@@ -231,6 +231,7 @@ class ApprovalResponse(Event):
     approved: bool = False
     reason: str = ""
     modified_args: dict[str, Any] | None = None
+    daa_choice: str = ""
 
 
 @dataclass
@@ -683,6 +684,8 @@ class ApprovalRequest(Event):
     user_message: str = ""
     workspace_roots: list[str] = field(default_factory=list)
     workspace_cwd: str = ""
+    daa_exact: str = ""
+    daa_prefix: tuple[str, ...] = ()
     judging: bool = False
     """True when an LLM reviewer is concurrently evaluating this request.
 

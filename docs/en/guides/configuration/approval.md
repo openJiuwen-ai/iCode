@@ -45,6 +45,20 @@ Tool calls that require approval open an **Approval Required** dialog showing th
 
 ## Understand automatic approval and safety protections
 
+Enable minimal DAA with `CHRYS_DAA_MINIMAL=1` or by setting `approval.daa_minimal` to `true` in your [user settings](../../reference/settings.md). When an eligible approval dialog appears, choose a session or project grant for exact reuse, or a literal command prefix. The default remains a one-time approval.
+
+DAA is currently available only to the main agent. Sub-agents and workflow nodes do not reuse or save DAA grants; they follow their existing approval policy and mode, including automatic approval and bypass where applicable.
+
+When minimal DAA is enabled, editing a request approves that edit once and does not save the original request as a reusable grant. The edited arguments run through `before_tool_call` hooks. If a hook changes them further, iCode asks you to confirm the resulting request without running the same transformation again. Arguments outside DAA's supported JSON identity format can use ordinary per-call approval only if the confirmation snapshot supports their types (see below); they cannot reuse or create a DAA grant.
+
+Session-scoped DAA grants follow the session ID and survive an agent rebuild or restoration of that same session. A different session does not inherit them. Historical session grants are currently retained in the DAA store; closing an approval dialog or rebuilding an agent does not delete them.
+
+File grants bind to the physical destination after resolving directory symlinks. Changing a link target requires new approval; the destination is checked again in the write/edit worker and the operation uses the confirmed physical path. A final-component symlink stays on ordinary approval because atomic replacement replaces the link itself. This one-time approval still tracks the physical parent and final entry, plus the link's current target: changing either while approval is pending requires fresh approval, and changes after handoff are rejected by the worker. An unresolved target never disables that guard. Older file grants without the physical-path version marker are ignored and must be approved again; command grants are unchanged. These checks do not provide filesystem sandbox isolation against another process concurrently replacing directory entries during an OS write.
+
+Per-call confirmation uses a separate, type-preserving snapshot. It supports built-in strings, booleans, integers, floats (including non-finite values), `None`, bytes, bytearrays, dictionaries, lists, tuples, sets and frozensets, plus `PurePath`/`Path` and enums, with nested values restricted to these types. Enum snapshots retain the enum class, member name and frozen value; valid StrEnum, IntEnum and ordinary Enum parameters reach normal approval. Changing supported arguments while approval is pending requires fresh approval, even when they cannot form reusable DAA keys.
+
+With DAA enabled, calls reaching this confirmation step with `date`/`datetime`, `UUID`, `Decimal`, Pydantic model instances, other unsupported host objects or cyclic values are rejected before a dialog opens with `Tool arguments cannot be safely compared for approval.` Custom tools that need these types must disable minimal DAA or accept supported argument types. This restriction does not apply when DAA is disabled.
+
 The following operations usually run without an approval dialog:
 
 - Safe, read-only Shell commands that do not access sensitive targets, such as `ls`, `cat`, and `grep`.

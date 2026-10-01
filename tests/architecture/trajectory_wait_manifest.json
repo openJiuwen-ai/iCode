@@ -1,5 +1,5 @@
 {
-  "inventory_sha256": "1ce584421bfa4e0290eea7912fd776491f37800616ea3c5717c2d798dc63e195",
+  "inventory_sha256": "d463db303b0c95c2403f4435409ffccf21a9c5d3031669fc120288bb8d83afce",
   "nodes": [
     {
       "cases": [
@@ -4418,7 +4418,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent",
       "source_column": 15,
-      "source_line": 1051,
+      "source_line": 1055,
       "wrapper_target": null
     },
     {
@@ -4438,7 +4438,7 @@
       "primitive": "wrapper",
       "qualname": "build_agent",
       "source_column": 8,
-      "source_line": 1053,
+      "source_line": 1057,
       "wrapper_target": "chrys.orchestration.invoker.resources.rollback_resources"
     },
     {
@@ -4458,7 +4458,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 8,
-      "source_line": 363,
+      "source_line": 364,
       "wrapper_target": null
     },
     {
@@ -4478,7 +4478,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 8,
-      "source_line": 371,
+      "source_line": 372,
       "wrapper_target": null
     },
     {
@@ -4498,7 +4498,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 12,
-      "source_line": 418,
+      "source_line": 419,
       "wrapper_target": null
     },
     {
@@ -4518,7 +4518,7 @@
       "primitive": "wrapper",
       "qualname": "build_agent._acquire",
       "source_column": 17,
-      "source_line": 502,
+      "source_line": 503,
       "wrapper_target": "chrys.service.llm.clients.create_client"
     },
     {
@@ -4538,7 +4538,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 8,
-      "source_line": 510,
+      "source_line": 511,
       "wrapper_target": null
     },
     {
@@ -4558,7 +4558,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 8,
-      "source_line": 516,
+      "source_line": 517,
       "wrapper_target": null
     },
     {
@@ -4578,7 +4578,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 12,
-      "source_line": 541,
+      "source_line": 542,
       "wrapper_target": null
     },
     {
@@ -4598,7 +4598,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 8,
-      "source_line": 559,
+      "source_line": 560,
       "wrapper_target": null
     },
     {
@@ -4618,7 +4618,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 12,
-      "source_line": 582,
+      "source_line": 583,
       "wrapper_target": null
     },
     {
@@ -4638,7 +4638,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 16,
-      "source_line": 621,
+      "source_line": 622,
       "wrapper_target": null
     },
     {
@@ -4658,7 +4658,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 20,
-      "source_line": 633,
+      "source_line": 634,
       "wrapper_target": null
     },
     {
@@ -4678,7 +4678,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 20,
-      "source_line": 647,
+      "source_line": 648,
       "wrapper_target": null
     },
     {
@@ -4698,7 +4698,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 20,
-      "source_line": 659,
+      "source_line": 660,
       "wrapper_target": null
     },
     {
@@ -4718,7 +4718,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 20,
-      "source_line": 661,
+      "source_line": 662,
       "wrapper_target": null
     },
     {
@@ -4738,7 +4738,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 16,
-      "source_line": 669,
+      "source_line": 670,
       "wrapper_target": null
     },
     {
@@ -4758,7 +4758,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 16,
-      "source_line": 704,
+      "source_line": 705,
       "wrapper_target": null
     },
     {
@@ -4778,7 +4778,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 24,
-      "source_line": 733,
+      "source_line": 734,
       "wrapper_target": null
     },
     {
@@ -4798,7 +4798,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 8,
-      "source_line": 738,
+      "source_line": 739,
       "wrapper_target": null
     },
     {
@@ -4818,7 +4818,7 @@
       "primitive": "wrapper",
       "qualname": "build_agent._acquire",
       "source_column": 42,
-      "source_line": 742,
+      "source_line": 743,
       "wrapper_target": "chrys.service.skills.adapter.create_skills_provider"
     },
     {
@@ -4838,7 +4838,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 12,
-      "source_line": 755,
+      "source_line": 756,
       "wrapper_target": null
     },
     {
@@ -4858,7 +4858,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 8,
-      "source_line": 759,
+      "source_line": 760,
       "wrapper_target": null
     },
     {
@@ -4878,7 +4878,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 12,
-      "source_line": 768,
+      "source_line": 769,
       "wrapper_target": null
     },
     {
@@ -4898,7 +4898,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 8,
-      "source_line": 771,
+      "source_line": 772,
       "wrapper_target": null
     },
     {
@@ -4918,7 +4918,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 8,
-      "source_line": 948,
+      "source_line": 949,
       "wrapper_target": null
     },
     {
@@ -4938,7 +4938,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire",
       "source_column": 8,
-      "source_line": 951,
+      "source_line": 952,
       "wrapper_target": null
     },
     {
@@ -4951,14 +4951,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await create_approval(conversation, ApprovalInputs(approval_policy=approval_policy, event_bus=bus, session_id=session_id, tool_kinds=tool_kinds, caller_name=profile.display_name or profile.name, workspace_roots=workspace_roots, approval_mode=approval_mode, approval_judge=approval_judge, approval_log_dir=approval_log_dir, workspace_cwd=runtime.cwd, dev_mode=settings.dev_mode, hook_manager=hook_manager, profile_name=profile.name, session_archive_read_roots=[effective_session_dir / COMPACTIONS_DIR_NAME] if effective_session_dir else None, turn_context=turn_context))",
+      "expression": "await create_approval(conversation, ApprovalInputs(daa=DAABinding(runtime, tools, agent_profile_fingerprint, session_id=session_id) if settings.daa_minimal else None, approval_policy=approval_policy, event_bus=bus, session_id=session_id, tool_kinds=tool_kinds, caller_name=profile.display_name or profile.name, workspace_roots=workspace_roots, approval_mode=approval_mode, approval_judge=approval_judge, approval_log_dir=approval_log_dir, workspace_cwd=runtime.cwd, dev_mode=settings.dev_mode, hook_manager=hook_manager, profile_name=profile.name, session_archive_read_roots=[effective_session_dir / COMPACTIONS_DIR_NAME] if effective_session_dir else None, turn_context=turn_context))",
       "identity": "chrys.orchestration.engine.build.builder:build_agent._acquire:26",
       "module": "chrys.orchestration.engine.build.builder",
       "ordinal": 26,
       "primitive": "wrapper",
       "qualname": "build_agent._acquire",
       "source_column": 30,
-      "source_line": 957,
+      "source_line": 958,
       "wrapper_target": "chrys.orchestration.invoker.runtime.create_approval"
     },
     {
@@ -4978,7 +4978,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire._mcp_progress",
       "source_column": 16,
-      "source_line": 722,
+      "source_line": 723,
       "wrapper_target": null
     },
     {
@@ -4998,7 +4998,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire._progress",
       "source_column": 16,
-      "source_line": 341,
+      "source_line": 342,
       "wrapper_target": null
     },
     {
@@ -5018,7 +5018,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire._publish_compaction_status",
       "source_column": 16,
-      "source_line": 855,
+      "source_line": 856,
       "wrapper_target": null
     },
     {
@@ -5038,7 +5038,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire._publish_compaction_status",
       "source_column": 12,
-      "source_line": 862,
+      "source_line": 863,
       "wrapper_target": null
     },
     {
@@ -5058,7 +5058,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire._publish_intermediate",
       "source_column": 12,
-      "source_line": 491,
+      "source_line": 492,
       "wrapper_target": null
     },
     {
@@ -5078,7 +5078,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire._publish_intermediate",
       "source_column": 12,
-      "source_line": 492,
+      "source_line": 493,
       "wrapper_target": null
     },
     {
@@ -5098,7 +5098,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire._publish_last_words_retry",
       "source_column": 12,
-      "source_line": 839,
+      "source_line": 840,
       "wrapper_target": null
     },
     {
@@ -5118,7 +5118,7 @@
       "primitive": "awaitable",
       "qualname": "build_agent._acquire._publish_validation_retry",
       "source_column": 12,
-      "source_line": 904,
+      "source_line": 905,
       "wrapper_target": null
     },
     {
@@ -20638,7 +20638,7 @@
       "primitive": "awaitable",
       "qualname": "create_approval",
       "source_column": 4,
-      "source_line": 286,
+      "source_line": 288,
       "wrapper_target": null
     },
     {
@@ -33658,7 +33658,367 @@
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware._ensure_auto_fulfill_block_subscription",
       "source_column": 8,
-      "source_line": 656,
+      "source_line": 826,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await call_next()",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:1",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 12,
+      "source_line": 387,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await call_next()",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:2",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 2,
+      "primitive": "awaitable",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 20,
+      "source_line": 410,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await call_next()",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:3",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 3,
+      "primitive": "awaitable",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 16,
+      "source_line": 431,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await call_next()",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:4",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 4,
+      "primitive": "awaitable",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 16,
+      "source_line": 465,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await call_next()",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:5",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 5,
+      "primitive": "awaitable",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 12,
+      "source_line": 479,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.to_thread(self._daa.service.match, daa_candidate)",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:6",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 6,
+      "primitive": "thread_pool",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 26,
+      "source_line": 548,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await call_next()",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:7",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 7,
+      "primitive": "awaitable",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 20,
+      "source_line": 566,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id, snapshot=deepcopy if self._daa is not None else None)",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:8",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 8,
+      "primitive": "async_context",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 23,
+      "source_line": 588,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self._ensure_auto_fulfill_block_subscription()",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:9",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 9,
+      "primitive": "wrapper",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 24,
+      "source_line": 607,
+      "wrapper_target": "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._ensure_auto_fulfill_block_subscription"
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self._bus.publish(ApprovalRequest(request_id=request_id, call_id=call_id, tool_name=tool_name, tool_kind=tool_kind, args=deepcopy(parsed_args) if self._daa is not None else parsed_args, session_id=self._session_id, caller_name=self._caller_name, user_message=self._user_message, workspace_roots=list(self._workspace_roots), workspace_cwd=self._workspace_cwd or '', judging=judging, daa_exact=daa_candidate.display if daa_candidate is not None else '', daa_prefix=daa_candidate.prefix or () if daa_candidate is not None else ()))",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:10",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 10,
+      "primitive": "awaitable",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 20,
+      "source_line": 611,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await approval_trace.requested(tool_name=tool_name, approval_mode=self._approval_mode.value, approval_level=_approval_level(policy=policy_requires_approval, dev_sub_agent_review=dev_sub_agent_review, sensitive=sensitive_shell or sensitive_filesystem_read or sensitive_filesystem_write))",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:11",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 11,
+      "primitive": "awaitable",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 24,
+      "source_line": 666,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await await_approval_with_hooks(future=future, judge_task=judge_task, manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, workspace_cwd=self._workspace_cwd or '', caller_name=self._caller_name, request_id=request_id, tool_name=tool_name, tool_kind=tool_kind, call_id=call_id, args=parsed_args, target_operation_id=approval_trace.request_id if approval_trace is not None else None)",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:12",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 12,
+      "primitive": "wrapper",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 31,
+      "source_line": 675,
+      "wrapper_target": "chrys.service.agent_middleware.control.approval_hooks.await_approval_with_hooks"
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await judge_task",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:13",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 13,
+      "primitive": "future",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 28,
+      "source_line": 697,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await approval_trace.resolved(approved=approved, decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE, reason_code='user_reason' if reason else '', arguments_modified=bool(modified_args))",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:14",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 14,
+      "primitive": "awaitable",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 16,
+      "source_line": 711,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await apply_before_tool_hooks(manager=self._hook_manager, context=context, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=context.arguments, workspace_cwd=self._workspace_cwd or '', target_operation_id=tool_operation_id(context.metadata))",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:15",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 15,
+      "primitive": "wrapper",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 31,
+      "source_line": 740,
+      "wrapper_target": "chrys.service.agent_middleware.events.hook_dispatch.apply_before_tool_hooks"
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await publisher.publish(InvocationToolCallArgsUpdated(origin=publisher.origin, agent_name=self._caller_name, tool_name=tool_name, tool_kind=tool_kind, call_id=call_id, args=final_args, session_id=self._session_id))",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:16",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 16,
+      "primitive": "awaitable",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 20,
+      "source_line": 763,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.to_thread(self._daa.service.remember, daa_candidate, daa_choice)",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:17",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 17,
+      "primitive": "thread_pool",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 16,
+      "source_line": 803,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await call_next()",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware._process:18",
+      "module": "chrys.service.agent_middleware.control.approval",
+      "ordinal": 18,
+      "primitive": "awaitable",
+      "qualname": "ApprovalMiddleware._process",
+      "source_column": 16,
+      "source_line": 808,
       "wrapper_target": null
     },
     {
@@ -33678,7 +34038,7 @@
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.close",
       "source_column": 8,
-      "source_line": 660,
+      "source_line": 830,
       "wrapper_target": null
     },
     {
@@ -33691,15 +34051,15 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await call_next()",
+      "expression": "await self._process(context, call_next, reapprove=reapprove)",
       "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:1",
       "module": "chrys.service.agent_middleware.control.approval",
       "ordinal": 1,
-      "primitive": "awaitable",
+      "primitive": "wrapper",
       "qualname": "ApprovalMiddleware.process",
-      "source_column": 12,
-      "source_line": 339,
-      "wrapper_target": null
+      "source_column": 23,
+      "source_line": 328,
+      "wrapper_target": "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._process"
     },
     {
       "cases": [
@@ -33711,275 +34071,15 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await call_next()",
+      "expression": "await apply_before_tool_hooks(manager=self._hook_manager, context=context, session_id=self._session_id, profile_name=self._profile_name, tool_name=context.function.name, kind=get_tool_kind(context.function) or self._tool_kinds.get(context.function.name, ''), call_id=get_call_id(context), args=cast('dict[str, Any]', context.arguments), workspace_cwd=self._workspace_cwd or '', target_operation_id=tool_operation_id(context.metadata))",
       "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:2",
       "module": "chrys.service.agent_middleware.control.approval",
       "ordinal": 2,
-      "primitive": "awaitable",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 20,
-      "source_line": 362,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await call_next()",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:3",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 3,
-      "primitive": "awaitable",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 16,
-      "source_line": 383,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await call_next()",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:4",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 4,
-      "primitive": "awaitable",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 16,
-      "source_line": 412,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await call_next()",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:5",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 5,
-      "primitive": "awaitable",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 12,
-      "source_line": 426,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id)",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:6",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 6,
-      "primitive": "async_context",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 23,
-      "source_line": 465,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self._ensure_auto_fulfill_block_subscription()",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:7",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 7,
       "primitive": "wrapper",
       "qualname": "ApprovalMiddleware.process",
-      "source_column": 24,
-      "source_line": 477,
-      "wrapper_target": "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._ensure_auto_fulfill_block_subscription"
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self._bus.publish(ApprovalRequest(request_id=request_id, call_id=call_id, tool_name=tool_name, tool_kind=tool_kind, args=parsed_args, session_id=self._session_id, caller_name=self._caller_name, user_message=self._user_message, workspace_roots=list(self._workspace_roots), workspace_cwd=self._workspace_cwd or '', judging=judging))",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:8",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 8,
-      "primitive": "awaitable",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 20,
-      "source_line": 481,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await approval_trace.requested(tool_name=tool_name, approval_mode=self._approval_mode.value, approval_level=_approval_level(policy=policy_requires_approval, dev_sub_agent_review=dev_sub_agent_review, sensitive=sensitive_shell or sensitive_filesystem_read or sensitive_filesystem_write))",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:9",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 9,
-      "primitive": "awaitable",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 24,
-      "source_line": 534,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await await_approval_with_hooks(future=future, judge_task=judge_task, manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, workspace_cwd=self._workspace_cwd or '', caller_name=self._caller_name, request_id=request_id, tool_name=tool_name, tool_kind=tool_kind, call_id=call_id, args=parsed_args, target_operation_id=approval_trace.request_id if approval_trace is not None else None)",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:10",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 10,
-      "primitive": "wrapper",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 31,
-      "source_line": 543,
-      "wrapper_target": "chrys.service.agent_middleware.control.approval_hooks.await_approval_with_hooks"
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await judge_task",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:11",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 11,
-      "primitive": "future",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 28,
-      "source_line": 565,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await approval_trace.resolved(approved=approved, decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE, reason_code='user_reason' if reason else '', arguments_modified=bool(modified_args))",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:12",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 12,
-      "primitive": "awaitable",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 16,
-      "source_line": 577,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await apply_before_tool_hooks(manager=self._hook_manager, context=context, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=context.arguments, workspace_cwd=self._workspace_cwd or '', target_operation_id=tool_operation_id(context.metadata))",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:13",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 13,
-      "primitive": "wrapper",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 31,
-      "source_line": 598,
+      "source_column": 15,
+      "source_line": 336,
       "wrapper_target": "chrys.service.agent_middleware.events.hook_dispatch.apply_before_tool_hooks"
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await publisher.publish(InvocationToolCallArgsUpdated(origin=publisher.origin, agent_name=self._caller_name, tool_name=tool_name, tool_kind=tool_kind, call_id=call_id, args=final_args, session_id=self._session_id))",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:14",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 14,
-      "primitive": "awaitable",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 20,
-      "source_line": 619,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await call_next()",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:15",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 15,
-      "primitive": "awaitable",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 12,
-      "source_line": 639,
-      "wrapper_target": null
     },
     {
       "cases": [
@@ -37618,7 +37718,7 @@
       "primitive": "awaitable",
       "qualname": "OneShotCorrelation.__aenter__",
       "source_column": 8,
-      "source_line": 45,
+      "source_line": 55,
       "wrapper_target": null
     },
     {
@@ -37638,7 +37738,7 @@
       "primitive": "awaitable",
       "qualname": "OneShotCorrelation.__aexit__",
       "source_column": 8,
-      "source_line": 49,
+      "source_line": 59,
       "wrapper_target": null
     },
     {

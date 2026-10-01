@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from tests.foundation.i18n._approval_catalog_oracle_ids import APPROVAL_MESSAGE_IDS
 from tests.foundation.i18n._buddy_catalog_oracle_ids import BUDDY_MESSAGE_IDS
 from tests.foundation.i18n._error_catalog_oracle_ids import ERROR_MESSAGE_IDS
 from tests.foundation.i18n._help_catalog_oracle_ids import HELP_MESSAGE_IDS
@@ -238,31 +239,6 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.agent_load.title.starting_session",
     "tui.agent_load.title.switching",
     "tui.agent_load.title.workspace",
-    "tui.approval.button.approve",
-    "tui.approval.button.decline",
-    "tui.approval.evaluating",
-    "tui.approval.file_edit.content",
-    "tui.approval.file_edit.planned_diff",
-    "tui.approval.file_edit.prepare_diff_error",
-    "tui.approval.file_edit.preparing_diff",
-    ("tui.approval.file_edit.replacements", "tui.approval.file_edit.replacements#plural"),
-    "tui.approval.flagged",
-    "tui.approval.mode_changed",
-    "tui.approval.presentation.edit_files",
-    "tui.approval.presentation.read_files",
-    "tui.approval.presentation.remote_tool",
-    "tui.approval.presentation.run_command",
-    "tui.approval.presentation.search",
-    "tui.approval.reason_placeholder",
-    "tui.approval.required_title",
-    "tui.approval.sub_agent.detail",
-    "tui.approval.sub_agent.prompt_title",
-    "tui.approval.sub_agent.review",
-    "tui.approval.title",
-    "tui.approval_mode.description.auto",
-    "tui.approval_mode.description.bypass",
-    "tui.approval_mode.description.manual",
-    "tui.approval_mode.title",
     "tui.ask_user.answer.not_answered",
     "tui.ask_user.button.answer_inline",
     "tui.ask_user.button.answer_next",
@@ -1416,8 +1392,6 @@ _message_ids.update(
         "tui.agent_load.default_title",
         "tui.agent_load.failed",
         "tui.agent_picker.title",
-        "tui.approval.judge.auto_approved",
-        "tui.approval.judge.flagged",
         "tui.ask_user.placeholder.custom_response",
         "tui.connection_report.not_advertised",
         "tui.connection_test.default_subject",
@@ -1568,6 +1542,7 @@ _message_ids.update(
         "settings.agent.default_profile.label",
         "settings.app.dev_mode.label",
         "settings.approval.default_mode.label",
+        "settings.approval.daa_minimal.label",
         "settings.context.warn_threshold_pct.label",
         "settings.history.prompt.enabled.label",
         "settings.llm.retry.max_transient.label",
@@ -1991,6 +1966,7 @@ _message_ids.update(
 
 EXPECTED_MESSAGE_IDS: frozenset[str | tuple[str, str]] = (
     frozenset(_message_ids)
+    | APPROVAL_MESSAGE_IDS
     | BUDDY_MESSAGE_IDS
     | WORKFLOW_MESSAGE_IDS
     | HELP_MESSAGE_IDS

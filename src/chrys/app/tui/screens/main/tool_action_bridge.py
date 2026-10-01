@@ -51,6 +51,7 @@ class ToolActionBridge:
         approved: bool,
         reason: str = "",
         modified_args: dict[str, Any] | None = None,
+        daa_choice: str = "",
     ) -> None:
         """Publish an approval response."""
         await self._publisher.publish(
@@ -59,6 +60,7 @@ class ToolActionBridge:
                 approved=approved,
                 reason=reason,
                 modified_args=modified_args,
+                daa_choice=daa_choice,
             )
         )
         self._log("ApprovalResponse", "approved" if approved else "declined")

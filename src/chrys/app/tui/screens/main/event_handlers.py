@@ -18,7 +18,7 @@ from chrys.app.tui.screens.main.dialog_controllers import (
     AgentLoadDialogController,
     ApprovalDialogHandle,
     ApprovalQueueController,
-    ApprovalResponseWorker,
+    ApprovalResponseCallback,
     ImageCompressionDialogController,
     QuestionDialogHandle,
     QuestionQueueController,
@@ -204,7 +204,7 @@ class BackendEventCallbacks:
     on_session_fork_error: Callable[[Error, str, NotificationSeverity], None]
     on_session_clear_error: Callable[[Error, str], None]
     block_pending_user_submit: Callable[[], None]
-    handle_approval_response: Callable[[str, bool, str, dict[str, object] | None], ApprovalResponseWorker | None]
+    handle_approval_response: ApprovalResponseCallback
     handle_ask_user_response: Callable[[str, tuple[AskUserAnswer, ...]], object]
     question_inline_preferred: Callable[[], bool]
     post_gc_message: Callable[[GcAbsorbRequested | GcReclaimRequested], object]

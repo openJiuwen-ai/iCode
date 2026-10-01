@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.markup import escape
@@ -13,7 +14,7 @@ from textual import events, on
 from textual.binding import Binding
 from textual.containers import HorizontalGroup, VerticalGroup
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static, TextArea
+from textual.widgets import Button, Select, Static, TextArea
 
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, InsertClipboardScreenMixin
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
@@ -60,6 +61,26 @@ _REASON_PLACEHOLDER = msg(
 )
 _APPROVE = msg("tui.approval.button.approve", fallback="Approve (Y)")
 _DECLINE = msg("tui.approval.button.decline", fallback="Decline (N)")
+_DAA_ONCE = msg("tui.approval.daa.once", fallback="Allow once")
+_DAA_EXACT_SESSION = msg("tui.approval.daa.exact_session", fallback="Remember — session")
+_DAA_EXACT_PROJECT = msg("tui.approval.daa.exact_project", fallback="Remember — project")
+_DAA_PREFIX_SESSION = msg("tui.approval.daa.prefix_session", fallback="Remember PREFIX — session")
+_DAA_PREFIX_PROJECT = msg("tui.approval.daa.prefix_project", fallback="Remember PREFIX — project")
+_DAA_DESCRIPTION = msg(
+    "tui.approval.daa.description",
+    fallback="EXACT remembers all arguments and execution context below. Edits apply once only.",
+)
+_DAA_FILES = msg(
+    "tui.approval.daa.files",
+    fallback="Allow further modifications to these files in the selected scope; contents may change. Edits here apply once only.",
+)
+_DAA_COMMAND = msg(
+    "tui.approval.daa.command",
+    fallback="Session remembers the normalized command below, including every argument. Project EXACT retains the full request and execution context. Edits here apply once only.",
+)
+_DAA_PREFIX = msg(
+    "tui.approval.daa.prefix", fallback="PREFIX authorizes these tokens and any appended literal arguments: {prefix}"
+)
 _FLAGGED = msg("tui.approval.flagged", fallback="Flagged by Auto-Review")
 
 _PRESENTATION_LABELS: dict[str, MessageDef] = {
@@ -167,7 +188,26 @@ class ApprovalDialog(
         judging: bool = False,
         approval_body: ApprovalBody | None = None,
         presentation_kind: str = "",
+        daa_exact: str = "",
+        daa_prefix: tuple[str, ...] = (),
     ) -> None:
+        self._daa_exact = daa_exact
+        self._daa_prefix = daa_prefix
+        self._daa_description = _DAA_DESCRIPTION
+        self._daa_session = True
+        self._daa_project = True
+        if daa_exact:
+            try:
+                details = json.loads(daa_exact)
+            except ValueError:
+                details = {}
+            if "file_paths" in details:
+                self._daa_description = _DAA_FILES
+            elif "command_session" in details:
+                self._daa_description = _DAA_COMMAND
+                self._daa_session = details["command_session"] is not None
+                self._daa_project = details.get("project_exact", False)
+        self.daa_choice = ""
         self._tool_name = tool_name
         self._tool_kind = tool_kind
         self._presentation_kind = presentation_kind
@@ -232,6 +272,14 @@ class ApprovalDialog(
                             arg_box = Static(Text(value), classes="approval-arg-box")
                             arg_box.border_title = Text(label)
                             yield arg_box
+                if self._daa_exact:
+                    yield Static(Text(render_str(localizer, self._daa_description.bind())))
+                    yield Static(Text(self._daa_exact), id="daa-exact")
+                    if self._daa_prefix:
+                        yield Static(
+                            Text(render_str(localizer, _DAA_PREFIX.bind(prefix=repr(list(self._daa_prefix))))),
+                            id="daa-prefix",
+                        )
             # Docked footer — separator + judge + buttons always pinned to bottom.
             with VerticalGroup(id="approval-footer"):
                 separator = Static("\u2500" * 200, id="approval-separator", markup=False)
@@ -250,6 +298,22 @@ class ApprovalDialog(
                 )
                 reason_input.placeholder = render_str(localizer, _REASON_PLACEHOLDER.bind())
                 yield reason_input
+                if self._daa_exact:
+                    choices = [
+                        (Text(render_str(localizer, _DAA_ONCE.bind())), ""),
+                    ]
+                    if self._daa_session:
+                        choices.append((Text(render_str(localizer, _DAA_EXACT_SESSION.bind())), "EXACT_SESSION"))
+                    if self._daa_project:
+                        choices.append((Text(render_str(localizer, _DAA_EXACT_PROJECT.bind())), "EXACT_PROJECT"))
+                    if self._daa_prefix:
+                        choices.extend(
+                            [
+                                (Text(render_str(localizer, _DAA_PREFIX_SESSION.bind())), "PREFIX_SESSION"),
+                                (Text(render_str(localizer, _DAA_PREFIX_PROJECT.bind())), "PREFIX_PROJECT"),
+                            ]
+                        )
+                    yield Select(choices, value="", allow_blank=False, id="daa-choice")
                 with HorizontalGroup(id="approval-buttons"):
                     yield _ApprovalButton(
                         Text(render_str(localizer, _APPROVE.bind())),
@@ -404,6 +468,9 @@ class ApprovalDialog(
         modified_args_fn = self._approval_body.modified_args if self._approval_body is not None else None
         modified_args = modified_args_fn() if modified_args_fn is not None else None
         reason = self.query_one("#approval-reason", _ApprovalReasonTextArea).text.strip()
+        if self._daa_exact and not modified_args:
+            selected = self.query_one("#daa-choice", Select).value
+            self.daa_choice = selected if isinstance(selected, str) else ""
         self._safe_dismiss((True, reason, modified_args), user_decision=True)
 
     @on(Button.Pressed, "#approval-no")

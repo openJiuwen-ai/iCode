@@ -317,6 +317,11 @@ class ShellTools:
         self._shell = shell or runtime.platform.shell
         self._session_dir = session_dir
 
+    @property
+    def shell(self) -> ShellInfo:
+        """Return the shell configuration used by this tool instance."""
+        return self._shell
+
     async def _bound_result(self, canonical: str, budget: int) -> str:
         plain = _truncate_output(canonical, budget)
         if plain == canonical:

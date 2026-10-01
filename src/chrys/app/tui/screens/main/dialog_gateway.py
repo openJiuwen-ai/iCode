@@ -12,6 +12,7 @@ from chrys.app.tui.screens.main.dialog_controllers import (
     AgentLoadDialogHandle,
     ApprovalBypassDecision,
     ApprovalDialogHandle,
+    ApprovalResponseCallback,
     ApprovalResponseWorker,
     ImageCompressionDialogHandle,
     QuestionDialogHandle,
@@ -28,7 +29,7 @@ class UiGatewayCallbacks:
     """Non-UI dialog effects supplied by the screen owner."""
 
     debug: Callable[[str, str], None]
-    handle_approval_response: Callable[[str, bool, str, dict[str, Any] | None], ApprovalResponseWorker | None]
+    handle_approval_response: ApprovalResponseCallback
     publish_auto_fulfill_blocked: Callable[[ApprovalReviewed], Awaitable[None]]
     handle_ask_user_response: Callable[[str, tuple[AskUserAnswer, ...]], object]
     question_inline_preferred: Callable[[], bool]
@@ -86,7 +87,10 @@ class UiGateway:
         approved: bool,
         reason: str,
         modified_args: dict[str, Any] | None = None,
+        daa_choice: str = "",
     ) -> ApprovalResponseWorker | None:
+        if daa_choice:
+            return self._callbacks.handle_approval_response(request_id, approved, reason, modified_args, daa_choice)
         return self._callbacks.handle_approval_response(request_id, approved, reason, modified_args)
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None:

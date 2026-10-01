@@ -60,6 +60,8 @@ class _FakeApprovalDialog:
         judging: bool = False,
         approval_body=None,
         presentation_kind: str = "",
+        daa_exact: str = "",
+        daa_prefix: tuple[str, ...] = (),
     ) -> None:
         self.caller_name = caller_name
         self._tool_name = tool_name
@@ -68,6 +70,9 @@ class _FakeApprovalDialog:
         self.judging = judging
         self.approval_body = approval_body
         self.presentation_kind = presentation_kind
+        self.daa_exact = daa_exact
+        self.daa_prefix = daa_prefix
+        self.daa_choice = ""
         self._dismissed = False
         self._user_decision_submitted = False
         self.received_verdict = None

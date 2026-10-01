@@ -419,6 +419,11 @@ class FunctionTool(SerializationMixin):
         return f"{self.__class__.__name__}(name={self.name})"
 
     @property
+    def bound_instance(self) -> object | None:
+        """Return the owner of a descriptor-bound tool, or None for an unbound tool."""
+        return self._instance
+
+    @property
     def declaration_only(self) -> bool:
         """Indicate whether the function is declaration only."""
         declaration_flag = self.__dict__.get("_declaration_only", False)

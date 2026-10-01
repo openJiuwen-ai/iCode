@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from chrys.kernel.client import BaseChatClient
     from chrys.kernel.middleware import ChatMiddleware
     from chrys.service.agent_middleware.injection import InjectionMiddleware
+    from chrys.service.approval.daa_binding import DAABinding
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
     from chrys.service.approval.turn_context import TurnContextHolder
@@ -108,6 +109,7 @@ class LastWordsInputs(TypedDict):
 class ApprovalInputs(TypedDict):
     """Explicit inputs to the conversation-owned ApprovalMiddleware."""
 
+    daa: NotRequired[DAABinding | None]
     approval_policy: ApprovalPolicy
     event_bus: EventBus
     session_id: NotRequired[str | None]

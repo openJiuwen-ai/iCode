@@ -806,6 +806,12 @@ msgstr "默认智能体"
 msgid "settings.app.dev_mode.label"
 msgstr "开发者模式"
 
+#. English: Enable experimental exact/prefix approval reuse
+#. chrys-meta={"fingerprint":"f1f07a6882cf5aa1a1b7f7f5d3f34987af5232f395f9503c7aeb9221959e71c2","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.approval.daa_minimal.label"
+msgstr "启用实验性的精确请求/命令前缀授权复用"
+
 #. English: Default approval mode
 #. chrys-meta={"fingerprint":"c8e65280cb85901d51d8d710a52c18865fd88c7247b342d14df96d915ed2b0fa","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -3644,6 +3650,65 @@ msgstr "批准（Y）"
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.button.decline"
 msgstr "拒绝（N）"
+
+#. English: Session remembers the normalized command below, including every
+#. argument. Project EXACT retains the full request and execution context.
+#. Edits here apply once only.
+#. chrys-meta={"fingerprint":"ca6a4aa7d939e96d48f9a01f82d2c0c1728d9fc83e0d7c92c18e74d916724567","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.daa.command"
+msgstr "当前会话记住下方规范化命令及全部参数；项目 EXACT 仍匹配完整请求和执行上下文。在此编辑参数仅批准一次。"
+
+#. English: EXACT remembers all arguments and execution context below. Edits
+#. apply once only.
+#. chrys-meta={"fingerprint":"1f0aefce4d1660a519ad9eeee2e78eb425d686d4843e732e69419914e2c7606f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.daa.description"
+msgstr "EXACT 会记住以下全部参数及执行上下文。编辑后的请求仅允许本次。"
+
+#. English: Remember — project
+#. chrys-meta={"fingerprint":"b628893c89b145dccc32312b04bac620664fce7b4d2c111824b3640660010bc7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.daa.exact_project"
+msgstr "记住 — 当前项目"
+
+#. English: Remember — session
+#. chrys-meta={"fingerprint":"120b2ebf7829da2f7074e14e3b9d09613d5db27d68df774534dcaf22674befd0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.daa.exact_session"
+msgstr "记住 — 当前会话"
+
+#. English: Allow further modifications to these files in the selected scope;
+#. contents may change. Edits here apply once only.
+#. chrys-meta={"fingerprint":"b8735796487f73b5db9f2a79257cbcbac860228fddefb5e661c6ff6b28ad9f2e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.daa.files"
+msgstr "允许在所选作用域内继续修改这些文件，内容可以变化。在此编辑参数仅批准一次。"
+
+#. English: Allow once
+#. chrys-meta={"fingerprint":"d9b6ae9de13b9c9a45139f96888d1827e0953a543381b7b6c2ee8917849b23e7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.daa.once"
+msgstr "仅允许本次"
+
+#. English: PREFIX authorizes these tokens and any appended literal arguments:
+#. {prefix}
+#. chrys-meta={"fingerprint":"0bbf6b6224f802bb51002132ed20db6aa63a7386057cc4920051946a753a9377","multiline":false,"placeholders":["prefix"]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.daa.prefix"
+msgstr "PREFIX 将授权以下词元及其后追加的任意字面参数：{prefix}"
+
+#. English: Remember PREFIX — project
+#. chrys-meta={"fingerprint":"834bd178e9c5f5c8d7a07f3883168eb32968d9c94096623f28410f1ec4882d04","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.daa.prefix_project"
+msgstr "记住 PREFIX 命令前缀 — 当前项目"
+
+#. English: Remember PREFIX — session
+#. chrys-meta={"fingerprint":"d55e7b1109e5315c619483746cca3548d6c3844bbff2cee8fe113adba92a0d1c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.daa.prefix_session"
+msgstr "记住 PREFIX 命令前缀 — 当前会话"
 
 #. English: Evaluating
 #. chrys-meta={"fingerprint":"1f40bf7abed439a37e5ef078ab3f1cc9e3b9c99ae066d8fbe917082ae955ddbc","multiline":false,"placeholders":[]}

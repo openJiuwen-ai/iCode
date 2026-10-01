@@ -25,6 +25,7 @@ from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.platform.paths import resolve_existing_path, resolve_workspace_path
 from chrys.foundation.text.images import ImageProcessingError, load_image_file
 from chrys.kernel import Content
+from chrys.service.tools.file_approval import FileWriteTarget, approved_write_path, file_write_target
 from chrys.service.tools.kinds import KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE, tool
 from chrys.service.tools.result_metadata import tool_error
 from chrys.service.tools.session_artifacts import (
@@ -128,6 +129,7 @@ def _atomic_write(path: str, content: str, encoding: str = "utf-8", errors: str 
     If the write or flush fails, the temp file is removed and the original
     file is left untouched.
     """
+    path = approved_write_path(path)
     parent = os.path.dirname(path) or "."
     platform = get_platform()
     target_mode: int | None = None
@@ -612,6 +614,7 @@ def _write_file_impl(
     base_cwd: str | None = None,
 ) -> str:
     try:
+        path = approved_write_path(path, base_cwd=base_cwd)
         with _fs_write_lock(path, base_cwd):
             plan = plan_write_file(path, content, overwrite=overwrite, base_cwd=base_cwd)
             if isinstance(plan, FileToolPreviewError):
@@ -841,6 +844,7 @@ def _edit_file_impl(
     base_cwd: str | None = None,
 ) -> str:
     try:
+        path = approved_write_path(path, base_cwd=base_cwd)
         with _fs_write_lock(path, base_cwd):
             plan = plan_edit_file(path, old_string, new_string, replace_all=replace_all, base_cwd=base_cwd)
             if isinstance(plan, FileToolPreviewError):
@@ -915,6 +919,23 @@ class FilesystemTools:
     def tools(self) -> list:
         """Return filesystem tools for this runtime context."""
         return [self.read_file, self.view_image, self.write_file, self.edit_file]
+
+    def approval_targets(self, arguments: dict[str, object]) -> tuple[FileWriteTarget, ...]:
+        """One-time targets, including final symlinks; unresolved paths authorize nothing."""
+        path = arguments.get("path")
+        if not isinstance(path, str) or not path or "\0" in path:
+            return ()
+        try:
+            return (file_write_target(path, base_cwd=self._runtime.cwd),)
+        except OSError, ValueError:
+            return ()
+
+    def affected_paths(self, arguments: dict[str, object]) -> tuple[str, ...] | None:
+        """Reusable physical destinations exclude mixed read/replace symlink operations."""
+        targets = self.approval_targets(arguments)
+        if not targets or any(target.link_target is not None for target in targets):
+            return None
+        return tuple(target.path for target in targets)
 
     @tool(kind=KIND_FILESYSTEM_READ)
     def read_file(

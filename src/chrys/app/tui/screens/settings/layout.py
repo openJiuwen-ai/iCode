@@ -463,6 +463,7 @@ DEFERRED_KEYS: frozenset[str] = frozenset(
         # Held back from the panel for now.
         "tools.result.ceiling_tokens",
         "app.dev_mode",
+        "approval.daa_minimal",  # Experimental opt-in via environment or user config.
         "context.warn_threshold_pct",
         # Keep the backend/config surface while its product UX is undecided.
         "trajectory.verify_commands",

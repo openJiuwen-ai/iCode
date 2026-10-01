@@ -76,6 +76,7 @@ from chrys.service.agent_middleware import (
 )
 from chrys.service.agent_middleware.injection import InjectionMiddleware
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
+from chrys.service.approval.daa_binding import DAABinding
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.context.compaction.last_words_state import DropRoundBreakerState, LastWordsState
 from chrys.service.context.compaction.spill import COMPACTIONS_DIR_NAME
@@ -957,6 +958,9 @@ async def build_agent(
         approval_middleware = await create_approval(
             conversation,
             ApprovalInputs(
+                daa=DAABinding(runtime, tools, agent_profile_fingerprint, session_id=session_id)
+                if settings.daa_minimal
+                else None,
                 approval_policy=approval_policy,
                 event_bus=bus,
                 session_id=session_id,

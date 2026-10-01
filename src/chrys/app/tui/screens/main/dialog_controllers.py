@@ -100,11 +100,26 @@ class ApprovalResponseWorker(Protocol):
     async def wait(self) -> object: ...
 
 
+class ApprovalResponseCallback(Protocol):
+    """Existing frontend callback with an optional explicit reuse selection."""
+
+    def __call__(
+        self,
+        request_id: str,
+        approved: bool,
+        reason: str,
+        modified_args: dict[str, Any] | None = None,
+        daa_choice: str = "",
+    ) -> ApprovalResponseWorker | None: ...
+
+
 class ApprovalDialogHandle(Protocol):
     """Small approval-dialog surface used by the controller."""
 
     @property
     def user_decision_submitted(self) -> bool: ...
+
+    daa_choice: str
 
     @property
     def is_dismissed(self) -> bool: ...
@@ -148,6 +163,7 @@ class ApprovalDialogPort(Protocol):
         approved: bool,
         reason: str,
         modified_args: dict[str, Any] | None = None,
+        daa_choice: str = "",
     ) -> ApprovalResponseWorker | None: ...
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None: ...
@@ -212,6 +228,7 @@ class ApprovalQueueController:
                 _call_id: str = event.call_id,
                 _args: dict[str, Any] = event.args,
                 _judging: bool = event.judging,
+                _daa_enabled: bool = bool(event.daa_exact),
             ) -> None:
                 dialog = self.open_dialogs.pop(_req, None)
                 if _req in self.cancelled_requests:
@@ -229,7 +246,18 @@ class ApprovalQueueController:
                 approved, reason, modified_args = result
                 if approved and modified_args and _call_id:
                     self._port.update_tool_args(_call_id, {**_args, **modified_args})
-                response_worker = self._port.handle_approval_response(_req, approved, reason, modified_args)
+                if (
+                    _daa_enabled
+                    and approved
+                    and dialog is not None
+                    and dialog.user_decision_submitted
+                    and dialog.daa_choice
+                ):
+                    response_worker = self._port.handle_approval_response(
+                        _req, approved, reason, modified_args, dialog.daa_choice
+                    )
+                else:
+                    response_worker = self._port.handle_approval_response(_req, approved, reason, modified_args)
                 if track_user_decision:
 
                     async def _drain_marker(

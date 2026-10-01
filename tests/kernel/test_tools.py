@@ -138,11 +138,14 @@ class TestToolInvocationContracts:
 
         Tools.execute = FunctionTool(name="execute", description="d", func=Tools.execute)
         Tools.execute.chrys_kind = "shell"
-        bound = Tools().execute
+        owner = Tools()
+        bound = owner.execute
         assert bound is not Tools.__dict__["execute"]
         assert type(bound) is FunctionTool
         assert bound.chrys_kind == "shell"
-        assert bound._instance is not None
+        assert bound.bound_instance is owner
+        assert Tools.execute.bound_instance is None
+        assert Tools().execute.bound_instance is not owner
 
     def test_parse_result_is_chrys_owned_and_returns_chrys_content(self) -> None:
         assert FunctionTool.parse_result.__module__ == "chrys.kernel.tools"
