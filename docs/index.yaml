@@ -37,8 +37,6 @@ topics:
         path: guides/running/icode-acp.md
       - id: icode_serve
         path: guides/running/icode-serve.md
-      - id: icode_buddy
-        path: guides/running/icode-buddy.md
       - id: workflows
         path: guides/running/workflows.md
   - id: configuration
