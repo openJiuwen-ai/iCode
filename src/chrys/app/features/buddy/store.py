@@ -51,10 +51,15 @@ _REPLACE_RETRY_SECONDS = 0.05
 
 
 class BuddyStore:
-    """One save file. With no *path*, the one under the platform config directory."""
+    """One save file. With no *path*, the one under the platform config directory.
 
-    def __init__(self, path: Path | None = None) -> None:
+    Strict clients read only the primary, reject damage and write no backup.
+    Only a missing primary and backup together count as first use.
+    """
+
+    def __init__(self, path: Path | None = None, *, strict: bool = False) -> None:
         self._path = path
+        self._strict = strict
 
     @property
     def path(self) -> Path:
@@ -66,6 +71,20 @@ class BuddyStore:
 
     def load(self) -> BuddyRecord | None:
         """The saved buddy, or None when there is none that can be read."""
+        if self._strict:
+            try:
+                text = self.path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                # A missing primary with an existing backup is damaged storage, not first use.
+                try:
+                    self.backup_path.stat()
+                except FileNotFoundError:
+                    return None
+                raise ValueError("Buddy primary save is missing while a backup exists") from None
+            record = _unseal(text)
+            if record is None:
+                raise ValueError("Invalid Buddy save: unsupported version, signature or record")
+            return record
         return _read(self.path)
 
     def update(self, change: Callable[[BuddyRecord | None], BuddyRecord | None]) -> BuddyRecord | None:
@@ -81,12 +100,15 @@ class BuddyStore:
         path = self.path
         path.parent.mkdir(parents=True, exist_ok=True)
         with FileLock(path.with_suffix(".lock"), timeout=_LOCK_TIMEOUT_SECONDS):
-            current = _read(path)
+            current = self.load()
             changed = change(current)
             if changed is None or changed == current:
                 return current
             sealed = _seal(changed)
             _write(path, sealed)
+            if self._strict:
+                # The primary is authoritative; strict clients do not recover from backups.
+                return changed
             # The primary is what counts. A failed second copy costs the fallback, not the change.
             with contextlib.suppress(OSError):
                 _write(_second_copy(path), sealed)

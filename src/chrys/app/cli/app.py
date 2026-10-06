@@ -71,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  agents      List available agent profiles\n"
             "  models      List available model profiles\n"
             "  acp         Run an Agent Client Protocol stdio server\n"
+            "  buddy       Local Buddy JSON bridge\n"
             f"  serve       Host the {APP_DISPLAY_NAME} TUI in a browser\n"
             "  trajectory  Export recorded trajectory analytics (perfetto/json/csv)\n"
             "  workflow    List, validate and run workflows headlessly\n"
@@ -140,6 +141,10 @@ def main() -> int:
         return _run_serve(argv[1:])
     if argv and argv[0] == "acp":
         return _run_acp(argv[1:])
+    if argv and argv[0] == "buddy":
+        from chrys.app.cli.buddy import main as buddy_main
+
+        return buddy_main(argv[1:])
     if argv and argv[0] == "trajectory":
         from chrys.app.cli.trajectory import main as trajectory_main
 
