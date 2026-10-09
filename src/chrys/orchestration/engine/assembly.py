@@ -74,6 +74,10 @@ def assemble_agent_engine(
     record it on their session. Production entry points always pass it.
     """
     bus = event_bus
+    # AIxCoding telemetry: tool-detail/ai-code reporting on this bus (idempotent per bus).
+    from chrys.aixcoding.telemetry import subscriber
+
+    subscriber.attach(bus)
     if loaded_settings is not None and settings is not None and settings is not loaded_settings.settings:
         error_message = "Pass either settings or loaded_settings, not two different ones."
         raise ValueError(error_message)

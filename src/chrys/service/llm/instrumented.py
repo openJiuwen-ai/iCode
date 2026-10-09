@@ -873,6 +873,7 @@ class _IntermediateTextMixin(_IntermediateTextBase):
 def _compose_client_stack(
     chat_client: Any,
     *,
+    session_id: str | None = None,
     max_iterations: int | None,
     max_consecutive_errors: int | None,
     tool_result_ceiling_tokens: int | None = None,
@@ -881,6 +882,9 @@ def _compose_client_stack(
 
     ``None`` knobs fall back to :class:`ToolLoopLayer` defaults.
     """
+    # AIxCoding telemetry: llm-call piggyback middleware (chrys/aixcoding/telemetry/llm_telemetry.py).
+    from chrys.aixcoding.telemetry.llm_telemetry import build_telemetry_middleware
+
     knobs: dict[str, Any] = {}
     if max_iterations is not None:
         knobs["max_iterations"] = max_iterations
@@ -888,7 +892,7 @@ def _compose_client_stack(
         knobs["max_consecutive_errors"] = max_consecutive_errors
     if tool_result_ceiling_tokens is not None:
         knobs["tool_result_ceiling_tokens"] = tool_result_ceiling_tokens
-    return ToolLoopLayer(ChatMiddlewareLayer(chat_client), **knobs)
+    return ToolLoopLayer(ChatMiddlewareLayer(chat_client, middleware=build_telemetry_middleware(session_id)), **knobs)
 
 
 def create_instrumented_openai_client(
@@ -987,6 +991,7 @@ def create_instrumented_openai_client(
     chat_client._on_intermediate_text_sync = on_intermediate_text_sync
     return _compose_client_stack(
         chat_client,
+        session_id=session_id,
         max_iterations=max_iterations,
         max_consecutive_errors=max_consecutive_errors,
         tool_result_ceiling_tokens=tool_result_ceiling_tokens,
@@ -1050,6 +1055,7 @@ def create_instrumented_openai_responses_client(
     chat_client._on_intermediate_text_sync = on_intermediate_text_sync
     return _compose_client_stack(
         chat_client,
+        session_id=session_id,
         max_iterations=max_iterations,
         max_consecutive_errors=max_consecutive_errors,
         tool_result_ceiling_tokens=tool_result_ceiling_tokens,
@@ -1122,6 +1128,7 @@ def create_instrumented_anthropic_client(
     client._on_intermediate_text_sync = on_intermediate_text_sync
     return _compose_client_stack(
         client,
+        session_id=session_id,
         max_iterations=max_iterations,
         max_consecutive_errors=max_consecutive_errors,
         tool_result_ceiling_tokens=tool_result_ceiling_tokens,

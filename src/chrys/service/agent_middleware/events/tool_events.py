@@ -395,6 +395,8 @@ class ToolEventMiddleware(FunctionMiddleware):
                 tool_kind=tool_kind,
                 args=args,
                 call_id=call_id,
+                # AIxCoding telemetry: provider call id keys the per-call registry.
+                provider_call_id=provider_call_id,
                 session_id=self._session_id,
             )
         )
@@ -691,6 +693,8 @@ class ToolEventMiddleware(FunctionMiddleware):
                             origin=origin,
                             tool_name=tool_name,
                             call_id=call_id,
+                            # AIxCoding telemetry: provider call id keys the per-call registry.
+                            provider_call_id=provider_call_id,
                             result=result_text,
                             image_contents=result_images,
                             duration_ms=duration_ms,

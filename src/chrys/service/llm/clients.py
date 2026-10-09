@@ -463,6 +463,8 @@ async def create_client(
     if provider not in _PROVIDER_API_KEY_ENVS:
         raise _unknown_provider(provider)
 
+    # AIxCoding telemetry: thread the session id into the instrumented stack.
+    stack_kwargs["session_id"] = session_id
     api_key = _resolve_profile_api_key(profile)
     headers = _build_default_headers(
         session_id,

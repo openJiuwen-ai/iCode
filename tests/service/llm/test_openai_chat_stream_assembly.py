@@ -177,6 +177,7 @@ async def test_instrumented_glm_stream_assembles_tool_and_preserves_markdown(
     def _checked_stack(
         chat_client: Any,
         *,
+        session_id: str | None = None,
         max_iterations: int | None,
         max_consecutive_errors: int | None,
         tool_result_ceiling_tokens: int | None = None,

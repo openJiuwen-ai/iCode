@@ -582,6 +582,10 @@ class TurnRunner:
         reference = parse_skill_reference(text, skill_details or self._current.manifest.runtime_details.skill_details)
         if reference is None:
             return None
+        # AIxCoding telemetry: input-trigger report for a resolved slash skill reference.
+        from chrys.aixcoding.telemetry.subscriber import record_skill_invocation
+
+        record_skill_invocation(reference.skill.name, self._session.session_id)
         return format_skill_reference_reminder(reference)
 
     def _complete_finalized_run(self, outcome: PostRunOutcome) -> None:

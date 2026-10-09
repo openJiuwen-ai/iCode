@@ -38,9 +38,15 @@ _AGENTS_SOURCE_MAP_SECTION = 'AGENTS.md "Source map (src/chrys/)" section'
 
 WORKFLOWS_FACADE = "workflows"
 
+# Fork-customization package (aixcoding/docs/): tier 1 pins it to kernel/foundation
+# imports only; service (LLM stack), orchestration (assembly) and app (ACP) may
+# reference it downwards.
+AIXCODING = "aixcoding"
+
 TIER_ORDER = {
     FOUNDATION: 0,
     KERNEL: 1,
+    AIXCODING: 1,
     SERVICE: 2,
     # src/chrys/workflows.py re-exports the service-tier SDK for workflow files.
     WORKFLOWS_FACADE: 2,
