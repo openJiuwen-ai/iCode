@@ -102,6 +102,14 @@ def test_tool_detail_save_envelope_and_columns(mock: server.TelemetryMockServer)
     assert body["unknownExtraField"] == "kept-by-passthrough"
 
 
+def test_tool_detail_save_without_product_name_is_accepted(mock: server.TelemetryMockServer) -> None:
+    payload = _save_payload()
+    del payload["productName"]  # 真实契约可选：aixcoding-continue 不下发（2026-10-09 联调修正）
+    status, _ = _post_json(mock, f"{CSAS}/tool-detail/save", payload)
+    assert status == 200
+    assert len(mock.store.query("tool-detail/save")) == 1
+
+
 def test_tool_detail_save_rejected_lands_in_rejected_table(mock: server.TelemetryMockServer) -> None:
     payload = _save_payload()
     del payload["funcType"]  # 必填缺失

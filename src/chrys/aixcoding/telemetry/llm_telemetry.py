@@ -95,10 +95,15 @@ def clear_call_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def build_telemetry_middleware(session_id: str | None) -> list[ChatMiddleware] | None:
-    """组栈入口（``instrumented.py`` 调用）；装配异常只降级为不上报。"""
+def build_telemetry_middleware(session_id: str | None, workspace_cwd: str | None = None) -> list[ChatMiddleware] | None:
+    """组栈入口（``instrumented.py`` 调用）；装配异常只降级为不上报。
+
+    ``workspace_cwd``：会话工作区（``SessionEnvironment.cwd``，workspace 优先、
+    启动目录兜底）——projectName / git 五件套的取值基（2026-10-09 修正：
+    原用进程 cwd，TUI 启动目录 ≠ 工作区时 git/projectName 指向错误仓库）。
+    """
     try:
-        return [AixTelemetryMiddleware(session_id=session_id)]
+        return [AixTelemetryMiddleware(session_id=session_id, workspace_cwd=workspace_cwd)]
     except Exception:
         logger.warning("AIxCoding telemetry middleware unavailable; llm telemetry disabled", exc_info=True)
         return None
@@ -107,8 +112,9 @@ def build_telemetry_middleware(session_id: str | None) -> list[ChatMiddleware] |
 class AixTelemetryMiddleware(ChatMiddleware):
     """llm-call 搭车遥测：payload 注入 + function call 关联登记。"""
 
-    def __init__(self, session_id: str | None) -> None:
+    def __init__(self, session_id: str | None, workspace_cwd: str | None = None) -> None:
         self._session_id = session_id
+        self._workspace_cwd = workspace_cwd
 
     async def process(self, context: ChatContext, call_next: Callable[[], Awaitable[None]]) -> None:
         if not self._enabled():
@@ -166,7 +172,7 @@ class AixTelemetryMiddleware(ChatMiddleware):
         if channel.channel_version:
             payload["channelVersion"] = channel.channel_version
         payload["pluginVersion"] = plugin_version()
-        cwd = Path.cwd()
+        cwd = Path(self._workspace_cwd) if self._workspace_cwd else Path.cwd()
         payload["projectName"] = cwd.name or str(cwd)
         from chrys.aixcoding.git_info import collect_git_info
 

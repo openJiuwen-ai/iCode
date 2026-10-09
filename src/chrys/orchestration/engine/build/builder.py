@@ -504,6 +504,8 @@ async def build_agent(
             session_id=session_id,
             session_dir=effective_session_dir,
             tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
+            # AIxCoding telemetry: workspace cwd for llm piggyback projectName/git.
+            workspace_cwd=runtime.cwd,
         )
         await prepared.own_or_release(client.aclose)
 

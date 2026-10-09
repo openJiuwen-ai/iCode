@@ -22,8 +22,13 @@ def remember_bounded(mapping: dict, key: str, value: Any, *, limit: int = BOUNDE
         mapping.pop(next(iter(mapping)))
 
 
-def common_fields() -> dict[str, Any]:
-    """csas 报文公共字段（channel/git/plugin/project/userId）。"""
+def common_fields(workspace_cwd: str | None = None) -> dict[str, Any]:
+    """csas 报文公共字段（channel/git/plugin/project/userId）。
+
+    ``workspace_cwd``：会话工作区（事件携带，``SessionEnvironment.cwd`` 同源）——
+    projectName / git 五件套的取值基；缺省回退进程 cwd（2026-10-09 修正，
+    对齐 aixcoding workspace 语义）。
+    """
     from chrys.aixcoding.config import load_settings
     from chrys.aixcoding.context import current_channel, plugin_version
 
@@ -38,7 +43,7 @@ def common_fields() -> dict[str, Any]:
     if channel.channel_version:
         fields["channelVersion"] = channel.channel_version
 
-    cwd = Path.cwd()
+    cwd = Path(workspace_cwd) if workspace_cwd else Path.cwd()
     fields["projectName"] = cwd.name or str(cwd)
 
     from chrys.aixcoding.git_info import collect_git_info

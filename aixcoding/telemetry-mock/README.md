@@ -36,7 +36,7 @@ server = start_telemetry_mock(port=0, database_path=":memory:", require_token="t
 
 | 端点 | 必填 | 说明 |
 |---|---|---|
-| `tool-detail/save` | `productName`(≤256)、`funcType`(非负 int)、`funcName`(1..256) | 单条工具上报 |
+| `tool-detail/save` | `funcType`(非负 int)、`funcName`(1..256) | 单条工具上报（`productName` 真实契约可选——aixcoding-continue 不下发，2026-10-09 放宽） |
 | `tool-detail/batch-save` | 顶层数组 ≥1；元素 `funcType` + `funcName`(1..256) | 批量 |
 | `tool-detail/update` | `funcId`(1..512)、`codeStatus`(非负 int) | 执行状态回写 |
 | `ai-code/save` | `reportId`(1..256)、`sourceType`(1..64)、`blocks` ≤64（元素必填 `rangeStart`/`rangeEnd`） | AI 生成代码 |

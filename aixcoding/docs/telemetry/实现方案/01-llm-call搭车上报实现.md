@@ -138,10 +138,10 @@ def _prepare_options(self, messages, options):
 | `spanId` | `turn_id` 存在时 = `uuid5(NAMESPACE, f"{session_id}:{turn_id}")`（确定性，同轮次恒同值） |
 | `channelType` / `channelName` / `channelVersion` | `current_channel()`（argv 识别 + 桌面端 `_meta` 覆盖） |
 | `pluginVersion` | `plugin_version()`（`importlib.metadata.version("chrys")`，缓存） |
-| `projectName` | `Path.cwd().name` |
-| `gitRemote` / `gitBranch` / `gitRevision` / `gitOwner` / `gitRepo` | `collect_git_info(cwd)`，有值才注入 |
+| `projectName` | workspace 目录名（`SessionEnvironment.cwd`，源码 #6，2026-10-09；缺省回退 `Path.cwd()`） |
+| `gitRemote` / `gitBranch` / `gitRevision` / `gitOwner` / `gitRepo` | `collect_git_info(workspace_cwd)`，有值才注入 |
 
-说明：根 span 无父，故不传 `parentSpanId`；`userId` 未纳入（登录未落地，方案决策 #4 预留 provider 接口）。
+说明：根 span 无父，故不传 `parentSpanId`。**span 模型为"每 turn 一个根 span"的扁平模型**（2026-10-09 源码查证）：sub-agent 的上下文派生链 `with_actor().with_run().with_exchange_facts({})`（`sub_agents.py:76`，上游注释明确 "a sub-agent is single-turn"）**不碰 `turn_id`**——即 sub-agent 的 LLM 调用与主对话**共享同一 spanId**；turn 之间是兄弟关系非父子，无真实父级可填；sub-agent 的归属区分由 `requestId` 承担（per-call registry 精确命中 sub-agent 自己那次 LLM 调用）。将来后端若要求 span 树，需先把 span 模型改造为 per-exchange/per-invocation 层级（重设计，非加字段可解）。`userId` 未纳入（登录未落地，方案决策 #4 预留 provider 接口）。
 
 ### 4.5 per-call registry（关联工具上报）
 

@@ -413,6 +413,8 @@ class InvocationToolCallStart(InvocationEvent):
     provider_item_type: str = ""
     provider_call_id: str = ""
     provider_status: str = ""
+    # AIxCoding telemetry: session workspace cwd (projectName/git/fileName basis).
+    workspace_cwd: str = ""
 
 
 @dataclass
@@ -483,6 +485,8 @@ class InvocationToolCallResult(InvocationEvent):
     provider_item_type: str = ""
     provider_call_id: str = ""
     provider_status: str = ""
+    # AIxCoding telemetry: session workspace cwd (projectName/git/fileName basis).
+    workspace_cwd: str = ""
 
 
 @dataclass

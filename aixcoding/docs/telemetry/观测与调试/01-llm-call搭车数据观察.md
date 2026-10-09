@@ -19,26 +19,26 @@ llm-call 的 `telemetry` 塞在**模型请求体** `body.telemetry` 里、发往
 :: 1. 启动前设置环境变量（apply=RESTART，必须在启动 iCode 前设好）
 set CHRYS_DEBUG_LLM_RAW_HTTP_LOG=1
 
-:: 2. 在 git 仓库目录下，headless 发一条请求
-uv run icode run "解释一下这个仓库是做什么的"
+:: 2. 在 git 仓库目录下，headless 发一条请求（-a 指定 agent，必填）
+uv run icode run "解释一下这个仓库是做什么的" -a Code
 ```
 
 ## 四、落盘位置与格式
 
-- 位置：`%USERPROFILE%\.chrys\sessions\<session_short_id>\llm_raw_http.jsonl`
+- 位置：`%APPDATA%\chrys\sessions\<session_short_id>\llm_raw_http.jsonl`（Windows；macOS/Linux 为 `~/.chrys/sessions/...`）
 - 格式：JSONL；每条 `event=request` 的记录含 `request.body.json`（解析后的请求体），`telemetry` 就在 `request.body.json.telemetry`。
 
 定位文件：
 
 ```powershell
-Get-ChildItem $env:USERPROFILE\.chrys\sessions -Recurse -Filter llm_raw_http.jsonl | Select-Object FullName
+Get-ChildItem "$env:APPDATA\chrys\sessions" -Recurse -Filter llm_raw_http.jsonl | Select-Object FullName
 ```
 
 ## 五、核对字段
 
 ```powershell
 # 列出所有 session 日志里含 telemetry 的行
-Get-Content $env:USERPROFILE\.chrys\sessions\*\llm_raw_http.jsonl | Select-String -Pattern '"telemetry"'
+Get-Content "$env:APPDATA\chrys\sessions\*\llm_raw_http.jsonl" | Select-String -Pattern '"telemetry"'
 ```
 
 `telemetry` 应含（有值才出现）：`requestId` / `sessionId` / `spanId` / `eventType`(=`"llm"`) / `eventSubType`(=`"agent"`|`"system"`) / `channelType` / `channelName` / `pluginVersion` / `projectName` / git 五件套（`gitRemote`/`gitBranch`/`gitRevision`/`gitOwner`/`gitRepo`）。

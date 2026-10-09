@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -17,6 +16,7 @@ from chrys.aixcoding.telemetry.reporters.tool_detail import (
     func_type_for_kind,
     line_counts,
     pick_value,
+    relative_file_name,
 )
 from chrys.aixcoding.telemetry.types import (
     TOOL_DETAIL_SAVE,
@@ -66,11 +66,14 @@ def _start(
     )
 
 
-def _result(*, call_id: str = "c1", metadata: dict | None = None, duration_ms: int = 120) -> InvocationToolCallResult:
+def _result(
+    *, call_id: str = "c1", provider_call_id: str = "", metadata: dict | None = None, duration_ms: int = 120
+) -> InvocationToolCallResult:
     return InvocationToolCallResult(
         origin=_origin(),
         tool_name="read_file",
         call_id=call_id,
+        provider_call_id=provider_call_id,
         result="done",
         duration_ms=duration_ms,
         session_id="sess-1",
@@ -136,10 +139,10 @@ def test_func_type_mapping():
 
 
 def test_pick_value_whitelist():
-    assert pick_value("read_file", {"filepath": "src/a.py", "extra": "x"}, full_mode=False) == "src/a.py"
+    assert pick_value("read_file", {"path": "src/a.py", "extra": "x"}, full_mode=False) == "src/a.py"
     assert pick_value("load_skill", {"skill_name": "code_review"}, full_mode=False) == "code_review"
     assert pick_value("write_file", {"filepath": "src/a.py"}, full_mode=False) is None
-    assert pick_value("read_file", {"filepath": 123}, full_mode=False) == "123"
+    assert pick_value("read_file", {"path": 123}, full_mode=False) == "123"
     assert pick_value("read_file", {}, full_mode=False) is None
 
 
@@ -150,10 +153,28 @@ def test_pick_value_full_mode_truncates():
 
 
 def test_line_counts_diff():
-    snapshot = SimpleNamespace(before_text="a\nb\nc", after_text="a\nx\nc\nd")
-    counts = line_counts({"file_snapshot": snapshot})
+    # 真链路 file_snapshot 是 tuple(before, after)（pipeline.py:89），非对象属性。
+    counts = line_counts({"file_snapshot": ("a\nb\nc", "a\nx\nc\nd"), "file_mutation_op": "modify"})
     assert counts == {"originalLines": 3, "addedLines": 2, "deletedLines": 1}
     assert line_counts({}) == {}
+
+
+def test_line_counts_create_and_delete_rules():
+    # 创建：original=0、added=新文件行数、deleted=0（2026-10-09 用户定稿）
+    assert line_counts({"file_snapshot": ("", "a\nb\nc"), "file_mutation_op": "create"}) == {
+        "originalLines": 0,
+        "addedLines": 3,
+        "deletedLines": 0,
+    }
+    # 删除：original=0、added=0、deleted=被删文件行数
+    assert line_counts({"file_snapshot": ("a\nb\nc", ""), "file_mutation_op": "delete"}) == {
+        "originalLines": 0,
+        "addedLines": 0,
+        "deletedLines": 3,
+    }
+    # 无 op 时按空侧推断（before 空=创建 / after 空=删除）
+    assert line_counts({"file_snapshot": ("", "x\ny")})["addedLines"] == 2
+    assert line_counts({"file_snapshot": ("x\ny", "")})["deletedLines"] == 2
 
 
 # -- reporter 报文 --------------------------------------------------------------
@@ -164,27 +185,31 @@ def test_reporter_start_then_result_ordering_and_fields():
     reporter = ToolDetailReporter(submitter)
     record_call("pc-1", "req-9", "span-9", "sess-1")
 
-    reporter.on_start(_start(provider_call_id="pc-1", args={"filepath": "src/a.py"}))
-    reporter.on_result(_result(metadata={"file_snapshot": SimpleNamespace(before_text="a\nb", after_text="a\nx\ny")}))
+    reporter.on_start(_start(provider_call_id="pc-1", args={"path": "src/a.py"}))
+    reporter.on_result(
+        _result(provider_call_id="pc-1", metadata={"file_snapshot": ("a\nb", "a\nx\ny"), "file_mutation_op": "modify"})
+    )
 
     assert submitter.endpoints() == [TOOL_DETAIL_SAVE, TOOL_DETAIL_UPDATE, TOOL_DETAIL_UPDATE]
     save = submitter.calls[0][1]
-    assert save["funcId"] == "c1"
+    assert save["funcId"] == "pc-1"  # csas 语义：provider id（模型生成），非 Chrys 短 id
     assert save["funcName"] == "read_file"
     assert save["funcType"] == FuncType.BUILTIN
     assert save["sessionId"] == "sess-1"
-    assert save["spanId"] == "inv-42"
+    assert save["spanId"] == "span-9"
     assert save["requestId"] == "req-9"
-    assert save["parentSpanId"] == "span-9"
+    assert "parentSpanId" not in save
     assert save["value"] == "src/a.py"
     assert save["pluginVersion"]
     assert save["projectName"]
 
     pending = submitter.calls[1][1]
-    assert pending["toolUseId"] == "c1"
+    assert pending["funcId"] == "pc-1"
+    assert pending["funcName"] == "read_file"
     assert pending["codeStatus"] == CodeStatus.PENDING
 
     final = submitter.calls[2][1]
+    assert final["funcId"] == "pc-1"  # update 关联键与 save 同源（provider id）
     assert final["codeStatus"] == CodeStatus.SUCCESS
     assert final["executionDurationMs"] == 120
     assert final["originalLines"] == 2
@@ -192,6 +217,38 @@ def test_reporter_start_then_result_ordering_and_fields():
     assert final["deletedLines"] == 1
     assert final["executionStartedAt"]
     assert final["executionFinishedAt"]
+
+
+def test_reporter_write_file_save_includes_file_name():
+    submitter = _CaptureSubmitter()
+    reporter = ToolDetailReporter(submitter)
+    record_call("pc-w", "req-w", "span-w", "sess-1")
+
+    reporter.on_start(
+        _start(provider_call_id="pc-w", tool_name="write_file", args={"path": "docs/new.md", "content": "hi"})
+    )
+    save = submitter.calls[0][1]
+    assert save["fileName"] == "docs/new.md"  # 写类工具 save 附 fileName（契约对齐）
+    reporter.on_result(
+        _result(provider_call_id="pc-w", metadata={"file_snapshot": ("", "hi\n"), "file_mutation_op": "create"})
+    )
+    final = submitter.calls[2][1]
+    assert final["originalLines"] == 0  # 创建：original=0、added=新文件行数
+    assert final["addedLines"] == 1
+    assert final["deletedLines"] == 0
+
+
+def test_relative_file_name(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    # 工程内绝对路径 → 相对路径（POSIX 分隔符，含文件名）
+    assert relative_file_name(str(sub / "a.kt")) == "sub/a.kt"
+    # 工程外绝对路径 → 原样保留
+    outside = str(tmp_path.parent / "elsewhere.kt")
+    assert relative_file_name(outside) == outside
+    # 相对入参原样
+    assert relative_file_name("docs/new.md") == "docs/new.md"
 
 
 def test_reporter_result_without_registry_still_reports():
@@ -205,10 +262,12 @@ def test_reporter_result_without_registry_still_reports():
     )
     save = submitter.calls[0][1]
     assert "requestId" not in save
+    assert save["funcId"] == "c1"  # provider id 为空时 fallback Chrys 短 id
     final = submitter.calls[2][1]
+    assert final["funcId"] == "c1"
     assert final["codeStatus"] == CodeStatus.FAILED
     assert final["failureType"] == "error"
-    assert final["toolErrorMessage"] == "done"
+    assert final["funcErrorMessage"] == "done"
 
 
 def test_reporter_rejected_marks_user_rejected():
@@ -229,7 +288,8 @@ def test_record_invocation_single_save():
     assert save["funcName"] == "java_code_review"
     assert save["funcType"] == FuncType.SKILL
     assert save["sessionId"] == "sess-1"
-    assert save["requestId"] == "req-prev"
+    assert "requestId" not in save  # 输入触发不误挂上一轮请求（aixcoding 同语义）
+    assert "spanId" not in save  # session 级 fallback span 为空则不带
 
 
 # -- subscriber 装配 ------------------------------------------------------------

@@ -63,7 +63,8 @@ def _write_result(
     after: str = "hello\nworld",
     errored: bool = False,
 ) -> InvocationToolCallResult:
-    snapshot = SimpleNamespace(before_text=before, after_text=after)
+    # 真链路 file_snapshot 是 tuple(before, after)（pipeline.py:89）。
+    snapshot = (before if before is not None else "", after)
     metadata: dict[str, Any] = {"file_snapshot": snapshot}
     if errored:
         metadata["errored"] = True
@@ -162,7 +163,9 @@ def test_reporter_write_success_emits_payload():
     assert payload["filepath"] == "src/a.py"
     assert payload["sourceType"] == "edit"
     assert payload["codeStatus"] == 5
-    assert payload["spanId"] == "inv-7"
+    # spanId 语义修正（2026-10-09）：来自 registry 根 span，无记录时不带
+    # （原 invocation_id 退出报文——与 tool-detail 同款修正）。
+    assert "spanId" not in payload
     assert payload["blocks"] == [{"snippet": "hello\nworld", "rangeStart": 1, "rangeEnd": 2}]
     assert payload["reportId"]
     assert payload["pluginVersion"]

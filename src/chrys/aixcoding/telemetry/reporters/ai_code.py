@@ -65,10 +65,11 @@ def _split_lines(text: str) -> list[str]:
     return text.replace("\r\n", "\n").split("\n")
 
 
-def _relative_filepath(path: str) -> str:
-    """git 相对路径（当前以 cwd 为基准；越界回退绝对路径原文）。"""
+def _relative_filepath(path: str, workspace_cwd: str | None = None) -> str:
+    """工作区相对路径（``workspace_cwd`` 缺省回退 cwd；越界回退绝对路径原文）。"""
     try:
-        return str(Path(path).resolve().relative_to(Path.cwd().resolve())).replace("\\", "/")
+        base = (Path(workspace_cwd) if workspace_cwd else Path.cwd()).resolve()
+        return str(Path(path).resolve().relative_to(base)).replace("\\", "/")
     except ValueError, OSError:
         return path
 
@@ -131,8 +132,9 @@ class AiCodeReporter:
         if args is None or event.tool_name not in FILE_WRITE_TOOLS or errored:
             return
         snapshot = event.metadata.get("file_snapshot")
-        before_text = getattr(snapshot, "before_text", None)
-        after_text = getattr(snapshot, "after_text", None)
+        # file_snapshot 是 tuple(before, after) (pipeline.py:89) — 同 tool_detail 修正.
+        before_text = snapshot[0] if isinstance(snapshot, tuple) and len(snapshot) == 2 else None
+        after_text = snapshot[1] if isinstance(snapshot, tuple) and len(snapshot) == 2 else None
         if not isinstance(after_text, str) or not after_text:
             return
         path = args.get("path")
@@ -142,18 +144,21 @@ class AiCodeReporter:
         from chrys.aixcoding.telemetry.llm_telemetry import resolve_call
         from chrys.aixcoding.telemetry.reporters import common_fields
 
+        workspace = event.workspace_cwd or None
         payload: dict[str, Any] = {
             "reportId": str(uuid.uuid4()),
-            "filepath": _relative_filepath(path),
+            "filepath": _relative_filepath(path, workspace),
             "blocks": ai_code_blocks(before_text if isinstance(before_text, str) else None, after_text),
             "sourceType": "edit",
             "sessionId": event.session_id,
             "codeStatus": code_status,
-            "spanId": event.origin.invocation_id,
         }
         request = resolve_call(event.provider_call_id, event.session_id)
         if request is not None:
             payload["requestId"] = request[0]
+            if request[1]:
+                # spanId = 提问周期链路 span (同 tool-detail 语义修正, 2026-10-09).
+                payload["spanId"] = request[1]
         from chrys.aixcoding.context import current_function_name
 
         if agent_name := current_function_name():
@@ -162,22 +167,22 @@ class AiCodeReporter:
             {
                 key: value
                 for key, value in (
-                    ("remoteUrl", _git_field("git_remote")),
-                    ("branch", _git_field("git_branch")),
-                    ("gitUserName", _git_field("git_user_name")),
-                    ("gitUserEmail", _git_field("git_user_email")),
+                    ("remoteUrl", _git_field("git_remote", workspace)),
+                    ("branch", _git_field("git_branch", workspace)),
+                    ("gitUserName", _git_field("git_user_name", workspace)),
+                    ("gitUserEmail", _git_field("git_user_email", workspace)),
                 )
                 if value
             }
         )
-        payload.update(common_fields())
+        payload.update(common_fields(workspace))
         self._add(payload)
 
 
-def _git_field(name: str) -> str | None:
+def _git_field(name: str, workspace_cwd: str | None = None) -> str | None:
     from chrys.aixcoding.git_info import collect_git_info
 
-    info = collect_git_info(Path.cwd())
+    info = collect_git_info(Path(workspace_cwd) if workspace_cwd else Path.cwd())
     if info is None:
         return None
     return getattr(info, name, None)

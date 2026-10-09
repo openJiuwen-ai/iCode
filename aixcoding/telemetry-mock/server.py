@@ -118,8 +118,10 @@ def _validate_object(
 def _validate_tool_detail_save(body: object) -> str | None:
     problem = _validate_object(
         body,
-        required_str=(("productName", 0, 256), ("funcName", 1, 256)),
-        optional_str=("funcId", "value", "fileName", *_COMMON_STR_FIELDS),
+        required_str=(("funcName", 1, 256),),
+        # productName is optional in the real csas contract (aixcoding-continue
+        # reporters never send it; verified 2026-10-09 live-link debugging).
+        optional_str=("productName", "funcId", "value", "fileName", *_COMMON_STR_FIELDS),
         required_int=("funcType",),
         optional_int=("codeStatus",),
     )
@@ -558,6 +560,8 @@ function filterText(row) {
 
 function renderRow(interfaceName, row) {
   const tr = document.createElement("tr");
+  tr._key = interfaceName + ":" + row.id;
+  tr._bodyJson = row.body_json;
   for (const column of COLUMNS[interfaceName]) {
     if (column === "body_json") {
       const td = document.createElement("td");
@@ -590,8 +594,12 @@ function setDetail(tr, bodyJson, show) {
     td.appendChild(pre);
     detail.appendChild(td);
     tr.parentNode.insertBefore(detail, tr.nextSibling);
+    if (tr._key) expanded.add(tr._key);
   }
-  if (!show && existing) tr.parentNode.removeChild(existing);
+  if (!show && existing) {
+    tr.parentNode.removeChild(existing);
+    if (tr._key) expanded.delete(tr._key);
+  }
 }
 
 async function refresh() {
@@ -629,7 +637,11 @@ async function refresh() {
         headRow.appendChild(th);
       }
       table.appendChild(headRow);
-      for (const row of rows) table.appendChild(renderRow(interfaceName, row));
+      for (const row of rows) {
+        const tr = renderRow(interfaceName, row);
+        table.appendChild(tr);
+        if (expanded.has(tr._key)) setDetail(tr, tr._bodyJson, true);
+      }
       section.appendChild(table);
     }
     sections.appendChild(section);
@@ -643,10 +655,11 @@ document.getElementById("expand-all").addEventListener("click", () => {
   document.querySelectorAll("td.bodycell").forEach((cell) => setDetail(cell.parentElement, cell._bodyJson, true));
 });
 document.getElementById("collapse-all").addEventListener("click", () => {
-  document.querySelectorAll("tr.detail").forEach((detail) => detail.parentNode.removeChild(detail));
+  document.querySelectorAll("tr.detail").forEach((detail) => setDetail(detail.previousSibling, null, false));
 });
 document.getElementById("clear").addEventListener("click", async () => {
   await fetch("/debug/clear", { method: "POST" });
+  expanded.clear();
   refresh();
 });
 setInterval(() => {

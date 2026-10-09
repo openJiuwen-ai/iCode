@@ -9,9 +9,9 @@
 
 | 里程碑 | 目标（方案 §九） | 状态 |
 |---|---|---|
-| M1 | aixcoding 包骨架 + llm-call 搭车 + per-call registry + telemetry-mock | **进行中**（第 1+2 步代码落地 2026-10-08：骨架/mock/llm_telemetry/源码 #1/#5/架构注册全部完成，专区 53 测试 + Smart Test 5398 + ruff + ty 全绿；余 M1 端到端验收项与 §8 外部确认项） |
-| M2 | subscriber + tool_detail（含输入触发）+ 装配 + ACP `_meta` 双向 | **进行中**（代码落地 2026-10-08：subscriber/outcome/reporters/acp_meta + 源码 #2/#3/#4 全部完成，专区 69 测试 + Smart Test 10498 + ruff + ty 全绿；余 M2 端到端验收——mock 入库核对/故障注入/skill 触发实测/`_meta` 回传联调） |
-| M3 | ai_code reporter + codeStatus 五态映射 | **进行中**（代码落地 2026-10-08：ai_code.py（blocks 对齐 pi-acp + ApprovalTracker + 批量缓冲）+ subscriber 增订审批三事件 + git_info 扩展 user.name/email + BatchBuffer 惰性定时器；专区 82 测试 + Smart Test 10341 + ruff + ty 全绿；**无源码修改项**；五态映射按方案 §4.3 实现待 §8-3 定稿确认；余 M3 端到端验收） |
+| M1 | aixcoding 包骨架 + llm-call 搭车 + per-call registry + telemetry-mock | **进行中**（代码 2026-10-08 全落；**2026-10-09 真链路验收大半通过**：spanId 绑定/registry 贯通含流式/LOCAL→mock 对接/raw log 核对；余：TUI/ACP→真实网关查库（§8-2）、sub-agent 用例、ACP 审批用例） |
+| M2 | subscriber + tool_detail（含输入触发）+ 装配 + ACP `_meta` 双向 | **进行中**（代码 2026-10-08 全落；**2026-10-09 真链路验收**：四形态之三（成功/异常/审批拒绝）+ 时长/错误分类/行数 + workspace 贯通（源码 #6）；余：超时形态、skill 引用触发、故障注入、`_meta` 回传联调） |
+| M3 | ai_code reporter + codeStatus 五态映射 | **进行中**（代码 2026-10-08 全落；**2026-10-09**：write_file 真链路入库首验通过 + ai_code.py 三处潜伏 bug 修复（tuple/spanId/git 基）；余：edit_file 补验、审批批准两路径 codeStatus、§8-3 定稿） |
 | M4 | 登录对接 + 哨兵测试 + 实现落地记录 | 未开始 |
 
 ## 外部确认项（方案 §八，与开发并行推进，不阻塞启动）
@@ -33,6 +33,7 @@
 | 2 | `orchestration/engine/assembly.py` | `assemble_agent_engine` 里调 `subscriber.attach(event_bus, ...)`，per-bus 幂等（~3 行） | M2 | 未开始 |
 | 3 | `orchestration/engine/run/`（input_refs 调用方） | skill 引用解析命中时调 `recorders.record_invocation(...)`，不改纯函数本体（~3 行） | M2 | 未开始 |
 | 4 | `app/acp/server.py`（+ `bridge.py`） | 读 prompt `_meta` envelope 存 channel context；响应回传 telemetry `_meta`（~8 行） | M2 | 未开始 |
+| 6 | `foundation/events/types.py` + `tool_events.py`（2 处）+ `sub_agent_events.py`（4 处）+ `instrumented.py`（`_compose_client_stack`+3 工厂）+ `clients.py`（`create_client`+`stack_kwargs`）+ `build/builder.py`（`create_client` 调用传 `runtime.cwd`） | 工具事件与 llm 搭车 middleware 携带**会话工作区**（`workspace_cwd`=`SessionEnvironment.cwd`，workspace 优先/启动目录兜底）——projectName/git 五件套/fileName 相对化的取值基（用户确认 2026-10-09，完整级别） | M2 | 已实施 2026-10-09（Smart Test 14869 过；`test_openai_chat_stream_assembly.py` 替身签名同步 +1 行，同 #1 附带先例） |
 
 ## M1
 
@@ -67,11 +68,11 @@
 
 - [x] mock 自测通过（含 `/debug/view` 观察页、`/debug/faults` 运行期切换）——41 项测试全绿（test_telemetry_mock.py 25 项 + test_infra.py 16 项）；CLI 直跑冒烟通过
 - [ ] TUI / ACP 各发一条模型请求 → 网关查库核对（搭车通道，§8-2 实测）
-- [ ] `current_trajectory()` 在 middleware 执行期绑定验证（spanId 来源，§8-5①）
-- [ ] `provider_call_id` 补填后 registry 贯通：含流式链路（流终结 → 提取写 registry → 工具 Start 前就绪）——单测级已验证（`test_llm_telemetry.py` 流式终结时序用例），真实模型链路待验
+- [x] `current_trajectory()` 在 middleware 执行期绑定验证（spanId 来源，§8-5①）——**2026-10-09 CLI headless 实测通过**（`CHRYS_DEBUG_LLM_RAW_HTTP_LOG=1` + `uv run icode run "<prompt>" -a Code` → `llm_raw_http.jsonl` 落盘核对：15 字段全齐、spanId 非空、telemetry 已 merge 进 body 顶层（wire 级贯通）；步骤见 `观测与调试/01-llm-call搭车数据观察.md`）
+- [x] `provider_call_id` 补填后 registry 贯通：含流式链路——**2026-10-09 真链路实测通过**（deepseek 流式：同 turn 3 轮 LLM 调用各得独立 requestId、并行 2 个 glob 共享同一 requestId=同响应双 function call、spanId 与 `llm_raw_http.jsonl` telemetry.spanId 同值；session ca4a2be7）
 - [ ] sub-agent 用例：工具关联到 sub-agent 那次 LLM 调用的 requestId
 - [ ] ACP 形态审批用例：agent_studio_new 回流下 `resolved_by_event`=True，decider=USER
-- [ ] LOCAL profile 指向 mock 可对接（`http://127.0.0.1:4321`）——验证方案已定（2026-10-08），按用户指示暂缓执行：① mock CLI 起停 + `/debug/view`；② `AIXCODING_EXTENSION_PROFILE=LOCAL` 下 `load_settings().report_base_url` 核对；③ `CHRYS_DEBUG_LLM_RAW_HTTP_LOG=1` + `uv run icode run "<prompt>"`（git 仓库 cwd）→ 落盘 `llm_raw_http.jsonl` 核对 `request.body.json.telemetry` 字段（eventType/eventSubType/sessionId/channelName=icode-cli/git 五件套；**spanId 非空即同时验证 §8-5①**）。注意：搭车报文发往模型网关，mock 收不到——LOCAL→mock 查库闭环待 M2 独立通道；raw log 不脱敏勿外发
+- [x] LOCAL profile 指向 mock 可对接（`http://127.0.0.1:4321`）——**2026-10-09 实测通过**：① mock CLI 起停 + `/debug/view` 观察页可用（展开状态跨自动刷新已修）；② `AIXCODING_EXTENSION_PROFILE=LOCAL` 端到端证明（mock 实收报文，强于配置核对）；③ raw log 落盘核对完成（含 spanId 非空验证 §8-5①）。搭车报文发往模型网关、mock 收不到——其观测靠 raw log（文档 01）
 
 ## M2
 
@@ -93,8 +94,8 @@
 
 ### 验收
 
-- [ ] 成功 / 异常 / 超时 / 审批拒绝四形态入库正确（mock SQLite 核对）——分类逻辑单测级已验证（`test_tool_detail.py` 四形态用例），真链路 mock 入库待验
-- [ ] 时长、错误分类、写类工具行数（difflib）正确——单测级已验证，真链路待验
+- [x] 成功 / 异常 / 超时 / 审批拒绝四形态入库正确（mock SQLite 核对）——**2026-10-09 真链路验三**：成功（read_file/glob/write_file codeStatus=1）、异常（读不存在文件 codeStatus=2 + failureType=error + funcErrorMessage 全路径）、审批拒绝（pwsh 被拒 codeStatus=4 + "Tool execution was rejected by user."，session b6ffbc04）；**超时形态未真链路构造**（单测级已覆盖， tolerated）
+- [x] 时长、错误分类、写类工具行数（difflib）正确——**2026-10-09 真链路实测通过**（executionDurationMs 合理：read_file 11-13ms / glob 647-658ms；failureType error/rejected 正确；创建行数 0/178/0 精确符合三态规则）
 - [ ] skill 引用触发入库（单条 save，funcType=0）——单测级已验证，真链路待验
 - [ ] `_meta` 回传被 agent_studio_new 收到——待验（agent_studio_new 侧联调）
 - [ ] 故障注入下上报吞错（后续可自动化为 pytest 集成测试：起 mock → 跑引擎 → 断言落库）
@@ -114,8 +115,8 @@
 
 ### 验收
 
-- [ ] write_file / edit_file 入库核对（mock SQLite）——单测级已验证（报文组装），真链路待验
-- [ ] 审批批准 / 拒绝两路径 codeStatus 正确（5 / 4；judge+auto+bypass=1）——单测级已验证（manual→5、auto→1、拒绝→4 用例），真链路待验
+- [x] write_file / edit_file 入库核对（mock SQLite）——**2026-10-09 真链路 write_file 通过**（ai_code_saves 首条：reportId/filepath 工作区相对路径/blocks 178 行块，session b6ffbc04；当日顺带修复 ai_code.py 三处潜伏 bug：tuple getattr/spanId 错位/git cwd 基）；edit_file 路径待真链路补验
+- [ ] 审批批准 / 拒绝两路径 codeStatus 正确（5 / 4；judge+auto+bypass=1）——**部分真链路验证（2026-10-09）**：拒绝路径 tool-detail codeStatus=4 已实测；批准=5 / judge+auto=1 的 ai-code codeStatus 路径待 ACP/审批场景补验
 
 ## 评审处理记录（2026-10-08，外部 AI 评审 5 项）
 

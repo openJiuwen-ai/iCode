@@ -874,6 +874,7 @@ def _compose_client_stack(
     chat_client: Any,
     *,
     session_id: str | None = None,
+    workspace_cwd: str | None = None,
     max_iterations: int | None,
     max_consecutive_errors: int | None,
     tool_result_ceiling_tokens: int | None = None,
@@ -892,7 +893,10 @@ def _compose_client_stack(
         knobs["max_consecutive_errors"] = max_consecutive_errors
     if tool_result_ceiling_tokens is not None:
         knobs["tool_result_ceiling_tokens"] = tool_result_ceiling_tokens
-    return ToolLoopLayer(ChatMiddlewareLayer(chat_client, middleware=build_telemetry_middleware(session_id)), **knobs)
+    # AIxCoding telemetry: workspace_cwd is the projectName/git basis (source #6).
+    return ToolLoopLayer(
+        ChatMiddlewareLayer(chat_client, middleware=build_telemetry_middleware(session_id, workspace_cwd)), **knobs
+    )
 
 
 def create_instrumented_openai_client(
@@ -901,6 +905,7 @@ def create_instrumented_openai_client(
     client: Any,
     session_id: str | None = None,
     parent_session_id: str | None = None,
+    workspace_cwd: str | None = None,
     use_route_session_context: bool = False,
     on_intermediate_text_async: Callable[[str], Awaitable[None]] | None = None,
     on_intermediate_text_sync: Callable[[str], None] | None = None,
@@ -992,6 +997,7 @@ def create_instrumented_openai_client(
     return _compose_client_stack(
         chat_client,
         session_id=session_id,
+        workspace_cwd=workspace_cwd,
         max_iterations=max_iterations,
         max_consecutive_errors=max_consecutive_errors,
         tool_result_ceiling_tokens=tool_result_ceiling_tokens,
@@ -1004,6 +1010,7 @@ def create_instrumented_openai_responses_client(
     client: Any,
     session_id: str | None = None,
     parent_session_id: str | None = None,
+    workspace_cwd: str | None = None,
     use_route_session_context: bool = False,
     on_intermediate_text_async: Callable[[str], Awaitable[None]] | None = None,
     on_intermediate_text_sync: Callable[[str], None] | None = None,
@@ -1056,6 +1063,7 @@ def create_instrumented_openai_responses_client(
     return _compose_client_stack(
         chat_client,
         session_id=session_id,
+        workspace_cwd=workspace_cwd,
         max_iterations=max_iterations,
         max_consecutive_errors=max_consecutive_errors,
         tool_result_ceiling_tokens=tool_result_ceiling_tokens,
@@ -1068,6 +1076,7 @@ def create_instrumented_anthropic_client(
     anthropic_client: Any,
     session_id: str | None = None,
     parent_session_id: str | None = None,
+    workspace_cwd: str | None = None,
     use_route_session_context: bool = False,
     on_intermediate_text_async: Callable[[str], Awaitable[None]] | None = None,
     on_intermediate_text_sync: Callable[[str], None] | None = None,
@@ -1129,6 +1138,7 @@ def create_instrumented_anthropic_client(
     return _compose_client_stack(
         client,
         session_id=session_id,
+        workspace_cwd=workspace_cwd,
         max_iterations=max_iterations,
         max_consecutive_errors=max_consecutive_errors,
         tool_result_ceiling_tokens=tool_result_ceiling_tokens,

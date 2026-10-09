@@ -101,28 +101,27 @@ def on_start(self, event):
     remember_bounded(self._started_at, event.call_id, event.timestamp)
     request = resolve_call(event.provider_call_id, event.session_id)
     payload = {
-        "funcId": event.call_id,            # Chrys 短 id（save/update 关联用）
+        "funcId": event.provider_call_id or event.call_id,  # provider id 优先（csas 语义），空值 fallback Chrys 短 id
         "funcName": event.tool_name,
         "funcType": func_type_for_kind(event.tool_kind),  # skill=0/MCP=1/内置=3
         "sessionId": event.session_id,
-        "spanId": event.origin.invocation_id,
     }
     if request is not None:
         payload["requestId"] = request[0]   # per-call registry 反查
         if request[1]:
-            payload["parentSpanId"] = request[1]
+            payload["spanId"] = request[1]  # 提问周期链路 span（=llm-call 搭车 telemetry.spanId）
     value = pick_value(event.tool_name, event.args, full_mode=...)
     if value is not None:
         payload["value"] = value
     ...
     payload.update(common_fields())
     self._submit(TOOL_DETAIL_SAVE, payload)
-    self._submit(TOOL_DETAIL_UPDATE, {"toolUseId": event.call_id,
+    self._submit(TOOL_DETAIL_UPDATE, {"funcId": event.call_id, "funcName": event.tool_name,
         "codeStatus": CodeStatus.PENDING, "executionStartedAt": _iso(event.timestamp)})
 ```
 
 - **funcType 映射**（`func_type_for_kind`）：`KIND_SKILL→0`、`KIND_MCP→1`、其余→内置 `3`。
-- **参数口径**（决策 #6，`pick_value`）：默认白名单——仅 `read_file→filepath`、`load_skill→skill_name` 放行；`toolParamMode: full` 时输出 args 全量 JSON 截 2000 字符。
+- **参数口径**（决策 #6，`pick_value`）：默认白名单——仅 `read_file→path`（input_model 真实参数名，2026-10-09 修正：原写 `filepath` 真链路取不到值）、`load_skill→skill_name` 放行；`toolParamMode: full` 时输出 args 全量 JSON 截 2000 字符。
 
 ### 4.4 update 组装
 
@@ -134,7 +133,8 @@ def on_result(self, event):
     started = self._started_at.pop(event.call_id, None)
     classification = classify_result_metadata(event.metadata)
     payload = {
-        "toolUseId": event.call_id,
+        "funcId": event.call_id,
+        "funcName": event.tool_name,
         "codeStatus": classification.code_status,   # 成功1/失败2/拒绝4
         "executionDurationMs": event.duration_ms,
     }
@@ -147,12 +147,45 @@ def on_result(self, event):
     if classification.rejected or classification.code_status != CodeStatus.SUCCESS:
         error_text = _error_text(event)
         if error_text:
-            payload["toolErrorMessage"] = error_text
+            payload["funcErrorMessage"] = error_text
     payload.update(line_counts(event.metadata))
     self._submit(TOOL_DETAIL_UPDATE, payload)
 ```
 
-写类工具补 difflib 行数（`line_counts`，`:78-92`）：从 `metadata["file_snapshot"]` 的 `before_text`/`after_text` 用 `difflib.ndiff` 统计 `addedLines`/`deletedLines`，`originalLines=before` 行数。
+写类工具行数（`line_counts`，随终态 update 上报）——`metadata["file_snapshot"]` 是 **tuple
+`(before_text, after_text)`**（`mutations/pipeline.py:89`，`tool_events.py:616` 原样挂入；
+2026-10-09 真链路发现原先按对象属性取恒空，单测用 SimpleNamespace 掩盖了类型不符，已修）。
+行数规则（**2026-10-09 用户定稿**，按 `metadata["file_mutation_op"]` 分派，缺省按空侧推断）：
+**创建**（op=create）：`originalLines=0`、`addedLines=新文件行数`、`deletedLines=0`；
+**删除**（op=delete）：`originalLines=0`、`addedLines=0`、`deletedLines=被删文件行数`；
+**修改**（op=modify）：difflib 差异，`originalLines=before 行数`。
+save 侧：写类工具（`write_file`/`edit_file`，对齐 iCode `_FILE_TOOLS`）从参数 `path`
+取值附 **`fileName`**（csas 契约字段，aixcoding-continue save 填 `fileName`：
+`toolCallReporter.ts:70`；2026-10-09 真链路联调补齐）。**fileName 口径**（同日用户定稿，
+对齐 aixcoding `getRelativePathOfFile` 语义）：文件在当前工程目录（cwd）内时取
+**相对路径**（含文件名，POSIX 分隔符，`relative_file_name()`）；工程外或解析失败
+保留绝对路径。
+
+**键名对齐与超集字段（2026-10-09 真链路联调修正）**：update 报文键名对齐
+aixcoding-continue `toolCallReporter.ts` 的真实上报——关联键 `funcId`（键名对齐；
+**值改用 provider 原始 call id**——csas 语义 = "模型调用工具时生成的 toolUseId"
+（`tool-use-types.ts:75-76`），与 session.json 消息历史/模型网关记录同 id 可直接
+核对；id 双体系见方案 §4.2：`metadata["call_id"]`（provider）≠
+`metadata["_chrys_call_id"]`（内部 12hex）；provider id 为空时 fallback Chrys
+短 id）、错误信息 `funcErrorMessage`（非 `toolErrorMessage`）、
+并附 `funcName`；save 的 `spanId` 语义修正——csas 契约为**提问周期链路 span**
+（aixcoding-continue 取 `SessionContext.getCurrentSpanId()`，与 llm-call 搭车
+telemetry 的 `spanId` 同值），改由 registry 反查的根 span 填充（原先误填
+`origin.invocation_id`），`parentSpanId` 真实上报从不填充、不再下发（查证
+依据见实现文档 01 §4.4：span 为"每 turn 一根"的扁平模型，sub-agent 与主对话
+同值，无真实父级可填）；输入触发
+save 同步对齐 aixcoding `InputTriggeredUsage` 语义——`requestId` 留空（不误挂
+上一轮请求），仅以 `spanId` 关联。save 的 `productName` 在真实契约中可选且 aixcoding-continue 不下发
+（本实现同样不下发，mock 校验已同步放宽）。**超集字段**：`executionDurationMs` /
+`executionStartedAt` / `executionFinishedAt` / `failureType` 为 iCode 额外下发
+（aixcoding-continue 的 update 只发 funcId/funcName/codeStatus/funcErrorMessage/
+三行数 7 字段）——**决策（2026-10-09）：暂保留**供时长与错误分类观测（M2 验收核对
+项），真实后端对未知字段的容忍度待方案 §8-6 外部确认，若后端严格拒收再收敛。
 
 ### 4.5 失败分类（outcome.py）
 

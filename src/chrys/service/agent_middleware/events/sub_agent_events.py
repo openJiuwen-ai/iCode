@@ -350,6 +350,8 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     provider_item_type=view.provider_item_type,
                     provider_call_id=view.provider_call_id,
                     provider_status=view.provider_status,
+                    # AIxCoding telemetry: workspace cwd for projectName/git/fileName.
+                    workspace_cwd=self._workspace_cwd,
                 )
             )
         elif isinstance(operation, HostedToolArgsOp):
@@ -406,6 +408,8 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     provider_item_type=view.provider_item_type,
                     provider_call_id=view.provider_call_id,
                     provider_status=view.provider_status,
+                    # AIxCoding telemetry: workspace cwd for projectName/git/fileName.
+                    workspace_cwd=self._workspace_cwd,
                 )
             )
 
@@ -647,6 +651,8 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                 args=args,
                 call_id=call_id,
                 session_id=self._session_id,
+                # AIxCoding telemetry: workspace cwd for projectName/git/fileName.
+                workspace_cwd=self._workspace_cwd,
             )
         )
         if self._hosted_bridge is not None:
@@ -897,6 +903,8 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                             duration_ms=duration_ms,
                             metadata=metadata,
                             session_id=self._session_id,
+                            # AIxCoding telemetry: workspace cwd for projectName/git/fileName.
+                            workspace_cwd=self._workspace_cwd,
                         )
                     )
                     if trajectory is not None:
