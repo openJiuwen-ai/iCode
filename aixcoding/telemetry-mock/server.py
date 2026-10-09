@@ -529,12 +529,19 @@ const TITLES = {
 };
 const COLUMNS = {
   "rejected": ["received_at", "interface", "problem", "body_json"],
+  // "json:<field>" 列：从报文原文（body_json）解析，展示库表提取列之外的完整参数。
   "tool-detail/save": ["received_at", "session_id", "func_id", "request_id", "span_id",
-                       "func_name", "code_status", "body_json"],
+                       "func_name", "code_status", "json:value", "json:fileName",
+                       "json:agentName", "json:channelType", "json:channelName",
+                       "json:pluginVersion", "json:gitBranch", "json:gitRevision", "body_json"],
   "tool-detail/update": ["received_at", "func_id", "code_status", "original_lines",
-                         "added_lines", "deleted_lines", "body_json"],
+                         "added_lines", "deleted_lines", "json:executionDurationMs",
+                         "json:failureType", "json:funcErrorMessage", "json:requestId",
+                         "json:agentName", "body_json"],
   "tool-detail/batch-save": ["received_at", "session_id", "item_count", "body_json"],
-  "ai-code/save": ["received_at", "report_id", "session_id", "filepath", "block_count", "body_json"],
+  "ai-code/save": ["received_at", "report_id", "session_id", "request_id", "filepath",
+                   "block_count", "json:sourceType", "json:codeStatus", "json:spanId",
+                   "json:agentName", "json:gitUserName", "body_json"],
   "event-reaction/save": ["received_at", "body_json"],
 };
 const LABELS = {
@@ -544,6 +551,11 @@ const LABELS = {
   "original_lines": "原行", "added_lines": "增行", "deleted_lines": "删行",
   "problem": "拒绝原因", "interface": "接口", "body_json": "原始报文", "filepath": "filepath",
   "block_count": "blocks",
+  "value": "value", "fileName": "fileName", "agentName": "agentName",
+  "channelType": "渠道类型", "channelName": "渠道名", "pluginVersion": "插件版本",
+  "gitBranch": "分支", "gitRevision": "commit", "executionDurationMs": "耗时ms",
+  "failureType": "失败类型", "funcErrorMessage": "错误信息", "sourceType": "来源",
+  "gitUserName": "git用户",
 };
 const expanded = new Set();
 
@@ -562,6 +574,7 @@ function renderRow(interfaceName, row) {
   const tr = document.createElement("tr");
   tr._key = interfaceName + ":" + row.id;
   tr._bodyJson = row.body_json;
+  let body = null;
   for (const column of COLUMNS[interfaceName]) {
     if (column === "body_json") {
       const td = document.createElement("td");
@@ -570,6 +583,11 @@ function renderRow(interfaceName, row) {
       td._bodyJson = row.body_json;
       td.addEventListener("click", () => setDetail(tr, td._bodyJson, !hasDetail(tr)));
       tr.appendChild(td);
+    } else if (column.startsWith("json:")) {
+      if (body === null) {
+        try { body = JSON.parse(row.body_json); } catch { body = {}; }
+      }
+      tr.appendChild(textCell(body[column.slice(5)]));
     } else {
       tr.appendChild(textCell(row[column]));
     }
@@ -633,7 +651,8 @@ async function refresh() {
       const headRow = document.createElement("tr");
       for (const column of COLUMNS[interfaceName]) {
         const th = document.createElement("th");
-        th.textContent = LABELS[column] || column;
+        const key = column.startsWith("json:") ? column.slice(5) : column;
+        th.textContent = LABELS[key] || key;
         headRow.appendChild(th);
       }
       table.appendChild(headRow);
