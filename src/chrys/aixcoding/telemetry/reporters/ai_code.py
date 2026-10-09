@@ -70,7 +70,7 @@ def _relative_filepath(path: str, workspace_cwd: str | None = None) -> str:
     try:
         base = (Path(workspace_cwd) if workspace_cwd else Path.cwd()).resolve()
         return str(Path(path).resolve().relative_to(base)).replace("\\", "/")
-    except ValueError, OSError:
+    except (ValueError, OSError):
         return path
 
 

@@ -79,7 +79,7 @@ def _run_git(cwd: Path, args: list[str]) -> str | None:
             check=False,
             **_windows_hidden_subprocess_kwargs(),
         )
-    except OSError, subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:
         return None

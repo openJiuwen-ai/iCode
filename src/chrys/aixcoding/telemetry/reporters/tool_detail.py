@@ -77,7 +77,7 @@ def pick_value(tool_name: str, args: Mapping[str, Any], *, full_mode: bool) -> s
     if full_mode:
         try:
             text = json.dumps(args, ensure_ascii=False, default=str)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None
         return text[:_FULL_VALUE_MAX_CHARS] or None
     field = VALUE_ARG_FIELD_BY_TOOL.get(tool_name)
@@ -136,7 +136,7 @@ def relative_file_name(raw: str, workspace_cwd: str | None = None) -> str:
         base = (Path(workspace_cwd) if workspace_cwd else Path.cwd()).resolve()
         if resolved.is_relative_to(base):
             return resolved.relative_to(base).as_posix()
-    except OSError, ValueError:
+    except (OSError, ValueError):
         pass
     return raw
 

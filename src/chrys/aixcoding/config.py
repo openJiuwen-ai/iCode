@@ -122,7 +122,7 @@ def _read_yaml(document: Path) -> dict:
         return {}
     try:
         loaded = yaml.safe_load(document.read_text(encoding="utf-8"))
-    except OSError, yaml.YAMLError:
+    except (OSError, yaml.YAMLError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
