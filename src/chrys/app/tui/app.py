@@ -84,6 +84,7 @@ from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.startup import catalog_load_warning
+from chrys.service.herdr_reporter import HerdrReporter
 from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_profile_selector
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.resolver import (
@@ -277,6 +278,9 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
     ) -> None:
         self._bus = event_bus
         self._engine = engine
+        # None outside a Herdr pane; every method of a live reporter is
+        # best-effort and must never disturb the session.
+        self._herdr_reporter = HerdrReporter.from_env()
         if settings_handle is not None and settings is not None and settings is not settings_handle.settings:
             error_message = "Pass either settings or settings_handle, not two different ones."
             raise ValueError(error_message)
@@ -941,6 +945,11 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             await self._bus.publish(w)
         self._startup_warnings.clear()
 
+        # The reporter must stream before the engine start task below can
+        # publish the opening SessionReady.
+        if self._herdr_reporter is not None:
+            await self._herdr_reporter.start(self._bus)
+
         registry = self._agent_registry
         if not registry.list_profiles():
             registry.load_all()
@@ -1098,6 +1107,9 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 await self._update_check_task
         self._update_check_task = None
         await self._engine.shutdown()
+        if self._herdr_reporter is not None:
+            await self._herdr_reporter.close()
+            self._herdr_reporter = None
         # After the engine: its shutdown drains a still-finalizing run
         # whose success callback can schedule one last title task; the
         # updater must be the last thing torn down so that task is
