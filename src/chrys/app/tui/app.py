@@ -52,6 +52,7 @@ from chrys.app.tui.support.gc_freeze import (
     GcReclaimReason,
     GcReclaimRequested,
 )
+from chrys.app.tui.terminal.program_status import ProgramStatusReporter
 from chrys.app.tui.terminal.title import (
     running_under_textual_web_driver,
     set_app_terminal_title_for_current_cwd,
@@ -317,6 +318,10 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             self._startup_warnings.append(catalog_load_warning(self.localizer.first_load_warning))
         self._apply_saved_model_on_restore = apply_saved_model_on_restore
         self._session_title_updater = session_title_updater
+        # OSC 7501 reporting lives and dies with the app: subscribed before
+        # any screen mounts (so the first turn event is never missed) and
+        # torn down first on unmount.
+        self._program_status_reporter = ProgramStatusReporter(event_bus, app_provider=lambda: self)
         # Projected from the loaded settings: bootstrap folds any legacy
         # ``notifications.yaml`` into the settings document before those
         # settings are loaded, so this view never reads the retired file.
@@ -921,6 +926,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def on_mount(self) -> None:
         """Push the main screen and start the engine."""
+        await self._program_status_reporter.subscribe()
         self._set_terminal_title_for_cwd()
         screen = self._build_main_screen()
         await self.push_screen(screen)
@@ -1083,6 +1089,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def on_unmount(self) -> None:
         """Shutdown engine on exit."""
+        await self._program_status_reporter.unsubscribe()
         self._gc_freeze.close()
         if self._gc_freeze_watchdog is not None:
             self._gc_freeze_watchdog.stop()
