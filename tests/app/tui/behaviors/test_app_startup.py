@@ -364,6 +364,10 @@ async def test_unmount_drains_title_updater_after_engine_shutdown() -> None:
         async def shutdown(self) -> None:
             calls.append("updater")
 
+    class _Reporter:
+        async def unsubscribe(self) -> None:
+            calls.append("program-status")
+
     class _Engine:
         async def shutdown(self) -> None:
             calls.append("engine")
@@ -379,6 +383,7 @@ async def test_unmount_drains_title_updater_after_engine_shutdown() -> None:
     host = SimpleNamespace(
         _startup_task=None,
         _update_check_task=None,
+        _program_status_reporter=_Reporter(),
         _session_title_updater=_Updater(),
         _engine=_Engine(),
         _gc_freeze=_Freeze(),
@@ -387,7 +392,7 @@ async def test_unmount_drains_title_updater_after_engine_shutdown() -> None:
 
     await ChrysApp.on_unmount(host)
 
-    assert calls == ["gc-close", "timer-stop", "engine", "updater"]
+    assert calls == ["program-status", "gc-close", "timer-stop", "engine", "updater"]
     assert host._gc_freeze_watchdog is None
 
 
