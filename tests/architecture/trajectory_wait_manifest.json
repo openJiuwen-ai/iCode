@@ -3898,23 +3898,6 @@
         ["awaitable", "await super().before_run(agent=agent, session=session, context=context, state=state)", "unresolved"]
       ]
     },
-    "chrys.service.herdr_reporter": {
-      "HerdrReporter._consume": [
-        ["async_context", "async with bus.stream(ExecutionChanged, ApprovalRequest, ApprovalReviewed, ApprovalResponse, ApprovalCancelled, ApprovalAutoFulfillBlocked, QuestionToUser, AskUserResponse, AskUserTimedOut, WorkflowNodeAskUser, WorkflowNodeAnswered, SessionReady, SessionRestored)", "unresolved"],
-        ["async_iteration", "async for event in events", "unresolved"]
-      ],
-      "HerdrReporter._send_loop": [
-        ["sync_primitive", "await self._wake.wait()", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(_invoke_herdr_cli, self._report_argv(session_id=session_id))", "unresolved"]
-      ],
-      "HerdrReporter.close": [
-        ["future", "await task", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(_invoke_herdr_cli, self._release_argv())", "unresolved"]
-      ],
-      "HerdrReporter.start": [
-        ["sync_primitive", "await self._started.wait()", "unresolved"]
-      ]
-    },
     "chrys.service.hooks.detached_worker": {
       "_main": [
         ["wrapper", "await _run_child(cmd, cwd=cwd, env=env)", "unresolved", "chrys.service.hooks.detached_worker._run_child"]

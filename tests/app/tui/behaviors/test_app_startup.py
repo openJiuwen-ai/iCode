@@ -383,7 +383,6 @@ async def test_unmount_drains_title_updater_after_engine_shutdown() -> None:
         _engine=_Engine(),
         _gc_freeze=_Freeze(),
         _gc_freeze_watchdog=_Timer(),
-        _herdr_reporter=None,
     )
 
     await ChrysApp.on_unmount(host)
