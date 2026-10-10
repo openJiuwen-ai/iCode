@@ -640,6 +640,7 @@ def test_tag_release_tags_the_merge_commit_the_mirror_leaves_on_main() -> None:
     assert "git show HEAD~1:pyproject.toml" in check["run"]
     # The mirror can force-push main back to a released commit: its tag is not released again.
     trigger = next(step for step in job["steps"] if step.get("name") == "Trigger CD pipeline")
-    guard = 'gh run list --workflow cd.yml --branch "$tag"'
+    # The lookup is a plain assignment, so under bash -e a failed lookup fails the step instead of dispatching.
+    guard = 'runs=$(gh run list --workflow cd.yml --branch "$tag"'
     assert guard in trigger["run"]
     assert trigger["run"].index(guard) < trigger["run"].index("gh workflow run cd.yml")

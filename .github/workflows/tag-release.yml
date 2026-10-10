@@ -59,7 +59,9 @@ jobs:
         if: steps.version.outputs.changed == 'true'
         run: |
           tag="v${{ steps.version.outputs.current }}"
-          if [ -n "$(gh run list --workflow cd.yml --branch "$tag" --limit 1 --json databaseId --jq '.[].databaseId')" ]; then
+          # A failed lookup fails this step (bash -e) instead of dispatching.
+          runs=$(gh run list --workflow cd.yml --branch "$tag" --limit 1 --json databaseId --jq '.[].databaseId')
+          if [ -n "$runs" ]; then
             echo "CD already ran on $tag, skipping"
             exit 0
           fi
