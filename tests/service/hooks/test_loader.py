@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -19,6 +20,55 @@ from chrys.service.hooks.loader import (
     parse_hooks_dict,
 )
 from chrys.service.hooks.schema import HookConfig, HookRun, HookSettings, HooksFile, MergedHooksFile, SkippedHook
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-32", "gb18030"])
+@pytest.mark.parametrize("suffix", ["yaml", "json"])
+def test_hooks_file_detects_encoding(tmp_path: Path, encoding: str, suffix: str) -> None:
+    description = "在执行工具前检查命令参数。记录本次操作的结果和详细说明。"
+    # JSON is also YAML, so both loaders see exactly the same non-ASCII values.
+    text = json.dumps(
+        {
+            "hooks": [
+                {
+                    "id": "guard",
+                    "description": description,
+                    "event": "before_tool_call",
+                    "run": {"type": "command", "argv": ["echo", description]},
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    src = tmp_path / f"hooks.{suffix}"
+    src.write_bytes(text.encode(encoding))
+
+    file = load_hooks_file(src)
+
+    assert file.hooks[0].description == description
+    assert file.hooks[0].run.argv == ["echo", description]
+
+
+@pytest.mark.parametrize("suffix", ["yaml", "json"])
+def test_damaged_hooks_are_reported_as_config_errors(tmp_path: Path, suffix: str) -> None:
+    src = tmp_path / f"hooks.{suffix}"
+    text = json.dumps(
+        {
+            "hooks": [
+                {
+                    "id": "guard",
+                    "description": "中文配置说明" * 20,
+                    "event": "before_tool_call",
+                    "run": {"type": "command", "argv": ["echo", "SENTINEL"]},
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    src.write_bytes(text.encode().replace(b"SENTINEL", b"abc\xffdef"))
+
+    with pytest.raises(HooksConfigError, match="decode"):
+        load_hooks_file(src)
 
 
 def test_empty_file_returns_defaults() -> None:

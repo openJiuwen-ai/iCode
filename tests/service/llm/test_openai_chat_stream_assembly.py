@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import pytest
+from openai.types import CompletionUsage
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
     ChoiceDeltaToolCall,
@@ -19,6 +20,7 @@ from openai.types.chat.chat_completion_chunk import ChoiceDelta as ChunkChoiceDe
 
 from chrys.kernel import ChatResponse, Content, FunctionTool, Message, ResponseStream
 from chrys.kernel.exceptions import ChatClientInvalidResponseException
+from chrys.service.agent_middleware.validators import DefaultResponseValidator
 from chrys.service.llm.chat_completions import ChatCompletionsClient
 from chrys.service.llm.chat_completions.client import OPENAI
 from chrys.service.llm.chat_completions.history import encode_messages
@@ -854,6 +856,81 @@ async def test_plain_openai_text_stream_adds_no_reasoning_content() -> None:
     assert [update.text for update in updates] == ["hello ", "world", ""]
     assert [content.type for content in response.messages[0].contents] == ["text"]
     assert response.raw_text == "hello world"
+
+
+def _usage_chunk(*, chunk_id: str) -> ChatCompletionChunk:
+    return ChatCompletionChunk.model_construct(
+        id=chunk_id,
+        object="chat.completion.chunk",
+        created=1_717_171_717,
+        model="glm-5.2",
+        choices=[],
+        usage=CompletionUsage(prompt_tokens=3, completion_tokens=2, total_tokens=5),
+    )
+
+
+def _content_shape(content: Content) -> tuple[Any, ...]:
+    if content.type == "function_call":
+        return (content.type, content.call_id, content.name, content.parse_arguments())
+    return (content.type, content.text)
+
+
+@pytest.mark.parametrize(
+    ("chunks", "shape", "stream_id"),
+    [
+        pytest.param(
+            [
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="Hel"), chunk_id="chunk-1"),
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="lo"), chunk_id="chunk-2"),
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="stop", chunk_id="chunk-3"),
+                _usage_chunk(chunk_id="chunk-4"),
+            ],
+            [("text", "Hello")],
+            "chunk-1",
+            id="text",
+        ),
+        pytest.param(
+            [
+                _tool_chunk(_tool_delta(index=0, call_id="call-1", name="read", arguments=""), chunk_id="chunk-1"),
+                _tool_chunk(_tool_delta(index=0, call_id="call-2", arguments='{"path":"README'), chunk_id="chunk-2"),
+                _tool_chunk(_tool_delta(index=0, call_id="call-3", arguments='.md"}'), chunk_id="chunk-3"),
+                _chunk(
+                    ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="tool_calls", chunk_id="chunk-4"
+                ),
+                _usage_chunk(chunk_id="chunk-5"),
+            ],
+            [("function_call", "call-1", "read", {"path": "README.md"})],
+            "chunk-1",
+            id="tool-call",
+        ),
+        pytest.param(
+            [
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="Hel"), chunk_id=""),
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="lo"), chunk_id="chunk-2"),
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="stop", chunk_id="chunk-3"),
+                _usage_chunk(chunk_id="chunk-4"),
+            ],
+            [("text", "Hello")],
+            "chunk-2",
+            id="first-chunk-without-id",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_fresh_id_on_every_chunk_keeps_the_reply_in_one_message(
+    chunks: list[ChatCompletionChunk], shape: list[tuple[Any, ...]], stream_id: str
+) -> None:
+    # Some gateways mint a new id for each chunk. The closing usage chunk
+    # under its own id must not end the reply with an empty message, which
+    # response validation would reject as blank.
+    _, response = await _raw_stream_response(chunks)
+
+    (message,) = response.messages
+    assert [_content_shape(content) for content in message.contents] == shape
+    assert (message.message_id, response.response_id) == (stream_id, stream_id)
+    assert response.usage_details is not None
+    assert response.usage_details.get("total_token_count") == 5
+    assert DefaultResponseValidator().validate(response).ok
 
 
 @pytest.mark.asyncio

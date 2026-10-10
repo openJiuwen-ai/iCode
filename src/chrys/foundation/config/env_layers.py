@@ -34,6 +34,7 @@ from typing import Final
 
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.spec import specs_by_field
+from chrys.foundation.text.encoding import decode_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -210,21 +211,15 @@ def _occurrences(path: Path) -> list[tuple[str, str | None]]:
 def _occurrences_of(raw: bytes) -> list[tuple[str, str | None]]:
     """The same reading of *raw*, for a caller that already holds the bytes.
 
-    ``TextIOWrapper`` rather than a decoded ``str``, because that *is* what
-    ``open()`` is — same universal-newline translation — and this module is
-    held to a byte-for-byte contract with ``load_dotenv``. Decoding by hand
-    would make a second reader with its own opinion about ``\\r\\n``.
-
-    UTF-8 explicitly, which is ``load_dotenv``'s own default and not the
-    default of anything that opens a file. A dotenv file is written once and
-    read on whatever machine clones it: decoded in the ambient locale, a
-    perfectly good UTF-8 file with a Chinese comment is mojibake under
-    ``GBK`` — or raises, and then the caller drops the *whole* file, taking
-    the API keys next to that comment with it.
+    The shared decoder prefers UTF-8 and detects legacy encodings, matching
+    other user configuration readers without relying on the ambient locale.
+    ``StringIO(newline=None)`` retains ``load_dotenv``'s universal-newline
+    translation, including inside quoted multiline values. Parsing and
+    interpolation still belong to python-dotenv.
     """
     from dotenv.main import DotEnv
 
-    with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8") as stream:
+    with io.StringIO(decode_bytes(raw, errors="strict"), newline=None) as stream:
         return list(DotEnv(None, stream=stream, interpolate=False, override=True).parse())
 
 

@@ -26,6 +26,7 @@ from chrys.foundation.config.settings import RENAMED_THEMES
 from chrys.foundation.events.types import Warning
 from chrys.foundation.i18n import msg
 from chrys.foundation.platform import get_platform
+from chrys.foundation.text.encoding import decode_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def theme_is_read_only(name: str) -> bool:
 
 def _load_theme_data(path: Path) -> dict[str, Any]:
     try:
-        text = path.read_text(encoding="utf-8")
+        text = decode_bytes(path.read_bytes(), errors="strict")
     except (OSError, UnicodeError) as e:
         raise UserThemeLoadError(f"Cannot read theme file {path}: {e}") from e
     try:

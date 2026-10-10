@@ -36,6 +36,23 @@ def test_read_returns_none_without_creating_anything(tmp_path: Path) -> None:
     assert not path.parent.exists()
 
 
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-32", "gb18030"])
+def test_detected_encoding_preserves_primary_and_unrelated_values(tmp_path: Path, encoding: str) -> None:
+    path = tmp_path / "settings.yaml"
+    description = "保留用户配置中的中文内容。不应被旧的备份文件覆盖。"
+    original = f"description: {description}\nui:\n  theme: chrys\n".encode(encoding)
+    path.write_bytes(original)
+    backup_path_for(path).write_text("description: stale backup\n", encoding="utf-8")
+    expected = {"description": description, "ui": {"theme": "chrys"}}
+
+    assert read_yaml_doc_readonly(path) == expected
+    assert read_yaml_doc(path) == expected
+    assert path.read_bytes() == original
+    committed = update_yaml_doc(path, lambda doc: {**doc, "extra": True})
+    assert committed == {**expected, "extra": True}
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == committed
+
+
 def test_update_merges_disjoint_keys_and_last_writer_wins_on_the_same_key(tmp_path: Path) -> None:
     path = tmp_path / "settings.yaml"
 
@@ -129,14 +146,17 @@ def test_read_without_backup_does_not_fall_back(tmp_path: Path) -> None:
 
 
 # Only the first of these fails inside PyYAML's *parser*. The rest escape as
-# ``ValueError`` / ``RecursionError`` / ``UnicodeDecodeError``, and every one is
-# reachable by hand-editing the file.
+# ``ValueError`` / ``RecursionError`` / ``UnicodeDecodeError`` or fail the YAML character rules, and
+# every one is reachable by hand-editing the file. Legacy encodings alone
+# are valid input, so corruption must remain invalid after decoding.
 _POISONED_PRIMARIES = [
     pytest.param(b"ui: [not valid yaml\n", id="parse-error"),
     pytest.param(b"ui: 2026-99-99\n", id="impossible-date"),
     pytest.param(b"ui: " + b"9" * (sys.get_int_max_str_digits() + 10) + b"\n", id="oversized-int"),
     pytest.param(b"ui: " + b"[" * 5_000 + b"]" * 5_000 + b"\n", id="deeply-nested"),
-    pytest.param(b"ui: \xff\xfe\n", id="invalid-utf8"),
+    pytest.param(b"ui: chrys\n# invalid control character: \x00\n", id="control-character"),
+    pytest.param(("# 中文配置说明\n" * 20).encode() + b"ui: solar\xff\n", id="damaged-utf8"),
+    pytest.param("ui: chrys\n".encode("utf-16")[:-1], id="truncated-utf16"),
 ]
 
 

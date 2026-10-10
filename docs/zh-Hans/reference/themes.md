@@ -11,7 +11,9 @@ iCode 支持通过主题文件自定义终端用户界面（Terminal User Interf
 | macOS / Linux | `~/.chrys/themes/` |
 | Windows | `%APPDATA%\chrys\themes\` |
 
-主题文件使用 UTF-8 编码，扩展名必须为 `.yaml` 或 `.yml`，直接存放在上述目录中。iCode 不读取子目录中的主题文件。
+主题文件扩展名必须为 `.yaml` 或 `.yml`，建议使用 UTF-8。iCode 也会自动检测 GBK/GB18030 等常见旧编码，以及带 BOM 的 UTF-16/UTF-32。通过 iCode 保存的主题使用 UTF-8。文件应直接存放在上述目录中；iCode 不读取子目录中的主题文件。
+
+无法按检测到的编码解码的文件与无效 YAML 文件一样，会被跳过并报告警告。
 
 主题名称为文件名去除 `.yaml` 或 `.yml` 扩展名后的部分。主题名称须满足以下要求：
 

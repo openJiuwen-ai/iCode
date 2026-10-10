@@ -52,6 +52,23 @@ def test_saved_data_round_trips_through_startup_loader(tmp_path: Path, source: T
     assert store.load(theme.name) == (theme, updated)
 
 
+@pytest.mark.parametrize("encoding", ["gb18030", "utf-32"])
+def test_a_legacy_encoded_theme_the_startup_loader_lists_opens_and_saves(tmp_path: Path, encoding: str) -> None:
+    text = '# 这是用户自定义主题。保留中文注释并正确加载颜色设置。\nprimary: "#875FAF"\n'
+    (tmp_path / "encoded.yaml").write_bytes(text.encode(encoding))
+    listed, warnings = load_user_themes(tmp_path)
+    store = UserThemeStore(tmp_path)
+
+    theme, revision = store.load("encoded")
+
+    assert warnings == []
+    assert listed == [theme]
+    theme.primary = "#123456"
+    saved = store.save(theme, revision)
+    assert store.load("encoded") == (theme, saved)
+    assert "#123456" in saved.path.read_text(encoding="utf-8")
+
+
 def test_yaml_preserves_omitted_fields_and_string_keys(tmp_path: Path) -> None:
     theme = Theme("custom", "#123456", variables={"on": "no", "yes": "false"})
     assert "background" not in theme_data(theme)

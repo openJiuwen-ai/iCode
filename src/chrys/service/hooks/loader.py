@@ -26,6 +26,7 @@ from typing import Any, cast
 import yaml
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.text.encoding import decode_bytes
 from chrys.foundation.tool_kinds import strip_legacy_kind_prefix
 from chrys.foundation.trajectory.ids import OPAQUE_ID_MAX_LENGTH, is_valid_opaque_id
 from chrys.service.hooks.events import HookEvent
@@ -68,7 +69,10 @@ def load_hooks_file(path: Path) -> HooksFile:
         msg = f"Hooks config file not found: {path}"
         raise FileNotFoundError(msg)
 
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = decode_bytes(path.read_bytes(), errors="strict")
+    except UnicodeError as exc:
+        raise HooksConfigError(f"Cannot decode hooks config file {path}: {exc}") from exc
     suffix = path.suffix.lower()
     try:
         raw = (json.loads(text) if text.strip() else {}) if suffix == ".json" else (yaml.safe_load(text) or {})

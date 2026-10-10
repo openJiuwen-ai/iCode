@@ -35,6 +35,10 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 
 两处都可以改用 `hooks.yml` 或 `hooks.json`。同一目录存在多个候选文件时，iCode 按 `hooks.yaml`、`hooks.yml`、`hooks.json` 的顺序只加载第一个。
 
+钩子配置文件建议使用 UTF-8。iCode 也会自动检测 GBK/GB18030 等常见旧编码，以及带 BOM 的 UTF-16/UTF-32。
+
+文件无法按检测到的编码解码时，iCode 会报告配置警告并禁用该文件中的钩子，不会替换命令或其他配置值中的字符。
+
 `<working-directory>` 是会话的工作目录。对于项目配置，iCode 只检查 `<working-directory>/.chrys/hooks/`，不会在工作目录的父目录或子目录中查找。
 
 ## 加载配置文件

@@ -139,6 +139,12 @@ class StreamState:
         # refusal with calls. It yields nothing more; what follows is read
         # only for its usage.
         self._settled = False
+        # The first id a chunk carried, which every update reports as its
+        # response and message id. A stream holds one completion under one id,
+        # but some gateways send a fresh id with each chunk: under each chunk's
+        # own id the reply would split into a message per chunk, and the
+        # closing usage chunk's empty message would end it as a blank reply.
+        self._id: str | None = None
 
     @property
     def ended(self) -> bool:
@@ -232,11 +238,14 @@ class StreamState:
         *finished* holds the chunk's finish reasons by choice, as
         :meth:`updates_for` read them; they are read here when not given.
         A ``created`` in milliseconds is converted on a copy, which is also the
-        update's raw representation; the SDK chunk stays as received.
+        update's raw representation; the SDK chunk stays as received. The
+        update carries the first id the stream's chunks carried.
         """
         if finished is None:
             finished = self._finish_reasons(chunk)
         chunk = normalize_openai_created_payload(chunk)
+        if self._id is None and chunk.id:
+            self._id = chunk.id
         metadata = response_metadata(chunk)
         contents: list[Content] = []
         finish: FinishReason | None = None
@@ -255,8 +264,8 @@ class StreamState:
         return ChatResponseUpdate(
             contents=contents,
             role="assistant",
-            response_id=chunk.id,
-            message_id=chunk.id,
+            response_id=self._id,
+            message_id=self._id,
             model=chunk.model,
             created_at=openai_created_at_iso(chunk.created),
             finish_reason=finish,

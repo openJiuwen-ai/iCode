@@ -22,6 +22,28 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-32", "gb18030"])
+def test_load_profile_detects_encoding_without_changing_values(tmp_path: Path, encoding: str) -> None:
+    path = tmp_path / "legacy.yaml"
+    raw = "name: 中文模型配置\napi_key: abcdef\n".encode(encoding)
+    path.write_bytes(raw)
+    profile = load_profile_from_yaml(path)
+    assert profile.name == "中文模型配置"
+    assert profile.api_key == "abcdef"
+    assert path.read_bytes() == raw
+
+
+def test_damaged_profile_is_skipped_without_changing_its_bytes(tmp_path: Path) -> None:
+    path = tmp_path / "damaged.yaml"
+    raw = ("# 中文配置说明\n" * 20).encode() + b"name: damaged\napi_key: abc\xffdef\n"
+    path.write_bytes(raw)
+    _write(tmp_path / "good.yaml", "name: good\n")
+    with pytest.raises(ModelProfileLoadError, match="Cannot read"):
+        load_profile_from_yaml(path)
+    assert [profile.name for profile in load_profiles_from_dir(tmp_path)] == ["good"]
+    assert path.read_bytes() == raw
+
+
 def test_load_minimal_profile(tmp_path: Path) -> None:
     """Only ``name`` is required; all other fields take their defaults."""
     p = _write(tmp_path / "abc.yaml", "name: My Profile\n")

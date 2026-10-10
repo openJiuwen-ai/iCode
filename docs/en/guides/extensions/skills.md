@@ -125,7 +125,7 @@ description: Draft user-facing release notes from commit history
 
 #### Write `SKILL.md`
 
-`SKILL.md` must use UTF-8 encoding. It starts with a YAML configuration block enclosed by `---`, also called frontmatter, followed by instructions for the agent. The frontmatter should be a valid YAML mapping; if it is not valid YAML, iCode tries to read it line by line and logs a warning. iCode validates the file as follows:
+UTF-8 is recommended for `SKILL.md`. iCode also detects common legacy encodings such as GBK/GB18030 and BOM-marked UTF-16/UTF-32. The file starts with a YAML configuration block enclosed by `---`, also called frontmatter, followed by instructions for the agent. The frontmatter should be a valid YAML mapping; if it is not valid YAML, iCode tries to read it line by line and logs a warning. iCode validates the file as follows:
 
 | Content | Loading requirements |
 | --- | --- |
@@ -137,7 +137,7 @@ description: Draft user-facing release notes from commit history
 | `metadata` | Optional; must be a YAML mapping whose values are plain text or numbers, otherwise iCode does not retain this field |
 | Body | iCode imposes no additional length or structure restrictions |
 
-Use valid YAML for the frontmatter to ensure that the skill loads reliably. iCode does not load a skill if its frontmatter, `name`, or `description` is missing, or if field values fail the validation rules above. An optional field given as a list or mapping is ignored.
+Use valid YAML for the frontmatter to ensure that the skill loads reliably. iCode does not load a skill if its file cannot be decoded using the detected encoding, if its frontmatter, `name`, or `description` is missing, or if field values fail the validation rules above. An optional field given as a list or mapping is ignored.
 
 The optional fields serve the following purposes:
 
@@ -166,10 +166,10 @@ release-notes/
 
 iCode recognizes text files as skill resources only if they have one of these extensions: `.md`, `.txt`, `.rst`, `.html`, `.htm`, `.xml`, `.svg`, `.json`, `.jsonl`, `.yaml`, `.yml`, `.toml`, `.csv`, `.tsv`, `.ini`, `.cfg`, `.css`.
 
-Resource files must use UTF-8 encoding. In addition:
+Text resources use the same automatic encoding detection as `SKILL.md`; UTF-8 is recommended. In addition:
 
 * Script extensions must be listed in the agent configuration's "Allowed Script Extensions".
 * iCode reads only files at the skill directory root and in its immediate subdirectories. For example, it discovers `guide.md` and `references/guide.md`, but ignores `references/api/guide.md`.
 * Within a skill directory, iCode skips files and directories accessed through symbolic links or Windows directory junctions. Both point to other locations on disk. To use their contents, place the actual files in the skill directory.
 
-Files that do not meet the extension, directory depth, or link rules do not appear in the skill's resource or script list. Reading a resource fails if it is not valid UTF-8 text. These issues do not prevent an otherwise valid `SKILL.md` from loading.
+Files that do not meet the extension, directory depth, or link rules do not appear in the skill's resource or script list. A missing, inaccessible, or undecodable resource fails when read. These issues do not prevent an otherwise valid `SKILL.md` from loading.

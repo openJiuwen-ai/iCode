@@ -381,6 +381,31 @@ hooks:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["global", "project"])
+async def test_damaged_hook_file_warns_without_aborting_agent_build(
+    tmp_path: Path,
+    _isolate_hook_config_dir: Path,
+    source: str,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    hooks_dir = _isolate_hook_config_dir / "hooks" if source == "global" else project_root / ".chrys" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "hooks.yaml").write_bytes(("# 中文配置说明\n" * 20).encode() + b"version: 1\n# damaged \xff\n")
+    engine = _Engine(project_root)
+    warnings: list[Warning] = []
+
+    async def _capture(event: Warning) -> None:
+        warnings.append(event)
+
+    await engine.event_bus.subscribe(Warning, _capture)
+    assert await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True) is None
+    assert len(warnings) == 1
+    assert warnings[0].code == ("hooks_config_invalid" if source == "global" else "project_hooks_config_invalid")
+    assert "Cannot decode hooks config file" in warnings[0].message
+
+
+@pytest.mark.asyncio
 async def test_settings_reload_flipping_project_hooks_rebuilds_the_hook_manager(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, engine_services
 ) -> None:

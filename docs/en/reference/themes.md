@@ -11,7 +11,9 @@ Store theme files in the following directory. Create it first if it does not exi
 | macOS / Linux | `~/.chrys/themes/` |
 | Windows | `%APPDATA%\chrys\themes\` |
 
-Theme files must use UTF-8 encoding and have a `.yaml` or `.yml` extension. Place them directly in this directory; iCode does not read theme files in subdirectories.
+Theme files must have a `.yaml` or `.yml` extension. UTF-8 is recommended; iCode also detects common legacy encodings such as GBK/GB18030 and BOM-marked UTF-16/UTF-32. Themes saved through iCode use UTF-8. Place files directly in this directory; iCode does not read theme files in subdirectories.
+
+Files that cannot be decoded using the detected encoding are skipped with a warning, just like invalid YAML files.
 
 The filename with the `.yaml` or `.yml` extension removed becomes the theme name. Theme names must meet these requirements:
 

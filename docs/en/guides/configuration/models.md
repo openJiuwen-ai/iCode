@@ -40,6 +40,8 @@ While a task is running, the "Model Configuration" window opens in read-only mod
 
 An API key entered directly is saved locally in the model profile file.
 
+When editing model profile files manually, use UTF-8 where possible. iCode also detects common legacy encodings such as GBK/GB18030 and BOM-marked UTF-16/UTF-32. Files that cannot be decoded using the detected encoding are skipped with a log warning; iCode does not replace characters in API keys or other values. Saving a profile through iCode writes UTF-8.
+
 To read the key from an environment variable, enter the following in the "API Key" field:
 
 ```text

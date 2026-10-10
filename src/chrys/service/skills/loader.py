@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
+from chrys.foundation.text.encoding import decode_bytes
 from chrys.service.skills.model import Skill, SkillLoadFailure, SkillResource, SkillScript
 
 if TYPE_CHECKING:
@@ -411,8 +412,8 @@ def load_file_skill(
     skill_file = Path(skill_dir) / SKILL_FILE_NAME
 
     try:
-        content = skill_file.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+        content = decode_bytes(skill_file.read_bytes(), errors="strict").replace("\r\n", "\n").replace("\r", "\n")
+    except (OSError, UnicodeError) as exc:
         return SkillLoadFailure(skill_dir=skill_dir, reason=f"failed to read SKILL.md: {exc}")
 
     fields, parse_error = parse_frontmatter(content)

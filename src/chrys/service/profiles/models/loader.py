@@ -190,10 +190,10 @@ def load_profile_from_yaml(path: Path) -> ModelProfile:
         ModelProfileLoadError: If the file cannot be read or is missing required fields.
     """
     try:
-        text = decode_bytes(path.read_bytes())
+        text = decode_bytes(path.read_bytes(), errors="strict")
     except FileNotFoundError as e:
         raise ModelProfileLoadError(f"Model profile file not found: {path}") from e
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
         raise ModelProfileLoadError(f"Cannot read model profile file {path}: {e}") from e
 
     try:

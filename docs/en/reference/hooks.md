@@ -35,6 +35,10 @@ iCode can load one hook configuration file from each of the global configuration
 
 Either location can use `hooks.yml` or `hooks.json` instead. If a directory contains multiple candidates, iCode loads only the first one, in the order `hooks.yaml`, `hooks.yml`, `hooks.json`.
 
+UTF-8 is recommended for hook configuration files. iCode also detects common legacy encodings such as GBK/GB18030 and BOM-marked UTF-16/UTF-32.
+
+If a file cannot be decoded using the detected encoding, iCode reports a configuration warning and disables the hooks from that file. It does not substitute characters in commands or other values.
+
 `<working-directory>` is the session's working directory. For project configuration, iCode checks only `<working-directory>/.chrys/hooks/`; it does not search parent or child directories of the working directory.
 
 ## Loading configuration files

@@ -19,6 +19,7 @@ from chrys.app.tui.theme_loader import (
 )
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.platform.files import atomic_write_text
+from chrys.foundation.text.encoding import decode_bytes
 from chrys.foundation.util.lock import FileLock
 
 _INVALID_NAME = msg(
@@ -124,7 +125,9 @@ class UserThemeStore:
                 raise ThemeStoreError(_CONFLICT.bind())
             path = paths[0]
             payload = path.read_bytes()
-            data = yaml.safe_load(payload)
+            # Decoded as the startup loader decodes it, so every theme it
+            # lists opens here; the revision stays the digest of the bytes.
+            data = yaml.safe_load(decode_bytes(payload, errors="strict"))
             if not isinstance(data, dict):
                 raise ValueError("Theme must contain a mapping")
             theme = _theme_from_data(name, data, path)

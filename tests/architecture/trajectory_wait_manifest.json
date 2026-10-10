@@ -4523,7 +4523,7 @@
     "chrys.service.skills.model": {
       "SkillResource.read": [
         ["thread_pool", "await asyncio.to_thread(path.is_file)", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(path.read_text, encoding='utf-8')", "unresolved"]
+        ["thread_pool", "await asyncio.to_thread(_read_resource_text, path)", "unresolved"]
       ]
     },
     "chrys.service.skills.provider": {

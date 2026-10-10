@@ -24,6 +24,7 @@ from chrys.foundation.config.env_layers import (
     inject_bootstrap_dotenv,
     process_env_snapshot,
     read_dotenv_layer,
+    read_dotenv_snapshot,
 )
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.spec import specs_by_field
@@ -209,6 +210,37 @@ def test_injection_matches_load_dotenv_on_non_ascii_values(tmp_path: Path, monke
 
     assert {name: os.environ.get(name) for name in ("GREETING", "TOKEN")} == expected
     assert expected == {"GREETING": "你好", "TOKEN": "secret"}
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-32", "gb18030"])
+def test_detected_dotenv_encoding_preserves_expansion_and_newlines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, encoding: str
+) -> None:
+    path = tmp_path / ".env"
+    greeting = "你好。这是配置文件中的中文内容。需要正确读取并保留。"
+    text = f'GREETING={greeting}\r\nCOPY=${{GREETING}}\r\nGREETING=last\r\nMULTILINE="one\r\ntwo"\r\n'
+    path.write_bytes(text.encode(encoding))
+    expected = {"GREETING": "last", "COPY": greeting, "MULTILINE": "one\ntwo"}
+    for name in expected:
+        _claim_env_name(monkeypatch, name)
+
+    assert dict(read_dotenv_layer(path, base={})) == expected
+    inject_bootstrap_dotenv([path], override=True)
+    assert {name: os.environ.get(name) for name in expected} == expected
+
+
+def test_damaged_dotenv_is_not_imported_or_migrated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / ".env"
+    original = ("# 中文配置说明\n" * 20).encode() + b"BROKEN_TOKEN=abc\xffdef\nCHRYS_THEME=solar\n"
+    path.write_bytes(original)
+    _claim_env_name(monkeypatch, "BROKEN_TOKEN")
+
+    assert read_dotenv_snapshot(path, base={}) is None
+    assert dict(read_dotenv_layer(path, base={})) == {}
+    inject_bootstrap_dotenv([path], override=True)
+
+    assert "BROKEN_TOKEN" not in os.environ
+    assert path.read_bytes() == original
 
 
 def test_a_utf8_dotenv_parses_the_same_where_the_locale_is_not_utf8(tmp_path: Path) -> None:

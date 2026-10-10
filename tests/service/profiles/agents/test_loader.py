@@ -57,6 +57,26 @@ def test_load_minimal_yaml(tmp_path: Path) -> None:
     assert profile.sub_agents.max_total_concurrency == 3
 
 
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-32", "gb18030"])
+def test_load_profile_detects_encoding_without_changing_instructions(tmp_path: Path, encoding: str) -> None:
+    path = tmp_path / "legacy.yaml"
+    raw = "name: legacy\ninstructions: 请阅读项目中的中文配置说明。\n".encode(encoding)
+    path.write_bytes(raw)
+    assert load_profile_from_yaml(path).instructions == "请阅读项目中的中文配置说明。"
+    assert path.read_bytes() == raw
+
+
+def test_damaged_profile_is_skipped_without_changing_its_bytes(tmp_path: Path) -> None:
+    path = tmp_path / "damaged.yaml"
+    raw = ("# 中文配置说明\n" * 20).encode() + b"name: damaged\ninstructions: abc\xffdef\n"
+    path.write_bytes(raw)
+    (tmp_path / "good.yaml").write_text("name: good\n", encoding="utf-8")
+    with pytest.raises(AgentProfileLoadError, match="Cannot read"):
+        load_profile_from_yaml(path)
+    assert [profile.name for profile in load_profiles_from_dir(tmp_path)] == ["good"]
+    assert path.read_bytes() == raw
+
+
 @pytest.mark.parametrize(
     ("yaml_value", "expected"),
     [('"Plain text."', "Plain text."), ("null", ""), ("[First rule., Second rule.]", "First rule.\nSecond rule.")],

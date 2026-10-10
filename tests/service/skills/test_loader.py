@@ -41,6 +41,41 @@ def _load(skill_dir: Path, script_extensions: tuple[str, ...] = (".py",)) -> Ski
     return load_file_skill(str(skill_dir), script_extensions=script_extensions)
 
 
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-32", "gb18030"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+async def test_skill_and_resource_detect_encoding(tmp_path: Path, encoding: str, newline: str) -> None:
+    description = "阅读项目文档。分析代码结构并说明检查结果。"
+    body = "这里是技能的详细操作说明。请保留中文内容和标点。\n第二行操作说明。\n"
+    skill_dir = tmp_path / "encoded"
+    skill_dir.mkdir()
+    content = f"---\nname: encoded\ndescription: {description}\n---\n\n{body}"
+    (skill_dir / "SKILL.md").write_bytes(content.replace("\n", newline).encode(encoding))
+    (skill_dir / "guide.md").write_bytes(body.replace("\n", newline).encode(encoding))
+
+    skill = _load(skill_dir)
+
+    assert isinstance(skill, Skill)
+    assert skill.description == description
+    assert skill.content == content
+    assert await _read_resource(skill, "guide.md") == body
+
+
+async def test_damaged_skill_and_resource_are_rejected(tmp_path: Path) -> None:
+    skill_dir = _write_skill(tmp_path, "damaged", body="中文操作说明\n" * 20)
+    path = skill_dir / "SKILL.md"
+    path.write_bytes(path.read_bytes() + b"\xff")
+
+    failure = _load(skill_dir)
+    assert isinstance(failure, SkillLoadFailure)
+    assert failure.reason.startswith("failed to read SKILL.md:")
+
+    skill_dir = _write_skill(tmp_path, "valid")
+    (skill_dir / "guide.md").write_bytes(("中文资源内容\n" * 20).encode() + b"\xff")
+    skill = _load(skill_dir)
+    assert isinstance(skill, Skill)
+    assert (await _read_resource(skill, "guide.md")).startswith("Error: Failed to read resource")
+
+
 # ---------------------------------------------------------------------------
 # Frontmatter parsing
 # ---------------------------------------------------------------------------
@@ -645,11 +680,19 @@ def test_frontmatter_blocks_match_with_either_newline(tmp_path: Path, newline: s
     assert isinstance(plain, Skill) and plain.description == "d"
 
 
-def test_a_skill_md_that_cannot_be_read_or_parsed_fails_alone(tmp_path: Path) -> None:
+def test_a_skill_md_that_cannot_be_read_or_parsed_fails_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import Path
+
     _write_skill(tmp_path, "good")
-    not_utf8 = tmp_path / "not-utf8"
-    not_utf8.mkdir()
-    (not_utf8 / "SKILL.md").write_bytes(b"---\nname: not-utf8\ndescription: \xff\n---\n")
+    unreadable = _write_skill(tmp_path, "unreadable") / "SKILL.md"
+    read_bytes = Path.read_bytes
+
+    def refuse_one_file(path: Path) -> bytes:
+        if path == unreadable:
+            raise PermissionError("permission denied")
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", refuse_one_file)
     no_such_day = tmp_path / "no-such-day"
     no_such_day.mkdir()
     # YAML reads this as a date, and building it raises ValueError rather than a YAML error.
@@ -661,8 +704,8 @@ def test_a_skill_md_that_cannot_be_read_or_parsed_fails_alone(tmp_path: Path) ->
 
     assert [skill.name for skill in skills] == ["good"]
     reasons = {os.path.basename(failure.skill_dir): failure.reason for failure in failures}
-    assert reasons.keys() == {"not-utf8", "no-such-day"}
-    assert reasons["not-utf8"].startswith("failed to read SKILL.md: 'utf-8' codec can't decode")
+    assert reasons.keys() == {"unreadable", "no-such-day"}
+    assert reasons["unreadable"] == "failed to read SKILL.md: permission denied"
     assert reasons["no-such-day"].startswith("failed to load SKILL.md: day ")
 
 

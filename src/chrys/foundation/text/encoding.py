@@ -26,6 +26,7 @@ from charset_normalizer import from_bytes
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
+    from typing import Literal
 
 _DETECT_SAMPLE_BYTES = 64 * 1024  # 64 KiB probe window
 _DETECT_TAIL_BYTES = 4  # Enough to complete any UTF-8 sequence that starts at the sample edge.
@@ -193,19 +194,26 @@ class EncodingDetector:
 
         return self._detect_from_bytes(raw, final=not sample_is_prefix)
 
-    def decode(self, raw: bytes | bytearray) -> str:
+    def decode(self, raw: bytes | bytearray, *, errors: Literal["strict", "replace"] = "replace") -> str:
         """Detect encoding and decode *raw* bytes to str.
 
         No binary check is performed — this is intended for data already
         known to be text (e.g. subprocess output).  Falls back to UTF-8
         with replacement if detection fails or the detected encoding
         cannot decode the full buffer.
+
+        ``errors="strict"`` uses the same detection but refuses undecodable
+        bytes anywhere in the full buffer. Configuration readers use this
+        mode so a replacement character cannot silently change a value or
+        be written back over the original bytes.
         """
         if not raw:
             return ""
         sample = bytes(raw[: _DETECT_SAMPLE_BYTES + _DETECT_TAIL_BYTES])
         result = self._detect_from_bytes(sample, final=len(raw) <= len(sample))
         enc = result.encoding or "utf-8"
+        if errors == "strict":
+            return raw.decode(enc)
         try:
             return raw.decode(enc)
         except UnicodeDecodeError, LookupError:
@@ -594,10 +602,11 @@ def _get_detector() -> EncodingDetector:
     return EncodingDetector()
 
 
-def decode_bytes(raw: bytes | bytearray) -> str:
+def decode_bytes(raw: bytes | bytearray, *, errors: Literal["strict", "replace"] = "replace") -> str:
     """Detect encoding and decode *raw* bytes to str.
 
     Convenience wrapper around :meth:`EncodingDetector.decode` using a
-    module-level singleton.
+    module-level singleton. Use ``errors="strict"`` when lossy replacement
+    would change configuration values or data that will be written back.
     """
-    return _get_detector().decode(raw)
+    return _get_detector().decode(raw, errors=errors)

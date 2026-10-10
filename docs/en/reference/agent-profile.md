@@ -15,6 +15,8 @@ User agent profiles are stored in the following directories:
 
 iCode loads only non-hidden files with the `.yaml` or `.yml` extension in this directory. Other files are ignored. Invalid profiles do not prevent other profiles from loading, but are skipped with a warning in the startup log.
 
+UTF-8 is recommended. iCode also detects common legacy encodings such as GBK/GB18030 and BOM-marked UTF-16/UTF-32. Files that cannot be decoded using the detected encoding are treated as invalid, without replacing bytes with `�`. Profiles saved or rewritten by iCode use UTF-8.
+
 iCode loads these files at startup. After manually adding, editing, or deleting a profile, restart iCode for the change to take effect.
 
 ## Profile naming and normalization

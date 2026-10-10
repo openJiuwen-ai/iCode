@@ -13,6 +13,10 @@ For steps to change settings in the terminal user interface (TUI) and when those
 
 iCode looks for `.chrys/settings.yaml` only in the current session's working directory. It does not search parent directories or subdirectories.
 
+UTF-8 is recommended for settings and `.env` files. iCode also detects common legacy encodings such as GBK/GB18030 and BOM-marked UTF-16/UTF-32. Whenever iCode writes one of these files, it uses UTF-8: when you save settings, and at startup when it moves settings left by an older version (such as `CHRYS_*` lines in `.env`) into `settings.yaml`.
+
+Bytes that cannot be decoded using the detected encoding make the file invalid; iCode does not replace them with `�`. Settings use the existing invalid-file recovery rules. An undecodable `.env` file is skipped during loading, and attempts to update it fail without overwriting it.
+
 The file uses YAML. Dots in key names represent nesting. For example, write `llm.retry.max_transient` as:
 
 ```yaml

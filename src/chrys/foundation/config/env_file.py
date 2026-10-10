@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from chrys.foundation.platform.files import atomic_write_text, digest_bytes
+from chrys.foundation.text.encoding import decode_bytes
 from chrys.foundation.util.lock import FileLock
 
 
@@ -115,7 +116,7 @@ def update_env_file(
         existed = raw is not None
         # ``newline=""`` is what the old text-mode read used, i.e. no newline
         # translation, so decoding the bytes reproduces it exactly.
-        original = raw.decode("utf-8") if raw is not None else ""
+        original = decode_bytes(raw, errors="strict") if raw is not None else ""
 
         found_updates: set[str] = set()
         rewritten: list[str] = []

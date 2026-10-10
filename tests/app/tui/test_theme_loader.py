@@ -327,17 +327,40 @@ def test_bad_user_theme_surfaces_as_startup_warning_not_crash(monkeypatch: pytes
     assert "broken.yaml" in app._startup_warnings[0].message
 
 
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-32", "gb18030"])
+def test_user_theme_detects_encoding(tmp_path: Path, encoding: str) -> None:
+    text = '# 这是用户自定义主题。保留中文注释并正确加载颜色设置。\nprimary: "#875FAF"\n'
+    (tmp_path / "encoded.yaml").write_bytes(text.encode(encoding))
+
+    themes, warnings = load_user_themes(tmp_path)
+
+    assert warnings == []
+    assert [theme.name for theme in themes] == ["encoded"]
+    assert themes[0].primary == "#875FAF"
+
+
 @pytest.mark.parametrize("content", [b'primary: "#875FAF"\n# \xff\n', 'primary: "#875FAF"\n'.encode("utf-16")])
-def test_undecodable_theme_does_not_block_other_files(tmp_path: Path, content: bytes) -> None:
+def test_decodable_non_utf8_theme_does_not_block_loading(tmp_path: Path, content: bytes) -> None:
     _write_theme(tmp_path, "good.yaml", 'primary: "#875FAF"\n')
-    (tmp_path / "broken.yaml").write_bytes(content)
+    (tmp_path / "legacy.yaml").write_bytes(content)
+
+    themes, warnings = load_user_themes(tmp_path)
+
+    assert [theme.name for theme in themes] == ["good", "legacy"]
+    assert warnings == []
+
+
+def test_damaged_utf8_theme_is_skipped(tmp_path: Path) -> None:
+    _write_theme(tmp_path, "good.yaml", 'primary: "#875FAF"\n')
+    damaged = ("# 中文主题说明\n" * 20).encode() + b'primary: "#875FAF"\n# \xff\n'
+    (tmp_path / "damaged.yaml").write_bytes(damaged)
 
     themes, warnings = load_user_themes(tmp_path)
 
     assert [theme.name for theme in themes] == ["good"]
     assert len(warnings) == 1
     assert warnings[0].code == "user_theme_skipped"
-    assert "broken.yaml" in warnings[0].message
+    assert "damaged.yaml" in warnings[0].message
 
 
 @pytest.mark.parametrize("value", ["2026-02-30", "2026-13-01", "!!int not-a-number", "!!timestamp not-a-date"])
@@ -433,13 +456,15 @@ def test_builtin_rgb_palettes_remain_loadable_as_user_themes(tmp_path: Path, nam
 @pytest.mark.parametrize(
     "content",
     [
-        b'primary: "#875FAF"\n# \xff\n',
+        b'primary: "#875FAF"\n# \x00\n',
+        ("# 中文主题说明\n" * 20).encode() + b'primary: "#875FAF"\n# \xff\n',
+        'primary: "#875FAF"\n'.encode("utf-16")[:-1],
         b'primary: "#875FAF"\ndark: null\n',
         b'primary: "#875FAF"\nluminosity_spread: null\n',
         b'primary: "#875FAF"\nluminosity_spread: .nan\n',
         b"primary: 2026-02-30\n",
     ],
-    ids=["encoding", "null-dark", "null-spread", "nan-spread", "yaml-date"],
+    ids=["control-character", "damaged-utf8", "truncated-utf16", "null-dark", "null-spread", "nan-spread", "yaml-date"],
 )
 async def test_invalid_saved_theme_falls_back_and_valid_theme_can_be_applied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes

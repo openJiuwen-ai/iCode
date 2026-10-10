@@ -659,10 +659,10 @@ def load_profile_from_yaml(path: Path) -> AgentProfile:
         AgentProfileLoadError: If the file cannot be read or is missing required fields.
     """
     try:
-        text = decode_bytes(path.read_bytes())
+        text = decode_bytes(path.read_bytes(), errors="strict")
     except FileNotFoundError as e:
         raise AgentProfileLoadError(f"Agent profile file not found: {path}") from e
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
         raise AgentProfileLoadError(f"Cannot read agent profile file {path}: {e}") from e
 
     try:

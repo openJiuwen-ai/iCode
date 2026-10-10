@@ -50,6 +50,28 @@ def test_update_env_file_preserves_unrelated_lines_and_updates_in_place(env_path
     )
 
 
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-32", "gb18030"])
+def test_update_detects_encoding_and_preserves_unrelated_text(env_path: Path, encoding: str) -> None:
+    env_path.parent.mkdir(parents=True)
+    prefix = "# 保留用户配置中的中文注释和其他参数。更新时不应损坏。\r\nGREETING=你好\r\n"
+    env_path.write_bytes((prefix + "TARGET=old\r\n").encode(encoding))
+
+    assert update_env_file({"TARGET": "new"}, expect_fingerprint=file_fingerprint(env_path))
+
+    assert env_path.read_bytes().decode("utf-8") == prefix + 'TARGET="new"\r\n'
+
+
+def test_update_refuses_lossy_decoding_without_changing_the_file(env_path: Path) -> None:
+    env_path.parent.mkdir(parents=True)
+    original = ("# 中文配置说明\n" * 20).encode() + b"SECRET=abc\xffdef\nTARGET=old\n"
+    env_path.write_bytes(original)
+
+    with pytest.raises(UnicodeError):
+        update_env_file({"TARGET": "new"})
+
+    assert env_path.read_bytes() == original
+
+
 def test_update_env_file_always_quotes_and_escapes_backslashes_and_quotes(env_path: Path) -> None:
     value = 'path\\to\\"quoted"'
 

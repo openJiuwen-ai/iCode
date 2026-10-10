@@ -17,6 +17,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from chrys.foundation.text.encoding import decode_bytes
+
+
+def _read_resource_text(path: Path) -> str:
+    """Keep disk IO and encoding detection off the event loop."""
+    return decode_bytes(path.read_bytes(), errors="strict").replace("\r\n", "\n").replace("\r", "\n")
+
 
 @dataclass
 class SkillResource:
@@ -40,7 +47,7 @@ class SkillResource:
         path = Path(self.full_path)
         if not await asyncio.to_thread(path.is_file):
             raise ValueError(f"Resource file '{self.name}' not found at '{self.full_path}'.")
-        return await asyncio.to_thread(path.read_text, encoding="utf-8")
+        return await asyncio.to_thread(_read_resource_text, path)
 
 
 @dataclass

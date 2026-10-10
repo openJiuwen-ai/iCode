@@ -34,6 +34,7 @@ from typing import Any
 import yaml
 
 from chrys.foundation.platform.files import atomic_write_text, digest_bytes
+from chrys.foundation.text.encoding import decode_bytes
 from chrys.foundation.util.lock import FileLock
 
 LOCK_TIMEOUT_SECONDS = 10.0
@@ -123,11 +124,11 @@ def _read_bytes(path: Path) -> bytes | None:
 
 
 def _parse(raw: bytes | None) -> dict[str, Any] | None:
-    """Parse *raw* as a YAML mapping, or ``None`` if undecodable/invalid.
+    """Decode a YAML mapping, returning ``None`` if undecodable or invalid.
 
-    Both catches are deliberately wider than the obvious one. A truncated or
-    mis-encoded file fails decoding with ``UnicodeDecodeError``, which is not an
-    ``OSError``. And PyYAML only wraps *parser* failures in ``YAMLError``: its
+    The shared detector's strict decode raises ``UnicodeError`` (a
+    ``ValueError``) instead of replacing damaged bytes. PyYAML only wraps
+    *parser* failures in ``YAMLError``: its
     constructors let the underlying exception out, so ``2026-99-99`` raises a
     bare ``ValueError``, an integer past ``sys.get_int_max_str_digits()`` the
     same, and deeply nested flow collections a ``RecursionError``.
@@ -139,10 +140,7 @@ def _parse(raw: bytes | None) -> dict[str, Any] | None:
     if raw is None:
         return None
     try:
-        text = raw.decode("utf-8")
-    except UnicodeError:
-        return None
-    try:
+        text = decode_bytes(raw, errors="strict")
         data = yaml.safe_load(text)
     except yaml.YAMLError, ValueError, RecursionError:
         return None

@@ -15,6 +15,7 @@ from chrys.foundation.text.encoding import (
     DetectionResult,
     EncodingDetector,
     _canonical_encoding,
+    decode_bytes,
     is_mostly_text,
 )
 
@@ -23,6 +24,36 @@ from chrys.foundation.text.encoding import (
 # ---------------------------------------------------------------------------
 
 detector = EncodingDetector()
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "utf-16", "utf-32", "gb18030"])
+@pytest.mark.parametrize("mutable", [False, True])
+def test_strict_decode_preserves_detected_text(encoding: str, mutable: bool) -> None:
+    text = "# 中文配置说明\r\nNAME=测试配置\r\n"
+    raw = text.encode(encoding)
+    assert decode_bytes(bytearray(raw) if mutable else raw, errors="strict") == text
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ("# 中文配置说明\n" * 20).encode() + b"SECRET=abc\xffdef\n",
+        "NAME=测试\n".encode("utf-16")[:-1],
+        "NAME=测试\n".encode("utf-32")[:-1],
+        b"# ASCII comment\n" * 5000 + b"NAME=abc\xffdef\n",
+    ],
+    ids=["damaged-utf8", "truncated-utf16", "truncated-utf32", "beyond-detection-sample"],
+)
+def test_strict_decode_rejects_damage_without_changing_default_replacement(raw: bytes) -> None:
+    with pytest.raises(UnicodeDecodeError):
+        decode_bytes(raw, errors="strict")
+    assert "�" in decode_bytes(raw)
+
+
+def test_strict_decode_allows_an_intentionally_encoded_replacement_character() -> None:
+    text = "NAME=literal �\n"
+    assert decode_bytes(text.encode(), errors="strict") == text
+    assert decode_bytes(b"", errors="strict") == ""
 
 
 def _result(raw: bytes) -> DetectionResult:
