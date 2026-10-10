@@ -19,6 +19,8 @@
 - 在输入栏中输入 `/rename`，打开“会话标题”窗口，输入标题并点击“保存”。
 - 在 `/rename` 后直接输入标题，例如 `/rename 修复登录问题`。
 
+“会话标题”窗口顶部还会显示会话 ID。点击“复制 ID”可复制该 ID，例如之后用 `icode -s <会话 ID>` 恢复这个会话；点击“打开文件夹”可在文件管理器中打开保存该会话数据的文件夹。在 iCode 无法打开文件管理器的环境中（例如通过 SSH 连接时），不显示“打开文件夹”。
+
 手动设置标题后，新标题会显示在会话列表和主界面中，iCode 将不再自动更新该会话的标题。若已开启[自动生成会话标题](../configuration/settings.md#会话)，清空“会话标题”窗口中的内容并保存后，iCode 会恢复已有的自动标题，并在后续任务中继续自动更新。
 
 ## 恢复已有会话
@@ -47,7 +49,7 @@
 
 ## 查找会话 ID 和会话保存位置
 
-当前会话 ID 显示在主界面左上角的“会话：…”区域；历史会话 ID 显示在“聊天会话”窗口的列表中。
+当前会话 ID 显示在主界面左上角的“会话：…”区域；历史会话 ID 显示在“聊天会话”窗口的列表中。点击“会话：…”区域可打开“会话标题”窗口，在其中[复制会话 ID 或打开会话文件夹](#修改会话标题)。
 
 输入 `/settings sessions`，或按 **F10** 后选择“会话”标签页，“会话存储根目录”下方的“使用中”会显示当前实际使用的 `sessions` 目录。每个会话保存在该目录下以会话 ID 命名的子目录中。
 
@@ -75,3 +77,19 @@
 5. 关闭所有 iCode 实例并重新启动，再按 **F1** 打开“聊天会话”窗口，确认重要会话已经出现并可以恢复。
 
 迁移完成后，源目录会保留原数据，不会自动删除。确认迁移完整后，如需释放空间，关闭 iCode，再归档或删除迁移窗口中“从”所显示的旧 `sessions` 目录。手工删除无法撤销。
+
+## 在会话数据中关联文件变更与模型请求
+
+如果要根据会话文件统计数据，请用下面的 ID 关联记录，不要按时间或工具调用顺序推测。旧版本 iCode 写入的记录没有这些 ID，有些记录也始终不会有；缺少 ID 时，应把关联视为未知。
+
+**哪次工具调用改动了文件。** `session.json` 中记录的每条文件变更都有 `tool_operation_id`。在 `trajectory/events.jsonl` 中，该工具调用的 `tool.operation.started` 和 `tool.operation.finished` 事件的 `operation_id` 与它相同，子智能体运行的工具也是如此。对于主智能体的工具调用，回复消息 `contents` 中的工具调用条目，以及其后工具消息中对应的结果条目，也以 `_chrys_operation_id` 记录同一个值。回复消息本身的 `_chrys_operation_id` 是另一个值，用于标识模型请求（见下文）。一次工具调用可能改动多个文件。
+
+**哪次请求返回了模型回复。** `session.json` 中每条模型回复消息都带有 `_chrys_request_attempt_id`，即返回这条回复的 HTTP 请求的 ID；消息的 `_chrys_operation_id` 与这条回复的 `model.request.*` 和 `model.exchange.finished` 事件的 `operation_id` 相同。在 `trajectory/events.jsonl` 中：
+
+- `model.request.prepared` 表示 iCode 即将发送的一次请求，`model.request.headers_received` 表示提供商对该请求的响应。两者带有相同的 `request_attempt_id`。后者还记录 HTTP 状态码，以及提供商返回的请求 ID（`provider_request_id`，提供商未返回时没有）。
+- 每次自动重试或重定向都是一次单独的请求，各有自己的 ID。没有 `model.request.headers_received` 事件的请求，可能在到达提供商之前就失败了。
+- 收到响应不代表回复已经完成。要了解回复如何结束，请查看 `operation_id` 相同的 `model.exchange.finished` 事件。
+
+iCode 还会通过 `Chrys-Request-Attempt-Id` 请求头把这个 ID 发给提供商，便于在网关或代理日志中查找对应请求。如果开启了原始 HTTP 日志，日志中每次请求的 `exchange_id` 也是这个 ID。
+
+这些 ID 只用于关联记录。Shell 命令执行后检测到的文件变更保留原有的可信度，这个 ID 并不能证明变更一定由该命令造成。这些 ID 也不统计改动行数。

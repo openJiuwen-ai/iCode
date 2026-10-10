@@ -98,6 +98,8 @@ _SESSION_INFO_OPEN_UNAVAILABLE = msg(
 )
 
 _TABS_HEIGHT = 2
+# Blank cells the Timeline leaves at its right edge; see _right_gap.
+_TIMELINE_RIGHT_GAP = 1
 
 
 class DashboardTab(StrEnum):
@@ -133,7 +135,6 @@ class TrajectoryDashboard(Container):
         layer: overlay;
         layers: default loading;
         background: $background;
-        padding: 0 1;
         border: round $tui-border-accent $border-opacity;
         border-title-align: left;
         border-title-color: $tui-border-title-accent;
@@ -205,8 +206,9 @@ class TrajectoryDashboard(Container):
         self._presentation_key: tuple[int, int, int] | None = None
         self._presentation_revision = 0
         self._render_identity: tuple[DashboardTab, str | None] | None = None
-        self._presentation_cache: LRUCache[tuple[object, ...], tuple[Text, ...]] | DetachedLruCache = LRUCache(
-            maxsize=64
+        # Each entry is a page's lines and the width the view scrolls over.
+        self._presentation_cache: LRUCache[tuple[object, ...], tuple[tuple[Text, ...], int]] | DetachedLruCache = (
+            LRUCache(maxsize=64)
         )
         self._update_border_labels()
 
@@ -695,12 +697,13 @@ class TrajectoryDashboard(Container):
             cache = None
         cached = cache.get(cache_key) if cache is not None else None
         if cached is not None:
-            self._commit_lines(list(cached))
+            cached_lines, scroll_width = cached
+            self._commit_lines(list(cached_lines), scroll_width)
         else:
-            lines = self._settled_lines(partial(self._active_lines, analysis, turn))
+            lines, scroll_width = self._settled_lines(partial(self._active_lines, analysis, turn))
             if cache is not None:
-                cache[cache_key] = tuple(lines)
-            self._commit_lines(lines)
+                cache[cache_key] = (tuple(lines), scroll_width)
+            self._commit_lines(lines, scroll_width)
         if self.active_tab is DashboardTab.TIMELINE:
             self._sync_turn_tabs(analysis)
 
@@ -756,20 +759,21 @@ class TrajectoryDashboard(Container):
             return timeline_lines(self._look(), context, turn)
         return []
 
-    def _settled_lines(self, render: Callable[[RenderContext, int], list[Text]]) -> list[Text]:
+    def _settled_lines(self, render: Callable[[RenderContext, int], list[Text]]) -> tuple[list[Text], int]:
         """Build for the region the asynchronous scrollbars settle on.
 
         The scrollbars this commit provokes (or retires) resize the region one
         cell after the fact; building for the settled region keeps every right
         edge real instead of cropping it off. *render* takes the layout and the
-        height the empty state fills.
+        height the empty state fills. Returns the lines and the width the view
+        scrolls over (see _scroll_width).
         """
         context = self._render_context()
         lines = render(context, self._content_height())
         text_view = self.query_one(TrajectoryTextView)
         region = text_view.scrollable_content_region
         if not region.width or not region.height:
-            return lines
+            return lines, self._scroll_width(lines, settled_width=None)
         region_width = self._effective_region_width()
         available = self._available_width()
         base_width = region_width + (1 if text_view.show_vertical_scrollbar else 0)
@@ -780,9 +784,30 @@ class TrajectoryDashboard(Container):
         settled_width = base_width - (1 if overflows_y else 0)
         overflows_x = any(line.cell_len > settled_width for line in lines)
         settled_height = base_height - (1 if overflows_x else 0)
+        page_width = max(1, settled_width - self._right_gap())
         if settled_width != region_width or settled_height != region.height:
-            lines = render(replace(context, width=max(1, settled_width)), max(1, settled_height))
-        return self._hatch_filled(lines, width=settled_width, height=settled_height)
+            lines = render(replace(context, width=page_width), max(1, settled_height))
+        lines = self._hatch_filled(lines, width=page_width, height=settled_height)
+        return lines, self._scroll_width(lines, settled_width=settled_width)
+
+    def _scroll_width(self, lines: list[Text], *, settled_width: int | None) -> int:
+        """The width the view scrolls over: the widest line and the page's right gap.
+
+        The gap counts toward the scrollable width instead of being left off
+        the lines' end: Textual re-checks a scroll view's scrollbars only when
+        its virtual size differs from its region, and a page one column short
+        of the settled width equals the region beside a scrollbar that should
+        retire, which would keep that scrollbar on screen. A page whose lines
+        fit the settled width never scrolls for the gap alone: a line drawn at
+        its own width (the Timeline's closing note, the dependency graph, an
+        error) that leaves less than the gap takes those cells instead. This
+        keeps the overflow the settle math predicts the overflow the view gets.
+        """
+        widest = max((line.cell_len for line in lines), default=0)
+        width = widest + self._right_gap()
+        if settled_width is not None and widest <= settled_width:
+            return min(width, settled_width)
+        return width
 
     def _hatch_filled(self, lines: list[Text], *, width: int, height: int) -> list[Text]:
         """Fill the viewport rows below short content with the hatch pattern."""
@@ -811,8 +836,18 @@ class TrajectoryDashboard(Container):
 
     def _content_width(self) -> int:
         """The width pages lay out in; the dashboard's own before the view has a region."""
-        width = self._effective_region_width()
-        return max(1, width) if width else max(1, self._available_width())
+        width = self._effective_region_width() or self._available_width()
+        return max(1, width - self._right_gap())
+
+    def _right_gap(self) -> int:
+        """Blank cells the active page leaves at its right edge.
+
+        The Timeline's text view pads only its left side: Textual draws a
+        scrollbar inside the padding, so a right padding would stand between
+        the scrollbar and the border. The page leaves the gap instead, which
+        keeps it beside the content and the scrollbar against the border.
+        """
+        return _TIMELINE_RIGHT_GAP if self.active_tab is DashboardTab.TIMELINE else 0
 
     def _content_height(self) -> int:
         """The height the empty state fills; the dashboard's own before the view has a region."""
@@ -834,7 +869,7 @@ class TrajectoryDashboard(Container):
             for y in range(height)
         ]
 
-    def _commit_lines(self, lines: list[Text]) -> None:
+    def _commit_lines(self, lines: list[Text], scroll_width: int) -> None:
         # The identity deliberately excludes the analysis generation: a live
         # session bumps it on every appended event, and a refresh of the view
         # the user is already reading must keep their scroll position. Session
@@ -845,7 +880,7 @@ class TrajectoryDashboard(Container):
         )
         reset_scroll = identity != self._render_identity
         self._render_identity = identity
-        self.query_one(TrajectoryTextView).set_lines(lines, reset_scroll=reset_scroll)
+        self.query_one(TrajectoryTextView).set_lines(lines, reset_scroll=reset_scroll, min_width=scroll_width)
 
     def _displayed_folder(self) -> Path | None:
         """The folder the session info section names: the session directory when

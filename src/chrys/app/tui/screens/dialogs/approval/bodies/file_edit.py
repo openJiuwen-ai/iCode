@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
 from textual.containers import VerticalGroup
+from textual.message import Message
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
@@ -46,6 +47,9 @@ type LocalizedText = MessageRef | str
 class ApprovalDiffPreview(VerticalGroup):
     """Prepare and mount a unified ``DiffView`` inside an approval dialog."""
 
+    class Ready(Message):
+        """The diff or its preparation error is ready for display."""
+
     def __init__(
         self,
         path: str,
@@ -56,6 +60,7 @@ class ApprovalDiffPreview(VerticalGroup):
         subtitle: LocalizedText = "",
     ) -> None:
         super().__init__(classes="approval-diff-preview")
+        self.is_ready = False
         self._path = path
         self._before = before
         self._after = after
@@ -95,10 +100,16 @@ class ApprovalDiffPreview(VerticalGroup):
                         _PREPARE_DIFF_ERROR.bind(detail=DisplayBlock(str(exc))),
                     )
                 )
+                self._mark_ready()
             return
         with suppress(Exception):
             await self.mount(dv)
             await self.query_one(".approval-diff-placeholder", Static).remove()
+            self._mark_ready()
+
+    def _mark_ready(self) -> None:
+        self.is_ready = True
+        self.post_message(self.Ready())
 
 
 def _string_arg(args: dict[str, Any], key: str) -> str | None:

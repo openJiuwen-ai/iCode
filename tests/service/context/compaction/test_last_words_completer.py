@@ -118,6 +118,7 @@ async def test_fallback_path_reports_side_call_usage(tmp_path):
         raw_text = note
         usage_details = usage
         additional_properties: ClassVar[dict[str, object]] = {}
+        messages: ClassVar[tuple[Message, ...]] = ()
 
     class _UsageClient:
         async def get_response(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]

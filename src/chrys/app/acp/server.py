@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+from collections.abc import Mapping
 from datetime import datetime
 from math import isfinite
 from typing import TYPE_CHECKING, Any
@@ -24,8 +26,10 @@ from chrys.app.acp.bridge import (
 )
 from chrys.app.acp.content import AcpContentError, ContentBlock, convert_prompt_blocks
 from chrys.app.acp.history import replay_session_history
+from chrys.app.acp.json_values import JsonValue, to_json_object
 from chrys.app.acp.session_manager import AcpSessionError, AcpSessionManager, ManagedSession, jsonable_dataclass
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.config.settings import DEFAULT_APPROVAL_TIMEOUT_SECONDS
 from chrys.foundation.events.types import (
     AgentLoadFailed,
     AgentLoadFinished,
@@ -74,13 +78,13 @@ from chrys.foundation.events.types import (
 from chrys.foundation.models.ask_user import AskUserQuestion, validate_request_input_response
 from chrys.foundation.text.encoding import EncodingDetector, decode_bytes
 from chrys.orchestration.session_host import Cancelled, EndTurn, Errored
+from chrys.service.mutations.types import FileMutationTextSnapshot
 
 if TYPE_CHECKING:
     from chrys.service.mutations.types import FileHashDiff
 
 _ALLOW_OPTION_ID = "allow"
 _REJECT_OPTION_ID = "reject"
-_PERMISSION_REQUEST_TIMEOUT_SECONDS = 600.0
 
 # Approval modes surfaced as standard ACP session modes (id, name, description).
 _APPROVAL_MODES: tuple[tuple[str, str, str], ...] = (
@@ -89,6 +93,72 @@ _APPROVAL_MODES: tuple[tuple[str, str, str], ...] = (
     ("bypass", "Bypass", "All tool calls are auto-approved."),
 )
 _APPROVAL_MODE_IDS = frozenset(mode_id for mode_id, _, _ in _APPROVAL_MODES)
+
+
+# Sub-agent tool-result metadata keys whose values carry whole file contents.
+_FILE_SNAPSHOT_KEY = "file_snapshot"
+_SHELL_FILE_SNAPSHOTS_KEY = "shell_file_snapshots"
+_SHELL_FILE_SNAPSHOTS_OMITTED_KEY = "shell_file_snapshots_omitted"
+# A broad command (a checkout, a formatter run) can change thousands of files,
+# while a client bounds what one notification may hold: iCode's own ACP client
+# ends the transport past 4,096 entries in one list. The byte bound keeps the
+# summaries small whatever the paths hold: an undecodable byte is seven bytes
+# once escaped.
+_MAX_SHELL_SNAPSHOT_SUMMARIES = 100
+_MAX_SHELL_SNAPSHOT_SUMMARY_BYTES = 256 * 1024
+
+
+def _sub_agent_result_metadata(metadata: Mapping[str, Any]) -> dict[str, JsonValue]:
+    """Project a sub-agent tool result's metadata for the ACP wire.
+
+    File contents stay in-process: both sides of every edited file would ride
+    every result to every client. The operation, hashes and skip reasons still
+    say what changed, and ``session/diff`` serves the text. Shell-changed files are a
+    list, not an object keyed by path: the sent path is display text, and two
+    paths can read the same.
+    """
+    projected = {
+        key: value for key, value in metadata.items() if key not in {_FILE_SNAPSHOT_KEY, _SHELL_FILE_SNAPSHOTS_KEY}
+    }
+    shell_snapshots = metadata.get(_SHELL_FILE_SNAPSHOTS_KEY)
+    if isinstance(shell_snapshots, Mapping) and shell_snapshots:
+        entries = [
+            (path, snapshot)
+            for path, snapshot in shell_snapshots.items()
+            if isinstance(path, str) and isinstance(snapshot, FileMutationTextSnapshot)
+        ]
+        summaries: list[JsonValue] = []
+        # The list as the SDK writes it, every non-ASCII character escaped:
+        # each entry adds its JSON and one byte (the opening bracket or its
+        # comma), and the closing bracket is the one byte counted up front.
+        size = 1
+        for path, snapshot in entries[:_MAX_SHELL_SNAPSHOT_SUMMARIES]:
+            summary = _shell_snapshot_summary(path, snapshot)
+            size += len(json.dumps(summary, separators=(",", ":"))) + 1
+            if size > _MAX_SHELL_SNAPSHOT_SUMMARY_BYTES:
+                break
+            summaries.append(summary)
+        projected[_SHELL_FILE_SNAPSHOTS_KEY] = summaries
+        if len(entries) > len(summaries):
+            projected[_SHELL_FILE_SNAPSHOTS_OMITTED_KEY] = len(entries) - len(summaries)
+    return to_json_object(projected)
+
+
+def _shell_snapshot_summary(path: str, snapshot: FileMutationTextSnapshot) -> dict[str, JsonValue]:
+    return to_json_object(
+        {
+            "path": path,
+            "operation": snapshot.operation,
+            "bytes_changed": snapshot.bytes_changed,
+            "source": snapshot.source,
+            "before_hash": snapshot.before_hash,
+            "after_hash": snapshot.after_hash,
+            "before_skip": snapshot.before_skip,
+            "after_skip": snapshot.after_skip,
+            "provenance": snapshot.provenance,
+            "contested": snapshot.contested,
+        }
+    )
 
 
 def _request_input_question_payload(question: AskUserQuestion) -> dict[str, object]:
@@ -108,10 +178,10 @@ class ChrysAcpServer:
         manager: AcpSessionManager,
         *,
         initial_vision: bool,
-        permission_timeout_seconds: float = _PERMISSION_REQUEST_TIMEOUT_SECONDS,
+        permission_timeout_seconds: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
     ) -> None:
-        if not isfinite(permission_timeout_seconds) or permission_timeout_seconds <= 0:
-            raise ValueError("permission_timeout_seconds must be finite and greater than zero.")
+        if not isfinite(permission_timeout_seconds) or permission_timeout_seconds < 0:
+            raise ValueError("permission_timeout_seconds must be finite and non-negative.")
         self._manager = manager
         self._initial_vision = initial_vision
         self._permission_timeout_seconds = permission_timeout_seconds
@@ -1028,7 +1098,7 @@ class ChrysAcpServer:
                     "agentName": event.agent_name,
                     "invocationId": event.origin.invocation_id,
                     "toolName": event.tool_name,
-                    "args": event.args,
+                    "args": to_json_object(event.args),
                     "callId": event.call_id,
                 },
             )
@@ -1044,7 +1114,7 @@ class ChrysAcpServer:
                     "callId": event.call_id,
                     "result": event.result,
                     "durationMs": event.duration_ms,
-                    "metadata": event.metadata,
+                    "metadata": _sub_agent_result_metadata(event.metadata),
                 },
             )
             return False
@@ -1408,7 +1478,7 @@ class ChrysAcpServer:
             title=tool_call_title(event.tool_name, event.tool_kind, event.args, intent_summary=event.intent_summary),
             kind=acp_tool_kind(event.tool_kind),
             status="pending",
-            rawInput=event.args,
+            rawInput=to_json_object(event.args),
             rawOutput=reason or None,
             field_meta={
                 "chrys": {
@@ -1460,7 +1530,8 @@ class ChrysAcpServer:
         try:
             done, _pending = await asyncio.wait(
                 {request_task, cancel_future},
-                timeout=self._permission_timeout_seconds,
+                # asyncio.wait uses None for an unlimited, still-cancellable wait.
+                timeout=self._permission_timeout_seconds or None,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if cancel_future in done:

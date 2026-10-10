@@ -14,6 +14,11 @@ from chrys.app.tui.screens.dialogs.session_title import SessionTitleDialog
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.screens.main.session_title import SessionTitleController
 from chrys.app.tui.screens.main.state import MainScreenState, RunState
+from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.foundation.config.settings import Settings
+from tests.support.tui_app_harness import make_chrys_app
+from tests.support.tui_helpers import click_when_settled
+from tests.support.waiting import wait_for
 
 
 class _Driver:
@@ -66,6 +71,7 @@ class _Harness:
             current_session_id=lambda: self.session_id,
             push_screen=lambda screen, callback: self.pushed.append((screen, callback)),
             start_custom_title_save=lambda title, session_id: self.saves.append((title, session_id)),
+            session_dir=lambda session_id: Path("/sessions") / session_id,
         )
 
     def _set_interval(self, _interval: float, callback: Callable[[], None]) -> _Timer:
@@ -245,6 +251,7 @@ def test_editor_saves_against_the_session_it_was_opened_for() -> None:
 
     assert isinstance(dialog, SessionTitleDialog)
     assert (dialog._custom_title, dialog._auto_title) == ("Pinned", "Summary")
+    assert (dialog._session_id, dialog._session_folder) == ("sessiona", Path("/sessions/session-a"))
     assert harness.saves == [("Renamed", "session-a")]
 
 
@@ -282,3 +289,28 @@ def test_new_clear_and_restored_sessions_clear_terminal_title_result() -> None:
     assert cleared == ["clear", "clear"]
     assert screen._state.session.creating_new_session is False
     assert screen._state.session.restoring_session is False
+
+
+@pytest.mark.asyncio
+async def test_border_click_opens_the_editor_on_the_store_folder_of_the_full_session_id(tmp_path: Path) -> None:
+    session_id = "e9796bf5-2747-4a1b-9c3d-5e6f7a8b9c0d"
+    app = make_chrys_app(tmp_path, settings=Settings(locale="en"))
+    async with app.run_test(size=(120, 30)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        main.chat_session_id = session_id
+        chat_panel = main.query_one(ChatPanel)
+        await wait_for(lambda: chat_panel.session_id == session_id, pilot=pilot, description="session id bound")
+
+        await click_when_settled(pilot, chat_panel, offset=(4, 0))
+        await wait_for(
+            lambda: isinstance(app.screen, SessionTitleDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="session title dialog open",
+        )
+
+        dialog = app.screen
+        assert isinstance(dialog, SessionTitleDialog)
+        assert dialog._session_id == "e9796bf52747"
+        assert dialog._session_folder == app._state_store.session_dir(session_id)
+        assert dialog._session_folder.name == "e9796bf52747"

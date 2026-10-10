@@ -637,6 +637,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                 is_shell,
                 workspace_cwd=self._workspace_cwd,
                 coordinator=self._mutation_coordinator,
+                tool_operation_id=tool_operation_id(_meta),
             )
 
         await self._bus.publish(

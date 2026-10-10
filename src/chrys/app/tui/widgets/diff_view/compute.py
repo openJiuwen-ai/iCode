@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import re
 from collections.abc import Sequence
 from functools import lru_cache
 
@@ -16,10 +17,13 @@ from pygments.lexers import find_lexer_class_for_filename
 from textual import highlight
 from textual.content import Content, Span
 
+from chrys.app.tui.util.source_text import mark_hidden_format, sanitize_source_text
 from chrys.app.tui.widgets.diff_view.palette import ADDED_EMPHASIS, REMOVED_EMPHASIS
 from chrys.app.tui.widgets.diff_view.rows import Hunk
 from chrys.app.tui.widgets.syntax_theme import NoErrorHighlightTheme
 
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+"""Where `shown_code` keeps a line break: it shows every other break character as a mark."""
 _EMPHASIS_SIMILARITY_CUTOFF = 0.5
 """Two lines less alike than this are different lines, not one line edited. Picking out the few
 characters they happen to share would be noise on top of backgrounds that already say as much."""
@@ -212,9 +216,31 @@ def _highlight_lines(code: str, path: str, language: str, *, shown_end: int | No
     return lines
 
 
+def shown_code(code: str) -> str:
+    """``code`` as a diff shows it.
+
+    A diff can show text a model or a remote agent wrote: its control characters
+    could restyle or hide lines, and bidi and zero-width characters reorder or hide
+    them, so each one shows as a mark of its own. Tabs become spaces up to the next
+    stop eight columns apart.
+    """
+    return mark_hidden_format(sanitize_source_text(code, tab_size=8))
+
+
+def _compared_lines(code: str) -> list[str]:
+    lines = _LINE_BREAK.split(code)
+    if lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def compute_hunks(code_before: str, code_after: str) -> list[Hunk]:
-    """The changes between two texts, each with up to three unchanged lines around it."""
-    matcher = difflib.SequenceMatcher(None, code_before.splitlines(), code_after.splitlines())
+    """The changes between two texts, each with up to three unchanged lines around it.
+
+    The texts are compared as given, since `shown_code` shows different characters alike and a
+    change between two of them would go missing, in lines that are the lines it shows.
+    """
+    matcher = difflib.SequenceMatcher(None, _compared_lines(code_before), _compared_lines(code_after))
     return list(matcher.get_grouped_opcodes())
 
 

@@ -19,6 +19,8 @@ You can change the current session's title in any of these ways:
 - Enter `/rename` in the input field to open the "Session Title" dialog, enter a title, and click "Save".
 - Enter a title directly after `/rename`, for example, `/rename Fix the login issue`.
 
+The top of the "Session Title" dialog also shows the session ID. Click "Copy ID" to copy it, for example to resume the session later with `icode -s <session-id>`. Click "Open folder" to open the folder that holds the session's data in your file manager. "Open folder" is not shown where iCode cannot open a file manager, for example over SSH.
+
 After you set a title manually, the new title appears in the session list and on the main screen, and iCode stops updating that session's title automatically. If [automatic session titles](../configuration/settings.md#sessions) are enabled, clearing the "Session Title" dialog and saving restores the existing automatic title and lets iCode continue updating it automatically during subsequent tasks.
 
 ## Resume an existing session
@@ -47,7 +49,7 @@ Deleting the current session also starts a new session, like `/clear`. A session
 
 ## Find the session ID and storage location
 
-The current session ID appears in the "Session: ..." area in the upper-left corner of the main screen. IDs for past sessions appear in the list in the "Chat Sessions" window.
+The current session ID appears in the "Session: ..." area in the upper-left corner of the main screen. IDs for past sessions appear in the list in the "Chat Sessions" window. Click the "Session: ..." area to open the "Session Title" dialog, where you can [copy the session ID or open its folder](#change-the-session-title).
 
 Enter `/settings sessions`, or press **F10** and select the "Sessions" tab. The "In use" text below "Session storage root" shows the actual `sessions` directory currently in use. Each session is saved in a subdirectory named after its session ID.
 
@@ -75,3 +77,19 @@ Before starting, finish the current task and close other iCode instances, then f
 5. Close all iCode instances and restart, then press **F1** to open the "Chat Sessions" window and confirm that important sessions appear and can be resumed.
 
 Migration keeps the original data in the source directory; it is not deleted automatically. After confirming that migration is complete, if you need to free up space, close iCode and archive or delete the old `sessions` directory shown under "From" in the migration window. Manual deletion cannot be undone.
+
+## Link file changes and model requests in session data
+
+If you build reports from a session's files, link records by the IDs below instead of by timestamps or the order of tool calls. Records from older iCode versions don't have these IDs, and some records never get one; when an ID is missing, treat the link as unknown.
+
+**Which tool call changed a file.** Each file change recorded in `session.json` has a `tool_operation_id`. In `trajectory/events.jsonl`, the `tool.operation.started` and `tool.operation.finished` events of that tool call have the same value as their `operation_id`, including for tools run by sub-agents. For tool calls made by the main agent, the tool call entry in the reply message's `contents`, and the matching result entry in the tool message that follows, also carry the same value as `_chrys_operation_id`. The reply message itself has a different `_chrys_operation_id`, which identifies the model request (see below). One tool call can change several files.
+
+**Which request returned a model reply.** Each model reply message in `session.json` carries `_chrys_request_attempt_id`, the ID of the HTTP request that returned it. The message's `_chrys_operation_id` is the `operation_id` of the `model.request.*` and `model.exchange.finished` events for that reply. In `trajectory/events.jsonl`:
+
+- `model.request.prepared` marks a request iCode is about to send, and `model.request.headers_received` marks the provider's response to it. Both carry the same `request_attempt_id`. The second also records the HTTP status and, when the provider sends one, the provider's own request ID as `provider_request_id`.
+- Each automatic retry or redirect is a separate request with its own ID. A request with no `model.request.headers_received` event may have failed before it reached the provider.
+- A received response doesn't mean the reply finished. To see how the reply ended, check the `model.exchange.finished` event with the same `operation_id`.
+
+iCode also sends this ID to the provider in the `Chrys-Request-Attempt-Id` header, so you can find the request in a gateway or proxy log. If you turned on raw HTTP logging, each request's `exchange_id` in that log is the same ID.
+
+These IDs only link records. A file change detected after a shell command keeps its own confidence: the ID doesn't prove that the command made the change. The IDs also don't count changed lines.

@@ -366,3 +366,33 @@ def test_the_model_pointer_is_still_read_live_after_bootstrap(
 
     assert loaded.settings.model_profile == "activated-mid-session"
     assert loaded.source_for("model.profile.active").layer is Source.PROCESS_RUNTIME
+
+
+def test_approval_timeout_defaults_and_round_trips(config_dir: Path) -> None:
+    key = "approval.timeout_seconds"
+    entry = specs_by_field(Settings)["approval_timeout_seconds"]
+    assert (entry.key, entry.apply, entry.kind) == (key, Apply.RESTART, Kind.INT)
+    freeze_process_env()
+    assert load_settings(env={}).settings.approval_timeout_seconds == 0
+    assert persist({key: 45}).written == {key: 45}
+    loaded = load_settings()
+    assert loaded.settings.approval_timeout_seconds == 45
+    assert loaded.source_for(key).layer is Source.USER
+    assert load_settings(env={"CHRYS_APPROVAL_TIMEOUT_SECONDS": "90"}).settings.approval_timeout_seconds == 90
+
+
+@pytest.mark.parametrize("raw, expected", [("-1", 0), ("bad", 0), ("1.5", 0)])
+def test_approval_timeout_validates_seconds(raw: str, expected: int) -> None:
+    loaded = load_settings(env={"CHRYS_APPROVAL_TIMEOUT_SECONDS": raw})
+    assert loaded.settings.approval_timeout_seconds == expected
+    assert loaded.warnings
+
+
+@pytest.mark.parametrize("seconds", [0, 600])
+def test_approval_timeout_preserves_explicit_zero_and_positive_values(config_dir: Path, seconds: int) -> None:
+    freeze_process_env()
+    assert persist({"approval.timeout_seconds": seconds}).written == {"approval.timeout_seconds": seconds}
+    assert load_settings().settings.approval_timeout_seconds == seconds
+    loaded = load_settings(env={"CHRYS_APPROVAL_TIMEOUT_SECONDS": str(seconds)})
+    assert loaded.settings.approval_timeout_seconds == seconds
+    assert not loaded.warnings

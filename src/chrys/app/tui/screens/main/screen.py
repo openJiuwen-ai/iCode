@@ -132,6 +132,8 @@ from chrys.service.profiles.models.schema import UNCONFIGURED_MODEL_ID, is_model
 from chrys.service.session.sub_agent_transcript import load_persisted_sub_agent_transcript
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from textual.app import ComposeResult
     from textual.theme import Theme
 
@@ -329,6 +331,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             start_custom_title_save=lambda title, session_id: self._start_worker(
                 partial(self._sessions.apply_custom_session_title, title, session_id)
             ),
+            session_dir=self._session_dir_for,
             locale_controller=self._locale_controller,
         )
         self._workspace_branch = WorkspaceBranchController(
@@ -408,6 +411,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 handle_ask_user_response=self._handle_ask_user_response,
                 question_inline_preferred=self._question_inline_preferred,
                 approval_defer_while_judging=self._approval_defer_while_judging,
+                approval_timeout_seconds=self._approval_timeout_seconds,
                 post_gc_message=self.post_message,
                 debug=self._debug,
                 refresh_model_indicator=self._refresh_model_indicator,
@@ -560,6 +564,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Put the choice in force; requests already waiting keep the choice they arrived under."""
         cast("ChrysApp", self.app).settings_handle.override(approval_defer_while_judging=value)
 
+    def _approval_timeout_seconds(self) -> int:
+        return cast("ChrysApp", self.app).settings_handle.settings.approval_timeout_seconds
+
     def _approval_defer_while_judging(self) -> bool:
         return cast("ChrysApp", self.app).settings_handle.settings.approval_defer_while_judging
 
@@ -634,6 +641,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _workspace_cwd(self) -> str:
         """Return the TUI-tracked workspace cwd."""
         return self._state.workspace_marker.current_cwd or safe_getcwd()
+
+    def _session_dir_for(self, session_id: str) -> Path | None:
+        """Return *session_id*'s folder in the session store, or ``None`` without a store."""
+        store = self._services.state_store
+        return store.session_dir(session_id) if session_id and store is not None else None
 
     def _notification_service(self) -> NotificationService:
         return cast("ChrysApp", self.app).notification_service
@@ -1252,6 +1264,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     async def on_unmount(self) -> None:
         """Flush pending UI-owned settings before the screen is torn down."""
+        self._events.close_approval_waits()
         if self._locale_controller is not None:
             self._locale_controller.unregister_surface(self)
         if self._workflow_timer is not None:

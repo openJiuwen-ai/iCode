@@ -381,6 +381,7 @@ def make_backend_handler(
             ),
             question_inline_preferred=lambda: False,
             approval_defer_while_judging=approval_defer_while_judging,
+            approval_timeout_seconds=lambda: 0,
             post_gc_message=post_gc_message,
             debug=lambda key, message="": _call_screen_hook(screen, "_debug", key, message),
             refresh_model_indicator=lambda: None,

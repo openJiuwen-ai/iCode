@@ -78,7 +78,7 @@ from .errors import (
     classify_acp_error,
     is_best_effort_option_rejection,
 )
-from .protocol import _validate_payload_caps
+from .protocol import _validate_payload_caps, _validate_request_payload_caps, sdk_field_values
 from .protocol import encode_protocol_json as encode_protocol_json
 from .protocol import parse_protocol_json as parse_protocol_json
 from .protocol import validate_json_rpc_envelope as validate_json_rpc_envelope
@@ -1049,13 +1049,15 @@ class AcpAgentClient:
             params = message.get("params")
             if type(params) is not dict:
                 raise ValueError("ACP request params must be an object.")
-            _validate_payload_caps(params)
+            _validate_request_payload_caps(params)
             active = self._active_session_id()
             if active is None or type(params.get("sessionId")) is not str or params["sessionId"] != active:
                 raise ValueError("ACP request is not bound to the active session.")
-            meta = params.get("_meta")
-            if meta is not None and (type(meta) is not dict or _META_COLLISION_KEYS.intersection(meta)):
-                raise ValueError("ACP request metadata collides with callback fields.")
+            # The SDK merges the metadata into the callback's arguments, read
+            # under either spelling.
+            for meta in sdk_field_values(params, "_meta", "field_meta"):
+                if meta is not None and (type(meta) is not dict or _META_COLLISION_KEYS.intersection(meta)):
+                    raise ValueError("ACP request metadata collides with callback fields.")
             method = message["method"]
             if method == protocol._PERMISSION_METHOD:
                 _preflight_permission(params)
@@ -1274,7 +1276,7 @@ def _validate_ext_params(method: str, params: dict[str, Any], session_id: str) -
         raise RequestError.invalid_params({"details": "Malformed ACP extension request."})
     try:
         validate_json_scalar_tree(params)
-        _validate_payload_caps(params)
+        _validate_request_payload_caps(params)
         if type(params.get("sessionId")) is not str or params["sessionId"] != session_id:
             raise ValueError
         if method == "chrys/request_input":
@@ -1285,7 +1287,9 @@ def _validate_ext_params(method: str, params: dict[str, Any], session_id: str) -
 
 def _valid_raw_usage_update(params: dict[str, Any]) -> bool:
     update = params.get("update")
-    if type(update) is not dict or update.get("sessionUpdate") != "usage_update":
+    if type(update) is not dict:
+        return True
+    if not any(kind == "usage_update" for kind in sdk_field_values(update, "sessionUpdate", "session_update")):
         return True
     return _valid_usage_int(update.get("used")) and _valid_usage_int(update.get("size"))
 

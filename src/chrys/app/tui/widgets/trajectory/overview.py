@@ -385,7 +385,7 @@ def _session_info_lines(
     controls = Text()
     if folder is not None:
         controls.append(
-            f"⎘ {look.message(_SESSION_INFO_COPY_PATH.bind())}",
+            look.message(_SESSION_INFO_COPY_PATH.bind()),
             style=look.semantic_style("primary", "blue", bold=True)
             + Style(underline=True)
             + Style.from_meta({"@click": "copy_session_path"}),
@@ -394,7 +394,7 @@ def _session_info_lines(
         if controls:
             controls.append("  ")
         controls.append(
-            f"⧉ {look.message(_SESSION_INFO_OPEN_FOLDER.bind())}",
+            look.message(_SESSION_INFO_OPEN_FOLDER.bind()),
             style=look.semantic_style("primary", "blue", bold=True)
             + Style(underline=True)
             + Style.from_meta({"@click": "open_session_folder"}),

@@ -24,6 +24,7 @@ from chrys.service.agent_middleware.validators import (
     NO_VISIBLE_OUTPUT_REASON,
     OUTPUT_TRUNCATED_REASON,
     REASONING_EXHAUSTED_OUTPUT_REASON,
+    UNNAMED_TOOL_CALL_REASON,
     DefaultResponseValidator,
     RegexRule,
     ValidationResult,
@@ -467,6 +468,74 @@ class TestContentFilteredWithoutAnswer:
 
         assert empty == ValidationResult.invalid("empty contents")
         assert empty.code == ValidationReason.EMPTY_CONTENTS
+
+
+# ---------------------------------------------------------------------------
+# Tool call without a function name
+# ---------------------------------------------------------------------------
+
+
+def _unnamed_call(name: str = "") -> Content:
+    return Content.from_function_call("call_1", name, arguments={"path": "x"})
+
+
+class TestToolCallWithoutAName:
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            pytest.param([_unnamed_call()], id="alone"),
+            pytest.param([Content.from_text("Reading it."), _unnamed_call()], id="after_text"),
+            pytest.param(
+                [Content.from_function_call("call_0", "read_file", arguments={"path": "a"}), _unnamed_call()],
+                id="beside_a_named_call",
+            ),
+        ],
+    )
+    def test_a_response_with_a_call_that_names_no_function_is_retried_and_fails_when_retries_run_out(
+        self, contents: list[Content]
+    ) -> None:
+        result = DefaultResponseValidator().validate(_assistant(contents))
+
+        assert result == ValidationResult.invalid(UNNAMED_TOOL_CALL_REASON, terminal_on_giveup=True)
+        assert result.code == ValidationReason.UNNAMED_TOOL_CALL
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(
+                Content.from_function_call("call_custom_1", "", arguments="x", informational_only=True),
+                id="informational",
+            ),
+            pytest.param(
+                Content(
+                    "function_call", call_id="hosted_1", name="", provider_hosted=True, provider_status="completed"
+                ),
+                id="provider_hosted",
+            ),
+        ],
+    )
+    def test_a_call_no_tool_loop_runs_needs_no_name(self, call: Content) -> None:
+        assert call.provider_hosted or call.informational_only
+        result = DefaultResponseValidator().validate(_assistant([call, Content.from_text("Done.")]))
+
+        assert result.ok
+
+    def test_the_content_filter_outranks_a_call_without_a_name(self) -> None:
+        assert DefaultResponseValidator().validate(_filtered([_unnamed_call()])) == _FILTERED
+
+    def test_the_rule_can_be_disabled(self) -> None:
+        assert DefaultResponseValidator(disable_unnamed_tool_call=True).validate(_assistant([_unnamed_call()])).ok
+
+    async def test_a_named_call_on_the_next_attempt_is_kept(self) -> None:
+        named = _assistant([_unnamed_call("read_file")])
+        fake = _FakeCallNext([_assistant([_unnamed_call()]), named], stream=False)
+        ctx = _make_context(stream=False)
+        fake.bind(ctx)
+
+        await ResponseValidationMiddleware(backoff_schedule=[0.0]).process(ctx, fake)
+
+        assert fake.call_count == 2
+        assert ctx.result is named
 
 
 # ---------------------------------------------------------------------------

@@ -340,17 +340,17 @@ def test_approved_pre_mount_verdict_skips_dialog(monkeypatch) -> None:
 # ──────────── flagged pre-mount → dialog shown with verdict ────────────
 
 
-def test_flagged_pre_mount_verdict_opens_the_dialog_flagged(monkeypatch) -> None:
+async def test_flagged_pre_mount_verdict_opens_the_dialog_flagged(monkeypatch) -> None:
     """Judge flags a queued request before its dialog is pushed.  The dialog
     is built with the verdict, so it opens flagged with nothing left to
     deliver after mount."""
     handler, app, _debug, _ = _make_approval_handler(monkeypatch)
 
-    asyncio.run(handler.on_approval_request(_make_request("req-1")))
-    asyncio.run(handler.on_approval_request(_make_request("req-2", tool_name="rm")))
+    await handler.on_approval_request(_make_request("req-1"))
+    await handler.on_approval_request(_make_request("req-2", tool_name="rm"))
 
     # Judge flags req-2 while still queued.
-    asyncio.run(handler.on_approval_reviewed(_make_reviewed("req-2", approved=False, reason="rm -rf")))
+    await handler.on_approval_reviewed(_make_reviewed("req-2", approved=False, reason="rm -rf"))
     assert "req-2" in handler._pending_verdicts
 
     # Dismiss dialog 1 → drains queue → dialog 2 is pushed.
@@ -503,21 +503,21 @@ def test_auto_user_decision_marker_clears_when_response_worker_finishes(monkeypa
 # ──────────── out-of-order parallel judges ─────────────────────────────
 
 
-def test_parallel_judges_finish_out_of_order(monkeypatch) -> None:
+async def test_parallel_judges_finish_out_of_order(monkeypatch) -> None:
     """Three parallel requests; judges fire for req-2 (approved) and req-3
     (flagged) while req-1's dialog is still visible.  Dismissing req-1
     drains the queue: req-2 is skipped silently, req-3 shows a dialog built
     with the flag concern."""
     handler, app, _debug, _ = _make_approval_handler(monkeypatch)
 
-    asyncio.run(handler.on_approval_request(_make_request("req-1", tool_name="t1")))
-    asyncio.run(handler.on_approval_request(_make_request("req-2", tool_name="t2")))
-    asyncio.run(handler.on_approval_request(_make_request("req-3", tool_name="t3")))
+    await handler.on_approval_request(_make_request("req-1", tool_name="t1"))
+    await handler.on_approval_request(_make_request("req-2", tool_name="t2"))
+    await handler.on_approval_request(_make_request("req-3", tool_name="t3"))
     assert len(app.pushed) == 1  # only req-1 mounted
 
     # Judges finish out of order.
-    asyncio.run(handler.on_approval_reviewed(_make_reviewed("req-2", approved=True)))
-    asyncio.run(handler.on_approval_reviewed(_make_reviewed("req-3", approved=False, reason="danger")))
+    await handler.on_approval_reviewed(_make_reviewed("req-2", approved=True))
+    await handler.on_approval_reviewed(_make_reviewed("req-3", approved=False, reason="danger"))
     assert set(handler._pending_verdicts.keys()) == {"req-2", "req-3"}
 
     # Dismiss dialog 1 (judge eventually approves it too).
@@ -546,7 +546,7 @@ def test_parallel_judges_finish_out_of_order(monkeypatch) -> None:
 # ──────────── MANUAL mode regression ───────────────────────────────────
 
 
-def test_manual_mode_shows_dialogs_sequentially(monkeypatch) -> None:
+async def test_manual_mode_shows_dialogs_sequentially(monkeypatch) -> None:
     """MANUAL mode (no judge, no ApprovalReviewed events) still queues
     and shows dialogs one at a time — each user decision drains the next.
     Guards the refactored ``_show_next_approval`` loop against breaking the
@@ -555,9 +555,9 @@ def test_manual_mode_shows_dialogs_sequentially(monkeypatch) -> None:
 
     # Three MANUAL requests (judging=False) — no judge verdicts will ever
     # arrive; the TUI must still serialize the dialogs.
-    asyncio.run(handler.on_approval_request(_make_request("req-1", judging=False)))
-    asyncio.run(handler.on_approval_request(_make_request("req-2", judging=False)))
-    asyncio.run(handler.on_approval_request(_make_request("req-3", judging=False)))
+    await handler.on_approval_request(_make_request("req-1", judging=False))
+    await handler.on_approval_request(_make_request("req-2", judging=False))
+    await handler.on_approval_request(_make_request("req-3", judging=False))
 
     assert len(app.pushed) == 1
     assert len(handler._approval_queue) == 2

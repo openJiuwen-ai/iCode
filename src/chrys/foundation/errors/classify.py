@@ -167,7 +167,7 @@ def classify_error(exc: BaseException) -> ErrorClassification:
     ):
         retryable = False
     elif signal is not None and is_2xx(signal.status_code):
-        retryable = stream_error_retryable(signal)
+        retryable = stream_error_retryable(signal, kind)
     else:
         # The legacy owner and deterministic vetoes were both decided above.
         retryable = _legacy.is_transient(full)

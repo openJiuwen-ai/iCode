@@ -16,6 +16,8 @@ from acp import schema
 from acp.exceptions import RequestError
 
 _SESSION_ID = "stub-session"
+# Each file adds 11 items to a tool call, past 4,096 in all from 372 files.
+WIDE_PATCH_FILES = 600
 
 
 class StubAgent:
@@ -265,13 +267,14 @@ class StubAgent:
                 view = view[written:]
             await asyncio.Event().wait()
         if self._scenario == "oversized_notification":
-            # A protocol-legal ext notification whose params bust the retained
-            # payload caps while staying far below the 50 MiB reader limit.
+            # A protocol-legal ext notification whose params bust the item cap,
+            # far below the 50 MiB reader limit: a wide collection costs much
+            # more to parse and walk than its bytes.
             frame = json.dumps(
                 {
                     "jsonrpc": "2.0",
                     "method": "_zeta/blob",
-                    "params": {"blob": "y" * (1024 * 1024 + 64)},
+                    "params": {"blob": list(range(5000))},
                 },
                 separators=(",", ":"),
             ).encode()
@@ -416,18 +419,21 @@ class StubAgent:
             answers = response.get("answers") or [{}]
             await self._send_text("answer:" + ",".join(answers[0].get("values", [])))
         elif self._scenario == "meta_collision":
-            try:
-                await self._require_conn()._conn.send_request(
-                    "session/request_permission",
-                    {
-                        "sessionId": _SESSION_ID,
-                        "toolCall": {"toolCallId": "collision", "title": "Collision"},
-                        "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}],
-                        "_meta": {"options": []},
-                    },
-                )
-            except RequestError as exc:
-                await self._send_text(f"preflight:{exc.code}")
+            # The SDK reads the metadata by its Python name too.
+            replacement = {"tool_call": {"toolCallId": "replacement", "title": "Replacement"}}
+            for key, meta in (("_meta", {"options": []}), ("_meta", replacement), ("field_meta", replacement)):
+                try:
+                    await self._require_conn()._conn.send_request(
+                        "session/request_permission",
+                        {
+                            "sessionId": _SESSION_ID,
+                            "toolCall": {"toolCallId": "collision", "title": "Collision"},
+                            "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}],
+                            key: meta,
+                        },
+                    )
+                except RequestError as exc:
+                    await self._send_text(f"preflight:{key}:{exc.code}")
         elif self._scenario == "unknown_ext":
             try:
                 await self._require_conn()._conn.send_request(
@@ -478,6 +484,66 @@ class StubAgent:
                 {"sessionId": "foreign-session", "update": {"blob": list(range(5000))}},
             )
             await self._send_text("local")
+        elif self._scenario == "large_payloads":
+            # A sub-agent writing a large file: the content rides an extension
+            # notification, a tool call and a permission request, each string
+            # past 256 Ki characters and each payload past 1 MiB.
+            content = "z" * (1024 * 1024 + 64)
+            await self._require_conn()._conn.send_notification("_zeta/blob", {"blob": content})
+            await self._require_conn().session_update(
+                session_id=_SESSION_ID,
+                update=acp.start_tool_call("write-1", "Write big.txt", kind="edit", raw_input={"content": content}),
+            )
+            response = await self._require_conn().request_permission(
+                session_id=_SESSION_ID,
+                tool_call=schema.ToolCallUpdate(
+                    toolCallId="write-1", title="Write big.txt", rawInput={"content": content}
+                ),
+                options=[
+                    schema.PermissionOption(optionId="allow", name="Allow", kind="allow_once"),
+                    schema.PermissionOption(optionId="deny", name="Deny", kind="reject_once"),
+                ],
+            )
+            selected = (
+                response.outcome.option_id
+                if isinstance(response.outcome, schema.AllowedOutcome)
+                else response.outcome.outcome
+            )
+            await self._require_conn().session_update(
+                session_id=_SESSION_ID,
+                update=acp.update_tool_call("write-1", status="completed", raw_output=content),
+            )
+            await self._send_text(f"permission:{selected}")
+        elif self._scenario == "wide_patch":
+            # One patch over hundreds of files: a diff, a location and an
+            # argument entry for each, far past 4,096 items in the tool call
+            # and in the permission request.
+            paths = [f"/w/src/module_{index}.py" for index in range(WIDE_PATCH_FILES)]
+            content = [acp.tool_diff_content(path, "new\n", "old\n") for path in paths]
+            locations = [schema.ToolCallLocation(path=path, line=1) for path in paths]
+            raw_input = {"changes": {path: {"type": "update", "unified_diff": "-old\n+new\n"} for path in paths}}
+            await self._require_conn().session_update(
+                session_id=_SESSION_ID,
+                update=acp.start_tool_call(
+                    "patch-1", "Apply patch", kind="edit", content=content, locations=locations, raw_input=raw_input
+                ),
+            )
+            response = await self._require_conn().request_permission(
+                session_id=_SESSION_ID,
+                tool_call=schema.ToolCallUpdate(
+                    toolCallId="patch-1", title="Apply patch", content=content, locations=locations, rawInput=raw_input
+                ),
+                options=[
+                    schema.PermissionOption(optionId="allow", name="Allow", kind="allow_once"),
+                    schema.PermissionOption(optionId="deny", name="Deny", kind="reject_once"),
+                ],
+            )
+            selected = (
+                response.outcome.option_id
+                if isinstance(response.outcome, schema.AllowedOutcome)
+                else response.outcome.outcome
+            )
+            await self._send_text(f"permission:{selected}")
         elif self._scenario == "permission_duplicate_ids":
             try:
                 await self._require_conn().request_permission(
@@ -492,14 +558,16 @@ class StubAgent:
             except RequestError as exc:
                 await self._send_text(f"dup:{exc.code}")
         elif self._scenario == "invalid_usage_updates":
-            for value in (True, 1.5, 1 << 80):
-                await self._require_conn()._conn.send_notification(
-                    "session/update",
-                    {
-                        "sessionId": _SESSION_ID,
-                        "update": {"sessionUpdate": "usage_update", "used": value, "size": 100},
-                    },
-                )
+            # The SDK reads the tag by its Python name too, and would coerce these.
+            for tag in ("sessionUpdate", "session_update"):
+                for value in (True, 1.5, "5", 1 << 80):
+                    await self._require_conn()._conn.send_notification(
+                        "session/update",
+                        {
+                            "sessionId": _SESSION_ID,
+                            "update": {tag: "usage_update", "used": value, "size": 100},
+                        },
+                    )
             await self._send_text("valid after invalid usage")
         elif self._scenario == "depth":
             await self._send_text(os.environ.get("CHRYS_ACP_SUBAGENT_DEPTH", "missing"))

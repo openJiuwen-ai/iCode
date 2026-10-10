@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         ApprovalBypassDecision,
         ApprovalDialogHandle,
         ApprovalResponseWorker,
+        ApprovalTimer,
         ImageCompressionDialogHandle,
         QuestionDialogHandle,
         QuestionDialogResult,
@@ -377,6 +378,7 @@ class DialogGatewayView(Protocol):
     def notify_approval_required(self) -> None: ...
     def update_tool_args(self, call_id: str, args: dict[str, Any]) -> None: ...
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None: ...
+    def set_timer(self, delay: float, callback: Callable[[], None]) -> ApprovalTimer: ...
     def show_question_dialog(
         self,
         event: QuestionToUser,

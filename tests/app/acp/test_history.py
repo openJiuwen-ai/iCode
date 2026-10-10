@@ -27,6 +27,7 @@ from chrys.kernel import (
 )
 from chrys.service.session.message_metadata import TOOL_CALL_KIND_METADATA_KEY, TOOL_RESULT_METADATA_KEY
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.acp_wire import acp_outgoing_json
 
 
 class _FakeClient:
@@ -34,7 +35,9 @@ class _FakeClient:
         self.updates: list[acp_schema.SessionNotification] = []
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        self.updates.append(acp_schema.SessionNotification(sessionId=session_id, update=update, **kwargs))
+        notification = acp_schema.SessionNotification(sessionId=session_id, update=update, **kwargs)
+        acp_outgoing_json(notification)
+        self.updates.append(notification)
 
 
 def _history_id(message_index: int, content_index: int, occurrence_index: int) -> str:

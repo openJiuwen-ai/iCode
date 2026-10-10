@@ -60,6 +60,8 @@ class EventType:
     MODEL_CYCLE_FINISHED = "model.cycle.finished"
     MODEL_EXCHANGE_STARTED = "model.exchange.started"
     MODEL_EXCHANGE_FINISHED = "model.exchange.finished"
+    MODEL_REQUEST_PREPARED = "model.request.prepared"
+    MODEL_REQUEST_HEADERS_RECEIVED = "model.request.headers_received"
     MODEL_VALIDATION_FINISHED = "model.validation.finished"
 
     # Links, retries.
@@ -194,6 +196,7 @@ class ValidationReason:
     CONTENT_FILTERED = "content_filtered"
     WHITESPACE_ONLY = "whitespace_only"
     LEAKED_TOOL_CALL = "leaked_tool_call"
+    UNNAMED_TOOL_CALL = "unnamed_tool_call"
     RULE_VIOLATION = "rule_violation"
     UNKNOWN = "unknown"
 

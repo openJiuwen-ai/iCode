@@ -533,10 +533,10 @@ async def test_settled_scrollbar_narrows_the_content_but_not_the_breakpoint_tier
     path.parent.mkdir(parents=True)
     _write_p1_operations(path)
 
-    # The dashboard's border and padding take 4 columns, leaving exactly the
+    # The dashboard's border takes 2 columns, leaving exactly the
     # MID breakpoint; the Overview overflows 30 rows, so its vertical
     # scrollbar takes one more column from the content.
-    async with open_dashboard(path, size=(84, 30)) as (dashboard, pilot):
+    async with open_dashboard(path, size=(82, 30)) as (dashboard, pilot):
         view = dashboard.query_one(TrajectoryTextView)
         await wait_for(
             lambda: (
@@ -563,25 +563,26 @@ async def test_settled_rerender_keeps_the_dashboard_tier(tmp_path: Path) -> None
     path.parent.mkdir(parents=True)
     _write_p1_operations(path)
 
-    async with open_dashboard(path, size=(84, 30)) as (dashboard, pilot):
+    async with open_dashboard(path, size=(82, 30)) as (dashboard, pilot):
         view = dashboard.query_one(TrajectoryTextView)
         await click_when_settled(pilot, "#timeline")
         await wait_for(
             lambda: (
                 dashboard.active_tab is DashboardTab.TIMELINE
                 and not view.show_vertical_scrollbar
-                and view.scrollable_content_region.width == 80
+                and view.scrollable_content_region.width == 79
             ),
             timeout=5,
             pilot=pilot,
             description="timeline settled without a vertical scrollbar",
         )
 
-        # Render the Overview before the view can grow its scrollbar: the
-        # first build fills the scrollbar-free 80 cells and overflows, so
-        # only the settled re-render can bring every line within 79 cells.
+        # The Timeline's left padding leaves the view 79 of the dashboard's 80
+        # cells. Render the Overview before the view can grow its scrollbar:
+        # the first build fills the scrollbar-free 79 cells and overflows, so
+        # only the settled re-render can bring every line within 78 cells.
         dashboard.active_tab = DashboardTab.OVERVIEW
         dashboard._render_active_view()
 
-        assert max(cell_len(line.plain) for line in view._lines) <= 79
+        assert max(cell_len(line.plain) for line in view._lines) <= 78
         assert any("Time & usage" in line.plain and "Where time went" in line.plain for line in view._lines)

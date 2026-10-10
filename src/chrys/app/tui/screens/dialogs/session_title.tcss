@@ -20,6 +20,60 @@ SessionTitleDialog {
     padding: 1 2 0 2;
 }
 
+#session-title-identity {
+    width: 100%;
+    height: auto;
+    border-bottom: solid $tui-border-primary $border-opacity;
+    margin-bottom: 1;
+}
+
+#session-title-id-label {
+    width: auto;
+    color: $text-muted;
+    margin-right: 2;
+}
+
+#session-title-id {
+    width: auto;
+}
+
+#session-title-id-group {
+    width: 1fr;
+    margin-right: 3;
+}
+
+#session-title-links {
+    width: auto;
+}
+
+/* Stacking never changes a margin or the width of an id or link widget: the
+   row measures those, and a measurement that changed with stacking would move
+   its own breakpoint and flip the row on every resize. */
+#session-title-identity.-stacked {
+    layout: vertical;
+}
+
+/* Alone on its line the id needs no room for the gap: 1fr would give the gap's
+   cells up and clip the id on a narrow terminal. */
+#session-title-identity.-stacked > #session-title-id-group {
+    width: auto;
+}
+
+.session-title-link {
+    width: auto;
+    color: $primary;
+    text-style: bold;
+    pointer: pointer;
+}
+
+#session-title-open-folder {
+    margin-left: 3;
+}
+
+.session-title-link:hover {
+    background: $foreground 15%;
+}
+
 #session-title-hint {
     width: 100%;
     height: auto;

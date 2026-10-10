@@ -639,7 +639,7 @@ wheels = [
 
 [[package]]
 name = "icode-tui"
-version = "0.29.1"
+version = "0.29.2"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },

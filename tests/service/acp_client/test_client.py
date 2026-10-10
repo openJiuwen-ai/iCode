@@ -10,6 +10,7 @@ import dataclasses
 from pathlib import Path
 
 import pytest
+from acp.schema import ToolCallProgress, ToolCallStart
 
 from chrys.foundation.platform.process import ManagedStdioProcess
 from chrys.service.acp_client import (
@@ -24,6 +25,7 @@ from chrys.service.acp_client import (
 )
 from chrys.service.acp_client import _transport as transport_mod
 from chrys.service.acp_client import client as client_mod
+from tests.support.acp_stub_agent import WIDE_PATCH_FILES
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
 
 from .helpers import CallbackRecorder, connected_client, make_spec, residual_client_tasks
@@ -620,7 +622,11 @@ async def test_raw_meta_collision_and_unknown_extension_never_reach_callbacks(tm
         await extra.force_close()
 
     assert collision_callbacks.permission_calls == []
-    assert collision_callbacks.updates[0][1].update.content.text == "preflight:-32602"
+    assert [update.update.content.text for _seq, update in collision_callbacks.updates] == [
+        "preflight:_meta:-32602",
+        "preflight:_meta:-32602",
+        "preflight:field_meta:-32602",
+    ]
     assert unknown_callbacks.ext_calls == []
     assert unknown_callbacks.updates[0][1].update.content.text == "extension:-32601"
     assert extra_callbacks.ext_calls == []
@@ -844,13 +850,49 @@ async def test_oversized_stdout_frame_hits_the_full_reader_guard(tmp_path: Path)
 
 async def test_oversized_ext_notification_is_transport_fatal_before_sdk_forwarding(tmp_path: Path) -> None:
     # Only session/update rides the observer caps; an ext/unknown notification
-    # must die at the pump before the SDK re-parses it.
+    # past the item cap must die at the pump before the SDK re-parses it.
     client, _callbacks = await connected_client(tmp_path, scenario="oversized_notification")
     try:
         with pytest.raises(AcpTransportError, match="notification"):
             await client.prompt("flood")
     finally:
         await client.force_close()
+
+
+async def test_a_sub_agent_writing_a_large_file_keeps_its_connection(tmp_path: Path) -> None:
+    client, callbacks = await connected_client(tmp_path, scenario="large_payloads")
+    try:
+        outcome = await client.prompt("write a large file")
+    finally:
+        await client.force_close()
+
+    assert outcome.stop_reason == "end_turn"
+    content_length = 1024 * 1024 + 64
+    [(permission_call, _options)] = callbacks.permission_calls
+    assert len(permission_call.raw_input["content"]) == content_length
+    updates = [notification.update for _seq, notification in callbacks.updates]
+    assert [len(update.raw_input["content"]) for update in updates if isinstance(update, ToolCallStart)] == [
+        content_length
+    ]
+    assert [len(update.raw_output) for update in updates if isinstance(update, ToolCallProgress)] == [content_length]
+    assert updates[-1].content.text == "permission:allow"
+
+
+async def test_a_sub_agent_patching_hundreds_of_files_keeps_its_connection(tmp_path: Path) -> None:
+    client, callbacks = await connected_client(tmp_path, scenario="wide_patch")
+    try:
+        outcome = await client.prompt("rename across the repository")
+    finally:
+        await client.force_close()
+
+    assert outcome.stop_reason == "end_turn"
+    [(permission_call, _options)] = callbacks.permission_calls
+    assert len(permission_call.raw_input["changes"]) == WIDE_PATCH_FILES
+    assert len(permission_call.content) == WIDE_PATCH_FILES
+    updates = [notification.update for _seq, notification in callbacks.updates]
+    [start] = [update for update in updates if isinstance(update, ToolCallStart)]
+    assert len(start.content) == len(start.locations) == WIDE_PATCH_FILES
+    assert updates[-1].content.text == "permission:allow"
 
 
 async def test_crash_recovery_leaves_no_residual_tasks_or_pending_futures(tmp_path: Path) -> None:

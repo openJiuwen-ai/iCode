@@ -11,8 +11,10 @@ from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_text, widget_localizer
 from chrys.app.tui.screens.dialogs.approval.body import ApprovalBody, register_approval_kind_body
+from chrys.app.tui.util.source_text import mark_hidden_format
 from chrys.app.tui.widgets import EnhancedTextArea
 from chrys.foundation.i18n import msg
+from chrys.foundation.i18n.formatting import sanitize_terminal_block
 from chrys.foundation.tool_kinds import KIND_SUB_AGENT
 
 if TYPE_CHECKING:
@@ -35,9 +37,12 @@ class SubAgentPromptEditor(VerticalGroup):
 
     def __init__(self, prompt: str) -> None:
         super().__init__(classes="approval-sub-agent-prompt")
-        self._original_prompt = prompt
+        # The field shows the prompt with its control, bidi and zero-width
+        # characters marked, so none of them can hide or reorder what is
+        # approved; the prompt goes out as given unless the user edits it.
+        self._shown_prompt = mark_hidden_format(sanitize_terminal_block(prompt))
         self._prompt_input = EnhancedTextArea(
-            prompt,
+            self._shown_prompt,
             id="approval-sub-agent-prompt-input",
             soft_wrap=True,
             show_line_numbers=False,
@@ -54,7 +59,7 @@ class SubAgentPromptEditor(VerticalGroup):
 
     def modified_args(self) -> dict[str, Any] | None:
         prompt = self._prompt_input.text
-        if prompt == self._original_prompt:
+        if prompt == self._shown_prompt:
             return None
         return {"prompt": prompt}
 

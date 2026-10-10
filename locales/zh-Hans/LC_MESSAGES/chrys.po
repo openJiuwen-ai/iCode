@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.29.1\n"
+"Project-Id-Version: Chrys 0.29.2\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -871,6 +871,12 @@ msgstr "检查更新"
 #: src/chrys/foundation/config/settings.py
 msgid "settings.approval.default_mode.label"
 msgstr "默认审批模式"
+
+#. English: Human approval timeout (seconds)
+#. chrys-meta={"fingerprint":"441876029e5dbb9db98094b59a808e0675f515d4b4680e3f1d42a308dbe8218e","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.approval.timeout_seconds.label"
+msgstr "人工审批超时（秒）"
 
 #. English: Lowering {source}={raw} to the maximum of {limit}.
 #. chrys-meta={"fingerprint":"08856704e9743293e879aa58af94ee553170e14dd68beec58672b1ea4550f24a","multiline":false,"placeholders":["limit","raw","source"]}
@@ -9067,6 +9073,19 @@ msgstr "取消"
 msgid "tui.session_title.button.save"
 msgstr "保存"
 
+#. English: Copy ID
+#. chrys-meta={"fingerprint":"cc7378ea90127bdd93bf5cf76bdaed4e0260e1306fac9ad21199603cbff6d77e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.copy_id"
+msgstr "复制 ID"
+
+#. English: This session has no folder yet. It is created when the session is
+#. first saved.
+#. chrys-meta={"fingerprint":"156154a682795f54d7ab5f831c3d19466434ac728c1baece81f883a6118ead7d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.folder_missing"
+msgstr "此会话还没有文件夹，会在首次保存会话时创建。"
+
 #. English: A custom title for this session. Leave empty for the auto-generated
 #. title.
 #. chrys-meta={"fingerprint":"fcba8c71ea44b184796ce3f1705ec6527989d18a22cf941c1c4295c204ee001d","multiline":false,"placeholders":[]}
@@ -9074,11 +9093,35 @@ msgstr "保存"
 msgid "tui.session_title.hint"
 msgstr "自定义此会话的标题。留空则使用自动生成的标题。"
 
+#. English: Session ID copied
+#. chrys-meta={"fingerprint":"779da1bac1459613153f8bac9e35e0ded747ecdd0600a1bc7e26447806ac20b7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.id_copied"
+msgstr "会话 ID 已复制"
+
+#. English: Could not open the session folder: {error}
+#. chrys-meta={"fingerprint":"41afc715fbd33121409322b36ea1604947e59ba04deebcd581eb7a3bf55110a3","multiline":false,"placeholders":["error"]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.open_failed"
+msgstr "无法打开会话文件夹：{error}"
+
+#. English: Open folder
+#. chrys-meta={"fingerprint":"c1ed71e74a8fee72d035f7f727db12cc77290c91452ddd09e24eb6f9397e97bd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.open_folder"
+msgstr "打开文件夹"
+
 #. English: Session title
 #. chrys-meta={"fingerprint":"8c32d741002a8621d63a43e4ba8879266e4c2cddffe49e585fb85cc8ac4e6548","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/session_title.py
 msgid "tui.session_title.placeholder"
 msgstr "会话标题"
+
+#. English: Session
+#. chrys-meta={"fingerprint":"ff5347f05cc1e039d9010c2905058f253aa7ab5e0fb4e243daf5d0787404db29","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.session_label"
+msgstr "会话"
 
 #. English: Session Title
 #. chrys-meta={"fingerprint":"467171a6f43ef24c6969f49eb3b77dc59dcfd6f017a7c1baddf77494f7d0f722","multiline":false,"placeholders":[]}
@@ -9597,6 +9640,13 @@ msgstr "下次启动时的审批模式；/approval 会同时更改当前会话�
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.defer_while_judging"
 msgstr "自动模式下，自动审查批准的调用直接运行，不弹对话框；只有调用被标记或无法评估时才弹出。关闭后，每个调用在评估期间就会显示，可以先行决定。"
+
+#. English: Seconds to wait for human approval in TUI and ACP; timeout rejects
+#. the call. Default 0 means no timeout. Restart to apply.
+#. chrys-meta={"fingerprint":"2832be4bf24136d03294cd2ba97b7b7f272434f8a94d710fae5522b3fd91a49e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.approval.timeout_seconds"
+msgstr "TUI 和 ACP 等待人工审批的秒数，超时后拒绝本次调用。默认 0 表示不超时，重启后生效。"
 
 #. English: Remember what you type so you can bring it back later with Ctrl+R.
 #. chrys-meta={"fingerprint":"5f63c61f7c1984a99d21d4bdc5ca7f6576efe3b8d5f814995cb362565c606618","multiline":false,"placeholders":[]}

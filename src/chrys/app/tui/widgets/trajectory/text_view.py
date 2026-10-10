@@ -36,6 +36,13 @@ class TrajectoryTextView(ScrollView):
     TrajectoryTextView.-overview {
         overflow-x: hidden;
     }
+    /* Overview and Insights pad their content inside section boxes; the
+       Timeline has none, so the view keeps it off the dashboard border. The
+       right gap is left by the page itself (the dashboard's _right_gap), so a
+       vertical scrollbar stays flush against the border. */
+    TrajectoryTextView.-timeline {
+        padding-left: 1;
+    }
     """
 
     def __init__(
@@ -53,11 +60,12 @@ class TrajectoryTextView(ScrollView):
         self._width = 0
         self._strips: LRUCache[tuple[int, int, int], Strip] | DetachedLruCache = LRUCache(maxsize=500)
 
-    def set_lines(self, lines: list[Text], *, reset_scroll: bool = True) -> None:
+    def set_lines(self, lines: list[Text], *, reset_scroll: bool = True, min_width: int = 0) -> None:
+        """Show *lines*, scrolling over at least *min_width* columns."""
         old_x = self.scroll_offset.x
         old_y = self.scroll_offset.y
         self._lines = lines
-        self._width = max((cell_len(line.plain) for line in lines), default=0)
+        self._width = max(max((cell_len(line.plain) for line in lines), default=0), min_width)
         if not isinstance(self._strips, DetachedLruCache):
             self._strips.clear()
         self.virtual_size = Size(self._width, len(lines))

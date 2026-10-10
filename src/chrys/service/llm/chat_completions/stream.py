@@ -336,8 +336,12 @@ class StreamState:
         """Add call fragments to the calls they continue.
 
         A non-empty id names its call, as some gateways send several whole
-        calls under one index. A fragment without one continues the call its
-        index last named, or the only pending call when that is unambiguous.
+        calls under one index. A fragment under an id not seen yet still
+        continues the call its index holds when it names no function, or when
+        that call has neither a name nor arguments yet, as some gateways change
+        the id mid-call: the call keeps its first id and answers to both. A
+        fragment without an id continues the call its index last named, or the
+        only pending call when that is unambiguous.
         """
         if state.finished:
             logger.warning(
@@ -350,18 +354,19 @@ class StreamState:
             index = _fragment_index(fragment)
             call_id = _fragment_call_id(fragment)
             function = getattr(fragment, "function", None)
+            name = getattr(function, "name", None)
+            named = isinstance(name, str) and bool(name)
             if call_id is None:
                 pending = self._call_without_id(choice, state, index)
             else:
-                pending = self._call_with_id(choice, state, call_id, index)
+                pending = self._call_with_id(choice, state, call_id, index, named=named)
             if index is not None:
                 # The id wins over the index: Gemini-compatible endpoints
                 # reuse index 0 for distinct whole calls.
                 state.by_index[index] = pending
                 if pending.index is None:
                     pending.index = index
-            name = getattr(function, "name", None)
-            if isinstance(name, str) and name:
+            if named:
                 if pending.name is not None and pending.name != name:
                     raise ChatClientInvalidResponseException(
                         f"Conflicting streamed tool-call names for choice {choice}, index {index!r}."
@@ -375,13 +380,30 @@ class StreamState:
                 pending.arguments.append(arguments)
             pending.raws.append(fragment if function is None else function)
 
-    def _call_with_id(self, choice: int, state: _ChoiceState, call_id: str, index: int | None) -> _PendingCall:
+    def _call_with_id(
+        self, choice: int, state: _ChoiceState, call_id: str, index: int | None, *, named: bool
+    ) -> _PendingCall:
         if (known := state.by_id.get(call_id)) is not None:
             return known
         indexed = state.by_index.get(index) if index is not None else None
         if indexed is not None and indexed.call_id is None:
             # Some endpoints send the id only after a call's first fragment.
             pending = indexed
+        elif indexed is not None and not (named and (indexed.name or any(indexed.arguments))):
+            # Some endpoints mint a new id for each fragment of one call, and
+            # may send the name only after a first fragment that carries
+            # nothing else. The call keeps its first id; the new one only finds
+            # it again. A fragment that names a function under a new id starts
+            # a call when the call its index holds has a name or arguments: a
+            # whole call, even one sent without its name, which stays apart for
+            # response validation.
+            logger.debug(
+                "Streamed tool-call fragment for choice %d, index %r changed its call id; continuing the call",
+                choice,
+                index,
+            )
+            state.by_id[call_id] = indexed
+            return indexed
         elif index is None and len(state.calls) == 1 and state.calls[0].call_id is None:
             # The same, with neither fragment carrying an index.
             pending = state.calls[0]
@@ -459,23 +481,24 @@ def _complete_calls(choice: int, calls: list[_PendingCall], finish_reason: str |
     """The calls of one choice as contents, in index order.
 
     A call without an id keeps the kernel's id-less behavior. A call without a
-    name is an error, except in a choice cut off at the length limit: the
-    model never finished it, and the finish reason already says why.
+    name is handed over as sent, for response validation to retry the request;
+    in a choice cut off at the length limit it is dropped: the model never
+    finished it, and the finish reason already says why.
     """
     ordered = sorted(calls, key=lambda call: (call.order if call.index is None else call.index, call.order))
     if len(ordered) > 1:
         _assign_local_ids(choice, ordered)
     contents: list[Content] = []
     for call in ordered:
-        if not call.name:
-            if finish_reason != "length":
-                raise ChatClientInvalidResponseException(
-                    f"Streamed tool call ended without a function name for choice {choice}, index {call.index!r}."
-                )
+        if not call.name and finish_reason == "length":
             logger.warning(
                 "Discarding truncated streamed tool call without a name for choice %d, index %r", choice, call.index
             )
             continue
+        if not call.name:
+            logger.warning(
+                "Streamed tool call ended without a function name for choice %d, index %r", choice, call.index
+            )
         if not call.call_id:
             logger.debug(
                 "OpenAI-compatible stream emitted a tool call without an id for choice %d, index %r; "

@@ -374,6 +374,7 @@ async def test_short_malformed_fallback_response_gets_format_correction(tmp_path
             class _Response:
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
+                messages: ClassVar[tuple[Message, ...]] = ()
                 raw_text = invalid_short if self.calls == 1 else valid
 
             return _Response()
@@ -692,6 +693,7 @@ async def test_transport_and_format_failures_use_independent_fallback_retry_budg
             class _Response:
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
+                messages: ClassVar[tuple[Message, ...]] = ()
                 raw_text = invalid
 
             return _Response()
@@ -730,6 +732,7 @@ async def test_short_terminal_retry_does_not_replace_adequate_invalid_note(tmp_p
             class _Response:
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
+                messages: ClassVar[tuple[Message, ...]] = ()
                 raw_text = adequate_invalid if self.calls == 1 else short_valid
 
             return _Response()

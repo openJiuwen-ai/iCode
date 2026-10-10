@@ -12,6 +12,7 @@ from chrys.service.mutations.pipeline import (
     _read_file_snapshot,
     _read_shell_snapshots,
     finalize_mutation_tracking,
+    prepare_mutation_tracking,
 )
 from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
@@ -242,3 +243,52 @@ async def test_file_lock_serializes_concurrent_edits(tmp_path) -> None:
     # Key assertion: the incremental before_hash chain is correct
     # m1.after == m2.before (not m1.before == m2.before which is the bug)
     assert m1.after_hash == m2.before_hash, "Lock should serialize mutations so m2.before_hash reflects m1's result"
+
+
+def test_shell_and_calibration_mutations_keep_the_tool_operation(tmp_path) -> None:
+    from chrys.service.mutations.pipeline import _record_shell_observations, _ShellObservation
+
+    tracker = MutationTracker(SnapshotStore(tmp_path / "snapshots"))
+    tracker.start_turn(1)
+    paths = [tmp_path / "shell.txt", tmp_path / "calibrated.txt"]
+    for path in paths:
+        path.write_text("after\n", encoding="utf-8")
+    operation_id = "a" * 32
+    mutations = _record_shell_observations(
+        tracker,
+        [
+            _ShellObservation(str(paths[0]), MutationOp.CREATE, None),
+            _ShellObservation(str(paths[1]), MutationOp.CREATE, None, calibrated=True),
+        ],
+        "short-id",
+        operation_id,
+    )
+    assert len(mutations) == 2
+    assert {mutation.tool_operation_id for mutation in mutations} == {operation_id}
+    assert {mutation.tool_call_id for mutation in mutations} == {"short-id"}
+    assert all(mutation.to_dict()["tool_operation_id"] == operation_id for mutation in mutations)
+
+
+async def test_shell_detected_mutations_keep_the_tool_operation_from_prepare_to_finalize(tmp_path) -> None:
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    target = repo / "file.txt"
+    target.write_bytes(b"before")
+    tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
+    tracker.start_turn(1)
+    operation_id = "b" * 32
+    context = await prepare_mutation_tracking(
+        tracker,
+        "shell",
+        {"command": "chmod +x .", "working_dir": str(repo)},
+        "shell",
+        True,
+        str(repo),
+        tool_operation_id=operation_id,
+    )
+    target.write_bytes(b"changed")
+    await finalize_mutation_tracking(tracker, context, "shell")
+    turn = tracker.get_turn_mutations(1)
+    assert turn is not None
+    assert str(target) in {m.path for m in turn.mutations}
+    assert {m.tool_operation_id for m in turn.mutations} == {operation_id}

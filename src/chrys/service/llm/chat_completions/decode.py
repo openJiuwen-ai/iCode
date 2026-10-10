@@ -218,7 +218,10 @@ def decode_completion(
     finish: FinishReason | None = None
     usage = decode_usage(response.usage, variant=variant) if response.usage else None
     reasons = [finish_reason(choice.finish_reason, answered=has_answer(choice.message)) for choice in response.choices]
-    calls = [_function_calls(choice.message) for choice in response.choices]
+    calls = [
+        _function_calls(choice.message, cut_off=reason == "length")
+        for choice, reason in zip(response.choices, reasons, strict=True)
+    ]
     refused = "content_filter" in reasons or any(has_refusal(choice.message) for choice in response.choices)
     if refused and any(calls):
         raise refused_calls_error(usage_details=usage)
@@ -322,17 +325,28 @@ def choice_metadata(choice: Choice | ChunkChoice) -> dict[str, Any]:
     return {"logprobs": getattr(choice, "logprobs", None)}
 
 
-def _function_calls(message: ChatCompletionMessage | None) -> list[Content]:
-    """The message's function calls; custom tool calls are skipped."""
+def _function_calls(message: ChatCompletionMessage | None, *, cut_off: bool) -> list[Content]:
+    """The message's function calls; custom tool calls are skipped.
+
+    A call without a name is kept for response validation to retry the
+    request, unless the choice was *cut_off* at the length limit: as in a
+    stream, the model never finished it, and the finish reason says why.
+    """
     if not message or not message.tool_calls:
         return []
-    return [
-        Content.from_function_call(
-            call_id=call.id or "",
-            name=call.function.name or "",
-            arguments=call.function.arguments or "",
-            raw_representation=call.function,
+    contents: list[Content] = []
+    for call in message.tool_calls:
+        if isinstance(call, ChatCompletionMessageCustomToolCall) or not call.function:
+            continue
+        if not call.function.name and cut_off:
+            logger.warning("Discarding truncated tool call without a name")
+            continue
+        contents.append(
+            Content.from_function_call(
+                call_id=call.id or "",
+                name=call.function.name or "",
+                arguments=call.function.arguments or "",
+                raw_representation=call.function,
+            )
         )
-        for call in message.tool_calls
-        if not isinstance(call, ChatCompletionMessageCustomToolCall) and call.function
-    ]
+    return contents

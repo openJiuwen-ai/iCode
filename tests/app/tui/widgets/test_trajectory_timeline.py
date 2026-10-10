@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from rich.cells import cell_len
+from rich.text import Text
 from textual.widgets import Tab, Tabs
 
 from chrys.app.tui.widgets.trajectory import DashboardTab
@@ -19,8 +20,8 @@ from chrys.foundation.trajectory.event_types import EventType
 from chrys.service.analytics import TimelineDiagnosticCode, TrajectoryAnalyzer
 from tests.app.tui.widgets._trajectory_fixtures import _NS, _write_operations, open_dashboard, page_text, plain_look
 from tests.service.analytics._events import EventLog
-from tests.support.tui_helpers import click_when_settled
-from tests.support.waiting import wait_for
+from tests.support.tui_helpers import click_when_settled, resize_when_settled
+from tests.support.waiting import wait_for, wait_until_quiet
 
 
 async def test_timeline_renders_operations_hierarchy_identity_ruler_and_unresolved_bar(tmp_path: Path) -> None:
@@ -118,8 +119,9 @@ async def test_timeline_canvas_floor_keeps_columns_and_scrolls_below_71_cells(tm
         def canvas_width() -> int:
             # 71 cells is the narrowest layout whose columns all fit; below it
             # the timeline draws on a fixed 92-cell canvas and scrolls
-            # horizontally instead of squeezing the bars away.
-            content_width = view.scrollable_content_region.width
+            # horizontally instead of squeezing the bars away. The page lays
+            # out one cell short of the view: its right gap.
+            content_width = view.scrollable_content_region.width - 1
             return content_width if content_width >= 71 else max(content_width, 92)
 
         for width in (150, 90, 71, 70, 50):
@@ -147,6 +149,90 @@ async def test_timeline_canvas_floor_keeps_columns_and_scrolls_below_71_cells(tm
                     pilot=pilot,
                     description="timeline no horizontal overflow",
                 )
+
+
+async def test_timeline_keeps_a_one_cell_gap_each_side_and_its_scrollbar_against_the_border(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    _write_operations(path)
+
+    async with open_dashboard(path, size=(110, 30)) as (dashboard, pilot):
+        view = dashboard.query_one(TrajectoryTextView)
+
+        def page_width() -> int:
+            return max(cell_len(line.plain) for line in view._lines)
+
+        # The Overview overflows this height, so the Timeline opens beside a
+        # scrollbar its shorter page has to retire.
+        await wait_for(lambda: view.show_vertical_scrollbar, pilot=pilot, description="overview scrollbar")
+        await click_when_settled(pilot, "#timeline")
+        await wait_for(
+            lambda: view.has_class("-timeline") and not view.show_vertical_scrollbar,
+            pilot=pilot,
+            description="timeline without a scrollbar",
+        )
+        region = view.scrollable_content_region
+        assert region.x == view.region.x + 1
+        assert region.right == view.region.right
+        assert page_width() == region.width - 1
+
+        await resize_when_settled(pilot, 110, 14)
+        await wait_for(
+            lambda: view.show_vertical_scrollbar and page_width() == view.scrollable_content_region.width - 1,
+            pilot=pilot,
+            description="timeline beside its scrollbar",
+        )
+        # The scrollbar takes the view's last column, right against the border.
+        assert view.scrollable_content_region.right == view.region.right - 1
+        assert view.region.right == dashboard.region.right - 1
+
+
+async def test_a_timeline_line_that_just_fits_takes_the_gap_instead_of_scrolling_for_it(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    _write_operations(path)
+
+    async with open_dashboard(path, size=(110, 30)) as (dashboard, pilot):
+        view = dashboard.query_one(TrajectoryTextView)
+
+        def is_note(line: Text) -> bool:
+            return line.plain.startswith("Total time excludes")
+
+        def scrollbars() -> tuple[bool, bool]:
+            return view.show_horizontal_scrollbar, view.show_vertical_scrollbar
+
+        async def resize_to(width: int) -> None:
+            # Every other line is laid out one cell short of the view: its gap.
+            await resize_when_settled(pilot, width, 30)
+            await wait_for(
+                lambda: max(cell_len(line.plain) for line in view._lines if not is_note(line)) == width - chrome - 1,
+                pilot=pilot,
+                description="timeline laid out for the new width",
+            )
+            await wait_until_quiet(
+                lambda: (scrollbars(), view.scrollable_content_region, view.virtual_size),
+                pilot=pilot,
+                description="timeline scrollbars settled",
+            )
+
+        await click_when_settled(pilot, "#timeline")
+        await wait_for(
+            lambda: view.has_class("-timeline") and scrollbars() == (False, False),
+            pilot=pilot,
+            description="timeline without scrollbars",
+        )
+        chrome = 110 - view.scrollable_content_region.width
+        # The closing note keeps its own width whatever the page's.
+        note = next(cell_len(line.plain) for line in view._lines if is_note(line))
+
+        # Exactly as wide as the view, the note takes the gap's cell.
+        await resize_to(note + chrome)
+        assert scrollbars() == (False, False)
+        assert view.virtual_size.width == view.scrollable_content_region.width == note
+
+        # One cell wider than the view, it scrolls, and the gap follows it.
+        await resize_to(note + chrome - 1)
+        assert scrollbars() == (True, False)
+        assert view.virtual_size.width == note + 1
+        assert len(view._lines) == view.scrollable_content_region.height
 
 
 def test_timeline_model_run_bar_uses_accent_without_recoloring_model_category(tmp_path: Path) -> None:

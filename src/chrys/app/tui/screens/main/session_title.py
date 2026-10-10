@@ -14,6 +14,8 @@ from chrys.app.tui.terminal.title import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from textual.timer import Timer
 
     from chrys.app.tui.i18n import LocaleController
@@ -52,6 +54,7 @@ class SessionTitleController:
         current_session_id: Callable[[], str],
         push_screen: Callable[[object, Callable[[str | None], None]], object],
         start_custom_title_save: Callable[[str, str], object],
+        session_dir: Callable[[str], Path | None],
         locale_controller: LocaleController | None = None,
     ) -> None:
         self._run = run
@@ -62,6 +65,7 @@ class SessionTitleController:
         self._current_session_id = current_session_id
         self._push_screen = push_screen
         self._start_custom_title_save = start_custom_title_save
+        self._session_dir = session_dir
         self._locale_controller = locale_controller
         self._custom = ""
         self._generated = ""
@@ -121,6 +125,8 @@ class SessionTitleController:
         from chrys.app.tui.screens.dialogs.session_title import SessionTitleDialog
 
         dialog = SessionTitleDialog(
+            session_id=session_id,
+            session_folder=self._session_dir(session_id),
             custom_title=self._custom,
             auto_title=self._generated or self._fallback,
             locale_controller=self._locale_controller,

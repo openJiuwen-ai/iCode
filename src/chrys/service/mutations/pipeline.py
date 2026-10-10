@@ -57,6 +57,7 @@ _MAX_SHELL_CHILD_SNAPSHOT_BYTES = 64 * 1024 * 1024
 class MutationContext:
     """Pre-execution mutation tracking state captured by ``prepare_mutation_tracking``."""
 
+    tool_operation_id: str | None = None
     file_mutation: FileMutation | None = None
     # True for calls whose writes only implicit detection can observe
     # (shell / implicit write tools).  Every artifact below is optional —
@@ -125,6 +126,7 @@ def _track_file_mutation_before(
     args: dict,
     call_id: str,
     workspace_cwd: str | None = None,
+    tool_operation_id: str | None = None,
 ) -> FileMutation | None:
     """Snapshot file state before write_file/edit_file execution."""
     import os
@@ -141,7 +143,7 @@ def _track_file_mutation_before(
     else:
         op = MutationOp.MODIFY
         source = MutationSource.EDIT_FILE
-    return tracker.record(resolved, op, source, call_id)
+    return tracker.record(resolved, op, source, call_id, tool_operation_id=tool_operation_id)
 
 
 def _track_shell_scan_before(tracker: MutationTracker, args: dict, workspace_cwd: str | None = None) -> dict | None:
@@ -301,6 +303,7 @@ def _record_shell_observations(
     tracker: MutationTracker,
     observations: list[_ShellObservation],
     call_id: str,
+    tool_operation_id: str | None = None,
 ) -> list[FileMutation]:
     """Merge one command's observations and record every resulting endpoint."""
     from chrys.service.mutations.types import MutationSource
@@ -319,6 +322,7 @@ def _record_shell_observations(
                 observation.operation,
                 observation.before_data,
                 call_id,
+                tool_operation_id=tool_operation_id,
                 before_skip=observation.before_skip,
                 before_size=observation.before_size,
                 before_symlink=observation.before_symlink,
@@ -330,6 +334,7 @@ def _record_shell_observations(
                 observation.operation,
                 MutationSource.SHELL,
                 call_id,
+                tool_operation_id=tool_operation_id,
             )
         if mutation is not None:
             mutations.append(mutation)
@@ -452,12 +457,13 @@ async def prepare_mutation_tracking(
     is_shell: bool,
     workspace_cwd: str | None = None,
     coordinator: MutationCoordinator | None = None,
+    tool_operation_id: str | None = None,
 ) -> MutationContext:
     """Capture pre-execution mutation state.
 
     Call this before publishing the start event and executing the tool.
     """
-    ctx = MutationContext(workspace_cwd=workspace_cwd)
+    ctx = MutationContext(workspace_cwd=workspace_cwd, tool_operation_id=tool_operation_id)
     if tracker is None:
         return ctx
 
@@ -525,7 +531,7 @@ async def prepare_mutation_tracking(
         # File mutation snapshot (write_file / edit_file)
         if tool_name in _FILE_TOOLS:
             ctx.file_mutation = await loop.run_in_executor(
-                None, _track_file_mutation_before, tracker, tool_name, args, call_id, workspace_cwd
+                None, _track_file_mutation_before, tracker, tool_name, args, call_id, workspace_cwd, tool_operation_id
             )
             if ctx.file_mutation is not None:
                 # Tight write-interval lower bound: record() runs pre-write.
@@ -607,7 +613,9 @@ async def finalize_mutation_tracking(
         if ctx.git_calibrator.detection_truncated:
             tracker.mark_detection_truncated()
 
-    shell_mutations = await loop.run_in_executor(None, _record_shell_observations, tracker, observations, call_id)
+    shell_mutations = await loop.run_in_executor(
+        None, _record_shell_observations, tracker, observations, call_id, ctx.tool_operation_id
+    )
     if shell_mutations:
         logger.debug("Mutation detection: %d file changes from shell command", len(shell_mutations))
 

@@ -29,6 +29,8 @@ SETTINGS_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "settings.app.dev_mode.label",
         "settings.app.update_check.label",
         "settings.approval.default_mode.label",
+        "settings.approval.timeout_seconds.label",
+        "tui.settings.hint.approval.timeout_seconds",
         "settings.context.warn_threshold_pct.label",
         "settings.history.prompt.enabled.label",
         "settings.llm.retry.max_transient.label",

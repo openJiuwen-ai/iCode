@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -30,17 +31,27 @@ from chrys.service.agent_middleware.events import sub_agent_events as sub_agent_
 from chrys.service.agent_middleware.events import tool_events as tool_events_module
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.schema import HookDecision
+from chrys.service.mutations.store import SnapshotStore
+from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.tools.result_metadata import tool_error
 from tests.service.agent_middleware._event_fakes import RewriteArgsHookManager, _ctx
 from tests.service.trajectory._fakes import CancelAckSink, FakeSink, make_context
 
 
-def _execution_stamp_middleware(kind: str, *, tool_result_ceiling_tokens: int | None = None):
+def _execution_stamp_middleware(
+    kind: str,
+    *,
+    tool_result_ceiling_tokens: int | None = None,
+    mutation_tracker: MutationTracker | None = None,
+    workspace_cwd: str = "",
+):
     if kind == "main":
         return ToolEventMiddleware(
             EventBus(),
             session_id="stamp-test",
             tool_result_ceiling_tokens=tool_result_ceiling_tokens,
+            mutation_tracker=mutation_tracker,
+            workspace_cwd=workspace_cwd,
             origin=InvocationOrigin("turn", "stamp-test", "turn-test", None),
         )
     return SubAgentEventMiddleware(
@@ -48,6 +59,8 @@ def _execution_stamp_middleware(kind: str, *, tool_result_ceiling_tokens: int | 
         agent_name="Explore",
         invocation_id="inv-stamp",
         tool_result_ceiling_tokens=tool_result_ceiling_tokens,
+        mutation_tracker=mutation_tracker,
+        workspace_cwd=workspace_cwd,
         origin=InvocationOrigin("sub_agent", "", "inv-stamp", None),
     )
 
@@ -168,6 +181,32 @@ async def test_event_middlewares_close_an_operation_abandoned_before_its_start_m
     assert preparation.monotonic_ns <= preparation_finished.monotonic_ns <= tool_started.monotonic_ns
     assert tool_started.monotonic_ns <= finished.monotonic_ns
     sink.assert_operations_settled()
+
+
+@pytest.mark.parametrize("kind", ["main", "sub_agent"])
+async def test_event_middlewares_record_file_mutations_under_the_tool_operation(kind: str, tmp_path: Path) -> None:
+    """Sub-agents and workflow nodes share the sub-agent middleware, so both must forward the id."""
+    tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
+    tracker.start_turn(1)
+    middleware = _execution_stamp_middleware(kind, mutation_tracker=tracker, workspace_cwd=str(tmp_path))
+    operation_id = new_analytics_id()
+    target = tmp_path / "edited.txt"
+    context = _ctx(
+        "write_file",
+        args={"path": str(target), "content": "new\n"},
+        metadata={OPERATION_ID_KEY: operation_id},
+    )
+
+    async def _next() -> None:
+        await asyncio.to_thread(target.write_text, "new\n", encoding="utf-8")
+        context.result = "ok"
+
+    await middleware.process(context, _next)
+
+    turn = tracker.current_turn
+    assert turn is not None
+    assert [mutation.tool_operation_id for mutation in turn.mutations] == [operation_id]
+    assert turn.mutations[0].tool_call_id != operation_id
 
 
 @pytest.mark.parametrize("kind", ["main", "sub_agent"])

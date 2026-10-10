@@ -12,6 +12,7 @@ from rich.text import Text
 from textual.css.query import NoMatches
 from textual.widgets import Static
 
+from chrys.app.tui.util.source_text import BIDI_AND_ZERO_WIDTH_CODEPOINTS
 from chrys.app.tui.widgets.chat.tool_call import ToolCall
 from chrys.foundation.i18n.formatting import sanitize_legacy_block, sanitize_legacy_scalar
 from chrys.foundation.net.url import normalize_url
@@ -23,10 +24,7 @@ from chrys.foundation.tool_result_metadata import (
 
 # A search result's title is the label of its link: bidi controls could show it
 # reversed or run it into the URL below, and zero-width characters hide text.
-# ZWJ and ZWNJ stay, since scripts and emoji need them.
-_BIDI_AND_ZERO_WIDTH = dict.fromkeys(
-    [*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x200E, 0x200F, 0x061C, 0x200B, 0x2060, 0xFEFF]
-)
+_BIDI_AND_ZERO_WIDTH = dict.fromkeys(BIDI_AND_ZERO_WIDTH_CODEPOINTS)
 
 
 class WebToolCall(ToolCall):

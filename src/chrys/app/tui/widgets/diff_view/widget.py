@@ -14,7 +14,7 @@ from textual.reactive import reactive, var
 
 from chrys.app.tui.widgets.diff_view.cells import ANNOTATION_WIDTH, annotation_cell, number_cell, number_cell_width
 from chrys.app.tui.widgets.diff_view.code import CodeColumn
-from chrys.app.tui.widgets.diff_view.compute import compute_highlighted_lines, compute_hunks
+from chrys.app.tui.widgets.diff_view.compute import compute_highlighted_lines, compute_hunks, shown_code
 from chrys.app.tui.widgets.diff_view.gutter import GutterColumn
 from chrys.app.tui.widgets.diff_view.rows import (
     DiffRow,
@@ -93,14 +93,15 @@ class DiffView(containers.VerticalGroup):
         super().__init__(name=name, id=id, classes=classes)
         self.path_before = path_before
         self.path_after = path_after
-        self.code_before = code_before.expandtabs()
-        self.code_after = code_after.expandtabs()
+        self.code_before = code_before
+        self.code_after = code_after
         self.max_display_lines: int | None = None
         """Show at most this many rows, and scroll within them."""
         self.auto_height = False
         """Be as tall as the diff. ``max_display_lines`` takes precedence."""
         self.show_scrollbars = True
         """Without scrollbars, a unified diff is drawn by a single `UnifiedDiffLines`."""
+        self._shown_code: tuple[str, str] | None = None
         self._hunks: list[Hunk] | None = None
         self._highlighted_lines: tuple[list[Content], list[Content]] | None = None
         self._layouts: dict[bool, _Layout] = {}
@@ -110,6 +111,13 @@ class DiffView(containers.VerticalGroup):
     async def prepare(self) -> None:
         """Work the diff out off the event loop, for the layout that ``split`` selects."""
         await asyncio.to_thread(self._layout, self.split)
+
+    @property
+    def shown_code(self) -> tuple[str, str]:
+        """The old and the new text as the diff shows them."""
+        if self._shown_code is None:
+            self._shown_code = (shown_code(self.code_before), shown_code(self.code_after))
+        return self._shown_code
 
     @property
     def hunks(self) -> list[Hunk]:
@@ -127,7 +135,7 @@ class DiffView(containers.VerticalGroup):
         """Every line of the old and of the new text."""
         if self._highlighted_lines is None:
             self._highlighted_lines = compute_highlighted_lines(
-                self.code_before, self.code_after, self.path_before, self.path_after, self.hunks
+                *self.shown_code, self.path_before, self.path_after, self.hunks
             )
         return self._highlighted_lines
 

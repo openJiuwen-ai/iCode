@@ -557,7 +557,7 @@ def _approval_request(request_id: str, *, judging: bool) -> ApprovalRequest:
     )
 
 
-def test_manual_approval_notifies_when_dialog_is_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_manual_approval_notifies_when_dialog_is_shown(monkeypatch: pytest.MonkeyPatch) -> None:
     handler, app = _make_approval_handler(monkeypatch)
     handler._approval_queue.append(_approval_request("r1", judging=False))
 
@@ -597,7 +597,7 @@ async def test_auto_approval_notifies_when_live_judge_flags(monkeypatch: pytest.
     assert app.notification_service.events == [NotificationEvent.APPROVAL_REQUIRED]
 
 
-def test_auto_approval_cached_flagged_verdict_notifies_when_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_auto_approval_cached_flagged_verdict_notifies_when_shown(monkeypatch: pytest.MonkeyPatch) -> None:
     handler, app = _make_approval_handler(monkeypatch)
     handler._approval_queue.append(_approval_request("r1", judging=True))
     handler._pending_verdicts["r1"] = ApprovalReviewed(request_id="r1", approved=False, reason="risky")

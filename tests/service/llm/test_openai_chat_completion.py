@@ -187,7 +187,8 @@ async def test_stream_sniff_rejects_blank_body_and_releases_the_connection() -> 
 
 
 async def test_stream_sniff_rejects_json_first_chunk_with_full_body() -> None:
-    raw, stream = _streaming_raw_response([b"{", b'"error":"gateway broke"}'])
+    # No error envelope (``test_chat_completions_error_envelopes.py``): just a JSON document.
+    raw, stream = _streaming_raw_response([b"{", b'"status":"gateway broke"}'])
 
     with pytest.raises(ChatClientException) as exc_info:
         await validate_stream_response(raw)
@@ -196,7 +197,7 @@ async def test_stream_sniff_rejects_json_first_chunk_with_full_body() -> None:
     # is a repr-escaped tuple; the user-facing text is the cause's own message.
     detail = str(exc_info.value.__cause__)
     assert "starts with '{'; expected an SSE event stream" in detail
-    assert 'Response body: \'{"error":"gateway broke"}\'' in detail
+    assert 'Response body: \'{"status":"gateway broke"}\'' in detail
     assert stream.closed
 
 
@@ -231,15 +232,15 @@ async def test_stream_sniff_keeps_verdict_when_capture_read_fails() -> None:
 
 
 async def test_stream_sniff_classifies_decoded_bytes_under_content_encoding() -> None:
-    error = gzip.compress(b'{"error":{"message":"gateway broke"}}')
-    raw, stream = _streaming_raw_response([error], content_type="application/json", content_encoding="gzip")
+    document = gzip.compress(b'{"detail":{"message":"gateway broke"}}')
+    raw, stream = _streaming_raw_response([document], content_type="application/json", content_encoding="gzip")
 
     with pytest.raises(ChatClientException) as exc_info:
         await validate_stream_response(raw)
 
     detail = str(exc_info.value.__cause__)
     assert "starts with '{'; expected an SSE event stream" in detail
-    assert 'Response body: \'{"error":{"message":"gateway broke"}}\'' in detail
+    assert 'Response body: \'{"detail":{"message":"gateway broke"}}\'' in detail
     assert stream.closed
 
     sse = b"data: [DONE]\n\n"

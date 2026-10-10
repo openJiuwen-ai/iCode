@@ -12,6 +12,14 @@ def find_unpaired_surrogate(text: str) -> int:
     (JSON encoders emit and decoders re-join it); anything else in the
     surrogate range is unpaired.
     """
+    # Text with no surrogate at all, nearly all text, encodes; the encoder
+    # checks it far faster than the scan below.
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    else:
+        return -1
     index = 0
     length = len(text)
     while index < length:

@@ -19,6 +19,7 @@ from typing import Any, TypeGuard, TypeVar, cast
 
 from acp import schema as acp_schema
 
+from chrys.app.acp.json_values import JsonValue, to_json_object
 from chrys.app.features.session_title.updater import SessionTitleUpdater
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.context import EvalContext
@@ -220,7 +221,7 @@ class AcpSessionManager:
             for profile in self._agent_registry.list_profiles(include_sub_agent_only=True)
         ]
 
-    def read_agent_profile(self, name: str) -> dict[str, object]:
+    def read_agent_profile(self, name: str) -> dict[str, JsonValue]:
         """Return one agent profile as JSON-like data with launch secrets masked."""
         self.load_registries()
         profile = self._agent_registry.resolve_selector(name)
@@ -237,7 +238,9 @@ class AcpSessionManager:
             data["tools"].pop(key, None)
             if key in serialized_tools:
                 data["tools"][key] = serialized_tools[key]
-        return _redact_agent_profile_secrets(data)
+        # Free-form YAML (``metadata``, web provider ``request``/``auth``) keeps
+        # the dates and sets the parser made; the reply must be plain JSON.
+        return to_json_object(_redact_agent_profile_secrets(data))
 
     @staticmethod
     def _stored_agent_profile_name(name: str) -> str | None:

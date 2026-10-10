@@ -878,7 +878,10 @@ async def test_provider_status_retry_ignores_deterministic_error_from_outer_cont
 
 # ───────────────────────── profile httpx client ──────────────────────
 
-_ROUTE_HOOKS = {"request": ["build_route_hooks.<locals>.stamp"], "response": ["build_route_hooks.<locals>.record"]}
+_ROUTE_HOOKS = {
+    "request": ["build_route_hooks.<locals>.stamp", "build_request_tracking_hooks.<locals>.prepared"],
+    "response": ["build_route_hooks.<locals>.record", "build_request_tracking_hooks.<locals>.received"],
+}
 
 
 def _pop_hook_names(kwargs: dict[str, Any]) -> dict[str, list[str]]:

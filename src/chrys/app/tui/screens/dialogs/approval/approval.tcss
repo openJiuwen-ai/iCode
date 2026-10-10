@@ -18,12 +18,6 @@ ApprovalDialog {
     width: 120;
 }
 
-#approval-inner {
-    scrollbar-color: $warning;
-    scrollbar-color-hover: $warning;
-    scrollbar-color-active: $warning;
-}
-
 #approval-footer {
     dock: bottom;
     width: 100%;
@@ -76,6 +70,26 @@ ApprovalDialog {
     color: $text;
     padding: 0 1;
     margin-bottom: 1;
+}
+
+/* A value too long to lay out at once scrolls inside its box, its scrollbar
+   against the right border. The stable gutter keeps the scrollbar from
+   changing the width its rows are cut to. */
+.approval-long-value {
+    max-height: 20;
+    padding: 0 0 0 1;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    scrollbar-size-vertical: 1;
+}
+
+.approval-long-value:focus {
+    border: round $tui-border-warning;
+}
+
+.approval-detail-box {
+    margin: 1 1 0 1;
 }
 
 .approval-diff-preview {

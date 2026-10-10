@@ -65,6 +65,8 @@ _IN_BAND_CODE_KINDS: Mapping[str, ErrorKind] = {
     "insufficient_system_resource": ErrorKind.OVERLOADED,
     # Codes a failed Responses API response reports.
     "invalid_prompt": ErrorKind.REQUEST_REJECTED,
+    # A gateway's error body under HTTP 200 may name a bad key by its code alone.
+    "invalid_api_key": ErrorKind.AUTH_FAILED,
     "cyber_policy": ErrorKind.CONTENT_FILTERED,
     "misalignment_policy_violation": ErrorKind.CONTENT_FILTERED,
     "image_content_policy_violation": ErrorKind.CONTENT_FILTERED,
@@ -364,9 +366,11 @@ def signal_kind(signal: ProviderSignal) -> tuple[ErrorKind, str]:
     evidence = f"{type(source).__name__} http {signal.status_code}"
     if _is_quota(signal):
         return ErrorKind.QUOTA_EXHAUSTED, f"{evidence} {signal.code or signal.error_type or ''}".rstrip()
-    # An error a stream reports in-band, with no status of its own, is how
-    # that response failed: the codes only a response reports name it too.
-    codes = _IN_BAND_CODE_KINDS if signal.status_code is None else _PROVIDER_CODE_KINDS
+    # An error a response reports in-band, with no status of its own or under
+    # its 2xx status, is how that response failed: the codes only a response
+    # reports name it too.
+    in_band = signal.status_code is None or is_2xx(signal.status_code)
+    codes = _IN_BAND_CODE_KINDS if in_band else _PROVIDER_CODE_KINDS
     if signal.code is not None and (kind := codes.get(signal.code)) is not None:
         return kind, f"{evidence} {signal.code}"
     # An error status outranks the error type, which can be broad
@@ -436,9 +440,15 @@ def names_server_error_overflow(signal: ProviderSignal) -> bool:
     return _names_overflow((signal.message or "", _clean_exception_text(signal.source)))
 
 
-def stream_error_retryable(signal: ProviderSignal) -> bool:
-    """Retry decision for an error a stream reported after its 2xx response."""
-    return signal.error_type not in _NON_RETRYABLE_STREAM_ERROR_TYPES
+def stream_error_retryable(signal: ProviderSignal, kind: ErrorKind) -> bool:
+    """Retry decision for an error a response reported under its 2xx status.
+
+    *kind* is what its code or type names. The error failed that response, so
+    a kind a retry meets again is final, as for any failure a response
+    reports (:func:`in_band_failure_retryable`); so is a type Anthropic
+    reports for one.
+    """
+    return kind not in _FINAL_IN_BAND_KINDS and signal.error_type not in _NON_RETRYABLE_STREAM_ERROR_TYPES
 
 
 def is_2xx(status: int | None) -> bool:

@@ -73,7 +73,10 @@ def build_raw_http_event_hooks(
     """Build async httpx event hooks that append raw request/response JSONL."""
 
     async def _request_hook(request: httpx.Request) -> None:
-        exchange_id = uuid4().hex
+        from chrys.service.llm.request_tracking import REQUEST_ATTEMPT_ID_EXTENSION
+
+        attempt_id = request.extensions.get(REQUEST_ATTEMPT_ID_EXTENSION)
+        exchange_id = attempt_id if isinstance(attempt_id, str) else uuid4().hex
         request_session_id = _request_session_id(request, fallback=session_id)
         request.extensions[_EXCHANGE_ID_EXTENSION] = exchange_id
         request.extensions[_SESSION_ID_EXTENSION] = request_session_id

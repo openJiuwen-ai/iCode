@@ -8,7 +8,7 @@ from typing import Any, NoReturn
 
 import httpx
 import pytest
-from openai import APIError
+from openai import APIError, APIStatusError
 
 from chrys.foundation.errors import (
     ContinuationVerdictError,
@@ -207,6 +207,46 @@ def test_an_error_a_stream_reports_in_band_with_only_a_broad_type_keeps_its_retr
     typed = classify_error(APIError("It broke.", request, body={"type": "invalid_request_error", "message": "x"}))
 
     assert (typed.kind, typed.retryable) == (ErrorKind.REQUEST_REJECTED, True)
+
+
+@pytest.mark.parametrize(
+    ("code", "kind", "retryable"),
+    [
+        ("network_error", ErrorKind.STREAM_TRUNCATED, True),
+        ("insufficient_system_resource", ErrorKind.OVERLOADED, True),
+        ("server_error", ErrorKind.SERVER_ERROR, True),
+        ("invalid_prompt", ErrorKind.REQUEST_REJECTED, False),
+        ("authentication_error", ErrorKind.AUTH_FAILED, False),
+        ("content_filter", ErrorKind.CONTENT_FILTERED, False),
+        ("insufficient_quota", ErrorKind.QUOTA_EXHAUSTED, False),
+    ],
+)
+def test_an_error_a_response_reports_under_its_2xx_status_is_named_and_retried_by_its_code(
+    code: str, kind: ErrorKind, retryable: bool
+) -> None:
+    # An error body a gateway answers with under HTTP 200, or a stream's error
+    # event an SDK raises with the 200 it streamed under, reports how that
+    # response failed: read as an error a stream reports in-band.
+    request = httpx.Request("POST", "https://api.example.test/v1/chat/completions")
+    response = httpx.Response(200, request=request)
+    carrying = classify_error(APIStatusError("It broke.", response=response, body={"code": code, "message": "x"}))
+    plain = classify_error(APIStatusError("It broke.", response=response, body={"code": "vendor_specific"}))
+
+    assert carrying.kind is kind
+    assert carrying.retryable is retryable
+    assert (plain.kind, plain.retryable) == (ErrorKind.UNKNOWN, True)
+
+
+def test_an_error_a_response_reports_under_its_2xx_status_is_final_by_a_type_a_retry_meets_again() -> None:
+    # Unlike an in-band error without a status, a type alone decides here
+    # (Anthropic names each stream error precisely).
+    request = httpx.Request("POST", "https://api.example.test/v1/messages")
+    response = httpx.Response(200, request=request)
+    typed = classify_error(APIStatusError("x", response=response, body={"type": "invalid_request_error"}))
+    overloaded = classify_error(APIStatusError("x", response=response, body={"type": "overloaded_error"}))
+
+    assert (typed.kind, typed.retryable) == (ErrorKind.REQUEST_REJECTED, False)
+    assert (overloaded.kind, overloaded.retryable) == (ErrorKind.OVERLOADED, True)
 
 
 def test_owner_terminal_veto_outranks_a_retryable_provider_response_error() -> None:

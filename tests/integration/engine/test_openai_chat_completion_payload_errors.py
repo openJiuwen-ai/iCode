@@ -41,6 +41,10 @@ class _PayloadCase:
 
 
 _KEEPALIVE_ONLY_SSE = b": keepalive\n\n"
+# A gateway's error body under HTTP 200 that a retry would meet again.
+_BAD_KEY_ENVELOPE = (
+    b'{"error":{"code":"invalid_api_key","type":"invalid_request_error","message":"Incorrect API key."}}'
+)
 
 
 @dataclass(frozen=True)
@@ -148,12 +152,18 @@ _CASES = (
     _PayloadCase(
         name="wrong_shape_json",
         content_type="application/json",
-        body=b'{"error":{"message":"gateway broke"}}',
+        body=b'{"detail":"gateway broke"}',
         expected_error=(
             "Chat Completions API returned an invalid response "
             "(HTTP 200, Content-Type 'application/json'): JSON payload is missing the required 'choices' array. "
-            'Response body: \'{"error":{"message":"gateway broke"}}\''
+            'Response body: \'{"detail":"gateway broke"}\''
         ),
+    ),
+    _PayloadCase(
+        name="error_envelope",
+        content_type="application/json",
+        body=_BAD_KEY_ENVELOPE,
+        expected_error="Error code: 200 - Incorrect API key.",
     ),
     _PayloadCase(
         name="streaming_empty",
@@ -224,13 +234,20 @@ _CASES = (
     _PayloadCase(
         name="streaming_json_error_labeled_sse",
         content_type="text/event-stream",
-        body=b'{"error":{"message":"gateway broke"}}',
+        body=b'{"detail":"gateway broke"}',
         expected_error=(
             "Chat Completions API returned an invalid response "
             "(HTTP 200, Content-Type 'text/event-stream'): streaming response body starts with '{'; "
             "expected an SSE event stream. "
-            'Response body: \'{"error":{"message":"gateway broke"}}\''
+            'Response body: \'{"detail":"gateway broke"}\''
         ),
+        stream=True,
+    ),
+    _PayloadCase(
+        name="streaming_error_envelope",
+        content_type="application/json",
+        body=_BAD_KEY_ENVELOPE,
+        expected_error="Error code: 200 - Incorrect API key.",
         stream=True,
     ),
     _PayloadCase(
@@ -270,12 +287,12 @@ _CASES = (
         name="streaming_gzip_json_error",
         content_type="application/json",
         content_encoding="gzip",
-        body=gzip.compress(b'{"error":{"message":"gateway broke"}}'),
+        body=gzip.compress(b'{"detail":"gateway broke"}'),
         expected_error=(
             "Chat Completions API returned an invalid response "
             "(HTTP 200, Content-Type 'application/json'): streaming response body starts with '{'; "
             "expected an SSE event stream. "
-            'Response body: \'{"error":{"message":"gateway broke"}}\''
+            'Response body: \'{"detail":"gateway broke"}\''
         ),
         stream=True,
     ),

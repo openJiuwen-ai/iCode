@@ -22,6 +22,9 @@ the agent loop to terminate with a nonsense final response:
 5. **Filtered without an answer** — the provider's content filter ended the
    response before its answer. The same request meets the same filter, so
    this is terminal, never retried.
+6. **Tool call without a function name** — the provider sent a call that
+   names no function, which no tool can run. A fresh sample usually names
+   one; when every attempt sends such a call, the response fails.
 
 Validation runs on the **final message** of a :class:`ChatResponse` —
 the message that would become the agent's final reply for the turn.
@@ -122,6 +125,10 @@ HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON = (
 
 CONTENT_FILTERED_REASON = "The model service's content filter stopped the response before it generated an answer."
 
+# Fixed text: retries compare reasons, and a call's id or index differs on
+# every attempt.
+UNNAMED_TOOL_CALL_REASON = "Response contained a tool call without a function name."
+
 _EVIDENCE_ONLY_HOSTED_FAMILIES = {
     HostedToolFamily.SEARCH,
     HostedToolFamily.FETCH,
@@ -207,6 +214,8 @@ class DefaultResponseValidator:
       (a pure tool-calling turn can legitimately have no text).
     - **Leaked tool-call markers** always runs on text contents — a message
       with tool calls whose text ALSO has a leaked marker is still invalid.
+    - **Tool call without a function name** fails the response before the
+      rules that read its other contents.
     - ``extra_rules`` are applied in order after the built-ins.  Configuring
       an empty list + setting ``disable_*`` flags to ``True`` yields a no-op
       validator that always returns ``valid`` — useful for tests.
@@ -216,6 +225,7 @@ class DefaultResponseValidator:
     disable_empty_contents: bool = False
     disable_whitespace_text: bool = False
     disable_leaked_tool_call: bool = False
+    disable_unnamed_tool_call: bool = False
 
     def validate(self, response: ChatResponse) -> ValidationResult:
         msg = _final_assistant_message(response)
@@ -257,6 +267,7 @@ class DefaultResponseValidator:
         text_items: list[str] = []
         has_usable_output = False
         has_local_function_call = False
+        has_unnamed_function_call = False
         has_reasoning_content = False
         last_visible_text_index = -1
         last_answer_bearing_output_index = -1
@@ -269,6 +280,7 @@ class DefaultResponseValidator:
             elif content.type == "function_call" and not content.provider_hosted and not content.informational_only:
                 has_usable_output = True
                 has_local_function_call = True
+                has_unnamed_function_call = has_unnamed_function_call or not content.name
                 last_answer_bearing_output_index = index
             elif content.type == "function_call" and content.informational_only and not content.provider_hosted:
                 # Responses custom_tool_call items are preserved as
@@ -295,6 +307,16 @@ class DefaultResponseValidator:
                 has_reasoning_content = has_reasoning_content or bool(
                     (content.text or "").strip() or content.protected_data
                 )
+
+        # The tool loop could answer such a call only as an unknown tool, and
+        # nothing else in the response may stand without it. A fresh sample
+        # usually names its function; when none does there is nothing to keep.
+        if not self.disable_unnamed_tool_call and has_unnamed_function_call:
+            if content_filtered:
+                return _content_filtered()
+            return ValidationResult.invalid(
+                UNNAMED_TOOL_CALL_REASON, code=ValidationReason.UNNAMED_TOOL_CALL, terminal_on_giveup=True
+            )
 
         # An answer is visible text, a call, or a hosted output that is an
         # answer itself, after the last hosted evidence gathering.

@@ -3500,7 +3500,7 @@
         ["wrapper", "await self._process_tool_call(context, call_next, call_id, provider_call_id, tool_name, args, trajectory, preamble, origin)", "unresolved", "chrys.service.agent_middleware.events.sub_agent_events.SubAgentEventMiddleware._process_tool_call"]
       ],
       "SubAgentEventMiddleware._process_tool_call": [
-        ["wrapper", "await prepare_mutation_tracking(self._mutation_tracker, tool_name, args, call_id, is_shell, workspace_cwd=self._workspace_cwd, coordinator=self._mutation_coordinator)", "unresolved", "chrys.service.mutations.pipeline.prepare_mutation_tracking"],
+        ["wrapper", "await prepare_mutation_tracking(self._mutation_tracker, tool_name, args, call_id, is_shell, workspace_cwd=self._workspace_cwd, coordinator=self._mutation_coordinator, tool_operation_id=tool_operation_id(_meta))", "unresolved", "chrys.service.mutations.pipeline.prepare_mutation_tracking"],
         ["awaitable", "await self._bus.publish(InvocationToolCallStart(origin=origin, agent_name=self._agent_name, tool_name=tool_name, tool_kind=tool_kind, args=args, call_id=call_id, session_id=self._session_id))", "unresolved"],
         ["awaitable", "await self._hosted_bridge.local_call_start_published(provider_call_id)", "unresolved"],
         ["awaitable", "await preamble.finished(outcome=PreparationOutcome.HANDOFF)", "unresolved"],
@@ -3575,7 +3575,7 @@
         ["wrapper", "await self._process_tool_call(context, call_next, call_id, provider_call_id, tool_name, args, trajectory, preamble, origin)", "unresolved", "chrys.service.agent_middleware.events.tool_events.ToolEventMiddleware._process_tool_call"]
       ],
       "ToolEventMiddleware._process_tool_call": [
-        ["wrapper", "await prepare_mutation_tracking(self._mutation_tracker, tool_name, args, call_id, is_shell, workspace_cwd=self._workspace_cwd, coordinator=self._mutation_coordinator)", "unresolved", "chrys.service.mutations.pipeline.prepare_mutation_tracking"],
+        ["wrapper", "await prepare_mutation_tracking(self._mutation_tracker, tool_name, args, call_id, is_shell, workspace_cwd=self._workspace_cwd, coordinator=self._mutation_coordinator, tool_operation_id=tool_operation_id(_meta))", "unresolved", "chrys.service.mutations.pipeline.prepare_mutation_tracking"],
         ["awaitable", "await self._bus.publish(InvocationToolCallStart(origin=origin, tool_name=tool_name, tool_kind=tool_kind, args=args, call_id=call_id, session_id=self._session_id))", "unresolved"],
         ["awaitable", "await self._on_start_published(provider_call_id)", "unresolved"],
         ["awaitable", "await preamble.finished(outcome=PreparationOutcome.HANDOFF)", "unresolved"],
@@ -4045,6 +4045,9 @@
       "WireCall._land": [
         ["awaitable", "await observed", "unresolved"],
         ["awaitable", "await self._on_async(signal)", "unresolved"]
+      ],
+      "WireCall._track_request": [
+        ["awaitable", "await result", "unresolved"]
       ]
     },
     "chrys.service.llm.one_shot": {
@@ -4456,7 +4459,7 @@
         ["thread_pool", "await loop.run_in_executor(None, _read_file_snapshot, tracker, ctx.file_mutation)", "unresolved"],
         ["thread_pool", "await loop.run_in_executor(None, _track_shell_scan_after, ctx.shell_scan_before)", "unresolved"],
         ["wrapper", "await _track_git_calibrate_after(ctx.git_calibrator, same_call_paths)", "unresolved", "chrys.service.mutations.pipeline._track_git_calibrate_after"],
-        ["thread_pool", "await loop.run_in_executor(None, _record_shell_observations, tracker, observations, call_id)", "unresolved"],
+        ["thread_pool", "await loop.run_in_executor(None, _record_shell_observations, tracker, observations, call_id, ctx.tool_operation_id)", "unresolved"],
         ["thread_pool", "await loop.run_in_executor(None, _apply_trace_upgrades, ctx, shell_mutations)", "unresolved"],
         ["thread_pool", "await loop.run_in_executor(None, _coordinate_after_detection, tracker, ctx, coordinator, tool_errored, proven_shell)", "unresolved"],
         ["thread_pool", "await loop.run_in_executor(None, _read_shell_snapshots, tracker, shell_mutations)", "unresolved"]
@@ -4464,7 +4467,7 @@
       "prepare_mutation_tracking": [
         ["thread_pool", "await loop.run_in_executor(None, _open_window)", "unresolved"],
         ["thread_pool", "await loop.run_in_executor(None, allocate_trace_file, tracker.store.mutations_dir)", "unresolved"],
-        ["thread_pool", "await loop.run_in_executor(None, _track_file_mutation_before, tracker, tool_name, args, call_id, workspace_cwd)", "unresolved"],
+        ["thread_pool", "await loop.run_in_executor(None, _track_file_mutation_before, tracker, tool_name, args, call_id, workspace_cwd, tool_operation_id)", "unresolved"],
         ["wrapper", "await _track_git_capture_before(tracker, args, workspace_cwd)", "unresolved", "chrys.service.mutations.pipeline._track_git_capture_before"],
         ["thread_pool", "await loop.run_in_executor(None, _track_shell_scan_before, tracker, args, workspace_cwd)", "unresolved"]
       ]

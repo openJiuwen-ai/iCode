@@ -14,12 +14,28 @@ from chrys.foundation.text.images import MAX_IMAGE_BYTES
 from chrys.foundation.util.unicode_scalars import find_unpaired_surrogate
 
 _MAX_PAYLOAD_BYTES = 1024 * 1024
+# A request can carry a whole file the agent is about to write, and a diff of
+# it. Re-encoded for the SDK reader with every non-ASCII character escaped, a
+# request at this bound grows at most threefold, still under the stdio limit.
+_MAX_REQUEST_PAYLOAD_BYTES = 8 * 1024 * 1024
 _MAX_PAYLOAD_DEPTH = 32
 _MAX_COLLECTION_ITEMS = 4_096
+# An agent's requests and notifications describe its tool calls, and one patch
+# over a few hundred files carries a diff, a location and an argument entry for
+# each: past 4,096 items in all. They keep the per-collection cap under this
+# larger total, which still bounds what validation and the translator walk in a
+# frame of tiny values.
+_MAX_AGENT_MESSAGE_ITEMS = 64 * 1024
 _MAX_STRING_CHARS = 256 * 1024
 _MAX_BASE64_IMAGE_CHARS = ((MAX_IMAGE_BYTES + 2) // 3) * 4
 _MAX_REQUEST_ID_CHARS = 4_096
 _MAX_METHOD_CHARS = 1_024
+# An update's ids are kept whole (map keys, local call ids) and repeated in
+# every event about the call, so they keep a cap when the text around them
+# has none.
+_MAX_UPDATE_ID_CHARS = 4_096
+_UPDATE_ID_FIELDS = (("toolCallId", "tool_call_id"), ("messageId", "message_id"))
+_TOOL_UPDATE_KINDS = ("tool_call", "tool_call_update")
 
 _PERMISSION_METHOD = "session/request_permission"
 _ASK_USER_METHOD = "_chrys/request_input"
@@ -59,6 +75,28 @@ def encode_protocol_json(value: Any) -> bytes:
     """Encode a protocol-bound value after the shared scalar validation pass."""
     validate_json_scalar_tree(value)
     return json.dumps(value, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("utf-8")
+
+
+def sdk_field_values(value: dict[str, Any], alias: str, name: str) -> list[Any]:
+    """Return what *value* holds under each spelling of one SDK model field.
+
+    The SDK's models are built with ``populate_by_name``: they read a field by
+    its alias or by its Python name, and when both are present a field takes
+    the alias while a tagged union picks its branch by the name. A check on
+    the raw frame therefore runs on every spelling present.
+    """
+    return [value[key] for key in (alias, name) if key in value]
+
+
+def protocol_json_size(value: Any) -> int:
+    """Return the size of *value* as compact UTF-8 JSON, the bytes an agent's frame spends on it.
+
+    :func:`encode_protocol_json` escapes every non-ASCII character, up to three
+    times what a frame carries, so a bound measured with it would refuse a
+    frame the stdio limit admits.
+    """
+    validate_json_scalar_tree(value)
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8"))
 
 
 def parse_protocol_json(raw: bytes) -> Any:
@@ -125,51 +163,73 @@ def validate_json_rpc_envelope(message: Any) -> Literal["request", "notification
     return "response"
 
 
-def _measure_payload(value: Any, *, depth: int = 0) -> tuple[int, int]:
+def _count_payload_items(value: Any, *, max_string_chars: int | None, depth: int = 0) -> int:
     if depth > _MAX_PAYLOAD_DEPTH:
         raise ValueError("ACP payload nesting is too deep.")
     if type(value) is str:
-        if len(value) > _MAX_STRING_CHARS:
+        if max_string_chars is not None and len(value) > max_string_chars:
             raise ValueError("ACP payload string is too large.")
-        return len(value.encode("utf-8", errors="surrogatepass")), 1
+        return 1
     if type(value) is dict:
         if len(value) > _MAX_COLLECTION_ITEMS:
             raise ValueError("ACP payload object has too many fields.")
-        total = 0
         items = 1
         for key, item in value.items():
-            if len(key) > _MAX_STRING_CHARS:
+            if max_string_chars is not None and len(key) > max_string_chars:
                 raise ValueError("ACP payload string is too large.")
-            total += len(key.encode("utf-8", errors="surrogatepass"))
-            child_bytes, child_items = _measure_payload(item, depth=depth + 1)
-            total += child_bytes
-            items += child_items
-        return total, items
+            items += _count_payload_items(item, max_string_chars=max_string_chars, depth=depth + 1)
+        return items
     if type(value) in {list, tuple}:
         if len(value) > _MAX_COLLECTION_ITEMS:
             raise ValueError("ACP payload sequence has too many items.")
-        total = 0
         items = 1
         for item in value:
-            child_bytes, child_items = _measure_payload(item, depth=depth + 1)
-            total += child_bytes
-            items += child_items
-        return total, items
-    return 16, 1
+            items += _count_payload_items(item, max_string_chars=max_string_chars, depth=depth + 1)
+        return items
+    return 1
+
+
+def _validate_payload_shape(value: Any, *, max_string_chars: int | None, max_total_items: int) -> None:
+    # Per-collection checks alone admit 4096-wide children at every level;
+    # the aggregate bound is what actually caps the object count.
+    if _count_payload_items(value, max_string_chars=max_string_chars) > max_total_items:
+        raise ValueError("ACP payload has too many items in total.")
 
 
 def _validate_payload_caps(value: Any) -> None:
-    _total_bytes, total_items = _measure_payload(value)
-    # Per-collection checks alone admit 4096-wide children at every level;
-    # the aggregate bound is what actually caps the retained object count.
-    if total_items > _MAX_COLLECTION_ITEMS:
-        raise ValueError("ACP payload has too many items in total.")
+    """Caps for responses, which are retained whole until their request settles."""
+    _validate_payload_shape(value, max_string_chars=_MAX_STRING_CHARS, max_total_items=_MAX_COLLECTION_ITEMS)
     if len(encode_protocol_json(value)) > _MAX_PAYLOAD_BYTES:
         raise ValueError("ACP retained payload exceeds the byte limit.")
 
 
+def _validate_request_payload_caps(value: Any) -> None:
+    """Caps for requests from the agent: permission, ask-user and extension requests.
+
+    Their arguments reach the approval dialog and the judge whole, so a request
+    keeps a byte bound, but no string has one of its own: a file the agent
+    writes is one long string.
+    """
+    _validate_payload_shape(value, max_string_chars=None, max_total_items=_MAX_AGENT_MESSAGE_ITEMS)
+    if protocol_json_size(value) > _MAX_REQUEST_PAYLOAD_BYTES:
+        raise ValueError("ACP request payload exceeds the byte limit.")
+
+
+def _validate_notification_payload_caps(value: Any) -> None:
+    """Caps for notifications: nesting and item count only.
+
+    Those are the shapes that cost far more to parse and walk than their bytes.
+    No notification is retained whole: the translator keeps bounded previews of
+    tool calls, message text has its own per-attempt budget, and extension
+    notifications are dropped. The stdio frame limit and the update buffer's
+    byte budget bound their size, so a long string, such as a file a sub-agent
+    writes, never ends the transport.
+    """
+    _validate_payload_shape(value, max_string_chars=None, max_total_items=_MAX_AGENT_MESSAGE_ITEMS)
+
+
 def _validate_update_image_data(data: str) -> None:
-    """Validate one image payload before exempting its encoding overhead."""
+    """Validate one tool image's base64 payload."""
     if not data:
         raise ValueError("ACP image payload is empty.")
     if len(data) > _MAX_BASE64_IMAGE_CHARS:
@@ -184,37 +244,32 @@ def _validate_update_image_data(data: str) -> None:
         raise ValueError("ACP image payload exceeds the supported size limit.")
 
 
-def _payload_without_tool_image_data(value: Any) -> Any:
-    """Replace validated tool-image encodings for retained-cap accounting."""
-    if type(value) is not dict:
-        return value
-    update = value.get("update")
-    if type(update) is not dict or update.get("sessionUpdate") not in {"tool_call", "tool_call_update"}:
-        return value
+def _validate_update_tool_images(update: dict[str, Any]) -> None:
+    if not any(kind in _TOOL_UPDATE_KINDS for kind in sdk_field_values(update, "sessionUpdate", "session_update")):
+        return
     content = update.get("content")
     if type(content) is not list:
-        return value
-
-    bounded_content: list[Any] | None = None
-    for index, item in enumerate(content):
+        return
+    for item in content:
         if type(item) is not dict or item.get("type") != "content":
             continue
         block = item.get("content")
-        if type(block) is not dict or block.get("type") != "image" or type(block.get("mimeType")) is not str:
+        if type(block) is not dict or block.get("type") != "image":
+            continue
+        if not any(type(mime) is str for mime in sdk_field_values(block, "mimeType", "mime_type")):
             continue
         data = block.get("data")
-        if type(data) is not str:
-            continue
-        _validate_update_image_data(data)
-        if bounded_content is None:
-            bounded_content = list(content)
-        bounded_content[index] = {**item, "content": {**block, "data": ""}}
-
-    if bounded_content is None:
-        return value
-    return {**value, "update": {**update, "content": bounded_content}}
+        if type(data) is str:
+            _validate_update_image_data(data)
 
 
 def _validate_update_payload_caps(value: Any) -> None:
-    """Apply retained caps while excluding validated tool-image encoding overhead."""
-    _validate_payload_caps(_payload_without_tool_image_data(value))
+    """Validate a session update's ids and tool images, then apply the notification caps."""
+    update = value.get("update") if type(value) is dict else None
+    if type(update) is dict:
+        for alias, name in _UPDATE_ID_FIELDS:
+            for item in sdk_field_values(update, alias, name):
+                if type(item) is str and len(item) > _MAX_UPDATE_ID_CHARS:
+                    raise ValueError("ACP update id exceeds the retained-field cap.")
+        _validate_update_tool_images(update)
+    _validate_notification_payload_caps(value)

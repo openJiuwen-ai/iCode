@@ -63,6 +63,9 @@ stay reserved: a user theme taking one would be renamed away on the next start.
 DEFAULT_LOCALE = "system"
 """Fallback locale selector when ``CHRYS_LOCALE`` is empty or missing."""
 
+DEFAULT_APPROVAL_TIMEOUT_SECONDS = 0
+"""Zero disables the human approval deadline in both TUI and ACP."""
+
 DEFAULT_APPROVAL_MODE = "manual"
 """Fallback approval mode when ``CHRYS_DEFAULT_APPROVAL_MODE`` is empty, missing, or invalid.
 
@@ -665,6 +668,9 @@ _LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
 )
 _LABEL_UI_EDITOR_KEYMAP = msg("settings.ui.editor.keymap.label", fallback="Editor keymap")
 _LABEL_WORKSPACE_MRU_MAX_ENTRIES = msg("settings.workspace.mru_max_entries.label", fallback="Recent workspaces to keep")
+_LABEL_APPROVAL_TIMEOUT_SECONDS = msg(
+    "settings.approval.timeout_seconds.label", fallback="Human approval timeout (seconds)"
+)
 _LABEL_APPROVAL_DEFAULT_MODE = msg("settings.approval.default_mode.label", fallback="Default approval mode")
 _LABEL_UI_APPROVAL_DEFER_WHILE_JUDGING = msg(
     "settings.ui.approval.defer_while_judging.label",
@@ -1095,6 +1101,19 @@ class Settings:
             risk=Risk.DANGEROUS,
             # Falling through could land on a persisted ``bypass``.
             invalid_policy=InvalidPolicy.SAFE_DEFAULT,
+        ),
+    )
+
+    approval_timeout_seconds: int = field(
+        default=DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+        metadata=spec(
+            key="approval.timeout_seconds",
+            label=_LABEL_APPROVAL_TIMEOUT_SECONDS,
+            env="CHRYS_APPROVAL_TIMEOUT_SECONDS",
+            coerce=int_coercer(minimum=0),
+            apply=Apply.RESTART,
+            group="approval",
+            kind=Kind.INT,
         ),
     )
 

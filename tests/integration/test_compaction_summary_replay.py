@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from acp import schema as acp_schema
+
 from chrys.app.acp.history import replay_session_history
 from chrys.app.tui.widgets.chat.replay import (
     HistoryReplayPlanner,
@@ -28,6 +30,7 @@ from chrys.service.context.providers.history import CompressibleHistoryProvider
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.session.message_metadata import is_compaction_tool_summary
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.acp_wire import acp_outgoing_json
 from tests.support.phase4_stubs import StubLastWordsGenerator, StubReminderMiddleware
 
 
@@ -36,6 +39,7 @@ class _AcpClient:
         self.updates: list[Any] = []
 
     async def session_update(self, session_id: str, update: Any) -> None:
+        acp_outgoing_json(acp_schema.SessionNotification(sessionId=session_id, update=update))
         self.updates.append(update)
 
 

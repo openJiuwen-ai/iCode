@@ -4,7 +4,9 @@
 
 Compatible gateways answer with error envelopes, HTML pages or empty
 streams under any status and Content-Type; these checks turn each into one
-invalid-response error that quotes a bounded part of the body.
+invalid-response error that quotes a bounded part of the body. An error
+envelope is the exception: it is raised as the service's own error
+(:class:`ErrorEnvelopeError`), so the classifier reads its code and type.
 """
 
 from __future__ import annotations
@@ -12,10 +14,11 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator
-from typing import Any, NoReturn
+from collections.abc import AsyncIterator, Mapping
+from typing import Any, NamedTuple, NoReturn
 
 import httpx
+from openai import APIStatusError
 from openai.types.chat.chat_completion import ChatCompletion
 
 from chrys.kernel.exceptions import ChatClientException, ChatClientInvalidResponseException
@@ -60,6 +63,45 @@ def raise_invalid_response(message: str) -> NoReturn:
     ) from invalid_response
 
 
+class ErrorEnvelopeError(APIStatusError):
+    """The error object a gateway answered with under a success status.
+
+    Some gateways report a failed request with HTTP 200 and the body an error
+    status would carry, ``{"error": {"code", "type", "message"}}``. Raised as
+    the SDK raises an error status, with the status, code, type and message
+    as sent, it is judged as an error a stream reports in-band: a code or
+    type a retry meets again (authentication, quota, a rejected request) is
+    final, anything else may pass on a retry.
+    """
+
+
+def raise_error_envelope(http_response: httpx.Response, body: str) -> None:
+    """Raise :class:`ErrorEnvelopeError` when *body* is an error envelope, and nothing otherwise.
+
+    An envelope is a JSON object with no ``choices`` and a non-empty ``error``
+    member: an object, or a message on its own.
+    """
+    try:
+        # A front end may lead the body with a byte order mark.
+        payload = json.loads(body.removeprefix("\ufeff"))
+    except ValueError:
+        return
+    if not isinstance(payload, Mapping) or payload.get("choices") is not None:
+        return
+    error = payload.get("error")
+    if isinstance(error, Mapping) and error:
+        details: dict[str, Any] = dict(error)
+    elif isinstance(error, str) and error.strip():
+        details = {"message": error}
+    else:
+        return
+    raise ErrorEnvelopeError(
+        f"Chat Completions API answered HTTP {http_response.status_code} with an error: {bounded_body_preview(body)}",
+        response=http_response,
+        body=details,
+    )
+
+
 def _raise_invalid_body(raw_response: Any, detail: str) -> NoReturn:
     """Reject a fully read (non-streaming) response, quoting its body."""
     body_preview = bounded_body_preview(raw_response.text)
@@ -77,6 +119,7 @@ def parse_completion(raw_response: Any) -> ChatCompletion:
         _raise_invalid_body(raw_response, detail)
     choices = response.choices
     if choices is None:
+        raise_error_envelope(raw_response.http_response, raw_response.text)
         _raise_invalid_body(raw_response, "JSON payload is missing the required 'choices' array")
     if not isinstance(choices, list):
         # Non-strict SDK construction passes any non-list value straight through.
@@ -179,6 +222,15 @@ def _stream_body_text(http_response: Any, data: bytes) -> str:
         return decoded.decode("utf-8", errors="replace")
 
 
+class _RejectedStream(NamedTuple):
+    """Why a streaming body cannot yield events, and the part of it captured."""
+
+    detail: str
+    text: str
+    # Only the start of the body was captured.
+    truncated: bool
+
+
 def _sse_framing_verdict(head: bytes, *, complete: bool) -> bool | None:
     """``True`` for SSE framing, ``False`` for none, ``None`` if more bytes could still decide."""
     if head.startswith(_DOCUMENT_LEADING_BYTES):
@@ -218,11 +270,11 @@ def _strip_leading_bom_from_decoded_bytes(http_response: Any) -> None:
     http_response.aiter_bytes = aiter_bytes
 
 
-async def _sniff_stream(http_response: Any) -> ReplayByteStream | tuple[str, str]:
+async def _sniff_stream(http_response: Any) -> ReplayByteStream | _RejectedStream:
     """Classify a streaming body by its decoded leading bytes.
 
     Returns the installed replay stream when the body opens with SSE framing,
-    or ``(detail, body_preview)`` when it cannot yield events (JSON, HTML,
+    or what was captured of a body that cannot yield events (JSON, HTML,
     plain text, blank). Classification reads decoded
     bytes because the SDK decodes Content-Encoding before parsing, while the
     replay carries the raw transport bytes untouched. A rejected body is
@@ -272,7 +324,7 @@ async def _sniff_stream(http_response: Any) -> ReplayByteStream | tuple[str, str
             break
     captured = prefix[:_INVALID_STREAM_BODY_CAPTURE_LIMIT]
     truncated = not at_eof or len(captured) < len(prefix)
-    return detail, bounded_body_preview(_stream_body_text(http_response, captured), truncated=truncated)
+    return _RejectedStream(detail, _stream_body_text(http_response, captured), truncated)
 
 
 def zero_event_message(replay: ReplayByteStream) -> str:
@@ -301,8 +353,10 @@ async def validate_stream_response(raw_response: Any) -> ReplayByteStream:
         raise
     if isinstance(verdict, ReplayByteStream):
         return verdict
-    detail, body_preview = verdict
     # Rejected: release the connection without draining the remainder.
     with contextlib.suppress(Exception):
         await http_response.aclose()
-    raise_invalid_response(_invalid_response_message(raw_response, detail, body_preview))
+    if not verdict.truncated:
+        raise_error_envelope(http_response, verdict.text)
+    body_preview = bounded_body_preview(verdict.text, truncated=verdict.truncated)
+    raise_invalid_response(_invalid_response_message(raw_response, verdict.detail, body_preview))

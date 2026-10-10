@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
+import json
 
 import pytest
 from acp.schema import (
@@ -18,6 +20,7 @@ from acp.schema import (
     TerminalToolCallContent,
     TextContentBlock,
     ToolCallProgress,
+    ToolCallStart,
     UsageUpdate,
 )
 
@@ -31,7 +34,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.text.images import MAX_IMAGE_BYTES
 from chrys.foundation.tool_result_metadata import TOOL_FAILED_METADATA_KEY, TOOL_INTERRUPTED_METADATA_KEY
-from chrys.orchestration.invoker.acp_protocol import AcpUpdateTranslator
+from chrys.orchestration.invoker.acp_protocol import AcpUpdateTranslator, preview_text
 from chrys.service.acp_client import client as acp_client_module
 from chrys.service.acp_client.errors import AcpTransportError
 from tests.orchestration.sub_agents._acp_fakes import session_notification
@@ -219,6 +222,59 @@ async def test_translator_forwards_only_explicit_remote_hosted_metadata_without_
     assert start_by_id["a1:remote-hosted"].hosted_family == "search"
     assert start_by_id["a1:remote-hosted"].provider_call_id == "provider-search"
     assert results[1].provider_item_type == "web_search_call"
+
+
+async def test_translator_bounds_remote_hosted_metadata_strings() -> None:
+    bus = EventBus()
+    starts = await capture_events(bus, InvocationToolCallStart)
+    results = await capture_events(bus, InvocationToolCallResult)
+    translator = AcpUpdateTranslator(
+        event_bus=bus,
+        session_id="parent",
+        agent_name="External",
+        invocation_id="inv",
+        attempt=1,
+        origin=InvocationOrigin("sub_agent", "parent", "inv", None),
+    )
+    # The client caps no string in an update but its ids.
+    long_value = "p" * 64 * 1024
+    await translator.put(
+        1,
+        session_notification(
+            ToolCallProgress(
+                sessionUpdate="tool_call_update",
+                toolCallId="remote-hosted",
+                title="Provider search",
+                kind="search",
+                rawOutput="found",
+                status="completed",
+                _meta={
+                    "chrys": {
+                        "provider_hosted": True,
+                        "hosted_family": long_value,
+                        "provider": long_value,
+                        "provider_item_type": long_value,
+                        "provider_call_id": long_value,
+                        "provider_status": long_value,
+                    }
+                },
+            )
+        ),
+    )
+
+    bounded = preview_text(long_value)
+    assert len(bounded) < len(long_value)
+    assert starts
+    assert len(results) == 1
+    for event in (*starts, *results):
+        assert event.provider_hosted is True
+        assert [
+            event.hosted_family,
+            event.provider,
+            event.provider_item_type,
+            event.provider_call_id,
+            event.provider_status,
+        ] == [bounded] * 5
 
 
 async def test_translator_extracts_every_tool_content_variant_and_flushes_interrupted() -> None:
@@ -416,6 +472,83 @@ async def test_translator_charges_images_retained_by_separate_calls() -> None:
         else:
             with pytest.raises(AcpTransportError, match="translated update budget"):
                 await translator.put(seq, notification)
+
+
+def _wide_patch(call_id: str, status: str) -> SessionNotification:
+    """A tool update editing as many files as a record keeps, each diff as long as it keeps."""
+    return session_notification(
+        ToolCallProgress(
+            sessionUpdate="tool_call_update",
+            toolCallId=call_id,
+            title="Apply patch",
+            kind="edit",
+            content=[
+                FileEditToolCallContent(type="diff", path=f"/w/m{index}.py", oldText="a" * 2_000, newText="b" * 2_000)
+                for index in range(256)
+            ],
+            status=status,
+        )
+    )
+
+
+async def test_translator_charges_a_call_for_its_latest_update_only() -> None:
+    """A record keeps only its call's latest state, so a wide patch reported
+    again and again stays within the budget that separate calls still fill."""
+    translator = AcpUpdateTranslator(
+        event_bus=None,
+        session_id=None,
+        agent_name="External",
+        invocation_id="inv",
+        attempt=1,
+        origin=InvocationOrigin("sub_agent", "", "inv", None),
+    )
+
+    for seq in range(1, 9):
+        await translator.put(seq, _wide_patch("patch", "completed" if seq == 8 else "in_progress"))
+    assert translator.completed_count == 1
+
+    with pytest.raises(AcpTransportError, match="translated update budget"):
+        for seq in range(9, 17):
+            await translator.put(seq, _wide_patch(f"patch-{seq}", "in_progress"))
+
+
+async def test_translator_keeps_no_more_of_a_call_than_its_latest_update() -> None:
+    """A finished call whose input a later update replaces with a smaller one
+    keeps no copy of the larger input, so what the budget charges bounds what
+    its record holds."""
+    translator = AcpUpdateTranslator(
+        event_bus=None,
+        session_id=None,
+        agent_name="External",
+        invocation_id="inv",
+        attempt=1,
+        origin=InvocationOrigin("sub_agent", "", "inv", None),
+    )
+    wide_input = {f"field{index}": "a" * 2_000 for index in range(256)}
+
+    for seq, call_id in ((1, "one"), (3, "two")):
+        await translator.put(
+            seq,
+            session_notification(
+                ToolCallStart(
+                    sessionUpdate="tool_call",
+                    toolCallId=call_id,
+                    title="Write",
+                    rawInput=wide_input,
+                    status="completed",
+                )
+            ),
+        )
+        await translator.put(
+            seq + 1,
+            session_notification(
+                ToolCallProgress(sessionUpdate="tool_call_update", toolCallId=call_id, rawInput={}, status="completed")
+            ),
+        )
+
+    assert translator.completed_count == 2
+    for record in translator.calls.values():
+        assert len(json.dumps(dataclasses.astuple(record), default=str)) < 1_024
 
 
 async def test_translator_message_boundaries_result_modes_and_usage_gauge() -> None:

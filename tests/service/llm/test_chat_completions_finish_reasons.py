@@ -865,8 +865,16 @@ async def test_a_choice_that_first_shows_up_after_the_end_is_cut_off_by_a_break(
     assert classify_error(raised.value).retryable is True
 
 
+# A call fragment whose arguments are no string, which the SDK keeps as sent:
+# a chunk that carries one cannot be read past it.
+_UNREADABLE_FRAGMENT = (
+    '{"index": 1, "id": "call_bad", "type": "function", "function": {"name": "read_file", "arguments": {}}}'
+)
+
+
 # Each is data the SDK makes a chunk of that cannot be read: it takes ``null``
-# for ``None``, and leaves a missing ``created`` unset.
+# for ``None``. The last two are read in part before they fail: a call begun,
+# a filter reported.
 @pytest.mark.parametrize(
     "trailing",
     [
@@ -874,17 +882,16 @@ async def test_a_choice_that_first_shows_up_after_the_end_is_cut_off_by_a_break(
         pytest.param('{"choices": [null]}', id="null_choice"),
         pytest.param("null", id="null"),
         pytest.param(
-            '{"id": "chunk-1", "model": "test", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}',
-            id="no_created",
-        ),
-        pytest.param(
-            '{"id": "chunk-1", "model": "test", "choices": [{"index": 1, "delta": {"role": "assistant", "tool_calls": '
-            '[{"index": 0, "id": "call_late", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]}, '
+            '{"id": "chunk-1", "created": 1717171717, "model": "test", "choices": [{"index": 1, "delta": '
+            '{"role": "assistant", "tool_calls": [{"index": 0, "id": "call_late", "type": "function", '
+            f'"function": {{"name": "read_file", "arguments": "{{}}"}}}}, {_UNREADABLE_FRAGMENT}]}}, '
             '"finish_reason": null}]}',
             id="late_call",
         ),
         pytest.param(
-            '{"id": "chunk-1", "model": "test", "choices": [{"index": 0, "delta": {}, "finish_reason": "content_filter"}]}',
+            '{"id": "chunk-1", "created": 1717171717, "model": "test", "choices": [{"index": 0, "delta": {}, '
+            '"finish_reason": "content_filter"}, {"index": 1, "delta": {"role": "assistant", "tool_calls": '
+            f'[{_UNREADABLE_FRAGMENT}]}}, "finish_reason": null}}]}}',
             id="late_filter",
         ),
     ],

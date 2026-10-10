@@ -385,6 +385,7 @@ class ToolEventMiddleware(FunctionMiddleware):
                 is_shell,
                 workspace_cwd=self._workspace_cwd,
                 coordinator=self._mutation_coordinator,
+                tool_operation_id=tool_operation_id(_meta),
             )
 
         tool_kind = get_tool_kind(context.function) or ""

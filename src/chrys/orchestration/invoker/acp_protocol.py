@@ -277,14 +277,17 @@ def _explicit_hosted_extension(update: ToolCallStart | ToolCallProgress) -> dict
     if not provider_hosted and not isinstance(family, str):
         return {}
 
+    # These strings ride every event about the call and are kept with it, and
+    # the client caps no string in an update but its ids, so they are bounded
+    # like the title.
     extension: dict[str, Any] = {"provider_hosted": provider_hosted}
     if isinstance(family, str):
-        extension["hosted_family"] = family
+        extension["hosted_family"] = preview_text(family)
 
     def _copy_text_value(target_key: str, snake_key: str, camel_key: str) -> None:
         value = chrys_meta.get(snake_key, chrys_meta.get(camel_key))
         if isinstance(value, str):
-            extension[target_key] = value
+            extension[target_key] = preview_text(value)
 
     _copy_text_value("provider", "provider", "provider")
     _copy_text_value("provider_item_type", "provider_item_type", "providerItemType")
@@ -333,7 +336,7 @@ class AcpUpdateTranslator:
         self._unpublished_final_text = ""
         self._message_id: str | None = None
         self._retained_bytes = 0
-        self._retained_image_bytes_by_call: dict[str, int] = {}
+        self._retained_bytes_by_call: dict[str, int] = {}
         self._audit: deque[dict[str, Any]] = deque()
         # Include the JSON list delimiters so the persisted ring itself,
         # rather than only the sum of its entries, stays within the cap.
@@ -420,17 +423,16 @@ class AcpUpdateTranslator:
             raise AcpTransportError("The ACP agent exceeded the translated update budget.")
 
     def _charge_tool_update(self, call_id: str, value: Any, image_uris: Sequence[str]) -> None:
-        update_bytes = len(json.dumps(value, ensure_ascii=False, default=str).encode())
-        image_bytes = len(json.dumps(image_uris, ensure_ascii=False).encode()) if image_uris else 0
-        previous_image_bytes = self._retained_image_bytes_by_call.get(call_id, 0)
-        retained_bytes = self._retained_bytes - previous_image_bytes + image_bytes + update_bytes
+        # A call's record keeps only its latest state, so each update's charge
+        # replaces the one the call's previous update made.
+        call_bytes = len(json.dumps(value, ensure_ascii=False, default=str).encode())
+        if image_uris:
+            call_bytes += len(json.dumps(image_uris, ensure_ascii=False).encode())
+        retained_bytes = self._retained_bytes - self._retained_bytes_by_call.get(call_id, 0) + call_bytes
         if retained_bytes > _MAX_ASSEMBLED_BYTES:
             raise AcpTransportError("The ACP agent exceeded the translated update budget.")
         self._retained_bytes = retained_bytes
-        if image_bytes:
-            self._retained_image_bytes_by_call[call_id] = image_bytes
-        else:
-            self._retained_image_bytes_by_call.pop(call_id, None)
+        self._retained_bytes_by_call[call_id] = call_bytes
 
     async def _merge_tool(self, update: ToolCallStart | ToolCallProgress) -> None:
         remote_id = update.tool_call_id
@@ -510,12 +512,12 @@ class AcpUpdateTranslator:
             await self._publish_terminal(record)
 
     async def _publish_start(self, record: _CallRecord, *, ensure: bool = False) -> None:
-        signature = json.dumps(
-            [record.title, record.kind, record.raw_input],
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        # The record keeps a digest of what it published: a finished call's
+        # input can be replaced by a smaller one, and the record must then keep
+        # no more than its latest update is charged for.
+        signature = hashlib.sha256(
+            json.dumps([record.title, record.kind, record.raw_input], sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         if not ensure and (
             record.terminal_published or (record.start_published and signature == record.last_start_signature)
         ):

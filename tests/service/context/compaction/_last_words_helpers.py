@@ -89,6 +89,7 @@ class FallbackClient:
         class _Response:
             usage_details = None
             additional_properties: ClassVar[dict[str, object]] = {}
+            messages: ClassVar[tuple[Message, ...]] = ()
             raw_text = self.text
 
         return _Response()
@@ -113,6 +114,7 @@ class SequenceFallbackClient:
         class _Response:
             usage_details = None
             additional_properties: ClassVar[dict[str, object]] = {}
+            messages: ClassVar[tuple[Message, ...]] = ()
             raw_text = text
 
         return _Response()

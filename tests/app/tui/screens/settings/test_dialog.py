@@ -82,7 +82,7 @@ async def test_mounting_the_dialog_writes_nothing_and_focuses_a_control() -> Non
         assert ports.notification_ports.saved == []
         assert isinstance(dialog.focused, Select)
         rows = dialog.rows()
-        assert len(rows) == ROW_COUNT == 34
+        assert len(rows) == ROW_COUNT == 35
         assert all(row.spec.key != "trajectory.verify_commands" for row in rows)
         assert dialog.query_one(TabbedContent).active == pane_id(GENERAL_TAB_ID)
 
@@ -359,6 +359,16 @@ async def test_dangerous_bool_confirms_when_enabling_and_reverts_when_declined()
                 ("3", 3, None, "3"),
                 ("-1", None, "Expected a non-negative integer.", "-1"),
                 ("999", 50, None, "50"),
+            ],
+        ),
+        (
+            "approval.timeout_seconds",
+            "security",
+            [
+                ("600", 600, None, "600"),
+                ("45", 45, None, "45"),
+                ("0", 0, None, "0"),
+                ("abc", None, "Expected an integer.", "abc"),
             ],
         ),
         (

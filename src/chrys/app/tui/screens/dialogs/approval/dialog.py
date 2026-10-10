@@ -5,29 +5,40 @@
 from __future__ import annotations
 
 import contextlib
+import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from rich.cells import split_graphemes
 from rich.markup import escape
 from rich.text import Text
 from textual import events, on
 from textual.binding import Binding
 from textual.containers import HorizontalGroup, VerticalGroup
 from textual.content import Content
+from textual.geometry import Size
 from textual.screen import ModalScreen
+from textual.scroll_view import ScrollView
+from textual.strip import Strip
 from textual.widgets import Button, Collapsible, RadioButton, RadioSet, Static, TextArea
 
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, InsertClipboardScreenMixin
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.screens.dialogs.approval.bodies.file_edit import ApprovalDiffPreview
+from chrys.app.tui.util.source_text import mark_hidden_format, sanitize_source_text
 from chrys.app.tui.widgets import Checkbox, ChrysLoadingIndicator, EnhancedTextArea, StableAutoHeightScroll
 from chrys.app.tui.widgets.text_area import NEWLINE_SHORTCUT_KEYS
 from chrys.foundation.i18n import MessageDef, msg
-from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block, sanitize_legacy_scalar
 from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoice
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE, KIND_SHELL
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.geometry import Offset
+    from textual.selection import Selection
+    from textual.widget import Widget
 
     from chrys.app.tui.screens.dialogs.approval.body import ApprovalBody
     from chrys.service.approval.judge import JudgeVerdict
@@ -85,6 +96,27 @@ _REUSE_PREFIX_WARNING = msg(
 )
 _FLAGGED = msg("tui.approval.flagged", fallback="Flagged by Auto-Review")
 
+# A remote agent's request can carry a whole file it is about to write, and
+# laying out a long value blocks the app for about a second per MiB, on every
+# resize too. The dialog lays out its values whole up to this many characters in
+# all; a value that does not fit goes into a box that scrolls through all of it
+# and draws only the rows in view.
+_MAX_VALUE_DISPLAY_CHARS = 64 * 1024
+
+# A stretch of printable ASCII this long is cut into rows by count; the rest of
+# a line is measured grapheme by grapheme, as rich draws it. A stretch leaves
+# its first and last character to the measured side, so a joiner or variation
+# selector next to it still pairs the way rich pairs it.
+_ASCII_STRETCH = re.compile(r"[\x20-\x7e]{64,}")
+
+# A value's box replaces its control characters, bidi controls and zero-width
+# characters, one for one, so a remote agent's text cannot hide, reorder or
+# restyle what is approved; it shows each line break as one LF and each tab as
+# spaces up to the next stop this many columns apart. A copy hands back the
+# value as given.
+_TAB_SIZE = 8
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+
 _PRESENTATION_LABELS: dict[str, MessageDef] = {
     KIND_SHELL: _RUN_COMMAND,
     KIND_FILESYSTEM_READ: _READ_FILES,
@@ -115,6 +147,196 @@ def _build_detail(tool_kind: str, tool_name: str, args: dict[str, Any]) -> str:
         if val:
             return str(val)
     return ""
+
+
+def _fold_line(line: str, width: int) -> list[str]:
+    """Cut one line into pieces at most *width* cells wide, each as full as it can be."""
+    if line.isascii():
+        return [line[index : index + width] for index in range(0, len(line), width)] or [""]
+    if len(line) * 2 <= width:
+        return [line]
+    pieces: list[str] = []
+    row_start = row_cells = 0
+
+    def measured(start: int, end: int) -> None:
+        nonlocal row_start, row_cells
+        spans, _ = split_graphemes(line[start:end])
+        for span_start, _span_end, cells in spans:
+            if row_cells and row_cells + cells > width:
+                pieces.append(line[row_start : start + span_start])
+                row_start, row_cells = start + span_start, 0
+            row_cells += cells
+
+    def counted(start: int, end: int) -> None:
+        nonlocal row_start, row_cells
+        position = start
+        while end - position > (room := max(width - row_cells, 0)):
+            position += room
+            pieces.append(line[row_start:position])
+            row_start, row_cells = position, 0
+        row_cells += end - position
+
+    position = 0
+    for stretch in _ASCII_STRETCH.finditer(line):
+        measured(position, stretch.start() + 1)
+        counted(stretch.start() + 1, stretch.end() - 1)
+        position = stretch.end() - 1
+    measured(position, len(line))
+    pieces.append(line[row_start:])
+    return pieces
+
+
+def _shown_text(value: str) -> str:
+    """Return *value* as a value's box shows it."""
+    return mark_hidden_format(sanitize_source_text(value, tab_size=_TAB_SIZE))
+
+
+def _shown_line(value: str) -> str:
+    """Return remote text shown on one line, such as a title, as the boxes would."""
+    return mark_hidden_format(sanitize_legacy_scalar(value))
+
+
+def _value_index(value: str, index: int, *, end: bool) -> int:
+    """Return where in *value* the box's text at *index* falls.
+
+    An index inside the spaces a tab is shown as falls before the tab, or after
+    it with *end*, so a selection that touches a tab copies all of it.
+    """
+    shown = line_start = 0
+    line_end = len(value)
+    for line_break in _LINE_BREAK.finditer(value):
+        width = len(value[line_start : line_break.start()].expandtabs(_TAB_SIZE))
+        if index <= shown + width:
+            line_end = line_break.start()
+            break
+        shown += width + 1
+        line_start = line_break.end()
+    line = value[line_start:line_end]
+    column = index - shown
+    position = shown = 0
+    while (tab := line.find("\t", position)) != -1 and column > shown + tab - position:
+        shown += tab - position
+        width = _TAB_SIZE - shown % _TAB_SIZE
+        if column < shown + width:
+            return line_start + tab + (1 if end else 0)
+        shown += width
+        position = tab + 1
+    return line_start + min(position + column - shown, len(line))
+
+
+def _value_slice(value: str, start: int, end: int) -> str:
+    """Return the part of *value* the box's text shows from *start* to *end*."""
+    return value[_value_index(value, start, end=False) : _value_index(value, end, end=True)]
+
+
+def _fold_rows(text: str, width: int) -> tuple[list[str], list[int]]:
+    """Cut *text* into rows at most *width* cells wide, with where each row starts in it."""
+    rows: list[str] = []
+    starts: list[int] = []
+    line_start = 0
+    for line in text.split("\n"):
+        start = line_start
+        for piece in _fold_line(line, width):
+            rows.append(piece)
+            starts.append(start)
+            start += len(piece)
+        line_start += len(line) + 1
+    return rows, starts
+
+
+class _LongValueView(ScrollView):
+    """A value too long to lay out at once, shown whole in a scrolling box.
+
+    Its text is cut into rows as wide as the box, again when the box's width
+    changes, and only the rows in view are drawn. A selection copies the value
+    as given, its tabs and line breaks included, without the breaks the rows add.
+    """
+
+    def __init__(self, value: str, *, id: str | None = None, classes: str | None = None) -> None:
+        super().__init__(id=id, classes=classes)
+        self._value = value
+        self._text = _shown_text(value)
+        self._rows: list[str] = []
+        self._row_starts: list[int] = []
+        self._fold_width = 0
+
+    def on_resize(self, _event: events.Resize) -> None:
+        # One blank column keeps the text off the scrollbar, as the left
+        # padding keeps it off the border.
+        width = self.scrollable_content_region.width - 1
+        if width < 1 or width == self._fold_width:
+            return
+        self._fold_width = width
+        self._rows, self._row_starts = _fold_rows(self._text, width)
+        self.virtual_size = Size(width, len(self._rows))
+        self.refresh()
+
+    def render_line(self, y: int) -> Strip:
+        scroll_x, scroll_y = self.scroll_offset
+        row = scroll_y + y
+        width = self.size.width
+        rich_style = self.rich_style
+        if row >= len(self._rows):
+            return Strip.blank(width, rich_style)
+        # Text.render drops the base style of a text without spans, so the box's
+        # colors go on as a span.
+        text = Text(self._rows[row], no_wrap=True)
+        text.stylize(rich_style)
+        selection = self.text_selection
+        if selection is not None and (span := selection.get_span(row)) is not None:
+            start, end = span
+            selection_style = self.screen.get_component_rich_style("screen--selection")
+            text.stylize(selection_style, start, len(text) if end == -1 else end)
+        strip = Strip(text.render(self.app.console), text.cell_len)
+        return strip.crop_extend(scroll_x, scroll_x + width, rich_style).apply_offsets(scroll_x, row)
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        self.refresh()
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        start = 0 if selection.start is None else self._text_index(selection.start)
+        end = len(self._text) if selection.end is None else self._text_index(selection.end)
+        return _value_slice(self._value, start, end), "\n"
+
+    def _text_index(self, offset: Offset) -> int:
+        if offset.y >= len(self._rows):
+            return len(self._text)
+        row = max(offset.y, 0)
+        return self._row_starts[row] + min(max(offset.x, 0), len(self._rows[row]))
+
+
+class _ValueText(Static):
+    """A value short enough to lay out at once, shown and copied as the long box does."""
+
+    def __init__(self, value: str, *, id: str | None = None, classes: str | None = None) -> None:
+        self._value = value
+        self._text = _shown_text(value)
+        super().__init__(Text(self._text), id=id, classes=classes)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        # A selection offset names a line of the text and a character in it.
+        line_starts = [0, *(line_break.end() for line_break in re.finditer("\n", self._text))]
+        line_ends = [start - 1 for start in line_starts[1:]] + [len(self._text)]
+
+        def text_index(offset: Offset) -> int:
+            if offset.y >= len(line_starts):
+                return len(self._text)
+            line = max(offset.y, 0)
+            return min(line_starts[line] + max(offset.x, 0), line_ends[line])
+
+        start = 0 if selection.start is None else text_index(selection.start)
+        end = len(self._text) if selection.end is None else text_index(selection.end)
+        return _value_slice(self._value, start, end), "\n"
+
+
+def _value_box(value: str, label: str, *, whole: bool) -> Widget:
+    """Return the bordered box that shows one argument *value* under *label*, laid out *whole* or scrolling."""
+    if whole:
+        box: Widget = _ValueText(value, classes="approval-arg-box")
+    else:
+        box = _LongValueView(value, classes="approval-arg-box approval-long-value")
+    box.border_title = Text(_shown_line(label))
+    return box
 
 
 def _build_args_lines(
@@ -207,6 +429,7 @@ class ApprovalDialog(
         reuse_offer: ApprovalReuseOffer | None = None,
         verdict: JudgeVerdict | None = None,
     ) -> None:
+        self._ready_callbacks: list[Callable[[], None]] = []
         self._reuse_offer = reuse_offer
         self.remember_choice: ReuseChoice = ""
         self._tool_name = tool_name
@@ -261,24 +484,33 @@ class ApprovalDialog(
                         markup=True,
                     )
                     if remote_title := self._novel_remote_title():
-                        yield Static(Text(remote_title), id="approval-remote-title")
+                        yield Static(Text(_shown_line(remote_title)), id="approval-remote-title")
                 else:
                     yield Static(
                         f"[reverse] {escape(self._tool_name)} [/reverse]",
                         id="approval-tool",
                         markup=True,
                     )
+                # Characters the dialog can still lay out whole.
+                room = _MAX_VALUE_DISPLAY_CHARS
                 if self._detail:
                     detail = self._detail if isinstance(self._detail, str) else render_str(localizer, self._detail)
-                    yield Static(Text(detail), id="approval-detail")
+                    if len(detail) <= room:
+                        room -= len(detail)
+                        yield _ValueText(detail, id="approval-detail")
+                    else:
+                        detail_box = _value_box(detail, self._detail_key, whole=False)
+                        detail_box.add_class("approval-detail-box")
+                        yield detail_box
                 if self._approval_body is not None:
                     yield from self._approval_body.widgets
                 if self._arg_lines:
                     with VerticalGroup(id="approval-args"):
                         for label, value in self._arg_lines:
-                            arg_box = Static(Text(value), classes="approval-arg-box")
-                            arg_box.border_title = Text(label)
-                            yield arg_box
+                            whole = len(value) <= room
+                            if whole:
+                                room -= len(value)
+                            yield _value_box(value, label, whole=whole)
                 if self._reuse_offer is not None:
                     yield from self._compose_reuse_controls()
                 with Collapsible(
@@ -330,7 +562,7 @@ class ApprovalDialog(
                 Text(render_str(localizer, description.bind())),
                 id="reuse-remember",
                 compact=True,
-                tooltip=Text(sanitize_legacy_block("\n".join(offer.targets))),
+                tooltip=Text(mark_hidden_format(sanitize_legacy_block("\n".join(offer.targets)))),
             )
             with VerticalGroup(id="reuse-options") as options:
                 options.display = False
@@ -408,6 +640,7 @@ class ApprovalDialog(
         return title
 
     def on_mount(self) -> None:
+        self.call_after_refresh(self._notify_ready)
         self._verdict_widgets_ready = True
         if self._flagged is not None:
             self._show_flagged(self._flagged)
@@ -417,6 +650,28 @@ class ApprovalDialog(
         if self._dismissed:
             # The dialog counts as mounted only once its mount handlers have returned.
             self.call_later(self._dismiss_if_top)
+
+    def when_ready(self, callback: Callable[[], None]) -> None:
+        """Run after mount and asynchronous preview content have been painted."""
+        if self._dismissed:
+            return
+        self._ready_callbacks.append(callback)
+        if self.is_mounted:
+            self.call_after_refresh(self._notify_ready)
+
+    @on(ApprovalDiffPreview.Ready)
+    def _on_preview_ready(self, event: ApprovalDiffPreview.Ready) -> None:
+        event.stop()
+        self.call_after_refresh(self._notify_ready)
+
+    def _notify_ready(self) -> None:
+        if not self.is_mounted or self._dismissed or self.app.screen is not self:
+            return
+        if any(not preview.is_ready for preview in self.query(ApprovalDiffPreview)):
+            return
+        callbacks, self._ready_callbacks = self._ready_callbacks, []
+        for callback in callbacks:
+            callback()
 
     @property
     def tool_name(self) -> str:
@@ -453,6 +708,7 @@ class ApprovalDialog(
         if self._dismissed:
             return
         self._dismissed = True
+        self._ready_callbacks.clear()
         self._dismiss_result = result
         self._user_decision_submitted = user_decision
         with contextlib.suppress(Exception):
@@ -480,6 +736,7 @@ class ApprovalDialog(
         self._safe_dismiss(None)
 
     def on_screen_resume(self, _event: events.ScreenResume) -> None:
+        self.call_after_refresh(self._notify_ready)
         if self._dismiss_on_resume:
             self._dismiss_on_resume = False
             # Resume is queued; another modal may already cover us again.
@@ -514,7 +771,7 @@ class ApprovalDialog(
         judge_area.add_class("judge-flagged")
         self.query_one("#approval-judge-loading").display = False
         concern_widget = self.query_one("#approval-concern", Static)
-        concern_widget.update(Text(verdict.reason))
+        concern_widget.update(Text(mark_hidden_format(sanitize_legacy_block(verdict.reason))))
         concern_widget.display = True
         self.query_one("#approval-reason-section", Collapsible).collapsed = False
 

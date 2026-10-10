@@ -37,9 +37,9 @@ To change only the default for the next launch without changing the current appr
 
 ## Handle approval requests in the TUI
 
-Tool calls that require approval open an **Approval Required** dialog showing the tool name and call arguments. For file edits, it also shows the planned diff so you can review changes before they are made.
+Tool calls that require approval open an **Approval Required** dialog showing the tool name and call arguments. For file edits, it also shows the planned diff so you can review changes before they are made. An argument too long to show at once, such as the whole content of a file, appears in a box with a scroll bar: scroll it with the mouse wheel, or click it and use the arrow keys, **Page Up**, **Page Down**, **Home** and **End** to read it to the end. Characters that could hide text or change the order it shows in, such as terminal control codes, appear as **�**; copying an argument still gives its original text.
 
-- Press **Y** to approve or **N** to decline, or click the corresponding button. You cannot close the dialog with **Esc**; you must explicitly approve or decline.
+- Press **Y** to approve or **N** to decline, or click the corresponding button. You cannot close the dialog with **Esc**. If you set a [human approval timeout](#set-the-human-approval-timeout), a request you have not answered when it runs out is declined.
 - When declining, you can provide a reason. The reason is sent to the agent to help it adjust its next steps. Once a reason is entered, the approve button is disabled.
 - In automatic mode, no dialog opens while the approval judge model evaluates a call; **Reviewing** appears, after a spinning icon, to the left of the approval mode label in the upper-right corner. Calls the model judges safe run without a dialog. If the model judges a call suspicious, the dialog opens with the title **Flagged by Auto-Review**, shows the reason, and waits for a person to decide. The cursor starts in the reason field so that a stray key press does not approve the call: type a reason and decline, or press **Tab** to move to the buttons. If the approval judge model is unavailable, or evaluation fails or times out, the dialog opens for a person to decide instead of approving the tool call automatically.
 - To see each call while it is evaluated, press **F10** to open **Settings** and turn off **Show the approval dialog only when Auto-Review flags a call** on the **Security** tab. The dialog then opens at once and shows **Evaluating**: it closes by itself if the model judges the call safe, and you can approve or decline before evaluation finishes.
@@ -115,3 +115,11 @@ Other ways of running iCode use the following approval modes and switching metho
 - **Headless CLI (`icode run`)**: Always bypasses approval and provides no approval-related options.
 - **iCode ACP server**: Defaults to manual mode. Use `icode acp --approval manual|auto|bypass` to set the initial mode. ACP clients that support this capability can also switch the current session's mode.
 - **Browser-hosted TUI (`icode serve`)**: Use the TUI operations described earlier to switch approval modes and handle approval requests.
+
+## Set the human approval timeout
+
+Press **F10** → **Settings** → **Security**, then set **Human approval timeout (seconds)** in the **Approval** section. This setting applies to both the TUI and ACP clients. The default is **0 (no timeout)**; positive values set a deadline in seconds. Negative values are adjusted to **0**. Restart iCode (the TUI or ACP server) after saving.
+
+With a positive timeout configured, the TUI timer starts when the approval dialog is shown and the call is ready for a human decision. Waiting behind another approval dialog and preparing its content (including file diffs) do not use up the timeout. In ACP, timing starts when the server sends the human approval request. If no response arrives before the timeout, iCode rejects that tool call.
+
+Without a timeout, a request waits until you approve or decline it, it is cancelled, or the session closes. Stopping the ACP server also ends any approval that is still waiting.

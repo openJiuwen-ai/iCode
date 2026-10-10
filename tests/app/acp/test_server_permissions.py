@@ -16,6 +16,7 @@ from acp.helpers import text_block
 
 from chrys.app.acp.bridge import AcpEventBridge
 from chrys.app.acp.server import ChrysAcpServer
+from chrys.foundation.config.settings_store import load_settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     ApprovalCancelled,
@@ -301,7 +302,7 @@ async def test_late_permission_allow_after_cancel_is_ignored() -> None:
 
 
 @pytest.mark.anyio
-async def test_wedged_permission_client_times_out_server_side() -> None:
+async def test_wedged_permission_client_times_out_with_configured_seconds() -> None:
     async def _never_reply(_session_id: str, _tool_call: Any) -> acp_schema.RequestPermissionResponse:
         await asyncio.Future()
         raise AssertionError("unreachable after timeout")
@@ -314,7 +315,9 @@ async def test_wedged_permission_client_times_out_server_side() -> None:
     server = ChrysAcpServer(  # type: ignore[arg-type]
         _FakeManager(host),
         initial_vision=False,
-        permission_timeout_seconds=0.01,
+        permission_timeout_seconds=load_settings(
+            env={"CHRYS_APPROVAL_TIMEOUT_SECONDS": "1"}
+        ).settings.approval_timeout_seconds,
     )
     server.on_connect(_FakeClient(permission_responder=_never_reply))
     responses: list[ApprovalResponse] = []
@@ -324,7 +327,7 @@ async def test_wedged_permission_client_times_out_server_side() -> None:
 
     await host.event_bus.subscribe(ApprovalResponse, _collect)
 
-    response = await asyncio.wait_for(server.prompt([text_block("run")], session_id="s1"), timeout=1)
+    response = await asyncio.wait_for(server.prompt([text_block("run")], session_id="s1"), timeout=3)
 
     assert response.stop_reason == "end_turn"
     assert len(responses) == 1
@@ -711,3 +714,71 @@ async def test_failed_permission_request_rejects_tool_call() -> None:
     assert len(responses) == 1
     assert responses[0].approved is False
     assert responses[0].reason == "ACP permission request failed or was cancelled."
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("explicit_zero", [False, True])
+async def test_unlimited_permission_wait_accepts_a_later_response(monkeypatch, explicit_zero: bool) -> None:
+    from types import ModuleType
+
+    from chrys.app.acp import server as server_module
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    timeouts: list[float | None] = []
+    real_wait = asyncio.wait
+
+    async def observed_wait(tasks, *, timeout, return_when):
+        timeouts.append(timeout)
+        entered.set()
+        return await real_wait(tasks, timeout=timeout, return_when=return_when)
+
+    shadow = ModuleType("asyncio")
+    shadow.__dict__.update(vars(asyncio))
+    shadow.wait = observed_wait
+    monkeypatch.setattr(server_module, "asyncio", shadow)
+
+    async def reply_later(_session_id: str, _tool_call: Any) -> acp_schema.RequestPermissionResponse:
+        await release.wait()
+        return acp_schema.RequestPermissionResponse(
+            outcome=acp_schema.AllowedOutcome(outcome="selected", optionId="allow")
+        )
+
+    host = _FakeHost(
+        event_bus=EventBus(),
+        events=[ApprovalRequest(request_id="unlimited", tool_name="bash", args={}, session_id="s1")],
+        outcome=EndTurn(),
+    )
+    options = {"permission_timeout_seconds": 0} if explicit_zero else {}
+    server = ChrysAcpServer(_FakeManager(host), initial_vision=False, **options)  # type: ignore[arg-type]
+    server.on_connect(_FakeClient(permission_responder=reply_later))
+    responses: list[ApprovalResponse] = []
+
+    async def collect(event: ApprovalResponse) -> None:
+        responses.append(event)
+
+    await host.event_bus.subscribe(ApprovalResponse, collect)
+    task = asyncio.create_task(server.prompt([text_block("run")], session_id="s1"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert timeouts == [None]
+        assert not responses
+        assert not task.done()
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
+        assert len(responses) == 1
+        assert responses[0].approved is True
+        assert not server._pending_permission_tasks
+        assert not server._pending_permission_cancels
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("seconds", [-1, float("inf"), float("nan")])
+def test_permission_timeout_rejects_invalid_deadlines(seconds: float) -> None:
+    host = _FakeHost(event_bus=EventBus(), events=[], outcome=EndTurn())
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        ChrysAcpServer(_FakeManager(host), initial_vision=False, permission_timeout_seconds=seconds)  # type: ignore[arg-type]

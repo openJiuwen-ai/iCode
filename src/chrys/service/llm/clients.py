@@ -255,6 +255,7 @@ def _build_profile_http_client(
         from openai import DefaultAsyncHttpxClient as HTTPClient
 
     from chrys.service.llm.proxy_route import ProxyRouter
+    from chrys.service.llm.request_tracking import build_request_tracking_hooks
     from chrys.service.llm.route_facts import build_route_hooks
 
     kwargs: dict[str, Any] = {
@@ -265,6 +266,9 @@ def _build_profile_http_client(
     if profile.bypass_proxy:
         kwargs["mounts"] = dict(BYPASS_PROXY_MOUNTS)
     event_hooks = build_route_hooks(ProxyRouter.from_client_config(bypass_proxy=profile.bypass_proxy))
+    tracking_hooks = build_request_tracking_hooks()
+    for event in ("request", "response"):
+        event_hooks[event].extend(tracking_hooks[event])
     if raw_http_log_path is not None:
         from chrys.service.llm.raw_http_log import build_raw_http_event_hooks
 

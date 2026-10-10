@@ -31,6 +31,7 @@ _KEY_SHAPED = re.compile(r"(?:openai|anthropic|deepseek)\.[A-Za-z0-9_.]+|_chrys_
 
 KEY_SHAPED_LITERALS = frozenset(
     {
+        "_chrys_request_attempt_id",
         "anthropic.cache_creation_input_tokens",
         "anthropic.cache_read_input_tokens",
         "deepseek.prompt_cache_hit_tokens",

@@ -604,7 +604,7 @@ async def test_theme_and_locale_refresh_invalidate_both_dashboard_cache_levels(t
             -999,
         )
         strip_marker = (-999, -999, -999)
-        dashboard._presentation_cache[presentation_marker] = (Text("stale"),)
+        dashboard._presentation_cache[presentation_marker] = ((Text("stale"),), 5)
         view._strips[strip_marker] = view.render_line(0)
 
         pilot.app.theme = "textual-light"
@@ -613,7 +613,7 @@ async def test_theme_and_locale_refresh_invalidate_both_dashboard_cache_levels(t
         assert presentation_marker not in dashboard._presentation_cache
         assert strip_marker not in view._strips
 
-        dashboard._presentation_cache[presentation_marker] = (Text("stale"),)
+        dashboard._presentation_cache[presentation_marker] = ((Text("stale"),), 5)
         view._strips[strip_marker] = view.render_line(0)
         dashboard.refresh_localization()
 

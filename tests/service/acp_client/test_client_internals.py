@@ -7,11 +7,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import json
 from pathlib import Path
 
 import pytest
 from acp.connection import StreamDirection, StreamEvent
 from acp.exceptions import RequestError
+from acp.schema import AgentMessageChunk, ImageContentBlock, SessionNotification, ToolCallProgress
 from acp.task import TaskSupervisor
 
 from chrys.foundation.models.ask_user import ASK_USER_META_COLLISION_KEYS
@@ -447,15 +449,16 @@ async def test_framing_pump_turns_reader_limit_overflow_into_terminal_failure() 
     assert "oversized" in failures[0].detail
 
 
-async def test_notification_frames_ride_the_retained_payload_caps() -> None:
+async def test_notification_frames_ride_the_notification_caps() -> None:
     raw_reader = asyncio.StreamReader(limit=ACP_STDIO_LIMIT_BYTES)
     sdk_reader = asyncio.StreamReader(limit=ACP_STDIO_LIMIT_BYTES)
     pause_transport = client_mod._PauseTransport()
     sdk_reader.set_transport(pause_transport)
     failures: list[BaseException] = []
     small = b'{"jsonrpc":"2.0","method":"_zeta/note","params":{"note":"ok"}}\n'
-    oversized = b'{"jsonrpc":"2.0","method":"_zeta/blob","params":{"blob":"' + b"y" * (1024 * 1024 + 64) + b'"}}\n'
-    raw_reader.feed_data(small + oversized)
+    long_string = b'{"jsonrpc":"2.0","method":"_zeta/blob","params":{"blob":"' + b"y" * (1024 * 1024 + 64) + b'"}}\n'
+    wide = b'{"jsonrpc":"2.0","method":"_zeta/blob","params":{"blob":[' + b"0," * 5000 + b"0]}}\n"
+    raw_reader.feed_data(small + long_string + wide)
     raw_reader.feed_eof()
     pump = client_mod._FramingPump(
         raw_reader,
@@ -474,9 +477,10 @@ async def test_notification_frames_ride_the_retained_payload_caps() -> None:
     assert task is not None
     await task
 
-    # The capped notification passes through untouched; the oversized one is
-    # never fed to the SDK side.
+    # Long strings pass through untouched (only the reader limit bounds them);
+    # the one past the item cap is never fed to the SDK side.
     assert await sdk_reader.readline() == small
+    assert await sdk_reader.readline() == long_string
     assert await sdk_reader.readline() == b""
     assert len(failures) == 1
     assert isinstance(failures[0], AcpTransportError)
@@ -533,6 +537,106 @@ async def test_maximum_tool_image_update_passes_pump_and_observer_caps() -> None
     updates = client_mod._ObserverBuffer()
     updates.put_update(params)
     assert await updates.get() == params
+
+
+@pytest.mark.parametrize("text", ["写入文件" * 4096, "😀" * 4096], ids=["cjk", "emoji"])
+async def test_update_frames_are_charged_the_bytes_the_agent_sent(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    params = {
+        "sessionId": "active",
+        "update": {"sessionUpdate": "tool_call_update", "toolCallId": "write-1", "rawOutput": text},
+    }
+    # Unescaped UTF-8, as an agent may write it; escaped, the same text is far larger.
+    message = {"jsonrpc": "2.0", "method": "session/update", "params": params}
+    frame = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+    assert len(client_mod.encode_protocol_json(params)) > len(frame)
+
+    raw_reader = asyncio.StreamReader(limit=ACP_STDIO_LIMIT_BYTES)
+    sdk_reader = asyncio.StreamReader(limit=ACP_STDIO_LIMIT_BYTES)
+    pause_transport = client_mod._PauseTransport()
+    sdk_reader.set_transport(pause_transport)
+    failures: list[BaseException] = []
+    raw_reader.feed_data(frame)
+    raw_reader.feed_eof()
+    pump = client_mod._FramingPump(
+        raw_reader,
+        sdk_reader,
+        pause_transport,
+        stateful=lambda: True,
+        closing=lambda: True,
+        preflight=lambda message: message,
+        on_response=lambda message: None,
+        active_session=lambda: "active",
+        fail=failures.append,
+    )
+
+    pump.start()
+    task = pump._task
+    assert task is not None
+    await task
+
+    assert failures == []
+    forwarded = await sdk_reader.readline()
+    assert forwarded == frame
+
+    # A frame at the stdio limit fits an empty buffer: the budget is larger,
+    # and it charges what the frame spent.
+    assert ACP_STDIO_LIMIT_BYTES < transport_mod._MAX_UPDATE_BYTES
+    monkeypatch.setattr(transport_mod, "_MAX_UPDATE_BYTES", len(frame))
+    updates = client_mod._ObserverBuffer()
+    updates.put_update(json.loads(forwarded)["params"])
+    assert await updates.get() == params
+
+
+@pytest.mark.parametrize("spelling", ["toolCallId", "tool_call_id", "messageId", "message_id"])
+def test_update_ids_keep_a_length_cap_under_every_spelling_the_sdk_reads(spelling: str) -> None:
+    limit = protocol_mod._MAX_UPDATE_ID_CHARS
+    # The text beside the id has no cap.
+    text = "x" * (protocol_mod._MAX_PAYLOAD_BYTES + 1)
+    is_tool_call = spelling in {"toolCallId", "tool_call_id"}
+
+    def update(identifier: str) -> dict[str, object]:
+        if is_tool_call:
+            body = {"sessionUpdate": "tool_call_update", spelling: identifier, "rawOutput": text}
+        else:
+            body = {
+                "sessionUpdate": "agent_message_chunk",
+                spelling: identifier,
+                "content": {"type": "text", "text": text},
+            }
+        return {"sessionId": "sess", "update": body}
+
+    updates = client_mod._ObserverBuffer()
+    at_limit = update("i" * limit)
+    updates.put_update(at_limit)
+    # The spelling reaches the id the translator keeps.
+    parsed = SessionNotification.model_validate(at_limit).update
+    assert isinstance(parsed, ToolCallProgress if is_tool_call else AgentMessageChunk)
+    assert (parsed.tool_call_id if isinstance(parsed, ToolCallProgress) else parsed.message_id) == "i" * limit
+
+    with pytest.raises(AcpTransportError, match="retained-payload caps"):
+        updates.put_update(update("i" * (limit + 1)))
+    assert len(updates._items) == 1
+
+
+@pytest.mark.parametrize("tag", ["sessionUpdate", "session_update"])
+@pytest.mark.parametrize("mime", ["mimeType", "mime_type"])
+def test_tool_images_are_checked_under_every_spelling_the_sdk_reads(tag: str, mime: str) -> None:
+    params = {
+        "sessionId": "active",
+        "update": {
+            tag: "tool_call_update",
+            "toolCallId": "image",
+            "content": [{"type": "content", "content": {"type": "image", "data": "not base64!", mime: "image/png"}}],
+        },
+    }
+    # The SDK takes this spelling as a tool image.
+    parsed = SessionNotification.model_validate(params).update
+    assert isinstance(parsed, ToolCallProgress)
+    assert parsed.content is not None
+    assert isinstance(parsed.content[0].content, ImageContentBlock)
+
+    with pytest.raises(AcpTransportError, match="retained-payload caps"):
+        client_mod._ObserverBuffer().put_update(params)
 
 
 def test_tool_image_update_exemption_keeps_decoded_size_cap() -> None:
@@ -621,6 +725,20 @@ def test_retained_payload_caps_bound_depth_bytes_and_items(monkeypatch: pytest.M
     monkeypatch.setattr(protocol_mod, "_MAX_STRING_CHARS", 4)
     with pytest.raises(ValueError, match="string"):
         client_mod._validate_payload_caps({"oversized-key": 1})
+
+
+def test_agent_messages_take_a_larger_item_total_than_responses() -> None:
+    # 500 lists of nine: 5,002 items, each collection under the 4,096 cap.
+    wide = {"changes": [[index] * 9 for index in range(500)]}
+    protocol_mod._validate_notification_payload_caps(wide)
+    protocol_mod._validate_request_payload_caps(wide)
+    with pytest.raises(ValueError, match="total"):
+        protocol_mod._validate_payload_caps(wide)
+
+    flood = {"changes": [[0] * 4_000 for _ in range(17)]}
+    for validate in (protocol_mod._validate_notification_payload_caps, protocol_mod._validate_request_payload_caps):
+        with pytest.raises(ValueError, match="total"):
+            validate(flood)
 
 
 def test_json_rpc_envelope_caps_retained_id_and_method_fields() -> None:
@@ -894,18 +1012,62 @@ async def test_session_announcement_requires_a_capped_result_and_bounded_id(tmp_
     assert malformed._active_session_id() is None
 
 
-def test_update_payloads_ride_the_retained_payload_caps(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(protocol_mod, "_MAX_STRING_CHARS", 8)
+def test_update_payloads_ride_the_notification_caps(monkeypatch: pytest.MonkeyPatch) -> None:
     updates = client_mod._ObserverBuffer()
+    # A sub-agent streaming a large file: one string past every response cap.
+    long_text = {
+        "sessionId": "sess",
+        "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "x" * (protocol_mod._MAX_PAYLOAD_BYTES + 1)},
+        },
+    }
 
+    updates.put_update(long_text)
+
+    assert [params for params, _size in updates._items] == [long_text]
+    monkeypatch.setattr(protocol_mod, "_MAX_COLLECTION_ITEMS", 4)
     with pytest.raises(AcpTransportError, match="retained-payload caps"):
-        updates.put_update(
-            {
-                "sessionId": "sess",
-                "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "x" * 64}},
-            }
-        )
-    assert not updates._items
+        updates.put_update({"sessionId": "sess", "update": {"sessionUpdate": "plan", "entries": [1, 2, 3, 4, 5]}})
+    assert len(updates._items) == 1
+
+
+def test_agent_requests_are_bounded_by_bytes_not_by_string_length(tmp_path: Path) -> None:
+    from .helpers import CallbackRecorder, make_spec
+
+    client = client_mod.AcpAgentClient(make_spec(tmp_path), CallbackRecorder())
+    client._session_id = "sess-1"
+
+    def permission_request(content: str) -> dict[str, object]:
+        return {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "sess-1",
+                "toolCall": {"toolCallId": "write-1", "title": "Write", "rawInput": {"content": content}},
+                "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}],
+            },
+        }
+
+    # A file the agent asks to write: past every response cap, within the request cap.
+    large = "x" * (protocol_mod._MAX_PAYLOAD_BYTES + 1)
+    admitted = permission_request(large)
+    assert client._preflight_request(dict(admitted)) == admitted
+    client_mod._validate_ext_params("_zeta/write", {"sessionId": "sess-1", "content": large}, "sess-1")
+
+    # Measured as the agent sent it: a two-byte script is three times larger
+    # escaped, and still fits a frame once re-encoded for the SDK reader.
+    accented = "é" * (protocol_mod._MAX_REQUEST_PAYLOAD_BYTES // 2 - 1024)
+    admitted = permission_request(accented)
+    assert client._preflight_request(dict(admitted)) == admitted
+    assert len(client_mod.encode_protocol_json(admitted)) > protocol_mod._MAX_REQUEST_PAYLOAD_BYTES
+    assert len(client_mod.encode_protocol_json(admitted)) < ACP_STDIO_LIMIT_BYTES
+
+    oversized = "x" * protocol_mod._MAX_REQUEST_PAYLOAD_BYTES
+    assert client._preflight_request(permission_request(oversized))["params"] == {}
+    with pytest.raises(RequestError):
+        client_mod._validate_ext_params("_zeta/write", {"sessionId": "sess-1", "content": oversized}, "sess-1")
 
 
 async def test_deterministic_connect_failures_survive_a_concurrent_eof_terminal(tmp_path) -> None:

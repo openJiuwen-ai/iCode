@@ -208,6 +208,7 @@ class BackendEventCallbacks:
     handle_ask_user_response: Callable[[str, tuple[AskUserAnswer, ...]], object]
     question_inline_preferred: Callable[[], bool]
     approval_defer_while_judging: Callable[[], bool]
+    approval_timeout_seconds: Callable[[], float]
     post_gc_message: Callable[[GcAbsorbRequested | GcReclaimRequested], object]
     debug: Callable[[str, str], None]
     refresh_model_indicator: Callable[[], None]
@@ -300,6 +301,7 @@ class BackendEventHandler:
         self._approval_controller = ApprovalQueueController(
             self._dialog_gateway,
             render_message=self._render_display,
+            timeout_seconds=callbacks.approval_timeout_seconds,
         )
         self._question_controller = QuestionQueueController(self._dialog_gateway)
         self._agent_load_controller = AgentLoadDialogController(self._dialog_gateway)
@@ -1511,6 +1513,10 @@ class BackendEventHandler:
     def _accumulate_shell_snapshots(self, metadata: dict[str, object]) -> None:
         """Accumulate shell-detected file mutations from event metadata."""
         self._live_diff.accumulate_shell_snapshots(metadata)
+
+    def close_approval_waits(self) -> None:
+        """Release approval timers owned by this screen."""
+        self._approval().close()
 
     async def on_approval_request(self, event: ApprovalRequest) -> None:
         """Queue an approval request and (maybe) show its dialog.

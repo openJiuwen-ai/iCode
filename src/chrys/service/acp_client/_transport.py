@@ -36,10 +36,12 @@ from acp.task.state import IncomingMessage
 from . import protocol
 from .errors import AcpConfigError, AcpTransportError, classify_protocol_frame_error
 from .protocol import (
+    _validate_notification_payload_caps,
     _validate_payload_caps,
     _validate_update_payload_caps,
     encode_protocol_json,
     parse_protocol_json,
+    protocol_json_size,
     validate_json_rpc_envelope,
 )
 from .spec import AcpPromptUsage
@@ -131,8 +133,9 @@ class _TrackingStateStore(MessageStateStore):
             # duplicate must not overwrite the retained response or usage,
             # re-run the caps, or resurrect a caps-violated record.
             return None
-        # Retained record fields ride the same §7.4 caps as permission and
-        # ask-user payloads: without this, a handful of oversized responses
+        # Retained record fields ride the response caps, the tightest §7.4
+        # caps (requests and notifications carry agent-written text and get
+        # looser ones): without this, a handful of oversized responses
         # could park most of the attempt byte budget in ``_completed`` forever.
         # The flag is load-bearing beyond the raise: the SDK receive loop still
         # routes this same frame into resolve/reject afterwards (the observer
@@ -492,15 +495,17 @@ class _ObserverBuffer:
         self._closed = False
 
     def put_update(self, params: dict[str, Any]) -> None:
-        # Updates are retained (buffered) and then published, so they ride the
-        # same §7.4 caps as every other retained frame. Validated tool-image
-        # encodings are the sole exception because base64 expands the shared
-        # 3 MiB image limit beyond the generic string and payload ceilings.
+        # Updates ride the notification caps (nesting and item count) plus the
+        # id and tool-image checks. Their size is bounded by the stdio frame
+        # limit and this buffer's byte budget, not per string: a sub-agent
+        # writing a large file streams one long string that the translator
+        # only previews. The budget charges the bytes the frame spent, so one
+        # frame at the stdio limit fits an empty buffer whatever its script.
         try:
             _validate_update_payload_caps(params)
         except ValueError as exc:
             raise AcpTransportError("An ACP update exceeds the retained-payload caps.", cause=exc) from exc
-        size = len(encode_protocol_json(params))
+        size = protocol_json_size(params)
         if self._data_items >= _MAX_UPDATE_ITEMS or self._data_bytes + size > _MAX_UPDATE_BYTES:
             raise AcpTransportError("The ACP update buffer exceeded its safety budget.")
         self._items.append((params, size))
@@ -843,7 +848,7 @@ class _FramingPump:
                         continue
                     # The SDK re-parses every forwarded notification and the
                     # dispatcher caps only session/update, so ext/unknown
-                    # methods must ride the retained-payload caps here.
+                    # methods must ride the notification caps here.
                     # Notifications owe no response, so a violation is
                     # transport-fatal (matching put_update) rather than
                     # substituted like request params.
@@ -852,7 +857,7 @@ class _FramingPump:
                         if message.get("method") == _UPDATE_METHOD:
                             _validate_update_payload_caps(params)
                         else:
-                            _validate_payload_caps(params)
+                            _validate_notification_payload_caps(params)
                     except ValueError as exc:
                         raise _AcpProtocolLimitError(
                             "An ACP notification exceeds the retained-payload caps.",

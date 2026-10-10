@@ -32,9 +32,12 @@ from chrys.service.mutations.types import (
     TurnMutations,
 )
 from chrys.service.todos.tracker import TodoTracker
+from tests.support.acp_wire import acp_outgoing_json
 
 
 class _FakeClient:
+    """Records what the server sends, failing any payload the wire would reject."""
+
     def __init__(
         self,
         *,
@@ -61,9 +64,11 @@ class _FakeClient:
         tool_call: acp_schema.ToolCallUpdate,
         **kwargs: Any,
     ) -> acp_schema.RequestPermissionResponse:
-        self.permission_requests.append(
-            acp_schema.RequestPermissionRequest(options=options, sessionId=session_id, toolCall=tool_call, **kwargs)
+        request = acp_schema.RequestPermissionRequest(
+            options=options, sessionId=session_id, toolCall=tool_call, **kwargs
         )
+        acp_outgoing_json(request)
+        self.permission_requests.append(request)
         if self.permission_exc is not None:
             raise self.permission_exc
         if self.permission_responder is not None:
@@ -75,12 +80,16 @@ class _FakeClient:
         )
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        self.updates.append(acp_schema.SessionNotification(sessionId=session_id, update=update, **kwargs))
+        notification = acp_schema.SessionNotification(sessionId=session_id, update=update, **kwargs)
+        acp_outgoing_json(notification)
+        self.updates.append(notification)
 
     async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
+        acp_outgoing_json(params)
         self.ext_notifications.append((method, params))
 
     async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        acp_outgoing_json(params)
         self.input_requests.append((method, params))
         if self.input_responder is not None:
             return await self.input_responder(method, params)

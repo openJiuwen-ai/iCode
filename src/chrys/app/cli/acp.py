@@ -12,9 +12,13 @@ from pathlib import Path
 from typing import cast
 
 import acp as acp_sdk
+from acp.agent.connection import AgentSideConnection
+from acp.core import DEFAULT_STDIO_BUFFER_LIMIT_BYTES
+from acp.stdio import stdio_streams
 
 from chrys.app.acp.server import ChrysAcpServer
 from chrys.app.acp.session_manager import AcpSessionManager
+from chrys.app.acp.transport import AbortableMessageSender
 from chrys.app.cli.launch_cwd import launch_cwd_missing_message
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
@@ -22,6 +26,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.config.spec import Source
 from chrys.foundation.config.warnings import settings_warning_events
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.startup import bootstrap_runtime
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -140,15 +145,36 @@ async def run_command(args: argparse.Namespace) -> int:
         agent_registry=agent_registry,
         model_registry=model_registry,
     )
-    server = ChrysAcpServer(manager, initial_vision=initial_vision)
+    server = ChrysAcpServer(
+        manager,
+        initial_vision=initial_vision,
+        permission_timeout_seconds=settings.approval_timeout_seconds,
+    )
     try:
-        # Runtime guarantee: the SDK dispatches structurally to the handlers
-        # advertised by Chrys; its Agent protocol also requires optional
-        # handlers that this server deliberately does not advertise.
-        await acp_sdk.run_agent(cast(acp_sdk.Agent, server), use_unstable_protocol=True)
+        await _serve_agent(server)
     finally:
         await manager.shutdown()
     return 0
+
+
+async def _serve_agent(server: ChrysAcpServer) -> None:
+    """Own the transport until its in-flight requests have drained."""
+    reader, writer = await stdio_streams(limit=DEFAULT_STDIO_BUFFER_LIMIT_BYTES)
+    # The SDK dispatches structurally; unadvertised optional handlers are absent.
+    connection = AgentSideConnection(
+        cast(acp_sdk.Agent, server),
+        writer,
+        reader,
+        listening=False,
+        use_unstable_protocol=True,
+        sender_factory=AbortableMessageSender,
+    )
+    try:
+        await connection.listen()
+    finally:
+        # Closing cancels SDK handlers and releases their prompt locks before
+        # manager.shutdown can wait on them, including after Ctrl-C or EOF.
+        await finish_close(asyncio.create_task(connection.close()))
 
 
 def _exception_message(exc: BaseException) -> str:

@@ -198,9 +198,13 @@ class WireClient(ChatTelemetryLayer, BaseChatClient):
         # The trajectory exchange trace is a loop-to-client handle, never a
         # provider request parameter: drop it before any kwargs are forwarded.
         forwarded_trace = kwargs.pop(TRAJECTORY_EXCHANGE_KWARG, None)
-        if self._observer is None:
-            return self._dispatch(messages, options, stream=stream, kwargs=kwargs)
-        call = self._observer.begin(messages, options, stream=stream, forwarded_trace=forwarded_trace)
+        from chrys.service.llm.observer import WireCall
+
+        call = (
+            self._observer.begin(messages, options, stream=stream, forwarded_trace=forwarded_trace)
+            if self._observer is not None
+            else WireCall(None, stream=stream)
+        )
         try:
             result = self._dispatch(messages, options, stream=stream, kwargs=kwargs)
         except BaseException as exc:
@@ -241,6 +245,11 @@ class WireClient(ChatTelemetryLayer, BaseChatClient):
         """Return the stream of one request; nothing is sent until it is consumed."""
 
     def _stamp_request_headers(self, request: dict[str, Any]) -> None:
-        """Last step of building a request: add this client's Chrys metadata headers."""
+        """Last step of building a request: add this client's Chrys metadata headers.
+
+        ``Chrys-Request-Attempt-Id`` is not added here: SDK retries and redirects
+        resend this one request, so the profile HTTP client's request hook
+        (``service/llm/request_tracking.py``) stamps a fresh id on every attempt.
+        """
         if self._request_headers is not None:
             self._request_headers.stamp(request)

@@ -4,6 +4,7 @@
 
 MODEL_ID_HEADER = "Chrys-Model-Id"
 PARENT_SESSION_ID_HEADER = "Chrys-Parent-Session-Id"
+REQUEST_ATTEMPT_ID_HEADER = "Chrys-Request-Attempt-Id"
 SESSION_ID_HEADER = "Chrys-Session-Id"
 X_PARENT_SESSION_ID_HEADER = "X-Parent-Session-ID"
 X_SESSION_ID_HEADER = "X-Session-ID"

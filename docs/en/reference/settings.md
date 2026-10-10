@@ -62,6 +62,7 @@ The `approval` keys control approval behavior when an agent requests an operatio
 | YAML key | Environment variable | Default | Type, values, and effect |
 | --- | --- | --- | --- |
 | `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | String; `manual` for manual approval, `auto` for automatic approval, or `bypass` to bypass approval. Setting the default mode does not switch the current session's mode |
+| `approval.timeout_seconds` | `CHRYS_APPROVAL_TIMEOUT_SECONDS` | `0` | Integer; seconds to wait for human approval in TUI and ACP. `0` disables the timeout; positive values set a deadline. Negative values are raised to `0`. Timeout rejects the tool call. Restart iCode to apply |
 | `ui.approval.defer_while_judging` | None | `true` | Boolean; in automatic mode, whether the TUI opens the approval dialog only when the approval judge model flags a call or evaluation fails. `false` opens it at once while the call is evaluated. The ACP server and `icode run` ignore it |
 | `project.config_enabled` | None | `false` | Boolean; whether to load project settings for each working directory. Must be enabled in user settings |
 | `project.hooks_enabled` | None | `false` | Boolean; whether to load project hooks from `.chrys/hooks` in the working directory. Must be enabled in user settings. Does not affect user-level hooks |

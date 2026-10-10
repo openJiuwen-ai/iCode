@@ -9,7 +9,7 @@ from contextlib import suppress
 
 from textual.geometry import Region
 
-from chrys.app.tui.widgets.diff_view.compute import compute_highlighted_lines, compute_hunks
+from chrys.app.tui.widgets.diff_view.compute import compute_highlighted_lines, compute_hunks, shown_code
 from chrys.app.tui.widgets.diff_view.rows import DiffRow, code_width, number_width, unified_rows
 from chrys.app.tui.widgets.diff_view.unified import UnifiedDiffLines
 
@@ -39,8 +39,8 @@ class InlineUnifiedDiffLines(UnifiedDiffLines):
         super().__init__((), number_digits=1, code_width=1, annotations=annotations, name=name, id=id, classes=classes)
         self.path_before = path_before
         self.path_after = path_after
-        self.code_before = code_before.expandtabs()
-        self.code_after = code_after.expandtabs()
+        self.code_before = code_before
+        self.code_after = code_after
         self.max_display_lines = max_display_lines
         self.auto_height = auto_height
         self._prepared = False
@@ -60,7 +60,12 @@ class InlineUnifiedDiffLines(UnifiedDiffLines):
     def _compute_rows(self) -> tuple[list[DiffRow], int, int]:
         hunks = compute_hunks(self.code_before, self.code_after)
         before, after = compute_highlighted_lines(
-            self.code_before, self.code_after, self.path_before, self.path_after, hunks, hunks_only=True
+            shown_code(self.code_before),
+            shown_code(self.code_after),
+            self.path_before,
+            self.path_after,
+            hunks,
+            hunks_only=True,
         )
         rows = unified_rows(hunks, before, after)
         return rows, number_width(rows), code_width(rows)

@@ -399,6 +399,7 @@ class FileMutation:
     contested: bool = False  # peer claim overlaps but the mutation stays ours
     t_start: float | None = None  # write-interval lower bound (see docstring)
     t_end: float | None = None  # write-interval upper bound
+    tool_operation_id: str | None = None  # stable tool occurrence, distinct from provider call_id
 
     def __post_init__(self) -> None:
         if self.provenance is None:
@@ -414,6 +415,8 @@ class FileMutation:
             # Always written — provenance is never "absent" semantically.
             "provenance": self.provenance.value if self.provenance else default_provenance(self.source).value,
         }
+        if self.tool_operation_id is not None:
+            d["tool_operation_id"] = self.tool_operation_id
         if self.old_path is not None:
             d["old_path"] = self.old_path
         if self.before_hash is not None:
@@ -440,6 +443,7 @@ class FileMutation:
             operation=MutationOp(d["operation"]),
             source=source,
             tool_call_id=d["tool_call_id"],
+            tool_operation_id=d.get("tool_operation_id"),
             timestamp=d["timestamp"],
             old_path=d.get("old_path"),
             before_hash=d.get("before_hash"),

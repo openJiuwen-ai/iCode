@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from openai.types.responses.parsed_response import ParsedResponse
@@ -37,6 +36,7 @@ from chrys.kernel import (
     UsageDetails,
 )
 from chrys.service.llm.chat_completions.decode import add_deepseek_cache_usage, refused_calls_error
+from chrys.service.llm.openai_timestamps import openai_created_at_iso
 from chrys.service.profiles.models.options import effective_store_option
 
 from .hosted import decode_hosted_item, to_payload
@@ -427,6 +427,6 @@ def finish_reason(response: Any) -> Literal["length", "content_filter"] | None:
             return None
 
 
-def timestamp(created_at: float) -> str:
-    """A response's creation time in the chat response's UTC format."""
-    return datetime.fromtimestamp(created_at, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+def timestamp(created_at: Any) -> str | None:
+    """A response's creation time in the chat response's UTC format, ``None`` when it is no usable time."""
+    return openai_created_at_iso(created_at)

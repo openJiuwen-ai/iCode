@@ -525,7 +525,18 @@ async def test_the_last_words_side_call_reports_an_exchange_of_its_own(
     assert note == "Sunny for note."
     started = sink.only(EventType.MODEL_EXCHANGE_STARTED)
     finished = sink.only(EventType.MODEL_EXCHANGE_FINISHED)
-    assert sink.event_types == [EventType.MODEL_EXCHANGE_STARTED, EventType.MODEL_EXCHANGE_FINISHED]
+    assert sink.event_types == [
+        EventType.MODEL_EXCHANGE_STARTED,
+        EventType.MODEL_REQUEST_PREPARED,
+        EventType.MODEL_REQUEST_HEADERS_RECEIVED,
+        EventType.MODEL_EXCHANGE_FINISHED,
+    ]
+    prepared = sink.only(EventType.MODEL_REQUEST_PREPARED)
+    received = sink.only(EventType.MODEL_REQUEST_HEADERS_RECEIVED)
+    assert prepared.operation_id == received.operation_id == started.operation_id
+    assert prepared.actor == received.actor == started.actor
+    assert prepared.payload["request_attempt_id"] == received.payload["request_attempt_id"]
+    assert finished.payload["request_attempt_id"] == prepared.payload["request_attempt_id"]
     for event in (started, finished):
         assert (event.actor.kind, event.actor.role) == ("side_call", "completer")
         assert event.operation_id == started.operation_id

@@ -13,6 +13,7 @@ from chrys.app.tui.screens.main.dialog_controllers import (
     ApprovalBypassDecision,
     ApprovalDialogHandle,
     ApprovalResponseWorker,
+    ApprovalTimer,
     ImageCompressionDialogHandle,
     QuestionDialogHandle,
     QuestionDialogResult,
@@ -98,6 +99,9 @@ class UiGateway:
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None:
         self._view.run_worker(awaitable, group=group)
+
+    def set_timer(self, delay: float, callback: Callable[[], None]) -> ApprovalTimer:
+        return self._view.set_timer(delay, callback)
 
     async def publish_auto_fulfill_blocked(self, event: ApprovalReviewed) -> None:
         await self._callbacks.publish_auto_fulfill_blocked(event)

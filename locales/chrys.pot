@@ -3,7 +3,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.29.1\n"
+"Project-Id-Version: Chrys 0.29.2\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -845,6 +845,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"c8e65280cb85901d51d8d710a52c18865fd88c7247b342d14df96d915ed2b0fa","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
 msgid "settings.approval.default_mode.label"
+msgstr ""
+
+#. English: Human approval timeout (seconds)
+#. chrys-meta={"fingerprint":"441876029e5dbb9db98094b59a808e0675f515d4b4680e3f1d42a308dbe8218e","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.approval.timeout_seconds.label"
 msgstr ""
 
 #. English: Lowering {source}={raw} to the maximum of {limit}.
@@ -8880,6 +8886,19 @@ msgstr ""
 msgid "tui.session_title.button.save"
 msgstr ""
 
+#. English: Copy ID
+#. chrys-meta={"fingerprint":"cc7378ea90127bdd93bf5cf76bdaed4e0260e1306fac9ad21199603cbff6d77e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.copy_id"
+msgstr ""
+
+#. English: This session has no folder yet. It is created when the session is
+#. first saved.
+#. chrys-meta={"fingerprint":"156154a682795f54d7ab5f831c3d19466434ac728c1baece81f883a6118ead7d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.folder_missing"
+msgstr ""
+
 #. English: A custom title for this session. Leave empty for the auto-generated
 #. title.
 #. chrys-meta={"fingerprint":"fcba8c71ea44b184796ce3f1705ec6527989d18a22cf941c1c4295c204ee001d","multiline":false,"placeholders":[]}
@@ -8887,10 +8906,34 @@ msgstr ""
 msgid "tui.session_title.hint"
 msgstr ""
 
+#. English: Session ID copied
+#. chrys-meta={"fingerprint":"779da1bac1459613153f8bac9e35e0ded747ecdd0600a1bc7e26447806ac20b7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.id_copied"
+msgstr ""
+
+#. English: Could not open the session folder: {error}
+#. chrys-meta={"fingerprint":"41afc715fbd33121409322b36ea1604947e59ba04deebcd581eb7a3bf55110a3","multiline":false,"placeholders":["error"]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.open_failed"
+msgstr ""
+
+#. English: Open folder
+#. chrys-meta={"fingerprint":"c1ed71e74a8fee72d035f7f727db12cc77290c91452ddd09e24eb6f9397e97bd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.open_folder"
+msgstr ""
+
 #. English: Session title
 #. chrys-meta={"fingerprint":"8c32d741002a8621d63a43e4ba8879266e4c2cddffe49e585fb85cc8ac4e6548","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/session_title.py
 msgid "tui.session_title.placeholder"
+msgstr ""
+
+#. English: Session
+#. chrys-meta={"fingerprint":"ff5347f05cc1e039d9010c2905058f253aa7ab5e0fb4e243daf5d0787404db29","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_title.py
+msgid "tui.session_title.session_label"
 msgstr ""
 
 #. English: Session Title
@@ -9408,6 +9451,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"533cc7559a60a7eeef7199a6f6f54fa72a7000501081bb92e42efef54dbd033c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.defer_while_judging"
+msgstr ""
+
+#. English: Seconds to wait for human approval in TUI and ACP; timeout rejects
+#. the call. Default 0 means no timeout. Restart to apply.
+#. chrys-meta={"fingerprint":"2832be4bf24136d03294cd2ba97b7b7f272434f8a94d710fae5522b3fd91a49e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.approval.timeout_seconds"
 msgstr ""
 
 #. English: Remember what you type so you can bring it back later with Ctrl+R.

@@ -134,8 +134,8 @@ async def test_chrys_built_client_matches_the_sdk_default(
         assert chrys_built.base_url == httpx.URL("")
         assert sdk_built.event_hooks == {"request": [], "response": []}
         assert _hook_names(chrys_built) == {
-            "request": ["build_route_hooks.<locals>.stamp"],
-            "response": ["build_route_hooks.<locals>.record"],
+            "request": ["build_route_hooks.<locals>.stamp", "build_request_tracking_hooks.<locals>.prepared"],
+            "response": ["build_route_hooks.<locals>.record", "build_request_tracking_hooks.<locals>.received"],
         }
     finally:
         await sdk_built.aclose()

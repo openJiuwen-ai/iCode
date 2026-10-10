@@ -22,6 +22,7 @@ from chrys.app.tui.screens.main.dialog_controllers import (
     AnswerQuestionDialogResult,
     ApprovalBypassDecision,
     ApprovalDialogHandle,
+    ApprovalTimer,
     ImageCompressionDialogHandle,
     InlineQuestionDialogResult,
     QuestionDialogHandle,
@@ -223,6 +224,9 @@ class MainScreenViewAdapter:
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None:
         self._screen.run_worker(awaitable, exclusive=False, group=group)
+
+    def set_timer(self, delay: float, callback: Callable[[], None]) -> ApprovalTimer:
+        return self._screen.set_timer(delay, callback)
 
     def call_after_refresh(self, callback: Callable[[], None]) -> None:
         self._screen.call_after_refresh(callback)

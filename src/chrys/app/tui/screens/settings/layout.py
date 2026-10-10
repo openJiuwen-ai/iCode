@@ -94,6 +94,13 @@ _HINT_APPROVAL_DEFAULT_MODE = msg(
         "/approval bypass applies to the current launch only and saves auto."
     ),
 )
+_HINT_APPROVAL_TIMEOUT_SECONDS = msg(
+    "tui.settings.hint.approval.timeout_seconds",
+    fallback=(
+        "Seconds to wait for human approval in TUI and ACP; timeout rejects the call. "
+        "Default 0 means no timeout. Restart to apply."
+    ),
+)
 _HINT_APPROVAL_DEFER_WHILE_JUDGING = msg(
     "tui.settings.hint.approval.defer_while_judging",
     fallback=(
@@ -349,6 +356,7 @@ TABS: tuple[SettingsTab, ...] = (
                 _SECTION_APPROVAL,
                 (
                     SettingRowSpec("approval.default_mode", hint=_HINT_APPROVAL_DEFAULT_MODE),
+                    SettingRowSpec("approval.timeout_seconds", hint=_HINT_APPROVAL_TIMEOUT_SECONDS),
                     SettingRowSpec("ui.approval.defer_while_judging", hint=_HINT_APPROVAL_DEFER_WHILE_JUDGING),
                 ),
             ),

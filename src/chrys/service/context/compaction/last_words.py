@@ -60,6 +60,7 @@ from chrys.kernel import (
     LastWordsToolCallError,
     Message,
     TokenizerProtocol,
+    messages_contain_tool_calls,
     raise_if_context_window_filled,
     report_wire_progress,
 )
@@ -1112,7 +1113,8 @@ class LastWordsGenerator:
                         request_note=f"fallback stage: {candidate.stage}",
                     )
                     continue
-                if transient_attempt >= max_transient_retries or not is_retryable(exc):
+                retryable = is_retryable(exc) or isinstance(exc, LastWordsToolCallError)
+                if transient_attempt >= max_transient_retries or not retryable:
                     if accepted := self._accept_pending_format_note(
                         format_state,
                         reason="corrective retry failed at the provider",
@@ -1645,6 +1647,9 @@ class LastWordsGenerator:
         if usage_details:
             self._report_side_call_usage(usage_details)
         raise_if_context_window_filled(response)
+        # As in the completer's guard: a reply that asks for a tool is no note.
+        if messages_contain_tool_calls(response.messages):
+            raise LastWordsToolCallError("last-words fallback call returned tool-call content")
         return _normalize_note_response(response.raw_text)
 
     def _write_log(
