@@ -1,9 +1,10 @@
 name: Tag Release
 
 on:
+  # No `paths` filter: the mirror's force push described below changes no files.
+  # A version bump is still found by comparing with the first parent.
   push:
     branches: [main]
-    paths: [pyproject.toml]
 
 permissions:
   contents: write
@@ -12,6 +13,11 @@ permissions:
 jobs:
   tag:
     name: Create version tag
+    # The GitCode→GitHub mirror may first merge a PR through GitHub, a merge commit
+    # GitHub makes, and seconds later force-push main to GitCode's own merge commit
+    # with the same tree. Skip the commit GitHub made and tag the one the mirror
+    # leaves on main, so the GitHub and GitCode tags name the same commit.
+    if: github.event.head_commit.committer.email != 'noreply@github.com'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0

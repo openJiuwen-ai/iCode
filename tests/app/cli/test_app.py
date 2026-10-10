@@ -626,3 +626,15 @@ def test_releases_upload_the_checked_wheel_to_pypi_without_a_stored_secret() -> 
     trigger = next(step for step in tag_release["jobs"]["tag"]["steps"] if step.get("name") == "Trigger CD pipeline")
     tag = '"v${{ steps.version.outputs.current }}"'
     assert trigger["run"] == f"gh workflow run cd.yml --ref {tag} -f ref={tag}"
+
+
+def test_tag_release_tags_the_merge_commit_the_mirror_leaves_on_main() -> None:
+    """A release is tagged on GitCode's merge commit, never on the merge commit GitHub made before the mirror replaced it."""
+    workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "tag-release.yml").read_text(encoding="utf-8"))
+    # The mirror's force push to GitCode's commit changes no files, so a `paths` filter would skip it.
+    assert workflow[True] == {"push": {"branches": ["main"]}}
+    job = workflow["jobs"]["tag"]
+    assert job["if"] == "github.event.head_commit.committer.email != 'noreply@github.com'"
+    # GitCode's merge commit is compared with its first parent, the main it was merged into.
+    check = next(step for step in job["steps"] if step.get("name") == "Check if version changed")
+    assert "git show HEAD~1:pyproject.toml" in check["run"]
