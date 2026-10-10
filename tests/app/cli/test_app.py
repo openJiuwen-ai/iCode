@@ -624,8 +624,8 @@ def test_releases_upload_the_checked_wheel_to_pypi_without_a_stored_secret() -> 
     # tag-release dispatches the release run on the tag it pushed, building that same tag.
     tag_release = yaml.safe_load((workflows / "tag-release.yml").read_text(encoding="utf-8"))
     trigger = next(step for step in tag_release["jobs"]["tag"]["steps"] if step.get("name") == "Trigger CD pipeline")
-    tag = '"v${{ steps.version.outputs.current }}"'
-    assert trigger["run"] == f"gh workflow run cd.yml --ref {tag} -f ref={tag}"
+    assert 'tag="v${{ steps.version.outputs.current }}"' in trigger["run"]
+    assert trigger["run"].rstrip().endswith('gh workflow run cd.yml --ref "$tag" -f ref="$tag"')
 
 
 def test_tag_release_tags_the_merge_commit_the_mirror_leaves_on_main() -> None:
@@ -638,3 +638,8 @@ def test_tag_release_tags_the_merge_commit_the_mirror_leaves_on_main() -> None:
     # GitCode's merge commit is compared with its first parent, the main it was merged into.
     check = next(step for step in job["steps"] if step.get("name") == "Check if version changed")
     assert "git show HEAD~1:pyproject.toml" in check["run"]
+    # The mirror can force-push main back to a released commit: its tag is not released again.
+    trigger = next(step for step in job["steps"] if step.get("name") == "Trigger CD pipeline")
+    guard = 'gh run list --workflow cd.yml --branch "$tag"'
+    assert guard in trigger["run"]
+    assert trigger["run"].index(guard) < trigger["run"].index("gh workflow run cd.yml")

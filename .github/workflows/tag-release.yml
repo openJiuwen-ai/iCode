@@ -53,9 +53,16 @@ jobs:
 
       # CD runs only when dispatched, so dispatch it on the tag pushed above: a run
       # on a release tag is the only kind the `pypi` environment lets publish to
-      # PyPI, and `ref` makes it build that tag.
+      # PyPI, and `ref` makes it build that tag. A tag CD already ran on is not
+      # dispatched again: the mirror can force-push main back to a released commit.
       - name: Trigger CD pipeline
         if: steps.version.outputs.changed == 'true'
-        run: gh workflow run cd.yml --ref "v${{ steps.version.outputs.current }}" -f ref="v${{ steps.version.outputs.current }}"
+        run: |
+          tag="v${{ steps.version.outputs.current }}"
+          if [ -n "$(gh run list --workflow cd.yml --branch "$tag" --limit 1 --json databaseId --jq '.[].databaseId')" ]; then
+            echo "CD already ran on $tag, skipping"
+            exit 0
+          fi
+          gh workflow run cd.yml --ref "$tag" -f ref="$tag"
         env:
           GH_TOKEN: ${{ github.token }}
