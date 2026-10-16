@@ -696,6 +696,18 @@ async def test_suggestion_list_empty_state_has_no_bullet() -> None:
         assert suggestion_list._contents[0].plain == "No results"
 
 
+async def test_suggestion_list_update_shows_caller_empty_text() -> None:
+    async with _SuggestionListApp().run_test() as pilot:
+        suggestion_list = pilot.app.query_one(SuggestionList)
+        suggestion_list.show("history", [])
+        suggestion_list.update([], empty_text="No prompt history yet.")
+        assert [content.plain for content in suggestion_list._contents] == ["No prompt history yet."]
+        assert suggestion_list._values == [None]
+
+        suggestion_list.update([])
+        assert suggestion_list._contents[0].plain == "No results"
+
+
 async def test_runtime_skill_suggestion_metadata_is_rendered_as_literal_text() -> None:
     screen = make_suggestion_screen()
     handler = make_suggestion_handler(screen)

@@ -191,6 +191,7 @@ class SuggestionList(Widget):
         disabled: set[str] | None = None,
         initial: str | None = None,
         title: str | None = None,
+        empty_text: str | None = None,
     ) -> None:
         """Replace displayed items with a new filtered set.
 
@@ -198,12 +199,14 @@ class SuggestionList(Widget):
             title: When given, re-renders the border title so per-keystroke
                 rebuilds pick up the active locale (``""`` clears it; ``None``
                 keeps the current title).
+            empty_text: Rendered row shown when *items* is empty; ``None``
+                shows the generic "No results".
         """
         self._set_loading(False)
         if title is not None:
             # Plain Content: a path in the title must not be parsed as markup.
             self.border_title = Content(title) if title else None
-        self._populate(items, disabled, initial)
+        self._populate(items, disabled, initial, empty_text=empty_text)
         self._restart_marquee()
 
     def _set_loading(self, loading: bool) -> None:
@@ -233,13 +236,17 @@ class SuggestionList(Widget):
         items: list[SuggestionItem | tuple[str, str | Content]],
         disabled: set[str] | None = None,
         initial: str | None = None,
+        *,
+        empty_text: str | None = None,
     ) -> None:
         """Replace the fixed-height rendered suggestion rows."""
         self._clear_items()
         if not items:
+            if empty_text is None:
+                empty_text = self._render_message(_SUGGESTIONS_NO_RESULTS.bind())
             self._values.append(None)
             self._kinds.append("")
-            self._contents.append(Content.styled(self._render_message(_SUGGESTIONS_NO_RESULTS.bind()), "#888888"))
+            self._contents.append(Content.styled(self._single_line(empty_text), "#888888"))
             self._disabled.append(True)
             self._marquee_starts.append(None)
             self._highlighted = None

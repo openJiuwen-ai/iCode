@@ -67,6 +67,9 @@ _INPUT_PLACEHOLDER_SHELL = msg("tui.input.placeholder.shell", fallback="Shell")
 _INPUT_PLACEHOLDER_COMMANDS = msg("tui.input.placeholder.commands", fallback="Commands")
 _INPUT_PLACEHOLDER_FILES = msg("tui.input.placeholder.files", fallback="Files")
 _INPUT_NEWLINE_HINT = msg("tui.input.hint.newline", fallback="{shortcut} for newline")
+_INPUT_HISTORY_SEARCH_PLACEHOLDER = msg("tui.input.placeholder.history_search", fallback="Search prompt history")
+_INPUT_PLACEHOLDER_HISTORY_SELECT = msg("tui.input.placeholder.history_select", fallback="Select")
+_INPUT_PLACEHOLDER_HISTORY_CLOSE = msg("tui.input.placeholder.history_close", fallback="Close")
 
 type InputLabel = MessageRef | str
 
@@ -129,6 +132,21 @@ def _build_inject_placeholder(localizer: Localizer | None = None) -> Content:
         (" @ ", "r"),
         " ",
         _placeholder_fragment(localizer, _INPUT_PLACEHOLDER_FILES.bind()),
+    )
+
+
+def _build_history_search_placeholder(localizer: Localizer | None = None) -> Content:
+    """Build the placeholder shown while the Ctrl+R prompt-history search is open."""
+    return Content.assemble(
+        _placeholder_fragment(localizer, _INPUT_HISTORY_SEARCH_PLACEHOLDER.bind()),
+        "  ",
+        (" Enter ", "r"),
+        " ",
+        _placeholder_fragment(localizer, _INPUT_PLACEHOLDER_HISTORY_SELECT.bind()),
+        " ",
+        (" Esc ", "r"),
+        " ",
+        _placeholder_fragment(localizer, _INPUT_PLACEHOLDER_HISTORY_CLOSE.bind()),
     )
 
 
@@ -223,6 +241,9 @@ class _ChatTextArea(EnhancedTextArea):
         self._instance_id = token_hex(8)
         self._history_writer = PromptHistoryWriter(append_history)
         self._suggestions_active: bool = False
+        # Prompt-history search types !, /, @, # and $ as query text instead of entering shell mode
+        # or opening their popups; Esc closes the search first.
+        self._history_search_active: bool = False
         self._right_placeholder = ""
         # Session restore/workspace updates replace this before normal use; this covers early paste during startup.
         self._paste_cwd: str = safe_getcwd()
@@ -429,7 +450,12 @@ class _ChatTextArea(EnhancedTextArea):
             self.post_message(self.EditorRequested())
             return
         # Shell mode trigger: "!" or fullwidth "!" (U+FF01) at start of empty input
-        if event.character in ("!", "\uff01") and not self.text and self.cursor_location == (0, 0):
+        if (
+            event.character in ("!", "\uff01")
+            and not self.text
+            and self.cursor_location == (0, 0)
+            and not self._history_search_active
+        ):
             event.stop()
             event.prevent_default()
             self.post_message(self.ShellModeRequested())
@@ -456,6 +482,8 @@ class _ChatTextArea(EnhancedTextArea):
                 self.post_message(self.Submitted(text))
             return
         await super()._on_key(event)
+        if self._history_search_active:
+            return
         # After character insertion, check for /, @, #, $ triggers.
         # Accept fullwidth variants (U+FF0F, U+FF20, U+FF03, U+FF04) for CJK keyboards.
         if event.character in ("/", "\uff0f") and self.text in ("/", "\uff0f") and self.cursor_location == (0, 1):
@@ -691,13 +719,29 @@ class InputBar(Widget):
         self._button_geometry_dirty = False
         self._retry_label = INPUT_CONTINUE.bind()
         self._inject_placeholder = _build_inject_placeholder(self._localizer())
+        self._history_search_placeholder = _build_history_search_placeholder(self._localizer())
         super().__init__(**kwargs)
 
     def set_suggestions_active(self, active: bool, mode: str = "") -> None:
         """Set suggestion-active state on both InputBar and _ChatTextArea."""
         self._suggestions_active = active
         self._suggestion_mode = mode
-        self.query_one("#chat-input", _ChatTextArea)._suggestions_active = active
+        text_area = self.query_one("#chat-input", _ChatTextArea)
+        text_area._suggestions_active = active
+        text_area._history_search_active = active and mode == "history"
+        self._apply_placeholders(text_area)
+
+    def _apply_placeholders(self, text_area: _ChatTextArea) -> None:
+        """Show the placeholder and right-edge hint for the current input mode.
+
+        Both setters skip unchanged values, so a repeated call repaints nothing.
+        """
+        if text_area._history_search_active:
+            text_area.placeholder = self._history_search_placeholder
+            text_area.set_right_placeholder("")
+            return
+        text_area.placeholder = self._inject_placeholder if self.agent_running else self._placeholder
+        text_area.set_right_placeholder(self._render_newline_hint())
 
     @property
     def suggestions_active(self) -> bool:
@@ -741,8 +785,7 @@ class InputBar(Widget):
         ta = self.query_one("#chat-input", _ChatTextArea)
         ta.set_paste_cwd(self._paste_cwd)
         ta.set_clipboard_image_dir(self._clipboard_image_dir)
-        ta.placeholder = self._placeholder
-        ta.set_right_placeholder(self._render_newline_hint())
+        self._apply_placeholders(ta)
         self.focus_input()
         # Pin the group to the current visible button widths. Subsequent state
         # changes remap only this fixed InputBar row, never MainScreen layout.
@@ -758,12 +801,11 @@ class InputBar(Widget):
         if self._uses_default_placeholder:
             self._placeholder = _build_prompt_placeholder(self._localizer())
         self._inject_placeholder = _build_inject_placeholder(self._localizer())
+        self._history_search_placeholder = _build_history_search_placeholder(self._localizer())
         self._interaction_signature = None
         if not self.is_mounted:
             return
-        text_area = self.query_one("#chat-input", _ChatTextArea)
-        text_area.placeholder = self._inject_placeholder if self.agent_running else self._placeholder
-        text_area.set_right_placeholder(self._render_newline_hint())
+        self._apply_placeholders(self.query_one("#chat-input", _ChatTextArea))
         self._set_btn_label(
             self._render_label(INPUT_NEW.bind()),
             button_id="new-btn",
@@ -959,15 +1001,14 @@ class InputBar(Widget):
             self._set_btn_label(self._render_label(INPUT_INTERRUPT.bind()), defer_geometry=True)
             btn.add_class("-stop")
             btn.disabled = False
-            ta.placeholder = self._inject_placeholder
         else:
             btn.remove_class("-stop")
-            ta.placeholder = self._placeholder
             retry = self.retry_mode
             label = self._retry_label if retry else INPUT_SEND.bind()
             self._set_btn_label(self._render_label(label), defer_geometry=True)
             btn.disabled = self.retry_pending or self.agent_loading or (not retry and not bool(ta.text.strip()))
 
+        self._apply_placeholders(ta)
         self._update_new_btn_visibility()
 
     def watch_has_messages(self, _has_messages: bool) -> None:

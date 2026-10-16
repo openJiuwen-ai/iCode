@@ -70,7 +70,6 @@ def test_show_suggestions_titles_popup_per_mode() -> None:
 
 def test_prompt_history_suggestions_are_global_recent_first_and_single_line() -> None:
     screen = make_suggestion_screen()
-    screen.input_bar.value = "current draft"
     screen.input_bar.prompt_history = ["old prompt", "middle\nline", "latest\r\nprompt"]
     handler = make_suggestion_handler(screen)
 
@@ -96,7 +95,6 @@ def test_prompt_history_suggestions_are_global_recent_first_and_single_line() ->
 
 async def test_prompt_history_opens_loading_popup_before_history_is_ready() -> None:
     screen = make_suggestion_screen()
-    screen.input_bar.value = "draft"
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -162,15 +160,91 @@ def test_prompt_history_selection_restores_original_multiline_prompt() -> None:
     assert screen.submitted == []
 
 
-def test_typing_dismisses_prompt_history_suggestions() -> None:
+def test_typing_filters_prompt_history_and_clearing_restores_all() -> None:
     screen = make_suggestion_screen()
-    screen.input_bar.value = "draft"
-    screen.suggestion_list.is_visible = True
+    screen.input_bar.prompt_history = ["Fix the session bug", "write docs", "Session storage\nnotes"]
     handler = make_suggestion_handler(screen)
-    handler._suggestion_mode = "history"
-    handler._prompt_history_draft = "draft"
+    asyncio.run(handler.show_prompt_history_async())
 
-    handler.on_text_changed("draft changed")
+    handler.on_text_changed("session")
+    assert suggestion_values(screen.suggestion_list.last_items) == ["Session storage\nnotes", "Fix the session bug"]
+
+    handler.on_text_changed("SESSION bug")
+    assert suggestion_values(screen.suggestion_list.last_items) == ["Fix the session bug"]
+
+    handler.on_text_changed("nothing matches")
+    assert screen.suggestion_list.last_items == []
+    assert screen.suggestion_list.last_empty_text == "No matching prompts. Try changing or clearing the input."
+    assert screen.suggestion_list.is_visible is True
+    assert handler.suggestion_mode == "history"
+
+    handler.on_text_changed("")
+    assert suggestion_values(screen.suggestion_list.last_items) == [
+        "Session storage\nnotes",
+        "write docs",
+        "Fix the session bug",
+    ]
+
+
+def test_empty_prompt_history_says_there_is_no_history_yet() -> None:
+    screen = make_suggestion_screen()
+    screen.input_bar.value = "anything"
+    screen.input_bar.prompt_history = []
+    handler = make_suggestion_handler(screen)
+
+    asyncio.run(handler.show_prompt_history_async())
+
+    assert screen.suggestion_list.last_items == []
+    assert screen.suggestion_list.last_empty_text == "No prompt history yet."
+
+
+def test_prompt_history_opens_filtered_by_the_draft() -> None:
+    screen = make_suggestion_screen()
+    screen.input_bar.value = "docs"
+    screen.input_bar.prompt_history = ["write docs", "fix bug", "review docs"]
+    handler = make_suggestion_handler(screen)
+
+    asyncio.run(handler.show_prompt_history_async())
+    assert suggestion_values(screen.suggestion_list.last_items) == ["review docs", "write docs"]
+
+    handler.on_text_changed("docs review")
+    assert suggestion_values(screen.suggestion_list.last_items) == ["review docs"]
+
+
+async def test_typing_while_prompt_history_loads_filters_loaded_entries() -> None:
+    screen = make_suggestion_screen()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def load_prompt_history(*, max_entries: int) -> list[str]:
+        assert max_entries == 100
+        started.set()
+        await release.wait()
+        return ["alpha", "beta"]
+
+    screen.input_bar.load_prompt_history = load_prompt_history  # type: ignore[method-assign]
+    handler = make_suggestion_handler(screen)
+    revision = handler.start_prompt_history()
+    task = asyncio.create_task(handler.show_prompt_history_async(revision=revision))
+    await started.wait()
+
+    screen.input_bar.value = "bet"
+    handler.on_text_changed("bet")
+    assert screen.suggestion_list.is_loading is True
+    release.set()
+    await task
+
+    assert suggestion_values(screen.suggestion_list.last_items) == ["beta"]
+
+
+def test_dismiss_drops_loaded_prompt_history() -> None:
+    screen = make_suggestion_screen()
+    screen.input_bar.prompt_history = ["alpha"]
+    handler = make_suggestion_handler(screen)
+    asyncio.run(handler.show_prompt_history_async())
+
+    handler.dismiss_suggestions()
+    handler.on_text_changed("alpha")
 
     assert screen.suggestion_list.is_visible is False
     assert handler.suggestion_mode is None

@@ -1418,11 +1418,14 @@ class MainScreenViewAdapter:
         *,
         disabled: set[str] | None = None,
         title: str | None = None,
+        empty_text: str | None = None,
     ) -> None:
         from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 
         with contextlib.suppress(NoMatches):
-            self._screen.query_one(SuggestionList).update(list(items), disabled=disabled, title=title)
+            self._screen.query_one(SuggestionList).update(
+                list(items), disabled=disabled, title=title, empty_text=empty_text
+            )
 
     def hide_suggestions(self) -> None:
         from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList

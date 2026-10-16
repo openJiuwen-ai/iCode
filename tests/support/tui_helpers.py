@@ -920,6 +920,7 @@ class SuggestionListStub:
         self.last_mode: str | None = None
         self.last_items: list[object] = []
         self.last_title: str | None = None
+        self.last_empty_text: str | None = None
         self.is_visible = False
         self.is_loading = False
         self.select_result = False
@@ -940,6 +941,7 @@ class SuggestionListStub:
 
     def update(self, items=None, *_args, **_kwargs) -> None:
         self.last_items = list(items or [])
+        self.last_empty_text = _kwargs.get("empty_text")
         self.is_loading = False
         title = _kwargs.get("title")
         if title is not None:
