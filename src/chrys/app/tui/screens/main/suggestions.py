@@ -19,6 +19,7 @@ from chrys.app.tui.screens.main.model_indicator import is_model_selection_locked
 from chrys.app.tui.screens.main.ports import BuddyCommandView, StartWorker, SuggestionPopupView
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import GcFreezeBlockReason
+from chrys.app.tui.support.prompt_search import rank_prompts
 from chrys.app.tui.widgets.chrome.commands import (
     SlashCommandDef,
     is_slash_command_candidate,
@@ -39,6 +40,11 @@ _SUGGESTIONS_COMMANDS_TITLE = msg("tui.suggestions.commands_title", fallback="Co
 _SUGGESTIONS_AGENTS_TITLE = msg("tui.suggestions.agents_title", fallback="Agents")
 _SUGGESTIONS_MODELS_TITLE = msg("tui.suggestions.models_title", fallback="Models")
 _SUGGESTIONS_PROMPT_HISTORY_TITLE = msg("tui.suggestions.prompt_history_title", fallback="Prompt History")
+_SUGGESTIONS_PROMPT_HISTORY_EMPTY = msg("tui.suggestions.prompt_history_empty", fallback="No prompt history yet.")
+_SUGGESTIONS_PROMPT_HISTORY_NO_MATCH = msg(
+    "tui.suggestions.prompt_history_no_match",
+    fallback="No matching prompts. Try changing or clearing the input.",
+)
 _SUGGESTIONS_SYSTEM_COMMANDS = msg("tui.suggestions.system_commands", fallback="System Commands")
 _SUGGESTIONS_LOADED_SKILLS = msg("tui.suggestions.loaded_skills", fallback="Loaded Skills")
 _SUGGESTIONS_SHADOWED = msg("tui.suggestions.shadowed", fallback="shadowed by /{name}")
@@ -112,7 +118,7 @@ class SuggestionHandler:
         self._file_warmup_requested_root: str | None = None
         self._file_warmup_worker: Worker[None] | None = None
         self._prompt_history_revision = 0
-        self._prompt_history_draft = ""
+        self._prompt_history_entries: list[str] | None = None
         self._slash_commands: list[SlashCommandDef] = []
         self._active_command: SlashCommandDef | None = None
         self._buddy_command = BuddyCommandController(
@@ -240,24 +246,43 @@ class SuggestionHandler:
         self._suggestion_mode = None
 
     def _invalidate_prompt_history_results(self) -> None:
-        """Invalidate an in-flight prompt-history load."""
+        """Invalidate an in-flight prompt-history load and drop loaded entries."""
         self._prompt_history_revision += 1
+        self._prompt_history_entries = None
 
     @staticmethod
     def _prompt_history_label(text: str) -> str:
         """Render a multi-line prompt as one visible suggestion row."""
         return _PROMPT_HISTORY_LINE_BREAK.join(text.splitlines())
 
+    def _show_prompt_history_matches(self, query: str) -> None:
+        """Show the loaded prompt-history entries matching *query*, best match first."""
+        entries = self._prompt_history_entries
+        if entries is None:
+            return
+        empty = _SUGGESTIONS_PROMPT_HISTORY_NO_MATCH if entries else _SUGGESTIONS_PROMPT_HISTORY_EMPTY
+        items = [
+            SuggestionItem(
+                value=prompt,
+                label=self._prompt_history_label(prompt),
+                kind="history",
+                marquee_start=0,
+            )
+            for prompt in rank_prompts(entries, query)
+        ]
+        self._view.update_suggestions(
+            items, title=self._suggestion_title("history"), empty_text=self._render_message(empty.bind())
+        )
+
     def start_prompt_history(self) -> int:
         """Open prompt-history loading synchronously and return its request revision."""
         self._invalidate_prompt_history_results()
         revision = self._prompt_history_revision
-        self._prompt_history_draft = self._view.input_value()
         self._show_suggestions_loading("history")
         return revision
 
     async def show_prompt_history_async(self, *, revision: int | None = None) -> None:
-        """Load and show the newest global prompt-history entries first."""
+        """Load the newest global prompt-history entries and show those matching the input text."""
         if revision is None:
             revision = self.start_prompt_history()
         elif revision != self._prompt_history_revision or self._suggestion_mode != "history":
@@ -269,16 +294,8 @@ class SuggestionHandler:
             or self._suggestion_mode != "history"
         ):
             return
-        items = [
-            SuggestionItem(
-                value=prompt,
-                label=self._prompt_history_label(prompt),
-                kind="history",
-                marquee_start=0,
-            )
-            for prompt in reversed(history)
-        ]
-        self._view.update_suggestions(items, title=self._suggestion_title("history"))
+        self._prompt_history_entries = list(reversed(history))
+        self._show_prompt_history_matches(self._view.input_value())
 
     # -------------------------------------------------------------- #
     # Trigger handlers (called by thin @on forwarders in MainScreen)
@@ -860,8 +877,9 @@ class SuggestionHandler:
             items = [item_by_id[profile_id] for profile_id in matches]
             self._view.update_suggestions(items, disabled=disabled, title=self._suggestion_title("models"))
 
-        elif self._suggestion_mode == "history" and text != self._prompt_history_draft:
-            self.dismiss_suggestions()
+        elif self._suggestion_mode == "history":
+            # The whole input is the search query; entries arriving later read it on load.
+            self._show_prompt_history_matches(text)
 
     # -------------------------------------------------------------- #
     # Navigation and selection

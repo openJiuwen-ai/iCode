@@ -6564,6 +6564,24 @@ msgstr ""
 msgid "tui.input.placeholder.files"
 msgstr ""
 
+#. English: Close
+#. chrys-meta={"fingerprint":"b539b71b98c3530fcd17b6257d0bcdd95ec41dbd6ba78a0b8ad40de8ddc5103e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.placeholder.history_close"
+msgstr ""
+
+#. English: Search prompt history
+#. chrys-meta={"fingerprint":"355e1cb1632d1f1783101c3a8d97e90391150cdae88961608554f2c24dbfd680","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.placeholder.history_search"
+msgstr ""
+
+#. English: Select
+#. chrys-meta={"fingerprint":"0ce70d4333424fe527d32c0aeab9226b4b5f97d5c9a953bc2e51c0c47bf763b2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.placeholder.history_select"
+msgstr ""
+
 #. English: Inject a message
 #. chrys-meta={"fingerprint":"4230abd9ea720286f6248e0446520f4eaa8f0ab6c5bd4f0ca78bf94056456ffc","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
@@ -10931,6 +10949,18 @@ msgstr ""
 #. chrys-meta={"fingerprint":"fe4e065a61fe39b7ec25d7182edf8fb6c341e7050286f9f329368d24834f8488","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/suggestion_list.py
 msgid "tui.suggestions.no_results"
+msgstr ""
+
+#. English: No prompt history yet.
+#. chrys-meta={"fingerprint":"6f5a873c95989f765e5313f971c89a518c9403ad9be3490208b76fd668806f4a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/suggestions.py
+msgid "tui.suggestions.prompt_history_empty"
+msgstr ""
+
+#. English: No matching prompts. Try changing or clearing the input.
+#. chrys-meta={"fingerprint":"60cbb169bee7614bc906ddd5a057bc874fc9507a7cbdf8ff6fb9f6a9c65a94a5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/suggestions.py
+msgid "tui.suggestions.prompt_history_no_match"
 msgstr ""
 
 #. English: Prompt History
