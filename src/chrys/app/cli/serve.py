@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import getpass
 import hashlib
 import hmac
@@ -41,6 +42,26 @@ _DEFAULT_PORT = 7777
 _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})
 _WARNING_STYLE = "yellow"
 _ERROR_STYLE = "red"
+_LISTEN_FAILURE_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, "EADDRINUSE", None),
+        getattr(errno, "EACCES", None),
+        getattr(errno, "EADDRNOTAVAIL", None),
+        getattr(errno, "WSAEADDRINUSE", None),
+        getattr(errno, "WSAEACCES", None),
+        getattr(errno, "WSAEADDRNOTAVAIL", None),
+    )
+    if code is not None
+)
+"""Listen-address failures the user can fix by changing --host or --port."""
+
+
+def _is_listen_failure(error: OSError) -> bool:
+    """Return true when *error* says the requested listen address is unusable."""
+    return error.errno in _LISTEN_FAILURE_ERRNOS or getattr(error, "winerror", None) in _LISTEN_FAILURE_ERRNOS
+
+
 _AUTH_COOKIE_NAME = "chrys_serve_auth"
 _AUTH_SESSION_TTL_SECONDS = 12 * 60 * 60
 _AUTH_SCRYPT_N = 2**14
@@ -1142,7 +1163,12 @@ def run_command(args: argparse.Namespace) -> None:
         build_tui_command(),
         **server_kwargs,
     )
-    server.serve(debug=args.debug)
+    try:
+        server.serve(debug=args.debug)
+    except OSError as exc:
+        if not _is_listen_failure(exc):
+            raise
+        raise RuntimeError(f"cannot listen on {args.host}:{args.port}: {exc.strerror or exc}") from exc
 
 
 def _resolve_auth_config(args: argparse.Namespace) -> ServeAuthConfig | None:

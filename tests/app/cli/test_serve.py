@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import inspect
 import io
 import json
@@ -1006,6 +1007,24 @@ def test_main_styles_runtime_error_red(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "\x1b[31m" in text
     assert text.endswith("\x1b[0m\n")
     assert "Error: browser auth over non-loopback HTTP is unsafe" in text
+
+
+def test_main_reports_a_listen_address_the_os_refuses(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A busy or privileged port is a typed error, not an uncaught traceback."""
+
+    class BusyServer(FakeServer):
+        def serve(self, *, debug: bool = False) -> None:
+            raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    monkeypatch.setattr(serve_cli, "_load_server_class", lambda: BusyServer)
+
+    with pytest.raises(SystemExit) as exc_info:
+        serve_cli.main(["--port", "7789"])
+
+    assert exc_info.value.code == 1
+    assert "Error: cannot listen on localhost:7789: Address already in use" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio
