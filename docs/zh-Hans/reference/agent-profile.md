@@ -275,7 +275,7 @@ tools:
 | --- | --- | --- |
 | `type` | 全部 | 必填。无需密钥的服务为 `exa_mcp`、`bing_html` 或 `duckduckgo_html`；需要密钥的搜索 API 为 `tavily`、`brave` 或 `exa`；自己的端点为 `custom_http`。 |
 | `api_key_env` | `tavily`、`brave`、`exa` | 必填。保存 API 密钥的环境变量名。这些类型不接受其他字段。 |
-| `preset` | `custom_http` | `searxng` 或 `serpapi`，为对应服务自动填写请求和响应映射；`serpapi` 还会设置 `endpoint` 和 `auth`。自己填写的字段优先。 |
+| `preset` | `custom_http` | `searxng`、`serpapi` 或 `serply`，为对应服务自动填写请求和响应映射；`serpapi` 和 `serply` 还会设置 `endpoint` 和 `auth`。自己填写的字段优先。 |
 | `endpoint` | `custom_http` | 搜索端点 URL。还需在用户设置 `tools.web_search.custom_endpoints` 中授权该端点及其读取的每个环境变量。 |
 | `method` | `custom_http` | `GET`（默认）或 `POST`。 |
 | `auth` | `custom_http` | 对象，包含 `location`（`header`、`query` 或默认的 `none`）、`name`（请求头或查询参数名）、`key_env`（保存密钥的环境变量）和可选的 `prefix`（例如 `"Bearer "`）。`location` 为 `header` 时，`name` 必须是 `Authorization`、`X-API-Key` 或 `X-Subscription-Token`。 |

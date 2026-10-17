@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""custom_http search providers: the searxng and serpapi presets, and where credentials may go.
+"""custom_http search providers: the searxng, serpapi and serply presets, and where credentials may go.
 
 Preset wire checks build the provider the way an agent build does, through
 ``build_web_tools`` and the user's custom endpoint grant, and answer beneath the
@@ -26,7 +26,7 @@ from chrys.service.tools.builtins.web.search.tool import WebSearchTools
 from tests.service.tools.web._support import Chunks, socket_network
 
 _PUBLIC = "93.184.215.14"
-_ADDRESSES = {"serpapi.com": _PUBLIC, "searx.example": _PUBLIC}
+_ADDRESSES = {"serpapi.com": _PUBLIC, "api.serply.io": _PUBLIC, "searx.example": _PUBLIC}
 _RESOLVE = "chrys.service.tools.builtins.web.build.resolve_search_credentials"
 
 
@@ -69,6 +69,22 @@ def test_the_serpapi_preset_carries_its_endpoint_and_query_credential():
         "snippet_pointer": "/snippet",
     }
     assert config.credential_names() == {"SERPAPI_API_KEY"}
+
+
+def test_the_serply_preset_carries_its_endpoint_and_header_credential():
+    config = parse_provider({"type": "custom_http", "preset": "serply"})
+    assert config.preset == "serply"
+    assert config.endpoint == "https://api.serply.io/v1/search"
+    assert config.method == "GET"
+    assert config.auth == {"location": "header", "name": "X-Api-Key", "key_env": "SERPLY_API_KEY"}
+    assert config.request == {"query_params": {"q": {"$input": "query"}, "num": {"$input": "limit"}}}
+    assert config.response == {
+        "results_pointer": "/results",
+        "url_pointer": "/link",
+        "title_pointer": "/title",
+        "snippet_pointer": "/description",
+    }
+    assert config.credential_names() == {"SERPLY_API_KEY"}
 
 
 def test_a_profile_field_replaces_the_presets_field():
@@ -164,6 +180,23 @@ async def test_a_serpapi_key_env_override_reads_that_variable():
     )
     _, request = await _search(tools, {"organic_results": []})
     assert request.url.params["api_key"] == "team-secret"
+
+
+async def test_a_serply_search_puts_the_key_in_a_header_and_reads_results():
+    tools = _search_tools(
+        {"type": "custom_http", "preset": "serply"},
+        {"url": "https://api.serply.io/v1/search", "credential_env_names": ["SERPLY_API_KEY"]},
+        {"SERPLY_API_KEY": "serply-secret-value"},
+    )
+    body = {"results": [{"title": "Chrys", "link": "https://example.com/chrys", "description": "Agents."}]}
+    data, request = await _search(tools, body)
+    assert request.method == "GET"
+    assert request.headers["Host"] == "api.serply.io"
+    assert request.url.path == "/v1/search"
+    assert dict(request.url.params) == {"q": "chrys agents", "num": "8"}
+    assert request.headers["X-Api-Key"] == "serply-secret-value"
+    assert data["results"] == [{"title": "Chrys", "url": "https://example.com/chrys", "snippet": "Agents."}]
+    assert "serply-secret-value" not in json.dumps(data)
 
 
 async def test_a_searxng_search_asks_for_json_without_credentials():

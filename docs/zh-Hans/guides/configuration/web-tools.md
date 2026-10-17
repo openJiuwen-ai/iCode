@@ -179,10 +179,11 @@ tools:
 - `auth.location` 为 `header`、`query` 或 `none`。密钥只能放在 `auth` 或 `$env` 标记中，不能直接写在请求头里。
 - `*_pointer` 字段是 JSON Pointer，例如 `/data/items`。`results_pointer` 和 `url_pointer` 必填。找不到结果容器时，搜索会失败，而不是返回空结果。
 
-以下两个预设可以为常见服务自动填写映射：
+以下三个预设可以为常见服务自动填写映射：
 
 - SearXNG：`type: custom_http`、`preset: searxng`，并将 `endpoint` 设为你的实例地址，例如 `https://search.example.com/search`。SearXNG 服务器需要启用 JSON 输出。
 - SerpAPI：`type: custom_http` 和 `preset: serpapi`。授权 `https://serpapi.com/search`，并设置 `credential_env_names: [SERPAPI_API_KEY]`。
+- [Serply](https://serply.io)：`type: custom_http` 和 `preset: serply`。授权 `https://api.serply.io/v1/search`，并设置 `credential_env_names: [SERPLY_API_KEY]`。Serply 每次搜索最多返回 10 条结果（[文档](https://serply.io/docs)）。
 
 ## 控制网络访问
 

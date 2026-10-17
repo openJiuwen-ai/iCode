@@ -179,10 +179,11 @@ Mapping rules:
 - `auth.location` is `header`, `query`, or `none`. Put keys only in `auth` or `$env` markers, never directly in headers.
 - The `*_pointer` fields are JSON Pointers, such as `/data/items`. `results_pointer` and `url_pointer` are required. If the results container is missing, the search fails instead of returning nothing.
 
-Two presets fill in the mapping for common services:
+Three presets fill in the mapping for common services:
 
 - SearXNG: `type: custom_http`, `preset: searxng`, and your instance's `endpoint`, such as `https://search.example.com/search`. JSON output must be enabled on the SearXNG server.
 - SerpAPI: `type: custom_http` and `preset: serpapi`. Grant `https://serpapi.com/search` with `credential_env_names: [SERPAPI_API_KEY]`.
+- [Serply](https://serply.io): `type: custom_http` and `preset: serply`. Grant `https://api.serply.io/v1/search` with `credential_env_names: [SERPLY_API_KEY]`. Serply returns at most 10 results per search ([docs](https://serply.io/docs)).
 
 ## Control network access
 
