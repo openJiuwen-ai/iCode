@@ -5,9 +5,10 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 
@@ -23,6 +24,8 @@ from tests.support.secure_files import plant_owner_only_bytes
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 if TYPE_CHECKING:
+    from textual._path import CSSPathType
+
     from chrys.app.tui.screens.main import MainScreen
     from tests.support.engines import AgentEngineFactory
 
@@ -142,6 +145,10 @@ async def test_interactive_launch_keeps_an_existing_composer_and_records_the_acq
     launch = prepare(tmp_path, "occupied-composer")
 
     class OccupiedComposerApp(ChrysApp):
+        CSS_PATH: ClassVar[CSSPathType | None] = [
+            Path(inspect.getfile(ChrysApp)).parent / "chrys.tcss",
+            Path(inspect.getfile(ChrysApp)).parent / "screens/themes/editor.tcss",
+        ]
         preserved_draft = ""
 
         async def _start_interactive_launch(self, profile: AgentProfile, screen: MainScreen) -> None:
@@ -152,7 +159,7 @@ async def test_interactive_launch_keeps_an_existing_composer_and_records_the_acq
     app = make_app(tmp_path, launch, agent_engine, OccupiedComposerApp)
     async with app.run_test():
         await wait_for(
-            lambda: launch.receipt["status"] == "failed",
+            lambda: launch.receipt["status"] == "failed" and app._startup_task is not None and app._startup_task.done(),
             timeout=ENGINE_TURN_TIMEOUT,
             description="occupied composer refuses launch material",
         )

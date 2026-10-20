@@ -1110,6 +1110,9 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 profile=active_profile,
             )
             stage = "composer-stage"
+            await self._dismiss_startup_load_dialog_before_restore(screen)
+            if self.screen is not screen:
+                raise ValueError("Interactive launch composer is covered by another screen")
             from chrys.app.tui.widgets.chrome.input_bar import InputBar
 
             if not screen.query_one(InputBar).restore_draft(launch.manifest.text):

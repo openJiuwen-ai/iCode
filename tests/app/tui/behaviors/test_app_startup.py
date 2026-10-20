@@ -489,6 +489,7 @@ async def test_start_engine_surfaces_early_startup_failure() -> None:
             notifications.append((title, severity, message))
 
     app = object.__new__(ChrysApp)
+    app._interactive_launch = None
     app._engine = _Engine()
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._startup_session_id = ""
@@ -525,6 +526,7 @@ async def test_start_engine_restores_startup_session_after_start() -> None:
             calls.append(("restore", session_id, allow_while_loading))
 
     app = object.__new__(ChrysApp)
+    app._interactive_launch = None
     app._engine = _Engine()
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._state_store = _Store()
@@ -569,6 +571,7 @@ async def test_start_engine_restores_canonical_startup_session_id() -> None:
             calls.append(("restore", session_id, allow_while_loading))
 
     app = object.__new__(ChrysApp)
+    app._interactive_launch = None
     app._engine = _Engine()
     app._state_store = _Store()
     app._startup_session_id = "canonicalsess"
@@ -636,6 +639,7 @@ async def test_start_engine_falls_back_when_restore_emits_no_success(outcome: st
             calls.append(("warning", message, title, severity))
 
     app = object.__new__(ChrysApp)
+    app._interactive_launch = None
     app._engine = _Engine()
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._state_store = _Store()
@@ -746,6 +750,7 @@ async def test_start_engine_dismisses_startup_modal_before_startup_session_resto
     monkeypatch.setattr(startup_dialog, "dismiss", lambda result=None: calls.append(("dismiss", result)))
 
     app = object.__new__(ChrysApp)
+    app._interactive_launch = None
     app._engine = _Engine()
     app._state_store = _Store()
     app._startup_session_id = "session-1"
@@ -807,6 +812,7 @@ async def test_start_engine_cancels_active_startup_modal_before_startup_session_
     monkeypatch.setattr(tui_app.asyncio, "sleep", fake_sleep)
 
     app = object.__new__(ChrysApp)
+    app._interactive_launch = None
     app._engine = _Engine()
     app._state_store = _Store()
     app._startup_session_id = "session-1"
@@ -879,6 +885,7 @@ async def test_start_engine_missing_startup_session_warns_and_continues() -> Non
             notifications.append((title, severity, message))
 
     app = object.__new__(ChrysApp)
+    app._interactive_launch = None
     app._engine = _Engine()
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._state_store = _Store()
@@ -946,6 +953,7 @@ async def test_start_engine_startup_session_restore_failure_warns_and_continues(
             notifications.append((title, severity, message))
 
     app = object.__new__(ChrysApp)
+    app._interactive_launch = None
     app._engine = _Engine()
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._state_store = _Store()
@@ -998,6 +1006,7 @@ async def test_start_engine_drops_deferred_settings_warnings_after_a_successful_
     await bus.subscribe(Warning, _record)
 
     app = object.__new__(ChrysApp)
+    app._interactive_launch = None
     app._engine = _Engine()
     app._state_store = _Store()
     app._startup_session_id = "session-1"
@@ -1071,6 +1080,7 @@ async def test_start_engine_flushes_deferred_settings_warnings_when_falling_back
     await bus.subscribe(Warning, _record)
 
     app = object.__new__(ChrysApp)
+    app._interactive_launch = None
     app._engine = _Engine()
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._state_store = _Store()
