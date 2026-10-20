@@ -243,6 +243,32 @@ async def test_save_skips_empty_messages(persistence: SessionPersistence) -> Non
     assert loaded is None
 
 
+async def test_explicit_interactive_checkpoint_retains_an_empty_native_session(
+    persistence: SessionPersistence, store: JsonFileStateStore, tmp_path
+) -> None:
+    assert (
+        await persistence.save_session(
+            "interactive-empty",
+            {"messages": []},
+            agent_profile_name="Code",
+            agent_display_name="Code",
+            agent_profile_id="code-test",
+            workspace=Workspace(primary_cwd=str(tmp_path), working_dirs=[]),
+            retain_empty=True,
+            raise_on_error=True,
+        )
+        is True
+    )
+    loaded = await persistence.load_session("interactive-empty")
+    assert loaded is not None
+    assert loaded["messages"] == []
+    meta = await store.load_session_meta("interactive-empty", strict=True)
+    assert meta is not None
+    assert meta.session_id == "interactive-empty"
+    assert meta.agent_profile_id == "code-test"
+    assert meta.primary_cwd == str(tmp_path)
+
+
 async def test_save_skips_only_markers(persistence: SessionPersistence) -> None:
     """save_session skips if all messages are chrys markers."""
     marker = _make_msg("assistant", chrys_kind=HistoryMarkerKind.TURN)

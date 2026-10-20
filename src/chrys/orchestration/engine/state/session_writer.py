@@ -139,7 +139,7 @@ class SessionWriter:
             ),
         )
 
-    async def save_current_session(self, *, raise_on_error: bool = False) -> bool:
+    async def save_current_session(self, *, raise_on_error: bool = False, retain_empty: bool = False) -> bool:
         """Auto-save the current chat session state to disk."""
         # Drain any in-flight recovery write first.  ``save_session`` deletes the
         # sidecar structurally; flushing first guarantees that delete is the last
@@ -224,6 +224,7 @@ class SessionWriter:
             **identity.metadata,
             service_session_id=service_session_id,
             raise_on_error=raise_on_error,
+            retain_empty=retain_empty,
         )
         if saved and self._session.session_id is not None:
             from chrys.foundation.observability.sink import get_otel_sink

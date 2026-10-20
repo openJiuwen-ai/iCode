@@ -1060,7 +1060,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         try:
             if launch.manifest.mode == "resume":
                 stage = "session-restore"
-                meta = await self._state_store.load_session_meta(launch.manifest.session_id)
+                meta = await self._state_store.load_session_meta(launch.manifest.session_id, strict=True)
                 if meta is None or meta.session_id != launch.manifest.session_id or meta.kind != "chat":
                     raise ValueError("Interactive launch session was not found by its complete identity")
                 if Path(meta.primary_cwd).resolve() != launch.manifest.cwd:
@@ -1109,6 +1109,11 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 project_enabled=self._settings.project_skills_enabled,
                 profile=active_profile,
             )
+            stage = "session-checkpoint"
+            if not await self._engine.writer.save_current_session(raise_on_error=True, retain_empty=True):
+                raise ValueError("Interactive launch native session checkpoint could not be retained")
+            if self._engine.session_id != session_id:
+                raise ValueError("Interactive launch session changed while saving its checkpoint")
             stage = "composer-stage"
             from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
 

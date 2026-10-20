@@ -431,7 +431,7 @@ async def preflight(manifest: LaunchManifest) -> dict[str, Any]:
     await asyncio.to_thread(registry.load_all)
     selector = manifest.configuration.get("role") or loaded.settings.default_agent
     if manifest.mode == "resume":
-        meta = await JsonFileStateStore().load_session_meta(manifest.session_id)
+        meta = await JsonFileStateStore().load_session_meta(manifest.session_id, strict=True)
         if meta is None or meta.session_id != manifest.session_id or meta.kind != "chat":
             raise InteractivePreparationError(
                 "session-unavailable", "Strict interactive session was not found by its complete identity"

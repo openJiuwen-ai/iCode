@@ -236,3 +236,5 @@ Mermaid 代码块会显示为图表，点击**打开完整图表**可查看、�
 集成方可先调用 `icode launch capabilities`，再用 `icode --launch-manifest /absolute/request.json` 打开交互界面，并通过 `icode launch inspect --request-id ID` 查询原生回执。v1 合同要求存在的绝对工作目录、唯一请求 ID、选定角色/模型引用、带 SHA256 的上下文及精确 Skill 来源和完整文件清单。`icode launch preflight --manifest FILE` 可在不创建会话的情况下核对原生 Skill 发现结果。项目授信设置和角色开关仍然生效；该协议不安装 Skill、不修改角色。
 
 回执 confirmed 表示 iCode 已取得原生会话并把材料放入可见的输入草稿，用户按正常交互发送。composer-staged 不表示已发送、已读取、已采用或业务完成，退出后的历史回执也不能证明当前仍有草稿。同一请求重试只查询原回执；内容不同明确拒绝，结果未知时应先核对。新的 resume 请求必须指定原始完整会话 ID 与目录；失败退出，不创建替代会话。普通手工 `-s` 保持现有行为。
+
+显式交互作业会在草稿发送前保留原生检查点，新恢复请求因此可打开同一个空会话。这不会插入用户消息或自动发送草稿。

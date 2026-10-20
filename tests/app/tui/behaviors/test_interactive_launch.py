@@ -106,7 +106,7 @@ async def test_unsent_interactive_draft_closes_then_resumes_the_same_native_sess
             timeout=ENGINE_TURN_TIMEOUT,
             description="same interactive native session restored",
         )
-        assert resume.receipt["status"] == "confirmed"
+        assert resume.receipt["status"] == "confirmed", resume.receipt
         assert resume.receipt["sessionId"] == native_id
         assert restored.screen.query_one(InputBar).snapshot_draft().text == resume.manifest.text
         assert resume.receipt["materials"] == "composer-staged"

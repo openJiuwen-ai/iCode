@@ -212,10 +212,13 @@ class SessionPersistence:
         model_profile_fingerprint: str | None = None,
         last_surface: SessionSurface | None = None,
         raise_on_error: bool = False,
+        retain_empty: bool = False,
     ) -> bool:
         """Persist session state to disk and publish ``SessionSaved``.
 
-        Chat saves require real messages. Workflow state is owned separately.
+        Chat saves normally require real messages. Explicit interactive handoffs
+        may retain an empty native checkpoint without inventing a user turn.
+        Workflow state is owned separately.
         """
         if self._state_store is None or session_id is None:
             return False
@@ -224,7 +227,7 @@ class SessionPersistence:
 
         try:
             # Skip saving if every message is a chrys marker (no real conversation).
-            if not has_real_messages(history_state):
+            if not retain_empty and not has_real_messages(history_state):
                 return False
 
             # Extract agent profile history from switch records
