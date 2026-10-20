@@ -10,6 +10,7 @@ import errno
 import hashlib
 import json
 import os
+import stat
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -290,6 +291,23 @@ class InteractiveLaunch:
         self._save()
 
 
+def _bounded_skill_file(path: Path, remaining: int) -> tuple[bytes, int]:
+    """Keep the actual descriptor read within the remaining package budget."""
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("Pinned Skill member is not a regular file")
+    with path.open("rb") as opened:
+        actual = os.fstat(opened.fileno())
+        if not stat.S_ISREG(actual.st_mode) or (actual.st_dev, actual.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("Pinned Skill member changed while opening")
+        if actual.st_size > remaining:
+            raise ValueError("Pinned Skill member exceeds its remaining byte budget")
+        raw = opened.read(remaining + 1)
+        if len(raw) > remaining:
+            raise ValueError("Pinned Skill member exceeds its remaining byte budget")
+        return raw, actual.st_mode
+
+
 def _verify_files(pin: LaunchSkill) -> str:
     """Compare every installed byte, executable bit and member, including attachments."""
     actual: dict[str, dict[str, Any]] = {}
@@ -304,22 +322,27 @@ def _verify_files(pin: LaunchSkill) -> str:
         for name in filenames:
             file = Path(root) / name
             relative = file.relative_to(pin.directory).as_posix()
-            if relative == ".teams-resource.json" and pin.source == "shared":
-                continue
             if file.is_symlink() or not file.is_file():
                 return "content-mismatch"
-            total += file.stat().st_size
-            if total > 2 * 1024 * 1024 or len(actual) >= 128:
+            if relative == ".teams-resource.json" and pin.source == "shared":
+                continue
+            if len(actual) >= 128:
                 return "content-mismatch"
+            try:
+                raw, mode = _bounded_skill_file(file, 2 * 1024 * 1024 - total)
+            except ValueError:
+                return "content-mismatch"
+            total += len(raw)
             actual[relative] = {
                 "path": relative,
-                "sha256": hashlib.sha256(file.read_bytes()).hexdigest(),
-                "executable": bool(file.stat().st_mode & 0o111),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "executable": bool(mode & 0o111),
             }
     if actual != {file["path"]: file for file in pin.files}:
         return "content-mismatch"
     if pin.source == "shared":
-        marker = json.loads((pin.directory / ".teams-resource.json").read_text(encoding="utf-8"))
+        marker_bytes, _mode = _bounded_skill_file(pin.directory / ".teams-resource.json", 4096)
+        marker = json.loads(marker_bytes)
         if marker != {
             "schemaVersion": 1,
             "resourceId": pin.origin["localResourceId"],

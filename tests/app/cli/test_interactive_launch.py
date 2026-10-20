@@ -137,3 +137,39 @@ def test_interactive_confirm_preserves_draft_semantics_and_strict_identity(tmp_p
     with pytest.raises(ValueError, match="different session"):
         launch.confirm("replacement-session", str(tmp_path))
     assert read_receipt("one")["sessionId"] == "native-session-one"
+
+
+def test_skill_descriptor_read_stays_bounded_when_the_file_grows_after_stat(tmp_path: Path) -> None:
+    from contextlib import contextmanager
+
+    from chrys.app.cli.interactive_launch import _bounded_skill_file
+
+    path = tmp_path / "growing.txt"
+    path.write_bytes(b"first")
+    requested: list[int] = []
+
+    class GrowingReader:
+        def __init__(self, handle) -> None:
+            self.handle = handle
+
+        def fileno(self) -> int:
+            return self.handle.fileno()
+
+        def read(self, amount: int) -> bytes:
+            requested.append(amount)
+            with path.open("ab") as writer:
+                writer.write(b"x" * 4096)
+            return self.handle.read(amount)
+
+    class GrowingPath:
+        def lstat(self):
+            return path.lstat()
+
+        @contextmanager
+        def open(self, mode: str):
+            with path.open(mode) as reader:
+                yield GrowingReader(reader)
+
+    with pytest.raises(ValueError, match="byte budget"):
+        _bounded_skill_file(GrowingPath(), 8)  # type: ignore[arg-type]
+    assert requested == [9]
