@@ -83,6 +83,7 @@ async def test_unsent_interactive_draft_closes_then_resumes_the_same_native_sess
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "mock-profile")
     launch = prepare(tmp_path, "new-one")
     app = make_app(tmp_path, launch, agent_engine)
     async with app.run_test() as pilot:
@@ -122,6 +123,7 @@ async def test_strict_interactive_restore_of_missing_session_creates_no_replacem
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "mock-profile")
     launch = prepare(tmp_path, "missing-one", session_id="missing-complete-session-id")
     app = make_app(tmp_path, launch, agent_engine)
     async with app.run_test():
@@ -142,6 +144,7 @@ async def test_interactive_launch_keeps_an_existing_composer_and_records_the_acq
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "mock-profile")
     launch = prepare(tmp_path, "occupied-composer")
 
     class OccupiedComposerApp(ChrysApp):

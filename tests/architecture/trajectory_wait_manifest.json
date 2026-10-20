@@ -1709,7 +1709,7 @@
       ],
       "SessionWriter.save_current_session": [
         ["wrapper", "await self.flush()", "unresolved", "chrys.orchestration.engine.state.session_writer.SessionWriter.flush"],
-        ["awaitable", "await self._persistence.save_session(identity.session_id, self._current.loaded.bindings.backend.history_state, **identity.metadata, service_session_id=service_session_id, raise_on_error=raise_on_error)", "unresolved"],
+        ["awaitable", "await self._persistence.save_session(identity.session_id, self._current.loaded.bindings.backend.history_state, **identity.metadata, service_session_id=service_session_id, raise_on_error=raise_on_error, retain_empty=retain_empty)", "unresolved"],
         ["awaitable", "await self._persistence.recovery_session_wins(self._session.session_id)", "unresolved"]
       ]
     },
