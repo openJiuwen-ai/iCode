@@ -849,7 +849,11 @@ async def test_mcp_list_and_skills_list_extension_read_runtime_details() -> None
         mcp_tools={"server1": ["tool_a"]},
         mcp_failures={"server2": "timeout"},
         skill_sources={"builtin": ["skill1"]},
-        skill_details=[RuntimeSkillDetails(name="skill1", description="desc", source="builtin")],
+        skill_details=[
+            RuntimeSkillDetails(
+                name="skill1", description="desc", source="builtin", content_sha256="a" * 64, file_based=True
+            )
+        ],
     )
     host = _FakeHost(event_bus=EventBus(), engine=_FakeEngine(runtime_details=runtime_details))
     server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]

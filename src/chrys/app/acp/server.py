@@ -1074,7 +1074,11 @@ class ChrysAcpServer:
             return {
                 "sessionId": session_id,
                 "skillSources": details.get("skill_sources", {}),
-                "skillDetails": details.get("skill_details", []),
+                # Keep the ACP list contract independent of native verification-only fields.
+                "skillDetails": [
+                    {key: item[key] for key in ("name", "description", "source")}
+                    for item in details.get("skill_details", [])
+                ],
             }
         raise RequestError.method_not_found(method)
 

@@ -16,7 +16,7 @@ import inspect
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, TypedDict
 
 from textual import __version__ as TEXTUAL_VERSION
 from textual import events as textual_events
@@ -246,6 +246,10 @@ def _restore_terminal_after_run(app: ChrysApp) -> None:
 def _reset_terminal_title_after_run() -> None:
     """Leave the host shell with a cwd title instead of the last prompt preview."""
     set_terminal_title_for_current_cwd()
+
+
+class _InteractiveLaunchKwargs(TypedDict, total=False):
+    interactive_launch: InteractiveLaunch
 
 
 class ChrysApp(TuiVariableDefaultsMixin, App):
@@ -1441,6 +1445,9 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             surface=SessionSurface.TUI,
         )
 
+        launch_kwargs: _InteractiveLaunchKwargs = {}
+        if launch is not None:
+            launch_kwargs["interactive_launch"] = launch
         app = app_cls(
             bus,
             engine,
@@ -1452,7 +1459,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             startup_warnings=[*bootstrap.warnings],
             settings_warnings=settings_warning_events(loaded),
             startup_session_id=args.session,
-            **({"interactive_launch": launch} if launch is not None else {}),
+            **launch_kwargs,
             apply_saved_model_on_restore=not bool(args.model.strip()),
             session_title_updater=session_title_updater,
             update_check=for_this_copy(enabled=loaded.settings.update_check, served=running_under_textual_web_driver()),
