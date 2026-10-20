@@ -1110,7 +1110,13 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 profile=active_profile,
             )
             stage = "composer-stage"
+            from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
+
+            startup_dialogs = [dialog for dialog in self.screen_stack if isinstance(dialog, AgentLoadDialog)]
             await self._dismiss_startup_load_dialog_before_restore(screen)
+            for dialog in startup_dialogs:
+                if self.screen is dialog:
+                    await dialog.dismiss()
             if self.screen is not screen:
                 raise ValueError("Interactive launch composer is covered by another screen")
             from chrys.app.tui.widgets.chrome.input_bar import InputBar
