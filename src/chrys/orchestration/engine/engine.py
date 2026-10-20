@@ -328,6 +328,19 @@ class AgentEngine:
         return self._session.session_id
 
     @property
+    def configuration_identity(self) -> dict[str, str]:
+        """Identity and fingerprints of the currently built native configuration, without secrets."""
+        profile = self._session.agent_profile
+        manifest = self._current.manifest
+        return {
+            "roleId": profile.id if profile else "",
+            "roleName": profile.name if profile else "",
+            "roleFingerprint": manifest.agent_profile_fingerprint,
+            "modelProfileId": manifest.active_profile.id if manifest.active_profile else "",
+            "modelFingerprint": manifest.model_profile_fingerprint,
+        }
+
+    @property
     def runtime_details(self) -> AgentRuntimeDetails:
         """Runtime details for the currently built agent."""
         return copy.deepcopy(self._current.manifest.runtime_details)

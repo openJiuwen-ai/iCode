@@ -230,3 +230,9 @@ You can continue exploring:
 - [Working directory](../guides/daily-use/workspaces.md)
 - [Configure approval modes](../guides/configuration/approval.md)
 - Extend iCode with [Skills](../guides/extensions/skills.md) and [MCP](../guides/extensions/mcp.md)
+
+### Request-correlated interactive launches
+
+Integrations can probe `icode launch capabilities`, then open `icode --launch-manifest /absolute/request.json` and query `icode launch inspect --request-id ID`. Protocol v1 requires an existing absolute working directory, a unique request ID, the selected role/model references, context text with its SHA256, and exact Skill source/file pins. `icode launch preflight --manifest FILE` checks native Skill discovery without creating a session. Existing project trust settings and profile switches still apply; this protocol does not install Skills or change roles.
+
+A confirmed receipt means iCode acquired the native session and staged a visible composer draft. The user sends it normally. `composer-staged` does not mean submitted, read, adopted or completed, and an old receipt does not prove the draft still exists after exit. Same-request retries only inspect the saved receipt; changed content is rejected, and an unknown result requires reconciliation. A new `resume` request names the full original session ID and directory; failure exits without creating a replacement session. Ordinary manual `-s` keeps its existing behavior.

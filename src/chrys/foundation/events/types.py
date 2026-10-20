@@ -1015,6 +1015,8 @@ class RuntimeSkillDetails:
     name: str = ""
     description: str = ""
     source: str = ""
+    content_sha256: str = ""
+    file_based: bool = False
 
 
 @dataclass

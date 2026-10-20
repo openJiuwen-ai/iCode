@@ -32,6 +32,7 @@ from textual.theme import Theme
 from textual.widget import Widget
 
 from chrys import __version__
+from chrys.app.cli.interactive_launch import InteractiveLaunch, LaunchManifest
 from chrys.app.cli.launch_cwd import launch_cwd_missing_message
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
 from chrys.app.features.session_title import SessionTitleUpdater
@@ -277,6 +278,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         startup_warnings: list[Warning] | None = None,
         settings_warnings: list[Warning] | None = None,
         startup_session_id: str = "",
+        interactive_launch: InteractiveLaunch | None = None,
         apply_saved_model_on_restore: bool = True,
         session_title_updater: SessionTitleUpdater | None = None,
         *,
@@ -309,6 +311,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         # values scrubbed before the bus had subscribers); flushed after
         # MainScreen subscribes to ``Warning`` so the user sees them as
         # toast notifications.
+        self._interactive_launch = interactive_launch
         self._startup_session_id = startup_session_id.strip()
         self._startup_warnings: list[Warning] = list(startup_warnings or [])
         # Settings-derived warnings describe the bootstrap load rooted at the
@@ -1020,6 +1023,9 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def _start_engine(self, profile: AgentProfile, screen: MainScreen) -> None:
         """Start the backend without holding Textual's mount path."""
+        if self._interactive_launch is not None:
+            await self._start_interactive_launch(profile, screen)
+            return
         try:
             if self._startup_session_id:
                 # Session restore builds the saved profile/runtime itself. Preparing
@@ -1041,6 +1047,77 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 screen.set_startup_agent_loading(False)
                 self._show_startup_failure(screen, exc)
             logger.exception("Engine startup failed")
+
+    async def _start_interactive_launch(self, profile: AgentProfile, screen: MainScreen) -> None:
+        launch = self._interactive_launch
+        if launch is None:
+            raise RuntimeError("Interactive launch is missing")
+        stage = "session-start"
+        try:
+            if launch.manifest.mode == "resume":
+                stage = "session-restore"
+                meta = await self._state_store.load_session_meta(launch.manifest.session_id)
+                if meta is None or meta.session_id != launch.manifest.session_id or meta.kind != "chat":
+                    raise ValueError("Interactive launch session was not found by its complete identity")
+                if Path(meta.primary_cwd).resolve() != launch.manifest.cwd:
+                    raise ValueError("Interactive launch cannot relocate a saved session")
+                await self._engine.prepare(profile)
+                self._startup_session_id = ""
+                await self._dismiss_startup_load_dialog_before_restore(screen)
+                if await screen.restore_startup_session(launch.manifest.session_id) != "restored":
+                    await self._engine.reset_after_failed_startup_restore()
+                    raise ValueError("Strict interactive session restore failed; no replacement was created")
+                self._deferred_settings_warnings.clear()
+            else:
+                selector = launch.manifest.configuration.get("role")
+                if selector and self._agent_registry.resolve_selector(selector) != profile:
+                    raise ValueError("The explicitly selected interactive role is unavailable")
+                await self._engine.start(profile)
+            session_id = self._engine.session_id
+            workspace = self._engine.workspace
+            if not session_id or workspace is None:
+                raise ValueError("Interactive launch did not acquire a native session")
+            await asyncio.to_thread(launch.observe_session, session_id, workspace.primary_cwd)
+            stage = "configuration-verify"
+            snapshot = self._engine.current_profile_snapshot()
+            active_profile = self._agent_registry.get(snapshot.to_profile)
+            if active_profile is None:
+                raise ValueError("Interactive launch active profile cannot be resolved")
+            if launch.manifest.mode == "resume":
+                expected_role = launch.manifest.configuration.get("role")
+                expected_model = launch.manifest.configuration.get("model")
+                if expected_role and expected_role != active_profile.id:
+                    raise ValueError("Interactive launch saved role differs from the expected configuration")
+                if expected_model and expected_model != snapshot.model_profile_id:
+                    raise ValueError("Interactive launch saved model differs from the expected configuration")
+            identity = self._engine.configuration_identity
+            if not identity["roleId"] or not identity["modelProfileId"]:
+                raise ValueError("Interactive launch did not resolve a usable native configuration")
+            for key in ("roleFingerprint", "modelFingerprint"):
+                expected = launch.manifest.configuration.get(key)
+                if expected and expected != identity[key]:
+                    raise ValueError("Interactive launch configuration changed from its recorded basis")
+            launch.receipt["configuration"] = identity
+            stage = "skill-verification"
+            await asyncio.to_thread(
+                launch.verify_skills,
+                self._engine.runtime_details,
+                project_enabled=self._settings.project_skills_enabled,
+                profile=active_profile,
+            )
+            stage = "composer-stage"
+            from chrys.app.tui.widgets.chrome.input_bar import InputBar
+
+            if not screen.query_one(InputBar).restore_draft(launch.manifest.text):
+                raise ValueError("Interactive launch refuses to overwrite an existing composer draft")
+            launch.confirm(session_id, workspace.primary_cwd)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            launch.receipt["failedStage"] = stage
+            await asyncio.to_thread(launch.fail, str(exc), self._engine.session_id)
+            screen.cancel_startup_session_restore()
+            self.exit(return_code=1)
 
     async def _restore_startup_session(self, screen: MainScreen) -> bool:
         """Restore the requested startup session, returning whether it succeeded."""
@@ -1276,6 +1353,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
     parser = SanitizingArgumentParser(
         description=f"{APP_DISPLAY_NAME} - A general-purpose extensible agent platform for rapidly building and evolving custom agents."
     )
+    parser.add_argument("--launch-manifest", default="", help="Receive an explicit interactive launch manifest.")
     parser.add_argument("-s", "--session", default="", help="Restore the given session id after startup.")
     parser.add_argument(
         "-a", "--agent", default="", help="Start with the given agent profile id, name, or display name."
@@ -1288,6 +1366,25 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
     )
     parser.add_argument("-C", "--workdir", default="", metavar="DIR", help="Start in the given working directory.")
     args = parser.parse_args()
+    launch: InteractiveLaunch | None = None
+    if args.launch_manifest:
+        if args.session or args.workdir or args.agent or args.model:
+            parser.error("--launch-manifest cannot be combined with session, workdir, role or model flags")
+        try:
+            launch = InteractiveLaunch(LaunchManifest.read(Path(args.launch_manifest)))
+            if not launch.claim():
+                import json
+                import sys
+
+                sys.stdout.write(json.dumps(launch.receipt, ensure_ascii=False) + "\n")
+                return
+        except (OSError, ValueError) as exc:
+            parser.exit(1, f"Error: {exc}\n")
+        args.workdir = str(launch.manifest.cwd)
+        args.session = launch.manifest.session_id
+        if launch.manifest.mode == "new":
+            args.agent = launch.manifest.configuration.get("role", "")
+            args.model = launch.manifest.configuration.get("model", "")
     if (missing_cwd := launch_cwd_missing_message(workdir_flag=True, workdir=args.workdir)) is not None:
         parser.exit(1, f"Error: {missing_cwd}\n")
     if args.workdir:
@@ -1319,7 +1416,13 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
         registry.load_all()
         model_registry = ModelProfileRegistry()
         model_registry.load_all()
-        loaded = _apply_startup_active_model_selection(parser, bootstrap.loaded, model_registry, args.model)
+        try:
+            loaded = _apply_startup_active_model_selection(parser, bootstrap.loaded, model_registry, args.model)
+        except SystemExit:
+            if launch is not None:
+                launch.receipt["failedStage"] = "configuration-selection"
+                launch.fail("The selected model configuration is unavailable")
+            raise
         state_store = JsonFileStateStore()
         session_title_updater = SessionTitleUpdater(bus, state_store)
 
@@ -1349,6 +1452,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             startup_warnings=[*bootstrap.warnings],
             settings_warnings=settings_warning_events(loaded),
             startup_session_id=args.session,
+            **({"interactive_launch": launch} if launch is not None else {}),
             apply_saved_model_on_restore=not bool(args.model.strip()),
             session_title_updater=session_title_updater,
             update_check=for_this_copy(enabled=loaded.settings.update_check, served=running_under_textual_web_driver()),
@@ -1367,6 +1471,8 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             _reset_terminal_title_after_run()
     finally:
         stop_debug_logging(debug_log)
+    if launch is not None and app.return_code:
+        raise SystemExit(app.return_code)
 
 
 if __name__ == "__main__":

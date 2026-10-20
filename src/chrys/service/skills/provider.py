@@ -124,6 +124,8 @@ def _runtime_skill_details(skills: Sequence[Skill]) -> list[RuntimeSkillDetails]
             name=skill.name,
             description=surrogate_safe_text(skill.description or ""),
             source=surrogate_safe_text(_catalog_skill_dir(skill) or "Inline profile skills"),
+            content_sha256=hashlib.sha256(skill.content.encode("utf-8", "surrogatepass")).hexdigest(),
+            file_based=bool(skill.path),
         )
         for skill in skills
     ]

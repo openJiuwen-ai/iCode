@@ -129,6 +129,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--version", action="store_true", help=f"Print the {APP_DISPLAY_NAME} version and exit")
 
     tui_options = parser.add_argument_group("TUI options")
+    tui_options.add_argument(
+        "--launch-manifest", metavar="FILE", help="Receive a request-correlated interactive launch manifest"
+    )
     tui_options.add_argument("-s", "--session", metavar="SESSION", help="Restore the given session id after startup")
     tui_options.add_argument(
         "-a",
@@ -167,6 +170,10 @@ def main() -> int:
         return 0
     if argv and argv[0] in _PLURAL_ALIASES:
         argv = [_PLURAL_ALIASES[argv[0]], *argv[1:]]
+    if argv and argv[0] == "launch":
+        from chrys.app.cli.interactive_launch import main as launch_main
+
+        return launch_main(argv[1:])
     if argv and argv[0] == "run":
         from chrys.app.cli.run import main as run_main
 
