@@ -306,6 +306,15 @@ _TUI_BINDING_CONSTRUCTION_ALLOWLIST = {
         False,
     ),
     (
+        Path("src/chrys/app/tui/screens/dialogs/quote_manager.py"),
+        "QuoteManagerDialog",
+        "Binding",
+        "c",
+        "clear_all",
+        None,
+        False,
+    ),
+    (
         Path("src/chrys/app/tui/screens/dialogs/vision_unsupported.py"),
         "VisionUnsupportedDialog",
         "Binding",
@@ -631,7 +640,7 @@ def test_tui_binding_display_guard_allowlist_entries_are_live_and_unambiguous() 
                 if isinstance(item, ast.Tuple) and len(item.elts) in {2, 3}
             )
 
-    assert len(_TUI_BINDING_CONSTRUCTION_ALLOWLIST) == 53
+    assert len(_TUI_BINDING_CONSTRUCTION_ALLOWLIST) == 54
     assert len(observed) == len(set(observed))
     assert set(observed) == _TUI_BINDING_CONSTRUCTION_ALLOWLIST
 

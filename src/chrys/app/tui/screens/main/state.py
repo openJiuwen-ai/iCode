@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
+from chrys.app.tui.screens.main.quotes import QuoteController
 from chrys.foundation.config.settings import DEFAULT_WORKSPACE_MRU_MAX_ENTRIES
 from chrys.foundation.events.types import AgentRuntimeDetails, InvocationMessage
 from chrys.foundation.models.execution import ExecutionSnapshot
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
     from chrys.foundation.config.settings_store import SettingsHandle
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.events.types import BackgroundTasksChanged, Error
+    from chrys.foundation.text.conversation_selections import Quote
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -214,16 +216,18 @@ class PendingInjectionState:
 
     injection_id: str | None = None
     text: str = ""
+    quotes: tuple[Quote, ...] = ()
 
     @property
     def active(self) -> bool:
         """Return whether an injection is queued and awaiting its outcome."""
         return self.injection_id is not None
 
-    def begin(self, injection_id: str, text: str) -> None:
-        """Track a newly queued injection."""
+    def begin(self, injection_id: str, text: str, quotes: tuple[Quote, ...] = ()) -> None:
+        """Track a newly queued injection, including the quotes it carried."""
         self.injection_id = injection_id
         self.text = text
+        self.quotes = quotes
 
     def matches(self, injection_id: str | None) -> bool:
         """Return whether *injection_id* identifies the tracked injection."""
@@ -233,6 +237,7 @@ class PendingInjectionState:
         """Stop tracking after the outcome arrived or the user cancelled."""
         self.injection_id = None
         self.text = ""
+        self.quotes = ()
 
 
 @dataclass
@@ -307,3 +312,4 @@ class MainScreenState:
     submit: SubmitCoordinator = field(default_factory=SubmitCoordinator)
     render_gate: TurnRenderGate = field(default_factory=TurnRenderGate)
     pending_injection: PendingInjectionState = field(default_factory=PendingInjectionState)
+    quotes: QuoteController = field(default_factory=QuoteController)

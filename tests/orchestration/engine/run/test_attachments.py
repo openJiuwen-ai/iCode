@@ -15,6 +15,7 @@ from PIL import Image
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.text.conversation_selections import Quote, compose_outgoing_text
 from chrys.foundation.text.mentions import format_file_mention, iter_mention_tokens
 from chrys.orchestration.engine.run import attachments as attachments_module
 from chrys.orchestration.engine.run.attachments import (
@@ -26,6 +27,7 @@ from chrys.orchestration.engine.run.attachments import (
     attachment_error_display,
     build_user_contents,
     discover_image_mentions,
+    discover_image_references,
     format_attachment_error_message,
     format_history_vision_unsupported_message,
     format_retry_image_unsupported_message,
@@ -579,3 +581,35 @@ def test_history_vision_displays_match_named_and_unnamed_legacy_composer() -> No
         assert format_message(history_vision_unsupported_display(model_name)) == (
             format_history_vision_unsupported_message(model_name)
         )
+
+
+def test_discovery_ignores_mentions_inside_conversation_selections(tmp_path: Path) -> None:
+    quoted = Quote(text="Use @missing.png as the example input.", source="assistant")
+    text = compose_outgoing_text("what does this line do", [quoted])
+
+    assert discover_image_references(text, tmp_path) == []
+    discovered = discover_image_mentions(text, tmp_path)
+    assert discovered.mentions == []
+    # A quoted mention is conversation content, not a file the user asked to
+    # attach: a missing path inside it must not refuse the send either.
+    assert discovered.errors == []
+
+
+def test_discovery_still_finds_body_mentions_beside_selections(tmp_path: Path) -> None:
+    shot = _write(tmp_path / "shot.png")
+    quoted = Quote(text="earlier @missing.png advice", source=None)
+    text = compose_outgoing_text(f"compare with @{shot.name}", [quoted])
+
+    references = discover_image_references(text, tmp_path)
+
+    assert [reference.path for reference in references] == [shot]
+
+
+def test_replace_image_mentions_with_paths_preserves_selections_block(tmp_path: Path) -> None:
+    shot = _write(tmp_path / "shot.png")
+    quoted = Quote(text="Use @missing.png as the example input.", source="assistant")
+    text = compose_outgoing_text(f"see @{shot.name}", [quoted])
+
+    replaced = replace_image_mentions_with_paths(text, tmp_path)
+
+    assert replaced == compose_outgoing_text(f"see {shot}", [quoted])

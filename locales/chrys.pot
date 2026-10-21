@@ -8579,6 +8579,93 @@ msgstr ""
 msgid "tui.prompt_cache.title"
 msgstr ""
 
+#. English: Quote
+#. chrys-meta={"fingerprint":"b56f5707a79d26529841e989a546164a27d878233381ef580e3fffa074064d97","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/quote_popup.py
+msgid "tui.quote.action"
+msgstr ""
+
+#. English: {count} conversation quote
+#. English-plural: {count} conversation quotes
+#. chrys-meta={"fingerprint":"6d8aef402c3c7fbaa80446f5eef4aef8d55688c81bf90c04dc07fa79da952670","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.quote.chip_count"
+msgid_plural "tui.quote.chip_count#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: View and manage conversation quotes
+#. chrys-meta={"fingerprint":"a3766d06c59522bb066427507fe276f7895302532fdc90346be21daf0e5cee21","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.quote.chip_tooltip"
+msgstr ""
+
+#. English: Clear all
+#. chrys-meta={"fingerprint":"49089c812ab1666de34005225c1144d4a139182b3425930c69ba9c7bbc7e9411","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/quote_manager.py
+msgid "tui.quote.clear_all"
+msgstr ""
+
+#. English: Close
+#. chrys-meta={"fingerprint":"b539b71b98c3530fcd17b6257d0bcdd95ec41dbd6ba78a0b8ad40de8ddc5103e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/quote_manager.py
+msgid "tui.quote.close"
+msgstr ""
+
+#. English: Conversation quotes
+#. chrys-meta={"fingerprint":"700cfe78b6982cf143e68a951c2807e1f9da66ac5a10dd0427b58cadf7975cf0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/quote_manager.py
+msgid "tui.quote.dialog_title"
+msgstr ""
+
+#. English: You can attach at most 8 conversation quotes.
+#. chrys-meta={"fingerprint":"274d61585b2084f960ce5c29be60f960db315a82831b14304c3c320085519975","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/quotes.py
+msgid "tui.quote.limit_count"
+msgstr ""
+
+#. English: A quote can contain at most 8,000 characters.
+#. chrys-meta={"fingerprint":"fee99ea6d9d4eb0c138d7173288fdf3f632470866ef6b511521ef88c550439b7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/quotes.py
+msgid "tui.quote.limit_single"
+msgstr ""
+
+#. English: Conversation quotes can contain at most 16,000 characters in total.
+#. chrys-meta={"fingerprint":"51005644b4d58440c373e7093c83c5d0595e2042c9fee6612ac5db138753d74d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/quotes.py
+msgid "tui.quote.limit_total"
+msgstr ""
+
+#. English: Remove
+#. chrys-meta={"fingerprint":"5ab83d83e77d1fd96ebcc0b0ecc9ce26afa1a54d844f2763f4d3e8f8a8903075","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/quote_manager.py
+msgid "tui.quote.remove"
+msgstr ""
+
+#. English: Quoted conversation
+#. chrys-meta={"fingerprint":"29e98b72a9669f0ebc08089df4fe3b1df6186881dd6bc410efa32178307f7699","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.quote.section_title"
+msgstr ""
+
+#. English: Assistant message
+#. chrys-meta={"fingerprint":"afd38a749ac095f18c946a948fb5437817c4fd92aaa9432fed4c7dc5afabd2f4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/quote_format.py
+msgid "tui.quote.source_assistant"
+msgstr ""
+
+#. English: Conversation
+#. chrys-meta={"fingerprint":"a1b1f49043ca14b8a2fdb10e1a29adefd0f28241bb6ed1fe424693b93b8afeb2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/quote_format.py
+msgid "tui.quote.source_unknown"
+msgstr ""
+
+#. English: User message
+#. chrys-meta={"fingerprint":"b73dd91a2d46a1906ba7b0a45641a6fe7b17c28b9ff7ef864a4a1161155c6dfa","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/quote_format.py
+msgid "tui.quote.source_user"
+msgstr ""
+
 #. English: Retry not started
 #. chrys-meta={"fingerprint":"7db136937dd3eb95b5c20273a433b782ffdd84353028e636f4d66a547f509d8b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/event_handlers.py

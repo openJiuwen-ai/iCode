@@ -110,6 +110,7 @@ from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
+from chrys.foundation.text.conversation_selections import split_selections_block
 from chrys.foundation.tool_result_metadata import canonical_tool_result_status
 from chrys.orchestration.engine.run.attachments import replace_image_mentions_with_paths
 from chrys.service.approval.policy import ApprovalMode
@@ -1097,9 +1098,11 @@ class BackendEventHandler:
             try:
                 # Show it even when cancelled-too-late: the model did see this
                 # text. The tab first, before any await, so it cannot overwrite
-                # a turn result that lands meanwhile.
+                # a turn result that lands meanwhile. The title shows the typed
+                # body; the bubble renders the full wire text with its quotes.
                 if s.agent_running:
-                    ui.set_terminal_title_for_user_message(event.text)
+                    visible_text, _quotes = split_selections_block(event.text)
+                    ui.set_terminal_title_for_user_message(visible_text or event.text)
                 await ui.add_user_injection(event.text, created_at=event.created_at)
                 s.update_toc()
                 s.debug("UserInjectResult", "consumed" if owns_input else "consumed (stale id)")
@@ -1108,7 +1111,12 @@ class BackendEventHandler:
                     pending.clear()
                     ui.unlock_input_after_consumed_injection()
         elif owns_input:
+            staged_quotes = pending.quotes
             pending.clear()
+            # The injection never reached the model: its quotes come off the
+            # wire text and back onto the pending chip next to the composer's
+            # own (typed) text, ready for the next submit.
+            self._state.quotes.restore(staged_quotes)
             ui.unlock_input_after_abandoned_injection()
             s.debug("UserInjectResult", "abandoned (text preserved)")
         else:

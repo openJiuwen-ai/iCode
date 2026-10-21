@@ -36,6 +36,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.text.conversation_selections import Quote, compose_outgoing_text
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.tui_helpers import click_when_settled, fake_session_title, make_backend_handler
 from tests.support.waiting import wait_for
@@ -364,6 +365,71 @@ async def test_terminal_title_names_a_mid_run_message_once_the_turn_gets_it(outc
         "consumed_after_turn_end": [("bubble", _TEXT)],
     }
     assert h.shown == expected.get(outcome, [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consumed", [False, True], ids=["abandoned_restores", "consumed_drops"])
+async def test_injection_outcome_settles_its_staged_quotes(consumed: bool) -> None:
+    """The quotes a queued injection carried come back unless the model saw it."""
+    h = _Harness()
+    await h.start()
+    h.state.quotes.add("quoted while running", "assistant")
+    await h.send_mid_run(_TEXT)
+
+    # The quotes left the chip with the submit and ride the pending tracker.
+    assert h.state.quotes.quotes == ()
+    assert h.state.pending_injection.quotes == (Quote("quoted while running", "assistant"),)
+    injection_id = h.state.pending_injection.injection_id
+
+    await h.bus.publish(UserInjectResult(text=_TEXT, consumed=consumed, injection_id=injection_id))
+
+    if consumed:
+        assert h.state.quotes.quotes == ()
+    else:
+        # The injection never reached the model: its quotes return to the
+        # chip next to the composer's own text, ready for the next submit.
+        assert h.state.quotes.quotes == (Quote("quoted while running", "assistant"),)
+
+
+@pytest.mark.asyncio
+async def test_consumed_injection_title_names_the_typed_body_not_the_block() -> None:
+    h = _Harness()
+    await h.start()
+    h.state.quotes.add("quoted while running", None)
+    await h.send_mid_run(_TEXT)
+    injection_id = h.state.pending_injection.injection_id
+    wire_text = compose_outgoing_text(_TEXT, [Quote("quoted while running")])
+
+    await h.bus.publish(UserInjectResult(text=wire_text, consumed=True, injection_id=injection_id))
+
+    # The tab shows the typed body; the bubble renders the full wire text.
+    assert h.shown == [("title", _TEXT), ("bubble", wire_text)]
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_admission_keeps_restored_quotes_when_not_refused() -> None:
+    """Esc while a message is being admitted restores its quotes for good.
+
+    The backend abandons a cancelled submit without refusing it, so the
+    queued flow's consume after the publish must not wipe the quotes the
+    cancel already handed back to the chip.
+    """
+    h = _Harness()
+
+    async def cancel_during_admission(_event: UserMessage) -> None:
+        # Esc while the hook runs; the backend marks the submit cancelled and
+        # abandons it later — no Error, no refusal on the publish.
+        assert h.controller.cancel_pending_injection() is True
+
+    await h.start(cancel_during_admission)
+    h.state.quotes.add("quoted while running", "assistant")
+    await h.send_mid_run(_TEXT)
+
+    assert h.state.quotes.quotes == (Quote("quoted while running", "assistant"),)
+    assert h.input_bar.locked is False
+    assert h.input_bar.value == _TEXT
+    assert h.state.pending_injection.active is False
+    assert h.shown == []
 
 
 @pytest.mark.asyncio

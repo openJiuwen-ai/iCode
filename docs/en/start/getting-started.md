@@ -215,6 +215,8 @@ Mermaid code blocks appear as diagrams; choose **Open full diagram** to view and
 
 Mouse selection copies what is displayed, without adding newlines for screen wrapping. Use **copy** beside the message header to copy the original Markdown and LaTeX. Reopening an older conversation uses the current rendering.
 
+After selecting a piece of conversation text and releasing the mouse, a small **Quote** button appears. Choose it and the text is kept as a quote; a "❝ N conversation quotes" hint shows above the input box. You can select and accumulate several quotes; choose the hint to review, remove, or clear them. When you send your next message, these quotes ride along with it, and the agent can answer questions about that content. A single quote can contain at most 8,000 characters, and you can keep at most 8 quotes totalling 16,000 characters.
+
 ## 5. End the session
 
 To finish using iCode, type `/exit` or press `Ctrl+Q` to exit.

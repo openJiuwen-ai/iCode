@@ -27,6 +27,7 @@ from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets.chat.image_preview import ChatImagePreview, ImagePreviewGrid, extract_image_previews
+from chrys.app.tui.widgets.chat.quote_format import Quote, source_label_reference, split_selections_block
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.markdown.parser import create_user_text_markdown_parser
@@ -81,6 +82,32 @@ _RETRY_MESSAGE = msg(
     fallback="{message} Retrying in {delay_seconds}s ({attempt}/{max_attempts})...",
     multiline=True,
 )
+_USER_QUOTE_SECTION_TITLE = msg("tui.quote.section_title", fallback="Quoted conversation")
+
+
+def _quote_view_lines(quote: Quote, render: Callable[[MessageRef], str]) -> list[str]:
+    """One quote as a markdown blockquote: a source label line, then the text."""
+    lines = [f"> **{render(source_label_reference(quote.source))}**"]
+    lines.extend(f"> {line}".rstrip() for line in (sanitize_source_text(quote.text).splitlines() or [""]))
+    return lines
+
+
+def compose_user_message_view(
+    text: str,
+    quotes: list[Quote],
+    render: Callable[[MessageRef], str],
+) -> str:
+    """The bubble's markdown view: typed text, then quoted selections as blocks.
+
+    ``text`` is the visible part with the wire block already stripped; an
+    empty quote list renders it unchanged.
+    """
+    view = sanitize_source_text(text)
+    if not quotes:
+        return view
+    parts = [view] if view else [f"**{render(_USER_QUOTE_SECTION_TITLE.bind())}**"]
+    parts.extend("\n".join(_quote_view_lines(quote, render)) for quote in quotes)
+    return "\n\n".join(parts)
 
 
 def _format_duration_ms(duration_ms: int) -> str:
@@ -376,8 +403,11 @@ class UserMessage(Widget):
             )
             copy_button.display = self._should_show_copy_button()
             yield copy_button
+        # The wire text is kept verbatim for copy/history; the bubble shows a
+        # quoted-conversation view when the message ends in a selections block.
+        visible_text, quotes = split_selections_block(self._text)
         yield VirtualizedMarkdown(
-            sanitize_source_text(self._text),
+            compose_user_message_view(visible_text, quotes, self._render_message),
             parser_factory=create_user_text_markdown_parser,
         )
         if self._image_previews:

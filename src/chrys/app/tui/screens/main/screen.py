@@ -15,12 +15,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from textual import __version__ as TEXTUAL_VERSION
 from textual import on, work
+from textual._arrange import DockArrangeResult
 from textual.actions import SkipAction
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.events import DescendantFocus, Paste, Resize, ScreenResume, ScreenSuspend
-from textual.geometry import Offset, Size
+from textual.geometry import Offset, Region, Size
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.selection import Selection, SelectState
@@ -50,6 +51,7 @@ from chrys.app.tui.screens.main.model_indicator import (
 )
 from chrys.app.tui.screens.main.navigation import MainNavigationController
 from chrys.app.tui.screens.main.ports import StatusMessage
+from chrys.app.tui.screens.main.quotes import QuoteAddOutcome, quote_limit_notice
 from chrys.app.tui.screens.main.rollback_controller import RollbackController
 from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider
 from chrys.app.tui.screens.main.session_handlers import RestoreRequest, SessionCallbacks, SessionHandler
@@ -86,9 +88,11 @@ from chrys.app.tui.support.gc_freeze import (
 )
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
-from chrys.app.tui.widgets.chat.messages import ConversationStatusAction
+from chrys.app.tui.widgets.chat.messages import AgentMessage, ConversationStatusAction, UserMessage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
+from chrys.app.tui.widgets.chat.quote_format import SOURCE_ASSISTANT, SOURCE_USER, Quote
+from chrys.app.tui.widgets.chat.quote_popup import QuoteSelectionPopup
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserInlineSubmitted
 from chrys.app.tui.widgets.chat.renderers.sleep import SleepSkipClicked
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentAbortClicked, SubAgentRetryClicked
@@ -490,6 +494,16 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             dismiss_suggestions=self._suggestions.dismiss_suggestions,
             debug=self._debug,
         )
+        # The controller lives on the state so backend event handlers (the
+        # injection outcome) can restore quotes the chip gave up; the screen
+        # binds the chip refresh once its widgets exist.
+        self._quotes = self._state.quotes
+        self._quotes.set_on_changed(self._refresh_quote_chip)
+        # A quote offer snapshotted when its drag ended; consumed by the pill.
+        self._pending_quote_pick: Quote | None = None
+        # Drag tracking for quote offers, recorded on every selection update.
+        self._quote_pointer: Offset | None = None
+        self._quote_source_leaf: Widget | None = None
         self._input_flow = InputFlowController(
             state=self._state,
             services=self._services,
@@ -1021,6 +1035,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         return False
 
     def compose(self) -> ComposeResult:
+        # An overlay child placed first: its flow origin is the screen origin,
+        # so show_at()'s corrective offset places it at exact screen cells.
+        yield QuoteSelectionPopup(locale_controller=self._locale_controller)
         yield AppHeader(locale_controller=self._locale_controller, show_mode_badge=True).data_bind(
             subtitle_parts=MainScreen.header_subtitle_parts,
             approval_mode=MainScreen.header_approval_mode,
@@ -1159,12 +1176,19 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         in a long chat. Drags whose both endpoints sit in the ChatPanel go
         through :class:`ChatSelectionController` instead; anything else
         (single-widget selections, non-chat surfaces) keeps stock behavior.
+
+        Drag-end quote offers need the pointer and the starting leaf on BOTH
+        paths, so they are recorded here before the routing decision.
         """
         if select_state is None or select_state.end is None:
             if select_state is None:
                 self._chat_selection.clear()
+                self._quote_pointer = None
+                self._quote_source_leaf = None
             super()._watch__select_state(select_state)
             return
+        self._quote_pointer = Offset(select_state.screen_offset.x, select_state.screen_offset.y)
+        self._quote_source_leaf = select_state.start.content_widget
         if not select_state.is_attached_to_dom() or select_state.is_single_content_widget:
             self._chat_selection.clear()
             super()._watch__select_state(select_state)
@@ -1194,11 +1218,121 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def clear_selection(self) -> None:
         """Clear the chat logical selection along with screen selection state."""
         self._chat_selection.clear()
+        self._hide_quote_popup_unless_pressed()
         super().clear_selection()
 
     def schedule_chat_selection_reprojection(self, panel: ChatPanel) -> None:
         """Keep chat selection highlights aligned after the transcript scrolls."""
+        # The quote pill is anchored to the drag end; scrolling moves the
+        # anchor away, so any scroll or relayout withdraws it.
+        self._hide_quote_popup_unless_pressed()
         self._chat_selection.schedule_reproject(panel)
+
+    def _watch__selecting(self, selecting: bool) -> None:
+        """Offer to quote a chat selection the moment its drag ends."""
+        super()._watch__selecting(selecting)
+        if selecting:
+            self._hide_quote_popup_unless_pressed()
+            return
+        self._offer_quote_for_finished_selection()
+
+    # -- conversation quoting ------------------------------------------------
+
+    def _quote_popup(self) -> QuoteSelectionPopup | None:
+        """The mounted quote pill, if this screen is still alive."""
+        try:
+            return self.query_one(QuoteSelectionPopup)
+        except Exception:
+            return None
+
+    def _hide_quote_popup_unless_pressed(self) -> None:
+        """Withdraw the pill unless a press on it is mid-click.
+
+        Textual clears the selection on any in-place mouse-up before the
+        click reaches its widget; hiding a pressed pill there would reroute
+        its own click to the transcript beneath.
+        """
+        popup = self._quote_popup()
+        if popup is not None and not popup.pressed:
+            popup.hide()
+
+    def _offer_quote_for_finished_selection(self) -> None:
+        """Show the quote pill for a completed drag with extractable text."""
+        pointer = self._quote_pointer
+        if pointer is None:
+            return
+        text = self.get_selected_text()
+        if text is None or not text.strip():
+            return
+        popup = self._quote_popup()
+        if popup is None:
+            return
+        leaf = self._chat_selection.first_leaf or self._quote_source_leaf
+        self._pending_quote_pick = Quote(text=text, source=self._quote_source_role(leaf))
+        popup.place_near(pointer)
+
+    def _quote_source_role(self, leaf: Widget | None) -> str | None:
+        """The wire source for a selection anchored on *leaf*, if any."""
+        if leaf is None:
+            return None
+        for ancestor in leaf.ancestors_with_self:
+            if isinstance(ancestor, UserMessage):
+                return SOURCE_USER
+            if isinstance(ancestor, AgentMessage):
+                return SOURCE_ASSISTANT
+        return None
+
+    def _refresh_quote_chip(self) -> None:
+        """Sync the input pill with the pending-quote buffer."""
+        if not self.is_mounted:
+            return
+        with contextlib.suppress(Exception):
+            self.query_one(InputBar).set_pending_quotes(len(self._quotes))
+
+    def on_quote_selection_popup_requested(self, event: QuoteSelectionPopup.Requested) -> None:
+        """Turn the finished selection snapshotted for the pill into a quote."""
+        event.stop()
+        pick = self._pending_quote_pick
+        self._pending_quote_pick = None
+        popup = self._quote_popup()
+        if popup is not None:
+            popup.hide()
+        self.clear_selection()
+        if pick is None:
+            return
+        outcome = self._quotes.add(pick.text, pick.source)
+        if outcome is not QuoteAddOutcome.ADDED:
+            self.notify(
+                render_str(self._language_localizer(), quote_limit_notice(outcome)),
+                severity="warning",
+                markup=False,
+            )
+
+    @on(InputBar.QuoteManagerRequested)
+    def _on_quote_manager_requested(self, _event: InputBar.QuoteManagerRequested) -> None:
+        """Open the modal listing the quotes riding the next message."""
+        from chrys.app.tui.screens.dialogs.quote_manager import QuoteManagerDialog
+
+        quotes = self._quotes.quotes
+        if not quotes:
+            return
+        self._hide_quote_popup_unless_pressed()
+        self.app.push_screen(
+            QuoteManagerDialog(
+                quotes,
+                on_remove=self._quotes.remove_at,
+                on_clear_all=self._quotes.clear,
+                locale_controller=self._locale_controller,
+            )
+        )
+
+    def watch_chat_session_id(self, old_session_id: str, session_id: str) -> None:
+        """Pending quotes belong to the conversation they were picked from."""
+        if old_session_id == session_id:
+            return
+        self._pending_quote_pick = None
+        self._hide_quote_popup_unless_pressed()
+        self._quotes.clear()
 
     def _compositor_refresh(self) -> None:
         """Forward each repaint to the dialog above this screen once.
@@ -1260,6 +1394,50 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._chat_selection.on_screen_layout_refreshed()
         # Likewise a workflow panel shown before this layout placed it.
         self._workflow.screen_layout_refreshed()
+
+    def arrange(self, size: Size, _optimal: bool = False) -> DockArrangeResult:
+        """Pin the quote pill to its target screen region on every arrange."""
+        result = super().arrange(size, _optimal)
+        self._place_quote_popup(result, size)
+        return result
+
+    def _place_quote_popup(self, result: DockArrangeResult, size: Size) -> None:
+        """Keep the quote pill at the exact cells its drag ended on.
+
+        Mirrors ``ChatPanel._place_scroll_to_bottom_button``: the pill's CSS
+        ``overlay: screen`` only keeps it out of flow; the fixed placement
+        below owns its position, immune to flow changes above it.
+        """
+        popup = self._quote_popup()
+        if popup is None:
+            return
+        target = popup.target_region
+        if target is None:
+            return
+        placements = result.placements
+        for index in range(len(placements) - 1, -1, -1):
+            placement = placements[index]
+            if placement.widget is not popup:
+                continue
+            region = Region(
+                min(max(0, target.x), max(0, size.width - target.width)),
+                min(max(0, target.y), max(0, size.height - target.height)),
+                target.width,
+                target.height,
+            )
+            if placement.fixed and placement.region == region and placement.offset == Offset():
+                return
+            placements[index] = placement._replace(
+                region=region,
+                offset=Offset(),
+                order=2**31 - 1,
+                # Fixed keeps the pinned region viewport-relative (screen
+                # space) instead of applying the container's scroll offset.
+                fixed=True,
+                absolute=False,
+            )
+            result._spatial_map = None
+            return
 
     async def on_mount(self) -> None:
         """Subscribe to backend events when the screen mounts."""

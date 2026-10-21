@@ -47,6 +47,7 @@ from chrys.app.tui.widgets.chrome.image_paste import (
     convert_pasted_image_paths_to_mentions,
     save_clipboard_image_to_file,
 )
+from chrys.app.tui.widgets.click_affordance import ClickAffordance
 from chrys.app.tui.widgets.selection import NonSelectableTextMixin
 from chrys.app.tui.widgets.text_area import MESSAGE_EDITOR_PASTE_MAX_TOKENS, NEWLINE_SHORTCUT_KEYS
 from chrys.foundation.i18n import Localizer, MessageRef, msg
@@ -76,6 +77,13 @@ _INPUT_NEWLINE_HINT = msg("tui.input.hint.newline", fallback="{shortcut} for new
 _INPUT_HISTORY_SEARCH_PLACEHOLDER = msg("tui.input.placeholder.history_search", fallback="Search prompt history")
 _INPUT_PLACEHOLDER_HISTORY_SELECT = msg("tui.input.placeholder.history_select", fallback="Select")
 _INPUT_PLACEHOLDER_HISTORY_CLOSE = msg("tui.input.placeholder.history_close", fallback="Close")
+_QUOTE_CHIP_COUNT = msg(
+    "tui.quote.chip_count",
+    fallback="{count} conversation quote",
+    plural_fallback="{count} conversation quotes",
+)
+_QUOTE_CHIP_TOOLTIP = msg("tui.quote.chip_tooltip", fallback="View and manage conversation quotes")
+_QUOTE_GLYPH = "❝"
 
 type InputLabel = MessageRef | str
 
@@ -529,6 +537,66 @@ class _InputBarButton(NonSelectableTextMixin, Button):
     """Input action button excluded from terminal drag selection and copy."""
 
 
+class QuoteChip(ClickAffordance):
+    """Pill above the input row counting the quotes riding the next message."""
+
+    ALLOW_SELECT = False
+
+    class Clicked(Message):
+        """Posted when the quote pill is clicked."""
+
+    CLICK_MESSAGE = Clicked
+
+    DEFAULT_CSS = """
+    QuoteChip {
+        width: auto;
+        height: 1;
+        margin: 0 0 0 1;
+        padding: 0 1;
+        background: $accent 20%;
+        color: $accent;
+        text-style: bold;
+        content-align: center middle;
+        pointer: pointer;
+    }
+    QuoteChip:hover {
+        background: $accent 30%;
+    }
+    """
+
+    def __init__(self, locale_controller: LocaleController | None = None) -> None:
+        super().__init__(self._chip_content(locale_controller, 0))
+        self._locale_controller = locale_controller
+        self._count = 0
+        self.tooltip = Content.from_text(self._chip_tooltip(locale_controller), markup=False)
+
+    @staticmethod
+    def _chip_content(locale_controller: LocaleController | None, count: int) -> Content:
+        bound = _QUOTE_CHIP_COUNT.bind(count=count)
+        if locale_controller is None:
+            return Content.from_text(f"{_QUOTE_GLYPH} {format_message(bound)}", markup=False)
+        return Content.assemble(_QUOTE_GLYPH, " ", render_content(locale_controller.localizer, bound))
+
+    @property
+    def count(self) -> int:
+        """The quote count currently rendered on the pill."""
+        return self._count
+
+    def update_count(self, count: int) -> None:
+        """Re-render the pill for *count* quotes (zero hides it via the owner)."""
+        self._count = count
+        self.update(self._chip_content(self._locale_controller, count), layout=False)
+
+    def refresh_localization(self) -> None:
+        self.update(self._chip_content(self._locale_controller, self._count), layout=False)
+        self.tooltip = Content.from_text(self._chip_tooltip(self._locale_controller), markup=False)
+
+    @staticmethod
+    def _chip_tooltip(locale_controller: LocaleController | None) -> str:
+        bound = _QUOTE_CHIP_TOOLTIP.bind()
+        return format_message(bound) if locale_controller is None else render_str(locale_controller.localizer, bound)
+
+
 class InputBar(Widget):
     """Multi-line input bar with Send/Stop button.
 
@@ -540,7 +608,8 @@ class InputBar(Widget):
     DEFAULT_CSS = """
     InputBar {
         height: auto;
-        max-height: 9;
+        /* One row for the quote pill plus the bordered editor row. */
+        max-height: 10;
         padding: 0;
     }
     InputBar > Horizontal {
@@ -653,6 +722,9 @@ class InputBar(Widget):
     class ShellModeRequested(Message):
         """Posted when the user requests shell mode from the input."""
 
+    class QuoteManagerRequested(Message):
+        """Posted when the user clicks the pending-quotes pill."""
+
     class EditorRequested(Message):
         """Posted when the user requests the full-screen message editor."""
 
@@ -760,6 +832,20 @@ class InputBar(Widget):
         if self.is_mounted:
             self.query_one("#chat-input", _ChatTextArea).set_paste_cwd(cwd)
 
+    def set_pending_quotes(self, count: int) -> None:
+        """Show, update, or hide the pending-quotes pill above the editor row."""
+        chip = self.query_one(QuoteChip)
+        visible = count > 0
+        if chip.display != visible:
+            chip.display = visible
+        if visible and chip.count != count:
+            chip.update_count(count)
+
+    def on_quote_chip_clicked(self, event: QuoteChip.Clicked) -> None:
+        """Surface a quote-pill click to the screen that owns the dialog."""
+        event.stop()
+        self.post_message(self.QuoteManagerRequested())
+
     def set_clipboard_image_dir(self, directory: str | Path | None) -> None:
         """Set the session-scoped directory used for clipboard image attachments."""
         self._clipboard_image_dir = Path(directory) if directory is not None else None
@@ -767,6 +853,11 @@ class InputBar(Widget):
             self.query_one("#chat-input", _ChatTextArea).set_clipboard_image_dir(self._clipboard_image_dir)
 
     def compose(self) -> ComposeResult:
+        quote_chip = QuoteChip(locale_controller=self._locale_controller)
+        # Hidden until quotes exist; a display toggle relayouts only this bar,
+        # the same class of change as the editor row growing a typed newline.
+        quote_chip.display = False
+        yield quote_chip
         with Horizontal():
             yield _InputBarButton(Text(">"), id="editor-btn")
             yield _ChatTextArea(
@@ -812,6 +903,7 @@ class InputBar(Widget):
         if not self.is_mounted:
             return
         self._apply_placeholders(self.query_one("#chat-input", _ChatTextArea))
+        self.query_one(QuoteChip).refresh_localization()
         self._set_btn_label(
             self._render_label(INPUT_NEW.bind()),
             button_id="new-btn",

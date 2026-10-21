@@ -12,6 +12,11 @@ Pipeline:
   compresses oversized images in memory before attaching them.
 - ``parse_image_mentions`` is the convenience wrapper for tests and callers
   that intentionally want validation plus byte loading in one step.
+
+Every scanner here reads only the user-authored body: a trailing
+conversation-selections block (quoted transcript text some frontends append)
+is spliced out first, so a quoted ``@file.png`` is never treated as an
+attachment the user asked to send.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from typing import Any, Protocol
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
+from chrys.foundation.text.conversation_selections import selections_span
 from chrys.foundation.text.images import (
     COMPRESSED_IMAGE_MEDIA_TYPE,
     IMAGE_MIME_BY_EXTENSION,
@@ -227,18 +233,20 @@ def discover_image_references(text: str, cwd: Path) -> list[ImageReference]:
 
 def replace_image_mentions_with_paths(text: str, cwd: Path) -> str:
     """Return *text* with supported image ``@file`` mentions replaced by plain paths."""
+    body, tail = selections_span(text)
     pieces: list[str] = []
     last_end = 0
     changed = False
     for token, path, _media_type in _iter_image_reference_tokens(text, cwd):
-        pieces.append(text[last_end : token.start])
+        pieces.append(body[last_end : token.start])
         pieces.append(str(path))
         last_end = token.end
         changed = True
 
     if not changed:
         return text
-    pieces.append(text[last_end:])
+    pieces.append(body[last_end:])
+    pieces.append(tail)
     return "".join(pieces)
 
 
@@ -250,7 +258,10 @@ def _iter_image_reference_tokens(text: str, cwd: Path) -> list[tuple[MentionToke
     except RuntimeError:
         root = cwd
 
-    for token in iter_mention_tokens(text):
+    # A trailing selections block is quoted conversation text, not authored
+    # input: its mentions are content under discussion, never attachments.
+    body, _tail = selections_span(text)
+    for token in iter_mention_tokens(body):
         if _is_folder_style_mention_value(token.value):
             continue
         try:

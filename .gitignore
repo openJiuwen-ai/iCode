@@ -55,3 +55,4 @@ src/chrys/foundation/vendor/ripgrep/rg*
 .aider*
 .copilot
 .chrys
+.zcode

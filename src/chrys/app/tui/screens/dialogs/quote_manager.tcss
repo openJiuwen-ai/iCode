@@ -1,0 +1,28 @@
+QuoteManagerDialog {
+    align: center middle;
+}
+
+#quote-manager-container {
+    width: 64;
+    max-width: 90%;
+    height: auto;
+    max-height: 80%;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+}
+
+#quote-manager-list {
+    width: 100%;
+    height: auto;
+    max-height: 16;
+    padding: 1 0;
+    background: $surface;
+}
+
+#quote-manager-buttons {
+    dock: bottom;
+    align: center top;
+    height: 3;
+    padding: 0 1;
+}
