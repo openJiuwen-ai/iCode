@@ -873,6 +873,18 @@ def test_executable_test_support_module_selects_its_path_consumers() -> None:
     assert selection.full_reason is None
 
 
+def test_a_file_watch_selects_its_test_only_where_that_test_exists(tmp_path: Path) -> None:
+    change = (chrys_test.Change("src/chrys/service/approval/principles.json", frozenset({"changed"})),)
+    target = "tests/service/approval/test_formal_core.py"
+    absent = chrys_test.select_smart_tests(change, chrys_test.ImportGraph({}, {}, {}, ()), root=tmp_path)
+
+    _write(tmp_path, target, "def test_formal_core(): pass\n")
+    present = chrys_test.select_smart_tests(change, chrys_test.ImportGraph({}, {}, {}, ()), root=tmp_path)
+
+    assert target not in absent.regular
+    assert present.regular[target] == {"regular filesystem watch matched src/chrys/service/approval/principles.json"}
+
+
 def test_unmapped_test_support_module_without_import_consumers_stays_local(tmp_path: Path) -> None:
     _write(tmp_path, "tests/support/test_helper.py", "def test_helper(): pass\n")
     path = "tests/support/unimported_helper.py"
@@ -1197,13 +1209,15 @@ def test_regular_filesystem_scanners_watch_their_complete_scope(
     expected_target: str,
 ) -> None:
     _write(tmp_path, "tests/app/__init__.py")
+    _write(tmp_path, expected_target)
     selection = chrys_test.select_smart_tests(
         (chrys_test.Change(changed_path, frozenset({"changed"})),),
         chrys_test.ImportGraph({}, {}, {}, ()),
         root=tmp_path,
     )
 
-    assert expected_target in selection.regular
+    # The target exists here, so a source mirror could also pick it: the watch must be why.
+    assert f"regular filesystem watch matched {changed_path}" in selection.regular.get(expected_target, set())
 
 
 def test_target_output_caps_reasons_without_discarding_selection_evidence(

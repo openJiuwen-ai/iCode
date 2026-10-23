@@ -194,10 +194,7 @@ _LLM_CLIENT_SOURCES = (
 # those dependency edges explicit: subprocess fixtures, filesystem scanners,
 # and import-every-module checks are invisible to the AST import graph.
 REGULAR_RULES = (
-    TestRule(
-        "tests/app/tui/behaviors/test_startup_imports.py",
-        ("src/chrys/app/tui/**", "src/chrys/orchestration/**", "src/chrys/service/acp_client/**"),
-    ),
+    TestRule("tests/app/tui/behaviors/test_startup_imports.py", ("src/chrys/**",)),
     TestRule("tests/service/approval/test_formal_core.py", ("src/chrys/service/approval/principles.json",)),
     TestRule("tests/app/tui/screens/test_approval_review_reason.py", ("src/chrys/service/approval/principles.json",)),
     TestRule("tests/foundation/test_documentation.py", ("pyproject.toml", "docs/index.yaml")),
@@ -1729,7 +1726,9 @@ def select_smart_tests(
                 for nodeid in sorted(graph.consumers.get(affected, ())):
                     selection.add(nodeid, f"local fallback: {reason}; reaches fixture {affected}")
 
-    regular_rule_matches = _add_rule_targets(selection, changes, REGULAR_RULES, kind="regular filesystem")
+    # Like an import consumer, a watched test is selected only where it exists.
+    present_rules = tuple(rule for rule in REGULAR_RULES if (root / rule.target).exists())
+    regular_rule_matches = _add_rule_targets(selection, changes, present_rules, kind="regular filesystem")
 
     for change in changes:
         path = change.path
