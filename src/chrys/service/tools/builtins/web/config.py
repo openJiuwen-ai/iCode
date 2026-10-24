@@ -51,6 +51,17 @@ CUSTOM_PRESETS: dict[str, dict[str, Any]] = {
             "snippet_pointer": "/snippet",
         },
     },
+    "serply": {
+        "endpoint": "https://api.serply.io/v1/search",
+        "auth": {"location": "header", "name": "X-Api-Key", "key_env": "SERPLY_API_KEY"},
+        "request": {"query_params": {"q": {"$input": "query"}, "num": {"$input": "limit"}}},
+        "response": {
+            "results_pointer": "/results",
+            "url_pointer": "/link",
+            "title_pointer": "/title",
+            "snippet_pointer": "/description",
+        },
+    },
 }
 
 

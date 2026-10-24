@@ -275,7 +275,7 @@ Each entry in `providers` supports these fields:
 | --- | --- | --- |
 | `type` | All | Required. `exa_mcp`, `bing_html`, or `duckduckgo_html` for services that need no key; `tavily`, `brave`, or `exa` for search APIs with a key; `custom_http` for your own endpoint. |
 | `api_key_env` | `tavily`, `brave`, `exa` | Required. Name of the environment variable that holds the API key. These types accept no other field. |
-| `preset` | `custom_http` | `searxng` or `serpapi`. Fills in the request and response mapping for that service; `serpapi` also sets `endpoint` and `auth`. Fields you set yourself take precedence. |
+| `preset` | `custom_http` | `searxng`, `serpapi` or `serply`. Fills in the request and response mapping for that service; `serpapi` and `serply` also set `endpoint` and `auth`. Fields you set yourself take precedence. |
 | `endpoint` | `custom_http` | URL of the search endpoint. It must also be granted in the `tools.web_search.custom_endpoints` user setting, together with every environment variable the provider reads. |
 | `method` | `custom_http` | `GET` (default) or `POST`. |
 | `auth` | `custom_http` | Object with `location` (`header`, `query`, or `none`, the default), `name` (the header or query parameter name), `key_env` (the environment variable holding the key), and an optional `prefix` such as `"Bearer "`. For `header`, `name` must be `Authorization`, `X-API-Key`, or `X-Subscription-Token`. |

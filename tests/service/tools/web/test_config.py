@@ -45,6 +45,7 @@ _CUSTOM = {
             {"type": "custom_http", "preset": "serpapi", "request": {"query_params": {"q": {"$input": "query"}}}},
             id="serpapi-override",
         ),
+        pytest.param({"type": "custom_http", "preset": "serply"}, id="serply"),
     ],
 )
 def test_the_profile_form_is_what_was_written_and_rebuilds_the_provider(raw):
