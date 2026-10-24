@@ -309,12 +309,17 @@ async def replay_session_history(
             # the update schema has no injection concept.
             if isinstance(additional, dict) and additional.get(HistoryMarkerKind.CONTINUATION_KEY):
                 continue
+            message_id = opening_user_message.get(message_index)
             if text:
                 # Only the message that OPENED the turn carries the id the
                 # client submitted; an injection or a retry note inside the
                 # turn is a different message and has no client-side id.
                 update = update_user_message_text(text)
-                update.message_id = opening_user_message.get(message_index)
+                update.message_id = message_id
+                if turn_meta:
+                    update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
+                await client.session_update(session_id=session_id, update=update)
+            for update in _user_image_updates(message, message_id):
                 if turn_meta:
                     update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
                 await client.session_update(session_id=session_id, update=update)
@@ -568,6 +573,39 @@ def _message_text(message: dict[str, object]) -> str:
             if isinstance(text, str) and text:
                 parts.append(text)
     return "\n\n".join(parts)
+
+
+def _user_image_updates(message: dict[str, object], message_id: str | None) -> list[Any]:
+    """Replay persisted user image contents as ACP image/resource blocks."""
+    updates: list[Any] = []
+    for content in _contents(message):
+        if content.get("type") not in {"data", "uri", "image"}:
+            continue
+        media_type = content.get("media_type")
+        uri = content.get("uri")
+        if not isinstance(media_type, str) or not media_type.startswith("image/"):
+            continue
+        if not isinstance(uri, str) or not uri:
+            continue
+        if uri.startswith("data:") and ";base64," in uri:
+            header, data = uri.split(",", 1)
+            mime_type = header[5:].split(";")[0] or media_type
+            block: Any = acp_schema.ImageContentBlock(type="image", data=data, mimeType=mime_type)
+        else:
+            block = acp_schema.ResourceContentBlock(
+                type="resource_link",
+                name=str(content.get("name") or content.get("file_id") or "User image"),
+                uri=uri,
+                mimeType=media_type,
+            )
+        updates.append(
+            acp_schema.UserMessageChunk(
+                sessionUpdate="user_message_chunk",
+                content=block,
+                messageId=message_id,
+            )
+        )
+    return updates
 
 
 def _contents(message: dict[str, object]) -> list[dict[str, object]]:
