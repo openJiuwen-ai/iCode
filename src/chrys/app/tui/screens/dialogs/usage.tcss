@@ -156,6 +156,14 @@ UsageDialog {
     color: $text-muted;
 }
 
+#usage-chart > .usage-chart--track {
+    color: $foreground 30%;
+}
+
+App:ansi #usage-chart > .usage-chart--track {
+    color: ansi_bright_black;
+}
+
 #usage-groups {
     height: 1fr;
     min-height: 8;

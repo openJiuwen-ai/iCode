@@ -7701,12 +7701,12 @@ msgid "tui.man.theme.body"
 msgstr ""
 
 #. English: Open the token usage dialog, read from every saved session.
-#. Overview: new tokens by date range, the daily or weekly trend,     and
-#. totals by model, source or project, with each model's speed.     Calendar:
-#. new tokens day by day, and one day's details.      New tokens are the input
-#. not served from the provider's cache,     plus the output, thinking
-#. included. Deleted sessions and external     ACP agents are not counted.
-#. chrys-meta={"fingerprint":"d3f146bdd0abd941735cce160669f604892e0a0d82b85bfaa25d02ae5e6da88b","multiline":true,"placeholders":[]}
+#. Overview: new tokens by date range, their trend over time,     and totals by
+#. model, source or project, with each model's speed.     Calendar: new tokens
+#. day by day, and one day's details.      New tokens are the input not served
+#. from the provider's cache,     plus the output, thinking included. Deleted
+#. sessions and external     ACP agents are not counted.
+#. chrys-meta={"fingerprint":"d3b60b05e938038df9d11299b1c3fba744067836a2467c91b19245632b1bb892","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.usage.body"
 msgstr ""
@@ -15066,6 +15066,12 @@ msgstr ""
 msgid "tui.usage.keys.overview"
 msgstr ""
 
+#. English: ←→ range  g group  ↑↓ row
+#. chrys-meta={"fingerprint":"2e08806590d25c6c6c81edc7e2da3d41e20ea0b9ba09950d32368ce204d8dc57","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.keys.overview_fixed_scale"
+msgstr ""
+
 #. English: Cached
 #. chrys-meta={"fingerprint":"bad67fee0c3718027c694e6884148ceffc88383f0a7c33079ca81d18dd0ad3c4","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
@@ -15162,12 +15168,6 @@ msgid_plural "tui.usage.note.unreported#plural"
 msgstr[0] ""
 msgstr[1] ""
 
-#. English: {start} to {end}
-#. chrys-meta={"fingerprint":"893937c16355af79020db33723d5a93fec2610be5c5841ab999e55e43468d685","multiline":false,"placeholders":["end","start"]}
-#: src/chrys/app/tui/screens/dialogs/usage.py
-msgid "tui.usage.period"
-msgstr ""
-
 #. English: Other workspaces
 #. chrys-meta={"fingerprint":"6d7805200d84a36fdff69306ab89e5d5baf0d2008448aa2166941869367ba36c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
@@ -15258,22 +15258,16 @@ msgstr ""
 msgid "tui.usage.tab.overview"
 msgstr ""
 
-#. English: Usage
-#. chrys-meta={"fingerprint":"131ded67f9e279dd240c5406e8fbb76fcc6d37b401c58fff1ba096a51525c0ec","multiline":false,"placeholders":[]}
+#. English: Token Usage
+#. chrys-meta={"fingerprint":"166392622df9e6afbd731270bea93f53e61e809361e48c75c8045e7e417b949c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
 msgid "tui.usage.title"
 msgstr ""
 
-#. English: Usage · reading…
-#. chrys-meta={"fingerprint":"a164dd80769b61bb2ee711ee0a6bc703a1bebb287c4e1cef67f0718d6dc78515","multiline":false,"placeholders":[]}
+#. English: Token Usage · reading…
+#. chrys-meta={"fingerprint":"129ed1bb3e00db5fde63388316a7003ec6ebb8477c01e064ed7e01f3f6609548","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
 msgid "tui.usage.title_reading"
-msgstr ""
-
-#. English: Usage · as of {time}
-#. chrys-meta={"fingerprint":"63ebbcfbdf9e81ddd37ef23aa38b85434479baf711dd5235b2f9de28423fc2df","multiline":false,"placeholders":["time"]}
-#: src/chrys/app/tui/screens/dialogs/usage.py
-msgid "tui.usage.title_snapshot"
 msgstr ""
 
 #. English: Trend

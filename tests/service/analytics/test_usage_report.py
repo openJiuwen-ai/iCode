@@ -98,6 +98,7 @@ def _events_of(path: Path, event_types: frozenset[str] = _WANTED) -> list[Trajec
 def _call(**overrides: Any) -> UsageCall:
     values: dict[str, Any] = {
         "day": date(2026, 10, 15),
+        "hour": 12,
         "model": "model-a",
         "source": "main",
         "project": "/w/a",
@@ -328,6 +329,21 @@ def test_a_call_falls_on_the_local_day_it_ended(tmp_path: Path) -> None:
 
     assert [call.day for call in report.calls] == [date(2026, 11, 1), date(2026, 10, 31)]
     assert set(report.new_tokens_by_day) == {date(2026, 11, 1), date(2026, 10, 31)}
+
+
+@pytest.mark.usefixtures("_utc_plus_eight")
+def test_todays_new_tokens_fall_on_the_local_hour_they_ended(tmp_path: Path) -> None:
+    log = EventLog()
+    _exchange(log, occurred_at="2026-10-31T17:30:00+00:00")
+    _exchange(log, occurred_at="2026-10-31T17:45:00+00:00")
+    _exchange(log, occurred_at="2026-10-31T15:59:00+00:00")
+    _write_session(tmp_path, "one", log)
+
+    report = _scan(tmp_path, today=date(2026, 11, 1))
+
+    assert [call.hour for call in report.calls] == [1, 1, 23]
+    assert report.new_tokens_by_hour == {1: report.new_tokens_by_day[date(2026, 11, 1)]}
+    assert report.new_tokens_by_hour[1] > 0
 
 
 def _fingerprint(cwd: str) -> str:

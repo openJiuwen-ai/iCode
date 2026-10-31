@@ -9,7 +9,7 @@ import logging
 import threading
 from calendar import monthrange
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from functools import partial
 from itertools import pairwise
 from math import ceil
@@ -43,12 +43,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TITLE = msg("tui.usage.title", fallback="Usage")
-_TITLE_SNAPSHOT = msg("tui.usage.title_snapshot", fallback="Usage · as of {time}")
-_TITLE_READING = msg("tui.usage.title_reading", fallback="Usage · reading…")
+_TITLE = msg("tui.usage.title", fallback="Token Usage")
+_TITLE_READING = msg("tui.usage.title_reading", fallback="Token Usage · reading…")
 _TAB_OVERVIEW = msg("tui.usage.tab.overview", fallback="Overview")
 _TAB_CALENDAR = msg("tui.usage.tab.calendar", fallback="Calendar")
 _KEYS_OVERVIEW = msg("tui.usage.keys.overview", fallback="←→ range  t scale  g group  ↑↓ row")
+_KEYS_OVERVIEW_FIXED_SCALE = msg("tui.usage.keys.overview_fixed_scale", fallback="←→ range  g group  ↑↓ row")
 _KEYS_CALENDAR = msg("tui.usage.keys.calendar", fallback="←→↑↓ day  {month_keys} month")
 _LOADING = msg("tui.usage.loading", fallback="Reading usage from every session…")
 _FAILED = msg("tui.usage.failed", fallback="Could not read usage.")
@@ -58,7 +58,6 @@ _RANGE_WEEK = msg("tui.usage.range.week", fallback="This week")
 _RANGE_MONTH = msg("tui.usage.range.month", fallback="This month")
 _RANGE_30_DAYS = msg("tui.usage.range.last_30_days", fallback="30 days")
 _RANGE_ALL = msg("tui.usage.range.all", fallback="All")
-_PERIOD = msg("tui.usage.period", fallback="{start} to {end}")
 _TREND = msg("tui.usage.trend", fallback="Trend")
 _TREND_DAILY = msg("tui.usage.trend.daily", fallback="Daily")
 _TREND_WEEKLY = msg("tui.usage.trend.weekly", fallback="Weekly")
@@ -119,6 +118,8 @@ _OVERVIEW_TAB: Final = "usage-overview"
 _CALENDAR_TAB: Final = "usage-calendar"
 _RANGES: Final = (_RANGE_TODAY, _RANGE_WEEK, _RANGE_MONTH, _RANGE_30_DAYS, _RANGE_ALL)
 _RANGE_TAB_IDS: Final = tuple(f"usage-range-{index}" for index in range(len(_RANGES)))
+_RANGE_TODAY_INDEX: Final = 0
+_RANGE_WEEK_INDEX: Final = 1
 _RANGE_MONTH_INDEX: Final = 2
 _RANGE_ALL_INDEX: Final = 4
 _GROUPS: Final = (_GROUP_MODEL, _GROUP_SOURCE, _GROUP_PROJECT)
@@ -128,6 +129,7 @@ _GROUP_SOURCE_INDEX: Final = 1
 _TREND_BUTTON_IDS: Final = ("usage-trend-daily", "usage-trend-weekly")
 _KPI_IDS: Final = ("new", "input", "output", "cached", "hit", "speed", "time", "calls")
 _BAR_GLYPHS: Final = " ▁▂▃▄▅▆▇█"
+_HATCH_GLYPHS: Final = "⢁⠔"
 _SHARE_GLYPHS: Final = " ▏▎▍▌▋▊▉█"
 _MIN_TREND_DAYS: Final = 14
 _MIN_TREND_WEEKS: Final = 8
@@ -227,34 +229,63 @@ def _spread(left: Text, right: str, width: int) -> Text:
 
 @dataclass(frozen=True, slots=True)
 class _TrendColumn:
-    start: date
+    label: str
+    """What the axis says under the bar; empty for none."""
     value: int
-    in_range: bool
 
 
-def _daily_columns(report: UsageReport, start: date, end: date) -> list[_TrendColumn]:
-    first = min(start, end - timedelta(days=_MIN_TREND_DAYS - 1))
-    days = (first + timedelta(days=offset) for offset in range((end - first).days + 1))
-    return [_TrendColumn(day, report.new_tokens_by_day.get(day, 0), start <= day <= end) for day in days]
+def _days(first: date, last: date) -> list[date]:
+    return [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
 
 
-def _weekly_columns(report: UsageReport, start: date, end: date) -> list[_TrendColumn]:
-    """Each week's tokens; a week the range cuts counts only its days in the range, so its bar matches the total."""
-    first = min(week_start(start), week_start(end) - timedelta(weeks=_MIN_TREND_WEEKS - 1))
+def _tokens_on(report: UsageReport, day: date) -> int:
+    """A day's new tokens; a day yet to come has none, whatever a skewed clock wrote, as no range's total counts it."""
+    return report.new_tokens_by_day.get(day, 0) if day <= report.today else 0
+
+
+def _hourly_columns(report: UsageReport) -> list[_TrendColumn]:
+    """Today's 24 hours, every sixth one named."""
+    return [
+        _TrendColumn(f"{hour:02}:00" if hour % 6 == 0 else "", report.new_tokens_by_hour.get(hour, 0))
+        for hour in range(24)
+    ]
+
+
+def _week_columns(report: UsageReport, monday: date) -> list[_TrendColumn]:
+    """The whole week from *monday*, every day named."""
+    return [_TrendColumn(f"{day:%m-%d}", _tokens_on(report, day)) for day in _days(monday, monday + timedelta(days=6))]
+
+
+def _daily_columns(report: UsageReport, first: date, last: date) -> list[_TrendColumn]:
+    """Each day from *first* through *last*, Mondays named."""
+    return [
+        _TrendColumn(f"{day:%m-%d}" if day.weekday() == 0 else "", _tokens_on(report, day))
+        for day in _days(first, last)
+    ]
+
+
+def _weekly_columns(report: UsageReport, first: date, last: date) -> list[_TrendColumn]:
+    """Each week *first* through *last* touch.
+
+    A week they cut counts only their days and goes by the first of them, so the bars add up to the range's total and
+    no date falls outside it.
+    """
     columns = []
-    monday = first
-    while monday <= end:
-        days = [monday + timedelta(days=offset) for offset in range(7)]
-        in_range = any(start <= day <= end for day in days)
-        counted = (day for day in days if not in_range or start <= day <= end)
-        columns.append(_TrendColumn(monday, sum(report.new_tokens_by_day.get(day, 0) for day in counted), in_range))
+    monday = week_start(first)
+    while monday <= last:
+        days = _days(max(monday, first), min(monday + timedelta(days=6), last))
+        columns.append(_TrendColumn(f"{days[0]:%m-%d}", sum(_tokens_on(report, day) for day in days)))
         monday += timedelta(weeks=1)
     return columns
 
 
 def _fitting(columns: Sequence[_TrendColumn], width: int) -> Sequence[_TrendColumn]:
-    """The newest columns that *width* cells can show."""
-    return columns[-width:] if 0 < width < len(columns) else columns
+    """The newest columns that *width* cells can show; the empty ones after the last bar go first, losing no bar."""
+    if not 0 < width < len(columns):
+        return columns
+    after_last_bar = next((index for index in range(len(columns), 0, -1) if columns[index - 1].value), len(columns))
+    stop = max(after_last_bar, width)
+    return columns[stop - width : stop]
 
 
 def _even_spans(count: int, total: int, gap: int = 0) -> list[tuple[int, int]]:
@@ -282,30 +313,37 @@ def _bar_spans(count: int, width: int) -> list[tuple[int, int]]:
     return _even_spans(count, width)
 
 
-def _chart(columns: Sequence[_TrendColumn], width: int, rows: int) -> Text:
-    """Rows of block glyphs across *width* on a linear scale; a column outside the range is dim."""
+def _hatch(start: int, cells: int) -> str:
+    """*cells* of fine diagonal lines from column *start*: their dots run on across cells, rows and the gaps of a chart."""
+    return "".join(_HATCH_GLYPHS[column % len(_HATCH_GLYPHS)] for column in range(start, start + cells))
+
+
+def _chart(columns: Sequence[_TrendColumn], width: int, rows: int, track: Style) -> Text:
+    """Rows of block glyphs across *width* on a linear scale; *track* hatches what a bar leaves of its column."""
     spans = _bar_spans(len(columns), width)
     peak = max((column.value for column in columns), default=0)
     levels = [ceil(column.value / peak * rows * 8) if peak else 0 for column in columns]
     chart = Text()
     for row in reversed(range(rows)):
         position = 0
-        for column, level, (start, cells) in zip(columns, levels, spans, strict=True):
+        for level, (start, cells) in zip(levels, spans, strict=True):
             chart.append(" " * (start - position))
-            chart.append(_BAR_GLYPHS[max(0, min(8, level - row * 8))] * cells, style="" if column.in_range else "dim")
+            eighths = max(0, min(8, level - row * 8))
+            if eighths:
+                chart.append(_BAR_GLYPHS[eighths] * cells)
+            else:
+                chart.append(_hatch(start, cells), style=track)
             position = start + cells
         chart.append("\n")
     return chart
 
 
-def _axis(columns: Sequence[_TrendColumn], width: int, *, weekly: bool) -> str:
-    """Date labels under their bars, each placed only if it clears the one before: Mondays for a daily chart."""
+def _axis(columns: Sequence[_TrendColumn], width: int) -> str:
+    """The columns' labels under their bars, each placed only if it clears the one before."""
     line = ""
     for column, (position, _cells) in zip(columns, _bar_spans(len(columns), width), strict=True):
-        if not weekly and column.start.weekday() != 0:
-            continue
-        label = f"{column.start:%m-%d}"
-        if (not line or position > len(line)) and position + len(label) <= width:
+        label = column.label
+        if label and (not line or position > len(line)) and position + len(label) <= width:
             line += " " * (position - len(line)) + label
     return line
 
@@ -499,20 +537,29 @@ class _RangeTabs(Tabs, can_focus=False):
     """The date ranges; the arrow keys stay with the dialog, which moves them from there."""
 
 
-class _TrendChart(Widget):
-    """Bars across the widget's whole width and height, with their dates on the last row."""
+class _PeakLine(Static):
+    """The line beside the trend's buttons: what fits changes as they come and go, with no other size changing."""
 
-    COMPONENT_CLASSES: ClassVar[set[str]] = {"usage-chart--axis"}
+    def __init__(self, on_resized: Callable[[], None], *, id: str, classes: str) -> None:
+        super().__init__(id=id, classes=classes)
+        self._on_resized = on_resized
+
+    def on_resize(self, _event: Resize) -> None:
+        self._on_resized()
+
+
+class _TrendChart(Widget):
+    """Bars across the widget's whole width and height, with their labels on the last row."""
+
+    COMPONENT_CLASSES: ClassVar[set[str]] = {"usage-chart--axis", "usage-chart--track"}
 
     def __init__(self, on_resized: Callable[[], None], *, id: str) -> None:
         super().__init__(id=id)
         self._on_resized = on_resized
         self._columns: Sequence[_TrendColumn] = ()
-        self._weekly = False
 
-    def show(self, columns: Sequence[_TrendColumn], *, weekly: bool) -> None:
+    def show(self, columns: Sequence[_TrendColumn]) -> None:
         self._columns = columns
-        self._weekly = weekly
         self.refresh()
 
     def on_resize(self, _event: Resize) -> None:
@@ -523,8 +570,8 @@ class _TrendChart(Widget):
         if width <= 0 or height <= 0:
             return Text()
         shown = _fitting(self._columns, width)
-        chart = _chart(shown, width, max(1, height - 1))
-        chart.append(_axis(shown, width, weekly=self._weekly), style=self.get_component_rich_style("usage-chart--axis"))
+        chart = _chart(shown, width, max(1, height - 1), self.get_component_rich_style("usage-chart--track"))
+        chart.append(_axis(shown, width), style=self.get_component_rich_style("usage-chart--axis"))
         return chart
 
 
@@ -688,7 +735,6 @@ class UsageDialog(BaseDialog[None]):
         self._reading = True
         self._read_failed = False
         self._report: UsageReport | None = None
-        self._snapshot_time = ""
         self._summaries: dict[tuple[date, date], UsageSummary] = {}
         self._project_names: dict[str, str] = {}
         self._heat: tuple[int, int, int] = (0, 0, 0)
@@ -728,7 +774,8 @@ class UsageDialog(BaseDialog[None]):
         with Horizontal(id="usage-kpis"):
             for kpi in _KPI_IDS:
                 yield Static(id=f"usage-kpi-{kpi}", classes="usage-kpi")
-        with Vertical(id="usage-trend", classes="usage-section"):
+        with Vertical(id="usage-trend", classes="usage-section") as trend:
+            trend.border_title = Text(render(_TREND.bind()))
             with Horizontal(classes="usage-controls"):
                 yield Static(Text(render(_TREND.bind())), classes="usage-section-label")
                 yield _ChoiceButton(
@@ -737,7 +784,7 @@ class UsageDialog(BaseDialog[None]):
                 yield _ChoiceButton(
                     render(_TREND_WEEKLY.bind()), lambda: self._set_weekly_trend(True), id=_TREND_BUTTON_IDS[1]
                 )
-                yield Static(id="usage-peak", classes="usage-controls-end")
+                yield _PeakLine(self._render_active, id="usage-peak", classes="usage-controls-end")
             yield _TrendChart(self._render_active, id="usage-chart")
         with Vertical(id="usage-groups", classes="usage-section") as groups:
             groups.border_title = Text(render(_GROUP.bind()))
@@ -812,7 +859,6 @@ class UsageDialog(BaseDialog[None]):
 
     def _adopt(self, report: UsageReport) -> None:
         self._report = report
-        self._snapshot_time = f"{datetime.now().astimezone():%m-%d %H:%M}"
         self._project_names = _project_labels(call.project for call in report.calls)
         self._heat = _heat_thresholds(report)
         self._day = _clamp_day(report.today, report)
@@ -914,9 +960,7 @@ class UsageDialog(BaseDialog[None]):
             return
         frame = self.query_one("#usage-container")
         frame.border_title = Text(self._render_message(self._title()))
-        frame.border_subtitle = Text(
-            self._render_message(_KEYS_CALENDAR.bind(month_keys="[ ]") if self._on_calendar else _KEYS_OVERVIEW.bind())
-        )
+        frame.border_subtitle = Text(self._render_message(self._keys()))
         if frame.content_size.height > 0:
             frame.set_class(frame.content_size.height < _COMPACT_BELOW_ROWS, "-compact")
             frame.set_class(frame.content_size.width < _DAY_PANEL_MIN_CELLS, "-narrow")
@@ -932,9 +976,12 @@ class UsageDialog(BaseDialog[None]):
             self._render_overview(report)
 
     def _title(self) -> MessageRef:
-        if self._reading:
-            return _TITLE_READING.bind()
-        return _TITLE_SNAPSHOT.bind(time=self._snapshot_time) if self._report is not None else _TITLE.bind()
+        return _TITLE_READING.bind() if self._reading else _TITLE.bind()
+
+    def _keys(self) -> MessageRef:
+        if self._on_calendar:
+            return _KEYS_CALENDAR.bind(month_keys="[ ]")
+        return _KEYS_OVERVIEW.bind() if self._has_scale_choice else _KEYS_OVERVIEW_FIXED_SCALE.bind()
 
     def _set(self, static_id: str, content: Text | str) -> None:
         self.query_one(f"#{static_id}", Static).update(
@@ -983,25 +1030,48 @@ class UsageDialog(BaseDialog[None]):
             )
 
     @property
+    def _has_scale_choice(self) -> bool:
+        """Today goes by the hour and a week by the day; only a longer range can be read by either scale."""
+        return self._range not in (_RANGE_TODAY_INDEX, _RANGE_WEEK_INDEX)
+
+    @property
     def _is_weekly_trend(self) -> bool:
         return self._range == _RANGE_ALL_INDEX if self._weekly_trend is None else self._weekly_trend
 
+    def _trend_columns(self, report: UsageReport, start: date, end: date) -> list[_TrendColumn]:
+        if self._range == _RANGE_TODAY_INDEX:
+            return _hourly_columns(report)
+        if self._range == _RANGE_WEEK_INDEX:
+            return _week_columns(report, start)
+        weekly = self._is_weekly_trend
+        first, last = start, end
+        if self._range == _RANGE_MONTH_INDEX:
+            # All of the month, so one just begun is not a single bar across the chart.
+            last = start.replace(day=monthrange(start.year, start.month)[1])
+        elif self._range == _RANGE_ALL_INDEX:
+            # A short history still gets a chart's worth of columns, empty before it began.
+            shortest = (
+                week_start(end) - timedelta(weeks=_MIN_TREND_WEEKS - 1)
+                if weekly
+                else end - timedelta(days=_MIN_TREND_DAYS - 1)
+            )
+            first = min(start, shortest)
+        return _weekly_columns(report, first, last) if weekly else _daily_columns(report, first, last)
+
     def _render_trend(self, report: UsageReport, start: date, end: date) -> None:
         render = self._render_message
-        weekly = self._is_weekly_trend
-        columns = _weekly_columns(report, start, end) if weekly else _daily_columns(report, start, end)
+        columns = self._trend_columns(report, start, end)
         chart = self.query_one(_TrendChart)
-        chart.show(columns, weekly=weekly)
-        self._select_choice(_TREND_BUTTON_IDS, 1 if weekly else 0)
-        period = render(_PERIOD.bind(start=_day_label(start, report.today), end=_day_label(end, report.today)))
-        self.query_one("#usage-trend").border_title = Text(f"{render(_TREND.bind())} · {period}")
+        chart.show(columns)
+        for button_id in _TREND_BUTTON_IDS:
+            self.query_one(f"#{button_id}", _ChoiceButton).display = self._has_scale_choice
+        self._select_choice(_TREND_BUTTON_IDS, 1 if self._is_weekly_trend else 0)
         peak = max((column.value for column in _fitting(columns, chart.size.width)), default=0)
         value = _tokens(peak)
         peak_text = render(_TREND_PEAK.bind(value=value))
-        choices = (f"{period} · {peak_text}", peak_text, value) if self._compact else (peak_text, value)
         width = self.query_one("#usage-peak").size.width
         # A clipped number reads as a smaller one, so only a whole one is shown.
-        self._set("usage-peak", next((choice for choice in choices if cell_len(choice) <= width), ""))
+        self._set("usage-peak", next((choice for choice in (peak_text, value) if cell_len(choice) <= width), ""))
 
     def _group_label(self, key: str) -> str:
         if self._group == _GROUP_MODEL_INDEX:

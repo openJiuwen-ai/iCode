@@ -412,7 +412,7 @@ _MAN_USAGE_BODY = msg(
     "tui.man.usage.body",
     fallback=(
         "Open the token usage dialog, read from every saved session.\n\n"
-        "    Overview: new tokens by date range, the daily or weekly trend,\n"
+        "    Overview: new tokens by date range, their trend over time,\n"
         "    and totals by model, source or project, with each model's speed.\n"
         "    Calendar: new tokens day by day, and one day's details.\n\n"
         "    New tokens are the input not served from the provider's cache,\n"

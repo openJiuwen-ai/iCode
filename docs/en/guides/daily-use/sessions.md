@@ -114,13 +114,13 @@ Migration keeps the original data in the source directory; it is not deleted aut
 
 While an agent replies, the status bar above the input shows how fast text is arriving, for example `92 tok/s`. It goes away when no text has arrived for a few seconds, such as while a tool runs. It is a rough figure counted from the text on screen.
 
-To see usage across all your sessions, type `/usage`. The window has two tabs: click one, or press **Tab**, to switch. The window's bottom border lists the keys for the tab you are on, and **Esc** closes it. The title says when the numbers were read; type `/usage` again for newer ones.
+To see usage across all your sessions, type `/usage`. The window has two tabs: click one, or press **Tab**, to switch. The window's bottom border lists the keys for the tab you are on, and **Esc** closes it. The numbers are from when the window opened; type `/usage` again for newer ones.
 
 **Overview** shows one date range at a time. Click a range at the top, or press the left and right arrow keys:
 
 - **New**: the tokens this range added: input the provider did not serve from its cache, plus output, including thinking. This is the number to watch; cached input is listed separately because it is much larger and usually costs much less.
 - **Hit**: how much of the input came from the provider's cache.
-- **Trend**: new tokens by day or by week. Click **Daily** or **Weekly**, or press **t**. Dim bars fall outside the selected range.
+- **Trend**: new tokens over the range: hour by hour for **Today**, day by day for **This week**. For a longer range, click **Daily** or **Weekly**, or press **t**. A column with only the faint pattern has no new tokens.
 - **Group**: a table of totals by model, by source (the main agent, sub-agents, workflow nodes and background tasks such as session titles) or by project. Click a button above the table or press **g** to switch. The up and down arrow keys, or a click, move between rows. On a narrow window the table shows fewer columns.
 - **TPS**: tokens per second, how fast a model produced output, from its first chunk to the end of the response, across all the requests that streamed. It depends on your provider and your network, so it may differ from a provider's published speed.
 

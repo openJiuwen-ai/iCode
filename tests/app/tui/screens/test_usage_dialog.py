@@ -24,6 +24,7 @@ from chrys.app.tui.screens.dialogs.usage import (
     _bar_spans,
     _ChoiceButton,
     _fit_row_columns,
+    _fitting,
     _grid_shape,
     _heat_level,
     _model_time,
@@ -33,7 +34,9 @@ from chrys.app.tui.screens.dialogs.usage import (
     _share_bar,
     _tokens,
     _TrendChart,
+    _TrendColumn,
     _UsageRows,
+    _week_columns,
 )
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.widgets.chat.messages import AgentMessage, UserMessage
@@ -61,6 +64,7 @@ if TYPE_CHECKING:
 
 _TODAY = date(2026, 10, 28)  # A Wednesday.
 _OVERVIEW_KEYS = "←→ range  t scale  g group  ↑↓ row"
+_HATCH = "⢁⠔"
 _CALENDAR_KEYS = "←→↑↓ day  [ ] month"
 _READING = "Reading usage from every session…"
 _FAILED = "Could not read usage."
@@ -75,6 +79,7 @@ class _HostApp(App):
 def _call(day: date = _TODAY, **overrides: Any) -> UsageCall:
     values: dict[str, Any] = {
         "day": day,
+        "hour": 12,
         "model": "model-a",
         "source": "main",
         "project": "/w/alpha",
@@ -91,9 +96,18 @@ def _call(day: date = _TODAY, **overrides: Any) -> UsageCall:
 
 def _report(*calls: UsageCall, today: date = _TODAY, unreadable: int = 0) -> UsageReport:
     by_day: dict[date, int] = {}
+    by_hour: dict[int, int] = {}
     for call in calls:
         by_day[call.day] = by_day.get(call.day, 0) + call.new_input + call.output
-    return UsageReport(calls=calls, today=today, unreadable_logs=unreadable, new_tokens_by_day=by_day)
+        if call.day == today:
+            by_hour[call.hour] = by_hour.get(call.hour, 0) + call.new_input + call.output
+    return UsageReport(
+        calls=calls,
+        today=today,
+        unreadable_logs=unreadable,
+        new_tokens_by_day=by_day,
+        new_tokens_by_hour=by_hour,
+    )
 
 
 def _sample_report() -> UsageReport:
@@ -267,11 +281,11 @@ async def test_nothing_takes_focus_so_the_arrows_reach_the_dialog() -> None:
         assert dialog.focused is None
 
 
-async def test_the_title_shows_when_the_snapshot_was_taken() -> None:
+async def test_the_title_stays_the_windows_name_once_the_numbers_are_in() -> None:
     async with _HostApp().run_test(size=(100, 30)) as pilot:
         dialog = await _open(pilot)
 
-        assert _title(dialog).startswith("Usage · as of ")
+        assert _title(dialog) == "Token Usage"
 
 
 async def test_the_overview_opens_on_this_month_and_moves_by_left_and_right() -> None:
@@ -279,7 +293,7 @@ async def test_the_overview_opens_on_this_month_and_moves_by_left_and_right() ->
         dialog = await _open(pilot)
 
         assert _active_range(dialog) == "This month"
-        assert "10-01 to 10-28" in _section_title(dialog, "usage-trend")
+        assert _section_title(dialog, "usage-trend") == "Trend"
         assert _kpis(dialog) == {
             "New": "10k",
             "Input": "10k",
@@ -332,17 +346,138 @@ async def test_the_trend_follows_the_range_until_t_toggles_it() -> None:
         await pilot.press("t")
         assert _chosen(dialog, "usage-trend") == "Daily"
 
-        await pilot.press("right", "right")
+        await pilot.press("t", "right")
+        await wait_for(lambda: _active_range(dialog) == "30 days", pilot=pilot, description="30 days")
+        assert _chosen(dialog, "usage-trend") == "Daily"
+        await pilot.press("t")
+        assert _chosen(dialog, "usage-trend") == "Weekly"
+
+        await pilot.press("right")
         await wait_for(lambda: _active_range(dialog) == "All", pilot=pilot, description="all")
         assert _chosen(dialog, "usage-trend") == "Weekly"
         await pilot.press("t")
         assert _chosen(dialog, "usage-trend") == "Daily"
-        await pilot.press("right")
-        await wait_for(lambda: _active_range(dialog) == "Today", pilot=pilot, description="today")
-        assert _chosen(dialog, "usage-trend") == "Daily"
-        await pilot.press("t", "left")
+        await pilot.press("left", "right")
         await wait_for(lambda: _active_range(dialog) == "All", pilot=pilot, description="all again")
         assert _chosen(dialog, "usage-trend") == "Weekly"
+
+
+def _scale_buttons_showing(dialog: UsageDialog) -> list[bool]:
+    return [button.display for button in dialog.query("#usage-trend .usage-choice")]
+
+
+async def test_today_is_a_chart_of_its_24_hours_with_no_scale_to_choose() -> None:
+    report = _report(
+        _call(hour=9, new_input=4_000_000, output=0),
+        _call(hour=21, new_input=2_000_000, output=0),
+        _call(_TODAY - timedelta(days=1), hour=9, new_input=90_000_000, output=0),
+    )
+    async with _HostApp().run_test(size=(100, 30)) as pilot:
+        dialog = await _open(pilot, report)
+        assert _scale_buttons_showing(dialog) == [True, True]
+
+        await pilot.press("left", "left")
+        await wait_for(lambda: _active_range(dialog) == "Today", pilot=pilot, description="today")
+
+        chart = dialog.query_one(_TrendChart)
+        await wait_for(lambda: _chart_lines(dialog)[-1].startswith("00:00"), pilot=pilot, description="hours")
+        lines = _chart_lines(dialog)
+        assert lines[-1].split() == ["00:00", "06:00", "12:00", "18:00"]
+        spans = _bar_spans(24, chart.size.width)
+        top, bottom = lines[0], lines[-2]
+        start, cells = spans[9]
+        assert top[start : start + cells] == "█" * cells
+        assert top.count("█") == cells
+        assert bottom[spans[21][0]] == "█"
+        assert bottom[spans[8][0]] in _HATCH
+        # Yesterday's larger spend is not today's.
+        assert _text(dialog, "usage-peak") == "peak 4.00M"
+        assert _scale_buttons_showing(dialog) == [False, False]
+
+
+async def test_this_week_is_a_chart_of_its_seven_days_with_no_scale_to_choose() -> None:
+    report = _report(
+        _call(date(2026, 10, 26), new_input=3_000_000, output=0),
+        _call(new_input=1_000_000, output=0),
+        _call(date(2026, 10, 25), new_input=90_000_000, output=0),
+    )
+    async with _HostApp().run_test(size=(100, 30)) as pilot:
+        dialog = await _open(pilot, report)
+
+        await pilot.press("left")
+        await wait_for(lambda: _active_range(dialog) == "This week", pilot=pilot, description="this week")
+
+        chart = dialog.query_one(_TrendChart)
+        await wait_for(lambda: len(_chart_lines(dialog)[-1].split()) == 7, pilot=pilot, description="seven days")
+        lines = _chart_lines(dialog)
+        assert lines[-1].split() == ["10-26", "10-27", "10-28", "10-29", "10-30", "10-31", "11-01"]
+        spans = _bar_spans(7, chart.size.width)
+        assert lines[0].count("█") == spans[0][1]
+        assert lines[0].startswith("█" * spans[0][1])
+        # Today is the last day with a bar: the rest of the week has yet to come.
+        assert lines[-2][spans[2][0]] == "█"
+        assert all(lines[-2][spans[day][0]] in _HATCH for day in range(3, 7))
+        # Last Sunday's larger spend is not this week's.
+        assert _text(dialog, "usage-peak") == "peak 3.00M"
+        assert _scale_buttons_showing(dialog) == [False, False]
+
+
+def test_a_day_after_the_report_ended_has_no_bar_as_no_total_counts_it() -> None:
+    report = _report(_call(new_input=1000, output=0), _call(_TODAY + timedelta(days=1)))
+
+    columns = _week_columns(report, date(2026, 10, 26))
+
+    assert [column.value for column in columns] == [0, 0, 1000, 0, 0, 0, 0]
+
+
+@pytest.mark.parametrize(("presses", "name"), [(("left",), "This week"), (("left", "left"), "Today")])
+async def test_t_changes_nothing_and_is_not_offered_where_the_trend_has_one_scale(
+    presses: tuple[str, ...], name: str
+) -> None:
+    async with _HostApp().run_test(size=(100, 30)) as pilot:
+        dialog = await _open(pilot)
+        await pilot.press(*presses)
+        await wait_for(lambda: _active_range(dialog) == name, pilot=pilot, description=name)
+        await wait_for(
+            lambda: _subtitle(dialog) == "←→ range  g group  ↑↓ row", pilot=pilot, description="keys without t"
+        )
+        before = _chart_lines(dialog)
+
+        await pilot.press("t")
+
+        assert _chart_lines(dialog) == before
+        assert _scale_buttons_showing(dialog) == [False, False]
+        assert _subtitle(dialog) == "←→ range  g group  ↑↓ row"
+
+
+@pytest.mark.parametrize(
+    ("presses", "name"), [((), "This month"), (("right",), "30 days"), (("right", "right"), "All")]
+)
+async def test_the_longer_ranges_keep_both_scales(presses: tuple[str, ...], name: str) -> None:
+    async with _HostApp().run_test(size=(100, 30)) as pilot:
+        dialog = await _open(pilot)
+        await pilot.press("left", "right", *presses)
+        await wait_for(lambda: _active_range(dialog) == name, pilot=pilot, description=name)
+        await wait_for(lambda: _subtitle(dialog) == _OVERVIEW_KEYS, pilot=pilot, description="keys with t")
+
+        assert _scale_buttons_showing(dialog) == [True, True]
+        chosen = _chosen(dialog, "usage-trend")
+        await pilot.press("t")
+        assert _chosen(dialog, "usage-trend") != chosen
+
+
+async def test_the_trend_line_refits_when_the_scale_buttons_come_and_go() -> None:
+    report = _report(_call(new_input=83_790_000, output=0))
+    async with _HostApp().run_test(size=(42, 24)) as pilot:
+        dialog = await _open(pilot, report)
+        peak = dialog.query_one("#usage-peak")
+        await wait_for(lambda: _painted_within(pilot, peak) == "83.79M", pilot=pilot, description="beside the buttons")
+
+        await pilot.press("left", "left")
+        await wait_for(lambda: _painted_within(pilot, peak) == "peak 83.79M", pilot=pilot, description="room to spare")
+
+        await pilot.press("right", "right")
+        await wait_for(lambda: _painted_within(pilot, peak) == "83.79M", pilot=pilot, description="buttons back")
 
 
 async def test_the_trend_and_group_buttons_choose_by_click() -> None:
@@ -370,8 +505,9 @@ async def test_the_chart_fills_its_width_and_shows_the_peak_and_mondays() -> Non
         lines = _chart_lines(dialog)
         bars = lines[:-1]
         assert len(bars) == chart.size.height - 1
-        # The first and the last day are the peak: full height, one at each edge of the chart.
+        # The first day is the peak, at the chart's edge; the month's last days have yet to come, up to the other.
         assert bars[0].startswith("█")
+        assert bars[0][-1] in _HATCH
         assert len(bars[0]) == chart.size.width
         assert "▁" in bars[-1]
         assert lines[-1].split() == ["10-05", "10-12", "10-19", "10-26"]
@@ -397,6 +533,132 @@ async def test_a_blank_row_keeps_the_tallest_bar_off_the_trend_buttons(size: tup
         await wait_for(lambda: chart.region.height > 0, pilot=pilot, description="chart laid out")
 
         assert chart.region.y == dialog.query_one("#usage-trend-daily", _ChoiceButton).region.bottom + 1
+
+
+async def test_whatever_a_bar_leaves_of_its_column_is_hatched_in_a_faint_color_of_its_own() -> None:
+    report = _report(
+        _call(hour=9, new_input=4_000_000, output=0),
+        _call(hour=21, new_input=2_000_000, output=0),
+    )
+    async with _HostApp().run_test(size=(100, 30)) as pilot:
+        dialog = await _open(pilot, report)
+        await pilot.press("left", "left")
+        await wait_for(lambda: _chart_lines(dialog)[-1].startswith("00:00"), pilot=pilot, description="hours")
+
+        chart = dialog.query_one(_TrendChart)
+        bars = _chart_lines(dialog)[:-1]
+        spans = _bar_spans(24, chart.size.width)
+        start, cells = spans[8]
+        # Every row alike, and by the chart's column, so the lines run on across rows and the gaps.
+        expected = "".join(_HATCH[column % 2] for column in range(start, start + cells))
+        assert all(line[start : start + cells] == expected for line in bars)
+        assert all(line[start + cells] == " " for line in bars), "the gap between columns stays clear"
+        half = spans[21][0]
+        assert bars[0][half] == _HATCH[half % 2]
+        assert bars[-1][half] == "█"
+
+        rendered = chart.render()
+        track = chart.get_component_rich_style("usage-chart--track")
+        hatched = [span.style for span in rendered.spans if set(rendered.plain[span.start : span.end]) <= set(_HATCH)]
+        assert hatched
+        assert set(hatched) == {track}
+        assert track.color != chart.rich_style.color
+        await wait_for(lambda: _HATCH[0] in _painted(pilot), pilot=pilot, description="hatching painted")
+
+
+@pytest.mark.parametrize("theme", ["ansi-dark", "ansi-light"])
+async def test_under_an_ansi_theme_the_hatching_takes_the_terminals_own_gray(theme: str) -> None:
+    app = _HostApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.theme = theme
+        dialog = await _open(pilot)
+
+        track = dialog.query_one(_TrendChart).get_component_rich_style("usage-chart--track")
+        assert track.color is not None
+        assert track.color.number == 8
+
+
+async def test_a_range_with_no_tokens_at_all_is_a_chart_of_hatching_not_a_blank() -> None:
+    report = _report(_call(_TODAY - timedelta(days=1)))
+    async with _HostApp().run_test(size=(100, 30)) as pilot:
+        dialog = await _open(pilot, report)
+        await pilot.press("left", "left")
+        await wait_for(lambda: _chart_lines(dialog)[-1].startswith("00:00"), pilot=pilot, description="hours")
+
+        bars = _chart_lines(dialog)[:-1]
+        assert all(set(line) == {*_HATCH, " "} for line in bars)
+
+
+@pytest.mark.parametrize(
+    ("presses", "name", "labels"),
+    [
+        ((), "This month", ["10-01", "10-05", "10-12", "10-19", "10-26"]),
+        (("right",), "30 days", ["09-29", "10-05", "10-12", "10-19", "10-26"]),
+    ],
+)
+async def test_by_the_week_a_month_or_30_days_shows_only_the_weeks_of_the_range(
+    presses: tuple[str, ...], name: str, labels: list[str]
+) -> None:
+    report = _report(
+        _call(date(2026, 9, 7), new_input=90_000_000, output=0),
+        # In the first column's week, but before the range: the column counts only the range's days.
+        _call(date(2026, 9, 28), new_input=80_000_000, output=0),
+        _call(date(2026, 10, 2), new_input=3_000_000, output=0),
+        _call(new_input=1_000_000, output=0),
+    )
+    async with _HostApp().run_test(size=(100, 30)) as pilot:
+        dialog = await _open(pilot, report)
+        await pilot.press(*presses, "t")
+        await wait_for(lambda: _active_range(dialog) == name, pilot=pilot, description=name)
+        await wait_for(lambda: _chosen(dialog, "usage-trend") == "Weekly", pilot=pilot, description="weekly")
+
+        lines = _chart_lines(dialog)
+        assert lines[-1].split() == labels
+        spans = _bar_spans(len(labels), dialog.query_one(_TrendChart).size.width)
+        assert lines[0].startswith("█" * spans[0][1])
+        assert lines[0].count("█") == spans[0][1]
+        assert _text(dialog, "usage-peak") == "peak 3.00M"
+
+
+async def test_a_month_just_begun_still_shows_all_of_it_by_the_day_and_by_the_week() -> None:
+    today = date(2026, 11, 1)
+    report = _report(
+        _call(today, new_input=2_000_000, output=0),
+        _call(date(2026, 10, 30), new_input=90_000_000, output=0),
+        today=today,
+    )
+    async with _HostApp().run_test(size=(100, 30)) as pilot:
+        dialog = await _open(pilot, report)
+
+        width = dialog.query_one(_TrendChart).size.width
+        lines = _chart_lines(dialog)
+        assert lines[-1].split() == ["11-02", "11-09", "11-16", "11-23"]
+        spans = _bar_spans(30, width)
+        assert lines[0].startswith("█" * spans[0][1])
+        assert lines[0].count("█") == spans[0][1]
+        assert _text(dialog, "usage-peak") == "peak 2.00M"
+
+        await pilot.press("t")
+
+        lines = _chart_lines(dialog)
+        assert lines[-1].split() == ["11-01", "11-02", "11-09", "11-16", "11-23", "11-30"]
+        spans = _bar_spans(6, width)
+        assert lines[0].startswith("█" * spans[0][1])
+        assert lines[0].count("█") == spans[0][1]
+
+
+def test_a_narrow_chart_gives_up_the_empty_columns_after_the_last_bar_first() -> None:
+    def columns_with_a_bar_at(index: int | None) -> list[_TrendColumn]:
+        return [_TrendColumn("", 5 if hour == index else 0) for hour in range(24)]
+
+    early = columns_with_a_bar_at(3)
+    late = columns_with_a_bar_at(20)
+    empty = columns_with_a_bar_at(None)
+
+    assert _fitting(early, 10) == early[:10]
+    assert _fitting(late, 10) == late[11:21]
+    assert _fitting(empty, 10) == empty[-10:]
+    assert _fitting(early, 30) == early
 
 
 async def test_a_chart_too_narrow_for_every_day_shows_the_newest_and_their_peak() -> None:
@@ -602,7 +864,6 @@ async def test_a_day_of_another_year_shows_its_year() -> None:
 
         await pilot.press("left", "left", "left")
         await wait_for(lambda: _active_range(dialog) == "All", pilot=pilot, description="all")
-        assert "2025-12-20 to 01-05" in _section_title(dialog, "usage-trend")
         assert "from 2025-12-20" in _text(dialog, "usage-note")
 
 
@@ -654,14 +915,14 @@ async def test_a_short_terminal_gives_up_the_frames_and_a_taller_one_gets_them_b
         assert frame.has_class("-compact")
         label = dialog.query_one("#usage-trend .usage-section-label", Static)
         assert label.display is True
-        assert _text(dialog, "usage-peak").startswith("10-01 to 10-28 · peak")
+        assert _text(dialog, "usage-peak").startswith("peak")
 
         await resize_when_settled(pilot, 120, 44)
 
         await wait_for(lambda: not frame.has_class("-compact"), pilot=pilot, description="frames back")
         await wait_for(lambda: not label.display, pilot=pilot, description="inline label gone")
         assert _text(dialog, "usage-peak").startswith("peak")
-        assert "10-01 to 10-28" in _section_title(dialog, "usage-trend")
+        assert _section_title(dialog, "usage-trend") == "Trend"
 
 
 async def test_the_calendar_opens_on_today_and_the_arrows_move_the_day() -> None:
@@ -996,15 +1257,16 @@ async def test_the_key_hints_fit_the_border_of_the_smallest_regular_terminal(
 @pytest.mark.parametrize(
     ("locale", "size", "peak"),
     [
-        ("en", (80, 24), "10-01 to 10-28 · peak 83.79M"),
-        ("en", (60, 24), "peak 83.79M"),
+        ("en", (120, 40), "peak 83.79M"),
+        ("en", (80, 24), "peak 83.79M"),
+        ("en", (46, 24), "peak 83.79M"),
         ("en", (42, 40), "83.79M"),
         ("en", (38, 24), ""),
         ("zh-Hans", (56, 24), "峰值 83.79M"),
         ("zh-Hans", (50, 24), "峰值 83.79M"),
     ],
 )
-async def test_the_trend_line_gives_up_the_period_before_any_of_the_peak(
+async def test_the_trend_line_gives_up_its_label_before_any_of_the_number(
     monkeypatch: pytest.MonkeyPatch, locale: str, size: tuple[int, int], peak: str
 ) -> None:
     from chrys.app.tui import i18n as tui_i18n
@@ -1035,16 +1297,16 @@ async def test_the_trend_line_refits_after_a_resize_and_a_trip_to_the_other_tab(
         def shows(text: str) -> Callable[[], bool]:
             return lambda: _painted_within(pilot, line) == text
 
-        await wait_for(shows("10-01 to 10-28 · peak 83.79M"), pilot=pilot, description="room for the period")
+        await wait_for(shows("peak 83.79M"), pilot=pilot, description="room for the label")
 
-        await resize_when_settled(pilot, 60, 24)
-        await wait_for(shows("peak 83.79M"), pilot=pilot, description="the period gives way")
+        await resize_when_settled(pilot, 42, 24)
+        await wait_for(shows("83.79M"), pilot=pilot, description="the label gives way")
 
         await pilot.press("tab")
         await wait_for(lambda: _active_tab(dialog) == "usage-calendar", pilot=pilot, description="on the calendar")
         await resize_when_settled(pilot, 80, 24)
         await pilot.press("tab")
-        await wait_for(shows("10-01 to 10-28 · peak 83.79M"), pilot=pilot, description="the period returns")
+        await wait_for(shows("peak 83.79M"), pilot=pilot, description="the label returns")
 
 
 @pytest.mark.parametrize(
@@ -1167,7 +1429,7 @@ async def test_the_shell_paints_before_the_read_finishes() -> None:
         await pilot.app.push_screen(dialog)
         await wait_for(lambda: bool(cancels), pilot=pilot, description="read started")
         await wait_for(lambda: _READING in _painted(pilot), pilot=pilot, description="overview shell")
-        assert _title(dialog) == "Usage · reading…"
+        assert _title(dialog) == "Token Usage · reading…"
 
         await pilot.press("tab")
         await wait_for(lambda: _subtitle(dialog) == _CALENDAR_KEYS, pilot=pilot, description="calendar keys")
@@ -1230,7 +1492,7 @@ async def test_a_failed_read_says_so(caplog: pytest.LogCaptureFixture) -> None:
         await wait_for(lambda: _FAILED in _painted(pilot), pilot=pilot, description="failure shown")
 
         assert "Failed to read the usage report" in caplog.text
-        assert _title(dialog) == "Usage"
+        assert _title(dialog) == "Token Usage"
 
 
 def _bold_cells(dialog: UsageDialog, static_id: str) -> str:

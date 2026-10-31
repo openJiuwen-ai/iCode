@@ -7880,18 +7880,18 @@ msgstr ""
 "在 /theme 后使用 Tab 补全可列出可用主题。"
 
 #. English: Open the token usage dialog, read from every saved session.
-#. Overview: new tokens by date range, the daily or weekly trend,     and
-#. totals by model, source or project, with each model's speed.     Calendar:
-#. new tokens day by day, and one day's details.      New tokens are the input
-#. not served from the provider's cache,     plus the output, thinking
-#. included. Deleted sessions and external     ACP agents are not counted.
-#. chrys-meta={"fingerprint":"d3f146bdd0abd941735cce160669f604892e0a0d82b85bfaa25d02ae5e6da88b","multiline":true,"placeholders":[]}
+#. Overview: new tokens by date range, their trend over time,     and totals by
+#. model, source or project, with each model's speed.     Calendar: new tokens
+#. day by day, and one day's details.      New tokens are the input not served
+#. from the provider's cache,     plus the output, thinking included. Deleted
+#. sessions and external     ACP agents are not counted.
+#. chrys-meta={"fingerprint":"d3b60b05e938038df9d11299b1c3fba744067836a2467c91b19245632b1bb892","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.usage.body"
 msgstr ""
 "打开 token 用量对话框，数据来自所有已保存的会话。\n"
 "\n"
-"    总览：按日期范围查看新增 token、按日或按周的趋势，\n"
+"    总览：按日期范围查看新增 token 及其趋势，\n"
 "    并按模型、来源或项目查看合计，以及每个模型的速度。\n"
 "    日历：逐日查看新增 token，以及某一天的详情。\n"
 "\n"
@@ -15188,6 +15188,12 @@ msgstr "←→↑↓ 选日期  {month_keys} 换月"
 msgid "tui.usage.keys.overview"
 msgstr "←→ 范围  t 日/周  g 分组  ↑↓ 选行"
 
+#. English: ←→ range  g group  ↑↓ row
+#. chrys-meta={"fingerprint":"2e08806590d25c6c6c81edc7e2da3d41e20ea0b9ba09950d32368ce204d8dc57","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.keys.overview_fixed_scale"
+msgstr "←→ 范围  g 分组  ↑↓ 选行"
+
 #. English: Cached
 #. chrys-meta={"fingerprint":"bad67fee0c3718027c694e6884148ceffc88383f0a7c33079ca81d18dd0ad3c4","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
@@ -15282,12 +15288,6 @@ msgid "tui.usage.note.unreported"
 msgid_plural "tui.usage.note.unreported#plural"
 msgstr[0] "{count} 次调用未报告用量"
 
-#. English: {start} to {end}
-#. chrys-meta={"fingerprint":"893937c16355af79020db33723d5a93fec2610be5c5841ab999e55e43468d685","multiline":false,"placeholders":["end","start"]}
-#: src/chrys/app/tui/screens/dialogs/usage.py
-msgid "tui.usage.period"
-msgstr "{start} 至 {end}"
-
 #. English: Other workspaces
 #. chrys-meta={"fingerprint":"6d7805200d84a36fdff69306ab89e5d5baf0d2008448aa2166941869367ba36c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
@@ -15378,23 +15378,17 @@ msgstr "日历"
 msgid "tui.usage.tab.overview"
 msgstr "总览"
 
-#. English: Usage
-#. chrys-meta={"fingerprint":"131ded67f9e279dd240c5406e8fbb76fcc6d37b401c58fff1ba096a51525c0ec","multiline":false,"placeholders":[]}
+#. English: Token Usage
+#. chrys-meta={"fingerprint":"166392622df9e6afbd731270bea93f53e61e809361e48c75c8045e7e417b949c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
 msgid "tui.usage.title"
-msgstr "用量"
+msgstr "Token 用量"
 
-#. English: Usage · reading…
-#. chrys-meta={"fingerprint":"a164dd80769b61bb2ee711ee0a6bc703a1bebb287c4e1cef67f0718d6dc78515","multiline":false,"placeholders":[]}
+#. English: Token Usage · reading…
+#. chrys-meta={"fingerprint":"129ed1bb3e00db5fde63388316a7003ec6ebb8477c01e064ed7e01f3f6609548","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
 msgid "tui.usage.title_reading"
-msgstr "用量 · 读取中…"
-
-#. English: Usage · as of {time}
-#. chrys-meta={"fingerprint":"63ebbcfbdf9e81ddd37ef23aa38b85434479baf711dd5235b2f9de28423fc2df","multiline":false,"placeholders":["time"]}
-#: src/chrys/app/tui/screens/dialogs/usage.py
-msgid "tui.usage.title_snapshot"
-msgstr "用量 · 快照 {time}"
+msgstr "Token 用量 · 读取中…"
 
 #. English: Trend
 #. chrys-meta={"fingerprint":"c348c443cf33d5961408e81501360e952ee7a9af71540711421358a4917a6681","multiline":false,"placeholders":[]}
@@ -16928,6 +16922,12 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.trajectory.operation_unresolved"
 #~ msgstr "{precision}：{reason}"
+
+#~ msgid "tui.usage.period"
+#~ msgstr "{start} 至 {end}"
+
+#~ msgid "tui.usage.title_snapshot"
+#~ msgstr "用量 · 快照 {time}"
 
 #~ msgid "tui.vision_unsupported.title.input_not_available"
 #~ msgstr "图像输入不可用"

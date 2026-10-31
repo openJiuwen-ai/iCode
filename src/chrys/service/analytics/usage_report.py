@@ -48,6 +48,8 @@ class UsageCall:
 
     day: date
     """The local calendar day the request ended on."""
+    hour: int
+    """The local hour of that day, 0 to 23."""
     model: str
     """The model that answered; empty when none did and the request does not say."""
     source: str
@@ -132,6 +134,8 @@ class UsageReport:
     today: date
     unreadable_logs: int = 0
     new_tokens_by_day: Mapping[date, int] = field(default_factory=dict)
+    new_tokens_by_hour: Mapping[int, int] = field(default_factory=dict)
+    """Today's new tokens by local hour."""
 
     @property
     def first_day(self) -> date | None:
@@ -223,14 +227,19 @@ def scan_usage(
         except OSError:
             logger.warning("Usage report: cannot read %s", log, exc_info=True)
             unreadable += 1
+    today = today or datetime.now().astimezone().date()
     new_tokens_by_day: defaultdict[date, int] = defaultdict(int)
+    new_tokens_by_hour: defaultdict[int, int] = defaultdict(int)
     for call in calls:
         new_tokens_by_day[call.day] += call.new_input + call.output
+        if call.day == today:
+            new_tokens_by_hour[call.hour] += call.new_input + call.output
     return UsageReport(
         calls=tuple(calls),
-        today=today or datetime.now().astimezone().date(),
+        today=today,
         unreadable_logs=unreadable,
         new_tokens_by_day=dict(new_tokens_by_day),
+        new_tokens_by_hour=dict(new_tokens_by_hour),
     )
 
 
@@ -271,7 +280,7 @@ class _SessionUsage:
 
     def _call(self, event: TrajectoryEvent) -> UsageCall | None:
         try:
-            day = datetime.fromisoformat(event.occurred_at).astimezone().date()
+            ended = datetime.fromisoformat(event.occurred_at).astimezone()
         except ValueError, OverflowError, OSError:
             return None
         payload = event.payload
@@ -284,7 +293,8 @@ class _SessionUsage:
         cache_read = plain_int_value(normalized.get("cache_read")) or 0
         model = payload.get("response_model") or payload.get("request_model")
         return UsageCall(
-            day=day,
+            day=ended.date(),
+            hour=ended.hour,
             model=model if isinstance(model, str) else "",
             source=event.actor.role,
             project=self._project(event.turn_id),
