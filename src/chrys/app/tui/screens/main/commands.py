@@ -425,7 +425,7 @@ _MAN_SETTINGS_BODY = msg(
     "tui.man.settings.body",
     fallback=(
         "Open the Settings panel (F10), optionally on a tab.\n\n"
-        "    Tabs: general, models, security, sessions, tools, notifications.\n"
+        "    Tabs: general, models, safety, sessions, tools, notifications.\n"
         "    Changes are saved as you make them; the panel says when each\n"
         "    one takes effect (immediately, on close, or after a restart)."
     ),

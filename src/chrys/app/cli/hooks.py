@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from chrys.service.hooks.validation import CheckedFile, HookDiagnostic, HooksReport
 
 
-_NOT_LOADED: Final = "not loaded: turn on Load project hooks under Settings → Security → Project trust"
+_NOT_LOADED: Final = "not loaded: turn on Load project hooks under Settings → Safety → Project trust"
 # The listing says this itself, on the file's own line.
 _DORMANT_WARNING_CODE: Final = "project_hooks_dormant"
 

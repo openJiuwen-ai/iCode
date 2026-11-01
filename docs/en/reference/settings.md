@@ -59,6 +59,7 @@ Model role keys take the ID or unique name of an existing model profile. Buddy d
 | `model.role.session_title` | `CHRYS_MODEL_PROFILE_SESSION_TITLE` | Unset | String; the model profile used to generate session titles automatically. Uses the current model when unset |
 | `model.role.buddy_model_id` | `CHRYS_PET_MODEL` | Unset | String; the model used by Buddy, using the current model profile's connection. Uses the current model when unset |
 | `llm.retry.max_transient` | `CHRYS_MAX_TRANSIENT_RETRIES` | `null` | Integer or `null`; `null` uses the default retry count for the launch command: `10` for the TUI (including `icode serve`) and `icode acp`, or `18` for `icode run` and `icode workflow run`. The wait before each retry grows, up to 10 minutes. `0` disables automatic retries for transient errors; negative values are invalid; capped at `50` |
+| `llm.credential_command.ttl_seconds` | `CHRYS_CREDENTIAL_COMMAND_TTL_SECONDS` | `3600` | Integer; how long, in seconds, a value from a `{{!command}}` placeholder is used before the next request runs the command again. Minimum `60`. A value the service refuses is replaced at once. Takes effect after a restart. See [Get an API key from a command](../guides/configuration/models.md#get-an-api-key-from-a-command) |
 
 Transient error retries handle recoverable errors such as temporary network failures, request timeouts, and rate limits. Raising the count also increases the wait and number of requests before a final failure. This number is not the total number of model requests for the entire task.
 
@@ -204,7 +205,7 @@ These are the general rules for values in settings files and environment variabl
 
 ## Project-level settings
 
-Project settings are not loaded by default. First enable them in the user `settings.yaml`, or turn on “Load project settings” under “Settings → Security” in the TUI:
+Project settings are not loaded by default. First enable them in the user `settings.yaml`, or turn on “Load project settings” under “Settings → Safety” in the TUI:
 
 ```yaml
 project:

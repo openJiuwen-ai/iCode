@@ -59,7 +59,7 @@ def shell_commands(text: str) -> list[str]:
     return [match.group(1) for match in _SHELL_RE.finditer(text)]
 
 
-def _shell_argv(command: str) -> tuple[str | WindowsShellCommand, ...]:
+def shell_argv(command: str) -> tuple[str | WindowsShellCommand, ...]:
     # The user's shell: ``$SHELL`` (``/bin/sh``), or ``cmd.exe`` given the command as
     # written, quotes included (``echo x > "a b"``).
     if sys.platform == "win32":
@@ -73,7 +73,7 @@ async def run_shell_command(command: str, *, cwd: str) -> str:
     stderr = BoundedCapture(SHELL_OUTPUT_LIMIT_BYTES)
     try:
         async with managed_subprocess(
-            *_shell_argv(command),
+            *shell_argv(command),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

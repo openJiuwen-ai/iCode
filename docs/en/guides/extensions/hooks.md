@@ -63,7 +63,7 @@ It checks the project and global hook files without running any hook. It lists e
 PASS 1 file · 1 hook
 ```
 
-Project hooks are not loaded by default. In the terminal user interface (TUI), press **F10** to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Security**. If it is already on, switch sessions or restart iCode to apply the configuration on disk.
+Project hooks are not loaded by default. In the terminal user interface (TUI), press **F10** to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Safety**. If it is already on, switch sessions or restart iCode to apply the configuration on disk.
 
 Run `icode hook list` to see the hooks a session started in this directory loads. The `Project hooks` line should end with `(loaded)`, with `record-turn` listed below it.
 
@@ -191,7 +191,7 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file
 
 Switch sessions or restart iCode to apply the configuration. The system reminder takes effect only after the blocking hook finishes successfully. iCode wraps the reminder in `<system-reminder>` tags and sends it to the model along with the user's submitted message. The reminder does not appear in the TUI conversation and is not saved in session data.
 
-To confirm that a `user_prompt_submit` hook is working, or to inspect the actual system reminder sent to the model, check the raw HTTP log of model requests. This log contains unredacted API keys and full conversation content, so enable it only temporarily for troubleshooting. In the TUI, press **F10**, go to **Security** > **Diagnostics**, enable **Capture raw model HTTP requests**, and restart iCode. Submit a message using the Code agent, then search for the reminder text "After modifying Python files" in `llm_raw_http.jsonl` in the current session directory. For its location, see [Find the session ID and storage location](../daily-use/sessions.md#find-the-session-id-and-storage-location). After verification, disable **Capture raw model HTTP requests** and restart iCode again.
+To confirm that a `user_prompt_submit` hook is working, or to inspect the actual system reminder sent to the model, check the raw HTTP log of model requests. This log contains unredacted API keys and full conversation content, so enable it only temporarily for troubleshooting. In the TUI, press **F10**, go to **Safety** > **Diagnostics**, enable **Capture raw model HTTP requests**, and restart iCode. Submit a message using the Code agent, then search for the reminder text "After modifying Python files" in `llm_raw_http.jsonl` in the current session directory. For its location, see [Find the session ID and storage location](../daily-use/sessions.md#find-the-session-id-and-storage-location). After verification, disable **Capture raw model HTTP requests** and restart iCode again.
 
 To add a reminder only for certain tasks, have the script read `text` (the message the user just submitted) from `CHRYS_HOOK_PAYLOAD_FILE` and write `system_reminder` to `CHRYS_HOOK_RESULT` only when the message meets your conditions.
 

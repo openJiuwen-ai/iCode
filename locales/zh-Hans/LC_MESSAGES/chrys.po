@@ -961,6 +961,12 @@ msgstr "上下文警告阈值"
 msgid "settings.history.prompt.enabled.label"
 msgstr "保存提示词历史"
 
+#. English: Credential command refresh interval (seconds)
+#. chrys-meta={"fingerprint":"881e643e078c60d678dbf44dab477bf459f1be252a6c92313a23bf6339c0267e","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.llm.credential_command.ttl_seconds.label"
+msgstr "凭据命令刷新间隔（秒）"
+
 #. English: Max transient retries
 #. chrys-meta={"fingerprint":"d5460f5ca26e427c6b0b266cf04c7d364d9e116aeaa4d3158676c7a1e16a0d01","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -1132,29 +1138,29 @@ msgid "settings.project.skills_enabled.label"
 msgstr "加载项目 Skills"
 
 #. English: Found project settings in {path} ({keys}), but they are not loaded.
-#. To apply them, turn on Load project settings under Settings → Security →
+#. To apply them, turn on Load project settings under Settings → Safety →
 #. Project trust (project.config_enabled).
-#. chrys-meta={"fingerprint":"b0e3dbf84eeb05e707cea468caca1d59f2b66a1c3be0b7b08be880e0172acd34","multiline":false,"placeholders":["keys","path"]}
+#. chrys-meta={"fingerprint":"0da01f2749b1cbfc944e1ebe38724c1ca1797004a728fb60dccd5a169e91a645","multiline":false,"placeholders":["keys","path"]}
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.project_config_dormant"
-msgstr "在 {path} 中发现项目设置（{keys}），但尚未加载。如需应用，请在 设置 → 安全 → 项目信任 中勾选“加载项目设置”（project.config_enabled）。"
+msgstr "在 {path} 中发现项目设置（{keys}），但尚未加载。如需应用，请在 设置 → 安全管控 → 项目信任 中勾选“加载项目设置”（project.config_enabled）。"
 
 #. English: Found project hooks in {path}, but they are not loaded. To run
-#. them, turn on Load project hooks under Settings → Security → Project trust
+#. them, turn on Load project hooks under Settings → Safety → Project trust
 #. (project.hooks_enabled).
-#. chrys-meta={"fingerprint":"5ec1234a8618ca2a204bd38c28f662e4600c42779c85aa5f670f458d731f99a8","multiline":false,"placeholders":["path"]}
+#. chrys-meta={"fingerprint":"cd4a080a5c645b5c000b009e2f3b7981fad1f1a623166d31bd3594ae47020d2e","multiline":false,"placeholders":["path"]}
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.project_hooks_dormant"
-msgstr "在 {path} 中发现项目钩子，但尚未加载。如需运行，请在 设置 → 安全 → 项目信任 中勾选“加载项目钩子”（project.hooks_enabled）。"
+msgstr "在 {path} 中发现项目钩子，但尚未加载。如需运行，请在 设置 → 安全管控 → 项目信任 中勾选“加载项目钩子”（project.hooks_enabled）。"
 
 #. English: Found project skills in {path}. They are not loaded automatically;
-#. to load them, turn on Load project skills under Settings → Security →
-#. Project trust (project.skills_enabled) and keep the agent's Load skills from
-#. working folder option on.
-#. chrys-meta={"fingerprint":"f6443d8c10bf7c5ebc4b047d577fbd2eebc4f00ed9a1072eaa4659a93753f10e","multiline":false,"placeholders":["path"]}
+#. to load them, turn on Load project skills under Settings → Safety → Project
+#. trust (project.skills_enabled) and keep the agent's Load skills from working
+#. folder option on.
+#. chrys-meta={"fingerprint":"4c94c15d7a79a9735c3584fae604120142833197ede868e8ee4e071a4072fc6c","multiline":false,"placeholders":["path"]}
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.project_skills_dormant"
-msgstr "在 {path} 中发现项目 Skills，不会自动加载。如需加载，请在 设置 → 安全 → 项目信任 中勾选“加载项目 Skills”（project.skills_enabled），并保持智能体的“从工作文件夹加载 Skills”选项开启。"
+msgstr "在 {path} 中发现项目 Skills，不会自动加载。如需加载，请在 设置 → 安全管控 → 项目信任 中勾选“加载项目 Skills”（project.skills_enabled），并保持智能体的“从工作文件夹加载 Skills”选项开启。"
 
 #. English: Ignoring {source}={raw}: expected a boolean.
 #. chrys-meta={"fingerprint":"f804369b50e63015f7f5a7096b0d54c6de66e96fd168736853c1690d0ad9c6e2","multiline":false,"placeholders":["raw","source"]}
@@ -2427,13 +2433,13 @@ msgid "tui.agent_config.skills.load_working_folder"
 msgstr "从工作文件夹加载 Skills（如果存在）"
 
 #. English: Auto-load skills from the agents skills directory under the current
-#. working folder when Load project skills is on under Settings → Security →
+#. working folder when Load project skills is on under Settings → Safety →
 #. Project trust. Reloaded automatically when the workspace cwd changes (/chdir
 #. or file picker).
-#. chrys-meta={"fingerprint":"ac4c8359baf2210072172b628ea16e352768bb6eb35b90c0e8a564e3730a815b","multiline":false,"placeholders":[]}
+#. chrys-meta={"fingerprint":"01ee7f4d82049a5eec12eceb6435cd810664d38141638a5d6ac2dfdd04668e68","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/skills.py
 msgid "tui.agent_config.skills.load_working_folder_tooltip"
-msgstr "在 设置 → 安全 → 项目信任 中勾选“加载项目 Skills”后，从当前工作文件夹下的 agents Skill 目录自动加载 Skills。工作区 cwd 发生变化（/chdir 或文件选择器）时会自动重新加载。"
+msgstr "在 设置 → 安全管控 → 项目信任 中勾选“加载项目 Skills”后，从当前工作文件夹下的 agents Skill 目录自动加载 Skills。工作区 cwd 发生变化（/chdir 或文件选择器）时会自动重新加载。"
 
 #. English: Missing in current workspace
 #. chrys-meta={"fingerprint":"f3a14b222d8a443dd8b95290a39d6cae1867d4662251bbdc08514b69acb073f5","multiline":false,"placeholders":[]}
@@ -7852,16 +7858,16 @@ msgstr ""
 "    - 查看会话元数据（日期、轮次等）"
 
 #. English: Open the Settings panel (F10), optionally on a tab.      Tabs:
-#. general, models, security, sessions, tools, notifications.     Changes are
+#. general, models, safety, sessions, tools, notifications.     Changes are
 #. saved as you make them; the panel says when each     one takes effect
 #. (immediately, on close, or after a restart).
-#. chrys-meta={"fingerprint":"2b21b292bfa8fe449d092f675cb2e23fad6d0607e94377403171d53efc617d23","multiline":true,"placeholders":[]}
+#. chrys-meta={"fingerprint":"5c7e46d01f4170b6f6120715078ba33e941c370d206f8594bb0f3245f1cd8736","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.settings.body"
 msgstr ""
 "打开设置面板（F10），可指定打开某个标签页。\n"
 "\n"
-"    标签页：general、models、security、sessions、tools、notifications。\n"
+"    标签页：general、models、safety、sessions、tools、notifications。\n"
 "    修改即时保存；面板会说明每一项何时生效\n"
 "    （立即、关闭时或重启后）。"
 
@@ -10747,6 +10753,13 @@ msgstr "TUI 和 ACP 等待人工审批的秒数，超时后拒绝本次调用。
 msgid "tui.settings.hint.history.prompt.enabled"
 msgstr "记住你输入过的内容，之后可用 Ctrl+R 找回。"
 
+#. English: How often a {{{{!command}}}} value runs again; at least 60 seconds.
+#. A token the service refuses is replaced at once.
+#. chrys-meta={"fingerprint":"2d30655e2148d8cd370ba159007649a942918a7e832c8b92933ad277f92fc3ca","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.llm.credential_command.ttl_seconds"
+msgstr "{{{{!command}}}} 值重新运行的间隔，最少 60 秒。服务拒绝令牌时会立即更换。"
+
 #. English: Blank = the frontend default ({default}); 0 = never retry; at most
 #. {maximum}.
 #. chrys-meta={"fingerprint":"6a8589bec0a732e09d05d785106f2926581a8d6e85896d9cfd17d9b340fe7216","multiline":false,"placeholders":["default","maximum"]}
@@ -11148,6 +11161,12 @@ msgstr "审批"
 msgid "tui.settings.section.ask_user"
 msgstr "询问用户"
 
+#. English: Credentials
+#. chrys-meta={"fingerprint":"704b73b498a32d0be384a1d0e9b270fb95692f00341307bf227ae6d3b6b7bd94","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.section.credentials"
+msgstr "凭据"
+
 #. English: Diagnostics
 #. chrys-meta={"fingerprint":"acb086a97483ad15195a9c3e452caae73cef2e696e7cc679d7a32968150681ed","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
@@ -11338,11 +11357,11 @@ msgstr "模型与智能体"
 msgid "tui.settings.tab.notifications"
 msgstr "通知"
 
-#. English: Security
-#. chrys-meta={"fingerprint":"6d3bcdb95ce3aa583fc6e498b7084e2c0dcd10abfc205c83470d4eae5f35bf94","multiline":false,"placeholders":[]}
+#. English: Safety
+#. chrys-meta={"fingerprint":"5dda52f20881249d011c9813c1430092262843e001ee2cb0570848380916ef4d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.tab.security"
-msgstr "安全"
+msgid "tui.settings.tab.safety"
+msgstr "安全管控"
 
 #. English: Sessions
 #. chrys-meta={"fingerprint":"c5cc776a4d7579ddf82b6d982259975f712ab352028d2c5a15b02fa329179077","multiline":false,"placeholders":[]}
@@ -16741,6 +16760,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.settings.tab.prompt_shortcuts"
 #~ msgstr "快捷指令"
+
+#~ msgid "tui.settings.tab.security"
+#~ msgstr "安全"
 
 #~ msgid "tui.sidebar.background.pid"
 #~ msgstr "pid {pid}"

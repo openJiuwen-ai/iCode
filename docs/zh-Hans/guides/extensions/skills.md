@@ -13,7 +13,7 @@ Skill 是一组可复用的操作说明，可以附带参考资料和脚本，�
 | `<working-directory>/.agents/skills` | 只希望在当前工作目录中使用                         | 勾选“加载项目 Skills”后才加载，也可针对智能体关闭 |
 | 自定义目录 | 希望从指定位置加载                            | 需要在相应智能体配置中手动添加 |
 
-其中，`<working-directory>` 表示当前工作目录。工作目录中的 Skill 随仓库而来，因此需要先在“设置 → 安全 → 项目信任”中勾选“加载项目 Skills”（`project.skills_enabled`），iCode 才会加载。工作目录中有未加载的 Skill 时，iCode 会弹出提示。切换工作目录后，iCode 会重新加载新工作目录中的 Skill。
+其中，`<working-directory>` 表示当前工作目录。工作目录中的 Skill 随仓库而来，因此需要先在“设置 → 安全管控 → 项目信任”中勾选“加载项目 Skills”（`project.skills_enabled`），iCode 才会加载。工作目录中有未加载的 Skill 时，iCode 会弹出提示。切换工作目录后，iCode 会重新加载新工作目录中的 Skill。
 
 两个用户级 Skill 目录在不同平台上的路径如下：
 
@@ -38,7 +38,7 @@ iCode 用户 Skill 目录始终自动加载。Agent Skills 共享目录默认也
 2. 根据 Skill 所在位置，确认对应的 Skill 来源已启用：
 
    * “从用户文件夹加载 Skills（如果存在）”对应 Agent Skills 共享目录；
-   * “从工作文件夹加载 Skills（如果存在）”对应 `<working-directory>/.agents/skills`，仅在“设置 → 安全 → 项目信任”中勾选了“加载项目 Skills”时生效。
+   * “从工作文件夹加载 Skills（如果存在）”对应 `<working-directory>/.agents/skills`，仅在“设置 → 安全管控 → 项目信任”中勾选了“加载项目 Skills”时生效。
 
 3. 如果 Skill 位于其他目录，点击“+ 添加”，填写 Skill 所在目录：
 

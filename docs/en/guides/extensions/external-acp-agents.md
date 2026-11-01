@@ -88,6 +88,10 @@ For example, if an API key is stored in the `EXTERNAL_AGENT_API_KEY` environment
 
 iCode resolves these references when you save the profile, when you test the connection, and each time it starts the external agent. If a referenced variable does not exist or has an empty value, the profile cannot be saved, and the connection test or invocation fails.
 
+Arguments and environment variable values can also use what a command prints, with `{{!command}}`, such as `{{!tokenprovider gettoken}}`. See [Get an API key from a command](../configuration/models.md#get-an-api-key-from-a-command) for what the command has to do. The command runs each time iCode starts the external agent, and a running agent keeps the value it started with. If the command fails the first time, the external agent does not start. The executable and working directory cannot use a command.
+
+While the agent runs, other users of this computer may be able to see its arguments. If the agent can read a secret from an environment variable, put it there.
+
 ## Set the working directory
 
 When "Working Directory" is blank, the external agent uses the current iCode session's working directory.

@@ -194,7 +194,7 @@ async def test_command_that_cannot_start_fails_with_start_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     missing = str(tmp_path / "no-such-shell")
-    monkeypatch.setattr(shell_module, "_shell_argv", lambda command: [missing, "-c", command])
+    monkeypatch.setattr(shell_module, "shell_argv", lambda command: [missing, "-c", command])
 
     with pytest.raises(ShellInterpolationError) as caught:
         await interpolate_shell("x !`echo hi` y", cwd=str(tmp_path))

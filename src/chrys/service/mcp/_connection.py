@@ -151,6 +151,7 @@ def _create_mcp_tool(config: MCPServerConfig) -> MCPTool:
         verify_ssl=config.verify_ssl,
         bypass_proxy=config.bypass_proxy,
         headers=headers or None,
+        resolve_commands=config.resolve_header_templates,
     )
 
 

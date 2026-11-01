@@ -36,7 +36,7 @@ This document is the design for that feature. For the YAML format see
   current manager.
 - A `--no-project-hooks` CLI flag or a trust-tier system. These are
   deliberately deferred. The one switch that exists is the
-  `project.hooks_enabled` setting (Settings → Security → Project trust,
+  `project.hooks_enabled` setting (Settings → Safety → Project trust,
   default off; a project file cannot set it): off means the project file
   is not opened at all and only global hooks load. When a project file
   exists while the setting is off, the settings load reports it as a

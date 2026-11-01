@@ -357,6 +357,7 @@ def _acp_template_error(
     value: str,
     *,
     location: str,
+    allow_commands: bool = True,
     render_message: _RenderMessage = format_message,
 ) -> list[str]:
     """Report ``{{ENV}}`` templates real invocation could not resolve.
@@ -366,7 +367,7 @@ def _acp_template_error(
     guaranteed runtime failure — surface it at validation time instead.
     """
     try:
-        resolve_env_templates(value, location=location)
+        resolve_env_templates(value, location=location, allow_commands=allow_commands)
     except ValueError as exc:
         return [_context_message(render_message, prefix, str(exc))]
     return []
@@ -395,6 +396,7 @@ def validate_acp_draft(
                 prefix,
                 config.command,
                 location="ACP command",
+                allow_commands=False,
                 render_message=render_message,
             )
         )
@@ -482,7 +484,7 @@ def validate_acp_draft(
         # would pass a template that expands outside the workspace.
         expanded_cwd: str | None
         try:
-            expanded_cwd = resolve_env_templates(config.cwd, location="ACP working directory")
+            expanded_cwd = resolve_env_templates(config.cwd, location="ACP working directory", allow_commands=False)
         except ValueError as exc:
             errors.append(_context_message(render_message, prefix, str(exc)))
             expanded_cwd = None

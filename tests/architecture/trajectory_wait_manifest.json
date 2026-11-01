@@ -3413,8 +3413,9 @@
         ["awaitable", "await self._require_conn().cancel(session_id=self._require_session_id())", "unresolved"]
       ],
       "AcpAgentClient.connect": [
+        ["wrapper", "await with_fresh_tokens(self._spec)", "unresolved", "chrys.service.acp_client.spawn.with_fresh_tokens"],
         ["async_context", "async with asyncio.timeout_at(self._handshake_deadline)", "unresolved"],
-        ["wrapper", "await spawn_acp_process(self._spec)", "unresolved", "chrys.service.acp_client.spawn.spawn_acp_process"],
+        ["wrapper", "await spawn_acp_process(launch_spec)", "unresolved", "chrys.service.acp_client.spawn.spawn_acp_process"],
         ["wrapper", "await _dispose_spawn(spawn)", "unresolved", "chrys.service.acp_client.client._dispose_spawn"],
         ["awaitable", "await self._require_conn().initialize(protocol_version=PROTOCOL_VERSION, client_capabilities=ClientCapabilities(fs=FileSystemCapabilities(read_text_file=False, write_text_file=False), terminal=False), client_info=self._spec.client_info)", "unresolved"],
         ["wrapper", "await self.force_close()", "unresolved", "chrys.service.acp_client.client.AcpAgentClient.force_close"],
@@ -3482,6 +3483,9 @@
         ["wrapper", "await spawn_managed_stdio_process(command, *args, cwd=cwd, env=env, limit=ACP_STDIO_LIMIT_BYTES, parent_env=parent_env)", "unresolved", "chrys.foundation.platform.process.spawn_managed_stdio_process"],
         ["timeout", "await asyncio.wait_for(process.wait(), timeout=2)", "unresolved"],
         ["subprocess", "process.wait()", "unresolved"]
+      ],
+      "with_fresh_tokens": [
+        ["wrapper", "await refresh(values)", "unresolved", "chrys.service.command_credentials.refresh"]
       ]
     },
     "chrys.service.agent_middleware.control.approval": {
@@ -3876,6 +3880,28 @@
         ["awaitable", "await call(client, messages, stream=stream, options=options, timeout=self.deadline - time.monotonic())", "unresolved"]
       ]
     },
+    "chrys.service.command_credentials": {
+      "CommandCredentialAuth.async_auth_flow": [
+        ["wrapper", "await ensure_fresh(self._handles)", "unresolved", "chrys.service.command_credentials.ensure_fresh"],
+        ["wrapper", "await refresh(self._handles)", "unresolved", "chrys.service.command_credentials.refresh"]
+      ],
+      "_fetch": [
+        ["shield", "await asyncio.shield(credential.running)", "unresolved"]
+      ],
+      "_run_and_keep": [
+        ["wrapper", "await _run_command(placeholder.command)", "unresolved", "chrys.service.command_credentials._run_command"]
+      ],
+      "_run_command": [
+        ["async_context", "async with managed_subprocess(*shell_argv(command), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, cwd=str(Path.home()), env=build_shell_subprocess_env())", "unresolved"],
+        ["wrapper", "await wait_for_subprocess(drain_process_pipes(proc, stdout, stdout), timeout=COMMAND_TIMEOUT_SECONDS, process_group_id=proc.pid if sys.platform != 'win32' else None)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"]
+      ],
+      "ensure_fresh": [
+        ["wrapper", "await _fetch(handle)", "unresolved", "chrys.service.command_credentials._fetch"]
+      ],
+      "refresh": [
+        ["wrapper", "await _fetch(handle)", "unresolved", "chrys.service.command_credentials._fetch"]
+      ]
+    },
     "chrys.service.context.compaction.breaker": {
       "DropBreakerController.publish_trip": [
         ["awaitable", "await generator.publish_breaker_trip(message)", "unresolved"]
@@ -4255,7 +4281,11 @@
       ]
     },
     "chrys.service.llm.clients": {
+      "_command_credential_auth": [
+        ["wrapper", "await ensure_fresh(values)", "unresolved", "chrys.service.command_credentials.ensure_fresh"]
+      ],
       "create_client": [
+        ["wrapper", "await _command_credential_auth(profile, api_key=api_key, headers=headers)", "unresolved", "chrys.service.llm.clients._command_credential_auth"],
         ["awaitable", "await close_http_client()", "unresolved"]
       ],
       "scoped_client": [
@@ -4368,6 +4398,7 @@
         ["awaitable", "await ctx.read_stream_writer.send(SessionMessage(message=JSONRPCMessage(error)))", "unresolved"]
       ],
       "_HTTPMCPTool.__aenter__": [
+        ["wrapper", "await ensure_fresh(self._static_headers.values())", "unresolved", "chrys.service.command_credentials.ensure_fresh"],
         ["awaitable", "await super().__aenter__()", "unresolved"],
         ["wrapper", "await self._close_owned_httpx_client()", "unresolved", "chrys.service.mcp._http_transport._HTTPMCPTool._close_owned_httpx_client"]
       ],
@@ -4394,6 +4425,7 @@
         ["awaitable", "await super().__aexit__(exc_type, exc_value, traceback)", "unresolved"]
       ],
       "tolerant_stdio_client": [
+        ["wrapper", "await refresh(server.env.values())", "unresolved", "chrys.service.command_credentials.refresh"],
         ["async_context", "async with stdio_client(stock_server, errlog=errlog)", "unresolved"],
         ["awaitable", "await _create_platform_compatible_process(command=command, args=server.args, env=env, errlog=cast('TextIO', subprocess.PIPE), cwd=server.cwd)", "unresolved"],
         ["awaitable", "await read_stream.aclose()", "unresolved"],
@@ -4713,7 +4745,7 @@
         ["wrapper", "await run_shell_command(command, cwd=cwd)", "unresolved", "chrys.service.prompt_shortcuts.shell.run_shell_command"]
       ],
       "run_shell_command": [
-        ["async_context", "async with managed_subprocess(*_shell_argv(command), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd, env=build_shell_subprocess_env())", "unresolved"],
+        ["async_context", "async with managed_subprocess(*shell_argv(command), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd, env=build_shell_subprocess_env())", "unresolved"],
         ["wrapper", "await wait_for_subprocess(drain_process_pipes(proc, stdout, stderr), timeout=SHELL_TIMEOUT_SECONDS, process_group_id=proc.pid if sys.platform != 'win32' else None)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"]
       ]
     },

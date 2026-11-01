@@ -51,6 +51,25 @@ To read the key from an environment variable, enter the following in the "API Ke
 
 Replace `PROVIDER_API_KEY` with the name of the environment variable that holds the key. Make sure the variable is set before starting iCode. Environment variable names can contain only letters, numbers, and underscores, and cannot start with a number.
 
+### Get an API key from a command
+
+If your key expires and a tool gives you a new one, put the command in the "API Key" field, inside double braces with a leading `!`:
+
+```text
+{{!tokenprovider gettoken}}
+```
+
+iCode runs the command when it first needs the model and uses what the command prints as the key. The profile file keeps the placeholder. The key itself stays in memory while iCode runs and is not saved. You can use a command in "HTTP Extra Headers" too, or as part of a value, such as `Bearer {{!tokenprovider gettoken}}`.
+
+**Getting a new key.** You don't need to restart iCode. It runs the command again:
+
+- before the next request, once the key is an hour old. To change this, see [Credential command refresh interval](./settings.md#credentials).
+- as soon as the model service refuses the key (HTTP 401). iCode then sends the refused request again with the new key.
+
+**What the command has to do.** Print the key on standard output as one line of plain ASCII text, and exit with code `0`. It runs in your shell (`cmd.exe` on Windows) from your home directory, and has 30 seconds. It cannot ask you anything, so if your tool needs you to sign in, sign in from a terminal first. If the command itself contains `}}`, write it as `}}}}`, or put the command in a script.
+
+**If it doesn't work.** If the command fails the first time, the error names the field and how the command failed, such as its exit code, but not what it printed: run the command in a terminal to see why. Once it works, type `/new` or restart iCode. If it fails later, iCode keeps using the last key. Once the model service refuses that key, you see an API key error: fix the command in a terminal, then retry the request.
+
 ### Clone a model profile
 
 Clone an existing profile when you need another profile with mostly the same parameters. For example, you might use a different model ID from the same provider, or set different context and output limits for the same model.

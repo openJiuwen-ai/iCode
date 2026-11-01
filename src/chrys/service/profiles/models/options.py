@@ -176,19 +176,23 @@ def parse_chat_options(profile: ModelProfile) -> dict[str, Any] | None:
     try:
         opts = json.loads(raw)
     except json.JSONDecodeError, TypeError:
-        _log.warning("ModelProfile %r chat_options is not valid JSON, ignoring: %r", profile.name, raw)
+        _log.warning("ModelProfile %r chat_options is not valid JSON, ignoring it", profile.name)
         return None
     if not isinstance(opts, dict):
-        _log.warning("ModelProfile %r chat_options is not a JSON object, ignoring: %r", profile.name, raw)
+        _log.warning("ModelProfile %r chat_options is not a JSON object, ignoring it", profile.name)
         return None
     opts = _drop_protected_chat_options(profile.name, opts)
     opts = _normalize_instructions_option(profile.name, opts)
     opts = _drop_managed_extra_headers(profile.name, opts)
-    resolved = cast(
-        "dict[str, Any]",
-        resolve_env_template_values(opts, location=f"model profile {profile.name!r} chat option"),
-    )
-    return resolved
+    # Only a header is swapped for its token at send time; the rest goes out as the JSON body.
+    return {
+        key: resolve_env_template_values(
+            value,
+            location=f"model profile {profile.name!r} chat option[{key!r}]",
+            allow_commands=key == "extra_headers",
+        )
+        for key, value in opts.items()
+    }
 
 
 def output_cap_option_value(options: Mapping[str, Any] | None, key: str) -> int | None:
@@ -428,10 +432,10 @@ def parse_http_headers(profile: ModelProfile) -> dict[str, str]:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError, TypeError:
-        _log.warning("ModelProfile %r http_headers is not valid JSON, ignoring: %r", profile.name, raw)
+        _log.warning("ModelProfile %r http_headers is not valid JSON, ignoring it", profile.name)
         return {}
     if not isinstance(data, dict):
-        _log.warning("ModelProfile %r http_headers is not a JSON object, ignoring: %r", profile.name, raw)
+        _log.warning("ModelProfile %r http_headers is not a JSON object, ignoring it", profile.name)
         return {}
     _log_managed_headers(profile.name, "http_headers", _managed_header_names(data))
     headers = {str(k): str(v) for k, v in data.items() if not is_chrys_managed_header_name(str(k))}

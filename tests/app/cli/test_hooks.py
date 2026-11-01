@@ -126,7 +126,7 @@ def test_the_list_says_whether_project_hooks_load(enabled: bool, capsys: pytest.
     assert hooks_cli.main(["list"]) == 0
 
     captured = capsys.readouterr()
-    state = "loaded" if enabled else "not loaded: turn on Load project hooks under Settings → Security → Project trust"
+    state = "loaded" if enabled else "not loaded: turn on Load project hooks under Settings → Safety → Project trust"
     assert captured.out.splitlines()[0] == f"Project hooks: {_shown('.chrys', 'hooks', 'hooks.yaml')} ({state})"
     # The listing says it on the file's own line; the startup warning would repeat it.
     assert captured.err == ""
@@ -216,7 +216,7 @@ def test_an_invalid_project_file_that_is_off_says_it_is_off_first(capsys: pytest
     assert capsys.readouterr().out.splitlines() == [
         (
             f"Project hooks: {_shown('.chrys', 'hooks', 'hooks.yaml')} (not loaded: turn on Load project hooks under "
-            "Settings → Security → Project trust; the file is also invalid: 'hooks' must be a list, got dict; "
+            "Settings → Safety → Project trust; the file is also invalid: 'hooks' must be a list, got dict; "
             "run 'icode hook validate' for details)"
         )
     ]

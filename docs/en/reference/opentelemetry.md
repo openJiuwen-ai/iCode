@@ -14,7 +14,7 @@ This page covers iCode OpenTelemetry configuration, local storage and export of 
 
 ### Enablement settings
 
-OpenTelemetry is disabled by default. Enable it under [Settings → Security → Telemetry](../guides/configuration/settings.md#telemetry) in the terminal user interface (TUI), or use the following environment variables. **All settings on this page take effect after restarting iCode.**
+OpenTelemetry is disabled by default. Enable it under [Settings → Safety → Telemetry](../guides/configuration/settings.md#telemetry) in the terminal user interface (TUI), or use the following environment variables. **All settings on this page take effect after restarting iCode.**
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
