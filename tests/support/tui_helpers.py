@@ -41,7 +41,12 @@ from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
 from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
-from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
+from chrys.app.tui.widgets.chrome.file_scanner import (
+    DEFAULT_FILE_DISCOVERY_BUDGET,
+    DEFAULT_SUGGESTION_BUDGET,
+    ProjectPathScanResult,
+    ProjectPathSuggestion,
+)
 from chrys.app.tui.widgets.chrome.status_bar import StatusTrail, TrailCount
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.app.tui.widgets.loading import RunningTitle
@@ -412,10 +417,11 @@ def make_session_handler(
     state, services, _live_diff = main_screen_parts(screen)
     setters = ScreenSetters(screen, state, services)
 
-    def clear_suggestion_file_cache() -> None:
+    def discard_suggestion_file_index() -> None:
         suggestions = getattr(screen, "_suggestions", None)
-        if suggestions is not None:
-            suggestions.file_cache = None
+        discard = getattr(suggestions, "discard_file_index", None)
+        if callable(discard):
+            discard()
 
     def post_gc_message(message: object) -> None:
         messages = getattr(screen, "_gc_messages", None)
@@ -457,7 +463,7 @@ def make_session_handler(
             set_workspace_cwd=setters.set_workspace_cwd,
             update_subtitle=lambda: _call_screen_hook(screen, "_update_subtitle"),
             update_toc=lambda: _call_screen_hook(screen, "_update_toc"),
-            clear_suggestion_file_cache=clear_suggestion_file_cache,
+            discard_suggestion_file_index=discard_suggestion_file_index,
             start_worker=lambda work: start_fake_worker(screen, work),
             post_gc_message=post_gc_message,
             debug=lambda key, message="": _call_screen_hook(screen, "_debug", key, message),
@@ -478,11 +484,6 @@ def status_trail(value: StatusTrail) -> str:
     if isinstance(value, tuple):
         return " · ".join(status_text(part.message if isinstance(part, TrailCount) else part) for part in value)
     return status_text(value)
-
-
-def stale_file_cache(*paths: str) -> list[ProjectPathSuggestion]:
-    """Build a suggestion file cache standing in for a prior ``@`` scan."""
-    return [ProjectPathSuggestion(path=path, kind="file") for path in paths]
 
 
 def make_live_mutation(
@@ -1277,7 +1278,13 @@ def suggestion_values(items: list[object]) -> list[str]:
 
 
 def scan_result(root: str, paths: list[ProjectPathSuggestion], **kwargs: object) -> ProjectPathScanResult:
-    """Build a project-path scan result for a fake scanner."""
+    """Build a project-path scan result for a fake scanner.
+
+    Budgets default to the scanner's own, so a fake scan is not silently treated
+    as sitting exactly on a truncation boundary.
+    """
+    kwargs.setdefault("file_budget", DEFAULT_FILE_DISCOVERY_BUDGET)
+    kwargs.setdefault("suggestion_budget", DEFAULT_SUGGESTION_BUDGET)
     return ProjectPathScanResult.from_suggestions(root=root, paths=paths, **kwargs)
 
 

@@ -9,13 +9,16 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 
 from chrys.app.tui.screens.main import suggestions as suggestions_module
 from chrys.app.tui.screens.main.suggestions import SuggestionHandler
+from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex, WorkspacePathIndex
 from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
+from chrys.service.mutations.types import MutationProvenance, MutationSource
 from tests.support.tui_helpers import (
     DeferredWorker,
     SuggestionScreen,
@@ -29,6 +32,24 @@ from tests.support.tui_helpers import (
 _SCAN_TARGET = "chrys.app.tui.widgets.chrome.file_scanner.scan_project_paths"
 
 type _ScanFake = Callable[[str], Awaitable[ProjectPathScanResult]]
+
+
+def _install_file_rows(
+    handler: SuggestionHandler,
+    root: str,
+    rows: Sequence[ProjectPathSuggestion],
+) -> WorkspacePathIndex:
+    """Install a snapshot for *root* so ``@`` needs no scan to answer."""
+    handler._state.workspace_marker.current_cwd = root
+    index = handler._file_index_for(root)
+    index.install(scan_result(root, list(rows)))
+    return index
+
+
+def _file_rows(handler: SuggestionHandler, *, limit: int = 30) -> list[str]:
+    """Read the rows the resident snapshot would answer the empty query with."""
+    snapshot = handler._file_snapshot()
+    return [] if snapshot is None else [suggestion.path for suggestion in snapshot.head(limit=limit)]
 
 
 def _patch_scan(
@@ -102,16 +123,16 @@ def _hold_index_build(
 ) -> _IndexBuildGate:
     """Block the off-loop index build until ``gate.release`` is set."""
     gate = _IndexBuildGate()
-    original_build = handler._build_file_index
+    original_build = ProjectPathIndex.build
 
-    def build(scan: ProjectPathScanResult):
+    def build(scan: ProjectPathScanResult) -> ProjectPathIndex:
         gate.builds += 1
         if not first_build_only or gate.builds == 1:
             gate.started.set()
             gate.release.wait(timeout=1)
         return original_build(scan)
 
-    monkeypatch.setattr(handler, "_build_file_index", build)
+    monkeypatch.setattr(ProjectPathIndex, "build", build)
     return gate
 
 
@@ -207,7 +228,7 @@ def test_file_suggestions_show_no_file_rows_for_empty_scan(monkeypatch) -> None:
 
     assert screen.suggestion_list.mode == "files"
     assert screen.suggestion_list.last_items == []
-    assert handler.file_cache == []
+    assert _file_rows(handler) == []
 
 
 def test_file_suggestion_enter_without_selection_does_not_submit_text() -> None:
@@ -254,11 +275,15 @@ async def test_file_suggestions_filter_directory_query() -> None:
     """A directory-shaped query should keep the matching directory entry."""
     screen = make_suggestion_screen()
     handler = make_suggestion_handler(screen)
-    handler.file_cache = [
-        ProjectPathSuggestion(path="src/chrys/app/tui/", kind="directory"),
-        ProjectPathSuggestion(path="src/chrys/app/tui/widgets/chrome/file_scanner.py", kind="file"),
-        ProjectPathSuggestion(path="src/chrys/orchestration/engine/engine.py", kind="file"),
-    ]
+    _install_file_rows(
+        handler,
+        "/repo",
+        [
+            ProjectPathSuggestion(path="src/chrys/app/tui/", kind="directory"),
+            ProjectPathSuggestion(path="src/chrys/app/tui/widgets/chrome/file_scanner.py", kind="file"),
+            ProjectPathSuggestion(path="src/chrys/orchestration/engine/engine.py", kind="file"),
+        ],
+    )
     handler._suggestion_mode = "files"
 
     handler.on_text_changed("@src/chrys/app/tui/")
@@ -280,7 +305,7 @@ async def test_file_suggestions_filter_full_relative_path_from_injected_cache(
         ProjectPathSuggestion(path="src/chrys/app/tui/widgets/chrome/file_scanner.py", kind="file"),
         ProjectPathSuggestion(path="src/chrys/orchestration/engine/engine.py", kind="file"),
     ]
-    handler.file_cache = injected
+    installed = _install_file_rows(handler, "/repo", injected)
     handler._suggestion_mode = "files"
 
     def fail_fuzzy_filter(*_args, **_kwargs) -> list[str]:
@@ -291,7 +316,7 @@ async def test_file_suggestions_filter_full_relative_path_from_injected_cache(
     handler.on_text_changed("@chrome")
     await wait_for_file_query(handler)
 
-    assert handler.file_cache is injected
+    assert handler._file_snapshot() is installed.snapshot
     assert suggestion_values(screen.suggestion_list.last_items) == [
         "src/chrys/app/tui/widgets/chrome/",
         "src/chrys/app/tui/widgets/chrome/file_scanner.py",
@@ -300,20 +325,35 @@ async def test_file_suggestions_filter_full_relative_path_from_injected_cache(
     assert screen.suggestion_list.last_items[0].kind == "directory"
 
 
-async def test_file_cache_assignment_invalidates_file_index() -> None:
+async def test_discard_file_index_drops_the_resident_snapshot() -> None:
     screen = make_suggestion_screen()
     handler = make_suggestion_handler(screen)
-    handler.file_cache = [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")]
+    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")])
     handler._suggestion_mode = "files"
 
     handler.on_text_changed("@chrome")
     await wait_for_file_query(handler)
-    assert handler._file_index is not None
+    assert handler._file_snapshot() is not None
 
-    handler.file_cache = None
+    handler.discard_file_index()
 
-    assert handler.file_cache is None
+    assert handler._file_snapshot() is None
     assert handler._file_index is None
+
+
+async def test_a_workspace_switch_replaces_the_resident_snapshot() -> None:
+    """The snapshot belongs to one root: another root starts cold instead of reusing it."""
+    screen = make_suggestion_screen()
+    handler = make_suggestion_handler(screen)
+    old = _install_file_rows(handler, "/repo-a", [ProjectPathSuggestion(path="a.py", kind="file")])
+
+    screen._set_workspace_cwd("/repo-b")
+
+    assert handler._file_snapshot() is None
+    replacement = handler._file_index_for("/repo-b")
+
+    assert replacement is not old
+    assert old.snapshot is None
 
 
 async def test_dismissed_suggestions_do_not_receive_stale_file_rows(
@@ -323,7 +363,7 @@ async def test_dismissed_suggestions_do_not_receive_stale_file_rows(
     screen = make_suggestion_screen()
     screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
-    handler.file_cache = [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")]
+    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")])
     handler._suggestion_mode = "files"
 
     handler.on_text_changed("@chrome")
@@ -341,7 +381,7 @@ async def test_switching_modes_invalidates_pending_file_query(
     screen = make_suggestion_screen()
     screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
-    handler.file_cache = [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")]
+    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")])
     handler._suggestion_mode = "files"
 
     handler.on_text_changed("@chrome")
@@ -360,19 +400,15 @@ async def test_rapid_file_typing_keeps_one_active_query_and_runs_latest(
     screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     handler._suggestion_mode = "files"
-    handler.file_cache = [ProjectPathSuggestion(path="placeholder.py", kind="file")]
+    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="placeholder.py", kind="file")])
 
     lock = threading.Lock()
     active = 0
     max_active = 0
     calls: list[str] = []
 
-    class SlowIndex:
-        truncated = False
-        file_count = 0
-        suggestion_count = 0
-
-        def query(self, query: str, *, limit: int) -> list[ProjectPathSuggestion]:
+    class SlowIndex(ProjectPathIndex):
+        def query(self, query: str, *, limit: int = 30) -> list[ProjectPathSuggestion]:
             nonlocal active, max_active
             with lock:
                 active += 1
@@ -385,8 +421,8 @@ async def test_rapid_file_typing_keeps_one_active_query_and_runs_latest(
                 with lock:
                     active -= 1
 
-    handler._file_index = SlowIndex()  # type: ignore[assignment]
-    handler._file_index_root = "/repo"
+    index = handler._file_index_for("/repo")
+    index.snapshot = SlowIndex(scan_result("/repo", []))
 
     handler.on_text_changed("@alpha")
     await asyncio.sleep(0.01)
@@ -439,12 +475,12 @@ async def test_cache_invalidation_during_index_build_discards_stale_warmup(
     handler._suggestion_mode = "files"
     warmup = asyncio.create_task(handler.show_file_suggestions_async())
     await asyncio.to_thread(gate.started.wait, 1)
-    handler.file_cache = None
+    handler.discard_file_index()
     gate.release.set()
     await warmup
 
     assert scans == ["/repo", "/repo"]
-    assert handler.file_cache == [ProjectPathSuggestion(path="fresh.py", kind="file")]
+    assert _file_rows(handler) == ["fresh.py"]
     assert suggestion_values(screen.suggestion_list.last_items) == ["fresh.py"]
 
 
@@ -520,8 +556,9 @@ async def test_interrupting_a_file_warmup_never_reopens_file_suggestions(
     monkeypatch: pytest.MonkeyPatch,
     case: _Interruption,
 ) -> None:
-    """Dismiss, mode switch, and detach all discard the in-flight warmup: the
-    cache stays empty, no follow-up scan is queued, and the popup is not reopened.
+    """Dismiss, mode switch, and detach all cut the cold build short: no follow-up
+    scan is queued and the popup is not reopened.  A scan that already finished
+    still installs its snapshot — that is what makes the next ``@`` free.
     """
     screen = make_suggestion_screen()
     screen._set_workspace_cwd("/repo")
@@ -536,7 +573,6 @@ async def test_interrupting_a_file_warmup_never_reopens_file_suggestions(
     await warmup
 
     assert hold.roots == ["/repo"]
-    assert handler.file_cache is None
     assert handler._file_warmup_requested_root is None
     assert screen.suggestion_list.last_items == []
     assert screen.suggestion_list.mode == case.expected_mode
@@ -588,7 +624,7 @@ async def test_mode_switch_before_warmup_worker_scans_skips_scan(
     await warmup
 
     assert scans == []
-    assert handler.file_cache is None
+    assert handler._file_snapshot() is None
     assert screen.suggestion_list.mode == "commands"
 
 
@@ -599,7 +635,7 @@ async def test_detached_screen_does_not_receive_file_query_result(
     screen = make_suggestion_screen()
     screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
-    handler.file_cache = [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")]
+    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")])
     handler._suggestion_mode = "files"
 
     handler.on_text_changed("@chrome")
@@ -613,7 +649,7 @@ async def test_index_warmup_build_does_not_starve_event_loop(monkeypatch: pytest
     screen = make_suggestion_screen()
     screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
-    original_build = handler._build_file_index
+    original_build = ProjectPathIndex.build
 
     async def large_scan(root: str) -> ProjectPathScanResult:
         return scan_result(
@@ -634,7 +670,7 @@ async def test_index_warmup_build_does_not_starve_event_loop(monkeypatch: pytest
         return original_build(scan)
 
     _patch_scan(monkeypatch, large_scan)
-    monkeypatch.setattr(handler, "_build_file_index", slow_build_file_index)
+    monkeypatch.setattr(ProjectPathIndex, "build", slow_build_file_index)
 
     handler._suggestion_mode = "files"
     warmup = asyncio.create_task(handler.show_file_suggestions_async())
@@ -667,3 +703,506 @@ def test_selecting_file_status_suggestion_is_ignored() -> None:
 
     assert screen.input_bar.replacements == []
     assert screen.suggestion_list.is_visible is False
+
+
+# --------------------------------------------------------------------------- #
+# Index lifecycle: staleness after a turn, background rebuild, incremental apply
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class _PeriodFake:
+    mutations: tuple[SimpleNamespace, ...]
+    detection_truncated: bool = False
+
+
+def _engine(
+    *,
+    mutated: Sequence[tuple[MutationSource, MutationProvenance]] = (),
+    changed: Sequence[str] = (),
+    detection_truncated: bool = False,
+) -> object:
+    period = _PeriodFake(
+        mutations=tuple(SimpleNamespace(source=source, provenance=provenance) for source, provenance in mutated),
+        detection_truncated=detection_truncated,
+    )
+    return SimpleNamespace(
+        mutation_tracker=SimpleNamespace(
+            current_period=period,
+            get_changed_files_set=lambda: set(changed),
+        )
+    )
+
+
+def _no_engine() -> object:
+    return SimpleNamespace(mutation_tracker=None)
+
+
+def _screen_at(root: str) -> SuggestionScreen:
+    screen = make_suggestion_screen()
+    screen._set_workspace_cwd(root)
+    return screen
+
+
+async def test_the_first_at_after_a_turn_answers_without_scanning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn end schedules the rebuild; the ``@`` that follows only reads the snapshot.
+
+    ``scan_project_paths`` is the only subprocess caller under ``@``, so counting
+    it is the "no rg/git subprocess on the input path" assertion (no wall clock).
+    """
+    screen = _screen_at("/repo")
+    handler = make_suggestion_handler(screen)
+    scans: list[str] = []
+
+    async def scan(root: str) -> ProjectPathScanResult:
+        scans.append(root)
+        return scan_result(root, [ProjectPathSuggestion(path="after.py", kind="file")])
+
+    _patch_scan(monkeypatch, scan, roots=None)
+    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="before.py", kind="file")])
+    screen.services.engine_provider = _no_engine
+
+    handler.mark_file_index_dirty()
+    assert handler._file_rebuild_worker is not None
+    await handler._file_rebuild_worker.wait()
+    scans_after_the_turn = list(scans)
+
+    handler._suggestion_mode = "files"
+    handler.on_file_triggered()
+    await handler.show_file_suggestions_async()
+
+    assert scans == scans_after_the_turn == ["/repo"]
+    assert screen.suggestion_list.is_loading is False
+    assert suggestion_values(screen.suggestion_list.last_items) == ["after.py"]
+
+
+async def test_a_turn_end_serves_the_stale_snapshot_while_the_rebuild_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """STALE: the trigger answers from the installed snapshot, then the rebuild hot-swaps."""
+    screen = _screen_at("/repo")
+    handler = make_suggestion_handler(screen)
+    gate = _ColdScanGate()
+
+    async def gated_scan(root: str) -> ProjectPathScanResult:
+        gate.started.set()
+        await gate.release.wait()
+        return scan_result(root, [ProjectPathSuggestion(path="after.py", kind="file")])
+
+    _patch_scan(monkeypatch, gated_scan, roots=gate.roots)
+    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="before.py", kind="file")])
+    screen.services.engine_provider = _no_engine
+
+    handler.mark_file_index_dirty()
+    await gate.started.wait()
+
+    handler._suggestion_mode = "files"
+    handler.on_file_triggered()
+
+    assert screen.suggestion_list.is_loading is False
+    assert suggestion_values(screen.suggestion_list.last_items) == ["before.py"]
+
+    gate.release.set()
+    await handler._file_rebuild_worker.wait()
+
+    assert suggestion_values(screen.suggestion_list.last_items) == ["after.py"]
+
+
+async def test_a_failed_rebuild_keeps_the_old_snapshot_and_the_popup_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screen = _screen_at("/repo")
+    handler = make_suggestion_handler(screen)
+
+    async def failing_scan(root: str) -> ProjectPathScanResult:
+        raise OSError("rg disappeared")
+
+    _patch_scan(monkeypatch, failing_scan)
+    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="before.py", kind="file")])
+    screen.services.engine_provider = _no_engine
+
+    handler.mark_file_index_dirty()
+    await handler._file_rebuild_worker.wait()
+
+    handler._suggestion_mode = "files"
+    handler.on_file_triggered()
+
+    assert suggestion_values(screen.suggestion_list.last_items) == ["before.py"]
+    assert handler._file_index is not None
+    assert handler._file_index.dirty is True
+
+
+async def test_a_turn_end_applies_tracker_deltas_without_a_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Deterministic mutations fold into the snapshot in memory: no scan, no rebuild."""
+    root = str(tmp_path)
+    created = tmp_path / "src" / "new.py"
+    created.parent.mkdir(parents=True, exist_ok=True)
+    created.write_text("", encoding="utf-8")
+    screen = _screen_at(root)
+    handler = make_suggestion_handler(screen)
+
+    async def unexpected_scan(scan_root: str) -> ProjectPathScanResult:
+        raise AssertionError("an incremental turn end must not scan")
+
+    _patch_scan(monkeypatch, unexpected_scan)
+    _install_file_rows(handler, root, [ProjectPathSuggestion(path="src/old.py", kind="file")])
+    screen.services.engine_provider = lambda: _engine(
+        mutated=[(MutationSource.WRITE_FILE, MutationProvenance.PROVEN)],
+        changed=[str(created)],
+    )
+
+    handler.mark_file_index_dirty()
+
+    # The turn end only accepts the change; the fold lands in the worker.
+    worker = handler._file_rebuild_worker
+    assert worker is not None
+    await worker.wait()
+
+    assert handler._file_index is not None
+    assert handler._file_index.dirty is False
+    # A folded row is appended, so only the visible set is contractual here.
+    assert set(_file_rows(handler)) == {"src/", "src/old.py", "src/new.py"}
+
+
+async def test_a_pending_fold_reports_dirty_until_the_worker_publishes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Between accepting the change and installing it, ``@`` answers stale.
+
+    The turn end returns before the fold is derived, so the window is the only
+    place the old snapshot could be reported current; nothing scans in it, and
+    the worker publishes the delta without a subprocess.
+    """
+    root = str(tmp_path)
+    created = tmp_path / "src" / "new.py"
+    created.parent.mkdir(parents=True, exist_ok=True)
+    created.write_text("", encoding="utf-8")
+    screen = _screen_at(root)
+    handler = make_suggestion_handler(screen)
+
+    async def unexpected_scan(scan_root: str) -> ProjectPathScanResult:
+        raise AssertionError("a foldable turn end must not scan")
+
+    _patch_scan(monkeypatch, unexpected_scan)
+    _install_file_rows(handler, root, [ProjectPathSuggestion(path="src/old.py", kind="file")])
+    screen.services.engine_provider = lambda: _engine(
+        mutated=[(MutationSource.WRITE_FILE, MutationProvenance.PROVEN)],
+        changed=[str(created)],
+    )
+
+    handler.mark_file_index_dirty()
+    worker = handler._file_rebuild_worker
+    index = handler._file_index
+    assert worker is not None
+    assert index is not None
+    assert index.dirty is True
+    assert _file_rows(handler) == ["src/old.py"]
+
+    await worker.wait()
+
+    assert index.dirty is False
+    assert set(_file_rows(handler)) == {"src/", "src/old.py", "src/new.py"}
+
+
+async def test_a_discard_during_a_pending_fold_drops_the_publish(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A fold that straddles a workspace switch must not publish.
+
+    ``discard()`` bumps the epoch, so the derived rows are dropped: the snapshot
+    stays empty instead of being resurrected from the root that was left behind,
+    and the dropped fold does not fall back to scanning.
+    """
+    root = str(tmp_path)
+    created = tmp_path / "new.py"
+    created.write_text("", encoding="utf-8")
+    screen = _screen_at(root)
+    handler = make_suggestion_handler(screen)
+
+    async def unexpected_scan(scan_root: str) -> ProjectPathScanResult:
+        raise AssertionError("a fold that lost its epoch must not fall back to a scan")
+
+    _patch_scan(monkeypatch, unexpected_scan)
+    index = _install_file_rows(handler, root, [ProjectPathSuggestion(path="old.py", kind="file")])
+    screen.services.engine_provider = lambda: _engine(
+        mutated=[(MutationSource.WRITE_FILE, MutationProvenance.PROVEN)],
+        changed=[str(created)],
+    )
+
+    fold_started = threading.Event()
+    release_fold = threading.Event()
+    derive_fold = WorkspacePathIndex._derive_fold
+
+    def gated_derive(self, removals, additions):
+        fold_started.set()
+        release_fold.wait(timeout=10)
+        return derive_fold(self, removals, additions)
+
+    monkeypatch.setattr(WorkspacePathIndex, "_derive_fold", gated_derive)
+
+    handler.mark_file_index_dirty()
+    worker = handler._file_rebuild_worker
+    assert worker is not None
+    assert await asyncio.to_thread(fold_started.wait, 5) is True
+
+    handler.discard_file_index()
+    release_fold.set()
+    await worker.wait()
+
+    assert index.snapshot is None
+    assert index.installed is False
+    assert index.query("old") == []
+    assert index.delta == set()
+
+
+@pytest.mark.parametrize(
+    "engine_factory",
+    [
+        pytest.param(_no_engine, id="no-tracker"),
+        pytest.param(
+            lambda: _engine(mutated=[(MutationSource.SHELL, MutationProvenance.PROVEN)], changed=["/repo/x.py"]),
+            id="shell-source",
+        ),
+        pytest.param(
+            lambda: _engine(
+                mutated=[(MutationSource.WRITE_FILE, MutationProvenance.PROVEN)],
+                changed=["/repo/x.py"],
+                detection_truncated=True,
+            ),
+            id="detection-truncated",
+        ),
+    ],
+)
+async def test_an_unknowable_turn_end_marks_the_snapshot_dirty_and_rebuilds(
+    monkeypatch: pytest.MonkeyPatch,
+    engine_factory: Callable[[], object],
+) -> None:
+    """Shell tools and truncated detection can create files silently, so they rescan."""
+    screen = _screen_at("/repo")
+    handler = make_suggestion_handler(screen)
+    scans: list[str] = []
+
+    _patch_scan(monkeypatch, {"/repo": ["rebuilt.py"]}, roots=scans)
+    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="before.py", kind="file")])
+    screen.services.engine_provider = engine_factory
+
+    handler.mark_file_index_dirty()
+    await handler._file_rebuild_worker.wait()
+
+    assert scans == ["/repo"]
+    assert _file_rows(handler) == ["rebuilt.py"]
+
+
+def test_file_query_debounce_is_one_frame() -> None:
+    """AC5: the keystroke debounce is 16ms, i.e. one 60Hz frame."""
+    assert pytest.approx(0.016) == suggestions_module._FILE_QUERY_DEBOUNCE_SECONDS
+
+
+async def test_typing_without_an_installed_snapshot_starts_no_query_worker() -> None:
+    """The 16ms fast path is only armed by an installed snapshot."""
+    screen = _screen_at("/repo")
+    handler = make_suggestion_handler(screen)
+    handler._suggestion_mode = "files"
+
+    handler.on_text_changed("@repo")
+
+    assert handler._file_query_pending is None
+    assert handler._file_query_worker is None
+
+
+async def test_a_read_only_turn_needs_no_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty mutation set folds to nothing, so the snapshot stays clean."""
+    screen = _screen_at("/repo")
+    handler = make_suggestion_handler(screen)
+
+    async def unexpected_scan(scan_root: str) -> ProjectPathScanResult:
+        raise AssertionError("a read-only turn must not scan")
+
+    _patch_scan(monkeypatch, unexpected_scan)
+    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="before.py", kind="file")])
+    screen.services.engine_provider = _engine
+
+    handler.mark_file_index_dirty()
+
+    assert handler._file_rebuild_worker is None
+    assert handler._file_index is not None
+    assert handler._file_index.dirty is False
+    assert _file_rows(handler) == ["before.py"]
+
+
+async def test_a_turn_end_that_lands_during_a_rebuild_still_reaches_the_next_at(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A create recorded while a rebuild is in flight must survive that rebuild.
+
+    Installing the scan as a clean baseline would drop the create: the next turn
+    folds nothing, reports the snapshot current, and the file never shows up.
+    """
+    root = str(tmp_path)
+    created = tmp_path / "src" / "created.py"
+    created.parent.mkdir(parents=True, exist_ok=True)
+    created.write_text("", encoding="utf-8")
+    screen = _screen_at(root)
+    handler = make_suggestion_handler(screen)
+    scans: list[str] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_scan(scan_root: str) -> ProjectPathScanResult:
+        scans.append(scan_root)
+        if len(scans) == 1:
+            started.set()
+            await release.wait()
+        return scan_result(scan_root, [ProjectPathSuggestion(path="src/old.py", kind="file")])
+
+    _patch_scan(monkeypatch, gated_scan)
+    _install_file_rows(handler, root, [ProjectPathSuggestion(path="src/old.py", kind="file")])
+    assert handler._file_index is not None
+
+    # Turn 1: an unknowable change set starts a background rebuild.
+    screen.services.engine_provider = _no_engine
+    handler.mark_file_index_dirty()
+    await started.wait()
+
+    # Turn 2 lands while that rebuild is still scanning; its create is tracked.
+    screen.services.engine_provider = lambda: _engine(
+        mutated=[(MutationSource.WRITE_FILE, MutationProvenance.PROVEN)],
+        changed=[str(created)],
+    )
+    handler.mark_file_index_dirty()
+    assert handler._file_index.delta, "the create must stay pending across the rebuild"
+
+    release.set()
+    await handler._file_rebuild_worker.wait()
+    scans_after_rebuild = list(scans)
+
+    # Turn 3 changed nothing and left nothing pending: the worker that settled the
+    # create is reused, and settling it still costs no scan.
+    screen.services.engine_provider = _engine
+    handler.mark_file_index_dirty()
+    await handler._file_rebuild_worker.wait()
+
+    assert scans == scans_after_rebuild == [root]
+    assert handler._file_index.dirty is False
+    assert "src/created.py" in _file_rows(handler)
+
+
+async def test_a_rollback_invalidation_drops_the_path_the_undo_restored_away(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """``/undo`` deletes the file a turn created; a fold-clean snapshot must stop listing it.
+
+    The rolled-back periods are gone from the tracker, so the restored paths
+    never reach ``mark_file_index_dirty``: only the rollback invalidating the
+    snapshot gets the ``@`` rows back to the restored truth.
+    """
+    root = str(tmp_path)
+    generated = tmp_path / "generated.py"
+    generated.write_text("", encoding="utf-8")
+    screen = _screen_at(root)
+    handler = make_suggestion_handler(screen)
+    scans: list[str] = []
+
+    async def restored_scan(scan_root: str) -> ProjectPathScanResult:
+        return scan_result(scan_root, [])
+
+    _patch_scan(monkeypatch, restored_scan, roots=scans)
+    _install_file_rows(handler, root, [ProjectPathSuggestion(path="generated.py", kind="file")])
+    screen.services.engine_provider = _engine
+
+    handler.mark_file_index_dirty()
+    assert handler._file_index is not None
+    assert handler._file_index.dirty is False
+    assert _file_rows(handler) == ["generated.py"]
+
+    generated.unlink()
+    handler.invalidate_file_index()
+    assert handler._file_rebuild_worker is not None
+    await handler._file_rebuild_worker.wait()
+
+    assert scans == [root]
+    assert _file_rows(handler) == []
+
+    # A later turn that changed nothing must not resurrect the rolled-back path.
+    handler.mark_file_index_dirty()
+
+    assert handler._file_index.dirty is False
+    assert _file_rows(handler) == []
+    assert scans == [root]
+
+
+async def test_a_rebuild_that_installs_an_unknowable_change_scans_again(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """P3-3: a scan that straddled an unknowable change cannot be the last one."""
+    root = str(tmp_path)
+    screen = _screen_at(root)
+    handler = make_suggestion_handler(screen)
+    scans: list[str] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_scan(scan_root: str) -> ProjectPathScanResult:
+        scans.append(scan_root)
+        if len(scans) == 1:
+            started.set()
+            await release.wait()
+            return scan_result(scan_root, [ProjectPathSuggestion(path="stale.py", kind="file")])
+        return scan_result(scan_root, [ProjectPathSuggestion(path="fresh.py", kind="file")])
+
+    _patch_scan(monkeypatch, gated_scan)
+    _install_file_rows(handler, root, [ProjectPathSuggestion(path="stale.py", kind="file")])
+    screen.services.engine_provider = _no_engine
+
+    # Turn 1 starts the rebuild; turn 2 changes something unknowable mid-scan.
+    handler.mark_file_index_dirty()
+    await started.wait()
+    handler.mark_file_index_dirty()
+    release.set()
+    await handler._file_rebuild_worker.wait()
+
+    assert scans == [root, root]
+    assert handler._file_index is not None
+    assert handler._file_index.dirty is False
+    assert _file_rows(handler) == ["fresh.py"]
+
+
+async def test_a_rebuild_chains_a_bounded_number_of_scans(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A workspace that never stops changing must not re-scan forever."""
+    root = str(tmp_path)
+    screen = _screen_at(root)
+    handler = make_suggestion_handler(screen)
+    scans: list[str] = []
+
+    async def always_changing_scan(scan_root: str) -> ProjectPathScanResult:
+        scans.append(scan_root)
+        index = handler._file_index
+        if index is not None:
+            index.mark_dirty()
+        return scan_result(scan_root, [ProjectPathSuggestion(path="busy.py", kind="file")])
+
+    _patch_scan(monkeypatch, always_changing_scan)
+    _install_file_rows(handler, root, [ProjectPathSuggestion(path="before.py", kind="file")])
+    screen.services.engine_provider = _no_engine
+
+    handler.mark_file_index_dirty()
+    await handler._file_rebuild_worker.wait()
+
+    assert len(scans) == suggestions_module._FILE_INDEX_REBUILD_SCANS
+    assert handler._file_index is not None
+    assert handler._file_index.dirty is True

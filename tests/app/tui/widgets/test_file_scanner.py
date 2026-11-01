@@ -19,11 +19,15 @@ from chrys.app.tui.widgets.chrome.file_scanner import (
     DEFAULT_SUGGESTION_BUDGET,
     ProjectPathScanResult,
     ProjectPathSuggestion,
-    _append_dot_entries,
     _append_unseen_dot_entries_from_walk,
+    _ChunkedLineReader,
     _is_referenceable_walk_name,
+    _probe_ignored_visible_files,
     _project_path_suggestions,
+    _scan_dot_entries,
     _scan_os_walk_files,
+    _select_ignored_visible_files,
+    _top_level_dot_entries,
     _walk_relative_path,
     fuzzy_filter,
     scan_project_paths,
@@ -466,35 +470,30 @@ class TestScanProjectPaths:
         assert scan.truncated is True
         assert scan.source_truncations["git_cached"] is True
 
-    def test_git_cached_probe_skipped_when_rg_already_truncated_at_file_budget(
+    def test_truncated_sources_are_keyed_and_merged_in_priority_order(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A proven-truncated rg result should not drain cached duplicates with no capacity."""
+        """Every concurrently gathered source keeps its own truncation key without stealing rows."""
 
-        async def fake_scan_rg_files(_root: str, _max_files: int):
-            return file_scanner_module._PathSourceResult(["README.md"], truncated=True)
+        async def fake_probes(_root: str, *, file_budget: int):
+            assert file_budget == 1
+            return file_scanner_module._PathProbes(
+                rg=file_scanner_module._PathSourceResult(["README.md"], truncated=True),
+                git_cached=file_scanner_module._PathSourceResult([".gitignore"]),
+                dot_entries=file_scanner_module._PathSourceResult([".github/ci.yml"]),
+                ignored_visible=file_scanner_module._IgnoredVisibleProbe(["drafts/notes.md"]),
+            )
 
-        async def fail_git_cached_probe(_root: str, _paths: list[str], _seen: set[str], *, file_budget: int) -> bool:
-            raise AssertionError("git cached probe should be skipped when rg already proved truncation")
-
-        async def no_dot_entries(_root: str, _paths: list[str], _seen: set[str], *, file_budget: int) -> bool:
-            return False
-
-        async def no_ignored_visible(_root: str, _max_files: int):
-            return file_scanner_module._PathSourceResult([])
-
-        monkeypatch.setattr(file_scanner_module, "_scan_rg_files", fake_scan_rg_files)
-        monkeypatch.setattr(file_scanner_module, "_append_git_cached_files", fail_git_cached_probe)
-        monkeypatch.setattr(file_scanner_module, "_append_dot_entries", no_dot_entries)
-        monkeypatch.setattr(file_scanner_module, "_scan_ignored_visible_files", no_ignored_visible)
+        monkeypatch.setattr(file_scanner_module, "_run_probes", fake_probes)
 
         scan = asyncio.run(scan_project_paths(str(tmp_path), file_budget=1, suggestion_budget=10))
 
+        # A truncated rg result at the budget leaves no capacity for the other tiers.
+        assert _paths(scan.paths) == ["README.md"]
         assert scan.file_count == 1
-        assert scan.truncated is True
-        assert scan.source_truncations == {"rg": True}
+        assert scan.source_truncations == {"rg": True, "dot_entries": True, "ignored_visible": True}
 
     def test_git_cached_probe_appends_tracked_ignored_files_with_remaining_budget(self, repo: Path) -> None:
         """The cached-git supplemental pass targets tracked files that are now ignored."""
@@ -638,18 +637,14 @@ class TestScanProjectPaths:
         original_project_path_suggestions = file_scanner_module._project_path_suggestions
         loop_turned = threading.Event()
 
-        async def fake_scan_rg_files(_root: str, _max_files: int):
-            paths = [f"src/path_{index:03d}/file.py" for index in range(20)]
-            return file_scanner_module._PathSourceResult(paths)
-
-        async def empty_source(_root: str, _max_files: int):
-            return file_scanner_module._PathSourceResult([])
-
-        async def no_git_cached_paths(_root: str, _paths: list[str], _seen: set[str], *, file_budget: int) -> bool:
-            return False
-
-        async def no_dot_entry_paths(_root: str, _paths: list[str], _seen: set[str], *, file_budget: int) -> bool:
-            return False
+        async def fake_probes(_root: str, *, file_budget: int):
+            assert file_budget == 20
+            return file_scanner_module._PathProbes(
+                rg=file_scanner_module._PathSourceResult([f"src/path_{index:03d}/file.py" for index in range(20)]),
+                git_cached=file_scanner_module._PathSourceResult([]),
+                dot_entries=file_scanner_module._PathSourceResult([]),
+                ignored_visible=file_scanner_module._IgnoredVisibleProbe([]),
+            )
 
         def slow_project_path_suggestions(
             paths: list[str],
@@ -664,10 +659,7 @@ class TestScanProjectPaths:
                 max_paths=max_paths,
             )
 
-        monkeypatch.setattr(file_scanner_module, "_scan_rg_files", fake_scan_rg_files)
-        monkeypatch.setattr(file_scanner_module, "_append_git_cached_files", no_git_cached_paths)
-        monkeypatch.setattr(file_scanner_module, "_append_dot_entries", no_dot_entry_paths)
-        monkeypatch.setattr(file_scanner_module, "_scan_ignored_visible_files", empty_source)
+        monkeypatch.setattr(file_scanner_module, "_run_probes", fake_probes)
         monkeypatch.setattr(file_scanner_module, "_project_path_suggestions", slow_project_path_suggestions)
 
         scan_task = asyncio.create_task(scan_project_paths(str(tmp_path), file_budget=20, suggestion_budget=100))
@@ -700,12 +692,6 @@ class TestScanProjectPaths:
         async def fake_scan_rg_files(_root: str, _max_files: int):
             return file_scanner_module._PathSourceResult(["README.md"])
 
-        async def no_git_cached_paths(_root: str, _paths: list[str], _seen: set[str], *, file_budget: int) -> bool:
-            return False
-
-        async def empty_source(_root: str, _max_files: int):
-            return file_scanner_module._PathSourceResult([])
-
         def fail_dot_git_ls_files(*_args, **_kwargs):
             raise FileNotFoundError
 
@@ -725,10 +711,8 @@ class TestScanProjectPaths:
             return False
 
         monkeypatch.setattr(file_scanner_module, "_scan_rg_files", fake_scan_rg_files)
-        monkeypatch.setattr(file_scanner_module, "_append_git_cached_files", no_git_cached_paths)
         monkeypatch.setattr(file_scanner_module, "managed_subprocess", fail_dot_git_ls_files)
         monkeypatch.setattr(file_scanner_module, "_append_unseen_dot_entries_from_walk", slow_dot_walk)
-        monkeypatch.setattr(file_scanner_module, "_scan_ignored_visible_files", empty_source)
 
         scan_task = asyncio.create_task(scan_project_paths(str(tmp_path), file_budget=5, suggestion_budget=10))
         ticks = 0
@@ -748,33 +732,43 @@ class TestScanProjectPaths:
         assert ".cache/data.txt" in _paths(scan.paths)
 
 
-class TestAppendDotEntries:
+class TestScanDotEntries:
     def test_empty_root_returns_empty(self, tmp_path: Path) -> None:
-        paths: list[str] = []
-        truncated = asyncio.run(_append_dot_entries(str(tmp_path), paths, set(), file_budget=100))
+        result = asyncio.run(_scan_dot_entries(str(tmp_path), _top_level_dot_entries(str(tmp_path)), max_files=100))
 
-        assert paths == []
-        assert truncated is False
+        assert result.paths == []
+        assert result.truncated is False
 
     def test_zero_budget_returns_empty(self, repo: Path) -> None:
         (repo / ".github").mkdir()
         (repo / ".github" / "x.yml").write_text("x\n")
-        paths: list[str] = []
-        truncated = asyncio.run(_append_dot_entries(str(repo), paths, set(), file_budget=0))
+        result = asyncio.run(_scan_dot_entries(str(repo), [".github"], max_files=0))
 
-        assert paths == []
-        assert truncated is False
+        assert result.paths == []
+        assert result.truncated is False
 
     def test_dot_file_at_root(self, repo: Path) -> None:
         """Top-level dot-files (not just directories) are surfaced."""
         (repo / ".env.example").write_text("KEY=val\n")
         _git(repo, "add", ".env.example")
         _git(repo, "commit", "-q", "-m", "env")
-        paths: list[str] = []
-        truncated = asyncio.run(_append_dot_entries(str(repo), paths, set(), file_budget=100))
+        result = asyncio.run(_scan_dot_entries(str(repo), _top_level_dot_entries(str(repo)), max_files=100))
 
-        assert ".env.example" in paths
-        assert truncated is False
+        assert ".env.example" in result.paths
+        assert result.truncated is False
+
+    def test_probe_reports_rows_beyond_the_budget(self, repo: Path) -> None:
+        """A probe bounded at the file budget still reports the rows it did not read."""
+        (repo / ".github").mkdir()
+        for name in ("a.yml", "b.yml", "c.yml"):
+            (repo / ".github" / name).write_text("x\n")
+        _git(repo, "add", ".github")
+        _git(repo, "commit", "-q", "-m", "ci")
+
+        result = asyncio.run(_scan_dot_entries(str(repo), _top_level_dot_entries(str(repo)), max_files=2))
+
+        assert result.paths == [".github/a.yml", ".github/b.yml"]
+        assert result.truncated is True
 
     @pytest.mark.skipif(not get_platform().is_windows, reason="requires Win32 reserved-name semantics")
     def test_fallback_walk_skips_real_nul_file_in_dot_cache(self, tmp_path: Path) -> None:
@@ -836,3 +830,246 @@ class TestAppendDotEntries:
         assert observed_dirnames == ["src"]
         assert paths == [".cache/keep.txt", ".cache/src/nested.txt"]
         assert truncated is False
+
+
+class TestParallelProbeScheduling:
+    def test_rejected_rows_after_the_last_kept_path_still_truncate(self, repo: Path) -> None:
+        """A budget cut at the final kept path must still report the rows git printed after it."""
+        (repo / ".gitignore").write_text("gen/\n")
+        _git(repo, "add", ".gitignore")
+        _git(repo, "commit", "-q", "-m", "ignore gen")
+        (repo / "gen").mkdir()
+        (repo / "gen" / "a.md").write_text("x\n")
+        (repo / "gen" / "b.zip").write_bytes(b"PK\x03\x04")
+
+        probe = asyncio.run(_probe_ignored_visible_files(str(repo)))
+
+        assert probe.paths == ["gen/a.md"]
+        assert probe.lines_after_last == 1
+        assert _select_ignored_visible_files(probe, 1).truncated is True
+        assert _select_ignored_visible_files(probe, 2).truncated is False
+
+    @pytest.mark.asyncio
+    async def test_every_probe_starts_before_any_result_is_awaited(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """All four discovery sources are in flight at once, so a cold scan costs the longest probe."""
+        (tmp_path / ".cache").mkdir()
+        started: set[str] = set()
+        all_started = asyncio.Event()
+
+        def gate(name: str, result: object):
+            async def probe(*_args: object, **_kwargs: object) -> object:
+                started.add(name)
+                if len(started) == 4:
+                    all_started.set()
+                await asyncio.wait_for(all_started.wait(), DEFAULT_WAIT_TIMEOUT)
+                return result
+
+            return probe
+
+        monkeypatch.setattr(
+            file_scanner_module, "_scan_rg_files", gate("rg", file_scanner_module._PathSourceResult(["a.py"]))
+        )
+        monkeypatch.setattr(
+            file_scanner_module,
+            "_scan_git_ls_files",
+            gate("git_cached", file_scanner_module._PathSourceResult([])),
+        )
+        monkeypatch.setattr(
+            file_scanner_module,
+            "_probe_ignored_visible_files",
+            gate("ignored_visible", file_scanner_module._IgnoredVisibleProbe([])),
+        )
+        monkeypatch.setattr(
+            file_scanner_module,
+            "_scan_dot_entries",
+            gate("dot_entries", file_scanner_module._PathSourceResult([])),
+        )
+
+        scan = await asyncio.wait_for(
+            scan_project_paths(str(tmp_path), file_budget=10, suggestion_budget=10),
+            DEFAULT_WAIT_TIMEOUT,
+        )
+
+        assert started == {"rg", "git_cached", "ignored_visible", "dot_entries"}
+        assert _paths(scan.paths) == ["a.py"]
+
+    def test_source_unavailable_still_returns_other_sources(
+        self,
+        repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A missing git does not drop the files ripgrep already proved exist."""
+        (repo / "src" / "app").mkdir(parents=True)
+        (repo / "src" / "app" / "main.py").write_text("py\n")
+
+        async def git_unavailable(_root: str, *_args: object, **_kwargs: object):
+            return file_scanner_module._PathSourceResult([])
+
+        async def no_ignored_visible(_root: str):
+            return file_scanner_module._IgnoredVisibleProbe([])
+
+        monkeypatch.setattr(file_scanner_module, "_scan_git_ls_files", git_unavailable)
+        monkeypatch.setattr(file_scanner_module, "_probe_ignored_visible_files", no_ignored_visible)
+
+        scan = asyncio.run(scan_project_paths(str(repo), file_budget=100, suggestion_budget=100))
+        paths = _paths(scan.paths)
+
+        assert "src/app/main.py" in paths
+        assert "src/" in paths
+        assert scan.source_truncations == {}
+
+    def test_pinned_path_set_for_mixed_source_fixture(self, repo: Path) -> None:
+        """Characterization pin: the visible set and its order must match the pre-parallel scanner."""
+        for directory in ("src/app", ".github/workflows", ".claude", "drafts", "node_modules/pkg", "src/.config"):
+            (repo / directory).mkdir(parents=True, exist_ok=True)
+        tracked = {
+            "README.md": "x",
+            "src/app/main.py": "x",
+            "src/app/util.py": "x",
+            "src/.env.example": "x",
+            "src/.config/settings.toml": "x",
+            ".github/workflows/ci.yml": "x",
+            ".claude/skill.md": "x",
+            "drafts/tracked.md": "x",
+            "docs/guide.md": "x",
+        }
+        for rel, body in tracked.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(body)
+        (repo / ".gitignore").write_text("drafts/\nnode_modules/\ndocs/local.md\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "seed")
+        (repo / "drafts" / "local.md").write_text("x\n")
+        (repo / "docs" / "local.md").write_text("x\n")
+        (repo / "node_modules" / "pkg" / "index.js").write_text("x\n")
+        (repo / "drafts" / "archive.zip").write_bytes(b"PK\x03\x04")
+
+        scan = asyncio.run(scan_project_paths(str(repo)))
+
+        assert [(entry.path, entry.kind) for entry in scan.paths] == [
+            ("README.md", "file"),
+            ("docs/", "directory"),
+            ("docs/guide.md", "file"),
+            ("src/", "directory"),
+            ("src/app/", "directory"),
+            ("src/app/main.py", "file"),
+            ("src/app/util.py", "file"),
+            (".claude/", "directory"),
+            (".claude/skill.md", "file"),
+            (".github/", "directory"),
+            (".github/workflows/", "directory"),
+            (".github/workflows/ci.yml", "file"),
+            (".gitignore", "file"),
+            ("src/.config/", "directory"),
+            ("src/.config/settings.toml", "file"),
+            ("src/.env.example", "file"),
+            ("docs/local.md", "file"),
+            ("drafts/", "directory"),
+            ("drafts/local.md", "file"),
+            ("drafts/tracked.md", "file"),
+        ]
+        assert scan.file_count == 12
+        assert scan.ordering == "path-sorted"
+        assert scan.source_truncations == {}
+
+
+class TestDerivedDirectoryReuse:
+    def test_directory_rows_are_derived_once_per_chained_prefix(self) -> None:
+        """A path-sorted input reuses the previous directory chain instead of re-joining it."""
+        paths = ["src/a.py", "src/b.py", "src/pkg/c.py", "src/pkg/d.py", "zzz/e.py"]
+
+        result = _project_path_suggestions(paths, suggestion_budget=1000)
+
+        assert [(entry.path, entry.kind) for entry in result.suggestions] == [
+            ("src/", "directory"),
+            ("src/a.py", "file"),
+            ("src/b.py", "file"),
+            ("src/pkg/", "directory"),
+            ("src/pkg/c.py", "file"),
+            ("src/pkg/d.py", "file"),
+            ("zzz/", "directory"),
+            ("zzz/e.py", "file"),
+        ]
+        assert result.truncated is False
+
+    def test_unsorted_input_still_emits_each_ancestor_before_its_file(self) -> None:
+        """Input tier order wins over path sorting: later tiers keep their own directory rows."""
+        paths = ["README.md", ".github/workflows/ci.yml", "src/app/main.py", "src/app/util.py", ".github/ISSUE.md"]
+
+        result = _project_path_suggestions(paths, suggestion_budget=1000)
+
+        assert [entry.path for entry in result.suggestions] == [
+            "README.md",
+            ".github/",
+            ".github/workflows/",
+            ".github/workflows/ci.yml",
+            "src/",
+            "src/app/",
+            "src/app/main.py",
+            "src/app/util.py",
+            ".github/ISSUE.md",
+        ]
+
+    def test_budget_cut_before_a_reused_prefix_reports_truncation(self) -> None:
+        """The budget still cuts on the row that would have been appended, reused prefix or not."""
+        paths = ["a/one.py", "a/two.py", "a/three.py"]
+
+        result = _project_path_suggestions(paths, suggestion_budget=3)
+
+        assert [entry.path for entry in result.suggestions] == ["a/", "a/one.py", "a/two.py"]
+        assert result.truncated is True
+
+
+class _FakeStdout:
+    """Minimal ``asyncio.StreamReader`` stand-in that answers ``read`` in fixed blocks."""
+
+    def __init__(self, payload: bytes, block: int) -> None:
+        self._payload = payload
+        self._offset = 0
+        self._block = block
+
+    async def read(self, n: int = -1) -> bytes:
+        size = self._block if n < 0 else min(n, self._block)
+        chunk = self._payload[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        return chunk
+
+
+def _read_lines(payload: bytes, block: int) -> list[bytes]:
+    async def collect() -> list[bytes]:
+        reader = _ChunkedLineReader(_FakeStdout(payload, block), chunk_size=8)
+        lines: list[bytes] = []
+        while line := await reader.line():
+            lines.append(line)
+        return lines
+
+    return asyncio.run(collect())
+
+
+class TestChunkedLineReader:
+    """The block reader must hand back exactly the lines ``StreamReader.readline`` returns."""
+
+    @pytest.mark.parametrize("block", [1, 2, 3, 4, 5, 7, 8, 64, 4096])
+    def test_matches_readline_across_block_boundaries(self, block: int) -> None:
+        payload = b"a.py\nsrc/b.py\r\nlonger/name/here.py\n"
+
+        assert _read_lines(payload, block) == [b"a.py\n", b"src/b.py\r\n", b"longer/name/here.py\n"]
+
+    def test_trailing_fragment_at_eof_is_a_line(self) -> None:
+        """Output without a final newline still yields its last path."""
+        assert _read_lines(b"a.py\nb.py", 3) == [b"a.py\n", b"b.py"]
+
+    def test_empty_stream_returns_no_lines(self) -> None:
+        assert _read_lines(b"", 4) == []
+
+    def test_blank_line_is_preserved(self) -> None:
+        assert _read_lines(b"a\n\nb\n", 2) == [b"a\n", b"\n", b"b\n"]
+
+    def test_line_ending_exactly_on_chunk_boundary(self) -> None:
+        payload = b"12345678\nnext\n"
+
+        assert _read_lines(payload, 9) == [b"12345678\n", b"next\n"]

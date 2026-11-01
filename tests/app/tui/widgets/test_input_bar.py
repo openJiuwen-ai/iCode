@@ -601,7 +601,6 @@ async def test_main_screen_reactive_sources_apply_existing_side_effects() -> Non
     async with app.run_test() as pilot:
         await pilot.pause()
         input_bar = app.main_screen.query_one(InputBar)
-        app.main_screen._suggestions.file_cache = {"stale": object()}
         app.main_screen._live_diff.call_paths["call"] = "src/app.py"
         app.main_screen._live_diff.file_mutations["src/app.py"] = object()
 
@@ -621,7 +620,6 @@ async def test_main_screen_reactive_sources_apply_existing_side_effects() -> Non
         assert app.main_screen._state.run.agent_running is False
         assert app.main_screen._state.run.agent_loading is False
         assert app.main_screen._state.run.has_messages is True
-        assert app.main_screen._suggestions.file_cache is None
         assert input_bar.locked is False
 
 
