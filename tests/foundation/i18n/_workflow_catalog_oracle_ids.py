@@ -71,6 +71,7 @@ WORKFLOW_MESSAGE_IDS = frozenset(
         ("tui.workflow.elapsed.minutes", "tui.workflow.elapsed.minutes#plural"),
         ("tui.workflow.elapsed.hours", "tui.workflow.elapsed.hours#plural"),
         ("tui.workflow.elapsed.days", "tui.workflow.elapsed.days#plural"),
+        ("tui.workflow.elapsed.milliseconds", "tui.workflow.elapsed.milliseconds#plural"),
         "tui.workflow.status_messages",
         "tui.workflow.session_title",
         "tui.workflow.session_locked",

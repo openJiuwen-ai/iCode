@@ -4834,9 +4834,9 @@ msgstr ""
 msgid "tui.chat.process.activity"
 msgstr ""
 
-#. English: {count} tool call
-#. English-plural: {count} tool calls
-#. chrys-meta={"fingerprint":"ec082f1fa6316a686791fa505626ee8709d5c2ae44119621fafdeda352a0f456","multiline":false,"placeholders":[]}
+#. English: {count} tool call:
+#. English-plural: {count} tool calls:
+#. chrys-meta={"fingerprint":"0c5a01de8fa3464dcf67ca4b720b27d1d78d465fd69665b7cd30b0f0cf1e2d0e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/process_block.py
 msgid "tui.chat.process.tool_calls"
 msgid_plural "tui.chat.process.tool_calls#plural"
@@ -15638,6 +15638,15 @@ msgstr[1] ""
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.elapsed.hours"
 msgid_plural "tui.workflow.elapsed.hours#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} ms
+#. English-plural: {count} ms
+#. chrys-meta={"fingerprint":"f073175ef03342b955d65e08c496f0641de28fa0638b2b2db9be9728776e1656","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.elapsed.milliseconds"
+msgid_plural "tui.workflow.elapsed.milliseconds#plural"
 msgstr[0] ""
 msgstr[1] ""
 

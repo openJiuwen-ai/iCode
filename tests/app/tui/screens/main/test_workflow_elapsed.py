@@ -55,11 +55,12 @@ async def test_elapsed_clock_updates_units_and_resets_for_a_new_run(
                 timestamp=started_at,
             )
         )
-        await wait_for(lambda: str(header.content).endswith("running (0s)"), pilot=pilot)
+        await wait_for(lambda: str(header.content).endswith("running (0ms)"), pilot=pilot)
         graph = panel.query_one(WorkflowGraph)
         diagram, geometry = graph.diagram, graph.geometry
         # Only the clock moves: the real controller timer must refresh the label.
         for seconds, display, node_display in (
+            (0.412, "412ms", "412 ms"),
             (59, "59s", "59 seconds"),
             (60, "1m", "1 minute"),
             (65, "1m 05s", "1 minute 5 seconds"),
@@ -143,5 +144,5 @@ async def test_elapsed_clock_updates_units_and_resets_for_a_new_run(
         await bus.publish(
             events.WorkflowRunStarted(run_id="second", timestamp=clock.now.return_value, manifest=preview.manifest)
         )
-        await wait_for(lambda: str(header.content).endswith("running (0s)"), pilot=pilot)
+        await wait_for(lambda: str(header.content).endswith("running (0ms)"), pilot=pilot)
         assert not graph._elapsed_labels and not graph._usage_labels

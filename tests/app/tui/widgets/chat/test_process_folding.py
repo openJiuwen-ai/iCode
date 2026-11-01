@@ -255,8 +255,8 @@ async def test_live_and_replay_share_segments_counts_and_default_fold_state() ->
         await pilot.pause()
         expected = _summary(panel)
         assert expected == [
-            (0, 1, False, True, "▸ 1 tool call · 1 read"),
-            (1, 1, False, True, "▸ 1 tool call · 1 read"),
+            (0, 1, False, True, "▸ 1 tool call: 1 read"),
+            (1, 1, False, True, "▸ 1 tool call: 1 read"),
         ]
         copied = panel.get_all_messages()
         assert copied == [
@@ -409,14 +409,14 @@ async def test_failed_header_mount_keeps_members_visible_and_can_be_retried(monk
 
         monkeypatch.setattr(panel, "mount_transcript_after", fail_first_segment)
         await _live(panel)
-        assert _summary(panel) == [(1, 1, False, True, "▸ 1 tool call · 1 read")]
+        assert _summary(panel) == [(1, 1, False, True, "▸ 1 tool call: 1 read")]
         assert panel.query(ToolGroup).first().display
         existing = panel.query_one(ProcessBlock)
         monkeypatch.setattr(panel, "mount_transcript_after", mount)
         await panel._process_controller.complete_live()
         assert _summary(panel) == [
-            (0, 1, False, True, "▸ 1 tool call · 1 read"),
-            (1, 1, False, True, "▸ 1 tool call · 1 read"),
+            (0, 1, False, True, "▸ 1 tool call: 1 read"),
+            (1, 1, False, True, "▸ 1 tool call: 1 read"),
         ]
         assert panel.query(ProcessBlock).last() is existing
 
@@ -455,7 +455,7 @@ async def test_a_turn_header_counts_its_calls_by_kind_and_a_failure_that_lands_a
         await panel.add_agent_message("Done.")
         block = panel.query_one(ProcessBlock)
         assert block.collapsed
-        assert rich_plain(block.render()) == "▸ 4 tool calls · 2 reads · 1 fetch · 1 command · 1 failed"
+        assert rich_plain(block.render()) == "▸ 4 tool calls: 2 reads · 1 fetch · 1 command · 1 failed"
         await wait_for(
             lambda: screen_is_settled(pilot.app, pilot.app.screen), pilot=pilot, description="the folded turn laid out"
         )
@@ -470,7 +470,7 @@ async def test_a_turn_header_counts_its_calls_by_kind_and_a_failure_that_lands_a
         monkeypatch.setattr(block, "refresh", recording_refresh)
         # Its result says it failed: only the outcome changes, and the folded turn's header shows it.
         await panel.add_tool_result("f1", "web_fetch", "Error: fetch failed", canonical_status="failed")
-        expected = "▸ 4 tool calls · 2 reads · 1 fetch · 1 command · 2 failed"
+        expected = "▸ 4 tool calls: 2 reads · 1 fetch · 1 command · 2 failed"
         await wait_for(lambda: rich_plain(block.render()) == expected, pilot=pilot, description="the late failure")
         # The header stays one row: new counts repaint it without laying out the transcript.
         assert refreshes == [{"layout": False}]
@@ -480,8 +480,12 @@ async def test_a_turn_header_counts_its_calls_by_kind_and_a_failure_that_lands_a
         failed = block.get_component_rich_style("processblock--failed").color
         detail = block.get_component_rich_style("processblock--detail").color
         assert isinstance(styles["2 failed"], Style) and styles["2 failed"].color == failed
+        # The total rides in the head, in the row's own colour: no span covers it, so nothing brightens it.
+        head = "▸ 4 tool calls: "
+        assert row.plain.startswith(head)
+        assert all(span.start >= len(head) for span in row.spans)
         # A count reads in the row's colour, its number included: not brighter.
-        for count in ("4 tool calls", "2 reads", "1 command"):
+        for count in ("2 reads", "1 command"):
             assert isinstance(styles[count], Style) and styles[count].color == detail
         assert failed != detail
 
@@ -759,8 +763,8 @@ async def test_a_compaction_during_a_turn_stays_visible_between_the_sections_it_
         await pilot.pause()
 
         assert _summary(panel) == [
-            (0, 1, False, True, "▸ 1 tool call · 1 read"),
-            (1, 2, False, True, "▸ 2 tool calls · 2 commands"),
+            (0, 1, False, True, "▸ 1 tool call: 1 read"),
+            (1, 2, False, True, "▸ 2 tool calls: 2 commands"),
         ]
         card = panel.query_one(CompactionCard)
         assert card.display

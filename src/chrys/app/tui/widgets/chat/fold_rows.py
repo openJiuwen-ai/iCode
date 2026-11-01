@@ -329,7 +329,8 @@ class ToolTally:
 class FoldRow:
     """A folded row's text: the head, the counts after it, and the outcomes it always keeps in view.
 
-    The head ends with the space before the counts; the counts and outcomes follow one another after separators.
+    The head ends with what parts it from the counts, its space or colon included; the counts and outcomes follow one
+    another after separators.
     """
 
     head: str

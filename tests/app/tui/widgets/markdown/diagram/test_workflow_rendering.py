@@ -157,11 +157,17 @@ async def test_large_list_formats_finished_labels_once_and_only_styles_requested
             clock.now.return_value = started + timedelta(seconds=tenth / 10)
             graph.advance_animation()
         assert elapsed.call_count == 9 and {call.args[0] for call in elapsed.call_args_list} == {"n2"}
-        label.assert_not_called()
+        # A sub-second run relabels as it ticks, in milliseconds: once per tenth of a second here.
+        assert label.call_count == 9
+        assert graph._elapsed_labels["n2"] == "900 ms"
         row.assert_not_called()
         clock.now.return_value = started + timedelta(seconds=1)
         graph.advance_animation()
-        label.assert_called_once_with(1, None)
+        assert label.call_count == 10 and graph._elapsed_labels["n2"] == "1 second"
+        clock.now.return_value = started + timedelta(seconds=1.5)
+        graph.advance_animation()
+        # Above a second, a half-second tick recomputes the label but it still reads the same.
+        assert label.call_count == 11 and graph._elapsed_labels["n2"] == "1 second"
         graph._set_hovered_node("n3")
         row.assert_not_called()
         style.assert_not_called()

@@ -30,7 +30,7 @@ from chrys.foundation.i18n import msg
 if TYPE_CHECKING:
     from rich.text import Text
 
-_CALLS = msg("tui.chat.process.tool_calls", fallback="{count} tool call", plural_fallback="{count} tool calls")
+_CALLS = msg("tui.chat.process.tool_calls", fallback="{count} tool call: ", plural_fallback="{count} tool calls: ")
 _ACTIVITY = msg("tui.chat.process.activity", fallback="Activity")
 
 
@@ -101,7 +101,7 @@ class ProcessBlock(FoldGap, Static, can_focus=False):
         )
 
     def render(self) -> Text:
-        """``▸ 12 tool calls · 8 reads · 4 commands · 1 failed``, cut to the width with the outcomes kept in view.
+        """``▸ 12 tool calls: 8 reads · 4 commands · 1 failed``, cut to the width with the outcomes kept in view.
 
         A turn in compressed history, or one that made no calls, reads ``▸ Activity``.
         """
@@ -111,7 +111,7 @@ class ProcessBlock(FoldGap, Static, can_focus=False):
         if tally.total and not self.is_compressed:
             calls = render_str(localizer, _CALLS.bind(count=tally.total))
             failed, interrupted = tally.outcomes(localizer)
-            row = FoldRow(f"{arrow} ", (calls, *tally.count_words(localizer)), failed, interrupted)
+            row = FoldRow(f"{arrow} {calls}", tally.count_words(localizer), failed, interrupted)
         else:
             row = FoldRow(f"{arrow} {render_str(localizer, _ACTIVITY.bind())}")
         return fit_fold_row(row, self.content_size.width, fold_row_styles(self, "processblock"))

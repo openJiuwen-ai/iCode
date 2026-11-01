@@ -53,6 +53,7 @@ async def test_running_footer_formats_and_repaints_without_relayout(
         box = graph.geometry[node_id]
         diagram, geometry = graph.diagram, graph.geometry
         for seconds, english, chinese in (
+            (0.412, "412 ms", "412 毫秒"),
             (1, "1 second", "1 秒"),
             (30, "30 seconds", "30 秒"),
             (85, "1 minute 25 seconds", "1 分钟 25 秒"),

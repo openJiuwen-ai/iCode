@@ -7,7 +7,13 @@ from __future__ import annotations
 import pytest
 from rich.text import Text
 
-from chrys.app.tui.util.formatting import format_token_count, format_typed_count, with_count_hint
+from chrys.app.tui.util.formatting import (
+    elapsed_parts,
+    format_elapsed,
+    format_token_count,
+    format_typed_count,
+    with_count_hint,
+)
 
 
 @pytest.mark.parametrize(
@@ -96,3 +102,22 @@ def test_with_count_hint_returns_the_label_unchanged_below_one_thousand_or_for_n
     assert with_count_hint(label, raw) is label
     assert label.plain == "Max"
     assert label.spans == []
+
+
+@pytest.mark.parametrize(
+    ("seconds", "parts", "compact"),
+    [
+        (-1.0, ((0, "ms"),), "0ms"),
+        (0.0, ((0, "ms"),), "0ms"),
+        (0.412, ((412, "ms"),), "412ms"),
+        (0.9999, ((999, "ms"),), "999ms"),
+        (1.0, ((1, "s"),), "1s"),
+        (59.9, ((59, "s"),), "59s"),
+        (65.0, ((1, "m"), (5, "s")), "1m 05s"),
+    ],
+)
+def test_elapsed_parts_spans_milliseconds_through_days(
+    seconds: float, parts: tuple[tuple[int, str], ...], compact: str
+) -> None:
+    assert elapsed_parts(seconds) == parts
+    assert format_elapsed(seconds) == compact

@@ -76,8 +76,13 @@ def format_byte_size(size_bytes: int) -> str:
 
 
 def elapsed_parts(seconds: float) -> tuple[tuple[int, str], ...]:
-    """Decompose elapsed seconds into at most two adjacent units, seconds through days."""
+    """Decompose elapsed seconds into at most two adjacent units, milliseconds through days.
+
+    A duration under one second is milliseconds alone, truncated as the larger units are.
+    """
     total = max(0, int(seconds))
+    if total == 0:
+        return ((max(0, int(seconds * 1000)), "ms"),)
     for scale, unit, remainder_scale, remainder_unit in (
         (86400, "d", 3600, "h"),
         (3600, "h", 60, "m"),
@@ -91,7 +96,7 @@ def elapsed_parts(seconds: float) -> tuple[tuple[int, str], ...]:
 
 
 def format_elapsed(seconds: float) -> str:
-    """Format elapsed seconds using at most two compact units."""
+    """Format elapsed seconds using at most two compact units, milliseconds under a second."""
     return " ".join(
         f"{value:02d}{unit}" if index else f"{value}{unit}"
         for index, (value, unit) in enumerate(elapsed_parts(seconds))
