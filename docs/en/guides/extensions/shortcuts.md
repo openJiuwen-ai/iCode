@@ -1,20 +1,21 @@
-# Configure shortcuts
+# Write and use shortcuts
 
 A shortcut is a prompt you save once as a Markdown file and reuse by typing `/` and its name. Choosing it fills the prompt into the input field, where you can edit it before you send it. A shortcut can also take arguments, switch the agent or model for the session, and fill in the output of shell commands when it is sent. Shortcuts work in the iCode window; `icode run` and editors connected through `icode acp` send `/name` as plain text.
 
 ## Where shortcut files go
 
-| Folder | macOS and Linux | Windows | Loaded |
-| --- | --- | --- | --- |
-| Your shortcuts | `~/.chrys/shortcuts` | `%APPDATA%\chrys\shortcuts` | On by default |
-| The project's shortcuts | `.chrys/shortcuts` in the working directory and its parent directories up to the repository root | Same | On by default |
-| Other folders you add | Any folder, such as one shared by your team | Same | Once added |
+iCode reads shortcuts from two places:
 
-Choose which folders are read under **Settings → Shortcuts** (`/settings shortcuts`); see [Shortcuts settings](../configuration/settings.md#shortcuts). Changes apply the next time you type `/`.
+| Folder | macOS and Linux | Windows |
+| --- | --- | --- |
+| Your shortcuts | `~/.chrys/shortcuts` | `%APPDATA%\chrys\shortcuts` |
+| The project's shortcuts | `.chrys/shortcuts` in the working directory and its parent directories up to the repository root | Same |
 
-A project's `.chrys/shortcuts` must stay inside the repository: if it is a link to a folder outside it, iCode skips it. To use a folder shared by your team, add it under **Settings → Shortcuts** instead.
+New and changed files show the next time you type `/`.
 
-The file name is the shortcut's name: `review.md` is `/review`. A file in a subfolder keeps the folder in its name: `git/commit-msg.md` is `/git/commit-msg`. When two folders hold a shortcut with the same name, the first one read is used: your own shortcuts, then the folders you added, then the nearest project folder.
+A project's `.chrys/shortcuts` must stay inside the repository: if it is a link to a folder outside it, iCode skips it.
+
+The file name is the shortcut's name: `review.md` is `/review`. A file in a subfolder keeps the folder in its name: `git/commit-msg.md` is `/git/commit-msg`. When two folders hold a shortcut with the same name, the first one read is used: your own shortcuts, then the nearest project folder.
 
 Some files are not loaded: a name with spaces (it could not be typed after `/`), a file or folder whose name starts with `.`, and a subfolder that is a link. If a shortcut you expect is missing, check its file name.
 
@@ -44,7 +45,7 @@ Focus on $ARGUMENTS.
 | `agent` | The agent to switch to when the prompt is sent. |
 | `model` | The model to switch to when the prompt is sent: a model profile's name, or `provider/model`. |
 
-Everything after the settings is the prompt. The format is the one opencode uses for its commands, so a file copied from `.opencode/commands` into a shortcuts folder works unchanged.
+Everything after the settings is the prompt.
 
 In the prompt you can use:
 
@@ -64,7 +65,7 @@ In the prompt you can use:
 
 When you send the prompt, your [prompt hooks](hooks.md) check it first, as you typed it, commands included. Then each `` !`command` `` in it runs in the session's working directory, and its output replaces it in the message the model receives; the conversation shows the message with the output. A command may run for up to 10 seconds, and up to 16 KB of its output is kept. While the commands run, the status bar says so and other actions, such as switching the agent or starting a new session, wait; press **Esc** to cancel. If a hook blocks the prompt, a command fails to start, runs out of time or is cancelled, or the prompt cannot be sent for another reason, nothing is sent and the prompt comes back to the input field as it was, highlights included, unless you have typed something else there meanwhile.
 
-The commands run only if the shortcut is still loaded from the same file for the session's working directory. If you changed the working directory, or turned off the folder the shortcut came from, they do not run: the prompt comes back as plain text, and sending it again sends it as typed.
+The commands run only if the shortcut is still loaded from the same file for the session's working directory. If you have since changed the working directory, or moved or deleted the shortcut's file, they do not run: the prompt comes back as plain text, and sending it again sends it as typed.
 
 Whenever sending will run commands, a card above the input field says how many, such as `2 commands in the input run when sent`.
 

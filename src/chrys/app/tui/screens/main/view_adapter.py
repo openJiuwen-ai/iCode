@@ -9,6 +9,7 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from textual.css.query import NoMatches
@@ -244,6 +245,12 @@ class MainScreenViewAdapter:
             )
         )
 
+    def open_usage(self) -> None:
+        from chrys.app.tui.screens.dialogs.usage import UsageDialog
+        from chrys.service.analytics.usage_report import load_usage_report
+
+        self._screen.app.push_screen(UsageDialog(partial(load_usage_report, self._state_store)))
+
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None:
         self._screen.run_worker(awaitable, exclusive=False, group=group)
 
@@ -358,6 +365,9 @@ class MainScreenViewAdapter:
 
     def show_status(self, text: StatusMessage) -> None:
         self._screen.query_one(StatusBar).show(text)
+
+    def note_output_text(self, text: str) -> None:
+        self._screen.query_one(StatusBar).note_output_text(text)
 
     def clear_status(self) -> None:
         self._screen.query_one(StatusBar).clear_status()

@@ -181,7 +181,7 @@ def test_reasoning_tokens_above_output_are_unresolved(tmp_path) -> None:
     assert reasoning.buckets[UsageBucket.REASONING].precision is Precision.UNRESOLVED
 
 
-_UNREPORTED = "one or more model requests failed or were interrupted before reporting usage, so totals count reported requests only"
+_UNREPORTED = "one or more model requests failed or were interrupted before reporting full usage, so totals count only what was reported"
 
 
 def _failed_exchange(log: EventLog, operation_id: str, start_ns: int, end_ns: int, *, outcome: str, **ids) -> None:
@@ -216,6 +216,38 @@ def test_failed_request_without_usage_makes_totals_a_reported_lower_bound(tmp_pa
     assert buckets[UsageBucket.OUTPUT] == Metric(20, Precision.ESTIMATED, _UNREPORTED)
 
 
+def test_what_a_failed_request_reported_counts_but_never_as_exact(tmp_path) -> None:
+    """A cut-off stream reports its input and a placeholder output: the total is a lower bound."""
+    log = EventLog()
+    log.coverage()
+    log.add("turn.started", 0, payload={"turn_number": 1})
+    log.exchange_usage("b" * 32, 0, NS, {"input_total": 500, "output_total": 1}, outcome="error")
+    log.exchange_usage("a" * 32, NS, 2 * NS, {"input_total": 100, "output_total": 20})
+    log.add("turn.finished", 2 * NS, payload={"end_reason": "completed", "duration_ms": 0})
+    path = tmp_path / "events.jsonl"
+    log.write(path)
+
+    analysis = analyze_trajectory(path)
+
+    assert analysis.turns[0].usage_tokens == Metric(621, Precision.ESTIMATED, _UNREPORTED)
+    assert analysis.token_usage.buckets[UsageBucket.INPUT] == Metric(600, Precision.ESTIMATED, _UNREPORTED)
+
+
+@pytest.mark.parametrize("reported", [{"input_total": 500}, {"output_total": 1}])
+def test_a_failed_request_missing_a_total_counts_as_unreported(tmp_path, reported: dict[str, int]) -> None:
+    """A failed request's half-reported usage must not take the whole turn's total away."""
+    log = EventLog()
+    log.coverage()
+    log.add("turn.started", 0, payload={"turn_number": 1})
+    log.exchange_usage("b" * 32, 0, NS, reported, outcome="error")
+    log.exchange_usage("a" * 32, NS, 2 * NS, {"input_total": 100, "output_total": 20})
+    log.add("turn.finished", 2 * NS, payload={"end_reason": "completed", "duration_ms": 0})
+    path = tmp_path / "events.jsonl"
+    log.write(path)
+
+    assert analyze_trajectory(path).turns[0].usage_tokens == Metric(120, Precision.ESTIMATED, _UNREPORTED)
+
+
 def test_successful_request_without_usage_still_leaves_totals_missing(tmp_path) -> None:
     log = EventLog()
     log.coverage()
@@ -248,3 +280,23 @@ def test_retry_amplification_counts_reported_retries_when_one_failed_silently(tm
 
     assert validation is not None
     assert validation.retry_amplification_tokens == Metric(60, Precision.ESTIMATED, _UNREPORTED)
+
+
+def test_retry_amplification_with_a_failed_retrys_usage_is_a_lower_bound(tmp_path) -> None:
+    log = EventLog()
+    log.coverage()
+    retry_id = "c" * 32
+    log.add("turn.started", 0, payload={"turn_number": 1})
+    log.add("retry.scheduled", NS, operation_id=retry_id, payload={"retry_mode": "run"})
+    log.add("retry.started", 2 * NS, operation_id=retry_id, payload={"retry_mode": "run"})
+    log.exchange_usage(
+        "b" * 32, 2 * NS, 3 * NS, {"input_total": 50, "output_total": 1}, outcome="error", parent_operation_id=retry_id
+    )
+    log.add("turn.finished", 3 * NS, payload={"end_reason": "cancelled", "duration_ms": 0})
+    path = tmp_path / "events.jsonl"
+    log.write(path)
+
+    validation = analyze_trajectory(path).validation
+
+    assert validation is not None
+    assert validation.retry_amplification_tokens == Metric(51, Precision.ESTIMATED, _UNREPORTED)

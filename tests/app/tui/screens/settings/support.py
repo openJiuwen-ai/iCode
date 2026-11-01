@@ -12,9 +12,8 @@ from typing import Any
 from textual.app import App
 
 from chrys.app.tui.notifications.settings import NotificationSettings
-from chrys.app.tui.screens.settings import TABS, SettingsDialog, Suggestions
+from chrys.app.tui.screens.settings import NOTIFICATIONS_TAB_ID, TABS, SettingsDialog, Suggestions
 from chrys.app.tui.screens.settings.panes.notifications import NotificationsPane
-from chrys.app.tui.screens.settings.panes.prompt_shortcuts import PromptShortcutsPane
 from chrys.app.tui.theme import TuiVariableDefaultsMixin
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle, SettingsWarning
@@ -22,8 +21,8 @@ from chrys.foundation.config.spec import ChoiceProvider, SettingOrigin, Source, 
 from chrys.foundation.i18n import MessageRef
 from tests.support.waiting import wait_for
 
-ROW_COUNT = sum(len(section.rows) for tab in TABS if not tab.custom_pane for section in tab.sections)
-"""Generic setting rows; custom panes render their own controls."""
+ROW_COUNT = sum(len(section.rows) for tab in TABS if tab.id != NOTIFICATIONS_TAB_ID for section in tab.sections)
+"""Setting rows across every tab; the notifications tab is a pane of its own."""
 
 
 class StubNotificationPorts:
@@ -120,9 +119,6 @@ class StubPorts:
     def loaded(self) -> LoadedSettings:
         return self.handle.loaded
 
-    def workspace_cwd(self) -> str:
-        return str(self.storage.root)
-
     def install(self, settings: Settings, provenance: Mapping[str, SettingOrigin] | None = None) -> None:
         self.handle.install(LoadedSettings(settings=settings, provenance=dict(provenance or {})))
 
@@ -188,12 +184,8 @@ def env_origin() -> SettingOrigin:
 
 
 def every_tab_projected(dialog: SettingsDialog) -> bool:
-    """Every row and custom pane show their values, the later tabs included."""
-    return (
-        len(dialog.rows()) == ROW_COUNT
-        and any(pane.projected for pane in dialog.query(NotificationsPane))
-        and any(pane.projected for pane in dialog.query(PromptShortcutsPane))
-    )
+    """Every row and the notifications pane show their values, the later tabs included."""
+    return len(dialog.rows()) == ROW_COUNT and any(pane.projected for pane in dialog.query(NotificationsPane))
 
 
 async def wait_for_every_tab(dialog: SettingsDialog, pilot: Any) -> None:

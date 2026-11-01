@@ -630,11 +630,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Existing process headers keep the user's choice."""
         cast("ChrysApp", self.app).settings_handle.override(chat_fold_finished_turns=value)
 
-    def _apply_prompt_shortcuts_setting(self, field_name: str, value: object) -> None:
-        """Put the choice in force; the ``/`` list reads shortcuts under it from now on."""
-        cast("ChrysApp", self.app).settings_handle.override(**{field_name: value})
-        self._suggestions.refresh_prompt_shortcuts()
-
     def _approval_timeout_seconds(self) -> int:
         return cast("ChrysApp", self.app).settings_handle.settings.approval_timeout_seconds
 
@@ -671,8 +666,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 apply_approval_defer_while_judging=self._apply_approval_defer_while_judging,
                 apply_thinking_expanded=self._apply_thinking_expanded,
                 apply_fold_finished_turns=self._apply_fold_finished_turns,
-                apply_prompt_shortcuts_setting=self._apply_prompt_shortcuts_setting,
-                workspace_cwd=self._workspace_cwd,
                 list_themes=lambda: sorted(app.available_themes),
                 save_notifications=self._schedule_notification_settings_save,
                 notification_service=self._notification_service,
@@ -852,6 +845,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             configure_agent=self._open_agent_config,
             configure_agent_tab=self._open_agent_config_tab,
             show_runtime_details=self.action_runtime_details,
+            show_usage=self._config_actions.open_usage,
             configure_settings=self._open_settings,
             show_manual_pages=lambda pages, start_index: self._view_adapter.show_man_pages(
                 pages,

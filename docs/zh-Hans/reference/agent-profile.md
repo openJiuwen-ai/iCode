@@ -273,7 +273,7 @@ tools:
 
 | 字段 | 适用于 | 说明 |
 | --- | --- | --- |
-| `type` | 全部 | 必填。无需密钥的服务为 `exa_mcp`、`bing_html` 或 `duckduckgo_html`；需要密钥的搜索 API 为 `tavily`、`brave` 或 `exa`；自己的端点为 `custom_http`。 |
+| `type` | 全部 | 必填。无需密钥的服务为 `exa_mcp`、`bing_html`、`duckduckgo_html` 或 `keenable`；需要密钥的搜索 API 为 `tavily`、`brave` 或 `exa`；自己的端点为 `custom_http`。 |
 | `api_key_env` | `tavily`、`brave`、`exa` | 必填。保存 API 密钥的环境变量名。这些类型不接受其他字段。 |
 | `preset` | `custom_http` | `searxng` 或 `serpapi`，为对应服务自动填写请求和响应映射；`serpapi` 还会设置 `endpoint` 和 `auth`。自己填写的字段优先。 |
 | `endpoint` | `custom_http` | 搜索端点 URL。还需在用户设置 `tools.web_search.custom_endpoints` 中授权该端点及其读取的每个环境变量。 |
@@ -283,7 +283,7 @@ tools:
 | `request` | `custom_http` | `query_params`，以及 `POST` 时的 `json`。写成 `{$input: query}`、`{$input: limit}`、`{$input: allowed_domains}` 或 `{$input: blocked_domains}` 的值会替换为对应的搜索参数，`{$env: NAME}` 会替换为环境变量。 |
 | `response` | `custom_http` | 指向响应内容的 JSON Pointer：`results_pointer` 和 `url_pointer`（未使用预设时必填），以及可选的 `title_pointer` 和 `snippet_pointer`。 |
 
-`exa_mcp`、`bing_html` 和 `duckduckgo_html` 只接受 `type` 字段。
+`exa_mcp`、`bing_html`、`duckduckgo_html` 和 `keenable` 只接受 `type` 字段。
 
 DeepSeek Search API 的完整 `custom_http` 示例见[配置网络工具](../guides/configuration/web-tools.md#deepseek-search-api)。DeepSeek 服务端 `web_search` 的支持模型和计费以 DeepSeek 官方文档为准。
 

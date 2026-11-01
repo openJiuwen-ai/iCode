@@ -213,49 +213,6 @@ async def test_a_workspace_switch_stops_the_old_shortcuts_until_the_new_read_lan
         await wait_for(lambda: chat.text == "Other body\n\ny", pilot=pilot, description="new shortcut expanded")
 
 
-async def test_switching_a_shortcut_folder_off_stops_the_old_list_at_once(tmp_path: Path, loader: _GatedLoader) -> None:
-    _global_shortcut("zzglob", "Global body")
-    _project_shortcut(Path.cwd(), "zzproj", "Project body")
-    app = make_chrys_app(tmp_path / "state")
-    async with app.run_test(size=(120, 40)) as pilot:
-        main, chat = await _ready(pilot)
-        handler = main._suggestions
-        await wait_for(
-            lambda: handler.resolve_typed_name("/zzglob x").kind == "shortcut",
-            pilot=pilot,
-            description="first read landed",
-        )
-        reads_before = len(loader.reads)
-        loader.held = True
-
-        main._apply_prompt_shortcuts_setting("prompt_shortcuts_load_user_folder", False)
-
-        # One new read, under the new switch (its thread records it once it runs).
-        await wait_for(lambda: len(loader.reads) > reads_before, pilot=pilot, description="new read started")
-        assert [read["load_user_folder"] for read in loader.reads[reads_before:]] == [False]
-        # The list read with the user folder on is used for nothing, the project shortcut included.
-        assert handler.resolve_typed_name("/zzglob x").kind != "shortcut"
-        assert handler.resolve_typed_name("/zzproj x").kind != "shortcut"
-        await _typed_tab(pilot, main, chat, "/zzproj x")
-        assert chat.text == "/zzproj x"
-        await _reset(pilot, main, chat)
-        await _open_list(pilot, main, chat)
-        assert _shortcut_rows(main) == []
-        # Opening the list rereads as always, but only ever under the new switch.
-        assert all(read["load_user_folder"] is False for read in loader.reads[reads_before:])
-
-        loader.release.set()
-        await wait_for(
-            lambda: handler.resolve_typed_name("/zzproj x").kind == "shortcut",
-            pilot=pilot,
-            description="new read landed",
-        )
-        assert handler.resolve_typed_name("/zzglob x").kind != "shortcut"
-        await _reset(pilot, main, chat)
-        await _open_list(pilot, main, chat)
-        await wait_for(lambda: _shortcut_rows(main) == ["/zzproj"], pilot=pilot, description="new rows listed")
-
-
 async def test_a_refresh_under_unchanged_folders_keeps_the_list_while_it_reads(
     tmp_path: Path, loader: _GatedLoader
 ) -> None:

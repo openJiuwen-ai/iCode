@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.32.2\n"
+"Project-Id-Version: Chrys 0.32.3\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -1155,24 +1155,6 @@ msgstr "在 {path} 中发现项目钩子，但尚未加载。如需运行，请�
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.project_skills_dormant"
 msgstr "在 {path} 中发现项目 Skills，不会自动加载。如需加载，请在 设置 → 安全 → 项目信任 中勾选“加载项目 Skills”（project.skills_enabled），并保持智能体的“从工作文件夹加载 Skills”选项开启。"
-
-#. English: Load prompt shortcuts from user folder (if present)
-#. chrys-meta={"fingerprint":"8d7fc3eda138f3c007d352e8974233786a1f954a4503abf6726a330a03bc436b","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.prompt_shortcuts.load_user_folder.label"
-msgstr "从用户目录加载快捷指令（如果存在）"
-
-#. English: Load prompt shortcuts from working folder (if present)
-#. chrys-meta={"fingerprint":"d2d2aad3aac344bfad2debaa39d11063f7207fc2cc4aa726465042771b713503","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.prompt_shortcuts.load_working_folder.label"
-msgstr "从工作目录加载快捷指令（如果存在）"
-
-#. English: Prompt shortcut directories
-#. chrys-meta={"fingerprint":"ab757d9771b99fd5b00412e488f413da1f89e5ca8b2dea4109783336aa82426b","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.prompt_shortcuts.paths.label"
-msgstr "快捷指令目录"
 
 #. English: Ignoring {source}={raw}: expected a boolean.
 #. chrys-meta={"fingerprint":"f804369b50e63015f7f5a7096b0d54c6de66e96fd168736853c1690d0ad9c6e2","multiline":false,"placeholders":["raw","source"]}
@@ -5250,6 +5232,12 @@ msgstr "打开设置面板"
 msgid "tui.commands.description.theme"
 msgstr "设置配色主题"
 
+#. English: Show token usage and speed across all sessions
+#. chrys-meta={"fingerprint":"90f80aee7c0be8101ea88677d855e8fadfbdcb599c78e05aacf0251b494db07d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.commands.description.usage"
+msgstr "查看所有会话的 token 用量和速度"
+
 #. English: Show help for /{name}
 #. chrys-meta={"fingerprint":"df2f841cd072593f47ac017908fec4bba0bf4a4a9b63698b72a1fb72c5b8ebbb","multiline":false,"placeholders":["name"]}
 #: src/chrys/app/tui/screens/main/commands.py
@@ -7864,16 +7852,16 @@ msgstr ""
 "    - 查看会话元数据（日期、轮次等）"
 
 #. English: Open the Settings panel (F10), optionally on a tab.      Tabs:
-#. general, models, security, sessions, tools, shortcuts, notifications.
-#. Changes are saved as you make them; the panel says when each     one takes
-#. effect (immediately, on close, or after a restart).
-#. chrys-meta={"fingerprint":"a4284198afe8b7b1683a09f5e322b143a0576252d9c26c5ca25369d408977158","multiline":true,"placeholders":[]}
+#. general, models, security, sessions, tools, notifications.     Changes are
+#. saved as you make them; the panel says when each     one takes effect
+#. (immediately, on close, or after a restart).
+#. chrys-meta={"fingerprint":"2b21b292bfa8fe449d092f675cb2e23fad6d0607e94377403171d53efc617d23","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.settings.body"
 msgstr ""
 "打开设置面板（F10），可指定打开某个标签页。\n"
 "\n"
-"    标签页：general、models、security、sessions、tools、shortcuts、notifications。\n"
+"    标签页：general、models、security、sessions、tools、notifications。\n"
 "    修改即时保存；面板会说明每一项何时生效\n"
 "    （立即、关闭时或重启后）。"
 
@@ -7890,6 +7878,25 @@ msgstr ""
 "指定主题名称时，直接切换到该主题。\n"
 "\n"
 "在 /theme 后使用 Tab 补全可列出可用主题。"
+
+#. English: Open the token usage dialog, read from every saved session.
+#. Overview: new tokens by date range, their trend over time,     and totals by
+#. model, source or project, with each model's speed.     Calendar: new tokens
+#. day by day, and one day's details.      New tokens are the input not served
+#. from the provider's cache,     plus the output, thinking included. Deleted
+#. sessions and external     ACP agents are not counted.
+#. chrys-meta={"fingerprint":"d3b60b05e938038df9d11299b1c3fba744067836a2467c91b19245632b1bb892","multiline":true,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.man.usage.body"
+msgstr ""
+"打开 token 用量对话框，数据来自所有已保存的会话。\n"
+"\n"
+"    总览：按日期范围查看新增 token 及其趋势，\n"
+"    并按模型、来源或项目查看合计，以及每个模型的速度。\n"
+"    日历：逐日查看新增 token，以及某一天的详情。\n"
+"\n"
+"    新增 token 指未命中服务商缓存的输入，加上输出（含思考）。\n"
+"    已删除的会话和外部 ACP 智能体不计入。"
 
 #. English: Page {page}/{total}  ↑ Up ↓ Down  Esc to close
 #. chrys-meta={"fingerprint":"e1b6bb1c681766b73689e1414e355a82c2c04e1e34bcb7423b93cc9f082686b5","multiline":false,"placeholders":["page","total"]}
@@ -9825,12 +9832,11 @@ msgstr "没有可用的活跃模型配置详情。"
 msgid "tui.runtime_details.empty.preconfigured_files"
 msgstr "未加载预配置文件。"
 
-#. English: No prompt shortcuts loaded. Choose the folders to read in Settings
-#. → Shortcuts.
-#. chrys-meta={"fingerprint":"ce3c05a4b55ec0cd3018dd75b5f574f32142df448ab27756fa550677a6f8bc82","multiline":false,"placeholders":[]}
+#. English: No prompt shortcuts loaded.
+#. chrys-meta={"fingerprint":"578a8ee937691c16e3dbcf81ece1d9bfa2d9cc8b8ed0ac51757e2d7de1778114","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
 msgid "tui.runtime_details.empty.shortcuts"
-msgstr "未加载快捷指令。请在“设置 → 快捷指令”中选择要读取的目录。"
+msgstr "未加载快捷指令。"
 
 #. English: No skills loaded.
 #. chrys-meta={"fingerprint":"e5883b60903ee2e2b664b486bed3b08ee8c26455f44019a5b502175ae786f49d","multiline":false,"placeholders":[]}
@@ -11075,91 +11081,6 @@ msgstr "迁移会话"
 msgid "tui.settings.migrate.to"
 msgstr "到"
 
-#. English: + Add
-#. chrys-meta={"fingerprint":"6ef2165c13c7ddb9d75eea643ddc7fb9c83bc3db81aaa0b56f4f9ef5dbac73bd","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.add"
-msgstr "+ 添加"
-
-#. English: Configure where the / list reads prompt shortcuts from. Only
-#. Markdown (.md) files are supported for now.
-#. chrys-meta={"fingerprint":"c39a8c70c24dc5f444a37b6df39892d6dd305c6d83ef923bf92b53e64999842c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.description"
-msgstr "配置 / 列表从哪里读取快捷指令。目前只支持 Markdown（.md）文件。"
-
-#. English: Prompt Shortcut Directory
-#. chrys-meta={"fingerprint":"1654425c05db84176bfa38c7cf94dd837d924943ef5399654a5f49a5327a5aab","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.directory"
-msgstr "快捷指令目录"
-
-#. English: No other folders added
-#. chrys-meta={"fingerprint":"f39d0a7d9cd5806bc5b180d299c88da5b9484072b749f01207c58fc3f5e43b1d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.empty"
-msgstr "未添加其他目录"
-
-#. English: How to write shortcuts →
-#. chrys-meta={"fingerprint":"310868f7f382d06c1108661aa5edcfd31348f9eda061eb16777d82e5dc041f44","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.guide_link"
-msgstr "如何编写快捷指令 →"
-
-#. English: Load prompt shortcuts from user folder (if present)
-#. chrys-meta={"fingerprint":"8d7fc3eda138f3c007d352e8974233786a1f954a4503abf6726a330a03bc436b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.load_user_folder"
-msgstr "从用户目录加载快捷指令（如果存在）"
-
-#. English: Load prompt shortcuts from working folder (if present)
-#. chrys-meta={"fingerprint":"d2d2aad3aac344bfad2debaa39d11063f7207fc2cc4aa726465042771b713503","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.load_working_folder"
-msgstr "从工作目录加载快捷指令（如果存在）"
-
-#. English: /home/you/prompts
-#. chrys-meta={"fingerprint":"1ccce9d94d718d259dcb4f137c61b76930267765059969a4ee691bcbda7d845d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.absolute_linux"
-msgstr "/home/you/prompts"
-
-#. English: /Users/you/prompts
-#. chrys-meta={"fingerprint":"785ae804bc36f8dd68180a95cc2bce08051e3e418082b38bfbb6bc3ad73b2b6a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.absolute_macos"
-msgstr "/Users/you/prompts"
-
-#. English: C:\path\to\prompts
-#. chrys-meta={"fingerprint":"892bf7be1799bb920391ecc4fd1b94ef45468300ee2a1ea406ca4c70434afd23","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.absolute_windows"
-msgstr "C:\\path\\to\\prompts"
-
-#. English: relative/path/to/prompts
-#. chrys-meta={"fingerprint":"aadc05521dd4acdf473f44138baeede13c8d3ecffa0f031636cafe3d3f3898a3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.relative_posix"
-msgstr "relative/path/to/prompts"
-
-#. English: relative\path\to\prompts
-#. chrys-meta={"fingerprint":"6bf3cb36074b6f8201319e1c1833899a7618fd17ea305c98b7f99717ca38e8b9","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.relative_windows"
-msgstr "relative\\path\\to\\prompts"
-
-#. English: Prompt Shortcut Directories
-#. chrys-meta={"fingerprint":"b3d0313a1ef5b7d17bc04b15467854ec17f1e5539114877ec7485881bcf1879d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.title"
-msgstr "快捷指令目录"
-
-#. English: {path} and its parent folders up to the repository root
-#. chrys-meta={"fingerprint":"0395569648aa949d99d45133636ae0ad130a55cb7312fd1440be927d7b2325ae","multiline":false,"placeholders":["path"]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.working_folder_scope"
-msgstr "{path} 及其上级目录（直到仓库根目录）"
-
 #. English: Set for this session by a command-line option; the saved value
 #. applies at the next launch.
 #. chrys-meta={"fingerprint":"f89ac50748913b5d202c345d1472421caac20f9a29fffea5990ced8d98274e29","multiline":false,"placeholders":[]}
@@ -11286,12 +11207,6 @@ msgstr "通知"
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.section.project_trust"
 msgstr "项目信任"
-
-#. English: Prompt shortcuts
-#. chrys-meta={"fingerprint":"e42b5a105027ac8a210a098574b218a5dc99b06f0e487b6934d9483b084ff3be","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.section.prompt_shortcuts"
-msgstr "快捷指令"
 
 #. English: Rollback
 #. chrys-meta={"fingerprint":"a6f676dbe1a7754d87fa0370c0d6c07595a08e6b1721f72fed7bfff7ac125348","multiline":false,"placeholders":[]}
@@ -11422,12 +11337,6 @@ msgstr "模型与智能体"
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.tab.notifications"
 msgstr "通知"
-
-#. English: Shortcuts
-#. chrys-meta={"fingerprint":"85a8e1c1cc90a21e40d54ae7f6a87925bb1028e151d567aa10f3b9c7c35005d2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.tab.prompt_shortcuts"
-msgstr "快捷指令"
 
 #. English: Security
 #. chrys-meta={"fingerprint":"6d3bcdb95ce3aa583fc6e498b7084e2c0dcd10abfc205c83470d4eae5f35bf94","multiline":false,"placeholders":[]}
@@ -11914,7 +11823,7 @@ msgstr "正在压缩对话..."
 #. chrys-meta={"fingerprint":"e68402a24f79f585991b060723722bc0d76e3b06565a924f35fc13ae8ad243b1","multiline":false,"placeholders":["elapsed"]}
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
 msgid "tui.status.completed"
-msgstr "已在 {elapsed} 内完成"
+msgstr "已完成，用时 {elapsed}"
 
 #. English: Custom title cleared
 #. chrys-meta={"fingerprint":"baa42e9dc1999c164953a609524fd83e48f2a1d2114721151d63846ed3fc1903","multiline":false,"placeholders":[]}
@@ -11993,6 +11902,12 @@ msgstr "模型"
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
 msgid "tui.status.opened_fork"
 msgstr "已打开分支：{fork_id}"
+
+#. English: {speed} tok/s
+#. chrys-meta={"fingerprint":"d5b8de6c5c81b1f37f8bea2977fda5ee5178feb97b4a53a928795ec201999f02","multiline":false,"placeholders":["speed"]}
+#: src/chrys/app/tui/widgets/chrome/status_bar.py
+msgid "tui.status.output_speed"
+msgstr "{speed} tok/s"
 
 #. English: Resuming
 #. chrys-meta={"fingerprint":"4fdab1e59a815cd3f0e81b914511674495b1732de1f51fafbec40f4727b0ed80","multiline":false,"placeholders":[]}
@@ -12088,7 +12003,7 @@ msgstr "上一条消息仍在发送中"
 #. chrys-meta={"fingerprint":"8ae58c7af153c48d15b5a3ca0dec78fb2407ef03d4fc4ac04033c005afea7cf6","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
 msgid "tui.status.streaming"
-msgstr "正在输出..."
+msgstr "正在回复…"
 
 #. English: Thinking
 #. chrys-meta={"fingerprint":"035935186d9026b49ead3077c1b3018b71e54f9bbee3e2a1276b907b14516ca3","multiline":false,"placeholders":[]}
@@ -15177,6 +15092,328 @@ msgstr "各轮时间分布 · 第 {turn} 轮"
 msgid "tui.transcript.fold.compressed"
 msgstr "已压缩"
 
+#. English: {year}-{month}
+#. chrys-meta={"fingerprint":"2296c3cf7d1759fdfc1a1162728fa5726561475730789f128d94e35e0379119d","multiline":false,"placeholders":["month","year"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.month"
+msgstr "{year}年{month}月"
+
+#. English: Top models
+#. chrys-meta={"fingerprint":"d9c45656bc8ccda10e0e2888a25c12b6445db7aaca3224db5ee51f9b8cdbbff1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.top_models"
+msgstr "主要模型"
+
+#. English: Week
+#. chrys-meta={"fingerprint":"61cd6a9473937dd9a81527e6a123a50409cc75d95c45884c546bc661d3f5ee00","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.week_total"
+msgstr "周新增"
+
+#. English: Mon Tue Wed Thu Fri Sat Sun
+#. chrys-meta={"fingerprint":"70bb5e0433da628025ba9337bf8f4abcd01b7a0c7babbf47f210ba7a319672ec","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.weekdays"
+msgstr "周一 周二 周三 周四 周五 周六 周日"
+
+#. English: Mo Tu We Th Fr Sa Su
+#. chrys-meta={"fingerprint":"13f7f03fb064900cbc0010bb59fd2e8be1e156bb0f717496c0249970ddebbcc0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.weekdays_short"
+msgstr "一 二 三 四 五 六 日"
+
+#. English: Hit
+#. chrys-meta={"fingerprint":"05a192dfe7d70f4b6d6965b78872500cdb6cfe573d2c3bf460468b3de722766b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.column.hit"
+msgstr "命中"
+
+#. English: New
+#. chrys-meta={"fingerprint":"6a784056227bb0fe6dc62f0f9bacf89cfaea66004e0b7ab7d8502ea670a49ab4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.column.new"
+msgstr "新增"
+
+#. English: TPS
+#. chrys-meta={"fingerprint":"ff4294673ea2773f78e7b343acf59c8db8800704df4dce7c4344cd1eac6bee52","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.column.speed"
+msgstr "速率"
+
+#. English: No model calls recorded yet.
+#. chrys-meta={"fingerprint":"4638f25ec1ef2eb201c96bf5f30c576c5ee0f364994480ed6de7c92a3a47afb8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.empty"
+msgstr "还没有模型调用记录。"
+
+#. English: Could not read usage.
+#. chrys-meta={"fingerprint":"4115ed20386af66c2aa2d360c66dd3bcb22608a5b2279f4c1d8d3399c29ca2c3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.failed"
+msgstr "读取用量失败。"
+
+#. English: Group
+#. chrys-meta={"fingerprint":"e2c1840e2cfa264951e9348cdefb5ca21bb2b618a23a71361617bcd09289c16d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group"
+msgstr "分组"
+
+#. English: Model
+#. chrys-meta={"fingerprint":"c820b93516ff203603ed60a227ea14ad662f6ca472bb143e0987a574f55d0eba","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.model"
+msgstr "模型"
+
+#. English: Project
+#. chrys-meta={"fingerprint":"bb494880de8a82165303fb5db8a2bd69147f6fff4874591b25d51ec1569bafb1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.project"
+msgstr "项目"
+
+#. English: Source
+#. chrys-meta={"fingerprint":"8a23381b73255be7becb386ff5bf8b4846f3fcba4f6d5404413d16d72d5ed687","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.source"
+msgstr "来源"
+
+#. English: ←→↑↓ day  {month_keys} month
+#. chrys-meta={"fingerprint":"70046dd55dfcbc816a5a4ca2f75929dc4a54b663b7143f2e41acdca740a2373f","multiline":false,"placeholders":["month_keys"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.keys.calendar"
+msgstr "←→↑↓ 选日期  {month_keys} 换月"
+
+#. English: ←→ range  t scale  g group  ↑↓ row
+#. chrys-meta={"fingerprint":"3c69c7fbe4a02f7fda8bfd5c0acaec8c9de1635231d0198e220395f8093bb83d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.keys.overview"
+msgstr "←→ 范围  t 日/周  g 分组  ↑↓ 选行"
+
+#. English: ←→ range  g group  ↑↓ row
+#. chrys-meta={"fingerprint":"2e08806590d25c6c6c81edc7e2da3d41e20ea0b9ba09950d32368ce204d8dc57","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.keys.overview_fixed_scale"
+msgstr "←→ 范围  g 分组  ↑↓ 选行"
+
+#. English: Cached
+#. chrys-meta={"fingerprint":"bad67fee0c3718027c694e6884148ceffc88383f0a7c33079ca81d18dd0ad3c4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.cached"
+msgstr "缓存读"
+
+#. English: Input
+#. chrys-meta={"fingerprint":"aa801f5aa47a9644ff6d258e4f0dc34a47b07d38685b021f96fe2a5f3c4e0ee6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.input"
+msgstr "新输入"
+
+#. English: TPS
+#. chrys-meta={"fingerprint":"ff4294673ea2773f78e7b343acf59c8db8800704df4dce7c4344cd1eac6bee52","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.speed"
+msgstr "速率"
+
+#. English: Time
+#. chrys-meta={"fingerprint":"dce8c787e4d26fbeb18d23d65541d6bf1fcb3a15099300e963e4b49f5d1d4e8a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.time"
+msgstr "耗时"
+
+#. English: Cache read
+#. chrys-meta={"fingerprint":"687accd9497f5127ef89db0a94b14b982d526ea210f3a503216de870e1fec009","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.cache_read"
+msgstr "缓存读"
+
+#. English: Calls
+#. chrys-meta={"fingerprint":"1ec55490d7fdabdf53205bcf206a678399e2426471802dcd44a38a467da87ed1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.calls"
+msgstr "调用"
+
+#. English: Failed
+#. chrys-meta={"fingerprint":"13d2e4ee23334630408fe0ffecabfab3876a64d44dd00ffaefb56d8ca90b0da8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.failed"
+msgstr "失败"
+
+#. English: New input
+#. chrys-meta={"fingerprint":"41704227570599c31de6e1c6bf3f493415c241d33866c323cca9f4ed3808c277","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.new_input"
+msgstr "新输入"
+
+#. English: Output
+#. chrys-meta={"fingerprint":"05859c2cb178f6b52e68ea789358b4f6d9958c27ad628104ccee05f67586426d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.output"
+msgstr "输出"
+
+#. English: Reading usage from every session…
+#. chrys-meta={"fingerprint":"0e800ab999b6729551bb1a759933628ec61c23fa49a3502b6f34052e4c8f7f6e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.loading"
+msgstr "正在读取所有会话的用量…"
+
+#. English: Unknown model
+#. chrys-meta={"fingerprint":"56be977d14bd94bfd99ffd8c01bb9cfff6a1ce4fadeb4430013a8587223fd916","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.model.unknown"
+msgstr "未知模型"
+
+#. English: no deleted sessions/external ACP
+#. chrys-meta={"fingerprint":"227326e99706858f18dd312a7ff9695275ab0c043702e16622224e0874fc3e90","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.scope"
+msgstr "不含已删除会话和外部 ACP"
+
+#. English: from {day}
+#. chrys-meta={"fingerprint":"c8f559c14b3ed684df7768c0df4b8d54b448eb0debd7d302b6266e8f8668aa99","multiline":false,"placeholders":["day"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.since"
+msgstr "始于 {day}"
+
+#. English: {count} log unreadable
+#. English-plural: {count} logs unreadable
+#. chrys-meta={"fingerprint":"e79d3d44be868323e918d5f9054c8f7a177caaec5a9bac422ede9ba788e6f3ee","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.unreadable"
+msgid_plural "tui.usage.note.unreadable#plural"
+msgstr[0] "{count} 个日志无法读取"
+
+#. English: {count} call unreported
+#. English-plural: {count} calls unreported
+#. chrys-meta={"fingerprint":"30edcd48c57cf2756f9abd1332255aaf4f23a3d446a15e63f0b1cdf45decc658","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.unreported"
+msgid_plural "tui.usage.note.unreported#plural"
+msgstr[0] "{count} 次调用未报告用量"
+
+#. English: Other workspaces
+#. chrys-meta={"fingerprint":"6d7805200d84a36fdff69306ab89e5d5baf0d2008448aa2166941869367ba36c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.project.other"
+msgstr "其他工作区"
+
+#. English: All
+#. chrys-meta={"fingerprint":"d24a279dbbad5c28bcf04fa0ca9ee667b53e32c0267123d319c0cee855dbdce8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.all"
+msgstr "全部"
+
+#. English: 30 days
+#. chrys-meta={"fingerprint":"abae31b65340147c30524f41173823d892accaf4e7bec9875b530cd93339faa1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.last_30_days"
+msgstr "近30天"
+
+#. English: This month
+#. chrys-meta={"fingerprint":"745458fe70202ca1d3efc7518aa83f097fb4719953f53d8f69d4595355abf16c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.month"
+msgstr "本月"
+
+#. English: Today
+#. chrys-meta={"fingerprint":"7b10a8bc136b317c40c28bf8608267d91fe8cbac80e3585e21d2a45af61fc15a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.today"
+msgstr "今天"
+
+#. English: This week
+#. chrys-meta={"fingerprint":"d148aad810da76712f69d54164c2334c0f3a2b0ff3a36eb5182e1b3fa315a6f0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.week"
+msgstr "本周"
+
+#. English: Approval judge
+#. chrys-meta={"fingerprint":"f644ea340d9f9ca7a08fce7bc7adc142595b67c8f1f422396319ba970c688bfc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.approval_judge"
+msgstr "审批判断"
+
+#. English: Compaction
+#. chrys-meta={"fingerprint":"7e3ffa2bd48daa53319a31743b1640fdb4ba309f934f972b709485b4baf35a3e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.compaction"
+msgstr "上下文压缩"
+
+#. English: Last Words
+#. chrys-meta={"fingerprint":"d3cb0e1ad12951982f0a857ab8baaeafaf2e37779f56254a30eb4690e109d373","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.completer"
+msgstr "Last Words"
+
+#. English: Main agent
+#. chrys-meta={"fingerprint":"2a6d7b7905e27f4347f243fecd0fd6331e8bfa169a9cc24685d5b5b14d3a91cc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.main"
+msgstr "主智能体"
+
+#. English: Sub-agent
+#. chrys-meta={"fingerprint":"89e0801e2952d3706eaa1b79629dcc3805be3cc23fadb72c9ca4949a1afbcc26","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.sub_agent"
+msgstr "子智能体"
+
+#. English: Session titles
+#. chrys-meta={"fingerprint":"568a23da6683fedebd695559ee88ad159b3b9feb83dce85eedcb39ac0ca15a94","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.title_gen"
+msgstr "标题生成"
+
+#. English: Workflow node
+#. chrys-meta={"fingerprint":"9dbd1483c31f15ae36e1996e3c1666505ef17ee28148945caf224bb0b80ad8b5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.workflow_node"
+msgstr "工作流节点"
+
+#. English: Calendar
+#. chrys-meta={"fingerprint":"ad64b46121327a123ac5c482bc73c25bb22ab33d5c23e6710b609a245779303d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.tab.calendar"
+msgstr "日历"
+
+#. English: Overview
+#. chrys-meta={"fingerprint":"b9ad84991d7daa4ad9f8a22fdf25f00dd38773173eb33646e011e7646ed19e29","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.tab.overview"
+msgstr "总览"
+
+#. English: Token Usage
+#. chrys-meta={"fingerprint":"166392622df9e6afbd731270bea93f53e61e809361e48c75c8045e7e417b949c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.title"
+msgstr "Token 用量"
+
+#. English: Token Usage · reading…
+#. chrys-meta={"fingerprint":"129ed1bb3e00db5fde63388316a7003ec6ebb8477c01e064ed7e01f3f6609548","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.title_reading"
+msgstr "Token 用量 · 读取中…"
+
+#. English: Trend
+#. chrys-meta={"fingerprint":"c348c443cf33d5961408e81501360e952ee7a9af71540711421358a4917a6681","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend"
+msgstr "趋势"
+
+#. English: Daily
+#. chrys-meta={"fingerprint":"347474e5a57b89c8c8a3abb20ebb1ae2a7fe0ac8edfe6b3ef84a37e9caecd57b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend.daily"
+msgstr "按日"
+
+#. English: peak {value}
+#. chrys-meta={"fingerprint":"1ec02a7ce56fd85aad42968f1e44d42b438cbb9721055da20cb1a3ad59f85dfd","multiline":false,"placeholders":["value"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend.peak"
+msgstr "峰值 {value}"
+
+#. English: Weekly
+#. chrys-meta={"fingerprint":"56dabaa7e3c3d626ed9a56bd103a3b2413e97b221fc8b7e45ac390e8919e1765","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend.weekly"
+msgstr "按周"
+
 #. English: OK
 #. chrys-meta={"fingerprint":"6df638960a5ede1f4a19b118e821e01478abe5fc851a4370ac9574784032e9f0","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/vision_unsupported.py
@@ -16278,6 +16515,15 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "run.unexpected_error"
 #~ msgstr "发生意外错误。"
 
+#~ msgid "settings.prompt_shortcuts.load_user_folder.label"
+#~ msgstr "从用户目录加载快捷指令（如果存在）"
+
+#~ msgid "settings.prompt_shortcuts.load_working_folder.label"
+#~ msgstr "从工作目录加载快捷指令（如果存在）"
+
+#~ msgid "settings.prompt_shortcuts.paths.label"
+#~ msgstr "快捷指令目录"
+
 #~ msgid "settings.value_clamped"
 #~ msgstr "{source}={raw}：{detail}，已改用 {adjusted}。"
 
@@ -16436,6 +16682,51 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "tui.settings.migrate.button.copy"
 #~ msgstr "复制"
 
+#~ msgid "tui.settings.prompt_shortcuts.add"
+#~ msgstr "+ 添加"
+
+#~ msgid "tui.settings.prompt_shortcuts.description"
+#~ msgstr "配置 / 列表从哪里读取快捷指令。目前只支持 Markdown（.md）文件。"
+
+#~ msgid "tui.settings.prompt_shortcuts.directory"
+#~ msgstr "快捷指令目录"
+
+#~ msgid "tui.settings.prompt_shortcuts.empty"
+#~ msgstr "未添加其他目录"
+
+#~ msgid "tui.settings.prompt_shortcuts.guide_link"
+#~ msgstr "如何编写快捷指令 →"
+
+#~ msgid "tui.settings.prompt_shortcuts.load_user_folder"
+#~ msgstr "从用户目录加载快捷指令（如果存在）"
+
+#~ msgid "tui.settings.prompt_shortcuts.load_working_folder"
+#~ msgstr "从工作目录加载快捷指令（如果存在）"
+
+#~ msgid "tui.settings.prompt_shortcuts.placeholder.absolute_linux"
+#~ msgstr "/home/you/prompts"
+
+#~ msgid "tui.settings.prompt_shortcuts.placeholder.absolute_macos"
+#~ msgstr "/Users/you/prompts"
+
+#~ msgid "tui.settings.prompt_shortcuts.placeholder.absolute_windows"
+#~ msgstr "C:\\path\\to\\prompts"
+
+#~ msgid "tui.settings.prompt_shortcuts.placeholder.relative_posix"
+#~ msgstr "relative/path/to/prompts"
+
+#~ msgid "tui.settings.prompt_shortcuts.placeholder.relative_windows"
+#~ msgstr "relative\\path\\to\\prompts"
+
+#~ msgid "tui.settings.prompt_shortcuts.title"
+#~ msgstr "快捷指令目录"
+
+#~ msgid "tui.settings.prompt_shortcuts.working_folder_scope"
+#~ msgstr "{path} 及其上级目录（直到仓库根目录）"
+
+#~ msgid "tui.settings.section.prompt_shortcuts"
+#~ msgstr "快捷指令"
+
 #~ msgid "tui.settings.section.session"
 #~ msgstr "会话"
 
@@ -16447,6 +16738,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.settings.section.web_search"
 #~ msgstr "网络搜索"
+
+#~ msgid "tui.settings.tab.prompt_shortcuts"
+#~ msgstr "快捷指令"
 
 #~ msgid "tui.sidebar.background.pid"
 #~ msgstr "pid {pid}"
@@ -16636,6 +16930,12 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.trajectory.operation_unresolved"
 #~ msgstr "{precision}：{reason}"
+
+#~ msgid "tui.usage.period"
+#~ msgstr "{start} 至 {end}"
+
+#~ msgid "tui.usage.title_snapshot"
+#~ msgstr "用量 · 快照 {time}"
 
 #~ msgid "tui.vision_unsupported.title.input_not_available"
 #~ msgstr "图像输入不可用"

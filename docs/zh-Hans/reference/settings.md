@@ -145,16 +145,6 @@ llm:
 | `context.warn_threshold_pct` | `0.5` | 数值；范围 `0`–`1`，表示上下文窗口的占用比例。用量达到阈值时向智能体提示一次上下文用量较高，回落到阈值以下后再次达到才会再提示；默认阈值为 50%；不改变自动压缩的触发条件 |
 | `trajectory.verify_commands` | 内置常见测试、检查命令列表 | 字符串；轨迹分析用来识别验证操作的命令词，以逗号分隔，例如 `"pytest,ruff,npm test"`。自定义值替换整份列表；只影响分析归类，不执行这些命令 |
 
-### 快捷指令
-
-以下键决定 TUI 的 `/` 列表从哪些目录读取[快捷指令](../guides/extensions/shortcuts.md)。它们没有对应的环境变量，修改后立即生效，只能在用户设置中修改，项目设置无法更改。
-
-| YAML 键 | 环境变量 | 默认值 | 类型、取值与效果 |
-| --- | --- | --- | --- |
-| `prompt_shortcuts.load_user_folder` | 无 | `true` | 布尔值；是否读取配置目录下 `shortcuts` 中你自己的快捷指令（`~/.chrys/shortcuts`，Windows 为 `%APPDATA%\chrys\shortcuts`） |
-| `prompt_shortcuts.load_working_folder` | 无 | `true` | 布尔值；是否读取工作目录及其上级目录（直到仓库根目录）中的 `.chrys/shortcuts` |
-| `prompt_shortcuts.paths` | 无 | `[]` | 额外读取快捷指令的目录列表，例如 `["~/team-prompts", "docs/prompts"]`，可以写成 YAML 列表，也可以写成 JSON 数组字符串（TUI 保存时使用 JSON 字符串）。每项可以是绝对路径、以 `~` 开头的路径，或相对于工作目录的路径；子目录也会读取 |
-
 ### 通知
 
 以下键均为布尔值，默认均为 `true`，没有对应环境变量，用于 TUI 的事件通知。

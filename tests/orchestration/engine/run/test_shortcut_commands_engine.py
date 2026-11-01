@@ -241,7 +241,7 @@ def _write_shortcut(folder: Path, name: str, body: str) -> Path:
 
 def _loaded_ref(engine: AgentEngine, name: str) -> PromptShortcutRef:
     """The ref the TUI sends for shortcut *name*: its name and the path the loader returned, as the ``/`` list loads it."""
-    shortcuts = load_prompt_shortcuts(**prompt_shortcut_folders(engine.settings, engine.workspace_primary_cwd))
+    shortcuts = load_prompt_shortcuts(**prompt_shortcut_folders(engine.workspace_primary_cwd))
     (shortcut,) = [shortcut for shortcut in shortcuts if shortcut.name == name]
     return PromptShortcutRef(name=shortcut.name, path=shortcut.path)
 
@@ -825,7 +825,7 @@ async def test_a_cancel_while_the_commands_are_announced_or_ended_still_tells_ev
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("case", ["other_working_folder", "working_folder_off", "user_folder_off", "path_differs"])
+@pytest.mark.parametrize("case", ["other_working_folder", "file_removed", "path_differs"])
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
 async def test_a_shortcut_the_engine_no_longer_loads_from_its_file_is_refused_unrun(
     agent_engine: AgentEngineFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
@@ -834,20 +834,17 @@ async def test_a_shortcut_the_engine_no_longer_loads_from_its_file_is_refused_un
     typed = f'Go !`echo ran > "{marker}"`'
     started = await _start(agent_engine, monkeypatch, tmp_path, [MockResponse(text="never")])
     engine = started.engine
-    in_working_folder = case in ("other_working_folder", "working_folder_off")
-    if in_working_folder:
-        _write_shortcut(project_shortcuts_dir(started.workspace), "go", typed)
+    if case == "other_working_folder":
+        written = _write_shortcut(project_shortcuts_dir(started.workspace), "go", typed)
     else:
-        _write_shortcut(global_shortcuts_dir(get_platform().config_dir), "go", typed)
+        written = _write_shortcut(global_shortcuts_dir(get_platform().config_dir), "go", typed)
     ref = _loaded_ref(engine, "go")
     if case == "other_working_folder":
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
         await engine.event_bus.publish(WorkspaceChange(primary_cwd=str(elsewhere)), raise_handler_errors=True)
-    elif case == "working_folder_off":
-        engine.settings_handle.override(prompt_shortcuts_load_working_folder=False)
-    elif case == "user_folder_off":
-        engine.settings_handle.override(prompt_shortcuts_load_user_folder=False)
+    elif case == "file_removed":
+        written.unlink()
     else:
         # Same name, another file: a copy elsewhere is not the shortcut the engine loads.
         other = _write_shortcut(tmp_path / "copies", "go", typed)

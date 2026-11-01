@@ -34,6 +34,7 @@ from time import monotonic_ns
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from chrys.foundation.errors import (
+    ProviderResponseError,
     classify_error,
     clean_error_message,
     invalidates_continuation_token,
@@ -66,6 +67,7 @@ from chrys.foundation.trajectory.metadata import (
     ANALYTICS_ITEM_ID_KEY,
     OPERATION_ID_KEY,
 )
+from chrys.foundation.trajectory.usage import exchange_usage_payload
 
 from ._content import Content, add_usage_details, normalize_stream_usage
 from ._loop_recorder import LoopRecorder, _message_snapshot
@@ -998,14 +1000,18 @@ class _LoopTrajectory:
         self._active_exchange = None
         self._last_exchange_id = trace.operation_id
         payload: dict[str, Any] = {}
+        measurements: dict[str, dict[str, Any]] | None = None
         if exc is not None:
             payload["error_code"] = type(exc).__name__
             policy = self._retry_policy
             payload["retryable"] = bool(policy is not None and policy.is_retryable(exc))
             if not isinstance(exc, asyncio.CancelledError):
                 payload["error_kind"] = classify_error(exc).kind
+            if isinstance(exc, ProviderResponseError) and exc.usage_details:
+                # The failed response still consumed these tokens; the session totals count them too.
+                payload["usage"], measurements = exchange_usage_payload(exc.usage_details)
         try:
-            trace.finished(outcome=outcome, payload=payload)
+            trace.finished(outcome=outcome, payload=payload, measurements=measurements)
         except Exception:
             logger.debug("Trajectory exchange close failed", exc_info=True)
 

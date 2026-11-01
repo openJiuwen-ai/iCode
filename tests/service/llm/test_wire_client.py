@@ -580,6 +580,7 @@ async def test_a_per_request_model_override_cannot_grow_past_the_line_budget() -
     start that became a gap."""
     sink = FakeSink()
     client = _StreamWireClient(None)
+    client.model = "client-model"
     with trajectory_scope(make_context(sink)), internal_side_call_scope(), side_call_scope(ActorRole.COMPLETER):
         stream = client._inner_get_response(
             messages=[Message("user", ["hi"])], options={"model": "m" * 200_000}, stream=True
@@ -590,6 +591,18 @@ async def test_a_per_request_model_override_cannot_grow_past_the_line_budget() -
     # here as the over-budget line it would have been.
     assert sink.only(EventType.MODEL_EXCHANGE_STARTED).payload["request_model"] == "m" * 256
     assert sink.only(EventType.MODEL_EXCHANGE_FINISHED).payload["outcome"] == ExchangeOutcome.SUCCESS
+
+
+async def test_a_request_without_a_model_override_reports_the_clients_model() -> None:
+    """A side call names no model in its options, and a failed one has no response to name it."""
+    sink = FakeSink()
+    client = _StreamWireClient(None)
+    client.model = "client-model"
+    with trajectory_scope(make_context(sink)), internal_side_call_scope(), side_call_scope(ActorRole.COMPLETER):
+        stream = client._inner_get_response(messages=[Message("user", ["hi"])], options={}, stream=True)
+        await stream.get_final_response()
+
+    assert sink.only(EventType.MODEL_EXCHANGE_STARTED).payload["request_model"] == "client-model"
 
 
 # ──────────────── the base call path ─────────────────────────────────────

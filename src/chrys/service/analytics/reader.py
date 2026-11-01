@@ -265,6 +265,39 @@ def scan_open_trajectory_batch(
     return batch
 
 
+def scan_event_types(
+    path: Path,
+    event_types: frozenset[str],
+    consumer: Callable[[TrajectoryEvent], None],
+    *,
+    cancel_event: Event | None = None,
+) -> None:
+    """Hand *consumer* each event of *event_types* in *path*, decoding only the lines that can hold one.
+
+    Decoding every line of a long history takes seconds; looking for the type's
+    JSON string takes a fraction of that, and text that merely mentions a type
+    is decoded and dropped. Nothing else is accounted for: no sequence checks,
+    no digest, and a line that does not decode is skipped.
+    """
+    needles = tuple(f'"{event_type}"'.encode() for event_type in event_types)
+    with path.open("rb") as handle:
+        while line := handle.readline(LINE_BUDGET_BYTES):
+            raise_if_cancelled(cancel_event)
+            if not line.endswith(b"\n"):
+                # Over the write-side budget, or a torn tail: never a whole event.
+                while (rest := handle.readline(LINE_BUDGET_BYTES)) and not rest.endswith(b"\n"):
+                    pass
+                continue
+            if not any(needle in line for needle in needles):
+                continue
+            try:
+                event = decode_event_line(line)
+            except EnvelopeError:
+                continue
+            if event.schema_version <= SCHEMA_VERSION and event.event_type in event_types:
+                consumer(event)
+
+
 def verify_prefix(
     handle: BufferedReader,
     *,

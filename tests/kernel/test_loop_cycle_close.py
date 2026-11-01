@@ -17,6 +17,7 @@ from typing import Any, NoReturn
 import pytest
 
 from chrys.foundation.errors.kinds import ErrorKind
+from chrys.foundation.errors.provider import ProviderResponseError
 from chrys.foundation.trajectory.context import TRAJECTORY_CONTEXT_KWARG
 from chrys.foundation.trajectory.envelope import MeasurementSource
 from chrys.foundation.trajectory.event_types import EventType, ExchangeOutcome, ToolOutcome
@@ -192,6 +193,59 @@ async def test_a_failed_exchange_records_what_the_error_was() -> None:
     assert finished.payload["outcome"] == ExchangeOutcome.ERROR
     assert finished.payload["error_code"] == "ConnectionRefusedError"
     assert finished.payload["error_kind"] == ErrorKind.CONNECTION_REFUSED
+
+
+class _FailedResponseWireClient(_FailingWireClient):
+    """A provider that answered with a failure, and reported what the attempt spent."""
+
+    def _send(
+        self, *, messages: Sequence[Message], options: Mapping[str, Any], **kwargs: Any
+    ) -> Awaitable[ChatResponse]:
+        del messages, options, kwargs
+
+        async def _resolve() -> ChatResponse:
+            raise ProviderResponseError(
+                "server_error",
+                "failed midway",
+                retryable=False,
+                usage_details={"input_token_count": 100, "cache_read_input_token_count": 40, "output_token_count": 7},
+            )
+
+        return _resolve()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_response_keeps_the_tokens_it_spent_on_its_exchange() -> None:
+    """The session totals count a failed response's usage; the exchange must say the same."""
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_FailedResponseWireClient()))
+    sink = FakeSink()
+
+    with pytest.raises(ProviderResponseError):
+        await layer.get_response(
+            [Message("user", ["hi"])],
+            client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+        )
+
+    finished = sink.only(EventType.MODEL_EXCHANGE_FINISHED)
+    assert finished.payload["outcome"] == ExchangeOutcome.ERROR
+    normalized = finished.payload["usage"]["normalized"]
+    assert (normalized["input_total"], normalized["cache_read"], normalized["output_total"]) == (100, 40, 7)
+    assert finished.measurements["/payload/usage/normalized/input_total"]["source"] == MeasurementSource.PROVIDER
+    assert finished.measurements["/payload/usage/normalized/output_total"]["source"] == MeasurementSource.PROVIDER
+
+
+@pytest.mark.asyncio
+async def test_a_failure_with_no_usage_reports_none_on_its_exchange() -> None:
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_FailingWireClient()))
+    sink = FakeSink()
+
+    with pytest.raises(ConnectionRefusedError):
+        await layer.get_response(
+            [Message("user", ["hi"])],
+            client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+        )
+
+    assert "usage" not in sink.only(EventType.MODEL_EXCHANGE_FINISHED).payload
 
 
 @pytest.mark.asyncio

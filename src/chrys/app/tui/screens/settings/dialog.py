@@ -17,7 +17,6 @@ from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.screens.settings.layout import (
     GENERAL_TAB_ID,
     NOTIFICATIONS_TAB_ID,
-    PROMPT_SHORTCUTS_TAB_ID,
     TABS,
     RowKind,
     SettingRowSpec,
@@ -25,11 +24,6 @@ from chrys.app.tui.screens.settings.layout import (
     tab_by_id,
 )
 from chrys.app.tui.screens.settings.panes.notifications import NotificationsPane
-from chrys.app.tui.screens.settings.panes.prompt_shortcuts import (
-    SHORTCUTS_GUIDE_TOPIC,
-    PromptShortcutsPane,
-    ShortcutsGuideLink,
-)
 from chrys.app.tui.screens.settings.panes.sessions import SessionRootRow
 from chrys.app.tui.screens.settings.rows import SettingRow, row_class_for
 from chrys.foundation.config.settings import Settings
@@ -123,8 +117,6 @@ class SettingsDialog(BaseDialog[None]):
         """Build *tab*'s widgets, titled in the locale in force now."""
         if tab.id == NOTIFICATIONS_TAB_ID:
             return [NotificationsPane(self._ports.notifications())]
-        if tab.id == PROMPT_SHORTCUTS_TAB_ID:
-            return [PromptShortcutsPane(self._ports)]
         localizer = widget_localizer(self)
         groups: list[Widget] = []
         for section in tab.sections:
@@ -175,15 +167,6 @@ class SettingsDialog(BaseDialog[None]):
         if mounting is not None:
             await mounting
 
-    @on(ShortcutsGuideLink.Clicked)
-    def _open_shortcuts_guide(self, event: ShortcutsGuideLink.Clicked) -> None:
-        event.stop()
-        # Imported here: the guide's markdown viewer is loaded only when it is opened.
-        from chrys.app.tui.screens.guides.screen import GuideDialog
-
-        # Over the settings, which stay open beneath it: closing the guide returns here.
-        self.app.push_screen(GuideDialog(locale_controller=self._locale_controller, topic_id=SHORTCUTS_GUIDE_TOPIC))
-
     def _build_row(self, row: SettingRowSpec) -> SettingRow:
         from chrys.app.tui.app import ChrysApp
 
@@ -233,16 +216,11 @@ class SettingsDialog(BaseDialog[None]):
     def _notification_panes(self) -> list[NotificationsPane]:
         return [pane for pane in self.query(NotificationsPane) if pane.projected]
 
-    def _prompt_shortcut_panes(self) -> list[PromptShortcutsPane]:
-        return [pane for pane in self.query(PromptShortcutsPane) if pane.projected]
-
     def reproject(self) -> None:
         """Re-read every value/badge from the ports; controls are not rebuilt."""
         for row in self.rows():
             row.project()
         for pane in self._notification_panes():
-            pane.project()
-        for pane in self._prompt_shortcut_panes():
             pane.project()
         self.refresh_status()
 
@@ -265,8 +243,6 @@ class SettingsDialog(BaseDialog[None]):
             row.refresh_localization()
         for notifications in self._notification_panes():
             notifications.refresh_localization()
-        for shortcuts in self._prompt_shortcut_panes():
-            shortcuts.refresh_localization()
         self.refresh_status()
 
     def refresh_status(self) -> None:
@@ -297,8 +273,6 @@ class SettingsDialog(BaseDialog[None]):
         """
         for row in self.rows():
             row.commit_pending()
-        for pane in self._prompt_shortcut_panes():
-            pane.commit_pending()
 
     def action_close(self) -> None:
         self.dismiss(None)

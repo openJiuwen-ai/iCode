@@ -55,14 +55,15 @@
 | `/buddy [command]` | — | 管理 Buddy 伙伴。尚未孵化时，只能使用 `hatch`；孵化后可使用其余选项。 | 省略参数：按空格键或 **Enter** 显示可用命令。<br>`hatch`：孵化新伙伴。<br>`info`：显示伙伴信息。<br>`pet`：与伙伴互动并生成回复。<br>`mute`：开启或关闭伙伴通知。<br>`name <new-name>`：将伙伴重命名为 `new-name`。 |
 | `/agents [target]` | `/agent`<br>`/config` | 打开智能体配置窗口。详见[配置智能体](../guides/configuration/agents.md#打开智能体配置窗口)。 | 省略参数：按空格键或 **Enter** 显示可用标签页。<br>`target`：直接打开指定标签页。可用值为 `basic`、`instructions`、`tools`、`sub-agents`、`skills`、`mcp`、`memory` 和 `compaction`。<br>参数别名：`subagents` 等同于 `sub-agents`，`skill` 等同于 `skills`。 |
 | `/runtime` | `/details` | 打开“运行时详情”窗口，查看当前模型配置和模型 ID、按类别分组的内置工具、上下文管理工具、子智能体工具、按服务器分组的 MCP 工具、按来源目录分组的快捷指令、按来源分组的 Skills、已加载的钩子，以及预配置记忆文件。 | — |
-| `/settings [tab]` | — | 打开设置窗口。详见[配置 iCode 设置](../guides/configuration/settings.md#设置窗口)。 | `tab`：直接打开指定标签页。可用值为 `general`、`models`、`security`、`sessions`、`tools`、`shortcuts` 和 `notifications`。省略参数时，按空格键或 **Enter** 显示可用标签页。 |
+| `/usage` | — | 打开 token 用量窗口，查看所有会话的合计、趋势和速度。详见[查看 token 用量和速度](../guides/daily-use/sessions.md#查看-token-用量和速度)。 | — |
+| `/settings [tab]` | — | 打开设置窗口。详见[配置 iCode 设置](../guides/configuration/settings.md#设置窗口)。 | `tab`：直接打开指定标签页。可用值为 `general`、`models`、`security`、`sessions`、`tools` 和 `notifications`。省略参数时，按空格键或 **Enter** 显示可用标签页。 |
 | `/workflow` | — | 打开工作流模式并选择工作流。详见[创建和运行工作流](../guides/running/workflows.md)。 | — |
 | `/help` | — | 打开“iCode 用户指南”窗口，查看本文档。也可以按 **F8** 或点击底栏的 `f8 帮助`。 | — |
 | `/man [command]` | — | 显示 iCode 命令说明。 | 省略参数：按空格键或 **Enter** 显示可查看的命令。<br>`command`：命令名称或别名；显示指定命令的名称、用法、说明、别名和选项。 |
 
 ## 快捷指令
 
-快捷指令是保存为 Markdown 文件的提示词，放在 `~/.chrys/shortcuts`（Windows：`%APPDATA%\chrys\shortcuts`）或项目的 `.chrys/shortcuts` 中。输入 `/` 后，它们列在“快捷指令”分组中；选中一个，或输入 `/名称 参数` 后按 **Tab** 或 **Enter**，提示词会填入输入栏，修改后再发送。如何编写和设置，详见[配置快捷指令](../guides/extensions/shortcuts.md)。
+快捷指令是保存为 Markdown 文件的提示词，放在 `~/.chrys/shortcuts`（Windows：`%APPDATA%\chrys\shortcuts`）或项目的 `.chrys/shortcuts` 中。输入 `/` 后，它们列在“快捷指令”分组中；选中一个，或输入 `/名称 参数` 后按 **Tab** 或 **Enter**，提示词会填入输入栏，修改后再发送。如何编写，详见[编写和使用快捷指令](../guides/extensions/shortcuts.md)。
 
 直接输入名称时，依次匹配内置命令、Skill、快捷指令。
 

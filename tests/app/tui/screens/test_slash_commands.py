@@ -294,6 +294,15 @@ def test_dispatch_runtime_opens_details_for_agent_without_status_trail() -> None
     assert screen.opened == ["runtime", "runtime"]
 
 
+def test_dispatch_usage_opens_the_usage_dialog() -> None:
+    screen = make_suggestion_screen()
+    handler = make_suggestion_handler(screen)
+    handler.build_slash_commands()
+
+    assert handler.dispatch_slash_command("/usage") is True
+    assert screen.opened == ["usage"]
+
+
 def test_dispatch_fork_requests_session_fork() -> None:
     screen = make_suggestion_screen()
     handler = make_suggestion_handler(screen)

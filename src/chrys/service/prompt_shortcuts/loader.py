@@ -23,12 +23,10 @@ import logging
 import os
 import stat as stat_mod
 import threading
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from chrys.foundation.config.settings import Settings, parse_prompt_shortcut_paths
 from chrys.foundation.platform import get_platform
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.service.skills.loader import FRONTMATTER_RE, parse_frontmatter
@@ -36,10 +34,7 @@ from chrys.service.skills.loader import FRONTMATTER_RE, parse_frontmatter
 logger = logging.getLogger(__name__)
 
 SHORTCUTS_DIR_NAME = "shortcuts"
-"""The directory under the config dir or a project's ``.chrys`` dir holding prompt shortcuts.
-
-Named as the settings tab is, not as opencode's ``commands``.
-"""
+"""The directory under the config dir or a project's ``.chrys`` dir holding prompt shortcuts."""
 
 PROJECT_CONFIG_DIR_NAME = ".chrys"
 
@@ -71,7 +66,7 @@ _CACHE_LOCK = threading.Lock()
 """Loads run off the event loop and may overlap; each prunes both caches to what it read."""
 
 type _SourceKind = Literal["project", "global"]
-"""Where a folder comes from: a project's ``.chrys``, or the user's own (their folder or one they added)."""
+"""Where a folder comes from: a project's ``.chrys``, or the user's own folder."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,32 +109,20 @@ def project_roots(workspace: str) -> list[Path]:
     return [start]
 
 
-def prompt_shortcut_folders(settings: Settings, workspace: str | None) -> dict[str, Any]:
-    """Where shortcuts are read from for *workspace* under *settings*: :func:`load_prompt_shortcuts`'s arguments.
+def prompt_shortcut_folders(workspace: str | None) -> dict[str, Any]:
+    """Where shortcuts are read from for *workspace*: :func:`load_prompt_shortcuts`'s arguments.
 
-    The one definition both readers use: the ``/`` list, and the engine when it
-    checks that a message's shortcut is still one it would load.
+    The user's folder and the working folder, always: which folders are read is
+    not a setting. The one definition both readers use: the ``/`` list, and the
+    engine when it checks that a message's shortcut is still one it would load.
     """
-    try:
-        extra_dirs = parse_prompt_shortcut_paths(settings.prompt_shortcuts_paths)
-    except ValueError, TypeError, RecursionError:
-        extra_dirs = []
-    return {
-        "config_dir": get_platform().config_dir,
-        "workspace": workspace,
-        "load_user_folder": settings.prompt_shortcuts_load_user_folder,
-        "extra_dirs": extra_dirs,
-        "load_working_folder": settings.prompt_shortcuts_load_working_folder,
-    }
+    return {"config_dir": get_platform().config_dir, "workspace": workspace}
 
 
 def load_prompt_shortcuts(
     *,
     config_dir: Path,
     workspace: str | None,
-    load_user_folder: bool = True,
-    extra_dirs: Sequence[str] = (),
-    load_working_folder: bool = True,
 ) -> list[PromptShortcut]:
     """Load prompt shortcuts, each name once, sorted by name (case-insensitively).
 
@@ -148,13 +131,7 @@ def load_prompt_shortcuts(
     """
     commands = [
         command
-        for _folder, found in prompt_shortcut_sources(
-            config_dir=config_dir,
-            workspace=workspace,
-            load_user_folder=load_user_folder,
-            extra_dirs=extra_dirs,
-            load_working_folder=load_working_folder,
-        )
+        for _folder, found in prompt_shortcut_sources(config_dir=config_dir, workspace=workspace)
         for command in found
     ]
     # The list shows shortcuts in this order; where a file came from is not shown, so it is no key.
@@ -165,9 +142,6 @@ def prompt_shortcut_sources(
     *,
     config_dir: Path,
     workspace: str | None,
-    load_user_folder: bool = True,
-    extra_dirs: Sequence[str] = (),
-    load_working_folder: bool = True,
 ) -> list[tuple[Path, list[PromptShortcut]]]:
     """Load prompt shortcuts by the folder they came from, folders in reading order.
 
@@ -175,32 +149,23 @@ def prompt_shortcut_sources(
     gave none is left out.
 
     Folders are read in this order: the user folder (``<config_dir>/shortcuts``),
-    then *extra_dirs* in order (``~`` expanded, relative ones resolved against
-    *workspace*), then the working folder: ``.chrys/shortcuts`` of *workspace*
-    and its parents up to the Git repository's top, nearest first. Extra
-    folders hold ``*.md`` files themselves, their subfolders included
-    (``git/commit-msg.md`` is ``/git/commit-msg``), and count as the user's
-    own (``global``).
+    then the working folder: ``.chrys/shortcuts`` of *workspace* and its
+    parents up to the Git repository's top, nearest first. Each holds ``*.md``
+    files, its subfolders included (``git/commit-msg.md`` is ``/git/commit-msg``).
 
     Like skills, the first shortcut loaded with a name (compared
     case-insensitively) is kept and later ones are skipped with a warning, so
     the user's own shortcuts win over a project's and a nearer project folder
     wins over a farther one. A folder is read at most once, and the user
     folder is never read as a project folder (a workspace at the user's home
-    on macOS/Linux), even with the user folder switched off.
+    on macOS/Linux).
     """
     user_dirs = [global_shortcuts_dir(config_dir)]
-    sources: list[tuple[list[Path], _SourceKind]] = []
-    if load_user_folder:
-        sources.append((user_dirs, "global"))
-    for raw in extra_dirs:
-        folder = resolve_extra_dir(raw, workspace)
-        if folder is not None:
-            sources.append(([folder], "global"))
+    sources: list[tuple[list[Path], _SourceKind]] = [(user_dirs, "global")]
     # A project folder reads nothing a link leads out of its repository: the folder itself
     # (``working_folder_dirs``) and each linked file in it (``_load_file``).
     project_top: Path | None = None
-    if load_working_folder and workspace:
+    if workspace:
         project_top = project_roots(workspace)[-1]
         sources.extend(([directory], "project") for directory in working_folder_dirs(workspace))
     seen_dirs: list[Path] = []
@@ -245,21 +210,13 @@ def prompt_shortcut_sources(
     ]
 
 
-def resolve_extra_dir(raw: str, workspace: str | None) -> Path | None:
-    """Return an extra folder as a path: ``~`` expanded, a relative one under *workspace* (None without one)."""
-    folder = Path(os.path.expanduser(raw))
-    if folder.is_absolute():
-        return folder
-    return Path(workspace) / folder if workspace else None
-
-
 def working_folder_dirs(workspace: str) -> list[Path]:
     """Return the working-folder shortcut directories that exist for *workspace*, nearest first.
 
     A directory that a link leads out of the repository (or, outside one, out
     of *workspace*) is left out with a warning: a repository decides what is in
     it, not what is read elsewhere on the machine. The user's own folders can
-    point anywhere; a team folder is added under Settings → Shortcuts.
+    point anywhere.
     """
     roots = project_roots(workspace)
     found: list[Path] = []
@@ -283,7 +240,7 @@ def _inside(path: Path, top: Path) -> bool:
             _WARNED_OUTSIDE.add(key)
         if warn:
             logger.warning(
-                "Prompt shortcuts: skipping %s: it leads out of %s; add the folder under Settings → Shortcuts instead",
+                "Prompt shortcuts: skipping %s: it leads out of %s",
                 key,
                 os.fspath(top),
             )

@@ -8,8 +8,7 @@ runs after the ``user_prompt_submit`` hooks passed and the message's images
 were checked, before its turn starts:
 
 * the engine must still load that shortcut, from the same file, for the
-  session's working folder under the settings in force now — a draft moved to
-  another folder, or one whose folder was switched off, runs nothing;
+  session's working folder now — a draft moved to another folder runs nothing;
 * the commands run in the session's working folder, and whatever ends the
   admission (the user withdrawing it, an interrupt, a session transition,
   shutdown) ends them, their process trees included;
@@ -43,7 +42,6 @@ from chrys.service.trajectory.preparation import PreparationOutcome
 from chrys.service.trajectory.waits import WaitOutcome, WaitTrace
 
 if TYPE_CHECKING:
-    from chrys.foundation.config.settings_store import SettingsHandle
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.events.types import PromptShortcutRef, UserMessage
     from chrys.orchestration.engine.execution import ExecutionLease, PromptAdmissionScope
@@ -82,19 +80,17 @@ class ExpandedMessage:
 
 
 class ShortcutCommands:
-    """Runs the step for one engine: the session, its settings, and the execution lease."""
+    """Runs the step for one engine: the session and the execution lease."""
 
     def __init__(
         self,
         *,
         bus: EventBus,
         session: ActiveSession,
-        settings_handle: SettingsHandle,
         lease: Callable[[], ExecutionLease],
     ) -> None:
         self._bus = bus
         self._session = session
-        self._settings_handle = settings_handle
         self._lease = lease
 
     async def expand(
@@ -210,8 +206,8 @@ class ShortcutCommands:
         await finish_close(asyncio.create_task(self._bus.publish(event)))
 
     async def _still_loaded(self, ref: PromptShortcutRef, cwd: str) -> bool:
-        """Whether the shortcut list for *cwd* under the settings in force has *ref*, from the same file."""
-        folders = prompt_shortcut_folders(self._settings_handle.settings, cwd)
+        """Whether the shortcut list for *cwd* has *ref*, from the same file."""
+        folders = prompt_shortcut_folders(cwd)
         try:
             shortcuts = await asyncio.to_thread(load_prompt_shortcuts, **folders)
         except Exception:

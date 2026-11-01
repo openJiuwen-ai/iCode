@@ -38,7 +38,6 @@ from chrys.app.tui.widgets.chrome.commands import (
 from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
 from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
-from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar, sanitize_terminal_block
 from chrys.foundation.platform import safe_getcwd
@@ -725,7 +724,7 @@ class SuggestionHandler:
     # -------------------------------------------------------------- #
 
     def refresh_prompt_shortcuts(self) -> None:
-        """Reread prompt shortcut files off the event loop under the current settings; the newest read wins."""
+        """Reread prompt shortcut files off the event loop for the current workspace; the newest read wins."""
         if not self._view.is_attached:
             return
         folders = self._prompt_shortcut_folders()
@@ -743,12 +742,11 @@ class SuggestionHandler:
         )
 
     def _shortcuts(self) -> list[PromptShortcut] | None:
-        """The shortcuts read under the folders and switches in force now; None while those are still being read.
+        """The shortcuts read for the current workspace; None while they are still being read.
 
-        A list read for another workspace, or with a folder since switched
-        off, is never shown or expanded: its files may not apply here. A
-        change of either starts a new read; a refresh under the same ones
-        keeps the list meanwhile. None ("not known yet") is not "none there":
+        A list read for another workspace is never shown or expanded: its
+        files may not apply here. A workspace change starts a new read; a
+        refresh for the same workspace keeps the list meanwhile. None ("not known yet") is not "none there":
         a typed ``/name`` that may be a shortcut waits for it
         (:meth:`resolve_typed_name`).
         """
@@ -791,14 +789,12 @@ class SuggestionHandler:
         return TypedName("none") if shortcut is None else TypedName("shortcut", shortcut, arguments)
 
     def prompt_shortcut_sources_loader(self) -> Callable[[], list[tuple[Path, list[PromptShortcut]]]]:
-        """A blocking read of the shortcuts by source folder, under the current settings, as the / list reads them."""
+        """A blocking read of the shortcuts by source folder for the current workspace, as the / list reads them."""
         return partial(prompt_shortcut_sources, **self._prompt_shortcut_folders())
 
     def _prompt_shortcut_folders(self) -> dict[str, Any]:
-        """Where the loader reads shortcuts from, under the current settings."""
-        handle = self._services.settings_handle
-        settings = handle.settings if handle is not None else Settings()
-        return prompt_shortcut_folders(settings, self._current_file_root())
+        """Where the loader reads shortcuts from for the current workspace."""
+        return prompt_shortcut_folders(self._current_file_root())
 
     async def _load_prompt_shortcuts(
         self, generation: int, folders: dict[str, Any], load: Callable[[], list[PromptShortcut]]

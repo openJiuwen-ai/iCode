@@ -38,12 +38,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from chrys.foundation.errors import classify_error
+from chrys.foundation.errors import ProviderResponseError, classify_error
 from chrys.foundation.trajectory.context import ExchangeTrace, TrajectoryContext, current_trajectory
 from chrys.foundation.trajectory.envelope import ActorKind
 from chrys.foundation.trajectory.event_types import ContinuationMode, ExchangeOutcome
 from chrys.foundation.trajectory.ids import new_analytics_id
-from chrys.foundation.trajectory.usage import normalized_usage, provider_reported_usage, usage_measurements
+from chrys.foundation.trajectory.usage import exchange_usage_payload
 from chrys.foundation.trajectory_timing import build_trajectory_timing, stamp_trajectory_timing
 from chrys.kernel import in_internal_side_call
 from chrys.kernel.instrumentation import _stream_abandoned, _stream_error_of
@@ -213,18 +213,8 @@ def exchange_response_facts(response: ChatResponse[Any]) -> tuple[dict[str, Any]
         payload["response_model"] = str(response.model)[:_OPAQUE_ID_LIMIT]
     if response.finish_reason is not None:
         payload["finish_reason"] = str(response.finish_reason)
-    usage = response.usage_details
-    reported = provider_reported_usage(usage)
-    normalized = normalized_usage(usage)
-    usage_payload: dict[str, Any] = {"normalized": normalized}
-    if reported is not None:
-        usage_payload["provider_reported"] = reported.values
-        if reported.omitted:
-            # Naming what did not fit keeps a reader from reading the mirror
-            # as everything the provider said.
-            usage_payload["provider_reported_omitted"] = list(reported.omitted)
-    payload["usage"] = usage_payload
-    return payload, usage_measurements(normalized)
+    payload["usage"], measurements = exchange_usage_payload(response.usage_details)
+    return payload, measurements
 
 
 def _update_has_visible_text(update: Any) -> bool:
@@ -269,10 +259,13 @@ class ExchangeRecorder:
             return
         outcome = ExchangeOutcome.CANCELLED if isinstance(exc, asyncio.CancelledError) else ExchangeOutcome.ERROR
         payload: dict[str, Any] = {}
+        measurements: dict[str, dict[str, Any]] | None = None
         if outcome == ExchangeOutcome.ERROR:
             payload["error_code"] = type(exc).__name__
             payload["error_kind"] = classify_error(exc).kind
-        self._trace.finished(outcome=outcome, payload=payload)
+            if isinstance(exc, ProviderResponseError) and exc.usage_details:
+                payload["usage"], measurements = exchange_usage_payload(exc.usage_details)
+        self._trace.finished(outcome=outcome, payload=payload, measurements=measurements)
 
     def attach_stream(self, stream: ResponseStream[Any, ChatResponse[Any]]) -> None:
         trace = self._trace

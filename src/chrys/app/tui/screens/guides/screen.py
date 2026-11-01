@@ -88,12 +88,9 @@ class GuideDialog(BaseDialog[None]):
         *,
         locale_controller: LocaleController | None = None,
         docs_root: Path | None = None,
-        topic_id: str | None = None,
     ) -> None:
-        """*topic_id* names the page to open at; the index's default page when it names none there."""
         super().__init__()
         self._locale_controller = locale_controller
-        self._initial_topic_id = topic_id
         self._docs_root = docs_root if docs_root is not None else resolve_docs_root()
         self._index: GuideIndex | None = None
         self._index_error = False
@@ -142,9 +139,9 @@ class GuideDialog(BaseDialog[None]):
         if self._index is None:
             self._enter_error_state()
             return
-        # The first topic becomes active before the tree is built, so the
+        # The default topic becomes active before the tree is built, so the
         # rebuild highlights it like any other active topic.
-        self._active_topic = self._initial_leaf()
+        self._active_topic = self._default_leaf()
         self._rebuild_tree()
         self._tree.focus()
         if self._active_topic is None:
@@ -343,17 +340,12 @@ class GuideDialog(BaseDialog[None]):
             self._pending_load.cancel()
         self._pending_load = None
 
-    def _initial_leaf(self) -> GuideTopic | None:
-        """The page asked for, or the index's default when the docs have no such page."""
+    def _default_leaf(self) -> GuideTopic | None:
         index = self._index
         if index is None:
             return None
-        wanted = self._initial_topic_id
-        leaves = list(iter_leaf_topics(index.topics))
-        if wanted is not None and (found := next((t for t_id, t in leaves if t_id == wanted), None)) is not None:
-            return found
         default = default_topic_id(index)
-        return next((topic for topic_id, topic in leaves if topic_id == default), None)
+        return next((topic for topic_id, topic in iter_leaf_topics(index.topics) if topic_id == default), None)
 
     def _read_active_markdown(self) -> str | None:
         index = self._index

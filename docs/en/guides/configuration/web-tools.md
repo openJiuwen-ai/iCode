@@ -74,6 +74,7 @@ If the combination is invalid, such as `auto` with a `providers` map but no `fal
 | `exa_mcp` | Exa's public endpoint, the same service `auto` uses by default |
 | `bing_html` | Bing search result pages |
 | `duckduckgo_html` | DuckDuckGo's HTML search result pages |
+| `keenable` | Keenable's public search API (keenable.ai) |
 
 These types accept only `type`: the endpoints are fixed and take no credentials. For example, to use DuckDuckGo instead of Exa:
 
@@ -89,6 +90,8 @@ tools:
 ```
 
 `bing_html` and `duckduckgo_html` read ordinary search result pages rather than an official API, so availability and result quality depend on the service and your network. Advertising and generated answers are left out. A captcha, consent page, or unfamiliar page layout is reported as an error, never as an empty result.
+
+`keenable` sends only the query and the number of results to `https://api.keenable.ai/v1/search/public`, with the header `X-Keenable-Title: iCode`. No API key or account is needed; the service has free rate limits per IP address.
 
 ### Search APIs with a key
 
@@ -125,7 +128,7 @@ In `auto` mode, iCode tries the providers in `fallback_chain` in order and retur
 - The provider cannot be reached: its name cannot be resolved, it resolves to a private address, or the connection is refused in a way a retry cannot fix (for example, a certificate rejected by a proxy).
 - The request is too large for the provider, such as a long query that no longer fits in its URL.
 - The provider redirects, returns a captcha or consent page, or sends a response that is too large, uses an unsupported compression, or cannot be read.
-- `exa_mcp`, `bing_html`, or `duckduckgo_html` returns any HTTP 4xx error, or `exa_mcp` reports that the search failed (for example, its free rate limit was reached). An empty result from `exa_mcp` is an answer, so the chain stops there.
+- `exa_mcp`, `bing_html`, `duckduckgo_html`, or `keenable` returns any HTTP 4xx error, or `exa_mcp` reports that the search failed (for example, its free rate limit was reached). An empty result from `exa_mcp` is an answer, so the chain stops there.
 
 If you see `Error: exa_rate_limited`, Exa has reported that its anonymous search limit was reached. iCode does not immediately retry this error; it tries the next provider in your fallback chain, if any. When Exa is the last provider, including the default setup, the error suggests trying again later or configuring a [search API with a key](#search-apis-with-a-key).
 

@@ -346,8 +346,12 @@ def _exa_mcp(name: str) -> SearchProvider:
     return create_provider(name, parse_provider({"type": "exa_mcp"}), ResolvedSearchCredentials({}))
 
 
+def _keenable(name: str) -> SearchProvider:
+    return create_provider(name, parse_provider({"type": "keenable"}), ResolvedSearchCredentials({}))
+
+
 @pytest.mark.parametrize("code", sorted(ENVIRONMENT_FAILURES))
-@pytest.mark.parametrize("factory", [_tavily, _brave, _anonymous, _exa_mcp])
+@pytest.mark.parametrize("factory", [_tavily, _brave, _anonymous, _exa_mcp, _keenable])
 def test_every_adapter_leaves_a_failure_of_its_environment_to_the_next_provider(factory, code):
     assert factory("p").falls_through(WebError(code))
 
@@ -356,7 +360,7 @@ def test_every_adapter_leaves_a_failure_of_its_environment_to_the_next_provider(
     "code,advancing",
     [
         # A keyless service refusing the query is the service's choice; a keyed one names the credential.
-        ("http_4xx", {"duckduckgo_html", "exa_mcp"}),
+        ("http_4xx", {"duckduckgo_html", "exa_mcp", "keenable"}),
         ("exa_rpc_error", {"exa_mcp"}),
         ("exa_search_failed", {"exa_mcp"}),
         # The request itself is wrong: every provider would reject it.
@@ -365,7 +369,13 @@ def test_every_adapter_leaves_a_failure_of_its_environment_to_the_next_provider(
     ],
 )
 def test_which_adapter_failures_end_the_chain(code, advancing):
-    providers = {"tavily": _tavily, "brave": _brave, "duckduckgo_html": _anonymous, "exa_mcp": _exa_mcp}
+    providers = {
+        "tavily": _tavily,
+        "brave": _brave,
+        "duckduckgo_html": _anonymous,
+        "exa_mcp": _exa_mcp,
+        "keenable": _keenable,
+    }
     assert {name for name, factory in providers.items() if factory(name).falls_through(WebError(code))} == advancing
 
 

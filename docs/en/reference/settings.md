@@ -145,16 +145,6 @@ The following settings have no corresponding environment variables.
 | `context.warn_threshold_pct` | `0.5` | Number; from `0` to `1`, representing the fraction of the context window in use. When usage reaches the threshold, the agent is told once that context usage is high, and again only after usage has dropped below the threshold and reached it again. The default threshold is 50%; this does not change when automatic compaction is triggered |
 | `trajectory.verify_commands` | Built-in list of common test and check commands | String; comma-separated command terms that trajectory analysis uses to identify verification operations, such as `"pytest,ruff,npm test"`. A custom value replaces the entire list. This affects only analysis categories; it does not run the commands |
 
-### Prompt shortcuts
-
-These keys set where the TUI `/` list reads [prompt shortcuts](../guides/extensions/shortcuts.md) from. They have no environment variables, apply immediately, and must be set in your user settings; project settings cannot change them.
-
-| YAML key | Environment variable | Default | Type, values, and effect |
-| --- | --- | --- | --- |
-| `prompt_shortcuts.load_user_folder` | None | `true` | Boolean; read your own prompt shortcuts from `shortcuts` under the configuration directory (`~/.chrys/shortcuts`, or `%APPDATA%\chrys\shortcuts` on Windows) |
-| `prompt_shortcuts.load_working_folder` | None | `true` | Boolean; read `.chrys/shortcuts` in the working directory and its parent directories up to the repository root |
-| `prompt_shortcuts.paths` | None | `[]` | List of extra folders to read prompt shortcuts from, for example `["~/team-prompts", "docs/prompts"]`, written as a YAML list or as a JSON array string (the TUI saves a JSON string). Each entry is an absolute path, a path starting with `~`, or a path relative to the working directory; subfolders are read too |
-
 ### Notifications
 
 The following keys are all booleans, default to `true`, and have no corresponding environment variables. They control TUI event notifications.

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
 
 from chrys.foundation.config.coercion import (
     MISSING,
@@ -80,29 +79,20 @@ def web_mode_coercer(*, on: str) -> Coercer:
     return coerce
 
 
-def json_list_coercer(parse: Callable[[object], list[object]]) -> Coercer:
-    """Coerce a list setting stored as a JSON array string, editable by the text row without hidden state.
+def web_list_coercer(raw: object) -> Coerced:
+    """Keep list settings editable by the existing text row without hidden state.
 
     A blank field is the empty list, which is also every list's default.
-    *parse* reads the value (a JSON string or a list) and raises ValueError,
-    TypeError or RecursionError for one it refuses; what it returns is stored.
     """
-
-    def coerce(raw: object) -> Coerced:
-        if raw is None:
-            return MISSING
-        if isinstance(raw, str) and not raw.strip():
-            return Coerced(CoerceStatus.VALID, value="[]")
-        try:
-            value = parse(raw)
-            return Coerced(CoerceStatus.VALID, value=json.dumps(value, ensure_ascii=False, allow_nan=False))
-        except ValueError, TypeError, RecursionError:
-            return invalid(raw, CoerceReason.EXPECTED_JSON_ARRAY)
-
-    return coerce
-
-
-web_list_coercer = json_list_coercer(_json_list)
+    if raw is None:
+        return MISSING
+    if isinstance(raw, str) and not raw.strip():
+        return Coerced(CoerceStatus.VALID, value="[]")
+    try:
+        value = _json_list(raw)
+        return Coerced(CoerceStatus.VALID, value=json.dumps(value, ensure_ascii=False, allow_nan=False))
+    except ValueError, TypeError, RecursionError:
+        return invalid(raw, CoerceReason.EXPECTED_JSON_ARRAY)
 
 
 def web_proxy_url_coercer(raw: object) -> Coerced:

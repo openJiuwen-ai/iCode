@@ -23,8 +23,6 @@ _TAB_SECURITY = msg("tui.settings.tab.security", fallback="Security")
 _TAB_SESSIONS = msg("tui.settings.tab.sessions", fallback="Sessions")
 _TAB_TOOLS = msg("tui.settings.tab.tools", fallback="Tools")
 _TAB_NOTIFICATIONS = msg("tui.settings.tab.notifications", fallback="Notifications")
-_TAB_PROMPT_SHORTCUTS = msg("tui.settings.tab.prompt_shortcuts", fallback="Shortcuts")
-_SECTION_PROMPT_SHORTCUTS = msg("tui.settings.section.prompt_shortcuts", fallback="Prompt shortcuts")
 
 # ── Section titles ─────────────────────────────────────────────────────
 _SECTION_APPEARANCE = msg("tui.settings.section.appearance", fallback="Appearance")
@@ -318,7 +316,6 @@ class SettingsTab:
 
 GENERAL_TAB_ID = "general"
 NOTIFICATIONS_TAB_ID = "notifications"
-PROMPT_SHORTCUTS_TAB_ID = "shortcuts"
 SESSIONS_TAB_ID = "sessions"
 
 TABS: tuple[SettingsTab, ...] = (
@@ -516,22 +513,6 @@ TABS: tuple[SettingsTab, ...] = (
                 (SettingRowSpec("workspace.change_notice.enabled", hint=_HINT_WORKSPACE_CHANGE_NOTICE_ENABLED),),
             ),
         ),
-    ),
-    SettingsTab(
-        id=PROMPT_SHORTCUTS_TAB_ID,
-        title=_TAB_PROMPT_SHORTCUTS,
-        # Rendered by PromptShortcutsPane; listed for the coverage invariant like Notifications.
-        sections=(
-            SettingsSection(
-                _SECTION_PROMPT_SHORTCUTS,
-                (
-                    SettingRowSpec("prompt_shortcuts.load_user_folder"),
-                    SettingRowSpec("prompt_shortcuts.load_working_folder"),
-                    SettingRowSpec("prompt_shortcuts.paths"),
-                ),
-            ),
-        ),
-        custom_pane=True,
     ),
     SettingsTab(
         id=NOTIFICATIONS_TAB_ID,

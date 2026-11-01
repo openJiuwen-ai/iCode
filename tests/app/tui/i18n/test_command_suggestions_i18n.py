@@ -176,6 +176,7 @@ def test_manual_pages_render_english_byte_identically_and_translate_at_display(
         "  /buddy        - Hatch, pet and look after your buddy\n"
         "  /agents       - Manage agent configs\n"
         "  /runtime      - Show active model, tools, skills, and files\n"
+        "  /usage        - Show token usage and speed across all sessions\n"
         "  /settings     - Open the Settings panel\n"
         "  /workflow     - Open Workflow mode and select a workflow\n"
         "  /help         - Open the user guide\n"

@@ -293,6 +293,7 @@ class ExchangeTrace:
         "_gaps_ms",
         "_last_chunk_ns",
         "_outcome_override",
+        "_request_model",
         "_stall_count",
         "_started",
         "_started_at",
@@ -319,6 +320,7 @@ class ExchangeTrace:
         self._stall_count = 0
         self._outcome_override: str | None = None
         self._context_revision_id: str | None = None
+        self._request_model: object = None
 
     @property
     def operation_id(self) -> str:
@@ -360,6 +362,7 @@ class ExchangeTrace:
             **(payload or {}),
             "started_at": self._started_at,
         }
+        self._request_model = data.get("request_model")
         self.context.sink.emit_soon(
             self.context.draft(
                 EventType.MODEL_EXCHANGE_STARTED,
@@ -422,6 +425,10 @@ class ExchangeTrace:
             "chunk_count": self._chunk_count,
             "stall_count": self._stall_count,
         }
+        if "response_model" not in data and self._request_model is not None:
+            # A response that named no model, or a failed one, is still the model the start marker
+            # asked (a per-request override, not the profile's): its tokens count under it.
+            data["request_model"] = self._request_model
         clock = measurement(MeasurementSource.MONOTONIC_CLOCK, method_version=1)
         provenance: dict[str, Mapping[str, Any]] = {"/payload/duration_ms": clock}
         if self._first_chunk_ns is not None:

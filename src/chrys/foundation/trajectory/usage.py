@@ -138,6 +138,20 @@ def normalized_usage(usage: Mapping[str, Any] | None) -> dict[str, Any]:
     return normalized
 
 
+def exchange_usage_payload(usage: Mapping[str, Any] | None) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """The ``usage`` member of ``model.exchange.finished`` and its field-level measurements."""
+    reported = provider_reported_usage(usage)
+    normalized = normalized_usage(usage)
+    payload: dict[str, Any] = {"normalized": normalized}
+    if reported is not None:
+        payload["provider_reported"] = reported.values
+        if reported.omitted:
+            # Naming what did not fit keeps a reader from reading the mirror
+            # as everything the provider said.
+            payload["provider_reported_omitted"] = list(reported.omitted)
+    return payload, usage_measurements(normalized)
+
+
 def usage_measurements(
     normalized: Mapping[str, Any], *, pointer_prefix: str = "/payload/usage/normalized"
 ) -> dict[str, dict[str, Any]]:

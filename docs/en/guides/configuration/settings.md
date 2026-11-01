@@ -25,7 +25,6 @@ You can also open a tab directly with `/settings <tab>`:
 | Security | `security` | Approval, project trust, diagnostics, and telemetry |
 | Sessions | `sessions` | Session titles, storage, and rollback |
 | Tools | `tools` | File search, images, web tools, agent questions, tool detail display, and workspace notices |
-| Shortcuts | `shortcuts` | Where the `/` list reads prompt shortcuts from |
 | Notifications | `notifications` | Notification toggles, delivery methods, and events |
 
 For example, enter `/settings security` to open the **Security** tab directly.
@@ -220,16 +219,6 @@ Values are checked with the same rules the web tools use before they are saved, 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
 | Workspace change notices | When processing a newly submitted prompt, iCode gives the agent a summary of working directory file changes since the previous prompt was submitted. This includes changes made by the current session's agent and its sub-agents, as well as changes made manually, by other programs, or by other iCode sessions. | On close |
-
-### Shortcuts
-
-Sets where the `/` list reads prompt shortcuts from. To write shortcuts and use them, see [Configure shortcuts](../extensions/shortcuts.md). Only Markdown (`.md`) files are read. These settings apply to every session and working directory; a project's own settings cannot change them.
-
-| Setting | Effect and notes | Takes effect |
-| --- | --- | --- |
-| Load prompt shortcuts from user folder | On by default. Reads your own prompt shortcuts from `~/.chrys/shortcuts` (Windows: `%APPDATA%\chrys\shortcuts`). | Immediately |
-| Load prompt shortcuts from working folder | On by default. Reads `.chrys/shortcuts` in the working directory and its parent directories up to the repository root. A shortcut only fills in the input field: what you see there, commands included, is what is sent and run when you press **Enter**. | Immediately |
-| + Add | Adds another folder to read prompt shortcuts from, such as a folder shared by your team. Enter an absolute path, or select “Workspace relative” and enter a path relative to the working directory. Click **Browse** to choose a folder. | Immediately |
 
 ### Notifications
 

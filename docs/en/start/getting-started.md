@@ -145,7 +145,7 @@ Hello
 
 iCode should reply with a greeting. If the model service returns an error, check the model profile again, including the model ID, base URL, and API key.
 
-While an agent runs, the status bar above the input shows elapsed time and tool calls. Long runs include hours and days, for example `1d 4h 20m 50s`. Tool cards, background tasks, CLI progress, and the F12 timing dashboard also support days; compact displays keep only the largest time units.
+While an agent runs, the status bar above the input shows elapsed time, tool calls and, while text is arriving, its speed. Long runs include hours and days, for example `1d 4h 20m 50s`. Tool cards, background tasks, CLI progress, and the F12 timing dashboard also support days; compact displays keep only the largest time units.
 
 Once the agent answers, the answer's header shows how long the whole turn took, for example `Code Agent - 2:04 AM (6m 5s)`: from when you sent your message, or clicked **Continue** or **Retry**, to the answer, including the time the agent waited for your approval or reply. A message you send while the agent works doesn't restart it. It shows the same when you reopen the session.
 

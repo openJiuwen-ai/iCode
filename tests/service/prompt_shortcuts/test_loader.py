@@ -16,7 +16,7 @@ import pytest
 
 import chrys.service.prompt_shortcuts.loader as loader_module
 from chrys.service.prompt_shortcuts import PromptShortcut, load_prompt_shortcuts, project_roots, prompt_shortcut_sources
-from chrys.service.prompt_shortcuts.loader import resolve_extra_dir, working_folder_dirs
+from chrys.service.prompt_shortcuts.loader import working_folder_dirs
 from tests.support.symlinks import symlink_or_skip
 
 
@@ -377,26 +377,16 @@ def test_sources_list_each_contributing_folder_in_reading_order(config_dir: Path
     workspace = repo / "pkg"
     workspace.mkdir(parents=True)
     (repo / ".git").mkdir()
-    extra_b = tmp_path / "extra-b"
-    extra_a = tmp_path / "extra-a"
     _write(config_dir / "shortcuts" / "zeta.md", "Global zeta")
     _write(config_dir / "shortcuts" / "Banana.md", "Global banana")
     _write(config_dir / "shortcuts" / "apple.md", "Global apple")
-    _write(extra_b / "from-b.md", "Extra b")
-    _write(extra_a / "from-a.md", "Extra a")
     _write(workspace / ".chrys" / "shortcuts" / "near.md", "Near")
     _write(repo / ".chrys" / "shortcuts" / "far.md", "Far")
 
-    sources = prompt_shortcut_sources(
-        config_dir=config_dir,
-        workspace=str(workspace),
-        extra_dirs=[str(extra_b), str(extra_a)],
-    )
+    sources = prompt_shortcut_sources(config_dir=config_dir, workspace=str(workspace))
 
     assert _sources_view(sources) == [
         ((config_dir / "shortcuts").resolve(), ["apple", "Banana", "zeta"]),
-        (extra_b.resolve(), ["from-b"]),
-        (extra_a.resolve(), ["from-a"]),
         ((workspace / ".chrys" / "shortcuts").resolve(), ["near"]),
         ((repo / ".chrys" / "shortcuts").resolve(), ["far"]),
     ]
@@ -404,43 +394,15 @@ def test_sources_list_each_contributing_folder_in_reading_order(config_dir: Path
 
 def test_sources_drop_shadowed_names_and_folders_left_empty(config_dir: Path, tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
-    extra = tmp_path / "extra"
     _write(config_dir / "shortcuts" / "Review.md", "Global review")
     _write(config_dir / "shortcuts" / "fix.md", "Global fix")
-    _write(extra / "review.md", "Extra review")
-    _write(extra / "own.md", "Extra own")
     _write(workspace / ".chrys" / "shortcuts" / "REVIEW.md", "Project review")
     _write(workspace / ".chrys" / "shortcuts" / "Fix.md", "Project fix")
 
-    sources = prompt_shortcut_sources(config_dir=config_dir, workspace=str(workspace), extra_dirs=[str(extra)])
+    sources = prompt_shortcut_sources(config_dir=config_dir, workspace=str(workspace))
 
-    assert _sources_view(sources) == [
-        ((config_dir / "shortcuts").resolve(), ["fix", "Review"]),
-        (extra.resolve(), ["own"]),
-    ]
-    assert [command.template for _folder, found in sources for command in found] == [
-        "Global fix",
-        "Global review",
-        "Extra own",
-    ]
-
-
-def test_sources_follow_the_folder_switches(config_dir: Path, tmp_path: Path) -> None:
-    workspace = tmp_path / "ws"
-    _write(config_dir / "shortcuts" / "mine.md", "Mine")
-    _write(workspace / ".chrys" / "shortcuts" / "proj.md", "Project")
-
-    no_user = prompt_shortcut_sources(config_dir=config_dir, workspace=str(workspace), load_user_folder=False)
-    no_work = prompt_shortcut_sources(config_dir=config_dir, workspace=str(workspace), load_working_folder=False)
-
-    assert _sources_view(no_user) == [((workspace / ".chrys" / "shortcuts").resolve(), ["proj"])]
-    assert _sources_view(no_work) == [((config_dir / "shortcuts").resolve(), ["mine"])]
-    assert (
-        prompt_shortcut_sources(
-            config_dir=config_dir, workspace=str(workspace), load_user_folder=False, load_working_folder=False
-        )
-        == []
-    )
+    assert _sources_view(sources) == [((config_dir / "shortcuts").resolve(), ["fix", "Review"])]
+    assert [command.template for _folder, found in sources for command in found] == ["Global fix", "Global review"]
 
 
 def test_load_prompt_shortcuts_is_the_sorted_union_of_the_sources(config_dir: Path, tmp_path: Path) -> None:
@@ -448,21 +410,19 @@ def test_load_prompt_shortcuts_is_the_sorted_union_of_the_sources(config_dir: Pa
     workspace = repo / "pkg"
     workspace.mkdir(parents=True)
     (repo / ".git").mkdir()
-    extra = tmp_path / "extra"
     _write(config_dir / "shortcuts" / "Mmm.md", "Global m")
     _write(config_dir / "shortcuts" / "dup.md", "Global dup")
     _write(config_dir / "shortcuts" / "aaa.md", "Global a")
-    _write(extra / "zzz.md", "Extra z")
-    _write(extra / "DUP.md", "Extra dup")
     _write(workspace / ".chrys" / "shortcuts" / "bbb.md", "Near b")
+    _write(workspace / ".chrys" / "shortcuts" / "DUP.md", "Near dup")
     _write(repo / ".chrys" / "shortcuts" / "Ccc.md", "Far c")
-    kwargs = {"config_dir": config_dir, "workspace": str(workspace), "extra_dirs": [str(extra)]}
+    kwargs = {"config_dir": config_dir, "workspace": str(workspace)}
 
     sources = prompt_shortcut_sources(**kwargs)
     loaded = load_prompt_shortcuts(**kwargs)
 
     union = [command for _folder, found in sources for command in found]
-    assert [c.name for c in loaded] == ["aaa", "bbb", "Ccc", "dup", "Mmm", "zzz"]
+    assert [c.name for c in loaded] == ["aaa", "bbb", "Ccc", "dup", "Mmm"]
     assert [(c.name, c.path, c.template) for c in loaded] == [
         (c.name, c.path, c.template) for c in sorted(union, key=lambda c: c.name.casefold())
     ]
@@ -481,48 +441,6 @@ def test_a_shortcut_carries_no_scope_or_root() -> None:
         "agent",
         "model",
     ]
-
-
-# -- extra folders ---------------------------------------------------------------
-
-
-def test_extra_folder_tilde_is_the_users_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-
-    assert resolve_extra_dir("~/prompts", str(tmp_path / "ws")) == home / "prompts"
-    assert resolve_extra_dir("~/prompts", None) == home / "prompts"
-
-
-def test_relative_extra_folder_is_under_the_workspace(tmp_path: Path) -> None:
-    workspace = tmp_path / "ws"
-
-    assert resolve_extra_dir("team/prompts", str(workspace)) == workspace / "team" / "prompts"
-    # ``..`` may leave the workspace: it names the folder beside it.
-    above = resolve_extra_dir("../shared", str(workspace))
-    assert above is not None
-    assert above.resolve() == (tmp_path / "shared").resolve()
-
-
-def test_relative_extra_folder_without_a_workspace_is_no_folder(tmp_path: Path) -> None:
-    assert resolve_extra_dir("team/prompts", None) is None
-    assert resolve_extra_dir("team/prompts", "") is None
-    absolute = tmp_path / "abs"
-    assert resolve_extra_dir(str(absolute), None) == absolute
-
-
-def test_relative_extra_folder_loads_only_with_a_workspace(config_dir: Path, tmp_path: Path) -> None:
-    workspace = tmp_path / "ws"
-    _write(workspace / "team" / "rel.md", "Relative")
-    _write(tmp_path / "shared" / "up.md", "Above")
-    extra = ["team", "../shared"]
-
-    with_ws = load_prompt_shortcuts(config_dir=config_dir, workspace=str(workspace), extra_dirs=extra)
-    without = load_prompt_shortcuts(config_dir=config_dir, workspace=None, extra_dirs=extra)
-
-    assert [c.name for c in with_ws] == ["rel", "up"]
-    assert without == []
 
 
 # -- caps --------------------------------------------------------------------------
@@ -783,16 +701,14 @@ def test_an_unchanged_file_keeps_its_parse_even_when_its_text_differs(
 # -- the user folder is never a project folder -------------------------------------
 
 
-def test_workspace_at_home_with_the_user_folder_off_reads_nothing_from_the_config_dir(tmp_path: Path) -> None:
+def test_workspace_at_home_reads_the_config_dir_once_as_the_users_own(tmp_path: Path) -> None:
     home = tmp_path / "home"
     config = home / ".chrys"
     _write(config / "shortcuts" / "mine.md", "Mine")
 
-    commands = load_prompt_shortcuts(config_dir=config, workspace=str(home), load_user_folder=False)
-    sources = prompt_shortcut_sources(config_dir=config, workspace=str(home), load_user_folder=False)
+    sources = prompt_shortcut_sources(config_dir=config, workspace=str(home))
 
-    assert commands == []
-    assert sources == []
+    assert _sources_view(sources) == [((config / "shortcuts").resolve(), ["mine"])]
 
 
 # -- what a folder can hold ----------------------------------------------------------
@@ -817,14 +733,3 @@ def test_a_special_file_named_like_a_shortcut_is_skipped_and_never_read(
 
     assert [c.name for c in commands] == ["good"]
     assert "not a regular file" in caplog.text
-
-
-def test_a_file_in_two_listed_folders_is_named_from_each(config_dir: Path, tmp_path: Path) -> None:
-    """With ``~/p`` and ``~/p/sub`` both added, ``sub/x.md`` is ``/sub/x`` from one and ``/x`` from the other."""
-    outer = tmp_path / "p"
-    inner = outer / "sub"
-    _write(inner / "x.md", "X")
-
-    sources = prompt_shortcut_sources(config_dir=config_dir, workspace=None, extra_dirs=[str(outer), str(inner)])
-
-    assert _sources_view(sources) == [(outer.resolve(), ["sub/x"]), (inner.resolve(), ["x"])]

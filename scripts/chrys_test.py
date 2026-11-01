@@ -199,11 +199,6 @@ REGULAR_RULES = (
     TestRule("tests/service/approval/test_formal_core.py", ("src/chrys/service/approval/principles.json",)),
     TestRule("tests/app/tui/screens/test_approval_review_reason.py", ("src/chrys/service/approval/principles.json",)),
     TestRule("tests/foundation/test_documentation.py", ("pyproject.toml", "docs/index.yaml")),
-    # The Settings → Shortcuts guide link opens the real guide page.
-    TestRule(
-        "tests/app/tui/screens/test_prompt_shortcuts.py",
-        ("docs/index.yaml", "docs/*/guides/extensions/shortcuts.md"),
-    ),
     TestRule("tests/service/acp_client", ("tests/support/acp_stub_agent.py",)),
     TestRule("tests/orchestration/sub_agents/test_acp_engine.py", ("tests/support/acp_stub_agent.py",)),
     TestRule("tests/service/workflows/test_protocol.py", _WORKFLOW_WORKER_HOST),

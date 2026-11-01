@@ -9,6 +9,7 @@ Flash:  Agent [profile] Model [model] [message text] ... [tool counts]
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -33,6 +34,7 @@ from chrys.app.tui.widgets import ChrysLoadingIndicator
 from chrys.app.tui.widgets.selection import NonSelectableStatic
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.text.tokenizer import TOKEN_UNITS_PER_TOKEN, MixedLanguageTokenizer
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult, RenderResult
@@ -83,6 +85,7 @@ STATUS_ELAPSED_DAYS_HOURS_MINUTES_SECONDS = msg(
     "tui.status.elapsed_days_hours_minutes_seconds",
     fallback="{days}d {hours}h {minutes}m {seconds}s",
 )
+STATUS_OUTPUT_SPEED = msg("tui.status.output_speed", fallback="{speed} tok/s")
 STATUS_DETAILS_TOOLTIP = msg("tui.status.details_tooltip", fallback="Click for details")
 STATUS_AGENT_SELECTOR_LABEL = msg("tui.status.agent_selector_label", fallback="Agent")
 STATUS_MODEL_SELECTOR_LABEL = msg("tui.status.model_selector_label", fallback="Model")
@@ -144,6 +147,13 @@ A change that comes sooner waits for the interval and gives way to a newer
 one, so a burst of changes repaints the row once; repeating the status shown
 (once per streamed delta) repaints nothing.
 """
+_OUTPUT_SPEED_WINDOW_SECONDS = 5.0
+"""How far back the shown speed looks, so it follows the stream rather than the run."""
+_OUTPUT_SPEED_IDLE_SECONDS = 3.0
+"""The speed leaves the trail once no text came for this long: a running tool has no speed to show."""
+_OUTPUT_SPEED_MIN_SPAN_SECONDS = 1.0
+"""A burst just begun is measured over at least this long, or its first delta would read as a huge speed."""
+_OUTPUT_TOKENIZER = MixedLanguageTokenizer()
 
 
 @dataclass
@@ -364,6 +374,7 @@ class StatusBar(Widget):
         self._locale_controller = locale_controller
         self._start_time: float = 0.0
         self._tool_count: int = 0
+        self._output_samples: deque[tuple[float, int]] = deque()
         self._flash: _FlashState | None = None
         self._timer: Timer | None = None
         self._status_shown_at = 0.0
@@ -623,7 +634,38 @@ class StatusBar(Widget):
         """Start timing a new agent.run cycle."""
         self._start_time = time.monotonic()
         self._tool_count = 0
+        self._output_samples.clear()
         self._refresh_running_trail()
+
+    def note_output_text(self, text: str) -> None:
+        """Count streamed model text toward the speed; only the trail's own refresh shows it, so a delta paints nothing."""
+        now = time.monotonic()
+        self._output_samples.append((now, _OUTPUT_TOKENIZER.count_token_units(text)))
+        self._drop_old_output_samples(now)
+
+    def _drop_old_output_samples(self, now: float) -> None:
+        samples = self._output_samples
+        while samples and samples[0][0] < now - _OUTPUT_SPEED_WINDOW_SECONDS:
+            samples.popleft()
+
+    def _output_speed(self) -> int | None:
+        """Estimated tokens per second over the recent stream.
+
+        ``None`` while no text is arriving, and for text that arrived all at
+        once, as a response that was not streamed does: it has no rate to show.
+        The span starts when the first sample landed, so that sample's text,
+        written before then, does not count.
+        """
+        now = time.monotonic()
+        self._drop_old_output_samples(now)
+        samples = self._output_samples
+        if not samples or now - samples[-1][0] > _OUTPUT_SPEED_IDLE_SECONDS:
+            return None
+        seconds = samples[-1][0] - samples[0][0]
+        if seconds < _OUTPUT_SPEED_MIN_SPAN_SECONDS:
+            return None
+        units = sum(count for _at, count in samples) - samples[0][1]
+        return max(1, round(units / TOKEN_UNITS_PER_TOKEN / seconds))
 
     def show(self, status: StatusMessage) -> None:
         """Show the status bar with given status text.
@@ -948,6 +990,9 @@ class StatusBar(Widget):
             stats.append(self._format_elapsed())
         if self._tool_count:
             stats.append(self._render_message(STATUS_TOOL_CALLS.bind(count=self._tool_count)))
+        speed = self._output_speed()
+        if speed is not None:
+            stats.append(self._render_message(STATUS_OUTPUT_SPEED.bind(speed=speed)))
         text = f"  ({' \u00b7 '.join(stats)})" if stats else ""
         self.query_one("#status-trail", Static).update(Text(text), layout=False)
         # Tool info on the right

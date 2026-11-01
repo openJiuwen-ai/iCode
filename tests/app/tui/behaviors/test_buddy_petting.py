@@ -130,6 +130,7 @@ def _make_handler(screen: _SuggestionScreen) -> SuggestionHandler:
             configure_agent=screen._open_agent_config,
             configure_agent_tab=screen._open_agent_config_tab,
             show_runtime_details=lambda: None,
+            show_usage=lambda: None,
             configure_settings=lambda _tab: None,
             show_manual_pages=lambda _pages, _start_index: None,
             warn=lambda message, title, timeout: screen.notify(message, title=title, timeout=timeout),

@@ -190,6 +190,7 @@ class EventLog:
         parent_operation_id: str | None = None,
         start_payload: dict[str, object] | None = None,
         actor: Actor = SYSTEM_ACTOR,
+        outcome: str = "success",
     ) -> None:
         """One model exchange whose terminal reports normalized usage with provider provenance."""
         buckets = tuple(normalized) if provider_buckets is None else provider_buckets
@@ -207,7 +208,7 @@ class EventLog:
             operation_id=operation_id,
             parent_operation_id=parent_operation_id,
             payload={
-                "outcome": "success",
+                "outcome": outcome,
                 "duration_ms": max(1, (end_ns - start_ns) // 1_000_000),
                 "usage": {"normalized": normalized},
             },

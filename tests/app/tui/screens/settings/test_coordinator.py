@@ -21,7 +21,7 @@ from chrys.app.tui.screens.main.state import MainScreenServices
 from chrys.app.tui.screens.settings import Suggestions
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, PersistResult, SettingsHandle
-from chrys.foundation.config.spec import ChoiceProvider, SettingOrigin, Source, specs_by_field
+from chrys.foundation.config.spec import ChoiceProvider, SettingOrigin, Source
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import SettingsReload, SettingsReloaded
 from chrys.foundation.i18n import msg
@@ -118,7 +118,6 @@ class _Harness:
         self.defer_while_judging: list[bool] = []
         self.thinking_expanded: list[bool] = []
         self.fold_finished_turns: list[bool] = []
-        self.prompt_shortcuts_settings: list[tuple[str, object]] = []
         self.saved_notifications: list[NotificationSettings] = []
         self.notification_service = _NotificationService()
         self.turn_task: asyncio.Task[None] | None = None
@@ -147,8 +146,6 @@ class _Harness:
                 apply_approval_defer_while_judging=self.defer_while_judging.append,
                 apply_thinking_expanded=self.thinking_expanded.append,
                 apply_fold_finished_turns=self.fold_finished_turns.append,
-                apply_prompt_shortcuts_setting=lambda name, value: self.prompt_shortcuts_settings.append((name, value)),
-                workspace_cwd=lambda: "",
                 list_themes=lambda: ["textual-dark", "chrys", "chrys-legacy"],
                 save_notifications=self.saved_notifications.append,
                 notification_service=lambda: self.notification_service,
@@ -213,34 +210,6 @@ async def test_live_keys_route_to_their_writers_and_never_to_the_queue(monkeypat
     # A LIVE key the panel does not render has no writer here either.
     with pytest.raises(ValueError, match="no live writer"):
         h.coordinator.apply_live("ui.editor.keymap", "vim")
-
-
-@pytest.mark.parametrize(
-    ("key", "value"),
-    [
-        ("prompt_shortcuts.load_user_folder", False),
-        ("prompt_shortcuts.load_working_folder", False),
-        ("prompt_shortcuts.paths", '["~/prompts"]'),
-    ],
-)
-async def test_a_prompt_shortcut_setting_applies_to_its_own_field_and_saves_without_a_reload(
-    monkeypatch: pytest.MonkeyPatch, key: str, value: object
-) -> None:
-    h = _Harness(monkeypatch)
-    await h.install_engine()
-
-    h.coordinator.apply_live(key, value)
-
-    # The field it is put in force under is the setting's own: a wrong mapping would change another one.
-    [(field_name, applied)] = h.prompt_shortcuts_settings
-    assert specs_by_field(Settings)[field_name].key == key
-    assert applied == value
-    assert h.recorder.calls == []
-
-    await h.close_and_settle()
-
-    assert h.recorder.calls == [({key: value}, ())]
-    assert h.reloads == 0
 
 
 async def test_the_approval_deferral_choice_applies_at_once_and_saves_without_a_reload(

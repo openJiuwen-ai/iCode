@@ -273,7 +273,7 @@ Each entry in `providers` supports these fields:
 
 | Field | Applies to | Description |
 | --- | --- | --- |
-| `type` | All | Required. `exa_mcp`, `bing_html`, or `duckduckgo_html` for services that need no key; `tavily`, `brave`, or `exa` for search APIs with a key; `custom_http` for your own endpoint. |
+| `type` | All | Required. `exa_mcp`, `bing_html`, `duckduckgo_html`, or `keenable` for services that need no key; `tavily`, `brave`, or `exa` for search APIs with a key; `custom_http` for your own endpoint. |
 | `api_key_env` | `tavily`, `brave`, `exa` | Required. Name of the environment variable that holds the API key. These types accept no other field. |
 | `preset` | `custom_http` | `searxng` or `serpapi`. Fills in the request and response mapping for that service; `serpapi` also sets `endpoint` and `auth`. Fields you set yourself take precedence. |
 | `endpoint` | `custom_http` | URL of the search endpoint. It must also be granted in the `tools.web_search.custom_endpoints` user setting, together with every environment variable the provider reads. |
@@ -283,7 +283,7 @@ Each entry in `providers` supports these fields:
 | `request` | `custom_http` | `query_params` and, for `POST`, `json`. A value written as `{$input: query}`, `{$input: limit}`, `{$input: allowed_domains}`, or `{$input: blocked_domains}` is replaced by that search input, and `{$env: NAME}` by an environment variable. |
 | `response` | `custom_http` | JSON Pointers into the response: `results_pointer` and `url_pointer` (required unless a preset provides them), plus optional `title_pointer` and `snippet_pointer`. |
 
-`exa_mcp`, `bing_html`, and `duckduckgo_html` accept only `type`.
+`exa_mcp`, `bing_html`, `duckduckgo_html`, and `keenable` accept only `type`.
 
 A complete `custom_http` example for the DeepSeek Search API is in [Configure web tools](../guides/configuration/web-tools.md#deepseek-search-api). See DeepSeek's documentation for the models and billing that support its server-side `web_search`.
 

@@ -73,17 +73,6 @@ class SettingsCoordinatorCallbacks:
     apply_approval_defer_while_judging: Callable[[bool], None]
     apply_thinking_expanded: Callable[[bool], None]
     apply_fold_finished_turns: Callable[[bool], None]
-    apply_prompt_shortcuts_setting: Callable[[str, object], None]
-    """Put a ``prompt_shortcuts.*`` value in force, given its ``Settings`` field name."""
-    workspace_cwd: Callable[[], str]
-
-
-_PROMPT_SHORTCUT_KEYS: dict[str, str] = {
-    "prompt_shortcuts.load_user_folder": "prompt_shortcuts_load_user_folder",
-    "prompt_shortcuts.load_working_folder": "prompt_shortcuts_load_working_folder",
-    "prompt_shortcuts.paths": "prompt_shortcuts_paths",
-}
-"""Live prompt-shortcut keys and their ``Settings`` fields; the ``/`` list reads them each time it opens."""
 
 
 def _values_by_key(loaded: LoadedSettings) -> dict[str, Any]:
@@ -248,9 +237,6 @@ class SettingsCoordinator:
         elif key == "ui.chat.fold_finished_turns":
             self._queue.schedule({key: bool(value)})
             self._callbacks.apply_fold_finished_turns(bool(value))
-        elif key in _PROMPT_SHORTCUT_KEYS:
-            self._queue.schedule({key: value})
-            self._callbacks.apply_prompt_shortcuts_setting(_PROMPT_SHORTCUT_KEYS[key], value)
         else:
             msg_text = f"{key}: no live writer registered"
             raise ValueError(msg_text)
@@ -294,10 +280,6 @@ class SettingsCoordinator:
 
     def session_storage(self) -> SessionStoragePorts:
         return self._session_storage
-
-    def workspace_cwd(self) -> str:
-        """The workspace the prompt-shortcut folders are shown for."""
-        return self._callbacks.workspace_cwd()
 
     def confirm(self, message: MessageRef, on_result: Callable[[bool], None]) -> None:
         from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog

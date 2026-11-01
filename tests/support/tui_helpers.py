@@ -1168,6 +1168,9 @@ class SuggestionScreen:
     def action_runtime_details(self) -> None:
         self.opened.append("runtime")
 
+    def action_usage(self) -> None:
+        self.opened.append("usage")
+
     def _open_settings(self, tab: str) -> None:
         self.opened.append(f"settings:{tab}")
 
@@ -1228,6 +1231,7 @@ def make_slash_actions(screen: SuggestionScreen) -> SlashCommandActions:
         configure_agent=screen._open_agent_config,
         configure_agent_tab=screen._open_agent_config_tab,
         show_runtime_details=screen.action_runtime_details,
+        show_usage=screen.action_usage,
         configure_settings=screen._open_settings,
         show_manual_pages=lambda _pages, _start_index: None,
         warn=lambda message, title, timeout: screen.notify(message, title=title, timeout=timeout),

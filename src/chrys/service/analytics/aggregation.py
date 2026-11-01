@@ -1267,7 +1267,7 @@ def _retry_amplification(
         and usage.bucket_has_provider_provenance(UsageBucket.OUTPUT)
         for usage in reported
     )
-    unreported = len(reported) < len(amplified)
+    unreported = any(usage.failed for usage in amplified)
     precision = (
         Precision.MISSING
         if missing

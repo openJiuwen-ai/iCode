@@ -1207,7 +1207,7 @@ def _turn_usage(
         for item in exchanges
     ):
         return Metric(value, Precision.UNRESOLVED, "normalized usage provenance is incomplete")
-    if len(exchanges) < len(active):
+    if any(item.failed for item in active):
         return Metric(value, Precision.ESTIMATED, _UNREPORTED_FAILURE_USAGE_REASON)
     return Metric(value, Precision.EXACT)
 
@@ -1216,10 +1216,10 @@ def _turn_bucket_usage(exchanges: list[_ExchangeUsage], bucket: UsageBucket, ver
     """Split one turn's usage verdict into a per-bucket display metric.
 
     The turn-level verdict caps every bucket: a missing or unresolved turn can
-    never yield an exact bucket, and an estimated one (failed requests that
-    reported no usage, already left out of *exchanges*) keeps every bucket a
-    lower bound. Optional buckets additionally degrade on partial reporting
-    because providers normalize them inconsistently.
+    never yield an exact bucket, and an estimated one (failed requests, with
+    those that reported no full usage already left out of *exchanges*) keeps
+    every bucket a lower bound. Optional buckets additionally degrade on
+    partial reporting because providers normalize them inconsistently.
     """
     if verdict.value is None:
         return Metric(None, verdict.precision, verdict.reason)

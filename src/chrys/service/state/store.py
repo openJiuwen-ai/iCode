@@ -117,6 +117,9 @@ SESSION_CATALOG_EAGER_COMMIT_ENTRIES = 16
 class StateStore(Protocol):
     """Protocol for session state persistence."""
 
+    @property
+    def sessions_root(self) -> Path: ...
+    def session_folder_cwds(self) -> dict[str, str]: ...
     def session_dir(self, session_id: str) -> Path: ...
     async def save_session(
         self,
@@ -1781,6 +1784,17 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             for session_dir in self._session_dir_candidates()
             if (meta := self._meta_for_session_dir(session_dir)) is not None
         ]
+
+    @property
+    def sessions_root(self) -> Path:
+        """The directory holding the session folders."""
+        return self._dir
+
+    def session_folder_cwds(self) -> dict[str, str]:
+        """Each listed session folder's name and primary working folder; blocking, so it runs off the event loop."""
+        cwds = {session_dir.name: meta.primary_cwd for session_dir, meta in self._folder_metas()}
+        self._settle_listing_caches()
+        return cwds
 
     def _scan_session_metas_sync(self) -> list[SessionMeta]:
         """Every listed session's meta without folder size or run status (for ranking by time)."""

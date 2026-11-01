@@ -164,7 +164,6 @@ class TurnCoordinator:
         self._shortcut_commands = ShortcutCommands(
             bus=self._bus,
             session=self._session,
-            settings_handle=self._settings_handle,
             lease=lambda: self._turn_state.lease,
         )
         self._injector = ActiveTurnInjector(

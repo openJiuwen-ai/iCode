@@ -673,7 +673,7 @@ async def test_a_live_choice_made_during_a_switch_s_rebuild_survives_its_commit(
 ) -> None:
     started = await _start(agent_engine, monkeypatch, tmp_path)
     engine = started.engine
-    assert engine.settings.prompt_shortcuts_load_user_folder is True
+    assert engine.settings.chat_thinking_expanded is False
     release = asyncio.Event()
     started.clients.hold = release
     switch = SessionOnlySwitch(model_profile=OTHER_MODEL)
@@ -684,7 +684,7 @@ async def test_a_live_choice_made_during_a_switch_s_rebuild_survives_its_commit(
         )
         assert not publish.done()
 
-        engine.settings_handle.override(prompt_shortcuts_load_user_folder=False)
+        engine.settings_handle.override(chat_thinking_expanded=True)
     finally:
         release.set()
     await publish
@@ -692,7 +692,7 @@ async def test_a_live_choice_made_during_a_switch_s_rebuild_survives_its_commit(
     assert switch.applied is True
     assert _model(engine) == OTHER_MODEL
     assert engine.settings.model_profile == OTHER_MODEL
-    assert engine.settings.prompt_shortcuts_load_user_folder is False
+    assert engine.settings.chat_thinking_expanded is True
 
 
 async def test_a_live_choice_keeps_the_session_model(
@@ -702,10 +702,10 @@ async def test_a_live_choice_keeps_the_session_model(
     engine = started.engine
     await _switch(engine, model=OTHER_MODEL)
 
-    engine.settings_handle.override(prompt_shortcuts_load_working_folder=False)
+    engine.settings_handle.override(chat_thinking_expanded=True)
 
     assert engine.settings.model_profile == OTHER_MODEL
-    assert engine.settings.prompt_shortcuts_load_working_folder is False
+    assert engine.settings.chat_thinking_expanded is True
     assert _session_model(engine) == OTHER_MODEL
     # And the next rebuild is still made on it.
     await _publish(engine, SettingsReload())

@@ -41,6 +41,9 @@ class MainScreenPresenter:
     def show_status(self, text: StatusMessage) -> None:
         self._view.show_status(text)
 
+    def note_output_text(self, text: str) -> None:
+        self._view.note_output_text(text)
+
     def clear_status(self) -> None:
         self._view.clear_status()
 

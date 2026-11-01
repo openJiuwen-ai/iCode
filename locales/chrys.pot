@@ -3,7 +3,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.32.2\n"
+"Project-Id-Version: Chrys 0.32.3\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -1130,24 +1130,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"f6443d8c10bf7c5ebc4b047d577fbd2eebc4f00ed9a1072eaa4659a93753f10e","multiline":false,"placeholders":["path"]}
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.project_skills_dormant"
-msgstr ""
-
-#. English: Load prompt shortcuts from user folder (if present)
-#. chrys-meta={"fingerprint":"8d7fc3eda138f3c007d352e8974233786a1f954a4503abf6726a330a03bc436b","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.prompt_shortcuts.load_user_folder.label"
-msgstr ""
-
-#. English: Load prompt shortcuts from working folder (if present)
-#. chrys-meta={"fingerprint":"d2d2aad3aac344bfad2debaa39d11063f7207fc2cc4aa726465042771b713503","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.prompt_shortcuts.load_working_folder.label"
-msgstr ""
-
-#. English: Prompt shortcut directories
-#. chrys-meta={"fingerprint":"ab757d9771b99fd5b00412e488f413da1f89e5ca8b2dea4109783336aa82426b","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.prompt_shortcuts.paths.label"
 msgstr ""
 
 #. English: Ignoring {source}={raw}: expected a boolean.
@@ -5204,6 +5186,12 @@ msgstr ""
 msgid "tui.commands.description.theme"
 msgstr ""
 
+#. English: Show token usage and speed across all sessions
+#. chrys-meta={"fingerprint":"90f80aee7c0be8101ea88677d855e8fadfbdcb599c78e05aacf0251b494db07d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.commands.description.usage"
+msgstr ""
+
 #. English: Show help for /{name}
 #. chrys-meta={"fingerprint":"df2f841cd072593f47ac017908fec4bba0bf4a4a9b63698b72a1fb72c5b8ebbb","multiline":false,"placeholders":["name"]}
 #: src/chrys/app/tui/screens/main/commands.py
@@ -7696,10 +7684,10 @@ msgid "tui.man.sessions.body"
 msgstr ""
 
 #. English: Open the Settings panel (F10), optionally on a tab.      Tabs:
-#. general, models, security, sessions, tools, shortcuts, notifications.
-#. Changes are saved as you make them; the panel says when each     one takes
-#. effect (immediately, on close, or after a restart).
-#. chrys-meta={"fingerprint":"a4284198afe8b7b1683a09f5e322b143a0576252d9c26c5ca25369d408977158","multiline":true,"placeholders":[]}
+#. general, models, security, sessions, tools, notifications.     Changes are
+#. saved as you make them; the panel says when each     one takes effect
+#. (immediately, on close, or after a restart).
+#. chrys-meta={"fingerprint":"2b21b292bfa8fe449d092f675cb2e23fad6d0607e94377403171d53efc617d23","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.settings.body"
 msgstr ""
@@ -7710,6 +7698,17 @@ msgstr ""
 #. chrys-meta={"fingerprint":"bcb190dd328f2c6625e46f5f8d7129d0dfd8b49365dba4d7792c1541bef896f4","multiline":true,"placeholders":["app"]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.theme.body"
+msgstr ""
+
+#. English: Open the token usage dialog, read from every saved session.
+#. Overview: new tokens by date range, their trend over time,     and totals by
+#. model, source or project, with each model's speed.     Calendar: new tokens
+#. day by day, and one day's details.      New tokens are the input not served
+#. from the provider's cache,     plus the output, thinking included. Deleted
+#. sessions and external     ACP agents are not counted.
+#. chrys-meta={"fingerprint":"d3b60b05e938038df9d11299b1c3fba744067836a2467c91b19245632b1bb892","multiline":true,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.man.usage.body"
 msgstr ""
 
 #. English: Page {page}/{total}  ↑ Up ↓ Down  Esc to close
@@ -9641,9 +9640,8 @@ msgstr ""
 msgid "tui.runtime_details.empty.preconfigured_files"
 msgstr ""
 
-#. English: No prompt shortcuts loaded. Choose the folders to read in Settings
-#. → Shortcuts.
-#. chrys-meta={"fingerprint":"ce3c05a4b55ec0cd3018dd75b5f574f32142df448ab27756fa550677a6f8bc82","multiline":false,"placeholders":[]}
+#. English: No prompt shortcuts loaded.
+#. chrys-meta={"fingerprint":"578a8ee937691c16e3dbcf81ece1d9bfa2d9cc8b8ed0ac51757e2d7de1778114","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
 msgid "tui.runtime_details.empty.shortcuts"
 msgstr ""
@@ -10891,91 +10889,6 @@ msgstr ""
 msgid "tui.settings.migrate.to"
 msgstr ""
 
-#. English: + Add
-#. chrys-meta={"fingerprint":"6ef2165c13c7ddb9d75eea643ddc7fb9c83bc3db81aaa0b56f4f9ef5dbac73bd","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.add"
-msgstr ""
-
-#. English: Configure where the / list reads prompt shortcuts from. Only
-#. Markdown (.md) files are supported for now.
-#. chrys-meta={"fingerprint":"c39a8c70c24dc5f444a37b6df39892d6dd305c6d83ef923bf92b53e64999842c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.description"
-msgstr ""
-
-#. English: Prompt Shortcut Directory
-#. chrys-meta={"fingerprint":"1654425c05db84176bfa38c7cf94dd837d924943ef5399654a5f49a5327a5aab","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.directory"
-msgstr ""
-
-#. English: No other folders added
-#. chrys-meta={"fingerprint":"f39d0a7d9cd5806bc5b180d299c88da5b9484072b749f01207c58fc3f5e43b1d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.empty"
-msgstr ""
-
-#. English: How to write shortcuts →
-#. chrys-meta={"fingerprint":"310868f7f382d06c1108661aa5edcfd31348f9eda061eb16777d82e5dc041f44","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.guide_link"
-msgstr ""
-
-#. English: Load prompt shortcuts from user folder (if present)
-#. chrys-meta={"fingerprint":"8d7fc3eda138f3c007d352e8974233786a1f954a4503abf6726a330a03bc436b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.load_user_folder"
-msgstr ""
-
-#. English: Load prompt shortcuts from working folder (if present)
-#. chrys-meta={"fingerprint":"d2d2aad3aac344bfad2debaa39d11063f7207fc2cc4aa726465042771b713503","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.load_working_folder"
-msgstr ""
-
-#. English: /home/you/prompts
-#. chrys-meta={"fingerprint":"1ccce9d94d718d259dcb4f137c61b76930267765059969a4ee691bcbda7d845d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.absolute_linux"
-msgstr ""
-
-#. English: /Users/you/prompts
-#. chrys-meta={"fingerprint":"785ae804bc36f8dd68180a95cc2bce08051e3e418082b38bfbb6bc3ad73b2b6a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.absolute_macos"
-msgstr ""
-
-#. English: C:\path\to\prompts
-#. chrys-meta={"fingerprint":"892bf7be1799bb920391ecc4fd1b94ef45468300ee2a1ea406ca4c70434afd23","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.absolute_windows"
-msgstr ""
-
-#. English: relative/path/to/prompts
-#. chrys-meta={"fingerprint":"aadc05521dd4acdf473f44138baeede13c8d3ecffa0f031636cafe3d3f3898a3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.relative_posix"
-msgstr ""
-
-#. English: relative\path\to\prompts
-#. chrys-meta={"fingerprint":"6bf3cb36074b6f8201319e1c1833899a7618fd17ea305c98b7f99717ca38e8b9","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.relative_windows"
-msgstr ""
-
-#. English: Prompt Shortcut Directories
-#. chrys-meta={"fingerprint":"b3d0313a1ef5b7d17bc04b15467854ec17f1e5539114877ec7485881bcf1879d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.title"
-msgstr ""
-
-#. English: {path} and its parent folders up to the repository root
-#. chrys-meta={"fingerprint":"0395569648aa949d99d45133636ae0ad130a55cb7312fd1440be927d7b2325ae","multiline":false,"placeholders":["path"]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.working_folder_scope"
-msgstr ""
-
 #. English: Set for this session by a command-line option; the saved value
 #. applies at the next launch.
 #. chrys-meta={"fingerprint":"f89ac50748913b5d202c345d1472421caac20f9a29fffea5990ced8d98274e29","multiline":false,"placeholders":[]}
@@ -11101,12 +11014,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"9aaa1b2e975dfd31550ed0cab60b9cbd0c5524d4c5aee59ed034bc113d4b8d87","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.section.project_trust"
-msgstr ""
-
-#. English: Prompt shortcuts
-#. chrys-meta={"fingerprint":"e42b5a105027ac8a210a098574b218a5dc99b06f0e487b6934d9483b084ff3be","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.section.prompt_shortcuts"
 msgstr ""
 
 #. English: Rollback
@@ -11238,12 +11145,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5f9613eca6168e7455a54ba84c1cbfdd774ed97b6c19c46acdd6adb568569d90","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.tab.notifications"
-msgstr ""
-
-#. English: Shortcuts
-#. chrys-meta={"fingerprint":"85a8e1c1cc90a21e40d54ae7f6a87925bb1028e151d567aa10f3b9c7c35005d2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.tab.prompt_shortcuts"
 msgstr ""
 
 #. English: Security
@@ -11812,6 +11713,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"586ae229258a8b0e689920005933c35311742c42dd7007680698b7ad2046ecc1","multiline":false,"placeholders":["fork_id"]}
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
 msgid "tui.status.opened_fork"
+msgstr ""
+
+#. English: {speed} tok/s
+#. chrys-meta={"fingerprint":"d5b8de6c5c81b1f37f8bea2977fda5ee5178feb97b4a53a928795ec201999f02","multiline":false,"placeholders":["speed"]}
+#: src/chrys/app/tui/widgets/chrome/status_bar.py
+msgid "tui.status.output_speed"
 msgstr ""
 
 #. English: Resuming
@@ -15061,6 +14968,330 @@ msgstr ""
 #. chrys-meta={"fingerprint":"bc006f980ad45002214982b17d9c68070fd6837d7982f1173320db7ecb3ae566","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/context_fold.py
 msgid "tui.transcript.fold.compressed"
+msgstr ""
+
+#. English: {year}-{month}
+#. chrys-meta={"fingerprint":"2296c3cf7d1759fdfc1a1162728fa5726561475730789f128d94e35e0379119d","multiline":false,"placeholders":["month","year"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.month"
+msgstr ""
+
+#. English: Top models
+#. chrys-meta={"fingerprint":"d9c45656bc8ccda10e0e2888a25c12b6445db7aaca3224db5ee51f9b8cdbbff1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.top_models"
+msgstr ""
+
+#. English: Week
+#. chrys-meta={"fingerprint":"61cd6a9473937dd9a81527e6a123a50409cc75d95c45884c546bc661d3f5ee00","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.week_total"
+msgstr ""
+
+#. English: Mon Tue Wed Thu Fri Sat Sun
+#. chrys-meta={"fingerprint":"70bb5e0433da628025ba9337bf8f4abcd01b7a0c7babbf47f210ba7a319672ec","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.weekdays"
+msgstr ""
+
+#. English: Mo Tu We Th Fr Sa Su
+#. chrys-meta={"fingerprint":"13f7f03fb064900cbc0010bb59fd2e8be1e156bb0f717496c0249970ddebbcc0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.weekdays_short"
+msgstr ""
+
+#. English: Hit
+#. chrys-meta={"fingerprint":"05a192dfe7d70f4b6d6965b78872500cdb6cfe573d2c3bf460468b3de722766b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.column.hit"
+msgstr ""
+
+#. English: New
+#. chrys-meta={"fingerprint":"6a784056227bb0fe6dc62f0f9bacf89cfaea66004e0b7ab7d8502ea670a49ab4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.column.new"
+msgstr ""
+
+#. English: TPS
+#. chrys-meta={"fingerprint":"ff4294673ea2773f78e7b343acf59c8db8800704df4dce7c4344cd1eac6bee52","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.column.speed"
+msgstr ""
+
+#. English: No model calls recorded yet.
+#. chrys-meta={"fingerprint":"4638f25ec1ef2eb201c96bf5f30c576c5ee0f364994480ed6de7c92a3a47afb8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.empty"
+msgstr ""
+
+#. English: Could not read usage.
+#. chrys-meta={"fingerprint":"4115ed20386af66c2aa2d360c66dd3bcb22608a5b2279f4c1d8d3399c29ca2c3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.failed"
+msgstr ""
+
+#. English: Group
+#. chrys-meta={"fingerprint":"e2c1840e2cfa264951e9348cdefb5ca21bb2b618a23a71361617bcd09289c16d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group"
+msgstr ""
+
+#. English: Model
+#. chrys-meta={"fingerprint":"c820b93516ff203603ed60a227ea14ad662f6ca472bb143e0987a574f55d0eba","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.model"
+msgstr ""
+
+#. English: Project
+#. chrys-meta={"fingerprint":"bb494880de8a82165303fb5db8a2bd69147f6fff4874591b25d51ec1569bafb1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.project"
+msgstr ""
+
+#. English: Source
+#. chrys-meta={"fingerprint":"8a23381b73255be7becb386ff5bf8b4846f3fcba4f6d5404413d16d72d5ed687","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.source"
+msgstr ""
+
+#. English: ←→↑↓ day  {month_keys} month
+#. chrys-meta={"fingerprint":"70046dd55dfcbc816a5a4ca2f75929dc4a54b663b7143f2e41acdca740a2373f","multiline":false,"placeholders":["month_keys"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.keys.calendar"
+msgstr ""
+
+#. English: ←→ range  t scale  g group  ↑↓ row
+#. chrys-meta={"fingerprint":"3c69c7fbe4a02f7fda8bfd5c0acaec8c9de1635231d0198e220395f8093bb83d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.keys.overview"
+msgstr ""
+
+#. English: ←→ range  g group  ↑↓ row
+#. chrys-meta={"fingerprint":"2e08806590d25c6c6c81edc7e2da3d41e20ea0b9ba09950d32368ce204d8dc57","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.keys.overview_fixed_scale"
+msgstr ""
+
+#. English: Cached
+#. chrys-meta={"fingerprint":"bad67fee0c3718027c694e6884148ceffc88383f0a7c33079ca81d18dd0ad3c4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.cached"
+msgstr ""
+
+#. English: Input
+#. chrys-meta={"fingerprint":"aa801f5aa47a9644ff6d258e4f0dc34a47b07d38685b021f96fe2a5f3c4e0ee6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.input"
+msgstr ""
+
+#. English: TPS
+#. chrys-meta={"fingerprint":"ff4294673ea2773f78e7b343acf59c8db8800704df4dce7c4344cd1eac6bee52","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.speed"
+msgstr ""
+
+#. English: Time
+#. chrys-meta={"fingerprint":"dce8c787e4d26fbeb18d23d65541d6bf1fcb3a15099300e963e4b49f5d1d4e8a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.time"
+msgstr ""
+
+#. English: Cache read
+#. chrys-meta={"fingerprint":"687accd9497f5127ef89db0a94b14b982d526ea210f3a503216de870e1fec009","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.cache_read"
+msgstr ""
+
+#. English: Calls
+#. chrys-meta={"fingerprint":"1ec55490d7fdabdf53205bcf206a678399e2426471802dcd44a38a467da87ed1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.calls"
+msgstr ""
+
+#. English: Failed
+#. chrys-meta={"fingerprint":"13d2e4ee23334630408fe0ffecabfab3876a64d44dd00ffaefb56d8ca90b0da8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.failed"
+msgstr ""
+
+#. English: New input
+#. chrys-meta={"fingerprint":"41704227570599c31de6e1c6bf3f493415c241d33866c323cca9f4ed3808c277","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.new_input"
+msgstr ""
+
+#. English: Output
+#. chrys-meta={"fingerprint":"05859c2cb178f6b52e68ea789358b4f6d9958c27ad628104ccee05f67586426d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.output"
+msgstr ""
+
+#. English: Reading usage from every session…
+#. chrys-meta={"fingerprint":"0e800ab999b6729551bb1a759933628ec61c23fa49a3502b6f34052e4c8f7f6e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.loading"
+msgstr ""
+
+#. English: Unknown model
+#. chrys-meta={"fingerprint":"56be977d14bd94bfd99ffd8c01bb9cfff6a1ce4fadeb4430013a8587223fd916","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.model.unknown"
+msgstr ""
+
+#. English: no deleted sessions/external ACP
+#. chrys-meta={"fingerprint":"227326e99706858f18dd312a7ff9695275ab0c043702e16622224e0874fc3e90","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.scope"
+msgstr ""
+
+#. English: from {day}
+#. chrys-meta={"fingerprint":"c8f559c14b3ed684df7768c0df4b8d54b448eb0debd7d302b6266e8f8668aa99","multiline":false,"placeholders":["day"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.since"
+msgstr ""
+
+#. English: {count} log unreadable
+#. English-plural: {count} logs unreadable
+#. chrys-meta={"fingerprint":"e79d3d44be868323e918d5f9054c8f7a177caaec5a9bac422ede9ba788e6f3ee","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.unreadable"
+msgid_plural "tui.usage.note.unreadable#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} call unreported
+#. English-plural: {count} calls unreported
+#. chrys-meta={"fingerprint":"30edcd48c57cf2756f9abd1332255aaf4f23a3d446a15e63f0b1cdf45decc658","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.unreported"
+msgid_plural "tui.usage.note.unreported#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: Other workspaces
+#. chrys-meta={"fingerprint":"6d7805200d84a36fdff69306ab89e5d5baf0d2008448aa2166941869367ba36c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.project.other"
+msgstr ""
+
+#. English: All
+#. chrys-meta={"fingerprint":"d24a279dbbad5c28bcf04fa0ca9ee667b53e32c0267123d319c0cee855dbdce8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.all"
+msgstr ""
+
+#. English: 30 days
+#. chrys-meta={"fingerprint":"abae31b65340147c30524f41173823d892accaf4e7bec9875b530cd93339faa1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.last_30_days"
+msgstr ""
+
+#. English: This month
+#. chrys-meta={"fingerprint":"745458fe70202ca1d3efc7518aa83f097fb4719953f53d8f69d4595355abf16c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.month"
+msgstr ""
+
+#. English: Today
+#. chrys-meta={"fingerprint":"7b10a8bc136b317c40c28bf8608267d91fe8cbac80e3585e21d2a45af61fc15a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.today"
+msgstr ""
+
+#. English: This week
+#. chrys-meta={"fingerprint":"d148aad810da76712f69d54164c2334c0f3a2b0ff3a36eb5182e1b3fa315a6f0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.week"
+msgstr ""
+
+#. English: Approval judge
+#. chrys-meta={"fingerprint":"f644ea340d9f9ca7a08fce7bc7adc142595b67c8f1f422396319ba970c688bfc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.approval_judge"
+msgstr ""
+
+#. English: Compaction
+#. chrys-meta={"fingerprint":"7e3ffa2bd48daa53319a31743b1640fdb4ba309f934f972b709485b4baf35a3e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.compaction"
+msgstr ""
+
+#. English: Last Words
+#. chrys-meta={"fingerprint":"d3cb0e1ad12951982f0a857ab8baaeafaf2e37779f56254a30eb4690e109d373","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.completer"
+msgstr ""
+
+#. English: Main agent
+#. chrys-meta={"fingerprint":"2a6d7b7905e27f4347f243fecd0fd6331e8bfa169a9cc24685d5b5b14d3a91cc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.main"
+msgstr ""
+
+#. English: Sub-agent
+#. chrys-meta={"fingerprint":"89e0801e2952d3706eaa1b79629dcc3805be3cc23fadb72c9ca4949a1afbcc26","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.sub_agent"
+msgstr ""
+
+#. English: Session titles
+#. chrys-meta={"fingerprint":"568a23da6683fedebd695559ee88ad159b3b9feb83dce85eedcb39ac0ca15a94","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.title_gen"
+msgstr ""
+
+#. English: Workflow node
+#. chrys-meta={"fingerprint":"9dbd1483c31f15ae36e1996e3c1666505ef17ee28148945caf224bb0b80ad8b5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.workflow_node"
+msgstr ""
+
+#. English: Calendar
+#. chrys-meta={"fingerprint":"ad64b46121327a123ac5c482bc73c25bb22ab33d5c23e6710b609a245779303d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.tab.calendar"
+msgstr ""
+
+#. English: Overview
+#. chrys-meta={"fingerprint":"b9ad84991d7daa4ad9f8a22fdf25f00dd38773173eb33646e011e7646ed19e29","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.tab.overview"
+msgstr ""
+
+#. English: Token Usage
+#. chrys-meta={"fingerprint":"166392622df9e6afbd731270bea93f53e61e809361e48c75c8045e7e417b949c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.title"
+msgstr ""
+
+#. English: Token Usage · reading…
+#. chrys-meta={"fingerprint":"129ed1bb3e00db5fde63388316a7003ec6ebb8477c01e064ed7e01f3f6609548","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.title_reading"
+msgstr ""
+
+#. English: Trend
+#. chrys-meta={"fingerprint":"c348c443cf33d5961408e81501360e952ee7a9af71540711421358a4917a6681","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend"
+msgstr ""
+
+#. English: Daily
+#. chrys-meta={"fingerprint":"347474e5a57b89c8c8a3abb20ebb1ae2a7fe0ac8edfe6b3ef84a37e9caecd57b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend.daily"
+msgstr ""
+
+#. English: peak {value}
+#. chrys-meta={"fingerprint":"1ec02a7ce56fd85aad42968f1e44d42b438cbb9721055da20cb1a3ad59f85dfd","multiline":false,"placeholders":["value"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend.peak"
+msgstr ""
+
+#. English: Weekly
+#. chrys-meta={"fingerprint":"56dabaa7e3c3d626ed9a56bd103a3b2413e97b221fc8b7e45ac390e8919e1765","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend.weekly"
 msgstr ""
 
 #. English: OK

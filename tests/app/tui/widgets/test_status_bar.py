@@ -210,7 +210,7 @@ async def test_status_bar_completed_flash_restores_localized_elapsed_from_snapsh
         assert controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
         status_bar.restore(snapshot)
 
-        assert status_bar.query_one("#status-flash", Static).render().plain == f"已在 {chinese} 内完成"
+        assert status_bar.query_one("#status-flash", Static).render().plain == f"已完成，用时 {chinese}"  # noqa: RUF001
 
 
 async def test_status_bar_localizes_tool_count_choices_and_elapsed_formats(
@@ -354,6 +354,117 @@ async def test_status_bar_flash_text_gets_full_row_when_trail_is_empty() -> None
         frame = "\n".join(strip.text for strip in strips)
         # A half-row flash box (the old 1fr/1fr split) clips this tail.
         assert "TAIL-END-MARKER" in frame
+
+
+async def test_status_bar_trail_shows_the_recent_output_speed_only_while_output_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from chrys.app.tui.widgets.chrome import status_bar as status_bar_module
+
+    now = [100.0]
+    monkeypatch.setattr(status_bar_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    def _trail(status_bar: StatusBar) -> str:
+        status_bar._refresh_trail()
+        return status_bar.query_one("#status-trail", Static).render().plain
+
+    async with WidgetApp(StatusBar).run_test() as pilot:
+        status_bar = pilot.app.query_one(StatusBar)
+        status_bar.start_run()
+        assert "tok/s" not in _trail(status_bar)
+
+        # 20 words a second, at one token each, over 2 s.
+        for _ in range(3):
+            status_bar.note_output_text("word " * 20)
+            now[0] += 1.0
+        now[0] -= 1.0
+        units = 2 * status_bar_module._OUTPUT_TOKENIZER.count_token_units("word " * 20)
+        expected = round(units / status_bar_module.TOKEN_UNITS_PER_TOKEN / 2.0)
+        assert f" {expected} tok/s" in _trail(status_bar)
+
+        # A pause in the stream (a tool running) hides it rather than showing a stale rate.
+        now[0] += status_bar_module._OUTPUT_SPEED_IDLE_SECONDS + 0.1
+        assert "tok/s" not in _trail(status_bar)
+
+
+async def test_status_bar_output_speed_needs_a_span_and_forgets_old_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from chrys.app.tui.widgets.chrome import status_bar as status_bar_module
+
+    now = [100.0]
+    monkeypatch.setattr(status_bar_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    async with WidgetApp(StatusBar).run_test() as pilot:
+        status_bar = pilot.app.query_one(StatusBar)
+        status_bar.start_run()
+
+        # Text that arrives all at once, as a response that was not streamed does, has no rate.
+        status_bar.note_output_text("word " * 500)
+        now[0] += status_bar_module._OUTPUT_SPEED_MIN_SPAN_SECONDS / 2
+        status_bar.note_output_text("word " * 500)
+        assert status_bar._output_speed() is None
+        now[0] += status_bar_module._OUTPUT_SPEED_MIN_SPAN_SECONDS / 2
+        status_bar.note_output_text("word")
+        assert status_bar._output_speed() is not None
+
+        # What arrived before the window no longer counts.
+        now[0] += status_bar_module._OUTPUT_SPEED_WINDOW_SECONDS
+        status_bar.note_output_text("word")
+        now[0] += 2.0
+        status_bar.note_output_text("word")
+        slow = status_bar._output_speed()
+        assert slow is not None
+        assert slow < 5
+
+        # A new run starts from nothing.
+        status_bar.start_run()
+        assert status_bar._output_speed() is None
+
+
+async def test_status_bar_output_speed_leaves_out_what_arrived_before_its_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from chrys.app.tui.widgets.chrome import status_bar as status_bar_module
+
+    now = [100.0]
+    monkeypatch.setattr(status_bar_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    async with WidgetApp(StatusBar).run_test() as pilot:
+        status_bar = pilot.app.query_one(StatusBar)
+        status_bar.start_run()
+
+        # Two whole responses, as ones that were not streamed land: the first took its time before the span began.
+        status_bar.note_output_text("word " * 3000)
+        now[0] += 2.0
+        status_bar.note_output_text("word " * 100)
+
+        units = status_bar_module._OUTPUT_TOKENIZER.count_token_units("word " * 100)
+        assert status_bar._output_speed() == round(units / status_bar_module.TOKEN_UNITS_PER_TOKEN / 2.0)
+
+
+async def test_status_bar_noting_output_paints_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A delta is per-token work; the trail picks the rate up on its one-second tick."""
+
+    async with WidgetApp(StatusBar).run_test() as pilot:
+        status_bar = pilot.app.query_one(StatusBar)
+        status_bar.start_run()
+        await pilot.pause()
+        trail = status_bar.query_one("#status-trail", Static)
+        before = trail.render().plain
+        updates: list[object] = []
+        monkeypatch.setattr(trail, "update", lambda *args, **kwargs: updates.append(args))
+
+        status_bar.note_output_text("word " * 50)
+
+        assert updates == []
+        assert trail.render().plain == before
 
 
 async def test_status_bar_run_trail_hugs_status_text() -> None:

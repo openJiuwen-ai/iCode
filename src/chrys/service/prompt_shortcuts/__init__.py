@@ -20,7 +20,6 @@ from chrys.service.prompt_shortcuts.loader import (
     project_shortcuts_dir,
     prompt_shortcut_folders,
     prompt_shortcut_sources,
-    resolve_extra_dir,
     working_folder_dirs,
 )
 from chrys.service.prompt_shortcuts.template import PromptExpansion, expand_template
@@ -36,6 +35,5 @@ __all__ = [
     "project_shortcuts_dir",
     "prompt_shortcut_folders",
     "prompt_shortcut_sources",
-    "resolve_extra_dir",
     "working_folder_dirs",
 ]

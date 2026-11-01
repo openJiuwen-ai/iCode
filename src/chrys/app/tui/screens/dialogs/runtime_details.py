@@ -61,7 +61,7 @@ _SHORTCUTS = msg("tui.runtime_details.shortcuts", fallback="Shortcuts")
 _LOADING_SHORTCUTS = msg("tui.runtime_details.loading.shortcuts", fallback="Reading prompt shortcuts…")
 _NO_SHORTCUTS = msg(
     "tui.runtime_details.empty.shortcuts",
-    fallback="No prompt shortcuts loaded. Choose the folders to read in Settings → Shortcuts.",
+    fallback="No prompt shortcuts loaded.",
 )
 _HOOKS = msg("tui.runtime_details.hooks", fallback="Hooks")
 RUNTIME_DETAILS_HOOKS_TAB = "runtime-hooks"

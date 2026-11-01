@@ -156,6 +156,8 @@ class WireClient(ChatTelemetryLayer, BaseChatClient):
     them is the bare codec, which the codec tests drive directly.
     """
 
+    model: str = ""
+
     def __init__(
         self,
         *,
@@ -200,8 +202,10 @@ class WireClient(ChatTelemetryLayer, BaseChatClient):
         forwarded_trace = kwargs.pop(TRAJECTORY_EXCHANGE_KWARG, None)
         from chrys.service.llm.observer import WireCall
 
+        # Options name a model only to override the client's, so the client's goes on the record otherwise.
+        reported_options = {**options, "model": options.get("model") or self.model}
         call = (
-            self._observer.begin(messages, options, stream=stream, forwarded_trace=forwarded_trace)
+            self._observer.begin(messages, reported_options, stream=stream, forwarded_trace=forwarded_trace)
             if self._observer is not None
             else WireCall(None, stream=stream)
         )

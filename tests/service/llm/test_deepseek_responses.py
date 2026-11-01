@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from chrys.foundation.trajectory.usage import normalized_usage
 from chrys.kernel import ChatResponse, Content, Message
 from chrys.kernel.exceptions import ChatClientInvalidRequestException
 from chrys.service.llm.openai_responses import DeepSeekResponsesApiClient
@@ -350,6 +351,25 @@ def test_deepseek_cached_usage_is_extracted_for_responses() -> None:
     details = decode_usage(usage, variant=DEEPSEEK_RESPONSES)
 
     assert details["deepseek.prompt_cache_hit_tokens"] == 7
+    # Under the generic name too: the session totals and the trajectory read that one.
+    assert normalized_usage(details)["cache_read"] == 7
+
+
+def test_a_cached_count_the_provider_reported_itself_wins_over_deepseeks() -> None:
+    usage = SimpleNamespace(
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=15,
+        input_tokens_details=SimpleNamespace(cached_tokens=3),
+        output_tokens_details=None,
+        prompt_cache_hit_tokens=7,
+        model_extra={},
+    )
+
+    details = decode_usage(usage, variant=DEEPSEEK_RESPONSES)
+
+    assert details["deepseek.prompt_cache_hit_tokens"] == 7
+    assert normalized_usage(details)["cache_read"] == 3
 
 
 def test_blocking_parse_persist_replay_keeps_plaintext_reasoning() -> None:

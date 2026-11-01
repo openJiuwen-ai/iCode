@@ -12,7 +12,6 @@ from chrys.app.tui.screens.settings import DEFERRED_KEYS, TAB_IDS, TABS, rendere
 from chrys.app.tui.screens.settings.layout import (
     GENERAL_TAB_ID,
     NOTIFICATIONS_TAB_ID,
-    PROMPT_SHORTCUTS_TAB_ID,
     HintArgs,
     RowKind,
     rendered_row_specs,
@@ -91,17 +90,16 @@ def test_tools_tab_lists_each_tool_category_as_its_own_section() -> None:
     ]
 
 
-def test_custom_panes_cover_prompts_and_boolean_notifications() -> None:
+def test_only_the_notifications_tab_is_a_custom_pane_and_its_keys_are_all_bool() -> None:
     specs = specs_by_key(Settings)
     for tab in TABS:
-        if tab.id in {NOTIFICATIONS_TAB_ID, PROMPT_SHORTCUTS_TAB_ID}:
-            assert tab.custom_pane is True
-        else:
-            assert tab.custom_pane is False
         if tab.id == NOTIFICATIONS_TAB_ID:
+            assert tab.custom_pane is True
             for section in tab.sections:
                 for row in section.rows:
                     assert specs[row.key].kind is Kind.BOOL
+        else:
+            assert tab.custom_pane is False
 
 
 def test_path_keys_render_only_as_the_session_root_row() -> None:

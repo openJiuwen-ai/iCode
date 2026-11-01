@@ -24,7 +24,6 @@ from chrys.app.tui.screens.settings import GENERAL_TAB_ID, NOTIFICATIONS_TAB_ID,
 from chrys.app.tui.screens.settings.dialog import pane_id
 from chrys.app.tui.screens.settings.layout import tab_by_id
 from chrys.app.tui.screens.settings.panes.notifications import NotificationsPane
-from chrys.app.tui.screens.settings.panes.prompt_shortcuts import PromptShortcutsPane
 from chrys.app.tui.screens.settings.rows import SettingRow
 from chrys.app.tui.widgets.chat.messages import AgentMessage, UserMessage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
@@ -98,7 +97,7 @@ def _tabs_with_content(dialog: SettingsDialog) -> set[str]:
     filled: set[str] = set()
     for tab in TABS:
         pane = dialog.query_one(f"#{pane_id(tab.id)}", TabPane)
-        if pane.query(SettingRow) or pane.query(NotificationsPane) or pane.query(PromptShortcutsPane):
+        if pane.query(SettingRow) or pane.query(NotificationsPane):
             filled.add(tab.id)
     return filled
 

@@ -1095,9 +1095,11 @@ class BackendEventHandler:
             else:
                 ui.finish_thinking_segment(event.segment_id)
         elif event.channel == "answer":
+            ui.note_output_text(event.text)
             ui.show_status(STATUS_STREAMING.bind())
             await ui.add_answer_delta(event.segment_id, event.text)
         else:
+            ui.note_output_text(event.text)
             ui.show_status(STATUS_THINKING.bind())
             await ui.add_thinking_delta(event.segment_id, event.channel, event.text)
 

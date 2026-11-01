@@ -509,7 +509,7 @@ def write_shortcut(name: str, text: str) -> Path:
 
 def loaded_shortcut_path(name: str) -> str:
     """The shortcut's path as the loader returns it, which is what a message's ``PromptShortcutRef`` names."""
-    loaded = load_prompt_shortcuts(**prompt_shortcut_folders(Settings(), str(Path.cwd())))
+    loaded = load_prompt_shortcuts(**prompt_shortcut_folders(str(Path.cwd())))
     return next(shortcut.path for shortcut in loaded if shortcut.name == name)
 
 

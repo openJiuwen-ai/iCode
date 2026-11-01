@@ -84,6 +84,10 @@ _DESCRIPTION_RUNTIME = msg(
     "tui.commands.description.runtime",
     fallback="Show active model, tools, skills, and files",
 )
+_DESCRIPTION_USAGE = msg(
+    "tui.commands.description.usage",
+    fallback="Show token usage and speed across all sessions",
+)
 _DESCRIPTION_SETTINGS = msg("tui.commands.description.settings", fallback="Open the Settings panel")
 _DESCRIPTION_MAN = msg("tui.commands.description.man", fallback="Show manual page for a command")
 
@@ -404,11 +408,24 @@ _MAN_RUNTIME_BODY = msg(
     ),
     multiline=True,
 )
+_MAN_USAGE_BODY = msg(
+    "tui.man.usage.body",
+    fallback=(
+        "Open the token usage dialog, read from every saved session.\n\n"
+        "    Overview: new tokens by date range, their trend over time,\n"
+        "    and totals by model, source or project, with each model's speed.\n"
+        "    Calendar: new tokens day by day, and one day's details.\n\n"
+        "    New tokens are the input not served from the provider's cache,\n"
+        "    plus the output, thinking included. Deleted sessions and external\n"
+        "    ACP agents are not counted."
+    ),
+    multiline=True,
+)
 _MAN_SETTINGS_BODY = msg(
     "tui.man.settings.body",
     fallback=(
         "Open the Settings panel (F10), optionally on a tab.\n\n"
-        "    Tabs: general, models, security, sessions, tools, shortcuts, notifications.\n"
+        "    Tabs: general, models, security, sessions, tools, notifications.\n"
         "    Changes are saved as you make them; the panel says when each\n"
         "    one takes effect (immediately, on close, or after a restart)."
     ),
@@ -461,6 +478,7 @@ class SlashCommandActionPort(Protocol):
     def open_agent_config(self) -> None: ...
     def open_agent_config_tab(self, tab: str) -> None: ...
     def runtime_details(self) -> None: ...
+    def usage(self) -> None: ...
     def open_settings(self, tab: str) -> None: ...
     def show_man_pages(self, pages: list[ManPageSpec], *, start_index: int = 0) -> None: ...
     def notify_warning(
@@ -507,6 +525,7 @@ class SlashCommandActions:
     configure_agent: Callable[[], None]
     configure_agent_tab: Callable[[str], None]
     show_runtime_details: Callable[[], None]
+    show_usage: Callable[[], None]
     configure_settings: Callable[[str], None]
     show_manual_pages: Callable[[list[ManPageSpec], int], None]
     warn: Callable[[MessageRef | str, MessageRef | str, float | None], None]
@@ -601,6 +620,9 @@ class SlashCommandActions:
 
     def runtime_details(self) -> None:
         self.show_runtime_details()
+
+    def usage(self) -> None:
+        self.show_usage()
 
     def open_settings(self, tab: str) -> None:
         self.configure_settings(tab)
@@ -1031,6 +1053,13 @@ class MainSlashCommandRegistry:
                 aliases=["details"],
                 allow_while_running=True,
                 man_page=_MAN_RUNTIME_BODY.bind(),
+            ),
+            SlashCommandDef(
+                "usage",
+                _DESCRIPTION_USAGE.bind(),
+                action=lambda _: actions.usage(),
+                allow_while_running=True,
+                man_page=_MAN_USAGE_BODY.bind(),
             ),
             SlashCommandDef(
                 "settings",

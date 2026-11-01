@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
@@ -38,7 +37,6 @@ from chrys.foundation.config.spec import (
     spec,
 )
 from chrys.foundation.config.web_values import (
-    json_list_coercer,
     web_custom_endpoints_coercer,
     web_mode_coercer,
     web_origins_coercer,
@@ -565,18 +563,6 @@ def _trace_mode_env_coercer() -> Coercer:
     return coerce
 
 
-def parse_prompt_shortcut_paths(raw: object) -> list[str]:
-    """Return the ``prompt_shortcuts.paths`` entries; raise ValueError unless it is a JSON array of non-blank strings."""
-    value = json.loads(raw) if isinstance(raw, str) else raw
-    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
-        raise ValueError("Expected a JSON array of folder paths")
-    return [item.strip() for item in value]
-
-
-# Stored as a JSON array string, each folder once.
-_prompt_shortcut_paths_coercer = json_list_coercer(lambda raw: list(dict.fromkeys(parse_prompt_shortcut_paths(raw))))
-
-
 def _theme_coercer() -> Coercer:
     """Coerce a theme name, following a retired built-in name to the one it goes by now.
 
@@ -762,14 +748,6 @@ _LABEL_MUTATIONS_TRACE_FSATRACE_PATH = msg("settings.mutations.trace.fsatrace_pa
 _LABEL_PROJECT_CONFIG_ENABLED = msg("settings.project.config_enabled.label", fallback="Load project settings")
 _LABEL_PROJECT_HOOKS_ENABLED = msg("settings.project.hooks_enabled.label", fallback="Load project hooks")
 _LABEL_PROJECT_SKILLS_ENABLED = msg("settings.project.skills_enabled.label", fallback="Load project skills")
-_LABEL_PROMPT_SHORTCUTS_LOAD_USER_FOLDER = msg(
-    "settings.prompt_shortcuts.load_user_folder.label", fallback="Load prompt shortcuts from user folder (if present)"
-)
-_LABEL_PROMPT_SHORTCUTS_LOAD_WORKING_FOLDER = msg(
-    "settings.prompt_shortcuts.load_working_folder.label",
-    fallback="Load prompt shortcuts from working folder (if present)",
-)
-_LABEL_PROMPT_SHORTCUTS_PATHS = msg("settings.prompt_shortcuts.paths.label", fallback="Prompt shortcut directories")
 _LABEL_NOTIFICATIONS_ENABLED = msg("settings.notifications.enabled.label", fallback="Enable notifications")
 _LABEL_NOTIFICATIONS_DELIVERY_DESKTOP = msg("settings.notifications.delivery.desktop.label", fallback="Desktop popup")
 _LABEL_NOTIFICATIONS_DELIVERY_SOUND = msg("settings.notifications.delivery.sound.label", fallback="Sound")
@@ -1729,56 +1707,6 @@ class Settings:
             # A project must not be able to switch its own skills back on.
             project_merge=ProjectMerge.DENY,
             risk=Risk.CAUTION,
-        ),
-    )
-
-    # ── Prompt shortcuts ─────────────────────────────────────────
-    # Where the TUI ``/`` list reads prompt shortcuts from, read each time the
-    # list opens, so a change applies at once.  User settings only: a project
-    # must not be able to point the list somewhere else or switch its own
-    # folder on.  The working folder is on by default, unlike project hooks and
-    # skills: a shortcut only fills the draft, and sending it is the user's own
-    # input — its text, ``!`command``` placeholders included, is in front of
-    # the user, who runs them by pressing Enter, as when typing them.
-    prompt_shortcuts_load_user_folder: bool = field(
-        default=True,
-        metadata=spec(
-            key="prompt_shortcuts.load_user_folder",
-            label=_LABEL_PROMPT_SHORTCUTS_LOAD_USER_FOLDER,
-            coerce=bool_coercer(),
-            apply=Apply.LIVE,
-            group="prompt_shortcuts",
-            kind=Kind.BOOL,
-            project_merge=ProjectMerge.DENY,
-        ),
-    )
-
-    # ``.chrys/shortcuts`` of the workspace and its parents up to the Git repository's top.
-    prompt_shortcuts_load_working_folder: bool = field(
-        default=True,
-        metadata=spec(
-            key="prompt_shortcuts.load_working_folder",
-            label=_LABEL_PROMPT_SHORTCUTS_LOAD_WORKING_FOLDER,
-            coerce=bool_coercer(),
-            apply=Apply.LIVE,
-            group="prompt_shortcuts",
-            kind=Kind.BOOL,
-            project_merge=ProjectMerge.DENY,
-        ),
-    )
-
-    # More folders, as a JSON array of paths like the web origin lists: an
-    # absolute path, ``~/…``, or a path relative to the workspace.
-    prompt_shortcuts_paths: str = field(
-        default="[]",
-        metadata=spec(
-            key="prompt_shortcuts.paths",
-            label=_LABEL_PROMPT_SHORTCUTS_PATHS,
-            coerce=_prompt_shortcut_paths_coercer,
-            apply=Apply.LIVE,
-            group="prompt_shortcuts",
-            kind=Kind.TEXT,
-            project_merge=ProjectMerge.DENY,
         ),
     )
 

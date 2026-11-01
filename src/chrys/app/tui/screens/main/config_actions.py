@@ -352,6 +352,10 @@ class RuntimeConfigController:
         """Open the active runtime details modal, on *initial_tab* when given."""
         self._view.open_runtime_details(self._state.runtime.details, initial_tab=initial_tab)
 
+    def open_usage(self) -> None:
+        """Open the token usage modal."""
+        self._view.open_usage()
+
     def open_settings(self, initial_tab: str) -> None:
         """Open the Settings dialog on *initial_tab*."""
         from chrys.app.tui.screens.settings import SettingsDialog

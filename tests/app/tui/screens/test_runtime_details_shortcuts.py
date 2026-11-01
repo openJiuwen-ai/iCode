@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
     from textual.pilot import Pilot
 
-_EMPTY_TEXT = "No prompt shortcuts loaded. Choose the folders to read in Settings → Shortcuts."
+_EMPTY_TEXT = "No prompt shortcuts loaded."
 _LOADING_TEXT = "Reading prompt shortcuts…"
 
 Sources = list[tuple[Path, list[PromptShortcut]]]
