@@ -859,7 +859,9 @@ def mcp_draft_errors_by_server(
                 errors.append(_prefixed_server_error(render_message, prefix, display, MCP_COMMAND_REQUIRED.bind()))
         else:
             errors.append(_prefixed_server_error(render_message, prefix, display, MCP_TRANSPORT.bind()))
-        if server.request_timeout is not None and server.request_timeout <= 0:
+        if server.request_timeout is not None and (
+            type(server.request_timeout) is not int or server.request_timeout <= 0
+        ):
             errors.append(_prefixed_server_error(render_message, prefix, display, MCP_TIMEOUT_POSITIVE.bind()))
         prefix_error = validate_mcp_tool_name_prefix(
             server.tool_name_prefix,

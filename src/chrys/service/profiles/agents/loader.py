@@ -311,11 +311,11 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 # stdio
                 command=entry.get("command", ""),
                 args=entry.get("args", []),
-                env=entry.get("env", {}) if transport == "stdio" else {},
+                env=_mcp_string_mapping(entry.get("env"), "tools.mcp.env") if transport == "stdio" else {},
                 encoding=entry.get("encoding"),
                 # http
                 url=entry.get("url", ""),
-                headers=entry.get("headers", {}),
+                headers=_mcp_string_mapping(entry.get("headers"), "tools.mcp.headers") if transport == "http" else {},
                 resolve_header_templates=coerce_bool(entry.get("resolve_header_templates"), default=True),
                 terminate_on_close=entry.get("terminate_on_close"),
                 verify_ssl=coerce_bool(entry.get("verify_ssl"), default=True),
@@ -334,6 +334,11 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
             )
         )
     return configs
+
+
+def _mcp_string_mapping(raw: object, field: str) -> dict[str, str]:
+    """Match runtime template coercion without resolving credentials in the editor."""
+    return {str(key): str(value) for key, value in _mapping_section(raw, field).items()}
 
 
 def _parse_skill_resources(raw: object, section: str) -> list[SkillResourceConfig]:

@@ -10,6 +10,7 @@ import logging
 import shlex
 import socket
 from collections.abc import Callable, Collection, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Literal, TypeGuard
@@ -23,6 +24,8 @@ from textual.widget import Widget
 from textual.widgets import Button, Label
 
 from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
+from chrys.app.tui.screens.agents.mcp_choices import MCPChoices, mcp_choice_conflict, mcp_name_key
+from chrys.app.tui.screens.agents.mcp_picker import MCPPickerAction, MCPPickerDialog, MCPPickerResult, conflict_message
 from chrys.app.tui.screens.agents.panels.markdown_report import (
     NOT_ADVERTISED,
     SUPPORTED_MARK,
@@ -72,6 +75,7 @@ from chrys.app.tui.screens.agents.validation_messages import (
 )
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.dialogs.connection_test import ConnectionTestDialog
+from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.widgets import Checkbox, ConfigAddButton, EnhancedTextArea, HatchedEmptyState, Select
 from chrys.app.tui.widgets import EnhancedInput as Input
 from chrys.app.tui.widgets.config_card import CardListChanged, CollapsibleConfigCard
@@ -1729,6 +1733,7 @@ class MCPConfigPanel(VerticalScroll):
         workspace_cwd: str | None = None,
         read_only: bool = False,
         additional_reserved_tool_names: Callable[[], Collection[str]] | None = None,
+        reuse_choices: Callable[[], MCPChoices] | None = None,
     ) -> None:
         servers = list(mcp_servers or [])
         # Folds from an earlier panel for these servers (see ``card_folds``); otherwise saved servers open folded.
@@ -1739,6 +1744,7 @@ class MCPConfigPanel(VerticalScroll):
         ]
         self._read_only = read_only
         self._additional_reserved_tool_names = additional_reserved_tool_names
+        self._reuse_choices = reuse_choices
         self._testing: set[int] = set()
         self._adapter = MCPAdapter(
             stdio_cwd=workspace_cwd or None,
@@ -1805,14 +1811,51 @@ class MCPConfigPanel(VerticalScroll):
     async def _on_add(self, _event: Button.Pressed) -> None:
         if self._read_only:
             return
-        from chrys.service.profiles.agents.schema import MCPServerConfig
-
         if self._refuse_while_testing(_WAIT_BEFORE_ADDING):
             return
-        new_config = MCPServerConfig(name="New Server", transport="stdio")
-        self._rows = self._snapshot_rows(preserve_blank_names=True)
-        self._rows.insert(0, _MCPServerRow(new_config, collapsed=False))
+        if self.screen is not self.app.screen:
+            return
+        choices = self._reuse_choices() if self._reuse_choices is not None else MCPChoices()
+        if not choices.choices:
+            await self._add_selected(MCPPickerAction.CREATE)
+            return
+        current = [row.config for row in self._snapshot_rows(preserve_blank_names=True)]
+        self.app.push_screen(MCPPickerDialog(choices, current), callback=self._add_selected)
+
+    async def _add_selected(self, result: MCPPickerResult) -> None:
+        if result is None or self._read_only:
+            return
+        if not self.is_attached or self._pruning or self._closing:
+            return
+        if not composed_live(self.screen) or self.screen is not self.app.screen:
+            return
+        if self._refuse_while_testing(_WAIT_BEFORE_ADDING):
+            return
+        from chrys.service.profiles.agents.schema import MCPServerConfig
+
+        # Read live cards again: queued selections must not duplicate a prior addition,
+        # and invalid command text must not leave name checks reading a stale agent draft.
+        rows = self._snapshot_rows(preserve_blank_names=True)
+        current = [row.config for row in rows]
+        if result is MCPPickerAction.CREATE:
+            names = {mcp_name_key(config.name) for config in current}
+            name = "New Server"
+            suffix = 2
+            while mcp_name_key(name) in names:
+                name = f"New Server {suffix}"
+                suffix += 1
+            config = MCPServerConfig(name=name, transport="stdio")
+        else:
+            conflict = mcp_choice_conflict(result, current)
+            if conflict is not None:
+                self.notify(self._render_message(conflict_message(conflict)), markup=False)
+                return
+            config = deepcopy(result)
+        self._rows = rows
+        self._rows.insert(0, _MCPServerRow(config, collapsed=False))
         await self._rebuild_cards()
+        self.scroll_home(animate=False)
+        self.post_message(CardListChanged())
 
     def _refuse_while_testing(self, reason: MessageDef) -> bool:
         """Tell the user why the card list can't change yet; tests hold card indexes until they finish."""

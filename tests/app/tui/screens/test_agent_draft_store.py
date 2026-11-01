@@ -51,6 +51,15 @@ def test_agent_draft_store_rejects_empty_graph() -> None:
     assert store.validate() == ["At least one agent profile is required."]
 
 
+@pytest.mark.parametrize("timeout", ["30", "bad", True, 1.5, 0, -1])
+def test_mcp_draft_reports_invalid_timeout_without_crashing(timeout: object) -> None:
+    server = MCPServerConfig(name="server", transport="stdio", command="server")
+    server.request_timeout = timeout  # type: ignore[assignment]
+    profile = AgentProfile(name="Code", tools=ToolsConfig(mcp=[server]))
+
+    assert validate_mcp_draft("Code", profile) == ["Code: Server 'server': timeout must be a positive integer."]
+
+
 def test_agent_draft_store_rejects_dirty_duplicate_name_against_registry() -> None:
     draft = _Draft(
         key="draft:1",
