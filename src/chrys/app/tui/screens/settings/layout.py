@@ -19,7 +19,7 @@ from chrys.foundation.i18n import MessageDef, msg
 # ── Tab titles ─────────────────────────────────────────────────────────
 _TAB_GENERAL = msg("tui.settings.tab.general", fallback="General")
 _TAB_MODELS_AGENTS = msg("tui.settings.tab.models_agents", fallback="Models & Agents")
-_TAB_SECURITY = msg("tui.settings.tab.security", fallback="Security")
+_TAB_SAFETY = msg("tui.settings.tab.safety", fallback="Safety")
 _TAB_SESSIONS = msg("tui.settings.tab.sessions", fallback="Sessions")
 _TAB_TOOLS = msg("tui.settings.tab.tools", fallback="Tools")
 _TAB_NOTIFICATIONS = msg("tui.settings.tab.notifications", fallback="Notifications")
@@ -34,6 +34,7 @@ _SECTION_MODEL_ROLES = msg("tui.settings.section.model_roles", fallback="Model r
 _SECTION_LLM = msg("tui.settings.section.llm", fallback="LLM")
 _SECTION_APPROVAL = msg("tui.settings.section.approval", fallback="Approval")
 _SECTION_PROJECT_TRUST = msg("tui.settings.section.project_trust", fallback="Project trust")
+_SECTION_CREDENTIALS = msg("tui.settings.section.credentials", fallback="Credentials")
 _SECTION_DIAGNOSTICS = msg("tui.settings.section.diagnostics", fallback="Diagnostics")
 _SECTION_TELEMETRY = msg("tui.settings.section.telemetry", fallback="Telemetry")
 _SECTION_LOCATION = msg("tui.settings.section.location", fallback="Location")
@@ -396,17 +397,13 @@ TABS: tuple[SettingsTab, ...] = (
                         hint_args=HintArgs.RETRY_DEFAULTS,
                         placeholder=Placeholder.RETRY_DEFAULT,
                     ),
-                    SettingRowSpec(
-                        "llm.credential_command.ttl_seconds",
-                        hint=_HINT_LLM_CREDENTIAL_COMMAND_TTL_SECONDS,
-                    ),
                 ),
             ),
         ),
     ),
     SettingsTab(
-        id="security",
-        title=_TAB_SECURITY,
+        id="safety",
+        title=_TAB_SAFETY,
         sections=(
             SettingsSection(
                 _SECTION_APPROVAL,
@@ -424,6 +421,10 @@ TABS: tuple[SettingsTab, ...] = (
                     SettingRowSpec("project.hooks_enabled", hint=_HINT_PROJECT_HOOKS_ENABLED),
                     SettingRowSpec("project.skills_enabled", hint=_HINT_PROJECT_SKILLS_ENABLED),
                 ),
+            ),
+            SettingsSection(
+                _SECTION_CREDENTIALS,
+                (SettingRowSpec("llm.credential_command.ttl_seconds", hint=_HINT_LLM_CREDENTIAL_COMMAND_TTL_SECONDS),),
             ),
             SettingsSection(
                 _SECTION_DIAGNOSTICS,

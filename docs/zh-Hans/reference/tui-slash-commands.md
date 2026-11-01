@@ -56,7 +56,7 @@
 | `/agents [target]` | `/agent`<br>`/config` | 打开智能体配置窗口。详见[配置智能体](../guides/configuration/agents.md#打开智能体配置窗口)。 | 省略参数：按空格键或 **Enter** 显示可用标签页。<br>`target`：直接打开指定标签页。可用值为 `basic`、`instructions`、`tools`、`sub-agents`、`skills`、`mcp`、`memory` 和 `compaction`。<br>参数别名：`subagents` 等同于 `sub-agents`，`skill` 等同于 `skills`。 |
 | `/runtime` | `/details` | 打开“运行时详情”窗口，查看当前模型配置和模型 ID、按类别分组的内置工具、上下文管理工具、子智能体工具、按服务器分组的 MCP 工具、按来源目录分组的快捷指令、按来源分组的 Skills、已加载的钩子，以及预配置记忆文件。 | — |
 | `/usage` | — | 打开 token 用量窗口，查看所有会话的合计、趋势和速度。详见[查看 token 用量和速度](../guides/daily-use/sessions.md#查看-token-用量和速度)。 | — |
-| `/settings [tab]` | — | 打开设置窗口。详见[配置 iCode 设置](../guides/configuration/settings.md#设置窗口)。 | `tab`：直接打开指定标签页。可用值为 `general`、`models`、`security`、`sessions`、`tools` 和 `notifications`。省略参数时，按空格键或 **Enter** 显示可用标签页。 |
+| `/settings [tab]` | — | 打开设置窗口。详见[配置 iCode 设置](../guides/configuration/settings.md#设置窗口)。 | `tab`：直接打开指定标签页。可用值为 `general`、`models`、`safety`、`sessions`、`tools` 和 `notifications`。省略参数时，按空格键或 **Enter** 显示可用标签页。 |
 | `/workflow` | — | 打开工作流模式并选择工作流。详见[创建和运行工作流](../guides/running/workflows.md)。 | — |
 | `/help` | — | 打开“iCode 用户指南”窗口，查看本文档。也可以按 **F8** 或点击底栏的 `f8 帮助`。 | — |
 | `/man [command]` | — | 显示 iCode 命令说明。 | 省略参数：按空格键或 **Enter** 显示可查看的命令。<br>`command`：命令名称或别名；显示指定命令的名称、用法、说明、别名和选项。 |

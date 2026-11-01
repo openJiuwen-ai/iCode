@@ -63,7 +63,7 @@ iCode runs the command when it first needs the model and uses what the command p
 
 **Getting a new key.** You don't need to restart iCode. It runs the command again:
 
-- before the next request, once the key is an hour old. To change this, see [Credential command refresh interval](./settings.md#llm).
+- before the next request, once the key is an hour old. To change this, see [Credential command refresh interval](./settings.md#credentials).
 - as soon as the model service refuses the key (HTTP 401). iCode then sends the refused request again with the new key.
 
 **What the command has to do.** Print the key on standard output as one line of plain ASCII text, and exit with code `0`. It runs in your shell (`cmd.exe` on Windows) from your home directory, and has 30 seconds. It cannot ask you anything, so if your tool needs you to sign in, sign in from a terminal first. If the command itself contains `}}`, write it as `}}}}`, or put the command in a script.

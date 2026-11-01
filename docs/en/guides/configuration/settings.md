@@ -1,6 +1,6 @@
 # Configure iCode settings
 
-iCode settings control the interface appearance, default agent, sessions, tools, notifications, and some security options. This guide explains how to configure these basics in the terminal user interface (TUI) and check when changes take effect.
+iCode settings control the interface appearance, default agent, sessions, tools, notifications, and some safety options. This guide explains how to configure these basics in the terminal user interface (TUI) and check when changes take effect.
 
 To edit `settings.yaml` directly or configure settings through environment variables, see the [iCode settings file reference](../../reference/settings.md) for file locations, settings keys, and source precedence.
 
@@ -22,12 +22,12 @@ You can also open a tab directly with `/settings <tab>`:
 | --- | --- | --- |
 | General | `general` | Appearance, input and updates |
 | Models & Agents | `models` | Default agent, model roles, and request retries |
-| Security | `security` | Approval, project trust, diagnostics, and telemetry |
+| Safety | `safety` | Approval, project trust, credentials, diagnostics, and telemetry |
 | Sessions | `sessions` | Session titles, storage, and rollback |
 | Tools | `tools` | File search, images, web tools, agent questions, tool detail display, and workspace notices |
 | Notifications | `notifications` | Notification toggles, delivery methods, and events |
 
-For example, enter `/settings security` to open the **Security** tab directly.
+For example, enter `/settings safety` to open the **Safety** tab directly.
 
 ### Save changes and check when they take effect
 
@@ -101,9 +101,8 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
 | Max transient retries | Sets the maximum number of automatic retries for errors that may resolve shortly, such as temporary network interruptions, request timeouts, temporary model service unavailability, or server rate limits. It does not retry problems that waiting cannot resolve, such as invalid model configuration or request parameters. A higher limit gives temporary failures more chances to recover; if retries keep failing, it also increases the wait and the number of model requests before the final failure. Leave blank to use the TUI default; set to `0` to disable automatic retries. This setting does not cover the one resend after iCode compacts a full context window, or the one resend of a reply that came back with no answer. | On close |
-| Credential command refresh interval (seconds) | How often iCode runs a `{{!command}}` value again, at least 60 seconds. The default is 3600 (one hour). A key the service refuses is replaced at once, whatever this says. See [Get an API key from a command](./models.md#get-an-api-key-from-a-command). | After restart |
 
-### Security
+### Safety
 
 #### Approval
 
@@ -123,6 +122,12 @@ Project settings, hooks, and skills come with the repository you open, so all th
 | Load project settings | Reads `.chrys/settings.yaml` in the current working directory and applies its project settings, such as request retries, automatic session titles, and working directory notices. See [Project-level settings](../../reference/settings.md#project-level-settings) for allowed keys and override restrictions. | On close |
 | Load project hooks | Controls whether iCode loads hooks from `.chrys/hooks` in the current working directory; it does not affect user-level hooks. To create and validate hooks, see [Configure and write hooks](../extensions/hooks.md). For the complete configuration fields, see the [Hooks configuration reference](../../reference/hooks.md). | On close |
 | Load project skills | Controls whether iCode loads skills from `.agents/skills` in the current working directory; it does not affect your own skills directories. See [Install and use skills](../extensions/skills.md). | On close |
+
+#### Credentials
+
+| Setting | Effect and notes | Takes effect |
+| --- | --- | --- |
+| Credential command refresh interval (seconds) | How often iCode runs a `{{!command}}` value again, at least 60 seconds. The default is 3600 (one hour). A key the service refuses is replaced at once, whatever this says. See [Get an API key from a command](./models.md#get-an-api-key-from-a-command). | After restart |
 
 #### Diagnostics
 

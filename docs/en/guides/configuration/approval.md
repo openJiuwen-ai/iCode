@@ -33,7 +33,7 @@ You can switch modes while a task is running. Approval requests that are already
 
 With the default settings unchanged, the TUI starts in manual approval mode on its first launch. Switching the current approval mode also updates the default for the next launch: choosing manual or automatic mode saves that mode as the default. Choosing bypass mode applies only to the current run; to avoid continuing to bypass approval protections after a restart, the default for the next launch is saved as automatic mode.
 
-To change only the default for the next launch without changing the current approval mode, press **F10** to open **Settings** and change **Default approval mode** on the **Security** tab. **Settings** does not offer bypass mode as a default that can be saved.
+To change only the default for the next launch without changing the current approval mode, press **F10** to open **Settings** and change **Default approval mode** on the **Safety** tab. **Settings** does not offer bypass mode as a default that can be saved.
 
 ## Choose how automatic review works
 
@@ -49,7 +49,7 @@ Both strategies ask you to confirm file deletion, including temporary files and 
 To choose a strategy:
 
 1. Enter `/approval auto` to switch to automatic mode.
-2. Press **F10**, open **Security → Approval**, and find **Automatic review strategy**.
+2. Press **F10**, open **Safety → Approval**, and find **Automatic review strategy**.
 3. Choose **Direct review** or **Individual risk checks**, then close Settings. Your choice is saved automatically and takes effect when the window closes. A review already in progress finishes as before.
 
 Individual risk checks cover these actions:
@@ -75,7 +75,7 @@ Tool calls that require approval open an **Approval Required** dialog showing th
 - Press **Y** to approve or **N** to decline, or click the corresponding button. You cannot close the dialog with **Esc**. If you set a [human approval timeout](#set-the-human-approval-timeout), a request you have not answered when it runs out is declined.
 - When declining, you can provide a reason. The reason is sent to the agent to help it adjust its next steps. Once a reason is entered, the approve button is disabled.
 - In automatic mode, no dialog opens while the approval judge model evaluates a call; **Reviewing** appears, after a spinning icon, to the left of the approval mode label in the upper-right corner. Calls the model judges safe run without a dialog. If the model judges a call suspicious, the dialog opens with the title **Flagged by Auto-Review**, shows the reason, and waits for a person to decide. The cursor starts in the reason field so that a stray key press does not approve the call: type a reason and decline, or press **Tab** to move to the buttons. If the approval judge model is unavailable, or evaluation fails or times out, the dialog opens for a person to decide instead of approving the tool call automatically.
-- To see each call while it is evaluated, press **F10** to open **Settings** and turn off **Show the approval dialog only when Auto-Review flags a call** on the **Security** tab. The dialog then opens at once and shows **Evaluating**: it closes by itself if the model judges the call safe, and you can approve or decline before evaluation finishes.
+- To see each call while it is evaluated, press **F10** to open **Settings** and turn off **Show the approval dialog only when Auto-Review flags a call** on the **Safety** tab. The dialog then opens at once and shows **Evaluating**: it closes by itself if the model judges the call safe, and you can approve or decline before evaluation finishes.
 - While a dialog waits for your decision, the terminal tab shows `?` before its title, so you can tell from another tab that iCode needs you. See [Follow a task in the terminal tab](../daily-use/sessions.md#follow-a-task-in-the-terminal-tab).
 
 ## Remember approvals
@@ -152,7 +152,7 @@ Other ways of running iCode use the following approval modes and switching metho
 
 ## Set the human approval timeout
 
-Press **F10** → **Settings** → **Security**, then set **Human approval timeout (seconds)** in the **Approval** section. This setting applies to both the TUI and ACP clients. The default is **0 (no timeout)**; positive values set a deadline in seconds. Negative values are adjusted to **0**. Restart iCode (the TUI or ACP server) after saving.
+Press **F10** → **Settings** → **Safety**, then set **Human approval timeout (seconds)** in the **Approval** section. This setting applies to both the TUI and ACP clients. The default is **0 (no timeout)**; positive values set a deadline in seconds. Negative values are adjusted to **0**. Restart iCode (the TUI or ACP server) after saving.
 
 With a positive timeout configured, the TUI timer starts when the approval dialog is shown and the call is ready for a human decision. Waiting behind another approval dialog and preparing its content (including file diffs) do not use up the timeout. In ACP, timing starts when the server sends the human approval request. If no response arrives before the timeout, iCode rejects that tool call.
 

@@ -205,7 +205,7 @@ These are the general rules for values in settings files and environment variabl
 
 ## Project-level settings
 
-Project settings are not loaded by default. First enable them in the user `settings.yaml`, or turn on “Load project settings” under “Settings → Security” in the TUI:
+Project settings are not loaded by default. First enable them in the user `settings.yaml`, or turn on “Load project settings” under “Settings → Safety” in the TUI:
 
 ```yaml
 project:

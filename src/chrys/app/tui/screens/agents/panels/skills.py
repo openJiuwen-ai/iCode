@@ -74,7 +74,7 @@ _LOAD_WORKING_FOLDER_TOOLTIP = msg(
     "tui.agent_config.skills.load_working_folder_tooltip",
     fallback=(
         "Auto-load skills from the agents skills directory under the current working folder when Load project "
-        "skills is on under Settings → Security → Project trust. Reloaded automatically when the workspace cwd "
+        "skills is on under Settings → Safety → Project trust. Reloaded automatically when the workspace cwd "
         "changes (/chdir or file picker)."
     ),
 )
