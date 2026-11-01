@@ -15410,6 +15410,15 @@ msgid_plural "tui.workflow.elapsed.hours#plural"
 msgstr[0] ""
 msgstr[1] ""
 
+#. English: {count} ms
+#. English-plural: {count} ms
+#. chrys-meta={"fingerprint":"f073175ef03342b955d65e08c496f0641de28fa0638b2b2db9be9728776e1656","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.elapsed.milliseconds"
+msgid_plural "tui.workflow.elapsed.milliseconds#plural"
+msgstr[0] ""
+msgstr[1] ""
+
 #. English: {count} minute
 #. English-plural: {count} minutes
 #. chrys-meta={"fingerprint":"444705dcf675d7c229caa2ead391fc5acc54220e106614654757983418f6d241","multiline":false,"placeholders":[]}

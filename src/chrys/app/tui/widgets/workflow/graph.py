@@ -51,7 +51,7 @@ MAX_DIAGRAM_NODES = 200
 
 def _elapsed_width(locale: LocaleController | None) -> int:
     """Reserve footer space once so elapsed labels never reflow the graph."""
-    return max(cell_len(text.elapsed_label(seconds, locale)) for seconds in (59, 3599, 86340, 86396400))
+    return max(cell_len(text.elapsed_label(seconds, locale)) for seconds in (0.999, 59, 3599, 86340, 86396400))
 
 
 def usage_label(usage: NodeUsage, locale: LocaleController | None = None) -> str:
@@ -235,7 +235,7 @@ class WorkflowGraph(DiagramViewport):
         self._retry_label = ""
         self._running_nodes: set[str] = set()
         self._elapsed_labels: dict[str, str] = {}
-        self._elapsed_display_seconds: dict[str, int] = {}
+        self._elapsed_display_ms: dict[str, int] = {}
         self._usage_labels: dict[str, str] = {}
         self.direction = Direction.LEFT_RIGHT
         self._manifest: dict[str, Any] = {}
@@ -270,7 +270,7 @@ class WorkflowGraph(DiagramViewport):
         self._badges.clear()
         self._running_nodes.clear()
         self._elapsed_labels.clear()
-        self._elapsed_display_seconds.clear()
+        self._elapsed_display_ms.clear()
         self._usage_labels.clear()
         self.selected_node = ""
         self._retry_label = text.render(text.RETRY.bind(), locale)
@@ -355,7 +355,7 @@ class WorkflowGraph(DiagramViewport):
                     if start >= 0:
                         self._badge_positions[node["id"]] = (box.x + cell_len(row[:start]), y, box.x + box.width - 2)
                         break
-        self._elapsed_display_seconds.clear()
+        self._elapsed_display_ms.clear()
         self._retry_regions.clear()
         now = datetime.now(UTC)
         for node_id in self._views:
@@ -513,21 +513,26 @@ class WorkflowGraph(DiagramViewport):
         self._refresh_rows(rows)
 
     def _update_elapsed(self, node_id: str, now: datetime) -> bool:
+        """Refresh the node's elapsed label, deduped at millisecond resolution.
+
+        A sub-second node relabels each tick; a longer one only when its label changes,
+        which is once a second.
+        """
         view = self._views.get(node_id, _DEFAULT_NODE)
         if view.elapsed_seconds is None and view.running_since is None:
-            self._elapsed_display_seconds.pop(node_id, None)
+            self._elapsed_display_ms.pop(node_id, None)
             return self._elapsed_labels.pop(node_id, None) is not None
         elapsed = view.elapsed_seconds or 0.0
         if view.state == "running" and view.running_since is not None:
             elapsed += max(0.0, (now - view.running_since).total_seconds())
-        seconds = int(max(0, elapsed))
-        if self._elapsed_display_seconds.get(node_id) == seconds:
+        millis = int(max(0.0, elapsed) * 1000)
+        if self._elapsed_display_ms.get(node_id) == millis:
             return False
-        self._elapsed_display_seconds[node_id] = seconds
-        label = text.elapsed_label(seconds, self._locale)
+        self._elapsed_display_ms[node_id] = millis
+        label = text.elapsed_label(elapsed, self._locale)
         box = self.geometry[node_id]
         if not self.list_fallback and cell_len(label) > box.width - 4:
-            label = crop_cell_text(format_elapsed(seconds), 0, box.width - 4).rstrip()
+            label = crop_cell_text(format_elapsed(elapsed), 0, box.width - 4).rstrip()
         changed = self._elapsed_labels.get(node_id) != label
         self._elapsed_labels[node_id] = label
         return changed
