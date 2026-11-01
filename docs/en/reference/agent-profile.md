@@ -549,4 +549,4 @@ acp:
 
 **Directory scope for `allow_external_cwd`**: If an ACP client creates the iCode session and supplies additional working directories, the external agent can run in those directories and their subdirectories even when `allow_external_cwd` is `false`.
 
-`command`, `args`, values in `env`, and `cwd` can use `{{ENV_VAR}}` to reference environment variables from the iCode process. Missing or empty variables cause startup to fail. For connection tests, working directory security boundaries, and how configuration options are applied, see [Configure external ACP agents](../guides/extensions/external-acp-agents.md).
+`command`, `args`, values in `env`, and `cwd` can use `{{ENV_VAR}}` to reference environment variables from the iCode process. Missing or empty variables cause startup to fail. `args` and values in `env` can also use `{{!command}}`, which runs each time the external agent starts; `command` and `cwd` cannot. For connection tests, working directory security boundaries, and how configuration options are applied, see [Configure external ACP agents](../guides/extensions/external-acp-agents.md).

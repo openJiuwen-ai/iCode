@@ -256,7 +256,6 @@ async def test_surrogate_reason_is_audited_without_blocking_permission(monkeypat
                     parent_provider_call_id="provider",
                     parent_event_call_id="event",
                     runner="acp",
-                    acp_command="agent",
                 )
                 assert await writer.write(
                     status="completed", ended=True, acp_state={"translated_updates": translator.translated_updates}

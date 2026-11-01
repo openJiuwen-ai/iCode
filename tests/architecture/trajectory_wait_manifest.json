@@ -3413,8 +3413,9 @@
         ["awaitable", "await self._require_conn().cancel(session_id=self._require_session_id())", "unresolved"]
       ],
       "AcpAgentClient.connect": [
+        ["wrapper", "await with_fresh_tokens(self._spec)", "unresolved", "chrys.service.acp_client.spawn.with_fresh_tokens"],
         ["async_context", "async with asyncio.timeout_at(self._handshake_deadline)", "unresolved"],
-        ["wrapper", "await spawn_acp_process(self._spec)", "unresolved", "chrys.service.acp_client.spawn.spawn_acp_process"],
+        ["wrapper", "await spawn_acp_process(launch_spec)", "unresolved", "chrys.service.acp_client.spawn.spawn_acp_process"],
         ["wrapper", "await _dispose_spawn(spawn)", "unresolved", "chrys.service.acp_client.client._dispose_spawn"],
         ["awaitable", "await self._require_conn().initialize(protocol_version=PROTOCOL_VERSION, client_capabilities=ClientCapabilities(fs=FileSystemCapabilities(read_text_file=False, write_text_file=False), terminal=False), client_info=self._spec.client_info)", "unresolved"],
         ["wrapper", "await self.force_close()", "unresolved", "chrys.service.acp_client.client.AcpAgentClient.force_close"],
@@ -3482,6 +3483,9 @@
         ["wrapper", "await spawn_managed_stdio_process(command, *args, cwd=cwd, env=env, limit=ACP_STDIO_LIMIT_BYTES, parent_env=parent_env)", "unresolved", "chrys.foundation.platform.process.spawn_managed_stdio_process"],
         ["timeout", "await asyncio.wait_for(process.wait(), timeout=2)", "unresolved"],
         ["subprocess", "process.wait()", "unresolved"]
+      ],
+      "with_fresh_tokens": [
+        ["wrapper", "await refresh(values)", "unresolved", "chrys.service.command_credentials.refresh"]
       ]
     },
     "chrys.service.agent_middleware.control.approval": {

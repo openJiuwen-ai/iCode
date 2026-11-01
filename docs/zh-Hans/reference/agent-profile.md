@@ -549,4 +549,4 @@ acp:
 
 **`allow_external_cwd` 的目录范围**：如果 iCode 会话由 ACP 客户端创建，且客户端提供了附加工作目录，那么即使 `allow_external_cwd` 为 `false`，外部智能体也可以在这些目录及其子目录中运行。
 
-`command`、`args`、`env` 的值和 `cwd` 可以使用 `{{ENV_VAR}}` 引用 iCode 进程的环境变量。缺失或为空的变量会导致启动失败。连接测试、工作目录安全边界和配置项应用方式参阅[配置外部 ACP 智能体](../guides/extensions/external-acp-agents.md)。
+`command`、`args`、`env` 的值和 `cwd` 可以使用 `{{ENV_VAR}}` 引用 iCode 进程的环境变量。缺失或为空的变量会导致启动失败。`args` 和 `env` 的值还可以使用 `{{!command}}`，每次启动外部智能体时都会运行命令；`command` 和 `cwd` 不能使用。连接测试、工作目录安全边界和配置项应用方式参阅[配置外部 ACP 智能体](../guides/extensions/external-acp-agents.md)。

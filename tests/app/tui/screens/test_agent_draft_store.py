@@ -265,6 +265,24 @@ def test_validate_acp_draft_enforces_launch_types_bounds_and_workspace_containme
     assert any("idle timeout must be finite" in error for error in errors)
 
 
+def test_validate_acp_draft_takes_commands_in_arguments_and_environment(tmp_path) -> None:
+    profile = _profile("External", sub_agent_only=True)
+    profile.acp = AcpAgentConfig(command="agent", args=["--key={{!tool get}}"], env={"TOKEN": "{{!tool get}}"})
+
+    assert validate_acp_draft("External", profile, workspace_cwd=str(tmp_path), workspace_roots=[str(tmp_path)]) == []
+
+
+@pytest.mark.parametrize("field", ["command", "cwd"])
+def test_validate_acp_draft_refuses_commands_for_what_runs_and_where(tmp_path, field: str) -> None:
+    profile = _profile("External", sub_agent_only=True)
+    profile.acp = AcpAgentConfig(**{"command": "agent", field: "{{!tool --password hunter2}}"})
+
+    errors = validate_acp_draft("External", profile, workspace_cwd=str(tmp_path), workspace_roots=[str(tmp_path)])
+
+    assert any("not supported" in error for error in errors)
+    assert not any("hunter2" in error for error in errors)
+
+
 def test_validate_acp_draft_expands_cwd_templates_before_containment(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "workspace"
     outside = tmp_path / "outside"

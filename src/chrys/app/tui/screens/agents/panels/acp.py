@@ -758,13 +758,17 @@ class AcpConfigPanel(VerticalScroll):
         """
         try:
             expanded: dict[str, Any] = {
-                "command": resolve_env_templates(config.command, location="ACP command"),
+                "command": resolve_env_templates(config.command, location="ACP command", allow_commands=False),
                 "args": tuple(resolve_env_templates(value, location="ACP argument") for value in config.args),
                 "env": {
                     key: resolve_env_templates(value, location=f"ACP environment {key!r}")
                     for key, value in config.env.items()
                 },
-                "cwd": resolve_env_templates(config.cwd, location="ACP cwd") if config.cwd else self._workspace_cwd,
+                "cwd": (
+                    resolve_env_templates(config.cwd, location="ACP cwd", allow_commands=False)
+                    if config.cwd
+                    else self._workspace_cwd
+                ),
             }
         except ValueError as exc:
             return None, [str(exc)]
