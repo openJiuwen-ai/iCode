@@ -532,7 +532,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 set_workspace_cwd=self._set_workspace_cwd,
                 update_subtitle=self._update_subtitle,
                 update_toc=self._update_toc,
-                clear_suggestion_file_cache=self._clear_suggestion_file_cache,
+                discard_suggestion_file_index=self._discard_suggestion_file_index,
                 start_worker=self._start_worker,
                 post_gc_message=self.post_message,
                 debug=self._debug,
@@ -820,8 +820,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         if restoring:
             self._session_title.clear_terminal_title_result()
 
-    def _clear_suggestion_file_cache(self) -> None:
-        self._suggestions.file_cache = None
+    def _invalidate_suggestion_file_index(self) -> None:
+        self._suggestions.invalidate_file_index()
+
+    def _discard_suggestion_file_index(self) -> None:
+        self._suggestions.discard_file_index()
 
     def _warn_slash_command(
         self,
@@ -1007,6 +1010,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             set_has_messages=self._set_has_messages,
             post_gc_message=self.post_message,
             debug=self._debug,
+            invalidate_file_index=self._invalidate_suggestion_file_index,
             locale_controller=self._locale_controller,
             confirm_stopping_background_tasks=lambda turn: self._confirm_stopping_background_tasks(after_turn=turn),
         )
@@ -2522,12 +2526,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 )
         else:
             # Agent tool calls (write_file / edit_file / shell) may have
-            # created or deleted files during the turn; drop the cached
-            # ``@`` suggestion list so the next trigger re-scans.  The
-            # scan is lazy — invalidation is cheap; the real work only
-            # runs when the user next types ``@``.  Mirrors the
-            # invalidation in ``on_workspace_updated``.
-            self._suggestions.file_cache = None
+            # created or deleted files during the turn, so the resident ``@``
+            # snapshot may be stale.  Marking it dirty keeps the snapshot
+            # answering the next trigger; the rebuild runs in the background
+            # and only hot-swaps it when it succeeds.  A workspace switch
+            # discards the snapshot instead (see ``on_workspace_updated``).
+            self._suggestions.mark_file_index_dirty()
             if self._state.run.turn_end_check_pending:
                 self._state.run.turn_end_check_pending = False
                 self._workspace_actions.check_after_turn()

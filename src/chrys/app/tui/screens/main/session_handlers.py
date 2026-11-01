@@ -151,7 +151,7 @@ class SessionCallbacks:
     set_workspace_cwd: Callable[[str], None]
     update_subtitle: Callable[[], None]
     update_toc: Callable[[], None]
-    clear_suggestion_file_cache: Callable[[], None]
+    discard_suggestion_file_index: Callable[[], None]
     start_worker: StartWorker
     post_gc_message: Callable[[GcAbsorbRequested | GcReclaimRequested], object]
     debug: Callable[[str, str], None]
@@ -396,8 +396,8 @@ class SessionHandler:
     def update_toc(self) -> None:
         self._callbacks.update_toc()
 
-    def clear_suggestion_file_cache(self) -> None:
-        self._callbacks.clear_suggestion_file_cache()
+    def discard_suggestion_file_index(self) -> None:
+        self._callbacks.discard_suggestion_file_index()
 
     def debug(self, key: str, message: str = "") -> None:
         self._callbacks.debug(key, message)
@@ -1114,7 +1114,7 @@ class SessionHandler:
         ui = self._ui()
 
         self._state.workspace.roots = [event.primary_cwd, *event.working_dirs]
-        s.clear_suggestion_file_cache()
+        s.discard_suggestion_file_index()
         ui.set_input_paste_cwd(event.primary_cwd)
         ui.set_chat_workspace_cwd(event.primary_cwd)
         if os.path.isdir(event.primary_cwd):
