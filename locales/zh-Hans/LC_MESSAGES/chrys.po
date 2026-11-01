@@ -8467,6 +8467,56 @@ msgstr "请等待 MCP 连接测试完成后再添加服务器。"
 msgid "tui.mcp.wait_before_removing"
 msgstr "请等待 MCP 连接测试完成后再移除服务器。"
 
+#. English: Already added
+#. chrys-meta={"fingerprint":"a4e7059ee254337d820a0f3c026b71621e5af14f3cdf25a47cbcad23b5b8645d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.added"
+msgstr "已添加"
+
+#. English: Connection already configured: {name}
+#. chrys-meta={"fingerprint":"5d8752145dd77a46c42ce0c1b3edf70d10c8430589eae858b479891c935c4bb6","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.connection_conflict"
+msgstr "已配置相同连接：{name}"
+
+#. English: + New MCP configuration…
+#. chrys-meta={"fingerprint":"19eef18c8c386587c0e69a38f8d412ff3dd796f9147e3d4827a45ecd7c3c948f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.create"
+msgstr "+ 新建 MCP 配置…"
+
+#. English: Disabled
+#. chrys-meta={"fingerprint":"8a6b944baa3fb6debaf2f00d1ef1e3b326d63d5a78db27135c4545eede038bbd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.disabled"
+msgstr "已禁用"
+
+#. English: {count} invalid configuration hidden
+#. English-plural: {count} invalid configurations hidden
+#. chrys-meta={"fingerprint":"31a5eea1fe10de515dc2a69d70da7979d7f92dd97c0d3ba50b3622bb120e1685","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.hidden"
+msgid_plural "tui.mcp_picker.hidden#plural"
+msgstr[0] "已隐藏 {count} 个无效的配置"
+
+#. English: Same name already exists with different settings
+#. chrys-meta={"fingerprint":"c1b39dafe717be7864f5541bb2ea671f9a28e9cb7f45cd356b4706fd55db069e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.name_conflict"
+msgstr "已存在同名配置，设置不同"
+
+#. English: Sources: {names}
+#. chrys-meta={"fingerprint":"ab0000f1466a23b64a324b5d166789847de6a2518fc3df7f0b9f7d9d70d581ad","multiline":false,"placeholders":["names"]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.sources"
+msgstr "来源：{names}"
+
+#. English: Add MCP Server
+#. chrys-meta={"fingerprint":"19062bdbd2c2002d4696bdb0c8c62b7d449b46596bff1bbd650f0ad11f65b0c0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.title"
+msgstr "添加 MCP 服务器"
+
 #. English: API Key
 #. chrys-meta={"fingerprint":"7e1e8f9cba473062ba1a1095adb5698709ea2c6c71b537e9fe3c941f99ef39a9","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/models/screen.py

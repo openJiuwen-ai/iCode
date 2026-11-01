@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.widget import Widget
 
+    from chrys.app.tui.screens.agents.mcp_choices import MCPChoices
     from chrys.service.profiles.agents.registry import AgentProfileRegistry, AgentProfileRegistrySnapshot
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -753,7 +754,16 @@ class AgentsConfigScreen(BaseDialog[str]):
                 workspace_cwd=self._workspace_cwd,
                 read_only=self._read_only,
                 additional_reserved_tool_names=self._selected_sub_agent_tool_names,
+                reuse_choices=self._mcp_reuse_choices,
             )
+        )
+
+    def _mcp_reuse_choices(self) -> MCPChoices:
+        """Offer the latest other drafts, including unsaved and sub-agent-only profiles."""
+        from chrys.app.tui.screens.agents.mcp_choices import collect_mcp_choices
+
+        return collect_mcp_choices(
+            draft.profile for draft in self._visible_drafts() if draft.key != self._selected_draft_key
         )
 
     def _selected_sub_agent_tool_names(self) -> set[str]:
@@ -1105,14 +1115,13 @@ class AgentsConfigScreen(BaseDialog[str]):
 
     @staticmethod
     def _is_config_mutation_button(button_id: str) -> bool:
-        # Not "mcp-delete-btn-": that press opens a confirmation, and the panel
-        # posts CardListChanged once a confirmed delete lands.
+        # MCP add/delete presses may only open a dialog; CardListChanged marks
+        # the draft dirty once an actual insertion or confirmed deletion lands.
         if button_id in {
             "sa-add-btn",
             "mem-add-file",
             "mem-add-folder",
             "sk-add-btn",
-            "mcp-add-btn",
             "acp-add-arg",
             "acp-add-env",
             "acp-add-option",

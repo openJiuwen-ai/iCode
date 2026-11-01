@@ -106,6 +106,25 @@ def test_register_overwrites() -> None:
     assert len(reg.list_profiles()) == 1
 
 
+@pytest.mark.parametrize("name", ["Code", "Mine"])
+def test_stdio_ignores_invalid_headers_without_dropping_user_profile(tmp_path: Path, name: str) -> None:
+    (tmp_path / f"{name}.yaml").write_text(
+        f"name: {name}\ninstructions: Keep my custom instructions\ntools:\n  mcp:\n"
+        "    - name: server\n      transport: stdio\n      command: my-server\n      headers: []\n",
+        encoding="utf-8",
+    )
+    registry = AgentProfileRegistry()
+
+    registry.load_all(user_dir=tmp_path)
+
+    profile = registry.get(name)
+    assert profile is not None
+    assert profile.instructions == "Keep my custom instructions"
+    assert len(profile.tools.mcp) == 1
+    assert profile.tools.mcp[0].command == "my-server"
+    assert profile.tools.mcp[0].headers == {}
+
+
 def test_remove_can_skip_sub_agent_ref_cascade(monkeypatch) -> None:
     reg = AgentProfileRegistry()
     reg.register(AgentProfile(name="child"))
