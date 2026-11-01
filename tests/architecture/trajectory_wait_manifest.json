@@ -3876,6 +3876,28 @@
         ["awaitable", "await call(client, messages, stream=stream, options=options, timeout=self.deadline - time.monotonic())", "unresolved"]
       ]
     },
+    "chrys.service.command_credentials": {
+      "CommandCredentialAuth.async_auth_flow": [
+        ["wrapper", "await ensure_fresh(templates.values())", "unresolved", "chrys.service.command_credentials.ensure_fresh"],
+        ["wrapper", "await refresh(templates.values())", "unresolved", "chrys.service.command_credentials.refresh"]
+      ],
+      "_fetch": [
+        ["shield", "await asyncio.shield(credential.running)", "unresolved"]
+      ],
+      "_run_and_keep": [
+        ["wrapper", "await _run_command(placeholder.command)", "unresolved", "chrys.service.command_credentials._run_command"]
+      ],
+      "_run_command": [
+        ["async_context", "async with managed_subprocess(*shell_argv(command), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, cwd=str(Path.home()), env=build_shell_subprocess_env())", "unresolved"],
+        ["wrapper", "await wait_for_subprocess(drain_process_pipes(proc, stdout, stdout), timeout=COMMAND_TIMEOUT_SECONDS, process_group_id=proc.pid if sys.platform != 'win32' else None)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"]
+      ],
+      "ensure_fresh": [
+        ["wrapper", "await _fetch(handle)", "unresolved", "chrys.service.command_credentials._fetch"]
+      ],
+      "refresh": [
+        ["wrapper", "await _fetch(handle)", "unresolved", "chrys.service.command_credentials._fetch"]
+      ]
+    },
     "chrys.service.context.compaction.breaker": {
       "DropBreakerController.publish_trip": [
         ["awaitable", "await generator.publish_breaker_trip(message)", "unresolved"]
@@ -4255,7 +4277,11 @@
       ]
     },
     "chrys.service.llm.clients": {
+      "_command_credential_auth": [
+        ["wrapper", "await ensure_fresh(values)", "unresolved", "chrys.service.command_credentials.ensure_fresh"]
+      ],
       "create_client": [
+        ["wrapper", "await _command_credential_auth(profile, api_key=api_key, headers=headers)", "unresolved", "chrys.service.llm.clients._command_credential_auth"],
         ["awaitable", "await close_http_client()", "unresolved"]
       ],
       "scoped_client": [
@@ -4713,7 +4739,7 @@
         ["wrapper", "await run_shell_command(command, cwd=cwd)", "unresolved", "chrys.service.prompt_shortcuts.shell.run_shell_command"]
       ],
       "run_shell_command": [
-        ["async_context", "async with managed_subprocess(*_shell_argv(command), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd, env=build_shell_subprocess_env())", "unresolved"],
+        ["async_context", "async with managed_subprocess(*shell_argv(command), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd, env=build_shell_subprocess_env())", "unresolved"],
         ["wrapper", "await wait_for_subprocess(drain_process_pipes(proc, stdout, stderr), timeout=SHELL_TIMEOUT_SECONDS, process_group_id=proc.pid if sys.platform != 'win32' else None)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"]
       ]
     },

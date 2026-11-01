@@ -38,6 +38,7 @@ from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.text.reading_order import reading_order
 from chrys.foundation.util.chrys_headers import is_chrys_managed_header_name
+from chrys.foundation.util.env_templates import blank_commands
 from chrys.foundation.util.header_charset import (
     api_key_charset_error,
     header_name_charset_error,
@@ -699,7 +700,7 @@ def _validate_chat_option_extra_headers(
             ]
         for charset_error in (
             header_name_charset_error(str(header)),
-            header_value_charset_error(str(header), value),
+            header_value_charset_error(str(header), blank_commands(value)),
         ):
             if charset_error:
                 return [
@@ -1160,7 +1161,7 @@ class ModelConfigScreen(BaseDialog[str]):
                     )
                     for charset_error in (
                         header_name_charset_error(key),
-                        header_value_charset_error(key, value),
+                        header_value_charset_error(key, blank_commands(value)),
                     )
                     if charset_error
                 )
@@ -1870,7 +1871,7 @@ class ModelConfigScreen(BaseDialog[str]):
         # pass untouched; their resolved values are re-checked when the
         # client is built.
         api_key = self.query_one("#mc-api-key", Input).value.strip()
-        api_key_error = api_key_charset_error(api_key)
+        api_key_error = api_key_charset_error(blank_commands(api_key))
         if api_key_error:
             errors.append(api_key_error)
 

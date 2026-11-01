@@ -126,6 +126,9 @@ def _load_bool_env(name: str, *, default: bool = False) -> bool:
 DEFAULT_ASK_USER_TIMEOUT_SECONDS = 900
 """Default ``ask_user`` reply wait (15 minutes) when ``CHRYS_ASK_USER_TIMEOUT_SECONDS`` is unset."""
 
+DEFAULT_CREDENTIAL_COMMAND_TTL_SECONDS = 3600
+"""How long a ``{{!command}}`` placeholder's output is used before it is run again (one hour)."""
+
 DEFAULT_MAX_TRANSIENT_RETRIES = 10
 """Default application-layer transient retry budget for interactive frontends."""
 
@@ -681,6 +684,9 @@ _LABEL_TRAJECTORY_VERIFY_COMMANDS = msg(
     "settings.trajectory.verify_commands.label", fallback="Trajectory verification commands"
 )
 _LABEL_LLM_RETRY_MAX_TRANSIENT = msg("settings.llm.retry.max_transient.label", fallback="Max transient retries")
+_LABEL_LLM_CREDENTIAL_COMMAND_TTL_SECONDS = msg(
+    "settings.llm.credential_command.ttl_seconds.label", fallback="Credential command refresh interval (seconds)"
+)
 _LABEL_TOOLS_RESULT_CEILING_TOKENS = msg(
     "settings.tools.result.ceiling_tokens.label", fallback="Tool result ceiling (tokens)"
 )
@@ -990,6 +996,19 @@ class Settings:
             # 600 s a retry), so a repository may only lower it.
             project_merge=ProjectMerge.TIGHTEN_ONLY,
             semantic_value=_semantic_max_transient_retries,
+        ),
+    )
+    # A rejected token (HTTP 401) is replaced at once, whatever this says.
+    credential_command_ttl_seconds: int = field(
+        default=DEFAULT_CREDENTIAL_COMMAND_TTL_SECONDS,
+        metadata=spec(
+            key="llm.credential_command.ttl_seconds",
+            label=_LABEL_LLM_CREDENTIAL_COMMAND_TTL_SECONDS,
+            env="CHRYS_CREDENTIAL_COMMAND_TTL_SECONDS",
+            coerce=int_coercer(minimum=60),
+            apply=Apply.RESTART,  # Read from the process snapshot: no engine or session where it is used.
+            group="llm",
+            kind=Kind.INT,
         ),
     )
     frontend_default_max_transient_retries: int = field(

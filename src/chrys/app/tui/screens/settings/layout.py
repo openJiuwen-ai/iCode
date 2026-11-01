@@ -108,6 +108,10 @@ _HINT_LLM_RETRY_MAX_TRANSIENT = msg(
     "tui.settings.hint.llm.retry.max_transient",
     fallback="Blank = the frontend default ({default}); 0 = never retry; at most {maximum}.",
 )
+_HINT_LLM_CREDENTIAL_COMMAND_TTL_SECONDS = msg(
+    "tui.settings.hint.llm.credential_command.ttl_seconds",
+    fallback="How often a {{{{!command}}}} value runs again; at least 60 seconds. A token the service refuses is replaced at once.",
+)
 _HINT_APPROVAL_DEFAULT_MODE = msg(
     "tui.settings.hint.approval.default_mode",
     fallback=(
@@ -391,6 +395,10 @@ TABS: tuple[SettingsTab, ...] = (
                         hint=_HINT_LLM_RETRY_MAX_TRANSIENT,
                         hint_args=HintArgs.RETRY_DEFAULTS,
                         placeholder=Placeholder.RETRY_DEFAULT,
+                    ),
+                    SettingRowSpec(
+                        "llm.credential_command.ttl_seconds",
+                        hint=_HINT_LLM_CREDENTIAL_COMMAND_TTL_SECONDS,
                     ),
                 ),
             ),

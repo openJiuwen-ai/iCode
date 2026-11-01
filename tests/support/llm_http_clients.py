@@ -63,8 +63,9 @@ async def http_client_ledger(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[H
         *,
         raw_http_log_path: Path | None = None,
         session_id: str | None = None,
+        auth: httpx.Auth | None = None,
     ) -> httpx.AsyncClient:
-        client = build(profile, timeout, raw_http_log_path=raw_http_log_path, session_id=session_id)
+        client = build(profile, timeout, raw_http_log_path=raw_http_log_path, session_id=session_id, auth=auth)
         ledger.builds.append(HttpClientBuild(client=client, profile_id=profile.id, session_id=session_id))
         return client
 

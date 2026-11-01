@@ -82,7 +82,7 @@ async def test_mounting_the_dialog_writes_nothing_and_focuses_a_control() -> Non
         assert ports.notification_ports.saved == []
         assert isinstance(dialog.focused, Select)
         rows = dialog.rows()
-        assert len(rows) == ROW_COUNT == 40
+        assert len(rows) == ROW_COUNT == 41
         assert all(row.spec.key != "trajectory.verify_commands" for row in rows)
         assert dialog.query_one(TabbedContent).active == pane_id(GENERAL_TAB_ID)
 

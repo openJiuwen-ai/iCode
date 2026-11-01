@@ -937,6 +937,12 @@ msgstr ""
 msgid "settings.history.prompt.enabled.label"
 msgstr ""
 
+#. English: Credential command refresh interval (seconds)
+#. chrys-meta={"fingerprint":"881e643e078c60d678dbf44dab477bf459f1be252a6c92313a23bf6339c0267e","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.llm.credential_command.ttl_seconds.label"
+msgstr ""
+
 #. English: Max transient retries
 #. chrys-meta={"fingerprint":"d5460f5ca26e427c6b0b266cf04c7d364d9e116aeaa4d3158676c7a1e16a0d01","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -10552,6 +10558,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5f63c61f7c1984a99d21d4bdc5ca7f6576efe3b8d5f814995cb362565c606618","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.history.prompt.enabled"
+msgstr ""
+
+#. English: How often a {{{{!command}}}} value runs again; at least 60 seconds.
+#. A token the service refuses is replaced at once.
+#. chrys-meta={"fingerprint":"2d30655e2148d8cd370ba159007649a942918a7e832c8b92933ad277f92fc3ca","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.llm.credential_command.ttl_seconds"
 msgstr ""
 
 #. English: Blank = the frontend default ({default}); 0 = never retry; at most

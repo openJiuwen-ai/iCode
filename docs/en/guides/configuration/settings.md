@@ -101,6 +101,7 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
 | Max transient retries | Sets the maximum number of automatic retries for errors that may resolve shortly, such as temporary network interruptions, request timeouts, temporary model service unavailability, or server rate limits. It does not retry problems that waiting cannot resolve, such as invalid model configuration or request parameters. A higher limit gives temporary failures more chances to recover; if retries keep failing, it also increases the wait and the number of model requests before the final failure. Leave blank to use the TUI default; set to `0` to disable automatic retries. This setting does not cover the one resend after iCode compacts a full context window, or the one resend of a reply that came back with no answer. | On close |
+| Credential command refresh interval (seconds) | How often iCode runs a `{{!command}}` value again, at least 60 seconds. The default is 3600 (one hour). A key the service refuses is replaced at once, whatever this says. See [Get an API key from a command](./models.md#get-an-api-key-from-a-command). | After restart |
 
 ### Security
 
