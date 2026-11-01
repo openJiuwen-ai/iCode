@@ -14,7 +14,7 @@ import pytest
 
 import chrys.service.command_credentials as credentials_module
 import chrys.service.llm.clients as clients_module
-from chrys.foundation.util.env_templates import EnvVarResolutionError
+from chrys.foundation.util.env_templates import EnvVarResolutionError, resolve_env_templates
 from chrys.kernel import Message
 from chrys.service.command_credentials import _CommandFailedError
 from chrys.service.llm.clients import _build_profile_http_client, create_client
@@ -163,15 +163,52 @@ async def test_header_values_and_per_request_headers_carry_tokens_too(
     assert seen[-1]["x-tenant"] == "good"
 
 
-async def test_a_command_used_only_in_chat_options_headers_still_gets_its_auth(
-    tokens: list[Any], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("other_has_a_token", [False, True])
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+async def test_a_cookie_the_provider_set_never_comes_back_as_a_token(
+    provider: str, other_has_a_token: bool, tokens: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cookie shaped like the handle of another command, an MCP server's say, stays what it is and runs nothing."""
+    tokens[:] = ["good"]
+    other = resolve_env_templates("{{!mcp-key-tool}}", location="an MCP server")
+    if other_has_a_token:
+        await credentials_module.refresh([other])
+    stream = _ANTHROPIC_STREAM if provider == "anthropic" else _OPENAI_STREAM
+    cookies: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cookies.append(request.headers.get("cookie"))
+        headers = {"content-type": "text/event-stream", "set-cookie": f"s={other}; Path=/"}
+        return httpx.Response(200, headers=headers, content=stream)
+
+    _answering_with(monkeypatch, handler)
+
+    stack = await create_client(_profile(provider, api_key="{{!tool get}}"))
+    try:
+        await _stream(stack, provider)
+        await _stream(stack, provider)
+    finally:
+        await stack.aclose()
+
+    assert cookies == [None, f"s={other}"]
+    assert (other in credentials_module._credentials) is other_has_a_token
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"chat_options": json.dumps({"extra_headers": {"X-T": "{{!tool get}}"}})},
+        {"http_headers": json.dumps({"X-T": "{{!tool get}}"})},
+    ],
+    ids=["chat_options", "http_headers"],
+)
+async def test_a_command_used_only_in_a_header_still_gets_its_auth(
+    fields: dict[str, str], tokens: list[Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tokens[:] = ["good"]
     wire = ScriptedWire(cc_replies([cc_text("Hi.", response_id="chatcmpl-1")], stream=False))
     route_clients_to(wire.transport, monkeypatch)
-    profile = _profile(
-        "openai", api_key="sk-plain", chat_options=json.dumps({"extra_headers": {"X-T": "{{!tool get}}"}})
-    )
+    profile = _profile("openai", api_key="sk-plain", **fields)
 
     stack = await create_client(profile)
     try:

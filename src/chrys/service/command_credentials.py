@@ -23,7 +23,7 @@ import logging
 import re
 import sys
 import time
-from collections.abc import AsyncGenerator, Iterable
+from collections.abc import AsyncGenerator, Collection, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,22 +98,25 @@ async def _run_command(command: str) -> str:
 
 async def _run_and_keep(handle: str, credential: _Credential) -> None:
     placeholder = command_placeholder(handle)
+    failure: str | None = None
     try:
-        token = await _run_command(placeholder.command)
-    except _CommandFailedError as failure:
-        # The TTL is only a guess, so a token that aged past it may still work: a 401 says
-        # when it stops, and starting the clock over keeps a broken command from running
-        # before every request.
-        credential.fetched_at = time.time()
-        message = f"The command in {placeholder.location} {failure}. Run it in a terminal to see why."
-        if credential.token is None:
-            raise EnvVarResolutionError(message) from None
-        logger.warning("%s Keeping its previous output.", message)
-    else:
-        credential.token = token
-        credential.fetched_at = time.time()
+        credential.token = await _run_command(placeholder.command)
+    except _CommandFailedError as exc:
+        failure = str(exc)
     finally:
         credential.running = None
+    # The TTL is only a guess, so a token that aged past it may still work: a 401 says
+    # when it stops, and starting the clock over keeps a broken command from running
+    # before every request.
+    credential.fetched_at = time.time()
+    if failure is None:
+        return
+    # Raised outside the handler so nothing is chained to it: whoever walks an error's
+    # chain for a timeout would blame a slow command on the server it was for.
+    message = f"The command in {placeholder.location} {failure}. Run it in a terminal to see why."
+    if credential.token is None:
+        raise EnvVarResolutionError(message)
+    logger.warning("%s Keeping its previous output.", message)
 
 
 async def _fetch(handle: str) -> None:
@@ -145,12 +148,12 @@ async def refresh(values: Iterable[str]) -> None:
         await _fetch(handle)
 
 
-def substitute(value: str) -> str:
-    """Replace each handle in *value* with its current token."""
+def substitute(value: str, only: Collection[str] | None = None) -> str:
+    """Replace each handle in *value*, or just those in *only*, with its current token."""
 
     def token(match: re.Match[str]) -> str:
         credential = _credentials.get(match.group())
-        if credential is None or credential.token is None:
+        if credential is None or credential.token is None or (only is not None and match.group() not in only):
             return match.group()
         return credential.token
 
@@ -161,28 +164,41 @@ class CommandCredentialAuth(httpx.Auth):
     """Send each request with current tokens; after a 401, once more with a newer one.
 
     It runs below the SDKs and every retry lane, so the second try costs none of
-    their budgets.
+    their budgets.  It serves only the handles in *values*, the client's own settings:
+    a request's headers also hold what a server sent (a cookie, a session id), and text
+    shaped like another command's handle must neither run that command nor come back
+    to that server as its token.
     """
+
+    def __init__(self, values: Iterable[str]) -> None:
+        self._handles = command_handles_in(values)
 
     async def async_auth_flow(self, request: httpx.Request) -> AsyncGenerator[httpx.Request, httpx.Response]:
         # An installed Auth takes the place of httpx's own Basic auth from the URL's credentials.
         if request.url.username or request.url.password:
             next(httpx.BasicAuth(request.url.username, request.url.password).auth_flow(request))
-        templates = {name: value for name, value in request.headers.items() if COMMAND_HANDLE_RE.search(value)}
+        own = {
+            name: value for name, value in request.headers.items() if any(handle in value for handle in self._handles)
+        }
 
-        def current() -> dict[str, str]:
-            return {name: substitute(value) for name, value in templates.items()}
+        def current() -> list[str]:
+            return [substitute(handle) for handle in self._handles]
 
-        await ensure_fresh(templates.values())
+        def stamp() -> None:
+            request.headers.update({name: substitute(value, self._handles) for name, value in own.items()})
+
+        # Closing a session isn't worth a command run: quitting would wait for it.
+        ending_session = request.method == "DELETE"
+        if not ending_session:
+            await ensure_fresh(self._handles)
         sent = current()
-        request.headers.update(sent)
+        stamp()
         response = yield request
-        if response.status_code != 401:
+        if ending_session or response.status_code != 401:
             return
         # Requests sharing this client race: another one's 401 may already have brought a newer token.
         if current() == sent:
-            await refresh(templates.values())
-        newer = current()
-        if newer != sent:
-            request.headers.update(newer)
+            await refresh(self._handles)
+        if current() != sent:
+            stamp()
             yield request

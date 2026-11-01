@@ -159,7 +159,7 @@ async def _command_credential_auth(
     from chrys.service.command_credentials import CommandCredentialAuth, ensure_fresh
 
     await ensure_fresh(values)
-    return CommandCredentialAuth()
+    return CommandCredentialAuth(values)
 
 
 def _validate_wire_charset(profile: ModelProfile, *, api_key: str, headers: dict[str, str]) -> None:

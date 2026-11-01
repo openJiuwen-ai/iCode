@@ -16,6 +16,8 @@ from types import TracebackType
 from typing import Any
 
 from chrys.foundation.errors import clean_error_message
+from chrys.foundation.util.env_templates import EnvVarResolutionError, command_handles_in
+from chrys.foundation.util.header_charset import header_value_charset_error
 from chrys.foundation.util.httpx_helpers import BYPASS_PROXY_MOUNTS
 from chrys.service.mcp._tool_mixins import _NoPrePagePingMixin, _StructuredContentFallbackMixin
 from chrys.service.mcp.owned import LOCAL_HTTP_FAILURE_ERROR_DATA, MCPStreamableHTTPTool
@@ -195,7 +197,7 @@ async def _chrys_streamable_http_client(
 class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStreamableHTTPTool):
     """MCPStreamableHTTPTool with TLS/proxy options and static headers.
 
-    Three profile knobs:
+    Four profile knobs:
 
     * ``verify_ssl=False`` — disables TLS cert validation. Insecure;
       local/self-signed dev only.
@@ -205,6 +207,9 @@ class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStre
       attached by a same-origin request hook, so they reach **every**
       request including ``initialize`` and ``list_tools`` without leaking
       across cross-origin redirects.
+    * ``resolve_commands`` — ``headers`` were resolved from a profile, so a
+      ``{{!command}}`` handle in them stands for a token.  Headers an ACP
+      client supplied are literal: they get no token and run no command.
 
     When any knob is non-default we pre-build the ``httpx.AsyncClient``
     and hand it to the parent via ``self._httpx_client``.
@@ -219,16 +224,28 @@ class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStre
         verify_ssl: bool = True,
         bypass_proxy: bool = False,
         headers: dict[str, str] | None = None,
+        resolve_commands: bool = False,
         **kwargs: Any,
     ) -> None:
         self._verify_ssl: bool = verify_ssl
         self._bypass_proxy: bool = bypass_proxy
         self._static_headers: dict[str, str] = dict(headers) if headers else {}
+        self._headers_hold_commands: bool = resolve_commands and bool(command_handles_in(self._static_headers.values()))
         self._owned_httpx_client: Any = None
         self._inject_headers_hook: Callable[[Any], Awaitable[None]] | None = None
         super().__init__(*args, **kwargs)
 
     async def __aenter__(self) -> Any:
+        if self._headers_hold_commands:
+            from chrys.service.command_credentials import ensure_fresh
+
+            # The transport quotes a value it refuses in its error, which here would hold a token.
+            for name, value in self._static_headers.items():
+                problem = header_value_charset_error(name, value)
+                if problem:
+                    raise EnvVarResolutionError(problem)
+            # Before the connection starts counting: a command's time isn't the server's.
+            await ensure_fresh(self._static_headers.values())
         if self._needs_prebuild() and self._httpx_client is None:
             client = self._build_httpx_client()
             self._owned_httpx_client = client
@@ -262,6 +279,8 @@ class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStre
 
         from httpx import URL
 
+        from chrys.service.command_credentials import substitute
+
         target_origin = _url_origin(URL(self.url))
 
         async def _inject_headers(request: Any) -> None:
@@ -272,7 +291,7 @@ class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStre
                     request.headers.pop(key, None)
                 return
             for key, value in self._static_headers.items():
-                request.headers[key] = value
+                request.headers[key] = substitute(value) if self._headers_hold_commands else value
 
         self._inject_headers_hook = _inject_headers
         http_client.event_hooks["request"].append(self._inject_headers_hook)
@@ -333,6 +352,10 @@ class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStre
         }
         if self._bypass_proxy:
             kwargs["mounts"] = dict(BYPASS_PROXY_MOUNTS)
+        if self._headers_hold_commands:
+            from chrys.service.command_credentials import CommandCredentialAuth
+
+            kwargs["auth"] = CommandCredentialAuth(self._static_headers.values())
         return AsyncClient(**kwargs)
 
     async def _close_owned_httpx_client(self) -> None:

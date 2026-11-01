@@ -17,6 +17,8 @@
 
 HTTP 请求头值和 STDIO 环境变量值都可以使用 `{{ENV_VAR}}` 引用启动 iCode 前已经设置的环境变量。环境变量名只能包含字母、数字和下划线，且不能以数字开头。
 
+两者也可以用 `{{!command}}` 使用命令输出的内容，例如 `Bearer {{!tokenprovider gettoken}}`。命令需要满足的条件参阅[通过命令获取 API 密钥](../configuration/models.md#通过命令获取-api-密钥)。HTTP 服务器在 iCode 运行期间会获得新值；STDIO 服务器会一直使用启动时的值，只有 iCode 再次启动它时才会获得新值。如果命令第一次就失败，服务器连接失败。
+
 接下来，根据服务器的连接方式完成 HTTP 或 STDIO 设置。
 
 ### 使用 HTTP 连接

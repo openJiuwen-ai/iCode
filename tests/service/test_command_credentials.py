@@ -296,7 +296,7 @@ def _accepting(token: str, seen: list[str]) -> Callable[[httpx.Request], httpx.R
 async def test_a_request_goes_out_with_the_current_token_and_no_handle(commands: _Commands) -> None:
     commands.tokens = ["good"]
     seen: list[str] = []
-    async with _client(_accepting("good", seen), CommandCredentialAuth()) as client:
+    async with _client(_accepting("good", seen), CommandCredentialAuth([_handle()])) as client:
         response = await client.post(_URL, headers={"Authorization": f"Bearer {_handle()}"})
 
     assert response.status_code == 200
@@ -307,7 +307,7 @@ async def test_a_request_goes_out_with_the_current_token_and_no_handle(commands:
 async def test_a_refused_token_is_replaced_and_the_request_sent_once_more(commands: _Commands) -> None:
     commands.tokens = ["expired", "good"]
     seen: list[str] = []
-    async with _client(_accepting("good", seen), CommandCredentialAuth()) as client:
+    async with _client(_accepting("good", seen), CommandCredentialAuth([_handle()])) as client:
         response = await client.post(_URL, headers={"Authorization": f"Bearer {_handle()}"})
 
     assert response.status_code == 200
@@ -318,7 +318,7 @@ async def test_a_refused_token_is_replaced_and_the_request_sent_once_more(comman
 async def test_the_same_token_again_is_not_sent_again(commands: _Commands) -> None:
     commands.tokens = ["refused"]
     seen: list[str] = []
-    async with _client(_accepting("good", seen), CommandCredentialAuth()) as client:
+    async with _client(_accepting("good", seen), CommandCredentialAuth([_handle()])) as client:
         response = await client.post(_URL, headers={"Authorization": f"Bearer {_handle()}"})
 
     assert response.status_code == 401
@@ -329,7 +329,7 @@ async def test_the_same_token_again_is_not_sent_again(commands: _Commands) -> No
 async def test_a_second_refusal_ends_it(commands: _Commands) -> None:
     commands.tokens = ["refused-1", "refused-2", "good"]
     seen: list[str] = []
-    async with _client(_accepting("good", seen), CommandCredentialAuth()) as client:
+    async with _client(_accepting("good", seen), CommandCredentialAuth([_handle()])) as client:
         response = await client.post(_URL, headers={"Authorization": f"Bearer {_handle()}"})
 
     assert response.status_code == 401
@@ -339,7 +339,7 @@ async def test_a_second_refusal_ends_it(commands: _Commands) -> None:
 async def test_a_failing_command_leaves_the_refusal_to_answer(commands: _Commands) -> None:
     commands.tokens = ["expired", _CommandFailedError("exited with code 1")]
     seen: list[str] = []
-    async with _client(_accepting("good", seen), CommandCredentialAuth()) as client:
+    async with _client(_accepting("good", seen), CommandCredentialAuth([_handle()])) as client:
         response = await client.post(_URL, headers={"Authorization": f"Bearer {_handle()}"})
 
     assert response.status_code == 401
@@ -348,7 +348,7 @@ async def test_a_failing_command_leaves_the_refusal_to_answer(commands: _Command
 
 async def test_a_status_other_than_401_runs_nothing(commands: _Commands) -> None:
     commands.tokens = ["good"]
-    async with _client(lambda _request: httpx.Response(403), CommandCredentialAuth()) as client:
+    async with _client(lambda _request: httpx.Response(403), CommandCredentialAuth([_handle()])) as client:
         response = await client.post(_URL, headers={"Authorization": f"Bearer {_handle()}"})
 
     assert response.status_code == 403
@@ -370,7 +370,9 @@ async def test_a_request_refused_after_another_brought_a_new_token_just_uses_it(
             await first_done.wait()
         return httpx.Response(401)
 
-    async with httpx.AsyncClient(auth=CommandCredentialAuth(), transport=httpx.MockTransport(handler)) as client:
+    async with httpx.AsyncClient(
+        auth=CommandCredentialAuth([handle]), transport=httpx.MockTransport(handler)
+    ) as client:
         await ensure_fresh([handle])
         late = asyncio.create_task(client.post(f"{_URL}/late", headers={"Authorization": f"Bearer {handle}"}))
         await second_sent.wait()
@@ -391,16 +393,38 @@ async def test_credentials_in_the_url_still_send_basic_auth(commands: _Commands)
         seen.append(httpx.Headers(request.headers))
         return httpx.Response(200)
 
-    async with _client(handler, CommandCredentialAuth()) as client:
+    async with _client(handler, CommandCredentialAuth([_handle()])) as client:
         await client.post("https://user:pass@provider.example/v1", headers={"X-Gateway": _handle()})
 
     assert seen[0]["Authorization"] == f"Basic {base64.b64encode(b'user:pass').decode()}"
     assert seen[0]["X-Gateway"] == "good"
 
 
+@pytest.mark.parametrize("other_has_a_token", [False, True])
+async def test_only_the_handles_it_was_given_become_tokens(commands: _Commands, other_has_a_token: bool) -> None:
+    """Anything else shaped like a handle, on its own or beside one of them, stays what it is and runs nothing."""
+    commands.tokens = ["good"]
+    own, other = _handle(), _handle("other")
+    if other_has_a_token:
+        await refresh([other])
+    runs_before = commands.runs
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(httpx.Headers(request.headers))
+        return httpx.Response(200)
+
+    async with _client(handler, CommandCredentialAuth([f"Bearer {own}"])) as client:
+        await client.post(_URL, headers={"X-Both": f"{own} {other}", "X-Other": other})
+
+    assert seen[0]["X-Both"] == f"good {other}"
+    assert seen[0]["X-Other"] == other
+    assert commands.runs == runs_before + 1
+
+
 async def test_a_request_without_a_handle_is_left_alone(commands: _Commands) -> None:
     seen: list[str] = []
-    async with _client(_accepting("plain", seen), CommandCredentialAuth()) as client:
+    async with _client(_accepting("plain", seen), CommandCredentialAuth([])) as client:
         response = await client.post(_URL, headers={"Authorization": "Bearer plain"})
 
     assert response.status_code == 200

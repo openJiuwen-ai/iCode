@@ -154,7 +154,7 @@ tools:
         Authorization: "Bearer {{MCP_API_TOKEN}}"
 ```
 
-`env` 和 `headers` 都是键值映射：左侧填写变量名或请求头名称，右侧填写对应的值。值可以直接填写，也可以用 `{{ENV_VAR}}` 引用启动 iCode 前已设置的环境变量。`env` 中引用的变量缺失或为空时，服务器连接失败；`headers` 仅在 `resolve_header_templates` 为 `true` 时解析变量并应用这一规则。
+`env` 和 `headers` 都是键值映射：左侧填写变量名或请求头名称，右侧填写对应的值。值可以直接填写，也可以用 `{{ENV_VAR}}` 引用启动 iCode 前已设置的环境变量，或用 `{{!command}}` 使用命令输出的内容（参阅[通过命令获取 API 密钥](../guides/configuration/models.md#通过命令获取-api-密钥)）。`env` 中引用的变量缺失或为空，或者命令第一次就失败时，服务器连接失败；`headers` 仅在 `resolve_header_templates` 为 `true` 时解析占位符并应用这一规则。
 
 | 字段 | 类型 | 默认值 | 适用范围 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -176,7 +176,7 @@ tools:
 | `encoding` | 字符串或 `null` | `null` | STDIO | 服务器标准输入输出编码；通常留空。 |
 | `url` | 字符串 | 空 | HTTP | 以 `http://` 或 `https://` 开头的服务器 URL。 |
 | `headers` | 字符串对象 | `{}` | HTTP | HTTP 请求头。 |
-| `resolve_header_templates` | 布尔值 | `true` | HTTP | 是否解析请求头值中的 `{{ENV_VAR}}`。设为 `false` 时按字面发送。 |
+| `resolve_header_templates` | 布尔值 | `true` | HTTP | 是否解析请求头值中的 `{{ENV_VAR}}` 和 `{{!command}}`。设为 `false` 时按字面发送。 |
 | `verify_ssl` | 布尔值 | `true` | HTTP | 是否验证 HTTPS 证书。关闭会降低连接安全性。 |
 | `bypass_proxy` | 布尔值 | `false` | HTTP | 是否绕过环境变量配置的 HTTP/HTTPS 代理，直接连接服务器。 |
 | `terminate_on_close` | 布尔值或 `null` | `null` | HTTP | 关闭连接时是否请求终止远程会话；`null` 使用默认值 `true`。 |

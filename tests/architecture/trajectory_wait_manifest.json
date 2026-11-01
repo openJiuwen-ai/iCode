@@ -3878,8 +3878,8 @@
     },
     "chrys.service.command_credentials": {
       "CommandCredentialAuth.async_auth_flow": [
-        ["wrapper", "await ensure_fresh(templates.values())", "unresolved", "chrys.service.command_credentials.ensure_fresh"],
-        ["wrapper", "await refresh(templates.values())", "unresolved", "chrys.service.command_credentials.refresh"]
+        ["wrapper", "await ensure_fresh(self._handles)", "unresolved", "chrys.service.command_credentials.ensure_fresh"],
+        ["wrapper", "await refresh(self._handles)", "unresolved", "chrys.service.command_credentials.refresh"]
       ],
       "_fetch": [
         ["shield", "await asyncio.shield(credential.running)", "unresolved"]
@@ -4394,6 +4394,7 @@
         ["awaitable", "await ctx.read_stream_writer.send(SessionMessage(message=JSONRPCMessage(error)))", "unresolved"]
       ],
       "_HTTPMCPTool.__aenter__": [
+        ["wrapper", "await ensure_fresh(self._static_headers.values())", "unresolved", "chrys.service.command_credentials.ensure_fresh"],
         ["awaitable", "await super().__aenter__()", "unresolved"],
         ["wrapper", "await self._close_owned_httpx_client()", "unresolved", "chrys.service.mcp._http_transport._HTTPMCPTool._close_owned_httpx_client"]
       ],
@@ -4420,6 +4421,7 @@
         ["awaitable", "await super().__aexit__(exc_type, exc_value, traceback)", "unresolved"]
       ],
       "tolerant_stdio_client": [
+        ["wrapper", "await refresh(server.env.values())", "unresolved", "chrys.service.command_credentials.refresh"],
         ["async_context", "async with stdio_client(stock_server, errlog=errlog)", "unresolved"],
         ["awaitable", "await _create_platform_compatible_process(command=command, args=server.args, env=env, errlog=cast('TextIO', subprocess.PIPE), cwd=server.cwd)", "unresolved"],
         ["awaitable", "await read_stream.aclose()", "unresolved"],
