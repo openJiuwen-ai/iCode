@@ -310,6 +310,7 @@ async def test_reload_reports_applied_deferred_and_conflicting_values_once(agent
         assert "ui.chat.fold_finished_turns" in (await report())["controls.reload_shadowed"]
         path.write_text("ui.theme: gone-theme\n", encoding="utf-8")
         lines = await report()
+        assert get_model_pointer()[0] == ""
         assert "gone-theme" in lines["controls.reload_unknown_theme"]
         assert "ui.theme" not in lines.get("controls.reload_next_launch", "")
         assert session.app.theme == old_theme

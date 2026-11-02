@@ -17,8 +17,9 @@ INVALID_SETTING = msg("settings.invalid_value_for_key", fallback="Invalid value 
 
 
 class ConfigError(Exception):
-    def __init__(self, display: MessageRef) -> None:
+    def __init__(self, display: MessageRef, *, hint: MessageRef | None = None) -> None:
         self.display = display
+        self.display_hint = hint
         super().__init__(format_message(display))
 
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
@@ -19,6 +19,9 @@ _RELOAD_DRAIN_FAILED = msg(
 _RELOAD_DRAIN_CANCELLED = msg(
     "controls.reload_drain_cancelled", fallback="The previous turn was cancelled while settings were waiting to reload."
 )
+
+if TYPE_CHECKING:
+    from chrys.service.profiles.reload import ProfileReload
 
 RebuildPermitDeniedReason = Literal["shutdown", "session_changed", "superseded", "load_active", "busy", "not_ready"]
 
@@ -73,6 +76,7 @@ class LifecyclePermits:
         self._load_generation: int = 0
         self._rebuild_gate_lock = asyncio.Lock()
         self._next_rebuild_permit_id = 1
+        self._staged_profiles: ProfileReload | None = None
         self._active_rebuild_permit_id: int | None = None
         self._active_rebuild_permit_owner: str | None = None
         self._active_rebuild_permit_task: asyncio.Task[Any] | None = None
@@ -386,11 +390,20 @@ class LifecyclePermits:
             display_message,
         )
 
+    def stage_profiles(self, permit: RebuildPermit, profiles: ProfileReload) -> None:
+        """Attach a candidate only to the owning rebuild, until it releases the permit."""
+        self.ensure_rebuild_permit(permit)
+        self._staged_profiles = profiles
+
+    def staged_profiles(self) -> ProfileReload | None:
+        return self._staged_profiles if self.current_task_owns_rebuild_permit() else None
+
     def release_rebuild_permit(self, permit: RebuildPermit) -> None:
         """Release a serialized rebuild permit and reopen prompt admission."""
         if self._active_rebuild_permit_id != permit.permit_id:
             return
         self._turn_state.lease.reopen_prompt_admission_after_rebuild(permit.owner)
+        self._staged_profiles = None
         self._active_rebuild_permit_id = None
         self._active_rebuild_permit_owner = None
         self._active_rebuild_permit_task = None

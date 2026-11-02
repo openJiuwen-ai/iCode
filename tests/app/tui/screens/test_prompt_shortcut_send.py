@@ -347,6 +347,7 @@ async def running_session(
     monkeypatch: pytest.MonkeyPatch,
     *,
     agents: Sequence[AgentProfile] = (),
+    registry: AgentProfileRegistry | None = None,
     models: ModelProfileRegistry | None = None,
     settings: Settings | None = None,
     startup_agent: str = ALPHA,
@@ -371,9 +372,10 @@ async def running_session(
     model = ScriptedModel()
     builds = Builds(model)
     monkeypatch.setattr(builder_module, "create_client", builds.create_client)
-    registry = AgentProfileRegistry()
-    for profile in agents or (make_agent(ALPHA), make_agent(BETA)):
-        registry.register(profile)
+    if registry is None:
+        registry = AgentProfileRegistry()
+        for profile in agents or (make_agent(ALPHA), make_agent(BETA)):
+            registry.register(profile)
     models = models if models is not None else mock_models()
     engine = agent_engine(
         bus,

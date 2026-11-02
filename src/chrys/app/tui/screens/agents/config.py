@@ -2077,19 +2077,21 @@ class AgentsConfigScreen(BaseDialog[str]):
         target_names.update(
             profile.name for profile in retargeted_profiles if self._should_persist_retargeted_profile(profile)
         )
-        snapshot = self._snapshot_save_state(old_names | target_names)
+        from chrys.service.profiles.agents.serializer import profile_write_lock
 
-        try:
-            active_new_display, active_new_name = self._perform_save(
-                dirty_drafts,
-                retargeted_profiles,
-                old_names=old_names,
-                target_names=target_names,
-                old_active_name=old_active_name,
-            )
-        except Exception:
-            self._restore_save_state(snapshot)
-            raise
+        with profile_write_lock:
+            snapshot = self._snapshot_save_state(old_names | target_names)
+            try:
+                active_new_display, active_new_name = self._perform_save(
+                    dirty_drafts,
+                    retargeted_profiles,
+                    old_names=old_names,
+                    target_names=target_names,
+                    old_active_name=old_active_name,
+                )
+            except Exception:
+                self._restore_save_state(snapshot)
+                raise
 
         if active_new_display is not None:
             self._current_profile = active_new_display

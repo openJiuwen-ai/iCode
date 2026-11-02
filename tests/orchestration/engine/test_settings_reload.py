@@ -777,7 +777,7 @@ async def test_manual_model_edit_is_validated_before_installing_or_syncing_the_p
     from chrys.service.profiles.models.serializer import save_profile
 
     save_profile(ModelProfile(id="on-disk", name="On disk", model_id="new", provider="mock"))
-    for choice, expected in (("unknown", "A"), ("empty", "A"), ("on-disk", "A"), ("B", "B")):
+    for choice, expected in (("unknown", "A"), ("empty", "A"), ("on-disk", "on-disk"), ("B", "B")):
         path.write_text(f"model.profile.active: {choice}\n", encoding="utf-8")
         await bus.publish(SettingsReload(manual=True, session_id=engine.session.session_id), raise_handler_errors=True)
         assert engine.current_profile_snapshot().model_profile_id == expected

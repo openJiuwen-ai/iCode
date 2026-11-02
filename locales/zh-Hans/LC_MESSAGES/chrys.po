@@ -201,6 +201,18 @@ msgstr "未配置智能体配置注册表，无法切换智能体配置"
 msgid "controls.profile_not_found"
 msgstr "未找到智能体配置“{profile_name}”"
 
+#. English: Agent '{old}' is no longer available. Using '{new}'.
+#. chrys-meta={"fingerprint":"a130868598167662423f644ba7b154ce2f800a5048303c0d47a11589bd574f05","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_agent_fallback"
+msgstr "智能体“{old}”已不可用，已切换到“{new}”。"
+
+#. English: Agent '{old}' is now named '{new}'.
+#. chrys-meta={"fingerprint":"fab19454999f6de87bb54112c942a01b746a9499b1d193d05a1bcb06b1df1e03","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_agent_renamed"
+msgstr "智能体“{old}”已更名为“{new}”。"
+
 #. English: Applied: {keys}
 #. chrys-meta={"fingerprint":"00c0e6d433265c03461a938cccfa6c4ab5fb758f544edf9bd2f516d22cc244c3","multiline":false,"placeholders":["keys"]}
 #: src/chrys/orchestration/engine/state/controls.py
@@ -213,11 +225,11 @@ msgstr "已应用：{keys}"
 msgid "controls.reload_busy"
 msgstr "请等当前回合或工作流结束后再执行 /reload。"
 
-#. English: Reloaded settings, memory and skills.
-#. chrys-meta={"fingerprint":"82a1457dc1b2ae27c8691d9d674f01785bd50419535c59f3eb13dea06afd7ad6","multiline":false,"placeholders":[]}
+#. English: Reloaded settings, profiles, memory and skills.
+#. chrys-meta={"fingerprint":"6085b1e097c4d4c5316175770d93bf63479e07593173a097e9982df493e11cb7","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_done"
-msgstr "已重新加载设置、记忆和 Skills。"
+msgstr "已重新加载设置、智能体与模型配置、记忆和 Skills。"
 
 #. English: The previous turn was cancelled while settings were waiting to
 #. reload.
@@ -232,12 +244,12 @@ msgstr "等待刷新设置时，上一回合已被取消。"
 msgid "controls.reload_drain_failed"
 msgstr "刷新设置前无法完成上一回合的收尾：{detail}"
 
-#. English: Kept the current model: '{model}' is unavailable. This reload uses
-#. the model profiles already loaded.
-#. chrys-meta={"fingerprint":"d7f645b2ad9b1a7e5cf39c7a57ab82b495ace739060ee1474995cfb46ce46d10","multiline":false,"placeholders":["model"]}
+#. English: Kept the current model: '{model}' is unavailable. Check the model
+#. profile file and run /reload again.
+#. chrys-meta={"fingerprint":"ec978a9242efbf79d6a2e1329e25a1dee86930387f1237978292c020550c66d1","multiline":false,"placeholders":["model"]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_kept_model"
-msgstr "已保留当前模型：“{model}”不可用。本次刷新仅可选用已加载的模型配置。"
+msgstr "已保留当前模型。“{model}”不可用，请检查模型配置文件后再次执行 /reload。"
 
 #. English: Wait for the agent to finish loading, then run /reload again.
 #. chrys-meta={"fingerprint":"941008e0342e2bec5449cd2d2abb28d6c598f5d7f813ab8918179cd5a24befd0","multiline":false,"placeholders":[]}
@@ -245,17 +257,44 @@ msgstr "已保留当前模型：“{model}”不可用。本次刷新仅可选�
 msgid "controls.reload_loading"
 msgstr "请等智能体加载完成后再执行 /reload。"
 
+#. English: Agent '{agent}' references missing model '{missing}'. Using
+#. '{actual}'.
+#. chrys-meta={"fingerprint":"e1bfcff98768c2dda7ef80df1b1fb10e6032f17c3b1f06d1029ff4aeb1d828e5","multiline":false,"placeholders":["actual","agent","missing"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_missing_bound_model"
+msgstr "智能体“{agent}”绑定的模型“{missing}”不存在，当前使用“{actual}”。"
+
+#. English: Model '{old}' is no longer selectable. Using '{new}' as the
+#. default.
+#. chrys-meta={"fingerprint":"701eb361512b92594fbb1ec144c26e55a20013264b957af94654983cd174690b","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_model_fallback"
+msgstr "模型“{old}”已不可选，现使用“{new}”作为默认模型。"
+
 #. English: Applies next launch: {keys}
 #. chrys-meta={"fingerprint":"a6db90ffb672d9b69a9ad8335ba7a41453e9f22f520ea58ba0e3a8a5a42d72bc","multiline":false,"placeholders":["keys"]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_next_launch"
 msgstr "下次启动生效：{keys}"
 
+#. English: No main agent is available. Kept the previous runtime.
+#. chrys-meta={"fingerprint":"c63552c6063925d9c518314ea12ede288120bd69228d04c8fa5ba44e8d89d547","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_no_agent"
+msgstr "没有可用的主智能体，已保留原会话配置。"
+
 #. English: The session changed before settings could reload.
 #. chrys-meta={"fingerprint":"0b3ed5e40f5ffb4cc2c04b791192bae29cb1408caf7136e80cff6bc310a77125","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/errors.py
 msgid "controls.reload_session_changed"
 msgstr "当前会话已切换，设置未刷新。"
+
+#. English: Session model '{model}' is no longer selectable. The session now
+#. uses its default model.
+#. chrys-meta={"fingerprint":"6f97a6d3b117226b0cb118a4092b77f5787fd78ff6b6846839e9bfe3343b4aa4","multiline":false,"placeholders":["model"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_session_model_removed"
+msgstr "会话模型“{model}”已不可选，当前会话改用默认模型。"
 
 #. English: Reloaded settings. No agent is active.
 #. chrys-meta={"fingerprint":"afd39507e1b644a357ce3bcd7b37db1792eba0725f68b442a3ffe1550bc5d52d","multiline":false,"placeholders":[]}
@@ -280,6 +319,13 @@ msgstr "正在退出，无法刷新设置。"
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_superseded"
 msgstr "已有更新的智能体加载操作，请重新执行 /reload。"
+
+#. English: Agent '{parent}' references '{child}'. Its tool '{tool}' is
+#. unavailable.
+#. chrys-meta={"fingerprint":"626b21d01e2470451feb473f9a1e4c6e2b12ea03b21f6d73810e34dc93ece503","multiline":false,"placeholders":["child","parent","tool"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_unavailable_child"
+msgstr "智能体“{parent}”引用的子智能体“{child}”不可用，工具“{tool}”未加载。"
 
 #. English: Model profile is unavailable: {model}
 #. chrys-meta={"fingerprint":"309636cd0cc28606573698ecf2fb04f9a7c79b3457858e76c87ed475e04ec8c1","multiline":false,"placeholders":["model"]}
@@ -731,6 +777,61 @@ msgstr "Hosted Tool Discovery"
 #: src/chrys/orchestration/startup.py
 msgid "i18n.catalog_load_failed"
 msgstr "无法加载语言设置 {locale} 的翻译资源，改用英文。"
+
+#. English: Reloaded agent and model profile definitions.
+#. chrys-meta={"fingerprint":"e4cbc2b8a17979fc36c60f27fa9f453e43f5437624a290c4cf75a334eabc4462","multiline":false,"placeholders":[]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_changed"
+msgstr "已更新智能体和模型配置。"
+
+#. English: Cannot list {path}. The profile directories were not reloaded.
+#. chrys-meta={"fingerprint":"80df279c6cc31a695cde05f5013ea6ef19535804fabcdb3f3242151204beee1c","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_directory_failed"
+msgstr "无法列出 {path} 中的文件。智能体和模型配置均未重新加载。"
+
+#. English: Profile files already changed: {changes}
+#. chrys-meta={"fingerprint":"3a2f58e1358588eff3a1f8f5405f8318308b76854915c28ee09ff561f6640c03","multiline":false,"placeholders":["changes"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_disk_changes"
+msgstr "已改动的配置文件：{changes}"
+
+#. English: The profile file changed before it could be normalized: {path}
+#. chrys-meta={"fingerprint":"da22e1c5660a410005be3c74343f16398ea993bcc1415eaebdbddc664a350137","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_file_changed"
+msgstr "整理文件前检测到内容发生了变化：{path}"
+
+#. English: Could not register {path} under its profile name. Check for a
+#. conflicting filename.
+#. chrys-meta={"fingerprint":"b935617d374b4625150dbd57eddc085e07f248fde500d30e6440a46f8c8e5b82","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_file_conflict"
+msgstr "无法按智能体名称注册 {path}，请检查文件名是否冲突。"
+
+#. English: Skipped invalid or unreadable profile files: {paths}
+#. chrys-meta={"fingerprint":"7fb9500ed342974da5b9e7ef5726c2290f2ba7283a90e8af849b055217e88ef3","multiline":false,"placeholders":["paths"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_invalid"
+msgstr "已跳过无效或无法读取的配置文件：{paths}"
+
+#. English: Kept the last loaded version of these profile files: {paths}
+#. chrys-meta={"fingerprint":"99bc4cd5c9a2cfa476a18c3b3dcb229c876ee198cb13de749eb8edb36cbdb163","multiline":false,"placeholders":["paths"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_kept"
+msgstr "以下配置文件继续使用上次成功加载的版本：{paths}"
+
+#. English: Could not normalize {path}: {reason}
+#. chrys-meta={"fingerprint":"d6f93c1cce42a4b1beda38b793de8a31078a6ac3220f4c8dd3bfcc79de255fc3","multiline":false,"placeholders":["path","reason"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_normalize_failed"
+msgstr "无法整理 {path}：{reason}"
+
+#. English: Profiles changed while reloading. Run /reload again.
+#. chrys-meta={"fingerprint":"9b3edeceec8b2a992b02606c80921b2b0857ea5899816286d2b9497550917f87","multiline":false,"placeholders":[]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_stale"
+msgstr "刷新期间配置发生了变化，请再次执行 /reload。"
 
 #. English: Images cannot be added while the agent is responding.  Wait for the
 #. current response to finish, then send the image in a new message.
@@ -8060,13 +8161,13 @@ msgstr "此命令不接受其他选项。"
 msgid "tui.man.options.supports_subcommands"
 msgstr "此命令支持子命令。"
 
-#. English: Read settings from disk and rebuild the current agent with its
-#. memory and skills. Run this command when the current turn or workflow has
-#. finished.
-#. chrys-meta={"fingerprint":"0fd3667c9c720ead219650ca75f209e598136f8e340d044e8a83df379a988cce","multiline":false,"placeholders":[]}
+#. English: Read settings, agent profiles and model profiles from disk, then
+#. rebuild the current agent with its memory and skills. Run this command when
+#. the current turn or workflow has finished.
+#. chrys-meta={"fingerprint":"634b77fcd4699faca3e242622bcfaa489c9d1b9ae28c435f2cdb442f05311da1","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.reload.body"
-msgstr "从磁盘读取设置，并重新加载当前智能体的记忆和 Skills。请在当前回合或工作流完成后执行。"
+msgstr "从磁盘读取设置、智能体和模型配置，并重新加载当前智能体的记忆和 Skills。请在当前回合或工作流结束后执行。"
 
 #. English: With a title argument, apply it directly as the custom session
 #. title. Without one (or with only whitespace), open the session title editor
@@ -12127,11 +12228,11 @@ msgstr "待办"
 msgid "tui.sidebar.toc.empty"
 msgstr "你的对话将显示在这里"
 
-#. English: Reload settings, memory and skills
-#. chrys-meta={"fingerprint":"a19fead565aeb839f663474424edf0aa52062da7ecfd843212628865f845370a","multiline":false,"placeholders":[]}
+#. English: Reload settings, profiles, memory and skills
+#. chrys-meta={"fingerprint":"80b3dad672449d72de7dda9021a4c3bca3acdf8187c4a1c81f98d86c6856d85c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.slash.reload_description"
-msgstr "重新加载设置、记忆和 Skills"
+msgstr "重新加载设置、智能体与模型配置、记忆和 Skills"
 
 #. English: Session {session_id} was not found.
 #. chrys-meta={"fingerprint":"a5c2002c8e98be1f6de66c9e7ceb5fd6595b9dcfc1595822cbd0bc7cdf8036c6","multiline":false,"placeholders":["session_id"]}

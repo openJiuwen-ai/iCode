@@ -32,6 +32,7 @@ from chrys.foundation.i18n import msg
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.trajectory.event_types import ProfileKind
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine.build import construction
 from chrys.orchestration.engine.build.construction import BuildAgentFn, StagedBuild
 from chrys.orchestration.engine.build.loaded import AgentManifest, CompletedBuild, ReplacedBuild
@@ -269,9 +270,14 @@ class AgentLoader:
         return hook_manager
 
     async def build(
-        self, profile: AgentProfile, staged: StagedBuild, *, preserved_history: dict | None = None
+        self,
+        profile: AgentProfile,
+        staged: StagedBuild,
+        *,
+        preserved_history: dict | None = None,
     ) -> CompletedBuild:
         """Construct a complete candidate without installing it."""
+        profiles = self._permits.staged_profiles()
         return await construction.build_agent(
             self._profile_with_mcp_overlay(profile),
             staged=staged,
@@ -280,8 +286,8 @@ class AgentLoader:
             session=self._session,
             persistence=self._persistence,
             bus=self._bus,
-            agent_registry=self._agent_registry,
-            model_registry=self._model_registry,
+            agent_registry=profiles.agents if profiles is not None else self._agent_registry,
+            model_registry=profiles.models if profiles is not None else self._model_registry,
             workspace_change_tracker=self._workspace_change_tracker,
             turn_state=self._turn_state,
             turn_context=self._turn_context,
@@ -544,7 +550,9 @@ class AgentLoader:
         exc: Exception,
     ) -> None:
         """Publish an agent load failure event."""
-        display_message, display_hint = (exc.display, None) if isinstance(exc, ConfigError) else display_fields(exc)
+        display_message, display_hint = (
+            (exc.display, exc.display_hint) if isinstance(exc, ConfigError) else display_fields(exc)
+        )
         await self._bus.publish(
             AgentLoadFailed(
                 operation=operation,
@@ -676,7 +684,11 @@ class AgentLoader:
             # awaited post-commit steps, would let a cancellation strand the new
             # executor under the old profile's name or publish it with an empty
             # history for the next save to persist.
-            completed = await self.build(new_profile, staged, preserved_history=preserved_state)
+            completed = await self.build(
+                new_profile,
+                staged,
+                preserved_history=preserved_state,
+            )
             replaced = await self._install_candidate(completed)
             await self.release(replaced)
             if staged_hook_manager is not old_hook_manager:
@@ -807,17 +819,41 @@ class AgentLoader:
             )
 
     async def _install_candidate(self, completed: CompletedBuild) -> ReplacedBuild:
+        profiles = self._permits.staged_profiles()
+        launch_agent = None
         try:
-            return self.install(completed)
-        except StaleModelFileChange:
-            coordinator = completed.staged.mutation_coordinator
-            await self.release(
-                ReplacedBuild(
-                    loaded=completed.loaded,
-                    coordinator=coordinator if coordinator is not self._session.mutation_coordinator else None,
+            if profiles is not None:
+                profiles.check_versions()
+                await finish_close(asyncio.create_task(asyncio.to_thread(profiles.normalize)))
+                profiles.check_versions()
+                launch_agent = profiles.updated_launch_agent(
+                    self._session.new_session_agent, completed.settings.effective.settings.default_agent
                 )
-            )
+        except BaseException as exc:
+            if isinstance(exc, ConfigError) and profiles is not None:
+                exc.display_hint = profiles.changes_hint()
+            await self._discard_candidate(completed)
             raise
+        try:
+            replaced = self.install(completed)
+        except StaleModelFileChange as exc:
+            if profiles is not None:
+                exc.display_hint = profiles.changes_hint()
+            await self._discard_candidate(completed)
+            raise
+        if profiles is not None and launch_agent is not None:
+            self._session.new_session_agent = launch_agent
+            profiles.install()
+        return replaced
+
+    async def _discard_candidate(self, completed: CompletedBuild) -> None:
+        coordinator = completed.staged.mutation_coordinator
+        await self.release(
+            ReplacedBuild(
+                loaded=completed.loaded,
+                coordinator=coordinator if coordinator is not self._session.mutation_coordinator else None,
+            )
+        )
 
     def install(self, completed: CompletedBuild) -> ReplacedBuild:
         """Install the completed candidate before releasing the previous owner."""

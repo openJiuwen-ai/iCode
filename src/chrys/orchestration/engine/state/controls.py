@@ -15,9 +15,10 @@ from typing import TYPE_CHECKING, Any
 from chrys.foundation.config.context import EvalContext
 from chrys.foundation.config.errors import RELOAD_SESSION_CHANGED, ConfigError, ConfigValueError
 from chrys.foundation.config.process_settings import reattribute_command_line, route_restart_settings
+from chrys.foundation.config.runtime_pointer import ModelFileChange
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle, load_settings
-from chrys.foundation.config.spec import Apply, Source, specs_by_field
+from chrys.foundation.config.spec import Apply, SettingOrigin, Source, specs_by_field
 from chrys.foundation.config.warnings import settings_warning_events
 from chrys.foundation.events.types import (
     AgentProfileSwitch,
@@ -39,15 +40,19 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine.state.active_session import session_pin_overrides
 from chrys.orchestration.engine.state.lifecycle_permits import RebuildControlToken, RebuildPermit, RebuildPermitDenied
 from chrys.service.approval.policy import ApprovalMode
+from chrys.service.profiles.agents.registry import resolve_launch_profile
 from chrys.service.profiles.models.resolver import (
     active_model_profile_fields,
     model_for_agent,
+    resolve_for_agent,
     resolve_selectable_profile,
 )
 from chrys.service.profiles.models.schema import is_model_profile_selectable
+from chrys.service.profiles.reload import ProfileReload
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
@@ -65,13 +70,33 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_RELOAD_DONE = msg("controls.reload_done", fallback="Reloaded settings, memory and skills.")
+_RELOAD_DONE = msg("controls.reload_done", fallback="Reloaded settings, profiles, memory and skills.")
 _RELOAD_SETTINGS_ONLY = msg("controls.reload_settings_only", fallback="Reloaded settings. No agent is active.")
 _RELOAD_UNKNOWN_THEME = msg("controls.reload_unknown_theme", fallback="Theme '{theme}' is unavailable in this session.")
 _RELOAD_NEXT_LAUNCH = msg("controls.reload_next_launch", fallback="Applies next launch: {keys}")
 _RELOAD_KEPT = msg(
     "controls.reload_kept_model",
-    fallback="Kept the current model: '{model}' is unavailable. This reload uses the model profiles already loaded.",
+    fallback="Kept the current model: '{model}' is unavailable. Check the model profile file and run /reload again.",
+)
+_PROFILE_FALLBACK = msg(
+    "controls.reload_agent_fallback", fallback="Agent '{old}' is no longer available. Using '{new}'."
+)
+_PROFILE_RENAMED = msg("controls.reload_agent_renamed", fallback="Agent '{old}' is now named '{new}'.")
+_NO_AGENT = msg("controls.reload_no_agent", fallback="No main agent is available. Kept the previous runtime.")
+_MODEL_FALLBACK = msg(
+    "controls.reload_model_fallback", fallback="Model '{old}' is no longer selectable. Using '{new}' as the default."
+)
+_UNAVAILABLE_CHILD = msg(
+    "controls.reload_unavailable_child",
+    fallback="Agent '{parent}' references '{child}'. Its tool '{tool}' is unavailable.",
+)
+_MISSING_BOUND_MODEL = msg(
+    "controls.reload_missing_bound_model",
+    fallback="Agent '{agent}' references missing model '{missing}'. Using '{actual}'.",
+)
+_SESSION_MODEL_REMOVED = msg(
+    "controls.reload_session_model_removed",
+    fallback="Session model '{model}' is no longer selectable. The session now uses its default model.",
 )
 _RELOAD_CHANGED = msg("controls.reload_applied", fallback="Applied: {keys}")
 _RELOAD_SHADOWED = msg("controls.reload_shadowed", fallback="Overridden by a higher-priority choice: {keys}")
@@ -661,10 +686,15 @@ class RuntimeControls:
             return
 
         report: list[MessageRef] = []
+        profiles = None
         kept_model = False
         old_effective = self._settings_handle.loaded
         old_loaded = self._settings_handle.base
-        session = self._session_choice_after_reload(model_chosen=event.model_chosen)
+        session = (
+            self._settings_handle.session_values
+            if event.manual
+            else self._session_choice_after_reload(model_chosen=event.model_chosen)
+        )
         try:
             try:
                 # Re-read settings from env (matches TUI behavior, which persists
@@ -687,24 +717,18 @@ class RuntimeControls:
                     **pins,
                 )
                 if event.manual:
+                    profiles = ProfileReload(self._agent_registry, self._model_registry)
+                    await asyncio.to_thread(profiles.scan)
+                    profiles.check_versions()
+                    report.extend(profiles.report)
+                    own_model = self._settings_handle.session_model
+                    if own_model and resolve_selectable_profile(profiles.models, own_model) is None:
+                        session = {}
+                        report.append(_SESSION_MODEL_REMOVED.bind(model=own_model))
                     report.append(
                         (_RELOAD_DONE if self._session.agent_profile is not None else _RELOAD_SETTINGS_ONLY).bind()
                     )
-                    edit = candidate.model_edit
-                    if edit and edit.value and resolve_selectable_profile(self._model_registry, edit.value) is None:
-                        if self._current.loaded is None:
-                            raise ConfigValueError(_RELOAD_UNAVAILABLE.bind(model=edit.value))
-                        kept_model = True
-                        report.append(_RELOAD_KEPT.bind(model=edit.value))
-                        key = "model.profile.active"
-                        candidate = dataclasses.replace(
-                            candidate,
-                            model_edit=None,
-                            settings=dataclasses.replace(
-                                candidate.settings, model_profile=old_loaded.settings.model_profile
-                            ),
-                            provenance={**candidate.provenance, key: old_loaded.source_for(key)},
-                        )
+                    candidate, kept_model = self._reload_model_default(candidate, profiles, report)
                 # Routed after the load, not excluded from it: the reload still has
                 # to report a RESTART value the user typed wrong, it just must not
                 # claim the good ones took effect. The snapshot fields keep the
@@ -734,7 +758,34 @@ class RuntimeControls:
                 # Pull the latest active profile instance from the registry so edits
                 # saved to user YAML (e.g. MCP enabled/disabled) take effect immediately.
                 profile_for_restart = self._session.agent_profile
-                if profile_for_restart is not None and self._agent_registry is not None:
+                if profile_for_restart is not None and profiles is not None and profiles.agents is not None:
+                    current = profile_for_restart
+                    view = profiles.agents
+                    selected = profiles.updated_agent(current)
+                    if selected is None or selected not in view.list_profiles():
+                        selected = resolve_launch_profile(view, loaded.settings.default_agent)
+                        if selected is None:
+                            raise ConfigValueError(_NO_AGENT.bind())
+                        report.append(_PROFILE_FALLBACK.bind(old=current.name, new=selected.name))
+                    elif selected.name != current.name:
+                        report.append(_PROFILE_RENAMED.bind(old=current.name, new=selected.name))
+                    previous_model = self._current.manifest.active_profile
+                    if previous_model and is_model_profile_selectable(previous_model):
+                        effective = self._settings_handle.prepare(loaded, session=session).effective.settings
+                        resolved = resolve_for_agent(profiles.models, effective, selected)
+                        # Removing just the default setting intentionally clears its pointer,
+                        # even if the unconfigured builtin will then prompt for a model.
+                        cleared_default = (
+                            candidate.model_edit is not None
+                            and not candidate.model_edit.value
+                            and not effective.model_profile_override
+                            and not selected.model.profile_id
+                            and resolve_selectable_profile(profiles.models, previous_model.id) is not None
+                        )
+                        if not is_model_profile_selectable(resolved) and not cleared_default:
+                            raise ConfigValueError(_RELOAD_UNAVAILABLE.bind(model=previous_model.name))
+                    profile_for_restart = selected
+                elif profile_for_restart is not None and self._agent_registry is not None:
                     refreshed = self._agent_registry.get(profile_for_restart.name)
                     if refreshed is not None:
                         profile_for_restart = refreshed
@@ -773,8 +824,14 @@ class RuntimeControls:
             # fails after keeps the settings its executor was actually built from
             # — restoring the old ones there would desynchronize the two.
             if profile_for_restart is not None:
+                if profiles is not None:
+                    self._permits.stage_profiles(permit, profiles)
                 await self._start_or_restart_with_permit(
-                    permit, profile_for_restart, operation="settings_reload", staged_loaded=loaded, session=session
+                    permit,
+                    profile_for_restart,
+                    operation="settings_reload",
+                    staged_loaded=loaded,
+                    session=session,
                 )
                 if (
                     old_loaded.settings.workspace_change_notice
@@ -784,8 +841,28 @@ class RuntimeControls:
                     # a failed rebuild keeps the old enabled settings AND the baseline.
                     self._workspace_change_tracker.invalidate()
             else:
-                self._settings_handle.install_prepared(self._settings_handle.prepare(loaded, session=session))
+                try:
+                    if profiles is not None:
+                        await finish_close(asyncio.create_task(asyncio.to_thread(profiles.normalize)))
+                        profiles.check_versions()
+                    self._settings_handle.install_prepared(self._settings_handle.prepare(loaded, session=session))
+                    if profiles is not None:
+                        profiles.install()
+                except ConfigError as exc:
+                    await self._bus.publish(
+                        Error(
+                            code="manual_settings_reload_failed",
+                            message=str(exc),
+                            display_message=exc.display,
+                            display_hint=exc.display_hint
+                            or (profiles.changes_hint() if profiles is not None else None),
+                            session_id=token.session_id,
+                        )
+                    )
+                    raise
             if event.manual:
+                if profile_for_restart is not None:
+                    report.extend(self._profile_reference_report(profile_for_restart))
                 new = self._settings_handle.loaded
                 before = dataclasses.asdict(old_effective.settings) | self._launch_defaults | event.tui_projection
                 after = dataclasses.asdict(new.settings)
@@ -823,6 +900,90 @@ class RuntimeControls:
             await self._publish_settings_reloaded(tuple(report))
         finally:
             self._permits.release_rebuild_permit(permit)
+
+    def _profile_reference_report(self, profile: AgentProfile) -> list[MessageRef]:
+        """Describe unresolved references on the installed agent and the children it actually exposes."""
+        manifest = self._current.manifest
+        active = manifest.active_profile
+        report: list[MessageRef] = []
+        models = self._model_registry
+        bound = profile.model.profile_id
+        if bound and active is not None and models is not None and models.get(bound) is None:
+            report.append(_MISSING_BOUND_MODEL.bind(agent=profile.name, missing=bound, actual=active.id))
+        for ref in profile.sub_agents.agents:
+            tool = ref.tool_name or ref.profile
+            child = self._agent_registry.get(ref.profile) if self._agent_registry is not None else None
+            if child is None or tool not in manifest.runtime_details.sub_agent_tools:
+                report.append(_UNAVAILABLE_CHILD.bind(parent=profile.name, child=ref.profile, tool=tool))
+            elif (
+                child.acp is None
+                and (bound := child.model.profile_id)
+                and models is not None
+                and models.get(bound) is None
+            ):
+                actual = resolve_for_agent(models, self._settings_handle.settings, child, fallback=active)
+                report.append(_MISSING_BOUND_MODEL.bind(agent=child.name, missing=bound, actual=actual.id))
+        return report
+
+    def _reload_model_default(
+        self, candidate: LoadedSettings, profiles: ProfileReload, report: list[MessageRef]
+    ) -> tuple[LoadedSettings, bool]:
+        """Validate an external selection or replace a default whose definition disappeared."""
+        requested = candidate.settings.model_profile
+        old = self._settings_handle.base
+        previous = old.settings.model_profile
+        key = "model.profile.active"
+        old_model = resolve_selectable_profile(self._model_registry, previous)
+        selected = resolve_selectable_profile(profiles.models, requested)
+        # A saved selector may be a display name. Renaming or reusing that
+        # name must keep the same model when the user hasn't changed selection.
+        if not candidate.model_edit and requested == previous and old_model and profiles.models:
+            same_id = profiles.models.get(old_model.id)
+            if same_id is not None and is_model_profile_selectable(same_id) and same_id is not selected:
+                revision = candidate.manual_model_revision
+                if revision is None:
+                    raise ConfigValueError(_RELOAD_UNAVAILABLE.bind(model=requested))
+                return dataclasses.replace(
+                    candidate,
+                    model_edit=ModelFileChange(candidate.file_model, same_id.id, candidate.source_for(key), revision),
+                    settings=dataclasses.replace(candidate.settings, model_profile=same_id.id),
+                ), False
+        if not requested or selected is not None:
+            return candidate, False
+        if candidate.model_edit and (not previous or resolve_selectable_profile(profiles.models, previous) is not None):
+            if self._current.loaded is None:
+                raise ConfigValueError(_RELOAD_UNAVAILABLE.bind(model=requested))
+            report.append(_RELOAD_KEPT.bind(model=requested))
+            return dataclasses.replace(
+                candidate,
+                model_edit=None,
+                settings=dataclasses.replace(candidate.settings, model_profile=previous),
+                provenance={**candidate.provenance, key: old.source_for(key)},
+            ), True
+        if old_model is None:
+            if candidate.model_edit:
+                raise ConfigValueError(_RELOAD_UNAVAILABLE.bind(model=requested))
+            return candidate, False
+        replacement = resolve_selectable_profile(profiles.models, candidate.file_model)
+        if replacement is None and profiles.models is not None:
+            replacement = next(
+                (
+                    p
+                    for p in sorted(profiles.models.list_profiles(), key=lambda p: (p.name.casefold(), p.id))
+                    if is_model_profile_selectable(p)
+                ),
+                None,
+            )
+        if replacement is None or candidate.manual_model_revision is None:
+            raise ConfigValueError(_RELOAD_UNAVAILABLE.bind(model=requested))
+        origin = SettingOrigin(layer=Source.PROCESS_RUNTIME)
+        report.append(_MODEL_FALLBACK.bind(old=previous, new=replacement.name))
+        return dataclasses.replace(
+            candidate,
+            model_edit=ModelFileChange(candidate.file_model, replacement.id, origin, candidate.manual_model_revision),
+            settings=dataclasses.replace(candidate.settings, model_profile=replacement.id),
+            provenance={**candidate.provenance, key: origin},
+        ), False
 
     def _session_choice_after_reload(self, *, model_chosen: bool) -> dict[str, Any]:
         """The session's own choices a reload commits: without its model once the user chose one or it is gone."""

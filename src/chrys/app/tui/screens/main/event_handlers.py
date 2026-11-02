@@ -872,7 +872,7 @@ class BackendEventHandler:
         s = self
 
         label = event.display_name or event.agent_profile
-        if label:
+        if label and not (event.operation == "settings_reload" and self._state.runtime.details_confirmed):
             s.profile = label
             with contextlib.suppress(Exception):
                 s.update_subtitle()
@@ -1964,7 +1964,9 @@ class BackendEventHandler:
     async def on_error(self, event: Error) -> None:
         if event.code in {"manual_settings_reload_failed", "manual_settings_reload_denied"}:
             self.notify(
-                event.display_message or event.message,
+                self._render_display_with_hint(event.display_message, event.display_hint)
+                if event.display_message and event.display_hint
+                else event.display_message or event.message,
                 title=SETTINGS_TITLE.bind(),
                 severity="warning" if event.code == "manual_settings_reload_denied" else "error",
                 timeout=8,

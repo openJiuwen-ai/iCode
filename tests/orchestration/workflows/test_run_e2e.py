@@ -747,3 +747,45 @@ async def test_a_restored_session_discovers_workflows_in_its_own_project(
         assert second.outcome.value == "completed"
     finally:
         await restored.shutdown()
+
+
+async def test_new_workflow_node_reads_later_model_editor_save_after_profile_reload(tmp_path, monkeypatch):
+    from chrys.foundation.config.process_env import freeze_process_env
+    from chrys.foundation.events.types import SettingsReload
+    from chrys.service.profiles.models.schema import ModelProfile
+    from chrys.service.profiles.models.serializer import save_profile
+    from tests.orchestration.workflows._hosting import agent_node_module
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "mock-profile")
+    freeze_process_env()
+    patch_runtime(monkeypatch, [MockChatClient(responses=[])])
+    project = make_project(tmp_path)
+    write_workflow(
+        project, "review", _agent_workflow().replace(b"instructions_suffix=", b"model='disk', instructions_suffix=")
+    )
+    host = make_host(tmp_path, project=project)
+    model = ModelProfile(id="disk", name="On disk", provider="mock", model_id="from-disk", stream=False)
+    save_profile(model)
+
+    async def client_for(model, **kwargs):
+        return MockChatClient(responses=[MockResponse(text=model.model_id)])
+
+    monkeypatch.setattr(agent_node_module, "create_client", client_for)
+    try:
+        await host.start()
+        registry = host.engine.model_registry
+        await host.event_bus.publish(
+            SettingsReload(session_id=host.engine.session_id, manual=True), raise_handler_errors=True
+        )
+        assert registry is host.engine.model_registry
+        assert registry.get("disk").model_id == "from-disk"
+        # The editor writes the definition, then registers the saved model on its shared instance.
+        updated = replace(model, model_id="after-editor-save")
+        save_profile(updated)
+        registry.register(updated)
+        await confirm(host, "review")
+        result, _ = await run(host, "review", input_text="diff")
+        assert result.outcome.value == "completed"
+        assert [out.value.text for out in result.outputs] == ["after-editor-save"]
+    finally:
+        await host.shutdown()

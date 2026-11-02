@@ -178,6 +178,18 @@ msgstr ""
 msgid "controls.profile_not_found"
 msgstr ""
 
+#. English: Agent '{old}' is no longer available. Using '{new}'.
+#. chrys-meta={"fingerprint":"a130868598167662423f644ba7b154ce2f800a5048303c0d47a11589bd574f05","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_agent_fallback"
+msgstr ""
+
+#. English: Agent '{old}' is now named '{new}'.
+#. chrys-meta={"fingerprint":"fab19454999f6de87bb54112c942a01b746a9499b1d193d05a1bcb06b1df1e03","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_agent_renamed"
+msgstr ""
+
 #. English: Applied: {keys}
 #. chrys-meta={"fingerprint":"00c0e6d433265c03461a938cccfa6c4ab5fb758f544edf9bd2f516d22cc244c3","multiline":false,"placeholders":["keys"]}
 #: src/chrys/orchestration/engine/state/controls.py
@@ -190,8 +202,8 @@ msgstr ""
 msgid "controls.reload_busy"
 msgstr ""
 
-#. English: Reloaded settings, memory and skills.
-#. chrys-meta={"fingerprint":"82a1457dc1b2ae27c8691d9d674f01785bd50419535c59f3eb13dea06afd7ad6","multiline":false,"placeholders":[]}
+#. English: Reloaded settings, profiles, memory and skills.
+#. chrys-meta={"fingerprint":"6085b1e097c4d4c5316175770d93bf63479e07593173a097e9982df493e11cb7","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_done"
 msgstr ""
@@ -209,9 +221,9 @@ msgstr ""
 msgid "controls.reload_drain_failed"
 msgstr ""
 
-#. English: Kept the current model: '{model}' is unavailable. This reload uses
-#. the model profiles already loaded.
-#. chrys-meta={"fingerprint":"d7f645b2ad9b1a7e5cf39c7a57ab82b495ace739060ee1474995cfb46ce46d10","multiline":false,"placeholders":["model"]}
+#. English: Kept the current model: '{model}' is unavailable. Check the model
+#. profile file and run /reload again.
+#. chrys-meta={"fingerprint":"ec978a9242efbf79d6a2e1329e25a1dee86930387f1237978292c020550c66d1","multiline":false,"placeholders":["model"]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_kept_model"
 msgstr ""
@@ -222,16 +234,43 @@ msgstr ""
 msgid "controls.reload_loading"
 msgstr ""
 
+#. English: Agent '{agent}' references missing model '{missing}'. Using
+#. '{actual}'.
+#. chrys-meta={"fingerprint":"e1bfcff98768c2dda7ef80df1b1fb10e6032f17c3b1f06d1029ff4aeb1d828e5","multiline":false,"placeholders":["actual","agent","missing"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_missing_bound_model"
+msgstr ""
+
+#. English: Model '{old}' is no longer selectable. Using '{new}' as the
+#. default.
+#. chrys-meta={"fingerprint":"701eb361512b92594fbb1ec144c26e55a20013264b957af94654983cd174690b","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_model_fallback"
+msgstr ""
+
 #. English: Applies next launch: {keys}
 #. chrys-meta={"fingerprint":"a6db90ffb672d9b69a9ad8335ba7a41453e9f22f520ea58ba0e3a8a5a42d72bc","multiline":false,"placeholders":["keys"]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_next_launch"
 msgstr ""
 
+#. English: No main agent is available. Kept the previous runtime.
+#. chrys-meta={"fingerprint":"c63552c6063925d9c518314ea12ede288120bd69228d04c8fa5ba44e8d89d547","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_no_agent"
+msgstr ""
+
 #. English: The session changed before settings could reload.
 #. chrys-meta={"fingerprint":"0b3ed5e40f5ffb4cc2c04b791192bae29cb1408caf7136e80cff6bc310a77125","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/errors.py
 msgid "controls.reload_session_changed"
+msgstr ""
+
+#. English: Session model '{model}' is no longer selectable. The session now
+#. uses its default model.
+#. chrys-meta={"fingerprint":"6f97a6d3b117226b0cb118a4092b77f5787fd78ff6b6846839e9bfe3343b4aa4","multiline":false,"placeholders":["model"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_session_model_removed"
 msgstr ""
 
 #. English: Reloaded settings. No agent is active.
@@ -256,6 +295,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"7040f85acfcd2b955c4e48ea673c126992861e14f83be8310b14a60dd4610acf","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_superseded"
+msgstr ""
+
+#. English: Agent '{parent}' references '{child}'. Its tool '{tool}' is
+#. unavailable.
+#. chrys-meta={"fingerprint":"626b21d01e2470451feb473f9a1e4c6e2b12ea03b21f6d73810e34dc93ece503","multiline":false,"placeholders":["child","parent","tool"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_unavailable_child"
 msgstr ""
 
 #. English: Model profile is unavailable: {model}
@@ -708,6 +754,61 @@ msgstr ""
 #. chrys-meta={"fingerprint":"7380a14158de43235291f346b97600028ee3949d0b06f827bbcc6c4e2066670c","multiline":false,"placeholders":["locale"]}
 #: src/chrys/orchestration/startup.py
 msgid "i18n.catalog_load_failed"
+msgstr ""
+
+#. English: Reloaded agent and model profile definitions.
+#. chrys-meta={"fingerprint":"e4cbc2b8a17979fc36c60f27fa9f453e43f5437624a290c4cf75a334eabc4462","multiline":false,"placeholders":[]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_changed"
+msgstr ""
+
+#. English: Cannot list {path}. The profile directories were not reloaded.
+#. chrys-meta={"fingerprint":"80df279c6cc31a695cde05f5013ea6ef19535804fabcdb3f3242151204beee1c","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_directory_failed"
+msgstr ""
+
+#. English: Profile files already changed: {changes}
+#. chrys-meta={"fingerprint":"3a2f58e1358588eff3a1f8f5405f8318308b76854915c28ee09ff561f6640c03","multiline":false,"placeholders":["changes"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_disk_changes"
+msgstr ""
+
+#. English: The profile file changed before it could be normalized: {path}
+#. chrys-meta={"fingerprint":"da22e1c5660a410005be3c74343f16398ea993bcc1415eaebdbddc664a350137","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_file_changed"
+msgstr ""
+
+#. English: Could not register {path} under its profile name. Check for a
+#. conflicting filename.
+#. chrys-meta={"fingerprint":"b935617d374b4625150dbd57eddc085e07f248fde500d30e6440a46f8c8e5b82","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_file_conflict"
+msgstr ""
+
+#. English: Skipped invalid or unreadable profile files: {paths}
+#. chrys-meta={"fingerprint":"7fb9500ed342974da5b9e7ef5726c2290f2ba7283a90e8af849b055217e88ef3","multiline":false,"placeholders":["paths"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_invalid"
+msgstr ""
+
+#. English: Kept the last loaded version of these profile files: {paths}
+#. chrys-meta={"fingerprint":"99bc4cd5c9a2cfa476a18c3b3dcb229c876ee198cb13de749eb8edb36cbdb163","multiline":false,"placeholders":["paths"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_kept"
+msgstr ""
+
+#. English: Could not normalize {path}: {reason}
+#. chrys-meta={"fingerprint":"d6f93c1cce42a4b1beda38b793de8a31078a6ac3220f4c8dd3bfcc79de255fc3","multiline":false,"placeholders":["path","reason"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_normalize_failed"
+msgstr ""
+
+#. English: Profiles changed while reloading. Run /reload again.
+#. chrys-meta={"fingerprint":"9b3edeceec8b2a992b02606c80921b2b0857ea5899816286d2b9497550917f87","multiline":false,"placeholders":[]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_stale"
 msgstr ""
 
 #. English: Images cannot be added while the agent is responding.  Wait for the
@@ -7917,10 +8018,10 @@ msgstr ""
 msgid "tui.man.options.supports_subcommands"
 msgstr ""
 
-#. English: Read settings from disk and rebuild the current agent with its
-#. memory and skills. Run this command when the current turn or workflow has
-#. finished.
-#. chrys-meta={"fingerprint":"0fd3667c9c720ead219650ca75f209e598136f8e340d044e8a83df379a988cce","multiline":false,"placeholders":[]}
+#. English: Read settings, agent profiles and model profiles from disk, then
+#. rebuild the current agent with its memory and skills. Run this command when
+#. the current turn or workflow has finished.
+#. chrys-meta={"fingerprint":"634b77fcd4699faca3e242622bcfaa489c9d1b9ae28c435f2cdb442f05311da1","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.reload.body"
 msgstr ""
@@ -11924,8 +12025,8 @@ msgstr ""
 msgid "tui.sidebar.toc.empty"
 msgstr ""
 
-#. English: Reload settings, memory and skills
-#. chrys-meta={"fingerprint":"a19fead565aeb839f663474424edf0aa52062da7ecfd843212628865f845370a","multiline":false,"placeholders":[]}
+#. English: Reload settings, profiles, memory and skills
+#. chrys-meta={"fingerprint":"80b3dad672449d72de7dda9021a4c3bca3acdf8187c4a1c81f98d86c6856d85c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.slash.reload_description"
 msgstr ""

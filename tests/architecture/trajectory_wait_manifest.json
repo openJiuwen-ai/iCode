@@ -824,11 +824,17 @@
       "AgentLoader._cleanup_replaced_build_resources": [
         ["awaitable", "await old_prepared.aclose()", "unresolved"]
       ],
-      "AgentLoader._install_candidate": [
+      "AgentLoader._discard_candidate": [
         ["wrapper", "await self.release(ReplacedBuild(loaded=completed.loaded, coordinator=coordinator if coordinator is not self._session.mutation_coordinator else None))", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.release"]
       ],
+      "AgentLoader._install_candidate": [
+        ["wrapper", "await finish_close(asyncio.create_task(asyncio.to_thread(profiles.normalize)))", "unresolved", "chrys.foundation.util.once_close.finish_close"],
+        ["thread_pool", "asyncio.to_thread(profiles.normalize)", "unresolved"],
+        ["wrapper", "await self._discard_candidate(completed)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._discard_candidate"],
+        ["wrapper", "await self._discard_candidate(completed)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._discard_candidate"]
+      ],
       "AgentLoader.build": [
-        ["wrapper", "await construction.build_agent(self._profile_with_mcp_overlay(profile), staged=staged, preserved_history=preserved_history, build_agent_fn=self._build_agent_fn, session=self._session, persistence=self._persistence, bus=self._bus, agent_registry=self._agent_registry, model_registry=self._model_registry, workspace_change_tracker=self._workspace_change_tracker, turn_state=self._turn_state, turn_context=self._turn_context, mcp_cache=self._mcp_cache, allow_user_interaction=self._allow_user_interaction, checkpoints=self._checkpoints, usage_publisher=self._usage_publisher, fire_pre_compact=self._hooks.fire_pre_compact, publish_load_progress=self.publish_load_progress, hold_injection_notification=self.hold_injection_notification)", "unresolved", "chrys.orchestration.engine.build.construction.build_agent"]
+        ["wrapper", "await construction.build_agent(self._profile_with_mcp_overlay(profile), staged=staged, preserved_history=preserved_history, build_agent_fn=self._build_agent_fn, session=self._session, persistence=self._persistence, bus=self._bus, agent_registry=profiles.agents if profiles is not None else self._agent_registry, model_registry=profiles.models if profiles is not None else self._model_registry, workspace_change_tracker=self._workspace_change_tracker, turn_state=self._turn_state, turn_context=self._turn_context, mcp_cache=self._mcp_cache, allow_user_interaction=self._allow_user_interaction, checkpoints=self._checkpoints, usage_publisher=self._usage_publisher, fire_pre_compact=self._hooks.fire_pre_compact, publish_load_progress=self.publish_load_progress, hold_injection_notification=self.hold_injection_notification)", "unresolved", "chrys.orchestration.engine.build.construction.build_agent"]
       ],
       "AgentLoader.build_hook_manager": [
         ["awaitable", "await SessionHookFactory(self._bus, confirmations=self._hook_confirmations)(project_root=project_root, project_hooks_enabled=project_hooks_enabled, session_id=resolved_session_id)", "unresolved"]
@@ -1805,10 +1811,14 @@
         ["awaitable", "await self._bus.publish(Error(code='manual_settings_reload_denied', message=format_message(message), display_message=message, session_id=event.session_id))", "unresolved"],
         ["wrapper", "await self._acquire_rebuild_permit_or_publish_error(token, manual=event.manual)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._acquire_rebuild_permit_or_publish_error"],
         ["thread_pool", "await asyncio.to_thread(load_settings, project_root=self._session_project_root(), eval_context=self._reload_eval_context(), **pins)", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(profiles.scan)", "unresolved"],
         ["awaitable", "await self._bus.publish(dataclasses.replace(warning, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Warning(code='settings_restart_required', message=format_message(display_message), display_message=display_message, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='manual_settings_reload_failed' if event.manual else 'settings_reload_failed', message=str(exc), display_message=exc.display if isinstance(exc, ConfigError) else None, session_id=token.session_id))", "unresolved"],
         ["wrapper", "await self._start_or_restart_with_permit(permit, profile_for_restart, operation='settings_reload', staged_loaded=loaded, session=session)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._start_or_restart_with_permit"],
+        ["wrapper", "await finish_close(asyncio.create_task(asyncio.to_thread(profiles.normalize)))", "unresolved", "chrys.foundation.util.once_close.finish_close"],
+        ["thread_pool", "asyncio.to_thread(profiles.normalize)", "unresolved"],
+        ["awaitable", "await self._bus.publish(Error(code='manual_settings_reload_failed', message=str(exc), display_message=exc.display, display_hint=exc.display_hint or (profiles.changes_hint() if profiles is not None else None), session_id=token.session_id))", "unresolved"],
         ["wrapper", "await self._publish_settings_reloaded(tuple(report))", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_settings_reloaded"]
       ],
       "RuntimeControls.on_workspace_change": [
