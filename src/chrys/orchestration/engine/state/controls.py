@@ -41,8 +41,15 @@ from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.util.once_close import finish_close
+from chrys.orchestration.engine.reload_resources import (
+    ReloadResources,
+    hook_trust_failure,
+    hooks_kept_report,
+    mcp_refresh_report,
+)
 from chrys.orchestration.engine.state.active_session import session_pin_overrides
 from chrys.orchestration.engine.state.lifecycle_permits import RebuildControlToken, RebuildPermit, RebuildPermitDenied
+from chrys.orchestration.session_hooks import read_hooks_strict
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.agents.registry import resolve_launch_profile
 from chrys.service.profiles.models.resolver import (
@@ -70,7 +77,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_RELOAD_DONE = msg("controls.reload_done", fallback="Reloaded settings, profiles, memory and skills.")
+_RELOAD_DONE = msg(
+    "controls.reload_done", fallback="Reloaded settings, profiles, memory, skills, hooks and MCP servers."
+)
 _RELOAD_SETTINGS_ONLY = msg("controls.reload_settings_only", fallback="Reloaded settings. No agent is active.")
 _RELOAD_UNKNOWN_THEME = msg("controls.reload_unknown_theme", fallback="Theme '{theme}' is unavailable in this session.")
 _RELOAD_NEXT_LAUNCH = msg("controls.reload_next_launch", fallback="Applies next launch: {keys}")
@@ -687,6 +696,7 @@ class RuntimeControls:
 
         report: list[MessageRef] = []
         profiles = None
+        resources: ReloadResources | None = None
         kept_model = False
         old_effective = self._settings_handle.loaded
         old_loaded = self._settings_handle.base
@@ -794,6 +804,21 @@ class RuntimeControls:
                             "Active profile '%s' missing from registry during settings reload; reusing current profile.",
                             profile_for_restart.name,
                         )
+                if event.manual and profile_for_restart is not None:
+                    hooks = await asyncio.to_thread(
+                        read_hooks_strict,
+                        project_root=str(self._session_project_root()),
+                        project_hooks_enabled=loaded.settings.project_hooks_enabled,
+                    )
+                    if hooks.problems:
+                        # Rules read under the old trust setting cannot stand in for the new
+                        # one, so this reload as a whole changes nothing.
+                        rules_in_force = self._session.hook_manager is not None
+                        was_trusted = old_loaded.settings.project_hooks_enabled
+                        if loaded.settings.project_hooks_enabled != was_trusted:
+                            raise ConfigValueError(hook_trust_failure(hooks.problems, project_hooks_loaded=was_trusted))
+                        report.append(hooks_kept_report(hooks.problems, rules_in_force=rules_in_force))
+                    resources = ReloadResources(hooks)
             except Exception as exc:
                 # A failing load (an unreadable settings file, say) aborts *before*
                 # the rebuild publishes any completion event. The bus swallows
@@ -826,6 +851,8 @@ class RuntimeControls:
             if profile_for_restart is not None:
                 if profiles is not None:
                     self._permits.stage_profiles(permit, profiles)
+                if resources is not None:
+                    self._permits.stage_reload_resources(permit, resources)
                 await self._start_or_restart_with_permit(
                     permit,
                     profile_for_restart,
@@ -833,6 +860,8 @@ class RuntimeControls:
                     staged_loaded=loaded,
                     session=session,
                 )
+                if resources is not None:
+                    report.extend(mcp_refresh_report(resources.mcp))
                 if (
                     old_loaded.settings.workspace_change_notice
                     and not self._settings_handle.settings.workspace_change_notice

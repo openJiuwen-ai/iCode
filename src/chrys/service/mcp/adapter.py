@@ -857,6 +857,7 @@ class MCPAdapter:
             except MCPToolConfigurationError:
                 raise
             except MCPConnectionError as exc:
+                self._cache.note_connect_failure(config, exc)
                 await self._publish_failure(exc)
                 failed += 1
                 if progress is not None:
@@ -865,6 +866,7 @@ class MCPAdapter:
             except Exception as exc:
                 err = MCPConnectionError(config.name, config.transport, exc)
                 self._failures[config.name] = err
+                self._cache.note_connect_failure(config, err)
                 await self._publish_failure(err)
                 failed += 1
                 if progress is not None:
@@ -1002,7 +1004,8 @@ class MCPAdapter:
             err.cause,
             exc_info=err.cause,
         )
-        if self._bus is None:
+        # A refresh's own report names this failure, without the server's stderr.
+        if self._bus is None or self._cache.refreshing:
             return
         from chrys.foundation.events.types import Warning as WarningEvent
 

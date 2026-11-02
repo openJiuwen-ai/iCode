@@ -40,7 +40,7 @@ from chrys.orchestration.engine.hook_reporting import wire_hook_reporting
 from chrys.orchestration.engine.state.machine import Trigger
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
 from chrys.orchestration.invoker.resources import PreparedAgent
-from chrys.orchestration.session_hooks import SessionHookFactory
+from chrys.orchestration.session_hooks import SessionHookFactory, hooks_unchanged
 from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
 from chrys.service.mcp.cache import MCPConnectionCache
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.events.types import RuntimeSkillDetails
+    from chrys.orchestration.engine.reload_resources import ReloadResources
     from chrys.orchestration.engine.run.turn_hooks import TurnHookDispatcher
     from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
     from chrys.orchestration.engine.state.active_session import ActiveSession
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.state.machine import EngineStateMachine
     from chrys.orchestration.engine.state.session_writer import RecoveryCheckpoints
     from chrys.orchestration.engine.usage import UsagePublisher
+    from chrys.orchestration.session_hooks import StrictHooks
     from chrys.service.approval.turn_context import TurnContextHolder
     from chrys.service.hooks.confirmation import HookConfirmationService
     from chrys.service.hooks.manager import HookManager
@@ -257,6 +259,9 @@ class AgentLoader:
         workspace: Workspace | None,
     ) -> HookManager | None:
         """Construct the hook candidate when the caller's replacement decision requires it."""
+        resources = self._permits.staged_reload_resources()
+        if resources is not None:
+            return self._reloaded_hook_manager(resources.hooks)
         old_hook_manager = self._session.hook_manager
         hook_manager = old_hook_manager
         if old_hook_manager is None or operation == "workspace_change":
@@ -335,6 +340,48 @@ class AgentLoader:
             wire_hook_reporting(manager, self._bus, session_id=resolved_session_id or "", run_log=self._hook_runs)
         return manager
 
+    def _reloaded_hook_manager(self, hooks: StrictHooks) -> HookManager | None:
+        """The manager a manual reload runs on: the live one unless a complete read says otherwise.
+
+        Keeping the same manager is what lets running asynchronous hooks and
+        in-flight checks finish: retiring one interrupts them.
+        """
+        old = self._session.hook_manager
+        # With nothing running (a failed first build) no rule is at stake, and what could be read still applies.
+        if (hooks.problems and old is not None) or hooks_unchanged(old, hooks.merged):
+            return old
+        factory = SessionHookFactory(self._bus, confirmations=self._hook_confirmations)
+        manager = factory.manager_for(hooks.merged)
+        if manager is not None:
+            manager.trajectory_context_provider = self._trajectory_recorder.context
+            wire_hook_reporting(manager, self._bus, session_id=self._session.session_id or "", run_log=self._hook_runs)
+        return manager
+
+    async def _commit_mcp_refresh(self) -> None:
+        """Settle a manual reload's connections; a cancelled waiter never leaves them half settled."""
+        resources = self._permits.staged_reload_resources()
+        if resources is None or not self._mcp_cache.refreshing:
+            return
+
+        async def commit(into: ReloadResources) -> None:
+            into.mcp = await self._mcp_cache.commit_refresh()
+
+        await finish_close(asyncio.create_task(commit(resources)))
+
+    async def _settle_failed_build(
+        self, *, old: HookManager | None, staged: HookManager | None, retire_staged_hooks: bool = True
+    ) -> None:
+        """Drop what a failed build opened, leaving the connections and hooks the live runtime holds."""
+        try:
+            if self._mcp_cache.refreshing:
+                await finish_close(asyncio.create_task(self._mcp_cache.abort_refresh()))
+        finally:
+            try:
+                if retire_staged_hooks:
+                    await self.settle_staged_hook_manager(old=old, staged=staged)
+            finally:
+                self._permits.finish_agent_load()
+
     def start_outbox_recovery(self) -> None:
         """Start durable outbox recovery for the current hook manager if needed."""
         if self._session.hook_manager is None or self._session.outbox_recovery_task is not None:
@@ -369,7 +416,10 @@ class AgentLoader:
         """Retire the old hook manager after a replacement executor is installed."""
         await self.cancel_outbox_recovery()
         await _close_replaced_hook_manager(old_hook_manager)
-        self.start_outbox_recovery()
+        # A manual reload replaces a manager this process is still running: its durable jobs
+        # are in flight, and recovery would take them for a dead process's and start them again.
+        if old_hook_manager is None or self._permits.staged_reload_resources() is None:
+            self.start_outbox_recovery()
 
     async def settle_staged_hook_manager(
         self,
@@ -433,19 +483,22 @@ class AgentLoader:
                 workspace=workspace,
                 hook_manager=hook_manager,
             )
+            if self._permits.staged_reload_resources() is not None:
+                self._mcp_cache.begin_refresh()
             completed = await self.build(profile, staged)
             replaced = await self._install_candidate(completed)
-            await self.release(replaced)
+            try:
+                await self._commit_mcp_refresh()
+            finally:
+                await self.release(replaced)
             self._fsm.try_transition(Trigger.START)
             self._register_current_engine()
         except Exception as exc:
-            await self.settle_staged_hook_manager(old=old_hook_manager, staged=hook_manager)
-            self._permits.finish_agent_load()
+            await self._settle_failed_build(old=old_hook_manager, staged=hook_manager)
             await self.publish_load_failed(operation=operation, profile=profile, exc=exc)
             raise
         except BaseException:
-            await self.settle_staged_hook_manager(old=old_hook_manager, staged=hook_manager)
-            self._permits.finish_agent_load()
+            await self._settle_failed_build(old=old_hook_manager, staged=hook_manager)
             raise
 
         # The build committed, so the profiles this session opened with are the
@@ -603,6 +656,7 @@ class AgentLoader:
         old_hook_manager = self._session.hook_manager
         staged_hook_manager = old_hook_manager
         new_loaded = staged_loaded if staged_loaded is not None else self._settings_handle.base
+        resources = self._permits.staged_reload_resources()
         # Project hooks are primary-cwd scoped and gated by ``project.hooks_enabled``:
         # a new primary cwd or a flipped gate rebuilds the manager for the root
         # the build is about to install (the live one when the workspace stays).
@@ -665,7 +719,10 @@ class AgentLoader:
                         },
                     )
 
-            if reload_hook_manager:
+            if resources is not None:
+                staged_hook_manager = self._reloaded_hook_manager(resources.hooks)
+                self._mcp_cache.begin_refresh()
+            elif reload_hook_manager:
                 staged_hook_manager = await self.build_hook_manager(
                     project_root=hook_manager_root,
                     project_hooks_enabled=new_loaded.settings.project_hooks_enabled,
@@ -690,7 +747,10 @@ class AgentLoader:
                 preserved_history=preserved_state,
             )
             replaced = await self._install_candidate(completed)
-            await self.release(replaced)
+            try:
+                await self._commit_mcp_refresh()
+            finally:
+                await self.release(replaced)
             if staged_hook_manager is not old_hook_manager:
                 await self.commit_hook_manager_replacement(old_hook_manager)
                 hook_manager_replacement_committed = True
@@ -751,15 +811,19 @@ class AgentLoader:
             # back: a pre-commit failure left every live field untouched, and a
             # post-commit failure keeps the committed build. Only the losing
             # hook manager still needs retiring.
-            if not hook_manager_replacement_committed:
-                await self.settle_staged_hook_manager(old=old_hook_manager, staged=staged_hook_manager)
-            self._permits.finish_agent_load()
+            await self._settle_failed_build(
+                old=old_hook_manager,
+                staged=staged_hook_manager,
+                retire_staged_hooks=not hook_manager_replacement_committed,
+            )
             await self.publish_load_failed(operation=operation, profile=new_profile, exc=exc)
             raise
         except BaseException:
-            if not hook_manager_replacement_committed:
-                await self.settle_staged_hook_manager(old=old_hook_manager, staged=staged_hook_manager)
-            self._permits.finish_agent_load()
+            await self._settle_failed_build(
+                old=old_hook_manager,
+                staged=staged_hook_manager,
+                retire_staged_hooks=not hook_manager_replacement_committed,
+            )
             raise
 
         message_count = len(preserved_state.get("messages", [])) if preserved_state else 0

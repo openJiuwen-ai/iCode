@@ -29,6 +29,8 @@ After editing settings manually, save the file and run `/reload` while the TUI i
 
 The same reload scans the agent and model profile directories. A newly added model can be selected in the same edit. If an existing profile file is invalid, iCode keeps its last loaded definition and names the file. If you rename an agent, iCode moves its file to match the new name after the replacement builds successfully. It also fills in missing agent IDs and removes references to the retired Plan agent when appropriate. If you add or remove a same-name override for the active built-in agent, `/reload` keeps that agent selected even if the override has its own ID. Removing a custom active agent selects an available launch agent. Removing the selected model selects another available model. If no model can take over, the current runtime stays available. A failed file migration reports which files were already changed so you can correct the problem and retry.
 
+The reload also reads your [hooks](../guides/extensions/hooks.md#apply-edits-with-reload) again and [reconnects MCP servers](../guides/extensions/mcp.md#reconnect-with-reload).
+
 ## Settings keys
 
 In the tables, “None” means there is no corresponding environment variable, and “Unset” means the key has no saved value (it is omitted or left empty). For general rules on writing values and handling invalid values, see [Value syntax and invalid values](#value-syntax-and-invalid-values).

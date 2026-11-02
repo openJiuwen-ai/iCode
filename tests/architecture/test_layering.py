@@ -1782,6 +1782,14 @@ def test_background_tasks_have_declared_owners() -> None:
             1,
             "the candidate build drains profile normalization with finish_close before installing or discarding it",
         ),
+        ("loader", "AgentLoader", "_commit_mcp_refresh"): (
+            1,
+            "a manual reload's connection commit, drained with finish_close before the reload goes on",
+        ),
+        ("loader", "AgentLoader", "_settle_failed_build"): (
+            1,
+            "a failed reload's connection abort, drained with finish_close before the hook manager settles",
+        ),
         ("loader", "AgentLoader", "start_outbox_recovery"): (1, "session outbox recovery task"),
         ("run/coordinator", "TurnCoordinator", "_admit_user_message"): (2, "execution lease run task"),
         ("run/retry", "RetryCoordinator", "_handle_user_retry"): (2, "execution lease run task"),

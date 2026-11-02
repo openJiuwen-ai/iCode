@@ -21,6 +21,7 @@ _RELOAD_DRAIN_CANCELLED = msg(
 )
 
 if TYPE_CHECKING:
+    from chrys.orchestration.engine.reload_resources import ReloadResources
     from chrys.service.profiles.reload import ProfileReload
 
 RebuildPermitDeniedReason = Literal["shutdown", "session_changed", "superseded", "load_active", "busy", "not_ready"]
@@ -77,6 +78,7 @@ class LifecyclePermits:
         self._rebuild_gate_lock = asyncio.Lock()
         self._next_rebuild_permit_id = 1
         self._staged_profiles: ProfileReload | None = None
+        self._staged_reload_resources: ReloadResources | None = None
         self._active_rebuild_permit_id: int | None = None
         self._active_rebuild_permit_owner: str | None = None
         self._active_rebuild_permit_task: asyncio.Task[Any] | None = None
@@ -398,12 +400,21 @@ class LifecyclePermits:
     def staged_profiles(self) -> ProfileReload | None:
         return self._staged_profiles if self.current_task_owns_rebuild_permit() else None
 
+    def stage_reload_resources(self, permit: RebuildPermit, resources: ReloadResources) -> None:
+        """Mark the owning rebuild as a manual reload, until it releases the permit."""
+        self.ensure_rebuild_permit(permit)
+        self._staged_reload_resources = resources
+
+    def staged_reload_resources(self) -> ReloadResources | None:
+        return self._staged_reload_resources if self.current_task_owns_rebuild_permit() else None
+
     def release_rebuild_permit(self, permit: RebuildPermit) -> None:
         """Release a serialized rebuild permit and reopen prompt admission."""
         if self._active_rebuild_permit_id != permit.permit_id:
             return
         self._turn_state.lease.reopen_prompt_admission_after_rebuild(permit.owner)
         self._staged_profiles = None
+        self._staged_reload_resources = None
         self._active_rebuild_permit_id = None
         self._active_rebuild_permit_owner = None
         self._active_rebuild_permit_task = None

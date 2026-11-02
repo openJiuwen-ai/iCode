@@ -202,8 +202,8 @@ msgstr ""
 msgid "controls.reload_busy"
 msgstr ""
 
-#. English: Reloaded settings, profiles, memory and skills.
-#. chrys-meta={"fingerprint":"6085b1e097c4d4c5316175770d93bf63479e07593173a097e9982df493e11cb7","multiline":false,"placeholders":[]}
+#. English: Reloaded settings, profiles, memory, skills, hooks and MCP servers.
+#. chrys-meta={"fingerprint":"f2378170f880e978ac08f4909291db0ee3e8af8e60413dd38dd0cee5fe588eaf","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_done"
 msgstr ""
@@ -221,6 +221,34 @@ msgstr ""
 msgid "controls.reload_drain_failed"
 msgstr ""
 
+#. English: Reload stopped: the hooks the new project trust setting needs can't
+#. be used. {detail} Settings and hooks stay as they were, with project hooks
+#. still loaded.
+#. chrys-meta={"fingerprint":"6c046aaeb3be103e7340a9bf62d5ad06359c3a76b0a21d842348b24fe608fc35","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hook_trust_failed_loaded"
+msgstr ""
+
+#. English: Reload stopped: the hooks the new project trust setting needs can't
+#. be used. {detail} Settings and hooks stay as they were, with project hooks
+#. still not loaded.
+#. chrys-meta={"fingerprint":"43d62042627309f1d98fc56b9f0b0547c2b98cd1d05cf09a73bde3b73c1fc8ba","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hook_trust_failed_not_loaded"
+msgstr ""
+
+#. English: Hooks were not updated; the previous rules stay in effect. {detail}
+#. chrys-meta={"fingerprint":"aabb75f0f22eb539222b8d19f7751517d251f21e6dcb061bdb59e498af8eadf1","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hooks_kept"
+msgstr ""
+
+#. English: Some hooks could not be loaded; the rest are in effect. {detail}
+#. chrys-meta={"fingerprint":"64bc23e763bd56e147207a897fef68f65cb588294a216e9dc24bd6a84a8f1b09","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hooks_partly_loaded"
+msgstr ""
+
 #. English: Kept the current model: '{model}' is unavailable. Check the model
 #. profile file and run /reload again.
 #. chrys-meta={"fingerprint":"ec978a9242efbf79d6a2e1329e25a1dee86930387f1237978292c020550c66d1","multiline":false,"placeholders":["model"]}
@@ -232,6 +260,19 @@ msgstr ""
 #. chrys-meta={"fingerprint":"941008e0342e2bec5449cd2d2abb28d6c598f5d7f813ab8918179cd5a24befd0","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_loading"
+msgstr ""
+
+#. English: MCP server '{server}': reconnect failed, using the existing
+#. connection. {detail}
+#. chrys-meta={"fingerprint":"71163ce56e31c2b24dbcdd0815bf854839b5ba1427839d6f3fde1acb33453f93","multiline":false,"placeholders":["detail","server"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_mcp_kept"
+msgstr ""
+
+#. English: MCP server '{server}' is unavailable: {detail}
+#. chrys-meta={"fingerprint":"ffb865a515a9b4e1930c2352e5faa55f1fa833f1db7fec067949a8d17db6fb38","multiline":false,"placeholders":["detail","server"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_mcp_unavailable"
 msgstr ""
 
 #. English: Agent '{agent}' references missing model '{missing}'. Using
@@ -8018,10 +8059,10 @@ msgstr ""
 msgid "tui.man.options.supports_subcommands"
 msgstr ""
 
-#. English: Read settings, agent profiles and model profiles from disk, then
-#. rebuild the current agent with its memory and skills. Run this command when
-#. the current turn or workflow has finished.
-#. chrys-meta={"fingerprint":"634b77fcd4699faca3e242622bcfaa489c9d1b9ae28c435f2cdb442f05311da1","multiline":false,"placeholders":[]}
+#. English: Read settings, agent profiles, model profiles and hooks from disk,
+#. reconnect MCP servers, then rebuild the current agent with its memory and
+#. skills. Run this command when the current turn or workflow has finished.
+#. chrys-meta={"fingerprint":"ece547f48854d5d7d6eb07ae17c72828ee186ffc46bac3ba32ebb795b9e6f788","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.reload.body"
 msgstr ""
@@ -12025,8 +12066,8 @@ msgstr ""
 msgid "tui.sidebar.toc.empty"
 msgstr ""
 
-#. English: Reload settings, profiles, memory and skills
-#. chrys-meta={"fingerprint":"80b3dad672449d72de7dda9021a4c3bca3acdf8187c4a1c81f98d86c6856d85c","multiline":false,"placeholders":[]}
+#. English: Reload settings, profiles, memory, skills, hooks and MCP servers
+#. chrys-meta={"fingerprint":"9f13c84786c318cc15399801329121a44dbd02d6ec61b6568b33a1f8064787a2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.slash.reload_description"
 msgstr ""

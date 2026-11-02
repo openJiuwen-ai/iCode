@@ -101,10 +101,12 @@ _DESCRIPTION_MODELS = msg(
 )
 _DESCRIPTION_BUDDY = msg("tui.commands.description.buddy", fallback="Hatch, pet and look after your buddy")
 _DESCRIPTION_AGENTS = msg("tui.commands.description.agents", fallback="Manage agent configs")
-_DESCRIPTION_RELOAD = msg("tui.slash.reload_description", fallback="Reload settings, profiles, memory and skills")
+_DESCRIPTION_RELOAD = msg(
+    "tui.slash.reload_description", fallback="Reload settings, profiles, memory, skills, hooks and MCP servers"
+)
 _MAN_RELOAD = msg(
     "tui.man.reload.body",
-    fallback="Read settings, agent profiles and model profiles from disk, then rebuild the current agent with its memory and skills. Run this command when the current turn or workflow has finished.",
+    fallback="Read settings, agent profiles, model profiles and hooks from disk, reconnect MCP servers, then rebuild the current agent with its memory and skills. Run this command when the current turn or workflow has finished.",
 )
 _DESCRIPTION_RUNTIME = msg(
     "tui.commands.description.runtime",

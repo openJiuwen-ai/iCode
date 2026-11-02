@@ -610,8 +610,13 @@ async def test_settings_reload_survives_one_invalid_env_value(
 async def test_manual_reload_next_provider_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine, style: str
 ) -> None:
-    """Compare requests from identical history, then change memory and skills independently."""
+    """Compare requests from identical history, then change memory and skills independently.
+
+    The agent has a real MCP server and hooks file: the reload reconnects the one and reads the other,
+    and neither may show in the request or disturb the running hooks when nothing was edited.
+    """
     import json
+    import sys
     from unittest.mock import create_autospec
 
     import httpx
@@ -621,7 +626,7 @@ async def test_manual_reload_next_provider_request(
     from chrys.orchestration.startup import bootstrap_runtime
     from chrys.service.agent_middleware.reminders.turn_line import TurnLineSource
     from chrys.service.llm import clients
-    from chrys.service.profiles.agents.schema import MemoryConfig
+    from chrys.service.profiles.agents.schema import MCPServerConfig, MemoryConfig
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from tests.support.waiting import await_run_task_chain
 
@@ -650,6 +655,28 @@ async def test_manual_reload_next_provider_request(
     )
     profile = _profile()
     profile.memory = MemoryConfig(files=["AGENTS.md"])
+    mcp_state = tmp_path / "mcp-state"
+    mcp_state.mkdir()
+    (mcp_state / "instructions").write_text("manual-reload-server-instructions", encoding="utf-8")
+    probe_server = Path(__file__).parents[2] / "support" / "mcp_reload_probe_server.py"
+    profile.tools.mcp = [
+        MCPServerConfig(
+            name="probe-server",
+            transport="stdio",
+            command=sys.executable,
+            args=[str(probe_server), "--state-dir", str(mcp_state)],
+        )
+    ]
+    hooks_file = path.parent / "hooks" / "hooks.json"
+    hooks_file.parent.mkdir(parents=True)
+    hook = {
+        "id": "never-matches",
+        "event": "before_tool_call",
+        "run": {"type": "command", "argv": [sys.executable, "-c", "pass"]},
+        "execution": {"mode": "blocking", "timeout_seconds": 30},
+        "match": {"tool_name": "no_such_tool"},
+    }
+    hooks_file.write_text(json.dumps({"version": 1, "hooks": [hook]}), encoding="utf-8")
     sent: list[bytes] = []
 
     def reply(request: httpx.Request) -> httpx.Response:
@@ -715,7 +742,12 @@ async def test_manual_reload_next_provider_request(
             manual = SettingsReload(manual=True, session_id=engine.session.session_id)
             await ask(engine, "first turn")
             if reload_first:
+                hook_manager = engine.session.hook_manager
+                assert hook_manager is not None
+                connects = len((mcp_state / "starts").read_text(encoding="utf-8").split())
                 await engine.event_bus.publish(manual, raise_handler_errors=True)
+                assert engine.session.hook_manager is hook_manager
+                assert len((mcp_state / "starts").read_text(encoding="utf-8").split()) == connects + 1
             payloads.append(await ask(engine, "second turn"))
             if reload_first:
                 memory.write_text("manual-reload-memory-two", encoding="utf-8")
@@ -736,6 +768,8 @@ async def test_manual_reload_next_provider_request(
                 assert "reload-example" in [detail.name for detail in details]
                 assert b"reload-example" in await ask(engine, "fourth turn")
         control, refreshed = (json.loads(raw) for raw in payloads)
+        assert b"probe" in payloads[1]
+        assert b"manual-reload-server-instructions" in payloads[1]
         if style == "chat_completions":
             assert payloads[0] == payloads[1]
         else:
@@ -750,6 +784,66 @@ async def test_manual_reload_next_provider_request(
     finally:
         for client in clients_created:
             await client.aclose()
+
+
+async def test_a_reload_after_a_failed_first_build_loads_the_hooks_it_can(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine
+) -> None:
+    import json
+    import sys
+    from unittest.mock import create_autospec
+
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.foundation.i18n.formatting import format_message
+    from chrys.orchestration.engine.build import builder
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
+    path = user_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("model.profile.active: mock-model\nsession.title.auto: false\n", encoding="utf-8")
+    hooks_file = path.parent / "hooks" / "hooks.json"
+    hooks_file.parent.mkdir()
+    rule = {
+        "event": "before_tool_call",
+        "run": {"type": "command", "argv": [sys.executable, "-c", "pass"]},
+        "execution": {"mode": "blocking", "timeout_seconds": 30},
+    }
+    skipped = {**rule, "id": "skipped", "match": {"args": {"path": {"regex": "("}}}}
+    hooks_file.write_text(json.dumps({"version": 1, "hooks": [{**rule, "id": "guard"}, skipped]}), encoding="utf-8")
+    loaded = bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded
+    registry = ModelProfileRegistry()
+    registry.register(ModelProfile(id="mock-model", name="Mock", model_id="model", provider="mock"))
+    profile = _profile()
+    create_client = builder.create_client
+    attempts: list[None] = []
+
+    async def fails_once(*args, **kwargs):
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise RuntimeError("cannot reach the model")
+        return await create_client(*args, **kwargs)
+
+    monkeypatch.setattr(builder, "create_client", create_autospec(create_client, side_effect=fails_once))
+    engine = agent_engine(
+        EventBus(), loaded_settings=loaded, model_registry=registry, agent_registry=_registry(profile)
+    )
+    engine.session.session_id = "abcd01234567"
+    with pytest.raises(RuntimeError):
+        await engine.start(profile, workspace=Workspace.from_cwd(str(tmp_path)))
+    assert engine.session.hook_manager is None
+
+    completions = await capture_events(engine.event_bus, SettingsReloaded)
+    manual = SettingsReload(manual=True, session_id=engine.session.session_id)
+    await engine.event_bus.publish(manual, raise_handler_errors=True)
+
+    manager = engine.session.hook_manager
+    assert manager is not None
+    assert [hook.id for hook in manager.file.hooks] == ["guard"]
+    report = [format_message(line) for line in completions[-1].report]
+    assert [line for line in report if "Some hooks could not be loaded" in line and "skipped" in line]
+    assert not [line for line in report if "previous rules" in line]
 
 
 async def test_manual_model_edit_is_validated_before_installing_or_syncing_the_pointer(

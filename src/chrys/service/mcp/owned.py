@@ -680,6 +680,31 @@ class MCPTool:
         except Exception as ex:
             await self._reconnect_or_raise(ex)
 
+    async def probe_session(self, *, timeout: float) -> str | None:
+        """Ask the current session for one bounded ping, never reconnecting.
+
+        Returns None when that same session answered; a server that does not
+        implement ping answers -32601, which still proves the session is alive.
+        Otherwise returns why the session could not be verified, in text that
+        holds no server-sent content.
+        """
+        from mcp.shared.exceptions import McpError
+
+        session = self.session
+        if session is None or not self.is_connected:
+            return "the connection is closed"
+        try:
+            async with asyncio.timeout(timeout):
+                await session.send_ping()
+        except TimeoutError:
+            return f"no answer to ping within {timeout:g}s"
+        except McpError as exc:
+            if exc.error.code != -32601:
+                return f"ping failed with error {exc.error.code}"
+        except Exception as exc:
+            return f"ping failed ({type(exc).__name__})"
+        return None if self.session is session else "the session was replaced during the check"
+
     async def _reconnect_or_raise(self, ex: BaseException) -> None:
         logger.info("MCP connection invalid or closed. Reconnecting...")
         try:

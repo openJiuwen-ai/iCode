@@ -225,11 +225,11 @@ msgstr "已应用：{keys}"
 msgid "controls.reload_busy"
 msgstr "请等当前回合或工作流结束后再执行 /reload。"
 
-#. English: Reloaded settings, profiles, memory and skills.
-#. chrys-meta={"fingerprint":"6085b1e097c4d4c5316175770d93bf63479e07593173a097e9982df493e11cb7","multiline":false,"placeholders":[]}
+#. English: Reloaded settings, profiles, memory, skills, hooks and MCP servers.
+#. chrys-meta={"fingerprint":"f2378170f880e978ac08f4909291db0ee3e8af8e60413dd38dd0cee5fe588eaf","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_done"
-msgstr "已重新加载设置、智能体与模型配置、记忆和 Skills。"
+msgstr "已重新加载设置、智能体与模型配置、记忆、Skills、钩子和 MCP 服务器。"
 
 #. English: The previous turn was cancelled while settings were waiting to
 #. reload.
@@ -244,6 +244,44 @@ msgstr "等待刷新设置时，上一回合已被取消。"
 msgid "controls.reload_drain_failed"
 msgstr "刷新设置前无法完成上一回合的收尾：{detail}"
 
+#. English: Reload stopped: the hooks the new project trust setting needs can't
+#. be used. {detail} Settings and hooks stay as they were, with project hooks
+#. still loaded.
+#. chrys-meta={"fingerprint":"6c046aaeb3be103e7340a9bf62d5ad06359c3a76b0a21d842348b24fe608fc35","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hook_trust_failed_loaded"
+msgstr ""
+"刷新已停止：新的项目信任设置所需的钩子无法使用。\n"
+"{detail}\n"
+"设置和钩子保持原样，项目钩子仍然加载。"
+
+#. English: Reload stopped: the hooks the new project trust setting needs can't
+#. be used. {detail} Settings and hooks stay as they were, with project hooks
+#. still not loaded.
+#. chrys-meta={"fingerprint":"43d62042627309f1d98fc56b9f0b0547c2b98cd1d05cf09a73bde3b73c1fc8ba","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hook_trust_failed_not_loaded"
+msgstr ""
+"刷新已停止：新的项目信任设置所需的钩子无法使用。\n"
+"{detail}\n"
+"设置和钩子保持原样，项目钩子仍未加载。"
+
+#. English: Hooks were not updated; the previous rules stay in effect. {detail}
+#. chrys-meta={"fingerprint":"aabb75f0f22eb539222b8d19f7751517d251f21e6dcb061bdb59e498af8eadf1","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hooks_kept"
+msgstr ""
+"钩子未更新，原有规则继续生效。\n"
+"{detail}"
+
+#. English: Some hooks could not be loaded; the rest are in effect. {detail}
+#. chrys-meta={"fingerprint":"64bc23e763bd56e147207a897fef68f65cb588294a216e9dc24bd6a84a8f1b09","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hooks_partly_loaded"
+msgstr ""
+"部分钩子无法加载，其余钩子已生效。\n"
+"{detail}"
+
 #. English: Kept the current model: '{model}' is unavailable. Check the model
 #. profile file and run /reload again.
 #. chrys-meta={"fingerprint":"ec978a9242efbf79d6a2e1329e25a1dee86930387f1237978292c020550c66d1","multiline":false,"placeholders":["model"]}
@@ -256,6 +294,19 @@ msgstr "已保留当前模型。“{model}”不可用，请检查模型配置�
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_loading"
 msgstr "请等智能体加载完成后再执行 /reload。"
+
+#. English: MCP server '{server}': reconnect failed, using the existing
+#. connection. {detail}
+#. chrys-meta={"fingerprint":"71163ce56e31c2b24dbcdd0815bf854839b5ba1427839d6f3fde1acb33453f93","multiline":false,"placeholders":["detail","server"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_mcp_kept"
+msgstr "MCP 服务器“{server}”：重连失败，沿用旧连接。{detail}"
+
+#. English: MCP server '{server}' is unavailable: {detail}
+#. chrys-meta={"fingerprint":"ffb865a515a9b4e1930c2352e5faa55f1fa833f1db7fec067949a8d17db6fb38","multiline":false,"placeholders":["detail","server"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_mcp_unavailable"
+msgstr "MCP 服务器“{server}”不可用：{detail}"
 
 #. English: Agent '{agent}' references missing model '{missing}'. Using
 #. '{actual}'.
@@ -8161,13 +8212,13 @@ msgstr "此命令不接受其他选项。"
 msgid "tui.man.options.supports_subcommands"
 msgstr "此命令支持子命令。"
 
-#. English: Read settings, agent profiles and model profiles from disk, then
-#. rebuild the current agent with its memory and skills. Run this command when
-#. the current turn or workflow has finished.
-#. chrys-meta={"fingerprint":"634b77fcd4699faca3e242622bcfaa489c9d1b9ae28c435f2cdb442f05311da1","multiline":false,"placeholders":[]}
+#. English: Read settings, agent profiles, model profiles and hooks from disk,
+#. reconnect MCP servers, then rebuild the current agent with its memory and
+#. skills. Run this command when the current turn or workflow has finished.
+#. chrys-meta={"fingerprint":"ece547f48854d5d7d6eb07ae17c72828ee186ffc46bac3ba32ebb795b9e6f788","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.reload.body"
-msgstr "从磁盘读取设置、智能体和模型配置，并重新加载当前智能体的记忆和 Skills。请在当前回合或工作流结束后执行。"
+msgstr "从磁盘读取设置、智能体和模型配置以及钩子，重新连接 MCP 服务器，然后重新加载当前智能体的记忆和 Skills。请在当前回合或工作流结束后执行。"
 
 #. English: With a title argument, apply it directly as the custom session
 #. title. Without one (or with only whitespace), open the session title editor
@@ -12228,11 +12279,11 @@ msgstr "待办"
 msgid "tui.sidebar.toc.empty"
 msgstr "你的对话将显示在这里"
 
-#. English: Reload settings, profiles, memory and skills
-#. chrys-meta={"fingerprint":"80b3dad672449d72de7dda9021a4c3bca3acdf8187c4a1c81f98d86c6856d85c","multiline":false,"placeholders":[]}
+#. English: Reload settings, profiles, memory, skills, hooks and MCP servers
+#. chrys-meta={"fingerprint":"9f13c84786c318cc15399801329121a44dbd02d6ec61b6568b33a1f8064787a2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.slash.reload_description"
-msgstr "重新加载设置、智能体与模型配置、记忆和 Skills"
+msgstr "重新加载设置、智能体与模型配置、记忆、Skills、钩子和 MCP 服务器"
 
 #. English: Session {session_id} was not found.
 #. chrys-meta={"fingerprint":"a5c2002c8e98be1f6de66c9e7ceb5fd6595b9dcfc1595822cbd0bc7cdf8036c6","multiline":false,"placeholders":["session_id"]}

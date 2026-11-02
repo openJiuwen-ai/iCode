@@ -824,6 +824,12 @@
       "AgentLoader._cleanup_replaced_build_resources": [
         ["awaitable", "await old_prepared.aclose()", "unresolved"]
       ],
+      "AgentLoader._commit_mcp_refresh": [
+        ["wrapper", "await finish_close(asyncio.create_task(commit(resources)))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
+      "AgentLoader._commit_mcp_refresh.commit": [
+        ["awaitable", "await self._mcp_cache.commit_refresh()", "unresolved"]
+      ],
       "AgentLoader._discard_candidate": [
         ["wrapper", "await self.release(ReplacedBuild(loaded=completed.loaded, coordinator=coordinator if coordinator is not self._session.mutation_coordinator else None))", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.release"]
       ],
@@ -832,6 +838,10 @@
         ["thread_pool", "asyncio.to_thread(profiles.normalize)", "unresolved"],
         ["wrapper", "await self._discard_candidate(completed)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._discard_candidate"],
         ["wrapper", "await self._discard_candidate(completed)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._discard_candidate"]
+      ],
+      "AgentLoader._settle_failed_build": [
+        ["wrapper", "await finish_close(asyncio.create_task(self._mcp_cache.abort_refresh()))", "unresolved", "chrys.foundation.util.once_close.finish_close"],
+        ["wrapper", "await self.settle_staged_hook_manager(old=old, staged=staged)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.settle_staged_hook_manager"]
       ],
       "AgentLoader.build": [
         ["wrapper", "await construction.build_agent(self._profile_with_mcp_overlay(profile), staged=staged, preserved_history=preserved_history, build_agent_fn=self._build_agent_fn, session=self._session, persistence=self._persistence, bus=self._bus, agent_registry=profiles.agents if profiles is not None else self._agent_registry, model_registry=profiles.models if profiles is not None else self._model_registry, workspace_change_tracker=self._workspace_change_tracker, turn_state=self._turn_state, turn_context=self._turn_context, mcp_cache=self._mcp_cache, allow_user_interaction=self._allow_user_interaction, checkpoints=self._checkpoints, usage_publisher=self._usage_publisher, fire_pre_compact=self._hooks.fire_pre_compact, publish_load_progress=self.publish_load_progress, hold_injection_notification=self.hold_injection_notification)", "unresolved", "chrys.orchestration.engine.build.construction.build_agent"]
@@ -853,10 +863,11 @@
         ["awaitable", "await self._bus.publish(AgentLoadStarted(operation=operation, to_profile=profile.name, to_display_name=profile.display_name or profile.name, session_id=self._session.session_id))", "unresolved"],
         ["wrapper", "await self.build(profile, staged)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.build"],
         ["wrapper", "await self._install_candidate(completed)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._install_candidate"],
+        ["wrapper", "await self._commit_mcp_refresh()", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._commit_mcp_refresh"],
         ["wrapper", "await self.release(replaced)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.release"],
-        ["wrapper", "await self.settle_staged_hook_manager(old=old_hook_manager, staged=hook_manager)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.settle_staged_hook_manager"],
+        ["wrapper", "await self._settle_failed_build(old=old_hook_manager, staged=hook_manager)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._settle_failed_build"],
         ["wrapper", "await self.publish_load_failed(operation=operation, profile=profile, exc=exc)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.publish_load_failed"],
-        ["wrapper", "await self.settle_staged_hook_manager(old=old_hook_manager, staged=hook_manager)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.settle_staged_hook_manager"],
+        ["wrapper", "await self._settle_failed_build(old=old_hook_manager, staged=hook_manager)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._settle_failed_build"],
         ["wrapper", "await self.commit_hook_manager_replacement(old_hook_manager)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.commit_hook_manager_replacement"],
         ["awaitable", "await self._bus.publish(AgentLoadFinished(operation=operation, agent_profile=profile.name, display_name=profile.display_name or profile.name, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(SessionReady(agent_profile=profile.name, display_name=profile.display_name, model_profile_id=self._current.manifest.active_profile.id if self._current.manifest.active_profile else '', max_context_tokens=self._current.manifest.active_profile.max_context_tokens if self._current.manifest.active_profile else 0, session_id=self._session.session_id, tool_names=list(self._current.manifest.tool_names), tool_kinds=dict(self._current.manifest.tool_kinds), skill_names=list(self._current.manifest.skill_names), sub_agent_tool_names=sub_agent_tool_names, memory_files=list(self._current.manifest.memory_files), runtime_details=copy.deepcopy(self._current.manifest.runtime_details), primary_cwd=self._workspace_cwd(), working_dirs=self._workspace_working_dirs()))", "unresolved"],
@@ -881,12 +892,13 @@
         ["wrapper", "await self.build_hook_manager(project_root=hook_manager_root, project_hooks_enabled=new_loaded.settings.project_hooks_enabled)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.build_hook_manager"],
         ["wrapper", "await self.build(new_profile, staged, preserved_history=preserved_state)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.build"],
         ["wrapper", "await self._install_candidate(completed)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._install_candidate"],
+        ["wrapper", "await self._commit_mcp_refresh()", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._commit_mcp_refresh"],
         ["wrapper", "await self.release(replaced)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.release"],
         ["wrapper", "await self.commit_hook_manager_replacement(old_hook_manager)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.commit_hook_manager_replacement"],
         ["awaitable", "await self._bus.publish(Warning(code='service_session_incompatible', message=f'The previous OpenAI Responses service session is not compatible with the active agent profile, workspace, model profile, service endpoint, or storage is disabled. {APP_DISPLAY_NAME} will continue from local history only.', display_message=_CONSTRUCTION_SERVICE_SESSION_INCOMPATIBLE.bind(app_name=APP_DISPLAY_NAME), session_id=self._session.session_id))", "unresolved"],
-        ["wrapper", "await self.settle_staged_hook_manager(old=old_hook_manager, staged=staged_hook_manager)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.settle_staged_hook_manager"],
+        ["wrapper", "await self._settle_failed_build(old=old_hook_manager, staged=staged_hook_manager, retire_staged_hooks=not hook_manager_replacement_committed)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._settle_failed_build"],
         ["wrapper", "await self.publish_load_failed(operation=operation, profile=new_profile, exc=exc)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.publish_load_failed"],
-        ["wrapper", "await self.settle_staged_hook_manager(old=old_hook_manager, staged=staged_hook_manager)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.settle_staged_hook_manager"],
+        ["wrapper", "await self._settle_failed_build(old=old_hook_manager, staged=staged_hook_manager, retire_staged_hooks=not hook_manager_replacement_committed)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._settle_failed_build"],
         ["awaitable", "await self._bus.publish(AgentLoadFinished(operation=operation, agent_profile=new_profile.name, display_name=new_profile.display_name or new_profile.name, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(ProfileSwitched(from_profile=old_profile_name, to_profile=new_profile.name, from_display_name=old_display_name or old_profile_name, to_display_name=new_profile.display_name or new_profile.name, message_count=message_count, model_profile_id=self._current.manifest.active_profile.id if self._current.manifest.active_profile else '', max_context_tokens=self._current.manifest.active_profile.max_context_tokens if self._current.manifest.active_profile else 0, session_id=self._session.session_id, tool_names=list(self._current.manifest.tool_names), skill_names=list(self._current.manifest.skill_names), sub_agent_tool_names=switched_sub_agent_names, memory_files=list(self._current.manifest.memory_files), runtime_details=copy.deepcopy(self._current.manifest.runtime_details)))", "unresolved"],
         ["awaitable", "await self._trajectory_recorder.profile_switched(kind=ProfileKind.AGENT, from_fingerprint=old_agent_profile_fingerprint, to_fingerprint=self._current.manifest.agent_profile_fingerprint)", "unresolved"],
@@ -1814,6 +1826,7 @@
         ["thread_pool", "await asyncio.to_thread(profiles.scan)", "unresolved"],
         ["awaitable", "await self._bus.publish(dataclasses.replace(warning, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Warning(code='settings_restart_required', message=format_message(display_message), display_message=display_message, session_id=self._session.session_id))", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(read_hooks_strict, project_root=str(self._session_project_root()), project_hooks_enabled=loaded.settings.project_hooks_enabled)", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='manual_settings_reload_failed' if event.manual else 'settings_reload_failed', message=str(exc), display_message=exc.display if isinstance(exc, ConfigError) else None, session_id=token.session_id))", "unresolved"],
         ["wrapper", "await self._start_or_restart_with_permit(permit, profile_for_restart, operation='settings_reload', staged_loaded=loaded, session=session)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._start_or_restart_with_permit"],
         ["wrapper", "await finish_close(asyncio.create_task(asyncio.to_thread(profiles.normalize)))", "unresolved", "chrys.foundation.util.once_close.finish_close"],
@@ -4636,11 +4649,14 @@
         ["future", "await close_task", "unresolved"]
       ],
       "MCPConnectionCache._connect_and_store": [
-        ["wrapper", "await self._open_mcp_tool(effective)", "unresolved", "chrys.service.mcp.cache.MCPConnectionCache._open_mcp_tool"],
+        ["wrapper", "await self._open_marked_tool(effective)", "unresolved", "chrys.service.mcp.cache.MCPConnectionCache._open_marked_tool"],
         ["sync_primitive", "async with self._lock", "unresolved"],
         ["wrapper", "await self._close_tool(config.name, mcp_tool)", "unresolved", "chrys.service.mcp.cache.MCPConnectionCache._close_tool"],
         ["wrapper", "await self._close_tool(config.name, mcp_tool)", "unresolved", "chrys.service.mcp.cache.MCPConnectionCache._close_tool"],
         ["sync_primitive", "async with self._lock", "unresolved"]
+      ],
+      "MCPConnectionCache._open_marked_tool": [
+        ["wrapper", "await self._open_mcp_tool(effective)", "unresolved", "chrys.service.mcp.cache.MCPConnectionCache._open_mcp_tool"]
       ],
       "MCPConnectionCache._open_mcp_tool": [
         ["awaitable", "await mcp_tool.__aenter__()", "unresolved"],
@@ -4648,9 +4664,19 @@
         ["awaitable", "await mcp_tool.__aexit__(None, None, None)", "unresolved"],
         ["awaitable", "await mcp_tool.__aexit__(None, None, None)", "unresolved"]
       ],
+      "MCPConnectionCache._refresh_connection": [
+        ["wrapper", "await self._open_marked_tool(effective)", "unresolved", "chrys.service.mcp.cache.MCPConnectionCache._open_marked_tool"],
+        ["awaitable", "await entry.mcp_tool.probe_session(timeout=SESSION_PROBE_TIMEOUT_SECONDS)", "unresolved"]
+      ],
+      "MCPConnectionCache.abort_refresh": [
+        ["sync_primitive", "async with self._lock", "unresolved"],
+        ["wrapper", "await self._close_untracked_tools(stale)", "unresolved", "chrys.service.mcp.cache.MCPConnectionCache._close_untracked_tools"]
+      ],
       "MCPConnectionCache.acquire": [
         ["sync_primitive", "async with self._lock", "unresolved"],
         ["wrapper", "await self._close_untracked_tools(stale_tools)", "unresolved", "chrys.service.mcp.cache.MCPConnectionCache._close_untracked_tools"],
+        ["sync_primitive", "async with self._lock", "unresolved"],
+        ["shield", "await asyncio.shield(attempt)", "unresolved"],
         ["sync_primitive", "async with self._lock", "unresolved"],
         ["shield", "await asyncio.shield(task)", "unresolved"],
         ["sync_primitive", "async with self._lock", "unresolved"]
@@ -4659,6 +4685,10 @@
         ["sync_primitive", "async with self._lock", "unresolved"],
         ["gather", "await asyncio.gather(*tasks, return_exceptions=True)", "unresolved"],
         ["wrapper", "await self._close_untracked_tools(tools)", "unresolved", "chrys.service.mcp.cache.MCPConnectionCache._close_untracked_tools"]
+      ],
+      "MCPConnectionCache.commit_refresh": [
+        ["sync_primitive", "async with self._lock", "unresolved"],
+        ["wrapper", "await self._close_untracked_tools(stale)", "unresolved", "chrys.service.mcp.cache.MCPConnectionCache._close_untracked_tools"]
       ],
       "MCPConnectionCache.prune_idle": [
         ["sync_primitive", "async with self._lock", "unresolved"],
@@ -4782,6 +4812,10 @@
       "MCPTool.load_tools": [
         ["sync_primitive", "async with self._function_load_lock", "unresolved"],
         ["wrapper", "await self._load_tools_locked()", "unresolved", "chrys.service.mcp.owned.MCPTool._load_tools_locked"]
+      ],
+      "MCPTool.probe_session": [
+        ["timeout", "async with asyncio.timeout(timeout)", "unresolved"],
+        ["awaitable", "await session.send_ping()", "unresolved"]
       ],
       "_expand_mcp_tool": [
         ["awaitable", "await tool_.connect()", "unresolved"]
