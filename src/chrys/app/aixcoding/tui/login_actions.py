@@ -114,9 +114,12 @@ def open_login_dialog(host: LoginActionHost) -> None:
     from chrys.app.aixcoding.tui.login import LoginDialog
 
     def _on_login_success(_account: AccountInfo) -> None:
-        # AIxCoding catalog batch placeholder: start_catalog_sync(immediate=True)
-        # arrives with the catalog migration (design, decision D3).
-        ...
+        # The login changed whose catalog is served: pull one now instead of
+        # waiting out an interval that began before it. Lazy import — the
+        # silent check imports this module on every startup.
+        from chrys.service.aixcoding.catalog import resume_sync_runtime
+
+        resume_sync_runtime()
 
     def _on_login_dismiss(result: object | None) -> None:
         if not isinstance(result, AccountInfo):
@@ -138,8 +141,12 @@ def perform_logout(host: LoginActionHost) -> None:
         host.notify(_NOT_LOGGED_IN_TOAST, severity="warning")
         return
     session.logout()
-    # AIxCoding catalog batch placeholder: stop_catalog_sync() arrives with the
-    # catalog migration (design, decision D3).
+    # A logged-out session has no credential to poll with; stop it so an
+    # in-flight sync cannot publish the logged-out account's catalog. Lazy
+    # import — the silent check imports this module on every startup.
+    from chrys.service.aixcoding.catalog import stop_sync_runtime
+
+    stop_sync_runtime()
     host.notify(_LOGGED_OUT_TOAST)
     host.refresh_login_indicator()
 

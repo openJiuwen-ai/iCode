@@ -376,7 +376,6 @@ def test_every_declared_binding_id_has_matching_registered_provenance() -> None:
         "tui.binding.delete",
         "tui.binding.help",
         "tui.binding.logs",
-        "tui.binding.models",
         "tui.binding.paste",
         "tui.binding.quit",
         "tui.binding.trajectory",
@@ -418,6 +417,8 @@ def test_migrated_bindings_preserve_english_and_keymap_contracts() -> None:
     main_bindings = [binding for binding in main_screen.MainScreen.BINDINGS if binding.id is not None]
     diff_bindings = [binding for binding in diff_screen.DiffScreen.BINDINGS if binding.id is not None]
 
+    # AIxCoding catalog: f4 binding retired — the provenance set and the
+    # keymap contract table drop the models_config entry.
     assert [
         (
             binding.key,
@@ -436,7 +437,6 @@ def test_migrated_bindings_preserve_english_and_keymap_contracts() -> None:
         ("ctrl+t", "shell_to_background", "Move to background", False, None, False, "", False, None),
         ("f1", "sessions", "Sessions", True, None, True, "", False, None),
         ("f2", "agents_config", "Agents", True, None, True, "", False, None),
-        ("f4", "models_config", "Models", True, None, True, "", False, None),
         ("f6", "show_log_viewer", "Logs", True, None, True, "", False, None),
         ("f8", "open_guide", "Help", True, None, True, "", False, None),
         ("f9", "pick_theme", "Themes", True, None, True, "", False, None),

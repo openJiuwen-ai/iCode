@@ -157,6 +157,7 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
 | 内网安装器 | `scripts/install.sh`（433 行，内网制品镜像 + channels + offline 包体系）+ 同族 `install.ps1` / `release/INSTALL.md` / channel 发布约定 | **待裁决（需求侧确认）** | 与上游 install.sh 为平行替代品（无演进关系）。**"废弃"证据不足**（外部评审 F-04）：旧脚本已兼容 `icode-*` 包名（final 后修复）与 PyApp 制品（旧分支已在用）；版本正则接受三段+后缀（覆盖四段）；`release/INSTALL.md` 将内网脚本列为推荐安装渠道（prod/test/Windows）。仅在产品确认取消内网分发体系后方可废弃；若保留，按现制品形态有改动的迁 |
 | skills 共享目录自动加载 | `service/skills/adapter.py` 定制（`~/.aixcoding/skills` + 工作区 `.aixcoding/skills` 自动加载、优先级、`auto_load_aixcoding_*` 开关）+ `agents/schema.py` + 测试 + 中英文文档 | **待分析（本轮未覆盖）** | 外部评审 F-01 发现（属上游 skills 机制的定制扩展，非注释命中之一，证明 908 非纯品牌文案）；新分支 `src/` 产品源码树无 `auto_load_aixcoding`（已核验，复审 R-04 收窄范围）。上游对比与判定随批次启动补做 |
 | 安全护栏（guard hooks） | `app/cli/app.py` 启动自动安装（`guard_install`，fail-open）+ 规则包 + wheel 打包 + 测试 + CI + MANUAL_TESTS | **待分析（本轮未覆盖）** | 外部评审 F-01 发现（属上游 hooks 机制的定制扩展）；**无任何标记命中**（复审 R-02：标记扫描盲区的实例，由功能面核查发现）；新分支 `src/` 产品源码树无 `guard_install`（已核验）。与 D 类历史文档第 9 份（安全护栏 MANUAL_TESTS）同族关联；上游对比与判定随批次启动补做 |
+| **用户指南文档定制化（docs/ 双语树）** | `docs/{en,zh-Hans}/` 整树定制（0.28 final 实测）：新增 start/login、start/what-is-aixcoding、faq、daily-use/build-info、running/aixcoding-serve 等定制指南；删除 external-acp-agents / extensions/shortcuts / reference/opentelemetry / configuration/chat-options / running/terminal-status；`icode-run` / `icode-serve` / `icode-acp` 重命名 `aixcoding-*`；各指南内容定制（如 configuration/models.md 集中管理版："不支持创建模型配置，仅支持切换；模型由管理员分配"） | **待批次启动（后续文档批次；语义参考 0.28 final，按 0.32.2 新结构重做）** | 0.32.2 上游文档结构大幅扩充（如 models.md 由 <1KB 扩为 16-17KB 完整指南），旧定制不可平移；与上游 0.28→0.32 文档自身演进混杂（0.28 final vs 上游现状 diff：75 文件 +2361/-6020，含演进噪音），批次启动时逐份甄别。**文档类定制零 marker 命中**（fork `docs/` 现状零 AIxCoding 标记，属标记扫描盲区、由功能面核查发现——同 F-01 性质）。**文档类待办统一并入本项**；首个并入：catalog-sync 批次 F-6（责任人裁决 2026-11-02）——models.md 双语改写不随 catalog-sync 批次，随本工作项处理 |
 
 ### D. 跟随处理
 
@@ -204,3 +205,9 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
   C1–C5 逐项对比）、F-08 第 9 份文档超出 R1 范围、F-09 处置轴澄清、F-10 三处计数/基线口径
   修正。复审确认 F-01~F-10 处置忠实性（9 项通过 + F-01 部分通过即本轮 R 项）。
   **判定均为建议性质，批次启动时须重新分析、由责任人裁决**（判定口径注见 §4 表前引注）。
+- 2026-11-02（二）：**§4 C 类新增"用户指南文档定制化"工作项**——catalog-sync 批次
+  第三轮评审 F-6 触发（models.md 用户指南与已定稿 UI 形态失真、0.28 final 曾有集中
+  管理定制版——考古盲区实例），顺带考古确认 0.28 final `docs/` 双语树为整树定制
+  （新增/删除/重命名/内容定制，75 文件差异含上游演进噪音）；责任人指示文档类待办
+  统一并入本工作项（首个并入：models.md 双语改写，catalog-sync F-6 裁决留后续
+  文档批次）。

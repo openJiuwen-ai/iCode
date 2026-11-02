@@ -3777,6 +3777,15 @@
         ["awaitable", "await call_next()", "unresolved"]
       ]
     },
+    "chrys.service.aixcoding.catalog": {
+      "fetch_catalog": [
+        ["async_context", "async with httpx.AsyncClient(timeout=timeout)", "unresolved"],
+        ["queue", "await client.get(endpoint, headers=headers)", "unresolved"]
+      ],
+      "sync_catalog": [
+        ["wrapper", "await fetch_catalog(url, timeout=timeout)", "unresolved", "chrys.service.aixcoding.catalog.fetch_catalog"]
+      ]
+    },
     "chrys.service.approval.arbitration": {
       "ApprovalDecisionArbiter.close": [
         ["awaitable", "await self._bus.unsubscribe(ApprovalAutoFulfillBlocked, self._on_blocked)", "unresolved"]

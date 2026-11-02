@@ -732,7 +732,12 @@ async def test_model_config_read_only_hides_mutations_and_does_not_write(tmp_pat
         assert screen.query_one("#mc-cancel", Button).disabled is False
         notice = screen.query_one("#mc-read-only-notice", Static)
         assert notice.display is True
-        assert notice.render().plain == "• Agent is running. This page is read-only."
+        # AIxCoding catalog: centrally managed notice assertion — read-only
+        # is permanent, not an agent-session condition.
+        assert (
+            notice.render().plain
+            == "• Model configuration is centrally managed. Profiles can be selected but not edited here."
+        )
         assert screen.query_one("#mc-buttons-spacer", Static).display is True
         footer = screen.query_one("#mc-footer", Vertical)
         close = screen.query_one("#mc-cancel", Button)

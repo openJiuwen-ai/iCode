@@ -235,7 +235,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         localized_binding("ctrl+t", "shell_to_background", _SHELL_TO_BACKGROUND_BINDING, show=False),
         localized_binding("f1", "sessions", _SESSIONS_BINDING, priority=True),
         localized_binding("f2", "agents_config", _AGENTS_BINDING, priority=True),
-        localized_binding("f4", "models_config", _MODELS_BINDING, priority=True),
+        # AIxCoding catalog: F4 model-management entry disabled — the model
+        # config screen is read-only under server-side management; /models
+        # and the status-bar indicator remain as entries
+        # (aixcoding/docs/batches/catalog-sync/design.md).
         localized_binding("f6", "show_log_viewer", _LOGS_BINDING, priority=True),
         localized_binding("f8", "open_guide", _HELP_BINDING, priority=True),
         Binding("ctrl+r", "prompt_history", show=False, priority=True),
@@ -754,6 +757,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             self._state.runtime.profile,
             self._language_localizer(),
             runtime_confirmed=self._state.runtime.details_confirmed,
+            # AIxCoding catalog: live label via registry — a catalog sync can
+            # rewrite the profile while the session runs, so the label tracks
+            # the registry, not the startup snapshot.
+            model_registry=self._services.model_registry,
         )
         self.query_one(StatusBar).set_model(state)
 

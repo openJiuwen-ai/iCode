@@ -1417,6 +1417,18 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
         bus = EventBus()
         registry = AgentProfileRegistry()
         registry.load_all()
+        # AIxCoding catalog: startup sync + poll wiring — one blocking sync
+        # before the registry loads (lazy import, unified degrade: a failed
+        # sync keeps the previous list and never breaks startup), then the
+        # poll runtime started below keeps a long-lived session current
+        # without a restart (aixcoding/docs/batches/catalog-sync/design.md).
+        from chrys.service.aixcoding.catalog import (
+            start_sync_runtime,
+            stop_sync_runtime,
+            sync_catalog_blocking,
+        )
+
+        sync_catalog_blocking()
         model_registry = ModelProfileRegistry()
         model_registry.load_all()
         loaded = _apply_startup_active_model_selection(parser, bootstrap.loaded, model_registry, args.model)
@@ -1455,6 +1467,19 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             update_check=for_this_copy(enabled=loaded.settings.update_check, served=running_under_textual_web_driver()),
             show_startup_loading=True,
         )
+
+        def _refresh_model_ui(_result: object) -> None:
+            screen = app._main_screen
+            if screen is not None and screen.is_mounted:
+                app.call_from_thread(screen._refresh_model_indicator)
+
+        # The catalog is polled, not fetched once: the blocking sync above ran
+        # the "immediately" one; this keeps a session current without a
+        # restart. A session that never logged in has no credential, so the
+        # poll may start later — login_actions resumes it once a login
+        # supplies one. Stopped in the finally below, so nothing outlives the
+        # terminal.
+        start_sync_runtime(model_registry, _refresh_model_ui)
         try:
             # On Windows, the ProactorEventLoop shutdown can raise KeyboardInterrupt
             # from GetQueuedCompletionStatus when a pending signal races with asyncio
@@ -1462,6 +1487,8 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             with contextlib.suppress(KeyboardInterrupt):
                 app.run()
         finally:
+            # Nothing catalog-syncable outlives the terminal.
+            stop_sync_runtime()
             # Safety net: ensure terminal is fully restored after native Textual exits.
             # Textual should handle this, but shell PTY activity during shutdown can
             # race with cleanup, leaving mouse tracking, focus reports, or alt screen on.

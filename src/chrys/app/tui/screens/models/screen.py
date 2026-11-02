@@ -70,9 +70,11 @@ if TYPE_CHECKING:
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
 
+# AIxCoding catalog: read-only notice wording — read-only is permanent
+# policy, not an agent-session condition (aixcoding/docs/batches/catalog-sync/design.md).
 _READ_ONLY_NOTICE = msg(
     "tui.model_config.read_only_notice",
-    fallback="• Agent is running. This page is read-only.",
+    fallback="• Model configuration is centrally managed. Profiles can be selected but not edited here.",
 )
 
 _MODEL_SETTINGS_TITLE = msg("tui.model_config.title.settings", fallback="Model Settings")

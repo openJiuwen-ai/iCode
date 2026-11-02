@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from chrys.foundation.events.types import RuntimeModelDetails
 from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
+
+if TYPE_CHECKING:
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
 
 _SELECT_MODEL = msg("tui.model_indicator.label.select", fallback="Select Model")
 _CONFIGURE_TOOLTIP = msg("tui.model_indicator.tooltip.configure", fallback="Open model settings")
@@ -104,6 +107,20 @@ def fmt_context_size(tokens: int) -> str:
     return str(tokens)
 
 
+def _live_label(details: RuntimeModelDetails, registry: ModelProfileRegistry | None) -> str:
+    """Return the profile's current name from the registry if available.
+
+    The runtime details are a snapshot taken when the agent started. A catalog
+    sync can rewrite the profile file while the session is live, so the label
+    shown in the indicator must track the registry rather than the snapshot.
+    """
+    if registry is not None and (profile := registry.get(details.profile_id)) is not None:
+        return profile.name
+    return details.name
+
+
+# AIxCoding catalog: label tracks the live registry — a catalog sync rewrites
+# the profile while a session runs (aixcoding/docs/batches/catalog-sync/design.md).
 def compute_model_indicator_state(
     details: RuntimeModelDetails | None,
     has_selectable_profile: bool,
@@ -111,6 +128,7 @@ def compute_model_indicator_state(
     localizer: Localizer,
     *,
     runtime_confirmed: bool = True,
+    model_registry: ModelProfileRegistry | None = None,
 ) -> ModelIndicatorState:
     """Compute model indicator state from confirmed runtime details and registry availability."""
     if not runtime_confirmed:
@@ -125,9 +143,10 @@ def compute_model_indicator_state(
         return _action_state_if_agent_ready(True, agent_label, localizer)
 
     tooltip = _details_tooltip(details, localizer)
+    label = _live_label(details, model_registry)
     if source == "active":
         return ModelIndicatorState(
-            label=details.name,
+            label=label,
             tooltip=tooltip,
             mode="select",
             profile_id=details.profile_id,
@@ -141,7 +160,7 @@ def compute_model_indicator_state(
     else:
         reason = _render(localizer, _GENERIC_LOCKED_TOOLTIP.bind())
     return ModelIndicatorState(
-        label=details.name,
+        label=label,
         tooltip=f"{tooltip}\n{reason}",
         mode="locked",
         profile_id=details.profile_id,
