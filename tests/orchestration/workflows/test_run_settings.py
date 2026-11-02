@@ -12,7 +12,7 @@ import pytest
 
 from chrys.foundation import platform
 from chrys.foundation.config.context import EvalContext
-from chrys.foundation.config.env_layers import freeze_process_env
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import load_settings
 from chrys.foundation.config.spec import Source

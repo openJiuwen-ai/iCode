@@ -37,22 +37,11 @@ _RAW_HTTP_CAPTURE_ON = msg(
         "prompts and model output unredacted. Turn it off when you are done."
     ),
 )
-_SETTINGS_MIGRATION_FAILED = msg(
-    "startup.settings_migration_failed",
-    fallback=(
-        "Could not migrate settings into {path} ({error}). "
-        "Your existing configuration still applies; migration retries on the next start."
-    ),
-)
-# Deliberately not the sentence above: the legacy ``.env`` keeps loading as a
-# layer when its migration fails, so that configuration really does still
-# apply — but nothing reads the legacy notifications file any more, so a
-# failure there means the preferences in it are not in force at all.
 _NOTIFICATIONS_MIGRATION_FAILED = msg(
     "startup.notifications_migration_failed",
     fallback=(
-        "Could not migrate notification preferences into {path} ({error}). "
-        "This start uses the default notification settings; migration retries on the next start."
+        "Notification migration into {path} failed ({error}). It will retry on the next start. "
+        "Until then, your previous notification preferences may not apply."
     ),
 )
 
@@ -100,46 +89,22 @@ def _dangerous_setting_warnings(loaded: LoadedSettings) -> list[Warning]:
 
 
 def _migrate_legacy_settings() -> list[Warning]:
-    """Run the legacy-source imports, reporting rather than failing the boot.
-
-    A migration that cannot run — a stuck lock, a full disk — leaves the world
-    exactly as the previous version ran in it: the legacy source still loads
-    the way it always did, and the untouched ledger retries next start. That
-    is a degraded state worth a warning, never a reason chrys does not open.
-    Each component runs independently, so one failing does not hold back the
-    other.
-
-    The theme rename is a rewrite inside the document, not an import, and the
-    loader follows the rename whatever the document says — so a rewrite that
-    cannot happen degrades nothing, and is logged rather than reported.
-    """
-    from chrys.foundation.config.migrations import (
-        migrate_dotenv_v0,
-        migrate_notifications_v0,
-        migrate_renamed_theme,
-    )
+    """Import notification preferences and refresh retired theme names at startup."""
+    from chrys.foundation.config.migrations import migrate_notifications_v0, migrate_renamed_theme
     from chrys.foundation.config.user_settings import user_settings_path
-    from chrys.foundation.config.warnings import migration_warning_events
 
     warnings: list[Warning] = []
-    components = (
-        (migrate_dotenv_v0, _SETTINGS_MIGRATION_FAILED, "settings_migration_failed"),
-        (migrate_notifications_v0, _NOTIFICATIONS_MIGRATION_FAILED, "notifications_migration_failed"),
-    )
-    for migrate, failure, code in components:
-        try:
-            migration = migrate()
-        except Exception as error:
-            display_message = failure.bind(path=str(user_settings_path()), error=str(error))
-            warnings.append(
-                Warning(
-                    code=code,
-                    message=format_message(display_message),
-                    display_message=display_message,
-                )
+    try:
+        migrate_notifications_v0()
+    except Exception as error:
+        display_message = _NOTIFICATIONS_MIGRATION_FAILED.bind(path=str(user_settings_path()), error=str(error))
+        warnings.append(
+            Warning(
+                code="notifications_migration_failed",
+                message=format_message(display_message),
+                display_message=display_message,
             )
-            continue
-        warnings.extend(migration_warning_events(migration.warnings))
+        )
     try:
         migrate_renamed_theme()
     except Exception:
@@ -181,15 +146,13 @@ def set_process_title(title: str = "chrys") -> None:
 
 def bootstrap_runtime(
     *,
-    dotenv_override: bool,
-    dotenv_cwd: str | os.PathLike[str] | None = None,
     configure_stdio: bool = False,
     apply_patches: bool = True,
     setup_telemetry: bool = True,
     eval_context: EvalContext = DEFAULT_EVAL_CONTEXT,
     project_root: Path | None = None,
 ) -> RuntimeBootstrap:
-    """Load environment, apply process patches, and build settings.
+    """Freeze the startup environment, apply process patches, and build settings.
 
     Args:
         eval_context: The frontend's own policy, passed *into* the load rather
@@ -211,17 +174,10 @@ def bootstrap_runtime(
     if configure_stdio:
         configure_utf8_stdio()
 
-    from chrys.foundation.config.env_file import config_env_path
-    from chrys.foundation.config.env_layers import freeze_process_env, inject_bootstrap_dotenv
+    from chrys.foundation.config.process_env import freeze_process_env
     from chrys.service.profiles.models.env_bridge import sanitize_no_proxy_env
 
-    # The snapshot must predate the injection below: it is the "real shell
-    # environment" every later settings load resolves against.
     freeze_process_env()
-    inject_bootstrap_dotenv(
-        [Path(dotenv_cwd if dotenv_cwd is not None else os.getcwd()) / ".env", config_env_path()],
-        override=dotenv_override,
-    )
 
     warnings = [
         Warning(

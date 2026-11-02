@@ -159,7 +159,6 @@ _message_ids: set[str | tuple[str, str]] = {
     "startup.invalid_no_proxy_env",
     "startup.notifications_migration_failed",
     "startup.raw_http_capture_on",
-    "startup.settings_migration_failed",
     "transcript.interrupted.continue_action",
     "transcript.interrupted.error_header",
     "transcript.interrupted.reason_by_user",

@@ -12,7 +12,7 @@ import yaml
 
 import chrys.foundation.platform as platform_mod
 from chrys.foundation.config.coercion import CoerceReason, CoerceStatus
-from chrys.foundation.config.env_layers import freeze_process_env
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.runtime_pointer import set_model_pointer
 from chrys.foundation.config.settings import MAX_TRANSIENT_RETRIES_LIMIT, Settings
 from chrys.foundation.config.settings_store import load_settings, persist
@@ -119,42 +119,15 @@ def test_a_user_yaml_value_loads_with_the_file_as_its_origin(config_dir: Path, m
     assert origin.path == path
 
 
-def test_the_user_dotenv_outranks_the_user_yaml(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear_theme(monkeypatch)
-    freeze_process_env()
-    _write_user_yaml(config_dir, "ui:\n  theme: from-yaml\n")
-    env_path = _write_user_env(config_dir, "CHRYS_THEME=from-dotenv\n")
-
-    loaded = load_settings()
-
-    assert loaded.settings.theme == "from-dotenv"
-    origin = loaded.source_for("ui.theme")
-    assert origin.layer is Source.USER_ENV
-    assert origin.path == env_path
-
-
-def test_the_real_environment_outranks_both_user_files(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_real_environment_outranks_user_settings(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHRYS_THEME", "from-shell")
     freeze_process_env()
     _write_user_yaml(config_dir, "ui:\n  theme: from-yaml\n")
-    _write_user_env(config_dir, "CHRYS_THEME=from-dotenv\n")
 
     loaded = load_settings()
 
     assert loaded.settings.theme == "from-shell"
     assert loaded.source_for("ui.theme").layer is Source.ENV
-
-
-def test_a_blank_user_dotenv_value_falls_through_to_the_yaml(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear_theme(monkeypatch)
-    freeze_process_env()
-    _write_user_yaml(config_dir, "ui:\n  theme: from-yaml\n")
-    _write_user_env(config_dir, "CHRYS_THEME=\n")
-
-    loaded = load_settings()
-
-    assert loaded.settings.theme == "from-yaml"
-    assert loaded.source_for("ui.theme").layer is Source.USER
 
 
 def test_files_stay_unread_until_bootstrap_freezes_the_environment(
@@ -234,21 +207,6 @@ def test_an_unparseable_user_yaml_loads_as_empty(config_dir: Path, monkeypatch: 
 
     assert loaded.source_for("ui.theme").layer is Source.DEFAULT
     assert loaded.unknown_keys == ()
-
-
-def test_a_lowercase_dotenv_spelling_answers_only_on_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear_theme(monkeypatch)
-    freeze_process_env()
-    for os_name, expected_layer in (("windows", Source.USER_ENV), ("linux", Source.DEFAULT)):
-        fake = dataclasses.replace(
-            platform_mod.get_platform(),
-            os_name=os_name,
-            config_dir=tmp_path / os_name / "config",
-            data_dir=tmp_path / os_name / "data",
-        )
-        monkeypatch.setattr(platform_mod, "get_platform", lambda fake=fake: fake)
-        _write_user_env(fake.config_dir, "chrys_theme=folded\n")
-        assert load_settings().source_for("ui.theme").layer is expected_layer, os_name
 
 
 # ── persist ──────────────────────────────────────────────────────────
@@ -421,3 +379,26 @@ def test_approval_timeout_preserves_explicit_zero_and_positive_values(config_dir
     loaded = load_settings(env={"CHRYS_APPROVAL_TIMEOUT_SECONDS": str(seconds)})
     assert loaded.settings.approval_timeout_seconds == seconds
     assert not loaded.warnings
+
+
+@pytest.mark.parametrize("yaml_theme", [None, "chrys-legacy"])
+def test_settings_reload_ignores_legacy_files(config_dir, tmp_path, monkeypatch, yaml_theme) -> None:
+    _clear_theme(monkeypatch)
+    freeze_process_env()
+    project = tmp_path / "workspace"
+    project.mkdir()
+    if yaml_theme is not None:
+        _write_user_yaml(config_dir, f"ui:\n  theme: {yaml_theme}\n")
+    user_env = _write_user_env(config_dir, "CHRYS_THEME=solar\n")
+    project_env = project / ".env"
+    project_env.write_text("CHRYS_THEME=solar\n", encoding="utf-8")
+
+    for changed in ("solar", "midnight"):
+        for path in (user_env, project_env):
+            path.write_text(f"CHRYS_THEME={changed}\n", encoding="utf-8")
+        loaded = load_settings(project_root=project)
+        assert loaded.settings.theme == (yaml_theme or Settings().theme)
+        assert loaded.source_for("ui.theme").layer is (Source.USER if yaml_theme else Source.DEFAULT)
+        assert loaded.warnings == ()
+        for path in (user_env, project_env):
+            assert path.read_text(encoding="utf-8") == f"CHRYS_THEME={changed}\n"

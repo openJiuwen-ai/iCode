@@ -25,10 +25,11 @@ from chrys.app.tui.screens.settings import (
     NotificationPorts,
     SessionStoragePorts,
     Suggestions,
+    is_greyed_layer,
     rendered_keys,
 )
 from chrys.foundation.config.settings import Settings, probe_session_root
-from chrys.foundation.config.spec import Apply, ChoiceProvider, Source, field_names_by_key, specs_by_key
+from chrys.foundation.config.spec import Apply, ChoiceProvider, field_names_by_key, specs_by_key
 from chrys.foundation.events.types import SettingsReload
 from chrys.foundation.i18n import msg
 
@@ -47,8 +48,6 @@ logger = logging.getLogger(__name__)
 _CONFIRM_TITLE = msg("tui.settings.confirm.title", fallback="Confirm setting")
 _CONFIRM_BUTTON = msg("tui.settings.confirm.button", fallback="Continue")
 SETTINGS_TITLE = msg("tui.settings.title", fallback="Settings")
-
-_GREYED_LAYERS = frozenset({Source.PROJECT, Source.USER_ENV, Source.ENV})
 
 # RELOAD keys the TUI reads only at startup: the engine's rebuild keeps its
 # current agent profile and approval mode, so a reload triggered for these
@@ -245,7 +244,7 @@ class SettingsCoordinator:
         loaded = self._settings_handle.loaded
         values = _values_by_key(loaded)
         current = values[key]
-        if loaded.source_for(key).layer in _GREYED_LAYERS:
+        if is_greyed_layer(loaded.source_for(key)):
             self._desired.pop(key, None)
             return current
         if key in self._desired and self._desired[key] == current:
@@ -328,7 +327,7 @@ class SettingsCoordinator:
         loaded = self._settings_handle.loaded
         values = _values_by_key(loaded)
         for key in list(self._desired):
-            if loaded.source_for(key).layer in _GREYED_LAYERS or values[key] == self._desired[key]:
+            if is_greyed_layer(loaded.source_for(key)) or values[key] == self._desired[key]:
                 del self._desired[key]
 
     async def _finalize(self) -> None:

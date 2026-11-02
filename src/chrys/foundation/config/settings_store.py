@@ -3,7 +3,7 @@
 """The one place settings are assembled from their sources.
 
 ``Settings`` is a plain value object; this module is what turns the layered
-sources into one: the user document, the dotenv files beside it, the process
+sources into one: the user document, the process
 environment as it stood before bootstrap, the project trust domain under the
 caller's ``project_root``, and the pins a frontend passes in.
 
@@ -35,14 +35,8 @@ from typing import Any, Final
 
 from chrys.foundation.config.coercion import Coerced, CoerceReason, CoerceStatus, invalid
 from chrys.foundation.config.context import EvalContext
-from chrys.foundation.config.env_file import config_env_path
-from chrys.foundation.config.env_layers import (
-    POINTER_ENV_NAMES,
-    canonical_env_name,
-    process_env_snapshot,
-    read_dotenv_layer,
-)
-from chrys.foundation.config.runtime_pointer import get_model_pointer
+from chrys.foundation.config.process_env import process_env_snapshot
+from chrys.foundation.config.runtime_pointer import MODEL_POINTER_ENV, get_model_pointer
 from chrys.foundation.config.settings import DEFAULT_MAX_TRANSIENT_RETRIES, Settings
 from chrys.foundation.config.spec import (
     FILE_SOURCES,
@@ -534,19 +528,10 @@ class _FileLayers:
     """Dotted key → raw value, from ``~/.chrys/settings.yaml``."""
 
     user_yaml_path: Path
-    user_env: Mapping[str, str]
-    """Canonically folded env name → value, from ``~/.chrys/.env``."""
-
-    user_env_path: Path
     unknown_keys: tuple[str, ...]
 
     project_yaml: Mapping[str, Any] = _EMPTY_MAP
-    """Dotted key → raw value, from ``<root>/.chrys/settings.yaml``.
-
-    The project layer's only file. A repository's ``.env`` is deliberately
-    not read: dotenv is the legacy channel on its way out, so its ``CHRYS_*``
-    lines stay inert rather than becoming a second project entrance.
-    """
+    """Dotted key → raw value, from ``<root>/.chrys/settings.yaml``."""
 
     project_yaml_unknown: tuple[str, ...] = ()
     project_yaml_path: Path | None = None
@@ -560,8 +545,6 @@ def _read_file_layers(specs: Mapping[str, SettingSpec], project_root: Path | Non
     :func:`freeze_process_env` — every test that constructs settings directly —
     has not opted into this machine's home directory, so the files stay
     unread rather than leaking one developer's ``~/.chrys`` into assertions.
-    It is also what the dotenv layer resolves against: values interpolate over
-    the environment as it was at bootstrap, never the mutated live one.
     """
     snapshot = process_env_snapshot()
     if snapshot is None:
@@ -578,18 +561,11 @@ def _read_file_layers(specs: Mapping[str, SettingSpec], project_root: Path | Non
         # read is on the startup path of every entry point, so raising here
         # means a second Chrys cannot start at all while the first is stalled
         # mid-write. The values genuinely are not in force this launch, which
-        # is exactly what provenance will report, and the dotenv layer below
-        # needs no lock and still applies.
+        # is exactly what provenance will report.
         logger.warning("Settings document was busy; loading without it: %s", yaml_path, exc_info=True)
         doc = {}
     known_keys = frozenset(entry.key for entry in specs.values())
     values, unknown = flatten_user_doc(doc, known_keys)
-    env_path = config_env_path()
-    layer = read_dotenv_layer(env_path, base=snapshot.values)
-    # Fold names the way the OS does, so on Windows a lowercase spelling in
-    # the file still answers for the uppercase alias. Later spellings win the
-    # collision, matching dotenv's own later-assignment-wins rule.
-    user_env = {canonical_env_name(env_name): value for env_name, value in layer.items()}
 
     project_yaml: Mapping[str, Any] = _EMPTY_MAP
     project_yaml_unknown: tuple[str, ...] = ()
@@ -610,8 +586,6 @@ def _read_file_layers(specs: Mapping[str, SettingSpec], project_root: Path | Non
     return _FileLayers(
         user_yaml=values,
         user_yaml_path=yaml_path,
-        user_env=user_env,
-        user_env_path=env_path,
         unknown_keys=unknown,
         project_yaml=project_yaml,
         project_yaml_unknown=project_yaml_unknown,
@@ -847,7 +821,7 @@ def _layers(
         # unregistered value is a real shell export and stays ``ENV``. Injected
         # test environments are hermetic, so the process-global registration
         # only speaks for the process environment.
-        if real_process and entry.env in POINTER_ENV_NAMES:
+        if real_process and entry.env == MODEL_POINTER_ENV:
             raw, registered = get_model_pointer()
             origin = registered if registered is not None else SettingOrigin(layer=Source.ENV)
         else:
@@ -862,11 +836,6 @@ def _layers(
 
     if file_layers is None:
         return
-
-    if entry.env is not None and (folded := canonical_env_name(entry.env)) in file_layers.user_env:
-        coerced = (entry.env_coerce or entry.coerce)(file_layers.user_env[folded])
-        if coerced.status is not CoerceStatus.MISSING:
-            yield coerced, SettingOrigin(layer=Source.USER_ENV, path=file_layers.user_env_path)
 
     # The project layer contributes what phase one already judged, at the
     # verdict it judged it — a shadowed project value was audited there, so

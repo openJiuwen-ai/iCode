@@ -11,7 +11,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from chrys.foundation import platform
-from chrys.foundation.config.env_layers import freeze_process_env
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings_store import SettingsHandle, load_settings
 from chrys.foundation.models.workflow_session import WorkflowModelSelection, WorkspaceSnapshot
 from chrys.foundation.models.workspace import Workspace

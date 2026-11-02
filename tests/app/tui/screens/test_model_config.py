@@ -378,7 +378,7 @@ async def test_model_config_save_global_default_is_file_only(monkeypatch: pytest
     registry.register(global_default)
     registry.register(runtime_effective)
     monkeypatch.setenv("CHRYS_MODEL_PROFILE", runtime_effective.id)
-    # The dotenv starts without a pointer so the assertion below proves the
+    # The settings document starts without a default profile so the assertion below proves the
     # save path itself performed the file write.
     assert get_global_default_profile_id() == ""
 

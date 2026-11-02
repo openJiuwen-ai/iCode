@@ -16,7 +16,7 @@ import pytest
 from chrys.app.cli import app as cli_app
 from chrys.app.cli import headless
 from chrys.app.cli import hooks as hooks_cli
-from chrys.foundation.config.env_layers import freeze_process_env
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings_store import load_settings
 from chrys.foundation.config.warnings import settings_warning_events
 from chrys.foundation.i18n import Localizer

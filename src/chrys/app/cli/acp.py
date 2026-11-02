@@ -88,9 +88,9 @@ def _configure_logging() -> None:
     logging.basicConfig(handlers=[handler], level=logging.WARNING)
 
 
-def _prepare_runtime(process_cwd: str | None = None) -> LoadedSettings:
-    """Load environment, apply runtime patches, and return settings."""
-    bootstrap = bootstrap_runtime(dotenv_override=True, dotenv_cwd=process_cwd, configure_stdio=True)
+def _prepare_runtime() -> LoadedSettings:
+    """Freeze the startup environment, apply runtime patches, and return settings."""
+    bootstrap = bootstrap_runtime(configure_stdio=True)
     for warning in (*bootstrap.warnings, *settings_warning_events(bootstrap.loaded)):
         sys.stderr.write(f"Warning: {warning.message}\n")
     return bootstrap.loaded
@@ -125,7 +125,7 @@ def _initial_vision(
 async def run_command(args: argparse.Namespace) -> int:
     """Execute parsed ``chrys acp`` args."""
     process_cwd = _resolve_cwd(args.cwd) if args.cwd else None
-    loaded = _prepare_runtime(process_cwd)
+    loaded = _prepare_runtime()
     # ACP clients own the ask_user interaction lifetime, so default to no
     # backend timeout; a positive --ask-user-timeout opts back into a bound.
     ask_user_timeout = args.ask_user_timeout if args.ask_user_timeout and args.ask_user_timeout > 0 else None

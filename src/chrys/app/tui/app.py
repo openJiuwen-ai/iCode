@@ -191,7 +191,7 @@ def _apply_startup_active_model_selection(
             error_message = f"{error_message}. Available model profiles: {available}"
         parser.error(error_message)
     # Keep startup --model durable across SettingsReload without writing the
-    # user's .env. ModelConfigScreen may still replace this process-local value
+    # user's settings file. ModelConfigScreen may still replace this process-local value
     # later when the user intentionally applies a different active profile.
     set_model_pointer(profile.id, origin=SettingOrigin(layer=Source.CLI))
     return loaded_with_active_model_profile(loaded, profile, Source.CLI)
@@ -1420,7 +1420,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
 
         install_log_handler()
 
-        bootstrap = bootstrap_runtime(dotenv_override=True, project_root=Path(os.getcwd()))
+        bootstrap = bootstrap_runtime(project_root=Path(os.getcwd()))
 
         bus = EventBus()
         registry = AgentProfileRegistry()

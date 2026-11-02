@@ -208,7 +208,7 @@ def test_origin_carries_the_file_a_value_came_from() -> None:
 
 def test_a_file_layer_origin_must_name_its_file() -> None:
     """Otherwise it silently degrades into the bare layer this type replaces."""
-    for layer in (Source.USER, Source.PROJECT, Source.USER_ENV):
+    for layer in (Source.USER, Source.PROJECT):
         with pytest.raises(ValueError, match="must name the file"):
             SettingOrigin(layer=layer)
 
@@ -224,7 +224,6 @@ def test_source_ordering_is_low_to_high_precedence() -> None:
         Source.DEFAULT,
         Source.USER,
         Source.PROJECT,
-        Source.USER_ENV,
         Source.ENV,
         Source.CLI,
         Source.PROCESS_RUNTIME,

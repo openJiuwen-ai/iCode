@@ -201,7 +201,7 @@ def _data_folders(config_dir: Path) -> tuple[list[Path], Path | None]:
     """
     folders = [config_dir] if config_dir.exists() or config_dir.is_symlink() else []
     try:
-        from chrys.foundation.config.env_layers import freeze_process_env
+        from chrys.foundation.config.process_env import freeze_process_env
         from chrys.foundation.config.settings import resolve_session_root_dir
 
         # This command skips the runtime bootstrap, and settings files are read only once the

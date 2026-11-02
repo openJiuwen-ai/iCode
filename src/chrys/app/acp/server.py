@@ -877,7 +877,7 @@ class ChrysAcpServer:
     async def set_session_model(
         self, model_id: str, session_id: str, **kwargs: Any
     ) -> acp_schema.SetSessionModelResponse:
-        """Switch the session model (standard ACP) — per-session, no global .env write."""
+        """Switch the session model (standard ACP), preserving the saved default."""
         _ = kwargs
         try:
             await self._manager.set_model_profile(session_id, model_id)
