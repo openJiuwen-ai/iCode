@@ -44,7 +44,7 @@ Live eval and live optimize use `ApprovalMode.BYPASS` (same as `icode run`). Alw
 
 Goal: improve a profile on a small `script_based` dataset with a real model, then export the winner for review.
 
-The shipped live sample is **`examples/rsi/complex-calc/`** (Rust complex calculator). Use that tree when you want a ready-made dataset; the section [Demo sample: Rust complex calculator](#demo-sample-rust-complex-calculator) walks through create → eval → optimize → install on it. The steps below are the same loop for any dataset you write yourself.
+The shipped live sample is **`playground/rsi/complex-calc/`** (Rust complex calculator). Use that tree when you want a ready-made dataset; the section [Demo sample: Rust complex calculator](#demo-sample-rust-complex-calculator) walks through create → eval → optimize → install on it. The steps below are the same loop for any dataset you write yourself.
 
 ### 1. Write a dataset
 
@@ -226,7 +226,7 @@ Eval artifacts land under the chosen output directory as `eval-<id>/scorecard.js
 
 ### Demo sample: Rust complex calculator
 
-`examples/rsi/complex-calc/` is the **canonical live RSI demo**: one coding case, empty workdir seed, trusted `script_based` judge. It shows the full offline loop—baseline often fails the hard checks, optimize proposes whitelist mutations, and a later epoch can raise the suite score to `1.0` (`perfect=True`) without hot-loading anything into chat.
+`playground/rsi/complex-calc/` is the **canonical live RSI demo**: one coding case, empty workdir seed, trusted `script_based` judge. It shows the full offline loop—baseline often fails the hard checks, optimize proposes whitelist mutations, and a later epoch can raise the suite score to `1.0` (`perfect=True`) without hot-loading anything into chat.
 
 #### What is in the tree
 
@@ -251,9 +251,9 @@ From the repo root (or any cwd that can reach the dataset path):
 
 ```bash
 # 1. Validate + open a task (snapshots seed/ into the task)
-icode rsi dataset validate examples/rsi/complex-calc/dataset.json
+icode rsi dataset validate playground/rsi/complex-calc/dataset.json
 icode rsi create --name complex-calc --max-iterations 2 \
-  --dataset examples/rsi/complex-calc/dataset.json \
+  --dataset playground/rsi/complex-calc/dataset.json \
   --instruction "Prefer clear parsing, right-associative ^, and strict rejection of malformed operator sequences. Append guidance; do not replace existing instructions."
 
 # 2. Optional: score Code once before searching

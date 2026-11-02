@@ -44,7 +44,7 @@ RSI（recursive self-improvement）是一套**实验性离线闭环**：用固�
 
 目标：在小型 `script_based` 数据集上，用真模型改进 profile，再导出胜出候选供审阅。
 
-仓库自带的 live 样例是 **`examples/rsi/complex-calc/`**（Rust 复数计算器）。需要现成数据集时直接用这棵树；完整的 create → eval → optimize → install 说明见 [演示样例：Rust 复数计算器](#演示样例rust-复数计算器)。下面步骤是同一套闭环，适用于你自己编写的任意数据集。
+仓库自带的 live 样例是 **`playground/rsi/complex-calc/`**（Rust 复数计算器）。需要现成数据集时直接用这棵树；完整的 create → eval → optimize → install 说明见 [演示样例：Rust 复数计算器](#演示样例rust-复数计算器)。下面步骤是同一套闭环，适用于你自己编写的任意数据集。
 
 ### 1. 编写数据集
 
@@ -226,7 +226,7 @@ icode rsi delete rsi-<id>
 
 ### 演示样例：Rust 复数计算器
 
-`examples/rsi/complex-calc/` 是 **RSI 的正式 live 演示样例**：单个编程 case、空 workdir 种子、可信 `script_based` 判分。它展示完整离线闭环——基线常在难题上失败，optimize 提出白名单 mutation，后续 epoch 可以把套件分数提到 `1.0`（`perfect=True`），且不会热加载进聊天会话。
+`playground/rsi/complex-calc/` 是 **RSI 的正式 live 演示样例**：单个编程 case、空 workdir 种子、可信 `script_based` 判分。它展示完整离线闭环——基线常在难题上失败，optimize 提出白名单 mutation，后续 epoch 可以把套件分数提到 `1.0`（`perfect=True`），且不会热加载进聊天会话。
 
 #### 目录里有什么
 
@@ -251,9 +251,9 @@ icode rsi delete rsi-<id>
 
 ```bash
 # 1. 校验 + 建任务（把 seed/ 快照进任务）
-icode rsi dataset validate examples/rsi/complex-calc/dataset.json
+icode rsi dataset validate playground/rsi/complex-calc/dataset.json
 icode rsi create --name complex-calc --max-iterations 2 \
-  --dataset examples/rsi/complex-calc/dataset.json \
+  --dataset playground/rsi/complex-calc/dataset.json \
   --instruction "Prefer clear parsing, right-associative ^, and strict rejection of malformed operator sequences. Append guidance; do not replace existing instructions."
 
 # 2. 可选：搜索前先给 Code 打一次分
