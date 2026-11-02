@@ -55,8 +55,18 @@ from .types import (
 # (the aixcoding.* subtree sinks/panel switch live in kernel/aixcoding/diagnostics),
 # design aixcoding/docs/batches/auth-logging/design.md (signed off 2026-10-29; decoupled
 # 2026-10-30: plain getLogger, no diagnostics import -- kernel cross-subpackage
-# imports are architecturally dead-ended, see design).
+# imports are architecturally dead-ended, see design). Sensitive fields (ehr) go to
+# the file-only "aixcoding.detail.auth" logger instead (ADR-0017, detail-logging
+# batch): that subtree never propagates, so its records stay in aixcoding.detail.log
+# and out of the F6 panel and the upstream debug log.
 _log = logging.getLogger("aixcoding.auth")
+_detail_log = logging.getLogger("aixcoding.detail.auth")
+
+#: AIxCoding detail logging: level of the file-only channel; mirrors
+#: ``DETAIL_LEVEL`` in diagnostics.logging_support (ADR-0017). Duplicated
+#: locally because kernel cross-subpackage imports are forbidden
+#: (test_layering); a test pins both definitions together.
+_DETAIL_LEVEL = 5
 
 
 def _reason(exc: BaseException, *, with_cause: bool = True) -> str:
@@ -204,7 +214,8 @@ class LoginSession:
                     _reason(exc),
                 )
                 return None
-            _log.info("已登录（桌面端登录）；ehr=%s env=%s", account.ehr, self.environment.value)
+            _log.info("已登录（桌面端登录）；env=%s", self.environment.value)
+            _detail_log.log(_DETAIL_LEVEL, "已登录（桌面端登录）；ehr=%s env=%s", account.ehr, self.environment.value)
             return account
         credential = self._store.load(self.environment)
         if credential is None or credential.is_expired or not credential.token:
@@ -229,7 +240,8 @@ class LoginSession:
                 _reason(exc),
             )
             return None
-        _log.info("已登录（本机保存的登录）；ehr=%s env=%s", account.ehr, self.environment.value)
+        _log.info("已登录（本机保存的登录）；env=%s", self.environment.value)
+        _detail_log.log(_DETAIL_LEVEL, "已登录（本机保存的登录）；ehr=%s env=%s", account.ehr, self.environment.value)
         return account
 
     async def request_device_code(self) -> DeviceCode:
@@ -273,7 +285,8 @@ class LoginSession:
                 ehr=account.ehr,
             ),
         )
-        _log.info("登录成功；ehr=%s env=%s", account.ehr, self.environment.value)
+        _log.info("登录成功；env=%s", self.environment.value)
+        _detail_log.log(_DETAIL_LEVEL, "登录成功；ehr=%s env=%s", account.ehr, self.environment.value)
         return account
 
     def logout(self) -> None:

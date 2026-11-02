@@ -4,10 +4,13 @@
 
 """Session logging tests: 12 state-transition records under ``aixcoding.auth``.
 
-Design: aixcoding/docs/batches/auth-logging/design.md (signed off 2026-10-29).
-Every case asserts the frozen message text, the level, and the two red
-lines: no secret ever appears in a record, and no record carries a
-traceback (``exc_info is None``).
+Design: aixcoding/docs/batches/auth-logging/design.md (signed off 2026-10-29);
+detail channel split: aixcoding/docs/batches/detail-logging/design.md +
+ADR-0017 (signed off 2026-11-02) — the three success records (#1/#5/#8) now
+carry ``ehr`` only on the file-only ``aixcoding.detail`` subtree. Every case
+asserts the frozen message text, the level, and the two red lines: no secret
+ever appears in a record, and no record carries a traceback
+(``exc_info is None``).
 """
 
 from __future__ import annotations
@@ -24,8 +27,10 @@ from chrys.kernel.aixcoding.auth import Environment, LoginSession, StoredCredent
 from chrys.kernel.aixcoding.auth.crypto import MemoryBackend
 from chrys.kernel.aixcoding.auth.delegation import DelegatedCredential
 from chrys.kernel.aixcoding.auth.errors import DevicePollCancelled, DevicePollDenied
+from chrys.kernel.aixcoding.diagnostics.logging_support import DETAIL_LEVEL
 
 DEAD_URL = "http://127.0.0.1:1/api/v1"
+EHR = "1234567"
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +51,33 @@ def _aix_logger_isolation() -> Iterator[None]:
     root.handlers[:] = saved_handlers
     root.propagate = saved_propagate
     root.setLevel(saved_level)
+
+
+@pytest.fixture
+def detail_capture() -> Iterator[list[logging.LogRecord]]:
+    """Capture records from the file-only detail subtree (ADR-0017).
+
+    caplog cannot see them: its handler sits on the root logger while the
+    detail subtree never propagates. Pin the subtree's level the way
+    ``setup_logging`` would and hook a capture handler at the subtree root.
+    """
+    detail = logging.getLogger("aixcoding.detail")
+    saved = (detail.handlers[:], detail.propagate, detail.level)
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    capture = _Capture()
+    capture.setLevel(logging.NOTSET)
+    logging.addLevelName(DETAIL_LEVEL, "DETAIL")  # normally done by setup_logging
+    detail.setLevel(DETAIL_LEVEL)
+    detail.propagate = False  # mirror the production preset (review S1)
+    detail.addHandler(capture)
+    yield records
+    detail.handlers[:] = saved[0]
+    detail.propagate, detail.level = saved[1], saved[2]
 
 
 def auth_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -79,17 +111,23 @@ async def login_once(session: LoginSession) -> str:
     return credential.token
 
 
-async def test_01_silent_ok_delegated(tmp_path, caplog) -> None:
+async def test_01_silent_ok_delegated(tmp_path, caplog, detail_capture) -> None:
     with MockServer(mode="auto", interval=0) as mock:
         token = await login_once(make_session(tmp_path, mock.base_url))
         session = delegated_session(tmp_path, mock.base_url, token)
+        detail_capture.clear()  # the preparation step's own detail record
         with caplog.at_level(logging.INFO, logger="aixcoding.auth"):
             assert await session.check_silent() is not None
         records = auth_records(caplog)
         assert len(records) == 1
         assert records[0].levelname == "INFO"
-        assert records[0].getMessage() == "已登录（桌面端登录）；ehr=1234567 env=local"
-        assert_clean(records, token)
+        assert records[0].getMessage() == "已登录（桌面端登录）；env=local"
+        assert_clean(records, token, EHR)  # ehr never on the panel-visible channel
+        assert len(detail_capture) == 1
+        assert detail_capture[0].name == "aixcoding.detail.auth"
+        assert detail_capture[0].exc_info is None  # traceback red line (review N1)
+        assert detail_capture[0].levelname == "DETAIL"
+        assert detail_capture[0].getMessage() == f"已登录（桌面端登录）；ehr={EHR} env=local"
 
 
 async def test_02_delegated_rejected(tmp_path, caplog) -> None:
@@ -132,18 +170,24 @@ async def test_04_no_credential(tmp_path, caplog) -> None:
         assert records[0].getMessage() == "未登录（首次使用或登录已过期）；env=local"
 
 
-async def test_05_silent_ok_stored(tmp_path, caplog) -> None:
+async def test_05_silent_ok_stored(tmp_path, caplog, detail_capture) -> None:
     with MockServer(mode="auto", interval=0) as mock:
         session = make_session(tmp_path, mock.base_url)
         token = await login_once(session)
         caplog.clear()
+        detail_capture.clear()  # the preparation step's own detail record
         with caplog.at_level(logging.INFO, logger="aixcoding.auth"):
             assert await session.check_silent() is not None
         records = auth_records(caplog)
         assert len(records) == 1
         assert records[0].levelname == "INFO"
-        assert records[0].getMessage() == "已登录（本机保存的登录）；ehr=1234567 env=local"
-        assert_clean(records, token)
+        assert records[0].getMessage() == "已登录（本机保存的登录）；env=local"
+        assert_clean(records, token, EHR)
+        assert len(detail_capture) == 1
+        assert detail_capture[0].name == "aixcoding.detail.auth"
+        assert detail_capture[0].exc_info is None  # traceback red line (review N1)
+        assert detail_capture[0].levelname == "DETAIL"
+        assert detail_capture[0].getMessage() == f"已登录（本机保存的登录）；ehr={EHR} env=local"
 
 
 async def test_06_stored_rejected(tmp_path, caplog) -> None:
@@ -182,17 +226,23 @@ async def test_07_stored_network_fail(tmp_path, caplog) -> None:
     assert_clean(records, "secret-keep-token")
 
 
-async def test_08_login_success(tmp_path, caplog) -> None:
+async def test_08_login_success(tmp_path, caplog, detail_capture) -> None:
     with MockServer(mode="auto", interval=0) as mock:
         session = make_session(tmp_path, mock.base_url)
         code = await session.request_device_code()
         with caplog.at_level(logging.INFO, logger="aixcoding.auth"):
             account = await session.complete_login(code)
-        assert account.ehr == "1234567"
+        assert account.ehr == EHR
         records = auth_records(caplog)
         assert len(records) == 1
         assert records[0].levelname == "INFO"
-        assert records[0].getMessage() == "登录成功；ehr=1234567 env=local"
+        assert records[0].getMessage() == "登录成功；env=local"
+        assert_clean(records, EHR)
+        assert len(detail_capture) == 1
+        assert detail_capture[0].name == "aixcoding.detail.auth"
+        assert detail_capture[0].exc_info is None  # traceback red line (review N1)
+        assert detail_capture[0].levelname == "DETAIL"
+        assert detail_capture[0].getMessage() == f"登录成功；ehr={EHR} env=local"
 
 
 async def test_11_login_failed_denied(tmp_path, caplog) -> None:

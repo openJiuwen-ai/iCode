@@ -10,6 +10,7 @@
 | [batches/mock](batches/mock/) | 功能批次 | mock 基建迁入（`aixcoding/mock`：auth/update/model_catalog 三服务 + 启动器） |
 | [batches/auth](batches/auth/) | 功能批次 | auth 迁入（`src/chrys/kernel/aixcoding/auth` + LLM token 接线） |
 | [batches/auth-logging](batches/auth-logging/) | 功能批次 | auth 登录状态埋点（session 落盘与 token 注入 wiring） |
+| [batches/detail-logging](batches/detail-logging/) | 功能批次 | detail 仅文件日志子树（敏感明细不进 F6 面板/上游 debug.log，ADR-0017 A′） |
 | [batches/tui](batches/tui/) | 功能批次 | tui 迁入（登录对话框 + 会话徽标 + /login、/logout 命令） |
 | [batches/tier-migration](batches/tier-migration/) | 功能批次 | ADR-0011 存量定制包按 tier 回迁 kernel 档 |
 | [batches/diagnostics](batches/diagnostics/) | 功能批次 | 本地诊断包（config + logging_support；crash/snapshot/launcher 已退役） |
