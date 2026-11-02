@@ -7,6 +7,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+import pytest
 from textual.widgets import Static
 
 from chrys.app.tui.screens.dialogs.approval.dialog import ApprovalDialog
@@ -45,10 +46,14 @@ class _Coordinator(SettingsCoordinator):
         return self.projected[key]
 
 
-def test_write_and_reload_feedback_reach_only_an_existing_coordinator() -> None:
+def test_write_and_reload_feedback_reach_only_an_existing_coordinator(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every queue write originates from the panel, so feedback arriving before
     the panel was ever opened has nothing to update — and must not build the
-    coordinator (which needs a running app) as a side effect."""
+    coordinator (which needs a running app) as a side effect. The shared handle
+    hears of the write either way: a notification choice is saved with no panel."""
+    confirmed: list[object] = []
+    app = SimpleNamespace(settings_handle=SimpleNamespace(confirm_written=confirmed.append))
+    monkeypatch.setattr(screen_module.MainScreen, "app", property(lambda _self: app))
     screen = object.__new__(screen_module.MainScreen)
     result = PersistResult(written={"session.title.auto": False}, rejected={})
 
@@ -64,6 +69,7 @@ def test_write_and_reload_feedback_reach_only_an_existing_coordinator() -> None:
 
     assert coordinator.written == [result]
     assert coordinator.reloaded == 1
+    assert confirmed == [result.written, result.written]
 
 
 def test_save_failures_toast_and_snap_the_panel_back() -> None:

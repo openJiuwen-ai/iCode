@@ -50,6 +50,7 @@ from chrys.foundation.config.runtime_pointer import (
 from chrys.foundation.config.settings import DEFAULT_MAX_TRANSIENT_RETRIES, Settings
 from chrys.foundation.config.spec import (
     FILE_SOURCES,
+    Apply,
     InvalidPolicy,
     Kind,
     ProjectMerge,
@@ -78,6 +79,11 @@ _FRONTEND_DEFAULT_FIELD = "frontend_default_max_transient_retries"
 
 
 _EMPTY_MAP: Final[Mapping[str, Any]] = MappingProxyType({})
+
+_LIVE_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
+    {entry.key: name for name, entry in specs_by_field(Settings).items() if entry.apply is Apply.LIVE}
+)
+"""Dotted key → ``Settings`` field for the tier a frontend puts in force itself, as a live choice."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +172,12 @@ class LoadedSettings:
     document_error: MessageRef | None = None
     model_edit: ModelFileChange | None = None
     manual_model_revision: int | None = None
+    confirmed_overrides: Mapping[str, int] = field(default_factory=dict)
+    """Live choices known to be on disk before this load read the files (field name → override version).
+
+    Set only on a manual reload's candidate. These are the choices the load may
+    have overtaken: see :meth:`SettingsHandle.confirmed_overrides`.
+    """
 
     def overlay(self, layer: Source, **values: Any) -> LoadedSettings:
         """Return a copy carrying *values*, credited to *layer*.
@@ -225,6 +237,8 @@ class PreparedSettings:
     """The ``Source.SESSION`` values ``effective`` carries over ``base``: the session's own choices."""
     runtime_revision: int = 0
     """Which live choices ``effective`` was composed with (``SettingsHandle``'s count of them)."""
+    released: Mapping[str, int] = field(default_factory=dict)
+    """Live choices ``effective`` leaves out because the file moved past them (field name → override version)."""
 
 
 class SettingsHandle:
@@ -253,13 +267,15 @@ class SettingsHandle:
     session is a cell where one session's pin becomes another's.
     """
 
-    __slots__ = ("_base", "_effective", "_runtime", "_runtime_revision", "_session")
+    __slots__ = ("_base", "_confirmed", "_effective", "_runtime", "_runtime_revision", "_runtime_versions", "_session")
 
     def __init__(self, loaded: LoadedSettings) -> None:
         self._base = loaded
         self._session: dict[str, Any] = {}
         self._runtime: dict[str, Any] = {}
         self._runtime_revision = 0
+        self._runtime_versions: dict[str, int] = {}
+        self._confirmed: dict[str, int] = {}
         self._effective = loaded
 
     @property
@@ -314,11 +330,13 @@ class SettingsHandle:
         its commit installs it.
         """
         values = dict(self._session if session is None else session)
+        released = self._overtaken_by(loaded)
         return PreparedSettings(
             base=loaded,
-            effective=self._compose(loaded, values),
+            effective=self._compose(loaded, values, without=released),
             session=values,
             runtime_revision=self._runtime_revision,
+            released=released,
         )
 
     def install_prepared(self, prepared: PreparedSettings) -> None:
@@ -328,6 +346,9 @@ class SettingsHandle:
         lost when the rebuild commits: the effective value is composed again
         with it, from values that were checked when they were chosen. Otherwise
         nothing is recomputed — a commit installs what was prepared.
+
+        The live choices the file moved past end here, with the load that shows
+        it, unless the user chose again since the file was read.
         """
         if prepared.base.manual_model_revision is not None:
             if prepared.base.model_edit is None:
@@ -339,9 +360,23 @@ class SettingsHandle:
                 base=replace(prepared.base, model_edit=None, manual_model_revision=None),
                 effective=replace(prepared.effective, model_edit=None, manual_model_revision=None),
             )
+        if prepared.base.confirmed_overrides:
+            prepared = replace(
+                prepared,
+                base=replace(prepared.base, confirmed_overrides={}),
+                effective=replace(prepared.effective, confirmed_overrides={}),
+            )
+        composed_current = prepared.runtime_revision == self._runtime_revision
         self._base = prepared.base
         self._session = dict(prepared.session)
-        if prepared.runtime_revision == self._runtime_revision:
+        ended = [name for name, version in prepared.released.items() if self._runtime_versions.get(name) == version]
+        for name in ended:
+            del self._runtime[name], self._runtime_versions[name]
+            self._confirmed.pop(name, None)
+        if ended:
+            # A rebuild prepared before this point composed these choices in.
+            self._runtime_revision += 1
+        if composed_current:
             self._effective = prepared.effective
         else:
             self._reapply()
@@ -355,7 +390,32 @@ class SettingsHandle:
         """
         self._runtime.update(values)
         self._runtime_revision += 1
+        for name in values:
+            self._runtime_versions[name] = self._runtime_revision
+            self._confirmed.pop(name, None)
         self._reapply()
+
+    def confirm_written(self, written: Mapping[str, Any]) -> None:
+        """Note which live choices reached the file: *written* maps dotted keys to the values stored.
+
+        Checked key by key against the choice in force, so a write that a newer
+        choice has overtaken confirms nothing, and a batch can confirm part of
+        what it carried. Only the LIVE tier counts: other overrides describe a
+        launch default rather than the screen, and no reload lets go of them.
+        """
+        for key, value in written.items():
+            name = _LIVE_FIELDS.get(key)
+            if name in self._runtime and self._runtime[name] == value:
+                self._confirmed[name] = self._runtime_versions[name]
+
+    def confirmed_overrides(self) -> dict[str, int]:
+        """The live choices known to be on disk now (field name → override version).
+
+        Taken before a manual reload reads the files. A choice is released only
+        when the file then says something else, and only if it is still the
+        same choice when the load is prepared and again when it is installed.
+        """
+        return dict(self._confirmed)
 
     def persist_approval_default(self, mode: str, *, persist: Callable[[str], Exception | None]) -> str:
         """Persist a global choice and mirror its safe launch default in the runtime overlay."""
@@ -366,9 +426,35 @@ class SettingsHandle:
         self.override(default_approval_mode=default)
         return default
 
-    def _compose(self, base: LoadedSettings, session: Mapping[str, Any]) -> LoadedSettings:
+    def _overtaken_by(self, loaded: LoadedSettings) -> dict[str, int]:
+        """The confirmed choices *loaded* moved past: a hand edit or removal, and not a value it refused.
+
+        A file that still holds the choice releases nothing, so a reload with no
+        edit leaves the overlay and every value it decides exactly as they were.
+        A value refused in the user's file keeps the choice in force: the warning
+        names the bad edit, and the screen has no better value to follow. Another
+        layer's refusal (a project may not set most of these keys) says nothing
+        about that edit.
+        """
+        rejected = {
+            _LIVE_FIELDS.get(warning.key)
+            for warning in loaded.warnings
+            if warning.rejected and warning.origin.layer is Source.USER
+        }
+        return {
+            name: version
+            for name, version in loaded.confirmed_overrides.items()
+            if self._runtime_versions.get(name) == version
+            and name not in rejected
+            and (name not in loaded.file_values or loaded.file_values[name] != self._runtime[name])
+        }
+
+    def _compose(
+        self, base: LoadedSettings, session: Mapping[str, Any], *, without: Mapping[str, Any] = _EMPTY_MAP
+    ) -> LoadedSettings:
         effective = base.overlay(Source.SESSION, **session) if session else base
-        return effective.overlay(Source.RUNTIME, **self._runtime) if self._runtime else effective
+        runtime = {name: value for name, value in self._runtime.items() if name not in without}
+        return effective.overlay(Source.RUNTIME, **runtime) if runtime else effective
 
     def _reapply(self) -> None:
         """Rebuild the effective value: the load, the session's own choices, then live choices on top.

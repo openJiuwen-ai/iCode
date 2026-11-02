@@ -225,11 +225,12 @@ msgstr "已应用：{keys}"
 msgid "controls.reload_busy"
 msgstr "请等当前回合或工作流结束后再执行 /reload。"
 
-#. English: Reloaded settings, profiles, memory, skills, hooks and MCP servers.
-#. chrys-meta={"fingerprint":"f2378170f880e978ac08f4909291db0ee3e8af8e60413dd38dd0cee5fe588eaf","multiline":false,"placeholders":[]}
+#. English: Reloaded settings, profiles, memory, skills, hooks, MCP servers,
+#. themes and prompt shortcuts.
+#. chrys-meta={"fingerprint":"399d57d2a45da329d41a50b2cca0f2bec9bf37be1aab7506e21831c953446ace","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_done"
-msgstr "已重新加载设置、智能体与模型配置、记忆、Skills、钩子和 MCP 服务器。"
+msgstr "已重新加载设置、智能体与模型配置、记忆、Skills、钩子、MCP 服务器、主题和快捷指令。"
 
 #. English: The previous turn was cancelled while settings were waiting to
 #. reload.
@@ -8212,13 +8213,14 @@ msgstr "此命令不接受其他选项。"
 msgid "tui.man.options.supports_subcommands"
 msgstr "此命令支持子命令。"
 
-#. English: Read settings, agent profiles, model profiles and hooks from disk,
-#. reconnect MCP servers, then rebuild the current agent with its memory and
-#. skills. Run this command when the current turn or workflow has finished.
-#. chrys-meta={"fingerprint":"ece547f48854d5d7d6eb07ae17c72828ee186ffc46bac3ba32ebb795b9e6f788","multiline":false,"placeholders":[]}
+#. English: Read settings, agent profiles, model profiles, hooks, themes and
+#. prompt shortcuts from disk, reconnect MCP servers, then rebuild the current
+#. agent with its memory and skills. Run this command when the current turn or
+#. workflow has finished.
+#. chrys-meta={"fingerprint":"a0dfe8bbc2ba1ade5d6f707e924f0b4a006621d7b8717cbb6e5a9c37bf901a58","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.reload.body"
-msgstr "从磁盘读取设置、智能体和模型配置以及钩子，重新连接 MCP 服务器，然后重新加载当前智能体的记忆和 Skills。请在当前回合或工作流结束后执行。"
+msgstr "从磁盘读取设置、智能体和模型配置、钩子、主题以及快捷指令，重新连接 MCP 服务器，然后重新加载当前智能体的记忆和 Skills。请在当前回合或工作流结束后执行。"
 
 #. English: With a title argument, apply it directly as the custom session
 #. title. Without one (or with only whitespace), open the session title editor
@@ -11627,6 +11629,12 @@ msgstr "已为本会话固定；保存的值适用于新会话。"
 msgid "tui.settings.reload_finalize_failed"
 msgstr "设置面板未能完成保存，本次刷新已停止。"
 
+#. English: Close the theme editor before reloading settings.
+#. chrys-meta={"fingerprint":"4e5b557d5df930f79f74141a517a8b734257cbf2f3a912c35d55d3216c78494a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.settings.reload_theme_editor_busy"
+msgstr "请先关闭主题编辑器，再重新加载设置。"
+
 #. English: Wait for the workflow run to finish before reloading settings.
 #. chrys-meta={"fingerprint":"f4455ec9d7f3f3d742e58508d5ba4cfc6f3fdc3bc7736a16c45262fdccde7f9e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/screen.py
@@ -12279,11 +12287,12 @@ msgstr "待办"
 msgid "tui.sidebar.toc.empty"
 msgstr "你的对话将显示在这里"
 
-#. English: Reload settings, profiles, memory, skills, hooks and MCP servers
-#. chrys-meta={"fingerprint":"9f13c84786c318cc15399801329121a44dbd02d6ec61b6568b33a1f8064787a2","multiline":false,"placeholders":[]}
+#. English: Reload settings, profiles, memory, skills, hooks, MCP servers,
+#. themes and prompt shortcuts
+#. chrys-meta={"fingerprint":"997389a23bb77d18bc898490f75dd781e2f91effe2bdd38f95566f833ac9ef9e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.slash.reload_description"
-msgstr "重新加载设置、智能体与模型配置、记忆、Skills、钩子和 MCP 服务器"
+msgstr "重新加载设置、智能体与模型配置、记忆、Skills、钩子、MCP 服务器、主题和快捷指令"
 
 #. English: Session {session_id} was not found.
 #. chrys-meta={"fingerprint":"a5c2002c8e98be1f6de66c9e7ceb5fd6595b9dcfc1595822cbd0bc7cdf8036c6","multiline":false,"placeholders":["session_id"]}

@@ -52,6 +52,27 @@ async def ask_after_reload(session: Session, prompt: str) -> None:
     assert not session.seen.of(ev.UserRetry)
 
 
+async def reload_report(session: Session) -> dict[str, str]:
+    """Run ``/reload`` from a ready screen; return its report lines by message key."""
+    from chrys.foundation.i18n.formatting import format_message
+
+    before = len(session.seen.of(ev.SettingsReloaded))
+    await wait_for(
+        lambda: session.app.screen is session.main and not session.bar.agent_loading,
+        pilot=session.pilot,
+        description="ready for /reload",
+    )
+    session.bar.focus_input()
+    await wait_for(lambda: session.chat.has_focus, pilot=session.pilot, description="chat focused")
+    await slash_reload(session)
+    await wait_for(
+        lambda: len(session.seen.of(ev.SettingsReloaded)) > before,
+        pilot=session.pilot,
+        description="manual report",
+    )
+    return {ref.definition.key: format_message(ref) for ref in session.seen.of(ev.SettingsReloaded)[-1].report}
+
+
 def settings_path() -> Path:
     freeze_process_env()
     path = user_settings_path()
@@ -246,7 +267,6 @@ async def test_manual_model_commits_only_after_success_and_keeps_the_session_mod
 async def test_reload_reports_applied_deferred_and_conflicting_values_once(agent_engine, tmp_path, monkeypatch):
     from chrys.foundation.config.process_settings import install_process_settings
     from chrys.foundation.config.settings_store import load_settings
-    from chrys.foundation.i18n.formatting import format_message
     from tests.support.event_capture import capture_events
 
     monkeypatch.delenv("CHRYS_OTEL", raising=False)
@@ -256,7 +276,6 @@ async def test_reload_reports_applied_deferred_and_conflicting_values_once(agent
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         warnings = await capture_events(session.bus, ev.Warning)
         session.engine.settings_handle.override(chat_fold_finished_turns=True)
-        old_theme = session.app.theme
         path.write_text(
             f"model.profile.active: {MAIN_MODEL}\nui.theme: nord\nui.chat.fold_finished_turns: true\n"
             "notifications.enabled: false\ntrajectory.verify_commands: mycheck\notel.enabled: true\n"
@@ -264,29 +283,13 @@ async def test_reload_reports_applied_deferred_and_conflicting_values_once(agent
             encoding="utf-8",
         )
 
-        async def report():
-            before = len(session.seen.of(ev.SettingsReloaded))
-            await wait_for(
-                lambda: session.app.screen is session.main and not session.bar.agent_loading,
-                pilot=session.pilot,
-                description="ready for /reload",
-            )
-            session.bar.focus_input()
-            await wait_for(lambda: session.chat.has_focus, pilot=session.pilot, description="chat focused")
-            await slash_reload(session)
-            await wait_for(
-                lambda: len(session.seen.of(ev.SettingsReloaded)) > before,
-                pilot=session.pilot,
-                description="manual report",
-            )
-            return {ref.definition.key: format_message(ref) for ref in session.seen.of(ev.SettingsReloaded)[-1].report}
-
         other = tmp_path / "summary-workspace"
         other.mkdir()
         await session.bus.publish(ev.WorkspaceChange(primary_cwd=str(other)), raise_handler_errors=True)
-        lines = await report()
-        assert session.app.theme == old_theme
-        assert "ui.theme" in lines["controls.reload_next_launch"]
+        lines = await reload_report(session)
+        assert session.app.theme == "nord"
+        assert "ui.theme" in lines["controls.reload_applied"]
+        assert "ui.theme" not in lines["controls.reload_next_launch"]
         assert "notifications.enabled" in lines["controls.reload_applied"]
         assert "trajectory.verify_commands" in lines["controls.reload_applied"]
         assert "otel.enabled" in lines["controls.settings_restart_required"]
@@ -295,25 +298,25 @@ async def test_reload_reports_applied_deferred_and_conflicting_values_once(agent
         await wait_for(
             lambda: any("ui.theme" in m for _, m in notices(session.app)),
             pilot=session.pilot,
-            description="pending theme shown",
+            description="applied theme shown",
         )
         assert session.app.notification_service.settings.enabled is False
         assert session.main._trajectory_verify_commands == "mycheck"
         await session.bus.publish(ev.SettingsReload(), raise_handler_errors=True)
-        pending = (await report())["controls.reload_next_launch"]
-        assert all(key in pending for key in ("ui.theme", "agent.default_profile", "approval.default_mode"))
+        pending = (await reload_report(session))["controls.reload_next_launch"]
+        assert all(key in pending for key in ("agent.default_profile", "approval.default_mode"))
 
         path.write_text(
             path.read_text(encoding="utf-8").replace("fold_finished_turns: true", "fold_finished_turns: false"),
             encoding="utf-8",
         )
-        assert "ui.chat.fold_finished_turns" in (await report())["controls.reload_shadowed"]
+        assert "ui.chat.fold_finished_turns" in (await reload_report(session))["controls.reload_shadowed"]
         path.write_text("ui.theme: gone-theme\n", encoding="utf-8")
-        lines = await report()
+        lines = await reload_report(session)
         assert get_model_pointer()[0] == ""
         assert "gone-theme" in lines["controls.reload_unknown_theme"]
-        assert "ui.theme" not in lines.get("controls.reload_next_launch", "")
-        assert session.app.theme == old_theme
+        assert "ui.theme" not in lines.get("controls.reload_applied", "")
+        assert session.app.theme == "nord"
 
 
 async def test_reload_waits_for_the_finished_turn_to_save(agent_engine, tmp_path, monkeypatch):

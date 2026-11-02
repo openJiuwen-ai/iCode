@@ -1775,7 +1775,7 @@
         ["awaitable", "await self._bus.publish(Error(code=denied.code, message=denied.message, session_id=session_id))", "unresolved"]
       ],
       "RuntimeControls._publish_settings_reloaded": [
-        ["awaitable", "await self._bus.publish(SettingsReloaded(report=report, runtime_details=copy.deepcopy(self._current.manifest.runtime_details), session_id=self._session.session_id))", "unresolved"]
+        ["awaitable", "await self._bus.publish(SettingsReloaded(manual=manual, report=report, runtime_details=copy.deepcopy(self._current.manifest.runtime_details), session_id=self._session.session_id))", "unresolved"]
       ],
       "RuntimeControls._publish_workspace_satisfied_or_denied": [
         ["wrapper", "await self._publish_workspace_updated_snapshot(session_id, primary_cwd=primary_cwd)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_workspace_updated_snapshot"],
@@ -1832,7 +1832,7 @@
         ["wrapper", "await finish_close(asyncio.create_task(asyncio.to_thread(profiles.normalize)))", "unresolved", "chrys.foundation.util.once_close.finish_close"],
         ["thread_pool", "asyncio.to_thread(profiles.normalize)", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='manual_settings_reload_failed', message=str(exc), display_message=exc.display, display_hint=exc.display_hint or (profiles.changes_hint() if profiles is not None else None), session_id=token.session_id))", "unresolved"],
-        ["wrapper", "await self._publish_settings_reloaded(tuple(report))", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_settings_reloaded"]
+        ["wrapper", "await self._publish_settings_reloaded(tuple(report), manual=event.manual)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_settings_reloaded"]
       ],
       "RuntimeControls.on_workspace_change": [
         ["awaitable", "await self._bus.publish(Error(code='runtime_mutation_not_ready', message='No active agent \u2014 cannot change workspace', display_message=_CONTROLS_WORKSPACE_SWITCH_NOT_READY.bind(), session_id=self._session.session_id))", "unresolved"],

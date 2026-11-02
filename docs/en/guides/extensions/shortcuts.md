@@ -11,7 +11,7 @@ iCode reads shortcuts from two places:
 | Your shortcuts | `~/.chrys/shortcuts` | `%APPDATA%\chrys\shortcuts` |
 | The project's shortcuts | `.chrys/shortcuts` in the working directory and its parent directories up to the repository root | Same |
 
-New and changed files show the next time you type `/`.
+New and changed files show the next time you type `/`, or after `/reload`.
 
 A project's `.chrys/shortcuts` must stay inside the repository: if it is a link to a folder outside it, iCode skips it.
 

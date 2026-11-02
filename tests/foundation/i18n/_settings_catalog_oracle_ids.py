@@ -169,6 +169,7 @@ SETTINGS_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "settings.invalid_value_for_key",
         "settings.model_id_expected",
         "settings.model_selection_changed",
+        "tui.settings.reload_theme_editor_busy",
         "tui.settings.reload_workflow_busy",
         "tui.settings.reload_finalize_failed",
         "tui.settings.save_rejected",

@@ -1627,6 +1627,8 @@ class SettingsReloaded(Event):
     distinguish success from an ``AgentLoadFailed`` rebuild failure.
     """
 
+    manual: bool = False
+    """It answers a ``SettingsReload(manual=True)``: the frontend also follows what the files now say."""
     report: tuple[MessageRef, ...] = ()
     runtime_details: AgentRuntimeDetails = field(default_factory=AgentRuntimeDetails)
 

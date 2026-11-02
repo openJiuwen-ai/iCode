@@ -78,7 +78,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RELOAD_DONE = msg(
-    "controls.reload_done", fallback="Reloaded settings, profiles, memory, skills, hooks and MCP servers."
+    "controls.reload_done",
+    fallback="Reloaded settings, profiles, memory, skills, hooks, MCP servers, themes and prompt shortcuts.",
 )
 _RELOAD_SETTINGS_ONLY = msg("controls.reload_settings_only", fallback="Reloaded settings. No agent is active.")
 _RELOAD_UNKNOWN_THEME = msg("controls.reload_unknown_theme", fallback="Theme '{theme}' is unavailable in this session.")
@@ -128,8 +129,8 @@ _RELOAD_DENIALS = {
     "shutdown": _RELOAD_SHUTDOWN,
 }
 
-# These settings have a separate TUI projection initialized at launch.
-_NEXT_LAUNCH_KEYS = {"agent.default_profile", "approval.default_mode", "ui.theme", "ui.locale", "ui.editor.keymap"}
+# These settings only decide what the next launch starts with.
+_NEXT_LAUNCH_KEYS = {"agent.default_profile", "approval.default_mode"}
 
 _CONTROLS_NO_REGISTRY = msg(
     "controls.no_registry",
@@ -720,6 +721,8 @@ class RuntimeControls:
                 pins = self._session_pin_overrides()
                 if event.manual:
                     pins["manual_reload"] = True
+                # Before the read: a choice confirmed after it may be newer than what was read.
+                confirmed = self._settings_handle.confirmed_overrides() if event.manual else {}
                 candidate = await asyncio.to_thread(
                     load_settings,
                     project_root=self._session_project_root(),
@@ -727,6 +730,7 @@ class RuntimeControls:
                     **pins,
                 )
                 if event.manual:
+                    candidate = dataclasses.replace(candidate, confirmed_overrides=confirmed)
                     profiles = ProfileReload(self._agent_registry, self._model_registry)
                     await asyncio.to_thread(profiles.scan)
                     profiles.check_versions()
@@ -900,12 +904,13 @@ class RuntimeControls:
                     for name, entry in specs_by_field(Settings).items()
                     if before[name] != after[name] and entry.apply in (Apply.LIVE, Apply.RELOAD)
                 }
+                # Also when the name is unchanged: its file may just have been deleted.
                 if (
-                    "ui.theme" in changed
-                    and event.available_themes is not None
+                    event.available_themes is not None
+                    and new.settings.theme
                     and new.settings.theme not in event.available_themes
                 ):
-                    changed.remove("ui.theme")
+                    changed.discard("ui.theme")
                     report.append(_RELOAD_UNKNOWN_THEME.bind(theme=new.settings.theme))
                 for definition, keys in (
                     (_RELOAD_CHANGED, changed - _NEXT_LAUNCH_KEYS),
@@ -926,7 +931,7 @@ class RuntimeControls:
                 )
                 if shadowed:
                     report.append(_RELOAD_SHADOWED.bind(keys=DisplaySequence(tuple(shadowed))))
-            await self._publish_settings_reloaded(tuple(report))
+            await self._publish_settings_reloaded(tuple(report), manual=event.manual)
         finally:
             self._permits.release_rebuild_permit(permit)
 
@@ -1027,9 +1032,10 @@ class RuntimeControls:
         profile = registry.get(profile_id) if registry is not None else None
         return profile is not None and is_model_profile_selectable(profile)
 
-    async def _publish_settings_reloaded(self, report: tuple[MessageRef, ...] = ()) -> None:
+    async def _publish_settings_reloaded(self, report: tuple[MessageRef, ...] = (), *, manual: bool = False) -> None:
         await self._bus.publish(
             SettingsReloaded(
+                manual=manual,
                 report=report,
                 runtime_details=copy.deepcopy(self._current.manifest.runtime_details),
                 session_id=self._session.session_id,

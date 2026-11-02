@@ -202,8 +202,9 @@ msgstr ""
 msgid "controls.reload_busy"
 msgstr ""
 
-#. English: Reloaded settings, profiles, memory, skills, hooks and MCP servers.
-#. chrys-meta={"fingerprint":"f2378170f880e978ac08f4909291db0ee3e8af8e60413dd38dd0cee5fe588eaf","multiline":false,"placeholders":[]}
+#. English: Reloaded settings, profiles, memory, skills, hooks, MCP servers,
+#. themes and prompt shortcuts.
+#. chrys-meta={"fingerprint":"399d57d2a45da329d41a50b2cca0f2bec9bf37be1aab7506e21831c953446ace","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.reload_done"
 msgstr ""
@@ -8059,10 +8060,11 @@ msgstr ""
 msgid "tui.man.options.supports_subcommands"
 msgstr ""
 
-#. English: Read settings, agent profiles, model profiles and hooks from disk,
-#. reconnect MCP servers, then rebuild the current agent with its memory and
-#. skills. Run this command when the current turn or workflow has finished.
-#. chrys-meta={"fingerprint":"ece547f48854d5d7d6eb07ae17c72828ee186ffc46bac3ba32ebb795b9e6f788","multiline":false,"placeholders":[]}
+#. English: Read settings, agent profiles, model profiles, hooks, themes and
+#. prompt shortcuts from disk, reconnect MCP servers, then rebuild the current
+#. agent with its memory and skills. Run this command when the current turn or
+#. workflow has finished.
+#. chrys-meta={"fingerprint":"a0dfe8bbc2ba1ade5d6f707e924f0b4a006621d7b8717cbb6e5a9c37bf901a58","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.reload.body"
 msgstr ""
@@ -11410,6 +11412,12 @@ msgstr ""
 msgid "tui.settings.reload_finalize_failed"
 msgstr ""
 
+#. English: Close the theme editor before reloading settings.
+#. chrys-meta={"fingerprint":"4e5b557d5df930f79f74141a517a8b734257cbf2f3a912c35d55d3216c78494a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.settings.reload_theme_editor_busy"
+msgstr ""
+
 #. English: Wait for the workflow run to finish before reloading settings.
 #. chrys-meta={"fingerprint":"f4455ec9d7f3f3d742e58508d5ba4cfc6f3fdc3bc7736a16c45262fdccde7f9e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/screen.py
@@ -12066,8 +12074,9 @@ msgstr ""
 msgid "tui.sidebar.toc.empty"
 msgstr ""
 
-#. English: Reload settings, profiles, memory, skills, hooks and MCP servers
-#. chrys-meta={"fingerprint":"9f13c84786c318cc15399801329121a44dbd02d6ec61b6568b33a1f8064787a2","multiline":false,"placeholders":[]}
+#. English: Reload settings, profiles, memory, skills, hooks, MCP servers,
+#. themes and prompt shortcuts
+#. chrys-meta={"fingerprint":"997389a23bb77d18bc898490f75dd781e2f91effe2bdd38f95566f833ac9ef9e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.slash.reload_description"
 msgstr ""

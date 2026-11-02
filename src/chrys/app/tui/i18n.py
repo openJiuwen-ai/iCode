@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 from weakref import WeakSet
@@ -199,12 +199,28 @@ class LocaleController:
 
         self._settings_handle.override(locale=requested_locale)
         persist_error = persist_locale(requested_locale)
-        if self._localizer.effective_locale == previous_effective:
-            return LocaleSwitchResult(LocaleSwitchStatus.REQUESTED_ONLY, persist_error=persist_error)
+        if persist_error is None:
+            self._settings_handle.confirm_written({"ui.locale": requested_locale})
+        return replace(self._present(previous_effective), persist_error=persist_error)
 
+    def follow_settings(self) -> LocaleSwitchResult:
+        """Put the locale the settings now hold on screen, which is neither a choice nor a write."""
+        requested_locale = self.requested_locale
+        if requested_locale == self._localizer.requested_locale:
+            return LocaleSwitchResult(LocaleSwitchStatus.IDENTICAL_REQUEST)
+        previous_effective = self._localizer.effective_locale
+        warning = self._localizer.switch_locale(requested_locale)
+        if warning is not None:
+            return LocaleSwitchResult(LocaleSwitchStatus.LOAD_FAILED, warning)
+        return self._present(previous_effective)
+
+    def _present(self, previous_effective: str) -> LocaleSwitchResult:
+        """Redraw the registered surfaces if the bundle just installed changed what they say."""
+        if self._localizer.effective_locale == previous_effective:
+            return LocaleSwitchResult(LocaleSwitchStatus.REQUESTED_ONLY)
         self._revision += 1
         self._refresh_registered_presentation()
-        return LocaleSwitchResult(LocaleSwitchStatus.EFFECTIVE_CHANGED, persist_error=persist_error)
+        return LocaleSwitchResult(LocaleSwitchStatus.EFFECTIVE_CHANGED)
 
     def _refresh_registered_presentation(self) -> None:
         for surface in tuple(self._surfaces):

@@ -23,7 +23,7 @@ The filename with the `.yaml` or `.yml` extension removed becomes the theme name
 
 When a `.yaml` file and a `.yml` file have the same theme name, iCode prefers `.yaml`. If the `.yaml` file is invalid, iCode still tries the `.yml` file. Only one theme is kept per name.
 
-After adding or editing a theme file, restart iCode to load it, then press **F9** and select the corresponding theme from the theme list to apply it.
+After adding or editing a theme file, run `/reload` while the TUI is idle and the theme editor is closed, or restart iCode. Then press **F9** and select the theme from the theme list, or name it in `ui.theme` in your [settings](settings.md). If you edited the theme in use, the screen updates right away. If you delete the file of the theme in use, the screen switches to the default `chrys` theme and your saved selection stays as it is, so the theme returns if you restore the file.
 
 ## File Format
 
@@ -147,6 +147,6 @@ The top-level field `text_alpha` is also accepted and must be a finite number, b
 
 ## Loading Failures
 
-If iCode finds malformed YAML, a missing `primary` field, unknown top-level fields, or invalid field values while loading, it displays a warning and skips the file. Use the warning to check the corresponding file, correct it, and restart iCode to load it again. Other valid themes remain available.
+If iCode finds malformed YAML, a missing `primary` field, unknown top-level fields, or invalid field values while loading, it displays a warning and skips the file. Use the warning to check the corresponding file, correct it, and run `/reload` or restart iCode to load it again. Other valid themes remain available, and with `/reload` a theme loaded earlier from that file also stays until you fix it.
 
-If a theme loads successfully but a `variables` value cannot be used in the corresponding interface style when applied, iCode displays a warning and falls back to the default `chrys` theme. This fallback does not overwrite the saved theme selection. Correct the file, then restart iCode to try again.
+If a theme loads successfully but a `variables` value cannot be used in the corresponding interface style when applied, iCode displays a warning. `/reload` keeps the theme already on screen; otherwise iCode falls back to the default `chrys` theme. Neither overwrites the saved theme selection. Correct the file, then run `/reload` or restart iCode to try again.

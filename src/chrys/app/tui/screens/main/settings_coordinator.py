@@ -227,6 +227,7 @@ class SettingsCoordinator:
             # row must show that, not the choice that did not take.
             self._reproject_dialog()
         elif key == "trajectory.verify_commands":
+            self._queue.schedule({key: str(value)})
             self._callbacks.apply_trajectory_verify_commands(str(value))
         elif key == "ui.chat.tool_groups_expanded":
             self._callbacks.apply_tool_groups_expanded(bool(value))
