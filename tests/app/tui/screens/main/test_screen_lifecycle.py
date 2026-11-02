@@ -42,6 +42,9 @@ def test_unmount_shuts_down_buddy_before_flushing_notifications() -> None:
     async def close_workflow() -> None:
         calls.append("workflow_close")
 
+    async def close_btw() -> None:
+        calls.append("btw_close")
+
     async def close_workspace_branch() -> None:
         calls.append("workspace_branch_close")
 
@@ -49,6 +52,7 @@ def test_unmount_shuts_down_buddy_before_flushing_notifications() -> None:
         _events=SimpleNamespace(close_approval_waits=lambda: calls.append("approval_waits_close")),
         _workflow_timer=None,
         _workflow=SimpleNamespace(close=close_workflow),
+        _btw=SimpleNamespace(shutdown=close_btw),
         _subscriptions=_Subscriptions(),
         _suggestions=SimpleNamespace(buddy_command=_BuddyCommand()),
         _session_title=SimpleNamespace(stop_activity=lambda: calls.append("session_title_stop")),
@@ -62,6 +66,7 @@ def test_unmount_shuts_down_buddy_before_flushing_notifications() -> None:
     assert calls == [
         "approval_waits_close",
         "workflow_close",
+        "btw_close",
         "unsubscribe",
         "session_title_stop",
         "workspace_branch_close",

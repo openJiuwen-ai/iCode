@@ -47,6 +47,27 @@ _DESCRIPTION_CLEAR = msg(
 _DESCRIPTION_EXIT = msg("tui.commands.description.exit", fallback="Exit {app}")
 _DESCRIPTION_RESUME = msg("tui.commands.description.resume", fallback="Resume the most recent session in this mode")
 _DESCRIPTION_FORK = msg("tui.commands.description.fork", fallback="Fork the current session")
+_DESCRIPTION_BTW = msg("tui.commands.description.btw", fallback="Ask a side question without changing the main task")
+_MAN_BTW_BODY = msg(
+    "tui.man.btw.body",
+    fallback=(
+        "Use /btw <question> to ask using the conversation's existing text and\n"
+        "tool results. Use /btw alone to reopen this session's latest saved answer.\n\n"
+        "The main task continues separately. The side question cannot use tools\n"
+        "and does not enter the main conversation. Its card appears below the\n"
+        "chat, leaving the sidebar at full height.\n\n"
+        "The Answer tab opens by default, showing a thinking animation until\n"
+        "the complete answer is ready. The Question tab keeps your full question.\n"
+        "Long content scrolls within each tab. Previous/next buttons browse saved\n"
+        "answers without changing your selected tab, and are disabled while generating.\n\n"
+        "Completed answers are kept with the session. Clearing, deleting, or rolling\n"
+        "back to the starting screen removes them. Prompt-submission hooks also check\n"
+        "side questions. Failed or cancelled questions are not saved. Escape or the\n"
+        "close icon cancels a running question or hides the card, keeping saved\n"
+        "answers. Only one side question can run at a time."
+    ),
+    multiline=True,
+)
 _DESCRIPTION_RENAME = msg(
     "tui.commands.description.rename",
     fallback="Set or clear a custom session title",
@@ -463,6 +484,7 @@ class SlashCommandActionPort(Protocol):
     def quit(self) -> None: ...
     def resume_last_session(self) -> None: ...
     def fork_current_session(self) -> None: ...
+    def ask_side_question(self, question: str, /) -> None: ...
     def browse_sessions(self) -> None: ...
     def open_workflows(self) -> None: ...
     def open_guide(self) -> None: ...
@@ -509,6 +531,7 @@ class SlashCommandActions:
     quit_app: Callable[[], None]
     resume_session: Callable[[], object]
     fork_session: Callable[[], object]
+    ask_side_question: Callable[[str], None]
     browse_session_list: Callable[[], None]
     workflow_selection: Callable[[], None]
     open_guide: Callable[[], None]
@@ -897,6 +920,14 @@ class MainSlashCommandRegistry:
                 _DESCRIPTION_FORK.bind(),
                 action=lambda _: actions.fork_current_session(),
                 man_page=_MAN_FORK_BODY.bind(),
+            ),
+            SlashCommandDef(
+                "btw",
+                _DESCRIPTION_BTW.bind(),
+                action=actions.ask_side_question,
+                allow_while_running=True,
+                synopsis="/btw [question]",
+                man_page=_MAN_BTW_BODY.bind(),
             ),
             SlashCommandDef(
                 "rename",

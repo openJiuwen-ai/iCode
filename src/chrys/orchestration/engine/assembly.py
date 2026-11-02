@@ -20,6 +20,7 @@ from chrys.orchestration.engine.run.coordinator import TurnCoordinator
 from chrys.orchestration.engine.run.turn_hooks import TurnHookDispatcher
 from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
 from chrys.orchestration.engine.session_lifecycle import SessionLifecycle
+from chrys.orchestration.engine.side_questions import SideQuestions
 from chrys.orchestration.engine.state.active_session import ActiveSession
 from chrys.orchestration.engine.state.controls import RuntimeControls
 from chrys.orchestration.engine.state.current_agent import CurrentAgent
@@ -155,6 +156,16 @@ def assemble_agent_engine(
         hook_confirmations=hook_confirmations,
     )
 
+    side_questions = SideQuestions(
+        bus=bus,
+        session=session,
+        current=current,
+        permits=permits,
+        history=history,
+        recorder=recorder,
+        state_store=state_store,
+        lease=turn_state.lease,
+    )
     lifecycle = SessionLifecycle(
         session=session,
         current=current,
@@ -173,6 +184,7 @@ def assemble_agent_engine(
         trajectory_recorder=recorder,
         workspace_change_tracker=workspace_change_tracker,
         unregister_current_engine=unregister_current_engine,
+        side_questions=side_questions,
     )
     rollback = RollbackController(
         session=session,
@@ -250,5 +262,6 @@ def assemble_agent_engine(
         workflows=workflows,
         hook_runs=hook_runs,
         hook_confirmations=hook_confirmations,
+        side_questions=side_questions,
     )
     return engine

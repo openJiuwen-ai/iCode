@@ -194,7 +194,7 @@ def allows_headless_event(event: Event) -> bool:
         return False
     if not isinstance(event, InvocationEvent):
         return True
-    if event.origin.root.kind == "workflow_node":
+    if event.origin.root.kind in {"workflow_node", "side_question"}:
         return False
     return event.origin.kind == "turn" or not isinstance(event, _InvocationProse)
 

@@ -96,10 +96,6 @@ _FORK_TURN_RUNNING = msg(
     "tui.session.fork.turn_running",
     fallback="Cannot fork while a turn is running",
 )
-_FORK_EMPTY_SESSION = msg(
-    "tui.session.fork.empty_session",
-    fallback="Cannot fork an empty session",
-)
 _FORK_NO_ACTIVE_SESSION = msg(
     "tui.session.fork.no_active_session",
     fallback="No active session to fork",
@@ -500,9 +496,7 @@ class SessionHandler:
         if s.agent_running or self._services.execution_busy():
             s.notify(_FORK_TURN_RUNNING.bind(), title=_FORK_TITLE.bind(), severity="warning", timeout=3)
             return
-        if not s.has_messages:
-            s.notify(_FORK_EMPTY_SESSION.bind(), title=_FORK_TITLE.bind(), severity="warning", timeout=3)
-            return
+        # The backend owns emptiness: a session can contain saved side answers without chat messages.
         session_id = ui.chat_session_id()
         if not session_id:
             s.notify(_FORK_NO_ACTIVE_SESSION.bind(), title=_FORK_TITLE.bind(), severity="warning", timeout=3)

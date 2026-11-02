@@ -6,6 +6,8 @@ Slash commands are shortcuts entered in the terminal user interface (TUI) input 
 
 A slash command must start at the beginning of the input, with the command and its arguments on the same line.
 
+`/btw` also accepts a question spanning multiple lines.
+
 - Valid example: `/diff` runs as a command.
 - Invalid example: `Please run /diff` does not trigger a command.
 
@@ -36,6 +38,7 @@ In this table:
 
 | Command and usage | Aliases | Description | Options |
 | --- | --- | --- | --- |
+| `/btw [question]` | — | Ask a side question using the current conversation while the main task continues. The answer appears in a separate card below the chat. See [Ask a side question](../guides/daily-use/sessions.md#ask-a-side-question). | `question`: optional; may span multiple lines. Omit it to reopen saved side questions for this session. |
 | `/new` | — | Start a new session and keep the current session. See [Switch to a new session](../guides/daily-use/sessions.md#switch-to-a-new-session). | — |
 | `/clear` | — | Delete the current session and start a new one. This cannot be undone after confirmation. See [Switch to a new session](../guides/daily-use/sessions.md#switch-to-a-new-session). | — |
 | `/exit` | `/quit` | Exit iCode and return to the terminal. | — |

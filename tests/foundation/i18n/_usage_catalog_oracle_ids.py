@@ -50,6 +50,7 @@ USAGE_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "tui.usage.source.approval_judge",
         "tui.usage.source.compaction",
         "tui.usage.source.completer",
+        "tui.usage.source.side_question",
         "tui.usage.source.main",
         "tui.usage.source.sub_agent",
         "tui.usage.source.title_gen",

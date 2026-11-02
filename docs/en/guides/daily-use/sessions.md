@@ -41,6 +41,18 @@ A task you stop shows no mark, and the mark clears when you start the next task.
 
 When you stop a task or it fails, the part of the reply that already appeared stays in the conversation and in the saved session, and the agent reads it when you send your next message. If you click **Retry** or **Continue** without typing anything instead, the agent writes the reply again: when it starts, the text it writes again is removed, and tool calls stay.
 
+## Ask a side question
+
+Enter `/btw <question>` to ask about the current conversation while the main task continues. The side question uses the current model and existing conversation text and tool results. It cannot read new files, run commands, or use tools. Very long reference text may be shortened to fit the model's context window. Prompt-submission hooks also check side questions: a blocked question is not sent to the model, and any hook reminders apply only to that side question.
+
+A **Side Questions** card opens below the main chat and takes half of the chat area. **Answer** shows a thinking animation, then the complete answer all at once. **Question** shows your full question. Long content scrolls within the card. Use the previous/next arrows to browse questions in the order you asked them; browsing keeps your selected tab. Only one side question can run at a time.
+
+Click **✕** or press **Esc** to close the card. Closing a running question cancels it; a completed answer is kept. You can ask another side question immediately after closing the card. If a completion menu is open, the first **Esc** closes that menu. The main task continues independently, and **Ctrl+B** still interrupts the main task.
+
+Enter `/btw` without a question to reopen the latest answer. If this session has no side questions, a warning appears. Saved questions survive restart and session restore and are copied when you fork a session. Failed or cancelled questions are not saved. Clearing or deleting the session, or rolling back to its starting screen, removes its side questions. Switching to another session, reopening the current session, or rolling back cancels a running side question. Answers stay available. Changing the model or agent, or forking and staying in the current session, lets it continue. Side questions do not enter the main conversation and have no follow-up or quote-back action.
+
+Answers appear before saving finishes. If saving fails, a warning appears and the answer stays available until you leave the session. Copy anything you need before leaving. Leaving the session, clearing it, rolling back to its starting screen, or exiting the app may discard a save still in progress. Asking a side question does not change an existing session's position in the recent-session list.
+
 ## Resume an existing session
 
 When the agent is idle, enter `/resume` in the input field to resume the most recent chat session.

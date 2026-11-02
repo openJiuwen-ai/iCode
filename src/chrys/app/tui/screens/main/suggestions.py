@@ -1287,7 +1287,7 @@ class SuggestionHandler:
                 self.dismiss_suggestions()
                 return
             query = text.lstrip("/\uff0f")
-            if " " in query:
+            if any(character.isspace() for character in query):
                 # Support second-level suggestions when user types "/cmd ..." directly.
                 parts = query.split(None, 1)
                 cmd_name = parts[0] if parts else ""

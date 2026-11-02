@@ -1260,7 +1260,7 @@ class ChrysAcpServer:
         return False
 
     async def _handle_chrys_extension_event(self, session_id: str, event: Event) -> bool:
-        if isinstance(event, InvocationEvent) and event.origin.root.kind == "workflow_node":
+        if isinstance(event, InvocationEvent) and event.origin.root.kind in {"workflow_node", "side_question"}:
             return False
         client = self._client_or_error()
         event_session_id = _event_session_id(event, session_id)

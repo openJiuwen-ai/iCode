@@ -211,6 +211,12 @@ _PROMPT_SEARCH_SCAN_BLOCK = 4096
 memory unit of ``_collapsed_prompt_excerpt`` (never a growing slice)."""
 
 
+def title_from_text(text: str) -> str:
+    """Use the same single-line, bounded title for every user-authored prompt."""
+    text = text.strip().replace("\n", " ")
+    return text[:_TITLE_MAX_LEN] + "..." if len(text) > _TITLE_MAX_LEN else text
+
+
 def _extract_title(messages: list[Message]) -> str:
     """Extract title from the first user message text, truncated.
 
@@ -223,11 +229,8 @@ def _extract_title(messages: list[Message]) -> str:
             continue
         for c in m.contents:
             if c.type == "text":
-                text = c.text or ""
-                text = text.strip().replace("\n", " ")
+                text = title_from_text(c.text or "")
                 if text:
-                    if len(text) > _TITLE_MAX_LEN:
-                        return text[:_TITLE_MAX_LEN] + "..."
                     return text
     return ""
 

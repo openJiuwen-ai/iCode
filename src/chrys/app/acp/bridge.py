@@ -319,7 +319,7 @@ class AcpEventBridge:
 
     def _project_event(self, event: Event) -> list[SessionUpdate]:
         if isinstance(event, InvocationEvent):
-            if event.origin.root.kind == "workflow_node":
+            if event.origin.root.kind in {"workflow_node", "side_question"}:
                 return []
             if event.origin.kind == "sub_agent":
                 return self._sub_agent_updates(event)

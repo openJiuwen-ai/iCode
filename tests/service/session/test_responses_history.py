@@ -80,6 +80,7 @@ def _restore_lifecycle(*, session: SimpleNamespace, current: SimpleNamespace) ->
         trajectory_recorder=None,
         workspace_change_tracker=None,
         unregister_current_engine=lambda: None,
+        side_questions=None,
     )
 
 

@@ -21,8 +21,10 @@ if TYPE_CHECKING:
 
 from chrys.foundation.config.settings import resolve_sessions_dir
 from chrys.foundation.models.session_surface import SessionSurface
+from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.platform.files import atomic_write_text as _common_atomic_write_text
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.service.session.side_questions import SideQuestionSessionSeed, load_side_questions, write_side_questions
 from chrys.service.state._fork import SessionForkMixin
 from chrys.service.state._session_files import _MRU_SWEEP_SLACK as _MRU_SWEEP_SLACK
 from chrys.service.state._session_files import RAW_HTTP_LOG_FILE_NAME as RAW_HTTP_LOG_FILE_NAME
@@ -56,7 +58,7 @@ from chrys.service.state._session_files import session_dir_has_artifacts as sess
 from chrys.service.state._session_files import session_write_lock_path as session_write_lock_path
 from chrys.service.state._session_meta import ChatSessionMeta as ChatSessionMeta
 from chrys.service.state._session_meta import SessionMeta as SessionMeta
-from chrys.service.state._session_meta import SessionMetaMixin, copy_session_meta, resolve_session_kind
+from chrys.service.state._session_meta import SessionMetaMixin, copy_session_meta, resolve_session_kind, title_from_text
 from chrys.service.state._session_meta import WorkflowSessionMeta as WorkflowSessionMeta
 from chrys.service.state._session_meta import _earliest_history_created_at as _earliest_history_created_at
 from chrys.service.state._session_meta import _extract_title as _extract_title
@@ -121,6 +123,14 @@ class StateStore(Protocol):
     def sessions_root(self) -> Path: ...
     def session_folder_cwds(self) -> dict[str, str]: ...
     def session_dir(self, session_id: str) -> Path: ...
+    async def save_side_question(
+        self,
+        session_id: str,
+        entry: SideQuestionEntry,
+        seed: SideQuestionSessionSeed,
+        *,
+        cancelled: threading.Event | None = None,
+    ) -> None: ...
     async def save_session(
         self,
         session_id: str,
@@ -989,6 +999,56 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             parent_session_id=parent_session_id,
             last_surface=last_surface,
         )
+
+    async def save_side_question(
+        self,
+        session_id: str,
+        entry: SideQuestionEntry,
+        seed: SideQuestionSessionSeed,
+        *,
+        cancelled: threading.Event | None = None,
+    ) -> None:
+        """Commit a complete Q&A without replacing any main-turn checkpoint."""
+        await asyncio.to_thread(self._save_side_question_sync, session_id, entry, seed, cancelled=cancelled)
+
+    def _save_side_question_sync(
+        self,
+        session_id: str,
+        entry: SideQuestionEntry,
+        seed: SideQuestionSessionSeed,
+        *,
+        cancelled: threading.Event | None = None,
+    ) -> None:
+        if not session_id:
+            raise ValueError("Side questions require a session identity")
+        directory = self.session_dir(session_id)
+        # Queue behind main checkpoints like other writers. Session operations never await this
+        # worker, so waiting for the lock cannot block them; they can invalidate a queued save.
+        with FileLock(self._write_lock_path(session_id), timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
+            if cancelled is not None and cancelled.is_set():
+                return
+            entries = load_side_questions(directory, session_id)
+            if not session_dir_has_artifacts(directory):
+                # A side-question-only session still needs a restorable envelope. Never overwrite
+                # a main turn's primary, recovery, or backup, even if it committed during this call.
+                data = self._build_session_envelope(
+                    session_id,
+                    {},
+                    agent_profile=seed.agent_profile,
+                    agent_display_name=seed.agent_display_name,
+                    agent_profile_id=seed.agent_profile_id,
+                    primary_cwd=seed.primary_cwd,
+                    working_dirs=list(seed.working_dirs),
+                    model_provider=seed.model_provider,
+                    model_api_style=seed.model_api_style,
+                    model_id=seed.model_id,
+                    model_profile_id=seed.model_profile_id,
+                    last_surface=seed.last_surface,
+                    title=title_from_text(entry.question),
+                )
+                self._record_mru(session_id, self._envelope_updated_at(data))
+                self._write_session_envelope_unlocked(session_id, data)
+            write_side_questions(directory, session_id, (*entries, entry))
 
     async def save_workflow_session(
         self, session_id: str, state: WorkflowSessionState, *, title: str = ""

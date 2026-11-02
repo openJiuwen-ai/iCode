@@ -1215,6 +1215,7 @@ def make_slash_actions(screen: SuggestionScreen) -> SlashCommandActions:
         quit_app=screen.action_quit,
         resume_session=screen._resume_last_session,
         fork_session=screen._fork_current_session,
+        ask_side_question=lambda _question: None,
         workflow_selection=lambda: None,
         open_guide=lambda: None,
         browse_session_list=screen.action_sessions,

@@ -117,8 +117,10 @@ All events provide the [base fields](#base-fields). Some events also provide add
 
 | Event | When it runs | Additional fields |
 | --- | --- | --- |
-| `user_prompt_submit` | When the user submits a message to start a new turn or an additional message while the agent is running. | `text`: the message text the user just submitted<br>`injected`: `true` for an additional message submitted during a run, `false` for a message starting a new turn |
+| `user_prompt_submit` | When the user submits a message to start a new turn, an additional message while the agent is running, or a `/btw` side question. | `text`: the submitted text; for a side question, the question without the `/btw` prefix<br>`injected`: `true` for an additional message sent to the running main turn; `false` for a new main-turn message or a side question<br>`side_question`: `true` for a side question; omitted for main-conversation messages (treat a missing value as `false`) |
 | `user_interrupt` | After the user interrupts the current turn. | None |
+
+To identify a message starting a new main turn, check both `not payload.get("injected", False)` and `not payload.get("side_question", False)`. A side question sends `injected: false` and `side_question: true`; it does not start a main turn or trigger `before_turn` / `after_turn`. Opening saved side questions with `/btw` alone does not trigger `user_prompt_submit`.
 
 ### Tool events
 
@@ -181,7 +183,7 @@ Only the following events apply decisions that blocking hooks return in the resu
 
 | Event | Effect |
 | --- | --- |
-| `user_prompt_submit` | Reject a message, [ask you to confirm it](#asking-you-to-confirm), or add a system reminder. A rejected message stays in the input box; if you sent it while the agent was running, the agent keeps working. |
+| `user_prompt_submit` | Reject a message, [ask you to confirm it](#asking-you-to-confirm), or add a system reminder. A rejected main-conversation message stays in the input box; if you sent it while the agent was running, the agent keeps working. A rejected side question shows the reason in its card; its reminders apply only to that side question. |
 | `before_tool_call` | Reject a tool call, [ask you to confirm it](#asking-you-to-confirm), or modify its arguments, but cannot approve a call or bypass approval. |
 | `after_tool_call` | Append context to the tool result, but cannot undo a call that has already occurred. |
 | `tool_error` | Append context to the tool error, but cannot undo a call that has already occurred. |
@@ -190,8 +192,8 @@ Only the following events apply decisions that blocking hooks return in the resu
 
 Async hooks run immediately when triggered, and the current operation continues. If a hook has not finished, iCode waits at the following points:
 
-- At the end of the current turn, it waits for async hooks triggered during that turn, except hooks triggered by `user_interrupt`.
-- When the current session ends, it waits for async hooks triggered by session events. Because `session_end` is triggered during session shutdown, iCode starts waiting for it immediately.
+- At the end of the current turn, it waits for async hooks triggered during that turn, except hooks triggered by `user_interrupt` or side questions.
+- When the current session ends, it waits for async hooks triggered by session events or side questions. Because `session_end` is triggered during session shutdown, iCode starts waiting for it immediately.
 
 The wait at session shutdown is limited by `shutdown_grace_seconds`. Each async hook is also subject to its own `timeout_seconds` limit.
 

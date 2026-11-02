@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.32.3\n"
+"Project-Id-Version: Chrys 0.33.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -4607,6 +4607,112 @@ msgstr "切换视图"
 msgid "tui.binding.trajectory"
 msgstr "轨迹"
 
+#. English: The side question was blocked by a hook. {reason}
+#. chrys-meta={"fingerprint":"df8d40213042ff7026f2f110cbf39c34e228db140572dfbf8ba7222f65a37d67","multiline":true,"placeholders":["reason"]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.blocked"
+msgstr ""
+"顺便问被 hook 拦截。\n"
+"{reason}"
+
+#. English: A side question is running. Close it before asking another.
+#. chrys-meta={"fingerprint":"92de309b7e58326a7a78075ea3ab636f35d994e05a08866dc47bcad10ac6d064","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/btw.py
+msgid "tui.btw.busy"
+msgstr "顺便问正在进行，请先关闭后再提问。"
+
+#. English: Close (Esc)
+#. chrys-meta={"fingerprint":"b09f4877f716a524b31df2f4863094c5298400fbb96c37dc6c61e80c63dbb2f7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.close"
+msgstr "关闭（Esc）"
+
+#. English: No side questions yet. Use /btw <question> to ask one.
+#. chrys-meta={"fingerprint":"8ee5ab59844428add7ab975035d60221148b88ec140a648f4c1314fbf0a48d58","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.empty"
+msgstr "暂无顺便问记录。输入 /btw <问题> 开始提问。"
+
+#. English: The side question could not finish. Close it and ask again.
+#. chrys-meta={"fingerprint":"603ec56ccd3f7991ab75746b43a7bd74c48b0365626b29927f25eda92153bc43","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.failed"
+msgstr "顺便问未能完成，请关闭后重新提问。"
+
+#. English: Next side question
+#. chrys-meta={"fingerprint":"dfe2b73c9ca1cdd7246bea7ccedf0ef42aa2a68581467df9821e2346530eb6ef","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.next"
+msgstr "下一个顺便问"
+
+#. English: Open side questions
+#. chrys-meta={"fingerprint":"620d78335be5c73eace923e574663a4bf15916a16bacabd7f91be8b8f2568a1f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.btw.open"
+msgstr "打开顺便问记录"
+
+#. English: Previous side question
+#. chrys-meta={"fingerprint":"c8aca1e89cd66446ef99ce917fb384acc0bc2a9adf7c09fa8e20b2557a875b99","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.previous"
+msgstr "上一个顺便问"
+
+#. English: Side question history could not be read. Your saved file was kept.
+#. chrys-meta={"fingerprint":"a26d854d6bf7dbae8ba50b9e226f943c50d2a9353a5aae329043660fffc05cd5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.read_failed"
+msgstr "无法读取顺便问记录，原有文件已保留。"
+
+#. English: Loading side questions...
+#. chrys-meta={"fingerprint":"ab20bc1d04f7cbbbb35aac038bb17cb0ec12eaf1a010ad7a4ea8628bac24ff3f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.reading"
+msgstr "正在读取顺便问记录…"
+
+#. English: This side answer could not be saved. It stays available until you
+#. leave this session.
+#. chrys-meta={"fingerprint":"8ac8ffedf2c96146445c4364b7daddbb1a0c3bf2b424e37028b5834d7628b18d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.save_failed"
+msgstr "这条顺便问的回答未能保存，离开此会话前仍可查看。"
+
+#. English: Send side question
+#. chrys-meta={"fingerprint":"5c53a809d60b05f1916183b7107cdb107cabe7a7504aa532a82aefc2de32840d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.btw.send"
+msgstr "发送顺便问"
+
+#. English: Answer
+#. chrys-meta={"fingerprint":"4a0af57df1047a39b77bfcd4c6c440fd72a7bd4fe7633d6b27867ce1a315e7dc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.tab.output"
+msgstr "回答"
+
+#. English: Question
+#. chrys-meta={"fingerprint":"868d8746d7e4b42628701a19d6e690b87aba5774ee5f5dc5774b509ada6d57dd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.tab.question"
+msgstr "问题"
+
+#. English: Thinking...
+#. chrys-meta={"fingerprint":"4b4ca080bc36c9e58a1cfb4e47bf7b603b5381bd3ca3353a6ce22c2e2bf8b017","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.thinking"
+msgstr "正在思考…"
+
+#. English: Side Questions
+#. chrys-meta={"fingerprint":"7270bf11fb3d44ce27afedb1fb1bd547ba3fab7bbabdd70fa557b07f14a0873f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.title"
+msgstr "顺便问"
+
+#. English: Side questions are unavailable while the session is changing. Try
+#. again when it is ready.
+#. chrys-meta={"fingerprint":"f5c705f7bb7ce3507537eb294911e626468e394cca5ec2dac5a11e93a094b224","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.unavailable"
+msgstr "会话正在切换，暂时无法使用顺便问。请就绪后重试。"
+
 #. English: evolution {stage}
 #. chrys-meta={"fingerprint":"213dcab508e98efe844bd6e8477d10f7e22a0d6cc09837a04e065130c59ad0b7","multiline":false,"placeholders":["stage"]}
 #: src/chrys/app/features/buddy/commands.py
@@ -5117,6 +5223,12 @@ msgstr "管理智能体配置"
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.approval"
 msgstr "切换审批模式：manual → auto → bypass"
+
+#. English: Ask a side question without changing the main task
+#. chrys-meta={"fingerprint":"a4bd6b9c446277437e73faadd25d474ce39e9efc76e2d7fe80c58d5decb4141e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.commands.description.btw"
+msgstr "顺便问一个问题，不改变主任务"
 
 #. English: Hatch, pet and look after your buddy
 #. chrys-meta={"fingerprint":"cb54466977309d63bd1dd99072d253df407389fc282d6fa057cf0ec07fcbc13b","multiline":false,"placeholders":[]}
@@ -7448,6 +7560,39 @@ msgstr ""
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.approval.mode_hint"
 msgstr "使用 Tab 补全可直接切换到指定模式。"
+
+#. English: Use /btw <question> to ask using the conversation's existing text
+#. and tool results. Use /btw alone to reopen this session's latest saved
+#. answer.  The main task continues separately. The side question cannot use
+#. tools and does not enter the main conversation. Its card appears below the
+#. chat, leaving the sidebar at full height.  The Answer tab opens by default,
+#. showing a thinking animation until the complete answer is ready. The
+#. Question tab keeps your full question. Long content scrolls within each tab.
+#. Previous/next buttons browse saved answers without changing your selected
+#. tab, and are disabled while generating.  Completed answers are kept with the
+#. session. Clearing, deleting, or rolling back to the starting screen removes
+#. them. Prompt-submission hooks also check side questions. Failed or cancelled
+#. questions are not saved. Escape or the close icon cancels a running question
+#. or hides the card, keeping saved answers. Only one side question can run at
+#. a time.
+#. chrys-meta={"fingerprint":"626194918c365b2d5eb3fe660e264720e2e33b4ba64ecec049e9d71afbbacb36","multiline":true,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.man.btw.body"
+msgstr ""
+"输入 /btw <问题>，根据对话中已有的文字和工具结果顺便提问。\n"
+"输入不带问题的 /btw，可重开本会话最新保存的答案。\n"
+"\n"
+"主任务独立继续运行。顺便问不能使用工具，也不会进入主对话。\n"
+"顺便问卡片显示在聊天区域下方，右侧栏保持完整高度。\n"
+"\n"
+"默认打开回答标签页，先显示思考动效，完整答案就绪后一次性显示。\n"
+"问题标签页保留完整问题，长内容在各标签页内滚动。\n"
+"前后按钮用于浏览已保存的答案，翻页时保留当前标签，生成期间不可翻页。\n"
+"\n"
+"完整答案随会话保存。清空、删除会话或回滚到起始画面时会一并移除。\n"
+"提交提示的 hook 也会检查顺便问。\n"
+"失败或取消的顺便问不保存。按 Esc 或点击关闭图标可取消正在进行的顺便问，\n"
+"或隐藏卡片并保留已保存的答案。同一时间只能运行一个顺便问。"
 
 #. English: Look after the buddy that lives in the sidebar.      Subcommands:
 #. hatch   - Hatch your buddy (there is only ever one)         info    - Show
@@ -10121,12 +10266,6 @@ msgstr "已创建分支 {fork_id}"
 #: src/chrys/app/tui/screens/main/session_handlers.py
 msgid "tui.session.fork.dialog_failed"
 msgstr "无法打开派生对话框"
-
-#. English: Cannot fork an empty session
-#. chrys-meta={"fingerprint":"e2bb6cb7f29148395cfa0d4d89ec9f24dfcc91db90e4645ca5e78b5041ad2fff","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/session_handlers.py
-msgid "tui.session.fork.empty_session"
-msgstr "无法派生空会话"
 
 #. English: No active session to fork
 #. chrys-meta={"fingerprint":"dab5a5ca81ec3300d6fe3bd7befbb84abfecc78d53e1249f68fd2207a97a5a28","multiline":false,"placeholders":[]}
@@ -15417,6 +15556,12 @@ msgstr "Last Words"
 msgid "tui.usage.source.main"
 msgstr "主智能体"
 
+#. English: Side questions
+#. chrys-meta={"fingerprint":"99cd49d604f2aad8fe773afdc8fb95c2fa57a9c8f6750d049007f27ff5bdeefe","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.side_question"
+msgstr "顺便问"
+
 #. English: Sub-agent
 #. chrys-meta={"fingerprint":"89e0801e2952d3706eaa1b79629dcc3805be3cc23fadb72c9ca4949a1afbcc26","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
@@ -16633,6 +16778,9 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "tui.binding.notifications"
 #~ msgstr "通知"
 
+#~ msgid "tui.btw.subtitle"
+#~ msgstr "关闭结束本次顺便问"
+
 #~ msgid "tui.buddy.hums"
 #~ msgstr "💭 {name} 若有所思地哼着歌..."
 
@@ -16741,6 +16889,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.runtime_details.shortcut.model"
 #~ msgstr "模型 {model}"
+
+#~ msgid "tui.session.fork.empty_session"
+#~ msgstr "无法派生空会话"
 
 #~ msgid "tui.sessions.run_count"
 #~ msgstr "{count_text} 次运行"

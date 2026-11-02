@@ -58,6 +58,7 @@ from chrys.service.profiles.models.schema import API_STYLE_RESPONSES, is_model_p
 from chrys.service.session.history import stamp_history_item_ids
 from chrys.service.session.persistence import has_real_messages
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
+from chrys.service.session.side_questions import BTW_FILE_NAME
 from chrys.service.session.sub_agent_logs import SubAgentSessionArtifactService
 from chrys.service.state.store import (
     SESSION_BACKUP_FILE_NAME,
@@ -77,6 +78,7 @@ if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.orchestration.engine.loader import AgentLoader
     from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
+    from chrys.orchestration.engine.side_questions import SideQuestions
     from chrys.orchestration.engine.state.active_session import ActiveSession
     from chrys.orchestration.engine.state.current_agent import CurrentAgent
     from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
@@ -271,7 +273,7 @@ def cleanup_empty_session_dir_path(session_dir: Path | None, *, path_reused: boo
 
 
 def _delete_reset_session_files(session_dir: Path) -> None:
-    for filename in (SESSION_FILE_NAME, SESSION_BACKUP_FILE_NAME, SESSION_RECOVERY_FILE_NAME):
+    for filename in (SESSION_FILE_NAME, SESSION_BACKUP_FILE_NAME, SESSION_RECOVERY_FILE_NAME, BTW_FILE_NAME):
         path = session_dir / filename
         if path.exists():
             path.unlink()
@@ -363,6 +365,7 @@ class SessionLifecycle:
         trajectory_recorder: TrajectoryRecorder,
         workspace_change_tracker: WorkspaceChangeTracker,
         unregister_current_engine: Callable[[], None],
+        side_questions: SideQuestions,
     ) -> None:
         self._session = session
         self._current = current
@@ -381,6 +384,7 @@ class SessionLifecycle:
         self._trajectory_recorder = trajectory_recorder
         self._workspace_change_tracker = workspace_change_tracker
         self._unregister_current_engine = unregister_current_engine
+        self._side_questions = side_questions
 
     def reset_turn_runtime_after_session_shutdown(self) -> None:
         """Clear turn runtime state after shutdown has observed the old task."""
@@ -722,9 +726,12 @@ class SessionLifecycle:
             return self._session.agent_profile
         return self.new_session_profile() or self._session.agent_profile
 
-    async def close_session_in_place(self) -> None:
-        """Close the session while retaining its lock and process resources."""
-        await self._teardown(release_lock=False, close_mcp=False)
+    async def close_session_in_place(self, *, keep_side_answers: bool = False) -> None:
+        """Close the runtime while retaining its lock and process resources.
+
+        Restoring the same session keeps its side answers and queued saves, but stops running questions.
+        """
+        await self._teardown(release_lock=False, close_mcp=False, keep_side_answers=keep_side_answers)
 
     async def shutdown(self) -> None:
         """Close the session and process resources."""
@@ -736,9 +743,13 @@ class SessionLifecycle:
         if tasks is not None:
             await tasks.close()
 
-    async def _teardown(self, *, release_lock: bool, close_mcp: bool) -> None:
+    async def _teardown(self, *, release_lock: bool, close_mcp: bool, keep_side_answers: bool = False) -> None:
         """Gracefully shut down the engine."""
         self._session.mark_closing()
+        if keep_side_answers:
+            await self._side_questions.stop_running()
+        else:
+            await self._side_questions.quiesce()
         self._turn_state.shutdown_used_cancel_fallback = False
         suppress_trailing_save = False
         self._unregister_current_engine()
@@ -886,6 +897,15 @@ class SessionLifecycle:
             )
             return
 
+        # Side-question history reads may yield to a rebuild or a new turn.
+        # All fork admission checks below must observe the state after those waits.
+        has_side_questions = False
+        if (
+            event.session_id == self._session.session_id
+            and self._current.loaded is not None
+            and not self._fsm.is_running()
+        ):
+            has_side_questions = await self._side_questions.has_history()
         active_session_id = self._session.session_id
         state_store = self._persistence.state_store
         if active_session_id is None or self._current.loaded is None:
@@ -936,7 +956,7 @@ class SessionLifecycle:
                 display_message=_FORK_LOCK_NOT_OWNED.bind(),
             )
             return
-        if not has_real_messages(self._current.loaded.bindings.backend.history_state):
+        if not has_real_messages(self._current.loaded.bindings.backend.history_state) and not has_side_questions:
             await self._publish_session_fork_error(
                 "session_fork_empty",
                 "Cannot fork an empty session.",
@@ -966,7 +986,7 @@ class SessionLifecycle:
                 display_message=_FORK_PREPARE_FAILED.bind(detail=DisplayBlock(str(exc))),
             )
             return
-        if fresh_state is None or not has_real_messages(fresh_state):
+        if fresh_state is None or (not has_real_messages(fresh_state) and not has_side_questions):
             await self._publish_session_fork_error(
                 "session_fork_empty",
                 "Cannot fork an empty session.",
@@ -1675,7 +1695,7 @@ class SessionLifecycle:
             if transition_owner is not None:
                 self._permits.commit_session_transition(transition_owner)
             if restoring_current:
-                await self.close_session_in_place()
+                await self.close_session_in_place(keep_side_answers=True)
             else:
                 await self.close_session()
             self.reset_turn_runtime_after_session_shutdown()
@@ -2024,6 +2044,7 @@ class SessionLifecycle:
         if release_current_lock:
             from chrys.foundation.observability.sink import get_otel_sink
 
+            await self._side_questions.quiesce()
             # Deleting the live session is its end: fire ``session_end`` now and
             # wait for it (async hooks included), while the id and the files still
             # exist, so hooks keep the "before teardown" contract; the shutdown

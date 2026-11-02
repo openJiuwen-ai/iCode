@@ -281,7 +281,7 @@ def test_resume_last_session_ignores_running_or_loading_agent() -> None:
     assert published == []
 
 
-def test_fork_current_session_rejects_empty_session() -> None:
+def test_fork_current_session_rejects_missing_session_identity() -> None:
     published: list[object] = []
     notifications: list[tuple[str, str, str]] = []
 
@@ -291,12 +291,13 @@ def test_fork_current_session_rejects_empty_session() -> None:
     screen = SimpleNamespace(
         _services=MainScreenServices(bus=SimpleNamespace(publish=publish)),
         notify=lambda message, **_kwargs: notifications.append(message),
+        query_one=lambda _type: SimpleNamespace(session_id=""),
     )
 
     asyncio.run(make_session_handler(screen).fork_current_session())
 
     assert published == []
-    assert notifications == ["Cannot fork an empty session"]
+    assert notifications == ["No active session to fork"]
 
 
 def test_fork_current_session_publishes_session_fork_and_opens_loading_modal(monkeypatch: pytest.MonkeyPatch) -> None:

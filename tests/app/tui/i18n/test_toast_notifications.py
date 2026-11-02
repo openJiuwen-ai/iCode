@@ -104,6 +104,7 @@ def _slash_actions(warn: Any) -> SlashCommandActions:
         quit_app=noop,
         resume_session=noop,
         fork_session=noop,
+        ask_side_question=lambda _question: None,
         workflow_selection=lambda: None,
         open_guide=lambda: None,
         browse_session_list=noop,

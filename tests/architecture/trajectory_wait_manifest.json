@@ -15,6 +15,20 @@
       "reason": "Execution-state notification delivery and draining have no enclosing trajectory interval proven for every call path.",
       "when": "all_paths"
     },
+    "session-transition-work": {
+      "classification": "B",
+      "container_rule": "unresolved_outer_container",
+      "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+      "reason": "Session fork admission, storage and same-session runtime teardown can wait without a containing trajectory interval proven on every entry path; they are lifecycle work outside a main turn.",
+      "when": "all_paths"
+    },
+    "side-question-background": {
+      "classification": "B",
+      "container_rule": "unresolved_outer_container",
+      "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+      "reason": "Side questions own independent hook, provider, history and bounded cancellation waits; no main-turn interval contains all paths, including idle-session requests and teardown.",
+      "when": "all_paths"
+    },
     "unresolved": {
       "classification": "B",
       "container_rule": "unresolved_outer_container",
@@ -709,6 +723,7 @@
         ["shield", "await asyncio.shield(task)", "unresolved"]
       ],
       "AgentEngine._release_resources": [
+        ["awaitable", "await self._side_questions.close()", "unresolved"],
         ["awaitable", "await self._lifecycle.shutdown()", "unresolved"],
         ["awaitable", "await self._hook_confirmations.close()", "unresolved"]
       ],
@@ -742,6 +757,7 @@
         ["awaitable", "await self._bus.subscribe(InvocationAborted, self._on_sub_agent_unpaused)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(InvocationCascadeAborted, self._on_sub_agent_unpaused)", "unresolved"],
         ["awaitable", "await self._workflows.subscribe()", "unresolved"],
+        ["awaitable", "await self._side_questions.subscribe()", "unresolved"],
         ["awaitable", "await self._hook_confirmations.start()", "unresolved"]
       ],
       "AgentEngine.begin_rollback_projection": [
@@ -1495,6 +1511,7 @@
     },
     "chrys.orchestration.engine.session_lifecycle": {
       "SessionLifecycle._delete_session_reporting": [
+        ["awaitable", "await self._side_questions.quiesce()", "unresolved"],
         ["wrapper", "await self.fire_session_end_hooks()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.fire_session_end_hooks"],
         ["awaitable", "await tasks.stop_all()", "unresolved"],
         ["wrapper", "await self.close_trajectory_log()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_trajectory_log"],
@@ -1545,27 +1562,29 @@
         ["awaitable", "await tasks.close()", "unresolved"]
       ],
       "SessionLifecycle._teardown": [
-        ["awaitable", "await self._current.loaded.bindings.backend.abort(handle, AbortCause.OWNER_CLOSE)", "unresolved"],
-        ["timeout", "await asyncio.wait_for(asyncio.shield(run_task), timeout=_SHUTDOWN_POST_RUN_TIMEOUT_SECONDS)", "unresolved"],
-        ["shield", "asyncio.shield(run_task)", "unresolved"],
-        ["future", "await run_task", "unresolved"],
+        ["awaitable", "await self._side_questions.stop_running()", "side-question-background"],
+        ["awaitable", "await self._side_questions.quiesce()", "side-question-background"],
+        ["awaitable", "await self._current.loaded.bindings.backend.abort(handle, AbortCause.OWNER_CLOSE)", "session-transition-work"],
+        ["timeout", "await asyncio.wait_for(asyncio.shield(run_task), timeout=_SHUTDOWN_POST_RUN_TIMEOUT_SECONDS)", "session-transition-work"],
+        ["shield", "asyncio.shield(run_task)", "session-transition-work"],
+        ["future", "await run_task", "session-transition-work"],
         ["awaitable", "await self._turn_state.lease.settle_notifications()", "execution-state-notification"],
-        ["awaitable", "await self._loader.cancel_outbox_recovery()", "unresolved"],
-        ["wrapper", "await self._stop_background_tasks()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._stop_background_tasks"],
-        ["awaitable", "await self._usage_publisher.settle()", "unresolved"],
-        ["wrapper", "await self.fire_session_end_hooks()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.fire_session_end_hooks"],
-        ["awaitable", "await self._session.hook_manager.drain_session()", "unresolved"],
-        ["awaitable", "await self._writer.save_current_session()", "unresolved"],
-        ["thread_pool", "await asyncio.get_running_loop().run_in_executor(None, self._session.mutation_coordinator.close)", "unresolved"],
-        ["awaitable", "await self._trajectory_recorder.close(reason=TrajectoryRuntimeFinishReason.GRACEFUL_SHUTDOWN if close_mcp else TrajectoryRuntimeFinishReason.SESSION_SWITCH)", "unresolved"],
-        ["awaitable", "await self._loader.release_current()", "unresolved"],
-        ["awaitable", "await self._loader.close()", "unresolved"]
+        ["awaitable", "await self._loader.cancel_outbox_recovery()", "session-transition-work"],
+        ["wrapper", "await self._stop_background_tasks()", "session-transition-work", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._stop_background_tasks"],
+        ["awaitable", "await self._usage_publisher.settle()", "session-transition-work"],
+        ["wrapper", "await self.fire_session_end_hooks()", "session-transition-work", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.fire_session_end_hooks"],
+        ["awaitable", "await self._session.hook_manager.drain_session()", "session-transition-work"],
+        ["awaitable", "await self._writer.save_current_session()", "session-transition-work"],
+        ["thread_pool", "await asyncio.get_running_loop().run_in_executor(None, self._session.mutation_coordinator.close)", "session-transition-work"],
+        ["awaitable", "await self._trajectory_recorder.close(reason=TrajectoryRuntimeFinishReason.GRACEFUL_SHUTDOWN if close_mcp else TrajectoryRuntimeFinishReason.SESSION_SWITCH)", "session-transition-work"],
+        ["awaitable", "await self._loader.release_current()", "session-transition-work"],
+        ["awaitable", "await self._loader.close()", "session-transition-work"]
       ],
       "SessionLifecycle.close_session": [
         ["wrapper", "await self._teardown(release_lock=True, close_mcp=False)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._teardown"]
       ],
       "SessionLifecycle.close_session_in_place": [
-        ["wrapper", "await self._teardown(release_lock=False, close_mcp=False)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._teardown"]
+        ["wrapper", "await self._teardown(release_lock=False, close_mcp=False, keep_side_answers=keep_side_answers)", "session-transition-work", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._teardown"]
       ],
       "SessionLifecycle.close_trajectory_log": [
         ["awaitable", "await self._trajectory_recorder.close(reason=TrajectoryRuntimeFinishReason.SESSION_SWITCH)", "unresolved"]
@@ -1589,25 +1608,26 @@
         ["awaitable", "await self._bus.publish(Error(code=failure.code, message=failure.message, session_id=event.session_id))", "unresolved"]
       ],
       "SessionLifecycle.on_session_fork": [
-        ["timeout", "await asyncio.wait_for(self._permits.wait_for_agent_load_idle(), timeout=_SESSION_FORK_AGENT_LOAD_TIMEOUT_SECONDS)", "unresolved"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_busy', 'Cannot fork while the agent is still loading.', session_id=event.session_id or self._session.session_id or '', display_message=_FORK_AGENT_LOADING.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_not_ready', 'Cannot fork before a session is ready.', session_id=active_session_id or event.session_id or '', display_message=_FORK_NOT_READY.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_stale', 'Cannot fork because the active session changed.', session_id=event.session_id or active_session_id, display_message=_FORK_SESSION_CHANGED.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_busy', 'Cannot fork while a turn is running.', session_id=active_session_id, display_message=_FORK_TURN_ACTIVE.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_failed', 'State store not configured.', session_id=active_session_id, display_message=_FORK_STATE_STORE_MISSING.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_busy', 'Cannot fork while session state is being restored.', session_id=active_session_id, display_message=_FORK_RESTORING.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_busy', 'Cannot fork because this window does not own the active session lock.', session_id=active_session_id, display_message=_FORK_LOCK_NOT_OWNED.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_empty', 'Cannot fork an empty session.', session_id=active_session_id, display_message=_FORK_EMPTY_SESSION.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["awaitable", "await self._writer.save_current_session(raise_on_error=True)", "unresolved"],
-        ["awaitable", "await state_store.load_session(active_session_id)", "unresolved"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_busy', f'Timed out preparing session for fork: {exc}', session_id=active_session_id, display_message=_FORK_PREPARE_TIMEOUT.bind(detail=DisplayBlock(str(exc))))", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_failed', f'Failed to prepare session for fork: {exc}', session_id=active_session_id, display_message=_FORK_PREPARE_FAILED.bind(detail=DisplayBlock(str(exc))))", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_empty', 'Cannot fork an empty session.', session_id=active_session_id, display_message=_FORK_EMPTY_SESSION.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["thread_pool", "await asyncio.to_thread(state_store.fork_session, active_session_id, last_surface=self._session.surface)", "unresolved"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_not_found', f\"Session '{active_session_id}' not found.\", session_id=active_session_id, display_message=_FORK_SESSION_NOT_FOUND.bind(session_id=active_session_id))", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_failed', f'Failed to fork session: {exc}', session_id=active_session_id, display_message=_FORK_FAILED.bind(detail=DisplayBlock(str(exc))))", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["awaitable", "await self._trajectory_recorder.fork(origin_session_id=active_session_id, fork_session_id=new_session_id, fork_session_dir=self._session.session_dir_for(new_session_id), fork_write_lock_path=self._session.session_write_lock_path(new_session_id), session_start_info=self._loader.trajectory_session_start_info())", "unresolved"],
-        ["awaitable", "await self._bus.publish(SessionForked(session_id=active_session_id, parent_session_id=active_session_id, new_session_id=new_session_id))", "unresolved"]
+        ["timeout", "await asyncio.wait_for(self._permits.wait_for_agent_load_idle(), timeout=_SESSION_FORK_AGENT_LOAD_TIMEOUT_SECONDS)", "session-transition-work"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_busy', 'Cannot fork while the agent is still loading.', session_id=event.session_id or self._session.session_id or '', display_message=_FORK_AGENT_LOADING.bind())", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["awaitable", "await self._side_questions.has_history()", "session-transition-work"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_not_ready', 'Cannot fork before a session is ready.', session_id=active_session_id or event.session_id or '', display_message=_FORK_NOT_READY.bind())", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_stale', 'Cannot fork because the active session changed.', session_id=event.session_id or active_session_id, display_message=_FORK_SESSION_CHANGED.bind())", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_busy', 'Cannot fork while a turn is running.', session_id=active_session_id, display_message=_FORK_TURN_ACTIVE.bind())", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_failed', 'State store not configured.', session_id=active_session_id, display_message=_FORK_STATE_STORE_MISSING.bind())", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_busy', 'Cannot fork while session state is being restored.', session_id=active_session_id, display_message=_FORK_RESTORING.bind())", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_busy', 'Cannot fork because this window does not own the active session lock.', session_id=active_session_id, display_message=_FORK_LOCK_NOT_OWNED.bind())", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_empty', 'Cannot fork an empty session.', session_id=active_session_id, display_message=_FORK_EMPTY_SESSION.bind())", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["awaitable", "await self._writer.save_current_session(raise_on_error=True)", "session-transition-work"],
+        ["awaitable", "await state_store.load_session(active_session_id)", "session-transition-work"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_busy', f'Timed out preparing session for fork: {exc}', session_id=active_session_id, display_message=_FORK_PREPARE_TIMEOUT.bind(detail=DisplayBlock(str(exc))))", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_failed', f'Failed to prepare session for fork: {exc}', session_id=active_session_id, display_message=_FORK_PREPARE_FAILED.bind(detail=DisplayBlock(str(exc))))", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_empty', 'Cannot fork an empty session.', session_id=active_session_id, display_message=_FORK_EMPTY_SESSION.bind())", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["thread_pool", "await asyncio.to_thread(state_store.fork_session, active_session_id, last_surface=self._session.surface)", "session-transition-work"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_not_found', f\"Session '{active_session_id}' not found.\", session_id=active_session_id, display_message=_FORK_SESSION_NOT_FOUND.bind(session_id=active_session_id))", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_failed', f'Failed to fork session: {exc}', session_id=active_session_id, display_message=_FORK_FAILED.bind(detail=DisplayBlock(str(exc))))", "execution-state-notification", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["awaitable", "await self._trajectory_recorder.fork(origin_session_id=active_session_id, fork_session_id=new_session_id, fork_session_dir=self._session.session_dir_for(new_session_id), fork_write_lock_path=self._session.session_write_lock_path(new_session_id), session_start_info=self._loader.trajectory_session_start_info())", "session-transition-work"],
+        ["awaitable", "await self._bus.publish(SessionForked(session_id=active_session_id, parent_session_id=active_session_id, new_session_id=new_session_id))", "execution-state-notification"]
       ],
       "SessionLifecycle.on_session_restore": [
         ["awaitable", "await self._bus.publish(Error(code='no_state_store', message='State store not configured', session_id=event.session_id))", "unresolved"],
@@ -1624,7 +1644,7 @@
         ["awaitable", "await self._bus.publish(Error(code='saved_agent_profile_unresolved', message=f\"Saved agent profile id '{saved_profile_id}' for '{saved_profile_name}' could not be uniquely resolved, and no current profile is active.\", display_message=_RESTORE_AGENT_PROFILE_UNRESOLVED.bind(saved=saved_display), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._permits.prepare_session_transition('restore')", "unresolved"],
         ["thread_pool", "await asyncio.to_thread(load_settings, project_root=Path(target_cwd), eval_context=self._reload_eval_context(), **self._session_pin_overrides())", "unresolved"],
-        ["wrapper", "await self.close_session_in_place()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session_in_place"],
+        ["wrapper", "await self.close_session_in_place(keep_side_answers=True)", "session-transition-work", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session_in_place"],
         ["wrapper", "await self.close_session()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"],
         ["wrapper", "await self._hydrate_restored_session(event=event, state=state, meta=meta, profile=profile, profile_name=profile_name, profile_switch=profile_switch, profile_resolution_warning=profile_resolution_warning, recovered_from_sidecar=recovered_from_sidecar, cwd_warning=cwd_warning, target_cwd=target_cwd, staged_loaded=staged_loaded)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._hydrate_restored_session"],
         ["awaitable", "await self._bus.publish(Error(code='session_restore_failed', message=str(exc), session_id=event.session_id))", "unresolved"]
@@ -1665,6 +1685,50 @@
       ],
       "SessionLifecycle.start_with_rebuild_permit": [
         ["wrapper", "await self.start(profile, operation=operation, staged_loaded=staged_loaded, session=session, workspace=workspace)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"]
+      ]
+    },
+    "chrys.orchestration.engine.side_questions": {
+      "SideQuestions._persist": [
+        ["awaitable", "await self._store.save_side_question(active.emitter.origin.session_id, entry, active.seed, cancelled=active.writes_cancelled)", "side-question-background"],
+        ["awaitable", "await active.emitter.publish(InvocationSideQuestionFailed(origin=active.emitter.origin, kind='save'))", "execution-state-notification"]
+      ],
+      "SideQuestions._run": [
+        ["wrapper", "await check_operation(self._session.hook_manager, HookEvent.USER_PROMPT_SUBMIT, active.operation, lambda: {'session_id': active.emitter.origin.session_id, 'profile': active.seed.agent_profile, 'cwd': active.seed.primary_cwd, 'text': question, 'injected': False, 'side_question': True}, scope='session', trajectory_context=trajectory, origin=active.emitter.origin)", "side-question-background", "chrys.service.hooks.manager.check_operation"],
+        ["awaitable", "await active.emitter.publish(failure)", "execution-state-notification"],
+        ["wrapper", "await answer_side_question(profile, session_id=active.emitter.origin.session_id, session_dir=session_dir, question=question, context=context, reminders=decision.system_reminders)", "side-question-background", "chrys.service.llm.side_question.answer_side_question"],
+        ["awaitable", "await projector.publish_text('answer', answer)", "execution-state-notification"],
+        ["awaitable", "await projector.finish('completed')", "execution-state-notification"],
+        ["awaitable", "await active.emitter.publish(InvocationSideQuestionFailed(origin=active.emitter.origin, session_id=active.emitter.origin.session_id))", "execution-state-notification"],
+        ["awaitable", "await active.emitter.publish(InvocationSideQuestionEnded(origin=active.emitter.origin))", "execution-state-notification"]
+      ],
+      "SideQuestions._stop": [
+        ["awaitable", "await cancelled.emitter.publish(InvocationSideQuestionEnded(origin=cancelled.emitter.origin))", "execution-state-notification"],
+        ["awaitable", "await self._bus.publish(SideQuestionsReset(session_id=self._session.session_id))", "execution-state-notification"],
+        ["multi_wait", "await asyncio.wait(tasks, timeout=_CLEANUP_TIMEOUT_SECONDS)", "side-question-background"]
+      ],
+      "SideQuestions.close": [
+        ["wrapper", "await self.quiesce()", "side-question-background", "chrys.orchestration.engine.side_questions.SideQuestions.quiesce"]
+      ],
+      "SideQuestions.has_history": [
+        ["wrapper", "await self.read_history(event)", "side-question-background", "chrys.orchestration.engine.side_questions.SideQuestions.read_history"]
+      ],
+      "SideQuestions.quiesce": [
+        ["wrapper", "await self._stop(tuple(self._run_tasks | self._commit_tasks))", "side-question-background", "chrys.orchestration.engine.side_questions.SideQuestions._stop"]
+      ],
+      "SideQuestions.read_history": [
+        ["thread_pool", "await asyncio.to_thread(load_side_questions, directory, session_id)", "side-question-background"]
+      ],
+      "SideQuestions.reset": [
+        ["wrapper", "await self.stop_running()", "side-question-background", "chrys.orchestration.engine.side_questions.SideQuestions.stop_running"]
+      ],
+      "SideQuestions.stop_running": [
+        ["wrapper", "await self._stop(tuple(self._run_tasks))", "side-question-background", "chrys.orchestration.engine.side_questions.SideQuestions._stop"]
+      ],
+      "SideQuestions.subscribe": [
+        ["awaitable", "await self._bus.subscribe(SideQuestionRequested, self.request)", "side-question-background"],
+        ["awaitable", "await self._bus.subscribe(SideQuestionCancelled, self.cancel)", "side-question-background"],
+        ["awaitable", "await self._bus.subscribe(SideQuestionHistoryRequested, self.read_history)", "side-question-background"],
+        ["awaitable", "await self._bus.subscribe(RollbackResult, self.reset)", "side-question-background"]
       ]
     },
     "chrys.orchestration.engine.state.controls": {
@@ -4198,7 +4262,7 @@
         ["wrapper", "await self._spawn_nonblocking(hook, job.payload, scope='session', session_drain_generation=self._session_drain_generation, existing_job=job)", "unresolved", "chrys.service.hooks.manager.HookManager._spawn_nonblocking"]
       ],
       "check_operation": [
-        ["awaitable", "await manager.fire(event, payload(), target_operation_id=target_operation_id, trajectory_context=trajectory_context, origin=origin, operation=operation)", "unresolved"]
+        ["awaitable", "await manager.fire(event, payload(), scope=scope, target_operation_id=target_operation_id, trajectory_context=trajectory_context, origin=origin, operation=operation)", "unresolved"]
       ]
     },
     "chrys.service.hooks.operation": {
@@ -4327,6 +4391,7 @@
         ["wrapper", "await _await_with_timeout(client.get_response(messages, stream=True, options=options, **kwargs), timeout, 'LLM stream')", "unresolved", "chrys.service.llm.one_shot._await_with_timeout"],
         ["wrapper", "await _await_with_timeout(aiter.__anext__(), timeout, 'LLM stream update')", "unresolved", "chrys.service.llm.one_shot._await_with_timeout"],
         ["wrapper", "await _await_with_timeout(result.get_final_response(), timeout, 'LLM final response')", "unresolved", "chrys.service.llm.one_shot._await_with_timeout"],
+        ["wrapper", "await finish_close(close_task)", "unresolved", "chrys.foundation.util.once_close.finish_close"],
         ["wrapper", "await cleanup_response_stream(result)", "unresolved", "chrys.service.llm.one_shot.cleanup_response_stream"]
       ]
     },
@@ -4386,6 +4451,12 @@
     "chrys.service.llm.sdk_retry": {
       "DeterministicConnectionSleepGuard._sleep_for_retry": [
         ["awaitable", "await super()._sleep_for_retry(**kwargs)", "unresolved"]
+      ]
+    },
+    "chrys.service.llm.side_question": {
+      "answer_side_question": [
+        ["wrapper", "async with scoped_client(profile, session_id=derive_llm_route_session_id(session_id, route_kind='side-question', model_profile=profile), parent_session_id=session_id, session_dir=session_dir)", "unresolved", "chrys.service.llm.clients.scoped_client"],
+        ["wrapper", "await get_final_response(client, messages, stream=profile.stream, options=_options(profile), timeout=profile.http_read_timeout)", "unresolved", "chrys.service.llm.one_shot.get_final_response"]
       ]
     },
     "chrys.service.mcp._http_transport": {
@@ -4888,6 +4959,9 @@
       ],
       "JsonFileStateStore.save_session": [
         ["thread_pool", "await asyncio.to_thread(self._save_session_sync, session_id, state, agent_profile=agent_profile, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, title=title, agent_profile_history=agent_profile_history, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, service_session_id=service_session_id, parent_session_id=parent_session_id, last_surface=last_surface)", "unresolved"]
+      ],
+      "JsonFileStateStore.save_side_question": [
+        ["thread_pool", "await asyncio.to_thread(self._save_side_question_sync, session_id, entry, seed, cancelled=cancelled)", "unresolved"]
       ],
       "JsonFileStateStore.save_workflow_session": [
         ["thread_pool", "await asyncio.to_thread(self._save_session_sync, session_id, state, primary_cwd=state.workspace.primary_cwd, working_dirs=[directory.path for directory in state.workspace.working_dirs], title=title, kind='workflow')", "workflow-blocking"]

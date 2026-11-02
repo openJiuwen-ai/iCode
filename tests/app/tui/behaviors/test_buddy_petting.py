@@ -114,6 +114,7 @@ def _make_handler(screen: _SuggestionScreen) -> SuggestionHandler:
             quit_app=screen.action_quit,
             resume_session=screen._resume_last_session,
             fork_session=lambda: None,
+            ask_side_question=lambda _question: None,
             workflow_selection=lambda: None,
             open_guide=lambda: None,
             browse_session_list=screen.action_sessions,

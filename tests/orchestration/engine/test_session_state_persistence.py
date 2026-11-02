@@ -314,7 +314,7 @@ async def test_restore_rearms_persisted_last_words_for_retry(
     await bus.subscribe(SessionRestored, lambda event: collect_events(events, event))
     engine = assemble_agent_engine(bus, settings=Settings(), state_store=store, agent_registry=_registry(profile))
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fake_start(
@@ -427,7 +427,7 @@ async def test_restore_reconciles_spill_quota_manifest_and_availability(
         agent_registry=_registry(profile),
     )
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fake_start(
@@ -587,7 +587,7 @@ async def test_restore_hydrates_todo_tracker_before_last_words(
     await bus.subscribe(SessionRestored, lambda event: collect_events(events, event))
     engine = assemble_agent_engine(bus, settings=Settings(), state_store=store, agent_registry=_registry(profile))
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fake_start(
@@ -655,7 +655,7 @@ async def test_restore_without_todos_leaves_tracker_empty(
     )
     engine.session.todo_tracker = await _tracker_with_todos(_TODOS)  # stale previous-session state
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fake_start(

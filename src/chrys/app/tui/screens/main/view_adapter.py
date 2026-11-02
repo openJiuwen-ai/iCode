@@ -661,6 +661,7 @@ class MainScreenViewAdapter:
         self._screen._workflow_panel.display = workflow and not dashboard.foreground and not shell
         chat = not workflow and not dashboard.foreground and not shell
         self._screen.query_one(ChatPanel).display = chat
+        self._screen.query_one("#chat-column").display = chat
         self._screen.query_one(StatusBar).display = shell or chat
         self._screen.query_one(InputBar).display = chat
         # The card belongs to the input: it never stays on a surface that hides it.
