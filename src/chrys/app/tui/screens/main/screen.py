@@ -126,6 +126,7 @@ from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
 from chrys.app.tui.widgets.workflow import text as workflow_text
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.app.tui.widgets.workflow.panel import WorkflowPanel
+from chrys.foundation.config.errors import RELOAD_SESSION_CHANGED, config_error_display
 from chrys.foundation.config.settings import (
     DEFAULT_LOCALE,
     DEFAULT_TRAJECTORY_VERIFY_COMMANDS,
@@ -199,6 +200,13 @@ _HELP_BINDING = msg("tui.binding.help", fallback="Help")
 _SIDEBAR_BINDING = msg("tui.binding.sidebar", fallback="Sidebar")
 _THEMES_BINDING = msg("tui.binding.themes", fallback="Themes")
 _SETTINGS_BINDING = msg("tui.binding.settings", fallback="Settings")
+_RELOAD_FINALIZE_FAILED = msg(
+    "tui.settings.reload_finalize_failed", fallback="Could not finish saving the Settings panel. Reload stopped."
+)
+_WORKFLOW_RELOAD_BUSY = msg(
+    "tui.settings.reload_workflow_busy", fallback="Wait for the workflow run to finish before reloading settings."
+)
+
 _SETTINGS_REJECTED = msg(
     "tui.settings.save_rejected",
     fallback="Could not save settings; the store rejected: {keys}.",
@@ -622,7 +630,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def _apply_tool_groups_expanded(self, value: bool) -> None:
         """Persist the live choice; existing groups deliberately keep their state."""
-        persist_tool_groups_expanded(value)
+        error = persist_tool_groups_expanded(value)
+        if error is not None:
+            self._notify_settings_failure(error)
         cast("ChrysApp", self.app).settings_handle.override(tool_groups_expanded=value)
 
     def _apply_approval_defer_while_judging(self, value: bool) -> None:
@@ -701,7 +711,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             coordinator.on_reloaded()
 
     def _notify_settings_failure(self, exc: Exception) -> None:
-        self._view_adapter.notify(str(exc), title=SETTINGS_TITLE.bind(), severity="error", timeout=5)
+        self._view_adapter.notify(config_error_display(exc), title=SETTINGS_TITLE.bind(), severity="error", timeout=5)
         coordinator = self._existing_settings_coordinator()
         if coordinator is not None:
             coordinator.on_write_failed()
@@ -852,6 +862,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             configure_model=self._open_model_config,
             configure_agent=self._open_agent_config,
             configure_agent_tab=self._open_agent_config_tab,
+            reload_settings=self._start_manual_reload,
             show_runtime_details=self.action_runtime_details,
             show_usage=self._config_actions.open_usage,
             configure_settings=self._open_settings,
@@ -1702,7 +1713,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _on_editor_result(self, result: EditorDialogResult, *, opened: InputDraftSnapshot) -> None:
         if result.mode is not self._editor_mode:
             self._editor_mode = result.mode
-            persist_editor_keymap(result.mode.value)
+            error = persist_editor_keymap(result.mode.value)
+            if error is not None:
+                self._notify_settings_failure(error)
             # The same write-point contract as theme and locale: the shared
             # settings handle records the choice as a RUNTIME override, so
             # settings keep describing the screen even when the swallowed
@@ -2074,6 +2087,57 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def action_settings(self) -> None:
         """Open the Settings dialog (F10)."""
         self._open_settings()
+
+    def _start_manual_reload(self) -> None:
+        if self._services.execution().kind == "workflow":
+            self._warn_slash_command(_WORKFLOW_RELOAD_BUSY.bind(), title=SETTINGS_TITLE.bind())
+            return
+        engine = self._services.engine_provider
+        # SessionReady has not populated the chat ID after a failed first build.
+        session_id = self.chat_session_id or (engine().session_id if engine is not None else None)
+        self._start_worker(partial(self._reload_settings_from_disk, session_id, self._services.session_generation()))
+
+    async def _reload_settings_from_disk(self, session_id: str | None, generation: int) -> None:
+        from chrys.foundation.events.types import SettingsReload
+
+        queue = self._settings_persistence()
+        failures = queue.failures
+        coordinator = self._existing_settings_coordinator()
+        finalize_failures = coordinator.finalize_failures if coordinator is not None else 0
+        while True:
+            writes = queue.save_generation
+            if not await queue.flush(notify_on_failure=True):
+                return
+            coordinator = self._existing_settings_coordinator()
+            if coordinator is not None:
+                error = await coordinator.wait_for_finalize(finalize_failures)
+                if error is not None:
+                    self._view_adapter.notify(error, title=_RELOAD_FINALIZE_FAILED.bind(), severity="error", timeout=8)
+                    return
+            if queue.failures != failures:
+                return
+            if writes == queue.save_generation:
+                break
+        if generation == self._services.session_generation() and (
+            not self.chat_session_id or session_id == self.chat_session_id
+        ):
+            projection: dict[str, str | bool] = {
+                **self._notification_service().settings.to_settings_fields(),
+                "trajectory_verify_commands": self._trajectory_verify_commands,
+                "theme": self.app.theme,
+                "locale": self._language_localizer().requested_locale,
+                "editor_keymap": self._editor_mode.value,
+            }
+            await self._services.bus.publish(
+                SettingsReload(
+                    manual=True,
+                    session_id=session_id or None,
+                    tui_projection=projection,
+                    available_themes=tuple(self.app.available_themes),
+                )
+            )
+        else:
+            self._warn_slash_command(RELOAD_SESSION_CHANGED.bind(), title=SETTINGS_TITLE.bind())
 
     def action_runtime_details(self) -> None:
         """Open the active runtime details modal."""

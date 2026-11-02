@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.config.context import EvalContext
+from chrys.foundation.config.errors import RELOAD_SESSION_CHANGED, ConfigError, ConfigValueError
 from chrys.foundation.config.process_settings import reattribute_command_line, route_restart_settings
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle, load_settings
-from chrys.foundation.config.spec import Source
+from chrys.foundation.config.spec import Apply, Source, specs_by_field
 from chrys.foundation.config.warnings import settings_warning_events
 from chrys.foundation.events.types import (
     AgentProfileSwitch,
@@ -32,7 +34,7 @@ from chrys.foundation.events.types import (
     WorkspaceChange,
     WorkspaceUpdated,
 )
-from chrys.foundation.i18n import DisplayPath, DisplaySequence, msg
+from chrys.foundation.i18n import DisplayPath, DisplaySequence, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import safe_getcwd
@@ -40,7 +42,11 @@ from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.orchestration.engine.state.active_session import session_pin_overrides
 from chrys.orchestration.engine.state.lifecycle_permits import RebuildControlToken, RebuildPermit, RebuildPermitDenied
 from chrys.service.approval.policy import ApprovalMode
-from chrys.service.profiles.models.resolver import active_model_profile_fields, model_for_agent
+from chrys.service.profiles.models.resolver import (
+    active_model_profile_fields,
+    model_for_agent,
+    resolve_selectable_profile,
+)
 from chrys.service.profiles.models.schema import is_model_profile_selectable
 
 if TYPE_CHECKING:
@@ -58,6 +64,38 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_RELOAD_DONE = msg("controls.reload_done", fallback="Reloaded settings, memory and skills.")
+_RELOAD_SETTINGS_ONLY = msg("controls.reload_settings_only", fallback="Reloaded settings. No agent is active.")
+_RELOAD_UNKNOWN_THEME = msg("controls.reload_unknown_theme", fallback="Theme '{theme}' is unavailable in this session.")
+_RELOAD_NEXT_LAUNCH = msg("controls.reload_next_launch", fallback="Applies next launch: {keys}")
+_RELOAD_KEPT = msg(
+    "controls.reload_kept_model",
+    fallback="Kept the current model: '{model}' is unavailable. This reload uses the model profiles already loaded.",
+)
+_RELOAD_CHANGED = msg("controls.reload_applied", fallback="Applied: {keys}")
+_RELOAD_SHADOWED = msg("controls.reload_shadowed", fallback="Overridden by a higher-priority choice: {keys}")
+
+_RELOAD_BUSY = msg("controls.reload_busy", fallback="Reload when the current turn or workflow finishes.")
+_RELOAD_LOADING = msg(
+    "controls.reload_loading", fallback="Wait for the agent to finish loading, then run /reload again."
+)
+_RELOAD_SUPERSEDED = msg(
+    "controls.reload_superseded", fallback="A newer agent load took precedence. Run /reload again."
+)
+_RELOAD_SHUTDOWN = msg("controls.reload_shutdown", fallback="Settings cannot reload during shutdown.")
+_RELOAD_UNAVAILABLE = msg("controls.reload_unavailable_model", fallback="Model profile is unavailable: {model}")
+_RELOAD_DENIALS = {
+    "busy": _RELOAD_BUSY,
+    "load_active": _RELOAD_LOADING,
+    "not_ready": _RELOAD_LOADING,
+    "session_changed": RELOAD_SESSION_CHANGED,
+    "superseded": _RELOAD_SUPERSEDED,
+    "shutdown": _RELOAD_SHUTDOWN,
+}
+
+# These settings have a separate TUI projection initialized at launch.
+_NEXT_LAUNCH_KEYS = {"agent.default_profile", "approval.default_mode", "ui.theme", "ui.locale", "ui.editor.keymap"}
 
 _CONTROLS_NO_REGISTRY = msg(
     "controls.no_registry",
@@ -85,10 +123,10 @@ _CONTROLS_WORKSPACE_MISSING = msg(
 )
 _CONTROLS_SETTINGS_RESTART_REQUIRED = msg(
     "controls.settings_restart_required",
-    fallback="Saved; takes effect after restart: {keys}.",
+    fallback="Restart to apply these settings: {keys}.",
 )
 
-PersistApprovalModeFn = Callable[[str], None]
+PersistApprovalModeFn = Callable[[str], Exception | None]
 
 
 def _denial_allows_already_satisfied_success(denied: RebuildPermitDenied) -> bool:
@@ -128,6 +166,10 @@ class RuntimeControls:
         self._lifecycle = lifecycle
         self._bus = bus
         self._settings_handle = settings_handle
+        self._launch_defaults = {
+            "default_agent": settings_handle.base.settings.default_agent,
+            "default_approval_mode": settings_handle.base.settings.default_approval_mode,
+        }
         self._agent_registry = agent_registry
         self._model_registry = model_registry
         self._workspace_change_tracker = workspace_change_tracker
@@ -201,7 +243,17 @@ class RuntimeControls:
             # ``Risk.DANGEROUS``, so a rejected value seals it at ``manual``, and
             # an in-place write would leave that seal on top of the mode the user
             # just chose.
-            self._settings_handle.persist_approval_default(mode.value, persist=persist_approval_mode_fn)
+            try:
+                self._settings_handle.persist_approval_default(mode.value, persist=persist_approval_mode_fn)
+            except (OSError, ValueError) as exc:
+                await self._bus.publish(
+                    Warning(
+                        code="approval_default_save_failed",
+                        message=str(exc),
+                        display_message=exc.display if isinstance(exc, ConfigError) else None,
+                        session_id=self._session.session_id,
+                    )
+                )
         await self._bus.publish(ApprovalModeUpdated(mode=mode.value, session_id=self._session.session_id))
 
     async def on_profile_switch(self, event: AgentProfileSwitch) -> None:
@@ -469,10 +521,22 @@ class RuntimeControls:
     async def _acquire_rebuild_permit_or_publish_error(
         self,
         token: RebuildControlToken,
+        *,
+        manual: bool = False,
     ) -> RebuildPermit | None:
-        permit = await self._permits.acquire_rebuild_permit(token)
+        permit = await self._permits.acquire_rebuild_permit(token, reject_running=manual)
         if isinstance(permit, RebuildPermitDenied):
-            await self._publish_rebuild_denied(permit, token.session_id)
+            if manual:
+                await self._bus.publish(
+                    Error(
+                        code="manual_settings_reload_denied",
+                        message=permit.message,
+                        display_message=permit.display_message or _RELOAD_DENIALS[permit.reason].bind(),
+                        session_id=token.session_id,
+                    )
+                )
+            else:
+                await self._publish_rebuild_denied(permit, token.session_id)
             return None
         return permit
 
@@ -573,6 +637,17 @@ class RuntimeControls:
         pick) or its profile no longer exists: the rebuild then commits the
         session without it.
         """
+        if event.manual and event.session_id != self._session.session_id:
+            message = RELOAD_SESSION_CHANGED.bind()
+            await self._bus.publish(
+                Error(
+                    code="manual_settings_reload_denied",
+                    message=format_message(message),
+                    display_message=message,
+                    session_id=event.session_id,
+                )
+            )
+            return
         token = self._permits.capture_control_token()
         # Taken even with nothing built yet. A host that has not built — startup
         # before the first build, a first build that failed, a host that only
@@ -581,10 +656,13 @@ class RuntimeControls:
         # configuration. The permit is also what serializes the load against a
         # build, since ``start`` takes this same boundary: the values installed
         # below cannot land halfway through one.
-        permit = await self._acquire_rebuild_permit_or_publish_error(token)
+        permit = await self._acquire_rebuild_permit_or_publish_error(token, manual=event.manual)
         if permit is None:
             return
 
+        report: list[MessageRef] = []
+        kept_model = False
+        old_effective = self._settings_handle.loaded
         old_loaded = self._settings_handle.base
         session = self._session_choice_after_reload(model_chosen=event.model_chosen)
         try:
@@ -599,12 +677,34 @@ class RuntimeControls:
                 # here would stall every other event for as long as the disk takes.
                 # The pins are snapshotted before the hand-off, so the load works
                 # from the state that asked for it.
+                pins = self._session_pin_overrides()
+                if event.manual:
+                    pins["manual_reload"] = True
                 candidate = await asyncio.to_thread(
                     load_settings,
                     project_root=self._session_project_root(),
                     eval_context=self._reload_eval_context(),
-                    **self._session_pin_overrides(),
+                    **pins,
                 )
+                if event.manual:
+                    report.append(
+                        (_RELOAD_DONE if self._session.agent_profile is not None else _RELOAD_SETTINGS_ONLY).bind()
+                    )
+                    edit = candidate.model_edit
+                    if edit and edit.value and resolve_selectable_profile(self._model_registry, edit.value) is None:
+                        if self._current.loaded is None:
+                            raise ConfigValueError(_RELOAD_UNAVAILABLE.bind(model=edit.value))
+                        kept_model = True
+                        report.append(_RELOAD_KEPT.bind(model=edit.value))
+                        key = "model.profile.active"
+                        candidate = dataclasses.replace(
+                            candidate,
+                            model_edit=None,
+                            settings=dataclasses.replace(
+                                candidate.settings, model_profile=old_loaded.settings.model_profile
+                            ),
+                            provenance={**candidate.provenance, key: old_loaded.source_for(key)},
+                        )
                 # Routed after the load, not excluded from it: the reload still has
                 # to report a RESTART value the user typed wrong, it just must not
                 # claim the good ones took effect. The snapshot fields keep the
@@ -620,7 +720,7 @@ class RuntimeControls:
                 # same bad value silent from the second read onwards.
                 for warning in settings_warning_events(loaded):
                     await self._bus.publish(dataclasses.replace(warning, session_id=self._session.session_id))
-                if deferred_keys:
+                if deferred_keys and not event.manual:
                     display_message = _CONTROLS_SETTINGS_RESTART_REQUIRED.bind(keys=DisplaySequence(deferred_keys))
                     await self._bus.publish(
                         Warning(
@@ -655,7 +755,12 @@ class RuntimeControls:
                 # by their coercer and reported as warnings, so one bad variable can
                 # no longer take a whole reload down.
                 await self._bus.publish(
-                    Error(code="settings_reload_failed", message=str(exc), session_id=self._session.session_id)
+                    Error(
+                        code="manual_settings_reload_failed" if event.manual else "settings_reload_failed",
+                        message=str(exc),
+                        display_message=exc.display if isinstance(exc, ConfigError) else None,
+                        session_id=token.session_id,
+                    )
                 )
                 raise
 
@@ -680,7 +785,42 @@ class RuntimeControls:
                     self._workspace_change_tracker.invalidate()
             else:
                 self._settings_handle.install_prepared(self._settings_handle.prepare(loaded, session=session))
-            await self._publish_settings_reloaded()
+            if event.manual:
+                new = self._settings_handle.loaded
+                before = dataclasses.asdict(old_effective.settings) | self._launch_defaults | event.tui_projection
+                after = dataclasses.asdict(new.settings)
+                changed = {
+                    entry.key
+                    for name, entry in specs_by_field(Settings).items()
+                    if before[name] != after[name] and entry.apply in (Apply.LIVE, Apply.RELOAD)
+                }
+                if (
+                    "ui.theme" in changed
+                    and event.available_themes is not None
+                    and new.settings.theme not in event.available_themes
+                ):
+                    changed.remove("ui.theme")
+                    report.append(_RELOAD_UNKNOWN_THEME.bind(theme=new.settings.theme))
+                for definition, keys in (
+                    (_RELOAD_CHANGED, changed - _NEXT_LAUNCH_KEYS),
+                    (_RELOAD_NEXT_LAUNCH, changed & _NEXT_LAUNCH_KEYS),
+                ):
+                    if keys:
+                        report.append(definition.bind(keys=DisplaySequence(tuple(sorted(keys)))))
+                if deferred_keys:
+                    report.append(_CONTROLS_SETTINGS_RESTART_REQUIRED.bind(keys=DisplaySequence(deferred_keys)))
+                upper_layers = {Source.ENV, Source.CLI, Source.PROCESS_RUNTIME, Source.SESSION, Source.RUNTIME}
+                shadowed = sorted(
+                    entry.key
+                    for name, entry in specs_by_field(Settings).items()
+                    if not (name == "model_profile" and kept_model)
+                    and name in new.file_values
+                    and new.file_values[name] != after[name]
+                    and new.source_for(entry.key).layer in upper_layers
+                )
+                if shadowed:
+                    report.append(_RELOAD_SHADOWED.bind(keys=DisplaySequence(tuple(shadowed))))
+            await self._publish_settings_reloaded(tuple(report))
         finally:
             self._permits.release_rebuild_permit(permit)
 
@@ -697,9 +837,10 @@ class RuntimeControls:
         profile = registry.get(profile_id) if registry is not None else None
         return profile is not None and is_model_profile_selectable(profile)
 
-    async def _publish_settings_reloaded(self) -> None:
+    async def _publish_settings_reloaded(self, report: tuple[MessageRef, ...] = ()) -> None:
         await self._bus.publish(
             SettingsReloaded(
+                report=report,
                 runtime_details=copy.deepcopy(self._current.manifest.runtime_details),
                 session_id=self._session.session_id,
             )

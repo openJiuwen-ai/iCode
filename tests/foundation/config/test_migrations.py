@@ -308,44 +308,22 @@ def test_a_notifications_file_that_cannot_be_read_at_all_is_not_retired(
 
     monkeypatch.setattr(Path, "read_bytes", unreadable)
 
-    result = migrate_notifications_v0()
-
-    assert result.migrated == {}
+    with pytest.raises(OSError, match="Input/output error"):
+        migrate_notifications_v0()
     assert path.is_file()
-    assert not (config_dir / "notifications.yaml.migrated").exists()
-    # Still pending, so a start that can read the file finishes the work.
-    assert _read_doc(config_dir)["migrations"][NOTIFICATIONS_COMPONENT] == {"pending_cleanup": True}
+    assert not (config_dir / "settings.yaml").exists()
 
 
-def test_a_notifications_file_that_reads_but_does_not_parse_still_retires(config_dir: Path) -> None:
-    """Otherwise the component never converges: every boot retries a file that cannot improve."""
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "notifications.yaml").write_text("enabled: [not valid yaml", encoding="utf-8")
-
-    result = migrate_notifications_v0()
-
-    assert result.performed
-    assert result.migrated == {}
-    assert not (config_dir / "notifications.yaml").exists()
-    assert (config_dir / "notifications.yaml.migrated").exists()
-    assert isinstance(_read_doc(config_dir)["migrations"][NOTIFICATIONS_COMPONENT], str)
-
-
-def test_notifications_migration_reads_backup_when_primary_is_corrupt(config_dir: Path) -> None:
+def test_notifications_migration_preserves_corrupt_source_and_ledger(config_dir: Path) -> None:
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "notifications.yaml").write_text("enabled: [not valid yaml", encoding="utf-8")
     (config_dir / "notifications.yaml.bak").write_text(yaml.safe_dump({"desktop": False}), encoding="utf-8")
 
-    result = migrate_notifications_v0()
-
-    assert result.migrated == {"notifications.delivery.desktop": False}
-    assert _read_doc(config_dir)["notifications"]["delivery"]["desktop"] is False
-    # Both copies retire together; a surviving backup would resurrect the
-    # primary on the next boot's read.
-    assert not (config_dir / "notifications.yaml").exists()
-    assert not (config_dir / "notifications.yaml.bak").exists()
-    assert (config_dir / "notifications.yaml.migrated").exists()
-    assert (config_dir / "notifications.yaml.bak.migrated").exists()
+    with pytest.raises(OSError, match=r"notifications\.yaml"):
+        migrate_notifications_v0()
+    assert (config_dir / "notifications.yaml").read_text(encoding="utf-8") == "enabled: [not valid yaml"
+    assert (config_dir / "notifications.yaml.bak").is_file()
+    assert not (config_dir / "settings.yaml").exists()
 
 
 def test_migrated_notification_values_load_as_the_user_layer(config_dir: Path) -> None:

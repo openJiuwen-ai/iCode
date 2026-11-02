@@ -34,6 +34,8 @@ from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.config.process_env import canonical_env_name
+from chrys.foundation.config.runtime_pointer import MODEL_POINTER_ENV
 from chrys.foundation.tool_call_context import get_tool_context, set_tool_context
 from chrys.foundation.tool_kinds import KIND_MCP, get_tool_kind, set_tool_kind
 from chrys.foundation.util.env_templates import resolve_env_template_mapping
@@ -135,12 +137,17 @@ def resolve_mcp_effective_config(config: MCPServerConfig, *, stdio_cwd: str | No
     if config.transport == "stdio":
         stdio_env = _resolved_stdio_env(config)
         child_env = _inherited_stdio_environment(stdio_env)
+        key_env = {k: v for k, v in child_env.items() if canonical_env_name(k) != MODEL_POINTER_ENV}
+        for name, value in stdio_env.items():
+            if canonical_env_name(name) == MODEL_POINTER_ENV:
+                key_env[MODEL_POINTER_ENV] = value
         resolved_stdio_cwd = stdio_cwd or os.getcwd()
         payload["stdio"] = {
             "command": config.command,
             "args": list(config.args),
             "encoding": config.encoding,
-            "env": _stable_mapping(child_env),
+            # Switching models does not change the server unless its configuration uses the pointer.
+            "env": _stable_mapping(key_env),
             "cwd": resolved_stdio_cwd,
         }
         stdio_env = child_env

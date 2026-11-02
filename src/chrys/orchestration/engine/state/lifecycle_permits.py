@@ -6,10 +6,19 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from collections.abc import Callable
 from typing import Any, Literal
 
+from chrys.foundation.i18n import MessageRef, msg
 from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
 from chrys.orchestration.engine.state.active_session import ActiveSession
+
+_RELOAD_DRAIN_FAILED = msg(
+    "controls.reload_drain_failed", fallback="Could not finish the previous turn before reloading: {detail}"
+)
+_RELOAD_DRAIN_CANCELLED = msg(
+    "controls.reload_drain_cancelled", fallback="The previous turn was cancelled while settings were waiting to reload."
+)
 
 RebuildPermitDeniedReason = Literal["shutdown", "session_changed", "superseded", "load_active", "busy", "not_ready"]
 
@@ -40,12 +49,20 @@ class RebuildPermitDenied:
     reason: RebuildPermitDeniedReason
     code: str
     message: str
+    display_message: MessageRef | None = None
 
 
 class LifecyclePermits:
     """Issue and validate permits for rebuilds, session transitions, and loads."""
 
-    def __init__(self, *, turn_state: TurnRuntimeState, session: ActiveSession) -> None:
+    def __init__(
+        self,
+        *,
+        turn_state: TurnRuntimeState,
+        session: ActiveSession,
+        turn_executing: Callable[[], bool] = lambda: False,
+    ) -> None:
+        self._turn_executing = turn_executing
         self._turn_state = turn_state
         self._session = session
         self._agent_loading = False
@@ -236,6 +253,8 @@ class LifecyclePermits:
     async def acquire_rebuild_permit(
         self,
         token: RebuildControlToken,
+        *,
+        reject_running: bool = False,
     ) -> RebuildPermit | RebuildPermitDenied:
         """Close turn admission and acquire the serialized rebuild boundary."""
         await self._rebuild_gate_lock.acquire()
@@ -245,6 +264,10 @@ class LifecyclePermits:
         self._turn_state.lease.close_prompt_admission_for_rebuild(owner)
         try:
             await self._turn_state.lease.wait_for_active_admissions_idle()
+            if reject_running and (self._turn_executing() or self._turn_state.lease.workflow is not None):
+                return self._deny_rebuild_permit_locked(
+                    owner, reason="busy", message="Reload when the current turn or workflow finishes."
+                )
             await self._turn_state.lease.wait_for_active_injection_commits_idle()
             try:
                 drain_outcome = await self._turn_state.drain_for_boundary()
@@ -253,6 +276,7 @@ class LifecyclePermits:
                     owner,
                     reason="busy",
                     message=f"Cannot rebuild because the active run failed: {exc}",
+                    display_message=_RELOAD_DRAIN_FAILED.bind(detail=str(exc)),
                 )
             await self._turn_state.lease.wait_for_active_injection_commits_idle()
             await self.wait_for_agent_load_idle()
@@ -329,6 +353,7 @@ class LifecyclePermits:
                 "busy",
                 "runtime_mutation_busy",
                 "Cannot rebuild because the active run was cancelled.",
+                display_message=_RELOAD_DRAIN_CANCELLED.bind(),
             )
         return None
 
@@ -337,8 +362,9 @@ class LifecyclePermits:
         reason: RebuildPermitDeniedReason,
         code: str,
         message: str,
+        display_message: MessageRef | None = None,
     ) -> RebuildPermitDenied:
-        return RebuildPermitDenied(reason=reason, code=code, message=message)
+        return RebuildPermitDenied(reason=reason, code=code, message=message, display_message=display_message)
 
     def _deny_rebuild_permit_locked(
         self,
@@ -347,6 +373,7 @@ class LifecyclePermits:
         reason: RebuildPermitDeniedReason | None = None,
         message: str | None = None,
         denied: RebuildPermitDenied | None = None,
+        display_message: MessageRef | None = None,
     ) -> RebuildPermitDenied:
         self._turn_state.lease.reopen_prompt_admission_after_rebuild(owner)
         self._rebuild_gate_lock.release()
@@ -356,6 +383,7 @@ class LifecyclePermits:
             reason or "busy",
             "runtime_mutation_busy",
             message or "Cannot rebuild while the runtime is busy.",
+            display_message,
         )
 
     def release_rebuild_permit(self, permit: RebuildPermit) -> None:

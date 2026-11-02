@@ -76,7 +76,7 @@ class _FakeMCPTool:
         self.exit_count += 1
 
 
-async def test_shared_cache_connects_once_and_returns_isolated_tool_clones() -> None:
+async def test_shared_cache_connects_once_and_returns_isolated_tool_clones(monkeypatch: pytest.MonkeyPatch) -> None:
     cache = MCPConnectionCache()
     adapter_a = MCPAdapter(cache=cache)
     adapter_b = MCPAdapter(cache=cache)
@@ -84,7 +84,9 @@ async def test_shared_cache_connects_once_and_returns_isolated_tool_clones() -> 
     fake = _FakeMCPTool()
 
     with patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake) as factory:
+        monkeypatch.setenv("CHRYS_MODEL_PROFILE", "model-a")
         tools_a = await adapter_a.connect(config)
+        monkeypatch.setenv("CHRYS_MODEL_PROFILE", "model-b")
         tools_b = await adapter_b.connect(config)
 
     assert factory.call_count == 1
@@ -539,6 +541,11 @@ def test_cache_key_tracks_inherited_stdio_environment(monkeypatch: pytest.Monkey
 
     assert key_a != key_b
     assert key_c != key_b
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "new-inherited-choice")
+    assert mcp_config_cache_key(config) == key_c
+    config.env = {"CHRYS_MODEL_PROFILE": "explicit-choice"}
+    assert mcp_config_cache_key(config) != key_c
 
 
 def test_cache_key_distinguishes_unspecified_empty_and_named_allowed_tools() -> None:

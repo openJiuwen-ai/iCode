@@ -402,3 +402,71 @@ def test_settings_reload_ignores_legacy_files(config_dir, tmp_path, monkeypatch,
         assert loaded.warnings == ()
         for path in (user_env, project_env):
             assert path.read_text(encoding="utf-8") == f"CHRYS_THEME={changed}\n"
+
+
+@pytest.mark.parametrize(
+    ("launch", "select", "file_default", "effective"),
+    [
+        ("cli", True, "Y", "Y"),
+        ("env", True, "Y", "Y"),
+        ("", False, "G", "P"),
+    ],
+)
+def test_manual_reload_only_adopts_external_model_edits(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch, launch: str, select: bool, file_default: str, effective: str
+) -> None:
+    from chrys.foundation.config.runtime_pointer import MODEL_POINTER_KEY, get_model_pointer
+    from chrys.foundation.config.settings_store import SettingsHandle
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.profiles.models.env_bridge import activate_model_profile, set_global_default_profile_id
+
+    path = _write_user_yaml(config_dir, "model.profile.active: P\n")
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
+    if launch == "env":
+        monkeypatch.setenv("CHRYS_MODEL_PROFILE", "E")
+    handle = SettingsHandle(bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded)
+    if launch == "cli":
+        set_model_pointer("X", origin=SettingOrigin(layer=Source.CLI))
+    if select:
+        activate_model_profile("Y")
+    else:
+        set_global_default_profile_id("G")
+    assert load_settings(manual_reload=True).file_model == file_default
+    assert load_settings(manual_reload=True).settings.model_profile == effective
+    path.write_text("model.profile.active: B\n", encoding="utf-8")
+    candidate = load_settings(manual_reload=True)
+    assert candidate.model_edit is not None
+    expected = {"cli": "X", "env": "E", "": "B"}[launch]
+    assert candidate.settings.model_profile == expected
+    handle.install(candidate)
+    assert get_model_pointer()[0] == expected
+    assert load_settings().settings.model_profile == expected
+    assert load_settings(manual_reload=True).model_edit is None
+    if not launch:
+        path.unlink()
+        handle.install(load_settings(manual_reload=True))
+        assert not get_model_pointer()[0]
+        assert not load_settings().settings.model_profile
+        assert handle.loaded.source_for(MODEL_POINTER_KEY).layer is Source.DEFAULT
+
+
+def test_bad_edit_keeps_last_document_across_readers_and_refuses_writes(config_dir: Path) -> None:
+    from chrys.foundation.config.settings import persist_theme
+    from chrys.foundation.config.yaml_store import ConfigDocumentError, backup_path_for
+    from chrys.service.profiles.models.env_bridge import get_global_default_profile_id
+
+    freeze_process_env()
+    path = _write_user_yaml(config_dir, "tools.ask_user.timeout_seconds: 65\nmodel.profile.active: A\n")
+    backup_path_for(path).write_text("tools.ask_user.timeout_seconds: 50\n", encoding="utf-8")
+    assert load_settings().settings.ask_user_timeout_seconds == 65
+    poison = b"tools: [broken: 70"
+    path.write_bytes(poison)
+    with pytest.raises(ConfigDocumentError, match="line 1"):
+        load_settings(manual_reload=True)
+    assert get_global_default_profile_id() == "A"
+    loaded = load_settings(project_root=config_dir.parent)
+    assert loaded.document_error
+    assert loaded.settings.ask_user_timeout_seconds == 65
+    assert isinstance(persist_theme("chrys"), ConfigDocumentError)
+    assert path.read_bytes() == poison
+    assert backup_path_for(path).read_text(encoding="utf-8") == "tools.ask_user.timeout_seconds: 50\n"

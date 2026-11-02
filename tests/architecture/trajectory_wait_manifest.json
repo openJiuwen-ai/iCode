@@ -824,6 +824,9 @@
       "AgentLoader._cleanup_replaced_build_resources": [
         ["awaitable", "await old_prepared.aclose()", "unresolved"]
       ],
+      "AgentLoader._install_candidate": [
+        ["wrapper", "await self.release(ReplacedBuild(loaded=completed.loaded, coordinator=coordinator if coordinator is not self._session.mutation_coordinator else None))", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.release"]
+      ],
       "AgentLoader.build": [
         ["wrapper", "await construction.build_agent(self._profile_with_mcp_overlay(profile), staged=staged, preserved_history=preserved_history, build_agent_fn=self._build_agent_fn, session=self._session, persistence=self._persistence, bus=self._bus, agent_registry=self._agent_registry, model_registry=self._model_registry, workspace_change_tracker=self._workspace_change_tracker, turn_state=self._turn_state, turn_context=self._turn_context, mcp_cache=self._mcp_cache, allow_user_interaction=self._allow_user_interaction, checkpoints=self._checkpoints, usage_publisher=self._usage_publisher, fire_pre_compact=self._hooks.fire_pre_compact, publish_load_progress=self.publish_load_progress, hold_injection_notification=self.hold_injection_notification)", "unresolved", "chrys.orchestration.engine.build.construction.build_agent"]
       ],
@@ -843,6 +846,7 @@
       "AgentLoader.load": [
         ["awaitable", "await self._bus.publish(AgentLoadStarted(operation=operation, to_profile=profile.name, to_display_name=profile.display_name or profile.name, session_id=self._session.session_id))", "unresolved"],
         ["wrapper", "await self.build(profile, staged)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.build"],
+        ["wrapper", "await self._install_candidate(completed)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._install_candidate"],
         ["wrapper", "await self.release(replaced)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.release"],
         ["wrapper", "await self.settle_staged_hook_manager(old=old_hook_manager, staged=hook_manager)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.settle_staged_hook_manager"],
         ["wrapper", "await self.publish_load_failed(operation=operation, profile=profile, exc=exc)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.publish_load_failed"],
@@ -870,6 +874,7 @@
         ["awaitable", "await self._bus.publish(AgentLoadStarted(operation=operation, from_profile=old_profile_name, to_profile=new_profile.name, from_display_name=old_display_name or old_profile_name, to_display_name=new_profile.display_name or new_profile.name, session_id=self._session.session_id))", "unresolved"],
         ["wrapper", "await self.build_hook_manager(project_root=hook_manager_root, project_hooks_enabled=new_loaded.settings.project_hooks_enabled)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.build_hook_manager"],
         ["wrapper", "await self.build(new_profile, staged, preserved_history=preserved_state)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.build"],
+        ["wrapper", "await self._install_candidate(completed)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader._install_candidate"],
         ["wrapper", "await self.release(replaced)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.release"],
         ["wrapper", "await self.commit_hook_manager_replacement(old_hook_manager)", "unresolved", "chrys.orchestration.engine.loader.AgentLoader.commit_hook_manager_replacement"],
         ["awaitable", "await self._bus.publish(Warning(code='service_session_incompatible', message=f'The previous OpenAI Responses service session is not compatible with the active agent profile, workspace, model profile, service endpoint, or storage is disabled. {APP_DISPLAY_NAME} will continue from local history only.', display_message=_CONSTRUCTION_SERVICE_SESSION_INCOMPATIBLE.bind(app_name=APP_DISPLAY_NAME), session_id=self._session.session_id))", "unresolved"],
@@ -1733,7 +1738,8 @@
     },
     "chrys.orchestration.engine.state.controls": {
       "RuntimeControls._acquire_rebuild_permit_or_publish_error": [
-        ["awaitable", "await self._permits.acquire_rebuild_permit(token)", "unresolved"],
+        ["awaitable", "await self._permits.acquire_rebuild_permit(token, reject_running=manual)", "unresolved"],
+        ["awaitable", "await self._bus.publish(Error(code='manual_settings_reload_denied', message=permit.message, display_message=permit.display_message or _RELOAD_DENIALS[permit.reason].bind(), session_id=token.session_id))", "unresolved"],
         ["wrapper", "await self._publish_rebuild_denied(permit, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_rebuild_denied"]
       ],
       "RuntimeControls._publish_model_satisfied_or_denied": [
@@ -1751,7 +1757,7 @@
         ["awaitable", "await self._bus.publish(Error(code=denied.code, message=denied.message, session_id=session_id))", "unresolved"]
       ],
       "RuntimeControls._publish_settings_reloaded": [
-        ["awaitable", "await self._bus.publish(SettingsReloaded(runtime_details=copy.deepcopy(self._current.manifest.runtime_details), session_id=self._session.session_id))", "unresolved"]
+        ["awaitable", "await self._bus.publish(SettingsReloaded(report=report, runtime_details=copy.deepcopy(self._current.manifest.runtime_details), session_id=self._session.session_id))", "unresolved"]
       ],
       "RuntimeControls._publish_workspace_satisfied_or_denied": [
         ["wrapper", "await self._publish_workspace_updated_snapshot(session_id, primary_cwd=primary_cwd)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_workspace_updated_snapshot"],
@@ -1785,6 +1791,7 @@
         ["wrapper", "await self._publish_model_switched_snapshot(model.id, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_model_switched_snapshot"]
       ],
       "RuntimeControls.on_set_approval_mode": [
+        ["awaitable", "await self._bus.publish(Warning(code='approval_default_save_failed', message=str(exc), display_message=exc.display if isinstance(exc, ConfigError) else None, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(ApprovalModeUpdated(mode=mode.value, session_id=self._session.session_id))", "unresolved"]
       ],
       "RuntimeControls.on_set_model_profile": [
@@ -1795,13 +1802,14 @@
         ["wrapper", "await self._publish_model_switched_snapshot(event.profile_id, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_model_switched_snapshot"]
       ],
       "RuntimeControls.on_settings_reload": [
-        ["wrapper", "await self._acquire_rebuild_permit_or_publish_error(token)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._acquire_rebuild_permit_or_publish_error"],
-        ["thread_pool", "await asyncio.to_thread(load_settings, project_root=self._session_project_root(), eval_context=self._reload_eval_context(), **self._session_pin_overrides())", "unresolved"],
+        ["awaitable", "await self._bus.publish(Error(code='manual_settings_reload_denied', message=format_message(message), display_message=message, session_id=event.session_id))", "unresolved"],
+        ["wrapper", "await self._acquire_rebuild_permit_or_publish_error(token, manual=event.manual)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._acquire_rebuild_permit_or_publish_error"],
+        ["thread_pool", "await asyncio.to_thread(load_settings, project_root=self._session_project_root(), eval_context=self._reload_eval_context(), **pins)", "unresolved"],
         ["awaitable", "await self._bus.publish(dataclasses.replace(warning, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Warning(code='settings_restart_required', message=format_message(display_message), display_message=display_message, session_id=self._session.session_id))", "unresolved"],
-        ["awaitable", "await self._bus.publish(Error(code='settings_reload_failed', message=str(exc), session_id=self._session.session_id))", "unresolved"],
+        ["awaitable", "await self._bus.publish(Error(code='manual_settings_reload_failed' if event.manual else 'settings_reload_failed', message=str(exc), display_message=exc.display if isinstance(exc, ConfigError) else None, session_id=token.session_id))", "unresolved"],
         ["wrapper", "await self._start_or_restart_with_permit(permit, profile_for_restart, operation='settings_reload', staged_loaded=loaded, session=session)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._start_or_restart_with_permit"],
-        ["wrapper", "await self._publish_settings_reloaded()", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_settings_reloaded"]
+        ["wrapper", "await self._publish_settings_reloaded(tuple(report))", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_settings_reloaded"]
       ],
       "RuntimeControls.on_workspace_change": [
         ["awaitable", "await self._bus.publish(Error(code='runtime_mutation_not_ready', message='No active agent \u2014 cannot change workspace', display_message=_CONTROLS_WORKSPACE_SWITCH_NOT_READY.bind(), session_id=self._session.session_id))", "unresolved"],

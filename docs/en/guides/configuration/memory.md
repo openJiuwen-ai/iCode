@@ -33,7 +33,7 @@ If the same file is both added individually and discovered in a folder, it is lo
 
 After switching working directories or changing the current agent profile, iCode reloads memory using the new paths.
 
-iCode does not monitor loaded memory files for changes. After editing a file directly on disk, reload the main agent for the changes to take effect. For example, restart iCode, switch working directories, modify and save the current agent profile, or switch to another main agent and then switch back.
+After editing a memory file on disk, run `/reload` while the session is idle. The next request includes the updated text. With OpenAI Responses service storage, a change to memory can end the previous service continuation. iCode reports this and continues from local conversation history.
 
 ## Verify that memory is loaded
 

@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.config.errors import ConfigError
+from chrys.foundation.config.runtime_pointer import StaleModelFileChange
 from chrys.foundation.errors import clean_error_message
 from chrys.foundation.errors.display import display_fields
 from chrys.foundation.events.types import (
@@ -426,7 +428,7 @@ class AgentLoader:
                 hook_manager=hook_manager,
             )
             completed = await self.build(profile, staged)
-            replaced = self.install(completed)
+            replaced = await self._install_candidate(completed)
             await self.release(replaced)
             self._fsm.try_transition(Trigger.START)
             self._register_current_engine()
@@ -542,7 +544,7 @@ class AgentLoader:
         exc: Exception,
     ) -> None:
         """Publish an agent load failure event."""
-        display_message, display_hint = display_fields(exc)
+        display_message, display_hint = (exc.display, None) if isinstance(exc, ConfigError) else display_fields(exc)
         await self._bus.publish(
             AgentLoadFailed(
                 operation=operation,
@@ -675,7 +677,7 @@ class AgentLoader:
             # executor under the old profile's name or publish it with an empty
             # history for the next save to persist.
             completed = await self.build(new_profile, staged, preserved_history=preserved_state)
-            replaced = self.install(completed)
+            replaced = await self._install_candidate(completed)
             await self.release(replaced)
             if staged_hook_manager is not old_hook_manager:
                 await self.commit_hook_manager_replacement(old_hook_manager)
@@ -803,6 +805,19 @@ class AgentLoader:
                     session_id=self._session.session_id,
                 ),
             )
+
+    async def _install_candidate(self, completed: CompletedBuild) -> ReplacedBuild:
+        try:
+            return self.install(completed)
+        except StaleModelFileChange:
+            coordinator = completed.staged.mutation_coordinator
+            await self.release(
+                ReplacedBuild(
+                    loaded=completed.loaded,
+                    coordinator=coordinator if coordinator is not self._session.mutation_coordinator else None,
+                )
+            )
+            raise
 
     def install(self, completed: CompletedBuild) -> ReplacedBuild:
         """Install the completed candidate before releasing the previous owner."""

@@ -32,6 +32,7 @@ from chrys.app.tui.util.static_update import update_static_in_place
 from chrys.app.tui.widgets import Checkbox, ConfigAddButton, Select
 from chrys.app.tui.widgets import EnhancedInput as Input
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.config.errors import ConfigError
 from chrys.foundation.config.runtime_pointer import set_model_pointer
 from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
@@ -1582,7 +1583,7 @@ class ModelConfigScreen(BaseDialog[str]):
                 await self._do_delete(profile_id)
             except Exception as exc:
                 self.notify(
-                    str(exc),
+                    self._render_toast(exc.display) if isinstance(exc, ConfigError) else str(exc),
                     title=self._render_toast(_MODEL_SETTINGS_TITLE.bind()),
                     severity="error",
                     timeout=5,
@@ -1634,8 +1635,17 @@ class ModelConfigScreen(BaseDialog[str]):
                 (candidate for candidate in profiles if is_model_profile_selectable(candidate)),
                 profiles[0],
             )
-            await self._persist_active_profile(new_global_default)
-            self._global_default_profile_id = new_global_default.id
+            try:
+                await self._persist_active_profile(new_global_default)
+            except (OSError, ValueError) as exc:
+                self.notify(
+                    self._render_toast(exc.display) if isinstance(exc, ConfigError) else str(exc),
+                    title=self._render_toast(_SAVE_ERROR_TITLE.bind()),
+                    severity="error",
+                    markup=False,
+                )
+            else:
+                self._global_default_profile_id = new_global_default.id
 
         if was_runtime_effective:
             # The file default may itself be dangling or hollow (deleting a
@@ -1705,7 +1715,7 @@ class ModelConfigScreen(BaseDialog[str]):
             profile = await self._save_only()
         except Exception as exc:
             self.notify(
-                str(exc),
+                self._render_toast(exc.display) if isinstance(exc, ConfigError) else str(exc),
                 title=self._render_toast(_SAVE_ERROR_TITLE.bind()),
                 severity="error",
                 timeout=5,

@@ -33,7 +33,9 @@ import threading
 from dataclasses import dataclass
 from typing import Final
 
-from chrys.foundation.config.spec import SettingOrigin
+from chrys.foundation.config.errors import ConfigError
+from chrys.foundation.config.spec import SettingOrigin, Source
+from chrys.foundation.i18n import msg
 
 MODEL_POINTER_ENV: Final = "CHRYS_MODEL_PROFILE"
 """The pointer's carrier variable in ``os.environ``."""
@@ -61,6 +63,79 @@ _registered_origin: SettingOrigin | None = None
 _generation = 0
 
 
+_file_choice = ""
+_launch_choice = ""
+
+
+_MODEL_SELECTION_CHANGED = msg(
+    "settings.model_selection_changed", fallback="Model selection changed during reload. Run /reload again."
+)
+
+
+class StaleModelFileChange(ConfigError, RuntimeError):
+    """A newer selection superseded the in-flight rebuild."""
+
+
+@dataclass(frozen=True, slots=True)
+class ModelFileChange:
+    """An external model edit awaiting a successful TUI rebuild."""
+
+    file_value: str
+    value: str
+    origin: SettingOrigin
+    generation: int
+
+    def commit(self) -> None:
+        global _file_choice
+        with _lock:
+            if self.generation != _generation:
+                raise StaleModelFileChange(_MODEL_SELECTION_CHANGED.bind())
+            _write_pointer(self.value or None, self.origin)
+            _file_choice = self.file_value
+
+
+def model_selection_revision() -> int:
+    with _lock:
+        return _generation
+
+
+def check_model_selection_revision(expected: int) -> None:
+    if model_selection_revision() != expected:
+        raise StaleModelFileChange(_MODEL_SELECTION_CHANGED.bind())
+
+
+def remember_file_model(value: str) -> None:
+    """Record bootstrap or a successful write of this particular key."""
+    global _file_choice, _generation
+    with _lock:
+        _file_choice = value
+        _generation += 1
+
+
+def external_model_edit(value: str, *, file_origin: SettingOrigin, exported: str) -> ModelFileChange | None:
+    with _lock:
+        if value == _file_choice:
+            return None
+        if _launch_choice:
+            selected, origin = _launch_choice, SettingOrigin(layer=Source.CLI)
+        elif exported:
+            selected, origin = exported, SettingOrigin(layer=Source.ENV)
+        else:
+            selected, origin = value, file_origin
+        return ModelFileChange(value, selected, origin, _generation)
+
+
+def _write_pointer(value: str | None, origin: SettingOrigin) -> None:
+    global _registered_origin, _generation
+    if value is None:
+        os.environ.pop(MODEL_POINTER_ENV, None)
+        _registered_origin = None
+    else:
+        os.environ[MODEL_POINTER_ENV] = value
+        _registered_origin = origin
+    _generation += 1
+
+
 def set_model_pointer(value: str | None, *, origin: SettingOrigin) -> PointerToken:
     """Write the pointer and record who wrote it; return the replaced state.
 
@@ -70,20 +145,12 @@ def set_model_pointer(value: str | None, *, origin: SettingOrigin) -> PointerTok
     old value back into ``os.environ`` by hand leaves the origin describing
     the write that was just rolled back.
     """
-    global _registered_origin, _generation
+    global _launch_choice
     with _lock:
-        token = PointerToken(
-            value=os.environ.get(MODEL_POINTER_ENV),
-            origin=_registered_origin,
-            generation=_generation,
-        )
-        if value is None:
-            os.environ.pop(MODEL_POINTER_ENV, None)
-            _registered_origin = None
-        else:
-            os.environ[MODEL_POINTER_ENV] = value
-            _registered_origin = origin
-        _generation += 1
+        token = PointerToken(os.environ.get(MODEL_POINTER_ENV), _registered_origin, _generation)
+        if origin.layer is Source.CLI:
+            _launch_choice = value or ""
+        _write_pointer(value, origin)
         return token
 
 
@@ -127,7 +194,9 @@ def get_model_pointer() -> tuple[str, SettingOrigin | None]:
 
 
 def _reset_model_pointer_for_tests() -> None:
-    global _registered_origin, _generation
+    global _registered_origin, _generation, _file_choice, _launch_choice
     with _lock:
         _registered_origin = None
         _generation = 0
+        _file_choice = ""
+        _launch_choice = ""

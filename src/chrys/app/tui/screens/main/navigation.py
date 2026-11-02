@@ -14,6 +14,7 @@ from chrys.app.tui.screens.main.session_handlers import CLEAR_SESSION_TITLE
 from chrys.app.tui.screens.main.state import MainScreenServices
 from chrys.app.tui.screens.sessions import WorkflowSessionPick
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.config.errors import config_error_display
 from chrys.foundation.i18n import msg
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.startup import catalog_load_warning
@@ -202,6 +203,10 @@ class MainNavigationController:
         if controller is None:
             return
         result = controller.switch_locale(requested_locale)
+        if result.persist_error is not None:
+            self._view.notify(
+                config_error_display(result.persist_error), title=LANGUAGE_PICKER_TITLE.bind(), severity="error"
+            )
         if result.status is not LocaleSwitchStatus.LOAD_FAILED or result.warning is None:
             return
         notice = catalog_load_warning(result.warning)

@@ -48,6 +48,7 @@ class LocaleSwitchResult:
 
     status: LocaleSwitchStatus
     warning: CatalogLoadWarning | None = None
+    persist_error: Exception | None = None
 
 
 def _resolved_display_text(localizer: Localizer, reference: MessageRef) -> str:
@@ -197,13 +198,13 @@ class LocaleController:
             return LocaleSwitchResult(LocaleSwitchStatus.LOAD_FAILED, warning)
 
         self._settings_handle.override(locale=requested_locale)
-        persist_locale(requested_locale)
+        persist_error = persist_locale(requested_locale)
         if self._localizer.effective_locale == previous_effective:
-            return LocaleSwitchResult(LocaleSwitchStatus.REQUESTED_ONLY)
+            return LocaleSwitchResult(LocaleSwitchStatus.REQUESTED_ONLY, persist_error=persist_error)
 
         self._revision += 1
         self._refresh_registered_presentation()
-        return LocaleSwitchResult(LocaleSwitchStatus.EFFECTIVE_CHANGED)
+        return LocaleSwitchResult(LocaleSwitchStatus.EFFECTIVE_CHANGED, persist_error=persist_error)
 
     def _refresh_registered_presentation(self) -> None:
         for surface in tuple(self._surfaces):

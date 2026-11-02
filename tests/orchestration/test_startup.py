@@ -350,7 +350,7 @@ def test_bootstrap_survives_a_settings_document_held_by_another_process(
 ) -> None:
     # A second Chrys must still start while the first is stalled inside the
     # document's lock: the read is on every entry point's startup path.
-    from chrys.foundation.config.yaml_store import lock_path_for, read_yaml_doc, update_yaml_doc
+    from chrys.foundation.config.yaml_store import lock_path_for, read_yaml_document, update_yaml_doc
     from chrys.foundation.util.lock import FileLock
 
     _quiet_bootstrap(monkeypatch, tmp_path)
@@ -359,7 +359,7 @@ def test_bootstrap_survives_a_settings_document_held_by_another_process(
     # document, so the test costs milliseconds instead of stalling a worker for
     # three full production timeouts.
     for target, function in (
-        ("chrys.foundation.config.settings_store.read_yaml_doc", read_yaml_doc),
+        ("chrys.foundation.config.settings_store.read_yaml_document", read_yaml_document),
         ("chrys.foundation.config.migrations.update_yaml_doc", update_yaml_doc),
     ):
         monkeypatch.setattr(target, functools.partial(function, lock_timeout=0.05))
@@ -486,3 +486,22 @@ def test_notification_migration_failure_does_not_skip_theme_rename(monkeypatch, 
     assert [w.code for w in bootstrap.warnings] == ["notifications_migration_failed"]
     assert bootstrap.settings.theme == "chrys"
     assert yaml.safe_load(settings_path.read_text(encoding="utf-8"))["ui"]["theme"] == "chrys"
+
+
+def test_corrupt_settings_without_legacy_notifications_does_not_warn_about_migration(monkeypatch, tmp_path) -> None:
+    _quiet_bootstrap(monkeypatch, tmp_path)
+    path = tmp_path / "config" / "settings.yaml"
+    path.write_text("ui: [broken", encoding="utf-8")
+    result = startup.bootstrap_runtime(apply_patches=False, setup_telemetry=False)
+    from chrys.foundation.config.warnings import settings_warning_events
+    from chrys.foundation.i18n import Localizer
+
+    (warning,) = [
+        event for event in settings_warning_events(result.loaded) if event.code == "settings_document_read_failed"
+    ]
+    assert warning.display_hint is not None
+    rendered = Localizer("zh-Hans").render(warning.display_hint)
+    assert str(path) in rendered and "第 1 行" in rendered
+    assert result.loaded.document_error
+    assert not any(warning.code == "notifications_migration_failed" for warning in result.warnings)
+    assert path.read_text(encoding="utf-8") == "ui: [broken"

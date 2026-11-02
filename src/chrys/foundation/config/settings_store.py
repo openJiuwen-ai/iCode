@@ -35,8 +35,18 @@ from typing import Any, Final
 
 from chrys.foundation.config.coercion import Coerced, CoerceReason, CoerceStatus, invalid
 from chrys.foundation.config.context import EvalContext
+from chrys.foundation.config.errors import MODEL_ID_EXPECTED, ConfigValueError
 from chrys.foundation.config.process_env import process_env_snapshot
-from chrys.foundation.config.runtime_pointer import MODEL_POINTER_ENV, get_model_pointer
+from chrys.foundation.config.runtime_pointer import (
+    MODEL_POINTER_ENV,
+    MODEL_POINTER_KEY,
+    ModelFileChange,
+    check_model_selection_revision,
+    external_model_edit,
+    get_model_pointer,
+    model_selection_revision,
+    remember_file_model,
+)
 from chrys.foundation.config.settings import DEFAULT_MAX_TRANSIENT_RETRIES, Settings
 from chrys.foundation.config.spec import (
     FILE_SOURCES,
@@ -52,10 +62,11 @@ from chrys.foundation.config.spec import (
 from chrys.foundation.config.user_settings import apply_settings_patch, flatten_user_doc, user_settings_path
 from chrys.foundation.config.yaml_store import (
     LOCK_TIMEOUT_SECONDS,
-    read_yaml_doc,
     read_yaml_doc_readonly,
+    read_yaml_document,
     update_yaml_doc,
 )
+from chrys.foundation.i18n import DisplayPath, MessageRef
 from chrys.foundation.platform.runtime_paths import same_path
 
 logger = logging.getLogger(__name__)
@@ -64,6 +75,7 @@ DEFAULT_EVAL_CONTEXT = EvalContext(frontend_default_max_transient_retries=DEFAUL
 """Interactive-frontend policy. ``chrys run`` passes its own (15)."""
 
 _FRONTEND_DEFAULT_FIELD = "frontend_default_max_transient_retries"
+
 
 _EMPTY_MAP: Final[Mapping[str, Any]] = MappingProxyType({})
 
@@ -147,6 +159,13 @@ class LoadedSettings:
 
     dormant_project_sources: tuple[DormantProjectSource, ...] = ()
     """Project hooks and skills discovered while their setting is off, reported the same way."""
+
+    file_values: Mapping[str, Any] = field(default_factory=dict)
+    """Typed values requested on disk, keyed by field name for manual reload reporting."""
+    file_model: str = ""
+    document_error: MessageRef | None = None
+    model_edit: ModelFileChange | None = None
+    manual_model_revision: int | None = None
 
     def overlay(self, layer: Source, **values: Any) -> LoadedSettings:
         """Return a copy carrying *values*, credited to *layer*.
@@ -283,10 +302,8 @@ class SettingsHandle:
         would not even follow it back: Textual keeps showing the theme that was
         chosen, so the settings would simply stop describing the screen.
 
-        The window where that is not merely a misattribution is real, because
-        ``persist_theme`` and its siblings log and swallow their failures: when
-        the write to disk did not land, this overlay is the only record that the
-        choice was ever made.
+        A failed save is reported to the user. Until the next launch this
+        overlay still describes the choice the screen is showing.
         """
         self.install_prepared(self.prepare(loaded))
 
@@ -312,6 +329,16 @@ class SettingsHandle:
         with it, from values that were checked when they were chosen. Otherwise
         nothing is recomputed — a commit installs what was prepared.
         """
+        if prepared.base.manual_model_revision is not None:
+            if prepared.base.model_edit is None:
+                check_model_selection_revision(prepared.base.manual_model_revision)
+            else:
+                prepared.base.model_edit.commit()
+            prepared = replace(
+                prepared,
+                base=replace(prepared.base, model_edit=None, manual_model_revision=None),
+                effective=replace(prepared.effective, model_edit=None, manual_model_revision=None),
+            )
         self._base = prepared.base
         self._session = dict(prepared.session)
         if prepared.runtime_revision == self._runtime_revision:
@@ -330,9 +357,11 @@ class SettingsHandle:
         self._runtime_revision += 1
         self._reapply()
 
-    def persist_approval_default(self, mode: str, *, persist: Callable[[str], None]) -> str:
+    def persist_approval_default(self, mode: str, *, persist: Callable[[str], Exception | None]) -> str:
         """Persist a global choice and mirror its safe launch default in the runtime overlay."""
-        persist(mode)
+        failure = persist(mode)
+        if failure is not None:
+            raise failure
         default = "auto" if mode == "bypass" else mode
         self.override(default_approval_mode=default)
         return default
@@ -356,6 +385,7 @@ def load_settings(
     project_root: Path | None = None,
     eval_context: EvalContext = DEFAULT_EVAL_CONTEXT,
     env: Mapping[str, str] | None = None,
+    manual_reload: bool = False,
     **pins: Any,
 ) -> LoadedSettings:
     """Assemble settings from every source, resolving each key downwards.
@@ -406,7 +436,8 @@ def load_settings(
     # layers off along with the real environment — a test passing ``env={}``
     # must not read the developer's own ``~/.chrys`` *or* the project files:
     # hermetic means hermetic, whatever root was passed alongside.
-    file_layers = _read_file_layers(specs, project_root) if env is None else None
+    revision = model_selection_revision() if manual_reload else None
+    file_layers = _read_file_layers(specs, project_root, strict=manual_reload) if env is None else None
     # Phase one: the project trust domain is audited completely before any
     # winner is chosen, so a project value a higher layer shadows still gets
     # its policy verdict and its warning.
@@ -445,9 +476,43 @@ def load_settings(
     # an unknown name falls out of ``Settings(**values)`` as a ``TypeError``.
     values.update({name: value for name, value in pins.items() if name not in specs})
 
+    raw_model = file_layers.user_yaml.get(MODEL_POINTER_KEY) if file_layers else None
+    file_model = raw_model.strip() if isinstance(raw_model, str) else ""
+    edit = None
+    if manual_reload and file_layers and "model_profile" not in pins:
+        if MODEL_POINTER_KEY in file_layers.user_yaml and raw_model is not None and not isinstance(raw_model, str):
+            raise ConfigValueError(MODEL_ID_EXPECTED.bind(path=DisplayPath(str(file_layers.user_yaml_path))))
+        edit = external_model_edit(
+            file_model,
+            file_origin=SettingOrigin(layer=Source.USER, path=file_layers.user_yaml_path)
+            if file_model
+            else SettingOrigin(layer=Source.DEFAULT),
+            exported=source.get(MODEL_POINTER_ENV, "").strip(),
+        )
+        if edit is not None:
+            values["model_profile"] = edit.value
+            provenance[MODEL_POINTER_KEY] = edit.origin
+    file_values: dict[str, Any] = {}
+    if manual_reload and file_layers is not None:
+        for name, entry in specs.items():
+            if not entry.persist:
+                continue
+            if name in project.values:
+                file_values[name] = project.values[name]
+            elif entry.key in file_layers.user_yaml:
+                verdict = _user_doc_verdict(entry, file_layers.user_yaml[entry.key])
+                if verdict.usable:
+                    file_values[name] = verdict.value
+    if revision is not None:
+        check_model_selection_revision(revision)
     settings = Settings(**values)
     return LoadedSettings(
         settings=settings,
+        file_values=file_values,
+        file_model=file_model,
+        model_edit=edit,
+        manual_model_revision=revision,
+        document_error=file_layers.error if file_layers else None,
         provenance=provenance,
         warnings=tuple(warnings),
         sealed_keys=frozenset(sealed),
@@ -530,6 +595,7 @@ class _FileLayers:
     user_yaml_path: Path
     unknown_keys: tuple[str, ...]
 
+    error: MessageRef | None = None
     project_yaml: Mapping[str, Any] = _EMPTY_MAP
     """Dotted key → raw value, from ``<root>/.chrys/settings.yaml``."""
 
@@ -538,7 +604,9 @@ class _FileLayers:
     """``None`` when no distinct project document applies."""
 
 
-def _read_file_layers(specs: Mapping[str, SettingSpec], project_root: Path | None) -> _FileLayers | None:
+def _read_file_layers(
+    specs: Mapping[str, SettingSpec], project_root: Path | None, *, strict: bool = False
+) -> _FileLayers | None:
     """Read the file-borne layers, or ``None`` before bootstrap froze the env.
 
     The snapshot gate is the hermeticity gate: a process that never called
@@ -550,20 +618,8 @@ def _read_file_layers(specs: Mapping[str, SettingSpec], project_root: Path | Non
     if snapshot is None:
         return None
     yaml_path = user_settings_path()
-    # ``None`` covers both "no document yet" and "nothing parseable", and an
-    # unparseable document must load as empty rather than not at all: the
-    # environment layers above it still apply, and the panel still opens.
-    try:
-        doc = read_yaml_doc(yaml_path) or {}
-    except TimeoutError:
-        # Another process was inside the document's lock for the whole wait.
-        # The same rule as an unparseable file, for a stronger reason: this
-        # read is on the startup path of every entry point, so raising here
-        # means a second Chrys cannot start at all while the first is stalled
-        # mid-write. The values genuinely are not in force this launch, which
-        # is exactly what provenance will report.
-        logger.warning("Settings document was busy; loading without it: %s", yaml_path, exc_info=True)
-        doc = {}
+    read = read_yaml_document(yaml_path, strict=strict)
+    doc = read.doc or {}
     known_keys = frozenset(entry.key for entry in specs.values())
     values, unknown = flatten_user_doc(doc, known_keys)
 
@@ -580,10 +636,13 @@ def _read_file_layers(specs: Mapping[str, SettingSpec], project_root: Path | Non
             project_yaml_path = candidate
             # Same empty-on-unparseable rule as the user document, read without
             # lock, backup or repair — the file lives in someone's working tree.
-            project_doc = read_yaml_doc_readonly(project_yaml_path) or {}
+            gate = specs["project_config_enabled"]
+            trusted = _user_doc_verdict(gate, values.get(gate.key)).value is True
+            project_doc = read_yaml_doc_readonly(project_yaml_path, strict=strict and trusted) or {}
             project_yaml, project_yaml_unknown = flatten_user_doc(project_doc, known_keys)
 
     return _FileLayers(
+        error=read.error,
         user_yaml=values,
         user_yaml_path=yaml_path,
         unknown_keys=unknown,
@@ -1010,7 +1069,17 @@ def persist(
     if rejected:
         return PersistResult(written={}, rejected=rejected)
     if written or removals:
-        update_yaml_doc(path, lambda doc: apply_settings_patch(doc, written, removals), lock_timeout=lock_timeout)
+
+        def record_selection() -> None:
+            if MODEL_POINTER_KEY in written or MODEL_POINTER_KEY in removals:
+                remember_file_model(str(written.get(MODEL_POINTER_KEY, "")))
+
+        update_yaml_doc(
+            path,
+            lambda doc: apply_settings_patch(doc, written, removals),
+            lock_timeout=lock_timeout,
+            committed=record_selection,
+        )
     return PersistResult(written=written, rejected={})
 
 

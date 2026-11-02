@@ -1231,6 +1231,7 @@ def make_slash_actions(screen: SuggestionScreen) -> SlashCommandActions:
         configure_model=screen._open_model_config,
         configure_agent=screen._open_agent_config,
         configure_agent_tab=screen._open_agent_config_tab,
+        reload_settings=lambda: None,
         show_runtime_details=screen.action_runtime_details,
         show_usage=screen.action_usage,
         configure_settings=screen._open_settings,

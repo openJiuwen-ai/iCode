@@ -25,7 +25,7 @@ llm:
     max_transient: 3
 ```
 
-After editing the settings file manually, save it and restart iCode for the changes to take effect.
+After editing settings manually, save the file and run `/reload` while the TUI is idle. Changes to the theme, language, editor keymap, default agent and default approval mode take effect the next time you start iCode. Choose a registered theme. Notifications and verify commands refresh immediately. Chat display preferences and the option to delay the approval dialog during automatic review are read when next used. A choice you already made in the Settings panel can take precedence over a later file edit for the rest of this session. The summary lists conflicting values and settings that require a restart. An invalid settings document stops the command and is left intact. Fix it before saving other settings. Ordinary reads can use the last valid document or a backup until you fix it. Deleting the file removes that layer. External edits to the default model can select profiles already loaded in this process. Restart to discover a newly added model file.
 
 ## Settings keys
 
@@ -70,7 +70,7 @@ The `approval` keys control approval behavior when an agent requests an operatio
 | YAML key | Environment variable | Default | Type, values, and effect |
 | --- | --- | --- | --- |
 | `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | String; `manual` for manual approval, `auto` for automatic approval, or `bypass` to bypass approval. Setting the default mode does not switch the current session's mode |
-| `approval.auto_review` | `CHRYS_APPROVAL_AUTO_REVIEW` | `direct` | `direct` selects **Direct review**; `formal` selects **Individual risk checks**, which ask you to confirm detected risks such as file deletion or code publication. See [Choose how automatic review works](../guides/configuration/approval.md#choose-how-automatic-review-works). Used only in `auto` mode. Close Settings to apply changes made there; after editing the file directly, restart iCode. Set it in your user settings; projects cannot override it. Invalid values use `direct` |
+| `approval.auto_review` | `CHRYS_APPROVAL_AUTO_REVIEW` | `direct` | `direct` selects **Direct review**; `formal` selects **Individual risk checks**, which ask you to confirm detected risks such as file deletion or code publication. See [Choose how automatic review works](../guides/configuration/approval.md#choose-how-automatic-review-works). Used only in `auto` mode. Close Settings to apply changes made there; after editing the file directly, run `/reload`. Set it in your user settings; projects cannot override it. Invalid values use `direct` |
 | `approval.timeout_seconds` | `CHRYS_APPROVAL_TIMEOUT_SECONDS` | `0` | Integer; seconds to wait for human approval in TUI and ACP. `0` disables the timeout; positive values set a deadline. Negative values are raised to `0`. Timeout rejects the tool call. Restart iCode to apply |
 | `ui.approval.defer_while_judging` | None | `true` | Boolean; in automatic mode, whether the TUI opens the approval dialog only when the approval judge model flags a call or evaluation fails. `false` opens it at once while the call is evaluated. The ACP server and `icode run` ignore it |
 | `project.config_enabled` | None | `false` | Boolean; whether to load project settings for each working directory. Must be enabled in user settings |
@@ -235,7 +235,7 @@ llm:
     max_transient: 3
 ```
 
-After enabling project settings and restarting, if the user has not set a retry count, the project's `3` retries apply. If user YAML already sets `1`, the project's `3` is rejected and `1` still applies. A valid value in the startup environment always takes precedence.
+After enabling project settings and reloading, if the user has not set a retry count, the project's `3` retries apply. If user YAML already sets `1`, the project's `3` is rejected and `1` still applies. A valid value in the startup environment always takes precedence.
 
 iCode reports and ignores disallowed project keys, values that exceed override restrictions, and unknown keys, while continuing to apply other valid settings.
 
@@ -250,7 +250,7 @@ iCode reports and ignores disallowed project keys, values that exceed override r
 
 ## When a setting does not take effect
 
-1. Confirm that the settings file is in the correct location and that you have saved it and restarted iCode.
+1. Confirm that the settings file is in the correct location and that you have saved it and run `/reload` (or restarted iCode for restart-only settings).
 2. Check for a higher-priority source. Deleting a key from YAML does not clear values from other sources.
 3. For project settings, confirm that loading is enabled in user settings and that the key and override direction meet the restrictions.
 4. Check the messages iCode reports at startup. For how invalid values and unknown keys are handled, see [Value syntax and invalid values](#value-syntax-and-invalid-values); for directory-related messages, check [File locations and format](#file-locations-and-format).

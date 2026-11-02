@@ -36,6 +36,7 @@ from chrys.app.tui.screens.main.ports import (
 )
 from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider, enabled_hook_count
 from chrys.app.tui.screens.main.session_title import QUESTION_MARK, RETRY_MARK, AttentionMark
+from chrys.app.tui.screens.main.settings_coordinator import SETTINGS_TITLE
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
@@ -1037,6 +1038,8 @@ class BackendEventHandler:
         # reload is when the live values catch up (or an unrelated reload
         # arrives), so it re-reads and, for its own reload, takes the ack.
         self._callbacks.settings_reloaded()
+        for line in _event.report:
+            self.notify(line, title=SETTINGS_TITLE.bind(), timeout=6)
 
     async def on_agent_runtime_updated(self, event: AgentRuntimeUpdated) -> None:
         """Refresh runtime details and the persistent status-bar counts."""
@@ -1950,10 +1953,23 @@ class BackendEventHandler:
             s.push_screen(dialog)
             s.debug("Warning", f"[{event.code}] {event.message[:80]}")
             return
-        s.notify(event.display_message or event.message, title=_WARNING_TITLE.bind(), severity="warning", timeout=8)
+        display = (
+            self._render_display_with_hint(event.display_message, event.display_hint)
+            if event.display_message is not None and event.display_hint is not None
+            else event.display_message or event.message
+        )
+        s.notify(display, title=_WARNING_TITLE.bind(), severity="warning", timeout=8)
         s.debug("Warning", f"[{event.code}] {event.message[:80]}")
 
     async def on_error(self, event: Error) -> None:
+        if event.code in {"manual_settings_reload_failed", "manual_settings_reload_denied"}:
+            self.notify(
+                event.display_message or event.message,
+                title=SETTINGS_TITLE.bind(),
+                severity="warning" if event.code == "manual_settings_reload_denied" else "error",
+                timeout=8,
+            )
+            return
         if self._callbacks.route_session_error(event):
             return
         s = self

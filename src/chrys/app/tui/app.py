@@ -71,6 +71,7 @@ from chrys.app.tui.util.debug_log import configure_debug_logging, stop_debug_log
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_AGENT_STARTUP_FAILED
 from chrys.foundation import platform as chrys_platform
 from chrys.foundation.branding import APP_DISPLAY_NAME, format_app_version_title
+from chrys.foundation.config.errors import ConfigError
 from chrys.foundation.config.runtime_pointer import set_model_pointer
 from chrys.foundation.config.settings import (
     DEFAULT_AGENT_PROFILE,
@@ -839,7 +840,13 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         """Persist a theme choice and overlay it on the shared handle, as a pair."""
         if self.theme_preview is not None or self._theme_selection_depth:
             return
-        persist_theme(theme_name)
+        failure = persist_theme(theme_name)
+        if failure is not None:
+            self.notify(
+                render_str(self.localizer, failure.display) if isinstance(failure, ConfigError) else str(failure),
+                severity="error",
+                markup=False,
+            )
         self._settings_handle.override(theme=theme_name)
 
     def apply_theme_setting(self, theme_name: str) -> bool:
