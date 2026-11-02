@@ -88,7 +88,7 @@ async def test_tui_session_restore_runs_the_saved_model_as_the_sessions_own_with
     )
     started_model_ids: list[str] = []
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fake_start(
@@ -323,7 +323,7 @@ async def test_session_restore_default_gate_does_not_apply_saved_model(
     )
     started_model_ids: list[str] = []
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fake_start(
@@ -372,7 +372,7 @@ async def test_saved_model_restore_changes_nothing_when_start_fails_before_its_c
         model_registry=_model_registry(saved_model),
     )
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fail_start(
@@ -425,7 +425,7 @@ async def test_saved_model_restore_does_not_roll_back_after_executor_install(
     )
     replacement_executor = MagicMock()
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fail_after_install(

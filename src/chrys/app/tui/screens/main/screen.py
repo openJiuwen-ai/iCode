@@ -34,6 +34,7 @@ from chrys.app.tui.i18n import render_content, render_str, widget_localizer
 from chrys.app.tui.language import LANGUAGE_OPTIONS, LANGUAGE_UNKNOWN_LOCALE
 from chrys.app.tui.screens.dialogs.background_task import ROLLBACK_NOTE, BackgroundTaskModal, confirm_stopping
 from chrys.app.tui.screens.main.action_availability import check_main_action
+from chrys.app.tui.screens.main.btw import BTW_BUSY, BtwController
 from chrys.app.tui.screens.main.commands import INVALID_COMMAND_TITLE_REF, SlashCommandActions
 from chrys.app.tui.screens.main.config_actions import (
     RuntimeConfigCallbacks,
@@ -88,6 +89,7 @@ from chrys.app.tui.support.gc_freeze import (
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.util.liveness import composed_live
+from chrys.app.tui.widgets.btw import BtwPanel, ChatColumn
 from chrys.app.tui.widgets.chat.messages import ConversationStatusAction
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
@@ -99,7 +101,7 @@ from chrys.app.tui.widgets.chat.selection_controller import ChatSelectionControl
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolViewRequested, is_tool_copy_excluded
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
-from chrys.app.tui.widgets.chrome.commands import is_slash_command_candidate
+from chrys.app.tui.widgets.chrome.commands import is_slash_command_candidate, parse_slash_draft
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
 from chrys.app.tui.widgets.chrome.hook_indicator import HookIndicator
 from chrys.app.tui.widgets.chrome.input_bar import (
@@ -553,6 +555,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             prompt_commands_ended_handler=self._input_flow.on_prompt_commands_ended,
         )
         self._workflow_panel = WorkflowPanel(locale_controller=self._locale_controller)
+        self._btw = BtwController(
+            bus=self._services.bus,
+            panel=BtwPanel(locale_controller=self._locale_controller),
+            focus_input=lambda: self.query_one(InputBar).focus_input(),
+        )
         self._workflow = WorkflowController(
             services=self._services,
             panel=self._workflow_panel,
@@ -829,6 +836,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             quit_app=self.action_quit,
             resume_session=self._resume_last_session,
             fork_session=self._fork_current_session,
+            ask_side_question=self.action_btw,
             browse_session_list=self.action_sessions,
             workflow_selection=self.action_workflow,
             open_guide=self._navigation.open_guide,
@@ -853,6 +861,32 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             ),
             warn=self._warn_slash_command,
         )
+
+    def action_btw(self, question: str) -> None:
+        """Ask a side question, or reopen this session's completed questions."""
+        if self._workflow.workflow_mode or self._state.run.agent_loading:
+            return
+        if not question.strip():
+            self._btw.open_history(self.query_one(ChatPanel).session_id)
+            return
+        if self._btw.panel.running:
+            self._warn_slash_command(BTW_BUSY.bind())
+            self.query_one(InputBar).restore_draft(f"/btw {question}")
+            return
+        if self._model_unconfigured():
+            self._show_model_unconfigured_dialog()
+            return
+        self._btw.ask(self.query_one(ChatPanel).session_id, question)
+
+    @on(BtwPanel.Closed)
+    def _on_btw_closed(self, event: BtwPanel.Closed) -> None:
+        event.stop()
+        self._btw.close_question()
+
+    @on(BtwPanel.Navigate)
+    async def _on_btw_navigate(self, event: BtwPanel.Navigate) -> None:
+        event.stop()
+        await self._btw.navigate(event.delta)
 
     def _new_diff_controller(self) -> DiffController:
         return DiffController(
@@ -1087,22 +1121,24 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             approval_mode=MainScreen.header_approval_mode,
         )
         with Horizontal():
-            yield ChatPanel(
-                cwd=self._workspace_cwd(),
-                localization=self._localization,
-                locale_controller=self._locale_controller,
-                tool_groups_expanded=self._tool_groups_expanded,
-                thinking_expanded=self._thinking_expanded,
-                fold_finished_turns=self._fold_finished_turns,
-                sub_agent_transcript_loader=self._load_sub_agent_transcript,
-            ).data_bind(
-                agent_running=MainScreen.agent_running_state,
-                profile_name=MainScreen.chat_profile_name,
-                session_id_value=MainScreen.chat_session_id,
-                session_title_value=MainScreen.chat_session_title,
-                workspace_cwd=MainScreen.chat_workspace_cwd,
-                workspace_branch=MainScreen.chat_workspace_branch,
-            )
+            with ChatColumn(id="chat-column"):
+                yield ChatPanel(
+                    cwd=self._workspace_cwd(),
+                    localization=self._localization,
+                    locale_controller=self._locale_controller,
+                    tool_groups_expanded=self._tool_groups_expanded,
+                    thinking_expanded=self._thinking_expanded,
+                    fold_finished_turns=self._fold_finished_turns,
+                    sub_agent_transcript_loader=self._load_sub_agent_transcript,
+                ).data_bind(
+                    agent_running=MainScreen.agent_running_state,
+                    profile_name=MainScreen.chat_profile_name,
+                    session_id_value=MainScreen.chat_session_id,
+                    session_title_value=MainScreen.chat_session_title,
+                    workspace_cwd=MainScreen.chat_workspace_cwd,
+                    workspace_branch=MainScreen.chat_workspace_branch,
+                )
+                yield self._btw.panel
             yield self._workflow_panel
             yield TrajectoryDashboard(
                 locale_controller=self._locale_controller,
@@ -1179,7 +1215,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         # Only these panel roots and the editor use the compact selectors.
         # Updating MainScreen recursively would restyle the whole transcript.
         self.update_classes({"--theme-editor-compact": compact}, update=False)
-        self.app.stylesheet.update_nodes((self.query_one(ChatPanel),))
+        self.app.stylesheet.update_nodes((self.query_one(ChatColumn), self.query_one(ChatPanel)))
         if self.theme_editor is not None and self.theme_editor.is_mounted:
             self.theme_editor.update_node_styles(animate=False)
 
@@ -1347,6 +1383,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         chat_panel.set_replay_progress_callback(self._events.update_session_history_progress)
         self._gc_freeze_participants = (
             chat_panel,
+            self._btw.panel,
             self.query_one(TrajectoryDashboard),
             self.query_one(SessionJsonPanel),
             self.query_one(ShellPanel),
@@ -1358,6 +1395,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             self._hook_runs, self._configured_hook_count, self._hook_runs_dropped
         )
         await self._subscriptions.subscribe_all()
+        await self._btw.subscribe()
         await self._workflow.subscribe()
         self._sync_execution_chrome()
         self._sync_workflow_timer()
@@ -1377,6 +1415,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         if self._workflow_timer is not None:
             self._workflow_timer.stop()
         await self._workflow.close()
+        await self._btw.shutdown()
         try:
             await self._subscriptions.unsubscribe_all()
         finally:
@@ -1867,6 +1906,17 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         draft = request.draft
         intent: SubmitRoute = "continue" if request.continue_turn else "message"
         text = draft.text.strip()
+        slash = parse_slash_draft(text)
+        if request.runs_commands and slash is not None and slash.name == "btw":
+            if not slash.arguments.strip():
+                return "command"
+            if self._btw.panel.running:
+                self._warn_slash_command(BTW_BUSY.bind())
+                return "taken"
+            if self._model_unconfigured():
+                self._show_model_unconfigured_dialog()
+                return "taken"
+            return "command"
         typed = self._suggestions.resolve_typed_name(text)
         if typed.kind == "pending":
             self._warn_slash_command(_SHORTCUTS_LOADING.bind(), title=PROMPT_SHORTCUT_TITLE.bind())
@@ -2487,6 +2537,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return
         if self._suggestions_active_for_bindings():
             self._suggestions.dismiss_suggestions()
+            return
+        if self._chat_foreground() and self._btw.close_question():
             return
         # A prompt shortcut's message on its way (its commands running), once the overlays above are closed.
         if self._input_flow.withdraw_submit():

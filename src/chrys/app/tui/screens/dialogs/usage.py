@@ -90,6 +90,7 @@ _SOURCE_APPROVAL_JUDGE = msg("tui.usage.source.approval_judge", fallback="Approv
 _SOURCE_COMPACTION = msg("tui.usage.source.compaction", fallback="Compaction")
 _SOURCE_TITLE_GEN = msg("tui.usage.source.title_gen", fallback="Session titles")
 _SOURCE_COMPLETER = msg("tui.usage.source.completer", fallback="Last Words")
+_SOURCE_SIDE_QUESTION = msg("tui.usage.source.side_question", fallback="Side questions")
 _SOURCE_LABELS: Final[dict[str, MessageDef]] = {
     ActorRole.MAIN: _SOURCE_MAIN,
     ActorRole.SUB_AGENT: _SOURCE_SUB_AGENT,
@@ -98,6 +99,7 @@ _SOURCE_LABELS: Final[dict[str, MessageDef]] = {
     ActorRole.COMPACTION: _SOURCE_COMPACTION,
     ActorRole.TITLE_GEN: _SOURCE_TITLE_GEN,
     ActorRole.COMPLETER: _SOURCE_COMPLETER,
+    ActorRole.SIDE_QUESTION: _SOURCE_SIDE_QUESTION,
 }
 _MONTH = msg("tui.usage.calendar.month", fallback="{year}-{month}")
 _WEEKDAYS_SHORT = msg("tui.usage.calendar.weekdays_short", fallback="Mo Tu We Th Fr Sa Su")

@@ -162,6 +162,7 @@ def test_manual_pages_render_english_byte_identically_and_translate_at_display(
         "  /exit         - Exit iCode\n"
         "  /resume       - Resume the most recent session in this mode\n"
         "  /fork         - Fork the current session\n"
+        "  /btw          - Ask a side question without changing the main task\n"
         "  /rename       - Set or clear a custom session title\n"
         "  /sessions     - Browse saved sessions\n"
         "  /theme        - Set color theme\n"

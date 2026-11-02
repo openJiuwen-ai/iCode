@@ -3,7 +3,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.32.3\n"
+"Project-Id-Version: Chrys 0.33.0\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -4576,6 +4576,110 @@ msgstr ""
 msgid "tui.binding.trajectory"
 msgstr ""
 
+#. English: The side question was blocked by a hook. {reason}
+#. chrys-meta={"fingerprint":"df8d40213042ff7026f2f110cbf39c34e228db140572dfbf8ba7222f65a37d67","multiline":true,"placeholders":["reason"]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.blocked"
+msgstr ""
+
+#. English: A side question is running. Close it before asking another.
+#. chrys-meta={"fingerprint":"92de309b7e58326a7a78075ea3ab636f35d994e05a08866dc47bcad10ac6d064","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/btw.py
+msgid "tui.btw.busy"
+msgstr ""
+
+#. English: Close (Esc)
+#. chrys-meta={"fingerprint":"b09f4877f716a524b31df2f4863094c5298400fbb96c37dc6c61e80c63dbb2f7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.close"
+msgstr ""
+
+#. English: No side questions yet. Use /btw <question> to ask one.
+#. chrys-meta={"fingerprint":"8ee5ab59844428add7ab975035d60221148b88ec140a648f4c1314fbf0a48d58","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.empty"
+msgstr ""
+
+#. English: The side question could not finish. Close it and ask again.
+#. chrys-meta={"fingerprint":"603ec56ccd3f7991ab75746b43a7bd74c48b0365626b29927f25eda92153bc43","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.failed"
+msgstr ""
+
+#. English: Next side question
+#. chrys-meta={"fingerprint":"dfe2b73c9ca1cdd7246bea7ccedf0ef42aa2a68581467df9821e2346530eb6ef","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.next"
+msgstr ""
+
+#. English: Open side questions
+#. chrys-meta={"fingerprint":"620d78335be5c73eace923e574663a4bf15916a16bacabd7f91be8b8f2568a1f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.btw.open"
+msgstr ""
+
+#. English: Previous side question
+#. chrys-meta={"fingerprint":"c8aca1e89cd66446ef99ce917fb384acc0bc2a9adf7c09fa8e20b2557a875b99","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.previous"
+msgstr ""
+
+#. English: Side question history could not be read. Your saved file was kept.
+#. chrys-meta={"fingerprint":"a26d854d6bf7dbae8ba50b9e226f943c50d2a9353a5aae329043660fffc05cd5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.read_failed"
+msgstr ""
+
+#. English: Loading side questions...
+#. chrys-meta={"fingerprint":"ab20bc1d04f7cbbbb35aac038bb17cb0ec12eaf1a010ad7a4ea8628bac24ff3f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.reading"
+msgstr ""
+
+#. English: This side answer could not be saved. It stays available until you
+#. leave this session.
+#. chrys-meta={"fingerprint":"8ac8ffedf2c96146445c4364b7daddbb1a0c3bf2b424e37028b5834d7628b18d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.save_failed"
+msgstr ""
+
+#. English: Send side question
+#. chrys-meta={"fingerprint":"5c53a809d60b05f1916183b7107cdb107cabe7a7504aa532a82aefc2de32840d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.btw.send"
+msgstr ""
+
+#. English: Answer
+#. chrys-meta={"fingerprint":"4a0af57df1047a39b77bfcd4c6c440fd72a7bd4fe7633d6b27867ce1a315e7dc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.tab.output"
+msgstr ""
+
+#. English: Question
+#. chrys-meta={"fingerprint":"868d8746d7e4b42628701a19d6e690b87aba5774ee5f5dc5774b509ada6d57dd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.tab.question"
+msgstr ""
+
+#. English: Thinking...
+#. chrys-meta={"fingerprint":"4b4ca080bc36c9e58a1cfb4e47bf7b603b5381bd3ca3353a6ce22c2e2bf8b017","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.thinking"
+msgstr ""
+
+#. English: Side Questions
+#. chrys-meta={"fingerprint":"7270bf11fb3d44ce27afedb1fb1bd547ba3fab7bbabdd70fa557b07f14a0873f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.title"
+msgstr ""
+
+#. English: Side questions are unavailable while the session is changing. Try
+#. again when it is ready.
+#. chrys-meta={"fingerprint":"f5c705f7bb7ce3507537eb294911e626468e394cca5ec2dac5a11e93a094b224","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.unavailable"
+msgstr ""
+
 #. English: evolution {stage}
 #. chrys-meta={"fingerprint":"213dcab508e98efe844bd6e8477d10f7e22a0d6cc09837a04e065130c59ad0b7","multiline":false,"placeholders":["stage"]}
 #: src/chrys/app/features/buddy/commands.py
@@ -5070,6 +5174,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"24ad985f3aedc2d87b38d1a17b6cadd4dfc38820322689fb9600b8de979dabd0","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.approval"
+msgstr ""
+
+#. English: Ask a side question without changing the main task
+#. chrys-meta={"fingerprint":"a4bd6b9c446277437e73faadd25d474ce39e9efc76e2d7fe80c58d5decb4141e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.commands.description.btw"
 msgstr ""
 
 #. English: Hatch, pet and look after your buddy
@@ -7389,6 +7499,25 @@ msgstr ""
 #. chrys-meta={"fingerprint":"009bcac8ba50ca9eadb16e15fc98755883621a6eab58abab8cc54bbc81be77b6","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.approval.mode_hint"
+msgstr ""
+
+#. English: Use /btw <question> to ask using the conversation's existing text
+#. and tool results. Use /btw alone to reopen this session's latest saved
+#. answer.  The main task continues separately. The side question cannot use
+#. tools and does not enter the main conversation. Its card appears below the
+#. chat, leaving the sidebar at full height.  The Answer tab opens by default,
+#. showing a thinking animation until the complete answer is ready. The
+#. Question tab keeps your full question. Long content scrolls within each tab.
+#. Previous/next buttons browse saved answers without changing your selected
+#. tab, and are disabled while generating.  Completed answers are kept with the
+#. session. Clearing, deleting, or rolling back to the starting screen removes
+#. them. Prompt-submission hooks also check side questions. Failed or cancelled
+#. questions are not saved. Escape or the close icon cancels a running question
+#. or hides the card, keeping saved answers. Only one side question can run at
+#. a time.
+#. chrys-meta={"fingerprint":"626194918c365b2d5eb3fe660e264720e2e33b4ba64ecec049e9d71afbbacb36","multiline":true,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.man.btw.body"
 msgstr ""
 
 #. English: Look after the buddy that lives in the sidebar.      Subcommands:
@@ -9929,12 +10058,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5e810aaa0559f662f7842089d512dc0ba888b2ec9c5c4ebf6c1ccdfd59708652","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/session_handlers.py
 msgid "tui.session.fork.dialog_failed"
-msgstr ""
-
-#. English: Cannot fork an empty session
-#. chrys-meta={"fingerprint":"e2bb6cb7f29148395cfa0d4d89ec9f24dfcc91db90e4645ca5e78b5041ad2fff","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/session_handlers.py
-msgid "tui.session.fork.empty_session"
 msgstr ""
 
 #. English: No active session to fork
@@ -15296,6 +15419,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"2a6d7b7905e27f4347f243fecd0fd6331e8bfa169a9cc24685d5b5b14d3a91cc","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
 msgid "tui.usage.source.main"
+msgstr ""
+
+#. English: Side questions
+#. chrys-meta={"fingerprint":"99cd49d604f2aad8fe773afdc8fb95c2fa57a9c8f6750d049007f27ff5bdeefe","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.side_question"
 msgstr ""
 
 #. English: Sub-agent

@@ -346,6 +346,15 @@ def _scrub_side_call_extra_body(payload: dict[str, Any]) -> None:
         }
 
 
+def sanitize_side_call_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy options without continuation, output-schema, or remote execution controls."""
+    clean = dict(options)
+    for key in (*_SIDE_CALL_CONTINUATION_KEYS, *_SIDE_CALL_OUTPUT_SHAPING_KEYS, *_SIDE_CALL_EXECUTION_MODE_KEYS):
+        clean.pop(key, None)
+    _scrub_side_call_extra_body(clean)
+    return clean
+
+
 def _tool_choice_forces_tool_use(tool_choice: Any) -> bool:
     """Return whether a standard or provider-native choice forbids prose-only output."""
     if isinstance(tool_choice, str):
@@ -639,9 +648,7 @@ class _ClientLastWordsCompleter:
         # other providers would reject an unknown request parameter.
         if "store" in side_options or type(self._client).STORES_BY_DEFAULT:
             side_options["store"] = False
-        for key in (*_SIDE_CALL_CONTINUATION_KEYS, *_SIDE_CALL_OUTPUT_SHAPING_KEYS, *_SIDE_CALL_EXECUTION_MODE_KEYS):
-            side_options.pop(key, None)
-        _scrub_side_call_extra_body(side_options)
+        side_options = sanitize_side_call_options(side_options)
 
         side_messages = _prepare_provider_request_messages([*base_messages, Message("user", [instruction])])
         # The scope keeps response instrumentation layered onto

@@ -213,6 +213,27 @@ async def _open_calendar(pilot: Pilot, report: UsageReport | None = None) -> Usa
     return dialog
 
 
+@pytest.mark.parametrize(("locale", "label"), [("en", "Side questions"), ("zh-Hans", "顺便问")])
+async def test_side_question_usage_has_a_localized_source(
+    monkeypatch: pytest.MonkeyPatch, locale: str, label: str
+) -> None:
+    from chrys.app.tui import i18n as tui_i18n
+
+    controller = LocaleController(Settings(locale="en"))
+    monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
+    if locale != "en":
+        assert controller.switch_locale(locale).status is LocaleSwitchStatus.EFFECTIVE_CHANGED
+
+    class _LocalizedApp(_HostApp):
+        locale_controller = controller
+
+    async with _LocalizedApp().run_test(size=(100, 30)) as pilot:
+        dialog = await _open(pilot, _report(_call(source="side_question")))
+        await click_when_settled(pilot, dialog.query_one("#usage-group-source", _ChoiceButton))
+        await wait_for(lambda: _row_names(dialog) == [label], pilot=pilot, description="localized side-question usage")
+        assert "side_question" not in _painted(pilot)
+
+
 async def test_the_tabs_are_a_real_tab_view_switched_by_click_and_by_the_tab_key() -> None:
     async with _HostApp().run_test(size=(100, 30)) as pilot:
         dialog = await _open(pilot)

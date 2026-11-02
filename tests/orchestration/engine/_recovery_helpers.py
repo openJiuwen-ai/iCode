@@ -301,7 +301,7 @@ def _record_shutdown(monkeypatch: pytest.MonkeyPatch, engine: AgentEngine) -> li
     async def fake_close_session() -> None:
         shutdown_calls.append((True, False))
 
-    async def fake_close_session_in_place() -> None:
+    async def fake_close_session_in_place(*, keep_side_answers: bool = False) -> None:
         shutdown_calls.append((False, False))
 
     monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)

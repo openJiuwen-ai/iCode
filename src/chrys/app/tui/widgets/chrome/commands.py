@@ -87,7 +87,10 @@ class ManPageSpec:
 
 def is_slash_command_candidate(text: str) -> bool:
     """Return True when text starts with a command-shaped slash token."""
-    return "\n" not in text and "\r" not in text and _SLASH_COMMAND_CANDIDATE_RE.match(text) is not None
+    if "\n" in text or "\r" in text:
+        draft = parse_slash_draft(text)
+        return draft is not None and draft.name == "btw"
+    return _SLASH_COMMAND_CANDIDATE_RE.match(text) is not None
 
 
 def completion_token_start(text: str, trigger: str) -> int | None:

@@ -115,6 +115,16 @@ def test_slash_suggestions_dismiss_for_non_command_paste() -> None:
     assert handler.suggestion_mode is None
 
 
+def test_multiline_side_question_dismisses_command_suggestions() -> None:
+    screen = make_suggestion_screen()
+    handler = make_suggestion_handler(screen)
+    handler.build_slash_commands()
+    handler._suggestion_mode = "commands"
+    handler.on_text_changed("/btw\nquestion")
+    assert handler.suggestion_mode is None
+    assert is_slash_command_candidate("/btw\nquestion")
+
+
 def test_build_slash_commands_uses_agents_and_no_legacy_entries() -> None:
     screen = make_suggestion_screen()
     handler = make_suggestion_handler(screen)

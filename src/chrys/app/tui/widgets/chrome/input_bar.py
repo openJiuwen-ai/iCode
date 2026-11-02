@@ -67,6 +67,8 @@ from chrys.foundation.platform import safe_getcwd
 # Unicode-name markers for CJK-family scripts where a preceding character cannot be an email local part.
 _CJK_NAME_TOKENS = ("CJK", "HIRAGANA", "KATAKANA", "HANGUL", "BOPOMOFO", "IDEOGRAPH")
 INPUT_SEND = msg("tui.input.send", fallback="Send")
+INPUT_BTW_SEND = msg("tui.btw.send", fallback="Send side question")
+INPUT_BTW_OPEN = msg("tui.btw.open", fallback="Open side questions")
 INPUT_NEW = msg("tui.input.new", fallback="New")
 INPUT_NEW_DESCRIPTION = msg("tui.input.new_description", fallback="Create a new session")
 INPUT_QUEUED = msg("tui.input.queued", fallback="Queued")
@@ -1302,6 +1304,9 @@ class InputBar(Widget):
         ta = self.query_one("#chat-input", _ChatTextArea)
         btn = self.query_one("#send-btn", Button)
         self.query_one("#editor-btn", Button).disabled = self.locked or self.shell_mode
+        slash = parse_slash_draft(ta.text.strip())
+        side_question = slash is not None and slash.name == "btw"
+        open_history = side_question and slash is not None and not slash.arguments.strip()
 
         signature = (
             self.locked,
@@ -1316,6 +1321,8 @@ class InputBar(Widget):
             bool(ta.text.strip()),
             self.has_messages,
             self.shell_mode,
+            side_question,
+            open_history,
         )
         if signature == self._interaction_signature:
             return
@@ -1342,7 +1349,13 @@ class InputBar(Widget):
         ta.show_cursor = True
         self._set_prompt_spinner(False)
 
-        if self.agent_running:
+        if side_question:
+            self._set_btn_label(
+                self._render_label((INPUT_BTW_OPEN if open_history else INPUT_BTW_SEND).bind()), defer_geometry=True
+            )
+            btn.remove_class("-stop")
+            btn.disabled = self.retry_pending or self.agent_loading
+        elif self.agent_running:
             self._set_btn_label(self._render_label(INPUT_INTERRUPT.bind()), defer_geometry=True)
             btn.add_class("-stop")
             btn.disabled = False
@@ -1525,7 +1538,9 @@ class InputBar(Widget):
         if event.button.id == "new-btn":
             self.post_message(self.NewSessionRequested())
             return
-        if self.agent_running:
+        if self._is_side_question():
+            self._do_submit()
+        elif self.agent_running:
             self.post_message(self.InterruptRequested())
         elif self.retry_mode:
             # In retry mode the button always resumes the current turn.
@@ -1544,6 +1559,10 @@ class InputBar(Widget):
             self._refresh_interaction_state()
             return
         self._submit(continue_turn=False, runs_commands=True)
+
+    def _is_side_question(self) -> bool:
+        draft = parse_slash_draft(self.query_one("#chat-input", _ChatTextArea).text.strip())
+        return draft is not None and draft.name == "btw"
 
     def _confirm_unfilled_prompt_fields(self) -> bool:
         """Return whether a submit may go ahead with the draft's prompt fields.

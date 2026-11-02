@@ -232,6 +232,7 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
             calls.append(("sidebar_remove", class_name))
 
     chat = _FakeChat()
+    chat_column = _FakeChat()
     session_json = _FakeSessionJson()
     dashboard = _FakeDashboard()
     shell = _FakeShell()
@@ -246,6 +247,8 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
         # The footer row holds the Footer and the hook indicator; shell mode hides the row.
         if cls == "#footer-row":
             return footer
+        if cls == "#chat-column":
+            return chat_column
         if cls is ChatPanel:
             return chat
         if cls is SessionJsonPanel:

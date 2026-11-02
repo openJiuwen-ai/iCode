@@ -24,6 +24,7 @@ from chrys.foundation.models.hook_confirmations import (
 )
 from chrys.foundation.models.hook_executions import HookExecutionView
 from chrys.foundation.models.invocations import ContentChannel, ContentStatus, InvocationOrigin
+from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.models.todos import TodoItem
 from chrys.foundation.models.workflow_session import (
     WorkflowModelSelection,
@@ -150,6 +151,49 @@ class UserMessage(Event):
     # shortcut, if it still loads it, once the prompt hooks have passed, and
     # sends their output in their place. Never joins a running turn.
     prompt_shortcut: PromptShortcutRef | None = None
+
+
+@dataclass
+class SideQuestionRequested(Event):
+    """Ask once beside the main turn, without adding to its history."""
+
+    request_id: str = ""
+    question: str = ""
+    accepted: bool = field(default=False, compare=False)
+
+
+@dataclass
+class SideQuestionCancelled(Event):
+    """Close the named side question without interrupting the main turn."""
+
+    request_id: str = ""
+
+
+@dataclass
+class SideQuestionsReset(Event):
+    """The session ended or rolled back; close its side-question card."""
+
+
+@dataclass
+class SideQuestionHistoryRequested(Event):
+    """Read the current session's completed questions without invoking a model."""
+
+    entries: tuple[SideQuestionEntry, ...] = field(default=(), compare=False)
+    accepted: bool = field(default=False, compare=False)
+    failed: bool = field(default=False, compare=False)
+
+
+@dataclass(kw_only=True)
+class InvocationSideQuestionFailed(InvocationEvent):
+    """A side question could not answer or persist; exception details stay in logs."""
+
+    kind: Literal["answer", "save", "blocked"] = "answer"
+    reason: str = ""
+
+
+@dataclass(kw_only=True)
+class InvocationSideQuestionEnded(InvocationEvent):
+    """The backend cancelled a side question, including during a session operation."""
 
 
 @dataclass

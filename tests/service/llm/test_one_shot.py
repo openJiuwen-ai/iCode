@@ -11,6 +11,7 @@ import pytest
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message, ResponseStream, report_wire_progress
 from chrys.kernel.client import start_with_wire_progress
 from chrys.service.llm.one_shot import get_final_response
+from tests.support.waiting import wait_for
 
 
 class _Response:
@@ -81,6 +82,50 @@ async def test_get_final_response_times_out_hung_stream_and_runs_cleanup() -> No
         )
 
     assert client.stream.cleanup_calls == 1
+
+
+@pytest.mark.parametrize("in_transform", [False, True])
+async def test_cancelling_one_shot_closes_its_stream_without_finalizing(in_transform: bool) -> None:
+    entered = asyncio.Event()
+    closed = asyncio.Event()
+    release = asyncio.Event()
+
+    async def updates():
+        try:
+            if not in_transform:
+                entered.set()
+                await release.wait()
+            yield ChatResponseUpdate(contents=[Content.from_text("must not finish")], role="assistant")
+        finally:
+            closed.set()
+
+    async def transform(_update: ChatResponseUpdate) -> None:
+        entered.set()
+        await release.wait()
+
+    stream = ResponseStream(
+        updates(), finalizer=ChatResponse.from_updates, transform_hooks=[transform] if in_transform else []
+    )
+
+    class Client:
+        async def get_response(self, messages, *, stream: bool, options=None):
+            return response_stream
+
+    response_stream = stream
+    task = asyncio.create_task(get_final_response(Client(), [Message("user", ["question"])], stream=True))
+    try:
+        await wait_for(entered.is_set, description="side stream is being read")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert closed.is_set()
+        assert stream._closed
+        assert not stream._finalized
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

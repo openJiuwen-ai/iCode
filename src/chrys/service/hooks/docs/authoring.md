@@ -86,9 +86,22 @@ resume. Both can fire in the same startup (boot + immediate restore).
 { ..., "text": "the user's prompt", "injected": false }
 ```
 
-`injected` is `true` when the prompt is a mid-turn injection rather than
-the start of a fresh turn. This includes direct user injections and
-retry/resume submissions that carry additional user text.
+`injected` is `true` when the prompt is a mid-turn injection into the main
+conversation. This includes direct user injections and retry/resume
+submissions that carry additional user text.
+
+A `/btw <question>` submission carries `injected: false` and the optional
+`side_question: true` field; `text` contains the question without `/btw`:
+
+```json
+{ ..., "text": "the user's side question", "injected": false, "side_question": true }
+```
+
+Main-conversation submissions omit `side_question`; treat a missing value as
+`false`. To identify a new main-turn submission, both `injected` and
+`side_question` must be false. A side question does not start a main turn or
+trigger `before_turn` / `after_turn`. Opening saved questions with `/btw`
+alone does not trigger `user_prompt_submit`.
 
 ### `before_tool_call` / `after_tool_call` / `tool_error`
 
@@ -315,11 +328,11 @@ YAML:
     on_error: warn
 ```
 
-### Python: inject project context on every prompt
+### Python: inject project context on new main turns
 
 ```python
 #!/usr/bin/env python3
-"""Append a project-specific <system-reminder> to user prompts."""
+"""Append a project-specific <system-reminder> to new main-turn prompts."""
 
 import json
 import os
@@ -332,8 +345,8 @@ REMINDER = (
 with open(os.environ["CHRYS_HOOK_PAYLOAD_FILE"]) as f:
     payload = json.load(f)
 
-# Only inject on fresh turns, not mid-turn user injections.
-if payload.get("injected"):
+# Apply only to new main turns; skip injections and side questions.
+if payload.get("injected", False) or payload.get("side_question", False):
     raise SystemExit(0)
 
 with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:

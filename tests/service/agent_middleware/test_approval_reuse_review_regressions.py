@@ -58,7 +58,10 @@ async def test_ui_edit_runs_its_before_hook_once(approval_setup, rewrite):
     hooks.has_hooks_for.side_effect = lambda event: event == HookEvent.BEFORE_TOOL_CALL
     seen = []
 
-    async def hook(event, payload, *, target_operation_id=None, trajectory_context=None, origin=None, operation=None):
+    async def hook(
+        event, payload, *, scope="turn", target_operation_id=None, trajectory_context=None, origin=None, operation=None
+    ):
+        assert scope == "turn"
         command = payload["tool"]["args"]["command"]
         seen.append(command)
         return HookDecision(args_override={"command": f"timeout 10 {command}"}) if rewrite else HookDecision()

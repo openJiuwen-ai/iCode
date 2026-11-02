@@ -61,6 +61,7 @@ from chrys.orchestration.engine.loader import AgentLoader
 from chrys.orchestration.engine.rollback import RollbackController
 from chrys.orchestration.engine.run.coordinator import TurnCoordinator
 from chrys.orchestration.engine.session_lifecycle import SessionLifecycle
+from chrys.orchestration.engine.side_questions import SideQuestions
 from chrys.orchestration.engine.state.active_session import ActiveSession
 from chrys.orchestration.engine.state.controls import RuntimeControls
 from chrys.orchestration.engine.state.current_agent import CurrentAgent
@@ -165,6 +166,7 @@ class AgentEngine:
         history: SessionHistoryManager,
         trajectory_recorder: trajectory_recorder.TrajectoryRecorder,
         workflows: WorkflowCoordinator,
+        side_questions: SideQuestions,
         hook_runs: HookRunLog | None = None,
         hook_confirmations: HookConfirmationService | None = None,
     ) -> None:
@@ -185,6 +187,7 @@ class AgentEngine:
         self._history = history
         self._trajectory_recorder = trajectory_recorder
         self._workflows = workflows
+        self._side_questions = side_questions
         self._hook_runs = hook_runs
         self._hook_confirmations = hook_confirmations
         self._subscribed = False
@@ -542,6 +545,7 @@ class AgentEngine:
         await self._bus.subscribe(InvocationAborted, self._on_sub_agent_unpaused)
         await self._bus.subscribe(InvocationCascadeAborted, self._on_sub_agent_unpaused)
         await self._workflows.subscribe()
+        await self._side_questions.subscribe()
         if self._hook_confirmations is not None:
             await self._hook_confirmations.start()
 
@@ -581,7 +585,10 @@ class AgentEngine:
 
     async def _release_resources(self) -> None:
         try:
-            await self._lifecycle.shutdown()
+            try:
+                await self._side_questions.close()
+            finally:
+                await self._lifecycle.shutdown()
         finally:
             if self._hook_confirmations is not None:
                 # After the release: what still waits on a question ends unavailable, and no answer is taken after.

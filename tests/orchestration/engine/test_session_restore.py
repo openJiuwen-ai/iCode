@@ -107,7 +107,7 @@ async def test_restore_snapshots_settings_inside_the_transition_fence(
         release_restore_load.wait(5)
         return LoadedSettings(settings=restore_settings, provenance={})
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fake_start(
@@ -460,7 +460,7 @@ async def test_session_restore_keeps_admission_closed_through_restored_event(
         ),
     )
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         shutdown_closed_states.append(engine.turns.turn_state.lease.prompt_admission_closed)
 
     async def fake_start(
@@ -496,7 +496,7 @@ async def test_new_session_keeps_admission_closed_through_restart(monkeypatch: p
     engine.session.agent_profile = profile
     states: list[tuple[str, bool]] = []
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         states.append(("shutdown", engine.turns.turn_state.lease.prompt_admission_closed))
 
     async def fake_start(
