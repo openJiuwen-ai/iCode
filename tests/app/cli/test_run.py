@@ -15,6 +15,7 @@ from collections.abc import Callable, Coroutine
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -22,9 +23,12 @@ from chrys.app.cli import headless
 from chrys.app.cli import run as run_cli
 from chrys.foundation.branding import APP_COMMAND
 from chrys.foundation.config.coercion import CoerceReason, invalid
+from chrys.foundation.config.context import EvalContext
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsWarning, load_settings
 from chrys.foundation.config.spec import SettingOrigin, Source
+from chrys.foundation.config.user_settings import user_settings_path
 from chrys.foundation.config.warnings import settings_warning_events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
@@ -170,7 +174,7 @@ def _prepared_runtime(
     )
 
 
-def _settings(**_kwargs: Any) -> headless.PreparedRuntime:
+def _settings(*, restoring_session: bool = False) -> headless.PreparedRuntime:
     return _prepared_runtime()
 
 
@@ -207,8 +211,7 @@ def _patch_failure_host(monkeypatch: pytest.MonkeyPatch, failure_factory) -> Non
 def _fake_bootstrap(
     *,
     warnings: list[Warning] | None = None,
-    **overrides: Any,
-) -> Callable[..., SimpleNamespace]:
+) -> Callable[..., startup_module.RuntimeBootstrap]:
     """Stand in for ``bootstrap_runtime`` without skipping the settings load.
 
     The retry policy under test is decided *inside* the load, from the
@@ -216,9 +219,12 @@ def _fake_bootstrap(
     pre-made ``Settings`` would assert nothing about the thing it names.
     """
 
-    def _bootstrap(**kwargs: Any) -> SimpleNamespace:
-        loaded = load_settings(eval_context=kwargs["eval_context"], **overrides)
-        return SimpleNamespace(loaded=loaded, settings=loaded.settings, warnings=list(warnings or []))
+    def _bootstrap(
+        *, configure_stdio: bool, eval_context: EvalContext, project_root: Path | None
+    ) -> startup_module.RuntimeBootstrap:
+        assert configure_stdio is True
+        loaded = load_settings(eval_context=eval_context, project_root=project_root)
+        return startup_module.RuntimeBootstrap(loaded=loaded, warnings=list(warnings or []))
 
     return _bootstrap
 
@@ -327,7 +333,7 @@ def test_run_command_model_sets_active_profile(
     monkeypatch.setattr(
         headless,
         "prepare_runtime",
-        lambda **_kwargs: _prepared_runtime(Settings(model_profile="env-model")),
+        lambda *, restoring_session: _prepared_runtime(Settings(model_profile="env-model")),
     )
     _patch_model_registry(monkeypatch)
 
@@ -478,11 +484,11 @@ def test_run_command_changes_directory_before_bootstrapping(
     tmp_path: Path,
     capsys,
 ) -> None:
-    """Bootstrap reads ``<cwd>/.env``, so ``-C`` must land before it runs."""
+    """Bootstrap reads project settings, so ``-C`` must land before it runs."""
     _patch_host(monkeypatch)
     seen: list[Path] = []
 
-    def recording_prepare(**_kwargs: Any) -> headless.PreparedRuntime:
+    def recording_prepare(*, restoring_session: bool) -> headless.PreparedRuntime:
         seen.append(Path(os.getcwd()))
         return _prepared_runtime()
 
@@ -546,19 +552,13 @@ def test_prepare_runtime_bootstraps_project_free_for_a_session_restore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A restore's settings come from the saved session's root, not the cwd."""
-    roots: list[Path | None] = []
-    fake = _fake_bootstrap()
-
-    def _record_root(**kwargs: Any) -> SimpleNamespace:
-        roots.append(kwargs["project_root"])
-        return fake(**kwargs)
-
-    monkeypatch.setattr(headless, "bootstrap_runtime", _record_root)
+    bootstrap = create_autospec(headless.bootstrap_runtime, side_effect=_fake_bootstrap())
+    monkeypatch.setattr(headless, "bootstrap_runtime", bootstrap)
 
     headless.prepare_runtime(restoring_session=True)
     headless.prepare_runtime()
 
-    assert roots == [None, Path(os.getcwd())]
+    assert [call.kwargs["project_root"] for call in bootstrap.call_args_list] == [None, Path.cwd()]
 
 
 def test_run_command_marks_the_runtime_as_restoring_only_with_a_session(
@@ -568,8 +568,8 @@ def test_run_command_marks_the_runtime_as_restoring_only_with_a_session(
     _patch_host(monkeypatch)
     seen: list[bool] = []
 
-    def _record(**kwargs: Any) -> headless.PreparedRuntime:
-        seen.append(kwargs["restoring_session"])
+    def _record(*, restoring_session: bool) -> headless.PreparedRuntime:
+        seen.append(restoring_session)
         return _prepared_runtime()
 
     monkeypatch.setattr(headless, "prepare_runtime", _record)
@@ -787,21 +787,11 @@ def test_prepare_runtime_reports_a_document_retry_value_without_naming_the_varia
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The env-var wording would send someone to a variable they never set."""
-    user_file = Path("/home/me/.chrys/settings.yaml")
-    warning = SettingsWarning(
-        key="llm.retry.max_transient",
-        origin=SettingOrigin(layer=Source.USER, path=user_file),
-        outcome=invalid("nonsense", CoerceReason.EXPECTED_NON_NEGATIVE_INT),
-    )
-    monkeypatch.setattr(
-        headless,
-        "bootstrap_runtime",
-        lambda **_kwargs: SimpleNamespace(
-            loaded=LoadedSettings(settings=Settings(), provenance={}, warnings=(warning,)),
-            settings=Settings(),
-            warnings=[],
-        ),
-    )
+    user_file = user_settings_path()
+    user_file.parent.mkdir(parents=True, exist_ok=True)
+    user_file.write_text("llm:\n  retry:\n    max_transient: nonsense\n", encoding="utf-8")
+    freeze_process_env()
+    monkeypatch.setattr(headless, "bootstrap_runtime", _fake_bootstrap())
 
     (queued,) = headless.prepare_runtime().pending_warnings
 
@@ -1084,7 +1074,7 @@ def test_run_command_reports_missing_task_file_before_runtime(
 ) -> None:
     runtime_calls: list[bool] = []
 
-    def _runtime(**_kwargs: Any) -> headless.PreparedRuntime:
+    def _runtime(*, restoring_session: bool) -> headless.PreparedRuntime:
         runtime_calls.append(True)
         return _prepared_runtime()
 
@@ -1585,7 +1575,7 @@ def test_phase_two_preparation_failure_is_english_on_both_transports_across_loca
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def _prepare_runtime(**_kwargs: Any) -> headless.PreparedRuntime:
+    def _prepare_runtime(*, restoring_session: bool) -> headless.PreparedRuntime:
         raise RuntimeError("prepare failed")
 
     _patch_host(monkeypatch)
@@ -1913,7 +1903,7 @@ def test_each_main_invocation_uses_a_fresh_prepared_runtime_holder(
     )
     calls = 0
 
-    def _prepare_runtime(**_kwargs: Any) -> headless.PreparedRuntime:
+    def _prepare_runtime(*, restoring_session: bool) -> headless.PreparedRuntime:
         nonlocal calls
         calls += 1
         if calls == 1:

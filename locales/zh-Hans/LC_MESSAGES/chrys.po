@@ -1472,13 +1472,13 @@ msgstr "保留的最近工作区数"
 msgid "startup.invalid_no_proxy_env"
 msgstr "环境变量 {var} 的值对 httpx 无效，已忽略（{value}）。请移除或修正该环境变量。"
 
-#. English: Could not migrate notification preferences into {path} ({error}).
-#. This start uses the default notification settings; migration retries on the
-#. next start.
-#. chrys-meta={"fingerprint":"416f42d4fd4ff05ab4122281a848df3087283e8b0ff0fdb2cf0362e4c8304516","multiline":false,"placeholders":["error","path"]}
+#. English: Notification migration into {path} failed ({error}). It will retry
+#. on the next start. Until then, your previous notification preferences may
+#. not apply.
+#. chrys-meta={"fingerprint":"ca6afca981b6a5c78f8b576a6523ba825865b1cd376250665f16519d8a8f056d","multiline":false,"placeholders":["error","path"]}
 #: src/chrys/orchestration/startup.py
 msgid "startup.notifications_migration_failed"
-msgstr "无法把通知偏好迁移到 {path}（{error}）。本次启动使用默认通知设置；下次启动会重试迁移。"
+msgstr "将通知偏好迁移到 {path} 时出错（{error}）。下次启动时会重试。在此之前，原有的通知偏好可能不会生效。"
 
 #. English: Raw HTTP capture is on ({source}): request and response logs record
 #. API keys, prompts and model output unredacted. Turn it off when you are
@@ -1487,13 +1487,6 @@ msgstr "无法把通知偏好迁移到 {path}（{error}）。本次启动使用�
 #: src/chrys/orchestration/startup.py
 msgid "startup.raw_http_capture_on"
 msgstr "原始 HTTP 抓包已开启（{source}）：请求与响应日志会原样记录 API key、提示词和模型输出。用完请及时关闭。"
-
-#. English: Could not migrate settings into {path} ({error}). Your existing
-#. configuration still applies; migration retries on the next start.
-#. chrys-meta={"fingerprint":"c187a2768849d0804673afaac83fea8a95c21525f62a8a3c66500457b9291a5b","multiline":false,"placeholders":["error","path"]}
-#: src/chrys/orchestration/startup.py
-msgid "startup.settings_migration_failed"
-msgstr "无法把设置迁移到 {path}（{error}）。现有配置仍然生效；下次启动会重试迁移。"
 
 #. English: Continue
 #. chrys-meta={"fingerprint":"167e575361c5e16ba03f613cc29c5da6ba716b02f2d070a5e8a84325e46e1e26","multiline":false,"placeholders":[]}
@@ -10730,12 +10723,6 @@ msgstr "逐项风险检查"
 msgid "tui.settings.badge.dangerous"
 msgstr "⚠"
 
-#. English: .env
-#. chrys-meta={"fingerprint":"c630002d7846209302449747f54abe10c83970e2d0809f599cedfaaa1aceb2c4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/provenance.py
-msgid "tui.settings.badge.dotenv"
-msgstr ".env"
-
 #. English: env
 #. chrys-meta={"fingerprint":"9fe735277fb86d01895e548b4d397e022d6c481a28c521781be18cbc6f3fbde5","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/provenance.py
@@ -11289,12 +11276,6 @@ msgstr "到"
 #: src/chrys/app/tui/screens/settings/provenance.py
 msgid "tui.settings.provenance.cli"
 msgstr "本会话由命令行选项设定；保存的值在下次启动时生效。"
-
-#. English: Overridden by {path} ({variable}).
-#. chrys-meta={"fingerprint":"4ce961a584b9ab97bc87bd541c9fd7149fd7bbf641d82b3d97ba939b4edfcf41","multiline":false,"placeholders":["path","variable"]}
-#: src/chrys/app/tui/screens/settings/provenance.py
-msgid "tui.settings.provenance.dotenv"
-msgstr "被 {path}（{variable}）覆盖。"
 
 #. English: Set by environment variable {variable}.
 #. chrys-meta={"fingerprint":"331300911d84befd8907bb25c9656b755c987775e20105db34d9dc171b88cd0f","multiline":false,"placeholders":["variable"]}
@@ -16744,6 +16725,9 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "settings.value_rejected"
 #~ msgstr "已忽略 {source}={raw}：{detail}。"
 
+#~ msgid "startup.settings_migration_failed"
+#~ msgstr "无法把设置迁移到 {path}（{error}）。现有配置仍然生效；下次启动会重试迁移。"
+
 #~ msgid "tui.agent_config.tools.sleep"
 #~ msgstr "等待"
 
@@ -16896,6 +16880,9 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "tui.sessions.run_count"
 #~ msgstr "{count_text} 次运行"
 
+#~ msgid "tui.settings.badge.dotenv"
+#~ msgstr ".env"
+
 #~ msgid "tui.settings.hint.trajectory.verify_commands"
 #~ msgstr "以逗号分隔、视为测试、构建或代码检查验证的命令词或短语。"
 
@@ -16943,6 +16930,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.settings.prompt_shortcuts.working_folder_scope"
 #~ msgstr "{path} 及其上级目录（直到仓库根目录）"
+
+#~ msgid "tui.settings.provenance.dotenv"
+#~ msgstr "被 {path}（{variable}）覆盖。"
 
 #~ msgid "tui.settings.section.prompt_shortcuts"
 #~ msgstr "快捷指令"

@@ -20,7 +20,7 @@ from chrys.foundation.config.settings import (
     Settings,
 )
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsWarning
-from chrys.foundation.config.spec import ENV_SOURCES
+from chrys.foundation.config.spec import Source
 from chrys.foundation.config.warnings import settings_warning_events
 from chrys.foundation.events.types import Warning
 from chrys.foundation.i18n import Localizer, MessageRef, msg
@@ -72,7 +72,7 @@ def speaks_for_the_env_var(warning: SettingsWarning) -> bool:
     skip and the report below, so the two cannot drift into double-reporting a
     warning or dropping one.
     """
-    return warning.key == _RETRY_KEY and warning.origin.layer in ENV_SOURCES
+    return warning.key == _RETRY_KEY and warning.origin.layer is Source.ENV
 
 
 def retry_warning_ref(warning: SettingsWarning) -> MessageRef:
@@ -87,7 +87,7 @@ def retry_warning_ref(warning: SettingsWarning) -> MessageRef:
 
 
 def prepare_runtime(*, restoring_session: bool = False) -> PreparedRuntime:
-    """Load environment, apply runtime patches, and prepare display state without writing stderr.
+    """Freeze the startup environment, apply runtime patches, and prepare display state without writing stderr.
 
     A ``--session`` restore loads its settings from the saved session's own
     root, which need not be the process cwd — bootstrapping project-free keeps
@@ -96,7 +96,6 @@ def prepare_runtime(*, restoring_session: bool = False) -> PreparedRuntime:
     on these project-free settings.
     """
     bootstrap = bootstrap_runtime(
-        dotenv_override=True,
         configure_stdio=True,
         eval_context=EvalContext(
             frontend_default_max_transient_retries=HEADLESS_DEFAULT_MAX_TRANSIENT_RETRIES,

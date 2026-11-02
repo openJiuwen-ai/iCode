@@ -19,7 +19,7 @@ def test_flatten_walks_nested_mappings_into_dotted_keys() -> None:
 
 
 def test_flatten_skips_the_reserved_housekeeping_keys() -> None:
-    doc = {"schema_version": 1, "migrations": {"dotenv_v0": {}}, "ui": {"theme": "dark"}}
+    doc = {"schema_version": 1, "migrations": {"some_component": {"pending_cleanup": True}}, "ui": {"theme": "dark"}}
     values, unknown = flatten_user_doc(doc, KNOWN)
     assert values == {"ui.theme": "dark"}
     assert unknown == ()

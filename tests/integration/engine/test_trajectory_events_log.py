@@ -15,7 +15,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from chrys.foundation.config.env_layers import freeze_process_env
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings import SESSION_ROOT_DIR_ENV_VAR, Settings, resolve_sessions_dir
 from chrys.foundation.config.settings_store import persist
 from chrys.foundation.events.bus import EventBus

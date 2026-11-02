@@ -499,7 +499,7 @@ class RuntimeControls:
         )
 
     async def on_set_model_profile(self, event: SetModelProfile) -> None:
-        """Switch the active model profile for this session only (no global .env write).
+        """Switch the active model profile for this session, preserving the saved default.
 
         Swaps the in-memory model selector and explicit override, then rebuilds;
         the build path resolves the model from ``settings`` against the registry,

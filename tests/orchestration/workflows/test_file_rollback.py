@@ -184,7 +184,7 @@ async def test_rollback_probe_uses_effective_snapshot_policy(tmp_path: Path, mon
     from dataclasses import replace
 
     from chrys.foundation import platform
-    from chrys.foundation.config.env_layers import freeze_process_env
+    from chrys.foundation.config.process_env import freeze_process_env
     from chrys.foundation.config.settings_store import load_settings
 
     config = tmp_path / "config"

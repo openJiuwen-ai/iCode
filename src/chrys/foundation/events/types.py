@@ -406,7 +406,7 @@ class ConfigUpdate(Event):
 
 @dataclass
 class SettingsReload(Event):
-    """User updated .env settings — engine should reload Settings and rebuild agent."""
+    """Reload settings from their sources and rebuild the agent."""
 
     model_chosen: bool = False
     """The user picked the default model for this session too (``$``): the session's own model ends."""
@@ -431,7 +431,7 @@ class SetModelProfile(Event):
     """User switches the active model profile for this session only.
 
     The engine swaps ``settings.model_profile`` in-memory and soft-restarts the
-    agent — no global ``.env`` write — so each session can run a different model
+    agent without changing the saved default, so each session can run a different model
     without colliding on process-wide environment state.  The engine echoes
     ``ModelProfileSwitched`` once the rebuild completes.
     """

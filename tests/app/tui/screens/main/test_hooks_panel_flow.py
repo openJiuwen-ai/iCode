@@ -839,7 +839,7 @@ def test_the_tui_entry_point_assembles_an_engine_that_records_hook_runs(
     monkeypatch.setattr(
         startup_mod,
         "bootstrap_runtime",
-        lambda **_kwargs: RuntimeBootstrap(loaded=LoadedSettings(settings=Settings(), provenance={})),
+        lambda *, project_root: RuntimeBootstrap(loaded=LoadedSettings(settings=Settings(), provenance={})),
     )
     monkeypatch.setattr(logs_mod, "install_log_handler", lambda: None)
     monkeypatch.setattr(tui_app, "configure_debug_logging", lambda _path: object())

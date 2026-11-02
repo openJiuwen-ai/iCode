@@ -67,9 +67,9 @@ async def test_tui_session_restore_runs_the_saved_model_as_the_sessions_own_with
 ) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    dotenv = config_dir / ".env"
-    original_dotenv = b'CHRYS_MODEL_PROFILE="global-model"\nUNCHANGED="yes"\n'
-    dotenv.write_bytes(original_dotenv)
+    settings_path = config_dir / "settings.yaml"
+    original_settings = b"model:\n  profile:\n    active: global-model\n"
+    settings_path.write_bytes(original_settings)
     platform = replace(get_platform(), config_dir=config_dir, data_dir=config_dir)
     monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: platform)
     monkeypatch.delenv("CHRYS_MODEL_PROFILE", raising=False)
@@ -122,9 +122,9 @@ async def test_tui_session_restore_runs_the_saved_model_as_the_sessions_own_with
     assert engine.settings.model_profile_override == ""
     assert engine.settings_handle.session_model == saved_model.id
     assert engine.settings_handle.base.settings.model_profile != saved_model.id
-    # The default new sessions start on did not move: no pointer write, no dotenv write.
+    # The default new sessions start on did not move: no process pointer or saved settings write.
     assert "CHRYS_MODEL_PROFILE" not in os.environ
-    assert dotenv.read_bytes() == original_dotenv
+    assert settings_path.read_bytes() == original_settings
 
 
 def test_saved_model_restore_clears_the_previous_sessions_pin() -> None:
@@ -275,9 +275,9 @@ def test_saved_model_restore_skips_registered_agent_binding_without_side_effects
 ) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    dotenv = config_dir / ".env"
-    original_dotenv = b'CHRYS_MODEL_PROFILE="global-model"\n'
-    dotenv.write_bytes(original_dotenv)
+    settings_path = config_dir / "settings.yaml"
+    original_settings = b"model:\n  profile:\n    active: global-model\n"
+    settings_path.write_bytes(original_settings)
     platform = replace(get_platform(), config_dir=config_dir, data_dir=config_dir)
     monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: platform)
     saved_model = ModelProfile(id="saved-model", name="Saved", model_id="gpt-saved")
@@ -301,7 +301,7 @@ def test_saved_model_restore_skips_registered_agent_binding_without_side_effects
     assert engine.settings is settings
     assert engine.settings.model_profile_override == "existing-override"
     assert os.environ["CHRYS_MODEL_PROFILE"] == "environment-before"
-    assert dotenv.read_bytes() == original_dotenv
+    assert settings_path.read_bytes() == original_settings
 
 
 async def test_session_restore_default_gate_does_not_apply_saved_model(

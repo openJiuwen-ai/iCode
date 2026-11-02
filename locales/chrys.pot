@@ -1448,10 +1448,10 @@ msgstr ""
 msgid "startup.invalid_no_proxy_env"
 msgstr ""
 
-#. English: Could not migrate notification preferences into {path} ({error}).
-#. This start uses the default notification settings; migration retries on the
-#. next start.
-#. chrys-meta={"fingerprint":"416f42d4fd4ff05ab4122281a848df3087283e8b0ff0fdb2cf0362e4c8304516","multiline":false,"placeholders":["error","path"]}
+#. English: Notification migration into {path} failed ({error}). It will retry
+#. on the next start. Until then, your previous notification preferences may
+#. not apply.
+#. chrys-meta={"fingerprint":"ca6afca981b6a5c78f8b576a6523ba825865b1cd376250665f16519d8a8f056d","multiline":false,"placeholders":["error","path"]}
 #: src/chrys/orchestration/startup.py
 msgid "startup.notifications_migration_failed"
 msgstr ""
@@ -1462,13 +1462,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"fd6133b7df24206d743a991be3061a706ec40ca1a0fa33881b1abdafb7ea36dd","multiline":false,"placeholders":["source"]}
 #: src/chrys/orchestration/startup.py
 msgid "startup.raw_http_capture_on"
-msgstr ""
-
-#. English: Could not migrate settings into {path} ({error}). Your existing
-#. configuration still applies; migration retries on the next start.
-#. chrys-meta={"fingerprint":"c187a2768849d0804673afaac83fea8a95c21525f62a8a3c66500457b9291a5b","multiline":false,"placeholders":["error","path"]}
-#: src/chrys/orchestration/startup.py
-msgid "startup.settings_migration_failed"
 msgstr ""
 
 #. English: Continue
@@ -10522,12 +10515,6 @@ msgstr ""
 msgid "tui.settings.badge.dangerous"
 msgstr ""
 
-#. English: .env
-#. chrys-meta={"fingerprint":"c630002d7846209302449747f54abe10c83970e2d0809f599cedfaaa1aceb2c4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/provenance.py
-msgid "tui.settings.badge.dotenv"
-msgstr ""
-
 #. English: env
 #. chrys-meta={"fingerprint":"9fe735277fb86d01895e548b4d397e022d6c481a28c521781be18cbc6f3fbde5","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/provenance.py
@@ -11081,12 +11068,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"f89ac50748913b5d202c345d1472421caac20f9a29fffea5990ced8d98274e29","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/provenance.py
 msgid "tui.settings.provenance.cli"
-msgstr ""
-
-#. English: Overridden by {path} ({variable}).
-#. chrys-meta={"fingerprint":"4ce961a584b9ab97bc87bd541c9fd7149fd7bbf641d82b3d97ba939b4edfcf41","multiline":false,"placeholders":["path","variable"]}
-#: src/chrys/app/tui/screens/settings/provenance.py
-msgid "tui.settings.provenance.dotenv"
 msgstr ""
 
 #. English: Set by environment variable {variable}.

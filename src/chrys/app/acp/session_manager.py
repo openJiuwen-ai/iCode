@@ -534,7 +534,7 @@ class AcpSessionManager:
             if option.env_alias == MODEL_POINTER_ENV:
                 pointer = str(stored) if stored else None
                 set_model_pointer(pointer, origin=SettingOrigin(layer=Source.PROCESS_RUNTIME))
-            self._refresh_default_settings_from_env()
+            self._refresh_default_settings()
         return {
             "key": key,
             "envKey": option.env_alias,
@@ -1101,7 +1101,7 @@ class AcpSessionManager:
             await bus.unsubscribe(Warning, _on_warning)
 
     async def set_model_profile(self, session_id: str, profile_id: str) -> ModelProfileSwitched:
-        """Switch the active model for this session only (no global .env write)."""
+        """Switch the active model for this session while preserving the saved default."""
         self.load_registries()
         if not profile_id or self._model_registry.get(profile_id) is None:
             msg = f"Model profile not found: {profile_id}"
@@ -1187,7 +1187,7 @@ class AcpSessionManager:
             failure_message="Settings reload failed.",
             warnings=warnings,
         )
-        await asyncio.to_thread(self._refresh_default_settings_from_env)
+        await asyncio.to_thread(self._refresh_default_settings)
         return result
 
     async def apply_config_option(
@@ -1456,7 +1456,7 @@ class AcpSessionManager:
             loaded, _deferred = route_restart_settings(reattribute_command_line(candidate, base), base)
             return loaded.overlay(Source.CLI, ask_user_timeout_seconds=base.settings.ask_user_timeout_seconds)
 
-    def _refresh_default_settings_from_env(self) -> None:
+    def _refresh_default_settings(self) -> None:
         # Read, route and publish as one step. Every writer refreshes after its
         # own write, so serializing this makes the last refresh to publish also
         # the last to read — without the lock, two clients configuring two
@@ -1466,7 +1466,7 @@ class AcpSessionManager:
         # rather than only at the write sites because a reload refreshes too.
         with self._global_settings_lock:
             # The launch-time ``--ask-user-timeout`` is a CLI value, not something a
-            # re-read of the environment can produce, so it is carried across as the
+            # settings reload can produce, so it is carried across as the
             # layer it came from rather than folded into the new load.
             timeout = self._loaded_settings.settings.ask_user_timeout_seconds
             # RESTART routing applies to future sessions too: one process, one

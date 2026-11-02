@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from unittest.mock import patch
 
 import pytest
 
@@ -91,16 +90,9 @@ def test_a_web_configuration_problem_costs_only_the_web_tools(config, reason, ca
     assert reason in caplog.text
 
 
-def test_missing_credential_names_the_variable(monkeypatch, tmp_path):
+def test_missing_credential_names_the_variable(monkeypatch):
     monkeypatch.delenv("WEB_BUILD_MISSING_KEY", raising=False)
-    with (
-        patch(
-            "chrys.service.tools.builtins.web.credentials.config_env_path",
-            autospec=True,
-            return_value=tmp_path / ".env",
-        ),
-        pytest.raises(ValueError, match="WEB_BUILD_MISSING_KEY"),
-    ):
+    with pytest.raises(ValueError, match="WEB_BUILD_MISSING_KEY"):
         resolve_search_credentials({"WEB_BUILD_MISSING_KEY"})
 
 

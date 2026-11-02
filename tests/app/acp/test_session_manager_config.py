@@ -14,7 +14,7 @@ import pytest
 
 from chrys.app.acp import session_manager as session_manager_module
 from chrys.app.acp.session_manager import AcpSessionError, ManagedSession
-from chrys.foundation.config.env_layers import freeze_process_env
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.runtime_pointer import MODEL_POINTER_ENV, get_model_pointer
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, PersistResult, load_settings, persist
@@ -41,7 +41,7 @@ def _dormant_project(tmp_path) -> Path:
 
 
 def test_set_config_option_stores_newline_value_without_injection(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    """The dotenv-injection vector is gone: YAML stores the newline verbatim."""
+    """YAML stores a newline verbatim without creating a second setting."""
     manager = _manager(None, _StaticListStore([]))
     _redirect_config_dir(monkeypatch, tmp_path)
 
@@ -64,7 +64,7 @@ def test_set_config_option_maps_empty_value_to_removal(monkeypatch: pytest.Monke
 
     assert result["value"] == ""
     assert _stored_setting(tmp_path, "ui.theme") is None
-    # The user's dotenv is not this write path's to clean up — migration owns it.
+    # Legacy files are left untouched.
     assert env_path.read_text(encoding="utf-8") == env_original
 
 

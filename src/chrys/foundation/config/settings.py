@@ -812,7 +812,7 @@ class Settings:
     """Application settings.
 
     Field defaults are plain literals: every source (built-in default, user
-    YAML, project layer, dotenv, real process env, CLI, session pin) is merged
+    YAML, project layer, real process env, CLI, session pin) is merged
     by :func:`chrys.foundation.config.settings_store.load_settings`, which is
     the only thing that reads the environment. A bare ``Settings()`` is
     therefore a pure value with no hidden process dependency.

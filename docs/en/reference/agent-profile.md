@@ -69,6 +69,8 @@ icode agent list
 
 If "Code review" appears in the list, the profile has loaded. If it does not appear, check the YAML parsing or field validation warnings shown at startup, and confirm that the file is in the user agent profile directory.
 
+`icode agent list` and `icode model list` read your user configuration without requiring a working directory. They also work if the directory you launched them from has been deleted.
+
 ## Top-level fields
 
 | Field | Type | Default | Description |

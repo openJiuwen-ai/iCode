@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Web grants are user-owned; secrets never consult project dotenv values."""
+"""Web grants are user-owned and cannot be supplied by project settings."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from chrys.foundation.config.coercion import CoerceReason, CoerceStatus
-from chrys.foundation.config.env_layers import freeze_process_env
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings_store import load_settings
 from chrys.foundation.config.warnings import warning_display_message
 from chrys.foundation.config.web_values import web_custom_endpoints_coercer, web_list_coercer, web_origins_coercer

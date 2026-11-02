@@ -318,7 +318,7 @@ def test_export_reports_session_directory_read_errors(tmp_path, monkeypatch, cap
 
 
 def test_export_prepares_the_runtime_before_resolving_the_sessions_dir(tmp_path, monkeypatch, capsys) -> None:
-    """The layered .env must be loaded first or the export reads the wrong session root."""
+    """Settings must load first or the export reads the wrong session root."""
     order: list[str] = []
 
     def prepare() -> Settings:
@@ -348,13 +348,12 @@ def test_prepare_runtime_bootstraps_without_telemetry_and_reports_warnings(monke
 
     loaded_settings = Settings(trajectory_verify_commands="proofread")
 
-    def fake_bootstrap_runtime(**kwargs: Any) -> RuntimeBootstrap:
-        assert kwargs["dotenv_override"] is True
-        assert kwargs["configure_stdio"] is True
-        assert kwargs["setup_telemetry"] is False
+    def fake_bootstrap_runtime(*, configure_stdio: bool, setup_telemetry: bool, project_root: Path) -> RuntimeBootstrap:
+        assert configure_stdio is True
+        assert setup_telemetry is False
         # The working directory's project layer must apply, like the TUI and
         # ``chrys run``, or project-level verify commands are silently lost.
-        assert kwargs["project_root"] == Path(os.getcwd())
+        assert project_root == Path(os.getcwd())
         return RuntimeBootstrap(
             loaded=LoadedSettings(settings=loaded_settings, provenance={}),
             warnings=[Warning(code="probe", message="probe warning")],

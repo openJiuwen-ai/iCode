@@ -3,9 +3,9 @@
 """Bridge between model profile settings and process environment state.
 
 Model profile credentials, base URLs, and transport options flow through the
-loaded ``ModelProfile`` object into the LLM client factory.  This bridge only
-persists the active-profile pointer (``CHRYS_MODEL_PROFILE``) so a fresh
-process selects the same profile at startup.  Provider API keys/base URLs in
+loaded ``ModelProfile`` object into the LLM client factory.  This bridge
+stores the default profile in ``settings.yaml`` and tracks the live process
+selection through ``CHRYS_MODEL_PROFILE``.  Provider API keys/base URLs in
 the environment remain user-owned fallback settings and are not rewritten by
 profile activation.
 """
@@ -13,17 +13,12 @@ profile activation.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
 
 from chrys.foundation.config.runtime_pointer import MODEL_POINTER_KEY, get_model_pointer, set_model_pointer
 from chrys.foundation.config.settings_store import persist
 from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.config.user_settings import flatten_user_doc, user_settings_path
 from chrys.foundation.config.yaml_store import read_yaml_doc
-
-if TYPE_CHECKING:
-    from chrys.service.profiles.models.schema import ModelProfile
-
 
 _NO_PROXY_ENV_VARS: tuple[str, ...] = ("NO_PROXY", "no_proxy")
 """Both casings httpx consults for proxy-bypass, in precedence order.
@@ -32,16 +27,6 @@ Uppercase wins; httpx falls back to lowercase only when ``NO_PROXY`` is
 unset/empty.  Anything that writes or scrubs the bypass list must touch
 both forms so a stale lowercase value can't shadow the canonical one.
 """
-
-
-def profile_to_activation_env_updates(profile: ModelProfile) -> dict[str, str]:
-    """Convert a ``ModelProfile`` to the env updates needed for activation.
-
-    Returned keys are limited to the active profile pointer.  Credentials
-    and base URLs are read from the model profile by ``create_client`` and
-    should not be duplicated into ``.env`` or global ``os.environ``.
-    """
-    return {"CHRYS_MODEL_PROFILE": profile.id}
 
 
 def _persist_pointer(profile_id: str) -> None:
@@ -137,11 +122,11 @@ def is_valid_no_proxy(value: str) -> bool:
 def sanitize_no_proxy_env() -> dict[str, str]:
     """Remove invalid ``NO_PROXY`` / ``no_proxy`` env vars; return what was scrubbed.
 
-    Called once at startup after ``.env`` has been loaded so an invalid
-    persisted value can't crash the LLM client constructor.  Both casings
+    Called once at startup so an invalid environment value cannot crash
+    the LLM client constructor.  Both casings
     are checked because httpx consults each (uppercase wins, lowercase is
-    the fallback) — a bad lowercase ``no_proxy`` exported by the shell or
-    left in ``.env`` would otherwise still crash.
+    the fallback) — a bad lowercase ``no_proxy`` exported by the shell
+    would otherwise still crash.
 
     Returns a mapping from var name to the scrubbed value (empty mapping
     when nothing was wrong).  Caller surfaces a user-visible warning per

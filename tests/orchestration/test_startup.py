@@ -6,17 +6,18 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import io
 import os
 import sys
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import yaml
 
-from chrys.foundation.config.env_layers import process_env_snapshot
+from chrys.foundation.config.process_env import process_env_snapshot
 from chrys.foundation.config.runtime_pointer import get_model_pointer
-from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.events.types import Warning as WarningEvent
 from chrys.foundation.i18n import MessageRef
@@ -24,12 +25,7 @@ from chrys.orchestration import startup
 
 
 def _isolate_startup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    """Stub out side-effecting collaborators so each test is hermetic.
-
-    The working directory moves to ``tmp_path`` because bootstrap reads
-    ``<cwd>/.env`` — without the move, a ``.env`` on the developer's machine
-    would leak into every test here.
-    """
+    """Stub out side-effecting collaborators so each test is hermetic."""
     import chrys.foundation.platform as platform_mod
 
     config_dir = tmp_path / "config"
@@ -43,7 +39,7 @@ def _isolate_startup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
 
 
 def _claim_env_name(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
-    """Register ``name`` for restore so injected values never outlive the test."""
+    """Restore ``name`` after any environment writes made by the code under test."""
     monkeypatch.setenv(name, "claimed")
     monkeypatch.delenv(name)
 
@@ -80,18 +76,18 @@ def test_bootstrap_runtime_sets_process_title_by_default(monkeypatch: pytest.Mon
     calls: list[str] = []
     monkeypatch.setattr(startup, "set_process_title", lambda title="chrys": calls.append(title))
 
-    startup.bootstrap_runtime(dotenv_override=False)
+    startup.bootstrap_runtime()
 
     assert calls == ["chrys"]
 
 
 def test_bootstrap_runtime_returns_invalid_no_proxy_warning(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     _isolate_startup(monkeypatch, tmp_path)
-    (tmp_path / ".env").write_text("NO_PROXY=[::1]\n", encoding="utf-8")
+    monkeypatch.setenv("NO_PROXY", "[::1]")
     monkeypatch.setattr("chrys.foundation.patches.apply_all", lambda: None)
     monkeypatch.setattr("chrys.foundation.observability.setup.setup_otel", lambda _settings: None)
 
-    bootstrap = startup.bootstrap_runtime(dotenv_override=True)
+    bootstrap = startup.bootstrap_runtime()
 
     assert "NO_PROXY" not in os.environ
     assert len(bootstrap.warnings) == 1
@@ -111,7 +107,7 @@ def test_bootstrap_runtime_returns_no_warnings_when_env_clean(monkeypatch: pytes
     monkeypatch.setattr("chrys.foundation.patches.apply_all", lambda: None)
     monkeypatch.setattr("chrys.foundation.observability.setup.setup_otel", lambda _settings: None)
 
-    bootstrap = startup.bootstrap_runtime(dotenv_override=False)
+    bootstrap = startup.bootstrap_runtime()
 
     assert bootstrap.warnings == []
 
@@ -122,7 +118,7 @@ def test_bootstrap_runtime_skips_patches_when_disabled(monkeypatch: pytest.Monke
     apply_calls: list[bool] = []
     monkeypatch.setattr("chrys.foundation.patches.apply_all", lambda: apply_calls.append(True))
 
-    startup.bootstrap_runtime(dotenv_override=False, apply_patches=False)
+    startup.bootstrap_runtime(apply_patches=False)
 
     assert apply_calls == []
 
@@ -133,7 +129,7 @@ def test_bootstrap_runtime_runs_patches_by_default(monkeypatch: pytest.MonkeyPat
     apply_calls: list[bool] = []
     monkeypatch.setattr("chrys.foundation.patches.apply_all", lambda: apply_calls.append(True))
 
-    startup.bootstrap_runtime(dotenv_override=False)
+    startup.bootstrap_runtime()
 
     assert apply_calls == [True]
 
@@ -144,7 +140,7 @@ def test_bootstrap_runtime_skips_telemetry_when_disabled(monkeypatch: pytest.Mon
     otel_calls: list[Any] = []
     monkeypatch.setattr("chrys.foundation.observability.setup.setup_otel", otel_calls.append)
 
-    startup.bootstrap_runtime(dotenv_override=False, setup_telemetry=False)
+    startup.bootstrap_runtime(setup_telemetry=False)
 
     assert otel_calls == []
 
@@ -155,113 +151,16 @@ def test_bootstrap_runtime_invokes_telemetry_by_default(monkeypatch: pytest.Monk
     otel_calls: list[Any] = []
     monkeypatch.setattr("chrys.foundation.observability.setup.setup_otel", otel_calls.append)
 
-    bootstrap = startup.bootstrap_runtime(dotenv_override=False)
+    bootstrap = startup.bootstrap_runtime()
 
     assert otel_calls == [bootstrap.settings]
-
-
-def test_bootstrap_runtime_dotenv_override_true_replaces_ambient_values(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    _quiet_bootstrap(monkeypatch, tmp_path)
-    (tmp_path / ".env").write_text("STARTUP_OVERRIDE_PROBE=from-dotenv\n", encoding="utf-8")
-    monkeypatch.setenv("STARTUP_OVERRIDE_PROBE", "from-shell")
-
-    startup.bootstrap_runtime(dotenv_override=True)
-
-    assert os.environ["STARTUP_OVERRIDE_PROBE"] == "from-dotenv"
-
-
-def test_bootstrap_runtime_dotenv_override_false_keeps_ambient_values(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    _quiet_bootstrap(monkeypatch, tmp_path)
-    (tmp_path / ".env").write_text("STARTUP_OVERRIDE_PROBE=from-dotenv\n", encoding="utf-8")
-    monkeypatch.setenv("STARTUP_OVERRIDE_PROBE", "from-shell")
-
-    startup.bootstrap_runtime(dotenv_override=False)
-
-    assert os.environ["STARTUP_OVERRIDE_PROBE"] == "from-shell"
-
-
-def test_bootstrap_runtime_reads_dotenv_from_the_working_directory(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    """The dotenv root is the workspace cwd, not a ``find_dotenv`` walk."""
-    _quiet_bootstrap(monkeypatch, tmp_path)
-    (tmp_path / ".env").write_text("STARTUP_CWD_PROBE=yes\n", encoding="utf-8")
-    _claim_env_name(monkeypatch, "STARTUP_CWD_PROBE")
-
-    startup.bootstrap_runtime(dotenv_override=True)
-
-    assert os.environ["STARTUP_CWD_PROBE"] == "yes"
-
-
-def test_bootstrap_runtime_reads_explicit_cwd_then_config_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    _quiet_bootstrap(monkeypatch, tmp_path)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / ".env").write_text("STARTUP_SHARED_PROBE=workspace\nSTARTUP_WORKSPACE_PROBE=yes\n", encoding="utf-8")
-    (tmp_path / "config" / ".env").write_text("STARTUP_SHARED_PROBE=config\n", encoding="utf-8")
-    for name in ("STARTUP_SHARED_PROBE", "STARTUP_WORKSPACE_PROBE"):
-        _claim_env_name(monkeypatch, name)
-
-    startup.bootstrap_runtime(dotenv_override=True, dotenv_cwd=workspace)
-
-    # Same file order as the load_dotenv calls this replaced: the config-dir
-    # .env is read second, so with override it wins the overlap.
-    assert os.environ["STARTUP_WORKSPACE_PROBE"] == "yes"
-    assert os.environ["STARTUP_SHARED_PROBE"] == "config"
-
-
-def test_bootstrap_runtime_freezes_the_environment_before_injection(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    _quiet_bootstrap(monkeypatch, tmp_path)
-    (tmp_path / ".env").write_text("STARTUP_SNAPSHOT_PROBE=injected\n", encoding="utf-8")
-    _claim_env_name(monkeypatch, "STARTUP_SNAPSHOT_PROBE")
-
-    startup.bootstrap_runtime(dotenv_override=True)
-
-    snapshot = process_env_snapshot()
-    assert snapshot is not None
-    assert "STARTUP_SNAPSHOT_PROBE" not in snapshot.values
-    assert os.environ["STARTUP_SNAPSHOT_PROBE"] == "injected"
-
-
-def test_bootstrap_runtime_never_injects_chrys_keys_from_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    """Dotenv files cannot mint settings, pointer, or IPC state in the process env."""
-    _quiet_bootstrap(monkeypatch, tmp_path)
-    (tmp_path / ".env").write_text(
-        "CHRYS_MODEL_PROFILE=from-dotenv\nCHRYS_ACP_SUBAGENT_DEPTH=3\nSTARTUP_PLAIN_PROBE=kept\n",
-        encoding="utf-8",
-    )
-    for name in ("CHRYS_MODEL_PROFILE", "CHRYS_ACP_SUBAGENT_DEPTH", "STARTUP_PLAIN_PROBE"):
-        _claim_env_name(monkeypatch, name)
-
-    bootstrap = startup.bootstrap_runtime(dotenv_override=True)
-
-    assert os.environ["STARTUP_PLAIN_PROBE"] == "kept"
-    assert "CHRYS_MODEL_PROFILE" not in os.environ
-    assert "CHRYS_ACP_SUBAGENT_DEPTH" not in os.environ
-    assert bootstrap.settings.model_profile == Settings().model_profile
-
-
-def test_bootstrap_runtime_real_environment_outranks_dotenv_for_chrys_keys(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    """The shell's export wins over any dotenv line, override flag or not."""
-    _quiet_bootstrap(monkeypatch, tmp_path)
-    (tmp_path / ".env").write_text("CHRYS_MODEL_PROFILE=from-dotenv\n", encoding="utf-8")
-    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "preexisting")
-
-    bootstrap = startup.bootstrap_runtime(dotenv_override=True)
-
-    assert os.environ["CHRYS_MODEL_PROFILE"] == "preexisting"
-    assert bootstrap.settings.model_profile == "preexisting"
 
 
 def test_bootstrap_seeds_the_model_pointer_with_the_layered_origin(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     _quiet_bootstrap(monkeypatch, tmp_path)
     monkeypatch.setenv("CHRYS_MODEL_PROFILE", "shell-model")
 
-    startup.bootstrap_runtime(dotenv_override=True)
+    startup.bootstrap_runtime()
 
     assert get_model_pointer() == ("shell-model", SettingOrigin(layer=Source.ENV))
 
@@ -270,28 +169,10 @@ def test_bootstrap_does_not_seed_an_absent_model_pointer(monkeypatch: pytest.Mon
     _quiet_bootstrap(monkeypatch, tmp_path)
     monkeypatch.delenv("CHRYS_MODEL_PROFILE", raising=False)
 
-    startup.bootstrap_runtime(dotenv_override=True)
+    startup.bootstrap_runtime()
 
     assert "CHRYS_MODEL_PROFILE" not in os.environ
     assert get_model_pointer() == ("", None)
-
-
-def test_bootstrap_migrates_the_config_dotenv_before_loading(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    """Legacy chrys lines move into ``settings.yaml`` and still take effect."""
-    _quiet_bootstrap(monkeypatch, tmp_path)
-    monkeypatch.delenv("CHRYS_THEME", raising=False)
-    config_env = tmp_path / "config" / ".env"
-    config_env.write_text("CHRYS_THEME=solar\nSTARTUP_PLAIN_PROBE=kept\n", encoding="utf-8")
-    _claim_env_name(monkeypatch, "STARTUP_PLAIN_PROBE")
-
-    bootstrap = startup.bootstrap_runtime(dotenv_override=True)
-
-    assert bootstrap.settings.theme == "solar"
-    assert bootstrap.loaded.source_for("ui.theme").layer is Source.USER
-    remaining = config_env.read_text(encoding="utf-8")
-    assert "CHRYS_THEME" not in remaining
-    assert "STARTUP_PLAIN_PROBE=kept" in remaining
-    assert (tmp_path / "config" / "settings.yaml").is_file()
 
 
 def test_bootstrap_renames_a_retired_theme_in_the_document(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -300,7 +181,7 @@ def test_bootstrap_renames_a_retired_theme_in_the_document(monkeypatch: pytest.M
     document = tmp_path / "config" / "settings.yaml"
     document.write_text("ui:\n  theme: chrys-dark\n", encoding="utf-8")
 
-    bootstrap = startup.bootstrap_runtime(dotenv_override=True)
+    bootstrap = startup.bootstrap_runtime()
 
     assert bootstrap.settings.theme == "chrys"
     assert bootstrap.loaded.source_for("ui.theme").layer is Source.USER
@@ -322,25 +203,11 @@ def test_bootstrap_draws_the_renamed_theme_even_when_the_document_cannot_be_rewr
 
     monkeypatch.setattr("chrys.foundation.config.migrations.migrate_renamed_theme", explode)
 
-    bootstrap = startup.bootstrap_runtime(dotenv_override=True)
+    bootstrap = startup.bootstrap_runtime()
 
     assert bootstrap.settings.theme == "chrys"
     assert bootstrap.warnings == []
     assert "chrys-dark" in document.read_text(encoding="utf-8")
-
-
-def test_bootstrap_reports_a_migration_failure_instead_of_dying(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    _quiet_bootstrap(monkeypatch, tmp_path)
-
-    def explode() -> None:
-        raise TimeoutError("lock busy")
-
-    monkeypatch.setattr("chrys.foundation.config.migrations.migrate_dotenv_v0", explode)
-
-    bootstrap = startup.bootstrap_runtime(dotenv_override=True)
-
-    (warning,) = [w for w in bootstrap.warnings if w.code == "settings_migration_failed"]
-    assert "lock busy" in warning.message
 
 
 def test_bootstrap_migrates_the_notifications_file_before_loading(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -349,7 +216,7 @@ def test_bootstrap_migrates_the_notifications_file_before_loading(monkeypatch: p
     legacy = tmp_path / "config" / "notifications.yaml"
     legacy.write_text("enabled: false\nevents:\n  turn_complete: false\n", encoding="utf-8")
 
-    bootstrap = startup.bootstrap_runtime(dotenv_override=True)
+    bootstrap = startup.bootstrap_runtime()
 
     assert bootstrap.settings.notifications_enabled is False
     assert bootstrap.settings.notifications_event_turn_complete is False
@@ -360,25 +227,6 @@ def test_bootstrap_migrates_the_notifications_file_before_loading(monkeypatch: p
     assert doc["notifications"]["enabled"] is False
 
 
-def test_bootstrap_runs_later_migrations_after_an_earlier_failure(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    """One stuck component must not hold back the other's import."""
-    _quiet_bootstrap(monkeypatch, tmp_path)
-
-    def explode() -> None:
-        raise TimeoutError("lock busy")
-
-    monkeypatch.setattr("chrys.foundation.config.migrations.migrate_dotenv_v0", explode)
-    legacy = tmp_path / "config" / "notifications.yaml"
-    legacy.write_text("enabled: false\n", encoding="utf-8")
-
-    bootstrap = startup.bootstrap_runtime(dotenv_override=True)
-
-    (warning,) = [w for w in bootstrap.warnings if w.code == "settings_migration_failed"]
-    assert "lock busy" in warning.message
-    assert bootstrap.settings.notifications_enabled is False
-    assert not legacy.exists()
-
-
 def test_bootstrap_runtime_configures_stdio_when_requested(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     _isolate_startup(monkeypatch, tmp_path)
     monkeypatch.setattr("chrys.foundation.patches.apply_all", lambda: None)
@@ -386,7 +234,7 @@ def test_bootstrap_runtime_configures_stdio_when_requested(monkeypatch: pytest.M
     stdio_calls: list[bool] = []
     monkeypatch.setattr(startup, "configure_utf8_stdio", lambda: stdio_calls.append(True))
 
-    startup.bootstrap_runtime(dotenv_override=False, configure_stdio=True)
+    startup.bootstrap_runtime(configure_stdio=True)
 
     assert stdio_calls == [True]
 
@@ -398,7 +246,7 @@ def test_bootstrap_runtime_does_not_configure_stdio_by_default(monkeypatch: pyte
     stdio_calls: list[bool] = []
     monkeypatch.setattr(startup, "configure_utf8_stdio", lambda: stdio_calls.append(True))
 
-    startup.bootstrap_runtime(dotenv_override=False)
+    startup.bootstrap_runtime()
 
     assert stdio_calls == []
 
@@ -441,7 +289,7 @@ def test_bootstrap_warns_while_raw_http_capture_is_on(monkeypatch: pytest.Monkey
     _quiet_bootstrap(monkeypatch, tmp_path)
     monkeypatch.setenv("CHRYS_DEBUG_LLM_RAW_HTTP_LOG", "1")
 
-    bootstrap = startup.bootstrap_runtime(dotenv_override=False)
+    bootstrap = startup.bootstrap_runtime()
 
     assert bootstrap.loaded.warnings == ()
     codes = [warning.code for warning in bootstrap.warnings]
@@ -453,7 +301,7 @@ def test_bootstrap_stays_quiet_while_raw_http_capture_is_off(monkeypatch: pytest
     _quiet_bootstrap(monkeypatch, tmp_path)
     monkeypatch.delenv("CHRYS_DEBUG_LLM_RAW_HTTP_LOG", raising=False)
 
-    assert startup.bootstrap_runtime(dotenv_override=False).warnings == []
+    assert startup.bootstrap_runtime().warnings == []
 
 
 def test_bootstrap_settles_an_unusable_session_root_before_anything_reads_it(
@@ -468,20 +316,16 @@ def test_bootstrap_settles_an_unusable_session_root_before_anything_reads_it(
     blocked.write_text("", encoding="utf-8")
     monkeypatch.setenv("CHRYS_SESSION_ROOT_DIR", str(blocked))
 
-    bootstrap = startup.bootstrap_runtime(dotenv_override=False)
+    bootstrap = startup.bootstrap_runtime()
 
     assert bootstrap.settings.session_root_dir == ""
     assert [warning.key for warning in bootstrap.loaded.warnings] == ["storage.session_root_dir"]
     assert resolve_session_root_dir(tmp_path / "config") == tmp_path / "config"
 
 
-def test_a_failed_notifications_migration_does_not_claim_the_old_file_still_applies(
+def test_notification_import_failure_warns_that_previous_preferences_may_not_apply(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    # The legacy ``.env`` keeps loading as a layer when its migration fails, so
-    # "your existing configuration still applies" is true there. Nothing reads
-    # the legacy notifications file any more, so saying it there tells the user
-    # the opposite of what happened to the toggles they turned off.
     _quiet_bootstrap(monkeypatch, tmp_path)
 
     def explode() -> None:
@@ -490,12 +334,14 @@ def test_a_failed_notifications_migration_does_not_claim_the_old_file_still_appl
     monkeypatch.setattr("chrys.foundation.config.migrations.migrate_notifications_v0", explode)
     (tmp_path / "config" / "notifications.yaml").write_text("enabled: false\n", encoding="utf-8")
 
-    bootstrap = startup.bootstrap_runtime(dotenv_override=True)
+    bootstrap = startup.bootstrap_runtime()
 
     (warning,) = [w for w in bootstrap.warnings if w.code == "notifications_migration_failed"]
-    assert "lock busy" in warning.message
-    assert "still applies" not in warning.message
-    # The defaults really are what this start runs on — the sentence has to match.
+    settings_path = tmp_path / "config" / "settings.yaml"
+    assert warning.message == (
+        f"Notification migration into {settings_path} failed (lock busy). It will retry on the next start. "
+        "Until then, your previous notification preferences may not apply."
+    )
     assert bootstrap.settings.notifications_enabled is True
 
 
@@ -525,7 +371,7 @@ def test_bootstrap_survives_a_settings_document_held_by_another_process(
     held = FileLock(lock_path_for(settings_path), timeout=0)
     held.acquire()
     try:
-        bootstrap = startup.bootstrap_runtime(dotenv_override=True)
+        bootstrap = startup.bootstrap_runtime()
     finally:
         held.release()
 
@@ -533,3 +379,110 @@ def test_bootstrap_survives_a_settings_document_held_by_another_process(
     # not in force and provenance does not claim it is.
     assert bootstrap.settings.theme != "solar"
     assert bootstrap.loaded.source_for("ui.theme").layer is Source.DEFAULT
+
+
+@pytest.mark.parametrize("ledger", [None, "complete", {"pending_cleanup": True}])
+def test_bootstrap_ignores_and_preserves_dotenv_files(monkeypatch, tmp_path, ledger) -> None:
+    _quiet_bootstrap(monkeypatch, tmp_path)
+    for name in ("CHRYS_THEME", "CHRYS_MODEL_PROFILE", "CHRYS_ACP_SUBAGENT_DEPTH", "STARTUP_DOTENV_KEY"):
+        _claim_env_name(monkeypatch, name)
+    monkeypatch.setenv("STARTUP_EXPORTED_KEY", "from-shell")
+    config_dir = tmp_path / "config"
+    document = {"ui": {"theme": "chrys-legacy"}, "migrations": {"notifications_v0": "complete"}}
+    if ledger is not None:
+        document["migrations"]["dotenv_v0"] = ledger
+    settings_path = config_dir / "settings.yaml"
+    settings_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    original = (
+        "CHRYS_THEME=solar\nCHRYS_MODEL_PROFILE=file-model\nCHRYS_ACP_SUBAGENT_DEPTH=3\n"
+        "STARTUP_DOTENV_KEY=file-value\nSTARTUP_EXPORTED_KEY=file-value\nNO_PROXY=[::1]\n"
+    )
+    paths = (tmp_path / ".env", config_dir / ".env")
+    for path in paths:
+        path.write_text(original, encoding="utf-8")
+
+    # A read-only scan can leave both the environment and the files unchanged.
+    with (
+        patch("io.open", wraps=io.open) as file_open,
+        patch("builtins.open", file_open),
+        patch("os.open", wraps=os.open) as fd_open,
+    ):
+        bootstrap = startup.bootstrap_runtime(project_root=tmp_path)
+
+    opened = set()
+    for args, kwargs in (*file_open.call_args_list, *fd_open.call_args_list):
+        file = args[0] if args else kwargs.get("file", kwargs.get("path"))
+        if isinstance(file, (str, bytes, os.PathLike)):
+            opened.add(os.path.basename(os.fsdecode(file)))
+    assert settings_path.name in opened
+    assert ".env" not in opened
+
+    assert bootstrap.warnings == []
+    assert bootstrap.settings.theme == "chrys-legacy"
+    assert bootstrap.loaded.source_for("ui.theme").layer is Source.USER
+    assert bootstrap.settings.model_profile == ""
+    assert "CHRYS_ACP_SUBAGENT_DEPTH" not in os.environ
+    assert "STARTUP_DOTENV_KEY" not in os.environ
+    assert os.environ["STARTUP_EXPORTED_KEY"] == "from-shell"
+    assert yaml.safe_load(settings_path.read_text(encoding="utf-8")) == document
+    for path in paths:
+        assert path.read_text(encoding="utf-8") == original
+        assert not path.with_name(".env.lock").exists()
+
+
+def test_bootstrap_freezes_environment_for_subsequent_settings_loads(monkeypatch, tmp_path) -> None:
+    from chrys.foundation.config.settings_store import load_settings
+
+    _quiet_bootstrap(monkeypatch, tmp_path)
+    monkeypatch.setenv("CHRYS_THEME", "chrys-legacy")
+    startup.bootstrap_runtime()
+    monkeypatch.setenv("CHRYS_THEME", "solar")
+
+    snapshot = process_env_snapshot()
+    assert snapshot is not None
+    assert snapshot.values["CHRYS_THEME"] == "chrys-legacy"
+    assert load_settings().settings.theme == "chrys-legacy"
+
+
+def test_notification_retirement_failure_keeps_imported_settings(monkeypatch, tmp_path) -> None:
+    from pathlib import Path
+
+    _quiet_bootstrap(monkeypatch, tmp_path)
+    legacy = tmp_path / "config" / "notifications.yaml"
+    legacy.write_text("enabled: false\n", encoding="utf-8")
+    original_replace = Path.replace
+
+    def fail_retirement(path: Path, target: str | os.PathLike[str]) -> Path:
+        if path == legacy:
+            raise PermissionError("retirement blocked")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_retirement)
+
+    bootstrap = startup.bootstrap_runtime()
+
+    (warning,) = [w for w in bootstrap.warnings if w.code == "notifications_migration_failed"]
+    assert "retirement blocked" in warning.message
+    assert bootstrap.settings.notifications_enabled is False
+    assert bootstrap.loaded.source_for("notifications.enabled").layer is Source.USER
+    document = yaml.safe_load((tmp_path / "config" / "settings.yaml").read_text(encoding="utf-8"))
+    assert document["notifications"]["enabled"] is False
+    assert document["migrations"]["notifications_v0"]["pending_cleanup"] is True
+    assert legacy.read_text(encoding="utf-8") == "enabled: false\n"
+
+
+def test_notification_migration_failure_does_not_skip_theme_rename(monkeypatch, tmp_path) -> None:
+    _quiet_bootstrap(monkeypatch, tmp_path)
+    settings_path = tmp_path / "config" / "settings.yaml"
+    settings_path.write_text("ui:\n  theme: chrys-dark\n", encoding="utf-8")
+
+    def fail_import() -> None:
+        raise TimeoutError("notification lock busy")
+
+    monkeypatch.setattr("chrys.foundation.config.migrations.migrate_notifications_v0", fail_import)
+
+    bootstrap = startup.bootstrap_runtime()
+
+    assert [w.code for w in bootstrap.warnings] == ["notifications_migration_failed"]
+    assert bootstrap.settings.theme == "chrys"
+    assert yaml.safe_load(settings_path.read_text(encoding="utf-8"))["ui"]["theme"] == "chrys"

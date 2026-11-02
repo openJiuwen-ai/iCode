@@ -13,9 +13,9 @@ For steps to change settings in the terminal user interface (TUI) and when those
 
 iCode looks for `.chrys/settings.yaml` only in the current session's working directory. It does not search parent directories or subdirectories.
 
-UTF-8 is recommended for settings and `.env` files. iCode also detects common legacy encodings such as GBK/GB18030 and BOM-marked UTF-16/UTF-32. Whenever iCode writes one of these files, it uses UTF-8: when you save settings, and at startup when it moves settings left by an older version (such as `CHRYS_*` lines in `.env`) into `settings.yaml`.
+UTF-8 is recommended for settings files. iCode also detects common legacy encodings such as GBK/GB18030 and BOM-marked UTF-16/UTF-32. Settings are always saved as UTF-8.
 
-Bytes that cannot be decoded using the detected encoding make the file invalid; iCode does not replace them with `�`. Settings use the existing invalid-file recovery rules. An undecodable `.env` file is skipped during loading, and attempts to update it fail without overwriting it.
+Bytes that cannot be decoded using the detected encoding make the file invalid; iCode does not replace them with `�`. Settings use the existing invalid-file recovery rules.
 
 The file uses YAML. Dots in key names represent nesting. For example, write `llm.retry.max_transient` as:
 
@@ -184,14 +184,11 @@ Each key is resolved independently in the following order, using the first valid
 | --- | --- |
 | 1 | Explicit choices in the current session, command-line arguments, or behavior fixed by the launch command |
 | 2 | Environment variables already present when the process starts |
-| 3 | Settings not yet migrated from the legacy user `.env` file (macOS / Linux: `~/.chrys/.env`; Windows: `%APPDATA%\chrys\.env`) |
-| 4 | Project settings that are enabled and permitted to apply |
-| 5 | User settings |
-| 6 | Built-in defaults |
+| 3 | Project settings that are enabled and permitted to apply |
+| 4 | User settings |
+| 5 | Built-in defaults |
 
-At startup, iCode attempts to migrate iCode settings from the legacy user `.env` file into the user `settings.yaml` and remove the migrated lines. During the merge, existing keys in `settings.yaml` take precedence and are not overwritten. Settings that have not yet been migrated continue to apply at priority 3 in the table. If migration fails, iCode reports it and retries on the next startup. Environment variables such as model service API keys remain in `.env`.
-
-iCode settings in the working directory's `.env` file do not take effect. Write project settings in `.chrys/settings.yaml`.
+iCode does not load or migrate `.env` files from the working directory or user configuration directory. Set any variables you still need from those files in the environment that launches iCode, then restart iCode. This includes provider API keys, proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`), OpenTelemetry variables (`OTEL_*`), and variables referenced by placeholders such as `{{MCP_API_TOKEN}}` in MCP headers or `{{MY_GATEWAY_TOKEN}}` in model `extra_headers`. Write user settings in the user `settings.yaml`, and project settings in `.chrys/settings.yaml`.
 
 ## Value syntax and invalid values
 

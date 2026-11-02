@@ -19,12 +19,12 @@ sentence. Whole sentences are also what a translator can actually work with.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 
 from chrys.foundation.config.coercion import CoerceReason
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsWarning
-from chrys.foundation.config.spec import ENV_SOURCES, SettingOrigin, specs_by_key
+from chrys.foundation.config.spec import SettingOrigin, Source, specs_by_key
 from chrys.foundation.config.user_settings import user_settings_path
 from chrys.foundation.events.types import Warning
 from chrys.foundation.i18n import DisplaySequence, MessageDef, MessageRef, msg
@@ -149,13 +149,10 @@ def setting_source_label(key: str, origin: SettingOrigin) -> str:
 
     ``llm.retry.max_transient`` is the panel's identifier; someone who set
     ``CHRYS_MAX_TRANSIENT_RETRIES`` has never seen it, and quoting the dotted
-    key would send them looking for a file they do not have. That holds for
-    every layer that reads the variable, not just the process environment: a
-    dotenv file spells the variable name too, so naming the file is the only
-    part that changes.
+    key would send them looking for a file they do not have.
     """
     entry = specs_by_key(Settings).get(key)
-    name = entry.env if origin.layer in ENV_SOURCES and entry is not None and entry.env is not None else key
+    name = entry.env if origin.layer is Source.ENV and entry is not None and entry.env is not None else key
     if origin.path is not None:
         return f"{name} in {origin.path}"
     return name
@@ -197,17 +194,6 @@ def _verdict_event(warning: SettingsWarning) -> Warning:
     display_message = warning_display_message(warning)
     code = "setting_rejected" if warning.rejected else "setting_clamped"
     return Warning(code=code, message=format_message(display_message), display_message=display_message)
-
-
-def migration_warning_events(warnings: Iterable[SettingsWarning]) -> list[Warning]:
-    """Compose events for values a migration dropped or adjusted.
-
-    The same sentences as a load's, because they are the same verdicts from
-    the same coercers — only discovered while moving the value instead of
-    while reading it. After migration the offending line is gone, so this is
-    the one time the user hears about it.
-    """
-    return [_verdict_event(warning) for warning in warnings]
 
 
 def settings_warning_events(

@@ -28,7 +28,6 @@ dependencies = [
     # exporter on 1.x, instrumentation on the matching 0.NNbM line) and are
     # bumped together. uv.lock holds the resolved version.
     "opentelemetry-api>=1.45.1,<2",
-    "python-dotenv==1.2.4",
     "pyyaml==6.0.3",
     "charset-normalizer==3.5.2",
     "mcp==1.30.0",

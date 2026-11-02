@@ -431,7 +431,7 @@ def _coercers_under_test() -> list[pytest.ParameterSet]:
 
 
 # One raw value per shape a layer can hand over: YAML parses native types and
-# containers, dotenv and the environment hand over strings, and an oversized
+# containers, the environment hands over strings, and an oversized
 # integer is the value whose *rendering* raises rather than its parsing.
 _RAW_SHAPES = [
     pytest.param(None, id="null"),
@@ -856,7 +856,7 @@ def test_persist_locale_round_trips_hostile_values(
 ) -> None:
     # A persisted value that reloads differently from what was written would
     # make this start and the next one disagree about the effective locale.
-    # YAML carries quoting, comments, and newlines that the old dotenv store
+    # YAML carries quoting, comments, and newlines that a line-based store
     # had to reject.
     persist_locale(value)
 

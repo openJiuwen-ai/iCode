@@ -1,55 +1,23 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Component migrations into the user settings document.
+"""Migrate notification preferences and rename saved themes in user settings.
 
-Importing an external legacy format is tracked in the ``migrations:`` ledger,
-never inferred from the document's existence: a crash between "wrote the YAML"
-and "cleaned the old source" must retry the cleanup on the next start, and a
-user who pre-created ``settings.yaml`` by hand has not thereby migrated
-anything. Each component entry is either a completion timestamp or
-``{pending_cleanup: true}``.
+Notification imports use a ``migrations:`` ledger with either a completion
+stamp or ``{pending_cleanup: true}``. The source is read under its own lock
+before taking the settings lock, then three phases hold at most one lock:
 
-Every migration is strictly three-phase, holding at most one configuration
-lock at any moment:
+- A merges into the settings document and records the source fingerprint with
+  ``pending_cleanup``.
+- B rechecks that fingerprint under the source lock, then renames the source
+  and its backup. Changed or unreadable bytes stay in place for a later retry.
+- C replaces the pending entry with a completion stamp. Repeating B after a
+  crash is safe.
 
-- **A** (settings lock): read the old source, coerce, merge and commit with
-  ``pending_cleanup: true``.
-- **B** (the old source's own lock, never the settings lock): retire the old
-  source. Nesting ``.env.lock`` inside the settings lock is a deadlock waiting
-  for its second process, so cross-file consistency comes from the resumable
-  ledger, not from lock nesting.
-- **C** (settings lock again): replace ``pending_cleanup`` with the
-  completion timestamp. A crash before C reruns B, which is idempotent.
+The document wins on an initial import and while a pending source is unchanged,
+so retrying cannot undo later panel edits. A changed pending source or a source
+written after completion represents newer legacy preferences and wins instead.
 
-Which side wins the merge depends on the ledger, and the two answers are not
-in tension:
-
-- While the component is **unfinished** — no entry, or ``pending_cleanup`` —
-  the document wins. A rerun after a crash between phases must not roll a
-  later panel edit back to the old file.
-- Once it is **complete**, an old source that is active again became active
-  *after* we finished, and the only thing that writes these formats now is a
-  downgraded install that cannot see the document. That makes it the newer
-  intent: it wins, and the component reopens to retire it again. Importing it
-  under the document-wins rule instead would delete the newer value and keep
-  the stale one, and skipping it would leave a legacy layer outranking every
-  panel write for good — the exact "I changed it and nothing happened" these
-  migrations exist to end.
-
-Phase B never retires a source it cannot prove is the one phase A read, and
-never on a read that did not succeed. The two are separate guarantees:
-
-- *Same bytes.* The retirement is gated on a fingerprint taken before the
-  parse and rechecked under the source's own lock. A source that moved in
-  between digests as its older self, so the recheck fails and the component
-  stays pending for the next start to fold in and retry.
-- *A real read.* Cleanup removes the whole key space, not the keys that were
-  found, so "this source holds nothing of ours" and "this source could not be
-  read" must not arrive here as the same empty mapping. An unreadable source
-  aborts the migration before anything is written or deleted.
-
-:func:`migrate_renamed_theme` is not an import and needs none of this: it
-rewrites one value inside the document, in one phase under the one lock.
+Theme renames update one value under the settings lock and need no ledger.
 """
 
 from __future__ import annotations
@@ -60,18 +28,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from chrys.foundation.config.coercion import Coerced, CoerceStatus
-from chrys.foundation.config.env_file import config_env_path, update_env_file
-from chrys.foundation.config.env_layers import (
-    canonical_env_name,
-    dotenv_disabled,
-    process_env_snapshot,
-    read_dotenv_snapshot,
-)
 from chrys.foundation.config.notification_events import NotificationEvent
 from chrys.foundation.config.settings import RENAMED_THEMES, Settings
-from chrys.foundation.config.settings_store import SettingsWarning
-from chrys.foundation.config.spec import SettingOrigin, SettingSpec, Source, kind_accepts, specs_by_field
+from chrys.foundation.config.spec import specs_by_field
 from chrys.foundation.config.user_settings import apply_settings_patch, flatten_user_doc, user_settings_path
 from chrys.foundation.config.yaml_store import (
     LOCK_TIMEOUT_SECONDS,
@@ -86,10 +45,7 @@ from chrys.foundation.util.lock import FileLock
 
 logger = logging.getLogger(__name__)
 
-DOTENV_COMPONENT = "dotenv_v0"
 NOTIFICATIONS_COMPONENT = "notifications_v0"
-
-_DEFERRED_CLEANUP = "Legacy %s changed while it was being migrated; %s stays pending for the next start: %s"
 
 
 class _AlreadyComplete(Exception):
@@ -98,180 +54,11 @@ class _AlreadyComplete(Exception):
 
 @dataclass(frozen=True, slots=True)
 class MigrationResult:
-    """What one migration run moved, and what it had to leave behind."""
+    """Values written by a migration and whether it changed the settings document."""
 
     migrated: dict[str, Any]
-    warnings: tuple[SettingsWarning, ...]
     performed: bool
-    """``False`` when the ledger said the work was already done."""
-
-
-def migrate_dotenv_v0() -> MigrationResult:
-    """Move the chrys keys out of ``~/.chrys/.env`` into ``settings.yaml``.
-
-    Left in place, a legacy ``CHRYS_THEME`` line keeps loading as the
-    ``USER_ENV`` layer and silently outranks every panel write — "I changed it
-    and nothing happened". So the values move to the document and the lines
-    go, in the three phases described in the module docstring.
-
-    Reading is two-step because the two ends speak different grammars (the
-    alias's ``env_coerce`` first, then the key's own ``coerce`` on the
-    canonical result): ``CHRYS_HISTORY_DISABLE=1`` means *disable*, and a
-    one-step read through the positive-polarity key coercer would migrate it
-    as ``history.prompt.enabled: true`` — flipping the user's setting in the
-    act of preserving it. The second step keeps migration from being the one
-    channel that can write a value into the YAML no panel could.
-
-    Values interpolate against the bootstrap snapshot, exactly as the
-    ``USER_ENV`` layer would have resolved them: migration writes what the
-    loader would have loaded.
-    """
-    if dotenv_disabled():
-        # The opt-out has to reach this too, and not only because the values
-        # would be unreadable: phase B *deletes* the lines it migrated, so
-        # running with the file disabled would empty a file the user told us
-        # not to read and move its values somewhere the opt-out cannot reach.
-        # Nothing is marked complete, so a later ordinary launch migrates.
-        return MigrationResult(migrated={}, warnings=(), performed=False)
-
-    env_path = config_env_path()
-    snapshot = process_env_snapshot()
-    base = snapshot.values if snapshot is not None else {}
-    specs = specs_by_field(Settings)
-    aliases = {canonical_env_name(entry.env): entry for entry in specs.values() if entry.env is not None}
-    known_keys = frozenset(entry.key for entry in specs.values())
-
-    # Read before the settings lock is taken, and unconditionally — ahead of
-    # the ledger — because a completed component can only notice that its
-    # source came back by looking. The parsed values and the digest come from
-    # one snapshot: cleanup deletes every alias regardless of what was found,
-    # so "nothing to import" and "could not read it" must not look alike.
-    snapshot = read_dotenv_snapshot(env_path, base=base)
-    if snapshot is None:
-        # The file is there and unreadable. Nothing is imported, nothing is
-        # deleted, and the ledger is untouched, so the next start tries again.
-        return MigrationResult(migrated={}, warnings=(), performed=False)
-    fingerprint = snapshot.fingerprint
-    candidates: dict[str, tuple[SettingSpec, str]] = {}
-    for env_name, value in snapshot.values.items():
-        spec_entry = aliases.get(canonical_env_name(env_name))
-        if spec_entry is not None:
-            # Later spellings win a fold collision, same as the loader.
-            candidates[spec_entry.key] = (spec_entry, value)
-
-    # Whether a line said anything is the coercer's call, not the string's:
-    # for most keys an empty assignment is silence, but ``CHRYS_HISTORY_DISABLE=``
-    # reads as "not 1" and imports as *enabled*. Both the completion guard and
-    # phase B's retirement must hear a line exactly the way fold-in does, or a
-    # speaking-empty line migrates yet survives — and, sitting in the higher
-    # USER_ENV layer, shadows the very document it was folded into.
-    speaking = frozenset(
-        key
-        for key, (spec_entry, value) in candidates.items()
-        if (spec_entry.env_coerce or spec_entry.coerce)(value).status is not CoerceStatus.MISSING
-    )
-
-    migrated: dict[str, Any] = {}
-    warnings: list[SettingsWarning] = []
-    origin = SettingOrigin(layer=Source.USER_ENV, path=env_path)
-
-    def fold_in(doc: dict[str, Any]) -> dict[str, Any]:
-        entry = _ledger_entry(doc, DOTENV_COMPONENT)
-        completed = entry is not None and not _pending_cleanup(entry)
-        if completed and not speaking:
-            # Presence is not reappearance here: ``.env`` outlives the
-            # migration on purpose, still carrying the SDK variables — and the
-            # lines phase B deliberately left behind, which say nothing and so
-            # are not somebody writing here again either.
-            raise _AlreadyComplete
-        document_wins = not completed and _document_is_newer(entry, fingerprint)
-        migrated.clear()
-        warnings.clear()
-
-        existing, _ = flatten_user_doc(doc, known_keys)
-        for key, (spec_entry, value) in candidates.items():
-            if key in existing and document_wins:
-                # A rerun after a crash between phases must not roll a later
-                # panel edit back to the old file. Once the source has moved
-                # since we imported from it — or the component has completed —
-                # the reverse holds; see the module docstring.
-                #
-                # Logged because phase B then deletes the line: without this the
-                # legacy value and every trace of it having existed disappear in
-                # the same run, and the only remaining evidence of the disagreement
-                # is a document that quietly does not say what the file said. The
-                # value itself stays out of the log — the key names the setting
-                # well enough to explain the outcome.
-                logger.info(
-                    "Settings document already sets %s; dropping the legacy %s in %s",
-                    key,
-                    spec_entry.env or key,
-                    env_path,
-                )
-                continue
-            first = (spec_entry.env_coerce or spec_entry.coerce)(value)
-            if first.status is CoerceStatus.MISSING:
-                continue
-            if first.status is CoerceStatus.INVALID:
-                warnings.append(SettingsWarning(key=key, origin=origin, outcome=first))
-                continue
-            if first.status is CoerceStatus.CLAMPED:
-                warnings.append(SettingsWarning(key=key, origin=origin, outcome=first))
-            second = spec_entry.coerce(first.value)
-            if second.status is CoerceStatus.MISSING and kind_accepts(spec_entry.kind, first.value):
-                # The first step already produced the field's own canonical
-                # value, and a coercer reads a canonical "unset" — ``None`` for
-                # an ``OPTIONAL_INT`` — as "say nothing" rather than as the
-                # value it is. Re-coercing it would drop the very setting being
-                # migrated: ``CHRYS_ASK_USER_TIMEOUT_SECONDS=0`` means *no
-                # timeout*, and the second read turns that into silence while
-                # phase B deletes the line that said it.
-                second = Coerced(status=CoerceStatus.VALID, value=first.value)
-            if second.status is not CoerceStatus.VALID:
-                warnings.append(SettingsWarning(key=key, origin=origin, outcome=second))
-                continue
-            migrated[key] = second.value
-
-        apply_settings_patch(doc, migrated)
-        _set_ledger(doc, DOTENV_COMPONENT, _pending(fingerprint))
-        return doc
-
-    try:
-        update_yaml_doc(user_settings_path(), fold_in)
-    except _AlreadyComplete:
-        return MigrationResult(migrated={}, warnings=(), performed=False)
-
-    result = MigrationResult(migrated=dict(migrated), warnings=tuple(warnings), performed=True)
-
-    # Phase B. The existence check keeps a fresh install from growing an empty
-    # ``.env``. Everything else — a file that raced in, changed, or stopped
-    # being readable since phase A — fails the fingerprint inside the file's
-    # own lock, and the component stays pending so the next start folds in
-    # what changed before retiring anything.
-    #
-    # Only the lines this read actually heard a value on are removed. A line
-    # that resolved to nothing was imported from nowhere, so deleting it would
-    # be the one thing this migration must never do — destroy the only
-    # remaining record of a setting. That is not hypothetical: cross-file
-    # ``${VAR}`` references no longer resolve, and such a line reads as empty
-    # here while still being the user's writing.
-    retired = sorted(
-        canonical_env_name(spec_entry.env)
-        for key, (spec_entry, _) in candidates.items()
-        if key in speaking and spec_entry.env is not None
-    )
-    if env_path.is_file() and retired:
-        removed = fingerprint is not None and update_env_file(
-            {},
-            remove_keys=retired,
-            expect_fingerprint=fingerprint,
-        )
-        if not removed:
-            logger.warning(_DEFERRED_CLEANUP, "dotenv", DOTENV_COMPONENT, env_path)
-            return result
-
-    update_yaml_doc(user_settings_path(), _mark_complete(DOTENV_COMPONENT))
-    return result
+    """``False`` when the migration was already complete or no rewrite was needed."""
 
 
 _LEGACY_NOTIFICATION_FIELDS: dict[str, str] = {
@@ -339,19 +126,16 @@ def migrate_notifications_v0() -> MigrationResult:
     # a value the user's old build is not showing them. Before completion the
     # sparse list is the right one: filling in defaults there would overwrite
     # panel edits with "on" for every field the legacy file happens to omit.
-    # (``.env`` needs no such distinction — absent keys there really are unset,
-    # and fall through to the layers below.)
     complete_state = dict.fromkeys(_all_notification_keys(), True) | candidates
 
     known_keys = frozenset(entry.key for entry in specs_by_field(Settings).values())
     migrated: dict[str, Any] = {}
 
     def fold_in(doc: dict[str, Any]) -> dict[str, Any]:
-        entry = _ledger_entry(doc, NOTIFICATIONS_COMPONENT)
+        entry = _ledger_entry(doc)
         completed = entry is not None and not _pending_cleanup(entry)
         if completed and legacy_doc is None:
-            # Presence *is* reappearance here, unlike ``.env``: this file has
-            # no role left once the component completes, because completing it
+            # This file has no role left once the component completes, which
             # renamed the file away. Anything back at this path was written by
             # something that does not know the document exists.
             raise _AlreadyComplete
@@ -363,8 +147,8 @@ def migrate_notifications_v0() -> MigrationResult:
                 # The document's value is newer: a rerun after a crash between
                 # phases must not roll a later panel edit back to the old file.
                 # Past completion the reverse holds — see the module docstring.
-                # Logged for the same reason as its dotenv twin: phase B retires
-                # the file, so this is the last moment the disagreement exists.
+                # Phase B retires the file, so this is the last moment the
+                # disagreement exists.
                 logger.info(
                     "Settings document already sets %s; dropping the legacy value in %s",
                     key,
@@ -373,25 +157,22 @@ def migrate_notifications_v0() -> MigrationResult:
                 continue
             migrated[key] = value
         apply_settings_patch(doc, migrated)
-        _set_ledger(doc, NOTIFICATIONS_COMPONENT, _pending(fingerprint))
+        _set_ledger(doc, _pending(fingerprint))
         return doc
 
     try:
         update_yaml_doc(user_settings_path(), fold_in)
     except _AlreadyComplete:
-        return MigrationResult(migrated={}, warnings=(), performed=False)
+        return MigrationResult(migrated={}, performed=False)
 
-    result = MigrationResult(migrated=dict(migrated), warnings=(), performed=True)
+    result = MigrationResult(migrated=dict(migrated), performed=True)
 
     # Phase B: the old document is renamed, never deleted — kept for rollback
     # and debugging. Its backup is renamed first; left behind, a crashed rerun
     # would restore the primary from it and resurrect the file just retired —
     # which is why the backup is retired even when the primary is already gone.
-    # Under the file's own lock and the same fingerprint gate the dotenv
-    # cleanup uses: renaming a file that changed since phase A read it carries
-    # away preferences nobody imported. They would still be recoverable from
-    # the ``.migrated`` name, which is the only reason this is not the P1 the
-    # dotenv deletion would be.
+    # Recheck the fingerprint under the file's own lock: renaming a source
+    # changed since phase A would retire preferences nobody imported.
     backup = backup_path_for(legacy_path)
     if legacy_path.is_file() or backup.is_file():
         with FileLock(lock_path_for(legacy_path), timeout=LOCK_TIMEOUT_SECONDS):
@@ -403,14 +184,17 @@ def migrate_notifications_v0() -> MigrationResult:
             # retires as it should rather than deferring forever.
             unreadable = current is None and legacy_path.is_file()
             if current != fingerprint or unreadable:
-                logger.warning(_DEFERRED_CLEANUP, "notifications", NOTIFICATIONS_COMPONENT, legacy_path)
+                logger.warning(
+                    "Could not verify that %s is unchanged. Notification migration will retry on the next start.",
+                    legacy_path,
+                )
                 return result
             if backup.is_file():
                 backup.replace(backup.with_name(backup.name + ".migrated"))
             if legacy_path.is_file():
                 legacy_path.replace(legacy_path.with_name(legacy_path.name + ".migrated"))
 
-    update_yaml_doc(user_settings_path(), _mark_complete(NOTIFICATIONS_COMPONENT))
+    update_yaml_doc(user_settings_path(), _mark_complete)
     return result
 
 
@@ -429,7 +213,7 @@ def migrate_renamed_theme() -> MigrationResult:
     """
     path = user_settings_path()
     key = specs_by_field(Settings)["theme"].key
-    done = MigrationResult(migrated={}, warnings=(), performed=False)
+    done = MigrationResult(migrated={}, performed=False)
     if _renamed_theme(read_yaml_doc(path), key) is None:
         return done
 
@@ -447,7 +231,7 @@ def migrate_renamed_theme() -> MigrationResult:
         update_yaml_doc(path, rename)
     except _AlreadyComplete:
         return done
-    return MigrationResult(migrated=dict(migrated), warnings=(), performed=True)
+    return MigrationResult(migrated=dict(migrated), performed=True)
 
 
 def _renamed_theme(doc: dict[str, Any] | None, key: str) -> str | None:
@@ -458,12 +242,9 @@ def _renamed_theme(doc: dict[str, Any] | None, key: str) -> str | None:
     return RENAMED_THEMES.get(saved.strip()) if isinstance(saved, str) else None
 
 
-def _mark_complete(component: str) -> Any:
-    def mutate(doc: dict[str, Any]) -> dict[str, Any]:
-        _set_ledger(doc, component, datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
-        return doc
-
-    return mutate
+def _mark_complete(doc: dict[str, Any]) -> dict[str, Any]:
+    _set_ledger(doc, datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    return doc
 
 
 def _pending(fingerprint: str | None) -> dict[str, Any]:
@@ -488,15 +269,10 @@ def _document_is_newer(entry: Any, fingerprint: str | None) -> bool:
     pending import read, which is the crash-between-phases case: a rerun there
     must not roll a later panel edit back to the old file.
 
-    False once the source has changed since that import, which is exactly what
-    a *deferred* cleanup means: phase B refused because somebody wrote there
-    afterwards. Treating the document as newer then is how the value that
-    caused the deferral gets skipped on the rerun and deleted by the cleanup
-    that follows it — imported nowhere, gone for good.
-
-    A pending entry with no digest recorded reads as "unchanged". Only a build
-    that predates this could write one, and the crash-rerun reading is the one
-    that cannot lose data.
+    When the current fingerprint differs from the recorded one, values read
+    from the changed source take precedence on retry. If the pending entry
+    has no digest (for example, the source was unreadable), we cannot tell
+    that it changed, so existing settings in the document take precedence.
     """
     if not isinstance(entry, dict):
         return True
@@ -504,17 +280,17 @@ def _document_is_newer(entry: Any, fingerprint: str | None) -> bool:
     return not isinstance(recorded, str) or recorded == fingerprint
 
 
-def _set_ledger(doc: dict[str, Any], component: str, value: Any) -> None:
+def _set_ledger(doc: dict[str, Any], value: Any) -> None:
     ledger = doc.get("migrations")
     if not isinstance(ledger, dict):
         ledger = {}
         doc["migrations"] = ledger
-    ledger[component] = value
+    ledger[NOTIFICATIONS_COMPONENT] = value
 
 
-def _ledger_entry(doc: dict[str, Any], component: str) -> Any:
+def _ledger_entry(doc: dict[str, Any]) -> Any:
     ledger = doc.get("migrations")
-    return ledger.get(component) if isinstance(ledger, dict) else None
+    return ledger.get(NOTIFICATIONS_COMPONENT) if isinstance(ledger, dict) else None
 
 
 def _pending_cleanup(entry: Any) -> bool:

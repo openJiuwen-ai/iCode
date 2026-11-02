@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("clear requires --all, --session or --project")
     if args.all and (args.action != "clear" or args.session or args.project):
         parser.error("--all is only valid with an unfiltered clear")
-    bootstrap_runtime(dotenv_override=True, configure_stdio=True, setup_telemetry=False)
+    bootstrap_runtime(configure_stdio=True, setup_telemetry=False)
     try:
         stores = _stores(get_platform().config_dir, args.session)
     except ValueError as error:
