@@ -11,7 +11,9 @@ with orphaned MCP subprocesses or an un-exited Agent.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
+import sys
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from typing import Any
@@ -583,6 +585,33 @@ async def test_build_agent_does_not_expose_displaced_local_web_tool_to_model() -
         result = await _invoke_build_agent(profile, session_id="session-1")
 
     assert "web_search" not in result.tool_names
+
+
+async def test_build_agent_imports_the_web_tools_off_the_event_loop(monkeypatch) -> None:
+    # A cold start spends a visible part of the build importing them, which on
+    # the event loop would freeze the TUI's loading animation.
+    agent_mock = _agent_mock()
+    agent_mock.__aenter__ = AsyncMock(side_effect=RuntimeError("stop after the tools"))
+    names = ("chrys.service.tools.builtins.web.build", "chrys.service.tools.registry")
+    loaded = {name: importlib.import_module(name) for name in names}
+    warmed: list[tuple[str, ...]] = []
+
+    async def import_off_loop(*requested: str) -> None:
+        warmed.append(requested)
+        for name in requested:
+            monkeypatch.setitem(sys.modules, name, loaded[name])
+
+    with (
+        _build_agent_env(mcp_mock=None, agent_mock=agent_mock),
+        patch.object(ab, "import_off_loop", import_off_loop),
+        pytest.raises(RuntimeError, match="stop after the tools"),
+    ):
+        # Until the build hands them to the worker, importing them fails.
+        for name in names:
+            monkeypatch.setitem(sys.modules, name, None)
+        await _invoke_build_agent(AgentProfile(name="test"))
+
+    assert warmed == [names]
 
 
 async def test_build_agent_loads_sleep_though_the_profile_omits_it() -> None:

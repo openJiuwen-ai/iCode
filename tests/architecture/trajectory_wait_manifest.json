@@ -226,6 +226,11 @@
         ["shield", "await asyncio.shield(task)", "unresolved"]
       ]
     },
+    "chrys.foundation.util.imports": {
+      "import_off_loop": [
+        ["thread_pool", "await asyncio.to_thread(_import_all, names)", "unresolved"]
+      ]
+    },
     "chrys.foundation.util.once_close": {
       "OnceClose.__call__": [
         ["wrapper", "await finish_close(self._task)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
@@ -600,6 +605,7 @@
         ["wrapper", "await create_client(active_profile, on_intermediate_text=on_intermediate, session_id=session_id, session_dir=effective_session_dir, tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens)", "unresolved", "chrys.service.llm.clients.create_client"],
         ["awaitable", "await prepared.own_or_release(client.aclose)", "unresolved"],
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_TOOLS, 'Loading built-in tools', status=AGENT_LOAD_STATUS_RUNNING)", "unresolved"],
+        ["wrapper", "await import_off_loop('chrys.service.tools.builtins.web.build', 'chrys.service.tools.registry')", "unresolved", "chrys.foundation.util.imports.import_off_loop"],
         ["awaitable", "await bus.publish(warning)", "unresolved"],
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_TOOLS, 'Built-in tools loaded', current=builtin_tool_count, total=builtin_tool_count, status=AGENT_LOAD_STATUS_DONE)", "unresolved"],
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_SUB_AGENTS, 'Loading sub-agent tools', current=0, total=sub_agent_total, status=AGENT_LOAD_STATUS_RUNNING)", "unresolved"],
@@ -4381,6 +4387,7 @@
         ["wrapper", "await ensure_fresh(values)", "unresolved", "chrys.service.command_credentials.ensure_fresh"]
       ],
       "create_client": [
+        ["wrapper", "await import_off_loop(*_SDK_MODULES[spec.sdk])", "unresolved", "chrys.foundation.util.imports.import_off_loop"],
         ["wrapper", "await _command_credential_auth(profile, api_key=api_key, headers=headers)", "unresolved", "chrys.service.llm.clients._command_credential_auth"],
         ["awaitable", "await close_http_client()", "unresolved"]
       ],
@@ -4502,6 +4509,7 @@
       ],
       "_HTTPMCPTool.__aenter__": [
         ["wrapper", "await ensure_fresh(self._static_headers.values())", "unresolved", "chrys.service.command_credentials.ensure_fresh"],
+        ["wrapper", "await import_off_loop('mcp')", "unresolved", "chrys.foundation.util.imports.import_off_loop"],
         ["awaitable", "await super().__aenter__()", "unresolved"],
         ["wrapper", "await self._close_owned_httpx_client()", "unresolved", "chrys.service.mcp._http_transport._HTTPMCPTool._close_owned_httpx_client"]
       ],
@@ -4725,6 +4733,7 @@
       ],
       "MCPTool._connect_on_owner": [
         ["wrapper", "await self._safe_close_exit_stack()", "unresolved", "chrys.service.mcp.owned.MCPTool._safe_close_exit_stack"],
+        ["wrapper", "await import_off_loop('mcp')", "unresolved", "chrys.foundation.util.imports.import_off_loop"],
         ["awaitable", "await self._exit_stack.enter_async_context(self.get_mcp_client())", "unresolved"],
         ["wrapper", "await self._close_and_check_cancelled(ex)", "unresolved", "chrys.service.mcp.owned.MCPTool._close_and_check_cancelled"],
         ["wrapper", "await self._safe_close_exit_stack()", "unresolved", "chrys.service.mcp.owned.MCPTool._safe_close_exit_stack"],

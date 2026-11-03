@@ -32,6 +32,7 @@ from chrys.foundation.text.model_json import model_json
 from chrys.foundation.tool_call_context import set_tool_context
 from chrys.foundation.trajectory.context import current_tool_operation_id
 from chrys.foundation.trajectory.event_types import WaitCategory
+from chrys.foundation.util.imports import import_off_loop
 from chrys.kernel import Content, normalize_tools
 from chrys.kernel._tool_expansion import _set_tool_expander
 from chrys.kernel.exceptions import ModelVisibleToolError, ToolException, ToolExecutionException
@@ -546,6 +547,8 @@ class MCPTool:
 
         if not self.session:
             try:
+                # The SDK is hundreds of modules, which the first connect of a run imports.
+                await import_off_loop("mcp")
                 transport = await self._exit_stack.enter_async_context(self.get_mcp_client())
             except (Exception, asyncio.CancelledError) as ex:
                 cancelled, cleanup_error = await self._close_and_check_cancelled(ex)
