@@ -262,6 +262,12 @@ async def test_every_log_tab_scrollbar_is_one_cell_and_flush_right() -> None:
             assert log_widget.vertical_scrollbar.region.right == container.content_region.right
 
 
+# A scroll so slow that what its first frames show holds for the whole test: Textual's
+# animator runs on wall-clock time, so a faster scroll can pass a state the test waits
+# for while a loaded runner stalls.
+_CREEPING_SCROLL_SECONDS = 40 * ENGINE_TURN_TIMEOUT
+
+
 def _at_bottom(log_widget: RichLog) -> bool:
     return log_widget.max_scroll_y > 0 and log_widget.scroll_y == log_widget.max_scroll_y
 
@@ -358,7 +364,7 @@ async def test_a_scroll_up_cut_short_by_a_taller_view_does_not_follow_new_lines(
         log_widget, pilot = log.widget, log.pilot
         bottom = log_widget.max_scroll_y
 
-        log_widget.scroll_home(duration=ENGINE_TURN_TIMEOUT, easing="linear", immediate=True)
+        log_widget.scroll_home(duration=_CREEPING_SCROLL_SECONDS, easing="linear", immediate=True)
         # Before its first frame: a line that lands now must not take the view back down.
         assert not log_widget._bottom_follow.following
         await wait_for(log.animating, pilot=pilot, description="Home animating")
@@ -390,7 +396,7 @@ async def test_page_down_from_the_bottom_a_taller_view_holds_home_at_follows_new
     async with _open_log() as log:
         log_widget, pilot = log.widget, log.pilot
         bottom = log_widget.max_scroll_y
-        log_widget.scroll_home(duration=ENGINE_TURN_TIMEOUT, easing="linear", immediate=True)
+        log_widget.scroll_home(duration=_CREEPING_SCROLL_SECONDS, easing="linear", immediate=True)
         await wait_for(log.animating, pilot=pilot, description="Home animating")
         await resize_when_settled(pilot, 120, 35)
         await wait_for(
@@ -588,7 +594,7 @@ async def test_a_log_follows_while_it_shows_its_bottom_row_through_moves_of_part
 
         # Home's first frames still show the bottom row: they are no move back to it.
         bottom = log_widget.max_scroll_y
-        log_widget.scroll_home(duration=40 * ENGINE_TURN_TIMEOUT, easing="linear", immediate=True)
+        log_widget.scroll_home(duration=_CREEPING_SCROLL_SECONDS, easing="linear", immediate=True)
         await wait_for(lambda: log_widget.scroll_y < bottom, pilot=pilot, description="Home's first frame")
         assert log_widget.scroll_offset.y == bottom
         assert not log_widget._bottom_follow.following

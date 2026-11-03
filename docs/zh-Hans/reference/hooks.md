@@ -239,6 +239,22 @@ match:
 - 非字符串参数会先用 Python 的 `str()` 转换再比较，因此 JSON 的 `true` 和 `false` 会变成 `True` 和 `False`（应写 `equals: "True"` 进行匹配），列表和对象使用 Python 的表示形式。
 - 正则表达式建议使用 YAML 单引号字符串；使用双引号时，反斜杠需要转义。正则表达式无效的钩子会在会话启动时被跳过，并显示一条注明该钩子和所在文件的警告；该文件中的其他钩子仍会运行。
 
+#### 已改名的 shell 参数
+
+shell 工具的 `working_dir` 参数已改名为 `workdir`，`max_tokens` 已改名为 `max_output_tokens`。按旧名编写的钩子目前仍可使用：
+
+- `match.args` 中的旧名会匹配 shell 调用的新参数。
+- 钩子脚本在 shell 调用的 `tool.args` 中仍能读到旧名，与新名并存。
+- 钩子在 `args_override` 中返回的旧名会修改对应的新参数。
+
+旧版本 iCode 留下的未完成持久投递任务在更新后重试时，钩子脚本除旧名外也能读到新名。
+
+对旧名的支持将在以后的版本中移除，请在用于 shell 的钩子中改用新名，并让脚本读取和返回新名。`icode hook validate` 会把仍使用旧名的钩子报告为 `retired_shell_arg`：
+
+- 设置了 `tool_kind: shell` 的钩子：请改用新名。
+- 未设置 `tool_kind` 的钩子（只对 `working_dir` 发出警告）：只有当钩子用于 shell 时，才改用新名并加上 `tool_kind: shell`。仅凭工具名无法确定：其他工具（如 MCP 工具）可以使用任何名称，包括 shell 的名称，并保留自己的 `working_dir`；同时用于两者时需要为每个工具各写一个钩子。这类钩子不会因 `max_tokens` 收到警告，因为 `read_file` 和 `web_fetch` 也接受该参数。
+- 设置了其他 `tool_kind` 的钩子不会收到警告：它匹配的是该工具自己的参数。
+
 ## 运行配置
 
 `run` 指定钩子要启动的脚本或命令。先通过 `type` 选择一种运行方式：
@@ -710,6 +726,7 @@ FAIL 1 file · 2 hooks: 1 error, 1 warning
 | `on_error_block_ignored` | 为不能阻塞的钩子设置了 `on_error: block`，其失败按 `warn` 处理 |
 | `durable_blocking` | 为阻塞式钩子设置了 `delivery: durable`，阻塞式钩子不使用该设置 |
 | `broad_before_tool_call` | `before_tool_call` 钩子没有匹配条件，会在每次工具调用时运行 |
+| `retired_shell_arg` | `match.args` 使用了 shell 参数的旧名：`working_dir`，或在 `tool_kind: shell` 下的 `max_tokens`；目前仍会匹配 shell 调用。参见[已改名的 shell 参数](#已改名的-shell-参数) |
 | `duplicate_id_across_files` | 项目和全局配置文件都定义了该 `id`，两个钩子都会运行 |
 | `shadowed_file` | 文件夹中有多个钩子配置文件，只读取第一个（参见[配置文件位置](#配置文件位置)） |
 | `program_not_found` | 在 `PATH` 中找不到运行已启用钩子的命令或脚本所需的程序，或者在 Windows 上找到的只是提示从 Microsoft Store 获取 Python 的占位程序 |

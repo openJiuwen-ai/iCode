@@ -428,7 +428,7 @@ async def test_without_a_registry_processes_left_after_the_shell_exited_are_stop
     command = _python_command(script["leave"], script["waiter"], tmp_path / "release", pid_file, "0")
     if loud:
         command = f"{_python_command(script['loud'])}; {command}"
-    call = asyncio.create_task(shell.execute(command, reason="test", timeout=60, max_tokens=100))
+    call = asyncio.create_task(shell.execute(command, reason="test", timeout=60, max_output_tokens=100))
     child = await _pid_of(pid_file)
 
     result = await call
