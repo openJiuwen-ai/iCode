@@ -4291,7 +4291,7 @@
         ["wrapper", "await self._dispatch(blocking, nonblocking, envelope, dispatch)", "unresolved", "chrys.service.hooks.manager.HookManager._dispatch"]
       ],
       "HookManager.recover_outbox": [
-        ["wrapper", "await self._spawn_nonblocking(hook, job.payload, scope='session', session_drain_generation=self._session_drain_generation, existing_job=job)", "unresolved", "chrys.service.hooks.manager.HookManager._spawn_nonblocking"]
+        ["wrapper", "await self._spawn_nonblocking(hook, with_new_names(job.payload), scope='session', session_drain_generation=self._session_drain_generation, existing_job=job)", "unresolved", "chrys.service.hooks.manager.HookManager._spawn_nonblocking"]
       ],
       "check_operation": [
         ["awaitable", "await manager.fire(event, payload(), scope=scope, target_operation_id=target_operation_id, trajectory_context=trajectory_context, origin=origin, operation=operation)", "unresolved"]
@@ -5174,9 +5174,9 @@
       ],
       "ShellTools.execute": [
         ["thread_pool", "await asyncio.to_thread(physical_dir, cwd)", "unresolved"],
-        ["wrapper", "await self._run(command, reason, cwd, timeout, budget, working_dir)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._run"],
+        ["wrapper", "await self._run(command, reason, cwd, timeout, budget, workdir)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._run"],
         ["awaitable", "await tasks.stop_requested()", "unresolved"],
-        ["wrapper", "await self._run(command, reason, cwd, timeout, budget, working_dir)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._run"],
+        ["wrapper", "await self._run(command, reason, cwd, timeout, budget, workdir)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._run"],
         ["awaitable", "await tasks.stop_requested()", "unresolved"]
       ],
       "_Command._close": [

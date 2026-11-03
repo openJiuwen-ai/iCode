@@ -172,7 +172,7 @@ async def test_shell_call_does_not_follow_a_retargeted_working_directory(
     if approved_by == "grant":
         runtime = replace(runtime, cwd=str(link))
     else:
-        args["working_dir"] = link.name
+        args["workdir"] = link.name
     tools = ShellTools(runtime).tools()
     binding = ApprovalReuseBinding(runtime, tools)
     context = FunctionInvocationContext(tools[0], args)

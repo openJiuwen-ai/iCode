@@ -339,6 +339,11 @@ _WARNINGS = {
         "blocking hooks are awaited inline",
     ),
     "unfiltered-before-tool-call": (_hook("before_tool_call"), "broad_before_tool_call", "every tool call"),
+    "retired-shell-argument-name": (
+        _hook("before_tool_call", match="{tool_kind: shell, args: {working_dir: {contains: prod}}}"),
+        "retired_shell_arg",
+        "'working_dir' is now 'workdir'",
+    ),
     "unknown-variable-in-cwd": (
         _hook("after_turn", run="{type: shell, shell: s, cwd: '${home}/x'}"),
         "unknown_template_var",

@@ -173,7 +173,7 @@ async def test_shell_relative_working_dir_under_a_deleted_session_cwd_is_reporte
     shell = ShellTools(gone_runtime)
 
     with _tool_metadata() as metadata:
-        result = await shell.execute("echo hello", reason="test", working_dir="sub")
+        result = await shell.execute("echo hello", reason="test", workdir="sub")
 
     _assert_working_dir_missing(result, metadata, gone)
     assert not gone.exists()
@@ -183,15 +183,15 @@ async def test_shell_relative_working_dir_under_a_deleted_session_cwd_is_reporte
 async def test_shell_nonexistent_working_dir_is_reported_as_that_directory(elsewhere: Path, relative: bool) -> None:
     runtime = dataclasses.replace(SessionEnvironment.capture(), cwd=str(elsewhere))
     shell = ShellTools(runtime)
-    working_dir = "nope" if relative else str(elsewhere / "nope")
+    workdir = "nope" if relative else str(elsewhere / "nope")
 
     with _tool_metadata() as metadata:
-        result = await shell.execute("echo hello", reason="test", working_dir=working_dir)
+        result = await shell.execute("echo hello", reason="test", workdir=workdir)
 
     resolved = str(elsewhere / "nope")
-    assert result == f"Error: working_dir not found — {resolved}"
+    assert result == f"Error: workdir not found — {resolved}"
     assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == "working_dir_not_found"
-    assert metadata[TOOL_ERROR_DETAILS_METADATA_KEY] == {"working_dir": working_dir, "resolved_path": resolved}
+    assert metadata[TOOL_ERROR_DETAILS_METADATA_KEY] == {"working_dir": workdir, "resolved_path": resolved}
 
 
 async def test_shell_absolute_working_dir_still_runs_after_the_session_cwd_is_deleted(
@@ -199,7 +199,7 @@ async def test_shell_absolute_working_dir_still_runs_after_the_session_cwd_is_de
 ) -> None:
     shell = ShellTools(gone_runtime)
 
-    result = await shell.execute("echo hello", reason="test", working_dir=str(elsewhere))
+    result = await shell.execute("echo hello", reason="test", workdir=str(elsewhere))
 
     assert "hello" in result
     assert "[exit_code: 0]" in result

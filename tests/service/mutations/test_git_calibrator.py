@@ -279,7 +279,7 @@ class TestGitDiffCalibration:
         changes = cal.detect_implicit_changes(set())
         assert {os.path.relpath(change.path, tmp_path).replace(os.sep, "/") for change in changes} == {"pkg_a/a.py"}
 
-    @pytest.mark.parametrize("cwd_arg_name", ["working_dir", "cwd"])
+    @pytest.mark.parametrize("cwd_arg_name", ["workdir", "cwd"])
     def test_pipeline_scope_includes_command_cwd_outside_workspace_cwd(
         self, tmp_path: Path, cwd_arg_name: str, git_repo_factory: Callable[[Path], Path]
     ) -> None:
@@ -794,7 +794,7 @@ async def _finalize_opaque_shell(
     context = await prepare_mutation_tracking(
         tracker,
         "shell",
-        {"command": "opaque-generator", "working_dir": str(repo)},
+        {"command": "opaque-generator", "workdir": str(repo)},
         call_id,
         True,
         str(repo),
@@ -1293,7 +1293,7 @@ async def test_targeted_chmod_records_content_net_zero_and_rollback_keeps_mode(
     context = await prepare_mutation_tracking(
         tracker,
         "shell",
-        {"command": "chmod +x README.md", "working_dir": str(tmp_path)},
+        {"command": "chmod +x README.md", "workdir": str(tmp_path)},
         "chmod",
         True,
         str(tmp_path),

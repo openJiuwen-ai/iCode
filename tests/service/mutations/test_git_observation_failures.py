@@ -60,7 +60,7 @@ async def test_failed_head_probe_does_not_pollute_diff_or_delete_tracked_files_o
     # shell command with no filesystem effects. Git calls other than the single
     # injected HEAD failure are real. The repository's HEAD remains intact.
     context = await prepare_mutation_tracking(
-        tracker, "shell", {"command": "opaque-launcher", "working_dir": str(repo)}, "launcher", True, str(repo)
+        tracker, "shell", {"command": "opaque-launcher", "workdir": str(repo)}, "launcher", True, str(repo)
     )
     result = await finalize_mutation_tracking(tracker, context, "launcher")
     assert head_reads >= failure_at
@@ -123,7 +123,7 @@ async def test_real_initial_commit_keeps_new_file_detection_and_rollback(
     tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
     tracker.start_turn(1)
     context = await prepare_mutation_tracking(
-        tracker, "shell", {"command": "opaque-generator", "working_dir": str(repo)}, "initial-commit", True, str(repo)
+        tracker, "shell", {"command": "opaque-generator", "workdir": str(repo)}, "initial-commit", True, str(repo)
     )
     created = repo / "created.txt"
     created.write_bytes(b"created and committed during the command")
@@ -148,7 +148,7 @@ async def test_failed_old_tree_probe_cannot_turn_a_tracked_edit_into_create(
     tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
     tracker.start_turn(1)
     context = await prepare_mutation_tracking(
-        tracker, "shell", {"command": "opaque-generator", "working_dir": str(repo)}, "generator", True, str(repo)
+        tracker, "shell", {"command": "opaque-generator", "workdir": str(repo)}, "generator", True, str(repo)
     )
     target = repo / "README.md"
     target.write_bytes(b"changed during command")
@@ -184,7 +184,7 @@ async def test_head_tree_deletion_uses_actual_worktree_endpoint(
     tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
     tracker.start_turn(1)
     context = await prepare_mutation_tracking(
-        tracker, "shell", {"command": "opaque-git-wrapper", "working_dir": str(repo)}, "orphan", True, str(repo)
+        tracker, "shell", {"command": "opaque-git-wrapper", "workdir": str(repo)}, "orphan", True, str(repo)
     )
     if head_move == "symbolic-ref":
         _git(repo, "symbolic-ref", "HEAD", "refs/heads/unborn")

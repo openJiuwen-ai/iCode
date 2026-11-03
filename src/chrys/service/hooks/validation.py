@@ -45,6 +45,7 @@ from chrys.service.hooks.loader import (
     read_hooks_text,
     same_hooks_file,
 )
+from chrys.service.hooks.retired_shell_args import retired_arg_names_warning
 from chrys.service.hooks.runner import TEMPLATE_VARIABLES
 from chrys.service.profiles.agents.loader import scan_profile_dir
 from chrys.service.profiles.agents.registry import BUILTIN_PROFILE_NAMES
@@ -321,6 +322,8 @@ def _check_hook(check: _FileCheck, hook: HookConfig, profiles: frozenset[str]) -
         warn("durable_blocking", message)
     if (message := broad_before_tool_call_warning(hook)) is not None:
         warn("broad_before_tool_call", message)
+    if (message := retired_arg_names_warning(hook)) is not None:  # DEPRECATED with the retired names
+        warn("retired_shell_arg", message)
     run = hook.run
     known = ", ".join(f"${{{variable}}}" for variable in TEMPLATE_VARIABLES)
     for where, value in [("run.cwd", run.cwd), *((f"run.env.{key}", value) for key, value in run.env.items())]:

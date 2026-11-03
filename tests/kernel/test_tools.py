@@ -445,6 +445,21 @@ class TestInvokeValidation:
         result = await schema_tool.invoke(arguments={"text": "hi", "mode": "a"})
         assert result[0].text == "echo:hi"
 
+    async def test_typed_tool_rejects_unadvertised_argument_instead_of_dropping_it(self) -> None:
+        received: list[str] = []
+
+        @tool(name="run")
+        async def run(command: str, workdir: str | None = None) -> str:
+            received.append(f"{command}@{workdir}")
+            return "ran"
+
+        with pytest.raises(TypeError, match="Unexpected argument"):
+            await run.invoke(arguments={"command": "rm -rf build", "working_dir": "sub"})
+        assert received == []
+
+        assert (await run.invoke(arguments={"command": "ls", "workdir": "sub"}))[0].text == "ran"
+        assert received == ["ls@sub"]
+
     async def test_direct_kwargs_context_and_unexpected_kwargs(self) -> None:
         direct = await _introspected_tool().invoke(text="hi")
         assert direct[0].text == "echo:hi"
