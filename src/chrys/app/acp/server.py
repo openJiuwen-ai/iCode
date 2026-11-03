@@ -1025,18 +1025,25 @@ class ChrysAcpServer:
             return _profile_switched_payload(result, session_id=session_id)
         if method == "settings/reload":
             session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
+            scope = params.get("scope")
+            if scope is not None and scope != "full":
+                raise RequestError.invalid_params({"details": "scope must be 'full' when given."})
             # A reload happens outside any prompt turn, and ``_handle_event`` only
             # runs inside one — so the warnings saying which of the client's
             # values were dropped had nowhere to go and were simply lost.
             warnings: list[Warning] = []
+            reply: dict[str, Any] = {}
             try:
-                await self._manager.reload_settings(session_id, warnings=warnings)
+                if scope == "full":
+                    reply = await self._manager.reload_settings_full(session_id, warnings=warnings)
+                else:
+                    await self._manager.reload_settings(session_id, warnings=warnings)
             except Exception as exc:
                 raise _request_error(exc) from exc
             for warning in warnings:
                 await self._send_warning(session_id, warning)
             await self._send_runtime_update(session_id)
-            return {}
+            return reply
         if method == "settings/options":
             session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
             try:

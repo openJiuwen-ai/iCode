@@ -4,13 +4,25 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from chrys.foundation.config import settings_store
 from chrys.foundation.config.coercion import CoerceReason, invalid
+from chrys.foundation.config.runtime_pointer import (
+    MODEL_POINTER_ENV,
+    MODEL_POINTER_KEY,
+    SessionDefaultModel,
+    StaleModelFileChange,
+    get_model_pointer,
+    model_selection_revision,
+    remember_file_model,
+    set_model_pointer,
+)
 from chrys.foundation.config.settings import Settings
-from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle, SettingsWarning
+from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle, SettingsWarning, load_settings
 from chrys.foundation.config.spec import SettingOrigin, Source
 
 
@@ -223,3 +235,82 @@ def test_a_rebuild_prepared_before_the_release_does_not_bring_the_choice_back() 
 
     assert handle.settings.theme == Settings().theme
     assert _source(handle) is not Source.RUNTIME
+
+
+@pytest.fixture(autouse=True)
+def _pointer_unwinds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Registered with monkeypatch even when absent, so a pointer a test writes does not outlive it."""
+    monkeypatch.setenv(MODEL_POINTER_ENV, "")
+    monkeypatch.delenv(MODEL_POINTER_ENV)
+
+
+def _session_scoped(model: str, origin: SettingOrigin) -> LoadedSettings:
+    return LoadedSettings(
+        settings=Settings(model_profile=model),
+        provenance={MODEL_POINTER_KEY: origin},
+        manual_model_revision=model_selection_revision(),
+        session_scoped_model=True,
+    )
+
+
+def test_a_session_scoped_load_settles_on_the_session_and_never_touches_or_races_the_pointer() -> None:
+    origin = SettingOrigin(layer=Source.USER, path=Path("settings.yaml"))
+    handle = SettingsHandle(LoadedSettings(settings=Settings(), provenance={}))
+    pointer = get_model_pointer()
+    prepared = handle.prepare(_session_scoped("from-file", origin))
+
+    remember_file_model("another-sessions-write")
+    handle.install_prepared(prepared)
+
+    assert handle.base.session_default_model == SessionDefaultModel("from-file", origin, model_selection_revision())
+    assert not handle.base.session_scoped_model
+    assert handle.base.manual_model_revision is None
+    assert get_model_pointer() == pointer
+
+
+def test_a_session_scoped_load_decided_by_a_pin_keeps_what_the_session_settled_on() -> None:
+    settled = SessionDefaultModel("from-file", SettingOrigin(layer=Source.DEFAULT), model_selection_revision())
+    handle = SettingsHandle(LoadedSettings(settings=Settings(), provenance={}, session_default_model=settled))
+    pinned = replace(
+        _session_scoped("pinned", SettingOrigin(layer=Source.SESSION)),
+        session_default_model=settled,
+    )
+
+    handle.install_prepared(handle.prepare(pinned))
+
+    assert handle.base.session_default_model is settled
+
+
+def test_a_load_carries_what_the_session_settled_on_past_the_pointer_and_a_pin_past_both() -> None:
+    origin = SettingOrigin(layer=Source.USER, path=Path("settings.yaml"))
+    set_model_pointer("revoked", origin=origin)
+    settled = SessionDefaultModel("", SettingOrigin(layer=Source.DEFAULT), model_selection_revision())
+
+    loaded = load_settings(session_default_model=settled)
+    assert loaded.settings.model_profile == ""
+    assert loaded.source_for(MODEL_POINTER_KEY).layer is Source.DEFAULT
+    assert loaded.session_default_model is settled
+
+    pinned = load_settings(session_default_model=settled, model_profile="pinned")
+    assert pinned.settings.model_profile == "pinned"
+    assert pinned.source_for(MODEL_POINTER_KEY).layer is Source.SESSION
+    assert pinned.session_default_model is settled
+
+    set_model_pointer("chosen", origin=SettingOrigin(layer=Source.PROCESS_RUNTIME))
+    after_a_choice = load_settings(session_default_model=settled)
+    assert after_a_choice.settings.model_profile == "chosen"
+    assert after_a_choice.session_default_model is None
+
+
+def test_only_a_process_wide_manual_read_races_the_pointer(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_read = settings_store._read_file_layers
+
+    def read_during_a_write(*args, **kwargs):
+        remember_file_model("written-meanwhile")
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(settings_store, "_read_file_layers", read_during_a_write)
+
+    assert load_settings(manual_reload=True, session_scoped_model=True).session_scoped_model
+    with pytest.raises(StaleModelFileChange):
+        load_settings(manual_reload=True)

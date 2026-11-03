@@ -1106,7 +1106,7 @@ class SessionLifecycle:
 
     def _session_pin_overrides(self) -> dict[str, Any]:
         """Snapshot the per-session pins every re-load must carry (:func:`session_pin_overrides`)."""
-        return session_pin_overrides(self._session, self._settings_handle.base.settings)
+        return session_pin_overrides(self._session, self._settings_handle.base)
 
     def _reload_eval_context(self) -> EvalContext:
         """The launch mode's retry policy, passed *into* the load (as every re-load must)."""

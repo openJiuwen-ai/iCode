@@ -41,11 +41,13 @@ from chrys.foundation.config.runtime_pointer import (
     MODEL_POINTER_ENV,
     MODEL_POINTER_KEY,
     ModelFileChange,
+    SessionDefaultModel,
     check_model_selection_revision,
     external_model_edit,
     get_model_pointer,
     model_selection_revision,
     remember_file_model,
+    session_model_decision,
 )
 from chrys.foundation.config.settings import DEFAULT_MAX_TRANSIENT_RETRIES, Settings
 from chrys.foundation.config.spec import (
@@ -172,6 +174,10 @@ class LoadedSettings:
     document_error: MessageRef | None = None
     model_edit: ModelFileChange | None = None
     manual_model_revision: int | None = None
+    session_scoped_model: bool = False
+    """This load's model decision belongs to its session: installing it records it there, not in the pointer."""
+    session_default_model: SessionDefaultModel | None = None
+    """The default this session settled on, which outranks the process pointer on every load of the session."""
     confirmed_overrides: Mapping[str, int] = field(default_factory=dict)
     """Live choices known to be on disk before this load read the files (field name → override version).
 
@@ -350,7 +356,33 @@ class SettingsHandle:
         The live choices the file moved past end here, with the load that shows
         it, unless the user chose again since the file was read.
         """
-        if prepared.base.manual_model_revision is not None:
+        if prepared.base.session_scoped_model:
+            base = prepared.base
+            origin = base.source_for(MODEL_POINTER_KEY)
+            # A caller's pin decided this load instead, and says nothing about the default.
+            settled = (
+                base.session_default_model
+                if origin.layer is Source.SESSION
+                else SessionDefaultModel(base.settings.model_profile, origin, model_selection_revision())
+            )
+            prepared = replace(
+                prepared,
+                base=replace(
+                    base,
+                    model_edit=None,
+                    manual_model_revision=None,
+                    session_scoped_model=False,
+                    session_default_model=settled,
+                ),
+                effective=replace(
+                    prepared.effective,
+                    model_edit=None,
+                    manual_model_revision=None,
+                    session_scoped_model=False,
+                    session_default_model=settled,
+                ),
+            )
+        elif prepared.base.manual_model_revision is not None:
             if prepared.base.model_edit is None:
                 check_model_selection_revision(prepared.base.manual_model_revision)
             else:
@@ -472,6 +504,8 @@ def load_settings(
     eval_context: EvalContext = DEFAULT_EVAL_CONTEXT,
     env: Mapping[str, str] | None = None,
     manual_reload: bool = False,
+    session_scoped_model: bool = False,
+    session_default_model: SessionDefaultModel | None = None,
     **pins: Any,
 ) -> LoadedSettings:
     """Assemble settings from every source, resolving each key downwards.
@@ -488,6 +522,12 @@ def load_settings(
             it afterwards would arrive after the verdicts it informs.
         env: Environment to read instead of ``os.environ``. Tests inject here;
             production passes nothing.
+        manual_reload: Read the files strictly and judge an external model edit.
+        session_scoped_model: With ``manual_reload``, decide the default model
+            for this session from the launch and the file, without reading or
+            racing the process pointer.
+        session_default_model: What this session settled on earlier; it outranks
+            the process pointer. A pin in *pins* outranks it in turn.
         **pins: Explicit per-caller values that outrank every source, e.g. a
             session's restored model profile or a frontend's own default.
     """
@@ -565,10 +605,15 @@ def load_settings(
     raw_model = file_layers.user_yaml.get(MODEL_POINTER_KEY) if file_layers else None
     file_model = raw_model.strip() if isinstance(raw_model, str) else ""
     edit = None
+    if session_default_model is not None and model_selection_revision() != session_default_model.revision:
+        session_default_model = None
+    if session_default_model is not None and "model_profile" not in pins:
+        values["model_profile"] = session_default_model.value
+        provenance[MODEL_POINTER_KEY] = session_default_model.origin
     if manual_reload and file_layers and "model_profile" not in pins:
         if MODEL_POINTER_KEY in file_layers.user_yaml and raw_model is not None and not isinstance(raw_model, str):
             raise ConfigValueError(MODEL_ID_EXPECTED.bind(path=DisplayPath(str(file_layers.user_yaml_path))))
-        edit = external_model_edit(
+        edit = (session_model_decision if session_scoped_model else external_model_edit)(
             file_model,
             file_origin=SettingOrigin(layer=Source.USER, path=file_layers.user_yaml_path)
             if file_model
@@ -589,7 +634,7 @@ def load_settings(
                 verdict = _user_doc_verdict(entry, file_layers.user_yaml[entry.key])
                 if verdict.usable:
                     file_values[name] = verdict.value
-    if revision is not None:
+    if revision is not None and not session_scoped_model:
         check_model_selection_revision(revision)
     settings = Settings(**values)
     return LoadedSettings(
@@ -598,6 +643,8 @@ def load_settings(
         file_model=file_model,
         model_edit=edit,
         manual_model_revision=revision,
+        session_scoped_model=session_scoped_model,
+        session_default_model=session_default_model,
         document_error=file_layers.error if file_layers else None,
         provenance=provenance,
         warnings=tuple(warnings),

@@ -94,6 +94,23 @@ class ModelFileChange:
             _file_choice = self.file_value
 
 
+@dataclass(frozen=True, slots=True)
+class SessionDefaultModel:
+    """The default model one session settled on, kept apart from the process pointer.
+
+    An ACP process serves many sessions from one pointer, so a full reload's
+    choice stays with the session that made it and travels on every later load
+    of that session. An empty ``value`` records that the default is gone, so a
+    load cannot bring it back from a pointer that still names it. ``revision`` is
+    :func:`model_selection_revision` when it was settled: any process-wide model
+    choice since then came after it, and the session follows that instead.
+    """
+
+    value: str
+    origin: SettingOrigin
+    revision: int
+
+
 def model_selection_revision() -> int:
     with _lock:
         return _generation
@@ -112,16 +129,27 @@ def remember_file_model(value: str) -> None:
         _generation += 1
 
 
+def _launch_or_file_model(value: str, file_origin: SettingOrigin, exported: str) -> tuple[str, SettingOrigin]:
+    """What the launch and the file say the model is, leaving out the live pointer: caller holds :data:`_lock`."""
+    if _launch_choice:
+        return _launch_choice, SettingOrigin(layer=Source.CLI)
+    if exported:
+        return exported, SettingOrigin(layer=Source.ENV)
+    return value, file_origin
+
+
 def external_model_edit(value: str, *, file_origin: SettingOrigin, exported: str) -> ModelFileChange | None:
     with _lock:
         if value == _file_choice:
             return None
-        if _launch_choice:
-            selected, origin = _launch_choice, SettingOrigin(layer=Source.CLI)
-        elif exported:
-            selected, origin = exported, SettingOrigin(layer=Source.ENV)
-        else:
-            selected, origin = value, file_origin
+        selected, origin = _launch_or_file_model(value, file_origin, exported)
+        return ModelFileChange(value, selected, origin, _generation)
+
+
+def session_model_decision(value: str, *, file_origin: SettingOrigin, exported: str) -> ModelFileChange:
+    """Decide one session's default afresh: never a change to the pointer, so nothing here commits it."""
+    with _lock:
+        selected, origin = _launch_or_file_model(value, file_origin, exported)
         return ModelFileChange(value, selected, origin, _generation)
 
 

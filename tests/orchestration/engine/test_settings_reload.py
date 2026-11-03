@@ -890,6 +890,99 @@ async def test_manual_model_edit_is_validated_before_installing_or_syncing_the_p
     assert path.read_text(encoding="utf-8") == "ui: [unclosed"
 
 
+async def test_a_mistyped_model_edit_fails_by_name_when_no_earlier_model_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine
+) -> None:
+    from chrys.foundation.config.runtime_pointer import get_model_pointer
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
+    path = user_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("model.profile.active: typo-one\n", encoding="utf-8")
+    loaded = bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded
+    models = ModelProfileRegistry()
+    models.register(ModelProfile(id="A", name="A", model_id="A", provider="mock"))
+    profile = _profile()
+    bus = EventBus()
+    engine = agent_engine(bus, loaded_settings=loaded, model_registry=models, agent_registry=_registry(profile))
+    await engine.start(profile, workspace=Workspace.from_cwd(str(tmp_path)))
+    before = engine.current_profile_snapshot().model_profile_id
+    errors = await capture_events(bus, Error)
+
+    path.write_text("model.profile.active: typo-two\n", encoding="utf-8")
+    await bus.publish(SettingsReload(manual=True, session_id=engine.session.session_id))
+
+    assert [(error.code, error.message) for error in errors] == [
+        ("manual_settings_reload_failed", "Model profile is unavailable: typo-two")
+    ]
+    assert engine.current_profile_snapshot().model_profile_id == before != "A"
+    assert get_model_pointer()[0] != "A"
+
+
+async def test_a_removed_launch_model_falls_back_to_the_edited_file_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine
+) -> None:
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.serializer import save_profile
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "X")
+    path = user_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("model.profile.active: A\n", encoding="utf-8")
+    for name in ("X", "A", "B"):
+        save_profile(ModelProfile(id=name, name=name, model_id=name, provider="mock"))
+    loaded = bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded
+    models = ModelProfileRegistry()
+    models.load_all()
+    profile = _profile()
+    bus = EventBus()
+    engine = agent_engine(bus, loaded_settings=loaded, model_registry=models, agent_registry=_registry(profile))
+    await engine.start(profile, workspace=Workspace.from_cwd(str(tmp_path)))
+    assert engine.current_profile_snapshot().model_profile_id == "X"
+    results = await capture_events(bus, SettingsReloaded)
+    errors = await capture_events(bus, Error)
+
+    (path.parent / "models" / "X.yaml").unlink()
+    path.write_text("model.profile.active: B\n", encoding="utf-8")
+    await bus.publish(SettingsReload(manual=True, session_id=engine.session.session_id))
+
+    assert [error.code for error in errors] == []
+    assert "controls.reload_model_fallback" in [ref.definition.key for ref in results[-1].report]
+    assert engine.current_profile_snapshot().model_profile_id == "B"
+
+
+async def test_a_manual_reload_with_no_usable_model_anywhere_still_reloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine
+) -> None:
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
+    path = user_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("model.profile.active: missing\n", encoding="utf-8")
+    loaded = bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded
+    profile = _profile()
+    bus = EventBus()
+    engine = agent_engine(
+        bus, loaded_settings=loaded, model_registry=ModelProfileRegistry(), agent_registry=_registry(profile)
+    )
+    await engine.start(profile, workspace=Workspace.from_cwd(str(tmp_path)))
+    results = await capture_events(bus, SettingsReloaded)
+    errors = await capture_events(bus, Error)
+
+    await bus.publish(SettingsReload(manual=True, session_id=engine.session.session_id), raise_handler_errors=True)
+
+    assert [error.code for error in errors] == []
+    assert [ref.definition.key for ref in results[-1].report] == ["controls.reload_done"]
+
+
 @pytest.mark.parametrize(
     ("reason", "notice"),
     [

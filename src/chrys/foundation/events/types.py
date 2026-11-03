@@ -415,6 +415,10 @@ class SettingsReload(Event):
     """Settings field names and values the requesting screen is actually displaying."""
     available_themes: tuple[str, ...] | None = None
     """Theme names registered by the requesting TUI, when present."""
+    session_scoped_model: bool = False
+    """With ``manual``: the model this reload selects stays with this session, as ACP's hosts share one pointer."""
+    follow_process_model: bool = False
+    """The default model was just set for the whole process: what this session settled on earlier ends."""
 
 
 @dataclass

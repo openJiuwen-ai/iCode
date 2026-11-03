@@ -1824,6 +1824,7 @@
         ["wrapper", "await self._acquire_rebuild_permit_or_publish_error(token, manual=event.manual)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._acquire_rebuild_permit_or_publish_error"],
         ["thread_pool", "await asyncio.to_thread(load_settings, project_root=self._session_project_root(), eval_context=self._reload_eval_context(), **pins)", "unresolved"],
         ["thread_pool", "await asyncio.to_thread(profiles.scan)", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(load_settings, project_root=self._session_project_root(), eval_context=self._reload_eval_context(), **unpinned)", "unresolved"],
         ["awaitable", "await self._bus.publish(dataclasses.replace(warning, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Warning(code='settings_restart_required', message=format_message(display_message), display_message=display_message, session_id=self._session.session_id))", "unresolved"],
         ["thread_pool", "await asyncio.to_thread(read_hooks_strict, project_root=str(self._session_project_root()), project_hooks_enabled=loaded.settings.project_hooks_enabled)", "unresolved"],

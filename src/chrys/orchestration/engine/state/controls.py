@@ -104,6 +104,9 @@ _MISSING_BOUND_MODEL = msg(
     "controls.reload_missing_bound_model",
     fallback="Agent '{agent}' references missing model '{missing}'. Using '{actual}'.",
 )
+# What a caller's model pin puts into every load (``session_pin_overrides``).
+_MODEL_PIN_KEYS = frozenset({"model_profile", "model_profile_override", "model_profile_override_sub_agents"})
+
 _SESSION_MODEL_REMOVED = msg(
     "controls.reload_session_model_removed",
     fallback="Session model '{model}' is no longer selectable. The session now uses its default model.",
@@ -646,7 +649,7 @@ class RuntimeControls:
 
     def _session_pin_overrides(self) -> dict[str, Any]:
         """Snapshot the per-session pins every re-load must carry (:func:`session_pin_overrides`)."""
-        return session_pin_overrides(self._session, self._settings_handle.base.settings)
+        return session_pin_overrides(self._session, self._settings_handle.base)
 
     def _reload_eval_context(self) -> EvalContext:
         """The launch mode's retry policy, passed *into* the load.
@@ -699,6 +702,7 @@ class RuntimeControls:
         profiles = None
         resources: ReloadResources | None = None
         kept_model = False
+        release_pin = False
         old_effective = self._settings_handle.loaded
         old_loaded = self._settings_handle.base
         session = (
@@ -719,8 +723,11 @@ class RuntimeControls:
                 # The pins are snapshotted before the hand-off, so the load works
                 # from the state that asked for it.
                 pins = self._session_pin_overrides()
+                if event.follow_process_model:
+                    pins.pop("session_default_model", None)
                 if event.manual:
                     pins["manual_reload"] = True
+                    pins["session_scoped_model"] = event.session_scoped_model
                 # Before the read: a choice confirmed after it may be newer than what was read.
                 confirmed = self._settings_handle.confirmed_overrides() if event.manual else {}
                 candidate = await asyncio.to_thread(
@@ -739,6 +746,26 @@ class RuntimeControls:
                     if own_model and resolve_selectable_profile(profiles.models, own_model) is None:
                         session = {}
                         report.append(_SESSION_MODEL_REMOVED.bind(model=own_model))
+                    pinned = pins.get("model_profile_override") if self._session.model_profile_pinned else None
+                    if (
+                        pinned
+                        and profiles.models is not None
+                        and resolve_selectable_profile(profiles.models, pinned) is None
+                    ):
+                        # A caller's pin (an ACP model switch) names a model whose file is gone:
+                        # read again without it, and the pin ends with the install.
+                        release_pin = True
+                        unpinned = {name: value for name, value in pins.items() if name not in _MODEL_PIN_KEYS}
+                        candidate = dataclasses.replace(
+                            await asyncio.to_thread(
+                                load_settings,
+                                project_root=self._session_project_root(),
+                                eval_context=self._reload_eval_context(),
+                                **unpinned,
+                            ),
+                            confirmed_overrides=confirmed,
+                        )
+                        report.append(_SESSION_MODEL_REMOVED.bind(model=pinned))
                     report.append(
                         (_RELOAD_DONE if self._session.agent_profile is not None else _RELOAD_SETTINGS_ONLY).bind()
                     )
@@ -857,13 +884,17 @@ class RuntimeControls:
                     self._permits.stage_profiles(permit, profiles)
                 if resources is not None:
                     self._permits.stage_reload_resources(permit, resources)
-                await self._start_or_restart_with_permit(
-                    permit,
-                    profile_for_restart,
-                    operation="settings_reload",
-                    staged_loaded=loaded,
-                    session=session,
-                )
+                try:
+                    await self._start_or_restart_with_permit(
+                        permit,
+                        profile_for_restart,
+                        operation="settings_reload",
+                        staged_loaded=loaded,
+                        session=session,
+                    )
+                finally:
+                    if release_pin and self._settings_handle.base is not old_loaded:
+                        self._session.model_profile_pinned = False
                 if resources is not None:
                     report.extend(mcp_refresh_report(resources.mcp))
                 if (
@@ -879,6 +910,8 @@ class RuntimeControls:
                         await finish_close(asyncio.create_task(asyncio.to_thread(profiles.normalize)))
                         profiles.check_versions()
                     self._settings_handle.install_prepared(self._settings_handle.prepare(loaded, session=session))
+                    if release_pin:
+                        self._session.model_profile_pinned = False
                     if profiles is not None:
                         profiles.install()
                 except ConfigError as exc:
@@ -962,11 +995,14 @@ class RuntimeControls:
     def _reload_model_default(
         self, candidate: LoadedSettings, profiles: ProfileReload, report: list[MessageRef]
     ) -> tuple[LoadedSettings, bool]:
-        """Validate an external selection or replace a default whose definition disappeared."""
+        """Validate an external selection or replace a default that names no selectable model."""
         requested = candidate.settings.model_profile
         old = self._settings_handle.base
         previous = old.settings.model_profile
         key = "model.profile.active"
+        if candidate.session_scoped_model and requested == previous:
+            # Decided afresh every time, but only a different answer is an edit to judge.
+            candidate = dataclasses.replace(candidate, model_edit=None)
         old_model = resolve_selectable_profile(self._model_registry, previous)
         selected = resolve_selectable_profile(profiles.models, requested)
         # A saved selector may be a display name. Renaming or reusing that
@@ -994,10 +1030,11 @@ class RuntimeControls:
                 settings=dataclasses.replace(candidate.settings, model_profile=previous),
                 provenance={**candidate.provenance, key: old.source_for(key)},
             ), True
-        if old_model is None:
-            if candidate.model_edit:
-                raise ConfigValueError(_RELOAD_UNAVAILABLE.bind(model=requested))
-            return candidate, False
+        if candidate.model_edit and requested == candidate.file_model != old.file_model:
+            # The user just wrote it and no usable model is left to keep: report it, never a stand-in.
+            raise ConfigValueError(_RELOAD_UNAVAILABLE.bind(model=requested))
+        # Nobody just named it: whether its file went in this reload, in another session's
+        # (the definitions are shared) or never existed, the model next in line takes over.
         replacement = resolve_selectable_profile(profiles.models, candidate.file_model)
         if replacement is None and profiles.models is not None:
             replacement = next(
@@ -1008,7 +1045,10 @@ class RuntimeControls:
                 ),
                 None,
             )
-        if replacement is None or candidate.manual_model_revision is None:
+        if replacement is None:
+            # Nothing to fall back to: the build decides whether the session can go on.
+            return candidate, False
+        if candidate.manual_model_revision is None:
             raise ConfigValueError(_RELOAD_UNAVAILABLE.bind(model=requested))
         origin = SettingOrigin(layer=Source.PROCESS_RUNTIME)
         report.append(_MODEL_FALLBACK.bind(old=previous, new=replacement.name))
