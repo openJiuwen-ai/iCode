@@ -249,8 +249,16 @@ class MockAuthState:
         return grant
 
     def token_owner(self, token: str) -> MockGrant | None:
-        """Return the grant that owns ``token``."""
-        return self._tokens.get(token)
+        """Return the grant that owns ``token``, or None once it has expired.
+
+        catalog-auth-gating (review F2): align with the catalog 401 check — an
+        expired token is refused here too, even before poll() lazily revokes
+        it, so user/info and the catalog never disagree inside that window.
+        """
+        grant = self._tokens.get(token)
+        if grant is not None and time.monotonic() >= grant.expires_at:
+            return None
+        return grant
 
     def poll(self, device_code: str) -> tuple[str, MockGrant | None]:
         """Advance the poll state machine and return ``(error, grant)``.

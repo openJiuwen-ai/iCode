@@ -16,12 +16,16 @@ import inspect
 import json
 import logging
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from aixcoding.tests.catalog.conftest import wait_until
 
+from chrys.kernel.aixcoding.auth import AccountInfo
+from chrys.kernel.aixcoding.diagnostics.logging_support import DETAIL_LEVEL
 from chrys.service.aixcoding import catalog as catalog_module
 from chrys.service.aixcoding.catalog import (
     CatalogSyncResult,
@@ -81,6 +85,52 @@ def _wire_sync(
 def _credentialed(monkeypatch: pytest.MonkeyPatch) -> None:
     """Assume a login: these tests are about the clock, not the credential gate."""
     monkeypatch.setattr(catalog_module, "has_catalog_credential", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _aix_logger_isolation() -> Iterator[None]:
+    """Pin the ``aixcoding`` logger tree so caplog sees the records (auth F5 pattern).
+
+    caplog's handler sits on the root logger, so records must propagate out
+    of the ``aixcoding`` subtree; other test modules may have left
+    ``propagate=False`` (or a file sink) behind. Save/restore all of it.
+    """
+    root = logging.getLogger("aixcoding")
+    saved_handlers = root.handlers[:]
+    saved_propagate = root.propagate
+    saved_level = root.level
+    root.handlers.clear()
+    root.propagate = True
+    yield
+    root.handlers[:] = saved_handlers
+    root.propagate = saved_propagate
+    root.setLevel(saved_level)
+
+
+@pytest.fixture
+def detail_capture() -> Iterator[list[logging.LogRecord]]:
+    """Capture the file-only detail subtree (ADR-0017), which caplog cannot see.
+
+    Pin the subtree the way ``setup_logging`` would and hook a capture
+    handler at its root (mirrors the auth detail-logging tests).
+    """
+    detail = logging.getLogger("aixcoding.detail")
+    saved = (detail.handlers[:], detail.propagate, detail.level)
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    capture = _Capture()
+    capture.setLevel(logging.NOTSET)
+    logging.addLevelName(DETAIL_LEVEL, "DETAIL")  # normally done by setup_logging
+    detail.setLevel(DETAIL_LEVEL)
+    detail.propagate = False  # mirror the production preset
+    detail.addHandler(capture)
+    yield records
+    detail.handlers[:] = saved[0]
+    detail.propagate, detail.level = saved[1], saved[2]
 
 
 # ── Migrated: the poll runtime ────────────────────────────────────────────
@@ -333,7 +383,7 @@ def test_publish_fault_injection_mkdir_fails(
 
     monkeypatch.setattr(catalog_module, "catalog_url", lambda: "http://127.0.0.1:1/base")
     monkeypatch.setattr(catalog_module, "fetch_catalog", _make_fetch("x"))
-    with caplog.at_level(logging.WARNING, logger="chrys.service.aixcoding.catalog"):
+    with caplog.at_level(logging.WARNING, logger="aixcoding.catalog"):
         assert sync_catalog_blocking() is None
     assert "Could not sync" in caplog.text
 
@@ -409,11 +459,11 @@ async def test_poll_parse_failure_is_logged(monkeypatch: pytest.MonkeyPatch, cap
 
     registry = ModelProfileRegistry()
     monkeypatch.setattr(catalog_module, "catalog_url", lambda: "http://127.0.0.1:1/base")
-    monkeypatch.setattr(catalog_module, "_catalog_token", lambda: "t")
+    monkeypatch.setattr(catalog_module, "_resolve_catalog_credential", lambda: ("t", "store"))
     monkeypatch.setattr(catalog_module.httpx, "AsyncClient", _FakeClient)
     monkeypatch.setattr(catalog_module, "parse_catalog", _reject)
 
-    with caplog.at_level(logging.WARNING, logger="chrys.service.aixcoding.catalog"):
+    with caplog.at_level(logging.WARNING, logger="aixcoding.catalog"):
         assert catalog_module.start_sync_runtime(registry, lambda: None, immediate=True)
         try:
             assert await wait_until(lambda: "unusable" in caplog.text), (
@@ -546,7 +596,7 @@ def test_startup_degrades_on_unexpected_errors(
         raise RuntimeError("settings exploded")
 
     monkeypatch.setattr(catalog_module, "catalog_url", _explode)
-    with caplog.at_level(logging.ERROR, logger="chrys.service.aixcoding.catalog"):
+    with caplog.at_level(logging.ERROR, logger="aixcoding.catalog"):
         assert sync_catalog_blocking() is None
     assert "Unexpected error syncing" in caplog.text
 
@@ -711,14 +761,14 @@ async def test_stale_generation_result_after_apply_is_dropped_before_publishing(
         return _result(*catalog.profile_ids())
 
     monkeypatch.setattr(catalog_module, "catalog_url", lambda: "http://127.0.0.1:1/base")
-    monkeypatch.setattr(catalog_module, "_catalog_token", lambda: "t")
+    monkeypatch.setattr(catalog_module, "_resolve_catalog_credential", lambda: ("t", "store"))
     monkeypatch.setattr(catalog_module, "sync_interval_seconds", lambda: 60)
     monkeypatch.setattr(catalog_module, "fetch_catalog", _make_fetch("a"))
     monkeypatch.setattr(catalog_module, "apply_catalog", _slow_apply)
 
     seen: list[CatalogSyncResult] = []
     registry = ModelProfileRegistry()
-    with caplog.at_level(logging.INFO, logger="chrys.service.aixcoding.catalog"):
+    with caplog.at_level(logging.INFO, logger="aixcoding.catalog"):
         assert catalog_module.start_sync_runtime(registry, seen.append, immediate=True)
         try:
             assert await wait_until(apply_started.is_set, timeout=2.0), "the first sync never reached apply"
@@ -822,3 +872,271 @@ def await_synced(registry: ModelProfileRegistry, seen: list[CatalogSyncResult]) 
             return True
         _time.sleep(0.01)
     return False
+
+
+# ── New: log redaction, the detail channel and debug-level diagnostics ────
+
+
+@pytest.mark.asyncio
+async def test_request_log_redacts_user_id_and_detail_carries_the_full_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    detail_capture: list[logging.LogRecord],
+) -> None:
+    """One request, two records (ADR-0017, auth's split mirrored):
+
+    the main logger gets the endpoint without its query string — even at
+    DEBUG the redaction never rolls back — while the file-only detail
+    subtree gets the full endpoint including userId, and never propagates.
+    """
+
+    class _FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"items": [{"id": "a", "name": "A", "provider": "openai", "model_id": "m"}]}
+
+    class _FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        async def get(self, endpoint: str, headers: dict[str, str] | None = None) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr(catalog_module, "catalog_url", lambda: "http://127.0.0.1:1/base")
+    monkeypatch.setattr(catalog_module, "_resolve_catalog_credential", lambda: ("t", "store"))
+    monkeypatch.setattr(catalog_module, "_catalog_user_id", lambda: "1234567")
+    monkeypatch.setattr(catalog_module.httpx, "AsyncClient", _FakeClient)
+
+    with caplog.at_level(logging.DEBUG, logger="aixcoding.catalog"):
+        catalog = await catalog_module.fetch_catalog()
+    assert catalog.items
+
+    main_records = [r for r in caplog.records if r.name == "aixcoding.catalog"]
+    request_lines = [r.getMessage() for r in main_records if "Model catalog request" in r.getMessage()]
+    assert len(request_lines) == 1
+    assert "userId" not in request_lines[0]
+    for record in main_records:
+        assert "1234567" not in record.getMessage(), "the main channel stays redacted even at DEBUG"
+
+    assert not [r for r in caplog.records if r.name.startswith("aixcoding.detail")], (
+        "the detail subtree must never propagate to the root logger"
+    )
+    request_details = [r for r in detail_capture if "Model catalog request" in r.getMessage()]
+    assert len(request_details) == 1
+    detail_record = request_details[0]
+    assert detail_record.name == "aixcoding.detail.catalog"
+    assert detail_record.levelname == "DETAIL"
+    assert detail_record.levelno == DETAIL_LEVEL == catalog_module._DETAIL_LEVEL, "the mirrored level must match"
+    assert "userId=1234567" in detail_record.getMessage()
+
+
+def test_unknown_fields_are_logged_only_at_debug(caplog: pytest.LogCaptureFixture) -> None:
+    """Field-level diagnostics are DEBUG-gated: the default level stays terse."""
+    payload = {"items": [{"id": "a", "name": "A", "provider": "openai", "model_id": "m", "futureKey": 1}]}
+
+    with caplog.at_level(logging.INFO, logger="aixcoding.catalog"):
+        catalog_module.parse_catalog(payload)
+    assert not [r for r in caplog.records if r.name == "aixcoding.catalog"], "INFO keeps field drops silent"
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="aixcoding.catalog"):
+        catalog_module.parse_catalog(payload)
+    drops = [r.getMessage() for r in caplog.records if r.name == "aixcoding.catalog" and r.levelno == logging.DEBUG]
+    assert len(drops) == 1
+    assert "futureKey" in drops[0]
+
+
+# ── New: login pre-verification and the response detail (catalog-auth-gating) ──
+
+
+def _wire_ok_httpx(monkeypatch: pytest.MonkeyPatch, payload: dict | None = None) -> list[dict]:
+    """200 OK fake transport for the gating cases; returns captured requests."""
+    calls: list[dict] = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return payload or {"items": [{"id": "a", "name": "A", "provider": "openai", "model_id": "m"}]}
+
+    class _FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        async def get(self, endpoint: str, headers: dict | None = None) -> _FakeResponse:
+            calls.append({"endpoint": endpoint, "headers": headers or {}})
+            return _FakeResponse()
+
+    monkeypatch.setattr(catalog_module.httpx, "AsyncClient", _FakeClient)
+    return calls
+
+
+def _wire_unverified(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A login whose verify returns None + a transport that fails the test if used."""
+    session = SimpleNamespace(stored_token="t", verify_live_credential=AsyncMock(return_value=None))
+    monkeypatch.setattr("chrys.kernel.aixcoding.auth.get_login_session", lambda: session)
+    monkeypatch.setattr(catalog_module, "catalog_url", lambda: "http://127.0.0.1:1/base")
+
+    class _ExplodingClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("an unverified login must not issue a catalog request")
+
+    monkeypatch.setattr(catalog_module.httpx, "AsyncClient", _ExplodingClient)
+
+
+def _wire_verified(monkeypatch: pytest.MonkeyPatch, verify: AsyncMock) -> None:
+    session = SimpleNamespace(stored_token="t", verify_live_credential=verify)
+    monkeypatch.setattr("chrys.kernel.aixcoding.auth.get_login_session", lambda: session)
+    monkeypatch.setattr(catalog_module, "catalog_url", lambda: "http://127.0.0.1:1/base")
+
+
+async def test_verified_login_fetches_after_one_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    verify = AsyncMock(return_value=AccountInfo())
+    _wire_verified(monkeypatch, verify)
+    _wire_ok_httpx(monkeypatch)
+
+    catalog = await catalog_module.fetch_catalog()
+    assert catalog.items
+    assert verify.await_count == 1, "a store credential is verified live exactly once per fetch"
+
+
+def test_unverified_login_blocks_startup_with_two_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Startup shape: the fetch-side WARNING plus the startup swallow's own line."""
+    _wire_unverified(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="aixcoding.catalog"):
+        assert sync_catalog_blocking() is None
+    warnings = [r for r in caplog.records if r.name == "aixcoding.catalog" and r.levelno == logging.WARNING]
+    assert len(warnings) == 2, f"expected pre-verification + swallow lines, got {caplog.text!r}"
+    assert "no verified login" in warnings[0].getMessage()
+    assert "Could not sync" in warnings[1].getMessage()
+
+
+async def test_unverified_login_poll_logs_a_single_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Poll shape: only the fetch-side WARNING — _sync_once never adds its own."""
+    _wire_unverified(monkeypatch)
+    monkeypatch.setattr(catalog_module, "sync_interval_seconds", lambda: 60)
+    registry = ModelProfileRegistry()
+    with caplog.at_level(logging.WARNING, logger="aixcoding.catalog"):
+        assert catalog_module.start_sync_runtime(registry, lambda: None, immediate=True)
+        try:
+            assert await wait_until(lambda: "no verified login" in caplog.text), (
+                f"the poll never logged the pre-verification skip: {caplog.text!r}"
+            )
+        finally:
+            catalog_module.stop_sync_runtime()
+    warnings = [r for r in caplog.records if r.name == "aixcoding.catalog" and r.levelno == logging.WARNING]
+    assert len(warnings) == 1, f"the poll must not add a swallow line: {caplog.text!r}"
+    assert "Could not sync" not in caplog.text
+
+
+async def test_env_token_skips_preverification(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AIXCODING_MODEL_CATALOG_TOKEN", "env-token")
+    verify = AsyncMock(return_value=None)  # would block the fetch if it were called
+    _wire_verified(monkeypatch, verify)
+    calls = _wire_ok_httpx(monkeypatch)
+
+    catalog = await catalog_module.fetch_catalog()
+    assert catalog.items
+    assert verify.await_count == 0, "env credentials have no session to verify — the server judges them"
+    assert calls[0]["headers"]["token"] == "env-token"
+
+
+def test_catalog_token_is_a_thin_wrapper_over_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(catalog_module, "_resolve_catalog_credential", lambda: ("tok", "env"))
+    assert catalog_module._catalog_token() == "tok"
+
+
+async def test_unverified_real_session_end_to_end(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """D6 backstop: a real LoginSession, a rejected credential, no autouse double.
+
+    The pre-verification must block the request AND leave the store untouched
+    (clearing belongs to auth's own check path, decision 乙).
+    """
+    from chrys.kernel.aixcoding.auth import Environment, LoginSession, StoredCredential
+    from chrys.kernel.aixcoding.auth.crypto import MemoryBackend
+    from chrys.kernel.aixcoding.auth.errors import AuthServerError
+
+    session = LoginSession(
+        environment=Environment.LOCAL,
+        endpoints=("http://127.0.0.1:1/api", "http://127.0.0.1:1/api"),
+        config_dir=tmp_path,
+        backend=MemoryBackend(),
+    )
+    session.store.store(
+        Environment.LOCAL,
+        StoredCredential(environment_id="local", user_id="u", token="stale-token", ehr="1234567"),
+    )
+
+    class _FakeAuthClient:
+        async def fetch_user_info(self, token: str) -> object:
+            raise AuthServerError("用户不存在")
+
+    session._make_client = _FakeAuthClient  # type: ignore[method-assign]
+    monkeypatch.setattr("chrys.kernel.aixcoding.auth.get_login_session", lambda: session)
+    monkeypatch.setattr(catalog_module, "catalog_url", lambda: "http://127.0.0.1:1/base")
+
+    class _ExplodingClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("an unverified login must not issue a catalog request")
+
+    monkeypatch.setattr(catalog_module.httpx, "AsyncClient", _ExplodingClient)
+    with pytest.raises(ModelCatalogError):
+        await catalog_module.fetch_catalog()
+    assert session.store.load(Environment.LOCAL) is not None, "pre-verification must not clear the store"
+    assert session.stored_token == "stale-token"
+
+
+async def test_response_detail_logged(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    detail_capture: list[logging.LogRecord],
+) -> None:
+    """The response detail (per-model fields) joins the request detail on the detail channel."""
+    payload = {
+        "version": "v9",
+        "default_profile_id": "a",
+        "items": [
+            {"id": "a", "name": "Alpha", "provider": "openai", "model_id": "m-a", "base_url": "http://x/v1"},
+            {"id": "b", "name": "Beta", "provider": "openai", "model_id": "m-b", "base_url": "http://y/v1"},
+        ],
+    }
+    _wire_ok_httpx(monkeypatch, payload)
+    with caplog.at_level(logging.INFO, logger="aixcoding.catalog"):
+        await catalog_module.fetch_catalog()
+
+    details = [r for r in detail_capture if "response detail" in r.getMessage()]
+    assert len(details) == 1
+    record = details[0]
+    assert record.name == "aixcoding.detail.catalog"
+    assert record.levelname == "DETAIL"
+    message = record.getMessage()
+    assert "version=v9" in message
+    assert "default_profile_id=a" in message
+    for fragment in ("'id': 'a'", "'name': 'Alpha'", "'model_id': 'm-a'", "'base_url': 'http://x/v1'", "'id': 'b'"):
+        assert fragment in message, f"missing {fragment} in {message}"
+    assert "response detail" not in caplog.text, "the detail stays off the main channel"

@@ -16,6 +16,7 @@
 | [batches/diagnostics](batches/diagnostics/) | 功能批次 | 本地诊断包（config + logging_support；crash/snapshot/launcher 已退役） |
 | [batches/auth-isolation-mock-ports](batches/auth-isolation-mock-ports/) | 功能批次 | auth 测试默认构造隔离 + mock launcher 动态端口（local-verify 前置微改动，豁免管线） |
 | [batches/catalog-sync](batches/catalog-sync/) | 功能批次 | 模型目录同步 + 档案集中管理（服务端目录整替、15min 轮询、登录联动、模型配置只读） |
+| [batches/catalog-auth-gating](batches/catalog-auth-gating/) | 功能批次 | catalog 登录预验证（未登录/失效不请求）+ mock 凭证 401 校验 + 响应详版 detail 日志 |
 | [batches/branding-and-command](batches/branding-and-command/) | 功能批次 | 功能品牌与命令切换 C4（AIxCoding 运行时品牌 + aixcoding-cli 全渠道入口/制品 + 安装迁移与卸载；纯文档后置） |
 | [batches/ai-gates](batches/ai-gates/) | 治理批次 | AI 流程闸门 |
 | [batches/ci-gate](batches/ci-gate/) | 治理批次 | 定制 CI 质量门（`aixcoding-tests.yml`） |

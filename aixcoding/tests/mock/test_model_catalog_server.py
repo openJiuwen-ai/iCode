@@ -31,6 +31,7 @@ from typing import Any
 
 import httpx
 import pytest
+from aixcoding.mock.auth.server import INVALID_TOKEN_MESSAGE, MockAuthConfig, MockGrant
 from aixcoding.mock.model_catalog import server as catalog_server
 from aixcoding.mock.model_catalog.server import RunningCatalogMock
 
@@ -338,3 +339,81 @@ async def test_llm_chat_streaming(mock: RunningCatalogMock, direct_route: None) 
     assert "chat.completion.chunk" in text
     assert catalog_server.LLM_MOCK_REPLY in text
     assert text.endswith("data: [DONE]\n\n")
+
+
+# ── catalog-auth-gating: the catalog is an authenticated endpoint ─────────────
+
+
+async def _get_with_token(url: str, token: str) -> httpx.Response:
+    async with httpx.AsyncClient() as client:
+        return await client.get(url, headers={"token": token})
+
+
+def _issue_token(running: RunningCatalogMock, *, expires_in: float = 600.0) -> str:
+    """Grant a token straight through the shared auth state (device-flow shortcut)."""
+    state = running._server.auth_state  # type: ignore[attr-defined]
+    now = time.monotonic()
+    grant = MockGrant(device_code="d", user_code="u", issued_at=now, expires_at=now + expires_in)
+    state._grants["d"] = grant
+    state._authorize(grant)  # assigns the token and marks the grant granted
+    return grant.token
+
+
+async def test_catalog_without_a_token_is_401_when_auth_is_mounted(
+    mock_factory: Callable[..., RunningCatalogMock], direct_route: None
+) -> None:
+    running = mock_factory(auth=MockAuthConfig(mode="auto"))
+    response = await _get(_catalog(running))
+    assert response.status_code == 401
+    assert "error" in response.json()
+
+
+async def test_catalog_with_an_unknown_token_is_401(
+    mock_factory: Callable[..., RunningCatalogMock], direct_route: None
+) -> None:
+    running = mock_factory(auth=MockAuthConfig(mode="auto"))
+    response = await _get_with_token(_catalog(running), "no-such-token")
+    assert response.status_code == 401
+
+
+async def test_catalog_with_an_expired_token_is_401(
+    mock_factory: Callable[..., RunningCatalogMock], direct_route: None
+) -> None:
+    running = mock_factory(auth=MockAuthConfig(mode="auto"))
+    token = _issue_token(running, expires_in=-1.0)
+    response = await _get_with_token(_catalog(running), token)
+    assert response.status_code == 401
+
+
+async def test_catalog_with_a_valid_token_is_served(
+    mock_factory: Callable[..., RunningCatalogMock], direct_route: None
+) -> None:
+    running = mock_factory(auth=MockAuthConfig(mode="auto"))
+    token = _issue_token(running)
+    response = await _get_with_token(_catalog(running), token)
+    assert response.status_code == 200
+    payload = response.json()
+    assert [entry["model"] for entry in payload["models"]] == ["openai/gpt-4o-mini"]
+
+
+async def test_catalog_without_auth_stays_open(mock: RunningCatalogMock, direct_route: None) -> None:
+    """The --no-auth exemption: a catalog-only mock keeps serving without any token."""
+    response = await _get(_catalog(mock))
+    assert response.status_code == 200
+
+
+async def test_expired_token_is_refused_by_both_user_info_and_catalog(
+    mock_factory: Callable[..., RunningCatalogMock], direct_route: None
+) -> None:
+    """F2: token_owner checks expiry too — no window where user/info passes but catalog 401s."""
+    running = mock_factory(auth=MockAuthConfig(mode="auto"))
+    token = _issue_token(running, expires_in=-1.0)
+    origin = str(running.origin).rstrip("/")
+    async with httpx.AsyncClient() as client:
+        info = await client.post(f"{origin}/api/v1/user/info", json={"token": token})
+        catalog_response = await client.get(_catalog(running), headers={"token": token})
+    assert info.status_code == 200  # the business-envelope refusal, not an HTTP error
+    body = info.json()
+    assert body["message"] == INVALID_TOKEN_MESSAGE
+    assert body["code"] == 400
+    assert catalog_response.status_code == 401

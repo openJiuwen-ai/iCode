@@ -69,7 +69,18 @@ from chrys.service.profiles.models.schema import (
     ModelProfile,
 )
 
-logger = logging.getLogger(__name__)
+# File-only by default: the aixcoding.* subtree stays off the F6 panel unless
+# aixcoding.toml opts in ([logging] panel); sinks live in kernel/aixcoding/diagnostics.
+logger = logging.getLogger("aixcoding.catalog")
+
+# AIxCoding detail logging: the full request endpoint carries userId, so it goes
+# to the file-only "aixcoding.detail.catalog" logger (ADR-0017) — mirroring
+# auth's split; that subtree never propagates to the panel or the upstream log.
+_detail_log = logging.getLogger("aixcoding.detail.catalog")
+
+#: AIxCoding detail logging: level of the file-only channel; mirrors
+#: ``DETAIL_LEVEL`` in diagnostics.logging_support (ADR-0017), as auth does.
+_DETAIL_LEVEL = 5
 
 #: Fork-private configuration contract: read and parsed by this module alone
 #: (never declared in the settings system), so they carry the ``AIXCODING_``
@@ -389,6 +400,7 @@ def _unique_profile_id(base: str, taken: set[str]) -> str:
     suffix = 2
     while f"{base}-{suffix}" in taken:
         suffix += 1
+    logger.debug("Catalog profile id %r is taken; disambiguated to %r.", base, f"{base}-{suffix}")
     return f"{base}-{suffix}"
 
 
@@ -398,11 +410,15 @@ def _positive_int(value: object) -> int:
     Booleans are refused even though ``bool`` subclasses ``int`` — a JSON
     ``true`` is a flag someone misplaced, not a context length of 1.
     """
+    if value is None:
+        return 0
     if isinstance(value, bool) or not isinstance(value, int | float | str):
+        logger.debug("Catalog numeric field %r is not a number; the field is dropped.", value)
         return 0
     try:
         number = int(value)
     except ValueError, OverflowError:
+        logger.debug("Catalog numeric field %r does not fit an integer; the field is dropped.", value)
         return 0
     return max(0, number)
 
@@ -487,6 +503,9 @@ def parse_catalog(payload: object) -> ModelCatalog:
     for index, item in enumerate(items_raw, start=1):
         if not isinstance(item, dict):
             raise ModelCatalogError(f"Catalog item {index} must be a JSON object, got {type(item).__name__!r}")
+        dropped = sorted(set(item) - allowed)
+        if dropped:
+            logger.debug("Catalog item %d: unknown field(s) dropped: %s.", index, ", ".join(dropped))
         filtered = {key: value for key, value in item.items() if key in allowed}
         try:
             profile = ModelProfile(**filtered)  # type: ignore[arg-type]
@@ -535,18 +554,30 @@ def _catalog_token() -> str:
     all yields "", which the caller turns into a cancelled sync rather than an
     unauthenticated request answered with a 401.
     """
+    return _resolve_catalog_credential()[0]
+
+
+def _resolve_catalog_credential() -> tuple[str, str]:
+    """``(token, source)`` resolved in one pass; source is "env" | "store" | "".
+
+    The source drives the pre-verification in :func:`fetch_catalog`
+    (catalog-auth-gating, review D3): env credentials have no login session to
+    verify against and stay the server's to judge, store credentials must be
+    verified live first. Token and origin are read here exactly once, so the
+    two can never drift apart.
+    """
     _warn_retired_env()
     env_token = os.environ.get(CATALOG_TOKEN_ENV, "").strip()
     if env_token:
-        return env_token
+        return env_token, "env"
     try:
         from chrys.kernel.aixcoding.auth import get_login_session
 
         stored = get_login_session().stored_token
     except Exception:
         logger.warning("Could not read the login session for the model catalog request.", exc_info=True)
-        return ""
-    return (stored or "").strip()
+        return "", ""
+    return (stored or "").strip(), "store"
 
 
 def has_catalog_credential() -> bool:
@@ -627,31 +658,48 @@ async def fetch_catalog(url: str | None = None, *, timeout: float = _DEFAULT_FET
     if not endpoint:
         raise ModelCatalogError("No model catalog source is configured.")
 
-    token = _catalog_token()
+    token, token_source = _resolve_catalog_credential()
     if not token:
         raise ModelCatalogError(
             f"No model catalog credential: log in, or set {CATALOG_TOKEN_ENV}. "
             "The sync is skipped and the previous model list is kept."
         )
+    if token_source != "env":
+        # AIxCoding catalog-auth-gating (decision 乙): only a login verified
+        # live by auth may fetch; env credentials have no session to verify
+        # and stay the server's to judge. The WARNING sits before the raise
+        # because the poll's _sync_once never logs ModelCatalogError itself
+        # ("already logged where it was raised").
+        from chrys.kernel.aixcoding.auth import get_login_session
+
+        if await get_login_session().verify_live_credential() is None:
+            logger.warning("Model catalog sync skipped: no verified login (logged out, rejected, or offline).")
+            raise ModelCatalogError(
+                "No verified login for the model catalog request. "
+                "The sync is skipped and the previous model list is kept."
+            )
 
     headers: dict[str, str] = {"Accept": "application/json", "token": token}
     endpoint = _catalog_endpoint(endpoint, _catalog_user_id())
+    # The query string carries the user id: logs and error text keep path only.
+    log_endpoint = endpoint.split("?", 1)[0]
 
     started = time.monotonic()
-    logger.info("Model catalog request: GET %s (timeout %.0fs).", endpoint, timeout)
+    logger.info("Model catalog request: GET %s (timeout %.0fs).", log_endpoint, timeout)
+    _detail_log.log(_DETAIL_LEVEL, "Model catalog request: GET %s (timeout %.0fs).", endpoint, timeout)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(endpoint, headers=headers)
             response.raise_for_status()
             payload: Any = response.json()
     except httpx.HTTPStatusError as exc:
-        logger.warning("Model catalog request rejected by %s: HTTP %d.", endpoint, exc.response.status_code)
-        raise ModelCatalogError(f"Model catalog request failed: {exc}") from exc
+        logger.warning("Model catalog request rejected by %s: HTTP %d.", log_endpoint, exc.response.status_code)
+        raise ModelCatalogError(f"Model catalog request failed: HTTP {exc.response.status_code}") from exc
     except httpx.HTTPError as exc:
-        logger.warning("Model catalog request to %s failed before a response: %s", endpoint, exc)
+        logger.warning("Model catalog request to %s failed before a response: %s", log_endpoint, exc)
         raise ModelCatalogError(f"Model catalog request failed: {exc}") from exc
     except ValueError as exc:
-        logger.warning("Model catalog response from %s is not valid JSON: %s", endpoint, exc)
+        logger.warning("Model catalog response from %s is not valid JSON: %s", log_endpoint, exc)
         raise ModelCatalogError(f"Model catalog response is not valid JSON: {exc}") from exc
 
     try:
@@ -660,7 +708,7 @@ async def fetch_catalog(url: str | None = None, *, timeout: float = _DEFAULT_FET
         # The poll loop treats a ModelCatalogError from here as already
         # logged; parse failures are raised below the logged fetch block,
         # so they get their own line or they would go silent on the clock.
-        logger.warning("Model catalog response from %s is unusable: %s", endpoint, exc)
+        logger.warning("Model catalog response from %s is unusable: %s", log_endpoint, exc)
         raise
     logger.info(
         "Model catalog response: HTTP %d, %d model(s), version %.12s, in %.2fs.",
@@ -668,6 +716,13 @@ async def fetch_catalog(url: str | None = None, *, timeout: float = _DEFAULT_FET
         len(catalog.items),
         catalog.version,
         time.monotonic() - started,
+    )
+    _detail_log.log(
+        _DETAIL_LEVEL,
+        "Model catalog response detail: version=%s default_profile_id=%s models=%s",
+        catalog.version,
+        catalog.default_profile_id,
+        [{"id": p.id, "name": p.name, "model_id": p.model_id, "base_url": p.base_url} for p in catalog.items],
     )
     return catalog
 

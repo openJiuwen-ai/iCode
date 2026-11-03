@@ -244,6 +244,27 @@ class LoginSession:
         _detail_log.log(_DETAIL_LEVEL, "已登录（本机保存的登录）；ehr=%s env=%s", account.ehr, self.environment.value)
         return account
 
+    async def verify_live_credential(self) -> AccountInfo | None:
+        """Verify-only counterpart of :meth:`check_silent`, with zero side effects.
+
+        AIxCoding catalog-auth-gating (decision 乙): pre-flight for the model
+        catalog fetch — same live-credential resolution (delegation wins, so
+        the verified token is always the one :attr:`stored_token` hands out)
+        and the same ``user/info`` validation, but the store and the delegated
+        state are never touched: clearing and the login-indicator refresh stay
+        on auth's own check path. ``None`` means unverified (nothing live,
+        locally expired, server-rejected, or offline); unlike
+        :meth:`check_silent` this logs nothing — the caller records its own
+        skip, auth's state records stay with :meth:`check_silent`.
+        """
+        token = self.stored_token
+        if not token:
+            return None
+        try:
+            return await self._make_client().fetch_user_info(token)
+        except AuthError:
+            return None
+
     async def request_device_code(self) -> DeviceCode:
         """Start a device authorization (the UI shows the returned code)."""
         return await self._make_client().request_device_code()
