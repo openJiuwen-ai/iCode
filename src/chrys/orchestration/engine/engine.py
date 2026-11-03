@@ -36,6 +36,7 @@ from chrys.foundation.events.types import (
     InvocationResumed,
     InvocationRetryRequested,
     ProfileSwitched,
+    RetryWaitSkip,
     SessionClear,
     SessionDelete,
     SessionFork,
@@ -525,6 +526,7 @@ class AgentEngine:
         await self._bus.subscribe(UserRetry, self._on_user_retry)
         await self._bus.subscribe(UserInject, self._on_user_inject)
         await self._bus.subscribe(UserInjectCancel, self._on_user_inject_cancel)
+        await self._bus.subscribe(RetryWaitSkip, self._on_retry_wait_skip)
         await self._bus.subscribe(UserRollback, self._on_user_rollback)
         await self._bus.subscribe(AgentProfileSwitch, self._on_profile_switch)
         await self._bus.subscribe(SessionNew, self._on_new_session)
@@ -781,6 +783,10 @@ class AgentEngine:
     async def _on_user_inject_cancel(self, event: UserInjectCancel) -> None:
         """Handle user cancellation of a still-pending mid-run injection."""
         await self._turns.on_user_inject_cancel(event)
+
+    async def _on_retry_wait_skip(self, event: RetryWaitSkip) -> None:
+        """Start the retry the user chose not to wait for."""
+        self._turns.on_retry_wait_skip(event)
 
     async def _on_background_task_stop(self, event: BackgroundTaskStop) -> None:
         """Start stopping the background command the user picked (task ids are random, never reused)."""

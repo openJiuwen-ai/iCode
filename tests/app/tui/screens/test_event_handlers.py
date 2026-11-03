@@ -577,7 +577,7 @@ def test_on_retry_attempt_calls_prepare_retry_before_add_retry() -> None:
         async def prepare_retry(self) -> None:
             call_log.append("prepare_retry")
 
-        async def add_retry(self, *_args) -> None:
+        async def add_retry(self, *_args, deadline: float | None = None, wait_id: str = "") -> None:
             call_log.append("add_retry")
 
     class _FakeStatusBar:
@@ -634,7 +634,7 @@ def test_on_retry_attempt_compaction_scope_uses_detail_without_parsing_message()
         async def prepare_retry(self) -> None:
             call_log.append("prepare_retry")
 
-        async def add_retry(self, *_args) -> None:
+        async def add_retry(self, *_args, deadline: float | None = None, wait_id: str = "") -> None:
             call_log.append("add_retry")
 
         def show_compaction_retry(self, message: str, attempt: int, max_attempts: int, delay_seconds: int) -> None:
@@ -690,7 +690,7 @@ def test_retry_attempt_display_message_localizes_banner_and_keeps_english_bytes(
             async def prepare_retry(self) -> None:
                 pass
 
-            async def add_retry(self, message: str, *_args) -> None:
+            async def add_retry(self, message: str, *_args, deadline: float | None = None, wait_id: str = "") -> None:
                 banners.append(message)
 
             def show_compaction_retry(self, message: str, *_args) -> None:
@@ -759,7 +759,7 @@ def test_on_retry_attempt_skipped_when_not_running() -> None:
         async def prepare_retry(self) -> None:
             call_log.append("prepare_retry")
 
-        async def add_retry(self, *_args) -> None:
+        async def add_retry(self, *_args, deadline: float | None = None, wait_id: str = "") -> None:
             call_log.append("add_retry")
 
     def _query_one(_cls):

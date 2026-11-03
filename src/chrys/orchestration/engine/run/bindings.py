@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import traceback
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
@@ -117,11 +119,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_RETRY_WAIT_POLL_SECONDS = 1.0
+"""Longest a retry wait goes without reading the interrupt latch."""
+
 
 class _AssistantMessageEventKwargs(TypedDict, total=False):
     """Optional timestamp forwarded to ``InvocationMessage``."""
 
     timestamp: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _RetryWait:
+    """The wait a retry notice announced: the user's skip or an interrupt ends it early."""
+
+    wait_id: str
+    woken: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +172,8 @@ class TurnBindings:
     _max_retries_override: int | None = None
     _hosted_bridge: HostedPresentationBridge | None = None
     _projector: ContentProjector | None = None
+    # The wait the last retry notice announced, until the sleep after it ends.
+    _retry_wait: _RetryWait | None = None
 
     def __init__(
         self,
@@ -624,6 +639,7 @@ class TurnBindings:
         self.state.last_error = ""
         self.state.partial_answer = ()
         self._interrupt.reset()
+        self._retry_wait = None
         self._attempt_trace.reset()
         self._hosted_run_generation = next_hosted_run_generation()
         emitter = self._emitter
@@ -701,6 +717,7 @@ class TurnBindings:
                 self.state.partial_answer = self._projector.take_unlanded_answer()
             self._projector = None
             self._interrupt.reset()
+            self._retry_wait = None
             self.state.running = False
             if self._bound_emitter is not None:
                 self._invocation_publishers.unbind(self._bound_emitter.origin)
@@ -771,6 +788,9 @@ class TurnBindings:
         if self._hosted_bridge is not None and self.inputs.pending_continuation_token is None:
             await self._hosted_bridge.attempt_rejected(message)
         display_message, display_hint = display_fields(exc, retry_notice=True)
+        # Armed before the notice is published: a skip sent as soon as a frontend shows it still finds the wait.
+        wait = _RetryWait(uuid.uuid4().hex) if delay_seconds > 0 else None
+        self._retry_wait = wait
         await self._emitter.publish(
             InvocationRetryAttempt(
                 origin=self._emitter.origin,
@@ -782,6 +802,7 @@ class TurnBindings:
                 session_id=self._session_id,
                 display_message=display_message,
                 display_hint=display_hint,
+                wait_id=wait.wait_id if wait is not None else "",
             )
         )
 
@@ -829,6 +850,8 @@ class TurnBindings:
         """
         generation = self._hosted_run_generation
         self._interrupt.set_interrupted()
+        if self._retry_wait is not None:
+            self._retry_wait.woken.set()
         if self._hosted_bridge is not None:
             await self._hosted_bridge.attempt_rejected("Execution interrupted", status=HostedToolStatus.INTERRUPTED)
         if self._hosted_run_generation != generation:
@@ -874,12 +897,36 @@ class TurnBindings:
             await self._bus.unsubscribe(InvocationToolCallResult, _on_tool_result)
 
     async def _interruptible_sleep(self, seconds: int) -> bool:
-        """Sleep in 1-second ticks, returning True if interrupted."""
-        for _ in range(seconds):
-            if self._interrupt.is_interrupted:
-                return True
-            await asyncio.sleep(1)
+        """Wait *seconds* before a retry, returning True if interrupted.
+
+        The wait the last retry notice announced ends early when the user
+        skips it or an interrupt arrives; the interrupt latch is also read
+        every ``_RETRY_WAIT_POLL_SECONDS``.
+        """
+        wait = self._retry_wait
+        woken = wait.woken if wait is not None else asyncio.Event()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + seconds
+        try:
+            while not self._interrupt.is_interrupted and not woken.is_set():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(woken.wait(), timeout=min(_RETRY_WAIT_POLL_SECONDS, remaining))
+        finally:
+            # Only this wait is over: a skip naming it from now on does nothing.
+            if self._retry_wait is wait:
+                self._retry_wait = None
         return self._interrupt.is_interrupted
+
+    def skip_retry_wait(self, wait_id: str) -> bool:
+        """End the wait the retry notice with *wait_id* announced; False when that wait is not the current one."""
+        wait = self._retry_wait
+        if not wait_id or wait is None or wait.wait_id != wait_id:
+            return False
+        wait.woken.set()
+        return True
 
     def inject(
         self,

@@ -347,6 +347,17 @@ class SleepSkip(Event):
 
 
 @dataclass
+class RetryWaitSkip(Event):
+    """User ends the wait before a main-turn retry (frontend → backend).
+
+    It wakes only the wait whose notice carried ``wait_id``; once that wait
+    has ended, it does nothing.
+    """
+
+    wait_id: str = ""
+
+
+@dataclass
 class ShellToBackground(Event):
     """User moves the shell commands the main agent runs now to the background."""
 
@@ -768,6 +779,8 @@ class InvocationRetryAttempt(InvocationEvent):
     """Shown after ``display_message`` (e.g. "seems offline"); never without it."""
     detail: str = ""
     """Raw untranslated diagnostic component separated from a fixed wrapper."""
+    wait_id: str = ""
+    """Names the wait before this retry that :class:`RetryWaitSkip` can end early; empty when it can't be skipped."""
 
 
 @dataclass

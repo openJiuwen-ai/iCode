@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import logging
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from functools import partial
@@ -1241,10 +1242,16 @@ class MainScreenViewAdapter:
         attempt: int,
         max_attempts: int,
         delay_seconds: int,
+        *,
+        wait_id: str = "",
     ) -> None:
         panel = self._screen.query_one(ChatPanel)
         await panel.prepare_retry()
-        await panel.add_retry(message, attempt, max_attempts, delay_seconds)
+        # The backend starts its wait once every handler has seen this notice, so a card that counts
+        # down from just before it mounts never ends after that wait: Retry Now is shown only while
+        # it can still end the wait.
+        deadline = time.monotonic() + delay_seconds
+        await panel.add_retry(message, attempt, max_attempts, delay_seconds, deadline=deadline, wait_id=wait_id)
         self.show_status(STATUS_RETRYING.bind(attempt=attempt, max_attempts=max_attempts))
 
     # -------------------------------------------------------------- #

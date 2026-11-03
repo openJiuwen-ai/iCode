@@ -1760,9 +1760,20 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Display an error message, replacing any trailing error/interrupted widget."""
         await self._live_renderer.add_error(text, action_label=action_label)
 
-    async def add_retry(self, message: str, attempt: int, max_attempts: int, delay_seconds: int) -> None:
+    async def add_retry(
+        self,
+        message: str,
+        attempt: int,
+        max_attempts: int,
+        delay_seconds: int,
+        *,
+        deadline: float | None = None,
+        wait_id: str = "",
+    ) -> None:
         """Display a retry notice, replacing any trailing status widget."""
-        await self._live_renderer.add_retry(message, attempt, max_attempts, delay_seconds)
+        await self._live_renderer.add_retry(
+            message, attempt, max_attempts, delay_seconds, deadline=deadline, wait_id=wait_id
+        )
 
     async def prepare_retry(self) -> None:
         """Finalise pending widgets before a main-agent stream retry.

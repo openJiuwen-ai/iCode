@@ -359,7 +359,10 @@ App:ansi ErrorMessage > .status-action-row > Button:focus,
 App:ansi ErrorMessage > .status-action-row > Button.-active,
 App:ansi InterruptedMessage > .status-action-row > Button:hover,
 App:ansi InterruptedMessage > .status-action-row > Button:focus,
-App:ansi InterruptedMessage > .status-action-row > Button.-active {
+App:ansi InterruptedMessage > .status-action-row > Button.-active,
+App:ansi RetryMessage > .retry-countdown-row > Button:hover,
+App:ansi RetryMessage > .retry-countdown-row > Button:focus,
+App:ansi RetryMessage > .retry-countdown-row > Button.-active {
     color: $button-color-foreground;
 }
 App:ansi StatusBar .model-tag:hover,
