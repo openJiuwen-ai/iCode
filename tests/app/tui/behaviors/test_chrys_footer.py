@@ -49,7 +49,9 @@ async def test_chrys_footer_composes_bindings_before_deferred_refresh(
         footer = app._main_screen.query_one(ChrysFooter)
         actions = {key.action for key in footer.query("FooterKey")}
 
-        assert {"sessions", "agents_config", "models_config", "show_log_viewer"} <= actions
+        # AIxCoding catalog: F4 footer key removed — assertions no longer expect
+        # the models_config action or its localized descriptions.
+        assert {"sessions", "agents_config", "show_log_viewer"} <= actions
 
 
 async def test_chrys_footer_recomposes_only_for_visible_binding_changes(
@@ -282,7 +284,6 @@ async def test_chrys_footer_localizes_in_place_with_natural_per_locale_widths(
         assert {key.action for key in keys_before} == {
             "sessions",
             "agents_config",
-            "models_config",
             "show_log_viewer",
             "open_guide",
             "toggle_trajectory_dashboard",
@@ -346,7 +347,6 @@ async def test_chrys_footer_localizes_in_place_with_natural_per_locale_widths(
         assert {key.action: key.description for key in keys_after} == {
             "sessions": "会话",
             "agents_config": "智能体",
-            "models_config": "模型",
             "show_log_viewer": "日志",
             "open_guide": "帮助",
             "toggle_trajectory_dashboard": "轨迹",
@@ -463,7 +463,6 @@ async def test_chrys_footer_locale_change_after_compose_before_mount_is_reconcil
                 assert {key.description for key in footer.query(FooterKey)} >= {
                     "会话",
                     "智能体",
-                    "模型",
                     "日志",
                     "侧边栏",
                     "主题",

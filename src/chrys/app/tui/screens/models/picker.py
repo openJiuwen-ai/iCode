@@ -16,7 +16,6 @@ from textual.widgets.option_list import Option
 from chrys.app.tui.binding_display import CLOSE_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
-from chrys.app.tui.util.picker_text import wrap_description
 from chrys.foundation.i18n import msg
 from chrys.foundation.text.reading_order import reading_order
 from chrys.service.profiles.models.schema import is_model_profile_selectable
@@ -95,8 +94,9 @@ class ModelsScreen(BaseDialog[ModelPickerResult]):
 
     def on_mount(self) -> None:
         ol = self.query_one(OptionList)
-        # Estimate usable width: container width - border(2) - padding(1) - scrollbar(1)
-        content_width = ol.size.width or 54
+        # AIxCoding catalog: "Manage models…" entry disabled — the picker
+        # lists profiles only; model configuration is centrally managed and
+        # read-only (aixcoding/docs/batches/catalog-sync/design.md).
         profiles = self._registry.list_profiles()
         selectable_profiles = sorted(
             (profile for profile in profiles if is_model_profile_selectable(profile)),
@@ -116,20 +116,6 @@ class ModelsScreen(BaseDialog[ModelPickerResult]):
                     disabled=is_current,
                 )
             )
-
-        if selectable_profiles:
-            ol.add_option(None)
-        localizer = widget_localizer(self)
-        hidden_count = len(profiles) - len(selectable_profiles)
-        desc = ""
-        if hidden_count:
-            hidden_text = render_str(localizer, _HIDDEN_PROFILES.bind(count=hidden_count))
-            desc = wrap_description(hidden_text, content_width)
-        manage_content = Content.assemble(
-            (render_str(localizer, _MANAGE_MODELS.bind()), "bold"),
-            f"\n{desc}" if desc else "",
-        )
-        ol.add_option(Option(manage_content, id=_MANAGE_OPTION_ID))
 
     @on(OptionList.OptionSelected)
     def _on_selected(self, event: OptionList.OptionSelected) -> None:

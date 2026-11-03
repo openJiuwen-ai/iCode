@@ -984,6 +984,12 @@ msgstr "CHRYS_MAX_TRANSIENT_RETRIES={value} 超过上限 {limit}，已限制为 
 msgid "settings.max_transient_retries_invalid"
 msgstr "已忽略无效的 CHRYS_MAX_TRANSIENT_RETRIES={raw}；应为非负整数，将使用前端默认值。"
 
+#. English: Model catalog base URL
+#. chrys-meta={"fingerprint":"e6cd53a77c510f41e59f222a3b3dc6a61c6904ecd2f7682c4ac327f4d48c787f","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.model.catalog.base_url.label"
+msgstr "模型目录服务地址"
+
 #. English: Active model profile
 #. chrys-meta={"fingerprint":"1fa94dedf5f593c4f5b9d72de45505809a093ee822d1cd987a4ae11d4865daf5","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -8640,11 +8646,12 @@ msgstr "{provider} 服务地址"
 msgid "tui.model_config.provider_model"
 msgstr "{provider} 模型"
 
-#. English: • Agent is running. This page is read-only.
-#. chrys-meta={"fingerprint":"2c1d9c5ee6873b430118a5b327031a85ab31bd7977a7d912ebcffa6d633308bf","multiline":false,"placeholders":[]}
+#. English: • Model configuration is centrally managed. Profiles can be
+#. selected but not edited here.
+#. chrys-meta={"fingerprint":"972e20ba261eb9e79e71f2e85ca3c5428a813c36411616392421fece4b3e4065","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/models/screen.py
 msgid "tui.model_config.read_only_notice"
-msgstr "• 智能体正在运行。此页面为只读。"
+msgstr "• 模型配置由系统统一管理，可选用切换，不可编辑。"
 
 #. English: Model profile saved
 #. chrys-meta={"fingerprint":"9477d2c9e38ba2b51d8d76039aef85b4d0be325ab302cc567a88fe0047153286","multiline":false,"placeholders":[]}

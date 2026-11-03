@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,22 +35,30 @@ class ModelProfileRegistry:
     def __init__(self) -> None:
         self._profiles: dict[str, ModelProfile] = {}
         self._user_dir: Path | None = None
+        # AIxCoding catalog: background sync thread replaces the whole set
+        # from its own thread while the UI reads it, so every access goes
+        # through one lock.
+        self._lock = threading.RLock()
 
     def register(self, profile: ModelProfile) -> None:
         """Register a model profile."""
-        self._profiles[profile.id] = profile
+        with self._lock:
+            self._profiles[profile.id] = profile
 
     def get(self, profile_id: str) -> ModelProfile | None:
         """Get a registered model profile by ID."""
-        return self._profiles.get(profile_id)
+        with self._lock:
+            return self._profiles.get(profile_id)
 
     def list_profiles(self) -> list[ModelProfile]:
         """List all registered model profiles."""
-        return list(self._profiles.values())
+        with self._lock:
+            return list(self._profiles.values())
 
     def list_ids(self) -> list[str]:
         """List IDs of all registered model profiles."""
-        return list(self._profiles.keys())
+        with self._lock:
+            return list(self._profiles.keys())
 
     def read_profiles(self, directory: Path | None = None) -> tuple[Path, list[ModelProfile]]:
         """Read profile files without mutating this registry.
@@ -61,26 +71,27 @@ class ModelProfileRegistry:
 
     def install_profiles(self, directory: Path, profiles: list[ModelProfile]) -> int:
         """Install profiles already read from *directory* into this registry."""
-        self._user_dir = directory
-        # Case-folded key → first-seen id.  Name comparison is case-
-        # insensitive to match the uniqueness rule enforced by the UI
-        # (avoids the user creating two profiles that only differ in
-        # case and then being unable to tell them apart in listings).
-        seen_names: dict[str, str] = {}
-        for profile in profiles:
-            key = profile.name.casefold()
-            if key in seen_names:
-                logger.warning(
-                    "Duplicate model profile name %r found (ids: %s, %s) — "
-                    "rename one via the model configuration screen to avoid ambiguity.",
-                    profile.name,
-                    seen_names[key],
-                    profile.id,
-                )
-            else:
-                seen_names[key] = profile.id
-            self.register(profile)
-        return len(profiles)
+        with self._lock:
+            self._user_dir = directory
+            # Case-folded key → first-seen id.  Name comparison is case-
+            # insensitive to match the uniqueness rule enforced by the UI
+            # (avoids the user creating two profiles that only differ in
+            # case and then being unable to tell them apart in listings).
+            seen_names: dict[str, str] = {}
+            for profile in profiles:
+                key = profile.name.casefold()
+                if key in seen_names:
+                    logger.warning(
+                        "Duplicate model profile name %r found (ids: %s, %s) — "
+                        "rename one via the model configuration screen to avoid ambiguity.",
+                        profile.name,
+                        seen_names[key],
+                        profile.id,
+                    )
+                else:
+                    seen_names[key] = profile.id
+                self.register(profile)
+            return len(profiles)
 
     def load_profiles(self, directory: Path | None = None) -> int:
         """Load model profiles from a directory.
@@ -97,7 +108,24 @@ class ModelProfileRegistry:
 
     def remove(self, profile_id: str) -> bool:
         """Remove a profile from the registry."""
-        return self._profiles.pop(profile_id, None) is not None
+        with self._lock:
+            return self._profiles.pop(profile_id, None) is not None
+
+    def install_snapshot(self, profiles: Sequence[ModelProfile]) -> int:
+        """Replace the whole set with *profiles* — one swap, no disk I/O.
+
+        A catalog sync replaces the directory wholesale, so the in-memory set
+        must be replaced too: :meth:`install_profiles` only adds, and profiles
+        the catalog just deleted would otherwise stay selectable. The caller
+        already holds the same item set it just wrote to disk, so installing it
+        here keeps the registry and the directory on one version without
+        re-reading the files inside the lock.
+        """
+        # AIxCoding catalog: install a same-version snapshot (short critical
+        # section: one dict swap, zero disk I/O under the lock).
+        with self._lock:
+            self._profiles = {profile.id: profile for profile in profiles}
+            return len(self._profiles)
 
     def load_all(self, user_dir: Path | None = None) -> int:
         """Load all user profiles. Returns total loaded."""

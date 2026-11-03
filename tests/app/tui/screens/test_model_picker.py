@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import OptionList, Static
-from textual.widgets.option_list import OptionDoesNotExist
+from textual.widgets.option_list import Option, OptionDoesNotExist
 
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.models.picker import ModelPickerAction, ModelsScreen
@@ -70,20 +70,21 @@ async def test_model_picker_matches_current_by_id_and_hides_incomplete_profiles(
         current = option_list.get_option("profile:current")
         same_name = option_list.get_option("profile:other")
         sentinel = option_list.get_option("profile:action:manage")
-        manage = option_list.get_option("action:manage")
 
         assert current.disabled is True
         assert current.prompt.plain == "◦ Shared name"
         assert same_name.disabled is False
         assert same_name.prompt.plain == "Shared name"
         assert sentinel.prompt.plain == "Sentinel-shaped ID"
-        assert manage.prompt.plain == "Manage models…\n  - 1 incomplete profile hidden"
+        # AIxCoding catalog: manage entry disabled — profiles only.
+        with pytest.raises(OptionDoesNotExist):
+            option_list.get_option("action:manage")
         with pytest.raises(OptionDoesNotExist):
             option_list.get_option("profile:incomplete")
 
 
 @pytest.mark.asyncio
-async def test_model_picker_rules_off_the_manage_action_and_nothing_else() -> None:
+async def test_model_picker_lists_profiles_without_rules_or_manage_action() -> None:
     registry = _registry(_profile("first", "First"), _profile("second", "Second"), _profile("third", "Third"))
     app = _PickerHarness(registry, current_profile_id="first")
 
@@ -91,9 +92,9 @@ async def test_model_picker_rules_off_the_manage_action_and_nothing_else() -> No
         option_list = app.picker.query_one(OptionList)
         await wait_for(lambda: option_list.virtual_size.height, pilot=pilot, description="picker laid out")
 
-        # A line to a model, then one rule and the action: no rule between one model and the next.
-        assert option_list.option_count == 4
-        assert option_list.virtual_size.height == 5
+        # Profiles only, no separator rule.
+        assert option_list.option_count == 3
+        assert option_list.virtual_size.height == 3
 
 
 @pytest.mark.asyncio
@@ -136,8 +137,14 @@ async def test_model_picker_namespaces_manage_action_and_profile_ids(
     async with app.run_test() as pilot:
         await pilot.pause()
         option_list = app.picker.query_one(OptionList)
-        option = option_list.get_option(option_id)
-        option_index = option_list.get_option_index(option_id)
+        if option_id == "action:manage":
+            # AIxCoding catalog: manage routing via synthesized event — the
+            # entry is no longer rendered, but the protocol path stays covered.
+            option = Option("Manage models…", id="action:manage")
+            option_index = option_list.option_count
+        else:
+            option = option_list.get_option(option_id)
+            option_index = option_list.get_option_index(option_id)
 
         option_list.post_message(OptionList.OptionSelected(option_list, option, option_index))
         await pilot.pause()
@@ -158,13 +165,12 @@ async def test_model_picker_escape_closes_without_selection() -> None:
 
 
 @pytest.mark.asyncio
-async def test_model_picker_renders_chinese_title_and_manage_action() -> None:
+async def test_model_picker_renders_chinese_title() -> None:
     app = _PickerHarness(_registry(), locale="zh-Hans")
 
     async with app.run_test() as pilot:
         await pilot.pause()
         container = app.picker.query_one("#container")
-        manage = app.picker.query_one(OptionList).get_option("action:manage")
 
+        # The manage entry is gone, but the title still renders localized.
         assert container.border_title == "模型"
-        assert manage.prompt.plain == "管理模型…"

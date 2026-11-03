@@ -542,6 +542,10 @@ DEFERRED_KEYS: frozenset[str] = frozenset(
         "mutations.coordination.enabled",
         "mutations.parallel_implicit_tools",
         "workspace.change_notice.max_entries",
+        # AIxCoding catalog: keep base_url out of the panel — the catalog is
+        # server-owned and the deployment base is not a panel action
+        # (aixcoding/docs/batches/catalog-sync/design.md).
+        "model.catalog.base_url",
     }
 )
 

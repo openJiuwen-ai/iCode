@@ -131,14 +131,32 @@ class TestDesignParsing:
         assert common.parse_table_section(self.SIGNED, "不存在的节") == []
 
     def test_r2_pool_signed_and_unsigned(self, tmp_path):
-        docs = tmp_path / "docs"
+        # docs_root.parents[1] is the repo root the pool verifies files against,
+        # so the tree must mirror the real layout: repo/aixcoding/docs/batches/…
+        # plus the R2-named files themselves.
+        repo = tmp_path / "repo"
+        docs = repo / "aixcoding" / "docs"
         for name, text in (("signed", self.SIGNED), ("unsigned", self.UNSIGNED)):
             d = docs / "batches" / name
             d.mkdir(parents=True)
             (d / "design.md").write_text(text, encoding="utf-8")
+        for rel in ("src/chrys/app/up.py", "src/chrys/app/up2.py"):
+            _write(repo, rel, "# up\n")
         approved, notes = common.r2_approved_upstream_files(docs)
         assert approved == {"src/chrys/app/up.py", "src/chrys/app/up2.py"}
         assert len(notes) == 1 and "unsigned/design.md" in notes[0]
+
+    def test_r2_pool_ignores_names_not_in_repo(self, tmp_path):
+        # A misspelled R2 name must be a loud note, never a silent pool entry.
+        repo = tmp_path / "repo"
+        docs = repo / "aixcoding" / "docs"
+        d = docs / "batches" / "signed"
+        d.mkdir(parents=True)
+        (d / "design.md").write_text(self.SIGNED, encoding="utf-8")
+        _write(repo, "src/chrys/app/up.py", "# up\n")
+        approved, notes = common.r2_approved_upstream_files(docs)
+        assert approved == {"src/chrys/app/up.py"}
+        assert any("up2.py" in n and "not a file in the repo" in n for n in notes)
 
     def test_r2_header_drift_is_loud(self, tmp_path):
         drifted = self.SIGNED.replace("| 文件 | 改什么 |", "| file | what |")

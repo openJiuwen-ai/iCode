@@ -258,7 +258,10 @@ class RuntimeConfigController:
                 ModelConfigScreen(
                     registry,
                     _canonical_active_model_profile_id(registry, global_default_profile_id),
-                    read_only=self._state.run.agent_running or self._services.execution_busy(),
+                    # AIxCoding catalog: centrally managed, always read-only —
+                    # the model list is owned by the server catalog
+                    # (aixcoding/docs/batches/catalog-sync/design.md).
+                    read_only=True,
                 ),
                 _on_result,
             )
