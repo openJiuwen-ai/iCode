@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from textual.widgets.text_area import Selection
+
 from chrys.app.tui.widgets.chrome.draft_text_area import DRAFT_COMPONENT_CLASSES, DraftTextArea, draft_text_area_css
 from chrys.app.tui.widgets.editor import EditorTextRange, MessageEditor
 from chrys.foundation.text.draft_references import iter_reference_labels, label_safe_range
@@ -75,20 +77,27 @@ class DraftEditor(DraftTextArea, MessageEditor):
         )
         return EditorTextRange(document.get_location_from_index(start), document.get_location_from_index(end))
 
-    def _label_edge(self, location: EditorLocation, *, forward: bool) -> EditorLocation:
-        # Where text cannot be typed (Vim Normal, Visual), the cursor rests on a
-        # character, never past a line's last one: a label that ends the line is
-        # one character there, so the cursor rests on its start.
-        edge = super()._label_edge(location, forward=forward)
-        row, column = edge
+    def _validate_selection(self, selection: Selection) -> Selection:
+        # Where text cannot be typed (Vim Normal), the cursor rests on a character,
+        # never past a line's last one: a label that ends the line is one character
+        # there, so a cursor it pushed to the line's end rests on its start. A
+        # selection (Vim Visual) keeps its exclusive end after the label, so the
+        # label shows selected when a yank or delete would take it.
+        validated = super()._validate_selection(selection)
         if (
-            forward
-            and edge != location
-            and column == len(self.document[row])
-            and not self._active_keymap().accepts_text()
+            not self._references
+            or not selection.is_empty
+            or validated.end == selection.end
+            or self._active_keymap().accepts_text()
         ):
-            return super()._label_edge(location, forward=False)
-        return edge
+            return validated
+        row, column = validated.end
+        line = self.document[row]
+        if column == len(line):
+            for label in iter_reference_labels(line, self._references):
+                if label.end == column:
+                    return Selection.cursor((row, label.start))
+        return validated
 
     def _limit_inserted_text(self, insert: str, start: EditorLocation, end: EditorLocation) -> str:
         """Cut *insert* to the character ceiling, never inside one of its live labels."""

@@ -259,6 +259,20 @@ async def test_vim_normal_mode_rests_on_a_label_that_ends_the_line(keys: tuple[s
 
 
 @pytest.mark.asyncio
+async def test_vim_visual_on_a_label_that_ends_the_line_shows_the_label_selected() -> None:
+    app = _App()
+    async with app.run_test() as pilot:
+        editor = await _open(app, pilot, ChatDraft("ab [Quote #1]", references=_quote()), mode=EditorMode.VIM)
+        editor.move_cursor((0, 0))
+        await pilot.press("dollar_sign", "v")
+
+        # The highlight is what a delete takes: the whole label.
+        assert editor.selected_text == "[Quote #1]"
+        await pilot.press("d")
+        assert editor.text == "ab "
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("append", ["a", "A"])
 async def test_vim_append_on_a_label_that_ends_the_line_types_after_it(append: str) -> None:
     app = _App()
