@@ -45,7 +45,7 @@ If a file cannot be decoded using the detected encoding, iCode reports a configu
 
 Project hooks are not loaded by default, because they come with the repository you open. To load them, press **F10** in the terminal user interface (TUI) to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Safety** (`project.hooks_enabled`). When the working directory has project hooks that are not loaded, iCode shows a notice. Global hooks are always loaded.
 
-Editing a hook configuration file on disk does not take effect immediately. After editing, switch sessions or restart iCode to reload the configuration. Changes to hook scripts alone do not require a reload; the next time the hook is triggered, it uses the new script content.
+Editing a hook configuration file on disk does not take effect immediately. After editing, run `/reload` while idle, switch sessions, or restart iCode to load the configuration. Changes to hook scripts alone do not require a reload; the next time the hook is triggered, it uses the new script content.
 
 Enter `/runtime` in the TUI and open the **Hooks** tab to view the currently loaded project and global hooks. In a terminal, [`icode hook list`](#icode-hook-list) shows the hooks a session started in the current directory loads, and [`icode hook validate`](#icode-hook-validate) checks the configuration files.
 

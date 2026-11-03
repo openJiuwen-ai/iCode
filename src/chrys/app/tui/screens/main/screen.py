@@ -126,6 +126,7 @@ from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
 from chrys.app.tui.widgets.workflow import text as workflow_text
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.app.tui.widgets.workflow.panel import WorkflowPanel
+from chrys.foundation.config.errors import RELOAD_SESSION_CHANGED, config_error_display
 from chrys.foundation.config.settings import (
     DEFAULT_LOCALE,
     DEFAULT_TRAJECTORY_VERIFY_COMMANDS,
@@ -164,6 +165,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.sessions import WorkflowSessionPick
     from chrys.app.tui.screens.themes import ThemeEditorPanel
     from chrys.app.tui.screens.themes.picker import ThemesScreen
+    from chrys.app.tui.theme_loader import UserThemeScan
     from chrys.app.tui.themes.store import ThemeFileRevision, UserThemeStore
     from chrys.app.update_check import UpdateNotice
     from chrys.foundation.config.settings_store import PersistResult, SettingsHandle
@@ -199,6 +201,16 @@ _HELP_BINDING = msg("tui.binding.help", fallback="Help")
 _SIDEBAR_BINDING = msg("tui.binding.sidebar", fallback="Sidebar")
 _THEMES_BINDING = msg("tui.binding.themes", fallback="Themes")
 _SETTINGS_BINDING = msg("tui.binding.settings", fallback="Settings")
+_RELOAD_FINALIZE_FAILED = msg(
+    "tui.settings.reload_finalize_failed", fallback="Could not finish saving the Settings panel. Reload stopped."
+)
+_WORKFLOW_RELOAD_BUSY = msg(
+    "tui.settings.reload_workflow_busy", fallback="Wait for the workflow run to finish before reloading settings."
+)
+_THEME_EDITOR_RELOAD_BUSY = msg(
+    "tui.settings.reload_theme_editor_busy", fallback="Close the theme editor before reloading settings."
+)
+
 _SETTINGS_REJECTED = msg(
     "tui.settings.save_rejected",
     fallback="Could not save settings; the store rejected: {keys}.",
@@ -346,6 +358,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._gc_freeze_participants: tuple[GcFreezeParticipant, ...] = ()
         self.theme_editor: ThemeEditorPanel | None = None
         self._theme_editor_opening = False
+        self._manual_reload_themes: UserThemeScan | None = None
+        self._manual_reloads_running = 0
         self._shell_requested_after_editor = False
         # Seeded with the engine's launch mode: the startup ApprovalModeUpdated
         # sync then confirms what the header already shows, instead of
@@ -468,6 +482,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 refresh_notification_settings=self._refresh_notification_settings,
                 refresh_trajectory_verify_commands=self._refresh_trajectory_verify_commands,
                 settings_reloaded=self._on_settings_reloaded_for_panel,
+                follow_manual_reload=self._follow_manual_reload,
             ),
             runtime_info=self._runtime_info,
             live_diff=self._live_diff,
@@ -622,8 +637,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def _apply_tool_groups_expanded(self, value: bool) -> None:
         """Persist the live choice; existing groups deliberately keep their state."""
-        persist_tool_groups_expanded(value)
-        cast("ChrysApp", self.app).settings_handle.override(tool_groups_expanded=value)
+        handle = cast("ChrysApp", self.app).settings_handle
+        handle.override(tool_groups_expanded=value)
+        error = persist_tool_groups_expanded(value)
+        if error is None:
+            handle.confirm_written({"ui.chat.tool_groups_expanded": value})
+        else:
+            self._notify_settings_failure(error)
 
     def _apply_approval_defer_while_judging(self, value: bool) -> None:
         """Put the choice in force; requests already waiting keep the choice they arrived under."""
@@ -691,9 +711,19 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         return coordinator if isinstance(coordinator, SettingsCoordinator) else None
 
     def _on_settings_written(self, result: PersistResult) -> None:
+        cast("ChrysApp", self.app).settings_handle.confirm_written(result.written)
         coordinator = self._existing_settings_coordinator()
         if coordinator is not None:
             coordinator.on_written(result)
+
+    def _follow_manual_reload(self) -> None:
+        """Put what the files now say on screen. Showing a value is not choosing it: nothing is written or overlaid."""
+        app = cast("ChrysApp", self.app)
+        if self._manual_reload_themes is not None:
+            app.follow_user_themes(self._manual_reload_themes)
+        self._navigation.follow_language()
+        self._editor_mode = EditorMode.parse(app.settings_handle.settings.editor_keymap)
+        self._suggestions.refresh_prompt_shortcuts()
 
     def _on_settings_reloaded_for_panel(self) -> None:
         coordinator = self._existing_settings_coordinator()
@@ -701,7 +731,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             coordinator.on_reloaded()
 
     def _notify_settings_failure(self, exc: Exception) -> None:
-        self._view_adapter.notify(str(exc), title=SETTINGS_TITLE.bind(), severity="error", timeout=5)
+        self._view_adapter.notify(config_error_display(exc), title=SETTINGS_TITLE.bind(), severity="error", timeout=5)
         coordinator = self._existing_settings_coordinator()
         if coordinator is not None:
             coordinator.on_write_failed()
@@ -852,6 +882,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             configure_model=self._open_model_config,
             configure_agent=self._open_agent_config,
             configure_agent_tab=self._open_agent_config_tab,
+            reload_settings=self._start_manual_reload,
             show_runtime_details=self.action_runtime_details,
             show_usage=self._config_actions.open_usage,
             configure_settings=self._open_settings,
@@ -1697,18 +1728,29 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             current_draft_revision=lambda: input_bar.draft_revision,
         )
         # What it returns is the draft it opened on (the snapshot holds it whole), edited.
-        self._view_adapter.push_screen(dialog, lambda result: self._on_editor_result(result, opened=snapshot))
+        opened_mode = self._editor_mode
+        self._view_adapter.push_screen(
+            dialog, lambda result: self._on_editor_result(result, opened=snapshot, opened_mode=opened_mode)
+        )
 
-    def _on_editor_result(self, result: EditorDialogResult, *, opened: InputDraftSnapshot) -> None:
-        if result.mode is not self._editor_mode:
+    def _on_editor_result(
+        self, result: EditorDialogResult, *, opened: InputDraftSnapshot, opened_mode: EditorMode
+    ) -> None:
+        # Against the mode it opened in: a reload may have moved ours since, which is not the user's choice.
+        if result.mode is not opened_mode:
             self._editor_mode = result.mode
-            persist_editor_keymap(result.mode.value)
             # The same write-point contract as theme and locale: the shared
             # settings handle records the choice as a RUNTIME override, so
             # settings keep describing the screen even when the swallowed
-            # disk write above failed.
+            # disk write below fails.
             if self._on_editor_keymap_changed is not None:
                 self._on_editor_keymap_changed(result.mode.value)
+            error = persist_editor_keymap(result.mode.value)
+            handle = self._services.settings_handle
+            if error is not None:
+                self._notify_settings_failure(error)
+            elif handle is not None:
+                handle.confirm_written({"ui.editor.keymap": result.mode.value})
         if not result.accepted:
             return
         input_bar = self.query_one(InputBar)
@@ -2074,6 +2116,78 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def action_settings(self) -> None:
         """Open the Settings dialog (F10)."""
         self._open_settings()
+
+    def _start_manual_reload(self) -> None:
+        if self._services.execution().kind == "workflow":
+            self._warn_slash_command(_WORKFLOW_RELOAD_BUSY.bind(), title=SETTINGS_TITLE.bind())
+            return
+        if self.theme_editor is not None or self._theme_editor_opening:
+            # The editor owns the theme on screen and the file it is editing.
+            self._warn_slash_command(_THEME_EDITOR_RELOAD_BUSY.bind(), title=SETTINGS_TITLE.bind())
+            return
+        engine = self._services.engine_provider
+        # SessionReady has not populated the chat ID after a failed first build.
+        session_id = self.chat_session_id or (engine().session_id if engine is not None else None)
+        self._start_worker(partial(self._reload_settings_from_disk, session_id, self._services.session_generation()))
+
+    async def _reload_settings_from_disk(self, session_id: str | None, generation: int) -> None:
+        self._manual_reloads_running += 1
+        try:
+            await self._flush_and_publish_manual_reload(session_id, generation)
+        finally:
+            self._manual_reloads_running -= 1
+
+    async def _flush_and_publish_manual_reload(self, session_id: str | None, generation: int) -> None:
+        from chrys.app.tui.theme_loader import scan_user_themes
+        from chrys.foundation.events.types import SettingsReload
+
+        queue = self._settings_persistence()
+        failures = queue.failures
+        coordinator = self._existing_settings_coordinator()
+        finalize_failures = coordinator.finalize_failures if coordinator is not None else 0
+        while True:
+            writes = queue.save_generation
+            if not await queue.flush(notify_on_failure=True):
+                return
+            coordinator = self._existing_settings_coordinator()
+            if coordinator is not None:
+                error = await coordinator.wait_for_finalize(finalize_failures)
+                if error is not None:
+                    self._view_adapter.notify(error, title=_RELOAD_FINALIZE_FAILED.bind(), severity="error", timeout=8)
+                    return
+            if queue.failures != failures:
+                return
+            if writes == queue.save_generation:
+                break
+        if generation == self._services.session_generation() and (
+            not self.chat_session_id or session_id == self.chat_session_id
+        ):
+            projection: dict[str, str | bool] = {
+                **self._notification_service().settings.to_settings_fields(),
+                "trajectory_verify_commands": self._trajectory_verify_commands,
+                "theme": self.app.theme,
+                "locale": self._language_localizer().requested_locale,
+                "editor_keymap": self._editor_mode.value,
+            }
+            # Off the loop, and only put on screen if the whole reload succeeds.
+            themes = await asyncio.to_thread(scan_user_themes)
+            self._manual_reload_themes = themes
+            try:
+                await self._services.bus.publish(
+                    SettingsReload(
+                        manual=True,
+                        session_id=session_id or None,
+                        tui_projection=projection,
+                        available_themes=cast("ChrysApp", self.app).themes_after(themes),
+                    )
+                )
+            finally:
+                if self._manual_reload_themes is themes:
+                    self._manual_reload_themes = None
+            for warning in themes.warnings:
+                await self._services.bus.publish(warning)
+        else:
+            self._warn_slash_command(RELOAD_SESSION_CHANGED.bind(), title=SETTINGS_TITLE.bind())
 
     def action_runtime_details(self) -> None:
         """Open the active runtime details modal."""
@@ -2442,6 +2556,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 render_str(self._language_localizer(), THEME_PREVIEW_HINT.bind()), severity="warning", markup=False
             )
             self.theme_editor.editor.focus_first_swatch()
+            return
+        if self._manual_reloads_running:
+            # Its preview would own the theme just when the reload puts the file's on screen.
             return
         self._navigation.pick_theme()
 

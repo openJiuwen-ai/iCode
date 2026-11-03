@@ -1295,6 +1295,13 @@ model:
     assert profile.model.profile_id == "abcdef123456"
 
 
+@pytest.mark.parametrize("value", ["null", "''", "[]", "{}", "false", "0", "0.0"])
+def test_empty_model_profile_id_loads_as_unbound(tmp_path: Path, value: str) -> None:
+    path = tmp_path / "agent.yaml"
+    path.write_text(f"name: Writer\nmodel: {{profile_id: {value}}}\n", encoding="utf-8")
+    assert load_profile_from_yaml(path).model.profile_id == ""
+
+
 def test_load_model_legacy_profile_ignored(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Legacy ``model.profile`` (name-based) is ignored and logs a warning."""
     import logging

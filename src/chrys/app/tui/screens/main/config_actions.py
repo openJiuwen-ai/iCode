@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal
 
 from chrys.app.tui.screens.main.model_indicator import model_lock_notice
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
+from chrys.foundation.config.errors import config_error_display
 from chrys.foundation.events.types import SetApprovalMode
 from chrys.foundation.i18n import msg
 from chrys.service.approval.policy import ApprovalMode
@@ -209,7 +210,7 @@ class RuntimeConfigController:
             await asyncio.to_thread(activate_model_profile, profile_id)
         except Exception as exc:
             self._view.notify(
-                str(exc),
+                config_error_display(exc),
                 title=_MODEL_SETTINGS_TITLE.bind(),
                 severity="error",
                 timeout=5,
@@ -285,7 +286,7 @@ class RuntimeConfigController:
             )
         except Exception as exc:
             self._view.notify(
-                str(exc),
+                config_error_display(exc),
                 title=_MODEL_SETTINGS_TITLE.bind(),
                 severity="error",
                 timeout=5,

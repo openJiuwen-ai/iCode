@@ -24,6 +24,10 @@ from chrys.service.mcp.owned import LOCAL_HTTP_FAILURE_ERROR_DATA, MCPStreamable
 
 logger = logging.getLogger(__name__)
 
+# The DELETE that ends a session is a courtesy: a server that stopped answering
+# must not hold whoever is closing the connection for the client's read timeout.
+_SESSION_TERMINATE_TIMEOUT_SECONDS = 5.0
+
 _HTTP_HEADERS_OVERRIDE: ContextVar[dict[str, str] | None] = ContextVar("mcp_http_headers_override", default=None)
 
 
@@ -187,7 +191,8 @@ async def _chrys_streamable_http_client(
                     yield read_stream, write_stream, transport.get_session_id
                 finally:
                     if transport.session_id and terminate_on_close:
-                        await transport.terminate_session(client)
+                        with anyio.move_on_after(_SESSION_TERMINATE_TIMEOUT_SECONDS):
+                            await transport.terminate_session(client)
                     tg.cancel_scope.cancel()
         finally:
             await read_stream_writer.aclose()

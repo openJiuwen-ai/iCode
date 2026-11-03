@@ -408,8 +408,17 @@ class ConfigUpdate(Event):
 class SettingsReload(Event):
     """Reload settings from their sources and rebuild the agent."""
 
+    manual: bool = False
     model_chosen: bool = False
     """The user picked the default model for this session too (``$``): the session's own model ends."""
+    tui_projection: dict[str, str | bool] = field(default_factory=dict)
+    """Settings field names and values the requesting screen is actually displaying."""
+    available_themes: tuple[str, ...] | None = None
+    """Theme names registered by the requesting TUI, when present."""
+    session_scoped_model: bool = False
+    """With ``manual``: the model this reload selects stays with this session, as ACP's hosts share one pointer."""
+    follow_process_model: bool = False
+    """The default model was just set for the whole process: what this session settled on earlier ends."""
 
 
 @dataclass
@@ -1209,6 +1218,7 @@ class Warning(Event):
     display_message: MessageRef | None = None
     reason: str = ""
     """Machine-readable cause within ``code``, for callers that act on it; empty when ``code`` says it all."""
+    display_hint: MessageRef | None = None
 
 
 @dataclass
@@ -1621,6 +1631,9 @@ class SettingsReloaded(Event):
     distinguish success from an ``AgentLoadFailed`` rebuild failure.
     """
 
+    manual: bool = False
+    """It answers a ``SettingsReload(manual=True)``: the frontend also follows what the files now say."""
+    report: tuple[MessageRef, ...] = ()
     runtime_details: AgentRuntimeDetails = field(default_factory=AgentRuntimeDetails)
 
 

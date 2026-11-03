@@ -99,9 +99,9 @@ def assemble_agent_engine(
     )
     on_turn_started: Callable[[], None] = on_turn_started if on_turn_started is not None else _noop_turn_started
     turn_state = TurnRuntimeState(lease=ExecutionLease(bus=bus))
-    permits = LifecyclePermits(turn_state=turn_state, session=session)
-    recorder = trajectory_recorder.TrajectoryRecorder()
     fsm = EngineStateMachine()
+    permits = LifecyclePermits(turn_state=turn_state, session=session, turn_executing=fsm.is_running)
+    recorder = trajectory_recorder.TrajectoryRecorder()
     history = SessionHistoryManager()
     workspace_change_tracker = WorkspaceChangeTracker()
     usage_publisher = UsagePublisher(bus=bus, session=session, current=current)

@@ -11,7 +11,7 @@ iCode 从以下两处读取快捷指令：
 | 你自己的快捷指令 | `~/.chrys/shortcuts` | `%APPDATA%\chrys\shortcuts` |
 | 项目的快捷指令 | 工作目录及其上级目录（直到仓库根目录）中的 `.chrys/shortcuts` | 同左 |
 
-新增或修改的文件，下次输入 `/` 时即可看到。
+新增或修改的文件，下次输入 `/` 时或执行 `/reload` 后即可看到。
 
 项目的 `.chrys/shortcuts` 必须位于仓库内：如果它是指向仓库外目录的链接，iCode 会跳过它。
 

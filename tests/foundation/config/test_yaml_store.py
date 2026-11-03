@@ -128,13 +128,13 @@ def test_a_failed_backup_write_does_not_fail_the_commit(tmp_path: Path, monkeypa
     assert not backup_path_for(path).exists()
 
 
-def test_read_falls_back_to_the_backup_and_repairs_the_primary(tmp_path: Path) -> None:
+def test_read_recovers_without_rewriting_a_corrupt_primary(tmp_path: Path) -> None:
     path = tmp_path / "settings.yaml"
     update_yaml_doc(path, lambda _doc: {"ui": {"theme": "chrys"}})
     path.write_text("ui: [not valid yaml", encoding="utf-8")
 
     assert read_yaml_doc(path) == {"ui": {"theme": "chrys"}}
-    assert yaml.safe_load(path.read_text(encoding="utf-8")) == {"ui": {"theme": "chrys"}}
+    assert path.read_text(encoding="utf-8") == "ui: [not valid yaml"
 
 
 def test_read_without_backup_does_not_fall_back(tmp_path: Path) -> None:
@@ -174,20 +174,18 @@ def test_every_way_of_corrupting_the_primary_still_reaches_the_backup(tmp_path: 
     assert read_yaml_doc(path) == {"ui": {"theme": "chrys"}}
 
     path.write_bytes(poison)
-    assert update_yaml_doc(path, lambda doc: {**doc, "approval": {"default_mode": "manual"}}) == {
-        "ui": {"theme": "chrys"},
-        "approval": {"default_mode": "manual"},
-    }
+    with pytest.raises(yaml_store.ConfigDocumentError):
+        update_yaml_doc(path, lambda doc: {**doc, "approval": {"default_mode": "manual"}})
+    assert path.read_bytes() == poison
 
 
-def test_update_keeps_the_backup_content_when_the_primary_is_corrupt(tmp_path: Path) -> None:
+def test_missing_primary_removes_remembered_content_and_ignores_backup(tmp_path: Path) -> None:
     path = tmp_path / "settings.yaml"
-    update_yaml_doc(path, lambda _doc: {"ui": {"theme": "chrys"}})
-    path.write_text("ui: [not valid yaml", encoding="utf-8")
-
-    committed = update_yaml_doc(path, lambda doc: {**doc, "approval": {"default_mode": "manual"}})
-
-    assert committed == {"ui": {"theme": "chrys"}, "approval": {"default_mode": "manual"}}
+    update_yaml_doc(path, lambda doc: {"removed": True})
+    path.unlink()
+    assert read_yaml_doc(path) is None
+    assert not path.exists()
+    assert update_yaml_doc(path, lambda doc: {**doc, "added": 2}) == {"added": 2}
 
 
 def test_a_non_mapping_document_reads_as_absent(tmp_path: Path) -> None:
@@ -195,7 +193,8 @@ def test_a_non_mapping_document_reads_as_absent(tmp_path: Path) -> None:
     path.write_text("- just\n- a list\n", encoding="utf-8")
 
     assert read_yaml_doc(path) is None
-    assert update_yaml_doc(path, lambda doc: {**doc, "ui": {"theme": "chrys"}}) == {"ui": {"theme": "chrys"}}
+    with pytest.raises(yaml_store.ConfigDocumentError):
+        update_yaml_doc(path, lambda doc: {**doc, "ui": {"theme": "chrys"}})
 
 
 @pytest.mark.parametrize("falsey", ["false\n", "0\n", "[]\n", "''\n"])
@@ -213,7 +212,8 @@ def test_a_falsey_non_mapping_does_not_pass_for_an_empty_document(tmp_path: Path
     assert read_yaml_doc(path) == {"ui": {"theme": "chrys"}}
 
     path.write_text(falsey, encoding="utf-8")
-    assert update_yaml_doc(path, lambda doc: doc)["ui"] == {"theme": "chrys"}
+    with pytest.raises(yaml_store.ConfigDocumentError):
+        update_yaml_doc(path, lambda doc: doc)
 
 
 @pytest.mark.parametrize("empty", ["", "\n", "# only a comment\n", "null\n", "~\n"])
@@ -253,8 +253,11 @@ def test_a_read_still_refuses_a_lock_another_process_is_holding(tmp_path: Path) 
     held = yaml_store.FileLock(lock_path_for(path), timeout=0)
     held.acquire()
     try:
-        with pytest.raises(TimeoutError):
-            read_yaml_doc(path, lock_timeout=0)
+        assert (
+            yaml_store.read_yaml_document(path, lock_timeout=0).error.definition.key == "settings.document_lock_timeout"
+        )
+        with pytest.raises(yaml_store.ConfigDocumentError, match="Timed out waiting for the lock"):
+            yaml_store.read_yaml_document(path, lock_timeout=0, strict=True)
     finally:
         held.release()
 
@@ -444,3 +447,25 @@ def test_readonly_read_bounds_the_expanded_scalar_volume(tmp_path: Path) -> None
     plain = tmp_path / "plain.yaml"
     plain.write_text('blob: "' + "y" * 100_000 + '"\n', encoding="utf-8")
     assert read_yaml_doc_readonly(plain) == {"blob": "y" * 100_000}
+
+
+def test_an_unreadable_primary_is_distinct_from_a_busy_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "settings.yaml"
+    path.write_text("value: 65", encoding="utf-8")
+    assert read_yaml_doc(path) == {"value": 65}
+    read = Path.read_bytes
+
+    def refuse(primary: Path) -> bytes:
+        if primary == path:
+            raise PermissionError(13, "Permission denied")
+        return read(primary)
+
+    monkeypatch.setattr(Path, "read_bytes", refuse)
+    result = yaml_store.read_yaml_document(path)
+    assert result.doc == {"value": 65}
+    assert result.error.definition.key == "settings.document_unreadable"
+    with pytest.raises(yaml_store.ConfigDocumentError, match="Permission denied") as failure:
+        yaml_store.read_yaml_document(path, strict=True)
+    assert failure.value.display.definition.key == "settings.document_unreadable"

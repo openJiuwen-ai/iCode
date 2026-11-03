@@ -120,6 +120,7 @@ def _slash_actions(warn: Any) -> SlashCommandActions:
         configure_model=noop,
         configure_agent=noop,
         configure_agent_tab=noop,
+        reload_settings=lambda: None,
         show_runtime_details=noop,
         show_usage=noop,
         configure_settings=lambda _tab: None,

@@ -97,11 +97,8 @@ def migrate_notifications_v0() -> MigrationResult:
     # Read under the legacy file's own lock *before* taking the settings lock:
     # migrations hold at most one configuration lock at any moment. Once the
     # component completes, the rename below makes this a cheap miss per boot.
-    # The fingerprint comes out of the same call rather than from a digest
-    # taken beside it: this read repairs a corrupt primary from its backup, so
-    # a digest taken before it describes a file that no longer exists and one
-    # taken after it races the read it is supposed to describe.
-    read = read_yaml_document(legacy_path)
+    # Only bytes successfully parsed from this primary authorize retiring it.
+    read = read_yaml_document(legacy_path, strict=True)
     legacy_doc, fingerprint = read.doc, read.fingerprint
 
     candidates: dict[str, bool] = {}
@@ -164,15 +161,17 @@ def migrate_notifications_v0() -> MigrationResult:
         update_yaml_doc(user_settings_path(), fold_in)
     except _AlreadyComplete:
         return MigrationResult(migrated={}, performed=False)
+    except OSError:
+        if legacy_doc is not None:
+            raise
+        # Nothing to import. A damaged or locked settings document can wait
+        # until the next startup without reporting a lost notification choice.
+        return MigrationResult(migrated={}, performed=False)
 
     result = MigrationResult(migrated=dict(migrated), performed=True)
 
-    # Phase B: the old document is renamed, never deleted — kept for rollback
-    # and debugging. Its backup is renamed first; left behind, a crashed rerun
-    # would restore the primary from it and resurrect the file just retired —
-    # which is why the backup is retired even when the primary is already gone.
-    # Recheck the fingerprint under the file's own lock: renaming a source
-    # changed since phase A would retire preferences nobody imported.
+    # Retire both files after import, preserving them for rollback. Recheck
+    # the primary under its lock before retiring the bytes read in phase A.
     backup = backup_path_for(legacy_path)
     if legacy_path.is_file() or backup.is_file():
         with FileLock(lock_path_for(legacy_path), timeout=LOCK_TIMEOUT_SECONDS):
@@ -180,8 +179,7 @@ def migrate_notifications_v0() -> MigrationResult:
             # A file that is present but cannot be digested has no identity to
             # compare against, and ``None == None`` would pass for proof that
             # it is unchanged — retiring bytes nobody managed to read. A file
-            # that reads but does not *parse* still digests, so that case
-            # retires as it should rather than deferring forever.
+            # that changed after the strict read is left for the next startup.
             unreadable = current is None and legacy_path.is_file()
             if current != fingerprint or unreadable:
                 logger.warning(

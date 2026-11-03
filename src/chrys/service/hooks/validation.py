@@ -467,6 +467,15 @@ def _entry_lines(text: str) -> list[int]:
     return lines
 
 
+def hooks_config_problem(exc: HooksConfigError) -> str:
+    """What is wrong with a hooks file, for a report line: a parse failure quotes nothing from the file."""
+    cause = exc.__cause__
+    if not isinstance(cause, yaml.YAMLError):
+        return str(exc)
+    message, line, column = _yaml_problem(cause)
+    return f"{message} (line {line}, column {column})" if line is not None else message
+
+
 def _yaml_problem(exc: yaml.YAMLError) -> tuple[str, int | None, int | None]:
     """The parser's own description of *exc* and where it is, without the excerpt of the file."""
     if isinstance(exc, yaml.MarkedYAMLError) and exc.problem:

@@ -36,6 +36,7 @@ from chrys.app.tui.screens.main.ports import (
 )
 from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider, enabled_hook_count
 from chrys.app.tui.screens.main.session_title import QUESTION_MARK, RETRY_MARK, AttentionMark
+from chrys.app.tui.screens.main.settings_coordinator import SETTINGS_TITLE
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
@@ -239,6 +240,7 @@ class BackendEventCallbacks:
     refresh_notification_settings: Callable[[], None]
     refresh_trajectory_verify_commands: Callable[[], None]
     settings_reloaded: Callable[[], None]
+    follow_manual_reload: Callable[[], None] = lambda: None
     accept_approval_update: Callable[[ApprovalModeUpdated], bool] = lambda _event: True
     route_session_error: Callable[[Error], bool] = lambda _event: False
     prompt_missing_working_dir: Callable[[MissingDirReason], None] = lambda _reason: None
@@ -871,7 +873,7 @@ class BackendEventHandler:
         s = self
 
         label = event.display_name or event.agent_profile
-        if label:
+        if label and not (event.operation == "settings_reload" and self._state.runtime.details_confirmed):
             s.profile = label
             with contextlib.suppress(Exception):
                 s.update_subtitle()
@@ -1021,7 +1023,7 @@ class BackendEventHandler:
             self.finish_agent_load(_FINISH_SESSION_READY.bind(profile=s.profile))
             self._callbacks.post_gc_message(GcReclaimRequested(GcReclaimReason.SESSION_READY, prompt=True))
 
-    async def on_settings_reloaded(self, _event: SettingsReloaded) -> None:
+    async def on_settings_reloaded(self, event: SettingsReloaded) -> None:
         """Route the LIVE tier: re-project what a reload only installed.
 
         A reload replaces the settings in the shared handle, but a LIVE field
@@ -1030,13 +1032,21 @@ class BackendEventHandler:
         until someone projects again. RELOAD fields need nothing here (the
         rebuild re-read them), and RESTART fields were held back by the
         reload's own routing.
+
+        A manual reload also follows the theme, locale and keymap, which an
+        ordinary one leaves as the launch set them. First, so its report reads
+        in the locale it just put in force.
         """
+        if event.manual:
+            self._callbacks.follow_manual_reload()
         self._callbacks.refresh_notification_settings()
         self._callbacks.refresh_trajectory_verify_commands()
         # The Settings panel projects written-but-not-yet-live values; a
         # reload is when the live values catch up (or an unrelated reload
         # arrives), so it re-reads and, for its own reload, takes the ack.
         self._callbacks.settings_reloaded()
+        for line in event.report:
+            self.notify(line, title=SETTINGS_TITLE.bind(), timeout=6)
 
     async def on_agent_runtime_updated(self, event: AgentRuntimeUpdated) -> None:
         """Refresh runtime details and the persistent status-bar counts."""
@@ -1950,10 +1960,25 @@ class BackendEventHandler:
             s.push_screen(dialog)
             s.debug("Warning", f"[{event.code}] {event.message[:80]}")
             return
-        s.notify(event.display_message or event.message, title=_WARNING_TITLE.bind(), severity="warning", timeout=8)
+        display = (
+            self._render_display_with_hint(event.display_message, event.display_hint)
+            if event.display_message is not None and event.display_hint is not None
+            else event.display_message or event.message
+        )
+        s.notify(display, title=_WARNING_TITLE.bind(), severity="warning", timeout=8)
         s.debug("Warning", f"[{event.code}] {event.message[:80]}")
 
     async def on_error(self, event: Error) -> None:
+        if event.code in {"manual_settings_reload_failed", "manual_settings_reload_denied"}:
+            self.notify(
+                self._render_display_with_hint(event.display_message, event.display_hint)
+                if event.display_message and event.display_hint
+                else event.display_message or event.message,
+                title=SETTINGS_TITLE.bind(),
+                severity="warning" if event.code == "manual_settings_reload_denied" else "error",
+                timeout=8,
+            )
+            return
         if self._callbacks.route_session_error(event):
             return
         s = self

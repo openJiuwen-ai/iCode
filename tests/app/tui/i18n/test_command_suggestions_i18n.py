@@ -176,6 +176,7 @@ def test_manual_pages_render_english_byte_identically_and_translate_at_display(
         "  /models       - Configure model provider and settings\n"
         "  /buddy        - Hatch, pet and look after your buddy\n"
         "  /agents       - Manage agent configs\n"
+        "  /reload       - Reload settings, profiles, memory, skills, hooks, MCP servers, themes and prompt shortcuts\n"
         "  /runtime      - Show active model, tools, skills, and files\n"
         "  /usage        - Show token usage and speed across all sessions\n"
         "  /settings     - Open the Settings panel\n"

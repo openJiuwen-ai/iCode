@@ -101,6 +101,14 @@ _DESCRIPTION_MODELS = msg(
 )
 _DESCRIPTION_BUDDY = msg("tui.commands.description.buddy", fallback="Hatch, pet and look after your buddy")
 _DESCRIPTION_AGENTS = msg("tui.commands.description.agents", fallback="Manage agent configs")
+_DESCRIPTION_RELOAD = msg(
+    "tui.slash.reload_description",
+    fallback="Reload settings, profiles, memory, skills, hooks, MCP servers, themes and prompt shortcuts",
+)
+_MAN_RELOAD = msg(
+    "tui.man.reload.body",
+    fallback="Read settings, agent profiles, model profiles, hooks, themes and prompt shortcuts from disk, reconnect MCP servers, then rebuild the current agent with its memory and skills. Run this command when the current turn or workflow has finished.",
+)
 _DESCRIPTION_RUNTIME = msg(
     "tui.commands.description.runtime",
     fallback="Show active model, tools, skills, and files",
@@ -499,6 +507,7 @@ class SlashCommandActionPort(Protocol):
     def open_model_config(self) -> None: ...
     def open_agent_config(self) -> None: ...
     def open_agent_config_tab(self, tab: str) -> None: ...
+    def reload_settings(self) -> None: ...
     def runtime_details(self) -> None: ...
     def usage(self) -> None: ...
     def open_settings(self, tab: str) -> None: ...
@@ -547,6 +556,7 @@ class SlashCommandActions:
     configure_model: Callable[[], None]
     configure_agent: Callable[[], None]
     configure_agent_tab: Callable[[str], None]
+    reload_settings: Callable[[], None]
     show_runtime_details: Callable[[], None]
     show_usage: Callable[[], None]
     configure_settings: Callable[[str], None]
@@ -1076,6 +1086,12 @@ class MainSlashCommandRegistry:
                 aliases=["config", "agent"],
                 allow_while_running=True,
                 man_page=_MAN_AGENTS_BODY.bind(),
+            ),
+            SlashCommandDef(
+                "reload",
+                _DESCRIPTION_RELOAD.bind(),
+                action=lambda _: actions.reload_settings(),
+                man_page=_MAN_RELOAD.bind(),
             ),
             SlashCommandDef(
                 "runtime",

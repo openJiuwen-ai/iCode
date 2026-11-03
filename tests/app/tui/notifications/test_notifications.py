@@ -334,7 +334,10 @@ def _stub_overlay_app(monkeypatch: pytest.MonkeyPatch, screen_module: Any) -> li
     save also records the live choice — so the app has to answer for something.
     """
     overrides: list[NotificationSettings] = []
-    app = SimpleNamespace(override_notification_settings=overrides.append)
+    app = SimpleNamespace(
+        override_notification_settings=overrides.append,
+        settings_handle=SimpleNamespace(confirm_written=lambda _written: None),
+    )
     monkeypatch.setattr(screen_module.MainScreen, "app", property(lambda _self: app))
     return overrides
 

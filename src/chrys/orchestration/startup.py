@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from chrys.foundation.config.context import EvalContext
+from chrys.foundation.config.errors import ConfigError
 from chrys.foundation.config.process_settings import install_process_settings, settle_session_root
-from chrys.foundation.config.runtime_pointer import MODEL_POINTER_KEY, set_model_pointer
+from chrys.foundation.config.runtime_pointer import MODEL_POINTER_KEY, remember_file_model, set_model_pointer
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import DEFAULT_EVAL_CONTEXT, LoadedSettings, load_settings
 from chrys.foundation.events.types import Warning
@@ -36,6 +37,10 @@ _RAW_HTTP_CAPTURE_ON = msg(
         "Raw HTTP capture is on ({source}): request and response logs record API keys, "
         "prompts and model output unredacted. Turn it off when you are done."
     ),
+)
+_NOTIFICATIONS_MIGRATION_RETRY = msg(
+    "startup.notifications_migration_retry",
+    fallback="Could not import previous notification preferences. The migration will retry on the next start.",
 )
 _NOTIFICATIONS_MIGRATION_FAILED = msg(
     "startup.notifications_migration_failed",
@@ -102,7 +107,10 @@ def _migrate_legacy_settings() -> list[Warning]:
             Warning(
                 code="notifications_migration_failed",
                 message=format_message(display_message),
-                display_message=display_message,
+                display_message=_NOTIFICATIONS_MIGRATION_RETRY.bind()
+                if isinstance(error, ConfigError)
+                else display_message,
+                display_hint=error.display if isinstance(error, ConfigError) else None,
             )
         )
     try:
@@ -196,6 +204,7 @@ def bootstrap_runtime(
 
     loaded = settle_session_root(load_settings(project_root=project_root, eval_context=eval_context))
     install_process_settings(loaded)
+    remember_file_model(loaded.file_model)
     # Seed the live model pointer with the layered verdict, origin intact —
     # never an unconditional overwrite: when the shell exported a value, that
     # value IS the verdict, so the write is a no-op and the origin stays ENV.

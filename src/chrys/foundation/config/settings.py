@@ -27,6 +27,7 @@ from chrys.foundation.config.coercion import (
     text_coercer,
 )
 from chrys.foundation.config.context import EvalContext
+from chrys.foundation.config.errors import INVALID_SETTING, ConfigValueError
 from chrys.foundation.config.spec import (
     Apply,
     ChoiceProvider,
@@ -2061,11 +2062,10 @@ class Settings:
         return self.image_send_limit_kb * 1024
 
 
-def _persist_one(key: str, value: Any, *, log_value: bool = True) -> None:
+def _persist_one(key: str, value: Any, *, log_value: bool = True) -> Exception | None:
     """Write one dotted key to the user settings document, without raising.
 
-    The thin shared body of the ``persist_*`` helpers: failures are logged and
-    swallowed so a disk/permission issue doesn't crash the TUI, and a value the
+    Return the failure so the TUI can report an unsaved choice. A value the
     store refuses is logged rather than written. No ``os.environ`` mirror —
     the mirror would turn the panel's own write into an ``ENV``-layer value,
     and provenance would then call it "overridden, editing has no effect".
@@ -2074,36 +2074,38 @@ def _persist_one(key: str, value: Any, *, log_value: bool = True) -> None:
 
     try:
         result = persist({key: value})
-    except Exception:
+    except Exception as exc:
         if log_value:
             logger.warning("Failed to persist %s=%r", key, value, exc_info=True)
         else:
             logger.warning("Failed to persist %s", key, exc_info=True)
-        return
+        return exc
     if not result.ok:
         if log_value:
             logger.warning("Refusing to persist %s: %r", key, value)
         else:
             logger.warning("Refusing to persist %s: value rejected", key)
+        return ConfigValueError(INVALID_SETTING.bind(key=key))
+    return None
 
 
-def persist_theme(theme: str) -> None:
+def persist_theme(theme: str) -> Exception | None:
     """Write ``ui.theme`` to the user settings document so it survives restart."""
-    _persist_one("ui.theme", theme)
+    return _persist_one("ui.theme", theme)
 
 
-def persist_locale(locale: str) -> None:
+def persist_locale(locale: str) -> Exception | None:
     """Write ``ui.locale`` to the user settings document without raising."""
     # Content-free logging by design: the requested value must not reach the log.
-    _persist_one("ui.locale", locale, log_value=False)
+    return _persist_one("ui.locale", locale, log_value=False)
 
 
-def persist_tool_groups_expanded(value: bool) -> None:
+def persist_tool_groups_expanded(value: bool) -> Exception | None:
     """Persist whether newly created live tool groups start expanded."""
-    _persist_one("ui.chat.tool_groups_expanded", value)
+    return _persist_one("ui.chat.tool_groups_expanded", value)
 
 
-def persist_approval_mode(mode: str) -> None:
+def persist_approval_mode(mode: str) -> Exception | None:
     """Write ``approval.default_mode`` to the user settings document.
 
     ``bypass`` never persists — :func:`chrys.foundation.config.settings_store.persist`
@@ -2111,9 +2113,9 @@ def persist_approval_mode(mode: str) -> None:
     mode; that mode must always be an explicit opt-in within a launch. Unknown
     values are ignored (logged, not written).
     """
-    _persist_one("approval.default_mode", mode)
+    return _persist_one("approval.default_mode", mode)
 
 
-def persist_editor_keymap(mode: str) -> None:
+def persist_editor_keymap(mode: str) -> Exception | None:
     """Persist the selected message-editor keymap."""
-    _persist_one("ui.editor.keymap", mode)
+    return _persist_one("ui.editor.keymap", mode)
