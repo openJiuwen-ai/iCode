@@ -105,13 +105,14 @@ jobs:
           # cross-compiling from arm64: the offline flavor has to pip-install
           # (and occasionally compile) x86_64 wheels for the bundled interpreter.
           # Windows on Arm builds natively on windows-11-arm for the same reason.
+          # AIxCoding branding: release command artifacts
           all_targets='[
-            {"target":"x86_64-unknown-linux-musl","os":"ubuntu-latest","artifact":"icode-linux-x86_64","platform":"linux"},
-            {"target":"aarch64-unknown-linux-musl","os":"ubuntu-24.04-arm","artifact":"icode-linux-aarch64","platform":"linux","glibc_floor":"2.18"},
-            {"target":"aarch64-apple-darwin","os":"macos-latest","artifact":"icode-macos-aarch64","platform":"macos"},
-            {"target":"x86_64-apple-darwin","os":"macos-15-intel","artifact":"icode-macos-x86_64","platform":"macos"},
-            {"target":"x86_64-pc-windows-msvc","os":"windows-latest","artifact":"icode-windows-x86_64.exe","platform":"windows"},
-            {"target":"aarch64-pc-windows-msvc","os":"windows-11-arm","artifact":"icode-windows-aarch64.exe","platform":"windows"}
+            {"target":"x86_64-unknown-linux-musl","os":"ubuntu-latest","artifact":"aixcoding-cli-linux-x86_64","platform":"linux"},
+            {"target":"aarch64-unknown-linux-musl","os":"ubuntu-24.04-arm","artifact":"aixcoding-cli-linux-aarch64","platform":"linux","glibc_floor":"2.18"},
+            {"target":"aarch64-apple-darwin","os":"macos-latest","artifact":"aixcoding-cli-macos-aarch64","platform":"macos"},
+            {"target":"x86_64-apple-darwin","os":"macos-15-intel","artifact":"aixcoding-cli-macos-x86_64","platform":"macos"},
+            {"target":"x86_64-pc-windows-msvc","os":"windows-latest","artifact":"aixcoding-cli-windows-x86_64.exe","platform":"windows"},
+            {"target":"aarch64-pc-windows-msvc","os":"windows-11-arm","artifact":"aixcoding-cli-windows-aarch64.exe","platform":"windows"}
           ]'
           if [ "$platform" = "all" ]; then
             filtered="$all_targets"
@@ -345,6 +346,7 @@ jobs:
             fi
           } >> "$GITHUB_ENV"
 
+      # AIxCoding branding: release command artifacts
       - name: Determine binary and artifact names
         id: name
         shell: bash
@@ -352,10 +354,10 @@ jobs:
           base="${{ matrix.artifact }}"
           version="v${PROJECT_VERSION}"
           if [[ "$base" == *.exe ]]; then
-            echo "binary=icode.exe" >> "$GITHUB_OUTPUT"
+            echo "binary=aixcoding-cli.exe" >> "$GITHUB_OUTPUT"
             echo "artifact=${base%.exe}-${version}-${{ matrix.installer }}" >> "$GITHUB_OUTPUT"
           else
-            echo "binary=icode" >> "$GITHUB_OUTPUT"
+            echo "binary=aixcoding-cli" >> "$GITHUB_OUTPUT"
             echo "artifact=${base}-${version}-${{ matrix.installer }}" >> "$GITHUB_OUTPUT"
           fi
 
@@ -461,16 +463,17 @@ jobs:
       - name: Collect release assets
         run: |
           mkdir release
+          # AIxCoding branding: release command artifacts
           # Archive binaries: tar.gz for Linux/macOS, zip for Windows
-          # Binary inside the archive is "icode" (or "icode.exe");
+          # Binary inside the archive is "aixcoding-cli" (or "aixcoding-cli.exe");
           # the archive filename carries the platform/arch/installer info.
-          for dir in artifacts/icode-*/; do
+          for dir in artifacts/aixcoding-cli-*/; do
             [ -d "$dir" ] || continue
             artifact=$(basename "$dir")
-            if [ -f "$dir/icode.exe" ]; then
-              (cd "$dir" && zip -q "$OLDPWD/release/${artifact}.zip" "icode.exe")
-            elif [ -f "$dir/icode" ]; then
-              tar -czf "release/${artifact}.tar.gz" -C "$dir" "icode"
+            if [ -f "$dir/aixcoding-cli.exe" ]; then
+              (cd "$dir" && zip -q "$OLDPWD/release/${artifact}.zip" "aixcoding-cli.exe")
+            elif [ -f "$dir/aixcoding-cli" ]; then
+              tar -czf "release/${artifact}.tar.gz" -C "$dir" "aixcoding-cli"
             fi
           done
           cp artifacts/wheel/*.whl release/
@@ -485,7 +488,7 @@ jobs:
 
   # ── Install the release the way users do ────────────────────────────
   # The install scripts at the release tag download the packages just published, check them
-  # against SHA256SUMS.txt and run `icode install`. GitCode gets its copy by hand later, so only
+  # against SHA256SUMS.txt and run `aixcoding-cli install`. GitCode gets its copy by hand later, so only
   # GitHub is tried here.
   install-scripts:
     name: Install script (${{ matrix.os }})
@@ -510,7 +513,8 @@ jobs:
         shell: bash
         run: |
           sh scripts/install.sh --version "$TAG" --source github
-          installed=$("$HOME/.local/bin/icode" --version)
+          # AIxCoding branding: release command artifacts
+          installed=$("$HOME/.local/bin/aixcoding-cli" --version)
           echo "installed: $installed"
           test "$installed" = "${TAG#v}"
 
@@ -524,6 +528,6 @@ jobs:
           # As `irm | iex` runs it: in Windows PowerShell 5.1, under its default policy.
           powershell -NoProfile -ExecutionPolicy Restricted -Command "Get-Content -Raw scripts/install.ps1 | Invoke-Expression"
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed (exit code $LASTEXITCODE)." }
-          $installed = & (Join-Path $env:LOCALAPPDATA 'chrys\bin\icode.exe') --version
+          $installed = & (Join-Path $env:LOCALAPPDATA 'chrys\bin\aixcoding-cli.exe') --version
           Write-Host "installed: $installed"
           if ($installed -ne $env:TAG.TrimStart('v')) { throw "Expected $env:TAG." }

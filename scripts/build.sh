@@ -20,7 +20,7 @@
 # the embedded distribution already contains chrys and every dependency, so
 # the first run only unpacks it — no installer, no PyPI, no network.
 #
-# Output: dist/icode (or dist/icode.exe on Windows)
+# Output: dist/aixcoding-cli (or dist/aixcoding-cli.exe on Windows)
 
 set -euo pipefail
 
@@ -300,11 +300,12 @@ else
 fi
 
 # ── Copy output ───────────────────────────────────────────────────────
+# AIxCoding branding: PyApp output name
 if [ "$BUILD_ON_WINDOWS" = "true" ]; then
-    OUTPUT="$PROJECT_ROOT/dist/icode.exe"
+    OUTPUT="$PROJECT_ROOT/dist/aixcoding-cli.exe"
     cp "$RELEASE_DIR/pyapp.exe" "$OUTPUT"
 else
-    OUTPUT="$PROJECT_ROOT/dist/icode"
+    OUTPUT="$PROJECT_ROOT/dist/aixcoding-cli"
     cp "$RELEASE_DIR/pyapp" "$OUTPUT"
     chmod +x "$OUTPUT"
 fi

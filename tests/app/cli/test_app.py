@@ -440,8 +440,9 @@ def test_pyapp_build_renames_runtime_python_on_process_name_sensitive_platforms(
     assert "install_project\\(\\)\\?;.*ensure_runtime_aliases" in cd_workflow
 
 
-def test_icode_is_the_only_command() -> None:
-    """Every install, the dev environment included, starts iCode as ``icode`` alone."""
+# AIxCoding branding: sole command follows APP_COMMAND
+def test_aixcoding_cli_is_the_only_command() -> None:
+    """Every install, the dev environment included, starts AIxCoding as ``aixcoding-cli`` alone."""
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["scripts"] == {APP_COMMAND: "chrys.app.cli.app:main"}
 

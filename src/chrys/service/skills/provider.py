@@ -29,6 +29,7 @@ from html import escape as xml_escape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.events.types import RuntimeSkillDetails
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.platform.paths import resolve_cross_platform_path
@@ -136,8 +137,9 @@ def _create_static_instructions(
     if prompt_template is None:
         return None
 
+    # AIxCoding branding: bind app for skill prompt
     try:
-        result = prompt_template.format(runner_instructions="__EXEC_PROBE__")
+        result = prompt_template.format(runner_instructions="__EXEC_PROBE__", app=APP_DISPLAY_NAME)
     except (KeyError, IndexError, ValueError) as exc:
         raise ValueError(
             "The provided instruction_template is not a valid format string. "
@@ -146,7 +148,7 @@ def _create_static_instructions(
     if "__EXEC_PROBE__" not in result:
         raise ValueError("The provided instruction_template must contain a '{runner_instructions}' placeholder.")
 
-    return prompt_template.format(runner_instructions=_SCRIPT_RUNNER_INSTRUCTIONS)
+    return prompt_template.format(runner_instructions=_SCRIPT_RUNNER_INSTRUCTIONS, app=APP_DISPLAY_NAME)
 
 
 def _file_signature(path: str) -> str:

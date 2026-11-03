@@ -846,7 +846,8 @@ async def test_soft_restart_incompatible_service_session_warning_keeps_legacy_te
     warning = warnings[0]
     expected_message = (
         "The previous OpenAI Responses service session is not compatible with the active agent profile, workspace, "
-        "model profile, service endpoint, or storage is disabled. iCode will continue from local history only."
+        # AIxCoding branding: soft-restart warning
+        "model profile, service endpoint, or storage is disabled. AIxCoding will continue from local history only."
     )
     assert (warning.code, warning.message, warning.session_id) == (
         "service_session_incompatible",
@@ -856,7 +857,7 @@ async def test_soft_restart_incompatible_service_session_warning_keeps_legacy_te
     reference = warning.display_message
     assert reference is not None
     assert reference.definition.key == "construction.service_session_incompatible"
-    assert dict(reference.args) == {"app_name": "iCode"}
+    assert dict(reference.args) == {"app_name": "AIxCoding"}
     assert Localizer(engine.settings.locale).render(reference) == expected_message
 
 

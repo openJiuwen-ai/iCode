@@ -1,4 +1,4 @@
-# Install or upgrade iCode from its offline package (Windows).
+# Install or upgrade AIxCoding from its offline package (Windows).
 #
 #   irm https://raw.githubusercontent.com/openJiuwen-ai/iCode/main/scripts/install.ps1 | iex
 #   irm https://raw.gitcode.com/openJiuwen/iCode/raw/main/scripts/install.ps1 | iex
@@ -8,8 +8,8 @@
 #   $env:ICODE_SOURCE = "gitcode"   download only from github or gitcode
 #
 # It downloads the package for this machine from GitHub Releases, or from GitCode when GitHub
-# fails, checks it against the release's SHA256SUMS.txt and runs `icode install`, which puts
-# `chrys.exe` and `icode.exe` in %LOCALAPPDATA%\chrys\bin and adds that folder to the user PATH.
+# fails, checks it against the release's SHA256SUMS.txt and runs `aixcoding-cli install`, which puts
+# `chrys.exe` and `aixcoding-cli.exe` in %LOCALAPPDATA%\chrys\bin and adds that folder to the user PATH.
 # Running it again upgrades.
 #
 # Everything runs in one script block, so `irm | iex` leaves nothing behind in the session, and
@@ -68,15 +68,15 @@
         return $null
     }
 
-    # Runs on this console, so the binary can ask the user to quit a running iCode first.
+    # Runs on this console, so the binary can ask the user to quit a running AIxCoding first.
     function Invoke-Install([string]$Exe) {
         $process = Start-Process -FilePath $Exe -ArgumentList 'install' -NoNewWindow -PassThru
         $null = $process.Handle  # Without the handle, ExitCode reads empty after the wait.
         $process.WaitForExit()
-        if ($process.ExitCode -ne 0) { throw "icode install failed (exit code $($process.ExitCode))." }
+        if ($process.ExitCode -ne 0) { throw "aixcoding-cli install failed (exit code $($process.ExitCode))." }
     }
 
-    # Returns whether iCode is now installed; throws when another host would not help.
+    # Returns whether AIxCoding is now installed; throws when another host would not help.
     function Install-From([string]$HostId) {
         $name = $hostNames[$HostId]
         if ($Version) {
@@ -87,7 +87,7 @@
         } else {
             $tag = Get-GitCodeLatestTag
             if (-not $tag) {
-                Write-Host "Could not find the latest iCode version on $name."
+                Write-Host "Could not find the latest AIxCoding version on $name."
                 return $false
             }
             $sumsUrl = Get-ReleaseUrl $HostId $tag 'SHA256SUMS.txt'
@@ -101,7 +101,8 @@
         }
 
         # The name of this machine's package, which also carries its version.
-        $prefix = "icode-windows-$arch-v"
+        # AIxCoding branding: Windows install command contract
+        $prefix = "aixcoding-cli-windows-$arch-v"
         $suffix = '-offline.zip'
         $package = $null
         $expected = $null
@@ -127,20 +128,20 @@
                 & { $ErrorActionPreference = 'Continue'; "$(& $installedExe --version 2>$null | Select-Object -First 1)".Trim() }
             } catch { '' }
         }
-        # Without its `icode` alias the install is incomplete, and installing again restores it.
-        if ($installed -eq $target -and (Test-Path -LiteralPath (Join-Path $binDir 'icode.exe'))) {
-            Write-Host "iCode $target is already installed."
+        # Without its `aixcoding-cli` alias the install is incomplete, and installing again restores it.
+        if ($installed -eq $target -and (Test-Path -LiteralPath (Join-Path $binDir 'aixcoding-cli.exe'))) {
+            Write-Host "AIxCoding $target is already installed."
             return $true
         }
         # A host that lags behind, such as GitCode right after a release, must not downgrade.
         if (-not $Version -and (Test-Version $installed) -and ([version]$installed -gt [version]$target)) {
-            Write-Host "iCode $installed is already installed, which is newer than the latest on $name ($target)."
-            # The installed binary puts back an `icode` alias that went missing.
-            if (-not (Test-Path -LiteralPath (Join-Path $binDir 'icode.exe'))) { Invoke-Install $installedExe }
+            Write-Host "AIxCoding $installed is already installed, which is newer than the latest on $name ($target)."
+            # The installed binary puts back an `aixcoding-cli` alias that went missing.
+            if (-not (Test-Path -LiteralPath (Join-Path $binDir 'aixcoding-cli.exe'))) { Invoke-Install $installedExe }
             return $true
         }
 
-        Write-Host "Downloading iCode $target for Windows ($arch) from $name..."
+        Write-Host "Downloading AIxCoding $target for Windows ($arch) from $name..."
         $zip = Join-Path $tmp $package
         # pwsh 7.4 and later can give up on a download that stops arriving, so the next host gets
         # a turn; Windows PowerShell gives up after 5 minutes without data.
@@ -172,12 +173,12 @@
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         [IO.Compression.ZipFile]::ExtractToDirectory($zip, $packageDir)
         # The binary unpacks its runtime on first run, then copies itself into place.
-        Invoke-Install (Join-Path $packageDir 'icode.exe')
+        Invoke-Install (Join-Path $packageDir 'aixcoding-cli.exe')
         return $true
     }
 
     if (-not $env:LOCALAPPDATA) {
-        throw 'This script installs iCode on Windows; on macOS and Linux, use install.sh.'
+        throw 'This script installs AIxCoding on Windows; on macOS and Linux, use install.sh.'
     }
     $binDir = Join-Path $env:LOCALAPPDATA 'chrys\bin'
 
@@ -196,20 +197,21 @@
     switch ($osArch) {
         { $_ -in 'X64', 'AMD64' } { $arch = 'x86_64' }
         { $_ -in 'Arm64', 'ARM64' } { $arch = 'aarch64' }
-        default { throw "There is no iCode package for $osArch processors." }
+        default { throw "There is no AIxCoding package for $osArch processors." }
     }
 
-    # The installer's folder goes first on the user PATH, so another `icode` would keep starting
+    # AIxCoding branding: Windows install command contract
+    # The installer's folder goes first on the user PATH, so another `aixcoding-cli` would keep starting
     # whatever it starts now only in terminals that put it earlier, and confuse later upgrades.
-    $others = @(Get-Command icode -CommandType Application -All -ErrorAction SilentlyContinue |
+    $others = @(Get-Command aixcoding-cli -CommandType Application -All -ErrorAction SilentlyContinue |
         Where-Object { [IO.Path]::GetDirectoryName($_.Source) -ne $binDir })
     if ($others -and (Test-Path -LiteralPath (Join-Path $binDir 'chrys.exe') -PathType Leaf)) {
-        # An offline install that already lives with this `icode` is started with `chrys`;
+        # An offline install that already lives with this `aixcoding-cli` is started with `chrys`;
         # upgrading it changes nothing about that.
-        Write-Host "Warning: $($others[0].Source) does not start the iCode offline install; start that with chrys."
+        Write-Host "Warning: $($others[0].Source) does not start the AIxCoding offline install; start that with chrys."
     } elseif ($others) {
-        throw ("$($others[0].Source) is not an iCode offline install, so this script would not replace it. " +
-            'If it is iCode installed with uv or pipx, upgrade it with that tool (for example, ' +
+        throw ("$($others[0].Source) is not an AIxCoding offline install, so this script would not replace it. " +
+            'If it is AIxCoding installed with uv or pipx, upgrade it with that tool (for example, ' +
             'uv tool upgrade iCode-TUI), or uninstall it first and run this script again.')
     }
 
@@ -221,7 +223,7 @@
             Write-Host "Could not install from $($hostNames[$hostId])."
         }
         if ($Version) {
-            throw ("Could not install iCode $Version. Check that this version is listed at " +
+            throw ("Could not install AIxCoding $Version. Check that this version is listed at " +
                 "https://github.com/$githubRepo/releases and that you are online.")
         }
         throw 'The download failed. Check your network connection, or try again later.'

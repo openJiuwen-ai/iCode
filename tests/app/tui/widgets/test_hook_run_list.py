@@ -428,7 +428,9 @@ async def test_the_title_counts_running_and_queued_runs() -> None:
 
 
 @pytest.mark.parametrize(
-    ("configured", "expected"), [(0, "No hooks configured"), (2, "No hook has run since iCode started")]
+    # AIxCoding branding: hooks empty-state text
+    ("configured", "expected"),
+    [(0, "No hooks configured"), (2, "No hook has run since AIxCoding started")],
 )
 async def test_the_empty_states_before_any_run(configured: int, expected: str) -> None:
     app = _ListApp(_Source(configured=configured))

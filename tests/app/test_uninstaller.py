@@ -23,6 +23,7 @@ from chrys.app.install_flavor import InstallFlavor
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import SESSION_ROOT_DIR_ENV_VAR
 from chrys.foundation.platform import get_platform
+from chrys.kernel.aixcoding.command_migration import LEGACY_APP_COMMAND
 from tests.support.symlinks import junction_or_skip
 
 _POSIX_ONLY = pytest.mark.skipif(
@@ -156,6 +157,45 @@ def test_offline_uninstall_spares_an_icode_command_that_starts_something_else(
     assert foreign.read_text(encoding="utf-8") == "uv entry point"
     assert download.is_file()
     assert f"The package you ran this from is still at {download}" in capsys.readouterr().out
+
+
+@_POSIX_ONLY
+def test_offline_uninstall_removes_legacy_and_current_own_aliases(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # AIxCoding branding: legacy alias uninstall tests
+    machine = _machine(monkeypatch, tmp_path)
+    (machine.bin_dir / LEGACY_APP_COMMAND).symlink_to("chrys")
+
+    assert uninstaller.uninstall(purge=False, assume_yes=True) == 0
+
+    assert sorted(path.name for path in machine.bin_dir.iterdir()) == []
+
+
+@_POSIX_ONLY
+def test_offline_uninstall_spares_an_external_legacy_icode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # AIxCoding branding: legacy alias uninstall tests
+    machine = _machine(monkeypatch, tmp_path)
+    foreign = machine.bin_dir / LEGACY_APP_COMMAND
+    foreign.write_text("uv entry point", encoding="utf-8")
+
+    assert uninstaller.uninstall(purge=False, assume_yes=True) == 0
+
+    assert [path.name for path in machine.bin_dir.iterdir()] == [LEGACY_APP_COMMAND]
+    assert foreign.read_text(encoding="utf-8") == "uv entry point"
+
+
+@_POSIX_ONLY
+def test_offline_uninstall_spares_a_dangling_legacy_symlink(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # A dangling legacy symlink proves nothing about our chrys, so it stays (F-2).
+    machine = _machine(monkeypatch, tmp_path)
+    legacy = machine.bin_dir / LEGACY_APP_COMMAND
+    legacy.symlink_to("removed")
+    assert not legacy.exists()
+
+    assert uninstaller.uninstall(purge=False, assume_yes=True) == 0
+
+    assert legacy.is_symlink()
 
 
 @_POSIX_ONLY

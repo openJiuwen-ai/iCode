@@ -150,16 +150,17 @@ def test_manual_pages_render_english_byte_identically_and_translate_at_display(
     index_content = ManPageDialog([index_page])._render_page(index_page)
     assert index_content == (
         "NAME\n"
-        "    iCode - AI-powered code assistant\n"
+        # AIxCoding branding: man page branding
+        "    AIxCoding - AI-powered code assistant\n"
         "\n"
         "DESCRIPTION\n"
-        "    iCode is a terminal-based AI assistant for code exploration,\n"
+        "    AIxCoding is a terminal-based AI assistant for code exploration,\n"
         "    analysis, and understanding.\n"
         "\n"
         "AVAILABLE COMMANDS\n"
         "  /new          - Start a new session\n"
         "  /clear        - Delete the current session and start a new one\n"
-        "  /exit         - Exit iCode\n"
+        "  /exit         - Exit AIxCoding\n"
         "  /resume       - Resume the most recent session in this mode\n"
         "  /fork         - Fork the current session\n"
         "  /rename       - Set or clear a custom session title\n"
@@ -201,7 +202,7 @@ def test_manual_pages_render_english_byte_identically_and_translate_at_display(
         "    /new\n"
         "\n"
         "DESCRIPTION\n"
-        "    Start a completely new iCode session.\n"
+        "    Start a completely new AIxCoding session.\n"
         "\n"
         "    This clears the current conversation context and begins fresh.\n"
         "    Use this when you want to work on a new task without\n"
@@ -220,7 +221,7 @@ def test_manual_pages_render_english_byte_identically_and_translate_at_display(
     localized_new = ManPageDialog(pages, start_index=start_index)._render_page(new_page)
     assert "可用命令" in localized_index
     assert "  /new          - 开始新会话" in localized_index
-    assert "开始一个全新的 iCode 会话。" in localized_new
+    assert "开始一个全新的 AIxCoding 会话。" in localized_new
 
 
 def test_buddy_command_messages_render_localized_with_legacy_english_fallback() -> None:

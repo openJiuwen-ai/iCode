@@ -232,7 +232,8 @@ async def test_man_page_retranslates_in_place_and_preserves_page(monkeypatch: py
 
         content = dialog.query_one("#man-content", Static)
         english = content.render().plain
-        assert "Exit iCode and return to the terminal." in english
+        # AIxCoding branding: exit man page
+        assert "Exit AIxCoding and return to the terminal." in english
         assert str(dialog.query_one("#man-container").border_title) == "/exit"
 
         controller.switch_locale("zh-Hans")
@@ -240,7 +241,7 @@ async def test_man_page_retranslates_in_place_and_preserves_page(monkeypatch: py
 
         assert app.screen is dialog
         assert dialog._index == start_index
-        assert "退出 iCode 并返回终端。" in content.render().plain
+        assert "退出 AIxCoding 并返回终端。" in content.render().plain
         footer = dialog.query_one("#man-footer", Static).render().plain
         assert footer.startswith(f"第 {start_index + 1}/{len(pages)} 页")
         assert str(dialog.query_one("#man-container").border_title) == "/exit"

@@ -13,6 +13,7 @@ import pytest
 
 from chrys.app import installer
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
+from chrys.kernel.aixcoding.command_migration import LEGACY_APP_COMMAND
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -608,6 +609,167 @@ def test_windows_command_alias_is_a_hard_link_or_a_copy_and_is_refreshed(
     monkeypatch.setattr(installer.os, "link", replaced)
     monkeypatch.setattr(installer.shutil, "copy2", replaced)
     assert installer._install_command_alias(alias, dest) == alias
+
+
+def test_find_running_chrys_processes_detects_the_legacy_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    # AIxCoding branding: legacy alias migration tests
+    processes = [
+        _FakeProcess(pid=10, name=LEGACY_APP_COMMAND, cmdline=[LEGACY_APP_COMMAND]),
+        _FakeProcess(pid=11, name=f"{LEGACY_APP_COMMAND}.exe", cmdline=None),
+        _FakeProcess(pid=12, name="other-tool", cmdline=["other-tool"]),
+    ]
+    monkeypatch.setattr(installer.psutil, "process_iter", lambda _attrs, *, ad_value: iter(processes))
+
+    found = installer._find_running_chrys_processes()
+
+    assert [process.pid for process in found.processes] == [10, 11]
+    assert found.complete is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks need privileges on Windows; the POSIX branch owns them.")
+def test_posix_install_cleans_up_the_own_legacy_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # AIxCoding branding: legacy alias migration tests
+    monkeypatch.setattr(installer, "get_platform", lambda: SimpleNamespace(is_windows=False, config_dir=tmp_path))
+    src = tmp_path / "download"
+    src.write_text("binary", encoding="utf-8")
+    dest = tmp_path / "bin" / "chrys"
+    dest.parent.mkdir()
+    dest.write_text("binary", encoding="utf-8")
+    legacy = dest.with_name(LEGACY_APP_COMMAND)
+    legacy.symlink_to("chrys")
+
+    installed = installer._install_command_alias(src, dest)
+
+    assert installed == dest.with_name(APP_COMMAND)
+    assert not legacy.exists() and not legacy.is_symlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks need privileges on Windows; the POSIX branch owns them.")
+def test_posix_install_keeps_the_legacy_alias_when_the_new_one_conflicts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CHRYS_LOCALE", "en")
+    monkeypatch.setattr(installer, "get_platform", lambda: SimpleNamespace(is_windows=False, config_dir=tmp_path))
+    src = tmp_path / "download"
+    src.write_text("binary", encoding="utf-8")
+    dest = tmp_path / "bin" / "chrys"
+    dest.parent.mkdir()
+    dest.write_text("binary", encoding="utf-8")
+    legacy = dest.with_name(LEGACY_APP_COMMAND)
+    legacy.symlink_to("chrys")
+    alias = dest.with_name(APP_COMMAND)
+    alias.write_text("other", encoding="utf-8")
+
+    installed = installer._install_command_alias(src, dest)
+
+    assert installed is None
+    assert legacy.is_symlink() and legacy.samefile(dest)
+    assert "already exists and starts something else" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks need privileges on Windows; the POSIX branch owns them.")
+def test_posix_install_spares_an_external_legacy_icode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CHRYS_LOCALE", "en")
+    monkeypatch.setattr(installer, "get_platform", lambda: SimpleNamespace(is_windows=False, config_dir=tmp_path))
+    src = tmp_path / "download"
+    src.write_text("binary", encoding="utf-8")
+    dest = tmp_path / "bin" / "chrys"
+    dest.parent.mkdir()
+    dest.write_text("binary", encoding="utf-8")
+    legacy = dest.with_name(LEGACY_APP_COMMAND)
+    legacy.write_text("uv entry point", encoding="utf-8")
+
+    installed = installer._install_command_alias(src, dest)
+
+    assert installed == dest.with_name(APP_COMMAND)
+    assert legacy.read_text(encoding="utf-8") == "uv entry point"
+    assert f"Kept {legacy}: cannot prove it belongs to this installation." in capsys.readouterr().out
+
+
+def test_windows_install_cleans_up_a_hard_linked_legacy_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # AIxCoding branding: legacy alias migration tests
+    monkeypatch.setattr(installer, "get_platform", lambda: SimpleNamespace(is_windows=True, config_dir=tmp_path))
+    src = tmp_path / "download.exe"
+    src.write_text("new binary", encoding="utf-8")
+    dest = tmp_path / "chrys.exe"
+    dest.write_text("new binary", encoding="utf-8")
+    legacy = tmp_path / f"{LEGACY_APP_COMMAND}.exe"
+    os.link(dest, legacy)
+
+    installed = installer._install_command_alias(src, dest)
+
+    assert installed == tmp_path / f"{APP_COMMAND}.exe"
+    assert not legacy.exists()
+
+
+def test_windows_install_spares_a_legacy_copy_whose_ownership_is_unprovable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CHRYS_LOCALE", "en")
+    monkeypatch.setattr(installer, "get_platform", lambda: SimpleNamespace(is_windows=True, config_dir=tmp_path))
+    src = tmp_path / "download.exe"
+    src.write_text("new binary", encoding="utf-8")
+    dest = tmp_path / "chrys.exe"
+    dest.write_text("new binary", encoding="utf-8")
+    legacy = tmp_path / f"{LEGACY_APP_COMMAND}.exe"
+    legacy.write_text("copy left by an older install", encoding="utf-8")
+
+    installed = installer._install_command_alias(src, dest)
+
+    assert installed == tmp_path / f"{APP_COMMAND}.exe"
+    assert legacy.read_text(encoding="utf-8") == "copy left by an older install"
+    assert f"Kept {legacy}: cannot prove it belongs to this installation." in capsys.readouterr().out
+
+
+def test_windows_install_spares_a_legacy_alias_that_cannot_be_removed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CHRYS_LOCALE", "en")
+    monkeypatch.setattr(installer, "get_platform", lambda: SimpleNamespace(is_windows=True, config_dir=tmp_path))
+    src = tmp_path / "download.exe"
+    src.write_text("new binary", encoding="utf-8")
+    dest = tmp_path / "chrys.exe"
+    dest.write_text("new binary", encoding="utf-8")
+    legacy = tmp_path / f"{LEGACY_APP_COMMAND}.exe"
+    os.link(dest, legacy)
+
+    original_unlink = Path.unlink
+
+    def locked(self: Path, *args: object, **kwargs: object) -> None:
+        if self == legacy:
+            raise OSError("the file is in use by another process")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", locked)
+
+    installed = installer._install_command_alias(src, dest)
+
+    assert installed == tmp_path / f"{APP_COMMAND}.exe"
+    assert legacy.exists()
+    assert "Could not remove the legacy 'icode' command" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks need privileges on Windows; the POSIX branch owns them.")
+def test_posix_install_migrates_when_the_new_alias_already_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The own/current early-return branch migrates too (F-1).
+    monkeypatch.setattr(installer, "get_platform", lambda: SimpleNamespace(is_windows=False, config_dir=tmp_path))
+    src = tmp_path / "download"
+    src.write_text("binary", encoding="utf-8")
+    dest = tmp_path / "bin" / "chrys"
+    dest.parent.mkdir()
+    dest.write_text("binary", encoding="utf-8")
+    dest.with_name(APP_COMMAND).symlink_to("chrys")
+    legacy = dest.with_name(LEGACY_APP_COMMAND)
+    legacy.symlink_to("chrys")
+
+    installed = installer._install_command_alias(src, dest)
+
+    assert installed == dest.with_name(APP_COMMAND)
+    assert not legacy.exists() and not legacy.is_symlink()
 
 
 def test_install_to_path_keeps_windows_running_instance_block(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

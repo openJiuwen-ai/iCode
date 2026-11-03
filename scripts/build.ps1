@@ -26,7 +26,7 @@
 # short folder such as C:\uv: uv builds inside its cache, and grpcio's deepest
 # object file then exceeds the 260 characters cl.exe can write.
 #
-# Output: dist\icode.exe
+# Output: dist\aixcoding-cli.exe
 
 param(
     [switch]$UseUv,
@@ -449,7 +449,8 @@ pub fn run_project() -> Result<()> {
     # ── Copy output ───────────────────────────────────────────────────
     $DistDir = Join-Path $ProjectRoot "dist"
     if (-not (Test-Path $DistDir)) { New-Item -ItemType Directory -Path $DistDir | Out-Null }
-    $Output = Join-Path $DistDir "icode.exe"
+    # AIxCoding branding: PyApp output name
+    $Output = Join-Path $DistDir "aixcoding-cli.exe"
     Copy-Item "target\release\pyapp.exe" $Output
 
     $SizeMB = [math]::Round((Get-Item $Output).Length / 1MB, 1)

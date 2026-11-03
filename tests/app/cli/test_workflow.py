@@ -120,7 +120,8 @@ def test_help_lists_every_command(flag: str, capsys: pytest.CaptureFixture[str])
 
     assert exc_info.value.code == 0
     out = capsys.readouterr().out
-    assert out.startswith("usage: icode workflow ")
+    # AIxCoding branding: workflow usage line
+    assert out.startswith("usage: aixcoding-cli workflow ")
     assert "List the workflows found for the current directory" in out
     assert "Check a workflow file or folder" in out
     assert "Run one workflow until it finishes" in out

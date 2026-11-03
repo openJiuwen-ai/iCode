@@ -35,7 +35,8 @@ WHEEL_PREFIX = "icode_tui-"
 BUNDLED_DOCS_PREFIX = "chrys/app/tui/screens/guides/_docs/"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # The one command the wheel installs.
-COMMAND = "icode"
+# AIxCoding branding: wheel command probe
+COMMAND = "aixcoding-cli"
 # Every command app/cli/app.py dispatches, plus the bare entry point and one plural alias.
 HELP_COMMANDS = (
     (),

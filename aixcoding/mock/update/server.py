@@ -60,7 +60,7 @@ Run it from the repository root::
 Then steer it at runtime and point the TUI at it::
 
     curl -X POST http://127.0.0.1:7778/debug/config -d '{"mode": "no_update"}'
-    AIXCODING_EXTENSION_BASE_URL=http://127.0.0.1:7778/csas uv run icode
+    AIXCODING_EXTENSION_BASE_URL=http://127.0.0.1:7778/csas uv run aixcoding-cli
 
 Importable for tests: ``MockUpdateConfig`` / ``MockUpdateState`` /
 ``create_server`` start a loopback instance on an ephemeral port.

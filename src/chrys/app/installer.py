@@ -23,6 +23,7 @@ from rich.theme import Theme
 from chrys import DISTRIBUTION_NAME
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.platform import get_platform
+from chrys.kernel.aixcoding.command_migration import LEGACY_APP_COMMAND, remove_legacy_alias
 
 _INSTALLER_THEME = Theme(
     {
@@ -35,12 +36,15 @@ _INSTALLER_THEME = Theme(
 # The binary keeps its original name on PATH; the product-named command is an alias of it.
 _INSTALLED_BINARY = "chrys"
 
+# AIxCoding branding: legacy command process recognition
 _CHRYS_PROCESS_BASENAMES = frozenset(
     {
         "chrys",
         "chrys.exe",
         APP_COMMAND,
         f"{APP_COMMAND}.exe",
+        LEGACY_APP_COMMAND,
+        f"{LEGACY_APP_COMMAND}.exe",
         "chrys-runtime",
         "chrys-runtime.exe",
         "chrys-runtimew.exe",
@@ -542,6 +546,8 @@ def _install_command_alias(src: Path, dest: Path) -> Path | None:
         # An alias that is the running binary was just copied to ``dest``, so it is current too,
         # and Windows would refuse to unlink it.
         if alias.exists() and (alias.samefile(dest) or alias.samefile(src)):
+            # AIxCoding branding: legacy alias migration hook
+            remove_legacy_alias(binary=dest, warn=_print_warning)
             return alias
         if get_platform().is_windows:
             alias.unlink(missing_ok=True)
@@ -559,6 +565,7 @@ def _install_command_alias(src: Path, dest: Path) -> Path | None:
     except OSError as e:
         _print_warning(f"Could not create the '{APP_COMMAND}' command at {alias}: {e}")
         return None
+    remove_legacy_alias(binary=dest, warn=_print_warning)
     return alias
 
 

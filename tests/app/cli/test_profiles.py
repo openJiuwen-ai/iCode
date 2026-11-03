@@ -219,5 +219,6 @@ def test_help_names_the_singular_command_and_its_list_subcommand(
 
     assert exc_info.value.code == 0
     out = capsys.readouterr().out
-    assert out.startswith(f"usage: icode {command} ")
+    # AIxCoding branding: profiles usage line
+    assert out.startswith(f"usage: aixcoding-cli {command} ")
     assert f"List the {noun} (the default)" in out

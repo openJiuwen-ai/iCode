@@ -62,9 +62,10 @@ from chrys.service.tools.approval_targets import approved_targets
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalTrace
 from chrys.service.trajectory.tools import tool_operation_id
 
+# AIxCoding branding: approval command text
 _REMEMBER_FAILED = msg(
     "approval.reuse.save_failed",
-    fallback="Allowed once, but the approval could not be remembered. Check storage permissions or manage grants with icode approval.",
+    fallback="Allowed once, but the approval could not be remembered. Check storage permissions or manage grants with aixcoding-cli approval.",
 )
 
 _GITDIR_POINTER_PREFIX = "gitdir:"

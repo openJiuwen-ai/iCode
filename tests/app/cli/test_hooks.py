@@ -217,7 +217,8 @@ def test_an_invalid_project_file_that_is_off_says_it_is_off_first(capsys: pytest
         (
             f"Project hooks: {_shown('.chrys', 'hooks', 'hooks.yaml')} (not loaded: turn on Load project hooks under "
             "Settings → Security → Project trust; the file is also invalid: 'hooks' must be a list, got dict; "
-            "run 'icode hook validate' for details)"
+            # AIxCoding branding: hook validate hint text
+            "run 'aixcoding-cli hook validate' for details)"
         )
     ]
     assert hooks_cli.main(["list", "--json"]) == 0
@@ -235,7 +236,8 @@ def test_an_invalid_file_is_listed_with_its_first_error(capsys: pytest.CaptureFi
     assert capsys.readouterr().out.splitlines() == [
         (
             f"Global hooks: {path} (invalid, not loaded: line 2: hook 'x': execution.mode must be 'blocking' / "
-            "'async' / 'fire_and_forget', got 'block'; run 'icode hook validate' for details)"
+            # AIxCoding branding: hook validate hint text
+            "'async' / 'fire_and_forget', got 'block'; run 'aixcoding-cli hook validate' for details)"
         )
     ]
 

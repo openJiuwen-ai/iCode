@@ -37,7 +37,8 @@ def test_feedback_precedes_tui_import_and_preserves_errors(monkeypatch, failure)
         if name == "__path__":
             raise AttributeError(name)
         assert name == "main"
-        assert output.getvalue() == "Starting iCode...\n"
+        # AIxCoding branding: startup message
+        assert output.getvalue() == "Starting AIxCoding...\n"
         assert output.flushed
         if failure is not None:
             output.write("diagnostic\n")
@@ -51,7 +52,7 @@ def test_feedback_precedes_tui_import_and_preserves_errors(monkeypatch, failure)
     else:
         with pytest.raises(type(failure)):
             cli_app._run_tui([])
-    assert output.getvalue() == "Starting iCode...\n" + ("diagnostic\n" if failure else "")
+    assert output.getvalue() == "Starting AIxCoding...\n" + ("diagnostic\n" if failure else "")
 
 
 @pytest.mark.parametrize("argv", [["--help"], ["-h"], ["-s", "session", "--help"], ["--version"], ["-v"]])

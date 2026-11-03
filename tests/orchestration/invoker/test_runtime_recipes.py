@@ -207,11 +207,12 @@ async def test_real_build_preserves_main_child_model_context_approval_and_chat_i
         root_messages, root_options = main.call_history[0]
         child_messages, child_options = child.call_history[0]
         assert "ROOT-INSTRUCTION" in root_options["instructions"]
-        assert "iCode documentation" in root_options["instructions"]
+        # AIxCoding branding: prompt documentation title
+        assert "AIxCoding documentation" in root_options["instructions"]
         assert "Product documentation could not be found" in root_options["instructions"]
         assert "ROOT-MEMORY-SENTINEL" in root_options["instructions"]
         assert child_options["instructions"].startswith("CHILD-INSTRUCTION")
-        assert "iCode documentation" not in child_options["instructions"]
+        assert "AIxCoding documentation" not in child_options["instructions"]
         assert "ROOT-MEMORY-SENTINEL" not in child_options["instructions"]
         root_names = {tool.name for tool in root_options["tools"]}
         child_names = {tool.name for tool in child_options["tools"]}

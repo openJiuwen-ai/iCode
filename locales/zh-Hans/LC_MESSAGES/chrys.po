@@ -51,11 +51,11 @@ msgstr ""
 "当前状态，不做任何改动。"
 
 #. English: Allowed once, but the approval could not be remembered. Check
-#. storage permissions or manage grants with icode approval.
-#. chrys-meta={"fingerprint":"279b7064d529d04e14050b066cbe8ee9e05790fabd5087cea79846cb7f5f8c61","multiline":false,"placeholders":[]}
+#. storage permissions or manage grants with aixcoding-cli approval.
+#. chrys-meta={"fingerprint":"9bec516e383cfea5a58d285f89de7b99c93a6a5697cfdaabea396c80d3744ac2","multiline":false,"placeholders":[]}
 #: src/chrys/service/agent_middleware/control/approval.py
 msgid "approval.reuse.save_failed"
-msgstr "本次已允许，但未能记住授权。请检查存储权限，或使用 icode approval 管理授权。"
+msgstr "本次已允许，但未能记住授权。请检查存储权限，或使用 aixcoding-cli approval 管理授权。"
 
 #. English: We couldn't attach this image.  {items}
 #. English-plural: We couldn't attach these images.  {items}
@@ -146,13 +146,13 @@ msgstr[0] ""
 "{files}"
 
 #. English: This model's provider runs web search, so the local {tools} tool(s)
-#. were disabled for this run. Provider-run search is not covered by iCode
+#. were disabled for this run. Provider-run search is not covered by {app}
 #. approval rules or network grants. Remove the hosted web tool declaration
 #. from the model's chat options to use local tools instead.
-#. chrys-meta={"fingerprint":"ccf4dce41e029f38bef7e380cc59fc6f9baeccae28ff830cc23cfc27d57a9e07","multiline":false,"placeholders":["tools"]}
+#. chrys-meta={"fingerprint":"d2a4cc1ac6a24b497548a443956b25e572ae27d3fe70903f0f9d6dccd7b40137","multiline":false,"placeholders":["app","tools"]}
 #: src/chrys/service/tools/builtins/web/hosted.py
 msgid "builder.hosted_web_tools_preferred"
-msgstr "当前模型的提供方会自行运行网络搜索，因此本次运行已停用本地 {tools} 工具。由提供方运行的搜索不受 iCode 审批规则和网络授权约束。如需改用本地工具，请从该模型的 Chat 选项中删除托管网络工具声明。"
+msgstr "当前模型的提供方会自行运行网络搜索，因此本次运行已停用本地 {tools} 工具。由提供方运行的搜索不受 {app} 审批规则和网络授权约束。如需改用本地工具，请从该模型的 Chat 选项中删除托管网络工具声明。"
 
 #. English: Auto-loaded memory truncated at the token cap. Loaded
 #. {loaded_count} file(s); skipped {skipped_count}.
