@@ -60,6 +60,18 @@ scan_markers 与 custom_assets 两处消费点统一），其余名称保持任�
 - **分发身份二次返工（已知成本）**：若 C5 裁决 `iCode-TUI` 更名，build/CD/install 链将
   因包身份再次调整（ADR-0019 复审登记的已接受成本）。
 
+## PR #87 评审记档（2026-11-03，随对账提交）
+
+- **C1（外部 `icode` 进程名误伤面）**：接受记档，零代码改动。命中动作经代码确认为
+  "安装流程提示用户退出运行中的进程"（`_is_chrys_process` → `_find_running_chrys_processes`
+  的上游既有防覆盖保护），不杀进程、不删外部文件；该保护对 `chrys`/新命令的外部同名
+  程序本就存在，纳入 `icode` 属 design #27 已签认的迁移接线，过渡行为随旧命令退出
+  自然消解。
+- **C2（verification 数字口径）**：环境差异，非用例选择差异。本机 powershell + pwsh
+  双全（`where pwsh` = `C:\Program Files\PowerShell\7\pwsh.exe`），-n0 复跑
+  18 passed / 28 skipped；评审副本 9 passed / 37 skipped 为缺 pwsh 环境下 `_SHELLS`
+  的 pwsh 参数化用例整体 skip 所致（9 例之差即一组 shell 参数化）。
+
 ## 发布说明要点（供 PR 描述与 release notes）
 
 1. 用户规范命令由 `icode` 切换为 `aixcoding-cli`，运行时品牌为 AIxCoding；wheel 仅安装
