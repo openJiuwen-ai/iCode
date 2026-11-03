@@ -137,6 +137,7 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
 | auth 登录 + LLM token + ACP 接线 | `aixcoding/auth/` 9 py + `app.py:960` 等挂接点 | 已完成 | auth + tier-migration + auth-logging 批次；env 已更名 `AIXCODING_AUTH_*` |
 | tui 登录 UI（/login、徽章、静默校验） | `aixcoding/tui/` + screen / commands / app_header 挂接点 | 已完成 | tui 批次；`login_actions.py` 另埋 catalog 批次占位符×2（见 C2） |
 | diagnostics | （阶段二新建，非迁入项） | 已完成 | diagnostics + launcher-retirement（ADR-0013） |
+| 模型目录同步 + 档案集中管理 | `catalog.py`（旧分支新增文件，847 行）+ `registry.py`（RLock 定制）+ `config_actions.py` 只读屏 + 测试×3 | 已完成 | catalog-sync 批次（PR #85，2026-11-03 合并：790b562e 主体 + 2164186e 双评审处置 + a4ea553a CI 修复）；服务端目录整替（两阶段发布）、15min 轮询、恒只读、登录联动启停；盘点 F-03/R-01 两处 API/并发漂移（`replace_profiles()` 同步语义 / `RLock` 线程安全）经 design 重审落地；ADR-0018（内网部署明文 HTTP）；批次文档 `batches/catalog-sync/` |
 
 ### B. 殿后已定（引用 §2 阶段三既有决策，不重新裁决）
 
@@ -151,13 +152,12 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
 | 特性 | 旧落点（0.28.0） | 建议判定 | 依据 / 备注（2026-11-02 对上游 0.32.2 分析） |
 |---|---|---|---|
 | 版本更新检测 | `update_detection.py`（内部 `/api/v2/releases/check` 契约）+ screen.py / app.py 挂接点（header 徽章） | **有改动的迁** | 上游 0.32.2 已有同目的的并行机制 `app/update_check.py`（PyPI/GitHub 公网源 + 每日缓存 + 聊天区通知 + settings 开关），内网静默失败；update mock（M2）模拟内部契约已就位。design 须定：① UI 形态（徽章 vs 通知）与上游 update_check 的并存/禁用策略；② **四段版本号 wire contract 为前置阻塞项**——versioning.md 已定稿 fork 第四段，而旧 `_SEMVER_RE` 与上游 `parse_version()` 均只接受三段，四段版本会在请求前静默跳过（update mock 同为三段校验） |
-| 模型目录同步 + 档案集中管理 | `catalog.py`（旧分支新增文件，847 行）+ `registry.py`（RLock 定制）+ `config_actions.py` 只读屏 + 测试×3 | **有改动的迁** | 上游无同名文件（零文件冲突）；旧实现已合新范式（settings 声明引用、tier 对齐 auth + drift test、15min 轮询、只读保护）。**但存在真实 API/并发漂移**（外部评审 F-03 + 复审 R-01）：① 旧同步语义依赖 registry `replace_profiles()`（清空重建，服务端删除可生效），新基线仅有 `install_profiles()`（逐项 register 不删除）——同步重建语义须 design 重审；② 旧 registry 以 `RLock` 保护后台同步线程与 UI 并发访问，新基线各方法无锁——线程安全策略须 design 重审；另 `ProcessSettings` 的 `model_catalog_base_url` 投影新基线无对应；接线面除 settings.py 声明与 `app/aixcoding/startup.py`（`login_actions.py` 占位符已预留）外，还含 F4 编辑禁用、picker "Manage models…" 禁用、登录/登出启停 |
 | 平台连接配置 | `config.py`（独立 `aixcoding.yaml` + `AIXCODING_EXTENSION_*`，telemetry 与更新检测共用） | **重新实现（拆解随批次）** | 独立 yaml 双轨制与现行配置范式不同构（现行范式：auth `environments.py` 模式 / settings 声明），不整体照迁——端点配置随消费批次（update / telemetry）按现行范式实现。**逐字段归属须 design 定、不得静默丢失**（外部评审 F-06）：`token`/`userId`（或已由 auth session 覆盖）、`toolParamMode`（工具参数上报 full/whitelist）、`telemetryEnabled`（reporter 装配开关）、`profile`/`customServerUrl` 优先级语义 |
-| 品牌定制 | `branding.py` 2 常量（`APP_DISPLAY_NAME` / `APP_COMMAND`）+ docs / README / i18n 文案 | **有改动的迁（时机待产品决策）** | 机制上游原生，常量改动 2 行；文案部分注意口径（外部评审 F-07）：908 为全仓非注释命中（含 skills/护栏等功能内容），**非纯品牌文案数**，改名工作量须先甄别。三个处置面分层：① 显示品牌与文案（`APP_DISPLAY_NAME`）；② 用户命令 `APP_COMMAND`——只改帮助文案与安装别名，**不自动变更 wheel 命令入口**（`[project.scripts]` 独立定义，需另行报批）；③ 分发名保持上游（versioning.md） |
+| 品牌定制 | `branding.py` 2 常量（`APP_DISPLAY_NAME` / `APP_COMMAND`）+ docs / README / i18n 文案 | **有改动的迁（已拆分定稿：C4a 运行时先行 + C4b 并入"用户指南文档定制化"）** | 机制上游原生，常量改动 2 行；文案部分注意口径（外部评审 F-07）：908 为全仓非注释命中（含 skills/护栏等功能内容），**非纯品牌文案数**，改名工作量须先甄别。三个处置面分层：① 显示品牌与文案（`APP_DISPLAY_NAME`）；② 用户命令 `APP_COMMAND`——只改帮助文案与安装别名，**不自动变更 wheel 命令入口**（`[project.scripts]` 独立定义，需另行报批）；③ 分发名保持上游（versioning.md）。**拆分定稿（2026-11-02/03 责任人裁决 D1-D7）**：C4a 运行时品牌（常量 2 + 散点 11 处——Python 插值×6 / YAML 直改+marker×2 / serve banner 采用旧分支纯 ASCII 先例（GBK 安全）——+ locales 2 条，零 docs/ 触碰）先行、待 ADR-0012 开工判定；C4b 文档品牌（63 文件约 960 处区分大小写命中 + README×2 + AGENTS.md，限期 2026-11-05 暂定）**并入"用户指南文档定制化"工作项**（品牌替换为其一维度）；install 脚本品牌/安装别名归 C5、pyproject `[project.urls]` 随 C1、NOTICE 零命中不涉及。决策记录（聊天侧材料）：`fork/temp/2026-11-02-c4-branding-split-decision.md`，细节以批次 design.md 签认版为准 |
 | 内网安装器 | `scripts/install.sh`（433 行，内网制品镜像 + channels + offline 包体系）+ 同族 `install.ps1` / `release/INSTALL.md` / channel 发布约定 | **待裁决（需求侧确认）** | 与上游 install.sh 为平行替代品（无演进关系）。**"废弃"证据不足**（外部评审 F-04）：旧脚本已兼容 `icode-*` 包名（final 后修复）与 PyApp 制品（旧分支已在用）；版本正则接受三段+后缀（覆盖四段）；`release/INSTALL.md` 将内网脚本列为推荐安装渠道（prod/test/Windows）。仅在产品确认取消内网分发体系后方可废弃；若保留，按现制品形态有改动的迁 |
 | skills 共享目录自动加载 | `service/skills/adapter.py` 定制（`~/.aixcoding/skills` + 工作区 `.aixcoding/skills` 自动加载、优先级、`auto_load_aixcoding_*` 开关）+ `agents/schema.py` + 测试 + 中英文文档 | **待分析（本轮未覆盖）** | 外部评审 F-01 发现（属上游 skills 机制的定制扩展，非注释命中之一，证明 908 非纯品牌文案）；新分支 `src/` 产品源码树无 `auto_load_aixcoding`（已核验，复审 R-04 收窄范围）。上游对比与判定随批次启动补做 |
 | 安全护栏（guard hooks） | `app/cli/app.py` 启动自动安装（`guard_install`，fail-open）+ 规则包 + wheel 打包 + 测试 + CI + MANUAL_TESTS | **待分析（本轮未覆盖）** | 外部评审 F-01 发现（属上游 hooks 机制的定制扩展）；**无任何标记命中**（复审 R-02：标记扫描盲区的实例，由功能面核查发现）；新分支 `src/` 产品源码树无 `guard_install`（已核验）。与 D 类历史文档第 9 份（安全护栏 MANUAL_TESTS）同族关联；上游对比与判定随批次启动补做 |
-| **用户指南文档定制化（docs/ 双语树）** | `docs/{en,zh-Hans}/` 整树定制（0.28 final 实测）：新增 start/login、start/what-is-aixcoding、faq、daily-use/build-info、running/aixcoding-serve 等定制指南；删除 external-acp-agents / extensions/shortcuts / reference/opentelemetry / configuration/chat-options / running/terminal-status；`icode-run` / `icode-serve` / `icode-acp` 重命名 `aixcoding-*`；各指南内容定制（如 configuration/models.md 集中管理版："不支持创建模型配置，仅支持切换；模型由管理员分配"） | **待批次启动（后续文档批次；语义参考 0.28 final，按 0.32.2 新结构重做）** | 0.32.2 上游文档结构大幅扩充（如 models.md 由 <1KB 扩为 16-17KB 完整指南），旧定制不可平移；与上游 0.28→0.32 文档自身演进混杂（0.28 final vs 上游现状 diff：75 文件 +2361/-6020，含演进噪音），批次启动时逐份甄别。**文档类定制零 marker 命中**（fork `docs/` 现状零 AIxCoding 标记，属标记扫描盲区、由功能面核查发现——同 F-01 性质）。**文档类待办统一并入本项**；首个并入：catalog-sync 批次 F-6（责任人裁决 2026-11-02）——models.md 双语改写不随 catalog-sync 批次，随本工作项处理 |
+| **用户指南文档定制化（docs/ 双语树）** | `docs/{en,zh-Hans}/` 整树定制（0.28 final 实测）：新增 start/login、start/what-is-aixcoding、faq、daily-use/build-info、running/aixcoding-serve 等定制指南；删除 external-acp-agents / extensions/shortcuts / reference/opentelemetry / configuration/chat-options / running/terminal-status；`icode-run` / `icode-serve` / `icode-acp` 重命名 `aixcoding-*`；各指南内容定制（如 configuration/models.md 集中管理版："不支持创建模型配置，仅支持切换；模型由管理员分配"） | **待批次启动（后续文档批次；语义参考 0.28 final，按 0.32.2 新结构重做）** | 0.32.2 上游文档结构大幅扩充（如 models.md 由 <1KB 扩为 16-17KB 完整指南），旧定制不可平移；与上游 0.28→0.32 文档自身演进混杂（0.28 final vs 上游现状 diff：75 文件 +2361/-6020，含演进噪音），批次启动时逐份甄别。**文档类定制零 marker 命中**（fork `docs/` 现状零 AIxCoding 标记，属标记扫描盲区、由功能面核查发现——同 F-01 性质）。**文档类待办统一并入本项**；首个并入：catalog-sync 批次 F-6（责任人裁决 2026-11-02）——models.md 双语改写不随 catalog-sync 批次，随本工作项处理。**第二个并入：C4 品牌文档切换（C4b，2026-11-03）**——C4 拆分定稿配套裁决（见上行品牌定制），品牌替换 63 文件约 960 处区分大小写命中（双语同批成对改、半自动+不可替换清单先行、文件名改名独立收尾提交），限期 2026-11-05 暂定，与结构定制（新增/删除/重命名/内容改写）合并规划，勿另起并行批次 |
 
 ### D. 跟随处理
 
@@ -166,6 +166,16 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
 | pyproject 全角标点豁免 | `pyproject.toml:201`（RUF001/2/3） | 随批次按需（文件头 `noqa`） | 新分支既有做法即文件头 noqa；不独立迁 pyproject 定制 |
 | 历史文档 9 份 | `aixcoding/doc/`（登录系列×5、发布指南、LLM 对接、项目索引、安全护栏 MANUAL_TESTS） | 责任人逐份定去向 | plan.md R1 已载"禁止删除"且枚举 8 份——**第 9 份（安全护栏 MANUAL_TESTS.md）超出 R1 枚举范围**（外部评审 F-08），去向单独定，或随 C7 安全护栏批次一并处理 |
 | 杂项资产 4 项（对账闭合） | `aixcoding/__init__.py`、`src/chrys/aixcoding/__init__.py`、`aixcoding/tests/conftest.py`、`aixcoding/README.md` | 随主体处置 | 外部评审 F-02 对账补漏：两个 `__init__.py` 分别随 R2′（开发资产锚点）与 P1（telemetry 根模块）处置；conftest 随 T1 测试迁移；`README.md` 两边均无明确去向，**待责任人定** |
+
+### E. 将来重构候选（暂不实施；触发再评估）
+
+> 定位：登记经责任人裁决"暂不做、将来再判断"的重构项——与 C 类"待迁功能"分轴（E 类无旧分支
+> 对应资产，是对现状架构的重构评估）。触发条件满足时先做触发核实与必要性分析呈报，由责任人
+> 裁决后再立项（ADR-0012；触发条件命中不自动开工）。
+
+| 重构项 | 触发再评估条件（先到为准） | 2026-11-03 评估结论（暂不实施的依据） |
+|---|---|---|
+| 定制层公共基础层/服务层提取（tier 地址注册表、共享常量、网络访问封装、通用工具；形态参考 aixcoding-continue `core/aixcoding/{types,network,utils}` 公共层） | ①定制功能增多后出现 **≥2 个真实跨特性共享消费方**（lazy import 接口复用无法覆盖的共享形态）；②**第 3 个 tier 地址消费方**出现（最可能为 telemetry 或版本更新检测 C1 批次）。届时随消费批次 design 一并裁决模块归属与 tier 放置（ADR-0011 适配），或按需独立批次走 §6 管线（涉 ADR-0011 补充则加 ADR） | 新分支 4 特性（auth / diagnostics / catalog / tui）实测无提取对象：地址仅 2 定义点且已有 drift test 防漂移（`aixcoding/tests/catalog/test_catalog_sync.py`）；网络访问 3 调用点语义刻意不同（auth 请求-响应 + `trust_env=False` vs catalog 轮询拉取，错误类型为特性域各归各）；常量零跨特性重复；唯一真实共享点（当前用户身份）已用接口复用解决（catalog `_catalog_user_id()` lazy import auth `stored_user_id`，旧分支 telemetry `current_user_id()` 同模式）。考古证据：旧分支 `src/chrys/aixcoding/` 根模块 5 py 实证为 telemetry 支撑模块长在根上（http / context / git_info 消费方均仅 telemetry 家族），属伪公共层——tier 放置（ADR-0011）为纠偏而非丢失；对比侧 aixcoding-continue 公共层系多 feature 共享密度长出（5 URL × 3 profile × 多 feature），且集中止步于 core 层（vscode / IntelliJ 扩展各持独立地址表、无跨层一致性测试）——"集中"为层内相对集中，边界由跨语言/跨进程结构决定 |
 
 ## 5. 变更记录
 
@@ -211,3 +221,23 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
   （新增/删除/重命名/内容定制，75 文件差异含上游演进噪音）；责任人指示文档类待办
   统一并入本工作项（首个并入：models.md 双语改写，catalog-sync F-6 裁决留后续
   文档批次）。
+- 2026-11-03：**C4 品牌定制拆分定稿**——责任人逐点裁决 D1-D7（拆分方案讨论稿经外部
+  AI 评审 8 findings + 逐条只读核实后收敛）：C4a 运行时品牌（常量 2 + 插值散点 6 文件 +
+  YAML 直改+marker 2 文件 + serve banner 旧分支纯 ASCII 先例 + locales 2 条，零 docs/
+  触碰）先行、待 ADR-0012 开工判定；C4b 文档品牌并入"用户指南文档定制化"（第二个并入
+  项，限期 2026-11-05 暂定）；install 脚本品牌/安装别名归 C5、pyproject `[project.urls]`
+  随 C1、NOTICE 实测零品牌命中。决策记录（聊天侧材料）：
+  `fork/temp/2026-11-02-c4-branding-split-decision.md`；细节以批次 design.md 签认版为准。
+- 2026-11-03（二）：**登记将来重构项"定制层公共基础层/服务层提取"（§4 E 类，决策：暂不实施）**
+  ——跨工程实践对比触发（aixcoding-continue 公共层 `core/aixcoding/{types,network,utils}` vs
+  fork 按 tier 分散的定制代码；端点地址散落为切入子问题）。三方实证核查（新分支 4 特性现状 /
+  旧分支根模块考古 / 对比侧公共层形态）结论均支持暂不实施（证据与触发条件详见 §4 E 类）：
+  当前无真实提取对象，跨特性共享需求已由接口复用（lazy import）覆盖；旧分支"根模块公共层"
+  实证为 telemetry 支撑模块（伪公共层），tier 放置为纠偏而非丢失。责任人裁决（2026-11-03）：
+  **暂时不做重构，登记将来重构项**——将来定制功能增多、触发条件满足时再评估是否重构；
+  届时先核实触发条件与必要性呈报，由责任人裁决后再立项。
+- 2026-11-03（三）：**catalog-sync 对账迁移**——PR #85 合并进 `main_aixcoding_cli`
+  （2026-11-03：790b562e 主体 + 2164186e 双评审处置 + a4ea553a CI 修复），"模型目录同步 +
+  档案集中管理"自 §4 C 类迁入 A 类"已迁入"（对账记录：漂移处置与接线细节见批次文档
+  `batches/catalog-sync/`）。INDEX.md 为零状态导航（ADR-0016）、DIRECTORY.md 已含
+  catalog-sync 批次注记，均无过时表述，无需联动更新。
