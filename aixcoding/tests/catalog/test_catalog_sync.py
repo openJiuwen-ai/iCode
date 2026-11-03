@@ -347,6 +347,16 @@ def test_infinite_context_length_is_absorbed() -> None:
     assert catalog.items, "an overflowing number is one unusable field, not a failed catalog"
 
 
+def test_boolean_context_length_is_not_a_number() -> None:
+    """JSON true is a misplaced flag, not a context length of 1."""
+    from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
+
+    assert catalog_module._positive_int(True) == 0
+    catalog = catalog_module.parse_catalog({"models": [{"title": "T", "model": "openai/gpt", "contextLength": True}]})
+    assert catalog.items
+    assert catalog.items[0].max_context_tokens == DEFAULT_MAX_CONTEXT_TOKENS
+
+
 def test_unusable_payload_field_types_are_converted() -> None:
     """Raw payload types (non-str id, unhashable provider) arrive converted, not as TypeError."""
     with pytest.raises(ModelCatalogError):
@@ -527,6 +537,49 @@ def test_startup_degrades_on_any_failure(monkeypatch: pytest.MonkeyPatch, tmp_pa
 # ── New: retired env names ────────────────────────────────────────────────
 
 
+def test_startup_degrades_on_unexpected_errors(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The startup swallow is not ModelCatalogError-shaped only (PR #85 review C1/C2)."""
+
+    def _explode() -> str:
+        raise RuntimeError("settings exploded")
+
+    monkeypatch.setattr(catalog_module, "catalog_url", _explode)
+    with caplog.at_level(logging.ERROR, logger="chrys.service.aixcoding.catalog"):
+        assert sync_catalog_blocking() is None
+    assert "Unexpected error syncing" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_poll_survives_unexpected_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unexpected error in one round kills neither the thread nor the schedule."""
+    calls = 0
+
+    async def _fetch_once_then_fail(url: str | None = None, *, timeout: float = 3.0) -> ModelCatalog:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transport exploded")
+        return _catalog("a")
+
+    monkeypatch.setattr(catalog_module, "catalog_url", lambda: "http://127.0.0.1:1/base")
+    monkeypatch.setattr(catalog_module, "sync_interval_seconds", lambda: _POLL_INTERVAL)
+    monkeypatch.setattr(catalog_module, "fetch_catalog", _fetch_once_then_fail)
+    monkeypatch.setattr(catalog_module, "apply_catalog", lambda c, **_kwargs: _result(*c.profile_ids()))
+
+    seen: list[CatalogSyncResult] = []
+    registry = ModelProfileRegistry()
+    assert catalog_module.start_sync_runtime(registry, seen.append, immediate=True)
+    try:
+        assert await wait_until(lambda: len(seen) >= 1), (
+            f"the loop must survive the first round's error and fetch again (calls={calls})"
+        )
+        assert registry.list_ids() == ["a"]
+    finally:
+        catalog_module.stop_sync_runtime()
+
+
 @pytest.mark.parametrize(
     "retired_name",
     [
@@ -635,6 +688,50 @@ async def test_stale_generation_result_is_dropped(monkeypatch: pytest.MonkeyPatc
     finally:
         catalog_module.stop_sync_runtime()
         fetch_release.set()
+
+
+@pytest.mark.asyncio
+async def test_stale_generation_result_after_apply_is_dropped_before_publishing(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A stop that lands mid-apply drops the result before the registry sees it.
+
+    The disk writes already happened (idempotent; the next sync converges),
+    but the old generation's catalog must not be installed into the registry
+    or reach the UI callback of a runtime that moved on (a logout, an
+    account switch) — the second, post-apply generation check.
+    """
+    apply_started = threading.Event()
+    apply_release = threading.Event()
+
+    def _slow_apply(catalog: ModelCatalog, **_kwargs: object) -> CatalogSyncResult:
+        apply_started.set()
+        assert apply_release.wait(timeout=10), "the test never released the apply"
+        return _result(*catalog.profile_ids())
+
+    monkeypatch.setattr(catalog_module, "catalog_url", lambda: "http://127.0.0.1:1/base")
+    monkeypatch.setattr(catalog_module, "_catalog_token", lambda: "t")
+    monkeypatch.setattr(catalog_module, "sync_interval_seconds", lambda: 60)
+    monkeypatch.setattr(catalog_module, "fetch_catalog", _make_fetch("a"))
+    monkeypatch.setattr(catalog_module, "apply_catalog", _slow_apply)
+
+    seen: list[CatalogSyncResult] = []
+    registry = ModelProfileRegistry()
+    with caplog.at_level(logging.INFO, logger="chrys.service.aixcoding.catalog"):
+        assert catalog_module.start_sync_runtime(registry, seen.append, immediate=True)
+        try:
+            assert await wait_until(apply_started.is_set, timeout=2.0), "the first sync never reached apply"
+            catalog_module.stop_sync_runtime()  # generation bump lands mid-apply
+            apply_release.set()
+            assert await wait_until(lambda: "dropped before publishing" in caplog.text), (
+                "the post-apply generation check must drop the stale result"
+            )
+            assert not seen, "a result from before the stop must not reach the callback"
+            assert registry.list_ids() == [], "nothing must be installed after the stop"
+        finally:
+            catalog_module.stop_sync_runtime()
+            apply_release.set()
 
 
 # ── New: loader semantics and login wiring ────────────────────────────────

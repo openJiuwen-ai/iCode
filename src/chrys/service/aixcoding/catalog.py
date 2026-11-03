@@ -5,12 +5,18 @@
 ``~/.chrys/models/`` has exactly one owner at a time, and there is no merge
 between two sources:
 
-* **A catalog source is configured** (``AIXCODING_MODEL_CATALOG_URL``, or a host
-  pushing a catalog over ACP).  Every successful sync *replaces the directory
-  wholesale* — files the catalog no longer contains are deleted — and the
-  directory stops being user-editable.  A failed sync changes nothing.
-* **No catalog source is configured.**  The directory is the user's own, as it
-  has always been: editable, never touched by this module.
+* **The catalog is in charge.**  A tier base (or an explicit
+  ``AIXCODING_MODEL_CATALOG_URL``) always names a source — see
+  :data:`_CATALOG_BASES`, which covers every tier — so the question is only
+  whether a sync has ever succeeded.  Every successful sync *replaces the
+  directory wholesale* — files the catalog no longer contains are deleted —
+  and its contents become server-owned.  A failed sync changes nothing.
+* **Until that first success the directory's content is untouched** — no
+  credential (never logged in) or every fetch failed so far, so the files
+  on disk are whatever the user or an installer left there.  The read-only
+  gate does not wait for a sync, though: a source is always named, which
+  is what :func:`is_catalog_managed` answers, so model configuration is
+  read-only from the first start.
 
 "Synced once" is sticky: the state file marks the directory as server-owned, so
 a later failed fetch (offline start) degrades to the previous catalog instead of
@@ -96,9 +102,11 @@ CATALOG_PATH = "/llm/api/v1/continue-config/dispatch"
 #: declared on the setting in :mod:`chrys.foundation.config.settings`, which is
 #: the one place the name lives (the settings-system exception in DIRECTORY.md
 #: §9: the contract belongs to the upstream settings machinery). With none
-#: configured, the tier named by ``AIXCODING_AUTH_ENVIRONMENT=local`` falls back
-#: to the loopback mock server; every other tier stays unconfigured — no sync —
-#: until a base is set.
+#: configured, every tier has a base in :data:`_CATALOG_BASES` below — local
+#: the loopback mock, dev and prod their own hosts, unset or unknown resolved
+#: to prod — so a catalog source is always named. Whether a sync actually
+#: runs is the credential's to decide (:func:`has_catalog_credential` gates
+#: the poll; the startup path swallows the no-credential failure with a log).
 #:
 #: The tier is read from auth's own variable, not a catalog-specific one: the
 #: catalog, the login flow and the user-data service are one deployment, and
@@ -231,13 +239,14 @@ def catalog_state_path() -> Path:
 
 
 def catalog_base_url() -> str:
-    """Return the catalog base for the current environment, or "" when there is none.
+    """Return the catalog base for the current environment.
 
     A configured base wins: ``model.catalog.base_url`` in
     ``~/.chrys/settings.yaml`` or ``CHRYS_MODEL_CATALOG_BASE_URL``. With none
     configured the base comes from the deployment tier
     (:data:`_CATALOG_BASES`), so ``local`` reaches the loopback mock while
-    ``dev`` and ``prod`` reach their own host.
+    ``dev`` and ``prod`` reach their own host — an unset or unknown tier
+    resolves to prod, so the base is never empty.
     """
     from chrys.foundation.config.process_settings import process_settings
 
@@ -249,7 +258,9 @@ def catalog_base_url() -> str:
 
 
 def catalog_url() -> str:
-    """Return the full catalog endpoint, or "" when no source is configured.
+    """Return the full catalog endpoint — never empty while
+    :func:`catalog_base_url` has a tier to draw on; the empty guard below
+    only covers a future base table with a gap in it.
 
     An explicitly configured URL still wins — that is how an existing
     deployment points somewhere specific. Otherwise the base comes from
@@ -329,6 +340,10 @@ def _coerce_version(catalog: ModelCatalog) -> str:
     Order participates: ``items`` is a tuple hashed in its own order, so
     reordering otherwise identical models counts as a change (the rewrite that
     follows is a no-op in content, not a wrong result).
+
+    The fingerprint is a record — it lands in the state file and the logs —
+    not a skip mechanism: every sync rewrites the directory wholesale, as the
+    0.28 deployment did before it (no unchanged-shortcut was ever shipped).
     """
     payload = json.dumps(
         [_profile_to_dict(profile) for profile in catalog.items],
@@ -362,7 +377,13 @@ def derive_profile_id(model: str) -> str:
 
 
 def _unique_profile_id(base: str, taken: set[str]) -> str:
-    """Disambiguate two served models that slug to the same id."""
+    """Disambiguate two served models that slug to the same id.
+
+    The suffix follows payload order: two same-slug models swapped by the
+    server trade ids (a known limit — distinct display models sharing one
+    slug is the pathological case).  Ids stay unique and stable within one
+    payload, which is what the directory rewrite needs.
+    """
     if base not in taken:
         return base
     suffix = 2
@@ -372,8 +393,12 @@ def _unique_profile_id(base: str, taken: set[str]) -> str:
 
 
 def _positive_int(value: object) -> int:
-    """One payload number, or 0 when it is absent or not a positive integer."""
-    if not isinstance(value, int | float | str):
+    """One payload number, or 0 when it is absent or not a positive integer.
+
+    Booleans are refused even though ``bool`` subclasses ``int`` — a JSON
+    ``true`` is a flag someone misplaced, not a context length of 1.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
         return 0
     try:
         number = int(value)
@@ -686,8 +711,10 @@ def apply_catalog(catalog: ModelCatalog, *, source: str = SOURCE_REMOTE) -> Cata
         ModelCatalogError: if the catalog is unusable or the directory cannot
             be written — including every ``OSError`` on the publish path,
             which is converted here rather than escaping to the startup path.
-            The staging files of a failed attempt are cleaned up; the
-            directory's previous catalog stays readable either way.
+            The staging files of a failed attempt are cleaned up. A failure
+            in the last step (the state write) leaves the directory already
+            new with a stale state file — readable either way, and the next
+            sync rewrites the state.
     """
     if not catalog.items:
         raise ModelCatalogError("Cannot apply an empty model catalog.")
@@ -772,24 +799,30 @@ def sync_catalog_blocking(*, timeout: float = _DEFAULT_FETCH_TIMEOUT) -> Catalog
     """Run one sync from the startup path, where no event loop exists yet.
 
     Returns ``None`` when no source is configured.  Failures are logged and
-    swallowed: the directory keeps the previous catalog, so an offline start
-    still has models.  A running loop means this was called from async code
-    that should have awaited :func:`sync_catalog` instead; starting a nested
+    swallowed — any failure, not just :class:`ModelCatalogError`: the whole
+    chain below sits inside one guard, so an unexpected error (a settings
+    read that cannot complete, say) degrades exactly like a network one and
+    the directory keeps the previous catalog, so an offline start still has
+    models.  A running loop means this was called from async code that
+    should have awaited :func:`sync_catalog` instead; starting a nested
     loop there would be wrong, so the sync is skipped.
     """
-    if not catalog_url():
-        return None
     try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        pass
-    else:
-        logger.warning("sync_catalog_blocking called with a running loop; await sync_catalog instead.")
-        return None
-    try:
+        if not catalog_url():
+            return None
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            logger.warning("sync_catalog_blocking called with a running loop; await sync_catalog instead.")
+            return None
         return asyncio.run(sync_catalog(timeout=timeout))
     except ModelCatalogError as exc:
         logger.warning("Could not sync the model catalog, keeping the previous list: %s", exc)
+        return None
+    except Exception:
+        logger.exception("Unexpected error syncing the model catalog; the previous list stays and startup continues.")
         return None
 
 
@@ -940,6 +973,11 @@ class _SyncRuntime:
             catalog = asyncio.run(fetch_catalog(timeout=self._timeout))
         except ModelCatalogError:
             return  # already logged where it was raised
+        except Exception:
+            # The poll is a daemon thread nobody restarts: an unexpected
+            # error must not kill the schedule, only this round.
+            logger.exception("Unexpected error in the model catalog poll; the loop continues.")
+            return
         if self._generation_snapshot() != generation:
             logger.info("Model catalog result from generation %d dropped before applying.", generation)
             return
@@ -947,6 +985,9 @@ class _SyncRuntime:
             result = apply_catalog(catalog)
         except ModelCatalogError:
             return  # already logged where it was raised
+        except Exception:
+            logger.exception("Unexpected error applying the model catalog; the loop continues.")
+            return
         if self._generation_snapshot() != generation:
             # The writes already happened — they are idempotent and the next
             # sync converges — but the result must not reach the registry or

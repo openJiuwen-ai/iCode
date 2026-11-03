@@ -383,12 +383,25 @@ def r2_approved_upstream_files(docs_root: Path) -> tuple[set[str], list[str]]:
         if status != SIGNED_OFF:
             notes.append(f"{rel}: R2 table present but sign-off status is '{status or 'missing'}' — ignored")
             continue
-        files = [(row.get("文件") or "").strip().strip("`") for row in rows]
-        if rows and not any(files):
+        cells = [(row.get("文件") or "").strip() for row in rows]
+        if rows and not any(cells):
             # Header drift must be loud, not a silent empty pool (design.md assumption table).
             notes.append(
                 f"{rel}: R2 table has {len(rows)} row(s) but no recognizable '文件' column — header drift? ignored"
             )
             continue
-        approved.update(to_posix(f) for f in files if f)
+        repo_root = docs_root.parents[1]
+        for cell in cells:
+            # One cell may name several files as `a` + `b` + `c`: every backtick
+            # span is a path, and a bare cell is a single path. A name that is
+            # not a real file in the repo is a loud note, never a silent pool
+            # entry (a misspelled name would otherwise masquerade as approval).
+            for name in re.findall(r"`([^`]+)`", cell) or ([cell] if cell else []):
+                path = to_posix(name.strip())
+                if not path:
+                    continue
+                if not (repo_root / path).exists():
+                    notes.append(f"{rel}: R2 row names {path!r} which is not a file in the repo — ignored")
+                    continue
+                approved.add(path)
     return approved, notes

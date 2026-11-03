@@ -55,12 +55,16 @@ check OK — 43 lines / 47 markers / 0 errors / 0 warnings
 （首跑曾报 18 errors：twin 计数超 2 处 + 未登记 marker 9 处 + 孤儿登记 8 处——全部按"登记锚为签认基准、代码注释向锚对齐"原则修正，见 §6 波折④。17 号跟改落地 C048/C049 后复跑：**45 registration rows / 49 markers / 0 error / 0 warning**。）
 
 ```
-uv run ruff check <21 改动文件>            → All checks passed
-uv run ruff format --check <21 改动文件>   → already formatted
+uv run ruff check <21 个改动上游文件逐一传入>            → All checks passed
+uv run ruff format --check <同上 21 文件>                → already formatted
 uv run ty check --error-on-warning --python-platform linux src/chrys   → 零 error
 uv run ty check --error-on-warning --python-platform darwin src/chrys → 零 error
 uv run ty check --error-on-warning --python-platform win32 src/chrys  → 零 error
 ```
+
+（21 文件清单 = §7 统计中 tests/ + src/ + locales/ + mo 的上游路径全集，即
+`git diff --name-only HEAD` 排除 `aixcoding/` 前缀后的输出；占位符形态曾由 PR #85
+第二份独立评审 B8 指出，此处改为实录口径。）
 
 ### 4. i18n 流水线
 
@@ -78,6 +82,16 @@ uv run pytest tests/foundation/i18n -q
 ### 5. 架构生成物再生成
 
 `tests/architecture/trajectory_wait_manifest.json` +9 行：新模块 `chrys.service.aixcoding.catalog` 的 awaitable 登记项（`fetch_catalog` ×2 / `sync_catalog` ×1，均 unresolved）——架构测试生成物随同改动刷新（"Refresh generated artifacts in the same change"义务）。
+
+逐行 review 结论（PR #85 第二份独立评审 B9 要求补）：
+
+| 生成行 | await 位置 | 结论 |
+|---|---|---|
+| `fetch_catalog` · `async with httpx.AsyncClient(...)` | async 上下文管理器 | unresolved 正确——httpx 客户端的 `__aenter__/__aexit__` 不属 trajectory wait 基建管辖（与 mock 批次 httpx 契约同族） |
+| `fetch_catalog` · `await client.get(...)` | httpx 传输层 | unresolved 正确——同上，网络库内部 await 不参与 wait 清单强制 |
+| `sync_catalog` · `await fetch_catalog(...)` | 本模块包装调用 | unresolved 正确——被包装的内部 await 已由 `fetch_catalog` 两行登记，包装层不重复强制 |
+
+三行均为机械登记的预期形态，无手工干预项。
 
 ### 6. 实施波折记录
 
@@ -286,6 +300,97 @@ uv run ty check --error-on-warning --python-platform win32 src/chrys → All che
 **含第三轮全部修复**——旧 dist 产物不含，故用源码态）。责任人目验结论：**没有发现
 问题**——mock 登录 → 即时同步 GPT-4o mini（新 parse 校验不误拦正常 payload）、footer
 无 F4、picker 无 manage 入口、`/models` 恒只读集中管理文案，正常路径零回归。
+
+## 2026-11-03 PR #85 peer review 处置（6 findings，责任人裁决）
+
+评审：PR #85 外部 peer review（head `790b562e`，独立临时副本 `%TEMP%\pr85wt`，
+review_scope 固化范围）；6 findings（C1-C6）核实全 confirm，处置（2026-11-03 责任人
+裁决，含两点修正：C3 升格全局决策、C6 并入本批）：
+
+- **C1 测试有效性（修复）**：发布前代次检查（apply 后 install 前）无锚定——评审变异
+  实证禁用后 38/38 全绿。新增
+  `test_stale_generation_result_after_apply_is_dropped_before_publishing`
+  （apply 中 stop → 断言 "dropped before publishing" 日志 + 回调未触发 + registry
+  未 install）；
+- **C2 文档/行为不一致（修复，注释级零行为改动；经复审两轮收敛）**：tier 回退注释段
+  与模块 docstring 对齐实现——三 tier 均有基址（unset → PROD），"无源"形态澄清为
+  凭据门控。复审指出首轮措辞"首次成功同步前目录 Editable"仍与实现矛盾
+  （`is_catalog_managed()` 恒 True，只读门不依赖同步历史——内容不被触碰 ≠ 用户可
+  编辑），终版改为"目录**内容**在首次成功同步前不被触碰，但只读门自首次启动即开"
+  （与 `test_read_only_gate` 恒只读锚定一致）；`catalog_base_url`/`catalog_url`
+  docstring 的 "or ''" 残留措辞一并清理（tier 恒有基址，空分支仅防未来基址表留空隙）。
+  未登录启动 warning 属设计内降级日志（宁缺毋错可查），登记不改；
+- **C3 明文 HTTP（ADR-0018，责任人裁决升格全局）**："现有内网条件下无法也不需要
+  支持 HTTPS，明确使用明文 HTTP"——记入 `standards/adr/0018-内网部署明文HTTP传输.md`
+  （草案待签认；覆盖 auth 存量 + catalog + 未来端点；评审 C3 类候选自此按 ADR 排除）；
+- **C4 slug 消歧（文档修复）**：`_unique_profile_id` 注释澄清顺序语义（同 slug 服务端
+  重排互换 id——已知限制；payload 内唯一稳定）；
+- **C5 design 子合计失真（勘误）**：修订记录（十一）——三个子合计系实施前预估，
+  评审 numstat 实测 1-11 号 +148/-48、12-13 号 +19/-5、14-18 号 +37/-24，实测以
+  verification §7 为准；
+- **C6 R2 gate 池健壮性（并入本批，责任人裁决）**：`_common.py::r2_approved_upstream_files`
+  增强——一格多文件按反引号段正确解析 + 每段须为仓库真实路径否则 warn 不入池
+  （堵误授权方向）；design 12/13 号格内路径改仓库根相对。增强即效：池 41→38（畸形
+  条目与 tier-migration 历史死路径 `src/chrys/aixcoding/__init__.py` 被 loud 排除，
+  warn 在案）；merge-base 口径 21 上游文件全 approved。
+
+复跑（全绿）：
+
+```
+uv run pytest aixcoding/tests/catalog -n0 -q   → 39 passed（38 + C1 新用例）
+uv run python aixcoding/tools/check_r2_diff.py --base origin/main_aixcoding_cli
+  → OK（upstream_changed=21 approved_pool=38，仅历史死路径 1 warn）
+uv run python aixcoding/tools/check_docs.py    → OK（18 ADR——ADR-0018 草案入档）
+uv run python aixcoding/tools/gen_customizations.py --strict → 45/49/0
+uv run ruff check + format --check（三文件）   → All checks passed / already formatted
+```
+
+## 2026-11-03 PR #85 第二份独立评审处置（18 候选，责任人裁决分档）
+
+评审：PR #85 另一独立评审（head `790b562e`，`pr/85` ref 实测）；候选编号范围
+C1-C6 / B1-B9 / E1-E3（**原评审 B4/B6 编号空缺未列内容，实际候选 16 项**——复审
+指出"18"系按编号范围误计，此处澄清），全部核实映射后分档处置（2026-11-03 责任人
+批准）：
+
+**A 档（行为级修复，全落地）**：
+
+- **同步链前置调用兜底**（评审 C1+C2+E1 同根因族）：`sync_catalog_blocking` 全链入
+  try + `except Exception` 兜底（error 日志 + 返回 None，"startup degrades on any
+  failure" 承诺闭环）；`_sync_once` fetch/apply 两段各补 `except Exception`
+  （daemon 线程不可自愈，意外异常只杀本轮不杀调度）；新用例 ×2（`RuntimeError` 注入
+  启动降级断言日志；首轮抛错次轮成功断言线程存活）；
+- **`_positive_int` 排除 bool**（评审 E3，`isinstance(True, int)` → 1）：补
+  `isinstance(value, bool)` 前置拒绝 + 用例（models 形态 `contextLength: true` 落
+  `DEFAULT_MAX_CONTEXT_TOKENS`——不可用值不写字段用默认，与 inf 同路径）。
+
+**B 档（文档/登记级）**：
+
+- B2 version 无短路消费——**考古排除为缺陷**：0.28 final 旧实现同样无条件全量重写
+  （`_clear_directory` 先清后写、`replaced` 恒 True），version 指纹双方均只写 state；
+  `_coerce_version` docstring 补"record not a skip mechanism"说明；
+- B1 非 ASCII 模型名整目录拒绝——已知限制登记（0.28 同构平移，内网 payload ASCII
+  为主），不改行为；
+- B8 verification §3 占位符命令——改实录口径（§3 附注）；
+- B9 wait manifest 3 行——§5 补逐行 review 结论（均机械登记预期形态）；
+- B7 PEP 758 vs 3.9 worker——**不触达**：catalog 消费方枚举全部在 TUI 链
+  （app/tui + settings 层 + login_actions），workflow worker 通道零 import；登记结论；
+- E2 state 写失败窗口——apply docstring "Raises" 段精确化（目录已新、state 旧、
+  下轮重写）。
+
+**排除/不动**（映射在案）：评审 C3=前轮处置 C1（发布前代次检查已锚定，写盘窗口为
+签认边界）；C4 docstring 已声明边界；B3 快照语义设计如此；B5 `require_catalog_writable`
+design 声明预留；C5/C6 风格级；manifest 无 R2 编号行——维持生成物豁免登记（修订记录
+（七）），不入 R2 表。
+
+复跑（全绿）：
+
+```
+uv run pytest aixcoding/tests/catalog -n0 -q   → 42 passed（39 + 3 新用例）
+uv run ruff check + format（两文件）           → All checks passed
+uv run ty check --error-on-warning --python-platform win32 src/chrys → All checks passed
+uv run python aixcoding/tools/gen_customizations.py --strict → 45/49/0
+uv run python aixcoding/tools/check_docs.py    → OK（18 ADR）
+```
 
 ## 待补项
 

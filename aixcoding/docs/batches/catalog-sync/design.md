@@ -51,6 +51,23 @@
 > 防 registry casefold 启动穿透）；interval 补非有限值回退（NaN 热循环/inf 溢出）；
 > 退役 env 四名全覆盖 + 新 TOKEN 优先测试补齐；R1 自查行数随 15-18 号登记刷新为
 > 18 行。修复明细与复跑见 verification 第三轮节。
+> 2026-11-03（十一）PR #85 peer review（6 findings）处置：C1 发布前代次检查补测试
+> 锚定；C2 tier 回退注释段与模块 docstring 对齐实现（"无源"形态澄清为凭据门控，
+> 零行为改动）；C4 slug 消歧顺序语义注释澄清；C5 本条——R2 三个子合计（+78/-18、
+> +10/-1、+23/-22）系**实施前预估**，评审 numstat 实测 1-11 号 +148/-48、12-13 号
+> +19/-5、14-18 号 +37/-24（修复轮注释增量与 registry 重缩进整体计行所致），
+> **实测以 verification.md §7（25 files +238/-84，逐文件 numstat 一致）为准**；
+> C3 按 ADR-0018（内网部署明文 HTTP，2026-11-03 责任人裁决）口径排除；C6 R2 gate
+> 池解析增强（一格多文件正确解析 + 真实路径校验）随本批落地，12 号格内 po/mo
+> 路径改仓库根相对。
+> 2026-11-03（十二）PR #85 第二份独立评审（候选 C1-C6/B1-B9/E1-E3，B4/B6 编号
+> 空缺实为 16 项）分档处置：A 档两项行为级修复
+> （同步链前置调用兜底——blocking 全链 try + 轮询两段 except Exception；
+> `_positive_int` 排除 bool）+ 3 新用例；B 档六项文档/登记（version 无短路消费经
+> 考古排除——0.28 同为无条件全量重写；非 ASCII 名整目录拒绝登记已知限制；worker
+> 不触达 PEP 758；verification §3 实录化与 §5 manifest 逐行结论；state 窗口表述
+> 精确化）；其余候选映射排除或维持签认边界。全部零上游改动，明细见 verification
+> 第二份评审处置节。
 
 ## 方案概述
 
@@ -311,8 +328,8 @@ TUI，ACP 写删通道限制登记于 requirements 非目标。
 | 9 | `src/chrys/app/tui/screens/settings/layout.py` | `DEFERRED_KEYS` 追加 `"model.catalog.base_url"` + 理由注释 4 行 | +5 | key 行处（marker ×1） | 排除集是上游面板渲染结构；与 2 号同批（声明入面板必须同步排除） |
 | 10 | `src/chrys/app/tui/screens/models/screen.py` | `_READ_ONLY_NOTICE` fallback 改集中管理措辞（照旧分支 `:66-69` 文案） | +1/-1 | 常量处（marker ×1） | 同 key 异 fallback——恒只读后 "Agent is running" 文案误导（评审一-3）；文案属上游 msg 定义处 |
 | 11 | `src/chrys/app/tui/screens/main/model_indicator.py` | `_live_label()` 函数 + `compute_model_indicator_state(..., model_registry=)` 参数（照 0.28 定制） | ~+14 | 函数定义处（marker ×1） | 会话中同步重写 profile 后指示器跟踪 registry 实时名——纯函数属上游模块，定制为参数化扩展 |
-| 12 | `locales/chrys.pot` + `zh-Hans/LC_MESSAGES/chrys.po` + `chrys.mo` | i18n 产物：settings label 新 key（`settings.model.catalog.base_url.label`）extract/中文条目；`tui.model_config.read_only_notice` 的 po `msgstr` 同步改写（10 号 fallback 变更连带——有翻译时翻译优先） | ~+8 | 标记豁免清单已有（tui 批次登记三产物） | 生成产物（extract/compile），随 msg 定义自动产生 |
-| 13 | `tests/foundation/i18n/_catalog_oracle_ids.py` + `test_catalog_oracle.py` | oracle 两动作：新 key 追加 `EXPECTED_MESSAGE_IDS` +1、size 断言 +1（C042/C043，同 tui 批次先例） | +2/-1 | 行尾 marker（文件级） | 上游 oracle 机制对借壳 key 的登记义务 |
+| 12 | `locales/chrys.pot` + `locales/zh-Hans/LC_MESSAGES/chrys.po` + `src/chrys/foundation/i18n/_catalogs/zh-Hans/LC_MESSAGES/chrys.mo` | i18n 产物：settings label 新 key（`settings.model.catalog.base_url.label`）extract/中文条目；`tui.model_config.read_only_notice` 的 po `msgstr` 同步改写（10 号 fallback 变更连带——有翻译时翻译优先）；格内路径为仓库根相对（PR #85 处置 C6：R2 gate 一格多文件正确解析 + 真实路径校验） | ~+8 | 标记豁免清单已有（tui 批次登记三产物） | 生成产物（extract/compile），随 msg 定义自动产生 |
+| 13 | `tests/foundation/i18n/_catalog_oracle_ids.py` + `tests/foundation/i18n/test_catalog_oracle.py` | oracle 两动作：新 key 追加 `EXPECTED_MESSAGE_IDS` +1、size 断言 +1（C042/C043，同 tui 批次先例）；格内路径为仓库根相对（同 12 号，PR #85 处置 C6） | +2/-1 | 行尾 marker（文件级） | 上游 oracle 机制对借壳 key 的登记义务 |
 | 14 | `tests/app/tui/screens/test_model_picker.py` | 8 号渲染段删除的测试连带（4 处必红，红因精确对应已签认行为差异）：①manage 正断言→`OptionDoesNotExist` 反断言；②计数 4/5→3/3 + 用例改名；③manage 参数化行**不删、改合成事件驱动**（构造未注册 manage Option + `post_message(OptionSelected)`，保留 `ModelPickerAction.MANAGE` 路由断言——协议覆盖不随 UI 入口消失）；④中文用例删 manage 段、保留标题断言 + 改名。参照 0.28 final，按 0.32.2 逐段复核（不机械照抄 diff） | ~+12/-10 | 反断言处、参数化改写处（marker ×2，C044/C045） | 渲染段删除的连带跟改；协议路由覆盖保留（对比四"留"清单的测试锚定落点） |
 | 15 | `tests/app/tui/screens/test_model_indicator_wiring.py` | 7 号/11 号 live label 语义的测试连带（5 处红：标签跟 registry 而非运行时快照）：照 0.28 final **修构造不修断言**——registry 注册名对齐 runtime details 名 + 语义注释（registry 为活名真相源、registry 不识 id 回退快照）；测试意图（切换刷新/状态机标签保持/失败后收敛）完整保留 | ~+6/-5 | 语义注释处（marker ×1，C046） | 实施期红面发现（E 段落地后甄别，三分类第一类），随发现随登记 |
 | 16 | `tests/app/tui/screens/test_model_config.py` | 10 号 notice 措辞的测试连带（1 处红）：断言期望串改集中管理新文案 | +1/-1 | 断言行（marker ×1，C047） | 同 15 号，实施期红面随发现随登记 |
