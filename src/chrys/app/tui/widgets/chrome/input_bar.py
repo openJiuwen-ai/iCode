@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import unicodedata
-from bisect import bisect_right
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
-from itertools import accumulate
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from secrets import token_hex
 from time import monotonic, time
@@ -34,7 +32,6 @@ from textual.strip import Strip
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Button, TextArea
-from textual.widgets.text_area import Document, Edit, EditResult, Location, Selection
 
 from chrys.app.tui.i18n import render_content, render_str, widget_localizer
 from chrys.app.tui.support.prompt_history import (
@@ -53,16 +50,19 @@ from chrys.app.tui.widgets.chrome.commands import (
     is_slash_command_candidate,
     parse_slash_draft,
 )
-from chrys.app.tui.widgets.chrome.image_paste import (
-    convert_pasted_image_paths_to_mentions,
-    save_clipboard_image_to_file,
-)
-from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
+from chrys.app.tui.widgets.chrome.draft_text_area import DRAFT_COMPONENT_CLASSES, DraftTextArea, draft_text_area_css
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft, ShortcutIntent
 from chrys.app.tui.widgets.selection import NonSelectableTextMixin
 from chrys.app.tui.widgets.text_area import MESSAGE_EDITOR_PASTE_MAX_TOKENS, NEWLINE_SHORTCUT_KEYS
 from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.platform import safe_getcwd
+from chrys.foundation.text.draft_references import (
+    DraftReference,
+    ReferenceKind,
+    expand_with_quote_spans,
+)
+from chrys.service.prompt_shortcuts.shell import shell_command_spans
 
 # Unicode-name markers for CJK-family scripts where a preceding character cannot be an email local part.
 _CJK_NAME_TOKENS = ("CJK", "HIRAGANA", "KATAKANA", "HANGUL", "BOPOMOFO", "IDEOGRAPH")
@@ -94,6 +94,11 @@ _INPUT_PROMPT_FIELDS_PENDING = msg(
     "tui.input.prompt_fields_pending",
     fallback="{count} highlighted placeholder is not filled in. Press Enter again to send as is.",
     plural_fallback="{count} highlighted placeholders are not filled in. Press Enter again to send as is.",
+)
+_INPUT_QUOTE_IN_COMMAND_TITLE = msg("tui.input.title.quote_in_command", fallback="Not sent")
+_INPUT_QUOTE_IN_COMMAND = msg(
+    "tui.input.quote_in_command",
+    fallback="A quote inside a !`command` would run as part of it. Move the quote out of the command to send.",
 )
 _PROMPT_FIELDS_CONFIRM_SECONDS = 2.0
 """A second Enter within this window sends a draft whose prompt fields are still unfilled."""
@@ -226,42 +231,6 @@ class _HistoryBrowser:
                     self.index = max(0, self.index - overflow)
 
 
-type PromptField = tuple[int, int]
-"""``[start, end)`` code-point span of an unfilled prompt-shortcut placeholder in the draft."""
-
-
-def shift_prompt_fields(fields: Sequence[PromptField], start: int, end: int, inserted: int) -> tuple[PromptField, ...]:
-    """Return *fields* after ``[start, end)`` is replaced by *inserted* characters.
-
-    A field the edit touches stops being a field: once the user types into,
-    over or across a placeholder it is their text. Text inserted exactly at a
-    field's edge leaves the field as it was, moving it when the text lands
-    before it.
-    """
-    delta = inserted - (end - start)
-    kept: list[PromptField] = []
-    for field_start, field_end in fields:
-        if end <= field_start:
-            kept.append((field_start + delta, field_end + delta))
-        elif start >= field_end:
-            kept.append((field_start, field_end))
-    return tuple(kept)
-
-
-@dataclass(frozen=True, slots=True)
-class ChatDraft:
-    """The chat draft as one value: its text, its unfilled prompt fields and the shortcut it belongs to.
-
-    Whatever moves a draft as a whole (history, the editor, a send that
-    gives it back) moves all three together, so a draft comes back the way
-    it left. Only an edit that empties the text ends the fields and owner.
-    """
-
-    text: str
-    fields: tuple[PromptField, ...] = ()
-    owner: ShortcutIntent | None = None
-
-
 @dataclass(frozen=True, slots=True)
 class SubmitRequest:
     """A submit gesture's draft and what the gesture asks for, for the screen's router."""
@@ -288,16 +257,16 @@ def default_submit_route(request: SubmitRequest) -> SubmitRoute:
     return "continue" if request.continue_turn else "message"
 
 
-class _ChatTextArea(EnhancedTextArea):
-    """Chat input with Enter-submit, explicit newline shortcuts and input history."""
+class _ChatTextArea(DraftTextArea, EnhancedTextArea):
+    """Chat input with Enter-submit, explicit newline shortcuts and input history.
 
-    COMPONENT_CLASSES: ClassVar[set[str]] = {"chat-input--prompt-field"}
-
-    DEFAULT_CSS = """
-    _ChatTextArea > .chat-input--prompt-field {
-        background: $accent 30%;
-    }
+    Editing the draft itself (labels, prompt fields, owner, pastes) is
+    :class:`DraftTextArea`'s, shared with the message editor.
     """
+
+    COMPONENT_CLASSES: ClassVar[set[str]] = set(DRAFT_COMPONENT_CLASSES)
+
+    DEFAULT_CSS = draft_text_area_css("_ChatTextArea")
 
     _history: _HistoryBrowser
     _history_browsing: bool
@@ -330,13 +299,6 @@ class _ChatTextArea(EnhancedTextArea):
     class ModelTrigger(Message):
         """Posted when user types ``$`` at start of empty input."""
 
-    class DraftOwnerChanged(Message):
-        """Posted when the prompt shortcut the draft belongs to changes (``ChatDraft.owner``)."""
-
-        def __init__(self, owner: ShortcutIntent | None) -> None:
-            self.owner = owner
-            super().__init__()
-
     def __init__(self, *args, **kwargs) -> None:
         kwargs.setdefault("max_paste_tokens", MESSAGE_EDITOR_PASTE_MAX_TOKENS)
         super().__init__(*args, **kwargs)
@@ -350,225 +312,6 @@ class _ChatTextArea(EnhancedTextArea):
         # or opening their popups; Esc closes the search first.
         self._history_search_active: bool = False
         self._right_placeholder = ""
-        # Session restore/workspace updates replace this before normal use; this covers early paste during startup.
-        self._paste_cwd: str = safe_getcwd()
-        self._clipboard_image_dir: Path | None = None
-        self._prompt_fields: tuple[PromptField, ...] = ()
-        self._draft_owner: ShortcutIntent | None = None
-        # Set while a whole draft is written: its own clearing must not end the owner it brings.
-        self._writing_draft = False
-        self._prompt_field_columns_of: tuple[PromptField, ...] | None = None
-        self._prompt_field_columns_cache: dict[int, list[tuple[int, int]]] = {}
-        # A snapshot of the initial setting: prompt fields turn the line highlight
-        # off while they show and restore this value, not one set later.
-        self._highlights_cursor_line = self.highlight_cursor_line
-
-    # -------------------------------------------------------------- #
-    # Prompt-shortcut fields
-    # -------------------------------------------------------------- #
-
-    @property
-    def prompt_fields(self) -> tuple[PromptField, ...]:
-        """Unfilled placeholders left by the last prompt-shortcut expansion."""
-        return self._prompt_fields
-
-    def set_prompt_fields(self, fields: Sequence[PromptField], *, select: bool = True) -> None:
-        """Highlight *fields* of the current text and, with *select*, select the first one."""
-        length = len(self.text)
-        self._prompt_fields = tuple(sorted((start, end) for start, end in fields if 0 <= start < end <= length))
-        self._repaint_prompt_fields()
-        if select and self._prompt_fields:
-            self._select_prompt_field(self._prompt_fields[0])
-
-    # -------------------------------------------------------------- #
-    # The draft as one value
-    # -------------------------------------------------------------- #
-
-    @property
-    def draft_owner(self) -> ShortcutIntent | None:
-        """The prompt shortcut this draft belongs to, if a shortcut expanded into it."""
-        return self._draft_owner
-
-    def set_draft_owner(self, owner: ShortcutIntent | None) -> None:
-        """Make *owner* the draft's, keeping its text and fields; posts the change."""
-        if owner == self._draft_owner:
-            return
-        self._draft_owner = owner
-        self.post_message(self.DraftOwnerChanged(owner))
-
-    def chat_draft(self) -> ChatDraft:
-        """The draft now: text, unfilled fields and owner."""
-        return ChatDraft(self.text, self._prompt_fields, self._draft_owner)
-
-    def write_draft(self, draft: ChatDraft, *, select_field: bool = False) -> None:
-        """Replace the whole draft with *draft*, its fields and owner included; the cursor ends at its end.
-
-        With *select_field* the first field is selected instead.
-        """
-        self._writing_draft = True
-        try:
-            self._drop_prompt_fields()
-            self.clear()
-            if draft.text:
-                self.insert(draft.text)
-        finally:
-            self._writing_draft = False
-        self.set_prompt_fields(draft.fields, select=select_field)
-        self.set_draft_owner(draft.owner if draft.text else None)
-
-    def _end_owner_if_emptied(self) -> None:
-        # An edit that empties the draft ends what it belonged to; a whole write states its own.
-        if not self._writing_draft and not self.text:
-            self._drop_prompt_fields()
-            self.set_draft_owner(None)
-
-    def _drop_prompt_fields(self) -> None:
-        if self._prompt_fields:
-            self._prompt_fields = ()
-            self._repaint_prompt_fields()
-
-    def _repaint_prompt_fields(self) -> None:
-        # The cursor line is styled over each line ``get_line`` returns, which
-        # would hide a field on the cursor's line: leave it unstyled while
-        # fields are shown.
-        self.highlight_cursor_line = self._highlights_cursor_line and not self._prompt_fields
-        # The rendered-line cache is keyed on text, cursor and theme, not on
-        # these spans: drop it so the next paint restyles the lines.
-        self._line_cache.clear()
-        self.refresh()
-
-    def _select_prompt_field(self, span: PromptField) -> None:
-        document = self.document
-        start, end = span
-        self.selection = Selection(document.get_location_from_index(start), document.get_location_from_index(end))
-
-    def select_next_prompt_field(self) -> bool:
-        """Select the field after the current selection, wrapping around; False with none left."""
-        fields = self._prompt_fields
-        if not fields:
-            return False
-        document = self.document
-        first, last = sorted(self.selection)
-        start = document.get_index_from_location(first)
-        end = document.get_index_from_location(last)
-        if (start, end) in fields:
-            following = fields[(fields.index((start, end)) + 1) % len(fields)]
-        else:
-            following = next((span for span in fields if span[0] >= start), fields[0])
-        self._select_prompt_field(following)
-        return True
-
-    def edit(self, edit: Edit) -> EditResult:
-        if not self._prompt_fields:
-            result = super().edit(edit)
-            self._end_owner_if_emptied()
-            return result
-        document = self.document
-        start = document.get_index_from_location(edit.top)
-        end = document.get_index_from_location(edit.bottom)
-        # Shift before the base edit posts Changed and repaints. ``len(edit.text)`` is the length
-        # the document stores: text reaches the draft with LF line ends only (typing inserts
-        # ``\n``, a paste or drop goes through ``_sanitize_paste_text``, an expansion through
-        # ``sanitize_terminal_block``), so no CRLF collapses on the way in.
-        self._prompt_fields = shift_prompt_fields(self._prompt_fields, start, end, len(edit.text))
-        if not self._prompt_fields:
-            self.highlight_cursor_line = self._highlights_cursor_line
-        result = super().edit(edit)
-        self._end_owner_if_emptied()
-        return result
-
-    # Undo and redo replay a batch of recorded edits straight on the document,
-    # not through ``edit()`` (Textual 8.2.7 ``TextArea._undo_batch`` /
-    # ``_redo_batch``). Each recorded edit knows the exact span it changed, so
-    # the fields move across those spans; telling them apart by comparing the
-    # text before and after would misplace a change next to a field whose
-    # characters match it.
-
-    def _undo_batch(self, edits: Sequence[Edit]) -> None:
-        if self._prompt_fields and edits:
-            steps: list[tuple[Location, Location, str] | None] = []
-            for recorded in reversed(edits):
-                # The span the edit wrote, and the text it replaced there.
-                done = recorded._edit_result
-                steps.append(None if done is None else (recorded.top, done.end_location, done.replaced_text))
-            self._replay_prompt_fields(steps)
-        super()._undo_batch(edits)
-        self._end_owner_if_emptied()
-
-    def _redo_batch(self, edits: Sequence[Edit]) -> None:
-        if self._prompt_fields and edits:
-            self._replay_prompt_fields([(recorded.top, recorded.bottom, recorded.text) for recorded in edits])
-        super()._redo_batch(edits)
-        self._end_owner_if_emptied()
-
-    def _replay_prompt_fields(self, steps: Sequence[tuple[Location, Location, str] | None]) -> None:
-        """Move the fields across *steps*, replacements applied in order to the current text.
-
-        Each step is ``(top, bottom, text)`` against the text the step before
-        it left; a scratch copy of the document turns each into offsets, as
-        ``edit()`` does on the live one. A step that cannot be placed drops
-        every field: a field is only highlighted where it is known to be.
-        """
-        scratch = Document(self.text)
-        fields = self._prompt_fields
-        for step in steps:
-            if step is None:
-                fields = ()
-                break
-            top, bottom, text = step
-            start = scratch.get_index_from_location(top)
-            end = scratch.get_index_from_location(bottom)
-            written = scratch.replace_range(top, bottom, text)
-            fields = shift_prompt_fields(
-                fields, start, end, scratch.get_index_from_location(written.end_location) - start
-            )
-        self._prompt_fields = fields
-        self._repaint_prompt_fields()
-
-    def load_text(self, text: str) -> None:
-        # A plain whole write: no fields, no owner.
-        self._drop_prompt_fields()
-        super().load_text(text)
-        self.set_draft_owner(None)
-
-    def get_line(self, line_index: int) -> Text:
-        line = super().get_line(line_index)
-        if not self._prompt_fields:
-            return line
-        spans = self._prompt_field_columns().get(line_index)
-        if spans:
-            style = self.get_component_rich_style("chat-input--prompt-field", partial=False)
-            for start, end in spans:
-                line.stylize(style, start, end)
-        return line
-
-    def _prompt_field_columns(self) -> dict[int, list[tuple[int, int]]]:
-        """The columns each line's fields cover, worked out once per change of the fields.
-
-        Every change of the text makes new fields (``edit()``, undo, redo,
-        ``load_text``), so the fields themselves key this. Paint asks line by
-        line, and a line's offset in the text costs a walk over every line
-        above it: done per painted line, a long draft paints slowly.
-        """
-        fields = self._prompt_fields
-        if self._prompt_field_columns_of is not fields:
-            document = self.document
-            lines = document.lines
-            newline = len(document.newline)
-            line_starts = list(accumulate((len(text) + newline for text in lines), initial=0))
-            columns: dict[int, list[tuple[int, int]]] = {}
-            for start, end in fields:
-                first = bisect_right(line_starts, start) - 1
-                last = min(bisect_right(line_starts, end) - 1, len(lines) - 1)
-                for row in range(first, last + 1):
-                    line_start = line_starts[row]
-                    left = max(start, line_start) - line_start
-                    right = min(end, line_start + len(lines[row])) - line_start
-                    if left < right:
-                        columns.setdefault(row, []).append((left, right))
-            self._prompt_field_columns_cache = columns
-            self._prompt_field_columns_of = fields
-        return self._prompt_field_columns_cache
 
     def set_right_placeholder(self, text: str) -> None:
         """Set literal placeholder text rendered against the input's right edge."""
@@ -670,75 +413,6 @@ class _ChatTextArea(EnhancedTextArea):
         self._history_browsing = False
         self._history_draft = None
         self._history.reset()
-
-    def _prepare_paste_text(self, text: str) -> str:
-        """Convert pasted/dropped supported image paths into ``@`` mentions."""
-        try:
-            return self._prepare_image_path_paste_text(text) or text
-        except OSError, RuntimeError, ValueError:
-            return text
-
-    def _prepare_image_path_paste_text(self, text: str) -> str | None:
-        """Return converted image-path paste text, or ``None`` when not applicable."""
-        converted = convert_pasted_image_paths_to_mentions(text, cwd=Path(self._paste_cwd))
-        if converted == text:
-            return None
-        start, _end = self.selection
-        insert_index = self.document.get_index_from_location(start)
-        if insert_index > 0 and not self.text[insert_index - 1].isspace():
-            return f" {converted}"
-        return converted
-
-    def set_paste_cwd(self, cwd: str) -> None:
-        """Set the cwd used to resolve relative pasted/dropped image paths."""
-        self._paste_cwd = cwd
-
-    def set_clipboard_image_dir(self, directory: str | Path | None) -> None:
-        """Set the session-scoped directory used for clipboard image attachments."""
-        self._clipboard_image_dir = Path(directory) if directory is not None else None
-
-    def _prepare_clipboard_image_paste_text(self) -> str | None:
-        """Return paste text for a bitmap image currently on the platform clipboard."""
-        # TODO(perf): Clipboard capture may run osascript/PIL/file I/O. Move
-        # this boundary to a worker when paste completion can remain ordered
-        # with subsequent input events.
-        path = save_clipboard_image_to_file(self._clipboard_image_dir)
-        if path is None:
-            return None
-        try:
-            return self._prepare_image_path_paste_text(str(path)) or str(path)
-        except OSError, RuntimeError, ValueError:
-            return str(path)
-
-    def _insert_paste_text(self, text: str) -> bool:
-        text = self._sanitize_paste_text(text)
-        if result := self._replace_via_keyboard(text, *self.selection):
-            self.move_cursor(result.end_location)
-            return True
-        return False
-
-    async def _on_paste(self, event) -> None:
-        """Handle text paste events and terminal image-clipboard no-ops."""
-        if not event.text:
-            event.prevent_default()
-            if not self.read_only:
-                self._insert_clipboard_image_paste()
-            event.stop()
-            return
-        await super()._on_paste(event)
-
-    def _insert_clipboard_image_paste(self) -> bool:
-        text = self._prepare_clipboard_image_paste_text()
-        if not text:
-            return False
-        return self._insert_paste_text(text)
-
-    def action_paste(self) -> None:
-        """Paste text or a platform clipboard image into the chat input."""
-        if self.read_only:
-            return
-        if not self._insert_clipboard_image_paste():
-            super().action_paste()
 
     async def _on_key(self, event) -> None:
         # Prompt history navigation: up on the first row shown, down on the last.
@@ -961,6 +635,13 @@ class InputBar(Widget):
             self.draft = draft if draft is not None else ChatDraft(text)
             super().__init__()
 
+    class ReferenceOpened(Message):
+        """Posted when a live label in the draft is clicked: *reference* is what it stands for."""
+
+        def __init__(self, reference: DraftReference) -> None:
+            self.reference = reference
+            super().__init__()
+
     class InterruptRequested(Message):
         """Posted when the user clicks Stop."""
 
@@ -1065,6 +746,8 @@ class InputBar(Widget):
         self._history_search_placeholder = _build_history_search_placeholder(self._localizer())
         self.submit_router: SubmitRouter | None = None
         """Where a submit goes (:class:`SubmitRequest`); the screen installs its own, else :func:`default_submit_route`."""
+        self.draft_place: Callable[[], object] | None = None
+        """Where a prompt shortcut's owner holds (``DraftTextArea.draft_place``); the screen installs its session and folder."""
         # When the unfilled-fields warning was shown, for which draft revision, and its toast.
         self._prompt_fields_warned: tuple[float, int, Notification] | None = None
         super().__init__(**kwargs)
@@ -1101,6 +784,19 @@ class InputBar(Widget):
         if self.is_mounted:
             self.query_one("#chat-input", _ChatTextArea).set_paste_cwd(cwd)
 
+    def _draft_place_now(self) -> object:
+        return self.draft_place() if self.draft_place is not None else None
+
+    @property
+    def paste_cwd(self) -> str:
+        """The folder relative pasted or dropped image paths resolve against."""
+        return self._paste_cwd
+
+    @property
+    def clipboard_image_dir(self) -> Path | None:
+        """The session-scoped folder pasted clipboard images are saved to."""
+        return self._clipboard_image_dir
+
     def set_clipboard_image_dir(self, directory: str | Path | None) -> None:
         """Set the session-scoped directory used for clipboard image attachments."""
         self._clipboard_image_dir = Path(directory) if directory is not None else None
@@ -1132,6 +828,7 @@ class InputBar(Widget):
         ta = self.query_one("#chat-input", _ChatTextArea)
         ta.set_paste_cwd(self._paste_cwd)
         ta.set_clipboard_image_dir(self._clipboard_image_dir)
+        ta.draft_place = self._draft_place_now
         self._apply_placeholders(ta)
         self.focus_input()
         # Pin the group to the current visible button widths. Subsequent state
@@ -1304,7 +1001,7 @@ class InputBar(Widget):
         ta = self.query_one("#chat-input", _ChatTextArea)
         btn = self.query_one("#send-btn", Button)
         self.query_one("#editor-btn", Button).disabled = self.locked or self.shell_mode
-        slash = parse_slash_draft(ta.text.strip())
+        slash = parse_slash_draft(ta.chat_draft().command_text())
         side_question = slash is not None and slash.name == "btw"
         open_history = side_question and slash is not None and not slash.arguments.strip()
 
@@ -1454,6 +1151,8 @@ class InputBar(Widget):
             return
         if text and not self._confirm_unfilled_prompt_fields():
             return
+        if text and not self._confirm_no_quote_in_command(draft):
+            return
         ta._reset_history_browsing()
         router = self.submit_router or default_submit_route
         route = (
@@ -1464,12 +1163,15 @@ class InputBar(Widget):
         if route == "taken":
             self._refresh_interaction_state()
             return
+        # The one place text leaves the composer: its labels expand here, and the
+        # draft rides along whole for whatever hands it back.
+        sent = draft.sent_text() if text else ""
         if route == "continue":
-            self.post_message(self.RetryRequested(text=text, draft=draft if text else None))
+            self.post_message(self.RetryRequested(text=sent, draft=draft if text else None))
         else:
-            self.post_message(self.UserSubmitted(text, draft))
+            self.post_message(self.UserSubmitted(sent, draft))
         if route != "message" or not self.agent_running:
-            ta.clear()
+            ta.leave_draft()
         self._refresh_interaction_state()
 
     def submit_input(self) -> None:
@@ -1479,8 +1181,10 @@ class InputBar(Widget):
             return
         self._submit(continue_turn=False, runs_commands=True)
 
-    def on__chat_text_area_draft_owner_changed(self, event: _ChatTextArea.DraftOwnerChanged) -> None:
+    def on_draft_text_area_draft_owner_changed(self, event: DraftTextArea.DraftOwnerChanged) -> None:
         event.stop()
+        # The owner is part of the draft: an open editor must see it changed.
+        self._draft_revision += 1
         self.post_message(self.DraftChanged())
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
@@ -1561,8 +1265,37 @@ class InputBar(Widget):
         self._submit(continue_turn=False, runs_commands=True)
 
     def _is_side_question(self) -> bool:
-        draft = parse_slash_draft(self.query_one("#chat-input", _ChatTextArea).text.strip())
+        draft = parse_slash_draft(self.query_one("#chat-input", _ChatTextArea).chat_draft().command_text())
         return draft is not None and draft.name == "btw"
+
+    def _confirm_no_quote_in_command(self, draft: ChatDraft) -> bool:
+        """Return whether no command *draft* runs holds a quote; warn and keep the draft when one does.
+
+        A quote never acts (``draft_references.inert_quote``), but one inside a
+        prompt shortcut's ``!`command``` would be run as part of it, wherever
+        the command's text comes from (typed, or a paste). Judged on what the
+        draft sends; only a shortcut's draft runs commands.
+        """
+        if draft.owner is None:
+            return True
+        sent, quotes = expand_with_quote_spans(draft.text.strip(), draft.references)
+        commands = shell_command_spans(sent)
+        if not any(
+            start < quote_end and quote_start < end for quote_start, quote_end in quotes for start, end in commands
+        ):
+            return True
+        localizer = widget_localizer(self)
+        self.app.post_message(
+            Notify(
+                Notification(
+                    render_str(localizer, _INPUT_QUOTE_IN_COMMAND.bind()),
+                    title=render_str(localizer, _INPUT_QUOTE_IN_COMMAND_TITLE.bind()),
+                    severity="warning",
+                    markup=False,
+                )
+            )
+        )
+        return False
 
     def _confirm_unfilled_prompt_fields(self) -> bool:
         """Return whether a submit may go ahead with the draft's prompt fields.
@@ -1599,9 +1332,29 @@ class InputBar(Widget):
         self.app.post_message(Notify(notification))
         return False
 
+    def on_draft_text_area_reference_clicked(self, event: DraftTextArea.ReferenceClicked) -> None:
+        event.stop()
+        self.post_message(self.ReferenceOpened(event.reference))
+
+    def insert_reference(self, kind: ReferenceKind, content: str) -> bool:
+        """Insert a new label for *content* at the cursor and focus the composer; False when it cannot."""
+        if self.shell_mode or not self.display:
+            return False
+        ta = self.query_one("#chat-input", _ChatTextArea)
+        if not ta.insert_reference(kind, content):
+            return False
+        self.focus_input()
+        self._refresh_interaction_state()
+        return True
+
     def expand_prompt(self, draft: ChatDraft) -> None:
-        """Replace the draft with an expanded prompt shortcut, its first unfilled field selected."""
-        self.set_draft(draft, select_field=True)
+        """Replace the draft with an expanded prompt shortcut, its first unfilled field selected.
+
+        The expansion is this draft rewritten around the arguments typed in it:
+        the labels it carries over still name what they named.
+        """
+        current = self.query_one("#chat-input", _ChatTextArea).references
+        self.set_draft(replace(draft, references=current), select_field=True)
         self.focus_input()
 
     def _lock(self, label: InputLabel, *, stop_style: bool, spin_prompt: bool = True) -> None:
@@ -1633,7 +1386,7 @@ class InputBar(Widget):
         """Unlock and clear the text — injection was consumed."""
         self._unlock()
         ta = self.query_one("#chat-input", _ChatTextArea)
-        ta.clear()
+        ta.leave_draft()
         self.focus_input()
         self._refresh_interaction_state()
 
@@ -1659,7 +1412,7 @@ class InputBar(Widget):
         return self._draft_revision
 
     def draft(self) -> ChatDraft:
-        """The draft now, as one value: text, unfilled fields and owner."""
+        """The draft now, as one value: text, unfilled fields, owner and label references."""
         return self.query_one("#chat-input", _ChatTextArea).chat_draft()
 
     @property
@@ -1672,7 +1425,10 @@ class InputBar(Widget):
         self.query_one("#chat-input", _ChatTextArea).set_draft_owner(owner)
 
     def restore_draft(self, draft: str | ChatDraft) -> bool:
-        """Hand *draft* back to an empty composer, whole (fields, prompt-shortcut owner); return whether it was written.
+        """Hand *draft* back to an empty composer, whole (fields, owner, references); return whether it was written.
+
+        A plain string is sent text and comes back as plain text: labels live
+        only in the draft that has not left the composer.
 
         Every caller reaches this from a path that already consumed the draft —
         a submit, a retry, a rollback, a rejection — and the hand-back travels
@@ -1687,21 +1443,36 @@ class InputBar(Widget):
         whole = draft if isinstance(draft, ChatDraft) else ChatDraft(draft)
         if not whole.text:
             return False
-        if self.query_one("#chat-input", _ChatTextArea).text:
+        text_area = self.query_one("#chat-input", _ChatTextArea)
+        if text_area.text:
             return False
+        # A draft is what the last draft to leave comes back as; plain text is sent text.
+        if text_area.take_back(whole, replaces=isinstance(draft, ChatDraft)):
+            # The draft that just left: undoing its leaving brings it back.
+            self._draft_revision += 1
+            text_area._reset_history_browsing()
+            self._refresh_interaction_state()
+            return True
         self.set_draft(whole)
         return True
 
     def replace_draft(self, text: str) -> None:
-        """Replace the draft with plain *text* (no fields, no owner), cursor at its end."""
+        """Replace the draft with plain *text* (no fields, no owner, no references), cursor at its end."""
         self.set_draft(ChatDraft(text))
 
-    def set_draft(self, draft: ChatDraft, *, select_field: bool = False) -> None:
-        """Replace the whole draft with *draft*, fields and owner included, and refresh controls."""
+    def set_draft(
+        self, draft: ChatDraft, *, select_field: bool = False, cursor_location: tuple[int, int] | None = None
+    ) -> None:
+        """Replace the whole draft with *draft*, fields and owner included, and refresh controls.
+
+        The cursor ends at its end, or at *cursor_location* (where the editor left it).
+        """
         self._draft_revision += 1
         text_area = self.query_one("#chat-input", _ChatTextArea)
         text_area._reset_history_browsing()
         text_area.write_draft(draft, select_field=select_field)
+        if cursor_location is not None:
+            text_area.move_cursor(cursor_location)
         self._refresh_interaction_state()
 
     def can_commit_editor_draft(self) -> bool:
@@ -1721,6 +1492,7 @@ class InputBar(Widget):
         ta = self.query_one("#chat-input", _ChatTextArea)
         if ta.read_only:
             return False
+        before = ta.references
         try:
             prepared = ta._prepare_image_path_paste_text(text)
         except OSError, RuntimeError, ValueError:
@@ -1730,6 +1502,7 @@ class InputBar(Widget):
         # This fallback handles path-only image payloads; normal large text pastes stay on the original target.
         result = ta._replace_via_keyboard(prepared, *ta.selection)
         if not result:
+            ta._restore_references(before)
             return False
         ta.move_cursor(result.end_location)
         self.focus_input()

@@ -18,7 +18,7 @@ from chrys.foundation.platform import safe_getcwd
 from chrys.service.approval.policy import ApprovalMode
 
 if TYPE_CHECKING:
-    from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
+    from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
     from chrys.foundation.config.settings_store import SettingsHandle
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.events.types import (

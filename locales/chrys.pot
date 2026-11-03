@@ -6288,6 +6288,43 @@ msgstr ""
 msgid "tui.diff.title"
 msgstr ""
 
+#. English: Image #{number}
+#. chrys-meta={"fingerprint":"3ccbb7b3b7d5a3d2972da8c90ec05727248326e41d0ee0adaccd7b067e9a725a","multiline":false,"placeholders":["number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.image"
+msgstr ""
+
+#. English: Pasted text #{number}
+#. chrys-meta={"fingerprint":"a09065ee1a830889339c0b27110c0a8ecce8b44f5e8e258037287f065479fc18","multiline":false,"placeholders":["number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.paste"
+msgstr ""
+
+#. English: Pasted text #{number} +{lines} lines
+#. chrys-meta={"fingerprint":"d913d6337a0b43e6e727300b8e1702b9aac018c9f51bf6dc609cdf26201683a5","multiline":false,"placeholders":["lines","number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.paste_lines"
+msgstr ""
+
+#. English: Quote #{number}
+#. chrys-meta={"fingerprint":"8131243910b631f03cc2962d1fc0f2234209e5b1b1752e072a2e635f6d1d2a01","multiline":false,"placeholders":["number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.quote"
+msgstr ""
+
+#. English: Quote truncated: {original_tokens} tokens exceeds the {limit}-token
+#. limit.
+#. chrys-meta={"fingerprint":"0179da74259526111826747f4a471481d2a47fe5fc8c5f51bf533100cb4d936a","multiline":false,"placeholders":["limit","original_tokens"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.quote_truncated"
+msgstr ""
+
+#. English: Quote truncated
+#. chrys-meta={"fingerprint":"9adcd7f5619aa9dc45e7b13ecb488579a469299c4ab4f9008fb94fdfb7c0e103","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.title.quote_truncated"
+msgstr ""
+
 #. English: Commit
 #. chrys-meta={"fingerprint":"a9ea9bc02cd01a400ac2e05c80ee665281710d028f24c44469b3f8bf2ea73c00","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/editor.py
@@ -7566,6 +7603,13 @@ msgstr[1] ""
 msgid "tui.input.queued"
 msgstr ""
 
+#. English: A quote inside a !`command` would run as part of it. Move the quote
+#. out of the command to send.
+#. chrys-meta={"fingerprint":"01b58ef98922fc3e499f33c9443bb0251b357c47fe98f02a9f8ddfbc63f9524d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.quote_in_command"
+msgstr ""
+
 #. English: Retry
 #. chrys-meta={"fingerprint":"8d1f1fcb3503341e5c6f3f3a1b3299129d2fb1258f711734492a20316c6158af","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
@@ -7591,6 +7635,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5e6e692b341d8fec43f56581cd87beba2cb80e7f08ced823d0efb4c5f932f569","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
 msgid "tui.input.title.prompt_fields_pending"
+msgstr ""
+
+#. English: Not sent
+#. chrys-meta={"fingerprint":"5e6e692b341d8fec43f56581cd87beba2cb80e7f08ced823d0efb4c5f932f569","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.title.quote_in_command"
 msgstr ""
 
 #. English: Unknown /language locale: {locale}
@@ -9757,6 +9807,42 @@ msgstr ""
 #. chrys-meta={"fingerprint":"be9ca4f9ab6b1c33719a48c334bda72eff21112528790531a5a8f68364569b59","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/screen.py
 msgid "tui.prompt_shortcuts.loading_tab"
+msgstr ""
+
+#. English: Quote
+#. chrys-meta={"fingerprint":"b56f5707a79d26529841e989a546164a27d878233381ef580e3fffa074064d97","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/quote_popup.py
+msgid "tui.quote.action"
+msgstr ""
+
+#. English: The message input cannot take a quote right now.
+#. chrys-meta={"fingerprint":"d18638da52c62272e849df046bafd5ad2e2ca44d608529bf3fcdd2a63ad7366b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.quote.input_unavailable"
+msgstr ""
+
+#. English: Loading image…
+#. chrys-meta={"fingerprint":"2e0e3cfa77e3b1575c836a2910774c9d8b5320bc55a79df3c0382e0e704759ca","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.loading"
+msgstr ""
+
+#. English: The image file can no longer be read.
+#. chrys-meta={"fingerprint":"1665edb900fd0863fa3fae2d2eeae2d8bfcc146c11d4628dce49c607f723ac9a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.missing"
+msgstr ""
+
+#. English: Path: {path}
+#. chrys-meta={"fingerprint":"20faefd025f55bd564eb151a9897cc545779f2eb7b9da3fe0f9a283b2f51b5df","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.path"
+msgstr ""
+
+#. English: This image cannot be shown.
+#. chrys-meta={"fingerprint":"c66ef735462f45c1657eeeacbfb48476aabb23fa452d304be8b3716f513f34f6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.unreadable"
 msgstr ""
 
 #. English: Retry not started

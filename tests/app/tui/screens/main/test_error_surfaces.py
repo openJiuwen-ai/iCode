@@ -34,6 +34,7 @@ from chrys.foundation.events.types import (
     Warning,
 )
 from chrys.foundation.i18n import Localizer, MessageRef
+from chrys.foundation.text.draft_references import EMPTY_REFERENCES, DraftReferences
 from tests.support.tui_helpers import (
     fake_session_title,
     main_screen_state_at,
@@ -918,20 +919,27 @@ class _RestorableDraftFake:
 
     value = ""
     draft_owner: ShortcutIntent | None = None
+    references: DraftReferences = EMPTY_REFERENCES
 
     def restore_draft(self, draft: str | ChatDraft) -> bool:
-        text = draft.text if isinstance(draft, ChatDraft) else draft
-        if not text or self.value:
+        whole = draft if isinstance(draft, ChatDraft) else ChatDraft(draft)
+        if not whole.text or self.value:
             return False
-        self.value = text
+        self.value = whole.text
+        self.references = whole.references
         return True
 
     def replace_draft(self, text: str) -> None:
         self.value = text
+        self.references = EMPTY_REFERENCES
 
     def set_draft(self, draft: ChatDraft) -> None:
         self.value = draft.text
         self.draft_owner = draft.owner
+        self.references = draft.references
+
+    def draft(self) -> ChatDraft:
+        return ChatDraft(self.value, owner=self.draft_owner, references=self.references)
 
 
 @dataclass

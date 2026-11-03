@@ -1,0 +1,41 @@
+ReferencePreviewDialog {
+    align: center middle;
+    background: $background 40%;
+}
+
+#reference-preview-container {
+    width: 90;
+    max-width: 90%;
+    height: auto;
+    background: $surface;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+}
+
+#reference-preview-body {
+    width: 100%;
+    height: auto;
+    /* The body, not its box, is capped: a box cap would clip rows the body still scrolls to. */
+    max-height: 80vh;
+    background: $surface;
+    /* No right padding: the 1-cell scrollbar sits against the border; the
+       content's own right margin keeps it off the scrollbar, as in Hook details. */
+    padding: 1 0 1 2;
+    scrollbar-size: 1 1;
+}
+
+#reference-preview-path {
+    width: 1fr;
+    height: auto;
+    margin: 0 2 1 0;
+}
+
+#reference-preview-status,
+#reference-preview-text,
+#reference-preview-image {
+    width: 1fr;
+    height: auto;
+    margin: 0 2 0 0;
+}
+

@@ -1,6 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Large modal editor for preparing a multi-line chat draft."""
+"""Large modal editor for preparing a multi-line chat draft.
+
+It edits the whole draft (labels, prompt fields, owner) by the input box's
+rules (``DraftEditor``) and hands the whole draft back.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +20,9 @@ from textual.widgets import Button, Select, Static
 from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
+from chrys.app.tui.widgets.chrome.draft_editor import DraftEditor
+from chrys.app.tui.widgets.chrome.draft_text_area import DraftTextArea
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.editor import (
     EditorBufferSnapshot,
     EditorIntent,
@@ -27,8 +34,13 @@ from chrys.app.tui.widgets.editor.types import COMMON_EDITOR_INTENTS, EditorStat
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from textual import events
     from textual.app import ComposeResult
+
+    from chrys.app.tui.widgets.editor.types import EditorLocation
+    from chrys.foundation.text.draft_references import DraftReference
 
 
 _UNSAVED_WARNING = msg(
@@ -110,11 +122,17 @@ def _build_editor_hint(mode: EditorMode, render_message: Callable[[MessageRef], 
 
 @dataclass(frozen=True, slots=True)
 class EditorDialogResult:
-    """Draft and keymap state returned on every deliberate dismissal."""
+    """Draft, cursor and keymap state returned on every deliberate dismissal."""
 
     accepted: bool
-    text: str
+    draft: ChatDraft
+    cursor_location: EditorLocation
     mode: EditorMode
+
+    @property
+    def text(self) -> str:
+        """The draft's text."""
+        return self.draft.text
 
 
 class EditorDialog(BaseDialog[EditorDialogResult]):
@@ -129,8 +147,22 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
         mode: EditorMode | str = EditorMode.STANDARD,
         can_commit: Callable[[], bool] = lambda: True,
         current_draft_revision: Callable[[], int] | None = None,
+        draft: ChatDraft | None = None,
+        paste_cwd: str = "",
+        clipboard_image_dir: Path | None = None,
+        open_reference: Callable[[DraftReference], None] | None = None,
     ) -> None:
+        """Edit *draft* (the snapshot's text when none), opened at the snapshot's cursor.
+
+        *paste_cwd* and *clipboard_image_dir* are the input box's, so a paste
+        lands as it would there; *open_reference* shows what a clicked label
+        stands for, as the input box does.
+        """
         self._entry_snapshot = snapshot
+        self._entry_draft = draft if draft is not None else ChatDraft(snapshot.text)
+        self._paste_cwd = paste_cwd
+        self._clipboard_image_dir = clipboard_image_dir
+        self._open_reference = open_reference
         self._mode = EditorMode.parse(mode)
         self._can_commit = can_commit
         self._current_draft_revision = current_draft_revision or (lambda: snapshot.draft_revision)
@@ -164,8 +196,10 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
                     id="editor-mode",
                 )
                 yield Static(_build_editor_hint(self._mode, render_message), id="editor-hint")
-            editor = MessageEditor(
-                text=self._entry_snapshot.text,
+            editor = DraftEditor(
+                self._entry_draft,
+                paste_cwd=self._paste_cwd,
+                clipboard_image_dir=self._clipboard_image_dir,
                 cursor_location=self._entry_snapshot.cursor_location,
                 mode=self._mode,
                 id="message-editor",
@@ -217,6 +251,12 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
         event.prevent_default()
         event.stop()
         self._handle_intent(event.intent)
+
+    @on(DraftTextArea.ReferenceClicked)
+    def _on_reference_clicked(self, event: DraftTextArea.ReferenceClicked) -> None:
+        event.stop()
+        if self._open_reference is not None:
+            self._open_reference(event.reference)
 
     @on(MessageEditor.EditActivity)
     def _on_editor_edit_activity(self, event: MessageEditor.EditActivity) -> None:
@@ -314,7 +354,7 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
 
     def request_escape_cancel(self) -> None:
         """Cancel clean text, or require a second Escape for dirty text."""
-        if self.query_one(MessageEditor).text == self._entry_snapshot.text:
+        if not self.query_one(MessageEditor).editor_is_dirty:
             self.cancel_immediately()
             return
         if self._discard_armed:
@@ -338,8 +378,12 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
             self._cycle_mode()
 
     def _dismiss_with_result(self, *, accepted: bool) -> None:
-        editor = self.query_one(MessageEditor)
-        self.dismiss(EditorDialogResult(accepted=accepted, text=editor.text, mode=self._mode))
+        editor = self.query_one(DraftEditor)
+        self.dismiss(
+            EditorDialogResult(
+                accepted=accepted, draft=editor.chat_draft(), cursor_location=editor.cursor_location, mode=self._mode
+            )
+        )
 
     def _clear_discard_armed(self) -> None:
         if not self._discard_armed:

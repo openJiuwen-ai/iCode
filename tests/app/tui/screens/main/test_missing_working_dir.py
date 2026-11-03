@@ -517,6 +517,9 @@ class _Composer:
         self.value = value
         self.locked = True
 
+    def draft(self) -> ChatDraft:
+        return ChatDraft(self.value)
+
     def unlock_and_keep(self) -> None:
         self.locked = False
 

@@ -10,18 +10,20 @@ import logging
 import reprlib
 from collections.abc import Awaitable, Callable
 from functools import partial
+from pathlib import Path
 from types import FunctionType, MethodType
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from textual import __version__ as TEXTUAL_VERSION
 from textual import on, work
+from textual._arrange import DockArrangeResult
 from textual.actions import SkipAction
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.events import DescendantFocus, Key, Paste, Resize, ScreenResume, ScreenSuspend
-from textual.geometry import Offset, Size
+from textual.geometry import Offset, Region, Size
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.selection import Selection, SelectState
@@ -89,10 +91,12 @@ from chrys.app.tui.support.gc_freeze import (
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.util.liveness import composed_live
+from chrys.app.tui.util.placement import pin_fixed_placement
 from chrys.app.tui.widgets.btw import BtwPanel, ChatColumn
 from chrys.app.tui.widgets.chat.messages import ConversationStatusAction
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
+from chrys.app.tui.widgets.chat.quote_popup import QuoteSelectionPopup
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserInlineSubmitted
 from chrys.app.tui.widgets.chat.renderers.sleep import SleepSkipClicked
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentAbortClicked, SubAgentRetryClicked
@@ -151,8 +155,6 @@ from chrys.service.profiles.models.schema import UNCONFIGURED_MODEL_ID, is_model
 from chrys.service.session.sub_agent_transcript import load_persisted_sub_agent_transcript
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from textual.app import ComposeResult
     from textual.notifications import SeverityLevel
     from textual.theme import Theme
@@ -172,6 +174,7 @@ if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_runs import HookRunDetail, HookRunRecord
+    from chrys.foundation.text.draft_references import DraftReference
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -192,6 +195,10 @@ _SHORTCUTS_LOADING = msg(
 _SHORTCUTS_LOADING_TAB = msg(
     "tui.prompt_shortcuts.loading_tab",
     fallback="Prompt shortcuts are still being read; press Tab again in a moment.",
+)
+_QUOTE_INPUT_UNAVAILABLE = msg(
+    "tui.quote.input_unavailable",
+    fallback="The message input cannot take a quote right now.",
 )
 _SESSIONS_BINDING = msg("tui.binding.sessions", fallback="Sessions")
 _AGENTS_BINDING = msg("tui.binding.agents", fallback="Agents")
@@ -438,6 +445,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         )
         self._copy_actions = CopyActionController(view=self._view_adapter, debug=self._debug)
         self._chat_selection = ChatSelectionController(self)
+        # The text the pill offers to quote, snapshotted when its drag ended.
+        self._pending_quote_pick: str | None = None
+        # Where the drag is and the leaf it started on, recorded on every selection update.
+        self._quote_pointer: Offset | None = None
+        self._quote_source_leaf: Widget | None = None
+        # The pill itself: ``arrange`` reads it every frame, so no query.
+        self._quote_pill: QuoteSelectionPopup | None = None
         self._diff_controller = self._new_diff_controller()
         self._rollback_controller = self._new_rollback_controller()
         self._navigation = self._new_navigation_controller()
@@ -1147,6 +1161,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         return False
 
     def compose(self) -> ComposeResult:
+        # An overlay child placed first: its flow origin is the screen origin,
+        # so the pinned placement in ``arrange`` lands on exact screen cells.
+        self._quote_pill = QuoteSelectionPopup(locale_controller=self._locale_controller)
+        yield self._quote_pill
         yield AppHeader(locale_controller=self._locale_controller, show_mode_badge=True).data_bind(
             subtitle_parts=MainScreen.header_subtitle_parts,
             approval_mode=MainScreen.header_approval_mode,
@@ -1193,6 +1211,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         yield SuggestionList(locale_controller=self._locale_controller)
         input_bar = InputBar(locale_controller=self._locale_controller)
         input_bar.submit_router = self._route_submit
+        input_bar.draft_place = self._input_flow.place
         yield input_bar.data_bind(
             agent_running=MainScreen.agent_running_state,
             agent_loading=MainScreen.agent_loading_state,
@@ -1306,12 +1325,19 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         in a long chat. Drags whose both endpoints sit in the ChatPanel go
         through :class:`ChatSelectionController` instead; anything else
         (single-widget selections, non-chat surfaces) keeps stock behavior.
+
+        The quote offer at the drag's end needs its pointer and starting leaf
+        on both paths, so they are recorded before the routing decision.
         """
         if select_state is None or select_state.end is None:
             if select_state is None:
                 self._chat_selection.clear()
+                self._quote_pointer = None
+                self._quote_source_leaf = None
             super()._watch__select_state(select_state)
             return
+        self._quote_pointer = Offset(select_state.screen_offset.x, select_state.screen_offset.y)
+        self._quote_source_leaf = select_state.start.content_widget
         if not select_state.is_attached_to_dom() or select_state.is_single_content_widget:
             self._chat_selection.clear()
             super()._watch__select_state(select_state)
@@ -1341,11 +1367,108 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def clear_selection(self) -> None:
         """Clear the chat logical selection along with screen selection state."""
         self._chat_selection.clear()
+        self._hide_quote_popup()
         super().clear_selection()
 
     def schedule_chat_selection_reprojection(self, panel: ChatPanel) -> None:
         """Keep chat selection highlights aligned after the transcript scrolls."""
+        # The quote pill sits at the drag's end; a scroll moves that away.
+        self._hide_quote_popup()
         self._chat_selection.schedule_reproject(panel)
+
+    def _watch__selecting(self, selecting: bool) -> None:
+        """Offer to quote a transcript selection the moment its drag ends."""
+        super()._watch__selecting(selecting)
+        if selecting:
+            self._hide_quote_popup()
+            return
+        self._offer_quote_for_finished_selection()
+
+    # -- quoting the conversation ---------------------------------------------
+
+    def _quote_popup(self) -> QuoteSelectionPopup | None:
+        """The mounted quote pill, if this screen is still alive."""
+        pill = self._quote_pill
+        return pill if pill is not None and pill.is_mounted else None
+
+    def _hide_quote_popup(self) -> None:
+        # The pick stays: Textual clears the selection (and hides the pill) on
+        # the press's own mouse-up, which can be handled before its Requested.
+        popup = self._quote_popup()
+        if popup is not None:
+            popup.hide()
+
+    def _offer_quote_for_finished_selection(self) -> None:
+        """Show the pill for a finished drag over transcript text."""
+        pointer = self._quote_pointer
+        if pointer is None:
+            return
+        leaf = self._chat_selection.first_leaf or self._quote_source_leaf
+        panel = next((node for node in leaf.ancestors_with_self if isinstance(node, ChatPanel)), None) if leaf else None
+        if panel is None:
+            return
+        text = self.get_selected_text()
+        if text is None or not text.strip():
+            return
+        popup = self._quote_popup()
+        if popup is None:
+            return
+        # The selected words, not the blank lines a drag across messages picks up around them.
+        self._pending_quote_pick = text.strip()
+        # Inside the transcript it quotes from, never over its border or the sidebar.
+        popup.place_near(pointer, within=panel.content_region)
+
+    def on_quote_selection_popup_requested(self, event: QuoteSelectionPopup.Requested) -> None:
+        """Put the selection the pill offered into the draft as a ``[Quote #n]`` label."""
+        event.stop()
+        pick, self._pending_quote_pick = self._pending_quote_pick, None
+        self.clear_selection()
+        if pick is None:
+            return
+        if not self.query_one(InputBar).insert_reference("quote", pick):
+            self.notify(
+                render_str(self._language_localizer(), _QUOTE_INPUT_UNAVAILABLE.bind()),
+                severity="warning",
+                markup=False,
+            )
+
+    @on(InputBar.ReferenceOpened)
+    def _on_reference_opened(self, event: InputBar.ReferenceOpened) -> None:
+        """Show what a clicked draft label stands for."""
+        event.stop()
+        self._open_reference_preview(event.reference)
+
+    def _open_reference_preview(self, reference: DraftReference) -> None:
+        """Show what a draft label stands for, over whatever screen is on top (the editor too)."""
+        from chrys.app.tui.screens.dialogs.reference_preview import ReferencePreviewDialog
+
+        self.app.push_screen(
+            ReferencePreviewDialog(
+                reference,
+                cwd=Path(self._state.workspace.current_cwd),
+                locale_controller=self._locale_controller,
+            )
+        )
+
+    def arrange(self, size: Size, _optimal: bool = False) -> DockArrangeResult:
+        """Pin the quote pill to its target screen region on every arrange."""
+        result = super().arrange(size, _optimal)
+        self._place_quote_popup(result, size)
+        return result
+
+    def _place_quote_popup(self, result: DockArrangeResult, size: Size) -> None:
+        """Keep the quote pill on the cells its drag ended on, clamped onto the screen; nothing while it is hidden."""
+        popup = self._quote_popup()
+        target = popup.target_region if popup is not None else None
+        if popup is None or target is None:
+            return
+        region = Region(
+            min(max(0, target.x), max(0, size.width - target.width)),
+            min(max(0, target.y), max(0, size.height - target.height)),
+            target.width,
+            target.height,
+        )
+        pin_fixed_placement(result, popup, lambda _arranged: region)
 
     def _compositor_refresh(self) -> None:
         """Forward each repaint to the dialog above this screen once.
@@ -1726,8 +1849,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             mode=self._editor_mode,
             can_commit=input_bar.can_commit_editor_draft,
             current_draft_revision=lambda: input_bar.draft_revision,
+            draft=snapshot.draft,
+            paste_cwd=input_bar.paste_cwd,
+            clipboard_image_dir=input_bar.clipboard_image_dir,
+            open_reference=self._open_reference_preview,
         )
-        # What it returns is the draft it opened on (the snapshot holds it whole), edited.
+        # It edits the whole draft it opened on and returns it whole.
         opened_mode = self._editor_mode
         self._view_adapter.push_screen(
             dialog, lambda result: self._on_editor_result(result, opened=snapshot, opened_mode=opened_mode)
@@ -1754,12 +1881,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         if not result.accepted:
             return
         input_bar = self.query_one(InputBar)
-        # Unchanged, and nothing else written meanwhile, the draft stays as it is, fields
-        # included. Otherwise the editor's text replaces whatever is there now, still
-        # belonging to the shortcut the draft it opened on belonged to; the fields cannot
-        # follow an editor's edits.
-        if result.text != opened.text or input_bar.draft_revision != opened.revision:
-            input_bar.set_draft(ChatDraft(result.text, owner=opened.draft.owner))
+        # Unchanged, and nothing else written meanwhile, the draft stays as it is.
+        # Otherwise the edited draft, whole (labels, fields, owner), replaces whatever
+        # is there now, its cursor where the editor left it.
+        if result.draft != opened.draft or input_bar.draft_revision != opened.revision:
+            input_bar.set_draft(result.draft, cursor_location=result.cursor_location)
         input_bar.focus_input()
 
     # ------------------------------------------------------------------ #
@@ -1947,7 +2073,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return default_submit_route(request)
         draft = request.draft
         intent: SubmitRoute = "continue" if request.continue_turn else "message"
-        text = draft.text.strip()
+        text = draft.command_text()
         slash = parse_slash_draft(text)
         if request.runs_commands and slash is not None and slash.name == "btw":
             if not slash.arguments.strip():
