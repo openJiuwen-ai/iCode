@@ -46,6 +46,7 @@ from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.retry import RetryAttemptInfo
 from chrys.foundation.tool_kinds import KIND_ASK_USER, KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
+from chrys.foundation.util.imports import import_off_loop
 from chrys.kernel import Agent, LoopRecorder
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.invoker.origin import InvocationPublishers
@@ -489,10 +490,12 @@ async def build_agent(
         await prepared.own_or_release(client.aclose)
 
         # Build tools from profile's builtin categories
+        await _progress(AGENT_LOAD_PHASE_TOOLS, "Loading built-in tools", status=AGENT_LOAD_STATUS_RUNNING)
+        # The web tools bring in HTML parsing and conversion, which the first build of a run imports.
+        await import_off_loop("chrys.service.tools.builtins.web.build", "chrys.service.tools.registry")
         from chrys.service.tools.builtins.web.build import assemble_web_tools
         from chrys.service.tools.registry import ToolRegistry
 
-        await _progress(AGENT_LOAD_PHASE_TOOLS, "Loading built-in tools", status=AGENT_LOAD_STATUS_RUNNING)
         tool_registry = ToolRegistry(vision_enabled=active_profile.vision)
         builtin_categories = profile.tools.builtins or []
         web_tools = assemble_web_tools(

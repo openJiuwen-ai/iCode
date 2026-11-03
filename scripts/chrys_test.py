@@ -201,6 +201,14 @@ REGULAR_RULES = (
     TestRule("tests/foundation/test_documentation.py", ("pyproject.toml", "docs/index.yaml")),
     TestRule("tests/service/acp_client", ("tests/support/acp_stub_agent.py",)),
     TestRule("tests/service/mcp/test_cache_refresh.py", ("tests/support/mcp_reload_probe_server.py",)),
+    TestRule(
+        "tests/service/mcp/test_connect_imports.py",
+        (
+            "src/chrys/service/mcp/**",
+            "src/chrys/foundation/util/imports.py",
+            "tests/support/mcp_reload_probe_server.py",
+        ),
+    ),
     TestRule("tests/app/tui/screens/test_reload_mcp.py", ("tests/support/mcp_reload_probe_server.py",)),
     TestRule("tests/orchestration/engine/test_settings_reload.py", ("tests/support/mcp_reload_probe_server.py",)),
     TestRule("tests/orchestration/sub_agents/test_acp_engine.py", ("tests/support/acp_stub_agent.py",)),

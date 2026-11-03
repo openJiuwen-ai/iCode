@@ -19,6 +19,7 @@ from chrys.foundation.errors import clean_error_message
 from chrys.foundation.util.env_templates import EnvVarResolutionError, command_handles_in
 from chrys.foundation.util.header_charset import header_value_charset_error
 from chrys.foundation.util.httpx_helpers import BYPASS_PROXY_MOUNTS
+from chrys.foundation.util.imports import import_off_loop
 from chrys.service.mcp._tool_mixins import _NoPrePagePingMixin, _StructuredContentFallbackMixin
 from chrys.service.mcp.owned import LOCAL_HTTP_FAILURE_ERROR_DATA, MCPStreamableHTTPTool
 
@@ -251,6 +252,8 @@ class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStre
                     raise EnvVarResolutionError(problem)
             # Before the connection starts counting: a command's time isn't the server's.
             await ensure_fresh(self._static_headers.values())
+        # Building the client imports the SDK, which the first connect of a run imports.
+        await import_off_loop("mcp")
         if self._needs_prebuild() and self._httpx_client is None:
             client = self._build_httpx_client()
             self._owned_httpx_client = client
