@@ -138,6 +138,7 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
 | tui 登录 UI（/login、徽章、静默校验） | `aixcoding/tui/` + screen / commands / app_header 挂接点 | 已完成 | tui 批次；`login_actions.py` 另埋 catalog 批次占位符×2（见 C2） |
 | diagnostics | （阶段二新建，非迁入项） | 已完成 | diagnostics + launcher-retirement（ADR-0013） |
 | 模型目录同步 + 档案集中管理 | `catalog.py`（旧分支新增文件，847 行）+ `registry.py`（RLock 定制）+ `config_actions.py` 只读屏 + 测试×3 | 已完成 | catalog-sync 批次（PR #85，2026-11-03 合并：790b562e 主体 + 2164186e 双评审处置 + a4ea553a CI 修复）；服务端目录整替（两阶段发布）、15min 轮询、恒只读、登录联动启停；盘点 F-03/R-01 两处 API/并发漂移（`replace_profiles()` 同步语义 / `RLock` 线程安全）经 design 重审落地；ADR-0018（内网部署明文 HTTP）；批次文档 `batches/catalog-sync/` |
+| 功能品牌与命令切换 | `branding.py` 2 常量 + 运行时散点 + 用户命令与离线制品 / 安装别名 + i18n 文案 | 已完成 | branding-and-command 批次（PR #87，2026-11-03 合并：f9d62145 单提交，merge eb2e7a80，PR 腿双 CI 绿）；82 定制点 C050-C131 + kernel 档 `command_migration.py` 单源归属判断与安全清理；GLM 三轮评审收敛 + PR 评审两候选记档（批次 verification）；ADR-0019；批次文档 `batches/branding-and-command/`。边界：`iCode-TUI` 分发名/包身份归 C5，纯文档品牌归"用户指南文档定制化"工作项 |
 
 ### B. 殿后已定（引用 §2 阶段三既有决策，不重新裁决）
 
@@ -153,7 +154,6 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
 |---|---|---|---|
 | 版本更新检测 | `update_detection.py`（内部 `/api/v2/releases/check` 契约）+ screen.py / app.py 挂接点（header 徽章） | **有改动的迁** | 上游 0.32.2 已有同目的的并行机制 `app/update_check.py`（PyPI/GitHub 公网源 + 每日缓存 + 聊天区通知 + settings 开关），内网静默失败；update mock（M2）模拟内部契约已就位。design 须定：① UI 形态（徽章 vs 通知）与上游 update_check 的并存/禁用策略；② **四段版本号 wire contract 为前置阻塞项**——versioning.md 已定稿 fork 第四段，而旧 `_SEMVER_RE` 与上游 `parse_version()` 均只接受三段，四段版本会在请求前静默跳过（update mock 同为三段校验） |
 | 平台连接配置 | `config.py`（独立 `aixcoding.yaml` + `AIXCODING_EXTENSION_*`，telemetry 与更新检测共用） | **重新实现（拆解随批次）** | 独立 yaml 双轨制与现行配置范式不同构（现行范式：auth `environments.py` 模式 / settings 声明），不整体照迁——端点配置随消费批次（update / telemetry）按现行范式实现。**逐字段归属须 design 定、不得静默丢失**（外部评审 F-06）：`token`/`userId`（或已由 auth session 覆盖）、`toolParamMode`（工具参数上报 full/whitelist）、`telemetryEnabled`（reporter 装配开关）、`profile`/`customServerUrl` 优先级语义 |
-| 品牌定制 | `branding.py` 2 常量（`APP_DISPLAY_NAME` / `APP_COMMAND`）+ 用户命令与离线制品 / 安装别名 + docs / README / i18n 文案 | **有改动的迁（2026-11-03 重裁：功能品牌与命令同批闭环，纯文档后置）** | 原 C4a/C5 拆分放弃：`APP_COMMAND` 并非纯文案，还驱动离线 alias 创建与卸载发现。现行 C4=`batches/branding-and-command/`（已实施+三轮评审收敛，待 PR 合并），一次覆盖运行时 AIxCoding 品牌、wheel 唯一入口 `aixcoding-cli`、PyApp 输出、CD release 资产、install.sh/ps1、离线旧 alias 安全迁移与卸载；不接受帮助/入口/安装链窗口期。C4 保持 `DISTRIBUTION_NAME="iCode-TUI"` 与 wheel 名，其是否更名及包身份迁移归 C5；内部 `chrys`、环境变量与数据键保持，`pyproject [project.urls]` 仍随 C1。旧安装脚本须重新获取，安全迁移与发布验收见 ADR-0019 和批次 design。纯文档（docs + README + AGENTS 完整文案）继续并入"用户指南文档定制化"，待目标上游版本及其他功能改动确定后集中实施；AGENTS/mock/UPGRADE-RUNBOOK 中会因入口改名立即失效的最小开发命令由 C4 同步修复 |
 | 内网安装器与分发身份 | `iCode-TUI` 分发名 / wheel 身份 + `scripts/install.sh`（433 行，内网制品镜像 + channels + offline 包体系）+ 同族 `install.ps1` / `release/INSTALL.md` / channel 发布约定 | **待裁决（需求侧确认；命令重命名已前置）** | 与上游 install.sh 为平行替代品（无演进关系）。**"废弃"证据不足**（外部评审 F-04）：旧脚本已兼容 `icode-*` 包名（final 后修复）与 PyApp 制品（旧分支已在用）；版本正则接受三段+后缀（覆盖四段）；`release/INSTALL.md` 将内网脚本列为推荐安装渠道（prod/test/Windows）。仅在产品确认取消内网分发体系后方可废弃。**边界更新（2026-11-03）**：命令、制品、安装 alias、提示和卸载的重命名随 C4 一次闭环；C5 负责裁决 `iCode-TUI` 是否更名，并在更名时完整处理 wheel 前缀、uv/pipx 新旧包迁移、更新检查、PyApp/build/CD 引用，同时保留内网镜像、channels 和发布策略等原有需求 |
 | skills 共享目录自动加载 | `service/skills/adapter.py` 定制（`~/.aixcoding/skills` + 工作区 `.aixcoding/skills` 自动加载、优先级、`auto_load_aixcoding_*` 开关）+ `agents/schema.py` + 测试 + 中英文文档 | **待分析（本轮未覆盖）** | 外部评审 F-01 发现（属上游 skills 机制的定制扩展，非注释命中之一，证明 908 非纯品牌文案）；新分支 `src/` 产品源码树无 `auto_load_aixcoding`（已核验，复审 R-04 收窄范围）。上游对比与判定随批次启动补做 |
 | 安全护栏（guard hooks） | `app/cli/app.py` 启动自动安装（`guard_install`，fail-open）+ 规则包 + wheel 打包 + 测试 + CI + MANUAL_TESTS | **待分析（本轮未覆盖）** | 外部评审 F-01 发现（属上游 hooks 机制的定制扩展）；**无任何标记命中**（复审 R-02：标记扫描盲区的实例，由功能面核查发现）；新分支 `src/` 产品源码树无 `guard_install`（已核验）。与 D 类历史文档第 9 份（安全护栏 MANUAL_TESTS）同族关联；上游对比与判定随批次启动补做 |
@@ -252,3 +252,8 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
   F-4 裁决留痕、F-5 拍板不修）；全量 33262+1237 零失败、strict 94/131、check_r2_diff/
   check_r3_markers/import 边界全绿；design D 节 R2 表路径补全待重签、self-review 待签认；
   tagged CD/三平台/POSIX/Linux oracle 归 CI。INDEX.md 为零状态导航（ADR-0016），无需联动。
+- 2026-11-03（六）：**branding-and-command 对账迁移**——PR #87 合并进 `main_aixcoding_cli`
+  （f9d62145 单提交，merge eb2e7a80，PR 腿 Tests + Upstream CI 双绿），"功能品牌与命令
+  切换"自 §4 C 类迁入 A 类"已迁入"；PR #87 评审两候选（C1 外部 icode 进程名误伤面 /
+  C2 verification 数字口径）经裁决记档于批次 verification.md，不单独提交。INDEX.md
+  零状态导航无需联动。

@@ -100,6 +100,14 @@
   迁移/卸载、ps1 旧 alias 重装）及 2 例 readlink 直测在 Windows 均 skip，行为证据以
   POSIX CI 腿通过为准（"Windows skipped 不记为通过"）。
 
+## 2026-11-03 PR #87 评审处置（合并后对账提交）
+
+- PR #87 独立评审（R2/R11 全清单内、无幻觉 API、3 组破坏性实验佐证）提出 2 候选，
+  无 blocker：C1 外部 icode 进程名误伤面、C2 verification 数字口径。
+- 责任人裁决：不为两候选单独追加 commit/CI，随合并后对账文档提交记档——C1 接受记档
+  （命中动作=提示退出，与上游同名保护同构，design #27 已签认）；C2 环境差异
+  （评审副本缺 pwsh），verification 补口径注记。详见 verification.md"PR #87 评审记档"。
+
 ## 2026-11-03 CI 门禁本地预跑（PR #70 教训逐项预跑）
 
 - `check_r2_diff --base origin/main_aixcoding_cli`：首跑 16 ERROR——D 节 R2 表 #32-45 合并行
