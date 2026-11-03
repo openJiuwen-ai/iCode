@@ -35,6 +35,7 @@ from chrys.app.installer import (
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.platform import conventional_config_dir, get_platform
 from chrys.foundation.platform.paths import real_path
+from chrys.kernel.aixcoding.command_migration import LEGACY_APP_COMMAND, is_alias_of
 
 # Drops the folder named by ICODE_UNINSTALL_DIR from the user PATH and prints "removed" when it
 # was there. Like `icode install`, it goes through .NET, which writes the other entries back with
@@ -107,16 +108,6 @@ class _OfflineInstall:
         return bool(self.files or self.folders or self.cache_entries)
 
 
-def _is_alias_of(alias: Path, binary: Path) -> bool:
-    """Whether ``alias`` is the product-named command ``icode install`` made for ``binary``."""
-    try:
-        if alias.is_symlink():
-            return Path(os.readlink(alias)) in (Path(binary.name), binary)
-        return alias.is_file() and binary.is_file() and alias.samefile(binary)
-    except OSError:
-        return False
-
-
 def _is_offline_binary(path: Path) -> bool:
     """Whether ``path`` is a binary ``icode install`` copied, not a command another installer made."""
     try:
@@ -148,11 +139,13 @@ def _find_offline_install() -> _OfflineInstall:
         binary = bin_dir / _INSTALLED_BINARY
         if _is_offline_binary(binary):
             found.files.append(binary)
-            alias = bin_dir / APP_COMMAND
-            # ~/.local/bin is shared: an `icode` that starts something else, such as a uv install,
-            # stays.
-            if _is_alias_of(alias, binary):
-                found.files.append(alias)
+            # AIxCoding branding: legacy alias uninstall hook
+            for command in (APP_COMMAND, LEGACY_APP_COMMAND):
+                alias = bin_dir / command
+                # ~/.local/bin is shared: an `icode` that starts something else, such as a uv install,
+                # stays.
+                if is_alias_of(alias, binary):
+                    found.files.append(alias)
 
     # Only PyApp's default layout is recognized; an install-dir override has a user-defined
     # structure that is not safe to delete wholesale.

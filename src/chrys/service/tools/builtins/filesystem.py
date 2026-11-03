@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Annotated
 
 from pydantic import Field
 
+from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import replace_with_retry, surrogate_safe_text
 from chrys.foundation.platform.paths import resolve_existing_path, resolve_workspace_path
@@ -57,8 +58,9 @@ _ReadMaxTokens = Annotated[
     int,
     Field(
         ge=1,
+        # AIxCoding branding: read tool description
         description=(
-            f"Optional token budget for file content, estimated by iCode. Defaults to {_DEFAULT_MAX_TOKENS}. "
+            f"Optional token budget for file content, estimated by {APP_DISPLAY_NAME}. Defaults to {_DEFAULT_MAX_TOKENS}. "
             "Takes priority over limit: content is truncated when this budget is reached, even with fewer lines."
         ),
     ),

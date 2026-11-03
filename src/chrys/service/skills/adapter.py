@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# AIxCoding branding: skill trust notice placeholder
 SKILLS_STATIC_PROMPT = """\
 You have access to skills — packaged domain expertise with instructions, \
 reference resources, and executable scripts.
@@ -100,7 +101,7 @@ through shell/bash/zsh/pwsh/powershell tools (e.g. `bash scripts/convert.py`, \
 handles skill-path validation, interpreter selection, timeouts, approval, \
 and provenance consistently. The runner is not a security sandbox: scripts \
 retain the user's normal file, network, and process privileges and inherit \
-most of the iCode process environment. Use executable skills only from \
+most of the {app} process environment. Use executable skills only from \
 sources you trust.
 - Do not verify script file existence before calling `run_skill_script`; \
 the skill system resolves paths internally.

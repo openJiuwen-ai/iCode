@@ -1708,7 +1708,8 @@ def test_classified_headless_error_says_what_went_wrong_with_the_raw_detail(
     english = (
         "Can't resolve api.example.com. Check your network connection and DNS; "
         "if the address is wrong, fix the base URL in the model profile. "
-        "The device running iCode doesn't seem to have a network connection. Check it first."
+        # AIxCoding branding: offline error text
+        "The device running AIxCoding doesn't seem to have a network connection. Check it first."
     )
     assert human["en"] == human["zh-Hans"] == (1, "", f"Error: {english}\n{detail_line}")
     # Machine output keeps the raw text alone.

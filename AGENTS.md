@@ -1,6 +1,7 @@
 # AGENTS.md
 
-Chrys is a Python 3.14+ agent platform: Textual TUI, headless CLI and ACP server. Users see it as **iCode** / `icode` (`foundation/branding.py`; `msg()` fallbacks write `{app}`, bound with `app=APP_DISPLAY_NAME`); the PyPI distribution is **iCode-TUI** (`__init__.py::DISTRIBUTION_NAME`, wheel `icode_tui-*.whl`), whose only command is `icode`; the import package, `~/.chrys`, `CHRYS_*`, wire/header names and data keys keep `chrys`. `pyproject.toml` is the source of truth for version and deps. Paths are under `src/chrys/` unless they start with `tests/`, `scripts/`, `docs/`, `locales/`, `.github/` or name a root file; a bare file name continues the directory named just before it.
+<!-- AIxCoding branding: development entry facts -->
+Chrys is a Python 3.14+ agent platform: Textual TUI, headless CLI and ACP server. Users see it as **AIxCoding** / `aixcoding-cli` (`foundation/branding.py`; `msg()` fallbacks write `{app}`, bound with `app=APP_DISPLAY_NAME`); the PyPI distribution is **iCode-TUI** (`__init__.py::DISTRIBUTION_NAME`, wheel `icode_tui-*.whl`), whose only command is `aixcoding-cli`; the import package, `~/.chrys`, `CHRYS_*`, wire/header names and data keys keep `chrys`. `pyproject.toml` is the source of truth for version and deps. Paths are under `src/chrys/` unless they start with `tests/`, `scripts/`, `docs/`, `locales/`, `.github/` or name a root file; a bare file name continues the directory named just before it.
 
 <!-- AIxCoding entry point to the customization standards (aixcoding/docs/standards) -->
 ## AIxCoding customization
@@ -28,12 +29,13 @@ AI agent conduct (ADR-0012; full protocol in DEVELOPMENT.md §4.2 and §6):
   `aixcoding/docs/standards/UPGRADE-RUNBOOK.md`; read it before starting any upgrade.
 
 ## Commands
+<!-- AIxCoding branding: development command examples -->
 ```bash
 uv sync                              # setup, as CI; also installs the dev group (tests, ruff, ty)
 ./scripts/fetch_rg.sh                # vendored ripgrep, gitignored (Windows: .ps1); search falls back to rg on PATH
-uv run icode                         # TUI (-s session, -a agent, -m model, -C workdir)
-uv run icode run "<prompt>" -a Code  # headless, approval BYPASS (as `icode workflow run`)
-uv run icode acp                     # ACP stdio server; also: serve, agent, model, approval, hook, workflow, trajectory, install, uninstall
+uv run aixcoding-cli                 # TUI (-s session, -a agent, -m model, -C workdir)
+uv run aixcoding-cli run "<prompt>" -a Code  # headless, approval BYPASS (as `aixcoding-cli workflow run`)
+uv run aixcoding-cli acp             # ACP stdio server; also: serve, agent, model, approval, hook, workflow, trajectory, install, uninstall
 uv run python scripts/chrys_test.py --smart --paths <changed files...>   # default verification; both modes run below normal CPU priority
 uv run python scripts/chrys_test.py --full        # complete non-integration suite; only when asked
 uv run pytest tests/x/test_y.py::test_fn -n0      # debugging only

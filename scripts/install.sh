@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install or upgrade iCode from its offline package (macOS and Linux).
+# Install or upgrade AIxCoding from its offline package (macOS and Linux).
 #
 #   curl -fsSL https://raw.githubusercontent.com/openJiuwen-ai/iCode/main/scripts/install.sh | sh
 #   curl -fsSL https://raw.gitcode.com/openJiuwen/iCode/raw/main/scripts/install.sh | sh
@@ -9,8 +9,8 @@
 #   --source github|gitcode  download only from there                     (ICODE_SOURCE)
 #
 # It downloads the package for this machine from GitHub Releases, or from GitCode when GitHub
-# fails, checks it against the release's SHA256SUMS.txt and runs `icode install`, which puts
-# `chrys` and its `icode` alias in ~/.local/bin. Running it again upgrades.
+# fails, checks it against the release's SHA256SUMS.txt and runs `aixcoding-cli install`, which puts
+# `chrys` and its `aixcoding-cli` alias in ~/.local/bin. Running it again upgrades.
 #
 # Everything sits in main() so a download cut short runs nothing.
 
@@ -63,7 +63,7 @@ main() {
     esac
 
     detect_platform
-    check_icode_command
+    check_aixcoding_cli_command
     find_downloader
     find_hasher
 
@@ -78,14 +78,14 @@ main() {
         say "Could not install from $(host_name "$host")."
     done
     if [ -n "$version" ]; then
-        fail "could not install iCode $version. Check that this version is listed at https://github.com/$github_repo/releases and that you are online."
+        fail "could not install AIxCoding $version. Check that this version is listed at https://github.com/$github_repo/releases and that you are online."
     fi
     fail "the download failed. Check your network connection, or try again later."
 }
 
 usage() {
     cat <<'USAGE'
-Install or upgrade iCode from its offline package.
+Install or upgrade AIxCoding from its offline package.
 
 Options:
   --version <X.Y.Z>        install that version instead of the latest
@@ -124,12 +124,12 @@ detect_platform() {
     case "$(uname -s)" in
         Darwin) os=macos ;;
         Linux) os=linux ;;
-        *) fail "this script installs iCode on macOS and Linux; on Windows, use install.ps1" ;;
+        *) fail "this script installs AIxCoding on macOS and Linux; on Windows, use install.ps1" ;;
     esac
     case "$(uname -m)" in
         x86_64 | amd64) arch=x86_64 ;;
         arm64 | aarch64) arch=aarch64 ;;
-        *) fail "there is no iCode package for $(uname -m) processors" ;;
+        *) fail "there is no AIxCoding package for $(uname -m) processors" ;;
     esac
     # A shell running under Rosetta reports x86_64 on Apple silicon.
     if [ "$os" = macos ] && [ "$arch" = x86_64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" = 1 ]; then
@@ -140,21 +140,22 @@ detect_platform() {
     fi
 }
 
-# `icode install` leaves an `icode` that is not its own alias alone, so after an install that
-# `icode` would still start whatever it starts now.
-check_icode_command() {
-    for found in "$bin_dir/icode" "$(command -v icode 2>/dev/null || true)"; do
+# AIxCoding branding: POSIX install command contract
+# `aixcoding-cli install` leaves an `aixcoding-cli` that is not its own alias alone, so after an
+# install that `aixcoding-cli` would still start whatever it starts now.
+check_aixcoding_cli_command() {
+    for found in "$bin_dir/aixcoding-cli" "$(command -v aixcoding-cli 2>/dev/null || true)"; do
         if [ -z "$found" ] || [ ! -e "$found" ] || [ "$found" -ef "$bin_dir/chrys" ]; then
             continue
         fi
         if [ -x "$bin_dir/chrys" ]; then
-            # An offline install that already lives with this `icode` is started with `chrys`;
+            # An offline install that already lives with this `aixcoding-cli` is started with `chrys`;
             # upgrading it changes nothing about that.
-            printf 'Warning: %s does not start the iCode offline install; start that with chrys.\n' "$found" >&2
+            printf 'Warning: %s does not start the AIxCoding offline install; start that with chrys.\n' "$found" >&2
             return 0
         fi
-        printf 'Error: %s is not an iCode offline install, so this script would not replace it.\n' "$found" >&2
-        printf 'If it is iCode installed with uv or pipx, upgrade it with that tool (for example,\n' >&2
+        printf 'Error: %s is not an AIxCoding offline install, so this script would not replace it.\n' "$found" >&2
+        printf 'If it is AIxCoding installed with uv or pipx, upgrade it with that tool (for example,\n' >&2
         printf 'uv tool upgrade iCode-TUI), or uninstall it first and run this script again.\n' >&2
         exit 1
     done
@@ -233,8 +234,9 @@ release_url() {
 }
 
 # The name of this machine's package in a SHA256SUMS.txt, which also carries its version.
+# AIxCoding branding: POSIX install command contract
 package_in() {
-    awk -v prefix="icode-$os-$arch-v" -v suffix="-offline.tar.gz" '
+    awk -v prefix="aixcoding-cli-$os-$arch-v" -v suffix="-offline.tar.gz" '
         { name = $2; sub(/^\*/, "", name) }
         index(name, prefix) == 1 && length(name) > length(prefix suffix) &&
             substr(name, length(name) - length(suffix) + 1) == suffix { print name; exit }
@@ -251,14 +253,14 @@ install_from() {
     elif tag="$(gitcode_latest_tag)"; then
         sums_url="$(release_url "$host" "$tag" SHA256SUMS.txt)"
     else
-        say "Could not find the latest iCode version on $(host_name "$host")."
+        say "Could not find the latest AIxCoding version on $(host_name "$host")."
         return 1
     fi
     rm -f "$tmp/SHA256SUMS.txt"
     fetch "$sums_url" "$tmp/SHA256SUMS.txt" quiet || return 1
 
     package="$(package_in "$tmp/SHA256SUMS.txt")"
-    target="${package#"icode-$os-$arch-v"}"
+    target="${package#"aixcoding-cli-$os-$arch-v"}"
     target="${target%-offline.tar.gz}"
     if [ -z "$package" ] || ! is_version "$target"; then
         say "That release on $(host_name "$host") has no package for $os ($arch)."
@@ -266,22 +268,22 @@ install_from() {
     fi
 
     installed="$("$bin_dir/chrys" --version 2>/dev/null </dev/null || true)"
-    # Without its `icode` alias the install is incomplete, and installing again restores it.
-    if [ "$installed" = "$target" ] && [ -e "$bin_dir/icode" ]; then
-        say "iCode $target is already installed."
+    # Without its `aixcoding-cli` alias the install is incomplete, and installing again restores it.
+    if [ "$installed" = "$target" ] && [ -e "$bin_dir/aixcoding-cli" ]; then
+        say "AIxCoding $target is already installed."
         return 0
     fi
     # A host that lags behind, such as GitCode right after a release, must not downgrade.
     if [ -z "$version" ] && is_version "$installed" && is_newer "$installed" "$target"; then
-        say "iCode $installed is already installed, which is newer than the latest on $(host_name "$host") ($target)."
-        # The installed binary puts back an `icode` alias that went missing.
-        if [ ! -e "$bin_dir/icode" ]; then
+        say "AIxCoding $installed is already installed, which is newer than the latest on $(host_name "$host") ($target)."
+        # The installed binary puts back an `aixcoding-cli` alias that went missing.
+        if [ ! -e "$bin_dir/aixcoding-cli" ]; then
             "$bin_dir/chrys" install </dev/null || fail "chrys install failed"
         fi
         return 0
     fi
 
-    say "Downloading iCode $target for $os ($arch) from $(host_name "$host")..."
+    say "Downloading AIxCoding $target for $os ($arch) from $(host_name "$host")..."
     fetch "$(release_url "$host" "v$target" "$package")" "$tmp/$package" || return 1
     expected="$(awk -v name="$package" '{ file = $2; sub(/^\*/, "", file) } file == name { print $1; exit }' "$tmp/SHA256SUMS.txt")"
     actual="$(cd "$tmp" && $hasher "$package" | awk '{ print $1 }')"
@@ -291,17 +293,17 @@ install_from() {
     fi
 
     # From here on a failure is not the download's, so another host would not help.
-    if ! { mkdir "$tmp/package" && tar -xzf "$tmp/$package" -C "$tmp/package" && chmod +x "$tmp/package/icode"; }; then
+    if ! { mkdir "$tmp/package" && tar -xzf "$tmp/$package" -C "$tmp/package" && chmod +x "$tmp/package/aixcoding-cli"; }; then
         fail "could not unpack $package"
     fi
     # The binary unpacks its runtime on first run, then copies itself into ~/.local/bin. Its
     # input is this script when piped, so it gets none.
     status=0
-    "$tmp/package/icode" install </dev/null || status=$?
+    "$tmp/package/aixcoding-cli" install </dev/null || status=$?
     if [ "$status" = 126 ]; then
         fail "could not run the package from $tmp. If that folder does not allow running programs, set TMPDIR to another folder and run this script again."
     fi
-    [ "$status" = 0 ] || fail "icode install failed"
+    [ "$status" = 0 ] || fail "aixcoding-cli install failed"
 }
 
 main "$@"

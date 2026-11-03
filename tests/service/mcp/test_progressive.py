@@ -292,7 +292,8 @@ async def test_list_changed_always_load_refreshes_connect_and_future_run_surface
 @pytest.mark.parametrize(
     ("collision_name", "message"),
     [
-        ("read_file", r"reserved iCode tool.*read_file"),
+        # AIxCoding branding: reserved tool conflict text
+        ("read_file", r"reserved AIxCoding tool.*read_file"),
         ("mcp_srv_load_tool", r"progressive-disclosure control.*mcp_srv_load_tool"),
     ],
 )
@@ -346,7 +347,8 @@ async def test_connection_test_rejects_permitted_names_reserved_by_chrys(progres
 
     with (
         patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake),
-        pytest.raises(MCPToolNameCollisionError, match=r"reserved iCode tool.*read_file"),
+        # AIxCoding branding: reserved tool conflict text
+        pytest.raises(MCPToolNameCollisionError, match=r"reserved AIxCoding tool.*read_file"),
     ):
         await adapter.test_connection(config)
 
@@ -408,7 +410,8 @@ async def test_connect_all_does_not_downgrade_chrys_name_collision_to_warning() 
 
     with (
         patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake),
-        pytest.raises(MCPToolNameCollisionError, match=r"reserved iCode tool.*read_file"),
+        # AIxCoding branding: reserved tool conflict text
+        pytest.raises(MCPToolNameCollisionError, match=r"reserved AIxCoding tool.*read_file"),
     ):
         await adapter.connect_all([config])
 

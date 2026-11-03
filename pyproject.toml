@@ -78,8 +78,9 @@ Repository = "https://github.com/openJiuwen-ai/iCode"
 Issues = "https://github.com/openJiuwen-ai/iCode/issues"
 Releases = "https://github.com/openJiuwen-ai/iCode/releases"
 
+# AIxCoding branding: wheel command entry
 [project.scripts]
-icode = "chrys.app.cli.app:main"
+aixcoding-cli = "chrys.app.cli.app:main"
 
 [tool.uv.sources]
 #rich = { path = "../rich", editable = true }

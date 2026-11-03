@@ -306,7 +306,8 @@ async def test_build_rejects_mcp_chrys_name_collision_and_rolls_back() -> None:
         "srv",
         "stdio",
         conflicting_names={"read_file"},
-        conflict_with="a reserved iCode tool",
+        # AIxCoding branding: hosted warning bound args
+        conflict_with="a reserved AIxCoding tool",
         guidance="Exclude the remote tool from the Permitted Tool Set or configure a Tool Name Prefix.",
     )
     mcp_mock = MagicMock()
@@ -316,7 +317,7 @@ async def test_build_rejects_mcp_chrys_name_collision_and_rolls_back() -> None:
 
     with (
         _build_agent_env(mcp_mock=mcp_mock, agent_mock=agent_mock) as dependencies,
-        pytest.raises(MCPToolNameCollisionError, match=r"reserved iCode tool.*read_file"),
+        pytest.raises(MCPToolNameCollisionError, match=r"reserved AIxCoding tool.*read_file"),
     ):
         await _invoke_build_agent(profile)
 
@@ -565,7 +566,9 @@ async def test_build_agent_reports_hosted_web_tools_that_displace_a_local_catego
     assert "web_search" in warnings[0].message
     assert "test-id" in warnings[0].message
     assert registry.load_builtins.call_args.kwargs["web"].hosted == {"web_search"}
-    _assert_warning_display_message(warnings[0], "builder.hosted_web_tools_preferred", {"tools": "web_search"})
+    _assert_warning_display_message(
+        warnings[0], "builder.hosted_web_tools_preferred", {"tools": "web_search", "app": "AIxCoding"}
+    )
 
 
 async def test_build_agent_does_not_expose_displaced_local_web_tool_to_model() -> None:

@@ -23,7 +23,7 @@ Usage::
                   [--catalog FILE] [--mode {ok,empty,invalid,error,slow,stale}]
                   [--no-auth] [--auth-mode {auto,manual}]
 
-    AIXCODING_AUTH_ENVIRONMENT=local uv run icode
+    AIXCODING_AUTH_ENVIRONMENT=local uv run aixcoding-cli
 
 Endpoints::
 

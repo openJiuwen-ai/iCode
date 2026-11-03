@@ -210,7 +210,10 @@ async def test_real_runs_appear_running_then_ended(tmp_path: Path) -> None:
     async with app.run_test(size=(160, 40)) as pilot:
         main = await _ready(pilot)
         await _show_hooks_tab(pilot, main)
-        await wait_for(lambda: _empty(main) == "No hook has run since iCode started", pilot=pilot, description="empty")
+        # AIxCoding branding: hooks panel states
+        await wait_for(
+            lambda: _empty(main) == "No hook has run since AIxCoding started", pilot=pilot, description="empty"
+        )
         wire_hook_reporting(manager, bus, session_id=_SESSION, run_log=log)
         fire = asyncio.create_task(manager.fire(HookEvent.BEFORE_TOOL_CALL, _payload()))
         try:
@@ -346,7 +349,10 @@ async def test_the_empty_state_follows_the_hooks_the_runtime_details_name(tmp_pa
         # A hook was configured since, and nothing has run.
         await bus.publish(_runtime_changed(kind, _runtime(1)), raise_handler_errors=True)
         await wait_for(
-            lambda: _empty(main) == "No hook has run since iCode started", pilot=pilot, description="configured"
+            # AIxCoding branding: hooks panel states
+            lambda: _empty(main) == "No hook has run since AIxCoding started",
+            pilot=pilot,
+            description="configured",
         )
 
 
@@ -686,7 +692,10 @@ async def test_an_empty_list_on_a_long_transcript_does_not_relayout_when_a_modal
         main = await _ready(pilot)
         await _populate(pilot, main)
         hooks = await _show_hooks_tab(pilot, main)
-        await wait_for(lambda: _empty(main) == "No hook has run since iCode started", pilot=pilot, description="empty")
+        # AIxCoding branding: hooks panel states
+        await wait_for(
+            lambda: _empty(main) == "No hook has run since AIxCoding started", pilot=pilot, description="empty"
+        )
         await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled underlay")
         seen: dict[str, list[object]] = {"styles": [], "layout": [], "footer": []}
         monkeypatch.setattr(main, "update_node_styles", lambda animate=True: seen["styles"].append(animate))
@@ -710,7 +719,7 @@ async def test_an_empty_list_on_a_long_transcript_does_not_relayout_when_a_modal
             await _close_modal(pilot, app, main)
             await wait_for(lambda closes=closes: len(paints) >= closes, pilot=pilot, description="painted on resume")
         await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled after")
-        assert _empty(main) == "No hook has run since iCode started"
+        assert _empty(main) == "No hook has run since AIxCoding started"
         assert seen == {"styles": [], "layout": [], "footer": []}
 
 

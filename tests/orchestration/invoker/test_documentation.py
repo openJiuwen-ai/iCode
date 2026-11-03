@@ -84,7 +84,8 @@ async def test_custom_agents_receive_routing_and_read_docs_only_on_demand(
         assert "no read_file tool" in main.call_history[0][1]["instructions"]
         messages, options = child.call_history[0]
         assert "CHILD-INSTRUCTION" in options["instructions"]
-        assert "iCode documentation" not in options["instructions"]
+        # AIxCoding branding: prompt documentation title absent
+        assert "AIxCoding documentation" not in options["instructions"]
         assert str(index) in messages[-1].text
         assert str(index) in main.call_history[0][1]["instructions"]
         assert "delegate the lookup" in main.call_history[0][1]["instructions"]

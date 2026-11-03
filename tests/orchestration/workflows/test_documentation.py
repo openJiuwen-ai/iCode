@@ -48,7 +48,8 @@ async def test_workflow_node_does_not_inject_product_documentation(
         assert result.outcome.value == "completed"
         assert len(client.call_history) == 1
         _messages, options = client.call_history[0]
-        assert "iCode documentation" not in options["instructions"]
+        # AIxCoding branding: prompt documentation title absent
+        assert "AIxCoding documentation" not in options["instructions"]
         assert "Topic index:" not in options["instructions"]
         assert "read_file" in {tool.name for tool in options["tools"]}
     finally:

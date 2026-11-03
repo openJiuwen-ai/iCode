@@ -70,7 +70,8 @@ def test_cli_lists_when_no_action_is_given(grants, capsys, argv):
 def test_cli_usage_names_the_singular_command(capsys):
     with pytest.raises(SystemExit):
         approvals.main(["--help"])
-    assert capsys.readouterr().out.startswith("usage: icode approval ")
+    # AIxCoding branding: approval usage line
+    assert capsys.readouterr().out.startswith("usage: aixcoding-cli approval ")
 
 
 @pytest.mark.parametrize("filter_args", [["--session", "session-a"], ["--project"], ["--all"]])

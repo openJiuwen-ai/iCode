@@ -80,7 +80,8 @@ async def test_workflow_context_changes_clear_only_acknowledged_results(
         run_id = await _accept_live_run(pilot, engine, bus, requests)
         await bus.publish(WorkflowRunFinished(run_id=run_id, outcome=outcome))
         await engine.set_execution(ExecutionSnapshot("idle"), bus)
-        result = _DONE if outcome == "completed" else _seq("state=error:app=iCode")
+        # AIxCoding branding: OSC app name assertions
+        result = _DONE if outcome == "completed" else _seq("state=error:app=AIxCoding")
         assert _reports(driver)[-1] == result
 
         if action == "new":
@@ -120,7 +121,8 @@ async def test_switching_from_chat_to_workflow_acknowledges_chat_result(tmp_path
         driver = _ForwardingDriver(app._driver)
         app._driver = driver
         await bus.publish(InvocationMessage(origin=_turn_origin(), text="Ready", is_final=True))
-        assert _reports(driver)[-1] == _seq(f"state=done:app=iCode:{_msg('Ready')}")
+        # AIxCoding branding: OSC app name assertions
+        assert _reports(driver)[-1] == _seq(f"state=done:app=AIxCoding:{_msg('Ready')}")
 
         await switch_mode(main, pilot)
 
@@ -200,7 +202,8 @@ async def test_queued_retry_reports_working_and_done_without_an_idle_lease_gap(
             for event in started.events
             if isinstance(event, InvocationMessage)
         )
-        assert app.writes[-1] == _seq(f"state=done:app=iCode:{_msg('retry completed')}")
+        # AIxCoding branding: OSC app name assertions
+        assert app.writes[-1] == _seq(f"state=done:app=AIxCoding:{_msg('retry completed')}")
     finally:
         client.release_cancellation.set()
         client.release_second.set()

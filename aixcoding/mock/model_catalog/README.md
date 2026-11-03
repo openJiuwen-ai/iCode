@@ -23,7 +23,7 @@ uv run python aixcoding/mock/model_catalog/server.py --no-auth  # 只挂目录�
 然后让 iCode 指向它：
 
 ```bash
-AIXCODING_AUTH_ENVIRONMENT=local uv run icode
+AIXCODING_AUTH_ENVIRONMENT=local uv run aixcoding-cli
 ```
 
 ## 端点

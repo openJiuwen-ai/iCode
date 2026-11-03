@@ -80,15 +80,19 @@ EXCLUDED_DIRS = {
     "venv",
     "node_modules",
     "__pycache__",
-    "dist",
-    "build",
     ".pytest_cache",
     ".ruff_cache",
     ".tox",
-    "target",
     ".idea",
     ".vscode",
 }
+# Build-output names are excluded only at the repository root: the same names
+# deeper in the tree are source directories (e.g. tests/orchestration/engine/build).
+ROOT_EXCLUDED_DIRS = {"dist", "build", "target"}
+
+
+def _is_excluded(rel_parts: tuple[str, ...]) -> bool:
+    return any(part in EXCLUDED_DIRS for part in rel_parts) or rel_parts[0] in ROOT_EXCLUDED_DIRS
 
 
 @dataclass
@@ -119,7 +123,7 @@ def iter_upstream_files(repo: Path):
         if not path.is_file():
             continue
         rel_parts = path.relative_to(repo).parts
-        if any(part in EXCLUDED_DIRS for part in rel_parts):
+        if _is_excluded(rel_parts):
             continue
         rel = common.to_posix(path.relative_to(repo))
         if common.is_custom(rel):
@@ -487,7 +491,7 @@ def run_archaeology(repo: Path, out: Path | None) -> int:
             custom_assets.extend(
                 common.to_posix(p.relative_to(repo))
                 for p in sorted(base_dir.rglob("*"))
-                if p.is_file() and not any(part in EXCLUDED_DIRS for part in p.relative_to(repo).parts)
+                if p.is_file() and not _is_excluded(p.relative_to(repo).parts)
             )
 
     lines = [

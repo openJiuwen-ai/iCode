@@ -1131,11 +1131,14 @@ def _make_chrys_server_class(base_server_class: type[Any]) -> _TextualServeServe
     return ChrysServeServer
 
 
+# AIxCoding branding: ASCII serve banner
 def _icode_serve_logo() -> str:
-    """Return the iCode-branded serve startup banner."""
-    return f"""[bold magenta]░▀█▀░█▀▀░█▀█░█▀▄░█▀▀░░░░░█▀▀░█▀▀░█▀▄░█░█░█▀▀
-░░█░░█░░░█░█░█░█░█▀▀░▄▄▄░▀▀█░█▀▀░█▀▄░▀▄▀░█▀▀
-░▀▀▀░▀▀▀░▀▀▀░▀▀░░▀▀▀░░░░░▀▀▀░▀▀▀░▀░▀░░▀░░▀▀▀ v{__version__}[/bold magenta]\n"""
+    """Return the AIxCoding serve startup banner (pure ASCII, safe on GBK consoles)."""
+    return f"""[bold magenta] ##   ####  #  #   ###   ##   ###   ####  #  #   ###
+#  #   ##    # #  #     #  #  #  #   ##   ## #  #
+####   ##     ##  #     #  #  #  #   ##   # ##  # ##
+#  #   ##    # #  #     #  #  #  #   ##   #  #  #  #
+#  #  ####  #  #   ###   ##   ###   ####  #  #   ###  v{__version__}[/bold magenta]\n"""
 
 
 def run_command(args: argparse.Namespace) -> None:

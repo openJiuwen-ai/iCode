@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print("Point the TUI at the mocks, e.g.:")
-    print("  AIXCODING_AUTH_ENVIRONMENT=local uv run icode")
+    print("  AIXCODING_AUTH_ENVIRONMENT=local uv run aixcoding-cli")
     if "update" in names:
         print(
             f"  AIXCODING_EXTENSION_BASE_URL=http://127.0.0.1:{UPDATE_PORT}/csas   # only if exercising update detection"

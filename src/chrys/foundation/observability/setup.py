@@ -65,6 +65,7 @@ from types import NoneType
 from typing import TYPE_CHECKING, Any
 
 from chrys import __version__
+from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.observability.gate import configure_telemetry
 from chrys.foundation.observability.sink import OtelSessionSink, get_otel_sink, set_otel_sink
 
@@ -176,8 +177,9 @@ def _create_otlp_exporters(
                 OTLPSpanExporter as HTTPSpanExporter,
             )
         except ImportError as exc:
+            # AIxCoding branding: OTLP error message
             raise ImportError(
-                "OTLP over HTTP needs opentelemetry-exporter-otlp-proto-http, which iCode does not include; "
+                f"OTLP over HTTP needs opentelemetry-exporter-otlp-proto-http, which {APP_DISPLAY_NAME} does not include; "
                 "use OTLP/gRPC instead (leave OTEL_EXPORTER_OTLP_PROTOCOL unset or set it to grpc)"
             ) from exc
 

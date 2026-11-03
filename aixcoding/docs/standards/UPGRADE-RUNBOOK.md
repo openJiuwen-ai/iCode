@@ -87,7 +87,7 @@ uv run ty check --error-on-warning --python-platform linux src/chrys   # darwin/
 
 - `gen_customizations --strict` 对账失败是**期望信号**：marker 增删/锚漂移/计数变化须同步各源 design 登记表（改登记行属 R10 重签范围；id 不随跟改漂移）；产物 freshness 义务已随 `CUSTOMIZATIONS.md` 退役（customization-registry 批次）；
 - R2/R3 以**新 merge-base** 跑：升级 PR 中上游文件改动必须 ⊆ 已签认 R2 表并集（merge 引入的上游自身变化不算"我们的改动"——merge 后 diff 区间重新从新分叉点起算）；
-- 关键链路人工验证（TUI 冒烟：`uv run icode`，F6 查看 aixcoding tab）。
+- 关键链路人工验证（TUI 冒烟：`uv run aixcoding-cli`，F6 查看 aixcoding tab）。
 
 ## 5. 淘汰检查
 
