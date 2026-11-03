@@ -5249,11 +5249,29 @@ msgid_plural "tui.chat.process.tool_calls#plural"
 msgstr[0] ""
 msgstr[1] ""
 
+#. English: Retrying in {seconds}s ({attempt}/{max_attempts})
+#. chrys-meta={"fingerprint":"4f437e9b65b0047a997ca67f72183c057aa5255abd72b935f248bcee165085dd","multiline":false,"placeholders":["attempt","max_attempts","seconds"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.retry_countdown"
+msgstr ""
+
 #. English: {message} Retrying in {delay_seconds}s
 #. ({attempt}/{max_attempts})...
 #. chrys-meta={"fingerprint":"2a539b6b7df6647ca02c8adcddd628c1096c2c87869f07ce542cec434098d512","multiline":true,"placeholders":["attempt","delay_seconds","max_attempts","message"]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.retry_message"
+msgstr ""
+
+#. English: Retry Now
+#. chrys-meta={"fingerprint":"4582af9e8d91cbe3d2fcc01807a59a4556726b4825b47d9962f05148e4ab1fc1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.retry_now"
+msgstr ""
+
+#. English: Retrying ({attempt}/{max_attempts})...
+#. chrys-meta={"fingerprint":"8d0fadd9e4cd1e9648a527bec4a366eff113b393cf0c5bb7b2a22d85190e544f","multiline":false,"placeholders":["attempt","max_attempts"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.retry_started"
 msgstr ""
 
 #. English: Scroll to bottom {glyph}

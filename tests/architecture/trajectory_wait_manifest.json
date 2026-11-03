@@ -743,6 +743,7 @@
         ["awaitable", "await self._bus.subscribe(UserRetry, self._on_user_retry)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(UserInject, self._on_user_inject)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(UserInjectCancel, self._on_user_inject_cancel)", "unresolved"],
+        ["awaitable", "await self._bus.subscribe(RetryWaitSkip, self._on_retry_wait_skip)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(UserRollback, self._on_user_rollback)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(AgentProfileSwitch, self._on_profile_switch)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(SessionNew, self._on_new_session)", "unresolved"],
@@ -1050,7 +1051,7 @@
         ["awaitable", "await self._bus.unsubscribe(InvocationToolCallResult, _on_tool_result)", "unresolved"]
       ],
       "TurnBindings._interruptible_sleep": [
-        ["sleep", "await asyncio.sleep(1)", "unresolved"]
+        ["timeout", "await asyncio.wait_for(woken.wait(), timeout=min(_RETRY_WAIT_POLL_SECONDS, remaining))", "unresolved"]
       ],
       "TurnBindings._local_call_start_published": [
         ["awaitable", "await self._hosted_bridge.local_call_start_published(provider_call_id)", "unresolved"]
@@ -1069,7 +1070,7 @@
       ],
       "TurnBindings._publish_retry_notice": [
         ["awaitable", "await self._hosted_bridge.attempt_rejected(message)", "unresolved"],
-        ["awaitable", "await self._emitter.publish(InvocationRetryAttempt(origin=self._emitter.origin, message=message, attempt=attempt, scope=scope, max_attempts=max_attempts, delay_seconds=delay_seconds, session_id=self._session_id, display_message=display_message, display_hint=display_hint))", "unresolved"]
+        ["awaitable", "await self._emitter.publish(InvocationRetryAttempt(origin=self._emitter.origin, message=message, attempt=attempt, scope=scope, max_attempts=max_attempts, delay_seconds=delay_seconds, session_id=self._session_id, display_message=display_message, display_hint=display_hint, wait_id=wait.wait_id if wait is not None else ''))", "unresolved"]
       ],
       "TurnBindings._publish_wire_retry_attempt": [
         ["wrapper", "await self._publish_retry_notice(message, attempt, max_attempts, delay_seconds, exc, scope='wire')", "unresolved", "chrys.orchestration.engine.run.bindings.TurnBindings._publish_retry_notice"]

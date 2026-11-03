@@ -2217,7 +2217,9 @@ class BackendEventHandler:
             if event.display_message is None
             else self._render_display_with_hint(event.display_message, event.display_hint)
         )
-        await self._ui().show_retry_attempt(retry_msg, event.attempt, event.max_attempts, event.delay_seconds)
+        await self._ui().show_retry_attempt(
+            retry_msg, event.attempt, event.max_attempts, event.delay_seconds, wait_id=event.wait_id
+        )
         s.debug("Retry", f"{event.message} ({event.attempt}/{event.max_attempts})")
 
 

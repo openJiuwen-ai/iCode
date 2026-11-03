@@ -93,7 +93,7 @@ from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.util.placement import pin_fixed_placement
 from chrys.app.tui.widgets.btw import BtwPanel, ChatColumn
-from chrys.app.tui.widgets.chat.messages import ConversationStatusAction
+from chrys.app.tui.widgets.chat.messages import ConversationStatusAction, RetryNowClicked
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.quote_popup import QuoteSelectionPopup
@@ -2643,6 +2643,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Bubbled from :class:`SleepToolCall` Skip button."""
         event.stop()
         await self._tool_actions.skip_sleep(event.call_id)
+
+    async def on_retry_now_clicked(self, event: RetryNowClicked) -> None:
+        """Bubbled from the Retry Now button of the main chat's retry notice."""
+        event.stop()
+        await self._tool_actions.skip_retry_wait(event.wait_id)
 
     async def on_ask_user_inline_submitted(self, event: AskUserInlineSubmitted) -> None:
         """Bubbled from :class:`AskUserToolCall` inline response controls."""
