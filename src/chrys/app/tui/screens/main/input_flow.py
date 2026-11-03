@@ -22,7 +22,8 @@ from chrys.app.tui.screens.main.ports import InputFlowView, StartWorker
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, SubmitKind
 from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcAbsorbRequested
 from chrys.app.tui.widgets.chat.replay import contents_text
-from chrys.app.tui.widgets.chrome.input_bar import INPUT_CONTINUE, ChatDraft
+from chrys.app.tui.widgets.chrome.input_bar import INPUT_CONTINUE
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_RESUMING, STATUS_THINKING
 from chrys.foundation.events.types import (
     Error,
@@ -106,7 +107,7 @@ class InputFlowController:
     def submit_user_text(self, text: str, draft: ChatDraft | None = None) -> None:
         """Submit normal user text as a new turn or mid-run injection; *draft* is the composer's whole draft."""
         if self._state.run.agent_running:
-            self._start_worker(partial(self.queue_injection, text))
+            self._start_worker(partial(self.queue_injection, text, draft))
             return
         self._start_worker(partial(self.send_user_message, text, draft))
 
@@ -158,16 +159,16 @@ class InputFlowController:
     def _begin_claim(self, text: str, *, kind: SubmitKind, draft: ChatDraft | None = None) -> None:
         """Claim the submit in flight with what it hands back if it does not go out: *draft*, else plain *text*."""
         # Where a shortcut's draft was taken, read only for one: it goes back without its owner elsewhere.
-        generation, cwd = self._place() if draft is not None and draft.owner is not None else (0, "")
+        generation, cwd = self.place() if draft is not None and draft.owner is not None else (0, "")
         self._state.submit.begin(text, kind=kind, draft=draft, session_generation=generation, cwd=cwd)
 
-    def _place(self) -> tuple[int, str]:
-        """The engine's session generation and the working folder, now."""
+    def place(self) -> tuple[int, str]:
+        """The engine's session generation and the working folder, now: where a prompt shortcut's draft is its own."""
         return self._services.session_generation(), self._state.workspace.current_cwd
 
     def _give_back_draft(self) -> None:
         """Hand the claimed draft back whole, if no refusal handler took it already."""
-        draft = self._state.submit.take_draft_for(self._place)
+        draft = self._state.submit.take_draft_for(self.place)
         if draft is not None:
             self._view.restore_input_draft(draft)
 
@@ -293,9 +294,9 @@ class InputFlowController:
         await self.flush_deferred_agent_messages()
         self._view.update_toc()
 
-    async def queue_injection(self, text: str) -> None:
-        """Queue a user message for mid-run injection without chat display."""
-        if not self._claim_submit(text, kind="injection"):
+    async def queue_injection(self, text: str, draft: ChatDraft | None = None) -> None:
+        """Queue a user message for mid-run injection without chat display; *draft* is the composer's whole draft."""
+        if not self._claim_submit(text, kind="injection", draft=draft):
             return
         try:
             injection_id = uuid4().hex[:12]
@@ -314,7 +315,8 @@ class InputFlowController:
             # so only the sent text leaves it.
             if self._state.pending_injection.matches(injection_id):
                 self._state.pending_injection.clear()
-                self._view.unlock_input_clearing(text)
+                # The locked composer holds the draft, not the text it sent.
+                self._view.unlock_input_clearing(draft.text.strip() if draft is not None else text)
             self._state.render_gate.begin()
             await self._open_turn(event)
             self._debug("UserMessage (inject → new turn)", text[:60])

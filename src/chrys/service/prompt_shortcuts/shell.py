@@ -38,7 +38,9 @@ SHELL_OUTPUT_LIMIT_BYTES = 16 * 1024
 SHELL_CONCURRENCY = 2
 """Commands run at once, as in opencode."""
 
-_SHELL_RE = re.compile(r"!`([^`]+)`")
+# A backslash before the ``!`` keeps the placeholder text: that is how a quote
+# carries one (``draft_references.inert_quote``) and how anyone writes one literally.
+_SHELL_RE = re.compile(r"(?<!\\)!`([^`]+)`")
 
 
 class ShellInterpolationError(Exception):
@@ -57,6 +59,11 @@ class ShellInterpolationError(Exception):
 def shell_commands(text: str) -> list[str]:
     """Return the commands of *text*'s ``!`command``` placeholders, in order."""
     return [match.group(1) for match in _SHELL_RE.finditer(text)]
+
+
+def shell_command_spans(text: str) -> list[tuple[int, int]]:
+    """Return the ``[start, end)`` of each of *text*'s ``!`command``` placeholders, in order."""
+    return [match.span() for match in _SHELL_RE.finditer(text)]
 
 
 def shell_argv(command: str) -> tuple[str | WindowsShellCommand, ...]:

@@ -45,7 +45,7 @@ from chrys.app.tui.behaviors.right_click_copy import handle_text_area_right_clic
 from chrys.app.tui.binding_display import COPY_BINDING, PASTE_BINDING, localized_binding
 from chrys.app.tui.clipboard import copy_text_to_clipboards, paste_text_from_clipboards
 from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.foundation.i18n import msg
+from chrys.foundation.i18n import MessageDef, msg
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 
 if TYPE_CHECKING:
@@ -196,33 +196,33 @@ class EnhancedTextArea(TextArea):
         if self.read_only:
             return
         text = self._sanitize_paste_text(event.text)
-        if result := self._replace_via_keyboard(text, *self.selection):
+        # Nothing to paste (a terminal's empty paste with no picture to take) changes nothing, the selection included.
+        if text and (result := self._replace_via_keyboard(text, *self.selection)):
             self.move_cursor(result.end_location)
         event.stop()
 
-    def _prepare_paste_text(self, text: str) -> str:
-        """Return text to insert for a paste action."""
-        return text
-
     def _sanitize_paste_text(self, text: str) -> str:
         """Normalize pasted text and apply the optional token cap."""
-        text = self._prepare_paste_text(text).replace("\r\n", "\n").replace("\r", "\n")
-        if self._max_paste_tokens is not None:
-            text, original_tokens = _truncate_to_tokens(text, self._max_paste_tokens)
-            if original_tokens > self._max_paste_tokens:
-                localizer = widget_localizer(self)
-                self.notify(
-                    render_str(
-                        localizer,
-                        _PASTE_TRUNCATED.bind(
-                            original_tokens=f"{original_tokens:,}",
-                            limit=f"{self._max_paste_tokens:,}",
-                        ),
-                    ),
-                    title=render_str(localizer, _PASTE_TRUNCATED_TITLE.bind()),
-                    severity="warning",
-                    markup=False,
-                )
+        return self._cap_to_paste_tokens(text.replace("\r\n", "\n").replace("\r", "\n"))
+
+    def _cap_to_paste_tokens(
+        self, text: str, *, notice: MessageDef = _PASTE_TRUNCATED, title: MessageDef = _PASTE_TRUNCATED_TITLE
+    ) -> str:
+        """*text* cut to the optional paste token cap, saying so with *notice* when it was cut."""
+        if self._max_paste_tokens is None:
+            return text
+        text, original_tokens = _truncate_to_tokens(text, self._max_paste_tokens)
+        if original_tokens > self._max_paste_tokens:
+            localizer = widget_localizer(self)
+            self.notify(
+                render_str(
+                    localizer,
+                    notice.bind(original_tokens=f"{original_tokens:,}", limit=f"{self._max_paste_tokens:,}"),
+                ),
+                title=render_str(localizer, title.bind()),
+                severity="warning",
+                markup=False,
+            )
         return text
 
     def action_copy(self) -> None:

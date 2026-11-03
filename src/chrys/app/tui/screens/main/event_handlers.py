@@ -8,7 +8,7 @@ import contextlib
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -51,6 +51,7 @@ from chrys.app.tui.widgets.chat.agent_transcript_surface import AnswerSegments
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload, FileSnapshotRef, should_externalize_snapshot
 from chrys.app.tui.widgets.chrome.app_header import APPROVAL_MODE_MESSAGES
 from chrys.app.tui.widgets.chrome.input_bar import INPUT_RETRY
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.chrome.status_bar import (
     STATUS_COMPACTING,
     STATUS_ERROR,
@@ -120,6 +121,7 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
+from chrys.foundation.text.draft_references import DraftReferences, image_labels_to_paths
 from chrys.foundation.tool_result_metadata import canonical_tool_result_status
 from chrys.orchestration.engine.run.attachments import replace_image_mentions_with_paths
 from chrys.service.approval.policy import ApprovalMode
@@ -2121,9 +2123,12 @@ class BackendEventHandler:
 
     def _show_image_rejection_dialog(self, code: str, message: str) -> None:
         """Show the image rejection modal for a backend-validated prompt."""
-        text = self.pending_user_submit_text
-        converted_text = replace_image_mentions_with_paths(text, Path(self._state.workspace.current_cwd))
-        show_path_action = converted_text != text
+        # What comes back into the composer is the claimed draft (its labels, not
+        # the mentions they sent as), so the paths rewrite works on that draft.
+        claimed = self._state.submit.draft
+        draft = claimed if claimed is not None else ChatDraft(self.pending_user_submit_text)
+        converted = _with_image_paths(draft, Path(self._state.workspace.current_cwd))
+        show_path_action = converted != draft
         restore = self._restore_pending_submit_text()
 
         from chrys.app.tui.screens.dialogs.vision_unsupported import (
@@ -2145,7 +2150,7 @@ class BackendEventHandler:
             # Only the prompt this handler restored may be rewritten in place;
             # a draft the user typed instead is theirs, dialog or no dialog.
             if result == USE_IMAGE_PATHS_RESULT:
-                self._ui().rewrite_restored_input(restore, converted_text)
+                self._ui().rewrite_restored_input(restore, converted.text, references=converted.references)
 
         self.push_screen(dialog, callback=on_dismiss)
 
@@ -2214,3 +2219,22 @@ class BackendEventHandler:
         )
         await self._ui().show_retry_attempt(retry_msg, event.attempt, event.max_attempts, event.delay_seconds)
         s.debug("Retry", f"{event.message} ({event.attempt}/{event.max_attempts})")
+
+
+def _with_image_paths(draft: ChatDraft, cwd: Path) -> ChatDraft:
+    """*draft* for a model without vision: every image it would send written as a plain path.
+
+    Image labels and image ``@file`` mentions in the draft's text, and image
+    mentions inside its folded pastes (which send as the user's own text),
+    become paths; quotes attach nothing anyway.
+    """
+    references = DraftReferences(
+        tuple(
+            replace(entry, content=replace_image_mentions_with_paths(entry.content, cwd))
+            if entry.kind == "paste"
+            else entry
+            for entry in draft.references.entries
+        )
+    )
+    text = replace_image_mentions_with_paths(image_labels_to_paths(draft.text, draft.references), cwd)
+    return replace(draft, text=text, references=references)

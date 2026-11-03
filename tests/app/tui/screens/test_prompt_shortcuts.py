@@ -20,7 +20,7 @@ from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 from chrys.app.tui.widgets.directory_path import DirectoryPathCard
 from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeSkillDetails
 from chrys.foundation.platform import get_platform
-from tests.support.tui_app_harness import make_chrys_app
+from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
@@ -248,7 +248,7 @@ async def test_enter_with_untouched_fields_sends_only_on_second_press(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _global_shortcut("zztranslate", _TRANSLATE)
-    app = make_chrys_app(tmp_path / "state")
+    app = make_chrys_app(tmp_path / "state", engine=SessionGenerationEngine())
     async with app.run_test(size=(120, 40), notifications=True) as pilot:
         main, chat, sent = await _ready(pilot, monkeypatch)
         await _open_list(pilot, main, "zztrans")
@@ -432,7 +432,7 @@ async def test_typed_name_with_arguments_expands_without_sending(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str
 ) -> None:
     _global_shortcut("zztranslate", _TRANSLATE)
-    app = make_chrys_app(tmp_path / "state")
+    app = make_chrys_app(tmp_path / "state", engine=SessionGenerationEngine())
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, sent = await _ready(pilot, monkeypatch)
         await _type(pilot, '/zztranslate formal "the meeting moved"')
@@ -514,7 +514,7 @@ async def test_system_command_wins_over_same_named_shortcut_when_typed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _global_shortcut("help", "SHORTCUT BODY for help")
-    app = make_chrys_app(tmp_path / "state")
+    app = make_chrys_app(tmp_path / "state", engine=SessionGenerationEngine())
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, sent = await _ready(pilot, monkeypatch)
         dispatched: list[str] = []
@@ -561,7 +561,7 @@ async def test_loaded_skill_wins_over_same_named_shortcut_when_typed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _global_shortcut("zzdup", "SHORTCUT BODY for zzdup")
-    app = make_chrys_app(tmp_path / "state")
+    app = make_chrys_app(tmp_path / "state", engine=SessionGenerationEngine())
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, sent = await _ready(pilot, monkeypatch)
         main._state.runtime.details = AgentRuntimeDetails(
@@ -795,4 +795,72 @@ async def test_typed_escaped_quotes_reach_the_placeholder_as_quotes(
             pilot=pilot,
             description="third argument expanded with literal quotes",
         )
+        assert sent.texts == []
+
+
+_LONG = "word " * 200
+
+
+async def test_a_long_pasted_shortcut_call_expands_as_if_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A paste folds by its size, not by what it says: the shortcut it names still expands and is not sent."""
+    _global_shortcut("zztranslate", _TRANSLATE)
+    app = make_chrys_app(tmp_path / "state", engine=SessionGenerationEngine())
+    async with app.run_test(size=(120, 40)) as pilot:
+        main, chat, sent = await _ready(pilot, monkeypatch)
+        # Shortcuts load in the background: until then a name that may be one waits.
+        await wait_for(lambda: main._suggestions._shortcuts() is not None, pilot=pilot, description="shortcuts read")
+        await chat._on_paste(events.Paste(f'/zztranslate formal "{_LONG.strip()}"'))
+        assert chat.text.startswith("[Pasted text #1")
+
+        await pilot.press("enter")
+
+        await wait_for(
+            lambda: chat.text == f"Use a formal tone for:\n{_LONG.strip()}",
+            pilot=pilot,
+            description="pasted shortcut call expanded",
+        )
+        assert sent.texts == []
+
+
+async def test_a_long_pasted_command_runs_as_the_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = make_chrys_app(tmp_path / "state", engine=SessionGenerationEngine())
+    async with app.run_test(size=(120, 40)) as pilot:
+        main, chat, sent = await _ready(pilot, monkeypatch)
+        dispatched: list[str] = []
+        original = main._suggestions.dispatch_slash_command
+
+        def record(text: str) -> bool:
+            dispatched.append(text)
+            return original(text)
+
+        monkeypatch.setattr(main._suggestions, "dispatch_slash_command", record)
+        await chat._on_paste(events.Paste(f"/help {_LONG.strip()}"))
+        assert chat.text.startswith("[Pasted text #1")
+
+        await pilot.press("enter")
+
+        await wait_for(lambda: dispatched == [f"/help {_LONG.strip()}"], pilot=pilot, description="command dispatched")
+        assert sent.texts == []
+
+
+async def test_a_quote_label_among_shortcut_arguments_stays_one_argument(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _global_shortcut("zztranslate", _TRANSLATE)
+    app = make_chrys_app(tmp_path / "state", engine=SessionGenerationEngine())
+    async with app.run_test(size=(120, 40)) as pilot:
+        main, chat, sent = await _ready(pilot, monkeypatch)
+        await wait_for(lambda: main._suggestions._shortcuts() is not None, pilot=pilot, description="shortcuts read")
+        await _type(pilot, "/zztranslate formal ")
+        await wait_for(lambda: not _list(main).is_visible, pilot=pilot, description="list closed after the space")
+        assert chat.insert_reference("quote", "the meeting moved to noon")
+
+        await pilot.press("enter")
+
+        await wait_for(
+            lambda: chat.text == "Use a formal tone for:\n[Quote #1]",
+            pilot=pilot,
+            description="the quote filled the second argument whole",
+        )
+        assert chat.chat_draft().sent_text() == "Use a formal tone for:\n“the meeting moved to noon”"
         assert sent.texts == []

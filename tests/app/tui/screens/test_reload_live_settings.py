@@ -15,6 +15,7 @@ import yaml
 
 from chrys.app.tui.notifications.settings import NotificationEvent, NotificationSettings
 from chrys.app.tui.screens.dialogs.editor import EditorDialogResult
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.editor import EditorMode
 from chrys.foundation.config.settings import Settings, persist_theme
 from chrys.foundation.config.spec import Apply, Source, field_names_by_key, specs_by_key
@@ -84,7 +85,7 @@ def choose_notification(apply: Callable[[NotificationSettings, bool], None]) -> 
 
 def choose_keymap(session: Session, value: Any) -> None:
     session.main._on_editor_result(
-        EditorDialogResult(accepted=False, text="", mode=EditorMode(value)),
+        EditorDialogResult(accepted=False, draft=ChatDraft(""), cursor_location=(0, 0), mode=EditorMode(value)),
         opened=None,
         opened_mode=session.main._editor_mode,
     )

@@ -171,6 +171,10 @@ class _Host:
     def delete_editor_range(self, source_range: EditorTextRange) -> None:
         self.replace_editor_range(source_range, "")
 
+    def editor_atomic_spans(self, row: int) -> list[tuple[int, int]]:
+        del row
+        return []
+
     def editor_undo(self) -> None:
         if self._undo:
             self._redo.append((self.text, self.cursor))

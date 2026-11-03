@@ -340,7 +340,7 @@ async def test_input_bar_add_to_history_persists_session_and_instance_id(monkeyp
         )
 
     monkeypatch.setattr("chrys.app.tui.widgets.chrome.input_bar.append_history", fake_append_history)
-    monkeypatch.setattr("chrys.app.tui.widgets.chrome.input_bar.safe_getcwd", lambda: "/workspace")
+    monkeypatch.setattr("chrys.app.tui.widgets.chrome.draft_text_area.safe_getcwd", lambda: "/workspace")
 
     async with WidgetApp(InputBar).run_test() as pilot:
         ib = pilot.app.query_one(InputBar)
