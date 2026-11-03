@@ -12,8 +12,8 @@ LAST_WORDS side call reports an exchange of its own, that concurrent
 requests on one client keep their own exchange traces, the exact chat and
 tool span attributes, the exact User-Agent, that a profile header spelled in
 another case goes out once, the text a failed request is wrapped in, the SDK
-retry hook Chrys overrides, and that importing the package loads no provider
-SDK.
+retry hook Chrys overrides, that importing the package loads no provider
+SDK, and that building an Anthropic client loads no OpenAI SDK.
 """
 
 from __future__ import annotations
@@ -933,15 +933,11 @@ def test_the_anthropic_sdk_asks_whether_to_retry_with_the_caught_error() -> None
 # ---------------------------------------------------------------------------
 
 
-def test_importing_the_llm_package_loads_no_provider_sdk(tmp_path: Any) -> None:
+def _provider_sdks_loaded_by(code: str, tmp_path: Any) -> str:
+    """Run *code* in a fresh interpreter and list the provider SDKs it left imported."""
     home = str(tmp_path)
     env = {**os.environ, "HOME": home, "USERPROFILE": home, "APPDATA": home}
-    code = (
-        "import sys\n"
-        "import chrys.service.llm\n"
-        "import chrys.service.llm.clients\n"
-        "print(sorted(name for name in ('openai', 'anthropic') if name in sys.modules))\n"
-    )
+    code += "\nimport sys\nprint(sorted(name for name in ('openai', 'anthropic') if name in sys.modules))\n"
     result = subprocess.run(
         [sys.executable, "-c", code],
         env=env,
@@ -953,7 +949,32 @@ def test_importing_the_llm_package_loads_no_provider_sdk(tmp_path: Any) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "[]"
+    return result.stdout.strip()
+
+
+def test_importing_the_llm_package_loads_no_provider_sdk(tmp_path: Any) -> None:
+    code = "import chrys.service.llm\nimport chrys.service.llm.clients\n"
+    assert _provider_sdks_loaded_by(code, tmp_path) == "[]"
+
+
+def test_building_an_anthropic_client_loads_no_openai_sdk(tmp_path: Any) -> None:
+    # The OpenAI SDK is close to a thousand modules, which a cold start imports
+    # while the agent builds.
+    code = textwrap.dedent(
+        """
+        import asyncio
+        from chrys.service.llm.clients import create_client
+        from chrys.service.profiles.models.schema import ModelProfile
+
+        async def build():
+            profile = ModelProfile(id="p", name="p", provider="anthropic", model_id="m", api_key="k")
+            client = await create_client(profile)
+            await client.aclose()
+
+        asyncio.run(build())
+        """
+    )
+    assert _provider_sdks_loaded_by(code, tmp_path) == "['anthropic']"
 
 
 def test_every_combo_is_a_distinct_pair() -> None:

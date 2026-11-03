@@ -52,8 +52,8 @@ from chrys.kernel import (
     TextSpanRegion,
 )
 from chrys.kernel.exchanges import TOOL_RESULT_CONTENT_TYPES
-from chrys.service.llm.chat_completions.decode import refused_calls_error
 from chrys.service.llm.reasoning_display import REASONING_SUMMARY_KEY
+from chrys.service.llm.refusals import refused_calls_error
 from chrys.service.profiles.models.options import effective_store_option
 
 from .decode import (
