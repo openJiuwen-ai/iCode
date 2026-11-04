@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -119,6 +120,10 @@ class LoginSession:
         self._http = http
         self._delegated = delegated if delegated is not None else detect_delegation()
         self._delegated_rejected = False
+        # AIxCoding catalog-auth-gating (decision 乙 revised 2026-11-04): the app
+        # layer registers this hook (overwriting on re-registration, since the
+        # session outlives any screen); fired once per server-rejected verify.
+        self.on_credential_rejected: Callable[[], None] | None = None
 
     @property
     def store(self) -> CredentialStore:
@@ -184,6 +189,30 @@ class LoginSession:
             auth_url, data_url = resolve_endpoints(self.environment)
         return AuthClient(auth_url, data_url, http=self._http)
 
+    def _clear_rejected_credential(self) -> None:
+        """The single clearing point for a server-rejected live credential.
+
+        AIxCoding catalog-auth-gating (review F8): shared by ``check_silent``
+        and ``verify_live_credential`` so both paths apply identical semantics —
+        a delegated credential only stops shadowing (the parent owns it), a
+        stored one is erased so the next login starts clean.
+        """
+        if self._active_delegated is not None:
+            self._delegated_rejected = True
+        else:
+            self._store.clear(self.environment)
+
+    def _notify_credential_rejected(self) -> None:
+        """Fire the app-layer hook; a callback failure must never eat the clear."""
+        callback = self.on_credential_rejected
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception as exc:
+            # AIxCoding 方案六 (B5): detail volume only.
+            _detail_log.log(_DETAIL_LEVEL, "登录失效通知回调失败；env=%s %s", self.environment.value, _reason(exc))
+
     async def check_silent(self) -> AccountInfo | None:
         """Startup check: the live credential validated against ``user/info``.
 
@@ -205,10 +234,19 @@ class LoginSession:
                     self.environment.value,
                     _reason(exc, with_cause=False),
                 )
-                self._delegated_rejected = True
+                self._clear_rejected_credential()
+                # AIxCoding 方案六 (A5): double-write with the reason chain on detail.
+                _detail_log.log(
+                    _DETAIL_LEVEL,
+                    "桌面端传入的登录已失效，改用本机登录；env=%s %s",
+                    self.environment.value,
+                    _reason(exc, with_cause=False),
+                )
                 return None
             except AuthError as exc:
-                _log.error(
+                # AIxCoding 方案六: technical detail — detail volume only, never the panel.
+                _detail_log.log(
+                    _DETAIL_LEVEL,
                     "登录检查未完成（网络不通），登录状态保留；env=%s %s",
                     self.environment.value,
                     _reason(exc),
@@ -220,21 +258,32 @@ class LoginSession:
         credential = self._store.load(self.environment)
         if credential is None or credential.is_expired or not credential.token:
             _log.info("未登录（首次使用或登录已过期）；env=%s", self.environment.value)
+            # AIxCoding 方案六 (A1): user-facing events are double-written.
+            _detail_log.log(_DETAIL_LEVEL, "未登录（首次使用或登录已过期）；env=%s", self.environment.value)
             return None
         try:
             account = await self._make_client().fetch_user_info(credential.token)
         except AuthServerError as exc:
             # AIxCoding auth logging: clear first, then record — a record claiming
             # "cleared" must never precede the clear itself (peer review C1).
-            self._store.clear(self.environment)
+            self._clear_rejected_credential()
             _log.error(
+                "本机保存的登录已失效，已自动清除，请重新登录；env=%s %s",
+                self.environment.value,
+                _reason(exc, with_cause=False),
+            )
+            # AIxCoding 方案六 (A4): double-write with the reason chain on detail.
+            _detail_log.log(
+                _DETAIL_LEVEL,
                 "本机保存的登录已失效，已自动清除，请重新登录；env=%s %s",
                 self.environment.value,
                 _reason(exc, with_cause=False),
             )
             return None
         except AuthError as exc:
-            _log.error(
+            # AIxCoding 方案六: technical detail — detail volume only.
+            _detail_log.log(
+                _DETAIL_LEVEL,
                 "登录检查未完成（网络不通），登录信息保留；env=%s %s",
                 self.environment.value,
                 _reason(exc),
@@ -242,6 +291,70 @@ class LoginSession:
             return None
         _log.info("已登录（本机保存的登录）；env=%s", self.environment.value)
         _detail_log.log(_DETAIL_LEVEL, "已登录（本机保存的登录）；ehr=%s env=%s", account.ehr, self.environment.value)
+        return account
+
+    async def verify_live_credential(self) -> AccountInfo | None:
+        """Pre-flight live validation for the model catalog fetch.
+
+        AIxCoding catalog-auth-gating (decision 乙, revised 2026-11-04): same
+        live-credential resolution (delegation wins, so the verified token is
+        always the one :attr:`stored_token` hands out) and the same ``user/info``
+        validation as :meth:`check_silent`. Side-effect-free EXCEPT for a server
+        rejection: an :class:`AuthServerError` clears the credential through the
+        shared clearing point and fires :attr:`on_credential_rejected`, so the
+        UI badge cannot keep claiming "logged in" (covers the PROD anomaly
+        cases: backend reset, deleted account). Offline keeps the credential —
+        being offline is not a logout.
+
+        Failures are attributed in the logs HERE (the caller only records the
+        skip event): rejection writes one user-facing main-volume record
+        without server internals, while the detail volume carries the server
+        message and exception chain. Offline carries the exception class chain
+        on detail only; the successful round-trip also goes to detail, so a
+        skipped sync is diagnosable from that log alone. ``None`` means
+        unverified (nothing live, locally expired, server-rejected, or offline).
+        """
+        token = self.stored_token
+        if not token:
+            return None
+        _detail_log.log(_DETAIL_LEVEL, "登录预验证请求 user/info；env=%s", self.environment.value)
+        try:
+            account = await self._make_client().fetch_user_info(token)
+        except AuthServerError as exc:
+            was_delegated = self._active_delegated is not None
+            # Clear first, then record and notify (peer review C1 ordering).
+            self._clear_rejected_credential()
+            # AIxCoding 方案六 (B3 revised): the rejection is a user-facing state
+            # change — a terse main-volume record (same wording as check_silent's
+            # A4/A5, no server internals) alongside the detail technical record.
+            if was_delegated:
+                _log.error("桌面端传入的登录已失效，改用本机登录；env=%s", self.environment.value)
+            else:
+                _log.error("本机保存的登录已失效，已自动清除，请重新登录；env=%s", self.environment.value)
+            _detail_log.log(
+                _DETAIL_LEVEL,
+                "登录预验证：服务端拒绝凭证，已自动清除，请重新登录；env=%s %s",
+                self.environment.value,
+                exc,  # server-side message (e.g. 用户不存在); never carries the token
+            )
+            _detail_log.log(
+                _DETAIL_LEVEL,
+                "登录预验证被拒详情；env=%s %s",
+                self.environment.value,
+                _reason(exc),
+            )
+            self._notify_credential_rejected()
+            return None
+        except AuthError as exc:
+            # AIxCoding 方案六 (B4): detail volume only.
+            _detail_log.log(
+                _DETAIL_LEVEL,
+                "登录预验证：网络不通，本轮跳过，凭证保留；env=%s %s",
+                self.environment.value,
+                _reason(exc),
+            )
+            return None
+        _detail_log.log(_DETAIL_LEVEL, "登录预验证通过；ehr=%s env=%s", account.ehr, self.environment.value)
         return account
 
     async def request_device_code(self) -> DeviceCode:
@@ -271,9 +384,12 @@ class LoginSession:
             account = await client.fetch_user_info(token.token)
         except DevicePollCancelled:
             _log.info("取消登录；env=%s", self.environment.value)
+            _detail_log.log(_DETAIL_LEVEL, "取消登录；env=%s", self.environment.value)  # 方案六 A8
             raise
         except AuthError as exc:
-            _log.error("登录失败；env=%s %s", self.environment.value, _reason(exc))
+            _log.error("登录失败：登录未完成，请稍后重试；env=%s", self.environment.value)
+            # AIxCoding 方案六 (A7): double-write with the reason chain on detail.
+            _detail_log.log(_DETAIL_LEVEL, "登录失败；env=%s %s", self.environment.value, _reason(exc))
             raise
         self._store.store(
             self.environment,
@@ -298,9 +414,13 @@ class LoginSession:
         """
         if self._active_delegated is not None:
             _log.info("跳过登出（当前使用桌面端登录，由桌面端管理）；env=%s", self.environment.value)
+            _detail_log.log(
+                _DETAIL_LEVEL, "跳过登出（当前使用桌面端登录，由桌面端管理）；env=%s", self.environment.value
+            )  # 方案六 A10
             return
         self._store.clear(self.environment)
         _log.info("已登出；env=%s", self.environment.value)
+        _detail_log.log(_DETAIL_LEVEL, "已登出；env=%s", self.environment.value)  # 方案六 A9
 
 
 _default_session: LoginSession | None = None

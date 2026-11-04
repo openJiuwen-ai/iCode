@@ -374,6 +374,9 @@
       ],
       "LoginSession.request_device_code": [
         ["awaitable", "await self._make_client().request_device_code()", "unresolved"]
+      ],
+      "LoginSession.verify_live_credential": [
+        ["awaitable", "await self._make_client().fetch_user_info(token)", "unresolved"]
       ]
     },
     "chrys.kernel.client": {
@@ -3779,6 +3782,7 @@
     },
     "chrys.service.aixcoding.catalog": {
       "fetch_catalog": [
+        ["awaitable", "await get_login_session().verify_live_credential()", "unresolved"],
         ["async_context", "async with httpx.AsyncClient(timeout=timeout)", "unresolved"],
         ["queue", "await client.get(endpoint, headers=headers)", "unresolved"]
       ],

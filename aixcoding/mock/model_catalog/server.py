@@ -342,6 +342,21 @@ def build_handler_class() -> type[BaseHTTPRequestHandler]:
         def _serve_catalog(self) -> None:
             server: CatalogMockServer = self.server  # type: ignore[assignment]
             state = server.state
+            auth_state = getattr(server, "auth_state", None)
+            if auth_state is not None:
+                # catalog-auth-gating: the catalog is an authenticated endpoint.
+                # Missing/unknown/revoked tokens get HTTP 401 (the client-side
+                # raise_for_status path), judged against the same grant records
+                # user/info uses — iterated via the grants() snapshot, never
+                # the unsynchronised _grants dict. --no-auth exempts this check.
+                # Tokens never expire with their grant (PROD parity, 2026-11-04).
+                token = self.headers.get("token", "").strip()
+                granted = bool(token) and any(
+                    grant.token == token and grant.status == "granted" for grant in auth_state.grants()
+                )
+                if not granted:
+                    self._send_json(401, {"error": "missing or invalid catalog credential"})
+                    return
             delay = delay_for(state.mode, state.delay)
             if delay:
                 time.sleep(delay)

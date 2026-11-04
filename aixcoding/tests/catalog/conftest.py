@@ -14,9 +14,13 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
+
+from chrys.kernel.aixcoding.auth import AccountInfo
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +34,23 @@ def _reset_catalog_sync_singleton() -> None:
         catalog._runtime = None
         catalog._last_wiring = None
     catalog._warned_retired_env.clear()
+
+
+@pytest.fixture(autouse=True)
+def _verified_login_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pre-verification defaults to a verified login (catalog-auth-gating).
+
+    Keeps the pre-existing suite focused on the clock/publish semantics; the
+    dedicated gating cases override the verify outcome (or the whole session)
+    themselves. The env credential is cleared so the store path is exercised.
+    """
+    session = SimpleNamespace(
+        stored_token="t",
+        stored_user_id="u",  # F3: without it _catalog_user_id() degrades to a WARNING + empty userId
+        verify_live_credential=AsyncMock(return_value=AccountInfo()),
+    )
+    monkeypatch.setattr("chrys.kernel.aixcoding.auth.get_login_session", lambda: session)
+    monkeypatch.delenv("AIXCODING_MODEL_CATALOG_TOKEN", raising=False)
 
 
 async def wait_until(

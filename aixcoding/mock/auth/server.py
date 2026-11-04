@@ -249,7 +249,13 @@ class MockAuthState:
         return grant
 
     def token_owner(self, token: str) -> MockGrant | None:
-        """Return the grant that owns ``token``."""
+        """Return the grant that owns ``token``, or None when unknown/revoked.
+
+        catalog-auth-gating (2026-11-04, supersedes review F2): an issued token
+        does NOT expire with its grant — PROD keeps a token valid until the
+        user logs out (no server-side expiry), so the mock does too. Grant
+        expiry only bounds the device-code login window (see poll()).
+        """
         return self._tokens.get(token)
 
     def poll(self, device_code: str) -> tuple[str, MockGrant | None]:

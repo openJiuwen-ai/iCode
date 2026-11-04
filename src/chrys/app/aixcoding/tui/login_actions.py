@@ -36,6 +36,7 @@ _LOGOUT_MANAGED_TOAST = "登出由桌面端管理"
 _NOT_LOGGED_IN_TOAST = "尚未登录"
 _LOGGED_OUT_TOAST = "已登出"
 _LOGIN_SUCCEEDED_TOAST = "已登录：{name}"
+_CREDENTIAL_REJECTED_TOAST = "登录已失效，请重新登录"
 
 # D2 exception (MessageRef strong typing): registered from the command table.
 # Keys carry the aixcoding.* prefix (ADR-0010 rule 2: catalog entries stay
@@ -95,10 +96,53 @@ class LoginActionHost(Protocol):
     def refresh_login_indicator(self, *, account: AccountInfo | None = None) -> None: ...
 
 
+class _SilentCheckApp(Protocol):
+    """The app surface the rejected-credential hook needs (thread hop)."""
+
+    def call_from_thread(self, callback: Callable[[], object]) -> object: ...
+
+
 class SilentCheckScreen(Protocol):
     """The screen surface the startup silent check needs."""
 
+    @property
+    def app(self) -> _SilentCheckApp: ...
+
+    def notify(
+        self,
+        message: str,
+        *,
+        severity: Literal["information", "warning", "error"] = "information",
+    ) -> None: ...
+
     def refresh_login_indicator(self, *, account: AccountInfo | None = None) -> None: ...
+
+
+def _make_credential_rejected_callback(screen: SilentCheckScreen) -> Callable[[], None]:
+    """Build the hook fired when a catalog pre-flight finds the credential rejected.
+
+    catalog-auth-gating (design 方案四): the verify may run on the catalog poll
+    thread, so the UI work hops through ``call_from_thread``; when the hook
+    already fires on the UI thread (async sync path) that raises RuntimeError
+    and we apply directly. The teardown mirrors a manual logout: stop the poll
+    (no silent no-credential spinning), toast, refresh the badge.
+    """
+
+    def _apply() -> None:
+        # Lazy import — the silent check imports this module on every startup.
+        from chrys.service.aixcoding.catalog import stop_sync_runtime
+
+        stop_sync_runtime()
+        screen.notify(_CREDENTIAL_REJECTED_TOAST, severity="warning")
+        screen.refresh_login_indicator()
+
+    def _on_rejected() -> None:
+        try:
+            screen.app.call_from_thread(_apply)
+        except RuntimeError:
+            _apply()  # already on the UI thread
+
+    return _on_rejected
 
 
 def open_login_dialog(host: LoginActionHost) -> None:
@@ -164,6 +208,9 @@ async def silent_login_check(screen: SilentCheckScreen) -> None:
     rather than the check result -- a network failure keeps the credential
     (stays signed in), a rejection has already cleared it (flips the badge).
     """
+    # catalog-auth-gating (方案四): overwrite on every run — the session is a
+    # process-wide singleton and must never hold a torn-down screen.
+    get_login_session().on_credential_rejected = _make_credential_rejected_callback(screen)
     screen.refresh_login_indicator()
     with contextlib.suppress(Exception):
         account = await get_login_session().check_silent()
