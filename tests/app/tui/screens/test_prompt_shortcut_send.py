@@ -23,7 +23,7 @@ import asyncio
 import contextlib
 import inspect
 import sys
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,6 +34,7 @@ from textual.widgets import Static
 from textual.widgets._footer import FooterKey
 
 import chrys.orchestration.engine.build.builder as builder_module
+import chrys.orchestration.sub_agents.tools as sub_agent_tools_module
 from chrys.app.tui.app import ChrysApp
 from chrys.app.tui.screens.agents.config import AgentsConfigScreen
 from chrys.app.tui.screens.agents.picker import AgentsScreen
@@ -210,7 +211,10 @@ class ScriptedModel(MockChatClient):
 
 
 class Builds:
-    """Stands in for ``create_client``: hands every build the session's model, recording which profile it was for."""
+    """Stands in for ``create_client``: hands every build the session's model, recording which profile it was for.
+
+    A sub-agent build gets a model of its own from :meth:`create_sub_agent_client`.
+    """
 
     def __init__(self, model: ScriptedModel) -> None:
         self.model = model
@@ -238,6 +242,19 @@ class Builds:
             raise RuntimeError(f"cannot reach the {profile.name} model")
         self.model._on_intermediate_text = on_intermediate_text
         return self.model
+
+    async def create_sub_agent_client(
+        self,
+        profile: ModelProfile,
+        on_intermediate_text: Callable[[str], None] | None = None,
+        session_id: str | None = None,
+        parent_session_id: str | None = None,
+        use_route_session_context: bool = False,
+        session_dir: Path | None = None,
+        tool_result_ceiling_tokens: int | None = None,
+    ) -> ScriptedModel:
+        """Return a fresh model: a released child closes its client, which must not be the session's."""
+        return ScriptedModel()
 
 
 def recorded_event_types() -> tuple[type[ev.Event], ...]:
@@ -354,8 +371,14 @@ async def running_session(
     startup_agent: str = ALPHA,
     hold_startup_load: bool = False,
     size: tuple[int, int] = (120, 40),
+    sub_agent_clients: Callable[..., Awaitable[object]] | None = None,
 ) -> AsyncIterator[Session]:
     """Run the app on a real engine until the session is ready, with the chat input focused.
+
+    Every model client the session builds is a stand-in, the sub-agents' too
+    (*sub_agent_clients*, or a fresh :class:`ScriptedModel` per child): a real
+    provider client would import its SDK, over a thousand modules, inside
+    whatever wait first builds one in the worker.
 
     With *hold_startup_load* the startup's ``AgentLoadStarted`` is held before
     the screen sees it (the first hold in ``holds``): the agent is loading and
@@ -373,6 +396,7 @@ async def running_session(
     model = ScriptedModel()
     builds = Builds(model)
     monkeypatch.setattr(builder_module, "create_client", builds.create_client)
+    monkeypatch.setattr(sub_agent_tools_module, "create_client", sub_agent_clients or builds.create_sub_agent_client)
     if registry is None:
         registry = AgentProfileRegistry()
         for profile in agents or (make_agent(ALPHA), make_agent(BETA)):

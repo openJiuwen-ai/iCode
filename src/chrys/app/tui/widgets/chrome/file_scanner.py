@@ -16,6 +16,7 @@ import asyncio
 import ntpath
 import os
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -124,6 +125,7 @@ class _PathProbes:
     git_cached: _PathSourceResult
     dot_entries: _PathSourceResult
     ignored_visible: _IgnoredVisibleProbe
+    ignored_dot: _IgnoredVisibleProbe
 
 
 _NON_REFERENCEABLE_FILE_EXTENSIONS: frozenset[str] = frozenset(
@@ -190,6 +192,50 @@ _NOISE_TOPLEVEL_DIRS: frozenset[str] = frozenset(
         "venv",
     }
 )
+# Ignored dot directories that hold tool state, caches or build output, at any
+# depth; a dot directory whose name ends in ``cache`` counts too.
+_IGNORED_DOT_NOISE_DIRS: frozenset[str] = frozenset(
+    {
+        ".angular",
+        ".bloop",
+        ".bsp",
+        ".build",
+        ".dart_tool",
+        ".direnv",
+        ".docusaurus",
+        ".eggs",
+        ".expo",
+        ".gradle",
+        ".history",
+        ".hypothesis",
+        ".idea",
+        ".ipynb_checkpoints",
+        ".metals",
+        ".next",
+        ".npm",
+        ".nox",
+        ".nuxt",
+        ".nyc_output",
+        ".output",
+        ".pnpm-store",
+        ".serverless",
+        ".settings",
+        ".stack-work",
+        ".svelte-kit",
+        ".terraform",
+        ".tox",
+        ".turbo",
+        ".vercel",
+        ".vs",
+        ".yarn",
+    }
+)
+# Ignored dot directories that usually hold credentials stay out of ``@``.
+_CREDENTIAL_DOT_DIRS: frozenset[str] = frozenset(
+    {".aws", ".azure", ".credentials", ".docker", ".gnupg", ".kube", ".secret", ".secrets", ".ssh"}
+)
+# Every path with a dot segment: a dotfile, or anything under a dot directory, at any depth.
+_DOT_PATH_PATHSPECS: tuple[str, ...] = (":(glob)**/.*", ":(glob)**/.*/**")
 _PLATFORM = get_platform()
 
 
@@ -217,10 +263,13 @@ async def scan_project_paths(
        newly created files aren't silently dropped.
     4. ``os.walk`` — plain directory walk (no ignore rules, skips dotfiles).
 
-    Ignored visible files are appended by a supplemental pass so user-owned
-    private docs like ``drafts/notes.md`` remain referenceable.  That pass
-    still rejects dot-prefixed paths, high-noise top-level directories, and
-    noisy non-referenceable file extensions.
+    Ignored files are appended by two supplemental passes so user-owned
+    private docs remain referenceable: ``drafts/notes.md`` from one, and
+    ``.scratch/spec.md`` or ``docs/.notes/plan.md`` (under a dot directory)
+    from the other, each under its own cap.  Both reject high-noise
+    directories and non-referenceable file extensions; the dot pass also
+    rejects tool-state, cache and credential directories and ignored
+    dotfiles such as ``.env``.
 
     Directory suggestions are derived from the final file list.  That means
     folders inherit the exact same ignore/noise behavior as files: empty
@@ -236,9 +285,9 @@ async def scan_project_paths(
     unchanged; each probe can therefore read at most ``file_budget`` rows
     without losing a path that the merge could still have placed.
 
-    Dot files/folders (e.g. ``.github/``, ``.claude/``) are handled by a
-    supplementary pass — see :func:`_scan_dot_entries` — and appended to
-    the primary result with de-duplication.  This is layered on top
+    Dot files/folders (e.g. ``.github/``, ``.claude/``, ``docs/.scratch/``) are
+    handled by a supplementary pass — see :func:`_scan_dot_entries` — and
+    appended to the primary result with de-duplication.  This is layered on top
     rather than folded into the primary commands because:
 
     - ``rg --files --hidden`` also pulls in ``.git/`` (rg's default
@@ -313,16 +362,11 @@ async def scan_project_paths(
     ):
         source_truncations["dot_entries"] = True
 
-    if len(primary) < file_budget:
-        ignored_result = _select_ignored_visible_files(probes.ignored_visible, file_budget - len(primary))
-        if ignored_result.truncated:
-            source_truncations["ignored_visible"] = True
-        if _append_unique_paths(primary, seen, ignored_result.paths, file_budget=file_budget):
-            source_truncations["ignored_visible"] = True
-    elif file_budget > 0:
-        ignored_result = _select_ignored_visible_files(probes.ignored_visible, 1)
-        if ignored_result.truncated or any(path not in seen for path in ignored_result.paths):
-            source_truncations["ignored_visible"] = True
+    # Ignored files under dot directories come last, from a probe with its own
+    # cap: a large ignored dot directory never crowds out ignored visible docs.
+    for key, probe in (("ignored_visible", probes.ignored_visible), ("ignored_dot", probes.ignored_dot)):
+        if _append_ignored_files(primary, seen, probe, file_budget=file_budget):
+            source_truncations[key] = True
 
     suggestions = await asyncio.to_thread(_project_path_suggestions, primary, suggestion_budget=suggestion_budget)
     if suggestions.truncated:
@@ -338,6 +382,18 @@ async def scan_project_paths(
         source_truncations=source_truncations,
         ordering=ordering,
     )
+
+
+def _append_ignored_files(paths: list[str], seen: set[str], probe: _IgnoredVisibleProbe, *, file_budget: int) -> bool:
+    """Append an ignored-file probe's paths within the remaining budget and report what it left out."""
+    if len(paths) < file_budget:
+        selected = _select_ignored_visible_files(probe, file_budget - len(paths))
+        appended_short = _append_unique_paths(paths, seen, selected.paths, file_budget=file_budget)
+        return selected.truncated or appended_short
+    if file_budget > 0:
+        selected = _select_ignored_visible_files(probe, 1)
+        return selected.truncated or any(path not in seen for path in selected.paths)
+    return False
 
 
 def _append_unique_paths(paths: list[str], seen: set[str], candidates: list[str], *, file_budget: int) -> bool:
@@ -364,21 +420,24 @@ async def _run_probes(root: str, *, file_budget: int) -> _PathProbes:
     """
     empty = _PathSourceResult([])
     if file_budget <= 0:
-        return _PathProbes(rg=empty, git_cached=empty, dot_entries=empty, ignored_visible=_IgnoredVisibleProbe([]))
+        nothing = _IgnoredVisibleProbe([])
+        return _PathProbes(rg=empty, git_cached=empty, dot_entries=empty, ignored_visible=nothing, ignored_dot=nothing)
     dot_entries = _top_level_dot_entries(root)
     results = await asyncio.gather(
         _scan_rg_files(root, file_budget),
         _scan_git_ls_files(root, "--cached", max_files=file_budget),
         _probe_ignored_visible_files(root),
+        _probe_ignored_dot_files(root),
         _scan_dot_entries(root, dot_entries, max_files=file_budget),
         return_exceptions=True,
     )
-    rg, git_cached, ignored_visible, dot = results
+    rg, git_cached, ignored_visible, ignored_dot, dot = results
     return _PathProbes(
         rg=_probe_or_raise(rg),
         git_cached=_probe_or_raise(git_cached),
         dot_entries=_probe_or_raise(dot),
         ignored_visible=_probe_or_raise(ignored_visible),
+        ignored_dot=_probe_or_raise(ignored_dot),
     )
 
 
@@ -536,8 +595,12 @@ def _top_level_dot_entries(root: str) -> list[str]:
 
 
 async def _scan_dot_entries(root: str, dot_entries: list[str], max_files: int) -> _PathSourceResult:
-    """Return bounded dot-entry files, walking the entries when git cannot answer."""
-    if not dot_entries or max_files <= 0:
+    """Return bounded files on a dot path at any depth, walking the top-level *dot_entries* when git cannot answer.
+
+    Ripgrep skips hidden paths, so git lists the tracked and the untracked,
+    not ignored ones: ``.github/ci.yml`` as well as ``docs/.scratch/spec.md``.
+    """
+    if max_files <= 0:
         return _PathSourceResult([])
 
     result = await _read_git_ls_files(
@@ -546,11 +609,13 @@ async def _scan_dot_entries(root: str, dot_entries: list[str], max_files: int) -
         "--others",
         "--exclude-standard",
         "--",
-        *dot_entries,
+        *_DOT_PATH_PATHSPECS,
         max_files=max_files,
     )
     if result is not None:
         return result
+    if not dot_entries:
+        return _PathSourceResult([])
     walked: list[str] = []
     truncated = await asyncio.to_thread(
         _append_unseen_dot_entries_from_walk,
@@ -617,14 +682,34 @@ def _walk_relative_path(root: str, dirpath: str, filename: str) -> str:
 
 
 async def _probe_ignored_visible_files(root: str) -> _IgnoredVisibleProbe:
-    """Read gitignored visible files once, under the supplemental source cap.
+    """Read gitignored files on no dot path, such as ``drafts/notes.md``, under the supplemental source cap."""
+    exclude_pathspecs = [":(exclude).*", *(f":(exclude){entry}" for entry in sorted(_NOISE_TOPLEVEL_DIRS))]
+    return await _probe_ignored_files(root, exclude_pathspecs, _include_ignored_visible_path)
+
+
+async def _probe_ignored_dot_files(root: str) -> _IgnoredVisibleProbe:
+    """Read gitignored files under dot directories, such as ``.scratch/spec.md``, under a cap of their own.
+
+    Tool-state, cache and credential directories are left out, and so are
+    ignored dotfiles (``.env``): see :func:`_include_ignored_dot_path`.
+    """
+    excluded = sorted(_NOISE_TOPLEVEL_DIRS | _IGNORED_DOT_NOISE_DIRS | _CREDENTIAL_DOT_DIRS)
+    pathspecs = [
+        ":(glob)**/.*/**",
+        ":(exclude,glob)**/.*cache/**",
+        *(f":(exclude,glob)**/{entry}/**" for entry in excluded),
+    ]
+    return await _probe_ignored_files(root, pathspecs, _include_ignored_dot_path)
+
+
+async def _probe_ignored_files(root: str, pathspecs: list[str], include: Callable[[str], bool]) -> _IgnoredVisibleProbe:
+    """Read the gitignored files *pathspecs* select once, keeping those *include* accepts.
 
     The budget a caller wants is only known after the primary list exists, so the
     probe keeps the filtered rows plus the two trail facts a budget-bound read
     would have used to decide truncation — see
     :func:`_select_ignored_visible_files`.
     """
-    exclude_pathspecs = [":(exclude).*", *(f":(exclude){entry}" for entry in sorted(_NOISE_TOPLEVEL_DIRS))]
     paths: list[str] = []
     lines_read = 0
     lines_after_last = 0
@@ -638,7 +723,7 @@ async def _probe_ignored_visible_files(root: str) -> _IgnoredVisibleProbe:
             "--ignored",
             "--exclude-standard",
             "--",
-            *exclude_pathspecs,
+            *pathspecs,
             cwd=root,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -654,7 +739,7 @@ async def _probe_ignored_visible_files(root: str) -> _IgnoredVisibleProbe:
                     return _IgnoredVisibleProbe(paths, lines_after_last=lines_after_last)
                 lines_read += 1
                 path = decode_subprocess_output(line).rstrip("\r\n")
-                if _include_ignored_visible_path(path) and not _has_non_referenceable_file_extension(path):
+                if include(path) and not _has_non_referenceable_file_extension(path):
                     paths.append(path)
                     lines_after_last = 0
                 else:
@@ -751,6 +836,23 @@ def _include_ignored_visible_path(path: str) -> bool:
     if any(part.startswith(".") for part in parts):
         return False
     return parts[0] not in _NOISE_TOPLEVEL_DIRS
+
+
+def _include_ignored_dot_path(path: str) -> bool:
+    """Return whether an ignored file under a dot directory should be offered in ``@`` suggestions."""
+    parts = [part for part in path.replace("\\", "/").split("/") if part and part != "."]
+    if len(parts) < 2 or parts[-1].startswith("."):
+        return False
+    directories = parts[:-1]
+    if not any(part.startswith(".") for part in directories):
+        return False
+    for part in directories:
+        folded = part.casefold()
+        if folded in _NOISE_TOPLEVEL_DIRS or folded in _IGNORED_DOT_NOISE_DIRS or folded in _CREDENTIAL_DOT_DIRS:
+            return False
+        if folded.startswith(".") and folded.endswith("cache"):
+            return False
+    return True
 
 
 def _has_non_referenceable_file_extension(path: str) -> bool:

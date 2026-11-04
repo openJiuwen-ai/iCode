@@ -325,8 +325,8 @@ class TestScanProjectPaths:
             f"unexpected .git/ leak: {[p for p in paths if p.startswith('.git/')]}"
         )
 
-    def test_gitignored_dot_folder_excluded(self, repo: Path) -> None:
-        """Dot-folders listed in ``.gitignore`` stay out of results."""
+    def test_gitignored_credential_dot_folder_excluded(self, repo: Path) -> None:
+        """An ignored dot folder that usually holds credentials stays out of results."""
         (repo / ".gitignore").write_text(".secret/\n")
         _git(repo, "add", ".gitignore")
         _git(repo, "commit", "-q", "-m", "ignore")
@@ -411,6 +411,79 @@ class TestScanProjectPaths:
         assert not any(p.startswith("build/") for p in paths)
         assert not any(p.startswith("__pycache__/") for p in paths)
 
+    @pytest.mark.parametrize("ignore_file", [".gitignore", ".git/info/exclude"])
+    def test_gitignored_dot_folder_contents_included(self, repo: Path, ignore_file: str) -> None:
+        """Docs in an ignored dot folder, top-level or nested, stay referenceable."""
+        (repo / ignore_file).write_text(".scratch/\n.notes/\n")
+        for rel in (".scratch/spec.md", ".scratch/design/plan.md", "packages/app/.notes/todo.md"):
+            path = repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("doc\n")
+
+        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+
+        assert ".scratch/spec.md" in paths
+        assert ".scratch/design/plan.md" in paths
+        assert "packages/app/.notes/todo.md" in paths
+        assert ".scratch/" in paths
+        assert paths.index("README.md") < paths.index(".scratch/spec.md")
+
+    def test_untracked_nested_dot_folder_contents_included(self, repo: Path) -> None:
+        """Ripgrep skips hidden paths, so a nested dot folder comes from git."""
+        (repo / "docs" / ".scratch").mkdir(parents=True)
+        (repo / "docs" / ".scratch" / "spec.md").write_text("spec\n")
+
+        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+
+        assert "docs/.scratch/spec.md" in paths
+        assert "docs/.scratch/" in paths
+
+    def test_gitignored_dot_state_caches_credentials_and_dotfiles_excluded(self, repo: Path) -> None:
+        """Ignored tool state, caches, credential folders and dotfiles stay out, at any depth."""
+        (repo / ".gitignore").write_text("*\n!.gitignore\n!README.md\n")
+        excluded = (
+            ".pytest_cache/README.md",
+            ".ruff_cache/0.1/data.md",
+            ".parcel-cache/a.md",
+            ".idea/workspace.xml",
+            "web/.next/server/page.md",
+            "pkg/.turbo/log.md",
+            "node_modules/.vite/deps.md",
+            ".ssh/config.md",
+            ".env",
+            ".scratch/.env",
+        )
+        for rel in (*excluded, ".claude/plan.md"):
+            path = repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("x\n")
+
+        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+
+        assert ".claude/plan.md" in paths
+        assert [path for path in excluded if path in paths] == []
+
+    def test_ignored_dot_files_have_their_own_cap(self, repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A large ignored dot folder sorts first in git's output yet never crowds out ignored docs."""
+        (repo / ".gitignore").write_text(".notes/\ndrafts/\n")
+        (repo / ".notes").mkdir()
+        for index in range(3):
+            (repo / ".notes" / f"{index}.md").write_text("note\n")
+        (repo / "drafts").mkdir()
+        (repo / "drafts" / "keep.md").write_text("keep\n")
+        monkeypatch.setattr(file_scanner_module, "_MAX_SUPPLEMENTAL_IGNORED_FILES", 2)
+
+        scan = asyncio.run(scan_project_paths(str(repo), file_budget=100, suggestion_budget=100))
+        paths = _scan_paths(scan)
+
+        assert "drafts/keep.md" in paths
+        assert [path for path in paths if path.startswith(".notes/") and path.endswith(".md")] == [
+            ".notes/0.md",
+            ".notes/1.md",
+        ]
+        assert scan.source_truncations.get("ignored_dot") is True
+        assert "ignored_visible" not in scan.source_truncations
+
     def test_tracked_file_under_now_ignored_folder_included_once(self, repo: Path) -> None:
         """Tracked files remain visible if their folder is ignored later."""
         (repo / "drafts").mkdir()
@@ -484,6 +557,7 @@ class TestScanProjectPaths:
                 git_cached=file_scanner_module._PathSourceResult([".gitignore"]),
                 dot_entries=file_scanner_module._PathSourceResult([".github/ci.yml"]),
                 ignored_visible=file_scanner_module._IgnoredVisibleProbe(["drafts/notes.md"]),
+                ignored_dot=file_scanner_module._IgnoredVisibleProbe([".scratch/spec.md"]),
             )
 
         monkeypatch.setattr(file_scanner_module, "_run_probes", fake_probes)
@@ -493,7 +567,12 @@ class TestScanProjectPaths:
         # A truncated rg result at the budget leaves no capacity for the other tiers.
         assert _paths(scan.paths) == ["README.md"]
         assert scan.file_count == 1
-        assert scan.source_truncations == {"rg": True, "dot_entries": True, "ignored_visible": True}
+        assert scan.source_truncations == {
+            "rg": True,
+            "dot_entries": True,
+            "ignored_visible": True,
+            "ignored_dot": True,
+        }
 
     def test_git_cached_probe_appends_tracked_ignored_files_with_remaining_budget(self, repo: Path) -> None:
         """The cached-git supplemental pass targets tracked files that are now ignored."""
@@ -644,6 +723,7 @@ class TestScanProjectPaths:
                 git_cached=file_scanner_module._PathSourceResult([]),
                 dot_entries=file_scanner_module._PathSourceResult([]),
                 ignored_visible=file_scanner_module._IgnoredVisibleProbe([]),
+                ignored_dot=file_scanner_module._IgnoredVisibleProbe([]),
             )
 
         def slow_project_path_suggestions(
@@ -855,7 +935,7 @@ class TestParallelProbeScheduling:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """All four discovery sources are in flight at once, so a cold scan costs the longest probe."""
+        """All five discovery sources are in flight at once, so a cold scan costs the longest probe."""
         (tmp_path / ".cache").mkdir()
         started: set[str] = set()
         all_started = asyncio.Event()
@@ -863,7 +943,7 @@ class TestParallelProbeScheduling:
         def gate(name: str, result: object):
             async def probe(*_args: object, **_kwargs: object) -> object:
                 started.add(name)
-                if len(started) == 4:
+                if len(started) == 5:
                     all_started.set()
                 await asyncio.wait_for(all_started.wait(), DEFAULT_WAIT_TIMEOUT)
                 return result
@@ -885,6 +965,11 @@ class TestParallelProbeScheduling:
         )
         monkeypatch.setattr(
             file_scanner_module,
+            "_probe_ignored_dot_files",
+            gate("ignored_dot", file_scanner_module._IgnoredVisibleProbe([])),
+        )
+        monkeypatch.setattr(
+            file_scanner_module,
             "_scan_dot_entries",
             gate("dot_entries", file_scanner_module._PathSourceResult([])),
         )
@@ -894,7 +979,7 @@ class TestParallelProbeScheduling:
             DEFAULT_WAIT_TIMEOUT,
         )
 
-        assert started == {"rg", "git_cached", "ignored_visible", "dot_entries"}
+        assert started == {"rg", "git_cached", "ignored_visible", "ignored_dot", "dot_entries"}
         assert _paths(scan.paths) == ["a.py"]
 
     def test_source_unavailable_still_returns_other_sources(

@@ -41,12 +41,7 @@ from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
 from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
-from chrys.app.tui.widgets.chrome.file_scanner import (
-    DEFAULT_FILE_DISCOVERY_BUDGET,
-    DEFAULT_SUGGESTION_BUDGET,
-    ProjectPathScanResult,
-    ProjectPathSuggestion,
-)
+from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
 from chrys.app.tui.widgets.chrome.status_bar import StatusTrail, TrailCount
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.app.tui.widgets.loading import RunningTitle
@@ -971,6 +966,7 @@ class SuggestionListStub:
         self.last_title: str | None = None
         self.last_empty_text: str | None = None
         self.last_keep_selection = False
+        self.chosen_value: str | None = None
         self.is_visible = False
         self.is_loading = False
         self.select_result = False
@@ -1278,13 +1274,7 @@ def suggestion_values(items: list[object]) -> list[str]:
 
 
 def scan_result(root: str, paths: list[ProjectPathSuggestion], **kwargs: object) -> ProjectPathScanResult:
-    """Build a project-path scan result for a fake scanner.
-
-    Budgets default to the scanner's own, so a fake scan is not silently treated
-    as sitting exactly on a truncation boundary.
-    """
-    kwargs.setdefault("file_budget", DEFAULT_FILE_DISCOVERY_BUDGET)
-    kwargs.setdefault("suggestion_budget", DEFAULT_SUGGESTION_BUDGET)
+    """Build a project-path scan result for a fake scanner."""
     return ProjectPathScanResult.from_suggestions(root=root, paths=paths, **kwargs)
 
 

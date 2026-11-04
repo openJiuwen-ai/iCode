@@ -514,6 +514,9 @@ class RollbackController:
 
     async def on_result(self, event: RollbackResult) -> None:
         """Surface rollback outcomes, refresh welcome state, and restore rolled-back input."""
+        # A rollback restores files outside any turn, so no turn end marks the
+        # resident ``@`` snapshot stale for it.
+        self._invalidate_file_index()
         self._refresh_diff_preview()
         is_welcome = event.target_turn == 0
         if is_welcome:
@@ -606,8 +609,4 @@ class RollbackController:
             detail += f", {len(event.exclusions)} excluded"
         if event.warnings:
             detail += ", " + format_message(_WARNINGS_COUNT.bind(count=len(event.warnings)))
-        # The engine only publishes this result: the rolled-back periods are gone
-        # from the tracker, so the resident ``@`` snapshot can only learn that
-        # files were restored from here.
-        self._invalidate_file_index()
         self._debug("RollbackResult", detail)

@@ -117,7 +117,7 @@ def _make_screen_for_running_toggle() -> SimpleNamespace:
         _events=events,
         _live_diff=LiveDiffTracker(),
         _suggestions=SimpleNamespace(
-            mark_file_index_dirty=lambda: suggestion_calls.append("mark_dirty"),
+            mark_file_index_stale=lambda: suggestion_calls.append("mark_stale"),
             discard_file_index=lambda: suggestion_calls.append("discard"),
         ),
         _suggestion_calls=suggestion_calls,
@@ -131,12 +131,12 @@ def _make_screen_for_running_toggle() -> SimpleNamespace:
     )
 
 
-def test_set_agent_running_false_marks_the_file_index_dirty() -> None:
+def test_set_agent_running_false_marks_the_file_index_stale() -> None:
     """When the agent stops, the resident ``@`` snapshot is marked stale, not dropped.
 
     Agent tool calls (``write_file``/``edit_file``/shell) can create or delete
-    files during a turn, so the snapshot needs a rebuild — but it keeps
-    answering the next trigger while that rebuild runs.
+    files during a turn, so the next trigger rescans — but the snapshot keeps
+    answering it while that rescan runs.
     ``_set_agent_running`` is the single chokepoint for all stop transitions
     (normal completion, error, user interrupt).
     """
@@ -147,7 +147,7 @@ def test_set_agent_running_false_marks_the_file_index_dirty() -> None:
 
     MainScreen._set_agent_running(screen, False)
 
-    assert screen._suggestion_calls == ["mark_dirty"]
+    assert screen._suggestion_calls == ["mark_stale"]
     assert screen._state.run.agent_running is False
 
 

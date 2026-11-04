@@ -112,7 +112,6 @@ async def test_build_failure_before_normalization_leaves_active_runtime_and_file
 
 
 async def test_later_model_editor_save_rebuilds_children_from_the_shared_registry(agent_engine, tmp_path, monkeypatch):
-    from chrys.orchestration.sub_agents import tools as child_build
     from chrys.service.llm.mock import MockChatClient, MockResponse
     from chrys.service.profiles.agents.schema import SubAgentRef
 
@@ -142,9 +141,14 @@ async def test_later_model_editor_save_rebuilds_children_from_the_shared_registr
         clients.append((profile.model_id, client))
         return client
 
-    monkeypatch.setattr(child_build, "create_client", create)
     async with running_session(
-        agent_engine, tmp_path, monkeypatch, agents=[parent, child], startup_agent="Parent", models=models
+        agent_engine,
+        tmp_path,
+        monkeypatch,
+        agents=[parent, child],
+        startup_agent="Parent",
+        models=models,
+        sub_agent_clients=create,
     ) as session:
         path = models.directory / f"{MAIN_MODEL}.yaml"
         path.write_text(path.read_text(encoding="utf-8").replace("gpt-test", "after-disk"), encoding="utf-8")
@@ -293,7 +297,6 @@ async def test_changed_agent_id_stays_with_the_same_source(agent_engine, tmp_pat
 @pytest.mark.parametrize("remove_child", ["delete", "rename"])
 async def test_reload_reports_missing_child_and_model_bindings(agent_engine, tmp_path, monkeypatch, remove_child):
     from chrys.foundation.i18n.formatting import format_message
-    from chrys.orchestration.sub_agents import tools as child_build
     from chrys.service.llm.mock import MockChatClient, MockResponse
     from chrys.service.profiles.agents.schema import SubAgentRef
     from tests.app.tui.screens.test_prompt_shortcut_send import FAST_MODEL
@@ -313,9 +316,14 @@ async def test_reload_reports_missing_child_and_model_bindings(agent_engine, tmp
     async def create(profile, **kwargs):
         return MockChatClient(responses=[MockResponse(text=profile.id)])
 
-    monkeypatch.setattr(child_build, "create_client", create)
     async with running_session(
-        agent_engine, tmp_path, monkeypatch, registry=registry, startup_agent="Writer", models=models
+        agent_engine,
+        tmp_path,
+        monkeypatch,
+        registry=registry,
+        startup_agent="Writer",
+        models=models,
+        sub_agent_clients=create,
     ) as session:
         (models.directory / f"{FAST_MODEL}.yaml").unlink()
         await reload_success(session)
