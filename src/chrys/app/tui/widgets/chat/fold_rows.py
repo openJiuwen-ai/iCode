@@ -65,14 +65,6 @@ def text_preview(text: str) -> str:
     return sanitize_legacy_scalar(" ".join(text[:_PREVIEW_SOURCE_CHARS].split()))
 
 
-def text_tail(text: str, end: int, cells: int) -> str:
-    """*text* up to *end* on one line, as :func:`text_preview` reads its opening: the last of it that fits *cells*.
-
-    Once the start no longer fits, ``…`` stands for what is cut off before it.
-    """
-    return _tail_fit(sanitize_legacy_scalar(" ".join(text[max(end - _PREVIEW_SOURCE_CHARS, 0) : end].split())), cells)
-
-
 def _tail_fit(shown: str, cells: int) -> str:
     """The last of *shown* that fits *cells*, as written, ``…`` standing for what is cut off before it."""
     if cell_len(shown) <= cells:

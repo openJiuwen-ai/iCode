@@ -43,7 +43,7 @@ llm:
 | `ui.locale` | `CHRYS_LOCALE` | `system` | 字符串；`system` 跟随系统，也可设为 `en` 或 `zh-Hans`。不支持的语言使用英语；不改变模型回复语言 |
 | `ui.editor.keymap` | `CHRYS_EDITOR_KEYMAP` | `standard` | 字符串；`standard`、`emacs`、`vim`，选择输入编辑器的按键模式 |
 | `ui.chat.tool_groups_expanded` | 无 | `false` | 布尔值；新出现的工具组是否默认展开详情 |
-| `ui.chat.show_thinking` | 无 | `false` | 布尔值；TUI 对话中新的可读思考在模型写出时是否在回复上方展开；为 `false` 时只显示一行，滚动显示最新内容。无论开关，模型继续下一步后思考都会折叠。服务只以加密形式返回的思考不会显示 |
+| `ui.chat.show_thinking` | 无 | `false` | 布尔值；TUI 是否在回复上方展开新的可读思考。为 `false` 时，折叠行显示这段思考的估算 token 数，收到足够的文本后也会显示近期速度。无论开关，模型继续下一步后思考都会折叠。服务只以加密形式返回的思考不会显示 |
 | `ui.chat.fold_finished_turns` | 无 | `true` | 布尔值；成功回复后自动折叠中间执行过程。适用于之后完成的轮次及之后打开的会话，已有过程块保持当前状态。用户消息和最终回复始终可见 |
 | `ui.chat.image_graphics` | 无 | `true` | 布尔值；启动时询问终端类型，并在 Ghostty、kitty、iTerm2 3.7.5 及以上版本、WezTerm、开启了终端图片的 VS Code 和 Windows Terminal 1.22 及以上版本中，用终端自身的图形能力全彩显示对话中的图片；为 `false` 时不询问终端，图片与在其他终端中一样以彩色色块绘制。启动时读取 |
 | `ui.chat.file_snapshot_inline_chars` | `CHRYS_TUI_FILE_SNAPSHOT_INLINE_CHARS` | `131072` | 整数；控制文件编辑卡片直接载入的改动前后内容上限，按两者字节数合计判断。不超过上限时随卡片载入，标题显示具体的增删行数；超过上限且有可用快照引用时，展开差异才读取，标题不显示具体行数。`0` 或负数将上限设为零；没有可用快照引用时仍可能保留内联内容。此设置只控制卡片的内容载入方式；是否备份文件内容由 `mutations.snapshot.max_file_mb` 和 `mutations.snapshot.skip_binary` 决定 |
