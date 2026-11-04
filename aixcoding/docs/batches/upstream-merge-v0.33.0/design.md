@@ -117,16 +117,15 @@ handle：命令 token 生效——与 C021 "login credential overrides any stati
 | C. rebase 定制提交到 v0.33.0 | 历史线性 | 改写已发布历史 + 需 force push（纪律禁止） | — | 否决 |
 | D. 重建法（0.28→0.31 旧路线） | 无冲突 | 冲突面实测可控，完全不需要；丢 PR 历史可追溯性 | — | 否决 |
 
-## 上游改动清单（R2；升级批次特例）
+## 上游改动清单（R2）
 
 **本批次我方对上游文件的新增改动 = 2 处测试文件适配**（merge 后全量验证暴露，按 R2 增补报批，
 责任人 2026-11-04 批准；登记见「定制点登记预告」C133/C134）：
 
-- `tests/service/tools/web/test_tools.py`：上游新增 keyless 测试硬编码 `X-Keenable-Title == "iCode"`，
-  与我方品牌 `AIxCoding` 冲突——断言品牌适配 + marker（C133）；
-- `tests/app/tui/screens/test_models_dialog_deletion.py`：上游新增"F4 打开对话框并删除模型"测试
-  ×4 参数，与我方 catalog-sync 既定语义互斥（F4 入口禁用 + 只读隐藏删除按钮）——函数级
-  skip + marker（C134），失效模式安全（上游追加用例会显式暴露而非静默吞没）。
+| 文件 | 改什么 | 标记注释位置 |
+|---|---|---|
+| tests/service/tools/web/test_tools.py | 上游新增 keyless 测试硬编码 `X-Keenable-Title == "iCode"`，与我方品牌 `AIxCoding` 冲突——断言品牌适配（C133） | `AIxCoding branding: keenable title assertion` |
+| tests/app/tui/screens/test_models_dialog_deletion.py | 上游新增"F4 打开对话框并删除模型"测试 ×4 参数，与我方 catalog-sync 既定语义互斥（F4 入口禁用 + 只读隐藏删除按钮）——函数级 skip（C134），失效模式安全（上游追加用例会显式暴露而非静默吞没） | `AIxCoding catalog: upstream deletes profiles in the local dialog` |
 
 其余口径不变：
 
