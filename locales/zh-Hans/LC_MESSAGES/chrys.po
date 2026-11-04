@@ -5445,13 +5445,29 @@ msgstr "会话：{session_id}"
 #. chrys-meta={"fingerprint":"035935186d9026b49ead3077c1b3018b71e54f9bbee3e2a1276b907b14516ca3","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/fold_rows.py
 msgid "tui.chat.thinking_label"
-msgstr "思考"
+msgstr "思考中"
+
+#. English:  ({tokens} token · {speed} tok/s)
+#. English-plural:  ({tokens} tokens · {speed} tok/s)
+#. chrys-meta={"fingerprint":"beb34e94058e0823652f0e44482b27c3fed830b6b422f7876fbe941b6dd4e7d7","multiline":false,"placeholders":["speed","tokens"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_speed"
+msgid_plural "tui.chat.thinking_speed#plural"
+msgstr[0] "（{tokens} token · {speed} tok/s）"
 
 #. English: Thinking summary
 #. chrys-meta={"fingerprint":"3320160e453e56c223cebb0e8aff29fd57844ebf3f13b67b4213cfc28bbdec55","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.thinking_summary_label"
 msgstr "思考摘要"
+
+#. English:  ({tokens} token)
+#. English-plural:  ({tokens} tokens)
+#. chrys-meta={"fingerprint":"2044bc779c79d04e4ddc5b643152407b841ee35d95b9257b61a39174f0337ecd","multiline":false,"placeholders":["tokens"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_tokens"
+msgid_plural "tui.chat.thinking_tokens#plural"
+msgstr[0] "（{tokens} token）"
 
 #. English: Thought
 #. chrys-meta={"fingerprint":"d2f59611e2915dccd579c93088ade4ba918f4fb8dcdb61ff640e518552520a47","multiline":false,"placeholders":[]}
@@ -11631,13 +11647,13 @@ msgstr "成功回复后折叠执行过程。适用于之后完成的轮次和之
 msgid "tui.settings.hint.ui.chat.image_graphics"
 msgstr "在 Ghostty、kitty、iTerm2 3.7.5 及以上版本、WezTerm、开启了终端图片的 VS Code 和 Windows Terminal 1.22 及以上版本中以全彩显示图片，为此启动时会询问终端类型。关闭此项或在其他终端中，图片以彩色色块绘制。"
 
-#. English: Show new thinking expanded while the model writes it. When off, it
-#. stays on one line, its newest words running along it. Either way it folds to
-#. one line once the turn moves on; click it at any time to read it in full.
-#. chrys-meta={"fingerprint":"fe88fd32f261c70edfb174380743699800ee033edff5218b58c029896eceed0a","multiline":false,"placeholders":[]}
+#. English: Expand new thinking while the model writes it. When off, the folded
+#. row shows the estimated token count and speed. Click it at any time to read
+#. the full text.
+#. chrys-meta={"fingerprint":"b0fb777fbe8cd96c7286ab6c22895ed223bf50a353552011d1d8270d6e366695","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.show_thinking"
-msgstr "开启后，模型写出思考时完整展开显示；关闭后只显示一行，滚动显示最新内容。无论开关，轮次继续后思考都会折叠为一行，可随时点击展开查看完整思考。"
+msgstr "开启后，模型写出思考时完整展开显示。关闭时，折叠行显示估算的 token 数和速度。随时点击都可查看完整思考。"
 
 #. English: Expand new tool groups by default. When off, click the tool status
 #. at any time to view details.

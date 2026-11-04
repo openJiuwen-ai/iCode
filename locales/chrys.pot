@@ -5391,11 +5391,29 @@ msgstr ""
 msgid "tui.chat.thinking_label"
 msgstr ""
 
+#. English:  ({tokens} token · {speed} tok/s)
+#. English-plural:  ({tokens} tokens · {speed} tok/s)
+#. chrys-meta={"fingerprint":"beb34e94058e0823652f0e44482b27c3fed830b6b422f7876fbe941b6dd4e7d7","multiline":false,"placeholders":["speed","tokens"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_speed"
+msgid_plural "tui.chat.thinking_speed#plural"
+msgstr[0] ""
+msgstr[1] ""
+
 #. English: Thinking summary
 #. chrys-meta={"fingerprint":"3320160e453e56c223cebb0e8aff29fd57844ebf3f13b67b4213cfc28bbdec55","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.thinking_summary_label"
 msgstr ""
+
+#. English:  ({tokens} token)
+#. English-plural:  ({tokens} tokens)
+#. chrys-meta={"fingerprint":"2044bc779c79d04e4ddc5b643152407b841ee35d95b9257b61a39174f0337ecd","multiline":false,"placeholders":["tokens"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_tokens"
+msgid_plural "tui.chat.thinking_tokens#plural"
+msgstr[0] ""
+msgstr[1] ""
 
 #. English: Thought
 #. chrys-meta={"fingerprint":"d2f59611e2915dccd579c93088ade4ba918f4fb8dcdb61ff640e518552520a47","multiline":false,"placeholders":[]}
@@ -11414,10 +11432,10 @@ msgstr ""
 msgid "tui.settings.hint.ui.chat.image_graphics"
 msgstr ""
 
-#. English: Show new thinking expanded while the model writes it. When off, it
-#. stays on one line, its newest words running along it. Either way it folds to
-#. one line once the turn moves on; click it at any time to read it in full.
-#. chrys-meta={"fingerprint":"fe88fd32f261c70edfb174380743699800ee033edff5218b58c029896eceed0a","multiline":false,"placeholders":[]}
+#. English: Expand new thinking while the model writes it. When off, the folded
+#. row shows the estimated token count and speed. Click it at any time to read
+#. the full text.
+#. chrys-meta={"fingerprint":"b0fb777fbe8cd96c7286ab6c22895ed223bf50a353552011d1d8270d6e366695","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.show_thinking"
 msgstr ""

@@ -56,9 +56,8 @@ _HINT_UI_LOCALE = msg(
 _HINT_UI_CHAT_THINKING_EXPANDED = msg(
     "tui.settings.hint.ui.chat.show_thinking",
     fallback=(
-        "Show new thinking expanded while the model writes it. When off, it stays on one line, its newest words "
-        "running along it. Either way it folds to one line once the turn moves on; click it at any time to read it "
-        "in full."
+        "Expand new thinking while the model writes it. When off, the folded row shows the estimated token count "
+        "and speed. Click it at any time to read the full text."
     ),
 )
 _HINT_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(

@@ -14,6 +14,7 @@ from textual.widgets import Static
 
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.i18n import LocaleController, LocaleSwitchStatus
+from chrys.app.tui.util import stream_tokens
 from chrys.app.tui.widgets import ChrysLoadingIndicator
 from chrys.app.tui.widgets.chrome.status_bar import (
     STATUS_INTERRUPTED,
@@ -28,6 +29,7 @@ from chrys.foundation.events.types import (
     RuntimeHookDetails,
     RuntimeHookSourceDetails,
 )
+from chrys.foundation.text.tokenizer import TOKEN_UNITS_PER_TOKEN, MixedLanguageTokenizer
 from tests.support.tui_helpers import (
     WidgetApp,
     make_click,
@@ -375,17 +377,16 @@ async def test_status_bar_trail_shows_the_recent_output_speed_only_while_output_
         status_bar.start_run()
         assert "tok/s" not in _trail(status_bar)
 
-        # 20 words a second, at one token each, over 2 s.
+        chunk = "word " * 20
         for _ in range(3):
-            status_bar.note_output_text("word " * 20)
+            status_bar.note_output_text(chunk)
             now[0] += 1.0
         now[0] -= 1.0
-        units = 2 * status_bar_module._OUTPUT_TOKENIZER.count_token_units("word " * 20)
-        expected = round(units / status_bar_module.TOKEN_UNITS_PER_TOKEN / 2.0)
-        assert f" {expected} tok/s" in _trail(status_bar)
+        tokens_per_second = round(MixedLanguageTokenizer().count_token_units(chunk) / TOKEN_UNITS_PER_TOKEN)
+        assert f" {tokens_per_second} tok/s" in _trail(status_bar)
 
         # A pause in the stream (a tool running) hides it rather than showing a stale rate.
-        now[0] += status_bar_module._OUTPUT_SPEED_IDLE_SECONDS + 0.1
+        now[0] += stream_tokens._IDLE_SECONDS + 0.1
         assert "tok/s" not in _trail(status_bar)
 
 
@@ -405,15 +406,15 @@ async def test_status_bar_output_speed_needs_a_span_and_forgets_old_samples(
 
         # Text that arrives all at once, as a response that was not streamed does, has no rate.
         status_bar.note_output_text("word " * 500)
-        now[0] += status_bar_module._OUTPUT_SPEED_MIN_SPAN_SECONDS / 2
+        now[0] += stream_tokens._MIN_SPAN_SECONDS / 2
         status_bar.note_output_text("word " * 500)
         assert status_bar._output_speed() is None
-        now[0] += status_bar_module._OUTPUT_SPEED_MIN_SPAN_SECONDS / 2
+        now[0] += stream_tokens._MIN_SPAN_SECONDS / 2
         status_bar.note_output_text("word")
         assert status_bar._output_speed() is not None
 
         # What arrived before the window no longer counts.
-        now[0] += status_bar_module._OUTPUT_SPEED_WINDOW_SECONDS
+        now[0] += stream_tokens._WINDOW_SECONDS
         status_bar.note_output_text("word")
         now[0] += 2.0
         status_bar.note_output_text("word")
@@ -426,8 +427,9 @@ async def test_status_bar_output_speed_needs_a_span_and_forgets_old_samples(
         assert status_bar._output_speed() is None
 
 
+@pytest.mark.parametrize("first_chunks", [1, 10])
 async def test_status_bar_output_speed_leaves_out_what_arrived_before_its_span(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, first_chunks: int
 ) -> None:
     from types import SimpleNamespace
 
@@ -440,13 +442,15 @@ async def test_status_bar_output_speed_leaves_out_what_arrived_before_its_span(
         status_bar = pilot.app.query_one(StatusBar)
         status_bar.start_run()
 
-        # Two whole responses, as ones that were not streamed land: the first took its time before the span began.
-        status_bar.note_output_text("word " * 3000)
+        # All text at the first timestamp precedes the measured interval, however it was chunked.
+        for _ in range(first_chunks):
+            status_bar.note_output_text("word " * (3000 // first_chunks))
         now[0] += 2.0
-        status_bar.note_output_text("word " * 100)
+        chunk = "word " * 100
+        status_bar.note_output_text(chunk)
 
-        units = status_bar_module._OUTPUT_TOKENIZER.count_token_units("word " * 100)
-        assert status_bar._output_speed() == round(units / status_bar_module.TOKEN_UNITS_PER_TOKEN / 2.0)
+        units = MixedLanguageTokenizer().count_token_units(chunk)
+        assert status_bar._output_speed() == round(units / TOKEN_UNITS_PER_TOKEN / 2.0)
 
 
 async def test_status_bar_noting_output_paints_nothing(monkeypatch: pytest.MonkeyPatch) -> None:

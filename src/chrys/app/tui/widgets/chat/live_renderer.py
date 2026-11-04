@@ -288,8 +288,7 @@ class LiveTranscriptRenderer:
     async def add_thinking_delta(self, segment_id: str, channel: ContentChannel, text: str) -> None:
         """Stream new thinking text into its segment's message, mounting it once the text is not blank.
 
-        Whether it opens is read as it mounts: folded, its row runs the newest
-        of the text. An answer that streamed before stays as it is: thinking
+        Whether it opens is read as it mounts. An answer that streamed before stays as it is: thinking
         does not tell whether the turn goes on past it.
         """
         thinking_expanded = self._thinking_expanded
@@ -300,7 +299,8 @@ class LiveTranscriptRenderer:
             self._thinking_segment_id = segment_id
         if self._thinking_msg is not None:
             self._thinking_msg.append_text(text)
-            self._ui.schedule_anchor_sync()
+            if not self._thinking_msg.collapsed:
+                self._ui.schedule_anchor_sync()
             return
         self._blank_thinking_text += text
         if not self._blank_thinking_text.strip():

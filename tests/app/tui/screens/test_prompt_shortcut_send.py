@@ -24,7 +24,7 @@ import contextlib
 import inspect
 import sys
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import create_autospec
@@ -657,6 +657,20 @@ async def gives_back(session: Session, draft: ChatDraft) -> None:
     )
 
 
+async def card_back(session: Session, *, commands: int) -> None:
+    """The draft's card shows again with its *commands*.
+
+    It follows the draft through the composer's change messages, a step after
+    the draft itself, which a sender's worker may hand back after the last
+    message drain of :func:`gives_back`.
+    """
+    await wait_for(
+        lambda: (state := card_state(session.main)) is not None and state.commands == commands,
+        pilot=session.pilot,
+        description=f"the draft's card back with {commands} command(s)",
+    )
+
+
 def no_turn(session: Session) -> bool:
     """No turn started in this session's app and the model was never asked."""
     return session.seen.of(ev.TurnStarted) == [] and session.model.call_count == 0
@@ -746,15 +760,8 @@ async def test_a_refused_message_comes_back_whole_and_only_once(
         # The end of the commands clears their status before the failure shows, so the failure stays.
         assert "echo checked" in status_line(main)
         assert no_turn(session)
-        assert card_state(main) is not None
-        assert card_state(main).commands == 1
-        # The failure names the command; the composer is not in retry mode, since no turn ran.
-        # Its card mounts after the draft comes back, so it is waited for.
-        await wait_for(
-            lambda: any("echo checked" in card for card in error_cards(main)),
-            pilot=pilot,
-            description="the failure's card naming the command",
-        )
+        await card_back(session, commands=1)
+        assert any("echo checked" in card for card in error_cards(main))
         assert not session.bar.retry_mode
 
         # Given back once: a composer the user empties stays empty.
@@ -764,30 +771,40 @@ async def test_a_refused_message_comes_back_whole_and_only_once(
         assert not await wait_until(lambda: chat.text != "", timeout=0.5, pilot=pilot)
 
 
+@pytest.mark.parametrize("code", ["prompt_shortcut_unavailable", "prompt_shortcut_command_failed"])
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
-async def test_an_unavailable_shortcut_comes_back_without_its_owner_and_then_sends_as_typed(
-    agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_refused_shortcut_returns_when_a_second_enter_can_send_it(
+    agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: str
 ) -> None:
-    path = write_shortcut("zzgone", "Note !`echo ran > ran.txt`")
+    path = write_shortcut("zzretry", "Note !`echo ran > ran.txt`")
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         main, pilot, chat = session.main, session.pilot, session.chat
-        draft = await expand_shortcut(session, "zzgone")
-        path.unlink()
-
-        await pilot.press("enter")
-
-        await await_error(session, "prompt_shortcut_unavailable")
-        await wait_for(
-            lambda: chat.text == draft.text and session.bar.draft_owner is None,
-            pilot=pilot,
-            description="the draft given back as plain text",
-        )
-        assert card_state(main) is None
-        assert session.seen.of(ev.PromptCommandsRunning) == []
+        draft = await expand_shortcut(session, "zzretry")
+        assert draft.owner is not None
+        missing = code == "prompt_shortcut_unavailable"
+        rejection = session.hold()
+        await hold_next(session.bus, ev.Error, rejection, when=lambda error: error.code == code)
+        with monkeypatch.context() as refusal:
+            if missing:
+                path.unlink()
+            else:
+                break_the_shell(refusal, tmp_path)
+            await pilot.press("enter")
+            await wait_for(rejection.entered.is_set, pilot=pilot, description="shortcut refusal shown")
+            # The error card is on screen while the first send still owns admission.
+            assert not chat.text
+            rejection.release()
+            await gives_back(session, replace(draft, owner=None) if missing else draft)
+        if missing:
+            # Plain text has no card: once the draft's change messages have run, none shows.
+            await pilot.pause()
+            assert card_state(main) is None
+        else:
+            await card_back(session, commands=1)
+        assert len(session.seen.of(ev.PromptCommandsRunning)) == (0 if missing else 1)
         assert not Path("ran.txt").exists()
         assert no_turn(session)
 
-        # No longer that shortcut's: a second Enter sends it as typed, and nothing runs.
         await pilot.press("enter")
         # Seen as it is published; its turn starts once the engine has admitted it.
         await wait_for(
@@ -796,12 +813,16 @@ async def test_an_unavailable_shortcut_comes_back_without_its_owner_and_then_sen
             timeout=ENGINE_TURN_TIMEOUT,
             description="sent again",
         )
-        again = session.seen.of(ev.UserMessage)[-1]
+        first, again = session.seen.of(ev.UserMessage)
         assert again.text == draft.text
-        assert again.prompt_shortcut is None
+        assert again.prompt_shortcut == (None if missing else first.prompt_shortcut)
         await turn_finished(session)
-        assert "!`echo ran > ran.txt`" in session.model.last_user_text()
-        assert not Path("ran.txt").exists()
+        if missing:
+            assert "!`echo ran > ran.txt`" in session.model.last_user_text()
+            assert not Path("ran.txt").exists()
+        else:
+            assert "!`" not in session.model.last_user_text()
+            assert Path("ran.txt").is_file()
 
 
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
@@ -867,7 +888,7 @@ async def test_esc_while_the_commands_run_withdraws_the_message_and_gives_the_dr
         )
         assert (await await_commands_ended(session, sent)).outcome == "cancelled"
         await gives_back(session, draft)
-        assert card_state(main) is not None
+        await card_back(session, commands=1)
         assert not sent.started_turn
         assert no_turn(session)
         assert session.seen.of(ev.UserInterrupt) == []

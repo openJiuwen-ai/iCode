@@ -14,10 +14,15 @@ from __future__ import annotations
 import asyncio
 import gc
 import weakref
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from textual.widget import AwaitMount, Widget
 
+from chrys.app.tui.i18n import LocaleController
+from chrys.app.tui.util import stream_tokens
+from chrys.app.tui.widgets.chat import messages as messages_module
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     ErrorMessage,
@@ -31,6 +36,7 @@ from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.renderers.read_file import ReadFileToolCall
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
+from chrys.foundation.config.settings import Settings
 from tests.support.tui_helpers import ChatPanelApp, chat_content_children, click_when_settled
 from tests.support.waiting import wait_for
 
@@ -353,6 +359,99 @@ async def test_a_new_prompt_keeps_a_failed_prompt_whose_turn_got_more_than_think
         ]
 
 
+@pytest.mark.parametrize(
+    ("locale", "label", "count", "speed", "thought"),
+    [
+        ("en", "Thinking", "Thinking (100 tokens)", "Thinking (3.2k tokens · 620 tok/s)", "Thought: "),
+        ("zh-Hans", "思考中", "思考中（100 token）", "思考中（3.2k token · 620 tok/s）", "思考："),  # noqa: RUF001
+    ],
+)
+async def test_folded_thinking_reports_progress_on_ticks_and_previews_text_only_once_finished(
+    locale: str, label: str, count: str, speed: str, thought: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 10.0
+    monkeypatch.setattr(messages_module, "time", SimpleNamespace(monotonic=lambda: now))
+    app = ChatPanelApp(thinking_expanded=lambda: False)
+    app.locale_controller = LocaleController(Settings(locale=locale))
+    async with app.run_test() as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await cp.add_user_message("prompt")
+        await _think(cp, "r1", "User" * 100, finish=False)
+        thinking = cp.query_one(ThinkingMessage)
+        header = thinking.query_one(_AgentHeader)
+        await wait_for(lambda: thinking._progress_timer is not None, pilot=pilot, description="thinking shown")
+        count_row = header.render()
+        assert count_row.plain == f"▸ {count}"
+
+        # Mixed-language chunks accumulate without rounding each delta. The folded row stays one line high.
+        sync_anchor = Mock(wraps=cp.schedule_anchor_sync)
+        monkeypatch.setattr(cp, "schedule_anchor_sync", sync_anchor)
+        now += 5.0
+        for _ in range(1000):
+            await cp.add_thinking_delta("r1", "reasoning", "文" + "a" * 10)
+        assert sync_anchor.call_count == 0
+        assert header.render().plain == f"▸ {count}"
+        await wait_for(lambda: header.render().plain == f"▸ {speed}", pilot=pilot, description="recent thinking speed")
+        speed_row = header.render()
+        assert not thinking.query(VirtualizedMarkdown)
+        now += stream_tokens._IDLE_SECONDS + 0.1
+        await wait_for(lambda: " · " not in header.render().plain, pilot=pilot, description="idle speed disappears")
+        assert "3.2k" in header.render().plain
+
+        cp.finish_thinking_segment("r1")
+        finished = header.render()
+        assert finished.plain.startswith(f"▸ {thought}UserUser")
+        title_style = finished.get_style_at_offset(app.console, len("▸ "))
+        preview_style = finished.get_style_at_offset(app.console, finished.plain.index("User"))
+        assert preview_style != title_style
+        for row in (count_row, speed_row):
+            for offset in range(len("▸ "), len(row)):
+                expected = title_style if offset < len(f"▸ {label}") else preview_style
+                assert row.get_style_at_offset(app.console, offset) == expected
+
+        await _think(cp, "r2", "N", finish=False)
+        next_header = cp.query(ThinkingMessage).last().query_one(_AgentHeader)
+        assert next_header.render().plain == f"▸ {label}"
+        sync_anchor.assert_called()
+
+
+async def test_hidden_thinking_counts_without_a_timer_and_catches_up_when_shown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Showing or refolding the row must catch it up even before any periodic tick.
+    monkeypatch.setattr(ThinkingMessage, "_tick_progress", lambda self: None)
+    async with ChatPanelApp(thinking_expanded=lambda: False).run_test() as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        cp.display = False
+        await wait_for(
+            lambda: cp not in pilot.app.screen._compositor.visible_widgets, pilot=pilot, description="hidden"
+        )
+        await cp.add_user_message("prompt")
+        await _think(cp, "r1", "User", finish=False)
+        thinking = cp.query_one(ThinkingMessage)
+        header = thinking.query_one(_AgentHeader)
+        assert thinking._progress_timer is None
+
+        cp.display = True
+        await wait_for(lambda: thinking._progress_timer is not None, pilot=pilot, description="first show")
+        assert header.render().plain == "▸ Thinking (1 token)"
+        cp.display = False
+        await wait_for(lambda: thinking._progress_timer is None, pilot=pilot, description="hide stops the timer")
+        await _think(cp, "r1", "User" * 99, finish=False)
+
+        cp.display = True
+        await wait_for(lambda: thinking._progress_timer is not None, pilot=pilot, description="shown again")
+        assert header.render().plain.startswith("▸ Thinking (100 tokens")
+        thinking.collapsed = False
+        assert thinking._progress_timer is None
+        await _think(cp, "r1", "User", finish=False)
+        thinking.collapsed = True
+        assert header.render().plain.startswith("▸ Thinking (101 tokens")
+        cp.finish_thinking_segment("r1")
+        assert thinking._progress_timer is None
+        assert header.render().plain.startswith("▸ Thought: UserUser")
+
+
 async def test_thinking_names_what_it_shows_and_folds_from_its_header_once_complete() -> None:
     async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
@@ -361,14 +460,14 @@ async def test_thinking_names_what_it_shows_and_folds_from_its_header_once_compl
         thinking = cp.query_one(ThinkingMessage)
         header = thinking.query_one(_AgentHeader)
         assert header.render().plain == "▾ Thinking"
-        # Streaming, it folds and opens from its header too: folded, its row runs the newest of its text.
+        # Streaming, it folds and opens from its header too.
         await click_when_settled(pilot, header)
         await wait_for(
             lambda: thinking.collapsed and not thinking.query(VirtualizedMarkdown),
             pilot=pilot,
             description="streaming thinking folded, its body gone",
         )
-        assert header.render().plain.startswith("▸ Thinking: ")
+        assert header.render().plain.split(" (")[0] == "▸ Thinking"
         await click_when_settled(pilot, header)
         await wait_for(
             lambda: not thinking.collapsed and bool(thinking.query(VirtualizedMarkdown)),

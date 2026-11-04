@@ -37,10 +37,11 @@ from chrys.app.tui.support.gc_freeze import (
     GcRemovedContent,
     current_gc_freeze_epoch,
 )
+from chrys.app.tui.util.formatting import format_token_count
 from chrys.app.tui.util.removal import remove_all_shielded, remove_shielded
-from chrys.app.tui.util.shimmer import FRAME_SECONDS
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.util.static_update import update_static_in_place
+from chrys.app.tui.util.stream_tokens import StreamTokens
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.fold_gap import FOLD_GAP_ROWS, FoldGap
 from chrys.app.tui.widgets.chat.fold_rows import (
@@ -51,14 +52,13 @@ from chrys.app.tui.widgets.chat.fold_rows import (
     THINKING_LABEL,
     THOUGHT_LABEL,
     text_preview,
-    text_tail,
 )
 from chrys.app.tui.widgets.chat.image_preview import extract_image_previews
 from chrys.app.tui.widgets.chat.image_view import TerminalImages
 from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
 from chrys.app.tui.widgets.chat.transcript_panel import note_fold
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
-from chrys.app.tui.widgets.loading import GatedAnimation
+from chrys.app.tui.widgets.loading import component_text_style
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.markdown.parser import create_user_text_markdown_parser
 from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
@@ -116,6 +116,12 @@ busy and the garbage collector behind it.
 _USER_MESSAGE_COPIED = msg("tui.copy.user_message", fallback="Copied your message")
 _USER_MESSAGE_COPY_TOOLTIP = msg("tui.chat.copy_user_message_tooltip", fallback="Copy your raw message")
 _THINKING_SUMMARY_LABEL = msg("tui.chat.thinking_summary_label", fallback="Thinking summary")
+_THINKING_TOKENS = msg("tui.chat.thinking_tokens", fallback=" ({tokens} token)", plural_fallback=" ({tokens} tokens)")
+_THINKING_SPEED = msg(
+    "tui.chat.thinking_speed",
+    fallback=" ({tokens} token · {speed} tok/s)",
+    plural_fallback=" ({tokens} tokens · {speed} tok/s)",
+)
 _RETRY_MESSAGE = msg(
     "tui.chat.retry_message",
     fallback="{message} Retrying in {delay_seconds}s ({attempt}/{max_attempts})...",
@@ -449,15 +455,9 @@ class _ShownRow(NamedTuple):
 
 
 _ROW_LABEL_START = len(OPEN_ARROW) + 1
-_MARQUEE_CATCH_UP_SECONDS = 0.5
-"""How far a running row trails the streamed text: the text that arrived in about this long."""
-_MARQUEE_MIN_CHARS_PER_SECOND = 24.0
-"""The slowest a running row moves while it trails the text, so the last words arrive soon."""
-_MARQUEE_MAX_STEP_SECONDS = 0.25
-"""The longest pause a running row makes up for at once, after a stall in painting."""
 
 
-class _FoldRowHeader(GatedAnimation, _AgentHeader):
+class _FoldRowHeader(_AgentHeader):
     """The header of thinking or text between tool calls: open, its label; folded, a sentence of the opening of its text.
 
     Folded, the text follows the label and a colon (``Thought: …``), or stands alone where the row is the agent's
@@ -468,31 +468,17 @@ class _FoldRowHeader(GatedAnimation, _AgentHeader):
     resize only cuts it again, and a language switch reaches it at its next fold, as it reaches other transcript
     text, so what a selection's offsets index is always the row on screen. A thinking block folded inside a
     hidden activity section never reads its preview.
-
-    Folded while its text streams, the row runs the newest of the text along it instead, coming in from the right
-    at the pace the text arrives, smoothed between the bursts it arrives in. Its refresh timer starts the first
-    time it runs, so a row that never does keeps none.
     """
 
     COMPONENT_CLASSES: ClassVar[set[str]] = {"fold-row-header--label", "fold-row-header--preview"}
-    _animating = False
 
-    def __init__(
-        self, label: MessageRef, *, collapsed: bool, text: str, folded_label: bool = True, streaming: bool = False
-    ) -> None:
+    def __init__(self, label: MessageRef, *, collapsed: bool, text: str, folded_label: bool = True) -> None:
         self._label = label
+        self._detail: MessageRef | None = None
         self._folded_label = folded_label
         """Whether the folded row names its label before the text."""
         self._collapsed = collapsed
         self._text = text
-        self._streaming = streaming
-        """Whether the text still streams; never ``_running``, which is MessagePump's own state."""
-        self._marquee_end = 0.0
-        """How far into the text a running row has got, in characters: a row folded as it streamed starts at 0."""
-        self._marquee_at: float | None = None
-        """When the running row last moved (``time.monotonic()``); None until it first paints."""
-        self._marquee_shown = ""
-        """The text a running row last painted after its label, as a selection copies it."""
         self._preview_source: str | None = None
         self._preview = ""
         self._row: _ShownRow | None = None
@@ -508,8 +494,6 @@ class _FoldRowHeader(GatedAnimation, _AgentHeader):
         past where the row cuts it.
         """
         label, head, _, preview = self._shown_row()
-        if self._runs:
-            preview = self._marquee_shown
         if not preview:
             return f"[{label}]", "\n"
         start = 0 if selection.start is None else selection.start.x
@@ -518,69 +502,33 @@ class _FoldRowHeader(GatedAnimation, _AgentHeader):
         copied = " ".join(part for part in (f"[{label}]" if start < len(head) else "", covered) if part)
         return copied, "\n"
 
-    def show(self, *, collapsed: bool, text: str, label: MessageRef | None = None, streaming: bool = False) -> None:
-        """Show the folded row for *text*, or the open header, under *label* when given; one row, so no layout.
-
-        Folded while *streaming*, the row runs the newest of the text.
-        """
+    def show(
+        self, *, collapsed: bool, text: str, label: MessageRef | None = None, detail: MessageRef | None = None
+    ) -> None:
+        """Show the folded row for *text* or the open header. Both are one row high."""
         relabelled = label is not None and label != self._label
-        reshaped = relabelled or collapsed != self._collapsed or streaming != self._streaming
-        if not (reshaped or (collapsed and text is not self._text)):
+        if not (
+            relabelled
+            or collapsed != self._collapsed
+            or detail != self._detail
+            or (collapsed and text is not self._text)
+        ):
             return
-        if collapsed and streaming and not self._runs:
-            # Folded as it streams: the row goes on from the newest text, not from its start.
-            self._marquee_end, self._marquee_at = float(len(text)), None
         if label is not None:
             self._label = label
-        self._collapsed, self._text, self._streaming = collapsed, text, streaming
-        if reshaped or not self._runs:
-            # A running row reads the newest text as it paints.
-            self._row = None
-        self._sync_marquee()
+        self._detail = detail
+        self._collapsed, self._text = collapsed, text
+        self._row = None
         self.refresh(layout=False)
-
-    @property
-    def _runs(self) -> bool:
-        """Whether the row runs the streamed text along it."""
-        return self._collapsed and self._streaming and self._folded_label
-
-    def on_mount(self) -> None:
-        if self._runs:
-            # Mounted folded as its text streams; ``is_mounted`` reads True only once the mount handlers return.
-            self.auto_refresh = FRAME_SECONDS
-        self._sync_marquee()
-
-    def _sync_marquee(self) -> None:
-        if not self._runs:
-            self.pause_animation()
-            return
-        if self._auto_refresh_timer is None and self.is_mounted:
-            self.auto_refresh = FRAME_SECONDS
-        self.resume_animation()
-
-    def _advance_marquee(self) -> int:
-        """How far into the text the running row reaches as it paints now, in characters."""
-        end = len(self._text)
-        now = time.monotonic()
-        if self.app.animation_level == "none":
-            self._marquee_end = float(end)
-        elif self._marquee_end < end and self._marquee_at is not None:
-            behind = end - self._marquee_end
-            speed = max(behind / _MARQUEE_CATCH_UP_SECONDS, _MARQUEE_MIN_CHARS_PER_SECOND)
-            step = speed * min(now - self._marquee_at, _MARQUEE_MAX_STEP_SECONDS)
-            self._marquee_end = min(self._marquee_end + step, float(end))
-        self._marquee_at = now
-        return int(self._marquee_end)
 
     def _shown_row(self) -> _ShownRow:
         if self._row is not None:
             return self._row
         localizer = widget_localizer(self)
         label = render_str(localizer, self._label)
-        if self._runs:
-            # The text after the label is the newest of it as the row paints.
-            shown = render_str(localizer, FOLDED_LABEL.bind(label=label))
-            self._row = _ShownRow(label, f"{FOLDED_ARROW} {shown}", _ROW_LABEL_START + len(shown.rstrip()), "")
+        if self._detail is not None:
+            shown = label + render_str(localizer, self._detail)
+            self._row = _ShownRow(shown, f"{FOLDED_ARROW} {shown}", _ROW_LABEL_START + len(label), "")
             return self._row
         if self._collapsed and self._preview_source is not self._text:
             self._preview_source = self._text
@@ -599,14 +547,10 @@ class _FoldRowHeader(GatedAnimation, _AgentHeader):
     def render(self) -> Text:
         row = self._shown_row()
         width = self.content_size.width
-        preview = row.preview
-        if self._runs:
-            preview = text_tail(self._text, self._advance_marquee(), max(width - cell_len(row.head), 0))
-            self._marquee_shown = preview
-        text = Text(row.head + preview)
-        text.stylize(self.text_style_of("fold-row-header--label"), _ROW_LABEL_START, row.label_end)
-        if preview:
-            text.stylize(self.text_style_of("fold-row-header--preview"), len(row.head))
+        text = Text(row.head + row.preview)
+        text.stylize(component_text_style(self, "fold-row-header--label"), _ROW_LABEL_START, row.label_end)
+        if row.label_end < len(text):
+            text.stylize(component_text_style(self, "fold-row-header--preview"), row.label_end)
         if width:
             text.truncate(width, overflow="ellipsis")
         return text
@@ -630,7 +574,9 @@ class _AgentReplyHeader(_FoldRowHeader):
         self._reply = reply
         self.refresh(layout=False)
 
-    def show(self, *, collapsed: bool, text: str, label: MessageRef | None = None, streaming: bool = False) -> None:
+    def show(
+        self, *, collapsed: bool, text: str, label: MessageRef | None = None, detail: MessageRef | None = None
+    ) -> None:
         if self._reply is not None:
             # The text turned out to sit between tool calls: the row takes the header's width, cut to it.
             self._reply = None
@@ -640,7 +586,7 @@ class _AgentReplyHeader(_FoldRowHeader):
             self.add_class("fold-row-header")
             self.refresh()
             return
-        super().show(collapsed=collapsed, text=text, label=label, streaming=streaming)
+        super().show(collapsed=collapsed, text=text, label=label, detail=detail)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         if self._reply is not None:
@@ -1262,8 +1208,8 @@ class ThinkingMessage(StreamedMarkdownMessage):
 
     It streams like an answer, open or folded to its row as it started, and
     keeps that once complete; its header opens or folds it at any time. Folded
-    as it streams, its row runs the newest of the text. A replayed one starts
-    folded, and a folded one builds its body the first time it opens. It is
+    as it streams, its row shows the estimated token count and speed. A replayed
+    one starts folded, and a folded one builds its body the first time it opens. It is
     not part of the answer: it has no copy button, and copying the agent's
     responses leaves it out.
     """
@@ -1312,6 +1258,11 @@ class ThinkingMessage(StreamedMarkdownMessage):
         """The content segment this message shows, for a retry that gives up its response to remove."""
         self._channel = channel
         self._header: _FoldRowHeader | None = None
+        self._progress = None if is_final else StreamTokens()
+        if self._progress is not None:
+            self._progress.note(text, time.monotonic())
+        self._progress_timer: Timer | None = None
+        self._composited = False
         super().__init__(text, is_final=is_final, classes="--compressed" if is_compressed else "")
         if collapsed:
             # Before mount, and without the watcher: the body is built when it first opens.
@@ -1336,7 +1287,7 @@ class ThinkingMessage(StreamedMarkdownMessage):
     def compose(self) -> ComposeResult:
         with MessageHeaderRow():
             self._header = _FoldRowHeader(
-                self._label_ref(), collapsed=self.collapsed, text=self._source_text, streaming=not self._is_final
+                self._label_ref(), collapsed=self.collapsed, text=self._source_text if self._is_final else ""
             )
             yield self._header
         if not self.collapsed:
@@ -1348,23 +1299,72 @@ class ThinkingMessage(StreamedMarkdownMessage):
     def _releases_body_on_folding(self) -> bool:
         return True
 
+    def append_text(self, text: str) -> None:
+        updated = self._source_text + text
+        if self._progress is None:
+            self.stream_update(updated)
+        else:
+            self._progress.note(text, time.monotonic())
+            super().stream_update(updated)
+
     def stream_update(self, text: str, is_final: bool = False) -> None:
-        super().stream_update(text, is_final)
-        if self.collapsed and not is_final:
-            # Its row runs the newest text; a final update shows the row's opening (_on_final).
+        if is_final:
+            super().stream_update(text, is_final=True)
+            return
+        if self._progress is not None and text.startswith(self._source_text):
+            self._progress.note(text[len(self._source_text) :], time.monotonic())
+            super().stream_update(text)
+            return
+        # Replacing the text starts a fresh estimate. The live renderer appends deltas directly.
+        self._progress = StreamTokens()
+        self._progress.note(text, time.monotonic())
+        super().stream_update(text)
+        self._refresh_header()
+
+    def on_show(self) -> None:
+        self._composited = True
+        if self.collapsed and self._progress is not None:
             self._refresh_header()
 
+    def on_hide(self) -> None:
+        self._composited = False
+        self._sync_progress_timer()
+
+    def _tick_progress(self) -> None:
+        if self._header is not None and is_widget_shown_on_active_screen(self._header):
+            self._refresh_header()
+
+    def _progress_detail(self) -> MessageRef | None:
+        progress = self._progress
+        if progress is None or not self._composited or not self.collapsed or not progress.tokens:
+            return None
+        tokens = format_token_count(progress.tokens)
+        speed = progress.speed(time.monotonic())
+        if speed is None:
+            return _THINKING_TOKENS.bind(count=progress.tokens, tokens=tokens)
+        return _THINKING_SPEED.bind(count=progress.tokens, tokens=tokens, speed=speed)
+
+    def _sync_progress_timer(self) -> None:
+        if self._composited and self.collapsed and self._progress is not None:
+            if self._progress_timer is None:
+                self._progress_timer = self.set_interval(1.0, self._tick_progress)
+        elif self._progress_timer is not None:
+            self._progress_timer.stop()
+            self._progress_timer = None
+
     def _refresh_header(self) -> None:
-        if self._header is not None:
-            self._header.show(
-                collapsed=self.collapsed,
-                text=self._source_text,
-                label=self._label_ref(),
-                streaming=not self._is_final,
-            )
+        if self._header is None:
+            return
+        self._sync_progress_timer()
+        self._header.show(
+            collapsed=self.collapsed,
+            text=self._source_text if self._is_final else "",
+            label=self._label_ref(),
+            detail=self._progress_detail(),
+        )
 
     def _on_final(self) -> None:
-        # Thinking that streamed is now thought.
+        self._progress = None
         self._refresh_header()
 
     def on__agent_header_clicked(self) -> None:

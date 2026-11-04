@@ -63,9 +63,11 @@ In the prompt you can use:
 
 ### Commands in the prompt
 
-When you send the prompt, your [prompt hooks](hooks.md) check it first, as you typed it, commands included. Then each `` !`command` `` in it runs in the session's working directory, and its output replaces it in the message the model receives; the conversation shows the message with the output. A command may run for up to 10 seconds, and up to 16 KB of its output is kept. While the commands run, the status bar says so and other actions, such as switching the agent or starting a new session, wait; press **Esc** to cancel. If a hook blocks the prompt, a command fails to start, runs out of time or is cancelled, or the prompt cannot be sent for another reason, nothing is sent and the prompt comes back to the input field as it was, highlights included, unless you have typed something else there meanwhile.
+When you send the prompt, your [prompt hooks](hooks.md) check it first, as you typed it, commands included. Then each `` !`command` `` in it runs in the session's working directory, and its output replaces it in the message the model receives; the conversation shows the message with the output. A command may run for up to 10 seconds, and up to 16 KB of its output is kept. While the commands run, the status bar says so and other actions, such as switching the agent or starting a new session, wait; press **Esc** to cancel.
 
-The commands run only if the shortcut is still loaded from the same file for the session's working directory. If you have since changed the working directory, or moved or deleted the shortcut's file, they do not run: the prompt comes back as plain text, and sending it again sends it as typed.
+If a hook blocks the prompt, a command fails to start, times out or is cancelled, or iCode cannot send the prompt for another reason, the prompt returns to the input field with its highlights. As soon as it appears, you can edit it or press **Enter** to try again. If you typed something else in the meantime, iCode keeps what you typed.
+
+The commands run only if the shortcut is still loaded from the same file for the session's working directory. If that file has moved, was deleted, or is no longer loaded for the current working directory, iCode shows an error. When the prompt returns to the input field, press **Enter** to send it as plain text, including the command placeholders.
 
 Whenever sending will run commands, a card above the input field says how many, such as `2 commands in the input run when sent`.
 
