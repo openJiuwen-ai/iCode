@@ -206,6 +206,8 @@ ignore = [
 "src/chrys/service/workflows/worker_host.py" = ["UP", "B905", "RUF007"]
 # AIxCoding tui: user-visible text is Chinese-only constants (ADR-0010)
 "src/chrys/app/aixcoding/tui/*" = ["RUF001"]
+# AIxCoding catalog: full-width Chinese punctuation (approved: batches/catalog-auth-gating/design.md)
+"src/chrys/service/aixcoding/**" = ["RUF001"]
 # AIxCoding custom tests: fake creds/asserts, frozen Chinese-message assertions (aixcoding/tests)
 "aixcoding/tests/**" = ["S", "PERF401", "RUF001"]
 # Tests — relax security checks, tolerate loop-append pattern

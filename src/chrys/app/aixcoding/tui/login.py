@@ -44,8 +44,12 @@ from chrys.kernel.aixcoding.auth import (
     LoginSession,
     get_login_session,
 )
+from chrys.kernel.aixcoding.diagnostics.logging_support import DETAIL_LEVEL
 
 logger = logging.getLogger(__name__)
+_auth_log = logging.getLogger("aixcoding.auth")
+_detail_log = logging.getLogger("aixcoding.detail.auth")
+_DETAIL_LEVEL = DETAIL_LEVEL
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -110,7 +114,9 @@ class LoginDialog(BaseDialog[AccountInfo | None]):
         try:
             code = await self._session.request_device_code()
         except AuthError as exc:
-            self._show_failure(f"无法获取登录码，请稍后重试。({exc})")
+            _auth_log.error("登录失败：无法获取登录码，请稍后重试。")
+            _detail_log.log(_DETAIL_LEVEL, "获取登录码失败：%s: %s", type(exc).__name__, exc)
+            self._show_failure("无法获取登录码，请稍后重试。")
             return
         self._show_code(code)
         try:
@@ -118,7 +124,8 @@ class LoginDialog(BaseDialog[AccountInfo | None]):
         except DevicePollCancelled:
             return
         except AuthError as exc:
-            self._show_failure(f"登录未完成。({exc})")
+            _detail_log.log(_DETAIL_LEVEL, "授权轮询失败：%s: %s", type(exc).__name__, exc)
+            self._show_failure("登录未完成，请稍后重试。")
             return
         if self._on_login_success is not None:
             try:

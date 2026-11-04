@@ -16,7 +16,7 @@ import inspect
 import json
 import logging
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -166,6 +166,26 @@ def test_no_credential_means_no_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(catalog_module, "has_catalog_credential", lambda: False)
     monkeypatch.setattr(catalog_module, "fetch_catalog", _must_not_fetch)
     assert catalog_module.start_sync_runtime(ModelProfileRegistry(), lambda _result: None) is False
+
+
+def test_no_credential_startup_log_is_chinese(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    detail_capture: list[logging.LogRecord],
+) -> None:
+    """方案七: the outer swallow and inner credential error are both Chinese."""
+    monkeypatch.setattr(catalog_module, "catalog_url", lambda: "http://127.0.0.1:1/base")
+    monkeypatch.setattr(catalog_module, "_resolve_catalog_credential", lambda: ("", ""))
+
+    with caplog.at_level(logging.WARNING, logger="aixcoding.catalog"):
+        assert catalog_module.sync_catalog_blocking() is None
+
+    records = [r for r in detail_capture if r.name == "aixcoding.detail.catalog"]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "同步模型目录失败，保留旧模型列表：没有模型目录凭证" in message
+    assert catalog_module.CATALOG_TOKEN_ENV in message
+    assert not [r for r in caplog.records if r.name == "aixcoding.catalog"]
 
 
 @pytest.mark.asyncio
@@ -369,6 +389,7 @@ def test_publish_fault_injection_mkdir_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
+    detail_capture: list[logging.LogRecord],
 ) -> None:
     """A directory-creation failure is converted, never leaked to the startup path."""
 
@@ -385,7 +406,8 @@ def test_publish_fault_injection_mkdir_fails(
     monkeypatch.setattr(catalog_module, "fetch_catalog", _make_fetch("x"))
     with caplog.at_level(logging.WARNING, logger="aixcoding.catalog"):
         assert sync_catalog_blocking() is None
-    assert "Could not sync" in caplog.text
+    assert "同步模型目录失败" not in caplog.text, "方案六: technical records stay off the main volume"
+    assert any("同步模型目录失败" in r.getMessage() for r in detail_capture)
 
 
 def test_infinite_context_length_is_absorbed() -> None:
@@ -424,7 +446,9 @@ def test_non_string_name_and_model_id_are_refused_before_publishing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_poll_parse_failure_is_logged(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+async def test_poll_parse_failure_is_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, detail_capture: list[logging.LogRecord]
+) -> None:
     """A payload the parser rejects stays visible from the polling path.
 
     The parse call lives inside fetch_catalog, below its logged fetch block;
@@ -466,9 +490,10 @@ async def test_poll_parse_failure_is_logged(monkeypatch: pytest.MonkeyPatch, cap
     with caplog.at_level(logging.WARNING, logger="aixcoding.catalog"):
         assert catalog_module.start_sync_runtime(registry, lambda: None, immediate=True)
         try:
-            assert await wait_until(lambda: "unusable" in caplog.text), (
-                f"expected the parse failure to be logged from the poll loop, got {caplog.text!r}"
+            assert await wait_until(lambda: any("不可用" in r.getMessage() for r in detail_capture)), (
+                "expected the parse failure on the detail volume (方案六)"
             )
+            assert "不可用" not in caplog.text, "the poll's technical records stay off the main volume"
         finally:
             catalog_module.stop_sync_runtime()
 
@@ -588,7 +613,7 @@ def test_startup_degrades_on_any_failure(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 
 def test_startup_degrades_on_unexpected_errors(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, detail_capture: list[logging.LogRecord]
 ) -> None:
     """The startup swallow is not ModelCatalogError-shaped only (PR #85 review C1/C2)."""
 
@@ -598,7 +623,8 @@ def test_startup_degrades_on_unexpected_errors(
     monkeypatch.setattr(catalog_module, "catalog_url", _explode)
     with caplog.at_level(logging.ERROR, logger="aixcoding.catalog"):
         assert sync_catalog_blocking() is None
-    assert "Unexpected error syncing" in caplog.text
+    assert "同步模型目录时发生意外错误" not in caplog.text
+    assert any("同步模型目录时发生意外错误" in r.getMessage() for r in detail_capture)
 
 
 @pytest.mark.asyncio
@@ -643,6 +669,7 @@ def test_retired_env_names_warn_and_do_not_apply(
     retired_name: str,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    detail_capture: list[logging.LogRecord],
 ) -> None:
     """Retired 0.28 names neither act nor leak their values into the log."""
     from chrys.foundation.config import process_settings as process_settings_module
@@ -666,9 +693,10 @@ def test_retired_env_names_warn_and_do_not_apply(
         assert catalog_module.sync_interval_seconds() == 15 * 60, "a retired name must not change the interval"
         assert catalog_module._catalog_token() == "", "a retired name must not supply a credential"
 
-    warnings = "\n".join(record.getMessage() for record in caplog.records)
+    warnings = "\n".join(record.getMessage() for record in detail_capture)  # 方案六: detail volume
     assert retired_name in warnings, f"the retired name {retired_name} should be warned about"
     assert f"retired-value-for-{retired_name}" not in warnings, "values must not leak into the log"
+    assert retired_name not in caplog.text, "the retired-name warning stays off the main volume"
 
 
 def test_new_env_names_take_priority(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -744,6 +772,7 @@ async def test_stale_generation_result_is_dropped(monkeypatch: pytest.MonkeyPatc
 async def test_stale_generation_result_after_apply_is_dropped_before_publishing(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    detail_capture: list[logging.LogRecord],
 ) -> None:
     """A stop that lands mid-apply drops the result before the registry sees it.
 
@@ -774,8 +803,8 @@ async def test_stale_generation_result_after_apply_is_dropped_before_publishing(
             assert await wait_until(apply_started.is_set, timeout=2.0), "the first sync never reached apply"
             catalog_module.stop_sync_runtime()  # generation bump lands mid-apply
             apply_release.set()
-            assert await wait_until(lambda: "dropped before publishing" in caplog.text), (
-                "the post-apply generation check must drop the stale result"
+            assert await wait_until(lambda: any("在发布前丢弃" in r.getMessage() for r in detail_capture)), (
+                "the post-apply generation check must drop the stale result (detail volume, 方案六)"
             )
             assert not seen, "a result from before the stop must not reach the callback"
             assert registry.list_ids() == [], "nothing must be installed after the stop"
@@ -837,6 +866,60 @@ def test_perform_logout_stops_the_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(login_actions, "get_login_session", _Session)
     login_actions.perform_logout(_Host())
     assert stopped, "logout must stop the catalog poll"
+
+
+def test_credential_rejected_callback_mirrors_logout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """方案四: the rejected hook stops the poll, toasts and refreshes — via call_from_thread."""
+    from chrys.app.aixcoding.tui import login_actions
+    from chrys.service.aixcoding import catalog
+
+    events: list[str] = []
+    monkeypatch.setattr(catalog, "stop_sync_runtime", lambda: events.append("stop"))
+
+    class _App:
+        def call_from_thread(self, callback: Callable[[], None]) -> None:
+            events.append("hop")
+            callback()
+
+    class _Screen:
+        app = _App()
+
+        def notify(self, message: str, *, severity: str = "information") -> None:
+            events.append(f"notify:{message}:{severity}")
+
+        def refresh_login_indicator(self, **_kwargs: object) -> None:
+            events.append("refresh")
+
+    login_actions._make_credential_rejected_callback(_Screen())()
+    assert events[0] == "hop", "poll-thread UI work must hop through call_from_thread"
+    assert "stop" in events, "the rejected teardown mirrors logout: no silent no-credential spinning"
+    assert "refresh" in events
+    assert any(e.startswith("notify:登录已失效") and e.endswith(":warning") for e in events)
+
+
+def test_credential_rejected_callback_on_the_ui_thread_applies_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """call_from_thread raises RuntimeError on the UI thread: fall back to applying directly."""
+    from chrys.app.aixcoding.tui import login_actions
+    from chrys.service.aixcoding import catalog
+
+    events: list[str] = []
+    monkeypatch.setattr(catalog, "stop_sync_runtime", lambda: events.append("stop"))
+
+    class _App:
+        def call_from_thread(self, _callback: object) -> None:
+            raise RuntimeError("call_from_thread invoked from the UI thread")
+
+    class _Screen:
+        app = _App()
+
+        def notify(self, *_args: object, **_kwargs: object) -> None:
+            events.append("notify")
+
+        def refresh_login_indicator(self, **_kwargs: object) -> None:
+            events.append("refresh")
+
+    login_actions._make_credential_rejected_callback(_Screen())()
+    assert events == ["stop", "notify", "refresh"]
 
 
 def test_resume_sync_runtime_uses_remembered_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -922,36 +1005,31 @@ async def test_request_log_redacts_user_id_and_detail_carries_the_full_endpoint(
     assert catalog.items
 
     main_records = [r for r in caplog.records if r.name == "aixcoding.catalog"]
-    request_lines = [r.getMessage() for r in main_records if "Model catalog request" in r.getMessage()]
-    assert len(request_lines) == 1
-    assert "userId" not in request_lines[0]
-    for record in main_records:
-        assert "1234567" not in record.getMessage(), "the main channel stays redacted even at DEBUG"
+    assert not main_records, "方案六: no catalog records on the main volume, even at DEBUG"
 
     assert not [r for r in caplog.records if r.name.startswith("aixcoding.detail")], (
         "the detail subtree must never propagate to the root logger"
     )
-    request_details = [r for r in detail_capture if "Model catalog request" in r.getMessage()]
-    assert len(request_details) == 1
-    detail_record = request_details[0]
-    assert detail_record.name == "aixcoding.detail.catalog"
-    assert detail_record.levelname == "DETAIL"
-    assert detail_record.levelno == DETAIL_LEVEL == catalog_module._DETAIL_LEVEL, "the mirrored level must match"
-    assert "userId=1234567" in detail_record.getMessage()
+    request_details = [r for r in detail_capture if "模型目录请求" in r.getMessage()]
+    assert len(request_details) == 2, "redacted + full-endpoint request twins, both on detail"
+    for record in request_details:
+        assert record.name == "aixcoding.detail.catalog"
+        assert record.levelname == "DETAIL"
+        assert record.levelno == DETAIL_LEVEL == catalog_module._DETAIL_LEVEL
+    detail_record = next(r for r in request_details if "userId" in r.getMessage())
+    assert "userId=1234567" in detail_record.getMessage(), "the full endpoint stays on detail"
 
 
-def test_unknown_fields_are_logged_only_at_debug(caplog: pytest.LogCaptureFixture) -> None:
-    """Field-level diagnostics are DEBUG-gated: the default level stays terse."""
+def test_unknown_fields_are_logged_only_at_debug(
+    caplog: pytest.LogCaptureFixture, detail_capture: list[logging.LogRecord]
+) -> None:
+    """方案六: field-level diagnostics live on the detail volume only, never the main one."""
     payload = {"items": [{"id": "a", "name": "A", "provider": "openai", "model_id": "m", "futureKey": 1}]}
 
-    with caplog.at_level(logging.INFO, logger="aixcoding.catalog"):
-        catalog_module.parse_catalog(payload)
-    assert not [r for r in caplog.records if r.name == "aixcoding.catalog"], "INFO keeps field drops silent"
-
-    caplog.clear()
     with caplog.at_level(logging.DEBUG, logger="aixcoding.catalog"):
         catalog_module.parse_catalog(payload)
-    drops = [r.getMessage() for r in caplog.records if r.name == "aixcoding.catalog" and r.levelno == logging.DEBUG]
+    assert not [r for r in caplog.records if r.name == "aixcoding.catalog"], "the main volume stays silent"
+    drops = [r.getMessage() for r in detail_capture if "未知字段" in r.getMessage()]
     assert len(drops) == 1
     assert "futureKey" in drops[0]
 
@@ -1022,36 +1100,42 @@ async def test_verified_login_fetches_after_one_verification(monkeypatch: pytest
 def test_unverified_login_blocks_startup_with_two_warnings(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    detail_capture: list[logging.LogRecord],
 ) -> None:
-    """Startup shape: the fetch-side WARNING plus the startup swallow's own line."""
+    """Startup shape: fetch-side + swallow records, both on the detail volume (方案六)."""
     _wire_unverified(monkeypatch)
     with caplog.at_level(logging.WARNING, logger="aixcoding.catalog"):
         assert sync_catalog_blocking() is None
-    warnings = [r for r in caplog.records if r.name == "aixcoding.catalog" and r.levelno == logging.WARNING]
-    assert len(warnings) == 2, f"expected pre-verification + swallow lines, got {caplog.text!r}"
-    assert "no verified login" in warnings[0].getMessage()
-    assert "Could not sync" in warnings[1].getMessage()
+    records = [r for r in detail_capture if r.name == "aixcoding.detail.catalog"]
+    assert len(records) == 2, f"expected pre-verification + swallow lines on detail, got {detail_capture!r}"
+    assert "登录未通过验证" in records[0].getMessage()
+    assert "同步模型目录失败" in records[1].getMessage()
+    assert "登录未通过验证" not in caplog.text and "同步模型目录失败" not in caplog.text, (
+        "the main volume carries neither record"
+    )
 
 
 async def test_unverified_login_poll_logs_a_single_warning(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    detail_capture: list[logging.LogRecord],
 ) -> None:
-    """Poll shape: only the fetch-side WARNING — _sync_once never adds its own."""
+    """Poll shape: only the fetch-side record on detail — _sync_once never adds its own."""
     _wire_unverified(monkeypatch)
     monkeypatch.setattr(catalog_module, "sync_interval_seconds", lambda: 60)
     registry = ModelProfileRegistry()
     with caplog.at_level(logging.WARNING, logger="aixcoding.catalog"):
         assert catalog_module.start_sync_runtime(registry, lambda: None, immediate=True)
         try:
-            assert await wait_until(lambda: "no verified login" in caplog.text), (
-                f"the poll never logged the pre-verification skip: {caplog.text!r}"
+            assert await wait_until(lambda: any("登录未通过验证" in r.getMessage() for r in detail_capture)), (
+                "the poll must log the pre-verification skip on the detail volume (方案六)"
             )
         finally:
             catalog_module.stop_sync_runtime()
-    warnings = [r for r in caplog.records if r.name == "aixcoding.catalog" and r.levelno == logging.WARNING]
-    assert len(warnings) == 1, f"the poll must not add a swallow line: {caplog.text!r}"
-    assert "Could not sync" not in caplog.text
+    skips = [r for r in detail_capture if "登录未通过验证" in r.getMessage()]
+    assert len(skips) == 1, "the poll must not add a swallow line"
+    assert not [r for r in detail_capture if "同步模型目录失败" in r.getMessage()], "no swallow line on detail either"
+    assert "登录未通过验证" not in caplog.text, "the skip stays off the main volume"
 
 
 async def test_env_token_skips_preverification(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1074,8 +1158,9 @@ def test_catalog_token_is_a_thin_wrapper_over_resolve(monkeypatch: pytest.Monkey
 async def test_unverified_real_session_end_to_end(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """D6 backstop: a real LoginSession, a rejected credential, no autouse double.
 
-    The pre-verification must block the request AND leave the store untouched
-    (clearing belongs to auth's own check path, decision 乙).
+    The pre-verification must block the request AND clear the credential through
+    the shared point, firing the rejected hook once (decision 乙 revised
+    2026-11-04: the badge must not keep claiming "logged in").
     """
     from chrys.kernel.aixcoding.auth import Environment, LoginSession, StoredCredential
     from chrys.kernel.aixcoding.auth.crypto import MemoryBackend
@@ -1105,10 +1190,13 @@ async def test_unverified_real_session_end_to_end(monkeypatch: pytest.MonkeyPatc
             raise AssertionError("an unverified login must not issue a catalog request")
 
     monkeypatch.setattr(catalog_module.httpx, "AsyncClient", _ExplodingClient)
+    notifications: list[str] = []
+    session.on_credential_rejected = lambda: notifications.append("fired")
     with pytest.raises(ModelCatalogError):
         await catalog_module.fetch_catalog()
-    assert session.store.load(Environment.LOCAL) is not None, "pre-verification must not clear the store"
-    assert session.stored_token == "stale-token"
+    assert session.store.load(Environment.LOCAL) is None, "a rejected credential is cleared by the verify"
+    assert session.stored_token is None
+    assert notifications == ["fired"]
 
 
 async def test_response_detail_logged(
@@ -1129,7 +1217,7 @@ async def test_response_detail_logged(
     with caplog.at_level(logging.INFO, logger="aixcoding.catalog"):
         await catalog_module.fetch_catalog()
 
-    details = [r for r in detail_capture if "response detail" in r.getMessage()]
+    details = [r for r in detail_capture if "响应详情" in r.getMessage()]
     assert len(details) == 1
     record = details[0]
     assert record.name == "aixcoding.detail.catalog"
@@ -1139,4 +1227,4 @@ async def test_response_detail_logged(
     assert "default_profile_id=a" in message
     for fragment in ("'id': 'a'", "'name': 'Alpha'", "'model_id': 'm-a'", "'base_url': 'http://x/v1'", "'id': 'b'"):
         assert fragment in message, f"missing {fragment} in {message}"
-    assert "response detail" not in caplog.text, "the detail stays off the main channel"
+    assert "响应详情" not in caplog.text, "the detail stays off the main channel"

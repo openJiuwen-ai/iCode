@@ -69,13 +69,10 @@ from chrys.service.profiles.models.schema import (
     ModelProfile,
 )
 
-# File-only by default: the aixcoding.* subtree stays off the F6 panel unless
-# aixcoding.toml opts in ([logging] panel); sinks live in kernel/aixcoding/diagnostics.
-logger = logging.getLogger("aixcoding.catalog")
-
-# AIxCoding detail logging: the full request endpoint carries userId, so it goes
-# to the file-only "aixcoding.detail.catalog" logger (ADR-0017) — mirroring
-# auth's split; that subtree never propagates to the panel or the upstream log.
+# AIxCoding 方案六 (2026-11-04): every catalog record is a technical event and
+# lives only on the file-only "aixcoding.detail.catalog" logger (ADR-0017) — the
+# main volume and the F6 panel carry user-facing events only (DEVELOPMENT.md §9).
+# That subtree never propagates to the panel or the upstream log.
 _detail_log = logging.getLogger("aixcoding.detail.catalog")
 
 #: AIxCoding detail logging: level of the file-only channel; mirrors
@@ -232,8 +229,9 @@ def _warn_retired_env() -> None:
             continue
         if os.environ.get(name):
             _warned_retired_env.add(name)
-            logger.warning(
-                "Environment variable %s is retired and has no effect; use the AIXCODING_MODEL_CATALOG_* names.",
+            _detail_log.log(
+                _DETAIL_LEVEL,
+                "环境变量 %s 已停用且不生效；请改用 AIXCODING_MODEL_CATALOG_* 系列变量。",
                 name,
             )
 
@@ -400,7 +398,7 @@ def _unique_profile_id(base: str, taken: set[str]) -> str:
     suffix = 2
     while f"{base}-{suffix}" in taken:
         suffix += 1
-    logger.debug("Catalog profile id %r is taken; disambiguated to %r.", base, f"{base}-{suffix}")
+    _detail_log.log(_DETAIL_LEVEL, "模型目录中的 profile id %r 已存在；改用 %r 消歧。", base, f"{base}-{suffix}")
     return f"{base}-{suffix}"
 
 
@@ -413,12 +411,12 @@ def _positive_int(value: object) -> int:
     if value is None:
         return 0
     if isinstance(value, bool) or not isinstance(value, int | float | str):
-        logger.debug("Catalog numeric field %r is not a number; the field is dropped.", value)
+        _detail_log.log(_DETAIL_LEVEL, "模型目录数值字段 %r 不是数字；已丢弃该字段。", value)
         return 0
     try:
         number = int(value)
     except ValueError, OverflowError:
-        logger.debug("Catalog numeric field %r does not fit an integer; the field is dropped.", value)
+        _detail_log.log(_DETAIL_LEVEL, "模型目录数值字段 %r 无法转换为整数；已丢弃该字段。", value)
         return 0
     return max(0, number)
 
@@ -431,16 +429,16 @@ def translate_models_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
     entries = payload.get("models")
     if not isinstance(entries, list):
-        raise ModelCatalogError(f"Server catalog 'models' must be a list, got {type(entries).__name__!r}")
+        raise ModelCatalogError(f"服务端目录的 'models' 必须是列表，实际为 {type(entries).__name__!r}")
 
     items: list[dict[str, Any]] = []
     taken: set[str] = set()
     for index, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict):
-            raise ModelCatalogError(f"Catalog item {index} must be a JSON object, got {type(entry).__name__!r}")
+            raise ModelCatalogError(f"目录第 {index} 项必须是 JSON 对象，实际为 {type(entry).__name__!r}")
         model = str(entry.get("model") or "").strip()
         if not model:
-            raise ModelCatalogError(f"Catalog item {index} has no 'model' to derive a profile id from")
+            raise ModelCatalogError(f"目录第 {index} 项缺少 'model'，无法派生 profile id")
         profile_id = _unique_profile_id(derive_profile_id(model), taken)
         taken.add(profile_id)
         item: dict[str, Any] = {
@@ -489,23 +487,21 @@ def parse_catalog(payload: object) -> ModelCatalog:
         items_raw = payload
 
     if not isinstance(items_raw, list):
-        raise ModelCatalogError(
-            f"Model catalog must be a list or an object with 'items', got {type(items_raw).__name__!r}"
-        )
+        raise ModelCatalogError(f"模型目录必须是列表或包含 'items' 的对象，实际为 {type(items_raw).__name__!r}")
     if not items_raw:
-        raise ModelCatalogError("Model catalog is empty; refusing to replace the model list with nothing.")
+        raise ModelCatalogError("模型目录为空；拒绝用空目录替换现有模型列表。")
     if len(items_raw) > MAX_PROFILES:
-        raise ModelCatalogError(f"Model catalog exceeds the {MAX_PROFILES} profile limit.")
+        raise ModelCatalogError(f"模型目录超过 {MAX_PROFILES} 个模型配置的上限。")
 
     allowed = _profile_field_names()
     profiles: list[ModelProfile] = []
     seen: set[str] = set()
     for index, item in enumerate(items_raw, start=1):
         if not isinstance(item, dict):
-            raise ModelCatalogError(f"Catalog item {index} must be a JSON object, got {type(item).__name__!r}")
+            raise ModelCatalogError(f"目录第 {index} 项必须是 JSON 对象，实际为 {type(item).__name__!r}")
         dropped = sorted(set(item) - allowed)
         if dropped:
-            logger.debug("Catalog item %d: unknown field(s) dropped: %s.", index, ", ".join(dropped))
+            _detail_log.log(_DETAIL_LEVEL, "模型目录第 %d 项：已丢弃未知字段：%s。", index, ", ".join(dropped))
         filtered = {key: value for key, value in item.items() if key in allowed}
         try:
             profile = ModelProfile(**filtered)  # type: ignore[arg-type]
@@ -516,19 +512,19 @@ def parse_catalog(payload: object) -> ModelCatalog:
             # are checked for the registry and request chains that consume
             # them (``profile.name.casefold()`` ordering, wire model id).
             if not SAFE_PROFILE_ID.match(profile.id):
-                raise ModelCatalogError(f"Catalog item {index} has an unusable profile id: {profile.id!r}")
+                raise ModelCatalogError(f"目录第 {index} 项的 profile id 不可用：{profile.id!r}")
             if not isinstance(profile.name, str):
-                raise ModelCatalogError(f"Catalog item {index} has a non-string name: {profile.name!r}")
+                raise ModelCatalogError(f"目录第 {index} 项的 name 不是字符串：{profile.name!r}")
             if not isinstance(profile.model_id, str):
-                raise ModelCatalogError(f"Catalog item {index} has a non-string model id: {profile.model_id!r}")
+                raise ModelCatalogError(f"目录第 {index} 项的 model_id 不是字符串：{profile.model_id!r}")
             if profile.provider not in VALID_PROVIDERS:
-                raise ModelCatalogError(f"Catalog item {index} has an unsupported provider: {profile.provider!r}")
+                raise ModelCatalogError(f"目录第 {index} 项的 provider 不受支持：{profile.provider!r}")
             if profile.api_style not in VALID_API_STYLES:
-                raise ModelCatalogError(f"Catalog item {index} has an unsupported api_style: {profile.api_style!r}")
+                raise ModelCatalogError(f"目录第 {index} 项的 api_style 不受支持：{profile.api_style!r}")
         except (TypeError, ValueError) as exc:
-            raise ModelCatalogError(f"Catalog item {index} is invalid: {exc}") from exc
+            raise ModelCatalogError(f"目录第 {index} 项无效：{exc}") from exc
         if profile.id in seen:
-            raise ModelCatalogError(f"Catalog item {index} repeats profile id {profile.id!r}")
+            raise ModelCatalogError(f"目录第 {index} 项重复使用 profile id {profile.id!r}")
         seen.add(profile.id)
         profiles.append(profile)
 
@@ -575,7 +571,7 @@ def _resolve_catalog_credential() -> tuple[str, str]:
 
         stored = get_login_session().stored_token
     except Exception:
-        logger.warning("Could not read the login session for the model catalog request.", exc_info=True)
+        _detail_log.log(_DETAIL_LEVEL, "读取模型目录请求所需的登录会话失败。", exc_info=True)
         return "", ""
     return (stored or "").strip(), "store"
 
@@ -604,7 +600,7 @@ def _catalog_user_id() -> str:
 
         stored = get_login_session().stored_user_id
     except Exception:
-        logger.warning("Could not read the login session user for the model catalog request.", exc_info=True)
+        _detail_log.log(_DETAIL_LEVEL, "读取模型目录请求所需的登录用户失败。", exc_info=True)
         return ""
     return (stored or "").strip()
 
@@ -656,13 +652,12 @@ async def fetch_catalog(url: str | None = None, *, timeout: float = _DEFAULT_FET
     """
     endpoint = (url or catalog_url()).strip()
     if not endpoint:
-        raise ModelCatalogError("No model catalog source is configured.")
+        raise ModelCatalogError("未配置模型目录来源。")
 
     token, token_source = _resolve_catalog_credential()
     if not token:
         raise ModelCatalogError(
-            f"No model catalog credential: log in, or set {CATALOG_TOKEN_ENV}. "
-            "The sync is skipped and the previous model list is kept."
+            f"没有模型目录凭证：请登录，或设置 {CATALOG_TOKEN_ENV}。本次同步已跳过，保留旧模型列表。"
         )
     if token_source != "env":
         # AIxCoding catalog-auth-gating (decision 乙): only a login verified
@@ -673,11 +668,8 @@ async def fetch_catalog(url: str | None = None, *, timeout: float = _DEFAULT_FET
         from chrys.kernel.aixcoding.auth import get_login_session
 
         if await get_login_session().verify_live_credential() is None:
-            logger.warning("Model catalog sync skipped: no verified login (logged out, rejected, or offline).")
-            raise ModelCatalogError(
-                "No verified login for the model catalog request. "
-                "The sync is skipped and the previous model list is kept."
-            )
+            _detail_log.log(_DETAIL_LEVEL, "跳过模型目录同步：登录未通过验证（未登录、凭证被拒或离线）。")
+            raise ModelCatalogError("模型目录请求的登录状态未通过验证。本次同步已跳过，保留旧模型列表。")
 
     headers: dict[str, str] = {"Accept": "application/json", "token": token}
     endpoint = _catalog_endpoint(endpoint, _catalog_user_id())
@@ -685,22 +677,22 @@ async def fetch_catalog(url: str | None = None, *, timeout: float = _DEFAULT_FET
     log_endpoint = endpoint.split("?", 1)[0]
 
     started = time.monotonic()
-    logger.info("Model catalog request: GET %s (timeout %.0fs).", log_endpoint, timeout)
-    _detail_log.log(_DETAIL_LEVEL, "Model catalog request: GET %s (timeout %.0fs).", endpoint, timeout)
+    _detail_log.log(_DETAIL_LEVEL, "模型目录请求：GET %s（超时 %.0f 秒）。", log_endpoint, timeout)
+    _detail_log.log(_DETAIL_LEVEL, "模型目录请求：GET %s（超时 %.0f 秒）。", endpoint, timeout)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(endpoint, headers=headers)
             response.raise_for_status()
             payload: Any = response.json()
     except httpx.HTTPStatusError as exc:
-        logger.warning("Model catalog request rejected by %s: HTTP %d.", log_endpoint, exc.response.status_code)
-        raise ModelCatalogError(f"Model catalog request failed: HTTP {exc.response.status_code}") from exc
+        _detail_log.log(_DETAIL_LEVEL, "模型目录请求被 %s 拒绝：HTTP %d。", log_endpoint, exc.response.status_code)
+        raise ModelCatalogError(f"模型目录请求失败：HTTP {exc.response.status_code}") from exc
     except httpx.HTTPError as exc:
-        logger.warning("Model catalog request to %s failed before a response: %s", log_endpoint, exc)
-        raise ModelCatalogError(f"Model catalog request failed: {exc}") from exc
+        _detail_log.log(_DETAIL_LEVEL, "模型目录请求 %s 在收到响应前失败：%s", log_endpoint, exc)
+        raise ModelCatalogError(f"模型目录请求失败：{exc}") from exc
     except ValueError as exc:
-        logger.warning("Model catalog response from %s is not valid JSON: %s", log_endpoint, exc)
-        raise ModelCatalogError(f"Model catalog response is not valid JSON: {exc}") from exc
+        _detail_log.log(_DETAIL_LEVEL, "来自 %s 的模型目录响应不是有效 JSON：%s", log_endpoint, exc)
+        raise ModelCatalogError(f"模型目录响应不是有效 JSON：{exc}") from exc
 
     try:
         catalog = parse_catalog(payload)
@@ -708,10 +700,11 @@ async def fetch_catalog(url: str | None = None, *, timeout: float = _DEFAULT_FET
         # The poll loop treats a ModelCatalogError from here as already
         # logged; parse failures are raised below the logged fetch block,
         # so they get their own line or they would go silent on the clock.
-        logger.warning("Model catalog response from %s is unusable: %s", log_endpoint, exc)
+        _detail_log.log(_DETAIL_LEVEL, "来自 %s 的模型目录响应不可用：%s", log_endpoint, exc)
         raise
-    logger.info(
-        "Model catalog response: HTTP %d, %d model(s), version %.12s, in %.2fs.",
+    _detail_log.log(
+        _DETAIL_LEVEL,
+        "模型目录响应：HTTP %d，%d 个模型，版本 %.12s，耗时 %.2f 秒。",
         response.status_code,
         len(catalog.items),
         catalog.version,
@@ -719,7 +712,7 @@ async def fetch_catalog(url: str | None = None, *, timeout: float = _DEFAULT_FET
     )
     _detail_log.log(
         _DETAIL_LEVEL,
-        "Model catalog response detail: version=%s default_profile_id=%s models=%s",
+        "模型目录响应详情：version=%s default_profile_id=%s models=%s",
         catalog.version,
         catalog.default_profile_id,
         [{"id": p.id, "name": p.name, "model_id": p.model_id, "base_url": p.base_url} for p in catalog.items],
@@ -733,7 +726,7 @@ def _remove_orphan_tmp(directory: Path) -> None:
         try:
             path.unlink()
         except OSError:
-            logger.warning("Could not remove stale staging file %s; the next sync retries.", path)
+            _detail_log.log(_DETAIL_LEVEL, "无法删除遗留暂存文件 %s；下次同步将重试。", path)
 
 
 def _write_profile(path: Path, profile: ModelProfile) -> None:
@@ -772,7 +765,7 @@ def apply_catalog(catalog: ModelCatalog, *, source: str = SOURCE_REMOTE) -> Cata
             sync rewrites the state.
     """
     if not catalog.items:
-        raise ModelCatalogError("Cannot apply an empty model catalog.")
+        raise ModelCatalogError("不能应用空模型目录。")
 
     directory = catalog_directory()
     previous_state = read_catalog_state()
@@ -808,12 +801,13 @@ def apply_catalog(catalog: ModelCatalog, *, source: str = SOURCE_REMOTE) -> Cata
             try:
                 path.unlink()
             except OSError:
-                logger.warning("Could not remove staging file %s after a failed publish.", path)
-        logger.warning(
-            "Model catalog publish failed (%s); the previous list stays readable and the next sync retries.",
+                _detail_log.log(_DETAIL_LEVEL, "发布失败后无法删除暂存文件 %s。", path)
+        _detail_log.log(
+            _DETAIL_LEVEL,
+            "模型目录发布失败（%s）；旧模型列表仍可使用，下次同步将重试。",
             exc,
         )
-        raise ModelCatalogError(f"Model catalog publish failed: {exc}") from exc
+        raise ModelCatalogError(f"模型目录发布失败：{exc}") from exc
 
     result = CatalogSyncResult(
         replaced=True,
@@ -822,8 +816,9 @@ def apply_catalog(catalog: ModelCatalog, *, source: str = SOURCE_REMOTE) -> Cata
         default_profile_id=catalog.default_profile_id,
         previous_profile_ids=previous_ids,
     )
-    logger.info(
-        "Model catalog %s applied: %d profile(s) from %s.",
+    _detail_log.log(
+        _DETAIL_LEVEL,
+        "已应用模型目录 %s：来自 %s，共 %d 个模型配置。",
         catalog.version,
         len(catalog.items),
         source,
@@ -870,14 +865,20 @@ def sync_catalog_blocking(*, timeout: float = _DEFAULT_FETCH_TIMEOUT) -> Catalog
         except RuntimeError:
             pass
         else:
-            logger.warning("sync_catalog_blocking called with a running loop; await sync_catalog instead.")
+            _detail_log.log(
+                _DETAIL_LEVEL, "在运行中的事件循环里调用了 sync_catalog_blocking；请改用 await sync_catalog。"
+            )
             return None
         return asyncio.run(sync_catalog(timeout=timeout))
     except ModelCatalogError as exc:
-        logger.warning("Could not sync the model catalog, keeping the previous list: %s", exc)
+        _detail_log.log(_DETAIL_LEVEL, "同步模型目录失败，保留旧模型列表：%s", exc)
         return None
     except Exception:
-        logger.exception("Unexpected error syncing the model catalog; the previous list stays and startup continues.")
+        _detail_log.log(
+            _DETAIL_LEVEL,
+            "同步模型目录时发生意外错误；保留旧模型列表并继续启动。",
+            exc_info=True,
+        )
         return None
 
 
@@ -899,11 +900,15 @@ def sync_interval_seconds() -> float:
     try:
         value = float(raw)
     except ValueError:
-        logger.warning("%s=%r is not a number; using %.0fs.", SYNC_INTERVAL_ENV, raw, SYNC_INTERVAL_SECONDS)
+        _detail_log.log(_DETAIL_LEVEL, "%s=%r 不是数字；使用 %.0f 秒。", SYNC_INTERVAL_ENV, raw, SYNC_INTERVAL_SECONDS)
         return float(SYNC_INTERVAL_SECONDS)
     if not math.isfinite(value) or value <= 0:
-        logger.warning(
-            "%s=%r is not a positive finite number; using %.0fs.", SYNC_INTERVAL_ENV, raw, SYNC_INTERVAL_SECONDS
+        _detail_log.log(
+            _DETAIL_LEVEL,
+            "%s=%r 不是正有限数；使用 %.0f 秒。",
+            SYNC_INTERVAL_ENV,
+            raw,
+            SYNC_INTERVAL_SECONDS,
         )
         return float(SYNC_INTERVAL_SECONDS)
     return value
@@ -1017,10 +1022,10 @@ class _SyncRuntime:
             return self._generation
 
     def _run(self) -> None:
-        logger.info("Model catalog sync started: every %.0fs.", self._interval)
+        _detail_log.log(_DETAIL_LEVEL, "模型目录同步已启动：每 %.0f 秒轮询。", self._interval)
         while self._wait(self._interval):
             self._sync_once()
-        logger.info("Model catalog sync stopped.")
+        _detail_log.log(_DETAIL_LEVEL, "模型目录同步已停止。")
 
     def _sync_once(self) -> None:
         generation = self._generation_snapshot()
@@ -1031,23 +1036,23 @@ class _SyncRuntime:
         except Exception:
             # The poll is a daemon thread nobody restarts: an unexpected
             # error must not kill the schedule, only this round.
-            logger.exception("Unexpected error in the model catalog poll; the loop continues.")
+            _detail_log.log(_DETAIL_LEVEL, "模型目录轮询发生意外错误；继续后续轮询。", exc_info=True)
             return
         if self._generation_snapshot() != generation:
-            logger.info("Model catalog result from generation %d dropped before applying.", generation)
+            _detail_log.log(_DETAIL_LEVEL, "模型目录代次 %d 的结果已在应用前丢弃。", generation)
             return
         try:
             result = apply_catalog(catalog)
         except ModelCatalogError:
             return  # already logged where it was raised
         except Exception:
-            logger.exception("Unexpected error applying the model catalog; the loop continues.")
+            _detail_log.log(_DETAIL_LEVEL, "应用模型目录时发生意外错误；继续后续轮询。", exc_info=True)
             return
         if self._generation_snapshot() != generation:
             # The writes already happened — they are idempotent and the next
             # sync converges — but the result must not reach the registry or
             # the UI of a runtime that moved on (a logout, an account switch).
-            logger.info("Model catalog result from generation %d dropped before publishing.", generation)
+            _detail_log.log(_DETAIL_LEVEL, "模型目录代次 %d 的结果已在发布前丢弃。", generation)
             return
         self._publish(catalog, result)
 
@@ -1060,12 +1065,12 @@ class _SyncRuntime:
         try:
             registry.install_snapshot(catalog.items)
         except Exception:
-            logger.exception("Model catalog registry install failed; the next sync retries.")
+            _detail_log.log(_DETAIL_LEVEL, "模型目录注册表安装失败；下次同步将重试。", exc_info=True)
             return
         try:
             refresh_ui(result)
         except Exception:
-            logger.exception("Model catalog sync callback failed; the next sync still runs.")
+            _detail_log.log(_DETAIL_LEVEL, "模型目录同步回调失败；下次同步仍会执行。", exc_info=True)
 
 
 _runtime: _SyncRuntime | None = None
@@ -1105,10 +1110,10 @@ def start_sync_runtime(
     global _runtime, _last_wiring
     _last_wiring = (registry, refresh_ui)
     if not catalog_url():
-        logger.info("Model catalog sync not started: no catalog source is configured.")
+        _detail_log.log(_DETAIL_LEVEL, "模型目录同步未启动：未配置目录来源。")
         return False
     if not has_catalog_credential():
-        logger.info("Model catalog sync not started: no credential yet — it starts on login.")
+        _detail_log.log(_DETAIL_LEVEL, "模型目录同步未启动：暂无凭证，登录后将启动。")
         return False
 
     with _runtime_lock:
@@ -1146,7 +1151,7 @@ def resume_sync_runtime(*, immediate: bool = True) -> bool:
             return True
         wiring = _last_wiring
     if wiring is None:
-        logger.info("Model catalog sync resume skipped: startup left no wiring.")
+        _detail_log.log(_DETAIL_LEVEL, "跳过恢复模型目录同步：启动阶段未留下接线信息。")
         return False
     return start_sync_runtime(wiring[0], wiring[1], immediate=immediate)
 

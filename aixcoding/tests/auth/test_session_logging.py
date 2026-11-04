@@ -143,16 +143,17 @@ async def test_02_delegated_rejected(tmp_path, caplog) -> None:
         assert_clean(records, "secret-bogus-delegated")
 
 
-async def test_03_delegated_network_fail(tmp_path, caplog) -> None:
+async def test_03_delegated_network_fail(tmp_path, caplog, detail_capture) -> None:
     session = delegated_session(tmp_path, DEAD_URL, "secret-d-token")
     with caplog.at_level(logging.INFO, logger="aixcoding.auth"):
         assert await session.check_silent() is None
     assert session.delegated_credential is not None  # network failure keeps the delegation
     # Platform assumption: a loopback dead port refuses immediately (no firewall
     # on 127.0.0.1), so the httpx cause is ConnectError, not ConnectTimeout.
-    records = auth_records(caplog)
+    # 方案六 B1: network details are detail-volume only; the main volume stays silent.
+    assert auth_records(caplog) == []
+    records = [r for r in detail_capture if r.name == "aixcoding.detail.auth"]
     assert len(records) == 1
-    assert records[0].levelname == "ERROR"
     assert records[0].getMessage() == (
         "登录检查未完成（网络不通），登录状态保留；env=local exc=AuthNetworkError cause=ConnectError"
     )
@@ -207,7 +208,7 @@ async def test_06_stored_rejected(tmp_path, caplog) -> None:
         assert_clean(records, "secret-bogus-stored")
 
 
-async def test_07_stored_network_fail(tmp_path, caplog) -> None:
+async def test_07_stored_network_fail(tmp_path, caplog, detail_capture) -> None:
     session = make_session(tmp_path, DEAD_URL)
     session.store.store(
         Environment.LOCAL,
@@ -217,9 +218,10 @@ async def test_07_stored_network_fail(tmp_path, caplog) -> None:
         assert await session.check_silent() is None
     assert session.stored_token == "secret-keep-token"  # offline is not a logout
     # Platform assumption: loopback dead port refuses immediately (see test_03).
-    records = auth_records(caplog)
+    # 方案六 B2: detail-volume only.
+    assert auth_records(caplog) == []
+    records = [r for r in detail_capture if r.name == "aixcoding.detail.auth"]
     assert len(records) == 1
-    assert records[0].levelname == "ERROR"
     assert records[0].getMessage() == (
         "登录检查未完成（网络不通），登录信息保留；env=local exc=AuthNetworkError cause=ConnectError"
     )
@@ -245,7 +247,7 @@ async def test_08_login_success(tmp_path, caplog, detail_capture) -> None:
         assert detail_capture[0].getMessage() == f"登录成功；ehr={EHR} env=local"
 
 
-async def test_11_login_failed_denied(tmp_path, caplog) -> None:
+async def test_11_login_failed_denied(tmp_path, caplog, detail_capture) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/auth/device/code"):
             return httpx.Response(
@@ -278,8 +280,12 @@ async def test_11_login_failed_denied(tmp_path, caplog) -> None:
         records = auth_records(caplog)
         assert len(records) == 1
         assert records[0].levelname == "ERROR"
-        assert records[0].getMessage() == "登录失败；env=local exc=DevicePollDenied"
+        assert records[0].getMessage() == "登录失败：登录未完成，请稍后重试；env=local"
         assert_clean(records)
+        detail = [r for r in detail_capture if "登录失败" in r.getMessage()]
+        assert len(detail) == 1
+        assert "DevicePollDenied" in detail[0].getMessage()
+        assert detail[0].exc_info is None
     finally:
         await http.aclose()
 

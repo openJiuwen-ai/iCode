@@ -376,13 +376,19 @@ async def test_catalog_with_an_unknown_token_is_401(
     assert response.status_code == 401
 
 
-async def test_catalog_with_an_expired_token_is_401(
+async def test_grant_expiry_does_not_invalidate_an_issued_token(
     mock_factory: Callable[..., RunningCatalogMock], direct_route: None
 ) -> None:
+    """方案五 (PROD parity): an issued token outlives its grant's login window, both endpoints."""
     running = mock_factory(auth=MockAuthConfig(mode="auto"))
     token = _issue_token(running, expires_in=-1.0)
-    response = await _get_with_token(_catalog(running), token)
-    assert response.status_code == 401
+    origin = str(running.origin).rstrip("/")
+    async with httpx.AsyncClient() as client:
+        info = await client.post(f"{origin}/api/v1/user/info", json={"token": token})
+        catalog_response = await client.get(_catalog(running), headers={"token": token})
+    assert info.status_code == 200
+    assert info.json()["data"]["ehr"] == "1234567", "grant expiry must not refuse an issued token"
+    assert catalog_response.status_code == 200
 
 
 async def test_catalog_with_a_valid_token_is_served(
@@ -402,12 +408,14 @@ async def test_catalog_without_auth_stays_open(mock: RunningCatalogMock, direct_
     assert response.status_code == 200
 
 
-async def test_expired_token_is_refused_by_both_user_info_and_catalog(
+async def test_revoked_token_is_refused_by_both_user_info_and_catalog(
     mock_factory: Callable[..., RunningCatalogMock], direct_route: None
 ) -> None:
-    """F2: token_owner checks expiry too — no window where user/info passes but catalog 401s."""
+    """The refusal path stays: an explicitly revoked token (_revoke) is unknown to both endpoints."""
     running = mock_factory(auth=MockAuthConfig(mode="auto"))
-    token = _issue_token(running, expires_in=-1.0)
+    token = _issue_token(running)
+    state = running._server.auth_state  # type: ignore[attr-defined]
+    state._revoke(state._grants["d"])
     origin = str(running.origin).rstrip("/")
     async with httpx.AsyncClient() as client:
         info = await client.post(f"{origin}/api/v1/user/info", json={"token": token})
