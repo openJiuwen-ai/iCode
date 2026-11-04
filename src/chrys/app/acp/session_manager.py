@@ -413,7 +413,7 @@ class AcpSessionManager:
         return {"name": name, "deleted": deleted}
 
     def reset_agent_profile(self, name: str) -> dict[str, object]:
-        """Reset a built-in agent while retaining Skills, MCP, and Memory settings."""
+        """Reset a built-in agent while retaining Skills, MCP, Memory, and Extensions settings."""
         self.load_registries()
         name = _safe_profile_file_stem(name, field_name="agent profile name")
         current = self._agent_registry.get(name)

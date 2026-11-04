@@ -164,7 +164,7 @@ class WebFetchTools:
                 retries += 1
                 await asyncio.sleep(delay)
 
-    @tool(kind=KIND_WEB_FETCH)
+    @tool(kind=KIND_WEB_FETCH, requires_approval=True)
     async def web_fetch(
         self,
         url: Annotated[str, "Absolute HTTP(S) URL without embedded credentials"],

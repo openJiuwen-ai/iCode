@@ -26,10 +26,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
-from unittest.mock import create_autospec
 
 import pytest
 
+from tests.support.tool_packs import install_tools
 from tests.support.waiting import (
     ENGINE_TEST_WAIT_TIMEOUT,
     ENGINE_TURN_TIMEOUT,
@@ -77,7 +77,6 @@ from chrys.service.profiles.agents.schema import (
     ToolsConfig,
 )
 from chrys.service.state.store import JsonFileStateStore
-from chrys.service.tools.registry import ToolRegistry
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -208,7 +207,7 @@ def _install_client(
 
 
 def _install_echo_tool(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Patch ``ToolRegistry.load_builtins`` so ``echo`` is the profile's only tool."""
+    """Make ``echo`` the profile's only tool."""
 
     async def _echo(message: str) -> str:
         return f"echo: {message}"
@@ -252,13 +251,8 @@ async def _await_held_tool(engine: AgentEngine, held: _HeldTool) -> None:
 
 
 def _install_tool(monkeypatch: pytest.MonkeyPatch, tool: FunctionTool) -> None:
-    """Patch ``ToolRegistry.load_builtins`` (signature-checked) so *tool* is the profile's only tool."""
-
-    def _load(registry: ToolRegistry, *_args: object, **_kwargs: object) -> list[FunctionTool]:
-        registry.register(tool)
-        return [tool]
-
-    monkeypatch.setattr(ToolRegistry, "load_builtins", create_autospec(ToolRegistry.load_builtins, side_effect=_load))
+    """Make *tool* the profile's only tool (signature-checked)."""
+    install_tools(monkeypatch, [tool])
 
 
 async def _subscribe_all(bus: EventBus, events: list[object], *classes: type[Event]) -> None:

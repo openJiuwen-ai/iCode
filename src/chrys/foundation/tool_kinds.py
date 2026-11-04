@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Final
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,30 @@ TOOL_KINDS: Final[frozenset[str]] = frozenset(
         KIND_TODO,
     }
 )
+
+EXTENSION_ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"[a-z][a-z0-9_]{0,63}")
+"""What a Python extension's id looks like (``acme_release``)."""
+
+_EXTENSION_KIND_PREFIX: Final[str] = "extension."
+
+
+def extension_kind(extension_id: str) -> str:
+    """The kind of every tool of extension *extension_id*: ``extension.<id>``.
+
+    Prefixed so an extension never takes over an approval override written for a
+    tool of the same name: a bare override key equal to a kind applies to the kind.
+    """
+    return f"{_EXTENSION_KIND_PREFIX}{extension_id}"
+
+
+def is_extension_kind(kind: str | None) -> bool:
+    """Whether *kind* names an extension's tools, installed or not."""
+    return (
+        kind is not None
+        and kind.startswith(_EXTENSION_KIND_PREFIX)
+        and EXTENSION_ID_PATTERN.fullmatch(kind[len(_EXTENSION_KIND_PREFIX) :]) is not None
+    )
+
 
 TOOL_CALL_KIND_METADATA_KEY: Final[str] = "_chrys_tool_kind"
 """Structured tool kind persisted on assistant ``function_call`` contents.

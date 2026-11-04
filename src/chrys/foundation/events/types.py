@@ -1285,6 +1285,10 @@ class AgentRuntimeDetails:
 
     model: RuntimeModelDetails = field(default_factory=RuntimeModelDetails)
     builtin_tools: dict[str, list[str]] = field(default_factory=dict)
+    extension_tools: dict[str, list[str]] = field(default_factory=dict)
+    """Each extension's tools, by extension id."""
+    extension_failures: dict[str, str] = field(default_factory=dict)
+    """Why each extension the profile enables was left out, by extension id."""
     web_search_providers: dict[str, str] = field(default_factory=dict)
     context_tools: list[str] = field(default_factory=list)
     """The context management tools the agent has besides its built-in ones: compressing and recalling context."""

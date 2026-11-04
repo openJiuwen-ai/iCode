@@ -171,11 +171,11 @@ async def test_tools_panel_todo_checkbox_round_trip() -> None:
         checkbox = app.query_one("#tc-cat-todo", Checkbox)
         assert checkbox.value is True
         assert checkbox.disabled is False
-        assert app.query_one(ToolsConfigPanel).get_config() == ["todo"]
+        assert app.query_one(ToolsConfigPanel).get_config().builtins == ["todo"]
 
         checkbox.value = False
         await pilot.pause()
-        assert "todo" not in app.query_one(ToolsConfigPanel).get_config()
+        assert "todo" not in app.query_one(ToolsConfigPanel).get_config().builtins
 
 
 async def test_tools_panel_todo_checkbox_defaults_off_when_profile_omits_category() -> None:
@@ -185,7 +185,7 @@ async def test_tools_panel_todo_checkbox_defaults_off_when_profile_omits_categor
 
         checkbox = app.query_one("#tc-cat-todo", Checkbox)
         assert checkbox.value is False
-        assert app.query_one(ToolsConfigPanel).get_config() == ["shell"]
+        assert app.query_one(ToolsConfigPanel).get_config().builtins == ["shell"]
 
 
 async def test_tools_panel_has_no_switch_for_the_always_loaded_sleep() -> None:
@@ -196,7 +196,7 @@ async def test_tools_panel_has_no_switch_for_the_always_loaded_sleep() -> None:
 
         assert app.query("#tc-cat-shell")
         assert not app.query("#tc-cat-sleep")
-        assert app.query_one(ToolsConfigPanel).get_config() == ["shell"]
+        assert app.query_one(ToolsConfigPanel).get_config().builtins == ["shell"]
 
 
 async def test_tools_panel_toggles_web_search_and_web_fetch_independently() -> None:
@@ -208,9 +208,9 @@ async def test_tools_panel_toggles_web_search_and_web_fetch_independently() -> N
         search = app.query_one("#tc-cat-web-search", Checkbox)
         fetch = app.query_one("#tc-cat-web-fetch", Checkbox)
         assert (search.value, fetch.value) == (False, True)
-        assert app.query_one(ToolsConfigPanel).get_config() == ["web_fetch", "shell"]
+        assert app.query_one(ToolsConfigPanel).get_config().builtins == ["web_fetch", "shell"]
 
         search.value = True
-        assert app.query_one(ToolsConfigPanel).get_config() == ["web_search", "web_fetch", "shell"]
+        assert app.query_one(ToolsConfigPanel).get_config().builtins == ["web_search", "web_fetch", "shell"]
         fetch.value = False
-        assert app.query_one(ToolsConfigPanel).get_config() == ["web_search", "shell"]
+        assert app.query_one(ToolsConfigPanel).get_config().builtins == ["web_search", "shell"]

@@ -39,6 +39,17 @@ def test_spill_creates_directory_lazily_and_round_trips_surrogates(tmp_path: Pat
         assert stat.S_IMODE(info.path.stat().st_mode) == 0o600
 
 
+def test_the_spill_notice_names_a_folder_that_is_not_utf8_escaped_for_the_model() -> None:
+    # A POSIX session folder whose name is not UTF-8 holds a lone surrogate; sent
+    # raw, it would fail the model request's strict encode.
+    path = Path("/sessions/bad\udcff/tool_results/shell_12345678.txt")
+
+    notice = format_spill_notice(path, "output")
+
+    assert str(path).replace("\udcff", "\\udcff") in notice
+    notice.encode("utf-8")
+
+
 def test_spill_tightens_existing_directory_mode(tmp_path: Path) -> None:
     directory = tmp_path / TOOL_RESULTS_DIR_NAME
     directory.mkdir(mode=0o755)

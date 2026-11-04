@@ -405,6 +405,23 @@ def test_create_tool_widget_mcp_kind_never_resolves_builtin_names() -> None:
     assert type(widget) is ToolCall
 
 
+@pytest.mark.parametrize("tool_name", ["bash", "web_search"])
+def test_create_tool_widget_extension_kind_never_resolves_builtin_names(tool_name: str) -> None:
+    """An extension picks its own tool names: ``bash`` (not this platform's shell)
+    or ``web_search`` (web tools off) is the extension's tool, shown as a plain call."""
+    from chrys.foundation.tool_kinds import extension_kind
+
+    widget = create_tool_widget(
+        call_id="c1",
+        tool_name=tool_name,
+        tool_kind=extension_kind("acme_release"),
+        args_summary="",
+        args={"command": "echo hi", "query": "q"},
+    )
+
+    assert type(widget) is ToolCall
+
+
 def test_create_tool_widget_shell_kind_covers_unlisted_shell_names() -> None:
     """A shell name outside ``SHELL_TOOL_NAMES`` (exotic ``$SHELL`` basename)
     still renders as a shell call via the kind registration."""

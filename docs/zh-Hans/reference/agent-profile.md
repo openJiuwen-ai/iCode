@@ -83,6 +83,7 @@ icode agent list
 | `instructions` | 字符串或字符串列表 | 空 | 提供给内置类型智能体的主要行为指令。写成列表时，各项按每项一行合成一段文本。外部 ACP 配置会忽略此字段。 |
 | `model` | 对象 | `{}` | 绑定模型配置，见 [model](#model)。 |
 | `tools` | 对象 | `{}` | 配置内置工具、MCP 和 Shell 过滤，见 [tools](#tools)。 |
+| `extensions` | 字符串列表 | `[]` | 智能体加载的 Python 扩展，见 [extensions](#extensions)。 |
 | `approval` | 对象 | 见下文 | 配置哪些工具调用需要审批，见 [approval](#approval)。 |
 | `skills` | 对象 | 见下文 | 配置 Skill 来源和内嵌 Skill，见 [skills](#skills)。 |
 | `memory` | 对象 | `{}` | 配置自动加载的参考文件，见 [memory](#memory)。 |
@@ -310,6 +311,15 @@ tools:
 
 网络访问（代理、来源列表和自定义端点授权）只能在用户设置中配置，不能写在智能体配置文件中。参阅设置文件参考中的[网络工具](./settings.md#网络工具)。
 
+## extensions
+
+```yaml
+extensions:
+  - tracker
+```
+
+智能体按顺序加载的 [Python 扩展](../guides/extensions/python-extensions.md) ID。未安装的扩展仍保留在列表中；智能体启动时不包含它，并显示警告。
+
 ## approval
 
 `approval` 用于设置工具调用的**初始审批级别**。它与会话的**审批模式**不同：审批级别决定工具调用是否需要进入审批流程，审批模式决定进入审批流程后的处理方式。
@@ -388,6 +398,8 @@ approval:
 Skill 脚本是例外：`run_skill_script` 默认需要审批。如需修改该行为，需要在 `overrides` 中显式配置 `skill`、`run_skill_script` 或 `skill.run_skill_script` 的审批级别。
 
 网络工具也是例外：`web_search` 和 `web_fetch` 类别的工具默认需要审批，即使 `default` 为 `auto`。该规则在 `overrides` 中的规则之后、`default` 之前生效。如需修改，在 `overrides` 中显式配置该类别或工具名称的审批级别，例如 `web_search: auto`。
+
+[Python 扩展](../guides/extensions/python-extensions.md)中的工具遵循同样的规则，作者标记为可以直接运行的工具除外。如需修改，为扩展的类别或其中某个工具配置审批级别，例如 `extension.tracker: auto`。
 
 ## skills
 
@@ -520,7 +532,7 @@ TUI 的“智能体配置”窗口保存时会检查并发数和 `tool_name` 格
 
 顶层出现 `acp` 时，该配置会成为外部 ACP 智能体，并被强制设为仅用作子智能体。任务指令、模型和工具由外部进程决定。
 
-外部 ACP 智能体不使用当前配置中的 `instructions`、`model.profile_id`、`tools`、`skills`、`memory`、`compaction`、`approval` 和 `sub_agents`。这些设置不会影响外部智能体的行为。
+外部 ACP 智能体不使用当前配置中的 `instructions`、`model.profile_id`、`tools`、`extensions`、`skills`、`memory`、`compaction`、`approval` 和 `sub_agents`。这些设置不会影响外部智能体的行为。
 
 ```yaml
 name: ExternalReviewer

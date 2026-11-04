@@ -27,7 +27,7 @@ import yaml
 
 from chrys.foundation.platform.runtime_paths import is_windows_store_python_stub
 from chrys.foundation.platform.script_commands import build_script_command
-from chrys.foundation.tool_kinds import TOOL_KINDS
+from chrys.foundation.tool_kinds import TOOL_KINDS, is_extension_kind
 from chrys.service.hooks.events import GATED_EVENTS, TOOL_EVENTS
 from chrys.service.hooks.loader import (
     HookEntryError,
@@ -301,7 +301,8 @@ def _check_hook(check: _FileCheck, hook: HookConfig, profiles: frozenset[str]) -
     if tool_fields and hook.event not in TOOL_EVENTS:
         verb = "never matches" if len(tool_fields) == 1 else "never match"
         warn("match_never_fires", f"{' and '.join(tool_fields)} {verb} on {hook.event}, which has no tool")
-    if match.tool_kind is not None and match.tool_kind not in TOOL_KINDS:
+    # An extension's kind is valid whether or not it is installed, so a shared hooks file stays quiet.
+    if match.tool_kind is not None and match.tool_kind not in TOOL_KINDS and not is_extension_kind(match.tool_kind):
         warn(
             "unknown_tool_kind",
             f"match.tool_kind {match.tool_kind!r} is not a tool kind{_did_you_mean(match.tool_kind, TOOL_KINDS)}",

@@ -460,6 +460,29 @@ def test_missing_or_unknown_tool_identity_uses_only_frozen_fallback_buckets(tmp_
     assert analysis.turns[0].action_projection_precision is Precision.EXACT
 
 
+def test_an_extension_s_calls_are_grouped_under_its_kind(tmp_path) -> None:
+    log = EventLog()
+    log.coverage()
+    log.add("turn.started", 0, payload={"turn_number": 1})
+    log.span(
+        "tool.operation",
+        "a" * 32,
+        0,
+        NS,
+        start_payload={"tool_name": "acme_project_name", "tool_kind": "extension.acme_release"},
+    )
+    log.add("turn.finished", NS, payload={"end_reason": "completed", "duration_ms": 0})
+    path = tmp_path / "events.jsonl"
+    log.write(path)
+
+    analysis = analyze_trajectory(path)
+    assert analysis.insights is not None
+    assert analysis.insights.tools.unclassified == 0
+    assert [(row.tool_kind, row.tool_name) for row in analysis.insights.tools.rows] == [
+        ("extension.acme_release", "acme_project_name")
+    ]
+
+
 @pytest.mark.parametrize("workflow_run", [False, True], ids=["chat", "workflow-session"])
 def test_context_carrying_load_is_surfaced_without_changing_finding_identity(tmp_path, workflow_run: bool) -> None:
     item_id = "7" * 32

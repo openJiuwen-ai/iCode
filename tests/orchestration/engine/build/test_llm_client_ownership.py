@@ -5,11 +5,9 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import create_autospec
 
 import pytest
 
-from chrys.service.tools.registry import ToolRegistry
 from tests.support.llm_client_engines import (
     ALT_MODEL,
     MAIN_MODEL,
@@ -18,6 +16,7 @@ from tests.support.llm_client_engines import (
     start_client_engine,
     switch_model,
 )
+from tests.support.tool_packs import install_tools
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 if TYPE_CHECKING:
@@ -69,7 +68,7 @@ async def test_main_build_failure_after_client_creation_closes_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     error = RuntimeError("builtin tools failed")
-    monkeypatch.setattr(ToolRegistry, "load_builtins", create_autospec(ToolRegistry.load_builtins, side_effect=error))
+    install_tools(monkeypatch, side_effect=error)
 
     with pytest.raises(RuntimeError) as info:
         await start_client_engine(agent_engine, tmp_path)

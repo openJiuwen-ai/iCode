@@ -9,7 +9,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from chrys.foundation.tool_approval import declare_requires_approval
 from chrys.foundation.tool_kinds import KIND_CONTEXT, KIND_SKILL
+from chrys.kernel import FunctionTool
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from chrys.service.skills.constants import RUN_SKILL_SCRIPT_TOOL_NAME
@@ -277,11 +279,26 @@ def test_bare_tool_override_wins_over_kind_independent_of_mapping_order(override
 
 
 @pytest.mark.parametrize("default", ["auto", "skip"])
-def test_run_skill_script_has_secure_approval_floor(default: str) -> None:
+def test_a_declared_tool_has_a_secure_approval_floor(default: str) -> None:
     policy = ApprovalPolicy(ApprovalConfig(default=default, overrides={}), tools=[])
 
-    assert policy.should_require_approval("run_skill_script", KIND_SKILL)
-    assert policy.should_require_approval("run_skill_script")
+    assert policy.should_require_approval("run_skill_script", KIND_SKILL, tool_requires_approval=True)
+    assert not policy.should_require_approval("run_skill_script", KIND_SKILL, tool_requires_approval=False)
+    # The floor comes from the called tool, never from its name or kind.
+    assert not policy.should_require_approval("run_skill_script", KIND_SKILL)
+
+
+def test_the_initial_tool_list_supplies_the_declaration_a_caller_omits() -> None:
+    declared = FunctionTool(name="deploy", func=lambda: "")
+    declare_requires_approval(declared)
+    plain = FunctionTool(name="status", func=lambda: "")
+    policy = ApprovalPolicy(ApprovalConfig(default="auto", overrides={}), tools=[declared, plain])
+
+    assert policy.should_require_approval("deploy")
+    assert not policy.should_require_approval("status")
+    # The live declaration wins over the initial list.
+    assert not policy.should_require_approval("deploy", tool_requires_approval=False)
+    assert policy.should_require_approval("status", tool_requires_approval=True)
 
 
 @pytest.mark.parametrize(
@@ -298,7 +315,7 @@ def test_explicit_tool_override_can_opt_out_of_run_skill_script_floor(
         tools=[],
     )
 
-    assert not policy.should_require_approval("run_skill_script", KIND_SKILL)
+    assert not policy.should_require_approval("run_skill_script", KIND_SKILL, tool_requires_approval=True)
 
 
 @pytest.mark.parametrize("rule", ["auto", "skip"])
@@ -309,7 +326,7 @@ def test_kind_wide_skill_override_intentionally_opts_out_of_script_floor(rule: s
         tools=[],
     )
 
-    assert not policy.should_require_approval(RUN_SKILL_SCRIPT_TOOL_NAME, KIND_SKILL)
+    assert not policy.should_require_approval(RUN_SKILL_SCRIPT_TOOL_NAME, KIND_SKILL, tool_requires_approval=True)
     assert not policy.should_require_approval("load_skill", KIND_SKILL)
 
 
@@ -320,7 +337,7 @@ def test_invalid_matching_override_fails_closed(caplog: pytest.LogCaptureFixture
     with caplog.at_level("ERROR", logger="chrys.service.approval.policy"):
         policy = ApprovalPolicy(config, tools=[])
 
-    assert policy.should_require_approval(RUN_SKILL_SCRIPT_TOOL_NAME, KIND_SKILL)
+    assert policy.should_require_approval(RUN_SKILL_SCRIPT_TOOL_NAME, KIND_SKILL, tool_requires_approval=False)
     assert any("Invalid approval rule" in record.message for record in caplog.records)
 
 
@@ -338,7 +355,7 @@ def test_allowed_user_override_precedes_run_skill_script_floor() -> None:
     )
     assert policy.set_user_override("skip")
 
-    assert not policy.should_require_approval("run_skill_script", KIND_SKILL)
+    assert not policy.should_require_approval("run_skill_script", KIND_SKILL, tool_requires_approval=True)
 
 
 def test_invalid_user_override_fails_closed() -> None:
