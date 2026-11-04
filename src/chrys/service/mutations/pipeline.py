@@ -95,6 +95,7 @@ class MutationResult:
     file_operation: str | None = None
     file_bytes_changed: bool | None = None
     file_hashes: FileHashDiff | None = None
+    file_changed_at: float | None = None
     shell_snapshots: dict[str, FileMutationTextSnapshot] | None = None
 
 
@@ -456,6 +457,7 @@ def _read_shell_snapshots(
                 after_skip=m.after_skip,
                 provenance=provenance,
                 contested=original.contested or contested,
+                last_changed_at=max(original.last_changed_at, m.changed_at or 0.0),
             )
         else:
             result[m.path] = FileMutationTextSnapshot(
@@ -470,6 +472,7 @@ def _read_shell_snapshots(
                 after_skip=m.after_skip,
                 provenance=provenance,
                 contested=contested,
+                last_changed_at=m.changed_at or 0.0,
             )
     return result
 
@@ -610,6 +613,7 @@ async def finalize_mutation_tracking(
         # Tight write-interval upper bound: the disk write happened
         # during tool execution, strictly before this stamp.
         ctx.file_mutation.t_end = time.time()
+        result.file_changed_at = ctx.file_mutation.changed_at
         snapshot = await loop.run_in_executor(None, _read_file_snapshot, tracker, ctx.file_mutation)
         result.file_snapshot = snapshot
         result.file_operation = ctx.file_mutation.operation.value
@@ -769,6 +773,7 @@ def abort_mutation_tracking(
     coordinator: MutationCoordinator | None,
     *,
     tracker: MutationTracker | None = None,
+    may_have_run: bool = True,
 ) -> None:
     """Sync cleanup for calls that skip the async finalize (cancel/reject).
 
@@ -785,19 +790,22 @@ def abort_mutation_tracking(
     (authorship of any delta is unknowable here) and errors never
     propagate.
 
-    ``tracker`` is passed only from abort sites where the command may have
-    actually run (cancellation mid-execution or mid-finalize — never
-    approval rejection or the prepare phase): implicit detection died with
-    the call, so a write it performed before the interrupt would otherwise
-    vanish from the notice entirely — no mutation row, and absorbed by the
-    baseline the finalizer still captures.  Marking the turn's detection
-    truncated surfaces that honestly.  The gate is the call class
-    (``implicit_detection``), not which artifacts armed: an executed
-    shell with zero artifacts (coordination off, non-Git cwd, opaque
-    command, no fsatrace) has exactly the same blind spot.  File tools
-    stay unmarked — their explicit mutation row survives the abort.
+    ``may_have_run=False`` is only for exits known to precede execution:
+    file rows retain their replay slot with after equal to before. Otherwise
+    file rows capture the current disk endpoint, including partial writes.
+    Neither case removes the row. Implicit detection is marked truncated
+    only when the call may have run: even a shell with no detection artifacts
+    may have written before the interrupt.
     """
-    if tracker is not None and ctx.implicit_detection:
+    if tracker is not None and ctx.file_mutation is not None:
+        try:
+            if may_have_run:
+                tracker.record_after(ctx.file_mutation)
+            else:
+                tracker.settle_unexecuted(ctx.file_mutation)
+        except Exception:
+            logger.debug("File mutation settle failed during abort", exc_info=True)
+    if tracker is not None and may_have_run and ctx.implicit_detection:
         try:
             tracker.mark_detection_truncated()
         except Exception:

@@ -133,9 +133,11 @@ class RollbackController:
         set_has_messages: Callable[[bool], None],
         post_gc_message: Callable[[GcReclaimRequested], object],
         debug: Callable[[str, str], None],
+        refresh_diff_preview: Callable[[], None] = lambda: None,
         locale_controller: LocaleController | None = None,
         confirm_stopping_background_tasks: Callable[[int], Awaitable[bool]] | None = None,
     ) -> None:
+        self._refresh_diff_preview = refresh_diff_preview
         self._services = services
         self._view = view
         self._workspace_cwd = workspace_cwd
@@ -510,6 +512,7 @@ class RollbackController:
 
     async def on_result(self, event: RollbackResult) -> None:
         """Surface rollback outcomes, refresh welcome state, and restore rolled-back input."""
+        self._refresh_diff_preview()
         is_welcome = event.target_turn == 0
         if is_welcome:
             cwd = self._workspace_cwd() or safe_getcwd()

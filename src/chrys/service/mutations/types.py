@@ -207,6 +207,8 @@ class FileMutationTextSnapshot:
     # sticky across collapsed multi-mutations (any assumed row → assumed).
     provenance: str = ""
     contested: bool = False
+    # Epoch seconds of the write interval end, independent of result delivery.
+    last_changed_at: float = 0
 
 
 @dataclass(frozen=True)
@@ -404,6 +406,21 @@ class FileMutation:
     def __post_init__(self) -> None:
         if self.provenance is None:
             self.provenance = default_provenance(self.source)
+
+    @property
+    def proves_no_change(self) -> bool:
+        """Whether both known endpoints are identical and no move took place."""
+        return (
+            self.old_path is None
+            and self.before_hash == self.after_hash
+            and self.before_skip is None
+            and self.after_skip is None
+        )
+
+    @property
+    def changed_at(self) -> float | None:
+        """Write-interval time for a possible change, absent for proven no-ops."""
+        return None if self.proves_no_change else self.t_end or self.timestamp
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {

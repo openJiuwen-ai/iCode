@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from rich.text import Text
 
 from chrys.app.tui.notifications import NotificationEvent
-from chrys.app.tui.util.diff_entries import DiffLoadResult
+from chrys.app.tui.util.diff_entries import DiffFocus, DiffLoadResult
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
 from chrys.foundation.events.types import (
     ApprovalRequest,
@@ -277,6 +277,7 @@ class DiffView(Protocol):
         session_id: str,
         all_entries: list[DiffFileEntry],
         load_data: Callable[[], Awaitable[DiffLoadResult]] | None = None,
+        focus: DiffFocus | None = None,
     ) -> None: ...
 
 

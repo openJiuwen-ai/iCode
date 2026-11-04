@@ -247,6 +247,8 @@ class BackendEventCallbacks:
     route_session_error: Callable[[Error], bool] = lambda _event: False
     prompt_missing_working_dir: Callable[[MissingDirReason], None] = lambda _reason: None
 
+    refresh_diff_preview: Callable[[bool], None] = lambda _reread: None
+
 
 def _usage_source_debug_suffix(source_id: str, *, main_source_id: str) -> str:
     """Return a short source marker for non-main usage debug entries."""
@@ -1020,6 +1022,7 @@ class BackendEventHandler:
             session_id=event.session_id or "",
             used_at=event.timestamp,
         )
+        self._callbacks.refresh_diff_preview(True)
         s.debug("SessionReady", f"{event.agent_profile} [{session_short_id(event.session_id or '')}]")
         if not s.restoring_session:
             self.finish_agent_load(_FINISH_SESSION_READY.bind(profile=s.profile))
@@ -1294,7 +1297,8 @@ class BackendEventHandler:
             canonical_status=canonical_status,
         )
         self._questions().finish_inline_for_tool_result(event.call_id)
-        self._live_diff.record_tool_result(event)
+        if self._live_diff.record_tool_result(event):
+            self._callbacks.refresh_diff_preview(False)
         s.refresh_git_branch()
         ui.show_status(STATUS_THINKING.bind())
         from chrys.app.tui.widgets.chat.tool_call import fmt_duration
@@ -1381,7 +1385,8 @@ class BackendEventHandler:
             provider_status=event.provider_status,
             canonical_status=canonical_status,
         )
-        self._live_diff.record_tool_result(event)
+        if self._live_diff.record_tool_result(event):
+            self._callbacks.refresh_diff_preview(False)
         s.refresh_git_branch()
 
     async def on_sub_agent_tool_args_updated(self, event: InvocationToolCallArgsUpdated) -> None:

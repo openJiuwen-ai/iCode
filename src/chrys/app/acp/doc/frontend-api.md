@@ -587,10 +587,16 @@ Notes:
   message limits. The edited file's before/after text (`file_snapshot`) is
   left out, and `shell_file_snapshots` lists the files a command changed as
   `{ path, operation, bytes_changed, source, before_hash, after_hash,
-  before_skip, after_skip, provenance, contested }`. `path` is display text
-  (an undecodable byte reads as its `\udcXX` escape), so two entries can
-  share it. The list stops at 100 files or 256 KiB of JSON, whichever comes
-  first; `shell_file_snapshots_omitted` counts the rest. Read the text through
+  before_skip, after_skip, provenance, contested, last_changed_at }`. `path`
+  is display text (an undecodable byte reads as its `\udcXX` escape), so two
+  entries can share it. `last_changed_at` is the latest observed write-interval
+  end for that path in Unix epoch seconds, falling back to the recorded
+  mutation time when no interval end was captured; `0` means unavailable.
+  File-tool results may also include `metadata.file_changed_at`, the observed
+  write-interval end in the same time format. These timestamps describe the
+  write observation, independently of result delivery. The list stops at
+  100 files or 256 KiB of JSON, whichever comes first;
+  `shell_file_snapshots_omitted` counts the rest. Read the text through
   `session/diff`.
 - `chrys/compaction_finished` and `chrys/sub_agent_compaction_finished`
   payloads include `formatViolation`. It is empty unless a malformed

@@ -369,6 +369,12 @@ class MutationTracker:
 
             return mutation
 
+    def settle_unexecuted(self, mutation: FileMutation) -> None:
+        """Close a file-tool row whose tool never ran: after equals before."""
+        with self._state_lock:
+            mutation.after_hash = mutation.before_hash
+            mutation.after_skip = mutation.before_skip
+
     def record_after(self, mutation: FileMutation) -> None:
         """Snapshot the file AFTER mutation and store the hash.
 
@@ -867,9 +873,11 @@ class MutationTracker:
 
         Caller must hold ``_state_lock``.
 
-        Safety filters run AFTER earliest-wins selection; every filtered
-        path is reported via :attr:`RollbackPlan.exclusions` (never
-        silent):
+        Paths whose rows all prove no change (equal hashes, no skips or
+        moves) are omitted outright, without a safety exclusion.
+
+        Safety filters run AFTER earliest-wins selection; every unsafe
+        path is reported via :attr:`RollbackPlan.exclusions`:
 
         1. **Provenance** — a path touched by a ``FOREIGN`` row, or by a
            ``contested`` row, is excluded outright (poisoning-style):
@@ -893,10 +901,15 @@ class MutationTracker:
            that escaped content.
         """
         earliest: dict[str, FileSnapshot] = {}
+        changed: set[str] = set()
         foreign_touched: set[str] = set()
         contested: set[str] = set()
         for turn in rolled_back:
             for m in turn.mutations:
+                if not m.proves_no_change:
+                    changed.add(m.path)
+                    if m.old_path is not None:
+                        changed.add(m.old_path)
                 if m.provenance is MutationProvenance.FOREIGN:
                     foreign_touched.add(m.path)
                     if m.old_path:
@@ -944,6 +957,8 @@ class MutationTracker:
         entries: list[tuple[str, FileSnapshot]] = []
         exclusions: list[tuple[str, RollbackExclusionReason]] = []
         for path, snap in earliest.items():
+            if path not in changed:
+                continue
             if path in foreign_touched:
                 exclusions.append((path, RollbackExclusionReason.FOREIGN))
             elif path in contested:
