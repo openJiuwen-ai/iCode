@@ -5,9 +5,9 @@
 
 ## 状态
 
-交付阶段（2026-11-04）：merge commit `33b55cf9` 完成，6 处冲突全解；merge 后全量暴露的 2 处
-新测试冲突已按 R2 增补适配（C133/C134）；fork-full 复跑全绿；design 增补已重签；六件文档齐。
-下一步 = 收尾提交 → push → PR。
+PR 修复迭代（2026-11-04）：merge `33b55cf9`、收尾 `b00a6f40`、R2 格式修复 `881a3aa2`
+已推送，PR #91 已创建。C135（prompt_shortcut_send models 参数级 skip）已完成 design 重签、
+实施与本地门禁；下一步 = 最终 diff 外部 AI 复审 → self-review 追加 → 提交 → push → 双 CI。
 
 ## 待办
 
@@ -26,19 +26,23 @@
 - [x] design 增补三节（R2 清单 / C133-C134 登记 / 决策交付物）→ 重签 → --strict 97/134 绿
 - [x] test-plan.md / verification.md / self-review.md / plan.md（流程缺件补齐）
 - [x] UPGRADE-RUNBOOK 头部基线更新（0.32.2→0.33.0）+ headless 冒烟（--version=0.33.0）
-- [ ] **收尾提交**：add（2 测试适配 + INDEX + RUNBOOK + 批次目录；pot 经 diff 实证为
-  autocrlf 假脏无内容差异，排除）→ status 检查 → commit（五段式 message 预审）——逐条授权停等
-- [ ] **push** `chore/merge_upstream_v0.33.0` → 责任人网页建 PR（目标 main_aixcoding_cli）
+- [x] 收尾提交 `b00a6f40`（C133/C134 + 批次文档）→ push → 责任人创建 PR #91
+- [x] R2 登记格式修复 `881a3aa2`（固定标题 + 标准表格）→ 本地 79/82 OK → push
+- [x] C135 design R2 增补与重签 → models 参数级 skip（agents 保留）→ R2 80/83、R3 76+4、
+  strict 98/135、ruff/format、check_docs、两参数收集全绿；Unix 运行归 PR checks
+- [x] C135 最终 diff 外部 AI 复审（Blocker/Major 0；Minor 1 + Nit 1 已处置）→ self-review 追加
+- [ ] C135 修复提交/push（逐条授权）
 - [ ] PR 双 CI（aixcoding-tests + 上游 ci.yml 桥接）绿后责任人合并
 - [x] mock（:7777/:7778）+ TUI 人工联调：按 test-plan 手工步骤及联调清单检查，责任人 2026-11-04 确认无问题
 
 ## 挂起与备忘
 
 - **裁决在案**（verification.md 第六节）：目标 ref 8d5a3208；Blocker 1 选 A（内网受控+服务端
-  承诺不下发+接受残余风险；不出 ADR 沿用 ADR-0018）；R2 两处适配批准；函数级 skip 微调。
+  承诺不下发+接受残余风险；不出 ADR 沿用 ADR-0018）；R2 三处适配批准；函数级/参数级 skip 分场景处理。
 - **淘汰检查**：95 行登记逐组 not-hit，零淘汰候选，本批次不删除任何定制。
-- **C134 复核义务**：上游若向 `test_models_dialog_deletion.py` 追加用例将显式暴露（函数级
-  skip 设计意图），下次升级必须复核该文件。
+- **C134/C135 复核义务**：上游若向 `test_models_dialog_deletion.py` 追加用例将显式暴露；
+  `test_prompt_shortcut_send.py` 的 models 参数级 skip 与 catalog 管控同生命周期，agents 覆盖不得误跳，
+  下次升级必须复核两个文件。
 - **D 待办**：catalog 只读行为正向覆盖盘点 → `fork\temp\aixcoding-todos\2026-11-04-catalog-readonly-test-coverage.md`（独立批次，勿入工程目录）。
 - **镜像**：本批次未触碰；`origin/main_iCode` 头（05679bec）领先 v0.33.0 共 24 个未发版提交，
   留下次升级前按 runbook §1.2 统一处理；归因实验 worktree 已清理。

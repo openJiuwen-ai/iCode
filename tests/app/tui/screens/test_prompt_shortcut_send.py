@@ -1184,7 +1184,19 @@ async def test_quitting_while_the_commands_run_ends_them_and_the_send_without_an
 
 @pytest.mark.parametrize(
     ("key", "dialog", "notice"),
-    [("f4", ModelConfigScreen, "#mc-read-only-notice"), ("f2", AgentsConfigScreen, "#ac-read-only-notice")],
+    [
+        # AIxCoding catalog: local model dialog send-in-flight case does not apply
+        # because F4 is disabled and the server-managed model list is always
+        # read-only (aixcoding/docs/batches/catalog-sync/design.md). Keep the
+        # agents case active; re-evaluate the models case at the next upgrade.
+        pytest.param(
+            "f4",
+            ModelConfigScreen,
+            "#mc-read-only-notice",
+            marks=pytest.mark.skip(reason="AIxCoding catalog: local F4 model editing does not apply"),
+        ),
+        ("f2", AgentsConfigScreen, "#ac-read-only-notice"),
+    ],
     ids=["models", "agents"],
 )
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)

@@ -10,17 +10,17 @@
 | 6 处 merge 冲突解决 | ✅ | 冲突清单见下节；冲突标记零残留 |
 | oracle 计数实测 | ✅ **2628** | pot/po/有效条目集合 == EXPECTED（2628），无单向差集（= 上游 2623 + 借壳 5，C028/C043 双 marker 在） |
 | i18n 管线幂等 | ✅ | extract/update/compile/check 第二轮，pot/po/mo hash 前后一致 |
-| `gen_customizations --strict` | ✅ | 97 登记行 / 134 marker / 0 error / 0 warning（重签后复跑同绿） |
+| `gen_customizations --strict` | ✅ | 98 登记行 / 135 marker / 0 error / 0 warning（C135 重签后复跑同绿） |
 | 行为锚定测试 | ✅ | merge 后初检含 `test_panel_anchor.py`，73 passed / 1 skipped |
 | `/man` 断言融合 | ✅ | 上游 /btw、/usage + 我方 /login、/logout + 品牌行 + C024/C086 marker 全在（test_command_suggestions_i18n.py 绿） |
-| R2/R3 新 merge-base | ✅ | base=8d5a3208；r2_diff OK（77 上游文件 ⊆ approved_pool=80）；r3_markers OK（73 checked + 4 exempt） |
+| R2/R3 新 merge-base | ✅ | base=8d5a3208；r2_diff OK（80 上游文件 ⊆ approved_pool=83）；r3_markers OK（76 checked + 4 exempt） |
 | import 边界 | ✅ | `check_import_boundaries` OK（1170 文件） |
 | 定制套件 merge 后重跑 | ✅ | 454 passed / 4 skipped（与基线逐位一致） |
 | ty 三平台 | ✅ | linux / darwin / win32 全过 |
-| ruff check + format | ✅ | 2623 文件合规（含 2 个适配文件单独复核） |
+| ruff check + format | ✅ | 2623 文件合规（含 3 个适配文件单独复核） |
 | fork-full（verify.py --full） | ⚠️ 首跑 5 failed → ✅ 复跑全绿 | 首跑 34445 passed / 5 failed（10:49）；2 适配后复跑：custom 454 + tests **34446 passed / 724 skipped** + architecture **1247 passed / 3 skipped**，`Summary: PASSED (exit 0)` |
 | TUI 冒烟 | ✅ headless + 人工联调 | `aixcoding-cli --version` = 0.33.0、`agent list` 正常；mock（:7777/:7778）+ TUI 按 test-plan 手工步骤及联调清单检查，责任人 2026-11-04 确认无问题 |
-| PR 双 CI | ⏳ 待 push | aixcoding-tests.yml + 上游 ci.yml 桥接 |
+| PR 双 CI | ↔ 归 PR checks | aixcoding-tests.yml + 上游 ci.yml 桥接；运行状态按规范不回写本文 |
 
 ## 二、冲突点全清单 + 逐点处理意见（runbook §5 交付物 1）
 
@@ -40,21 +40,22 @@
 - `AGENTS.md`（C001/C130/C131）：上游改 6 行 auto-merge 过，入口段 marker 与段完整性核对通过（--strict 含）；
 - `tests/app/tui/i18n/test_command_suggestions_i18n.py`（C024/C086）：`/man` 完整等值断言融合核对通过（上表）。
 
-### merge 后全量验证暴露的新冲突（2 处，R2 增补报批）
+### merge 后验证暴露的新冲突（3 处，R2 增补报批）
 
 | # | 文件 | 归因（实验链） | 处理（责任人 2026-11-04 批准） | 复核 |
 |---|---|---|---|---|
 | 7 | `tests/service/tools/web/test_tools.py` | 上游新增 keyless 测试硬编码 `X-Keenable-Title == "iCode"` vs 我方品牌 | 断言改 `AIxCoding` + marker（**C133**） | 1 passed ✅ |
 | 8 | `tests/app/tui/screens/test_models_dialog_deletion.py` ×4 | 上游新增"F4 打开对话框删除模型"测试；我方 catalog-sync F4 禁用（screen.py:264）+ 只读隐藏删除按钮——**语义互斥非回归**。实验：纯上游 4 passed → fork 树 4 failed → 还原 read_only 参数仍失败（排除该变量）→ 动态诊断无异常（F4 禁用无动作） | 函数级 `@pytest.mark.skip` + marker（**C134**；外部 AI 评审微调：函数级优于模块级——上游追加用例将显式暴露而非静默吞没；reason 带 AIxCoding 前缀） | 4 skipped ✅ |
+| 9 | `tests/app/tui/screens/test_prompt_shortcut_send.py` `[models]` | 上游 models 参数要求 F4 入口及空闲时可编辑，与我方 F4 禁用 + 恒只读双重互斥；文件在 win32 整模块 skip，Windows 全量存在覆盖盲区 | 仅 models 参数级 `pytest.param` skip + marker（**C135**）；agents 参数保持上游发送中只读覆盖；注释含 catalog-sync 归属与升级复核提示 | ruff/format 绿；2 tests collected（不等于 Unix 运行验证）；R2 80/83、strict 98/135；win32 模块级 skip 使 Windows 全量数字不受 C135 影响，无需复跑；Unix 运行归 PR checks |
 
 ## 三、定制化改变清单（runbook §5 交付物 2）
 
-- **需新增**：C133（keyless 品牌断言）、C134（models_dialog_deletion skip）——已登记入本批次
-  design「定制点登记预告」表，`--strict` 97/134 对账绿；
+- **需新增**：C133（keyless 品牌断言）、C134（models_dialog_deletion skip）、C135（prompt_shortcut_send
+  models 参数级 skip）——已登记入本批次 design「定制点登记预告」表，`--strict` 98/135 对账绿；
 - **需适配的既有定制点**：C028/C043（oracle 计数 2628）、C100–C101（Safety+aixcoding-cli 融合）、
   catalog-sync 的 `read_only=True` 与 `model_catalog_base_url`（冲突 #2/#3 保留）；
 - **建议删除（淘汰候选）**：**无**——逐组淘汰检查见下节，95 行登记全部 not-hit；
-- 讨论选项 D（catalog 只读行为正向覆盖）留独立批次，待办已登记
+- 讨论选项 D（catalog 只读行为正向覆盖）留独立批次，待办已登记并关联 C134/C135：
   `fork\temp\aixcoding-todos\2026-11-04-catalog-readonly-test-coverage.md`。
 
 ## 四、95 行矩阵逐组存活核对结论（runbook §3 结构层）
@@ -70,7 +71,7 @@
 | branding-and-command（C050–C131） | 存活 | 全组 marker 在（--strict 含 wheel/installer/uninstaller/approval/OSC/hooks 测试契约）；keyless 新断言已适配（C133） |
 | i18n（C002/C027/C028/C043/C132 + 豁免表 4 项） | 存活 | oracle 2628 全等 + pot/po/mo 重生成幂等 |
 | ruff 豁免（C003） | 存活 | 上游区间 pyproject 仅 version 行变化，豁免行在 |
-| 机检兜底 | ✅ | `--strict` 97/134 + `test_panel_anchor` 绿 |
+| 机检兜底 | ✅ | `--strict` 98/135 + `test_panel_anchor` 绿 |
 
 > 本节即 runbook §6.3 的 **anchor/risk 重评记录**：全部定制点 anchor 未漂移（行号纯移位不影响
 > 文本锚对账），risk 等级维持原评，无需调整登记行。
@@ -99,11 +100,13 @@
 3. **三轮文档评审收敛**：初审 5 项（信任路径/95 行口径/oracle 2628/man 融合/镜像）、复审 4 项（ADR 终裁/C003 补入/引用对齐/路径写全）、终审通过。
 4. **R2 增补报批（2026-11-04）**：keyless 品牌断言（C133）+ models_dialog_deletion 函数级 skip（C134，外部 AI 讨论后微调），均已批准实施并验证。
 5. **design 增补重签（2026-11-04）**：R2 清单 + C133/C134 登记 + 决策交付物三节增补后重签完成。
+6. **C135 增补重签（2026-11-04）**：外部 AI 核实诊断并补充 marker 归属、正向覆盖待办和本地验证边界；
+   责任人批准仅 models 参数级 skip、agents 保留覆盖的方案，design 重签后实施；CI 证据不回写本文。
 
 ## 七、时点快照（gen_customizations --report，2026-11-04 重签后）
 
 ```
-gen_customizations: check OK — 97 registration row(s) / 134 marker(s) across 10 design(s), 0 retired id(s), 0 warning(s)
+gen_customizations: check OK — 98 registration row(s) / 135 marker(s) across 10 design(s), 0 retired id(s), 0 warning(s)
 ```
 
 95 行全景（C001–C132）详见 `aixcoding/docs/batches/upstream-merge-v0.33.0/design.md`
@@ -114,4 +117,4 @@ gen_customizations: check OK — 97 registration row(s) / 134 marker(s) across 1
 - [x] fork-full 复跑：0 failed（custom 454 + tests 34446 + architecture 1247，PASSED exit 0）；
 - [x] TUI headless 冒烟（--version=0.33.0、agent list 正常）+ mock/TUI 人工联调（责任人确认无问题）；
 - [x] UPGRADE-RUNBOOK.md 头部「当前基线」更新（0.32.2→0.33.0、2026-11-04）；
-- [ ] 收尾提交（2 测试适配 + INDEX + 批次文档 + RUNBOOK；pot 假脏排除）→ push → PR 双 CI。
+- [ ] C135 修复提交（1 测试适配 + 批次文档 + self-review 追加）→ push → PR 双 CI（结果归 checks）。

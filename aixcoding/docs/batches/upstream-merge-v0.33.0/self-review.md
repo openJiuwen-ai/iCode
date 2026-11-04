@@ -67,3 +67,20 @@
 - **Nit-1**（plan.md 收尾清单含 pot，疑似行尾假脏）→ **实证闭环**：`git diff --numstat` 与
   `--ignore-cr-at-eol` 对 `locales/chrys.pot` 均零输出（autocrlf stat 假脏，无实际内容差异），
   收尾 add 清单排除 pot。
+
+## 六、2026-11-04 C135 最终实施复审（外部 AI 独立会话，型号未注明）
+
+对象 = `test_prompt_shortcut_send.py` 最终 diff + design R2/C135 登记 + verification/test-plan/plan +
+仓库外正向覆盖待办。**结论：Blocker 0、Major 0、Minor 1、Nit 1**；确认 models 参数级 skip 不误跳
+agents，marker/R2/C135 路径逐字一致，产品语义互斥成立，Windows 收集与 Unix 运行验证边界及 CI 证据
+归属均无违规。findings 处置：
+
+- **Minor M1**（verification 遗留项仍写首次“收尾提交”及旧 add 清单，与 PR 修复迭代不符）→ **已修**：
+  改为“C135 修复提交（1 测试适配 + 批次文档 + self-review 追加）”，INDEX/RUNBOOK 不重复列入。
+- **Nit N1**（Windows fork-full 数字未标注为 C135 前时点）→ **已采纳**：verification 冲突 #9 复核栏
+  补明 win32 模块级 skip 使全量数字不受 C135 影响，无需复跑；不把收集检查当作 Unix 运行验证。
+- **流程前置项**（self-review 尚未追加 C135 复审）→ **本节补齐**；按文件头部“后续追加评审记录
+  不触发重签”规则处理。
+
+复审引用门禁：R2 80/83、R3 76+4、strict 98/135、ruff/format、2 tests collected、check_docs 全绿；
+Unix 实际运行结果仍归 PR checks，不在本文预记结论。

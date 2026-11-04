@@ -119,13 +119,14 @@ handle：命令 token 生效——与 C021 "login credential overrides any stati
 
 ## 上游改动清单（R2）
 
-**本批次我方对上游文件的新增改动 = 2 处测试文件适配**（merge 后全量验证暴露，按 R2 增补报批，
-责任人 2026-11-04 批准；登记见「定制点登记预告」C133/C134）：
+**本批次我方对上游文件的新增改动 = 3 处测试文件适配**（C133/C134 已由责任人 2026-11-04 批准；
+C135 为本次 R2 增补，随本 design 重签生效；登记见「定制点登记预告」C133–C135）：
 
 | 文件 | 改什么 | 标记注释位置 |
 |---|---|---|
 | tests/service/tools/web/test_tools.py | 上游新增 keyless 测试硬编码 `X-Keenable-Title == "iCode"`，与我方品牌 `AIxCoding` 冲突——断言品牌适配（C133） | `AIxCoding branding: keenable title assertion` |
 | tests/app/tui/screens/test_models_dialog_deletion.py | 上游新增"F4 打开对话框并删除模型"测试 ×4 参数，与我方 catalog-sync 既定语义互斥（F4 入口禁用 + 只读隐藏删除按钮）——函数级 skip（C134），失效模式安全（上游追加用例会显式暴露而非静默吞没） | `AIxCoding catalog: upstream deletes profiles in the local dialog` |
+| tests/app/tui/screens/test_prompt_shortcut_send.py | 上游 models 参数要求空闲时经 F4 打开可编辑本地模型对话框，与 catalog-sync 的 F4 禁用 + 恒只读语义互斥——仅 models 参数级 skip（C135），agents 参数保留上游发送中只读覆盖 | `AIxCoding catalog: local model dialog send-in-flight case does not apply` |
 
 其余口径不变：
 
@@ -152,8 +153,8 @@ fetch_rg 版本不变。
 
 ## 定制点登记预告
 
-原稿"无新增定制点"——2026-11-04 增补：merge 后全量验证暴露两处上游新测试与我方定制的语义冲突，
-适配产生 **2 个新 marker**（R2 已报批），按下表点级登记（当前 `--report` 最大 C132，顺延 C133/C134）。
+原稿"无新增定制点"——2026-11-04 增补：merge 后验证暴露三处上游新测试与我方定制的语义冲突，
+适配产生 **3 个新 marker**。C133/C134 已批准，C135 随本次 design 重签批准；编号顺延 C133–C135。
 冲突适配其余部分均落在在册定制点（catalog-sync 两点 / branding hint 文案 / C028/C043 计数行），
 登记行数值适配属存量维护。
 
@@ -161,6 +162,7 @@ fetch_rg 版本不变。
 |---|---|---|---|---|---|---|
 | C133 | tests/service/tools/web/test_tools.py | AIxCoding branding: keenable title assertion | 1 | keyless 搜索 `X-Keenable-Title` 头断言（branding.py APP_DISPLAY_NAME 消费方） | 低（测试断言品牌适配，同 C100-C101 先例） | 随 C050（品牌政策变更时逐点裁决） |
 | C134 | tests/app/tui/screens/test_models_dialog_deletion.py | AIxCoding catalog: upstream deletes profiles in the local dialog | 1 | 函数级 `@pytest.mark.skip` + reason 前缀（catalog-sync F4 禁用与只读删除隐藏的上游语义冲突留痕） | 低（显式 skip；上游追加用例将显式暴露需复核） | 〔随组〕catalog 只读管控语义整体淘汰获裁时恢复上游测试（测试支撑） |
+| C135 | tests/app/tui/screens/test_prompt_shortcut_send.py | AIxCoding catalog: local model dialog send-in-flight case does not apply | 1 | models 参数级 `pytest.param` skip + reason 前缀；agents 参数保留上游发送中只读覆盖 | 低（仅跳过与 F4 禁用 + 恒只读互斥的 models；两参数仍收集，Unix 运行结果归 PR checks） | 〔随组〕catalog 只读管控语义整体淘汰获裁时恢复上游 models 参数（测试支撑） |
 
 ## 既有定制点存活核对矩阵（runbook §3 结构层展开）
 
