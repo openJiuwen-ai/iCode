@@ -286,6 +286,42 @@ def test_compile_failure_preserves_existing_mo_bytes(tmp_path: Path, failure: st
     assert mo_path.read_bytes() == original
 
 
+@pytest.mark.parametrize("fuzzy", [False, True], ids=["active", "fuzzy"])
+def test_a_non_blank_translation_with_nothing_visible_is_a_gate_error(tmp_path: Path, fuzzy: bool) -> None:
+    # The shared compiler (scripts/i18n_mo.py) keeps every form with a
+    # non-whitespace character, so the gate must refuse one the runtime would
+    # not show instead of letting it into the MO.
+    paths = _prepare_translated_catalog(tmp_path)
+    catalog = _read_catalog(paths[2])
+    message = _message(catalog, "dialog.close")
+    message.string = "\u200b"
+    if fuzzy:
+        message.flags.add("fuzzy")
+    _write_catalog(paths[2], catalog)
+
+    _assert_check_and_compile_reject(paths, "no visible content")
+
+
+def test_a_whitespace_only_translation_stays_untranslated(tmp_path: Path) -> None:
+    source_root, pot_path, po_path, mo_path = _prepare_translated_catalog(tmp_path)
+    catalog = _read_catalog(po_path)
+    _message(catalog, "dialog.close").string = " \u3000 "
+    _write_catalog(po_path, catalog)
+
+    i18n.compile_catalog(
+        source_root=source_root,
+        pot_path=pot_path,
+        po_path=po_path,
+        mo_path=mo_path,
+        location_root=source_root,
+    )
+
+    with mo_path.open("rb") as stream:
+        translations = gettext.GNUTranslations(stream)
+    assert translations.gettext("dialog.close") == "dialog.close"
+    assert translations.ngettext("dialog.files", "dialog.files#plural", 2) == "{count} 个 {name}"
+
+
 def test_partially_translated_plural_is_a_gate_error_for_multi_form_locales(tmp_path: Path) -> None:
     source_root = _source_root(
         tmp_path,

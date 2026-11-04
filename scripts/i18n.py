@@ -46,6 +46,11 @@ from babel.messages.pofile import PoFileError, denormalize, read_po, write_po
 
 from chrys import __version__
 from chrys.foundation.i18n import msg as build_message_definition
+
+if __package__:
+    from scripts.i18n_mo import SOURCE_MO_PATH, compile_mo
+else:  # run as ``python scripts/i18n.py``: only scripts/ is on sys.path
+    from i18n_mo import SOURCE_MO_PATH, compile_mo
 from chrys.foundation.i18n.formatting import (
     _normalized_lookup_candidate,
     has_visible_content,
@@ -61,9 +66,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "src" / "chrys"
 POT_PATH = REPO_ROOT / "locales" / f"{DOMAIN}.pot"
 ZH_PO_PATH = REPO_ROOT / "locales" / "zh-Hans" / "LC_MESSAGES" / f"{DOMAIN}.po"
-ZH_MO_PATH = (
-    REPO_ROOT / "src" / "chrys" / "foundation" / "i18n" / "_catalogs" / "zh-Hans" / "LC_MESSAGES" / f"{DOMAIN}.mo"
-)
+ZH_MO_PATH = REPO_ROOT / SOURCE_MO_PATH
 
 _CATALOG_DATE = datetime(2026, 1, 1, tzinfo=UTC)
 _ENGLISH_SINGULAR_PREFIX = "English:"
@@ -766,6 +769,13 @@ def validate_translation_catalog(messages: Sequence[ExtractedMessage], catalog: 
             _validate_translation_safety(form, multiline=extracted.multiline, key=key)
             if _normalized_lookup_candidate(form) in lookup_ids:
                 raise CatalogToolError(f"Translation for {key!r} must not equal any catalog lookup ID")
+            # The shared compiler keeps every form with a non-whitespace
+            # character (it cannot measure terminal width in the build
+            # environment), so a non-blank form must also be visible.
+            if form.strip() and not has_visible_content(form):
+                raise CatalogToolError(
+                    f"Translation for {key!r} has no visible content; leave it empty to keep it untranslated"
+                )
 
         visibility = [has_visible_content(form) for form in forms]
         if extracted.plural:
@@ -810,39 +820,23 @@ def compile_catalog(
     mo_path: Path = ZH_MO_PATH,
     location_root: Path | None = None,
 ) -> None:
-    """Validate the source/PO state and atomically replace the tracked MO."""
-    _messages, po = check_catalogs(
+    """Validate the source/PO state and atomically replace the generated MO.
+
+    The compile step itself is ``i18n_mo.compile_mo``, which the wheel build
+    hook runs too, so both write the same MO for the same PO.
+    """
+    check_catalogs(
         source_root=source_root,
         pot_path=pot_path,
         po_path=po_path,
         location_root=location_root,
     )
-    compiled = _new_catalog(locale=ZH_HANS_LOCALE, header_comment=_ZH_HEADER)
-    for message in _active_messages(po):
-        forms = _translation_forms(message)
-        if message.fuzzy or not forms or not all(has_visible_content(form) for form in forms):
-            continue
-        compiled.add(message.id, string=message.string)
-
-    mo_path = Path(mo_path)
-    mo_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            dir=mo_path.parent, prefix=f".{mo_path.name}.", suffix=".tmp", delete=False
-        ) as stream:
-            temporary_path = Path(stream.name)
-            write_mo(stream, compiled, use_fuzzy=False)
-        _validate_mo(temporary_path)
-        _replace_generated_file(temporary_path, mo_path)
-        temporary_path = None
-    except (OSError, EOFError, SyntaxError, ValueError) as error:
+        compile_mo(Path(po_path), Path(mo_path), verify=_validate_mo)
+    except (OSError, EOFError, PoFileError, SyntaxError, ValueError) as error:
         if isinstance(error, CatalogToolError):
             raise
         raise CatalogToolError(f"Could not compile {mo_path}: {error}") from error
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
 
 
 def _validate_mo(path: Path) -> None:
@@ -1156,7 +1150,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("extract", help="extract src/chrys msg() definitions into locales/chrys.pot")
     subparsers.add_parser("update", help="merge source metadata into the maintained zh-Hans PO")
-    subparsers.add_parser("compile", help="validate and atomically compile the tracked zh-Hans MO")
+    subparsers.add_parser("compile", help="validate, then atomically compile the gitignored zh-Hans MO")
     subparsers.add_parser("check", help="non-mutating source/catalog freshness and safety gate")
     pseudo = subparsers.add_parser("pseudo", help="generate a loadable en-XA catalog tree")
     pseudo.add_argument("--output", required=True, type=Path)

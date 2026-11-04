@@ -35,8 +35,8 @@ jobs:
           python-version-file: .python-version
           allow-prereleases: true
       - run: uv sync
-      - run: uv run ruff check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py scripts/chat_panel_workloads.py
-      - run: uv run ruff format --check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py scripts/chat_panel_workloads.py
+      - run: uv run ruff check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py scripts/chat_panel_workloads.py hatch_build.py scripts/i18n_mo.py
+      - run: uv run ruff format --check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py scripts/chat_panel_workloads.py hatch_build.py scripts/i18n_mo.py
 
   test_linux:
     name: Unix shard (${{ matrix.label }})
