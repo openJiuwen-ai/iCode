@@ -663,8 +663,13 @@ class DiffPreviewController:
                     # A failed file must not hold up other rows. Retry transient
                     # errors on the next list refresh, without another state.
                     remember = False
-                if cache is not self._counts or owner != self._owner():
+                if cache is not self._counts:
                     continue
+                if owner != self._owner():
+                    # The session moved on before its event arrived: refetch
+                    # for the new owner, whose refresh resumes counting.
+                    self.request_refresh(reread=True)
+                    return
                 if cache.accept(counted, directory, remember=remember) and self._visible():
                     self._show(cache.entries)
         finally:

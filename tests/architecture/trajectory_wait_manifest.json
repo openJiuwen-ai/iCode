@@ -4864,7 +4864,7 @@
         ["thread_pool", "await asyncio.get_running_loop().run_in_executor(None, _capture)", "unresolved"]
       ],
       "finalize_mutation_tracking": [
-        ["thread_pool", "await loop.run_in_executor(None, tracker.record_after, ctx.file_mutation)", "unresolved"],
+        ["thread_pool", "await loop.run_in_executor(None, partial(tracker.record_after, ctx.file_mutation, settled=True))", "unresolved"],
         ["thread_pool", "await loop.run_in_executor(None, _read_file_snapshot, tracker, ctx.file_mutation)", "unresolved"],
         ["thread_pool", "await loop.run_in_executor(None, _track_shell_scan_after, ctx.shell_scan_before, tracker)", "unresolved"],
         ["wrapper", "await _track_git_calibrate_after(ctx.git_calibrator, same_call_paths)", "unresolved", "chrys.service.mutations.pipeline._track_git_calibrate_after"],

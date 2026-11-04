@@ -143,6 +143,27 @@ async def test_owner_change_discards_old_count_even_with_identical_endpoints(hel
     assert h.shown[-1][0].line_counts == (1, 1)
 
 
+async def test_owner_change_before_its_refresh_stops_the_old_count_and_rereads(held_diff: HeldDiff) -> None:
+    h = RefreshHarness()
+    loaded = data("same.py")
+    loaded.all_entries[0] = replace(loaded.all_entries[0], before_text="held")
+    h.loader.load_current.return_value = CurrentDiffLoad(loaded, loaded)
+    h.controller.request_refresh()
+    try:
+        await wait_for(held_diff.started.is_set, description="old owner's count held")
+        # A rollback or /new commits the new generation before its event reaches the TUI.
+        h.owner = ("s1", 1, "/repo")
+        held_diff.release.set()
+        await wait_for(lambda: all(task.done() for task in h.tasks), description="workers settle for the new owner")
+    finally:
+        held_diff.release.set()
+        h.visible = False
+        await h.drain()
+    assert len(held_diff.calls) == 2
+    assert h.loader.load_current.call_count == 2
+    assert h.shown[-1][0].line_counts == (1, 1)
+
+
 @pytest.mark.parametrize("snapshots", [True, False], ids=["hashes", "live-text"])
 async def test_new_endpoints_cannot_receive_the_old_count(tmp_path: Path, held_diff: HeldDiff, snapshots: bool) -> None:
     from chrys.service.mutations.store import SnapshotStore

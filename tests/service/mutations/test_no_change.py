@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Only known identical endpoints without a move prove that a mutation changed nothing."""
+"""Only final, identical endpoints without a move prove that a mutation changed nothing."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from chrys.service.mutations.store import SnapshotStore
+from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import FileMutation, MutationOp, MutationSource, SnapshotSkipReason
 
 
@@ -36,7 +38,8 @@ from chrys.service.mutations.types import FileMutation, MutationOp, MutationSour
         "both-endpoints-unknown",
     ],
 )
-def test_mutation_only_proves_no_change_with_known_identical_endpoints(
+@pytest.mark.parametrize("settled", [True, False], ids=["settled", "unsettled"])
+def test_mutation_only_proves_no_change_with_final_identical_endpoints(
     tmp_path: Path,
     operation: MutationOp,
     before: str | None,
@@ -45,6 +48,7 @@ def test_mutation_only_proves_no_change_with_known_identical_endpoints(
     before_skip: SnapshotSkipReason | None,
     after_skip: SnapshotSkipReason | None,
     expected: bool,
+    settled: bool,
 ) -> None:
     mutation = FileMutation(
         path=str(tmp_path / "file.txt"),
@@ -57,8 +61,12 @@ def test_mutation_only_proves_no_change_with_known_identical_endpoints(
         after_hash=after,
         before_skip=before_skip,
         after_skip=after_skip,
+        settled=settled,
     )
-    assert mutation.proves_no_change is expected
+    assert mutation.endpoints_match is expected
+    # An unsettled endpoint (an interrupted writer, an older session) proves nothing.
+    assert mutation.proves_no_change is (expected and settled)
+    assert FileMutation.from_dict(mutation.to_dict()) == mutation
 
 
 @pytest.mark.parametrize(
@@ -80,3 +88,21 @@ def test_changed_at_only_reports_a_real_or_unresolved_change(
         after_hash=after,
     )
     assert mutation.changed_at == expected
+
+
+def test_interrupted_create_from_an_older_session_is_still_deleted_by_rollback(tmp_path: Path) -> None:
+    target = tmp_path / "new.txt"
+    tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
+    tracker.start_turn(1)
+    row = tracker.record(str(target), MutationOp.CREATE, MutationSource.WRITE_FILE, "call")
+    assert row is not None
+    # Older sessions never read an interrupted call's endpoint, nor marked a row settled.
+    target.write_text("created by the interrupted writer", encoding="utf-8")
+    data = tracker.serialize()
+    (saved,) = data["turns"][0]["mutations"]
+    assert "after_hash" not in saved and "settled" not in saved
+    restored = MutationTracker.deserialize(data, SnapshotStore(tmp_path / "session"))
+    plan = restored.get_rollback_plan(1)
+    assert plan.paths == {str(target)}
+    ((_, snapshot),) = plan.entries
+    assert snapshot.existed is False

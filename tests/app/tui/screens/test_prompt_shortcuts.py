@@ -21,6 +21,7 @@ from chrys.app.tui.widgets.directory_path import DirectoryPathCard
 from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeSkillDetails
 from chrys.foundation.platform import get_platform
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
+from tests.support.tui_helpers import hold_prompt_fields_confirm_window
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
@@ -248,6 +249,7 @@ async def test_enter_with_untouched_fields_sends_only_on_second_press(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _global_shortcut("zztranslate", _TRANSLATE)
+    hold_prompt_fields_confirm_window(monkeypatch)
     app = make_chrys_app(tmp_path / "state", engine=SessionGenerationEngine())
     async with app.run_test(size=(120, 40), notifications=True) as pilot:
         main, chat, sent = await _ready(pilot, monkeypatch)

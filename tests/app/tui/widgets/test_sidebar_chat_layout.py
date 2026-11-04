@@ -170,7 +170,7 @@ async def test_narrow_and_short_chat_keep_the_messages_frame_when_the_preview_ha
         )
         assert box.border_title == "Messages"
         assert box.styles.border_top[0] == "round"
-        assert box.region.width == chat.content_size.width - 2
+        assert box.region.width == chat.content_size.width
         assert box.query_one(".toc-empty", Static).display
 
 

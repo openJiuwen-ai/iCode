@@ -10,7 +10,7 @@ from textual.app import App, ComposeResult
 
 from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar, _ChatTextArea
 from chrys.app.tui.widgets.chrome.prompt_draft import shift_prompt_fields
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_when_settled, hold_prompt_fields_confirm_window
 from tests.support.waiting import wait_for
 
 # ---------------------------------------------------------------------------
@@ -287,7 +287,8 @@ async def test_field_highlight_on_a_long_draft_reads_no_offsets_per_painted_line
         assert walks == []
 
 
-async def test_enter_with_untouched_fields_needs_a_second_press() -> None:
+async def test_enter_with_untouched_fields_needs_a_second_press(monkeypatch: pytest.MonkeyPatch) -> None:
+    hold_prompt_fields_confirm_window(monkeypatch)
     app = _FieldsApp()
     async with app.run_test() as pilot:
         chat = await _expanded(pilot, app)
@@ -364,7 +365,8 @@ async def test_enter_in_retry_state_with_untouched_fields_warns_first() -> None:
         assert chat.text == _TEXT
 
 
-async def test_retry_button_with_untouched_fields_needs_a_second_click() -> None:
+async def test_retry_button_with_untouched_fields_needs_a_second_click(monkeypatch: pytest.MonkeyPatch) -> None:
+    hold_prompt_fields_confirm_window(monkeypatch)
     app = _FieldsApp()
     async with app.run_test() as pilot:
         await _retry_state(pilot, app)

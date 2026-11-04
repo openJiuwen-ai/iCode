@@ -516,7 +516,7 @@ async def test_source_flags_leave_preview_text_and_available_path_width_unchange
             description="unmarked file has its full available width",
         )
         baseline = rows.content.plain
-        assert name in baseline
+        assert os.path.normpath(name) in baseline  # The platform's separators, as in the full viewer.
         assert baseline.rstrip().endswith(tail)
         sidebar.set_entries((replace(plain, source=source, inferred=inferred, contested=contested),))
         assert rows.content.plain == baseline

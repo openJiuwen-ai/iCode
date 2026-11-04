@@ -41,6 +41,7 @@ from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
 from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
+from chrys.app.tui.widgets.chrome import input_bar as input_bar_module
 from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
 from chrys.app.tui.widgets.chrome.status_bar import StatusTrail, TrailCount
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
@@ -803,6 +804,19 @@ def header_zone_click(header: ToolCardHeader, zone: str) -> Click:
 def click_copy_button(header: ToolCardHeader) -> None:
     """Click the copy zone of a tool card header."""
     header_zone_click(header, "copy")
+
+
+def hold_prompt_fields_confirm_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep open the window in which a second submit sends a draft whose prompt fields are unfilled.
+
+    The input bar sends such a draft on a second submit only within
+    ``_PROMPT_FIELDS_CONFIRM_SECONDS`` of its warning, by the wall clock. What a
+    test does between its two submits (a wait for the warning, a press effect,
+    a full collection on a loaded runner) can take longer, and the second
+    submit then only warns again. The input bar reads this clock for that
+    window alone.
+    """
+    monkeypatch.setattr(input_bar_module, "monotonic", lambda: 0.0)
 
 
 async def click_when_settled(

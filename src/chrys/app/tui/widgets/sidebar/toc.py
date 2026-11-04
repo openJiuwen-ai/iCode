@@ -69,11 +69,10 @@ class ConversationToc(Widget, can_focus=False):
     DEFAULT_CSS = """
     ConversationToc {
         height: 1fr;
-        margin: 0 1;
     }
     ConversationToc > #toc-box {
         height: 1fr;
-        border: round $tui-border-primary-darken-3 $border-opacity;
+        border: round $tui-border-primary-darken-3 $inner-border-opacity;
         border-title-color: $text-muted;
         border-title-style: bold;
         padding: 0;

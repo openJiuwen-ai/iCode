@@ -28,8 +28,8 @@ _TASKS_TITLE = msg("tui.sidebar.tasks.title", fallback="Todos")
 _TASKS_COUNTER = msg("tui.sidebar.tasks.counter", fallback="Todos ({done}/{total})")
 _TASKS_EMPTY = msg("tui.sidebar.tasks.empty", fallback="No todos yet")
 
-_SECTION_CHROME = 3
-"""Rows a section spends around its content: its title and the two borders of its box."""
+_SECTION_CHROME = 2
+"""Rows a section spends around its content: the two borders of its box, the top one carrying its title."""
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -84,21 +84,18 @@ class TasksPanel(Widget, can_focus=False):
     TasksPanel {
         height: 100%;
         width: 100%;
-        padding: 0 1;
     }
     TasksPanel > #tasks-todos {
         height: 1fr;
+        border: round $tui-border-primary-darken-3 $inner-border-opacity;
+        border-title-color: $text-muted;
+        border-title-style: bold;
     }
     TasksPanel > .tasks--in-progress {
         color: $warning;
     }
-    TasksPanel .tasks-label {
-        text-style: bold;
-        color: $text-muted;
-    }
     TasksPanel #tasks-list {
         height: 1fr;
-        border: round $tui-border-primary-darken-3 $border-opacity;
         scrollbar-size: 1 1;
         overflow-x: hidden;
         padding: 0 0 0 1;
@@ -110,13 +107,8 @@ class TasksPanel(Widget, can_focus=False):
     }
     TasksPanel #tasks-empty {
         height: 1fr;
-        border: round $tui-border-primary-darken-3 $border-opacity;
         color: $text-muted;
         content-align: center middle;
-    }
-    SidebarPanel.-shell-active TasksPanel #tasks-list,
-    SidebarPanel.-shell-active TasksPanel #tasks-empty {
-        border: round $tui-border-warning-darken-1 $border-opacity;
     }
     """
 
@@ -138,10 +130,13 @@ class TasksPanel(Widget, can_focus=False):
         self._cleared: set[str] = set()
         """Ended background commands the user cleared from the list."""
         self._heights: tuple[int | None, int | None] = (None, None)
+        self._title = self._render_message(_TASKS_TITLE.bind())
+        """The todo box's border title, as shown."""
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="tasks-todos"):
-            yield Static(Text(self._render_message(_TASKS_TITLE.bind())), classes="tasks-label")
+        todos = Vertical(id="tasks-todos")
+        todos.border_title = Text(self._title)
+        with todos:
             with VerticalScroll(id="tasks-list"):
                 yield Static(id="tasks-checklist")
             yield SidebarEmptyStateLabel(Text(self._render_message(_TASKS_EMPTY.bind())), id="tasks-empty")
@@ -198,6 +193,7 @@ class TasksPanel(Widget, can_focus=False):
         todo_rows = 1
         if self._render_state is not None and self._render_state.items:
             # The checklist's height at the width its box gives it, as the next layout will find it.
+            width -= self.query_one("#tasks-todos", Vertical).gutter.width
             width -= self.query_one("#tasks-list", VerticalScroll).gutter.width
             size = Size(width, height)
             todo_rows = self.query_one("#tasks-checklist", Static).get_content_height(size, size, width)
@@ -224,7 +220,7 @@ class TasksPanel(Widget, can_focus=False):
         self.query_one(BackgroundTaskList).refresh_localization()
         self.query_one("#tasks-empty", Static).update(Text(self._render_message(_TASKS_EMPTY.bind())))
         if self._render_state is None:
-            self.query_one(".tasks-label", Static).update(Text(self._render_message(_TASKS_TITLE.bind())))
+            self._show_title(self.query_one("#tasks-todos", Vertical), _TASKS_TITLE.bind())
             return
         self._sync_todo_state()
 
@@ -233,6 +229,13 @@ class TasksPanel(Widget, can_focus=False):
         if controller is None:
             return format_message(reference)
         return render_str(controller.localizer, reference)
+
+    def _show_title(self, todos: Vertical, reference: MessageRef) -> None:
+        # On the border, a new title repaints the box and lays out nothing.
+        title = self._render_message(reference)
+        if title != self._title:
+            self._title = title
+            todos.border_title = Text(title)
 
     def _request_todo_sync(self) -> None:
         if self._sync_pending:
@@ -252,7 +255,7 @@ class TasksPanel(Widget, can_focus=False):
         if state is None:
             return
         try:
-            label = self.query_one(".tasks-label", Static)
+            todos = self.query_one("#tasks-todos", Vertical)
             todo_list = self.query_one("#tasks-list", VerticalScroll)
             checklist = self.query_one("#tasks-checklist", Static)
             empty = self.query_one("#tasks-empty", Static)
@@ -262,10 +265,10 @@ class TasksPanel(Widget, can_focus=False):
         items = state.items
         empty.update(Text(self._render_message(_TASKS_EMPTY.bind())))
         if not items:
-            label.update(Text(self._render_message(_TASKS_TITLE.bind())))
+            self._show_title(todos, _TASKS_TITLE.bind())
             checklist.update("")
         else:
-            label.update(Text(self._render_message(_TASKS_COUNTER.bind(done=todo_done_count(items), total=len(items)))))
+            self._show_title(todos, _TASKS_COUNTER.bind(done=todo_done_count(items), total=len(items)))
             checklist.update(todo_checklist_renderable(items, in_progress_style=self._theme_style))
         todo_list.display = bool(items)
         empty.display = not items
