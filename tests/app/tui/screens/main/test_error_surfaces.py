@@ -20,7 +20,7 @@ from chrys.app.tui.screens.main.event_handlers import (
     BackendEventHandler,
     _WarningDedupeKey,
 )
-from chrys.app.tui.screens.main.state import MainScreenState, RunState, SessionViewState
+from chrys.app.tui.screens.main.state import MainScreenState, RunState, SessionViewState, SubmitKind
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
     GcAbsorbRequested,
@@ -418,17 +418,7 @@ def _blocked_prompt_state() -> MainScreenState:
     return state
 
 
-def test_pending_submit_error_restores_prompt_without_inline_retry_action() -> None:
-    class _FakeInputBar(_RestorableDraftFake):
-        def __init__(self) -> None:
-            self.value = ""
-            self.locked = True
-            self.unlocked = False
-
-        def unlock_and_keep(self) -> None:
-            self.locked = False
-            self.unlocked = True
-
+def test_pending_turn_error_leaves_the_draft_for_the_sender_without_inline_retry_action() -> None:
     class _FakeStatusBar:
         def flash(self, _message: str, *, error: bool = False) -> None:
             assert error is True
@@ -437,13 +427,10 @@ def test_pending_submit_error_restores_prompt_without_inline_retry_action() -> N
         async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
             chat_errors.append((message, action_label))
 
-    input_bar = _FakeInputBar()
     chat_errors: list[tuple[str, str | None]] = []
     running: list[bool] = []
 
     def query_one(cls: object) -> object:
-        if cls.__name__ == "InputBar":
-            return input_bar
         if cls.__name__ == "StatusBar":
             return _FakeStatusBar()
         if cls.__name__ == "ChatPanel":
@@ -463,8 +450,7 @@ def test_pending_submit_error_restores_prompt_without_inline_retry_action() -> N
 
     assert handler._state.submit.blocked is True
     assert running == []
-    assert input_bar.value == "blocked prompt"
-    assert input_bar.unlocked is True
+    assert handler._state.submit.returned is False
     assert chat_errors == [("Prompt denied", None)]
 
 
@@ -732,7 +718,8 @@ def test_image_attachment_warning_from_backend_uses_modal_and_restores_prompt() 
     assert "retry or continuation prompts" in dialog._message
 
 
-def test_submit_blocking_warning_restores_prompt_without_modal() -> None:
+@pytest.mark.parametrize("kind", ["turn", "injection", "retry"])
+def test_submit_blocking_warning_returns_only_injection_and_retry_drafts(kind: SubmitKind) -> None:
     class _FakeInputBar(_RestorableDraftFake):
         def __init__(self) -> None:
             self.value = ""
@@ -756,7 +743,8 @@ def test_submit_blocking_warning_restores_prompt_without_modal() -> None:
         notifications.append((message, title, severity))
 
     state = MainScreenState()
-    state.submit.begin("retry after the other agent finishes")
+    text = "retry after the other agent finishes"
+    state.submit.begin(text, kind=kind)
     screen = SimpleNamespace(
         _state=state,
         app=SimpleNamespace(push_screen=pushed.append),
@@ -778,8 +766,12 @@ def test_submit_blocking_warning_restores_prompt_without_modal() -> None:
     )
 
     assert handler._state.submit.blocked is True
-    assert input_bar.value == "retry after the other agent finishes"
-    assert input_bar.unlocked is True
+    if kind == "turn":
+        assert state.submit.returned is False
+        assert input_bar.value == ""
+    else:
+        assert input_bar.value == text
+        assert input_bar.unlocked is True
     assert pushed == []
     assert notifications == [("Resolve paused sub-agent(s) first.", "Warning", "warning")]
 

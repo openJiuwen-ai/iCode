@@ -1931,7 +1931,7 @@ class BackendEventHandler:
                 self._show_image_rejection_dialog(event.code, display)
                 s.debug("ImageAttachmentBlocked", event.message.splitlines()[0][:80])
                 return
-            self._restore_pending_submit_text()
+            self._restore_inline_refusal_draft()
         key = _WarningDedupeKey(
             # Capability ownership is a model configuration fact. Its message
             # already includes the model profile, so /new must not reopen the
@@ -2057,13 +2057,7 @@ class BackendEventHandler:
                 self._callbacks.prompt_missing_working_dir("submit" if restored else "turn_end")
                 s.debug("Error", f"[{event.code}] {full_msg[:60]}")
                 return
-            await self._show_pending_submit_error(
-                event.code,
-                display_full,
-                raw_message=full_msg,
-                # Gone from this working folder: the draft comes back as plain text, sent as typed next time.
-                drop_owner=event.code == _SHORTCUT_UNAVAILABLE_CODE,
-            )
+            await self._show_pending_submit_error(event.code, display_full, raw_message=full_msg)
             return
         if s.defers_turn_event(event):
             s.defer_error(event)
@@ -2107,19 +2101,24 @@ class BackendEventHandler:
             self._notify(NotificationEvent.TURN_ERROR)
         s.debug("Error", f"[{event.code}] {full_msg[:60]}")
 
-    def _restore_pending_submit_text(self, *, drop_owner: bool = False) -> InputRestore | None:
+    def _restore_pending_submit_text(self) -> InputRestore | None:
         """Restore the draft the input widget cleared on submit, whole (fields, prompt-shortcut owner), once.
 
         None when nothing was written: the composer holds the user's own draft,
-        or the submit's draft went back already. *drop_owner* hands it back as
-        plain text (its shortcut is no longer one here).
+        or the submit's draft went back already.
         """
         draft = self._state.submit.take_draft_for(
-            lambda: (self._services.session_generation(), self._state.workspace.current_cwd), drop_owner=drop_owner
+            lambda: (self._services.session_generation(), self._state.workspace.current_cwd)
         )
         if draft is None:
             return None
         return self._ui().restore_input_text(draft)
+
+    def _restore_inline_refusal_draft(self) -> None:
+        # A normal send returns the draft as it releases its claim, so Enter can send it again.
+        # Injection and retry only release the claim and rely on the handler to restore the draft.
+        if self._state.submit.kind != "turn":
+            self._restore_pending_submit_text()
 
     def _show_image_rejection_dialog(self, code: str, message: str) -> None:
         """Show the image rejection modal for a backend-validated prompt."""
@@ -2154,9 +2153,7 @@ class BackendEventHandler:
 
         self.push_screen(dialog, callback=on_dismiss)
 
-    async def _show_pending_submit_error(
-        self, code: str, message: str, *, raw_message: str | None = None, drop_owner: bool = False
-    ) -> None:
+    async def _show_pending_submit_error(self, code: str, message: str, *, raw_message: str | None = None) -> None:
         """Surface a synchronous submit rejection without switching into retry mode.
 
         ``message`` may be localized display text; the debug stream keeps
@@ -2165,7 +2162,9 @@ class BackendEventHandler:
         s = self
         ui = self._ui()
 
-        self._restore_pending_submit_text(drop_owner=drop_owner)
+        if code == _SHORTCUT_UNAVAILABLE_CODE:
+            self._state.submit.discard_shortcut_owner()
+        self._restore_inline_refusal_draft()
         short_msg = message
         if "- {" in short_msg:
             short_msg = short_msg[: short_msg.index("- {")].strip()

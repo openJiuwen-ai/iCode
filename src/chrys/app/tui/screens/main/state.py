@@ -249,16 +249,18 @@ class SubmitCoordinator:
         self.session_generation = session_generation
         self.cwd = cwd
 
-    def take_draft_for(
-        self, place: Callable[[], tuple[int, str]], *, drop_owner: bool = False
-    ) -> ChatDraft | str | None:
+    def discard_shortcut_owner(self) -> None:
+        """The shortcut vanished. Keep the whole draft to return as plain text when admission ends."""
+        if self.draft is not None and self.draft.owner is not None:
+            self.draft = replace(self.draft, owner=None)
+
+    def take_draft_for(self, place: Callable[[], tuple[int, str]]) -> ChatDraft | str | None:
         """What to hand back to the composer now — the draft, or the text of a plain submit — once.
 
         A second taker (a refusal handler, then the sender) gets None. A draft
         goes back without its prompt-shortcut owner to another session or
         working folder than it was taken in (*place*: the session generation
-        and folder now, read only for such a draft), or when *drop_owner* (its
-        shortcut is no longer one there): it is no longer that shortcut's.
+        and folder now, read only for such a draft).
         """
         if self.returned:
             return None
@@ -268,7 +270,7 @@ class SubmitCoordinator:
             return self.text
         if draft.owner is None:
             return draft
-        if drop_owner or place() != (self.session_generation, self.cwd):
+        if place() != (self.session_generation, self.cwd):
             return replace(draft, owner=None)
         return draft
 
