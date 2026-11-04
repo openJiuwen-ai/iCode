@@ -657,6 +657,20 @@ async def gives_back(session: Session, draft: ChatDraft) -> None:
     )
 
 
+async def card_back(session: Session, *, commands: int) -> None:
+    """The draft's card shows again with its *commands*.
+
+    It follows the draft through the composer's change messages, a step after
+    the draft itself, which a sender's worker may hand back after the last
+    message drain of :func:`gives_back`.
+    """
+    await wait_for(
+        lambda: (state := card_state(session.main)) is not None and state.commands == commands,
+        pilot=session.pilot,
+        description=f"the draft's card back with {commands} command(s)",
+    )
+
+
 def no_turn(session: Session) -> bool:
     """No turn started in this session's app and the model was never asked."""
     return session.seen.of(ev.TurnStarted) == [] and session.model.call_count == 0
@@ -746,8 +760,7 @@ async def test_a_refused_message_comes_back_whole_and_only_once(
         # The end of the commands clears their status before the failure shows, so the failure stays.
         assert "echo checked" in status_line(main)
         assert no_turn(session)
-        assert card_state(main) is not None
-        assert card_state(main).commands == 1
+        await card_back(session, commands=1)
         assert any("echo checked" in card for card in error_cards(main))
         assert not session.bar.retry_mode
 
@@ -782,7 +795,12 @@ async def test_refused_shortcut_returns_when_a_second_enter_can_send_it(
             assert not chat.text
             rejection.release()
             await gives_back(session, replace(draft, owner=None) if missing else draft)
-        assert (card_state(main) is None) == missing
+        if missing:
+            # Plain text has no card: once the draft's change messages have run, none shows.
+            await pilot.pause()
+            assert card_state(main) is None
+        else:
+            await card_back(session, commands=1)
         assert len(session.seen.of(ev.PromptCommandsRunning)) == (0 if missing else 1)
         assert not Path("ran.txt").exists()
         assert no_turn(session)
@@ -870,7 +888,7 @@ async def test_esc_while_the_commands_run_withdraws_the_message_and_gives_the_dr
         )
         assert (await await_commands_ended(session, sent)).outcome == "cancelled"
         await gives_back(session, draft)
-        assert card_state(main) is not None
+        await card_back(session, commands=1)
         assert not sent.started_turn
         assert no_turn(session)
         assert session.seen.of(ev.UserInterrupt) == []
