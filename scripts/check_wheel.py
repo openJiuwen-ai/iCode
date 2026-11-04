@@ -11,7 +11,9 @@ archive. Then ``uv tool install`` puts the wheel into a fresh tool
 environment, resolving its dependencies from the index as a user's install
 does — ``uv.lock`` plays no part — and the installed ``icode`` and its
 interpreter are probed: the version, every command's help, the TUI and
-optional-feature imports, the bundled guide and the bundled ripgrep.
+optional-feature imports, the bundled guide, the zh-Hans translations the
+build compiled into it (the MO is generated, not tracked) and the bundled
+ripgrep.
 ``--all-ripgrep`` requires the ripgrep of every platform the wheel serves
 (the release wheel, built after ``fetch_rg.sh --all``).
 
@@ -33,6 +35,8 @@ from pathlib import Path
 DISTRIBUTION_NAME = "iCode-TUI"
 WHEEL_PREFIX = "icode_tui-"
 BUNDLED_DOCS_PREFIX = "chrys/app/tui/screens/guides/_docs/"
+# Compiled from locales/ by hatch_build.py; scripts/i18n_mo.py::PACKAGE_MO_PATH.
+ZH_HANS_CATALOG = "chrys/foundation/i18n/_catalogs/zh-Hans/LC_MESSAGES/chrys.mo"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # The one command the wheel installs.
 COMMAND = "icode"
@@ -63,6 +67,7 @@ from pathlib import Path
 
 import chrys
 from chrys.foundation.documentation import resolve_docs_root
+from chrys.foundation.i18n.catalogs import load_catalog
 from chrys.foundation.vendor import _TRIPLE_MAP, VENDOR_RIPGREP, find_rg
 
 # What a bare install must import: the TUI's whole subtree, the document
@@ -85,6 +90,10 @@ if chrys.__version__ != sys.argv[1]:
 docs = resolve_docs_root()
 if docs is None or not docs.resolve().is_relative_to(package):
     problems.append(f"the user guide resolves to {docs}, not the copy bundled under {package}")
+# A loadable catalog without translations would still pass a load check.
+cancel = load_catalog("zh-Hans").gettext("tui.theme_editor.cancel")
+if cancel != "取消":
+    problems.append(f"the bundled zh-Hans catalog translates tui.theme_editor.cancel as {ascii(cancel)}")
 rg = find_rg()
 if rg is None or not Path(rg).resolve().is_relative_to(VENDOR_RIPGREP):
     problems.append(f"ripgrep resolves to {rg}, not the copy bundled under {VENDOR_RIPGREP}")
@@ -145,9 +154,15 @@ def check_archive(wheel: Path, version: str) -> None:
     missing = sorted(tracked - bundled)
     if missing:
         problems.append(f"the wheel is missing user-guide files: {missing}")
+    catalogs = names.count(ZH_HANS_CATALOG)
+    if catalogs != 1:
+        problems.append(f"the wheel carries {catalogs} copies of {ZH_HANS_CATALOG}, not one")
     if problems:
         sys.exit("\n".join(problems))
-    print(f"==> {wheel.name}: metadata and all {len(tracked)} user-guide files present", flush=True)
+    print(
+        f"==> {wheel.name}: metadata, all {len(tracked)} user-guide files and the zh-Hans catalog present",
+        flush=True,
+    )
 
 
 def check_install(wheel: Path, version: str, *, all_ripgrep: bool) -> None:
