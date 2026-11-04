@@ -204,7 +204,12 @@ async def test_start_runs_inside_session_transition_boundary(monkeypatch: pytest
     calls: list[str] = []
 
     async def fake_start_locked(
-        _profile: object, *, operation: str = "startup", staged_loaded: object = None, workspace: object = None
+        _profile: object,
+        *,
+        operation: str = "startup",
+        staged_loaded: object = None,
+        session: object = None,
+        workspace: object = None,
     ) -> None:
         calls.append(operation)
 

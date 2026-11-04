@@ -10,9 +10,9 @@ from textual.app import App, ComposeResult
 from textual.widgets import Button, Input, Label
 from textual.widgets.collapsible import CollapsibleTitle
 
-from chrys.app.tui.screens.agents.panels.config_card import CollapsibleConfigCard, ConfigCard
 from chrys.app.tui.screens.agents.panels.mcp import MCPConnectionCard
 from chrys.app.tui.screens.agents.panels.subagents import SubAgentCard
+from chrys.app.tui.widgets.config_card import CollapsibleConfigCard, ConfigCard
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 

@@ -55,6 +55,8 @@ from chrys.foundation.events.types import (
     InvocationToolCallStart,
     InvocationToolCallStatusUpdated,
     ProfileSwitched,
+    PromptCommandsEnded,
+    PromptCommandsRunning,
     QuestionToUser,
     RollbackResult,
     SessionForked,
@@ -104,6 +106,8 @@ class MainScreenSubscriptions:
         sessions: SessionHandler,
         rollback_result_handler: EventHandler[RollbackResult],
         execution_handler: EventHandler[ExecutionChanged],
+        prompt_commands_running_handler: EventHandler[PromptCommandsRunning],
+        prompt_commands_ended_handler: EventHandler[PromptCommandsEnded],
     ) -> None:
         self._bus = bus
         self._subscriptions: tuple[EventSubscription[Any], ...] = (
@@ -116,6 +120,8 @@ class MainScreenSubscriptions:
             _sub(AgentRuntimeUpdated, events.on_agent_runtime_updated),
             _sub(ImageAttachmentCompressionStarted, events.on_image_attachment_compression_started),
             _sub(ImageAttachmentCompressionFinished, events.on_image_attachment_compression_finished),
+            _sub(PromptCommandsRunning, prompt_commands_running_handler),
+            _sub(PromptCommandsEnded, prompt_commands_ended_handler),
             _sub(AgentThinking, events.on_agent_thinking),
             _sub(InvocationMessage, events.on_agent_message),
             _sub(InvocationContentDelta, events.on_agent_content),

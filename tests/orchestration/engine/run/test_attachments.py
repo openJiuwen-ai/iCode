@@ -221,14 +221,12 @@ def test_parse_image_mentions_unknown_user_home_path_is_error(tmp_path: Path) ->
 )
 def test_parse_image_mentions_oversize_supported_image_is_compressed(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     name: str,
     image_format: str,
     size: tuple[int, int],
     quality: int | None,
 ) -> None:
     max_image_bytes = 128 * 1024
-    monkeypatch.setattr(attachments_module, "MAX_IMAGE_BYTES", max_image_bytes)
     image = _write_noisy_image(
         tmp_path / name,
         image_format,
@@ -237,7 +235,7 @@ def test_parse_image_mentions_oversize_supported_image_is_compressed(
         quality=quality,
     )
 
-    result = parse_image_mentions(f"look at @{name}", cwd=tmp_path)
+    result = parse_image_mentions(f"look at @{name}", cwd=tmp_path, max_bytes=max_image_bytes)
 
     assert result.errors == []
     assert len(result.attachments) == 1

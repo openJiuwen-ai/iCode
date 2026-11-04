@@ -219,6 +219,10 @@ _PREPARATION_OUTCOME_IMAGE_REJECTED = msg(
     "tui.trajectory.preparation_outcome.image_rejected",
     fallback="image rejected",
 )
+_PREPARATION_OUTCOME_COMMAND_FAILED = msg(
+    "tui.trajectory.preparation_outcome.command_failed",
+    fallback="command failed",
+)
 _PREPARATION_OUTCOME_NOT_READY = msg("tui.trajectory.preparation_outcome.not_ready", fallback="not ready")
 _PREPARATION_OUTCOME_PREPARATION_FAILED = msg(
     "tui.trajectory.preparation_outcome.preparation_failed",
@@ -244,6 +248,7 @@ _PREPARATION_OUTCOMES = {
     "target_stale": _PREPARATION_OUTCOME_TARGET_STALE,
     "rejected": _PREPARATION_OUTCOME_REJECTED,
     "image_rejected": _PREPARATION_OUTCOME_IMAGE_REJECTED,
+    "command_failed": _PREPARATION_OUTCOME_COMMAND_FAILED,
     "not_ready": _PREPARATION_OUTCOME_NOT_READY,
     "preparation_failed": _PREPARATION_OUTCOME_PREPARATION_FAILED,
     "conflict": _PREPARATION_OUTCOME_CONFLICT,

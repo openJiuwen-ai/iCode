@@ -18,6 +18,7 @@ from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
     GcAbsorbRequested,
 )
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
@@ -36,6 +37,9 @@ from tests.support.tui_helpers import (
     make_backend_handler,
     status_text,
 )
+
+_PREPARED_IMAGE = {"type": "image", "media_type": "image/png"}
+"""An image content the backend prepared: never text, so the user bubble shows only the message's text."""
 
 
 class _FakeInputFlowView:
@@ -97,6 +101,19 @@ class _FakeInputFlowView:
     def update_toc(self) -> None:
         self.calls.append("toc")
 
+    def restore_input_draft(self, draft: str | ChatDraft) -> bool:
+        self.calls.append(("restore", draft))
+        return True
+
+    def flash_submit_still_sending(self) -> None:
+        self.calls.append("still_sending")
+
+    def show_status(self, text: MessageRef | str) -> None:
+        self.calls.append(f"show_status:{status_text(text)}")
+
+    def clear_status(self) -> None:
+        self.calls.append("clear_status")
+
 
 def _make_input_flow_controller(
     bus: EventBus,
@@ -150,6 +167,9 @@ def _make_input_flow_controller(
         commit_profile_switch_marker=lambda: setattr(state.profile_marker, "from_profile", None),
         post_gc_message=view.gc_messages.append,
         debug=lambda *_args: None,
+        pending_switch=lambda _draft: None,
+        model_left_out=lambda: None,
+        show_error_notice=lambda error: view.calls.append(f"notice:{error.code}"),
     )
     return controller, state, view
 
@@ -178,7 +198,7 @@ def test_input_bar_retry_leaves_status_action_until_admission() -> None:
             return _FakeChatPanel()
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
-    flow = SimpleNamespace(request_retry=lambda text: calls.append(("retry", text)))
+    flow = SimpleNamespace(request_retry=lambda text, _draft=None: calls.append(("retry", text)))
     screen = SimpleNamespace(
         query_one=query_one,
         _input_flow=flow,
@@ -211,7 +231,7 @@ def test_inline_status_retry_resumes_without_consuming_input_draft() -> None:
             return _FakeInputBar()
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
-    flow = SimpleNamespace(request_retry=lambda text: calls.append(("retry", text)))
+    flow = SimpleNamespace(request_retry=lambda text, _draft=None: calls.append(("retry", text)))
     screen = SimpleNamespace(
         _state=MainScreenState(),
         query_one=query_one,
@@ -229,11 +249,60 @@ def test_inline_status_retry_resumes_without_consuming_input_draft() -> None:
 def test_request_retry_ignores_duplicate_while_retry_submit_is_pending() -> None:
     state = MainScreenState()
     state.submit.active = True
+    state.submit.kind = "retry"
     controller, _state, view = _make_input_flow_controller(EventBus(), state=state)
 
     controller.request_retry("duplicate note")
 
     assert view.calls == []
+
+
+def test_a_note_refused_while_a_message_is_on_its_way_comes_back() -> None:
+    # A message's admission can take a while (a prompt shortcut's commands): a Continue
+    # note typed meanwhile is the user's, not dropped.
+    state = MainScreenState()
+    state.submit.active = True
+    state.submit.kind = "turn"
+    controller, _state, view = _make_input_flow_controller(EventBus(), state=state)
+
+    controller.request_retry("my note")
+
+    assert view.calls == [("restore", "my note"), "still_sending"]
+
+
+def test_a_note_whose_continue_meets_a_turn_started_since_the_keypress_comes_back_whole() -> None:
+    state = MainScreenState()
+    state.run.agent_running = True
+    controller, _state, view = _make_input_flow_controller(EventBus(), state=state)
+    draft = ChatDraft("my note", fields=((3, 7),))
+
+    controller.request_retry("my note", draft)
+
+    assert view.calls == [("restore", draft)]
+    assert state.submit.active is False
+
+
+def test_a_message_whose_send_meets_a_load_started_since_the_keypress_comes_back_whole() -> None:
+    """Enter cleared the composer and queued the send; a load began before the send ran."""
+    bus = EventBus()
+    published: list[UserMessage] = []
+    state = MainScreenState()
+    controller, _state, view = _make_input_flow_controller(bus, state=state)
+    draft = ChatDraft("Review this", fields=((7, 11),))
+
+    async def _record(event: UserMessage) -> None:
+        published.append(event)
+
+    async def _run() -> None:
+        await bus.subscribe(UserMessage, _record)
+        state.run.agent_loading = True
+        await controller.send_user_message("Review this", draft)
+
+    asyncio.run(_run())
+
+    assert published == []
+    assert view.calls == [("restore", draft)]
+    assert state.submit.active is False
 
 
 @pytest.mark.parametrize("outcome", ["accepted", "rejected", "cancelled"])
@@ -333,9 +402,11 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
             self._retry_label = "Continue" if initial_retry_mode else ""
             self.retry_mode = initial_retry_mode
             self.value = ""
+            self.restored: str | ChatDraft | None = None
 
-        def restore_draft(self, text: str) -> bool:
-            self.value = text
+        def restore_draft(self, draft: str | ChatDraft) -> bool:
+            self.value = draft.text if isinstance(draft, ChatDraft) else draft
+            self.restored = draft
             return True
 
         def unlock_and_keep(self) -> None:
@@ -377,6 +448,9 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
         start_worker=scheduled.append,
     )
 
+    # A note typed over a shortcut's draft whose field is still unfilled: a refusal gives it back whole.
+    draft = ChatDraft(text, fields=((0, 5),)) if text else None
+
     async def _fail_retry(_event: UserRetry) -> None:
         event_type = Warning if error_code == "sub_agent_paused" else Error
         await bus.publish(event_type(code=error_code, message="retry failed"))
@@ -385,7 +459,7 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
         await bus.subscribe(UserRetry, _fail_retry)
         await bus.subscribe(Error, handler.on_error)
         await bus.subscribe(Warning, handler.on_warning)
-        controller.request_retry(text)
+        controller.request_retry(text, draft)
         await _run_started(scheduled)
 
     asyncio.run(_run())
@@ -401,6 +475,8 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
         assert "status:Resuming" not in order
         assert f"retry-note:{text}" not in view.calls
         assert input_bar.value == text
+        if draft is not None:
+            assert input_bar.restored == draft
         assert input_bar.locked is False
         assert input_bar.retry_mode is initial_retry_mode
         assert input_bar._retry_label == ("Continue" if initial_retry_mode else "")
@@ -436,7 +512,8 @@ async def test_rejected_retry_keeps_mounted_action_until_next_retry_is_accepted(
         value = ""
         locked = True
 
-        def restore_draft(self, text: str) -> bool:
+        def restore_draft(self, draft: str | ChatDraft) -> bool:
+            text = draft.text if isinstance(draft, ChatDraft) else draft
             self.value = text
             return True
 
@@ -694,7 +771,7 @@ def test_send_user_message_defers_fast_agent_message_until_user_bubble_is_render
     )
 
     async def _accept_and_finish(event: UserMessage) -> None:
-        event.prepared_contents = ["hello", "prepared-image-content"]
+        event.prepared_contents = ["hello", _PREPARED_IMAGE]
         event.started_turn = True
         origin = InvocationOrigin("turn", event.session_id or "", "turn-test", None)
         await bus.publish(
@@ -721,7 +798,7 @@ def test_send_user_message_defers_fast_agent_message_until_user_bubble_is_render
     # Streamed text and the final both wait for the user bubble, then replay in order.
     user_index = view.calls.index("user:hello")
     assert view.calls[user_index + 1 : user_index + 4] == ["delta:done", "finished", "agent:done:hello"]
-    assert view.user_contents == [["hello", "prepared-image-content"]]
+    assert view.user_contents == [["hello", _PREPARED_IMAGE]]
 
 
 def test_text_arriving_while_deferred_text_replays_waits_behind_it() -> None:
@@ -822,7 +899,7 @@ def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> 
     )
 
     async def _accept_and_fail(event: UserMessage) -> None:
-        event.prepared_contents = ["hello", "prepared-image-content"]
+        event.prepared_contents = ["hello", _PREPARED_IMAGE]
         event.started_turn = True
         await bus.publish(Error(code="executor_error", message=f"failed:{event.text}", session_id=event.session_id))
 
@@ -836,6 +913,6 @@ def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> 
     user_index = order.index("user:hello")
     error_index = order.index("error:failed:hello:Retry")
     assert user_index < error_index
-    assert view.user_contents == [["hello", "prepared-image-content"]]
+    assert view.user_contents == [["hello", _PREPARED_IMAGE]]
     assert state.submit.blocked is False
     assert input_bar.retry_mode is True

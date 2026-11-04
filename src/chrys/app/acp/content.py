@@ -20,11 +20,18 @@ from acp.schema import (
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.events.types import UserMessage
-from chrys.foundation.text.images import wire_image_media_type
+from chrys.foundation.text.images import (
+    COMPRESSED_IMAGE_MEDIA_TYPE,
+    MAX_ACP_IMAGE_BYTES,
+    MAX_IMAGE_BYTES,
+    ImageProcessingError,
+    compress_image_data,
+    format_mb,
+    wire_image_media_type,
+)
 from chrys.kernel import Content
-from chrys.orchestration.engine.run.attachments import MAX_IMAGE_BYTES
 
-_MAX_BASE64_IMAGE_CHARS = ((MAX_IMAGE_BYTES + 2) // 3) * 4
+_MAX_BASE64_IMAGE_CHARS = ((MAX_ACP_IMAGE_BYTES + 2) // 3) * 4
 
 
 class AcpContentError(ValueError):
@@ -44,8 +51,14 @@ ContentBlock = (
 )
 
 
-def convert_prompt_blocks(blocks: list[ContentBlock], *, vision_enabled: bool) -> ConvertedPrompt:
-    """Convert ACP prompt blocks into a Chrys ``UserMessage``."""
+def convert_prompt_blocks(
+    blocks: list[ContentBlock], *, vision_enabled: bool, max_image_bytes: int = MAX_IMAGE_BYTES
+) -> ConvertedPrompt:
+    """Convert ACP prompt blocks into a Chrys ``UserMessage``.
+
+    An image over *max_image_bytes* is compressed here, which can take a
+    while: a caller on an event loop runs this in a worker thread.
+    """
     text_parts: list[str] = []
     image_contents: list[Content] = []
 
@@ -63,7 +76,7 @@ def convert_prompt_blocks(blocks: list[ContentBlock], *, vision_enabled: bool) -
             if not vision_enabled:
                 msg = "This session's model profile does not support image input."
                 raise AcpContentError(msg)
-            image_contents.append(_image_content(block))
+            image_contents.append(_image_content(block, max_bytes=max_image_bytes))
             continue
         if isinstance(block, AudioContentBlock):
             msg = f"Audio content is not supported by {APP_DISPLAY_NAME} ACP phase 1."
@@ -105,13 +118,13 @@ def _format_embedded_resource(block: EmbeddedResourceContentBlock) -> str:
     raise AcpContentError(msg)
 
 
-def _image_content(block: ImageContentBlock) -> Content:
+def _image_content(block: ImageContentBlock, *, max_bytes: int) -> Content:
     mime_type = block.mime_type.strip().lower()
     if not mime_type.startswith("image/"):
         msg = f"Unsupported image MIME type: {block.mime_type}"
         raise AcpContentError(msg)
     if len(block.data) > _MAX_BASE64_IMAGE_CHARS:
-        msg = f"Image content exceeds the {MAX_IMAGE_BYTES // (1024 * 1024)} MB limit."
+        msg = f"Image content exceeds the {format_mb(MAX_ACP_IMAGE_BYTES)} limit."
         raise AcpContentError(msg)
     try:
         data = base64.b64decode(block.data, validate=True)
@@ -121,12 +134,18 @@ def _image_content(block: ImageContentBlock) -> Content:
     if not data:
         msg = "Image content is empty."
         raise AcpContentError(msg)
-    if len(data) > MAX_IMAGE_BYTES:
-        msg = f"Image content exceeds the {MAX_IMAGE_BYTES // (1024 * 1024)} MB limit."
+    if len(data) > MAX_ACP_IMAGE_BYTES:
+        msg = f"Image content exceeds the {format_mb(MAX_ACP_IMAGE_BYTES)} limit."
         raise AcpContentError(msg)
     # The bytes name the type: a mislabelled or unreadable image would fail
     # every later request of the session.
     if (media_type := wire_image_media_type(data, None)) is None:
         msg = "Unsupported image format. Use PNG, JPEG, GIF, or WebP."
         raise AcpContentError(msg)
+    if len(data) > max_bytes:
+        try:
+            data = compress_image_data(data, max_bytes=max_bytes)
+        except ImageProcessingError as exc:
+            raise AcpContentError(str(exc)) from exc
+        media_type = COMPRESSED_IMAGE_MEDIA_TYPE
     return Content.from_data(data=data, media_type=media_type)

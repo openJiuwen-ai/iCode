@@ -57,7 +57,13 @@ from chrys.foundation.models.ask_user import (
 )
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.platform.files import surrogate_safe_text
-from chrys.foundation.text.images import MAX_IMAGE_BYTES
+from chrys.foundation.text.images import (
+    COMPRESSED_IMAGE_MEDIA_TYPE,
+    MAX_ACP_IMAGE_BYTES,
+    MAX_IMAGE_BYTES,
+    ImageProcessingError,
+    compress_image_data,
+)
 from chrys.foundation.tool_result_metadata import TOOL_FAILED_METADATA_KEY, TOOL_INTERRUPTED_METADATA_KEY
 from chrys.foundation.trajectory.context import TrajectoryContext
 from chrys.foundation.trajectory.event_types import WaitCategory
@@ -92,10 +98,10 @@ _AUDIT_RING_ITEMS = 500
 _AUDIT_RING_BYTES = 256 * 1024
 _ALLOW_KINDS = ("allow_once", "allow_always")
 _REJECT_KINDS = ("reject_once", "reject_always")
-_MAX_BASE64_IMAGE_CHARS = ((MAX_IMAGE_BYTES + 2) // 3) * 4
-# A maximum-size accepted image expands to 4 MiB in base64. Keep one
-# additional MiB for its data-URI prefix and the surrounding bounded record.
-_MAX_ASSEMBLED_BYTES = _MAX_BASE64_IMAGE_CHARS + 1024 * 1024
+_MAX_BASE64_IMAGE_CHARS = ((MAX_ACP_IMAGE_BYTES + 2) // 3) * 4
+# What the records of one attempt keep in all, their images counted as the data
+# URIs they keep: a compressed image takes about a third of a MiB.
+_MAX_ASSEMBLED_BYTES = 5 * 1024 * 1024
 
 
 def display_tool_kind(kind: str | None) -> str:
@@ -189,8 +195,21 @@ def _content_block_text(block: Any) -> str:
     return preview_text(block)
 
 
-def _structured_tool_content(content: Sequence[Any]) -> tuple[list[Content], list[dict[str, Any]]]:
-    """Extract images and resource descriptors before bounded text projection."""
+def _compressed_tool_image(data: bytes) -> bytes | None:
+    """The JPEG a tool image over :data:`MAX_IMAGE_BYTES` is kept as, or None when it can't be decoded."""
+    try:
+        return compress_image_data(data)
+    except ImageProcessingError:
+        return None
+
+
+async def _structured_tool_content(content: Sequence[Any]) -> tuple[list[Content], list[dict[str, Any]]]:
+    """Extract images and resource descriptors before bounded text projection.
+
+    An image over :data:`MAX_IMAGE_BYTES` is kept compressed, which can take a
+    while: off the event loop. One that can't be decoded is kept as it came,
+    as a smaller one is, and the attempt's byte budget bounds what it keeps.
+    """
     image_contents: list[Content] = []
     artifacts: list[dict[str, Any]] = []
     for item in content:
@@ -208,8 +227,12 @@ def _structured_tool_content(content: Sequence[Any]) -> tuple[list[Content], lis
                     raise AcpTransportError("The ACP agent returned invalid base64 image content.") from exc
                 if not data:
                     raise AcpTransportError("The ACP agent returned empty image content.")
-                if len(data) > MAX_IMAGE_BYTES:
+                if len(data) > MAX_ACP_IMAGE_BYTES:
                     raise AcpTransportError("The ACP agent returned an image that exceeds the supported size limit.")
+                if len(data) > MAX_IMAGE_BYTES:
+                    compressed = await asyncio.to_thread(_compressed_tool_image, data)
+                    if compressed is not None:
+                        data, media_type = compressed, COMPRESSED_IMAGE_MEDIA_TYPE
                 image_contents.append(Content.from_data(data=data, media_type=media_type))
             elif block.uri:
                 image_contents.append(Content.from_uri(uri=block.uri, media_type=media_type))
@@ -474,6 +497,10 @@ class AcpUpdateTranslator:
         self._retained_bytes_by_call[call_id] = call_bytes
 
     async def _merge_tool(self, update: ToolCallStart | ToolCallProgress) -> None:
+        content = getattr(update, "content", None)
+        # Before anything changes: the record never shows a half-merged update
+        # while an image compresses.
+        structured = await _structured_tool_content(content) if content is not None else None
         remote_id = update.tool_call_id
         local_id = self._current_call_ids.get(remote_id, "")
         record = self.calls.get(local_id)
@@ -502,7 +529,6 @@ class AcpUpdateTranslator:
         kind = getattr(update, "kind", None)
         raw_input = getattr(update, "raw_input", None)
         raw_output = getattr(update, "raw_output", None)
-        content = getattr(update, "content", None)
         locations = getattr(update, "locations", None)
         if title is not None:
             record.title = preview_text(title) or "tool"
@@ -512,8 +538,8 @@ class AcpUpdateTranslator:
             record.raw_input = canonical_raw_input(raw_input)
         if raw_output is not None:
             record.raw_output = _bounded_value(raw_output)
-        if content is not None:
-            record.image_contents, record.artifacts = _structured_tool_content(content)
+        if structured is not None:
+            record.image_contents, record.artifacts = structured
             record.content = list(_bounded_value(content) or [])
         if locations is not None:
             record.locations = list(_bounded_value(locations) or [])

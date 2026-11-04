@@ -19,6 +19,7 @@ from chrys.app.tui.theme import CHRYS_LEGACY_THEME
 from chrys.app.tui.theme_loader import load_user_themes
 from chrys.app.tui.themes.document import copy_theme
 from chrys.app.tui.themes.store import ThemeStoreError, UserThemeStore
+from chrys.app.tui.widgets.btw import ChatColumn
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolCall
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
@@ -26,7 +27,8 @@ from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.select import Select
 from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
 from chrys.foundation.config.settings import persist_theme
-from tests.support.tui_helpers import click_when_settled
+from tests.support.pilot_barrier import screen_is_settled
+from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
 
 from .helpers import (
@@ -272,7 +274,7 @@ async def test_editor_reflows_the_same_chat_beside_its_dock(tmp_path: Path, size
 
 
 # Each case also resizes across the compact breakpoint while the editor is open.
-@pytest.mark.parametrize("width", [100, 140])
+@pytest.mark.parametrize("width", [60, 140])
 @pytest.mark.parametrize("source", ["chrys-ansi", "chrys-legacy"])
 async def test_edit_entry_adopts_current_theme_without_restyling_transcript(
     tmp_path: Path, width: int, source: str
@@ -295,6 +297,10 @@ async def test_edit_entry_adopts_current_theme_without_restyling_transcript(
         await pilot.pause()
         original = copy_theme(app.current_theme)
         variables = app.theme_variables.copy()
+        column = main.query_one(ChatColumn)
+        normal_minimum = column.styles.min_width
+        assert normal_minimum is not None and normal_minimum.value == 35
+        await wait_for(lambda: screen_is_settled(app, main), pilot=pilot)
         transcript_nodes = set(chat.walk_children())
         with (
             patch.object(
@@ -318,12 +324,16 @@ async def test_edit_entry_adopts_current_theme_without_restyling_transcript(
             assert main.query_one(SidebarPanel).display == (width >= 128)
             assert chat.region.x >= main.theme_editor.region.right
             assert chat.region.width > 0
-            resized_width = 140 if width == 100 else 100
-            await pilot.resize_terminal(resized_width, 50)
-            await wait_for(
-                lambda: main.query_one(SidebarPanel).display == (resized_width >= 128) and not main._layout_required,
-                pilot=pilot,
-            )
+            assert column.region.right <= main.region.right
+            assert column.styles.min_width is not None
+            assert column.styles.min_width.value == (0 if width < 128 else 35)
+            for resized_width in (60, 140):
+                await resize_when_settled(pilot, resized_width, 50)
+                assert main.query_one(SidebarPanel).display == (resized_width >= 128)
+                assert column.region.right <= main.region.right
+                assert column.region.x >= main.theme_editor.region.right
+                assert column.styles.min_width.value == (0 if resized_width < 128 else 35)
+            assert column.styles.min_width == normal_minimum
             assert chat.region.x >= main.theme_editor.region.right
             assert editor.query_one(".--rows-grid Label").region.height == 1
             # Closing an unchanged draft also needs no theme work. The chat

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+import struct
 import warnings
 from dataclasses import dataclass
 from io import BytesIO
@@ -19,20 +20,32 @@ IMAGE_MIME_BY_EXTENSION: dict[str, str] = {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
 }
-MAX_IMAGE_BYTES = 3 * 1024 * 1024
+# The most bytes an image is sent to a model with. A larger image, or one in a
+# format model APIs don't read, is compressed to a JPEG within it: every image
+# in the history rides each request, and a gateway in front of a model service
+# may reject a request the service itself accepts.
+MAX_IMAGE_BYTES = 256 * 1024
+# The largest image accepted at all, as bytes and as decoded pixels.
 MAX_IMAGE_SOURCE_BYTES = 50 * 1024 * 1024
 MAX_IMAGE_PIXELS = 80_000_000
+# The largest image an ACP message carries: its base64, under 43 MiB, fits the
+# 50 MiB line a JSON-RPC message is read as, leaving room for the rest of it.
+MAX_ACP_IMAGE_BYTES = 32 * 1024 * 1024
 # The only formats Pillow decodes for an attached or viewed image: the four
 # model APIs read plus BMP, which converts. A file in any other format behind
 # an image name never reaches the rest of Pillow's decoders.
 IMAGE_DECODE_FORMATS: tuple[str, ...] = ("PNG", "JPEG", "GIF", "WEBP", "BMP")
 
 COMPRESSED_IMAGE_MEDIA_TYPE = "image/jpeg"
-_COMPRESSED_IMAGE_HEADROOM_BYTES = 128 * 1024
-_COMPRESSED_IMAGE_TARGET_BYTES = MAX_IMAGE_BYTES - _COMPRESSED_IMAGE_HEADROOM_BYTES
-_JPEG_QUALITIES = (88, 82, 76, 70, 62, 54, 46, 38)
+# What Pillow raises decoding a malformed image: OSError mostly, but a broken
+# PNG chunk, for one, is a SyntaxError.
+_DECODE_ERRORS: tuple[type[Exception], ...] = (OSError, ValueError, SyntaxError, EOFError, IndexError, struct.error)
+# Compression fits an image within this long edge first, never enlarging it,
+# then tries these JPEG qualities in turn; an image still too large is scaled
+# down further at the same qualities, never encoded at a lower one.
+COMPRESSED_IMAGE_MAX_EDGE = 2048
+_JPEG_QUALITIES = (88, 82, 76)
 _MAX_COMPRESSION_PASSES = 8
-_MIN_COMPRESSED_IMAGE_SIDE = 512
 
 
 @dataclass(frozen=True)
@@ -111,8 +124,8 @@ def read_image_source_bytes(path: Path, *, max_bytes: int = MAX_IMAGE_SOURCE_BYT
         return file.read(max_bytes + 1)
 
 
-def load_image_file(path: Path, media_type: str | None = None) -> LoadedImage:
-    """Load and optionally compress an image file for model input."""
+def load_image_file(path: Path, media_type: str | None = None, *, max_bytes: int = MAX_IMAGE_BYTES) -> LoadedImage:
+    """Load an image file for model input, compressed when it is over *max_bytes*."""
     try:
         data = read_image_source_bytes(path)
     except ValueError as exc:
@@ -131,10 +144,10 @@ def load_image_file(path: Path, media_type: str | None = None) -> LoadedImage:
     # Sent as it is only when the bytes are a format model APIs read; other
     # bytes behind an image name (a renamed BMP) are converted like an
     # oversized image.
-    if len(data) <= MAX_IMAGE_BYTES and (wire_media_type := wire_image_media_type(data, None)) is not None:
+    if len(data) <= max_bytes and (wire_media_type := wire_image_media_type(data, None)) is not None:
         return LoadedImage(data=data, media_type=wire_media_type, width=width, height=height)
 
-    compressed = compress_image_data(data)
+    compressed = compress_image_data(data, max_bytes=max_bytes)
     compressed_width, compressed_height = inspect_image_dimensions(compressed)
     return LoadedImage(
         data=compressed,
@@ -163,10 +176,18 @@ def inspect_image_dimensions(data: bytes, *, formats: tuple[str, ...] = IMAGE_DE
 
 
 def compress_image_data(
-    data: bytes, *, max_bytes: int = MAX_IMAGE_BYTES, formats: tuple[str, ...] = IMAGE_DECODE_FORMATS
+    data: bytes,
+    *,
+    max_bytes: int = MAX_IMAGE_BYTES,
+    formats: tuple[str, ...] = IMAGE_DECODE_FORMATS,
+    max_edge: int | None = COMPRESSED_IMAGE_MAX_EDGE,
 ) -> bytes:
-    """Compress image bytes, in one of *formats*, to a JPEG under *max_bytes*."""
-    from PIL import Image, ImageOps, UnidentifiedImageError
+    """Compress image bytes, in one of *formats*, to a JPEG under *max_bytes*.
+
+    The image is fitted within *max_edge* on its long edge first, as an image
+    sent to a model is; None keeps every pixel, as a stored copy does.
+    """
+    from PIL import Image, ImageOps
 
     try:
         with warnings.catch_warnings():
@@ -177,23 +198,33 @@ def compress_image_data(
                 image = _to_jpeg_rgb(opened)
     except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
         raise ImageProcessingError(format_image_too_large_to_process_reason()) from exc
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except _DECODE_ERRORS as exc:
         raise ImageProcessingError(
             "This file could not be read as a supported image. Export it as PNG, JPEG, or WebP, then try again."
         ) from exc
 
     try:
-        compressed = _compress_jpeg_under_limit(image, target_bytes=_compression_target_bytes(max_bytes))
+        compressed = _compress_jpeg_under_limit(image, max_bytes=max_bytes, max_edge=max_edge)
     except (OSError, ValueError) as exc:
         raise ImageProcessingError(
             "This image could not be compressed. Resize it or export a smaller copy, then try again."
         ) from exc
     if compressed is None:
         raise ImageProcessingError(
-            f"This image is still larger than {format_mb(max_bytes)} after compression. "
+            f"This image is still larger than {_format_size(max_bytes)} after compression. "
             "Resize it or export a smaller copy, then try again."
         )
     return compressed
+
+
+def shrink_image_data(data: bytes, *, max_bytes: int) -> LoadedImage | None:
+    """The JPEG within *max_bytes* an image already in a conversation shrinks to, or None when none fits."""
+    try:
+        compressed = compress_image_data(data, max_bytes=max_bytes)
+        width, height = inspect_image_dimensions(compressed)
+    except ImageProcessingError:
+        return None
+    return LoadedImage(data=compressed, media_type=COMPRESSED_IMAGE_MEDIA_TYPE, width=width, height=height)
 
 
 def validate_image_dimensions(size: tuple[int, int]) -> None:
@@ -221,17 +252,18 @@ def format_source_too_large_reason(size_bytes: int) -> str:
     )
 
 
-def format_model_too_large_reason(size_bytes: int) -> str:
-    """Return a friendly model-payload size error."""
-    return (
-        f"This image is {format_mb(size_bytes)}, over the {format_mb(MAX_IMAGE_BYTES)} model input limit. "
-        "Resize it or export a smaller copy, then try again."
-    )
-
-
 def format_mb(size_bytes: int) -> str:
     """Format bytes as decimal-ish megabytes for user-facing errors."""
     return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format bytes as bytes, kilobytes or, from a megabyte, as :func:`format_mb` does."""
+    if size_bytes < 1024:
+        return f"{size_bytes} bytes"
+    if size_bytes < 1024 * 1024:
+        return f"{math.ceil(size_bytes / 1024)} KB"
+    return format_mb(size_bytes)
 
 
 def data_uri_payload_info(uri: str) -> tuple[int | None, str]:
@@ -264,35 +296,42 @@ def _to_jpeg_rgb(image: Any) -> Any:
     return image.convert("RGB")
 
 
-def _compression_target_bytes(max_bytes: int) -> int:
-    """Return a target below the hard limit while preserving production headroom."""
-    headroom = min(_COMPRESSED_IMAGE_HEADROOM_BYTES, max_bytes // 20)
-    return max(1, max_bytes - headroom)
-
-
-def _compress_jpeg_under_limit(image: Any, *, target_bytes: int = _COMPRESSED_IMAGE_TARGET_BYTES) -> bytes | None:
-    """Try JPEG quality reduction and bounded downscaling until under the limit."""
+def _fit_long_edge(image: Any, max_edge: int) -> Any:
+    """Return *image* scaled down to fit *max_edge* on its long edge, or itself when it already fits."""
     from PIL import Image
 
-    working = image
-    best: bytes | None = None
+    width, height = image.size
+    long_edge = max(width, height)
+    if long_edge <= max_edge:
+        return image
+    scale = max_edge / long_edge
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    return image.resize(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
 
+
+def _compress_jpeg_under_limit(image: Any, *, max_bytes: int, max_edge: int | None) -> bytes | None:
+    """Encode *image* as a JPEG of at most *max_bytes*, or None when no size within the passes gets there."""
+    from PIL import Image
+
+    fitted = image if max_edge is None else _fit_long_edge(image, max_edge)
+    working = fitted
     for _ in range(_MAX_COMPRESSION_PASSES):
+        encoded_sizes: list[int] = []
         for quality in _JPEG_QUALITIES:
             encoded = _encode_jpeg(working, quality=quality)
-            if len(encoded) <= target_bytes:
+            if len(encoded) <= max_bytes:
                 return encoded
-            if best is None or len(encoded) < len(best):
-                best = encoded
+            encoded_sizes.append(len(encoded))
 
+        # Bytes grow about with the pixel count: aim the next size a little under
+        # the limit, each side shrinking by at least a tenth and to no less than a third.
         width, height = working.size
-        if min(width, height) <= _MIN_COMPRESSED_IMAGE_SIDE or best is None:
-            return None
-        ratio = min(0.90, max(0.35, math.sqrt(target_bytes / len(best)) * 0.96))
+        ratio = min(0.90, max(0.35, math.sqrt(max_bytes / min(encoded_sizes)) * 0.96))
         new_size = (max(1, int(width * ratio)), max(1, int(height * ratio)))
         if new_size == working.size:
             return None
-        working = working.resize(new_size, Image.Resampling.LANCZOS)
+        # Each pass resamples the fitted image, not the previous pass's.
+        working = fitted.resize(new_size, Image.Resampling.LANCZOS)
 
     return None
 

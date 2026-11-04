@@ -68,7 +68,11 @@ class SuggestionList(Widget):
     keeps focus and forwards key events.
     """
 
-    COMPONENT_CLASSES: ClassVar[set[str]] = {"suggestion-list--option-hover", "suggestion-list--match"}
+    COMPONENT_CLASSES: ClassVar[set[str]] = {
+        "suggestion-list--option-hover",
+        "suggestion-list--match",
+        "suggestion-list--section",
+    }
 
     DEFAULT_CSS = """
     SuggestionList {
@@ -85,6 +89,9 @@ class SuggestionList(Widget):
     }
     SuggestionList > .suggestion-list--option-hover {
         background: $primary 30%;
+    }
+    SuggestionList > .suggestion-list--section {
+        color: $text-primary;
     }
     SuggestionList > .suggestion-list--match {
         color: $accent;
@@ -212,6 +219,8 @@ class SuggestionList(Widget):
         """Replace displayed items with a new filtered set.
 
         Args:
+            initial: Value to highlight (instead of the first enabled item),
+                unless *keep_selection* keeps the one highlighted now.
             title: When given, re-renders the border title so per-keystroke
                 rebuilds pick up the active locale (``""`` clears it; ``None``
                 keeps the current title).
@@ -296,12 +305,13 @@ class SuggestionList(Widget):
         previous_section = ""
         normalized = self._normalize_items(items)
         match_style = self._match_style() if any(item.match_spans for item in normalized) else None
+        section_style = self._section_style() if any(item.section for item in normalized) else None
         for item in normalized:
             if item.section and item.section != previous_section:
                 previous_section = item.section
                 self._values.append(None)
                 self._kinds.append("")
-                self._contents.append(Content.styled(self._single_line(item.section), "dim bold"))
+                self._contents.append(Content.styled(self._single_line(item.section), section_style or ""))
                 self._disabled.append(True)
                 self._marquee_starts.append(None)
             option_index = len(self._contents)
@@ -336,6 +346,10 @@ class SuggestionList(Widget):
     def _single_line(text: str) -> str:
         """Collapse newlines: window math and click mapping assume one row per item."""
         return " ".join(text.splitlines()) if "\n" in text or "\r" in text else text
+
+    def _section_style(self) -> Style:
+        """Return the style of a group heading: its own color, not bold like the rows, apart from the title's accent."""
+        return Style(foreground=self.get_component_styles("suggestion-list--section").color)
 
     def _match_style(self) -> Style:
         """Return the theme's style for matched characters: its match color, in bold.

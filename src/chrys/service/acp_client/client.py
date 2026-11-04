@@ -83,7 +83,7 @@ from .protocol import encode_protocol_json as encode_protocol_json
 from .protocol import parse_protocol_json as parse_protocol_json
 from .protocol import validate_json_rpc_envelope as validate_json_rpc_envelope
 from .protocol import validate_json_scalar_tree as validate_json_scalar_tree
-from .spawn import ACP_STDIO_LIMIT_BYTES, AcpSpawnResult, spawn_acp_process, validate_agent_spec
+from .spawn import ACP_STDIO_LIMIT_BYTES, AcpSpawnResult, spawn_acp_process, validate_agent_spec, with_fresh_tokens
 from .spec import AcpAgentSpec, AcpHandshakeInfo, AcpPromptOutcome, PermissionDecision
 
 logger = logging.getLogger(__name__)
@@ -216,13 +216,15 @@ class AcpAgentClient:
         self._connect_started = True
         validate_agent_spec(self._spec)
         loop = asyncio.get_running_loop()
-        self._handshake_deadline = loop.time() + self._spec.handshake_timeout_seconds
         self._terminal_failure = loop.create_future()
         self._activity_event = asyncio.Event()
         self._last_activity = loop.time()
         try:
+            # A command's time isn't the agent's to answer for: the handshake clock starts after it.
+            launch_spec = await with_fresh_tokens(self._spec)
+            self._handshake_deadline = loop.time() + self._spec.handshake_timeout_seconds
             async with asyncio.timeout_at(self._handshake_deadline):
-                spawn = await spawn_acp_process(self._spec)
+                spawn = await spawn_acp_process(launch_spec)
                 if self._closing:
                     # A force_close that completed during the spawn await saw
                     # nothing to release, and its cached task never runs

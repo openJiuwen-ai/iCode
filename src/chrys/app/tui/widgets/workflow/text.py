@@ -133,6 +133,7 @@ ELAPSED_SECONDS = msg("tui.workflow.elapsed.seconds", fallback="{count} second",
 ELAPSED_MINUTES = msg("tui.workflow.elapsed.minutes", fallback="{count} minute", plural_fallback="{count} minutes")
 ELAPSED_HOURS = msg("tui.workflow.elapsed.hours", fallback="{count} hour", plural_fallback="{count} hours")
 ELAPSED_DAYS = msg("tui.workflow.elapsed.days", fallback="{count} day", plural_fallback="{count} days")
+ELAPSED_MILLIS = msg("tui.workflow.elapsed.milliseconds", fallback="{count} ms", plural_fallback="{count} ms")
 LAYOUT_VERTICAL = msg("tui.workflow.layout.vertical", fallback="↕ Vertical")
 LAYOUT_HORIZONTAL = msg("tui.workflow.layout.horizontal", fallback="↔ Horizontal")
 LOOP_ITERATION = msg("tui.workflow.loop_iteration", fallback="Iteration {iteration}/{maximum}")
@@ -225,8 +226,8 @@ def iteration_label(iteration: int, maximum: int, controller: LocaleController |
 
 
 def elapsed_label(seconds: float, controller: LocaleController | None = None) -> str:
-    """Render at most two spelled-out duration units with localized plurals."""
-    units = {"d": ELAPSED_DAYS, "h": ELAPSED_HOURS, "m": ELAPSED_MINUTES, "s": ELAPSED_SECONDS}
+    """Render at most two spelled-out duration units with localized plurals, milliseconds under a second."""
+    units = {"d": ELAPSED_DAYS, "h": ELAPSED_HOURS, "m": ELAPSED_MINUTES, "s": ELAPSED_SECONDS, "ms": ELAPSED_MILLIS}
     return " ".join(render(units[unit].bind(count=value), controller) for value, unit in elapsed_parts(seconds))
 
 

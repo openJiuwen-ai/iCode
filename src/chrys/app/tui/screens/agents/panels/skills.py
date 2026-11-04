@@ -12,11 +12,9 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.message import Message
 from textual.widgets import Button, Label, Static
 
 from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.screens.agents.panels.path_entry import _WORKSPACE_RELATIVE, PathEntryCard
 from chrys.app.tui.screens.agents.skill_paths import normalize_skill_path_for_compare
 from chrys.app.tui.screens.agents.validation_messages import (
     CONTEXT_ERROR,
@@ -40,6 +38,8 @@ from chrys.app.tui.screens.agents.validation_messages import (
 )
 from chrys.app.tui.widgets import Checkbox, ConfigActionButton, ConfigAddButton, HatchedEmptyState
 from chrys.app.tui.widgets import EnhancedInput as Input
+from chrys.app.tui.widgets.directory_path import PREVIEW_NOTE, DirectoryPathCard
+from chrys.app.tui.widgets.path_entry import WORKSPACE_RELATIVE
 from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
 
 if TYPE_CHECKING:
@@ -49,29 +49,10 @@ if TYPE_CHECKING:
 
 _ALL_EXTENSIONS = [".py", ".ts", ".js", ".sh", ".rb", ".ps1"]
 
-_PATH_DOES_NOT_EXIST = msg("tui.agent_config.skills.path_missing", fallback="Path does not exist")
-_ABSOLUTE_PATH_ERROR = msg(
-    "tui.agent_config.skills.absolute_path_error",
-    fallback="Absolute path - Turn off Workspace relative",
-)
-_RESOLVED_AT_RUNTIME = msg(
-    "tui.agent_config.skills.resolved_at_runtime",
-    fallback="Resolved at session runtime",
-)
-_MISSING_IN_WORKSPACE = msg(
-    "tui.agent_config.skills.missing_in_workspace",
-    fallback="Missing in current workspace",
-)
-_RELATIVE_PATH_ERROR = msg(
-    "tui.agent_config.skills.relative_path_error",
-    fallback="Relative path - Enable Workspace relative",
-)
-_PREVIEW_NOTE = msg("tui.agent_config.skills.preview_note", fallback="  · {note}")
 _AUTO_LOAD_COVERED = msg(
     "tui.agent_config.skills.auto_load_covered",
     fallback="Also auto-loaded when Load skills from working folder and Load project skills are on",
 )
-_CURRENT_PATH = msg("tui.agent_config.skills.current_path", fallback="Current: {path}{note}")
 _SKILL_DIRECTORIES = msg("tui.agent_config.skills.title", fallback="Skill Directories")
 _SKILL_DIRECTORIES_DESCRIPTION = msg(
     "tui.agent_config.skills.description",
@@ -93,7 +74,7 @@ _LOAD_WORKING_FOLDER_TOOLTIP = msg(
     "tui.agent_config.skills.load_working_folder_tooltip",
     fallback=(
         "Auto-load skills from the agents skills directory under the current working folder when Load project "
-        "skills is on under Settings → Security → Project trust. Reloaded automatically when the workspace cwd "
+        "skills is on under Settings → Safety → Project trust. Reloaded automatically when the workspace cwd "
         "changes (/chdir or file picker)."
     ),
 )
@@ -193,114 +174,8 @@ class ExtChip(ConfigActionButton):
 # ── Single skill directory card ──────────────────────────────────────
 
 
-class SkillDirCard(PathEntryCard):
+class SkillDirCard(DirectoryPathCard):
     """A single skill directory entry."""
-
-    DEFAULT_CSS = """
-    SkillDirCard .sk-row {
-        height: auto;
-        margin: 0 0 1 0;
-    }
-    SkillDirCard .sk-header-row {
-        height: auto;
-        margin: 0;
-    }
-    SkillDirCard .sk-label {
-        height: 1;
-        color: $text-muted;
-        margin: 0 0 1 0;
-    }
-    SkillDirCard .sk-separator {
-        display: none;
-    }
-    SkillDirCard Input {
-        height: 1;
-        border: none;
-        background: $foreground 8%;
-        padding: 0 1;
-        margin: 0;
-    }
-    SkillDirCard Input:focus {
-        border: none;
-        background: $foreground 12%;
-    }
-    SkillDirCard .sk-field {
-        width: 1fr;
-        height: auto;
-        margin: 1 0 0 0;
-    }
-    SkillDirCard .sk-ext-row {
-        height: auto;
-        margin: 0 0 1 0;
-    }
-    SkillDirCard .sk-path-row {
-        height: 1;
-        width: 1fr;
-        margin: 0;
-    }
-    SkillDirCard .sk-path-row Input {
-        width: 1fr;
-        min-width: 18;
-    }
-    SkillDirCard .sk-browse-btn {
-        min-width: 10;
-        height: 1;
-        border: solid $tui-border-secondary $border-opacity;
-        background: $secondary 18%;
-        color: $secondary;
-        text-style: bold;
-        margin: 0 0 0 1;
-        content-align: center middle;
-        text-align: center;
-    }
-    SkillDirCard .sk-browse-btn:focus {
-        border: solid $tui-border-secondary $border-opacity;
-        background: $secondary 18%;
-        color: $secondary;
-    }
-    SkillDirCard .sk-browse-btn:hover {
-        border: solid $tui-border-secondary $border-opacity;
-        background: $secondary 28%;
-        color: $secondary;
-    }
-    SkillDirCard .sk-browse-btn.-active {
-        border: solid $tui-border-secondary $border-opacity;
-        background: $secondary 18%;
-        color: $secondary;
-    }
-    SkillDirCard .sk-rel-cb {
-        width: auto;
-        height: 1;
-        border: none;
-        background: transparent;
-        padding: 0;
-        margin: 1 0 0 0;
-    }
-    SkillDirCard .sk-rel-cb:focus {
-        background: $foreground 8%;
-    }
-    SkillDirCard .sk-rel-cb > .toggle--button {
-        color: $foreground 35%;
-        background: $foreground 6%;
-    }
-    SkillDirCard .sk-rel-cb.-on > .toggle--button {
-        color: $success;
-        background: $secondary 12%;
-    }
-    SkillDirCard .sk-preview {
-        width: 1fr;
-        height: auto;
-        color: $text-muted;
-        margin: 1 0 0 0;
-        text-wrap: wrap;
-        text-overflow: fold;
-    }
-    """
-
-    class Removed(Message):
-        def __init__(self, index: int) -> None:
-            self.index = index
-            super().__init__()
 
     _title_label = _SKILL_DIRECTORY
     _id_prefix = "sk"
@@ -311,99 +186,21 @@ class SkillDirCard(PathEntryCard):
     _placeholder_absolute_linux = _SKILL_PLACEHOLDER_ABSOLUTE_LINUX
     _placeholder_absolute_windows = _SKILL_PLACEHOLDER_ABSOLUTE_WINDOWS
 
-    def _refresh_preview(self) -> None:
-        """Render the current effective path for this row."""
-        from chrys.foundation.platform.paths import is_absolute_path
-
-        label = self.query_one(f"#{self._preview_id}", Label)
-        raw = self.query_one(f"#{self._path_input_id}", Input).value.strip()
-        if not raw:
-            label.update("")
-            label.display = False
-            return
-        label.display = True
-
-        expanded = os.path.expanduser(raw)
-        resolved_path: Path | None = None
-        resolve_failed = False
-        resolved_text = expanded
-        localizer = widget_localizer(self)
-        missing_note = render_str(localizer, _PATH_DOES_NOT_EXIST.bind())
-        if self._is_relative:
-            if is_absolute_path(expanded):
-                label.update(Text(render_str(localizer, _ABSOLUTE_PATH_ERROR.bind()), style="$error"))
-                return
-            if not self._workspace_cwd:
-                label.update(Text(render_str(localizer, _RESOLVED_AT_RUNTIME.bind()), style="dim"))
-                return
-            resolved_path, resolve_failed = self._resolve_for_preview(Path(self._workspace_cwd) / expanded)
-            resolved_text = str(resolved_path)
-            missing_note = render_str(localizer, _MISSING_IN_WORKSPACE.bind())
-        else:
-            if not is_absolute_path(expanded):
-                label.update(Text(render_str(localizer, _RELATIVE_PATH_ERROR.bind()), style="$error"))
-                return
-            candidate = Path(expanded)
-            if candidate.is_absolute():
-                resolved_path, resolve_failed = self._resolve_for_preview(candidate)
-                resolved_text = str(resolved_path)
-            else:
-                # Foreign-absolute under the other platform's rules
-                # (e.g. ``/foo`` on Windows, ``C:\foo`` on POSIX). Keep
-                # the typed text as-is and still report missing so the
-                # user knows it won't load on this host.
-                resolved_path = candidate
-                resolved_text = expanded
-
-        note = ""
-        missing = resolved_path is not None and (resolve_failed or not resolved_path.is_dir())
-        if missing:
-            note = render_str(localizer, _PREVIEW_NOTE.bind(note=missing_note))
-        if self._workspace_cwd and resolved_path is not None:
-            cwd_default, _default_failed = self._resolve_for_preview(Path(self._workspace_cwd) / ".agents" / "skills")
-            if resolved_path == cwd_default:
-                note += render_str(
-                    localizer,
-                    _PREVIEW_NOTE.bind(note=render_str(localizer, _AUTO_LOAD_COVERED.bind())),
-                )
-
-        label.update(
-            Text(
-                render_str(localizer, _CURRENT_PATH.bind(path=resolved_text, note=note)),
-                style="$warning" if missing else "dim",
-            )
-        )
-
-    @staticmethod
-    def _resolve_for_preview(path: Path) -> tuple[Path, bool]:
-        try:
-            return path.resolve(), False
-        except OSError:
-            return path, True
-
     def _open_browse(self) -> None:
-        """Open the folder picker dialog."""
-        from chrys.app.tui.screens.dialogs.file_picker import FilePicker, FilePickerMode
+        """Open the folder picker for this row."""
+        from chrys.app.tui.screens.dialogs.file_picker import open_folder_picker
 
-        current = self.query_one(f"#sk-path-{self._index}", Input).value.strip()
-        from chrys.foundation.platform import safe_getcwd
+        open_folder_picker(self.app, *self._browse_from(), self._take_browsed)
 
-        current_expanded = os.path.expanduser(current)
-        initial = self._workspace_cwd or safe_getcwd()
-        if current and os.path.isdir(current_expanded):
-            initial = current_expanded
-
-        def _on_result(result: str | None) -> None:
-            if result:
-                self.query_one(f"#sk-path-{self._index}", Input).value = result
-
-        self.app.push_screen(
-            FilePicker(mode=FilePickerMode.FOLDER, initial_path=initial),
-            _on_result,
-        )
-
-    def _removed_message(self) -> Message:
-        return self.Removed(self._index)
+    def _preview_extra_note(self, resolved: Path) -> str:
+        """Say when the working folder's own skill folder already covers *resolved*."""
+        if not self._workspace_cwd:
+            return ""
+        cwd_default, _failed = self._resolve_for_preview(Path(self._workspace_cwd) / ".agents" / "skills")
+        if resolved != cwd_default:
+            return ""
+        localizer = widget_localizer(self)
+        return render_str(localizer, PREVIEW_NOTE.bind(note=render_str(localizer, _AUTO_LOAD_COVERED.bind())))
 
 
 # ── Main skills config panel ─────────────────────────────────────────
@@ -726,7 +523,7 @@ class SkillsConfigPanel(VerticalScroll):
         errors: list[str] = []
         seen_paths: dict[str, int] = {}
         localizer = widget_localizer(self)
-        workspace_relative_label = render_str(localizer, _WORKSPACE_RELATIVE.bind())
+        workspace_relative_label = render_str(localizer, WORKSPACE_RELATIVE.bind())
         duplicate_match_description = _render_duplicate_match_detail(self)
         for i, card in enumerate(self.query(SkillDirCard), 1):
             context = render_str(localizer, SKILL_DIRECTORY_CONTEXT.bind(index=i))

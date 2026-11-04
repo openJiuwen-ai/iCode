@@ -51,6 +51,15 @@ def test_agent_draft_store_rejects_empty_graph() -> None:
     assert store.validate() == ["At least one agent profile is required."]
 
 
+@pytest.mark.parametrize("timeout", ["30", "bad", True, 1.5, 0, -1])
+def test_mcp_draft_reports_invalid_timeout_without_crashing(timeout: object) -> None:
+    server = MCPServerConfig(name="server", transport="stdio", command="server")
+    server.request_timeout = timeout  # type: ignore[assignment]
+    profile = AgentProfile(name="Code", tools=ToolsConfig(mcp=[server]))
+
+    assert validate_mcp_draft("Code", profile) == ["Code: Server 'server': timeout must be a positive integer."]
+
+
 def test_agent_draft_store_rejects_dirty_duplicate_name_against_registry() -> None:
     draft = _Draft(
         key="draft:1",
@@ -263,6 +272,24 @@ def test_validate_acp_draft_enforces_launch_types_bounds_and_workspace_containme
     assert any("result mode" in error for error in errors)
     assert any("handshake timeout must be a finite number" in error for error in errors)
     assert any("idle timeout must be finite" in error for error in errors)
+
+
+def test_validate_acp_draft_takes_commands_in_arguments_and_environment(tmp_path) -> None:
+    profile = _profile("External", sub_agent_only=True)
+    profile.acp = AcpAgentConfig(command="agent", args=["--key={{!tool get}}"], env={"TOKEN": "{{!tool get}}"})
+
+    assert validate_acp_draft("External", profile, workspace_cwd=str(tmp_path), workspace_roots=[str(tmp_path)]) == []
+
+
+@pytest.mark.parametrize("field", ["command", "cwd"])
+def test_validate_acp_draft_refuses_commands_for_what_runs_and_where(tmp_path, field: str) -> None:
+    profile = _profile("External", sub_agent_only=True)
+    profile.acp = AcpAgentConfig(**{"command": "agent", field: "{{!tool --password hunter2}}"})
+
+    errors = validate_acp_draft("External", profile, workspace_cwd=str(tmp_path), workspace_roots=[str(tmp_path)])
+
+    assert any("not supported" in error for error in errors)
+    assert not any("hunter2" in error for error in errors)
 
 
 def test_validate_acp_draft_expands_cwd_templates_before_containment(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

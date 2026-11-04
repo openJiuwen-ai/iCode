@@ -139,13 +139,24 @@ _IMAGE_WARNING_CODES = {
 }
 _SUBMIT_BLOCKING_WARNING_CODES = _IMAGE_WARNING_CODES | {"sub_agent_paused"}
 _WORKING_DIR_MISSING_CODE = "working_dir_missing"
+_SHORTCUT_UNAVAILABLE_CODE = "prompt_shortcut_unavailable"
 _SUBMIT_BLOCKING_ERROR_CODES = _IMAGE_ERROR_CODES | {
     "hook_blocked",
     "not_ready",
     "prompt_admission_conflict",
     "retry_missing_user_anchor",
     _WORKING_DIR_MISSING_CODE,
+    # A prompt shortcut's message: its commands failed, its shortcut is gone from this
+    # working folder, or a turn started meanwhile; or the switch it asked for named
+    # an agent or model that is gone.
+    "prompt_shortcut_command_failed",
+    _SHORTCUT_UNAVAILABLE_CODE,
+    "prompt_shortcut_busy",
+    "profile_not_found",
+    "model_profile_not_found",
 }
+_REBUILD_REFUSED_PREFIX = "runtime_mutation_"
+"""The engine's refusals of a rebuild it may not make now; inside a submit, only its switch makes one."""
 _STALE_RUN_FILTERED_ERROR_CODES = {"executor_error", "retry_missing_user_anchor"}
 
 
@@ -901,6 +912,7 @@ class BackendEventHandler:
             self._state.runtime.keep_hook_snapshot_of(s.main_usage_source_id)
             self.refresh_hook_indicator()
         s.profile = event.display_name or event.agent_profile
+        self._state.runtime.profile_name = event.agent_profile
         s.runtime_metadata = event.runtime_details
         self._state.runtime.details_confirmed = True
         if event.runtime_details.model.selection_source == "active":
@@ -1083,9 +1095,11 @@ class BackendEventHandler:
             else:
                 ui.finish_thinking_segment(event.segment_id)
         elif event.channel == "answer":
+            ui.note_output_text(event.text)
             ui.show_status(STATUS_STREAMING.bind())
             await ui.add_answer_delta(event.segment_id, event.text)
         else:
+            ui.note_output_text(event.text)
             ui.show_status(STATUS_THINKING.bind())
             await ui.add_thinking_delta(event.segment_id, event.channel, event.text)
 
@@ -1884,6 +1898,15 @@ class BackendEventHandler:
             f"side_calls={event.side_call_tokens:,}/{event.side_call_token_budget:,}",
         )
 
+    def notify_held_error(self, event: Error) -> None:
+        """Show an error held back while a submit that opened no turn was in flight: a notice, never a failed turn.
+
+        It came from something else (the submit's own refusal is handled as it
+        arrives), and no turn ran, so the transcript and retry mode stay as they are.
+        """
+        message = event.message if event.display_message is None else self._render_display(event.display_message)
+        self.notify(message, title=_WARNING_TITLE.bind(), severity="warning", timeout=8)
+
     async def on_warning(self, event: Warning) -> None:
         s = self
         submit_rejected = event.code in _SUBMIT_BLOCKING_WARNING_CODES and s.in_pending_submit_publish
@@ -1991,7 +2014,9 @@ class BackendEventHandler:
             s.push_screen(dialog)
             s.debug("Error", f"[{event.code}] {full_msg[:60]}")
             return
-        if s.in_pending_submit_publish and event.code in _SUBMIT_BLOCKING_ERROR_CODES:
+        if s.in_pending_submit_publish and (
+            event.code in _SUBMIT_BLOCKING_ERROR_CODES or event.code.startswith(_REBUILD_REFUSED_PREFIX)
+        ):
             # The backend refusing the submit in flight: the message, never a
             # run (see ``SubmitKind``).
             s.block_pending_user_submit()
@@ -2005,7 +2030,13 @@ class BackendEventHandler:
                 self._callbacks.prompt_missing_working_dir("submit" if restored else "turn_end")
                 s.debug("Error", f"[{event.code}] {full_msg[:60]}")
                 return
-            await self._show_pending_submit_error(event.code, display_full, raw_message=full_msg)
+            await self._show_pending_submit_error(
+                event.code,
+                display_full,
+                raw_message=full_msg,
+                # Gone from this working folder: the draft comes back as plain text, sent as typed next time.
+                drop_owner=event.code == _SHORTCUT_UNAVAILABLE_CODE,
+            )
             return
         if s.defers_turn_event(event):
             s.defer_error(event)
@@ -2049,10 +2080,19 @@ class BackendEventHandler:
             self._notify(NotificationEvent.TURN_ERROR)
         s.debug("Error", f"[{event.code}] {full_msg[:60]}")
 
-    def _restore_pending_submit_text(self) -> InputRestore | None:
-        """Restore the prompt text that the input widget cleared on submit."""
-        s = self
-        return self._ui().restore_input_text(s.pending_user_submit_text)
+    def _restore_pending_submit_text(self, *, drop_owner: bool = False) -> InputRestore | None:
+        """Restore the draft the input widget cleared on submit, whole (fields, prompt-shortcut owner), once.
+
+        None when nothing was written: the composer holds the user's own draft,
+        or the submit's draft went back already. *drop_owner* hands it back as
+        plain text (its shortcut is no longer one here).
+        """
+        draft = self._state.submit.take_draft_for(
+            lambda: (self._services.session_generation(), self._state.workspace.current_cwd), drop_owner=drop_owner
+        )
+        if draft is None:
+            return None
+        return self._ui().restore_input_text(draft)
 
     def _show_image_rejection_dialog(self, code: str, message: str) -> None:
         """Show the image rejection modal for a backend-validated prompt."""
@@ -2084,7 +2124,9 @@ class BackendEventHandler:
 
         self.push_screen(dialog, callback=on_dismiss)
 
-    async def _show_pending_submit_error(self, code: str, message: str, *, raw_message: str | None = None) -> None:
+    async def _show_pending_submit_error(
+        self, code: str, message: str, *, raw_message: str | None = None, drop_owner: bool = False
+    ) -> None:
         """Surface a synchronous submit rejection without switching into retry mode.
 
         ``message`` may be localized display text; the debug stream keeps
@@ -2093,7 +2135,7 @@ class BackendEventHandler:
         s = self
         ui = self._ui()
 
-        self._restore_pending_submit_text()
+        self._restore_pending_submit_text(drop_owner=drop_owner)
         short_msg = message
         if "- {" in short_msg:
             short_msg = short_msg[: short_msg.index("- {")].strip()

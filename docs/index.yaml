@@ -77,6 +77,8 @@ topics:
         path: guides/extensions/mcp.md
       - id: hooks
         path: guides/extensions/hooks.md
+      - id: shortcuts
+        path: guides/extensions/shortcuts.md
       - id: external_acp_agents
         path: guides/extensions/external-acp-agents.md
   - id: reference

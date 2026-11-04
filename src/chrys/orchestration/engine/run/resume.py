@@ -121,22 +121,37 @@ class TurnResumePolicy:
         """Pre-assign the analytics item id the next opening user message takes."""
         self._opening_item_id = item_id
 
-    def begin_invocation(self) -> None:
-        """Allocate the fresh operation's identity synchronously before preparation."""
+    def begin_invocation(self, *, typed_text: str | None = None) -> None:
+        """Allocate the fresh operation's identity synchronously before preparation.
+
+        *typed_text*, what the user typed when the message sent differs from it,
+        is recorded at once: a Stop before the request goes out leaves the
+        message to the failure fallback and the recovery checkpoint, which take
+        their record from :attr:`input_properties`.
+        """
         self.origin = InvocationOrigin("turn", self._session_id or "", new_analytics_id(), None)
         self.outcome = None
         self.evidence = InvocationEvidence(self.origin.invocation_id)
         self.pending_continuation_token = None
-        self.input_properties = None
+        self.input_properties = {HistoryMarkerKind.TYPED_TEXT_KEY: typed_text} if typed_text else None
 
     def _take_opening_item_id(self) -> str | None:
         item_id = self._opening_item_id
         self._opening_item_id = None
         return item_id
 
-    def fresh_request(self, contents: list, created_at: datetime | str | None = None) -> RunRequest:
-        """Prepare a new Turn input after checking the backend admission fence."""
+    def fresh_request(
+        self, contents: list, created_at: datetime | str | None = None, *, typed_text: str | None = None
+    ) -> RunRequest:
+        """Prepare a new Turn input after checking the backend admission fence.
+
+        *typed_text* is what the user typed when the message's text differs from
+        it (a prompt shortcut's commands spliced in): recorded on the message
+        (``HistoryMarkerKind.TYPED_TEXT_KEY``), never sent.
+        """
         user_message = _make_user_message(contents, created_at, item_id=self._opening_item_id)
+        if typed_text is not None and typed_text != user_message.text:
+            user_message.additional_properties[HistoryMarkerKind.TYPED_TEXT_KEY] = typed_text
         request = RunRequest([user_message], RunIntent.FRESH, self.origin)
         self.backend.validate(request)
         self._take_opening_item_id()

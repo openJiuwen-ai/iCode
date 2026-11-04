@@ -411,6 +411,25 @@ async def test_model_config_validate_accepts_env_templates_and_printable_ascii()
     assert errors == []
 
 
+async def test_model_config_validate_accepts_command_text_only_the_command_output_must_be_ascii() -> None:
+    registry = ModelProfileRegistry()
+    profile = ModelProfile(id="model-a", name="Model A", model_id="m")
+    registry.register(profile)
+
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, _pilot):
+        screen.query_one("#mc-api-key", Input).value = "{{!cat ~/凭据/key}}"
+        fill_kv_row(screen.query_one("#mc-headers-list"), "X-Api-Key", "Bearer {{!cat ~/凭据/key}}")
+        fill_kv_row(screen.query_one("#mc-options-list"), "extra_headers", '{"X-T": "{{!cat ~/凭据/key}}"}')
+
+        accepted = screen._validate()
+
+        fill_kv_row(screen.query_one("#mc-headers-list"), "X-Api-Key", "秘密 {{!cat ~/凭据/key}}")
+        refused = screen._validate()
+
+    assert accepted == []
+    assert any("value contains a non-ASCII or control character at position 1" in error for error in refused)
+
+
 async def test_model_config_validate_rejects_non_ascii_chat_option_model() -> None:
     """A chat-options model override rides the Chrys-Model-Id header; same charset gate."""
 

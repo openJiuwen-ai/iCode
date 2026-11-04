@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,7 @@ async def test_failed_settings_reload_keeps_workspace_baseline(
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         _ = operation

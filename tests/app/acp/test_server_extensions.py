@@ -76,6 +76,12 @@ async def test_error_and_warning_events_are_exposed_as_chrys_extension_notificat
         AcpEventBridge(),
         {},
     )
+    await server._handle_event(
+        "s1",
+        Warning(code="trajectory_activation_failed", message="Recording is off", session_id="s1", reason="lease_held"),
+        AcpEventBridge(),
+        {},
+    )
 
     assert client.ext_notifications == [
         (
@@ -93,6 +99,15 @@ async def test_error_and_warning_events_are_exposed_as_chrys_extension_notificat
                 "sessionId": "s1",
                 "code": "heads_up",
                 "message": "Be careful",
+            },
+        ),
+        (
+            "chrys/warning",
+            {
+                "sessionId": "s1",
+                "code": "trajectory_activation_failed",
+                "message": "Recording is off",
+                "reason": "lease_held",
             },
         ),
     ]

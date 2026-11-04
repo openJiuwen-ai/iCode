@@ -63,7 +63,7 @@ icode hook validate
 PASS 1 file · 1 hook
 ```
 
-项目钩子默认不加载。在终端用户界面（Terminal User Interface，TUI）中按 **F10** 打开“设置”，在“安全”-“项目信任”区域勾选“加载项目钩子”。如果已经勾选，切换会话或重启 iCode，使磁盘上的配置生效。
+项目钩子默认不加载。在终端用户界面（Terminal User Interface，TUI）中按 **F10** 打开“设置”，在“安全管控”-“项目信任”区域勾选“加载项目钩子”。如果已经勾选，切换会话或重启 iCode，使磁盘上的配置生效。
 
 运行 `icode hook list`，查看在此目录中启动的会话会加载哪些钩子。`Project hooks` 一行末尾应为 `(loaded)`，下方列出 `record-turn`。
 
@@ -191,7 +191,7 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file
 
 切换会话或重启 iCode，使配置生效。系统提醒只有在阻塞式钩子成功结束后才会生效。iCode 会用 `<system-reminder>` 标签包住提醒内容，随用户提交的消息一起发送给模型。这段提醒不会显示在 TUI 对话中，也不会写入会话数据。
 
-如需确认 `user_prompt_submit` 钩子是否生效，或查看系统提醒发送给模型时的实际内容，可以检查模型请求的原始 HTTP 日志。该日志包含未脱敏的 API 密钥和完整对话内容，应仅在排查问题时临时启用。在 TUI 中按 **F10**，进入“安全”-“诊断”，开启“捕获模型原始 HTTP 请求”，然后重启 iCode。使用 Code 智能体提交一条消息后，在当前会话目录的 `llm_raw_http.jsonl` 中搜索提醒正文“修改 Python 文件后”。当前会话目录的位置参阅[查找会话 ID 和会话保存位置](../daily-use/sessions.md#查找会话-id-和会话保存位置)。验证完成后，应关闭“捕获模型原始 HTTP 请求”并再次重启 iCode。
+如需确认 `user_prompt_submit` 钩子是否生效，或查看系统提醒发送给模型时的实际内容，可以检查模型请求的原始 HTTP 日志。该日志包含未脱敏的 API 密钥和完整对话内容，应仅在排查问题时临时启用。在 TUI 中按 **F10**，进入“安全管控”-“诊断”，开启“捕获模型原始 HTTP 请求”，然后重启 iCode。使用 Code 智能体提交一条消息后，在当前会话目录的 `llm_raw_http.jsonl` 中搜索提醒正文“修改 Python 文件后”。当前会话目录的位置参阅[查找会话 ID 和会话保存位置](../daily-use/sessions.md#查找会话-id-和会话保存位置)。验证完成后，应关闭“捕获模型原始 HTTP 请求”并再次重启 iCode。
 
 如果只想在部分任务中添加提醒，可以让脚本读取 `CHRYS_HOOK_PAYLOAD_FILE` 中的 `text`（用户刚提交的消息），并只在消息符合条件时向 `CHRYS_HOOK_RESULT` 写入 `system_reminder`。
 

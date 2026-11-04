@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
@@ -78,7 +79,6 @@ from chrys.foundation.events.types import (
     TurnStarted,
     UsageUpdate,
     UserInjectResult,
-    UserMessage,
     Warning,
     WorkspaceUpdated,
 )
@@ -287,6 +287,10 @@ class _TurnExecution:
 def _refusal_meta(turn: _TurnExecution, error: Error) -> dict[str, Any]:
     """The ``chrys`` object of a ``refusal`` response: the turn's metadata, then why the input was refused."""
     return {**turn.response_meta(), "code": error.code, "message": error.message}
+
+
+class _CancelledBeforeTurn(Exception):
+    """The prompt was cancelled while it was prepared, so no turn starts."""
 
 
 class _TurnInFlight(Exception):
@@ -550,13 +554,30 @@ class ChrysAcpServer:
             raise RequestError.internal_error({"details": "ACP client connection is not ready."})
         user_message_id = _validated_message_id(message_id)
 
-        def make_message() -> UserMessage:
-            converted = convert_prompt_blocks(prompt, vision_enabled=self._manager.get(session_id).host.vision_enabled)
-            return replace(converted.message, client_message_id=user_message_id)
-
-        def start(session: ManagedSession) -> AsyncIterator[Event]:
-            message = make_message()
-            return session.host.iter_turn_events(message)
+        async def start(session: ManagedSession) -> AsyncIterator[Event]:
+            cancels = session.cancels_requested
+            convert = functools.partial(
+                convert_prompt_blocks,
+                prompt,
+                vision_enabled=session.host.vision_enabled,
+                max_image_bytes=session.host.image_send_limit_bytes,
+            )
+            if any(isinstance(block, acp_schema.ImageContentBlock) for block in prompt):
+                # Compressing a large image takes a while: off the event loop.
+                converted = await asyncio.to_thread(convert)
+                # A close or delete may have begun meanwhile.
+                if self._manager.get(session_id) is not session:
+                    raise AcpSessionError(f"ACP session is not active: {session_id}")
+            else:
+                converted = convert()
+            if session.cancels_requested != cancels:
+                # The host drops a cancel sent before it takes a turn, as one sent
+                # while the images were prepared: the prompt starts none. It takes
+                # the turn without awaiting first, so a later cancel reaches it.
+                raise _CancelledBeforeTurn
+            message = replace(converted.message, client_message_id=user_message_id)
+            async for event in session.host.iter_turn_events(message):
+                yield event
 
         turn = await self._run_turn(session_id, start)
         if isinstance(turn.outcome, EndTurn):
@@ -714,21 +735,27 @@ class ChrysAcpServer:
                         # turn's own spend, and only this snapshot says where it began.
                         baseline_usage = self._cumulative_usage(session_id)
                         events = start(session)
-                        # Only after *start* admitted the turn: a refused retry runs
-                        # nothing, and its error must not report a spend.
+                        # Only after *start* returned: a retry it refuses runs nothing,
+                        # and its error must not report a spend. A prompt checks its
+                        # content and session once its stream is iterated, so an error
+                        # from those checks comes later, with nothing spent.
                         execution_started = True
-                        async for event in events:
-                            if isinstance(event, TurnStarted) and turn_id is None:
-                                turn_id, turn_number = event.turn_id, event.turn_number
-                                if not event.is_retry:
-                                    # A new turn: a bare retry never drops an earlier turn's answer.
-                                    session.answer_message_ids = {}
-                            await self._handle_event(session_id, event, bridge, pending_approvals)
-                            if isinstance(event, InvocationAnswerWithdrawn) and event.origin.kind == "turn":
-                                await self._retract_answer(session_id, session, turn_id, event.segment_ids)
-                        outcome = session.host.last_turn_outcome
-                        if isinstance(outcome, Refused):
-                            await self._show_refusal(session_id, outcome.error)
+                        try:
+                            async for event in events:
+                                if isinstance(event, TurnStarted) and turn_id is None:
+                                    turn_id, turn_number = event.turn_id, event.turn_number
+                                    if not event.is_retry:
+                                        # A new turn: a bare retry never drops an earlier turn's answer.
+                                        session.answer_message_ids = {}
+                                await self._handle_event(session_id, event, bridge, pending_approvals)
+                                if isinstance(event, InvocationAnswerWithdrawn) and event.origin.kind == "turn":
+                                    await self._retract_answer(session_id, session, turn_id, event.segment_ids)
+                        except _CancelledBeforeTurn:
+                            outcome = Cancelled(reason="Cancelled before the turn started.")
+                        else:
+                            outcome = session.host.last_turn_outcome
+                            if isinstance(outcome, Refused):
+                                await self._show_refusal(session_id, outcome.error)
                     finally:
                         if turn_id is not None:
                             # What a later bare retry may withdraw: the answer segments this turn sent.
@@ -1233,7 +1260,7 @@ class ChrysAcpServer:
         return False
 
     async def _handle_chrys_extension_event(self, session_id: str, event: Event) -> bool:
-        if isinstance(event, InvocationEvent) and event.origin.root.kind == "workflow_node":
+        if isinstance(event, InvocationEvent) and event.origin.root.kind in {"workflow_node", "side_question"}:
             return False
         client = self._client_or_error()
         event_session_id = _event_session_id(event, session_id)
@@ -1675,14 +1702,10 @@ class ChrysAcpServer:
 
     async def _send_warning(self, session_id: str, warning: Warning) -> None:
         """Send one ``chrys/warning``, whether it came from a turn or an RPC."""
-        await self._client_or_error().ext_notification(
-            "chrys/warning",
-            {
-                "sessionId": session_id,
-                "code": warning.code,
-                "message": warning.message,
-            },
-        )
+        payload = {"sessionId": session_id, "code": warning.code, "message": warning.message}
+        if warning.reason:
+            payload["reason"] = warning.reason
+        await self._client_or_error().ext_notification("chrys/warning", payload)
 
     async def _send_runtime_update(self, session_id: str) -> None:
         # Same envelope as the event-bridged senders (SessionReady /

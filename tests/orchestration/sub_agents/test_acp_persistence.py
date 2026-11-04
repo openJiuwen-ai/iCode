@@ -53,9 +53,8 @@ async def test_acp_audit_envelope_round_trip_redacts_values_and_uses_owner_only_
         parent_provider_call_id="provider",
         parent_event_call_id="event",
         runner="acp",
-        acp_command="/bin/agent",
-        acp_args=["--token=secret", "--flag", "positional", "-Iprivate", "-", "--"],
     )
+    writer.set_acp_launch("/bin/agent", ["--token=secret", "--flag", "positional", "-Iprivate", "-", "--"])
     await writer.write(
         status="completed",
         ended=True,
@@ -119,9 +118,8 @@ async def test_acp_audit_envelope_survives_surrogateescaped_launch_values(
         parent_provider_call_id="provider",
         parent_event_call_id="event",
         runner="acp",
-        acp_command=surrogate_command,
-        acp_args=["--flag", "/data/f\udcfeile"],
     )
+    writer.set_acp_launch(surrogate_command, ["--flag", "/data/f\udcfeile"])
     written = await writer.write(
         status="running",
         acp_state={"agent_info": None, "attempts": [], "stop_reason": "", "translated_updates": []},
@@ -171,11 +169,10 @@ async def test_acp_audit_envelope_survives_surrogateescaped_workspace_paths(
         parent_provider_call_id="provider",
         parent_event_call_id="event",
         runner="acp",
-        acp_command="/bin/agent",
-        acp_args=["--flag"],
         primary_cwd=surrogate_cwd,
         working_dirs=[surrogate_cwd, surrogate_root],
     )
+    writer.set_acp_launch("/bin/agent", ["--flag"])
     # For an ACP writer a failed write RE-RAISES, so a surviving True return here
     # already proves the surrogate meta path did not crash the strict file write.
     written = await writer.write(

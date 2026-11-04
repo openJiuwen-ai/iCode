@@ -23,6 +23,7 @@ from tests.architecture import (
     test_hygiene_tui_bindings,
     test_hygiene_tui_locale_controller,
     test_hygiene_tui_prose,
+    test_hygiene_user_turn_events,
 )
 from tests.architecture._hygiene_core import (
     _ALLOWLIST_PIN_REGISTRY,
@@ -69,6 +70,7 @@ from tests.architecture.test_hygiene_tui_prose import (
     _assert_tui_placeholder_tooltip_prose_is_localized,
     _assert_tui_widget_label_prose_is_localized,
 )
+from tests.architecture.test_hygiene_user_turn_events import _assert_user_turn_events_are_built_only_by_the_input_flow
 from tests.support.ci import CI_LINUX_ONLY
 from tests.support.paths import REPO_ROOT, SRC_ROOT, TESTS_ROOT
 
@@ -96,6 +98,7 @@ _RULE_MODULES = (
     test_hygiene_tui_bindings,
     test_hygiene_tui_locale_controller,
     test_hygiene_tui_prose,
+    test_hygiene_user_turn_events,
 )
 
 
@@ -128,6 +131,7 @@ _SRC_HYGIENE_RULES = (
     _assert_llm_clients_have_reviewed_owners,
     _assert_launches_state_their_surface,
     _assert_reminder_source_members_are_reviewed,
+    _assert_user_turn_events_are_built_only_by_the_input_flow,
 )
 
 _GLOBAL_SRC_HYGIENE_RULES = (_assert_tui_locale_controller_propagation_is_explicit,)

@@ -15,7 +15,7 @@ import sys
 import textwrap
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -301,28 +301,34 @@ async def test_no_file_lock_is_taken_per_event(tmp_path: Path, monkeypatch: pyte
     assert len(read_trajectory(path).events) == 52
 
 
-async def test_written_ack_latency_stays_small(tmp_path: Path) -> None:
+async def test_written_ack_latency_stays_small(tmp_path: Path, record_property: Callable[[str, object], None]) -> None:
     """Acceptance 15d: local-disk ack latency is sub-millisecond in the common case.
 
-    The plan treats this as an alert, not a hard gate, so the asserted bound is
-    generous; the measured percentiles are printed for the CI log.
+    The plan treats this as an alert, not a hard gate, so the bound is generous
+    and on the 95th percentile. The 99th is recorded, not asserted: each ack
+    crosses to the worker thread and back, and on a loaded runner the few
+    slowest wait for the scheduler at one of those hand-offs.
     """
     path, backend = _open(tmp_path)
     writer = _writer(backend)
     await writer.emit(_draft(0))  # warm the thread
+    results: list[EmitResult] = []
     samples: list[float] = []
     for n in range(300):
         started = time.perf_counter()
-        assert await writer.emit(_draft(n)) is EmitResult.WRITTEN
+        results.append(await writer.emit(_draft(n)))
         samples.append((time.perf_counter() - started) * 1000.0)
-    samples.sort()
-    p50 = statistics.median(samples)
-    p95 = samples[int(len(samples) * 0.95)]
-    p99 = samples[int(len(samples) * 0.99)]
-    logging.getLogger(__name__).info("trajectory written-ack latency ms: p50=%.3f p95=%.3f p99=%.3f", p50, p95, p99)
-    assert p95 < 25.0
-    assert p99 < 100.0
+    fsyncs_while_acking = backend.fsync_calls
     await writer.close(reason=RuntimeFinishReason.GRACEFUL_SHUTDOWN)
+    samples.sort()
+    p95 = samples[int(len(samples) * 0.95)]
+    record_property("written_ack_p50_ms", round(statistics.median(samples), 3))
+    record_property("written_ack_p95_ms", round(p95, 3))
+    record_property("written_ack_p99_ms", round(samples[int(len(samples) * 0.99)], 3))
+    assert results == [EmitResult.WRITTEN] * 300
+    # What keeps an ack this fast: it waits for the write, never for an fsync.
+    assert fsyncs_while_acking == 0
+    assert p95 < 25.0
     assert path.stat().st_size > 0
 
 
@@ -623,6 +629,8 @@ async def test_hung_backend_bounded_wait_and_terminal_degraded(tmp_path: Path) -
     path, backend = _open(tmp_path)
     block = threading.Event()
     backend.block_writes = block
+    # Earlier tests on this xdist worker may have left their writers' threads, of the same name, alive.
+    earlier_threads = set(_writer_threads())
     writer = _writer(backend, write_ack_timeout=0.3)
     with earlier_tests_heap_frozen():
         started = time.monotonic()
@@ -648,7 +656,7 @@ async def test_hung_backend_bounded_wait_and_terminal_degraded(tmp_path: Path) -
         elapsed = time.monotonic() - started
     assert elapsed < 0.1
     # ③ no second writer / fd: still exactly one backend, one worker thread.
-    assert len(_writer_threads()) == 1
+    assert [thread for thread in _writer_threads() if thread not in earlier_threads] == [writer._thread]
     assert writer.thread_alive
     # Release the hang: event 1 lands late (it is NOT part of any gap, 15f ③); 2..5 never land.
     block.set()

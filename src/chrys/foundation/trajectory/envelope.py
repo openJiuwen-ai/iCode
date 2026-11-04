@@ -54,6 +54,7 @@ class ActorRole:
     COMPACTION = "compaction"
     TITLE_GEN = "title_gen"
     COMPLETER = "completer"
+    SIDE_QUESTION = "side_question"
 
 
 class LinkRelation:

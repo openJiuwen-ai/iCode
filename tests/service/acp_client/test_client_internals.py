@@ -487,8 +487,9 @@ async def test_notification_frames_ride_the_notification_caps() -> None:
     assert "notification" in failures[0].detail
 
 
-async def test_maximum_tool_image_update_passes_pump_and_observer_caps() -> None:
-    encoded = base64.b64encode(b"x" * MAX_IMAGE_BYTES).decode("ascii")
+async def test_tool_image_update_over_the_payload_cap_passes_pump_and_observer_caps() -> None:
+    # Far over the size an image is sent with: the translator compresses it.
+    encoded = base64.b64encode(b"x" * (12 * MAX_IMAGE_BYTES)).decode("ascii")
     params = {
         "sessionId": "active",
         "update": {
@@ -639,8 +640,15 @@ def test_tool_images_are_checked_under_every_spelling_the_sdk_reads(tag: str, mi
         client_mod._ObserverBuffer().put_update(params)
 
 
-def test_tool_image_update_exemption_keeps_decoded_size_cap() -> None:
-    encoded = base64.b64encode(b"x" * (MAX_IMAGE_BYTES + 1)).decode("ascii")
+def test_the_largest_agent_image_fits_the_line_a_message_is_read_as() -> None:
+    # With room left for the rest of the update: a longer line ends the connection.
+    assert protocol_mod._MAX_BASE64_IMAGE_CHARS + 4 * 1024 * 1024 <= ACP_STDIO_LIMIT_BYTES
+
+
+def test_tool_image_update_exemption_keeps_decoded_size_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Lowered: a real-size image only makes the test slow.
+    monkeypatch.setattr(protocol_mod, "MAX_ACP_IMAGE_BYTES", 1024)
+    encoded = base64.b64encode(b"x" * 1025).decode("ascii")
     params = {
         "sessionId": "active",
         "update": {

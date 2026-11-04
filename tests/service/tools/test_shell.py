@@ -17,11 +17,11 @@ import pytest
 import chrys.service.tools.builtins.shell as shell_module
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform import ShellInfo
+from chrys.foundation.platform.runtime_paths import build_shell_subprocess_env
 from chrys.foundation.text.tool_output import truncate_output as _truncate_output
 from chrys.service.tools.builtins.shell import (
     ShellTools,
     _await_pty_master_drained,
-    _build_subprocess_env,
     _prepare_pipe_command,
     _process_carriage_returns,
     _strip_ansi,
@@ -102,7 +102,7 @@ async def test_execute_pipe_closes_stdin_at_once(shell: ShellTools, monkeypatch:
 async def test_execute_python_cjk_output(shell: ShellTools, tmp_path: Path) -> None:
     """Python subprocess printing CJK text should produce correct UTF-8 output.
 
-    ``_build_subprocess_env`` sets ``PYTHONUTF8=1`` so Python children
+    ``build_shell_subprocess_env`` sets ``PYTHONUTF8=1`` so Python children
     always encode stdout as UTF-8 regardless of the system locale.
 
     The CJK literal lives in a UTF-8 script file (not in ``-c`` on the
@@ -787,26 +787,26 @@ async def test_pty_strips_ansi_from_output(shell: ShellTools) -> None:
     assert "normal" in result
 
 
-# ──────────────── _build_subprocess_env ──────────────────────────────────
+# ──────────────── build_shell_subprocess_env ──────────────────────────────────
 
 
 def test_build_env_sets_term_dumb() -> None:
-    env = _build_subprocess_env()
+    env = build_shell_subprocess_env()
     assert env["TERM"] == "dumb"
 
 
 def test_build_env_sets_no_color() -> None:
-    env = _build_subprocess_env()
+    env = build_shell_subprocess_env()
     assert env["NO_COLOR"] == "1"
 
 
 def test_build_env_sets_chrys_marker() -> None:
-    env = _build_subprocess_env()
+    env = build_shell_subprocess_env()
     assert env["CHRYS"] == "1"
 
 
 def test_build_env_disables_pager() -> None:
-    env = _build_subprocess_env()
+    env = build_shell_subprocess_env()
     assert env["GIT_PAGER"] == "cat"
     assert env["PAGER"] == "cat"
 
@@ -816,7 +816,7 @@ def test_build_env_removes_color_forcing(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("FORCE_COLOR", "1")
     monkeypatch.setenv("COLORTERM", "truecolor")
     monkeypatch.setenv("CLICOLOR_FORCE", "1")
-    env = _build_subprocess_env()
+    env = build_shell_subprocess_env()
     assert "FORCE_COLOR" not in env
     assert "COLORTERM" not in env
     assert "CLICOLOR_FORCE" not in env
@@ -824,7 +824,7 @@ def test_build_env_removes_color_forcing(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_build_env_inherits_path() -> None:
     """PATH and other standard vars are inherited from the parent env."""
-    env = _build_subprocess_env()
+    env = build_shell_subprocess_env()
     assert "PATH" in env
 
 
@@ -848,7 +848,7 @@ def test_build_env_demotes_runtime_path_when_frozen(
     monkeypatch.setenv("PYAPP", "1")
     monkeypatch.setenv("PATH", os.pathsep.join([str(runtime_bin), str(system_bin)]))
 
-    env = _build_subprocess_env()
+    env = build_shell_subprocess_env()
     path_key = runtime_paths.path_env_key(env)
 
     assert path_key is not None
@@ -857,7 +857,7 @@ def test_build_env_demotes_runtime_path_when_frozen(
 
 def test_build_env_forces_utf8() -> None:
     """Subprocess env forces UTF-8 output for Python (and compatible tools)."""
-    env = _build_subprocess_env()
+    env = build_shell_subprocess_env()
     assert env["PYTHONUTF8"] == "1"
     assert env["PYTHONIOENCODING"] == "utf-8"
 

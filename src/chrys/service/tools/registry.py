@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.text.images import MAX_IMAGE_BYTES
 from chrys.service.profiles.agents.schema import ALWAYS_LOADED_TOOL_CATEGORIES
 from chrys.service.tools.builtins.ask_user import ask_user
 from chrys.service.tools.builtins.filesystem import FilesystemTools
@@ -208,7 +209,12 @@ class ToolRegistry:
             return [fs.write_file, fs.edit_file]
 
         if category == "filesystem.read":
-            fs = FilesystemTools(runtime, session_dir=session_dir, session_id=session_id or "")
+            fs = FilesystemTools(
+                runtime,
+                session_dir=session_dir,
+                session_id=session_id or "",
+                max_image_bytes=settings.image_send_limit_bytes() if settings is not None else MAX_IMAGE_BYTES,
+            )
             return [fs.read_file, fs.view_image]
 
         if category == "search":

@@ -9,8 +9,10 @@ from tests.foundation.i18n._buddy_catalog_oracle_ids import BUDDY_MESSAGE_IDS
 from tests.foundation.i18n._error_catalog_oracle_ids import ERROR_MESSAGE_IDS
 from tests.foundation.i18n._help_catalog_oracle_ids import HELP_MESSAGE_IDS
 from tests.foundation.i18n._hook_panel_catalog_oracle_ids import HOOK_PANEL_MESSAGE_IDS
+from tests.foundation.i18n._prompt_catalog_oracle_ids import PROMPT_MESSAGE_IDS
 from tests.foundation.i18n._settings_catalog_oracle_ids import SETTINGS_MESSAGE_IDS
 from tests.foundation.i18n._tool_card_catalog_oracle_ids import TOOL_CARD_MESSAGE_IDS
+from tests.foundation.i18n._usage_catalog_oracle_ids import USAGE_MESSAGE_IDS
 from tests.foundation.i18n._web_catalog_oracle_ids import WEB_MESSAGE_IDS
 from tests.foundation.i18n._workflow_catalog_oracle_ids import WORKFLOW_MESSAGE_IDS
 
@@ -78,6 +80,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "construction.project_hooks_invalid",
     "construction.service_session_incompatible",
     "construction.trajectory_activation_failed",
+    "controls.model_profile_not_found",
     "controls.model_switch_not_ready",
     "controls.no_registry",
     "controls.profile_not_found",
@@ -348,6 +351,25 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.commands.description.diff",
     "tui.commands.description.exit",
     "tui.commands.description.fold",
+    "tui.btw.busy",
+    "tui.btw.blocked",
+    "tui.btw.close",
+    "tui.btw.empty",
+    "tui.btw.failed",
+    "tui.btw.next",
+    "tui.btw.open",
+    "tui.btw.previous",
+    "tui.btw.read_failed",
+    "tui.btw.reading",
+    "tui.btw.save_failed",
+    "tui.btw.send",
+    "tui.btw.title",
+    "tui.btw.tab.output",
+    "tui.btw.tab.question",
+    "tui.btw.thinking",
+    "tui.btw.unavailable",
+    "tui.commands.description.btw",
+    "tui.man.btw.body",
     "tui.commands.description.fork",
     "tui.commands.description.language",
     "aixcoding.tui.commands.description.login",  # AIxCoding tui: /login /logout keys
@@ -536,7 +558,9 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.input.placeholder.models",
     "tui.input.placeholder.prompt",
     "tui.input.placeholder.shell",
+    ("tui.input.prompt_fields_pending", "tui.input.prompt_fields_pending#plural"),
     "tui.input.queued",
+    "tui.input.title.prompt_fields_pending",
     "tui.input.retry",
     "tui.input.send",
     "tui.language_command.unknown_locale",
@@ -725,13 +749,15 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.runtime_details.section.project_hooks",
     "tui.runtime_details.section.sub_agent_tools",
     "tui.runtime_details.skills",
+    "tui.runtime_details.shortcuts",
+    "tui.runtime_details.loading.shortcuts",
+    "tui.runtime_details.empty.shortcuts",
     "tui.runtime_details.title",
     "tui.runtime_details.token_count",
     "tui.runtime_details.tools",
     "tui.session.clear.failed",
     "tui.session.fork.created",
     "tui.session.fork.dialog_failed",
-    "tui.session.fork.empty_session",
     "tui.session.fork.no_active_session",
     "tui.session.fork.turn_running",
     "tui.session.resume.none",
@@ -1453,6 +1479,14 @@ _message_ids.update(
         ("tui.model_picker.hidden_profiles", "tui.model_picker.hidden_profiles#plural"),
         "tui.model_picker.manage",
         "tui.model_picker.title",
+        "tui.mcp_picker.title",
+        "tui.mcp_picker.create",
+        "tui.mcp_picker.sources",
+        "tui.mcp_picker.added",
+        "tui.mcp_picker.name_conflict",
+        "tui.mcp_picker.connection_conflict",
+        "tui.mcp_picker.disabled",
+        ("tui.mcp_picker.hidden", "tui.mcp_picker.hidden#plural"),
         "tui.notifications.button.test",
         "tui.notifications.desktop_popup",
         "tui.notifications.enable",
@@ -1774,6 +1808,7 @@ _message_ids.update(
         "tui.trajectory.mcp_usage.title",
         "tui.trajectory.preparation_outcome.abandoned_no_target",
         "tui.trajectory.preparation_outcome.cancelled",
+        "tui.trajectory.preparation_outcome.command_failed",
         "tui.trajectory.preparation_outcome.completed",
         "tui.trajectory.preparation_outcome.conflict",
         "tui.trajectory.preparation_outcome.dropped",
@@ -1852,4 +1887,6 @@ EXPECTED_MESSAGE_IDS: frozenset[str | tuple[str, str]] = (
     | ERROR_MESSAGE_IDS
     | SETTINGS_MESSAGE_IDS
     | TOOL_CARD_MESSAGE_IDS
+    | PROMPT_MESSAGE_IDS
+    | USAGE_MESSAGE_IDS
 )

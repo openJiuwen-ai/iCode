@@ -16,6 +16,7 @@ from chrys.app.tui.screens.main.ports import (
 
 if TYPE_CHECKING:
     from chrys.app.tui.screens.main.state import MainScreenState
+    from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
     from chrys.app.tui.widgets.sidebar.context import ContextUsageState
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_executions import HookExecutionView
@@ -39,6 +40,9 @@ class MainScreenPresenter:
 
     def show_status(self, text: StatusMessage) -> None:
         self._view.show_status(text)
+
+    def note_output_text(self, text: str) -> None:
+        self._view.note_output_text(text)
 
     def clear_status(self) -> None:
         self._view.clear_status()
@@ -133,8 +137,8 @@ class MainScreenPresenter:
     def set_input_paste_cwd(self, cwd: str) -> None:
         self._view.set_input_paste_cwd(cwd)
 
-    def restore_input_text(self, text: str) -> InputRestore | None:
-        return self._view.restore_input_text(text)
+    def restore_input_text(self, draft: str | ChatDraft) -> InputRestore | None:
+        return self._view.restore_input_text(draft)
 
     def rewrite_restored_input(self, restore: InputRestore | None, text: str) -> bool:
         return self._view.rewrite_restored_input(restore, text)

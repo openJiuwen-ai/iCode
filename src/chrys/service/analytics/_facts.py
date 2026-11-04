@@ -254,11 +254,13 @@ _USAGE_PROVENANCE_BITS: Final[dict[UsageBucket, int]] = {
     UsageBucket.CACHE_CREATION: 16,
 }
 _USAGE_NORMALIZATION_UNAVAILABLE_BIT: Final = 32
-# A request that failed, stalled or was interrupted before the provider sent
-# its usage block records no usage at all; totals count the requests that
-# reported and say they are a lower bound instead of going missing.
+# A request that failed, stalled or was interrupted may have reported nothing,
+# or only what the provider said before the end (a cut-off stream's input and a
+# placeholder output). Totals count what it reported in full and say they are a
+# lower bound instead of going missing or reading as exact.
 _USAGE_UNREPORTED_FAILURE_BIT: Final = 64
-_UNREPORTED_FAILURE_USAGE_REASON: Final = "one or more model requests failed or were interrupted before reporting usage, so totals count reported requests only"
+_USAGE_FAILED_BIT: Final = 128
+_UNREPORTED_FAILURE_USAGE_REASON: Final = "one or more model requests failed or were interrupted before reporting full usage, so totals count only what was reported"
 
 _USAGE_BUCKET_KEYS: Final[dict[UsageBucket, str]] = {
     UsageBucket.INPUT: "input_total",
@@ -291,6 +293,10 @@ class _ExchangeUsage:
     @property
     def unreported_failure(self) -> bool:
         return bool(self.flags & _USAGE_UNREPORTED_FAILURE_BIT)
+
+    @property
+    def failed(self) -> bool:
+        return bool(self.flags & _USAGE_FAILED_BIT)
 
     def bucket_value(self, bucket: UsageBucket) -> int | None:
         if bucket is UsageBucket.INPUT:
@@ -644,14 +650,18 @@ class _Intermediate:
                         flags |= _USAGE_PROVENANCE_BITS[bucket]
                 if isinstance(usage, dict) and usage.get("normalization_unavailable") is True:
                     flags |= _USAGE_NORMALIZATION_UNAVAILABLE_BIT
+                input_total = _usage_int_value(usage.get("input_total")) if isinstance(usage, dict) else None
+                output_total = _usage_int_value(usage.get("output_total")) if isinstance(usage, dict) else None
                 outcome = event.payload.get("outcome")
-                if usage is None and isinstance(outcome, str) and outcome != ExchangeOutcome.SUCCESS:
-                    flags |= _USAGE_UNREPORTED_FAILURE_BIT
+                if isinstance(outcome, str) and outcome != ExchangeOutcome.SUCCESS:
+                    flags |= _USAGE_FAILED_BIT
+                    if input_total is None or output_total is None:
+                        flags |= _USAGE_UNREPORTED_FAILURE_BIT
                 self.usage_by_turn[turn_id].append(
                     _ExchangeUsage(
                         sequence=event.sequence,
-                        input_total=_usage_int_value(usage.get("input_total")) if isinstance(usage, dict) else None,
-                        output_total=_usage_int_value(usage.get("output_total")) if isinstance(usage, dict) else None,
+                        input_total=input_total,
+                        output_total=output_total,
                         extras=extras,
                         flags=flags,
                     )

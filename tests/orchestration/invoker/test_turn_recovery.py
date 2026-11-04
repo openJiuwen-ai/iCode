@@ -72,8 +72,8 @@ async def test_real_prepare_stop_retry_does_not_use_previous_invocation(
     begun = []
     original_begin = engine.current.loaded.bindings.inputs.begin_invocation
 
-    def begin():
-        original_begin()
+    def begin(*, typed_text=None):
+        original_begin(typed_text=typed_text)
         begun.append(engine.current.loaded.bindings.inputs.origin)
 
     monkeypatch.setattr(

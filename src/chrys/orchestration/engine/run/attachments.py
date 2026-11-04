@@ -274,8 +274,10 @@ def _is_folder_style_mention_value(value: str) -> bool:
     return value.endswith(("/", "\\"))
 
 
-def load_image_attachments(mentions: Sequence[ImageMention]) -> AttachmentParseResult:
-    """Load image bytes for previously discovered mentions."""
+def load_image_attachments(
+    mentions: Sequence[ImageMention], *, max_bytes: int = MAX_IMAGE_BYTES
+) -> AttachmentParseResult:
+    """Load image bytes for previously discovered mentions, each compressed to at most *max_bytes*."""
     attachments: list[ImageAttachment] = []
     errors: list[str] = []
 
@@ -329,9 +331,9 @@ def load_image_attachments(mentions: Sequence[ImageMention]) -> AttachmentParseR
         # JPEG, GIF and WebP: other bytes behind an image name (a renamed BMP)
         # are converted like an oversized image.
         media_type = wire_image_media_type(data, None)
-        if len(data) > MAX_IMAGE_BYTES or media_type is None:
+        if len(data) > max_bytes or media_type is None:
             try:
-                data = compress_image_data(data, max_bytes=MAX_IMAGE_BYTES)
+                data = compress_image_data(data, max_bytes=max_bytes)
             except ImageProcessingError as exc:
                 errors.append(_format_image_error(mention.mention, mention.path, str(exc)))
                 continue
@@ -353,12 +355,25 @@ def load_image_attachments(mentions: Sequence[ImageMention]) -> AttachmentParseR
     return AttachmentParseResult(attachments=attachments, errors=errors)
 
 
-def parse_image_mentions(text: str, cwd: Path) -> AttachmentParseResult:
-    """Parse and load supported image ``@file`` mentions from *text*."""
+def parse_image_mentions(text: str, cwd: Path, *, max_bytes: int = MAX_IMAGE_BYTES) -> AttachmentParseResult:
+    """Parse and load supported image ``@file`` mentions from *text*, each compressed to at most *max_bytes*."""
     discovered = discover_image_mentions(text, cwd)
     if discovered.errors:
         return AttachmentParseResult(attachments=[], errors=discovered.errors)
-    return load_image_attachments(discovered.mentions)
+    return load_image_attachments(discovered.mentions, max_bytes=max_bytes)
+
+
+def with_message_text(contents: list[Any], text: str) -> list[Any]:
+    """*contents* with their text replaced by *text*: what the message says once its commands ran.
+
+    User contents are ``[text, *images]`` (:func:`build_user_contents`, and the
+    contents an ACP client's prompt arrives as), so the text is the first entry
+    and the images stay as they are.
+    """
+    if not contents or not isinstance(contents[0], str):
+        msg_text = "User message contents must start with their text"
+        raise ValueError(msg_text)
+    return [text, *contents[1:]]
 
 
 def build_user_contents(text: str, attachments: list[ImageAttachment]) -> list[Any]:

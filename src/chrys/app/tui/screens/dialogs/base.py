@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Shared base class for dismissable modal dialogs, and whether a modal screen's widgets are live."""
+"""Shared base class for dismissable modal dialogs."""
 
 from __future__ import annotations
 
@@ -8,23 +8,14 @@ from typing import Any, ClassVar, TypeVar
 
 from textual import events
 from textual.await_complete import AwaitComplete
-from textual.screen import ModalScreen, Screen
+from textual.screen import ModalScreen
 
 from chrys.app.tui.behaviors.click_outside_dismiss import ClickOutsideDismissMixin
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, InsertClipboardScreenMixin
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
+from chrys.app.tui.util.liveness import composed_live
 
 DialogResultT = TypeVar("DialogResultT")
-
-
-def composed_live(screen: Screen) -> bool:
-    """Whether *screen* may query and update the widgets it composed.
-
-    Not once its removal begins, the app's shutdown included: that prunes them before the screen unmounts. Nor when
-    the screen is pushed as the app begins to exit, or in its last running turn to mount once it stopped: none of them
-    mount then. Owners may report to it, and it may mount, at any of those moments; nothing renders it then.
-    """
-    return screen.is_attached and screen.app.is_running and not screen._pruning and not screen._closing
 
 
 class BaseDialog(

@@ -245,6 +245,7 @@ ThemeEditorPanel {
 
 /* Preserve a useful chat preview when three columns cannot fit. */
 MainScreen.--theme-editor-compact ChatPanel { min-width: 0; }
+MainScreen.--theme-editor-compact ChatColumn { min-width: 0; }
 
 SaveThemeDialog {
     align: center middle;

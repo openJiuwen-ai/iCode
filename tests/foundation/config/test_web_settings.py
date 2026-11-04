@@ -14,7 +14,7 @@ from chrys.foundation.config.coercion import CoerceReason, CoerceStatus
 from chrys.foundation.config.env_layers import freeze_process_env
 from chrys.foundation.config.settings_store import load_settings
 from chrys.foundation.config.warnings import warning_display_message
-from chrys.foundation.config.web_values import web_custom_endpoints_coercer, web_origins_coercer
+from chrys.foundation.config.web_values import web_custom_endpoints_coercer, web_list_coercer, web_origins_coercer
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.platform import get_platform
 
@@ -172,3 +172,19 @@ def test_deeply_nested_json_is_refused_not_raised(coerce):
     outcome = coerce("[" * 200_000)
     assert outcome.status is CoerceStatus.INVALID
     assert outcome.reason is CoerceReason.EXPECTED_JSON_ARRAY
+
+
+def test_web_list_coercer_keeps_any_json_array_unchanged() -> None:
+    assert web_list_coercer("  ").value == "[]"
+    assert web_list_coercer(None).status is CoerceStatus.MISSING
+    kept = web_list_coercer('[1, "a", {"b": null}, "a"]')
+    assert kept.status is CoerceStatus.VALID
+    # No item check and no dedupe: those belong to each setting's own coercer.
+    assert json.loads(kept.value) == [1, "a", {"b": None}, "a"]
+    assert web_list_coercer(["x"]).value == '["x"]'
+    refused = web_list_coercer('{"a": 1}')
+    assert refused.status is CoerceStatus.INVALID
+    assert refused.reason is CoerceReason.EXPECTED_JSON_ARRAY
+    deep = web_list_coercer("[" * 200_000)
+    assert deep.status is CoerceStatus.INVALID
+    assert deep.reason is CoerceReason.EXPECTED_JSON_ARRAY

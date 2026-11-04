@@ -49,7 +49,7 @@ from chrys.foundation.platform.process import (
     wait_for_subprocess,
 )
 from chrys.foundation.platform.pty_output import PtyOutputProtocol
-from chrys.foundation.platform.runtime_paths import reorder_path_demoting_runtime
+from chrys.foundation.platform.runtime_paths import build_shell_subprocess_env
 from chrys.foundation.platform.win_console import preserve_console_mode
 from chrys.foundation.text.tool_output import (
     process_carriage_returns as _process_carriage_returns,
@@ -296,33 +296,6 @@ def _shell_argv_variants(shell: ShellInfo, command: str) -> list[tuple[str, ...]
     if prefix:
         return [(*prefix, *base), base]
     return [base]
-
-
-def _build_subprocess_env() -> dict[str, str]:
-    """Build a colour-suppressed environment for shell subprocesses.
-
-    Shared by both the PTY (Unix) and pipe (Windows) execution paths.
-    """
-    env = os.environ.copy()
-    env["TERM"] = "dumb"
-    env["CHRYS"] = "1"
-    env["NO_COLOR"] = "1"
-    # Force UTF-8 output from Python subprocesses (and other tools
-    # that respect these variables) so CJK text is never garbled.
-    env["PYTHONUTF8"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
-    # Prevent git (and other tools) from launching a pager, which
-    # would block forever waiting for interactive input.
-    env["GIT_PAGER"] = "cat"
-    env["PAGER"] = "cat"
-    # Suppress colour-forcing variables
-    env.pop("FORCE_COLOR", None)
-    env.pop("COLORTERM", None)
-    env.pop("CLICOLOR_FORCE", None)
-    # Shell commands intentionally mirror the user's environment more closely
-    # than managed hook/skill/MCP subprocesses, so keep PYTHONHOME/PYTHONPATH.
-    reorder_path_demoting_runtime(env)
-    return env
 
 
 _POWERSHELL_UTF8_PREAMBLE = "\n".join(
@@ -636,7 +609,7 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
         flags = fcntl.fcntl(master, fcntl.F_GETFL)
         fcntl.fcntl(master, fcntl.F_SETFL, flags | posix_os.O_NONBLOCK)
 
-        env = _build_subprocess_env()
+        env = build_shell_subprocess_env()
 
         def _setup_pty() -> None:
             posix_os.setsid()
@@ -735,7 +708,7 @@ async def _spawn_pipe(command: str, shell: ShellInfo, cwd: str) -> _Command:
     of its own elsewhere: every process the command starts can be listed and
     stopped with it.
     """
-    env = _build_subprocess_env()
+    env = build_shell_subprocess_env()
     argv_variants = _shell_argv_variants(shell, _prepare_pipe_command(command, shell))
     proc: ManagedStdioProcess | None = None
     for index, argv in enumerate(argv_variants):

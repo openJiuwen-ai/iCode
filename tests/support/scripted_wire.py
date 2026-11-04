@@ -72,8 +72,16 @@ def route_clients_to(transport: httpx.AsyncBaseTransport, monkeypatch: pytest.Mo
         *,
         raw_http_log_path: Path | None = None,
         session_id: str | None = None,
+        auth: httpx.Auth | None = None,
     ) -> httpx.AsyncClient:
-        return build(profile, timeout, raw_http_log_path=raw_http_log_path, session_id=session_id, transport=transport)
+        return build(
+            profile,
+            timeout,
+            raw_http_log_path=raw_http_log_path,
+            session_id=session_id,
+            auth=auth,
+            transport=transport,
+        )
 
     monkeypatch.setattr(clients_module, "_build_profile_http_client", build_over)
 

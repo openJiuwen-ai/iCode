@@ -1,41 +1,55 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Cell-based image previews for chat messages."""
+"""Decoded chat images, their cell layout, and their half-block rendering."""
 
 from __future__ import annotations
 
 import base64
 import binascii
 import logging
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 from rich.color import Color
-from rich.console import Console, ConsoleOptions, RenderResult
+from rich.segment import Segment
 from rich.style import Style
-from rich.text import Text
 
 from chrys.foundation.text.images import IMAGE_DECODE_FORMATS
 
-_HALF_BLOCK = "\u2580"
-_TRANSPARENT_BACKGROUND = (15, 18, 24)
-_DEFAULT_MAX_ROWS = 16
+TRANSPARENT_BACKGROUND: Final = (15, 18, 24)
+"""What transparent pixels are flattened onto where the terminal cannot blend them."""
+MAX_PREVIEW_INPUT_PIXELS: Final = 80_000_000
+DEFAULT_MAX_ROWS: Final = 16
+_HALF_BLOCK = "▀"
 _IMAGE_GAP = 2
 _MIN_IMAGE_WIDTH = 8
-_MAX_PREVIEW_INPUT_PIXELS = 80_000_000
 _MAX_PREVIEW_SOURCE_SIZE = (512, 512)
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ChatImagePreview:
-    """Decoded image data ready for cell rendering."""
+    """A decoded thumbnail ready for half-block rendering, and the data it came from."""
 
     image: Image.Image
     media_type: str
+    data_uri: str
+    """The original image, decoded again at full size for terminals that draw real pixels."""
+
+
+@dataclass(frozen=True)
+class ImageBox:
+    """Where one image of a row sits, in cells, and its half-block size in pixels."""
+
+    x: int
+    columns: int
+    rows: int
+    pixel_height: int
+    """Half-block pixels tall (two per row); odd when the last row is half padding."""
 
 
 def extract_image_previews(contents: Sequence[Any] | None) -> list[ChatImagePreview]:
@@ -51,77 +65,83 @@ def extract_image_previews(contents: Sequence[Any] | None) -> list[ChatImagePrev
         if not media_type.startswith("image/"):
             continue
         try:
-            data = _decode_data_uri(data_uri)
+            data = decode_data_uri(data_uri)
             image = _load_preview_image(data)
         except binascii.Error, Image.DecompressionBombError, OSError, UnidentifiedImageError, ValueError:
             logger.debug("Skipping invalid chat image preview for media type %s", media_type, exc_info=True)
             continue
-        previews.append(ChatImagePreview(image=image, media_type=media_type))
+        previews.append(ChatImagePreview(image=image, media_type=media_type, data_uri=data_uri))
     return previews
 
 
-class ImagePreviewGrid:
-    """Rich renderable that shows one row of image previews."""
+def layout_image_row(
+    images: Sequence[ChatImagePreview],
+    *,
+    max_width: int,
+    max_rows: int = DEFAULT_MAX_ROWS,
+    allow_upscale: bool = False,
+) -> tuple[ImageBox, ...]:
+    """Lay images side by side within ``max_width`` cells, each at most ``max_rows`` rows tall.
 
-    def __init__(
-        self,
-        images: Sequence[ChatImagePreview],
-        *,
-        max_width: int,
-        max_rows: int = _DEFAULT_MAX_ROWS,
-        indent: str = "",
-        allow_upscale: bool = False,
-    ) -> None:
-        self.images = list(images)
-        self.max_width = max(1, max_width)
-        self.max_rows = max(1, max_rows)
-        self.indent = indent
-        self.allow_upscale = allow_upscale
+    One column is one thumbnail pixel wide and one row two pixels tall, whatever draws the image, so
+    the layout does not change with the terminal's graphics support.
+    """
+    if not images:
+        return ()
+    available = max(1, max_width)
+    count = len(images)
+    gap = _IMAGE_GAP if count > 1 else 0
+    per_image_width = max(1, (available - gap * (count - 1)) // count)
+    if per_image_width < _MIN_IMAGE_WIDTH and count > 1:
+        gap = 1
+        per_image_width = max(1, (available - gap * (count - 1)) // count)
+    boxes: list[ImageBox] = []
+    x = 0
+    for preview in images:
+        width, height = _fit_size(
+            preview.image.size,
+            max_width=per_image_width,
+            max_height=max(1, max_rows) * 2,
+            allow_upscale=allow_upscale,
+        )
+        boxes.append(ImageBox(x=x, columns=width, rows=math.ceil(height / 2), pixel_height=height))
+        x += width + gap
+    return tuple(boxes)
 
-    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        _ = console, options
-        yield from self.render_lines()
 
-    def render_lines(self) -> list[Text]:
-        """Render images into terminal-cell rows."""
-        if not self.images:
-            return []
+def half_block_rows(image: Image.Image, box: ImageBox) -> list[list[Segment]]:
+    """Render ``image`` into ``box`` as half-block cells: the upper pixel in the foreground color."""
+    fitted = (
+        image
+        if image.size == (box.columns, box.pixel_height)
+        else image.resize((box.columns, box.pixel_height), Image.Resampling.LANCZOS)
+    )
+    if fitted.height % 2:
+        padded = Image.new("RGB", (fitted.width, fitted.height + 1), TRANSPARENT_BACKGROUND)
+        padded.paste(fitted, (0, 0))
+        fitted = padded
+    pixels = fitted.load()
+    if pixels is None:
+        return []
+    rows: list[list[Segment]] = []
+    for y in range(0, fitted.height, 2):
+        row: list[Segment] = []
+        for x in range(fitted.width):
+            # Runtime guarantee: preview loading normalizes every image to RGB.
+            upper = cast(tuple[int, int, int], pixels[x, y])
+            lower = cast(tuple[int, int, int], pixels[x, y + 1])
+            row.append(Segment(_HALF_BLOCK, Style(color=Color.from_rgb(*upper), bgcolor=Color.from_rgb(*lower))))
+        rows.append(row)
+    return rows
 
-        available = max(1, self.max_width - len(self.indent))
-        gap = _IMAGE_GAP if len(self.images) > 1 else 0
-        total_gap = gap * (len(self.images) - 1)
-        per_image_width = max(1, (available - total_gap) // len(self.images))
-        if per_image_width < _MIN_IMAGE_WIDTH and len(self.images) > 1:
-            gap = 1
-            total_gap = gap * (len(self.images) - 1)
-            per_image_width = max(1, (available - total_gap) // len(self.images))
 
-        rendered_images = [
-            _render_single_image(
-                preview.image,
-                max_width=per_image_width,
-                max_rows=self.max_rows,
-                allow_upscale=self.allow_upscale,
-            )
-            for preview in self.images
-        ]
-        max_line_count = max((len(lines) for lines in rendered_images), default=0)
-        output: list[Text] = []
-
-        for row_index in range(max_line_count):
-            line = Text(self.indent)
-            for image_index, image_lines in enumerate(rendered_images):
-                if row_index < len(image_lines):
-                    line.append(image_lines[row_index])
-                else:
-                    image_width = _image_render_width(image_lines)
-                    line.append(" " * image_width)
-                if image_index < len(rendered_images) - 1:
-                    line.append(" " * gap)
-            if line.cell_len > self.max_width:
-                line.truncate(self.max_width, overflow="crop")
-            output.append(line)
-        return output
+def decode_data_uri(uri: str) -> bytes:
+    """The bytes of a base64 ``data:`` URI."""
+    header, encoded = uri.split(",", 1)
+    if ";base64" not in header:
+        msg = "image preview data URI is not base64 encoded"
+        raise ValueError(msg)
+    return base64.b64decode(encoded, validate=True)
 
 
 def _extract_content_data_uri(content: Any) -> tuple[str, str] | None:
@@ -145,17 +165,9 @@ def _extract_content_data_uri(content: Any) -> tuple[str, str] | None:
     return media_type, uri
 
 
-def _decode_data_uri(uri: str) -> bytes:
-    header, encoded = uri.split(",", 1)
-    if ";base64" not in header:
-        msg = "image preview data URI is not base64 encoded"
-        raise ValueError(msg)
-    return base64.b64decode(encoded, validate=True)
-
-
 def _load_preview_image(data: bytes) -> Image.Image:
     with Image.open(BytesIO(data), formats=IMAGE_DECODE_FORMATS) as opened:
-        if opened.width * opened.height > _MAX_PREVIEW_INPUT_PIXELS:
+        if opened.width * opened.height > MAX_PREVIEW_INPUT_PIXELS:
             msg = "image preview input exceeds the supported pixel limit"
             raise ValueError(msg)
         opened.draft("RGB", _MAX_PREVIEW_SOURCE_SIZE)
@@ -163,52 +175,17 @@ def _load_preview_image(data: bytes) -> Image.Image:
         image.thumbnail(_MAX_PREVIEW_SOURCE_SIZE, Image.Resampling.LANCZOS)
         if image.mode in {"RGBA", "LA", "PA"} or "transparency" in image.info:
             rgba = image.convert("RGBA")
-            background = Image.new("RGB", rgba.size, _TRANSPARENT_BACKGROUND)
+            background = Image.new("RGB", rgba.size, TRANSPARENT_BACKGROUND)
             background.paste(rgba, mask=rgba.getchannel("A"))
             return background
         return image.convert("RGB")
 
 
-def _render_single_image(
-    image: Image.Image, *, max_width: int, max_rows: int, allow_upscale: bool = False
-) -> list[Text]:
-    fitted = _fit_image(image, max_width=max_width, max_height=max_rows * 2, allow_upscale=allow_upscale)
-    if fitted.height % 2:
-        padded = Image.new("RGB", (fitted.width, fitted.height + 1), _TRANSPARENT_BACKGROUND)
-        padded.paste(fitted, (0, 0))
-        fitted = padded
-
-    pixels = fitted.load()
-    if pixels is None:
-        return []
-    lines: list[Text] = []
-    for y in range(0, fitted.height, 2):
-        line = Text()
-        for x in range(fitted.width):
-            # Runtime guarantee: preview loading normalizes every image to RGB.
-            upper = cast(tuple[int, int, int], pixels[x, y])
-            lower = cast(tuple[int, int, int], pixels[x, y + 1])
-            line.append(
-                _HALF_BLOCK,
-                style=Style(
-                    color=Color.from_rgb(*upper),
-                    bgcolor=Color.from_rgb(*lower),
-                ),
-            )
-        lines.append(line)
-    return lines
-
-
-def _fit_image(image: Image.Image, *, max_width: int, max_height: int, allow_upscale: bool = False) -> Image.Image:
-    width, height = image.size
+def _fit_size(
+    size: tuple[int, int], *, max_width: int, max_height: int, allow_upscale: bool = False
+) -> tuple[int, int]:
+    width, height = size
     scale = min(max_width / width, max_height / height)
     if not allow_upscale:
         scale = min(scale, 1.0)
-    new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
-    if new_size == image.size:
-        return image.copy()
-    return image.resize(new_size, Image.Resampling.LANCZOS)
-
-
-def _image_render_width(lines: list[Text]) -> int:
-    return max((line.cell_len for line in lines), default=0)
+    return max(1, int(width * scale)), max(1, int(height * scale))

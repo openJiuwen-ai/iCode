@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
@@ -16,11 +16,40 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
 
 if TYPE_CHECKING:
+    from chrys.foundation.config.settings import Settings
     from chrys.orchestration.engine.build.construction import StagedBuild
     from chrys.service.mutations.tracker import MutationTracker
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.session.persistence import SessionPersistence
     from chrys.service.todos.tracker import TodoTracker
+
+
+def session_pin_overrides(session: ActiveSession, settings: Settings) -> dict[str, Any]:
+    """Snapshot the per-session pins every re-load of *session*'s settings must carry.
+
+    *settings* is the layered load (``SettingsHandle.base``), never the
+    effective value: a session's own model (``Source.SESSION`` in the handle)
+    is kept apart from the load and is not a pin. Pins travel only while
+    pinned, so an unpinned session picks up a changed env value on its next
+    load:
+
+    * ``model_profile`` / ``model_profile_override`` — pinned by a caller that
+      owns the model for the session's host (an ACP model switch, headless
+      ``--model``).
+    * ``ask_user_timeout_seconds`` — pinned when ACP owns the ask_user lifetime
+      (set via dataclasses.replace at launch — see app/cli/acp.py).
+    * ``frontend_default_max_transient_retries`` — launch-mode policy; travels
+      as the reload eval context instead, and the separate env-derived override
+      is deliberately re-read.
+    """
+    overrides: dict[str, Any] = {}
+    if session.ask_user_timeout_pinned:
+        overrides["ask_user_timeout_seconds"] = settings.ask_user_timeout_seconds
+    if session.model_profile_pinned:
+        overrides["model_profile"] = settings.model_profile
+        overrides["model_profile_override"] = settings.model_profile_override
+        overrides["model_profile_override_sub_agents"] = settings.model_profile_override_sub_agents
+    return overrides
 
 
 class ActiveSession(SessionResources[SessionRuntimeMetadata]):
@@ -46,14 +75,20 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         self.surface = surface
         self._surface_mark: tuple[str, SessionSurface] | None = None
         self.agent_profile: AgentProfile | None = None
+        # The agent a new session starts on: the launch profile, then the user's
+        # own pick (``#``). Survives /new and restore, like the approval mode; a
+        # prompt shortcut's switch and a restored session's own agent change only
+        # ``agent_profile``. Empty until the launch profile is known.
+        self.new_session_agent: str = ""
         self.shutting_down: bool = False
         self.turn_number: int = 0
         self.todo_tracker: TodoTracker | None = None
-        # Set only by a per-session ACP model switch (SetModelProfile). When True,
-        # SettingsReload keeps the live ``settings.model_profile`` instead of
-        # reverting to the global env default. The TUI never sets this (it persists
-        # CHRYS_MODEL_PROFILE to .env and relies on SettingsReload re-reading env),
-        # so its behavior is unchanged.
+        # Set only by a per-session ACP model switch (SetModelProfile) or a caller
+        # that owns the model (headless ``--model``). When True, SettingsReload
+        # keeps the live ``settings.model_profile`` instead of reverting to the
+        # global default. A session's own model in the TUI (a prompt shortcut's,
+        # a restored session's) is not a pin: it lives in the settings handle's
+        # session layer.
         self.model_profile_pinned: bool = False
         # Set via ``pin_ask_user_timeout`` when the caller owns
         # ``ask_user_timeout_seconds`` out-of-band (ACP injects it via

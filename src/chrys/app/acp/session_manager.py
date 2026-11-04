@@ -145,6 +145,9 @@ class ManagedSession:
     # and the next waiter's acquisition, and again while a waiter is queued, so
     # a turn admitted exclusively has to be counted, not inferred.
     _turns_reserved: int = 0
+    # Counts every cancel requested for the session: a prompt reads it before
+    # its turn starts, since the host drops a cancel sent before then.
+    cancels_requested: int = 0
     closing: bool = False
     # The messages each answer segment of the last turn went out as, live
     # (``AcpEventBridge.answer_message_ids``) or replayed: a bare retry that
@@ -868,6 +871,7 @@ class AcpSessionManager:
         if session is None:
             msg = f"ACP session is not active: {session_id}"
             raise AcpSessionError(msg)
+        session.cancels_requested += 1
         await session.host.cancel_current_turn()
 
     async def inject(self, session_id: str, text: str) -> None:

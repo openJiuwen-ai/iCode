@@ -190,6 +190,39 @@ async def test_domain_filters_pushed_to_providers_without_native_support(provide
     assert "site:example.com" in sent_query
 
 
+async def test_keenable_keyless_contract_and_filter():
+    seen = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        items = [
+            {"title": "Keep", "url": "https://example.com/a", "description": "", "snippet": "page text"},
+            {"title": "Drop", "url": "https://other.example.org/b", "description": "", "snippet": "page text"},
+        ]
+        return response(200, json.dumps({"results": items}))
+
+    runtime = WebEgressRuntime()
+    provider = create_provider("free", parse_provider({"type": "keenable"}), ResolvedSearchCredentials({}))
+    tools = WebSearchTools((provider,), runtime, DestinationPolicy(), num_results=3)
+    with patch.object(
+        runtime,
+        "client",
+        autospec=True,
+        side_effect=lambda policy, *, timeout: httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    ):
+        result = await tools.web_search('中 "query"', allowed_domains=["example.com"])
+    data = json.loads(result.split("\nExternal", 1)[0])
+    assert data["provider"] == "free"
+    assert data["filtered_results"] == 1
+    assert data["results"] == [{"title": "Keep", "url": "https://example.com/a", "snippet": "page text"}]
+    request = seen[0]
+    assert request.method == "POST"
+    assert str(request.url) == "https://api.keenable.ai/v1/search/public"
+    assert request.headers["X-Keenable-Title"] == "iCode"
+    assert {"authorization", "x-api-key"}.isdisjoint(key.lower() for key in request.headers)
+    assert json.loads(request.content) == {"query": '中 "query" site:example.com', "max_results": 3}
+
+
 async def test_custom_mapping_and_authorization_before_credentials():
     config = parse_search(
         {

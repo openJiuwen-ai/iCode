@@ -29,7 +29,6 @@ from textual.message import Message
 from textual.widgets import Button, Label, Static
 
 from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.screens.agents.panels.path_entry import _WORKSPACE_RELATIVE, PathEntryCard
 from chrys.app.tui.screens.agents.validation_messages import (
     CONTEXT_ERROR,
     MEMORY_CONTEXT,
@@ -44,6 +43,7 @@ from chrys.app.tui.screens.agents.validation_messages import (
 )
 from chrys.app.tui.widgets import ConfigAddButton, HatchedEmptyState
 from chrys.app.tui.widgets import EnhancedInput as Input
+from chrys.app.tui.widgets.path_entry import WORKSPACE_RELATIVE, PathEntryCard
 from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
 from chrys.service.context.memory_loader import FOLDER_MAX_DEPTH, FOLDER_MAX_FILES
 
@@ -645,7 +645,7 @@ class MemoryConfigPanel(VerticalScroll):
         files = self._collect_paths(MemoryFileCard)
         folders = self._collect_paths(MemoryFolderCard)
         localizer = widget_localizer(self)
-        workspace_relative_label = render_str(localizer, _WORKSPACE_RELATIVE.bind())
+        workspace_relative_label = render_str(localizer, WORKSPACE_RELATIVE.bind())
         errors: list[str] = []
         for label_definition, card_cls in ((_MEMORY_FILE, MemoryFileCard), (_MEMORY_FOLDER, MemoryFolderCard)):
             label = render_str(localizer, label_definition.bind())

@@ -40,6 +40,7 @@ from chrys.foundation.events.types import (
     SessionDelete,
     SessionFork,
     SessionNew,
+    SessionOnlySwitch,
     SessionRestore,
     SetApprovalMode,
     SetModelProfile,
@@ -60,6 +61,7 @@ from chrys.orchestration.engine.loader import AgentLoader
 from chrys.orchestration.engine.rollback import RollbackController
 from chrys.orchestration.engine.run.coordinator import TurnCoordinator
 from chrys.orchestration.engine.session_lifecycle import SessionLifecycle
+from chrys.orchestration.engine.side_questions import SideQuestions
 from chrys.orchestration.engine.state.active_session import ActiveSession
 from chrys.orchestration.engine.state.controls import RuntimeControls
 from chrys.orchestration.engine.state.current_agent import CurrentAgent
@@ -164,6 +166,7 @@ class AgentEngine:
         history: SessionHistoryManager,
         trajectory_recorder: trajectory_recorder.TrajectoryRecorder,
         workflows: WorkflowCoordinator,
+        side_questions: SideQuestions,
         hook_runs: HookRunLog | None = None,
         hook_confirmations: HookConfirmationService | None = None,
     ) -> None:
@@ -184,6 +187,7 @@ class AgentEngine:
         self._history = history
         self._trajectory_recorder = trajectory_recorder
         self._workflows = workflows
+        self._side_questions = side_questions
         self._hook_runs = hook_runs
         self._hook_confirmations = hook_confirmations
         self._subscribed = False
@@ -532,6 +536,7 @@ class AgentEngine:
         await self._bus.subscribe(SettingsReload, self._on_settings_reload)
         await self._bus.subscribe(SetApprovalMode, self._on_set_approval_mode)
         await self._bus.subscribe(SetModelProfile, self._on_set_model_profile)
+        await self._bus.subscribe(SessionOnlySwitch, self._on_session_only_switch)
         await self._bus.subscribe(BackgroundTaskStop, self._on_background_task_stop)
         await self._bus.subscribe(InvocationRetryRequested, self._on_sub_agent_retry)
         await self._bus.subscribe(InvocationAbortRequested, self._on_sub_agent_abort)
@@ -540,6 +545,7 @@ class AgentEngine:
         await self._bus.subscribe(InvocationAborted, self._on_sub_agent_unpaused)
         await self._bus.subscribe(InvocationCascadeAborted, self._on_sub_agent_unpaused)
         await self._workflows.subscribe()
+        await self._side_questions.subscribe()
         if self._hook_confirmations is not None:
             await self._hook_confirmations.start()
 
@@ -547,6 +553,9 @@ class AgentEngine:
         # Closing is declared before the active workflow run is drained: a requester queued behind that
         # run is refused as shutting down instead of being admitted into a session that is going away.
         self._session.mark_closing()
+        # An input still being admitted ends now, and whatever it waits on with it (a hook's
+        # confirmation, a prompt shortcut's commands), whoever is driving the admission.
+        self._turns.turn_state.input_operations.invalidate_all("shutdown")
         try:
             await self._workflows.shutdown()
         except BaseException:
@@ -576,7 +585,10 @@ class AgentEngine:
 
     async def _release_resources(self) -> None:
         try:
-            await self._lifecycle.shutdown()
+            try:
+                await self._side_questions.close()
+            finally:
+                await self._lifecycle.shutdown()
         finally:
             if self._hook_confirmations is not None:
                 # After the release: what still waits on a question ends unavailable, and no answer is taken after.
@@ -795,6 +807,10 @@ class AgentEngine:
     async def _on_profile_switch(self, event: AgentProfileSwitch) -> None:
         """Handle agent profile switch — preserves conversation history."""
         await self._controls.on_profile_switch(event)
+
+    async def _on_session_only_switch(self, event: SessionOnlySwitch) -> None:
+        """Switch this session's own agent and/or model in one rebuild (a prompt shortcut's)."""
+        await self._controls.on_session_only_switch(event)
 
     def pin_ask_user_timeout(self) -> None:
         """Mark ``ask_user_timeout_seconds`` as caller-owned across reloads.

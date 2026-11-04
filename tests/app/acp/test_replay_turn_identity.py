@@ -22,6 +22,7 @@ from chrys.orchestration.session_host import Cancelled, EndTurn
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.trajectory.state import TurnRecord
 from tests.app.acp._server_fakes import _FakeClient, _FakeHost, _FakeManager
+from tests.support.images import image_bytes
 
 _CLIENT_MESSAGE_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 
@@ -101,6 +102,39 @@ async def test_replay_marks_the_opening_message_with_its_turn_and_echoes_the_cli
     assert user_chunks[0].field_meta == {"chrys": {"turnId": "turn-a", "turnNumber": 1}}
     assert user_chunks[1].message_id is None
     assert user_chunks[1].field_meta == {"chrys": {"turnId": "turn-a", "turnNumber": 1}}
+
+
+@pytest.mark.asyncio
+async def test_replay_sends_a_messages_images_under_its_id_and_turn(tmp_path) -> None:
+    store = JsonFileStateStore(tmp_path / "sessions")
+    image_only_id = "9b2c1d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d"
+    opener = _user_message("look", "item-1")
+    opener.contents.append(Content.from_data(data=image_bytes(), media_type="image/png"))
+    image_only = _user_message("", "item-2")
+    image_only.contents.append(Content.from_data(data=image_bytes(), media_type="image/png"))
+    await _save(
+        store,
+        tmp_path,
+        [opener, Message("assistant", ["seen"]), image_only],
+        [
+            TurnRecord(turn_number=1, turn_id="turn-a", opening_item_id="item-1", user_message_id=_CLIENT_MESSAGE_ID),
+            TurnRecord(turn_number=2, turn_id="turn-b", opening_item_id="item-2", user_message_id=image_only_id),
+        ],
+    )
+
+    updates = await _replay(store)
+
+    user_chunks = [update for update in updates if update.session_update == "user_message_chunk"]
+    assert [(chunk.content.type, chunk.message_id) for chunk in user_chunks] == [
+        ("text", _CLIENT_MESSAGE_ID),
+        ("image", _CLIENT_MESSAGE_ID),
+        ("image", image_only_id),
+    ]
+    assert [chunk.field_meta for chunk in user_chunks] == [
+        {"chrys": {"turnId": "turn-a", "turnNumber": 1}},
+        {"chrys": {"turnId": "turn-a", "turnNumber": 1}},
+        {"chrys": {"turnId": "turn-b", "turnNumber": 2}},
+    ]
 
 
 @pytest.mark.asyncio

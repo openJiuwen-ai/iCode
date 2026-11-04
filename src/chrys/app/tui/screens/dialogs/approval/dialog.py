@@ -22,7 +22,7 @@ from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.approval.bodies.file_edit import ApprovalDiffPreview
 from chrys.app.tui.screens.dialogs.approval.review_reason import review_reason
-from chrys.app.tui.screens.dialogs.base import composed_live
+from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.util.source_text import mark_hidden_format
 from chrys.app.tui.widgets import Checkbox, ChrysLoadingIndicator, EnhancedTextArea, StableAutoHeightScroll
 from chrys.app.tui.widgets.text_area import NEWLINE_SHORTCUT_KEYS

@@ -5,10 +5,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import functools
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from chrys.foundation.events.types import (
     Error,
@@ -19,6 +23,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import msg
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.platform import safe_getcwd
+from chrys.foundation.text.images import LoadedImage, shrink_image_data
 from chrys.orchestration.engine.run.attachments import (
     MAX_IMAGE_BYTES,
     AttachmentDiscoveryResult,
@@ -47,6 +52,7 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.state.machine import EngineStateMachine
     from chrys.service.session.history import SessionHistoryManager
 
+logger = logging.getLogger(__name__)
 
 _IMAGE_COMPRESSION_TIMEOUT_SECONDS = 30.0
 _PROMPT_CONTENT_IMAGE_ATTACHMENT_WHILE_RUNNING = msg(
@@ -60,7 +66,14 @@ _PROMPT_CONTENT_IMAGE_ATTACHMENT_WHILE_RUNNING = msg(
 
 ImageMentionDiscoverer = Callable[[str, Path], AttachmentDiscoveryResult]
 ImageReferenceDiscoverer = Callable[[str, Path], list[ImageReference]]
-ImageAttachmentLoader = Callable[[Sequence[ImageMention]], AttachmentParseResult]
+
+
+class ImageAttachmentLoader(Protocol):
+    """Loads discovered image mentions, each compressed to at most *max_bytes*."""
+
+    def __call__(self, mentions: Sequence[ImageMention], *, max_bytes: int) -> AttachmentParseResult: ...
+
+
 PromptPublicationGuard = Callable[[], bool]
 
 
@@ -86,6 +99,7 @@ class PromptContentPreparer:
         discover_references: ImageReferenceDiscoverer = discover_image_references,
         load_attachments: ImageAttachmentLoader = load_image_attachments,
         compression_timeout_seconds: float = _IMAGE_COMPRESSION_TIMEOUT_SECONDS,
+        image_send_limit: Callable[[], int] = lambda: MAX_IMAGE_BYTES,
     ) -> None:
         self._session = session
         self._current = current
@@ -94,6 +108,8 @@ class PromptContentPreparer:
         self._discover_references = discover_references
         self._load_attachments = load_attachments
         self._compression_timeout_seconds = compression_timeout_seconds
+        self._image_send_limit = image_send_limit
+        self._history = history
         self._history_policy = ImageHistoryPolicy(history=history, fsm=fsm)
 
     async def prepare_fresh(
@@ -137,7 +153,9 @@ class PromptContentPreparer:
         if not discovered.mentions:
             return PromptContentResult(contents=build_user_contents(text, []))
 
-        compression_count = sum(1 for mention in discovered.mentions if mention.size > MAX_IMAGE_BYTES)
+        max_bytes = self._image_send_limit()
+        load = functools.partial(self._load_attachments, discovered.mentions, max_bytes=max_bytes)
+        compression_count = sum(1 for mention in discovered.mentions if mention.size > max_bytes)
         timeout_errors: list[str] = []
         loaded = None
         compression_started = False
@@ -150,13 +168,13 @@ class PromptContentPreparer:
             if compression_count:
                 try:
                     loaded = await asyncio.wait_for(
-                        asyncio.to_thread(self._load_attachments, discovered.mentions),
+                        asyncio.to_thread(load),
                         timeout=self._compression_timeout_seconds,
                     )
                 except TimeoutError:
                     timeout_errors = self.format_image_preparation_timeout_errors(discovered.mentions)
             else:
-                loaded = await asyncio.to_thread(self._load_attachments, discovered.mentions)
+                loaded = await asyncio.to_thread(load)
         finally:
             if compression_count and (compression_started or self._should_publish(should_publish)):
                 await self._bus.publish(
@@ -363,6 +381,38 @@ class PromptContentPreparer:
         """Return the user-facing compression timeout duration."""
         return format_image_compression_timeout_duration(self._compression_timeout_seconds)
 
+    async def shrink_history_images(self) -> None:
+        """Shrink, in place, every image of the session history over the send limit.
+
+        After the limit is lowered, the next turn or retry sends the session's
+        earlier images within it too, so a request a gateway refused as too
+        large goes through; the turn's save keeps them shrunk. Shrinking stops
+        at the attachment compression timeout, keeping the images it finished:
+        a later turn or retry goes on with the rest.
+        """
+        max_bytes = self._image_send_limit()
+        oversized = self._history.images_over(max_bytes)
+        if not oversized:
+            return
+        count = len(oversized)
+        written = 0
+        session_id = self._session.session_id
+        await self._bus.publish(ImageAttachmentCompressionStarted(image_count=count, session_id=session_id))
+        try:
+            async with asyncio.timeout(self._compression_timeout_seconds):
+                for image in oversized:
+                    # Off the event loop, on a copy of the payload: the image
+                    # changes only once its replacement is ready, never halfway.
+                    replacement = await asyncio.to_thread(_shrink_image, image.uri, max_bytes)
+                    if replacement is not None:
+                        written += self._history.shrink_images([(image, replacement)])
+        except TimeoutError:
+            pass
+        finally:
+            await self._bus.publish(ImageAttachmentCompressionFinished(image_count=count, session_id=session_id))
+        if written < count:
+            logger.warning("%d history image(s) stay over the %d-byte send limit.", count - written, max_bytes)
+
     @staticmethod
     def _should_publish(guard: PromptPublicationGuard | None) -> bool:
         """Return whether prompt-preparation side effects still belong to the live owner."""
@@ -434,6 +484,24 @@ class ImageHistoryPolicy:
     def contents_have_image_content(self, contents: list[Any]) -> bool:
         """Return True when a pending user-message content list includes image content."""
         return contents_have_image_content(contents)
+
+
+def _shrink_image(uri: str, max_bytes: int) -> LoadedImage | None:
+    """The JPEG within *max_bytes* an image data URI shrinks to, or None when it can't."""
+    header, _, encoded = uri.partition(",")
+    if ";base64" not in header.lower():
+        return None
+    try:
+        data = base64.b64decode(encoded, validate=False)
+    except binascii.Error, ValueError:
+        return None
+    try:
+        return shrink_image_data(data, max_bytes=max_bytes)
+    except Exception:
+        # Whatever a stored image does to the decoder, it fails no turn: it is
+        # sent as it is, as one that can't be shrunk at all.
+        logger.warning("A history image could not be shrunk.", exc_info=True)
+        return None
 
 
 def contents_have_image_content(contents: list[Any]) -> bool:

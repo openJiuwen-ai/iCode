@@ -1042,6 +1042,11 @@ class DismissInputBarStub:
         self.prompt_history_on = True
         self.suggestions_active = False
         self.suggestion_mode: str | None = None
+        self.submitted_drafts: list[str] = []
+        """The drafts handed to the input bar's own submit path (``InputBar.submit_input``)."""
+
+    def submit_input(self) -> None:
+        self.submitted_drafts.append(self.value)
 
     def set_suggestions_active(self, active: bool, *, mode: str | None = None) -> None:
         self.suggestions_active = active
@@ -1074,12 +1079,17 @@ class SuggestionScreen:
         super().__setattr__(name, value)
 
     def __init__(self) -> None:
-        self.app = type("_App", (), {"available_themes": ["textual-dark"], "theme": "textual-dark"})()
+        self.app = type(
+            "_App", (), {"available_themes": ["textual-dark"], "theme": "textual-dark", "is_running": True}
+        )()
         self.state = MainScreenState()
         self.state.runtime.profile = "Code"
         self._set_workspace_cwd("")
         self.services = MainScreenServices(bus=EventBus(), state_store=object())
         self.is_attached = True
+        # What the adapter reads, with is_attached, to tell a live screen from one being torn down.
+        self._pruning = False
+        self._closing = False
         self.opened: list[str] = []
         self.notifications: list[str] = []
         self.submitted: list[str] = []
@@ -1090,6 +1100,8 @@ class SuggestionScreen:
         self.applied_titles: list[str] = []
         self.suggestion_list = SuggestionListStub()
         self.input_bar = DismissInputBarStub()
+        # Every worker started, for the test to await: a started worker is the test's to finish.
+        self.workers: list[TaskWorker] = []
 
     def _set_workspace_cwd(self, cwd: str) -> None:
         """Move the workspace as ``MainScreen._set_workspace_cwd`` does."""
@@ -1156,6 +1168,9 @@ class SuggestionScreen:
     def action_runtime_details(self) -> None:
         self.opened.append("runtime")
 
+    def action_usage(self) -> None:
+        self.opened.append("usage")
+
     def _open_settings(self, tab: str) -> None:
         self.opened.append(f"settings:{tab}")
 
@@ -1166,7 +1181,9 @@ class SuggestionScreen:
         self.notifications.append(format_message(message) if isinstance(message, MessageRef) else message)
 
     def run_worker(self, work, **_kwargs) -> TaskWorker:
-        return TaskWorker(work)
+        worker = TaskWorker(work)
+        self.workers.append(worker)
+        return worker
 
     def query_one(self, cls):
         name = cls.__name__
@@ -1198,6 +1215,7 @@ def make_slash_actions(screen: SuggestionScreen) -> SlashCommandActions:
         quit_app=screen.action_quit,
         resume_session=screen._resume_last_session,
         fork_session=screen._fork_current_session,
+        ask_side_question=lambda _question: None,
         workflow_selection=lambda: None,
         open_guide=lambda: None,
         browse_session_list=screen.action_sessions,
@@ -1214,6 +1232,7 @@ def make_slash_actions(screen: SuggestionScreen) -> SlashCommandActions:
         configure_agent=screen._open_agent_config,
         configure_agent_tab=screen._open_agent_config_tab,
         show_runtime_details=screen.action_runtime_details,
+        show_usage=screen.action_usage,
         configure_settings=screen._open_settings,
         show_manual_pages=lambda _pages, _start_index: None,
         warn=lambda message, title, timeout: screen.notify(message, title=title, timeout=timeout),

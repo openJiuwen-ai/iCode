@@ -25,6 +25,7 @@ from chrys.foundation.events.types import (
     Warning,
     WorkspaceUpdated,
 )
+from chrys.foundation.text.images import MAX_IMAGE_BYTES
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mutations.types import (
     FileHashDiff,
@@ -174,6 +175,7 @@ class _FakeHost:
     retry_events: list[Event] = field(default_factory=list)
     outcome: Any = None
     vision_enabled: bool = False
+    image_send_limit_bytes: int = MAX_IMAGE_BYTES
     last_turn_outcome: Any = None
     retry_texts: list[str | None] = field(default_factory=list)
     engine: _FakeEngine = field(default_factory=_FakeEngine)
@@ -199,6 +201,7 @@ class _FakeSession:
     # Mirrors ``ManagedSession``'s admission: a session serves one turn at a
     # time, and whether one is admitted cannot be read off the lock.
     _turns_reserved: int = 0
+    cancels_requested: int = 0
     closing: bool = False
     answer_message_ids: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
@@ -245,6 +248,7 @@ class _LoadedSession:
     host: _FakeHost = field(default_factory=lambda: _FakeHost(event_bus=EventBus()))
     prompt_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _turns_reserved: int = 0
+    cancels_requested: int = 0
     answer_message_ids: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
@@ -464,6 +468,7 @@ class _FakeManager:
     async def cancel(self, session_id: str) -> None:
         self.cancelled_sessions.append(session_id)
         self.lifecycle_calls.append(f"cancel:{session_id}")
+        self._session.cancels_requested += 1
 
     async def begin_close(self, session_id: str) -> None:
         self.lifecycle_calls.append(f"begin_close:{session_id}")

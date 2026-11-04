@@ -8,7 +8,7 @@ import asyncio
 import contextlib
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -17,6 +17,7 @@ import pytest
 
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.app import ChrysApp
+from chrys.app.tui.graphics.probe import TerminalReport
 from chrys.app.tui.screens.main.session_handlers import RestoreRequest
 from chrys.app.tui.screens.main.state import MainScreenState, RunState
 from chrys.foundation.config.settings import Settings
@@ -132,8 +133,7 @@ async def test_cancelled_startup_ignores_late_refresh_callback() -> None:
 
 
 def test_tui_startup_profile_resolves_preferred_agent() -> None:
-    from chrys.app.tui.app import _resolve_startup_profile
-    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
     from chrys.service.profiles.agents.schema import AgentProfile
 
     registry = AgentProfileRegistry()
@@ -142,12 +142,11 @@ def test_tui_startup_profile_resolves_preferred_agent() -> None:
     registry.register(code)
     registry.register(qa)
 
-    assert _resolve_startup_profile(registry, "QA") is qa
+    assert resolve_launch_profile(registry, "QA") is qa
 
 
 def test_tui_startup_profile_accepts_id_and_display_name() -> None:
-    from chrys.app.tui.app import _resolve_startup_profile
-    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
     from chrys.service.profiles.agents.schema import AgentProfile
 
     registry = AgentProfileRegistry()
@@ -156,13 +155,12 @@ def test_tui_startup_profile_accepts_id_and_display_name() -> None:
     registry.register(code)
     registry.register(qa)
 
-    assert _resolve_startup_profile(registry, "qa-id") is qa
-    assert _resolve_startup_profile(registry, "quality agent") is qa
+    assert resolve_launch_profile(registry, "qa-id") is qa
+    assert resolve_launch_profile(registry, "quality agent") is qa
 
 
 def test_tui_startup_profile_falls_back_to_code_when_preferred_missing() -> None:
-    from chrys.app.tui.app import _resolve_startup_profile
-    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
     from chrys.service.profiles.agents.schema import AgentProfile
 
     registry = AgentProfileRegistry()
@@ -171,12 +169,11 @@ def test_tui_startup_profile_falls_back_to_code_when_preferred_missing() -> None
     registry.register(qa)
     registry.register(code)
 
-    assert _resolve_startup_profile(registry, "Missing") is code
+    assert resolve_launch_profile(registry, "Missing") is code
 
 
 def test_tui_startup_profile_treats_sub_agent_only_preference_as_unusable() -> None:
-    from chrys.app.tui.app import _resolve_startup_profile
-    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
     from chrys.service.profiles.agents.schema import AgentProfile
 
     registry = AgentProfileRegistry()
@@ -185,7 +182,7 @@ def test_tui_startup_profile_treats_sub_agent_only_preference_as_unusable() -> N
     registry.register(explore)
     registry.register(code)
 
-    assert _resolve_startup_profile(registry, "Explore") is code
+    assert resolve_launch_profile(registry, "Explore") is code
 
 
 def test_terminal_restore_skips_textual_web_driver(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
@@ -268,6 +265,7 @@ def test_main_restores_terminal_when_app_run_raises(
     monkeypatch.setattr(tui_app, "stop_debug_logging", lambda _runtime: calls.append("stop-debug"))
     monkeypatch.setattr(tui_app, "_restore_terminal_after_run", lambda _app: calls.append("restore-terminal"))
     monkeypatch.setattr(tui_app, "_reset_terminal_title_after_run", lambda: calls.append("reset-title"))
+    monkeypatch.setattr(tui_app, "ask_terminal", lambda _env, *, enabled: None)
     monkeypatch.setattr(tui_app, "EventBus", object)
     monkeypatch.setattr(tui_app, "AgentProfileRegistry", _Registry)
     monkeypatch.setattr(tui_app, "ModelProfileRegistry", _Registry)
@@ -360,6 +358,14 @@ def test_main_passes_startup_args_to_app(
     monkeypatch.setattr(tui_app, "stop_debug_logging", lambda _runtime: calls.append("stop-debug"))
     monkeypatch.setattr(tui_app, "_restore_terminal_after_run", lambda _app: calls.append("restore-terminal"))
     monkeypatch.setattr(tui_app, "_reset_terminal_title_after_run", lambda: calls.append("reset-title"))
+    terminal_report = TerminalReport("ghostty 1.4.0")
+    asked: list[tuple[bool, bool]] = []
+
+    def _ask_terminal(env: Mapping[str, str], *, enabled: bool) -> TerminalReport:
+        asked.append((env is os.environ, enabled))
+        return terminal_report
+
+    monkeypatch.setattr(tui_app, "ask_terminal", _ask_terminal)
     monkeypatch.setattr(tui_app, "EventBus", object)
     monkeypatch.setattr(tui_app, "AgentProfileRegistry", _AgentRegistry)
     monkeypatch.setattr(tui_app, "ModelProfileRegistry", _ModelRegistry)
@@ -372,6 +378,10 @@ def test_main_passes_startup_args_to_app(
     finally:
         os.chdir(original_cwd)
 
+    # The terminal named by the process environment is asked, by the loaded setting, and the answer goes
+    # to the app.
+    assert asked == [(True, Settings().chat_image_graphics)]
+    assert captured_kwargs["terminal_report"] is terminal_report
     assert captured_kwargs["startup_session_id"] == "session-1"
     assert captured_kwargs["profile_name"] == "Code"
     assert captured_kwargs["apply_saved_model_on_restore"] is False
@@ -480,6 +490,10 @@ async def test_unmount_drains_title_updater_after_engine_shutdown() -> None:
         async def shutdown(self) -> None:
             calls.append("engine")
 
+    class _Graphics:
+        async def close(self) -> None:
+            calls.append("graphics")
+
     class _Freeze:
         def close(self) -> None:
             calls.append("gc-close")
@@ -493,6 +507,7 @@ async def test_unmount_drains_title_updater_after_engine_shutdown() -> None:
         _update_check_task=None,
         _left_behind_task=None,
         _program_status_reporter=_Reporter(),
+        _terminal_graphics=_Graphics(),
         _session_title_updater=_Updater(),
         _engine=_Engine(),
         _gc_freeze=_Freeze(),
@@ -501,7 +516,7 @@ async def test_unmount_drains_title_updater_after_engine_shutdown() -> None:
 
     await ChrysApp.on_unmount(host)
 
-    assert calls == ["program-status", "gc-close", "timer-stop", "engine", "updater"]
+    assert calls == ["program-status", "graphics", "gc-close", "timer-stop", "engine", "updater"]
     assert host._gc_freeze_watchdog is None
 
 

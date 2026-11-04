@@ -66,6 +66,13 @@ async def test_statistics_compartment_and_frozen_elapsed_survive_layout_changes(
         graph.toggle_layout()
         assert graph._usage_labels["review"] and graph._elapsed_labels["review"] == elapsed
         assert graph.geometry["review"].height == original_height
+        # A node that ran under a second shows milliseconds, in either layout.
+        graph.show_nodes({"review": NodeView("completed", elapsed_seconds=0.412, usage=NodeUsage(9999, 2_700_000))})
+        subsecond = "412 ms" if locale == "en" else "412 毫秒"
+        assert graph._elapsed_labels == {"review": subsecond}
+        graph.advance_animation()
+        assert graph._elapsed_labels == {"review": subsecond}
+        assert subsecond in graph.render_line(y + 1).text
         # Starting a different run clears statistics without changing its geometry.
         graph.show_manifest(manifest, [], locale=LocaleController(Settings(locale=locale)), reserve_usage=True)
         assert graph.geometry["review"].height == original_height

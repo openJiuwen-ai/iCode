@@ -10,7 +10,7 @@ import copy
 import logging
 import os
 import shutil
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,9 +19,7 @@ from typing import TYPE_CHECKING, Any, cast
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.context import EvalContext
 from chrys.foundation.config.process_settings import reattribute_command_line, route_restart_settings
-from chrys.foundation.config.runtime_pointer import PointerToken, restore_model_pointer, set_model_pointer
 from chrys.foundation.config.settings_store import load_settings
-from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.config.warnings import settings_warning_events
 from chrys.foundation.events.types import (
     BackgroundTasksChanged,
@@ -46,6 +44,7 @@ from chrys.foundation.trajectory.event_types import RuntimeFinishReason as Traje
 from chrys.foundation.util.lock import FileLock
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.engine.state import lifecycle_permits
+from chrys.orchestration.engine.state.active_session import session_pin_overrides
 from chrys.orchestration.engine.state.machine import Trigger
 from chrys.orchestration.invoker.contracts import AbortCause
 from chrys.orchestration.invoker.runtime import restore_phase4_state
@@ -53,11 +52,13 @@ from chrys.service.context.compaction.spill import SpillReconciliationResult, re
 from chrys.service.mutations.store import SnapshotPolicy, SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
-from chrys.service.profiles.models.resolver import loaded_with_active_model_profile
+from chrys.service.profiles.agents.registry import resolve_launch_profile, resolve_profile_selector
+from chrys.service.profiles.models.resolver import active_model_profile_fields
 from chrys.service.profiles.models.schema import API_STYLE_RESPONSES, is_model_profile_selectable
 from chrys.service.session.history import stamp_history_item_ids
 from chrys.service.session.persistence import has_real_messages
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
+from chrys.service.session.side_questions import BTW_FILE_NAME
 from chrys.service.session.sub_agent_logs import SubAgentSessionArtifactService
 from chrys.service.state.store import (
     SESSION_BACKUP_FILE_NAME,
@@ -77,6 +78,7 @@ if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.orchestration.engine.loader import AgentLoader
     from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
+    from chrys.orchestration.engine.side_questions import SideQuestions
     from chrys.orchestration.engine.state.active_session import ActiveSession
     from chrys.orchestration.engine.state.current_agent import CurrentAgent
     from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
@@ -84,7 +86,6 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.state.session_writer import SessionWriter
     from chrys.orchestration.engine.trajectory import TrajectoryRecorder
     from chrys.orchestration.engine.usage import UsagePublisher
-    from chrys.orchestration.invoker.kernel import KernelConversation
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -151,7 +152,7 @@ _FORK_FAILED = msg(
 
 _CONSTRUCTION_TRAJECTORY_ACTIVATION_FAILED = msg(
     "construction.trajectory_activation_failed",
-    fallback="Trajectory recording could not start and has been disabled for this session.",
+    fallback="Detailed trajectory recording is off for this session; your task can continue.",
 )
 
 
@@ -229,29 +230,6 @@ def _extra_roots(paths: list[str], primary_cwd: str) -> list[str]:
     return [path for path in paths if path != primary_cwd]
 
 
-@dataclass(frozen=True)
-class _ModelRestoreRollbackToken:
-    """State needed to undo a model reapply before the build's commit installs it."""
-
-    conversation: KernelConversation | None
-    pointer: PointerToken
-
-
-def _rollback_reapplied_model_profile(token: _ModelRestoreRollbackToken) -> None:
-    """Undo the eager pointer write after a pre-commit start failure.
-
-    The settings half needs no undo: the reapplied selection lived only on the
-    staged load, and a build that failed before its commit never installed it.
-    Value and origin go back together — a bare env write would leave the
-    registry saying SESSION about a pointer the rollback just took away.
-    A refusal is the registry reporting that someone chose a profile while
-    this restore was failing; that choice is newer than the state this token
-    describes, so it stands.
-    """
-    if not restore_model_pointer(token.pointer):
-        logger.debug("Model pointer moved during a failed restore; leaving the newer selection in place")
-
-
 def _reset_restore_history_state(history_state: dict) -> dict:
     """Deep copy of the live history captured before a reset deletes session files.
 
@@ -295,7 +273,7 @@ def cleanup_empty_session_dir_path(session_dir: Path | None, *, path_reused: boo
 
 
 def _delete_reset_session_files(session_dir: Path) -> None:
-    for filename in (SESSION_FILE_NAME, SESSION_BACKUP_FILE_NAME, SESSION_RECOVERY_FILE_NAME):
+    for filename in (SESSION_FILE_NAME, SESSION_BACKUP_FILE_NAME, SESSION_RECOVERY_FILE_NAME, BTW_FILE_NAME):
         path = session_dir / filename
         if path.exists():
             path.unlink()
@@ -387,6 +365,7 @@ class SessionLifecycle:
         trajectory_recorder: TrajectoryRecorder,
         workspace_change_tracker: WorkspaceChangeTracker,
         unregister_current_engine: Callable[[], None],
+        side_questions: SideQuestions,
     ) -> None:
         self._session = session
         self._current = current
@@ -405,6 +384,7 @@ class SessionLifecycle:
         self._trajectory_recorder = trajectory_recorder
         self._workspace_change_tracker = workspace_change_tracker
         self._unregister_current_engine = unregister_current_engine
+        self._side_questions = side_questions
 
     def reset_turn_runtime_after_session_shutdown(self) -> None:
         """Clear turn runtime state after shutdown has observed the old task."""
@@ -455,9 +435,15 @@ class SessionLifecycle:
         await self._trajectory_recorder.close(reason=TrajectoryRuntimeFinishReason.SESSION_SWITCH)
 
     def prepare(self, profile: AgentProfile | None) -> None:
-        """Seed the fallback profile used by session restores."""
+        """Seed the fallback profile used by session restores, and the agent new sessions start on.
+
+        Seeded here, where the launch profile is known, rather than by the first
+        start: with ``-s`` that start is a restore, whose agent is that
+        session's own.
+        """
         if profile is not None:
             self._session.agent_profile = profile
+            self._session.new_session_agent = profile.name
 
     async def start(
         self,
@@ -465,21 +451,30 @@ class SessionLifecycle:
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
-        """Build and install the agent from a profile under a lifecycle permit."""
+        """Build and install the agent from a profile under a lifecycle permit.
+
+        *session* is the session's own choices to build with (the installed
+        ones when None), committed with the build (``AgentLoader.stage``).
+        """
         if (
             self._permits.current_task_owns_rebuild_permit()
             or self._permits.current_task_owns_session_transition_permit()
         ):
-            await self._start_locked(profile, operation=operation, staged_loaded=staged_loaded, workspace=workspace)
+            await self._start_locked(
+                profile, operation=operation, staged_loaded=staged_loaded, session=session, workspace=workspace
+            )
             return
         token = self._permits.capture_control_token()
         permit = await self._permits.acquire_rebuild_permit(token)
         if isinstance(permit, lifecycle_permits.RebuildPermitDenied):
             raise RuntimeError(permit.message)
         try:
-            await self._start_locked(profile, operation=operation, staged_loaded=staged_loaded, workspace=workspace)
+            await self._start_locked(
+                profile, operation=operation, staged_loaded=staged_loaded, session=session, workspace=workspace
+            )
         finally:
             self._permits.release_rebuild_permit(permit)
 
@@ -489,12 +484,19 @@ class SessionLifecycle:
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         """Start the engine while the caller owns the rebuild boundary."""
         # Every session (fresh, restored, reset) starts here: re-arm the
         # once-per-session ``session_end`` hook fired by shutdown/delete.
         self._session.begin(agent_profile=profile, workspace=workspace)
+        if not self._session.new_session_agent and operation == "startup":
+            # A host that never named a launch profile (ACP, headless): the agent
+            # it starts on is the one new sessions go back to. Every other start
+            # runs on a session's agent (a restore's, a switch's, the live one a
+            # rebuild keeps), which never becomes the default.
+            self._session.new_session_agent = profile.name
         if self._session.session_id is None:
             raise RuntimeError("Session begin did not establish a session id.")
         staged_workspace = workspace if workspace is not None else self._session.workspace
@@ -554,7 +556,7 @@ class SessionLifecycle:
         trajectory_session_id = self._session.session_id
         trajectory_warning_tasks: set[asyncio.Task[None]] = set()
 
-        def _report_trajectory_activation_failure(_reason: str) -> None:
+        def _report_trajectory_activation_failure(reason: str) -> None:
             def _publish_warning() -> None:
                 task = event_loop.create_task(
                     self._bus.publish(
@@ -563,6 +565,7 @@ class SessionLifecycle:
                             message="Trajectory recording could not start and has been disabled for this session.",
                             display_message=_CONSTRUCTION_TRAJECTORY_ACTIVATION_FAILED.bind(),
                             session_id=trajectory_session_id,
+                            reason=reason,
                         )
                     )
                 )
@@ -588,6 +591,7 @@ class SessionLifecycle:
             profile,
             operation=operation,
             staged_loaded=staged_loaded,
+            session=session,
             workspace=staged_workspace,
             hook_manager=hook_manager,
             trajectory=trajectory,
@@ -601,11 +605,14 @@ class SessionLifecycle:
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         """Start using an already-acquired rebuild permit."""
         self._permits.ensure_rebuild_permit(permit)
-        await self.start(profile, operation=operation, staged_loaded=staged_loaded, workspace=workspace)
+        await self.start(
+            profile, operation=operation, staged_loaded=staged_loaded, session=session, workspace=workspace
+        )
 
     async def reload(
         self,
@@ -614,20 +621,25 @@ class SessionLifecycle:
         *,
         operation: str = "switch",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
     ) -> None:
         """Restart the agent with a new profile/workspace while preserving history."""
         if (
             self._permits.current_task_owns_rebuild_permit()
             or self._permits.current_task_owns_session_transition_permit()
         ):
-            await self._reload_locked(new_profile, workspace, operation=operation, staged_loaded=staged_loaded)
+            await self._reload_locked(
+                new_profile, workspace, operation=operation, staged_loaded=staged_loaded, session=session
+            )
             return
         token = self._permits.capture_control_token()
         permit = await self._permits.acquire_rebuild_permit(token)
         if isinstance(permit, lifecycle_permits.RebuildPermitDenied):
             raise RuntimeError(permit.message)
         try:
-            await self._reload_locked(new_profile, workspace, operation=operation, staged_loaded=staged_loaded)
+            await self._reload_locked(
+                new_profile, workspace, operation=operation, staged_loaded=staged_loaded, session=session
+            )
         finally:
             self._permits.release_rebuild_permit(permit)
 
@@ -638,9 +650,12 @@ class SessionLifecycle:
         *,
         operation: str = "switch",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
     ) -> None:
         """Soft-restart while the caller owns the rebuild boundary."""
-        await self._loader.reload(new_profile, workspace, operation=operation, staged_loaded=staged_loaded)
+        await self._loader.reload(
+            new_profile, workspace, operation=operation, staged_loaded=staged_loaded, session=session
+        )
 
     async def reload_with_rebuild_permit(
         self,
@@ -650,18 +665,73 @@ class SessionLifecycle:
         *,
         operation: str = "switch",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
     ) -> None:
         """Soft-restart using an already-acquired rebuild permit."""
         self._permits.ensure_rebuild_permit(permit)
-        await self.reload(new_profile, workspace=workspace, operation=operation, staged_loaded=staged_loaded)
+        await self.reload(
+            new_profile, workspace=workspace, operation=operation, staged_loaded=staged_loaded, session=session
+        )
 
     async def close_session(self) -> None:
-        """Close the session and release its lock, retaining process resources."""
-        await self._teardown(release_lock=True, close_mcp=False)
+        """Close the session and release its lock, retaining process resources.
 
-    async def close_session_in_place(self) -> None:
-        """Close the session while retaining its lock and process resources."""
-        await self._teardown(release_lock=False, close_mcp=False)
+        The session's own agent and model end with it (a new session, a clear, a
+        restore of another): the next start begins on the agent new sessions
+        start on and the default model. A shutdown leaves them, since nothing
+        starts on an engine after it. A teardown that raised before it released the runtime leaves the
+        session running on the build both were configured for, so both stay.
+        Closing in place (:meth:`close_session_in_place`) keeps them.
+        """
+        try:
+            await self._teardown(release_lock=True, close_mcp=False)
+        finally:
+            if self._current.loaded is None:
+                self._end_session_choice()
+
+    def _end_session_choice(self) -> None:
+        """Put the agent and model a new session starts on in force for whatever starts next.
+
+        Synchronous on purpose: it runs in ``finally`` blocks a cancel passes
+        through.
+        """
+        profile = self.new_session_profile()
+        if profile is not None:
+            self._session.agent_profile = profile
+        self._settings_handle.install_prepared(self._settings_handle.prepare(self._settings_handle.base, session={}))
+
+    def new_session_profile(self) -> AgentProfile | None:
+        """The agent a new session starts on, as the registry has it now; None when none was named.
+
+        ``ActiveSession.new_session_agent`` while it is still a main agent, else
+        the launch chain from the configured default agent
+        (:func:`resolve_launch_profile`). None while no agent was named (a host
+        that has not started yet, or started only by restoring a session):
+        callers keep the agent they have.
+        """
+        registry = self._agent_registry
+        name = self._session.new_session_agent
+        if registry is None or not name:
+            return None
+        kept = resolve_profile_selector(registry.list_profiles(), name)
+        return kept or resolve_launch_profile(registry, self._settings_handle.settings.default_agent)
+
+    def _restore_fallback_profile(self, *, restoring_current: bool) -> AgentProfile | None:
+        """The agent a restore uses when the saved one does not resolve.
+
+        The current one when restoring the current session; else the one new
+        sessions start on — never another session's own (a prompt shortcut's).
+        """
+        if restoring_current:
+            return self._session.agent_profile
+        return self.new_session_profile() or self._session.agent_profile
+
+    async def close_session_in_place(self, *, keep_side_answers: bool = False) -> None:
+        """Close the runtime while retaining its lock and process resources.
+
+        Restoring the same session keeps its side answers and queued saves, but stops running questions.
+        """
+        await self._teardown(release_lock=False, close_mcp=False, keep_side_answers=keep_side_answers)
 
     async def shutdown(self) -> None:
         """Close the session and process resources."""
@@ -673,9 +743,13 @@ class SessionLifecycle:
         if tasks is not None:
             await tasks.close()
 
-    async def _teardown(self, *, release_lock: bool, close_mcp: bool) -> None:
+    async def _teardown(self, *, release_lock: bool, close_mcp: bool, keep_side_answers: bool = False) -> None:
         """Gracefully shut down the engine."""
         self._session.mark_closing()
+        if keep_side_answers:
+            await self._side_questions.stop_running()
+        else:
+            await self._side_questions.quiesce()
         self._turn_state.shutdown_used_cancel_fallback = False
         suppress_trailing_save = False
         self._unregister_current_engine()
@@ -823,6 +897,15 @@ class SessionLifecycle:
             )
             return
 
+        # Side-question history reads may yield to a rebuild or a new turn.
+        # All fork admission checks below must observe the state after those waits.
+        has_side_questions = False
+        if (
+            event.session_id == self._session.session_id
+            and self._current.loaded is not None
+            and not self._fsm.is_running()
+        ):
+            has_side_questions = await self._side_questions.has_history()
         active_session_id = self._session.session_id
         state_store = self._persistence.state_store
         if active_session_id is None or self._current.loaded is None:
@@ -873,7 +956,7 @@ class SessionLifecycle:
                 display_message=_FORK_LOCK_NOT_OWNED.bind(),
             )
             return
-        if not has_real_messages(self._current.loaded.bindings.backend.history_state):
+        if not has_real_messages(self._current.loaded.bindings.backend.history_state) and not has_side_questions:
             await self._publish_session_fork_error(
                 "session_fork_empty",
                 "Cannot fork an empty session.",
@@ -903,7 +986,7 @@ class SessionLifecycle:
                 display_message=_FORK_PREPARE_FAILED.bind(detail=DisplayBlock(str(exc))),
             )
             return
-        if fresh_state is None or not has_real_messages(fresh_state):
+        if fresh_state is None or (not has_real_messages(fresh_state) and not has_side_questions):
             await self._publish_session_fork_error(
                 "session_fork_empty",
                 "Cannot fork an empty session.",
@@ -1022,23 +1105,8 @@ class SessionLifecycle:
         self._fsm.restore_terminal_state(failed=source == "error")
 
     def _session_pin_overrides(self) -> dict[str, Any]:
-        """Snapshot the per-session pins every re-load must carry.
-
-        Keep this contract in sync with the same-named implementation in
-        state/controls.py; changes to either implementation must update both.
-        Pins travel only while pinned, so an unpinned session picks up a changed
-        env value on its next load.
-        """
-        overrides: dict[str, Any] = {}
-        if self._session.ask_user_timeout_pinned:
-            overrides["ask_user_timeout_seconds"] = self._settings_handle.settings.ask_user_timeout_seconds
-        if self._session.model_profile_pinned:
-            overrides["model_profile"] = self._settings_handle.settings.model_profile
-            overrides["model_profile_override"] = self._settings_handle.settings.model_profile_override
-            overrides["model_profile_override_sub_agents"] = (
-                self._settings_handle.settings.model_profile_override_sub_agents
-            )
-        return overrides
+        """Snapshot the per-session pins every re-load must carry (:func:`session_pin_overrides`)."""
+        return session_pin_overrides(self._session, self._settings_handle.base.settings)
 
     def _reload_eval_context(self) -> EvalContext:
         """The launch mode's retry policy, passed *into* the load (as every re-load must)."""
@@ -1046,44 +1114,33 @@ class SessionLifecycle:
             frontend_default_max_transient_retries=self._settings_handle.settings.frontend_default_max_transient_retries
         )
 
-    def _reapply_saved_model_profile(
+    def _restored_session_choice(
         self,
         meta: ChatSessionMeta | None,
         profile: AgentProfile,
         staged_loaded: LoadedSettings,
-    ) -> tuple[LoadedSettings, _ModelRestoreRollbackToken | None]:
-        """Apply a selectable saved model when the restored agent has no live binding.
+    ) -> dict[str, Any]:
+        """The restored session's own choices: its saved model, when selectable and not bound by its agent.
 
-        Transforms the staged load rather than installing anything: the selection
-        goes live with the build's commit, exactly when the executor built from it
-        does. Only the process pointer is written eagerly (§7: an intended fork,
-        other hosts do see it) — but as SESSION, never ENV: the panel must not
-        claim the shell exported what this restore wrote. The rollback token
-        carries that one eager write, plus the executor identity that tells a
-        pre-commit failure from a post-commit one.
+        Its own, not the default: the selection rides the settings handle's
+        session layer, goes live with the build's commit and ends when the
+        session closes, so restoring a session never changes the model new
+        sessions start on. Restoring the current session keeps the choice it
+        has, and a saved model already in force adds nothing.
         """
+        current = self._settings_handle.session_values
         registry = self._model_registry
         if meta is None or not meta.model_profile_id or registry is None:
-            return staged_loaded, None
+            return current
         saved = registry.get(meta.model_profile_id)
         if saved is None or not is_model_profile_selectable(saved):
-            return staged_loaded, None
-
+            return current
         bound_profile_id = profile.model.profile_id
         if bound_profile_id and registry.get(bound_profile_id) is not None:
-            return staged_loaded, None
-        if saved.id == staged_loaded.settings.model_profile:
-            return staged_loaded, None
-
-        token = _ModelRestoreRollbackToken(
-            conversation=self._current.loaded.bindings.backend if self._current.loaded is not None else None,
-            pointer=set_model_pointer(saved.id, origin=SettingOrigin(layer=Source.SESSION)),
-        )
-        # Through the overlay, and as the whole selection, not one field of it.
-        # Setting only ``model_profile`` would leave the previous session's pin in
-        # ``model_profile_override``, which outranks it — the restore would claim
-        # the saved model and resolve the old session's.
-        return loaded_with_active_model_profile(staged_loaded, saved, Source.SESSION), token
+            return current
+        if saved.id == self._settings_handle.prepare(staged_loaded, session=current).effective.settings.model_profile:
+            return current
+        return {**current, **active_model_profile_fields(saved)}
 
     async def reset_after_failed_startup_restore(self) -> None:
         """Discard every partially installed restore field before fresh startup.
@@ -1102,13 +1159,18 @@ class SessionLifecycle:
                 self.reset_turn_runtime_after_session_shutdown()
                 self._session.workspace = None
                 self.reset_for_restart(None)
+                # The fallback start is a new session whatever the teardown got through. A
+                # teardown that raised before releasing the runtime leaves it running on the
+                # session's model meanwhile, under settings that name the default: the
+                # fallback start's build replaces it.
+                self._end_session_choice()
         # Fallback startup runs in the process cwd, not the failed target's root,
         # so the settings the next build reads must be re-derived for that root —
         # whatever the failed restore left installed described the wrong project
         # trust domain. Best-effort: the reset must never mask the original
         # failure, and the live settings remain a usable baseline without it.
         try:
-            old_loaded = self._settings_handle.loaded
+            old_loaded = self._settings_handle.base
             candidate = await asyncio.to_thread(
                 load_settings,
                 project_root=Path(safe_getcwd()),
@@ -1317,8 +1379,10 @@ class SessionLifecycle:
             self._permits.finish_session_transition(transition_owner)
 
     async def _start_fresh_session(self, profile: AgentProfile) -> None:
-        """Shut the current session down and start an empty one under *profile*.
+        """Shut the current session down and start an empty one on the agent new sessions start on.
 
+        *profile*, the live agent, is used only when none resolves: closing the
+        session puts the new-session agent in force (:meth:`close_session`).
         Callers hold a COMMITTED session transition (``_begin_session_transition``
         or prepare + ``_commit_session_transition``); the shutdown here relies on
         the fence to have already invalidated the old session's turn state.
@@ -1327,7 +1391,7 @@ class SessionLifecycle:
         self.reset_turn_runtime_after_session_shutdown()
         self.cleanup_empty_session_dir()
         self.reset_for_restart(None)
-        await self.start(profile, operation="new_session")
+        await self.start(self._session.agent_profile or profile, operation="new_session")
 
     async def on_session_clear(self, event: SessionClear) -> None:
         """Delete the ACTIVE session and start a fresh one as one fenced transition.
@@ -1519,15 +1583,16 @@ class SessionLifecycle:
                         return
                     unresolved_saved_identity = bool(saved_profile_id)
                     saved_display = (meta.agent_display_name if meta else "") or saved_profile_name or saved_profile_id
-                    if self._session.agent_profile is not None:
-                        profile_name = self._session.agent_profile.name
+                    fallback_profile = self._restore_fallback_profile(restoring_current=restoring_current)
+                    if fallback_profile is not None:
+                        profile_name = fallback_profile.name
                         logger.warning(
                             "Agent profile '%s' not found, keeping current profile '%s'",
                             saved_profile_name,
                             profile_name,
                         )
                         if unresolved_saved_identity:
-                            current_display = self._session.agent_profile.display_name or profile_name
+                            current_display = fallback_profile.display_name or profile_name
                             profile_resolution_warning = Warning(
                                 code="saved_agent_profile_unresolved",
                                 message=(
@@ -1613,7 +1678,7 @@ class SessionLifecycle:
             # them, exactly as a workspace change would. Loaded here — before
             # anything is torn down — so an unreadable config file aborts the
             # restore with the current session intact.
-            old_loaded = self._settings_handle.loaded
+            old_loaded = self._settings_handle.base
             candidate = await asyncio.to_thread(
                 load_settings,
                 project_root=Path(target_cwd),
@@ -1622,13 +1687,15 @@ class SessionLifecycle:
             )
             staged_loaded, _ = route_restart_settings(reattribute_command_line(candidate, old_loaded), old_loaded)
             if profile is None:
-                profile = self._session.agent_profile
+                # Sampled after the transition fence, like the live agent was:
+                # a switch that won the gate meanwhile is the one in force.
+                profile = self._restore_fallback_profile(restoring_current=restoring_current)
                 if not profile_name and profile is not None:
                     profile_name = profile.name
             if transition_owner is not None:
                 self._permits.commit_session_transition(transition_owner)
             if restoring_current:
-                await self.close_session_in_place()
+                await self.close_session_in_place(keep_side_answers=True)
             else:
                 await self.close_session()
             self.reset_turn_runtime_after_session_shutdown()
@@ -1734,19 +1801,12 @@ class SessionLifecycle:
         self._session.runtime_meta = SessionRuntimeMetadata.from_state_dict(state)
 
         if profile is not None:
-            rollback_token = None
-            if event.apply_saved_model:
-                staged_loaded, rollback_token = self._reapply_saved_model_profile(meta, profile, staged_loaded)
-            try:
-                await self.start(profile, operation="restore", staged_loaded=staged_loaded)
-            except BaseException:
-                if (
-                    rollback_token is not None
-                    and (self._current.loaded.bindings.backend if self._current.loaded is not None else None)
-                    is rollback_token.conversation
-                ):
-                    _rollback_reapplied_model_profile(rollback_token)
-                raise
+            session = (
+                self._restored_session_choice(meta, profile, staged_loaded)
+                if event.apply_saved_model
+                else self._settings_handle.session_values
+            )
+            await self.start(profile, operation="restore", staged_loaded=staged_loaded, session=session)
             if profile_switch is not None and self._current.loaded is not None:
                 self._current.loaded.reminder_middleware.sources.profile_switch.set_profile_switch(*profile_switch)
         else:
@@ -1984,6 +2044,7 @@ class SessionLifecycle:
         if release_current_lock:
             from chrys.foundation.observability.sink import get_otel_sink
 
+            await self._side_questions.quiesce()
             # Deleting the live session is its end: fire ``session_end`` now and
             # wait for it (async hooks included), while the id and the files still
             # exist, so hooks keep the "before teardown" contract; the shutdown

@@ -154,7 +154,7 @@ tools:
         Authorization: "Bearer {{MCP_API_TOKEN}}"
 ```
 
-`env` 和 `headers` 都是键值映射：左侧填写变量名或请求头名称，右侧填写对应的值。值可以直接填写，也可以用 `{{ENV_VAR}}` 引用启动 iCode 前已设置的环境变量。`env` 中引用的变量缺失或为空时，服务器连接失败；`headers` 仅在 `resolve_header_templates` 为 `true` 时解析变量并应用这一规则。
+`env` 和 `headers` 都是键值映射：左侧填写变量名或请求头名称，右侧填写对应的值。值可以直接填写，也可以用 `{{ENV_VAR}}` 引用启动 iCode 前已设置的环境变量，或用 `{{!command}}` 使用命令输出的内容（参阅[通过命令获取 API 密钥](../guides/configuration/models.md#通过命令获取-api-密钥)）。`env` 中引用的变量缺失或为空，或者命令第一次就失败时，服务器连接失败；`headers` 仅在 `resolve_header_templates` 为 `true` 时解析占位符并应用这一规则。
 
 | 字段 | 类型 | 默认值 | 适用范围 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -176,7 +176,7 @@ tools:
 | `encoding` | 字符串或 `null` | `null` | STDIO | 服务器标准输入输出编码；通常留空。 |
 | `url` | 字符串 | 空 | HTTP | 以 `http://` 或 `https://` 开头的服务器 URL。 |
 | `headers` | 字符串对象 | `{}` | HTTP | HTTP 请求头。 |
-| `resolve_header_templates` | 布尔值 | `true` | HTTP | 是否解析请求头值中的 `{{ENV_VAR}}`。设为 `false` 时按字面发送。 |
+| `resolve_header_templates` | 布尔值 | `true` | HTTP | 是否解析请求头值中的 `{{ENV_VAR}}` 和 `{{!command}}`。设为 `false` 时按字面发送。 |
 | `verify_ssl` | 布尔值 | `true` | HTTP | 是否验证 HTTPS 证书。关闭会降低连接安全性。 |
 | `bypass_proxy` | 布尔值 | `false` | HTTP | 是否绕过环境变量配置的 HTTP/HTTPS 代理，直接连接服务器。 |
 | `terminate_on_close` | 布尔值或 `null` | `null` | HTTP | 关闭连接时是否请求终止远程会话；`null` 使用默认值 `true`。 |
@@ -273,7 +273,7 @@ tools:
 
 | 字段 | 适用于 | 说明 |
 | --- | --- | --- |
-| `type` | 全部 | 必填。无需密钥的服务为 `exa_mcp`、`bing_html` 或 `duckduckgo_html`；需要密钥的搜索 API 为 `tavily`、`brave` 或 `exa`；自己的端点为 `custom_http`。 |
+| `type` | 全部 | 必填。无需密钥的服务为 `exa_mcp`、`bing_html`、`duckduckgo_html` 或 `keenable`；需要密钥的搜索 API 为 `tavily`、`brave` 或 `exa`；自己的端点为 `custom_http`。 |
 | `api_key_env` | `tavily`、`brave`、`exa` | 必填。保存 API 密钥的环境变量名。这些类型不接受其他字段。 |
 | `preset` | `custom_http` | `searxng` 或 `serpapi`，为对应服务自动填写请求和响应映射；`serpapi` 还会设置 `endpoint` 和 `auth`。自己填写的字段优先。 |
 | `endpoint` | `custom_http` | 搜索端点 URL。还需在用户设置 `tools.web_search.custom_endpoints` 中授权该端点及其读取的每个环境变量。 |
@@ -283,7 +283,7 @@ tools:
 | `request` | `custom_http` | `query_params`，以及 `POST` 时的 `json`。写成 `{$input: query}`、`{$input: limit}`、`{$input: allowed_domains}` 或 `{$input: blocked_domains}` 的值会替换为对应的搜索参数，`{$env: NAME}` 会替换为环境变量。 |
 | `response` | `custom_http` | 指向响应内容的 JSON Pointer：`results_pointer` 和 `url_pointer`（未使用预设时必填），以及可选的 `title_pointer` 和 `snippet_pointer`。 |
 
-`exa_mcp`、`bing_html` 和 `duckduckgo_html` 只接受 `type` 字段。
+`exa_mcp`、`bing_html`、`duckduckgo_html` 和 `keenable` 只接受 `type` 字段。
 
 DeepSeek Search API 的完整 `custom_http` 示例见[配置网络工具](../guides/configuration/web-tools.md#deepseek-search-api)。DeepSeek 服务端 `web_search` 的支持模型和计费以 DeepSeek 官方文档为准。
 
@@ -549,4 +549,4 @@ acp:
 
 **`allow_external_cwd` 的目录范围**：如果 iCode 会话由 ACP 客户端创建，且客户端提供了附加工作目录，那么即使 `allow_external_cwd` 为 `false`，外部智能体也可以在这些目录及其子目录中运行。
 
-`command`、`args`、`env` 的值和 `cwd` 可以使用 `{{ENV_VAR}}` 引用 iCode 进程的环境变量。缺失或为空的变量会导致启动失败。连接测试、工作目录安全边界和配置项应用方式参阅[配置外部 ACP 智能体](../guides/extensions/external-acp-agents.md)。
+`command`、`args`、`env` 的值和 `cwd` 可以使用 `{{ENV_VAR}}` 引用 iCode 进程的环境变量。缺失或为空的变量会导致启动失败。`args` 和 `env` 的值还可以使用 `{{!command}}`，每次启动外部智能体时都会运行命令；`command` 和 `cwd` 不能使用。连接测试、工作目录安全边界和配置项应用方式参阅[配置外部 ACP 智能体](../guides/extensions/external-acp-agents.md)。

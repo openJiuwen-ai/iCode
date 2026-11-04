@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import threading
@@ -15,6 +16,9 @@ from typing import Any
 
 import pytest
 
+from chrys.foundation import platform as platform_module
+from chrys.foundation.platform import get_platform
+from chrys.foundation.platform.files import SecureFileError
 from chrys.foundation.trajectory import writer as writer_module
 from chrys.foundation.trajectory.context import TrajectoryContext
 from chrys.foundation.trajectory.envelope import (
@@ -45,6 +49,7 @@ from chrys.service.trajectory.session import (
     trajectory_lease_path,
 )
 from tests.support.secure_files import plant_owner_only_bytes
+from tests.support.symlinks import symlink_or_skip
 from tests.support.trajectory_invariants import assert_trajectory_accounted
 from tests.support.waiting import DEFAULT_WAIT_TIMEOUT as WAIT_TIMEOUT
 from tests.support.waiting import wait_until
@@ -112,7 +117,8 @@ async def test_no_session_dir_is_disabled_without_touching_the_filesystem(
     tmp_path: Path, make_trajectory: TrajectoryFactory
 ) -> None:
     config_dir = tmp_path / "config"
-    trajectory = make_trajectory(None, config_dir=config_dir)
+    reports: list[str] = []
+    trajectory = make_trajectory(None, config_dir=config_dir, on_activation_failed=reports.append)
     assert trajectory.session_dir is None
     assert trajectory.is_active is False
     assert trajectory.disabled_reason is None  # activation is lazy: nothing decided yet
@@ -145,6 +151,8 @@ async def test_no_session_dir_is_disabled_without_touching_the_filesystem(
     assert await trajectory.close(reason=RuntimeFinishReason.GRACEFUL_SHUTDOWN) is True
     assert trajectory.is_closed
     assert trajectory.disabled_reason == TrajectoryDisabledReason.NO_SESSION_DIR
+    # Nothing to record into is how such a session is meant to run, not a failure to report.
+    assert reports == []
 
 
 async def test_close_before_activation_disables_with_closed_reason(
@@ -152,20 +160,24 @@ async def test_close_before_activation_disables_with_closed_reason(
 ) -> None:
     session_dir = tmp_path / "session"
     session_dir.mkdir()
-    trajectory = make_trajectory(session_dir)
+    reports: list[str] = []
+    trajectory = make_trajectory(session_dir, on_activation_failed=reports.append)
     assert await trajectory.close(reason=RuntimeFinishReason.SESSION_SWITCH) is True
     assert trajectory.is_closed
     assert trajectory.disabled_reason == TrajectoryDisabledReason.CLOSED
     assert await trajectory.emit(_draft(1)) is EmitResult.DEGRADED
+    assert reports == []
     assert not trajectory_dir(session_dir).exists()
 
 
 async def test_activation_failure_disables_and_never_raises(tmp_path: Path, make_trajectory: TrajectoryFactory) -> None:
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("file in the way")
-    trajectory = make_trajectory(blocker / "session")
+    reports: list[str] = []
+    trajectory = make_trajectory(blocker / "session", on_activation_failed=reports.append)
     assert await trajectory.emit(_draft(1)) is EmitResult.DEGRADED
     assert trajectory.disabled_reason == TrajectoryDisabledReason.ACTIVATION_FAILED
+    assert reports == [TrajectoryDisabledReason.ACTIVATION_FAILED]
     assert trajectory.is_active is False
     assert trajectory.writer is None
 
@@ -175,13 +187,107 @@ async def test_unusable_key_disables_and_releases_the_lease(tmp_path: Path, make
     session_dir.mkdir()
     config_path = tmp_path / "config-is-a-file"
     config_path.write_text("")
-    trajectory = make_trajectory(session_dir, config_dir=config_path)
+    reports: list[str] = []
+    trajectory = make_trajectory(session_dir, config_dir=config_path, on_activation_failed=reports.append)
     assert await trajectory.emit(_draft(1)) is EmitResult.DEGRADED
     assert trajectory.disabled_reason == TrajectoryDisabledReason.KEY_UNAVAILABLE
+    assert await trajectory.emit(_draft(2)) is EmitResult.DEGRADED
+    assert reports == [TrajectoryDisabledReason.KEY_UNAVAILABLE]
     assert trajectory.fingerprint_key is None
     assert not trajectory_events_path(session_dir).exists()
     # The lease taken before the key was loaded is given back on disable.
     assert WriterLease.is_held_elsewhere(trajectory_lease_path(session_dir)) is False
+
+
+def _log_readable_by_others(session_dir: Path) -> None:
+    if get_platform().is_windows:
+        pytest.skip("POSIX mode bits")
+    trajectory_dir(session_dir).mkdir()
+    plant_owner_only_bytes(trajectory_events_path(session_dir), b"")
+    trajectory_events_path(session_dir).chmod(0o644)
+
+
+def _log_is_a_link(session_dir: Path) -> None:
+    trajectory_dir(session_dir).mkdir()
+    elsewhere = session_dir.parent / "elsewhere.jsonl"
+    plant_owner_only_bytes(elsewhere, b"")
+    symlink_or_skip(trajectory_events_path(session_dir), elsewhere)
+
+
+def _trajectory_folder_is_a_link(session_dir: Path) -> None:
+    elsewhere = session_dir.parent / "elsewhere"
+    elsewhere.mkdir()
+    symlink_or_skip(trajectory_dir(session_dir), elsewhere, target_is_directory=True)
+
+
+def _trajectory_folder_is_a_dangling_link(session_dir: Path) -> None:
+    symlink_or_skip(trajectory_dir(session_dir), session_dir.parent / "missing", target_is_directory=True)
+
+
+def _session_folder_is_read_only(session_dir: Path) -> None:
+    if get_platform().is_windows or os.geteuid() == 0:
+        pytest.skip("POSIX mode bits, which root ignores")
+    session_dir.chmod(0o500)
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        _log_readable_by_others,
+        _log_is_a_link,
+        _trajectory_folder_is_a_link,
+        _trajectory_folder_is_a_dangling_link,
+        _session_folder_is_read_only,
+    ],
+    ids=[
+        "log-readable-by-others",
+        "log-is-a-link",
+        "trajectory-folder-is-a-link",
+        "trajectory-folder-is-a-dangling-link",
+        "session-folder-is-read-only",
+    ],
+)
+async def test_files_that_refuse_this_user_are_reported_as_permission(
+    tmp_path: Path, make_trajectory: TrajectoryFactory, prepare: Callable[[Path], None]
+) -> None:
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    prepare(session_dir)
+    reports: list[str] = []
+    trajectory = make_trajectory(session_dir, on_activation_failed=reports.append)
+    try:
+        assert await trajectory.emit(_draft(1)) is EmitResult.DEGRADED
+        assert await trajectory.emit(_draft(2)) is EmitResult.DEGRADED
+    finally:
+        session_dir.chmod(0o700)
+    assert trajectory.disabled_reason == TrajectoryDisabledReason.PERMISSION
+    assert reports == [TrajectoryDisabledReason.PERMISSION]
+    assert trajectory.writer is None
+
+
+@pytest.mark.parametrize(
+    ("windows", "error", "reason"),
+    [
+        (False, SecureFileError("Secure file is not owned by the current user."), "permission"),
+        (False, SecureFileError(errno.EROFS, "Unable to open owner-only append file."), "permission"),
+        (False, SecureFileError(errno.EMFILE, "Unable to open owner-only append file."), "activation_failed"),
+        (False, OSError(errno.ENOSPC, "No space left on device"), "activation_failed"),
+        (False, TimeoutError(), "activation_failed"),
+        (True, SecureFileError("Secure file is not owned by the current Windows user."), "permission"),
+        (True, SecureFileError(5, "Unable to open owner-only Windows file."), "permission"),
+        # ERROR_WRITE_PROTECT: a read-only volume.
+        (True, SecureFileError(19, "Unable to open owner-only Windows file."), "permission"),
+        # ERROR_NETWORK_ACCESS_DENIED: a share that refuses this user.
+        (True, SecureFileError(65, "Unable to open owner-only Windows file."), "permission"),
+        # Win32 ERROR_INVALID_DATA shares its number with POSIX EACCES.
+        (True, SecureFileError(13, "Unable to open owner-only Windows file."), "activation_failed"),
+    ],
+)
+def test_an_activation_error_names_permission_only_when_the_files_refused_this_user(
+    monkeypatch: pytest.MonkeyPatch, windows: bool, error: Exception, reason: str
+) -> None:
+    monkeypatch.setattr(platform_module, "get_platform", lambda: SimpleNamespace(is_windows=windows))
+    assert session_module._activation_failure_reason(error) == reason
 
 
 # ---------------------------------------------------------------- activation
@@ -734,9 +840,11 @@ async def test_a_log_written_by_a_newer_schema_is_left_alone(
         handle.write(b'{"schema_version":2,"event_id":"torn')
     raw = path.read_bytes()
 
-    second = make_trajectory(session_dir)
+    reports: list[str] = []
+    second = make_trajectory(session_dir, on_activation_failed=reports.append)
     assert await second.emit(_draft(2)) is EmitResult.DEGRADED
     assert second.disabled_reason == TrajectoryDisabledReason.SCHEMA_TOO_NEW
+    assert reports == [TrajectoryDisabledReason.SCHEMA_TOO_NEW]
     assert second.is_active is False
     assert second.writer is None
     # Not even the torn bytes: a file this build will not write to is one it does not touch.
@@ -762,9 +870,11 @@ async def test_a_log_ending_in_a_line_that_names_no_slot_is_left_alone(
         handle.write(b'{"schema_version":2,"event_id":"torn')
     raw = path.read_bytes()
 
-    second = make_trajectory(session_dir)
+    reports: list[str] = []
+    second = make_trajectory(session_dir, on_activation_failed=reports.append)
     assert await second.emit(_draft(2)) is EmitResult.DEGRADED
     assert second.disabled_reason == TrajectoryDisabledReason.UNREADABLE_TAIL
+    assert reports == [TrajectoryDisabledReason.UNREADABLE_TAIL]
     assert second.is_active is False
     assert second.writer is None
     # Appending here would reuse whatever slot that line took, so nothing is
@@ -793,9 +903,11 @@ async def test_a_log_that_has_spent_every_sequence_it_can_encode_is_left_alone(
         handle.write(b'{"schema_version":2,"event_id":"torn')
     raw = path.read_bytes()
 
-    second = make_trajectory(session_dir)
+    reports: list[str] = []
+    second = make_trajectory(session_dir, on_activation_failed=reports.append)
     assert await second.emit(_draft(2)) is EmitResult.DEGRADED
     assert second.disabled_reason == TrajectoryDisabledReason.SEQUENCE_EXHAUSTED
+    assert reports == [TrajectoryDisabledReason.SEQUENCE_EXHAUSTED]
     assert second.is_active is False
     assert second.writer is None
     # A gap is encoded past the check that refuses an out-of-range event, so
@@ -1172,9 +1284,11 @@ async def test_second_live_recorder_is_disabled_while_the_lease_is_held(
     await first.emit(_draft(1))
     raw = trajectory_events_path(session_dir).read_bytes()
 
-    second = make_trajectory(session_dir)
+    reports: list[str] = []
+    second = make_trajectory(session_dir, on_activation_failed=reports.append)
     assert await second.emit(_draft(2)) is EmitResult.DEGRADED
     assert second.disabled_reason == TrajectoryDisabledReason.LEASE_HELD
+    assert reports == [TrajectoryDisabledReason.LEASE_HELD]
     assert second.is_active is False
     assert second.writer is None
     assert second.runtime_id is None

@@ -10,9 +10,11 @@ import pytest
 from acp.helpers import audio_block, image_block, resource_block, resource_link_block, text_block
 from acp.schema import BlobResourceContents, TextResourceContents
 
+from chrys.app.acp import content as content_module
 from chrys.app.acp.content import AcpContentError, convert_prompt_blocks
-from chrys.orchestration.engine.run.attachments import MAX_IMAGE_BYTES
-from tests.support.images import image_bytes
+from chrys.app.cli import acp as acp_cli
+from chrys.foundation.text.images import MAX_IMAGE_BYTES, inspect_image_dimensions
+from tests.support.images import image_bytes, noisy_image_bytes
 
 
 def test_convert_prompt_blocks_keeps_plain_text_as_normal_user_text() -> None:
@@ -58,11 +60,63 @@ def test_convert_prompt_blocks_rejects_images_when_vision_disabled() -> None:
         convert_prompt_blocks([image_block(data, "image/png")], vision_enabled=False)
 
 
-def test_convert_prompt_blocks_rejects_oversized_images() -> None:
-    data = base64.b64encode(b"x" * (MAX_IMAGE_BYTES + 1)).decode("ascii")
+def test_convert_prompt_blocks_compresses_images_over_the_send_limit() -> None:
+    source = noisy_image_bytes("PNG")
+    assert len(source) > MAX_IMAGE_BYTES
 
-    with pytest.raises(AcpContentError, match="exceeds"):
+    converted = convert_prompt_blocks(
+        [image_block(base64.b64encode(source).decode("ascii"), "image/png")], vision_enabled=True
+    )
+
+    assert converted.message.prepared_contents is not None
+    image = converted.message.prepared_contents[-1]
+    assert image.media_type == "image/jpeg"
+    data = base64.b64decode(image.uri.split(",", 1)[1])
+    assert data.startswith(b"\xff\xd8\xff")
+    assert len(data) <= MAX_IMAGE_BYTES
+    assert inspect_image_dimensions(data) == (640, 480)
+
+
+def test_convert_prompt_blocks_keeps_images_within_the_send_limit_as_sent() -> None:
+    source = image_bytes("PNG", size=(64, 48))
+
+    converted = convert_prompt_blocks(
+        [image_block(base64.b64encode(source).decode("ascii"), "image/png")], vision_enabled=True
+    )
+
+    assert converted.message.prepared_contents is not None
+    image = converted.message.prepared_contents[-1]
+    assert image.media_type == "image/png"
+    assert base64.b64decode(image.uri.split(",", 1)[1]) == source
+
+
+def test_convert_prompt_blocks_rejects_images_it_cannot_compress() -> None:
+    # A PNG signature in front of bytes no decoder reads.
+    data = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * MAX_IMAGE_BYTES).decode("ascii")
+
+    with pytest.raises(AcpContentError, match="could not be read as a supported image"):
         convert_prompt_blocks([image_block(data, "image/png")], vision_enabled=True)
+
+
+def test_convert_prompt_blocks_rejects_base64_over_the_source_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(content_module, "_MAX_BASE64_IMAGE_CHARS", 8)
+    data = base64.b64encode(image_bytes("PNG")).decode("ascii")
+
+    with pytest.raises(AcpContentError, match=r"exceeds the 32\.0 MB limit"):
+        convert_prompt_blocks([image_block(data, "image/png")], vision_enabled=True)
+
+
+def test_the_largest_prompt_image_fits_the_line_the_server_reads_a_message_as() -> None:
+    # With room left for the rest of the prompt: a longer line ends the connection.
+    assert content_module._MAX_BASE64_IMAGE_CHARS + 4 * 1024 * 1024 <= acp_cli.DEFAULT_STDIO_BUFFER_LIMIT_BYTES
+
+
+def test_convert_prompt_blocks_rejects_images_over_the_source_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = image_bytes("PNG")
+    monkeypatch.setattr(content_module, "MAX_ACP_IMAGE_BYTES", len(source) - 1)
+
+    with pytest.raises(AcpContentError, match="exceeds the"):
+        convert_prompt_blocks([image_block(base64.b64encode(source).decode("ascii"), "image/png")], vision_enabled=True)
 
 
 def test_convert_prompt_blocks_rejects_audio() -> None:

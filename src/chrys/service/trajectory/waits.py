@@ -4,9 +4,10 @@
 
 Approvals, retries and hook runs are already wait nodes on the timeline and
 never get a ``wait.*`` twin. This module records user input, MCP connection
-setup, input-admission gates, tool-admission lock acquisition, and a hook's
+setup, input-admission gates, tool-admission lock acquisition, a hook's
 ``ask`` waiting for the user (``hook_confirmation``, whose finish adds the
-``result`` and ``end_reason`` codes). Categories
+``result`` and ``end_reason`` codes), and a message's prompt-shortcut commands
+running before its turn (``prompt_commands``). Categories
 remain an open payload domain; declared categories need not have producers.
 """
 

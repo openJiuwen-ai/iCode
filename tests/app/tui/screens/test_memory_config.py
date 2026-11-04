@@ -17,7 +17,7 @@ from textual.widgets import Button, Checkbox, Input, Label, Static
 
 from chrys.app.tui.screens.agents.panels import memory as memory_module
 from chrys.app.tui.screens.agents.panels.memory import MemoryConfigPanel, MemoryFileCard, MemoryFolderCard
-from chrys.app.tui.screens.agents.panels.path_entry import PathEntryCard
+from chrys.app.tui.widgets.path_entry import PathEntryCard
 from chrys.service.profiles.agents.schema import MemoryConfig
 from tests.support.paths import deny_path_probes
 from tests.support.waiting import wait_for

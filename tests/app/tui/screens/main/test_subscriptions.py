@@ -46,6 +46,8 @@ async def test_subscribe_all_registers_each_handler_once() -> None:
         sessions=sessions,  # type: ignore[arg-type]
         rollback_result_handler=_rollback_handler,
         execution_handler=_rollback_handler,
+        prompt_commands_running_handler=_rollback_handler,
+        prompt_commands_ended_handler=_rollback_handler,
     )
 
     await subscriptions.subscribe_all()
@@ -78,6 +80,8 @@ async def test_unsubscribe_all_is_idempotent_and_remount_does_not_duplicate_hand
         sessions=sessions,  # type: ignore[arg-type]
         rollback_result_handler=_rollback_handler,
         execution_handler=_rollback_handler,
+        prompt_commands_running_handler=_rollback_handler,
+        prompt_commands_ended_handler=_rollback_handler,
     )
 
     await subscriptions.subscribe_all()
@@ -120,6 +124,8 @@ async def test_tui_routes_child_prose_activity_and_control() -> None:
         sessions=_Handlers(),  # type: ignore[arg-type]
         rollback_result_handler=_rollback_handler,
         execution_handler=_rollback_handler,
+        prompt_commands_running_handler=_rollback_handler,
+        prompt_commands_ended_handler=_rollback_handler,
     )
     routes = {
         InvocationMessage: "on_agent_message",

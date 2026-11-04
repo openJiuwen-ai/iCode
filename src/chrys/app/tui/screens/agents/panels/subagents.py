@@ -16,7 +16,6 @@ from textual.css.query import NoMatches
 from textual.widgets import Button, Label
 
 from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.screens.agents.panels.config_card import ConfigCard
 from chrys.app.tui.screens.agents.validation_messages import (
     CONTEXT_ERROR,
     DUPLICATE_SUB_AGENT_PROFILE,
@@ -34,6 +33,7 @@ from chrys.app.tui.screens.agents.validation_messages import (
 )
 from chrys.app.tui.widgets import ConfigAddButton, EnhancedTextArea, HatchedEmptyState, Select
 from chrys.app.tui.widgets import EnhancedInput as Input
+from chrys.app.tui.widgets.config_card import ConfigCard
 from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
 from chrys.service.profiles.agents.schema import DEFAULT_SUB_AGENT_CONCURRENCY
 

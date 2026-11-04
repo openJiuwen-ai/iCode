@@ -64,7 +64,7 @@ async def test_completed_turns_fold_without_global_restyle_or_recompose(tmp_path
         blocks = list(panel.query(ProcessBlock))
         assert len(blocks) == _TURNS
         assert all(block.collapsed for block in blocks)
-        assert {rich_plain(block.render()) for block in blocks} == {"▸ 1 tool call · 1 read"}
+        assert {rich_plain(block.render()) for block in blocks} == {"▸ 1 tool call: 1 read"}
         assert all(block not in main.focus_chain for block in blocks)
         input_bar = main.query_one(InputBar)
         input_bar.focus_input()

@@ -609,13 +609,19 @@ def test_the_windows_helper_renames_then_deletes_its_targets(tmp_path: Path) -> 
     other_app.mkdir()
     home = tmp_path / "home"
     home.mkdir()
-    encoded = base64.b64encode(uninstaller._DEFERRED_REMOVAL.encode("utf-16-le")).decode("ascii")
+    # Only the shell's own modules, so looking up a command reads none of the machine's others.
+    command = "$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')\n" + uninstaller._DEFERRED_REMOVAL
+    encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
     env = {
         **os.environ,
         "HOME": str(home),
         "USERPROFILE": str(home),
         "APPDATA": str(home / "Roaming"),
         "LOCALAPPDATA": str(home / "Local"),
+        # Where pwsh keeps its user modules, settings and cache off Windows.
+        "XDG_DATA_HOME": str(home / "data"),
+        "XDG_CONFIG_HOME": str(home / "config"),
+        "XDG_CACHE_HOME": str(home / "cache"),
         # pwsh otherwise reports its start and looks for updates over the network.
         "POWERSHELL_TELEMETRY_OPTOUT": "1",
         "POWERSHELL_UPDATECHECK": "Off",

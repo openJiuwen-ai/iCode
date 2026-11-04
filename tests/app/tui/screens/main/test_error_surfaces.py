@@ -25,6 +25,8 @@ from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
     GcAbsorbRequested,
 )
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
+from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import (
@@ -915,12 +917,21 @@ class _RestorableDraftFake:
     """
 
     value = ""
+    draft_owner: ShortcutIntent | None = None
 
-    def restore_draft(self, text: str) -> bool:
+    def restore_draft(self, draft: str | ChatDraft) -> bool:
+        text = draft.text if isinstance(draft, ChatDraft) else draft
         if not text or self.value:
             return False
         self.value = text
         return True
+
+    def replace_draft(self, text: str) -> None:
+        self.value = text
+
+    def set_draft(self, draft: ChatDraft) -> None:
+        self.value = draft.text
+        self.draft_owner = draft.owner
 
 
 @dataclass

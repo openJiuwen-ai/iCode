@@ -114,7 +114,7 @@ def format_available_profile_labels(registry: ModelProfileRegistry) -> str:
 
 def settings_with_active_model_profile(settings: Settings, profile: ModelProfile) -> Settings:
     """Return ``settings`` with the active fallback model profile set to ``profile``."""
-    return replace(settings, **_active_model_profile_fields(profile))
+    return replace(settings, **active_model_profile_fields(profile))
 
 
 def loaded_with_active_model_profile(loaded: LoadedSettings, profile: ModelProfile, layer: Source) -> LoadedSettings:
@@ -124,11 +124,16 @@ def loaded_with_active_model_profile(loaded: LoadedSettings, profile: ModelProfi
     the panel has to be able to tell them apart; both used to arrive as an
     anonymous ``replace()`` and read back as whatever the file layers had said.
     """
-    return loaded.overlay(layer, **_active_model_profile_fields(profile))
+    return loaded.overlay(layer, **active_model_profile_fields(profile))
 
 
-def _active_model_profile_fields(profile: ModelProfile) -> dict[str, Any]:
-    """The fields selecting *profile* as the active fallback, in one place."""
+def active_model_profile_fields(profile: ModelProfile) -> dict[str, Any]:
+    """The fields selecting *profile* as the active fallback, in one place.
+
+    The whole selection, never ``model_profile`` alone: a pin left in
+    ``model_profile_override`` would outrank it. A session's own model (the
+    settings handle's session layer) is these fields too.
+    """
     return {
         "model_profile": profile.id,
         "model_profile_override": "",
@@ -273,6 +278,27 @@ def resolve_selection_for_agent(
     if fallback is not None:
         return ModelSelection(fallback, "inherited")
     return _resolve_active_selection(registry, settings)
+
+
+def model_for_agent(
+    registry: ModelProfileRegistry | None,
+    settings: Settings,
+    agent_profile: AgentProfile,
+    *,
+    session_model: str | None = None,
+) -> str:
+    """The id of the model a build of *agent_profile* runs, the session's own choice being *session_model*.
+
+    *session_model* None keeps the choice *settings* carry. The one answer to
+    "which model would this agent run": it is :func:`resolve_selection_for_agent`,
+    which every build resolves with, so an override or a model the agent binds
+    runs over the session's choice here as it does there. A model asked for the
+    session takes effect on that agent only where this returns it. What a
+    session runs now is the runtime's word, not this: no build is made.
+    """
+    if session_model is not None:
+        settings = replace(settings, model_profile=session_model)
+    return resolve_selection_for_agent(registry, settings, agent_profile).profile.id
 
 
 def resolve_for_agent(

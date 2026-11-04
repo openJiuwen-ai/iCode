@@ -1587,14 +1587,21 @@ async def test_input_bar_locked_queue_disables_text_area_until_unlock() -> None:
         assert text_area.disabled is False
 
 
-async def test_input_bar_consume_retry_text_returns_and_clears_note() -> None:
-    async with _InputBarApp().run_test() as pilot:
-        ib = pilot.app.query_one(InputBar)
+async def test_continue_button_sends_the_typed_note_stripped_and_clears_it() -> None:
+    retries: list[str] = []
 
+    class RetryApp(_InputBarApp):
+        def on_input_bar_retry_requested(self, event: InputBar.RetryRequested) -> None:
+            retries.append(event.text)
+
+    async with RetryApp().run_test() as pilot:
+        ib = pilot.app.query_one(InputBar)
+        ib.retry_mode = True
         ib.value = "  retry note  "
         await pilot.pause()
 
-        assert ib.consume_retry_text() == "retry note"
+        ib.on_button_pressed(Button.Pressed(ib.query_one("#send-btn", Button)))
+        await wait_for(lambda: retries == ["retry note"], pilot=pilot, description="note sent as the continue")
         assert ib.value == ""
 
 
@@ -1629,8 +1636,8 @@ async def test_submit_button_closes_prompt_history_and_discards_held_selection(
 
     async with app.run_test() as pilot:
         screen = app.main_screen
-        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
-        monkeypatch.setattr(screen._input_flow, "request_retry", retried.append)
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", lambda text, _draft=None: submitted.append(text))
+        monkeypatch.setattr(screen._input_flow, "request_retry", lambda text, _draft=None: retried.append(text))
         input_bar = screen.query_one(InputBar)
         input_bar.retry_mode = retry
         input_bar.value = "ready"

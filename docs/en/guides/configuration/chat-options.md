@@ -57,6 +57,8 @@ To read part of a value from an environment variable, write the variable name in
 
 The profile file keeps the placeholder, and iCode fills in the value when it sends a request. Set the variable before starting iCode. If it isn't set, iCode reports an error naming the variable.
 
+A header can also get its value from a command, such as `{"X-Api-Token": "{{!tokenprovider gettoken}}"}`; see [Get an API key from a command](./models.md#get-an-api-key-from-a-command). This works only inside `extra_headers`. Anywhere else in Chat Options it is an error, because iCode can't replace an expired value in the body of a request. To send such text as written, escape it as `{{{{!...}}}}`.
+
 ### Which requests use Chat Options
 
 Chat Options are shared by requests made with the profile, including the main agent, sub-agents, workflow agents, session titles, the automatic approval judge, and context compaction. Individual operations may override or filter options for their own request. Higher reasoning effort can also increase the latency and cost of these auxiliary requests.
@@ -282,4 +284,5 @@ Documentation: [Quickstart](https://openrouter.ai/docs/quickstart), [Provider se
 - **The error contains `unexpected keyword argument 'x'`**: move the field `x` into `extra_body`, as described in [Where service-specific fields go](#where-service-specific-fields-go).
 - **The model service says it doesn't support a field**: remove only that field. If it is inside `extra_body`, delete just that member from the JSON object and keep the others. Then save.
 - **The error names an environment variable**: set that variable and restart iCode, or remove the `{{...}}` placeholder.
+- **The error says a command failed**: run the command from your `{{!...}}` placeholder in a terminal to see why. Once it works, type `/new` or restart iCode. See [Get an API key from a command](./models.md#get-an-api-key-from-a-command).
 - **Nothing obvious**: remove recently added rows one at a time until requests work again, and check the service's documentation for the model you use.

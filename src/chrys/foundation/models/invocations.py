@@ -18,7 +18,7 @@ type ContentStatus = Literal["completed", "failed", "interrupted"]
 class InvocationOrigin:
     """A logical caller operation, including its explicitly bound ancestry."""
 
-    kind: Literal["turn", "sub_agent", "workflow_node"]
+    kind: Literal["turn", "sub_agent", "workflow_node", "side_question"]
     session_id: str
     invocation_id: str
     parent: InvocationOrigin | None
@@ -30,7 +30,7 @@ class InvocationOrigin:
     """
 
     def __post_init__(self) -> None:
-        if self.kind not in ("turn", "sub_agent", "workflow_node") or not self.invocation_id:
+        if self.kind not in ("turn", "sub_agent", "workflow_node", "side_question") or not self.invocation_id:
             raise ValueError("A live invocation requires a kind and invocation identity")
 
     def same_invocation(self, other: InvocationOrigin | None) -> bool:

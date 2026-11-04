@@ -26,12 +26,15 @@ def resolve_acp_spec(
 ) -> AcpAgentSpec:
     """Resolve each fresh ACP launch with the caller's existing workspace policy."""
     try:
-        command = resolve_env_templates(config.command, location="ACP command")
+        # The executable and working directory decide what runs and where, so a command can't supply them.
+        command = resolve_env_templates(config.command, location="ACP command", allow_commands=False)
         args = tuple(resolve_env_templates(arg, location="ACP argument") for arg in config.args)
         env = {
             key: resolve_env_templates(value, location=f"ACP environment {key!r}") for key, value in config.env.items()
         }
-        cwd_raw = resolve_env_templates(config.cwd, location="ACP cwd") if config.cwd else runtime.cwd
+        cwd_raw = (
+            resolve_env_templates(config.cwd, location="ACP cwd", allow_commands=False) if config.cwd else runtime.cwd
+        )
     except ValueError as exc:
         raise AcpConfigError(str(exc), cause=exc) from exc
     if any("\x00" in value for value in (command, *args, cwd_raw, *env.values())):

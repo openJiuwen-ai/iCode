@@ -88,8 +88,9 @@ async def test_rollback_completes_when_the_caller_is_cancelled(
         *,
         raw_http_log_path: Path | None = None,
         session_id: str | None = None,
+        auth: httpx.Auth | None = None,
     ) -> httpx.AsyncClient:
-        client = build(profile, timeout, raw_http_log_path=raw_http_log_path, session_id=session_id)
+        client = build(profile, timeout, raw_http_log_path=raw_http_log_path, session_id=session_id, auth=auth)
         close = client.aclose
 
         async def gated_close() -> None:

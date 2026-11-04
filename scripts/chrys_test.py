@@ -139,6 +139,7 @@ ARCHITECTURE_RULES = (
     TestRule("tests/architecture/test_hygiene_tui_bindings.py", ("src/chrys/app/tui/**",)),
     TestRule("tests/architecture/test_hygiene_tui_locale_controller.py"),
     TestRule("tests/architecture/test_hygiene_tui_prose.py", ("src/chrys/app/tui/**",)),
+    TestRule("tests/architecture/test_hygiene_user_turn_events.py", ("src/chrys/app/tui/**",)),
     TestRule("tests/architecture/test_layering.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_network_egress.py"),
     TestRule(

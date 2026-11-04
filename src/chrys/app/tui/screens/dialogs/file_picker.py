@@ -40,8 +40,10 @@ from chrys.foundation.i18n import MessageRef, msg
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from rich.style import Style
-    from textual.app import ComposeResult
+    from textual.app import App, ComposeResult
     from textual.widgets._tree import Tree, TreeNode
 
 
@@ -580,3 +582,19 @@ def _find_child(tree: _FilteredDirectoryTree, node: TreeNode[DirEntry], name: st
         if renormalized is None and unicodedata.normalize("NFC", listed) == wanted:
             renormalized = child
     return renormalized
+
+
+def open_folder_picker(app: App[Any], current: str, start: str, on_result: Callable[[str], None]) -> None:
+    """Open the folder picker at *current* when it is a folder, else at *start*; *on_result* gets the folder chosen.
+
+    For directory cards outside ``screens/`` (``widgets.directory_path``), which
+    may not import this screen themselves.
+    """
+    current_expanded = os.path.expanduser(current.strip())
+    initial = current_expanded if current.strip() and os.path.isdir(current_expanded) else start
+
+    def _on_result(result: str | None) -> None:
+        if result:
+            on_result(result)
+
+    app.push_screen(FilePicker(mode=FilePickerMode.FOLDER, initial_path=initial), _on_result)

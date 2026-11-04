@@ -51,7 +51,7 @@ async def judge_client(
             },
         )
 
-    def build_http(profile, timeout, *, raw_http_log_path=None, session_id=None):
+    def build_http(profile, timeout, *, raw_http_log_path=None, session_id=None, auth=None):
         http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
         http_clients.append(http)
         return http

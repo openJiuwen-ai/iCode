@@ -67,3 +67,11 @@ def show_newest_first(rack: ToastRack, notifications: Notifications) -> None:
             before=0,
         )
         rack.call_later(rack.scroll_home, animate=False, force=True)
+
+
+def dismiss_toast(app: App[object], notification: Notification) -> None:
+    """Take *notification* down before its timeout; a no-op once it is gone.
+
+    Uses ``App._unnotify``, private in Textual :data:`TEXTUAL_TOAST_RACK_FORK_VERSION`.
+    """
+    app._unnotify(notification)

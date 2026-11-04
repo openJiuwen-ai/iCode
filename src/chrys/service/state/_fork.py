@@ -25,6 +25,7 @@ from chrys.foundation.platform.files import (
 from chrys.foundation.text.mentions import format_file_mention, iter_mention_tokens
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.service.mutations.snapshot_files import rollback_snapshot_paths
+from chrys.service.session.side_questions import BTW_FILE_NAME, load_side_questions, write_side_questions
 from chrys.service.session.sub_agent_logs import (
     MAX_AUDIT_SCAN_TOTAL_BYTES,
     MAX_SCANNED_AUDIT_FILES,
@@ -206,6 +207,14 @@ class SessionForkMixin:
         with contextlib.suppress(FileNotFoundError):
             (tmp_dir / RAW_HTTP_LOG_FILE_NAME).unlink()
         self._prepare_fork_sub_agent_artifacts(tmp_dir)
+        try:
+            side_questions = load_side_questions(self._session_dir(parent_session_id), parent_session_id)
+        except OSError, ValueError:
+            logger.warning("Omitting unreadable side questions from fork of session %s", parent_session_id)
+            (tmp_dir / BTW_FILE_NAME).unlink(missing_ok=True)
+        else:
+            if (tmp_dir / BTW_FILE_NAME).exists():
+                write_side_questions(tmp_dir, new_session_id, side_questions)
 
         fork_updated_at = datetime.now(UTC)
         updated_at = fork_updated_at.isoformat()

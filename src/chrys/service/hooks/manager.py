@@ -1628,6 +1628,7 @@ async def check_operation(
     operation: HookOperation,
     payload: Callable[[], dict[str, Any]],
     *,
+    scope: str = "turn",
     target_operation_id: str | None = None,
     trajectory_context: TrajectoryContext | None = None,
     origin: InvocationOrigin | None = None,
@@ -1654,6 +1655,7 @@ async def check_operation(
     decision = await manager.fire(
         event,
         payload(),
+        scope=scope,
         target_operation_id=target_operation_id,
         trajectory_context=trajectory_context,
         origin=origin,

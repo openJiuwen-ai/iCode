@@ -10,6 +10,7 @@ from dataclasses import replace
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
+from textual.color import Color
 from textual.content import Content
 from textual.screen import Screen
 from textual.style import Style
@@ -848,3 +849,36 @@ async def test_click_during_loading_popup_selects_nothing() -> None:
         await pilot.pause()
         assert [selected[0] for selected in app.selected] == ["ready prompt"]
         assert suggestion_list.is_loading is False
+
+
+async def test_suggestion_list_section_headings_use_their_own_color_and_are_not_bold() -> None:
+    async with _SuggestionListApp().run_test() as pilot:
+        suggestion_list = pilot.app.query_one(SuggestionList)
+        items = [
+            SuggestionItem(value="new", label="/new", section="System Commands", kind="command"),
+            SuggestionItem(value="review", label="/review", section="Prompt Shortcuts", kind="prompt"),
+        ]
+        suggestion_list.show("commands", items)
+        await pilot.pause()
+
+        section_color = suggestion_list.get_component_styles("suggestion-list--section").color
+        assert section_color != suggestion_list.styles.border_title_color
+        accent = Color.parse(pilot.app.current_theme.to_color_system().generate()["accent"])
+        assert suggestion_list.styles.border_title_color.rgb == accent.rgb
+        assert section_color.rgb != accent.rgb
+
+        headings = [suggestion_list._contents[0], suggestion_list._contents[2]]
+        assert [heading.plain for heading in headings] == ["System Commands", "Prompt Shortcuts"]
+        for heading in headings:
+            styles = [span.style for span in heading.spans]
+            assert styles, heading
+            for style in styles:
+                assert isinstance(style, Style)
+                assert style.bold is not True
+                assert style.foreground == section_color
+
+        rows = [suggestion_list._contents[1], suggestion_list._contents[3]]
+        assert [row.plain for row in rows] == ["/new", "/review"]
+        for row in rows:
+            for span in row.spans:
+                assert not (isinstance(span.style, Style) and span.style.foreground == section_color)

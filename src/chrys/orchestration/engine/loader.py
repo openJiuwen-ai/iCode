@@ -8,9 +8,9 @@ import asyncio
 import contextlib
 import copy
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.errors import clean_error_message
@@ -222,16 +222,25 @@ class AgentLoader:
     def stage(
         self,
         *,
-        loaded: LoadedSettings,
+        loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         agent_profile: AgentProfile,
         workspace: Workspace | None,
         hook_manager: HookManager | None,
     ) -> StagedBuild:
-        """Assemble the settings, workspace, and coordinator candidate."""
+        """Assemble the settings, workspace, and coordinator candidate.
+
+        *loaded* is the layered load to build on (the installed one when None:
+        never the effective value, which already carries the session's own
+        choices); *session* the session's own choices to build with (the
+        installed ones when None). The build reads both composed, and its commit
+        installs them.
+        """
+        base = loaded if loaded is not None else self._settings_handle.base
         return construction.stage_build(
             session=self._session,
             persistence=self._persistence,
-            loaded=loaded,
+            prepared=self._settings_handle.prepare(base, session=session),
             agent_profile=agent_profile,
             workspace=workspace,
             hook_manager=hook_manager,
@@ -250,7 +259,7 @@ class AgentLoader:
         if old_hook_manager is None or operation == "workspace_change":
             # Project hooks are primary-cwd scoped, so the candidate is built for
             # the root the staged workspace would install, not the live one.
-            build_settings = (staged_loaded if staged_loaded is not None else self._settings_handle.loaded).settings
+            build_settings = (staged_loaded if staged_loaded is not None else self._settings_handle.base).settings
             hook_manager = await self.build_hook_manager(
                 project_root=_workspace_primary_cwd(workspace),
                 project_hooks_enabled=build_settings.project_hooks_enabled,
@@ -267,7 +276,6 @@ class AgentLoader:
             preserved_history=preserved_history,
             build_agent_fn=self._build_agent_fn,
             session=self._session,
-            settings_handle=self._settings_handle,
             persistence=self._persistence,
             bus=self._bus,
             agent_registry=self._agent_registry,
@@ -382,6 +390,7 @@ class AgentLoader:
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None,
         hook_manager: HookManager | None,
         trajectory: SessionTrajectory,
@@ -392,7 +401,8 @@ class AgentLoader:
         ``staged_loaded`` is a settings candidate the build should be configured
         from instead of the live handle — a settings reload or workspace change
         retrying after a failed first build passes the re-derived load here, and
-        it goes live only when the build commits. ``workspace`` is the same thing
+        it goes live only when the build commits; ``session`` is the same for the
+        session's own choices (:meth:`stage`). ``workspace`` is the same thing
         for the workspace: a no-executor workspace change passes the new root here
         rather than mutating the live one, so a failed build keeps the workspace
         the live settings and hooks still describe.
@@ -409,7 +419,8 @@ class AgentLoader:
             )
 
             staged = self.stage(
-                loaded=staged_loaded if staged_loaded is not None else self._settings_handle.loaded,
+                loaded=staged_loaded,
+                session=session,
                 agent_profile=profile,
                 workspace=workspace,
                 hook_manager=hook_manager,
@@ -551,13 +562,16 @@ class AgentLoader:
         *,
         operation: str = "switch",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
     ) -> None:
         """Restart the agent with a new profile/workspace while preserving history.
 
         ``staged_loaded`` is a settings candidate the build should be configured
         from instead of the live handle — a settings reload or workspace change
         passes the re-derived load here, and it goes live only when the build
-        commits. A pre-commit failure therefore leaves the settings the previous
+        commits; ``session`` is the same for the session's own choices
+        (:meth:`stage`), which a shortcut's switch, a ``$`` pick or a deleted
+        model change. A pre-commit failure therefore leaves the settings the previous
         executor was built from untouched; a post-commit failure keeps the new
         ones, because they are what the installed executor runs with.
         """
@@ -578,13 +592,13 @@ class AgentLoader:
         old_workspace = self._session.workspace
         old_hook_manager = self._session.hook_manager
         staged_hook_manager = old_hook_manager
-        new_loaded = staged_loaded if staged_loaded is not None else self._settings_handle.loaded
+        new_loaded = staged_loaded if staged_loaded is not None else self._settings_handle.base
         # Project hooks are primary-cwd scoped and gated by ``project.hooks_enabled``:
         # a new primary cwd or a flipped gate rebuilds the manager for the root
         # the build is about to install (the live one when the workspace stays).
         reload_hook_manager = (
             workspace is not None and _workspace_primary_cwd(old_workspace) != _workspace_primary_cwd(workspace)
-        ) or new_loaded.settings.project_hooks_enabled != self._settings_handle.loaded.settings.project_hooks_enabled
+        ) or new_loaded.settings.project_hooks_enabled != self._settings_handle.base.settings.project_hooks_enabled
         hook_manager_root = _workspace_primary_cwd(workspace if workspace is not None else old_workspace)
         hook_manager_replacement_committed = False
 
@@ -648,7 +662,8 @@ class AgentLoader:
                 )
 
             staged = self.stage(
-                loaded=staged_loaded if staged_loaded is not None else self._settings_handle.loaded,
+                loaded=staged_loaded,
+                session=session,
                 agent_profile=new_profile,
                 workspace=workspace if workspace is not None else old_workspace,
                 hook_manager=staged_hook_manager,

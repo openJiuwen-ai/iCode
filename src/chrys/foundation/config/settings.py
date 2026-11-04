@@ -126,6 +126,9 @@ def _load_bool_env(name: str, *, default: bool = False) -> bool:
 DEFAULT_ASK_USER_TIMEOUT_SECONDS = 900
 """Default ``ask_user`` reply wait (15 minutes) when ``CHRYS_ASK_USER_TIMEOUT_SECONDS`` is unset."""
 
+DEFAULT_CREDENTIAL_COMMAND_TTL_SECONDS = 3600
+"""How long a ``{{!command}}`` placeholder's output is used before it is run again (one hour)."""
+
 DEFAULT_MAX_TRANSIENT_RETRIES = 10
 """Default application-layer transient retry budget for interactive frontends."""
 
@@ -151,6 +154,15 @@ DEFAULT_TOOL_RESULT_CEILING_TOKENS = 64_000
 
 TOOL_RESULT_CEILING_FLOOR = 2_000
 """Minimum positive ``CHRYS_TOOL_RESULT_CEILING_TOKENS`` value."""
+
+DEFAULT_IMAGE_SEND_LIMIT_KB = 256
+"""Default most KiB an image is sent to a model with (``foundation.text.images.MAX_IMAGE_BYTES``)."""
+
+MIN_IMAGE_SEND_LIMIT_KB = 32
+"""Lowest image send limit: below it most photos shrink to thumbnails."""
+
+MAX_IMAGE_SEND_LIMIT_KB = 3072
+"""Highest image send limit, the size images were sent at before compression got a setting."""
 
 DEFAULT_WORKSPACE_MRU_MAX_ENTRIES = 20
 """Default number of recently used workspace directories kept in the MRU index."""
@@ -675,10 +687,14 @@ _LABEL_TRAJECTORY_VERIFY_COMMANDS = msg(
     "settings.trajectory.verify_commands.label", fallback="Trajectory verification commands"
 )
 _LABEL_LLM_RETRY_MAX_TRANSIENT = msg("settings.llm.retry.max_transient.label", fallback="Max transient retries")
+_LABEL_LLM_CREDENTIAL_COMMAND_TTL_SECONDS = msg(
+    "settings.llm.credential_command.ttl_seconds.label", fallback="Credential command refresh interval (seconds)"
+)
 _LABEL_TOOLS_RESULT_CEILING_TOKENS = msg(
     "settings.tools.result.ceiling_tokens.label", fallback="Tool result ceiling (tokens)"
 )
 _LABEL_SEARCH_RESPECT_GITIGNORE = msg("settings.tools.search.respect_gitignore.label", fallback="Respect .gitignore")
+_LABEL_TOOLS_IMAGE_SEND_LIMIT_KB = msg("settings.tools.image.send_limit_kb.label", fallback="Image size limit (KB)")
 _LABEL_UI_THEME = msg("settings.ui.theme.label", fallback="Theme")
 _LABEL_UI_LOCALE = msg("settings.ui.locale.label", fallback="UI Language")
 _LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
@@ -689,6 +705,7 @@ _LABEL_UI_CHAT_THINKING_EXPANDED = msg("settings.ui.chat.show_thinking.label", f
 _LABEL_UI_CHAT_FOLD_FINISHED_TURNS = msg(
     "settings.ui.chat.fold_finished_turns.label", fallback="Automatically fold completed turns"
 )
+_LABEL_UI_CHAT_IMAGE_GRAPHICS = msg("settings.ui.chat.image_graphics.label", fallback="Full-color images")
 _LABEL_UI_EDITOR_KEYMAP = msg("settings.ui.editor.keymap.label", fallback="Editor keymap")
 _LABEL_WORKSPACE_MRU_MAX_ENTRIES = msg("settings.workspace.mru_max_entries.label", fallback="Recent workspaces to keep")
 _LABEL_APPROVAL_TIMEOUT_SECONDS = msg(
@@ -1002,6 +1019,19 @@ class Settings:
             semantic_value=_semantic_max_transient_retries,
         ),
     )
+    # A rejected token (HTTP 401) is replaced at once, whatever this says.
+    credential_command_ttl_seconds: int = field(
+        default=DEFAULT_CREDENTIAL_COMMAND_TTL_SECONDS,
+        metadata=spec(
+            key="llm.credential_command.ttl_seconds",
+            label=_LABEL_LLM_CREDENTIAL_COMMAND_TTL_SECONDS,
+            env="CHRYS_CREDENTIAL_COMMAND_TTL_SECONDS",
+            coerce=int_coercer(minimum=60),
+            apply=Apply.RESTART,  # Read from the process snapshot: no engine or session where it is used.
+            group="llm",
+            kind=Kind.INT,
+        ),
+    )
     frontend_default_max_transient_retries: int = field(
         default=DEFAULT_MAX_TRANSIENT_RETRIES,
         metadata=spec(
@@ -1045,6 +1075,23 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.BOOL,
+        ),
+    )
+
+    # The most an image attached, viewed or sent by an ACP client takes in a
+    # request; a larger one is compressed to fit. Each turn and retry also
+    # shrinks the session's earlier images to it, so lowering it fixes a
+    # request a gateway refused as too large.
+    image_send_limit_kb: int = field(
+        default=DEFAULT_IMAGE_SEND_LIMIT_KB,
+        metadata=spec(
+            key="tools.image.send_limit_kb",
+            label=_LABEL_TOOLS_IMAGE_SEND_LIMIT_KB,
+            env="CHRYS_IMAGE_SEND_LIMIT_KB",
+            coerce=int_coercer(minimum=MIN_IMAGE_SEND_LIMIT_KB, maximum=MAX_IMAGE_SEND_LIMIT_KB),
+            apply=Apply.RELOAD,
+            group="tools",
+            kind=Kind.INT,
         ),
     )
 
@@ -1541,6 +1588,22 @@ class Settings:
         ),
     )
 
+    # Whether chat images use the terminal's own graphics (kitty protocol, Sixel) where the terminal
+    # is known to have them; off, every terminal shows the half-block approximation. Read once, when
+    # the TUI starts: what the terminal already holds is not redrawn.
+    chat_image_graphics: bool = field(
+        default=True,
+        metadata=spec(
+            key="ui.chat.image_graphics",
+            label=_LABEL_UI_CHAT_IMAGE_GRAPHICS,
+            coerce=bool_coercer(),
+            apply=Apply.RESTART,
+            group="ui",
+            kind=Kind.BOOL,
+            project_merge=ProjectMerge.DENY,
+        ),
+    )
+
     # Maximum combined before/after snapshot bytes chat tool records keep
     # inline.  ``0`` keeps nothing inline.
     chat_file_snapshot_inline_chars: int = field(
@@ -2013,6 +2076,10 @@ class Settings:
         if self.max_transient_retries is not None:
             return self.max_transient_retries
         return self.frontend_default_max_transient_retries
+
+    def image_send_limit_bytes(self) -> int:
+        """Return the most bytes an image is sent to a model with."""
+        return self.image_send_limit_kb * 1024
 
 
 def _persist_one(key: str, value: Any, *, log_value: bool = True) -> None:

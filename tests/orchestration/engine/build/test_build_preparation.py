@@ -150,8 +150,13 @@ async def test_preparation_failure_closes_candidates_and_preserves_all_live_valu
     with pytest.raises(error):
         await engine.loader.reload(profile, staged_loaded=staged_loaded)
     _assert_same_live(engine, before, engine_services=engine_services)
-    assert candidate.bindings.closed is True
-    assert coordinator.closed is True
+    if preparation == "settings":
+        # Settings are prepared when the build is staged, so their failure comes before any candidate exists.
+        assert candidate.bindings.closed is False
+        assert coordinator.closed is False
+    else:
+        assert candidate.bindings.closed is True
+        assert coordinator.closed is True
     assert results[0].bindings.closed is False
     assert [type(event) for event in events] == [AgentLoadFailed]
     assert engine.permits.agent_loading is False

@@ -198,7 +198,7 @@ def create_provider(
         return ExaMcpProvider(provider_id)
     if config.type in HTML_SEARCH_ENDPOINTS:
         return HtmlSearchProvider(provider_id, config.type)
-    if config.type in OFFICIAL_ENDPOINTS or config.type == "custom_http":
+    if config.type in OFFICIAL_ENDPOINTS or config.type in {"keenable", "custom_http"}:
         return JsonApiProvider(provider_id, config, credentials)
     raise ValueError(f"Unknown search provider type {config.type!r}")
 

@@ -174,8 +174,12 @@ def _fallback_line_parse(yaml_block: str) -> dict[str, object]:
     return fields
 
 
-def parse_frontmatter(content: str) -> tuple[dict[str, object] | None, str | None]:
-    """Extract frontmatter fields from SKILL.md text.
+def parse_frontmatter(
+    content: str, *, file_name: str = SKILL_FILE_NAME, fallback_log_level: int = logging.WARNING
+) -> tuple[dict[str, object] | None, str | None]:
+    """Extract frontmatter fields from *file_name* text (``SKILL.md`` unless another file reuses this parser).
+
+    Falling back to tolerant line parsing is logged at *fallback_log_level*.
 
     Returns ``(fields, None)`` on success — *fields* keyed by lowercased
     top-level keys — or ``(None, reason)`` when the frontmatter block is
@@ -183,7 +187,7 @@ def parse_frontmatter(content: str) -> tuple[dict[str, object] | None, str | Non
     """
     match = FRONTMATTER_RE.search(content)
     if not match:
-        return None, "SKILL.md does not contain YAML frontmatter delimited by '---' lines"
+        return None, f"{file_name} does not contain YAML frontmatter delimited by '---' lines"
 
     yaml_block = match.group(1)
     if len(yaml_block) > MAX_FRONTMATTER_LENGTH:
@@ -197,7 +201,9 @@ def parse_frontmatter(content: str) -> tuple[dict[str, object] | None, str | Non
     except yaml.YAMLError as exc:
         fields = _fallback_line_parse(yaml_block)
         if fields:
-            logger.warning("SKILL.md frontmatter is not valid YAML (%s); using tolerant line parsing", exc)
+            logger.log(
+                fallback_log_level, "%s frontmatter is not valid YAML (%s); using tolerant line parsing", file_name, exc
+            )
             return fields, None
         return None, f"invalid YAML frontmatter: {exc}"
     finally:

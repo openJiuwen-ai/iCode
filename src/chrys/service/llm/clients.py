@@ -50,7 +50,7 @@ from chrys.foundation.util.chrys_headers import (
     X_PARENT_SESSION_ID_HEADER,
     X_SESSION_ID_HEADER,
 )
-from chrys.foundation.util.env_templates import resolve_env_templates
+from chrys.foundation.util.env_templates import command_handles_in, resolve_env_templates
 from chrys.foundation.util.header_charset import (
     api_key_charset_error,
     header_name_charset_error,
@@ -60,7 +60,7 @@ from chrys.foundation.util.header_charset import (
 from chrys.foundation.util.httpx_helpers import BYPASS_PROXY_MOUNTS
 from chrys.foundation.util.once_close import OnceClose
 from chrys.service.llm.providers import PROVIDERS, ProviderSpec
-from chrys.service.profiles.models.options import parse_http_headers
+from chrys.service.profiles.models.options import parse_chat_options, parse_http_headers
 from chrys.service.profiles.models.schema import ModelProfile
 
 if TYPE_CHECKING:
@@ -139,6 +139,27 @@ def _build_default_headers(
 def _resolve_profile_api_key(profile: ModelProfile) -> str:
     """Resolve explicit API-key env templates before provider env fallback."""
     return resolve_env_templates(profile.api_key, location=f"model profile {profile.name!r} API Key")
+
+
+async def _command_credential_auth(
+    profile: ModelProfile, *, api_key: str, headers: dict[str, str]
+) -> httpx.Auth | None:
+    """Fetch the tokens of the profile's ``{{!command}}`` values and return the auth that sends them.
+
+    A failure here is the profile's configuration error; from now on a request
+    always has a token to send.  ``None`` for a profile with no such value: an
+    installed auth would turn off httpx's own for ``user:pass@`` in a URL.
+    """
+    extra_headers = (parse_chat_options(profile) or {}).get("extra_headers")
+    values = [api_key, *headers.values()]
+    if isinstance(extra_headers, dict):
+        values.extend(str(value) for value in extra_headers.values())
+    if not command_handles_in(values):
+        return None
+    from chrys.service.command_credentials import CommandCredentialAuth, ensure_fresh
+
+    await ensure_fresh(values)
+    return CommandCredentialAuth(values)
 
 
 def _validate_wire_charset(profile: ModelProfile, *, api_key: str, headers: dict[str, str]) -> None:
@@ -231,6 +252,7 @@ def _build_profile_http_client(
     *,
     raw_http_log_path: Path | None = None,
     session_id: str | None = None,
+    auth: httpx.Auth | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> httpx.AsyncClient:
     """Build the profile's ``httpx.AsyncClient``; Chrys, not the SDK, owns every pool.
@@ -280,6 +302,8 @@ def _build_profile_http_client(
         for event in ("request", "response"):
             event_hooks[event] = [*event_hooks[event], *raw_hooks.get(event, ())]
     kwargs["event_hooks"] = event_hooks
+    if auth is not None:
+        kwargs["auth"] = auth
     if transport is not None:
         kwargs["transport"] = transport
     return HTTPClient(**kwargs)
@@ -426,6 +450,7 @@ async def create_client(
         sdk_user_agent=_provider_sdk_user_agent(provider),
     )
     _validate_wire_charset(profile, api_key=api_key, headers=headers)
+    auth = await _command_credential_auth(profile, api_key=api_key, headers=headers)
 
     import httpx
 
@@ -442,6 +467,7 @@ async def create_client(
         timeout,
         raw_http_log_path=resolve_raw_http_log_path(session_id, session_dir),
         session_id=session_id,
+        auth=auth,
     )
     close_http_client = OnceClose(http_client.aclose)
     stack_kwargs.update(

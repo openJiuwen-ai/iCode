@@ -29,6 +29,7 @@ from chrys.foundation.trajectory.keys import (
     load_or_create_fingerprint_key,
 )
 from tests.support.secure_files import plant_owner_only_bytes
+from tests.support.symlinks import symlink_or_skip
 
 
 def test_load_or_create_key_is_stable_owner_only_and_32_bytes(tmp_path: Path) -> None:
@@ -170,6 +171,21 @@ def test_ensure_owner_only_directory_rejects_a_file(tmp_path: Path) -> None:
     target = tmp_path / "not-a-dir"
     target.write_bytes(b"")
     with pytest.raises(OSError):
+        ensure_owner_only_directory(target)
+
+
+@pytest.mark.parametrize("link_target", ["directory", "file", "missing"])
+def test_ensure_owner_only_directory_names_a_link_as_insecure(tmp_path: Path, link_target: str) -> None:
+    if link_target == "directory" and get_platform().is_windows:
+        pytest.skip("the Windows branch neither opens nor tightens the directory")
+    elsewhere = tmp_path / "elsewhere"
+    if link_target == "directory":
+        elsewhere.mkdir()
+    elif link_target == "file":
+        elsewhere.write_bytes(b"")
+    target = tmp_path / "trajectory"
+    symlink_or_skip(target, elsewhere, target_is_directory=link_target != "file")
+    with pytest.raises(SecureFileError, match="symbolic link"):
         ensure_owner_only_directory(target)
 
 

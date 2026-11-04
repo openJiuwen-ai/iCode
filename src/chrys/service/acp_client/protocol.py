@@ -10,7 +10,7 @@ import json
 import math
 from typing import Any, Literal
 
-from chrys.foundation.text.images import MAX_IMAGE_BYTES
+from chrys.foundation.text.images import MAX_ACP_IMAGE_BYTES
 from chrys.foundation.util.unicode_scalars import find_unpaired_surrogate
 
 _MAX_PAYLOAD_BYTES = 1024 * 1024
@@ -27,7 +27,7 @@ _MAX_COLLECTION_ITEMS = 4_096
 # frame of tiny values.
 _MAX_AGENT_MESSAGE_ITEMS = 64 * 1024
 _MAX_STRING_CHARS = 256 * 1024
-_MAX_BASE64_IMAGE_CHARS = ((MAX_IMAGE_BYTES + 2) // 3) * 4
+_MAX_BASE64_IMAGE_CHARS = ((MAX_ACP_IMAGE_BYTES + 2) // 3) * 4
 _MAX_REQUEST_ID_CHARS = 4_096
 _MAX_METHOD_CHARS = 1_024
 # An update's ids are kept whole (map keys, local call ids) and repeated in
@@ -240,7 +240,7 @@ def _validate_update_image_data(data: str) -> None:
         raise ValueError("ACP image payload is not valid base64.") from exc
     if not decoded:
         raise ValueError("ACP image payload is empty.")
-    if len(decoded) > MAX_IMAGE_BYTES:
+    if len(decoded) > MAX_ACP_IMAGE_BYTES:
         raise ValueError("ACP image payload exceeds the supported size limit.")
 
 
