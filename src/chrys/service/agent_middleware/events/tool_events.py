@@ -52,6 +52,7 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
     is_mutable_tool_args,
     set_call_id,
     set_tool_invocation_order,
+    tool_may_have_run,
 )
 from chrys.service.agent_middleware.events.intermediate_text import ResponseBatchCounter
 from chrys.service.agent_middleware.events.rejection_metadata import (
@@ -572,9 +573,15 @@ class ToolEventMiddleware(FunctionMiddleware):
                 # so the async finalize below is unreachable — release the
                 # trace wrapper and close the coordination window
                 # synchronously or the registry advertises a live command
-                # to peers until shutdown. The command may have written
-                # before the interrupt, so implicit detection is truncated.
-                abort_mutation_tracking(mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker)
+                # to peers until shutdown. Interrupted before the commit step
+                # (e.g. at approval), the tool never ran; after it, the command
+                # may have written, so implicit detection is truncated.
+                abort_mutation_tracking(
+                    mut_ctx,
+                    self._mutation_coordinator,
+                    tracker=self._mutation_tracker,
+                    may_have_run=tool_may_have_run(context),
+                )
             if not cancelled:
                 try:
                     result_text = error_text or extract_result_text(context.result)

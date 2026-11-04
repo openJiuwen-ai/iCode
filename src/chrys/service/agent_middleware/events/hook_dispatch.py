@@ -44,6 +44,17 @@ def is_mutable_tool_args(value: object) -> TypeGuard[dict[str, Any]]:
     return isinstance(value, dict)
 
 
+def tool_may_have_run(context: FunctionInvocationContext) -> bool:
+    """Whether the call's tool body may have started: the commit step took its operation, or it has none.
+
+    The commit step is the last one before the tool runs, so an operation that
+    is still pending or was invalidated proves the tool never started.
+    """
+    metadata = context.metadata if isinstance(context.metadata, dict) else None
+    operation = metadata.get(_HOOK_OPERATION_KEY) if metadata is not None else None
+    return not isinstance(operation, HookOperation) or operation.state == "committed"
+
+
 async def apply_before_tool_hooks(
     *,
     manager: HookManager | None,

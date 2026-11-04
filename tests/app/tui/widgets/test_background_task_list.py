@@ -13,6 +13,9 @@ from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.geometry import Region
+from textual.pilot import Pilot
+from textual.strip import Strip
+from textual.widget import Widget
 from textual.widgets import Static
 
 from chrys.app.tui.widgets.sidebar.background_tasks import BackgroundTaskList
@@ -61,20 +64,42 @@ def _rows(app: App) -> list[str]:
     return [strip.text.rstrip() for strip in rows.render_lines(Region(0, 0, width, height)) if strip.text.strip()]
 
 
-def _title(app: App) -> str:
-    return str(app.query_one("#background-tasks-title", Static).render())
+def _title(app: App) -> str | None:
+    return app.query_one(BackgroundTaskList).border_title
 
 
 def _shown(app: App, selector: str) -> bool:
     return app.query_one(selector).display
 
 
+def _border(widget: Widget, *, bottom: bool = False) -> Strip:
+    width, height = widget.outer_size
+    return widget.render_lines(Region(0, height - 1 if bottom else 0, width, 1))[0]
+
+
+def _link(app: App) -> range:
+    """The columns of the Clear ended link on the list's bottom border, as drawn: underlined."""
+    columns: list[int] = []
+    x = 0
+    for segment in _border(app.query_one(BackgroundTaskList), bottom=True):
+        width = cell_len(segment.text)
+        if segment.style is not None and segment.style.underline:
+            columns.extend(range(x, x + width))
+        x += width
+    return range(columns[0], columns[-1] + 1) if columns else range(0)
+
+
 def _clear_shown(app: App) -> bool:
-    return app.query_one("#background-tasks-clear").visible
+    return bool(_link(app))
 
 
-def _label_text(app: App) -> str:
-    return str(app.query_one(".tasks-label", Static).render())
+async def _click_clear(pilot: Pilot) -> None:
+    background = pilot.app.query_one(BackgroundTaskList)
+    await click_when_settled(pilot, background, offset=(_link(pilot.app).start, background.outer_size.height - 1))
+
+
+def _todo_title(app: App) -> str | None:
+    return app.query_one("#tasks-todos").border_title
 
 
 def _heights(app: App) -> tuple[int, int]:
@@ -148,14 +173,55 @@ async def test_a_running_command_shows_its_time_and_outcome_in_the_running_color
 
 
 @pytest.mark.asyncio
-async def test_the_title_fits_beside_clear_ended_in_the_narrowest_sidebar() -> None:
+async def test_the_title_and_clear_ended_show_whole_on_the_borders_of_the_narrowest_sidebar() -> None:
     # 40 columns: what the sidebar leaves inside its border at its minimum width.
     async with _TasksApp().run_test(size=(40, 24)) as pilot:
+        background = pilot.app.query_one(BackgroundTaskList)
         pilot.app.query_one(TasksPanel).background_tasks = (*(_task(str(n)) for n in range(32)), _ended("e"))
         await wait_for(lambda: _clear_shown(pilot.app), pilot=pilot, description="clear ended shown")
 
-        assert _title(pilot.app) == "Background Tasks (32)"
-        assert cell_len(_title(pilot.app)) <= pilot.app.query_one("#background-tasks-title").region.width
+        assert _border(background).text.startswith("╭─ Background Tasks (32) ─")
+        assert _border(background, bottom=True).text.endswith("─ Clear ended ─╯")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [60, 12])  # 12: too narrow for the whole link, which Textual cuts short
+async def test_only_the_clear_ended_link_on_the_bottom_border_points_and_clears(width: int) -> None:
+    async with _TasksApp().run_test(size=(width, 24)) as pilot:
+        app = pilot.app
+        background = app.query_one(BackgroundTaskList)
+        app.query_one(TasksPanel).background_tasks = (_task("a"), _ended("b"))
+        await wait_for(lambda: _clear_shown(app), pilot=pilot, description="the link shown")
+        link, bottom = _link(app), background.outer_size.height - 1
+
+        # The blank either side of the link counts as the link; the border past it does not.
+        for inside, beside in ((link.start - 1, link.start - 2), (link.stop, link.stop + 1)):
+            await pilot.hover(background, offset=(inside, bottom))
+            await wait_for(lambda: background.styles.pointer == "pointer", pilot=pilot, description="it points")
+            await pilot.hover(background, offset=(beside, bottom))
+            await wait_for(lambda: background.styles.pointer == "default", pilot=pilot, description="beside it")
+            await click_when_settled(pilot, background, offset=(beside, bottom))
+            assert len(background.tasks) == 2
+        # Off the border, into the rows or out of the list, it no longer points either.
+        for elsewhere in ("#background-tasks-rows", "#tasks-todos"):
+            await pilot.hover(background, offset=(link.start, bottom))
+            await wait_for(lambda: background.styles.pointer == "pointer", pilot=pilot, description="it points")
+            await pilot.hover(elsewhere, offset=(2, 1))
+            await wait_for(lambda: background.styles.pointer == "default", pilot=pilot, description="moved off it")
+
+        await click_when_settled(pilot, background, offset=(link.stop - 1, bottom))
+        await wait_for(lambda: len(background.tasks) == 1, pilot=pilot, description="the ended row cleared")
+        await wait_for(lambda: not _clear_shown(app), pilot=pilot, description="the link gone")
+
+        # Gone while the rows keep their count, and with them the layout, it no longer points where it was.
+        panel = app.query_one(TasksPanel)
+        panel.background_tasks = (_task("a"), _ended("c"))
+        await wait_for(lambda: _clear_shown(app), pilot=pilot, description="the link back")
+        await pilot.hover(background, offset=(_link(app).start, bottom))
+        await wait_for(lambda: background.styles.pointer == "pointer", pilot=pilot, description="it points")
+        panel.background_tasks = (_task("a"), _task("d"))
+        await wait_for(lambda: not _clear_shown(app), pilot=pilot, description="the link gone again")
+        assert background.styles.pointer == "default"
 
 
 @pytest.mark.parametrize(
@@ -163,11 +229,11 @@ async def test_the_title_fits_beside_clear_ended_in_the_narrowest_sidebar() -> N
     [
         (40, 1, 1, (None, None)),  # both empty: half each
         (40, 30, 30, (None, None)),  # both overflow their half
-        (40, 17, 1, (None, None)),  # the todos still fit in their half
-        (40, 18, 1, (None, 10)),  # the background shrinks, but not below a quarter
-        (40, 18, 9, (None, 12)),  # ...or to what it shows
-        (40, 30, 17, (None, 20)),
-        (40, 30, 18, (None, None)),
+        (40, 18, 1, (None, None)),  # the todos still fit in their half
+        (40, 19, 1, (None, 10)),  # the background shrinks, but not below a quarter
+        (40, 19, 9, (None, 11)),  # ...or to what it shows
+        (40, 30, 18, (None, 20)),
+        (40, 30, 19, (None, None)),
         (40, 5, 30, (10, None)),
     ],
 )
@@ -188,14 +254,14 @@ def _sized_todos(*lines: int) -> TodoListState:
 async def test_a_section_that_overflows_takes_what_the_other_does_not_show() -> None:
     async with _TasksApp().run_test(size=(60, 24)) as pilot:
         panel = pilot.app.query_one(TasksPanel)
-        # 56 columns fit the panel but not the 55 inside the box: each todo takes two rows.
-        panel.todo_state = _sized_todos(*[56] * 5)
+        # 58 columns fit the panel but not the 57 inside the box: each todo takes two rows.
+        panel.todo_state = _sized_todos(*[58] * 6)
         await wait_for(lambda: _heights(pilot.app) == (18, 6), pilot=pilot, description="the commands keep a quarter")
 
         panel.background_tasks = tuple(_task(f"t{index}") for index in range(5))
-        await wait_for(lambda: _heights(pilot.app) == (16, 8), pilot=pilot, description="the commands fit their rows")
+        await wait_for(lambda: _heights(pilot.app) == (17, 7), pilot=pilot, description="the commands fit their rows")
 
-        panel.background_tasks = tuple(_task(f"t{index}") for index in range(10))
+        panel.background_tasks = tuple(_task(f"t{index}") for index in range(11))
         await wait_for(lambda: _heights(pilot.app) == (12, 12), pilot=pilot, description="both full: half each")
 
         panel.todo_state = TodoListState(items=())
@@ -210,9 +276,9 @@ async def test_todos_measure_at_the_width_their_scrollbar_leaves() -> None:
         todo_list = pilot.app.query_one("#tasks-list", VerticalScroll)
         await wait_for(lambda: todo_list.scrollbar_gutter.width > 0, pilot=pilot, description="the todos scroll")
 
-        # Nine rows fill the half exactly, but the last todo wraps beside the scrollbar it still has.
-        panel.todo_state = _sized_todos(*[10] * 8, 55)
-        await wait_for(lambda: _label_text(pilot.app) == "Todos (0/9)", pilot=pilot, description="the new todos")
+        # Ten rows fill the half exactly, but the last todo wraps beside the scrollbar it still has.
+        panel.todo_state = _sized_todos(*[10] * 9, 57)
+        await wait_for(lambda: _todo_title(pilot.app) == "Todos (0/10)", pilot=pilot, description="the new todos")
         background = pilot.app.query_one(BackgroundTaskList)
         assert str(background.styles.height) == "6"
 
@@ -237,7 +303,7 @@ async def test_clear_ended_hides_those_commands_but_not_later_ones() -> None:
         panel.background_tasks = (_task("a"), _ended("b"))
         await wait_for(lambda: len(_rows(pilot.app)) == 2, pilot=pilot, description="two background rows")
 
-        await click_when_settled(pilot, "#background-tasks-clear")
+        await _click_clear(pilot)
         await wait_for(lambda: len(_rows(pilot.app)) == 1, pilot=pilot, description="the ended row cleared")
         assert not _clear_shown(pilot.app)
 
@@ -249,7 +315,7 @@ async def test_clear_ended_hides_those_commands_but_not_later_ones() -> None:
         assert len(_rows(pilot.app)) == 1
 
         # Nothing left to show: the box says so.
-        await click_when_settled(pilot, "#background-tasks-clear")
+        await _click_clear(pilot)
         await wait_for(lambda: _shown(pilot.app, "#background-tasks-empty"), pilot=pilot, description="the empty state")
 
 
@@ -328,8 +394,8 @@ async def test_a_long_list_in_a_short_tab_scrolls_to_its_last_row() -> None:
         await wait_for(lambda: box.max_scroll_y > 0, pilot=pilot, description="the list overflows")
 
         box.scroll_end(animate=False)
-        # The rows scrolled up under the title open nothing from there.
-        await click_when_settled(pilot, "#background-tasks-title", offset=(4, 0))
+        # The rows scrolled up under the top border open nothing from there.
+        await click_when_settled(pilot, app.query_one(BackgroundTaskList), offset=(4, 0))
         await click_when_settled(pilot, "#background-tasks-rows", offset=(2, 15))
         await wait_for(lambda: app.opened == ["t15"], pilot=pilot, description="the last row opened")
 

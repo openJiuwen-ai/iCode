@@ -68,9 +68,12 @@ class SidebarPanel(Widget, can_focus=False):
     SidebarPanel.-shell-active {
         border: round $tui-border-warning $border-opacity;
     }
+    /* Here, not in the boxes' own CSS: Textual scopes a widget's rule to under the widget. */
     SidebarPanel.-shell-active DiffPreview > #diff-preview-box,
-    SidebarPanel.-shell-active ConversationToc > #toc-box {
-        border: round $tui-border-warning-darken-1 $border-opacity;
+    SidebarPanel.-shell-active ConversationToc > #toc-box,
+    SidebarPanel.-shell-active TasksPanel > #tasks-todos,
+    SidebarPanel.-shell-active BackgroundTaskList {
+        border: round $tui-border-warning-darken-1 $inner-border-opacity;
     }
     SidebarPanel > TabbedContent {
         height: 100%;

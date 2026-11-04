@@ -374,12 +374,15 @@ class MutationTracker:
         with self._state_lock:
             mutation.after_hash = mutation.before_hash
             mutation.after_skip = mutation.before_skip
+            mutation.settled = True
 
-    def record_after(self, mutation: FileMutation) -> None:
+    def record_after(self, mutation: FileMutation, *, settled: bool = False) -> None:
         """Snapshot the file AFTER mutation and store the hash.
 
         Called after a tool (write_file, edit_file) completes to
         capture the post-mutation content for session replay diffs.
+        *settled* only once the tool has returned, so nothing can still
+        write the endpoint (see :attr:`FileMutation.settled`).
 
         Also updates ``_last_known_hash`` so subsequent mutations to
         the same file within this turn get an accurate ``before_hash``.
@@ -388,6 +391,7 @@ class MutationTracker:
             after = self._store.save_blob(mutation.path)
             mutation.after_hash = after.content_hash
             mutation.after_skip = after.skip_reason
+            mutation.settled = settled
             # A detector's DELETE is a candidate, not proof of absence:
             # refs can move without touching the worktree, and filesystem
             # probes can fail. Only an observed missing endpoint is deleted.

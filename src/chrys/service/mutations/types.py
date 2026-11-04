@@ -385,6 +385,12 @@ class FileMutation:
     Persisted so resumed sessions can still match at a post-restart
     rollback; ``None`` (legacy rows) simply never matches — a missed
     demotion, not a correctness hazard.
+
+    ``settled`` marks a file-tool row whose after endpoint is final: the
+    tool returned before it was read, or never ran and after is before.
+    Only a settled row can prove no change. An interrupted call's sync
+    writer may still be running when its endpoint is read, and rows from
+    older sessions carry no such evidence, so neither ever proves one.
     """
 
     path: str  # absolute, normalized
@@ -402,14 +408,15 @@ class FileMutation:
     t_start: float | None = None  # write-interval lower bound (see docstring)
     t_end: float | None = None  # write-interval upper bound
     tool_operation_id: str | None = None  # stable tool occurrence, distinct from provider call_id
+    settled: bool = False  # after endpoint is final (see docstring)
 
     def __post_init__(self) -> None:
         if self.provenance is None:
             self.provenance = default_provenance(self.source)
 
     @property
-    def proves_no_change(self) -> bool:
-        """Whether both known endpoints are identical and no move took place."""
+    def endpoints_match(self) -> bool:
+        """Whether both recorded endpoints are identical and no move took place: what the row shows, not proof."""
         return (
             self.old_path is None
             and self.before_hash == self.after_hash
@@ -418,9 +425,14 @@ class FileMutation:
         )
 
     @property
+    def proves_no_change(self) -> bool:
+        """Whether the endpoints match and are final, so rollback may leave the path alone."""
+        return self.settled and self.endpoints_match
+
+    @property
     def changed_at(self) -> float | None:
-        """Write-interval time for a possible change, absent for proven no-ops."""
-        return None if self.proves_no_change else self.t_end or self.timestamp
+        """Write-interval time for a possible change, absent for rows that show none."""
+        return None if self.endpoints_match else self.t_end or self.timestamp
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -450,6 +462,8 @@ class FileMutation:
             d["t_start"] = self.t_start
         if self.t_end is not None:
             d["t_end"] = self.t_end
+        if self.settled:
+            d["settled"] = True
         return d
 
     @classmethod
@@ -471,6 +485,7 @@ class FileMutation:
             contested=bool(d.get("contested", False)),
             t_start=d.get("t_start"),
             t_end=d.get("t_end"),
+            settled=d.get("settled") is True,
         )
 
 

@@ -60,7 +60,6 @@ class DiffPreview(Vertical, can_focus=False):
     DEFAULT_CSS = """
     DiffPreview {
         display: none;
-        margin: 0 1;
     }
     DiffPreview > .diff-preview--hover {
         background: $primary 30%;
@@ -78,7 +77,7 @@ class DiffPreview(Vertical, can_focus=False):
     }
     DiffPreview > #diff-preview-box {
         height: 1fr;
-        border: round $tui-border-primary-darken-3 $border-opacity;
+        border: round $tui-border-primary-darken-3 $inner-border-opacity;
         border-title-color: $text-muted;
         border-title-style: bold;
         padding: 0 1;

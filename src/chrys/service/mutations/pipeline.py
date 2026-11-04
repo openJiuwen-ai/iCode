@@ -15,6 +15,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING
 
 from chrys.foundation.platform.paths import resolve_workspace_path
@@ -609,7 +610,8 @@ async def finalize_mutation_tracking(
 
     # Capture after-content for file mutations (for DiffView replay)
     if ctx.file_mutation is not None:
-        await loop.run_in_executor(None, tracker.record_after, ctx.file_mutation)
+        # The tool has returned, so this endpoint is final.
+        await loop.run_in_executor(None, partial(tracker.record_after, ctx.file_mutation, settled=True))
         # Tight write-interval upper bound: the disk write happened
         # during tool execution, strictly before this stamp.
         ctx.file_mutation.t_end = time.time()
@@ -792,8 +794,9 @@ def abort_mutation_tracking(
 
     ``may_have_run=False`` is only for exits known to precede execution:
     file rows retain their replay slot with after equal to before. Otherwise
-    file rows capture the current disk endpoint, including partial writes.
-    Neither case removes the row. Implicit detection is marked truncated
+    file rows capture the current disk endpoint, including partial writes;
+    an interrupted sync writer may still change it, so that endpoint never
+    proves no change. Neither case removes the row. Implicit detection is marked truncated
     only when the call may have run: even a shell with no detection artifacts
     may have written before the interrupt.
     """
