@@ -127,6 +127,11 @@ async def _delete_in_the_models_dialog(session: Session, profile_id: str) -> Non
     await wait_for(lambda: app.screen is session.main, pilot=pilot, description="Models dialog closed")
 
 
+# AIxCoding catalog: upstream deletes profiles in the local dialog; under
+# server-side catalog management the F4 entry is disabled and the list is
+# read-only (aixcoding/docs/batches/catalog-sync/design.md) - re-evaluate at
+# the next upgrade.
+@pytest.mark.skip(reason="AIxCoding catalog: model list is server-managed read-only; local deletion does not apply")
 @pytest.mark.parametrize(
     ("deleted", "startup_agent", "own_model", "runs_after"),
     [

@@ -218,7 +218,8 @@ async def test_keenable_keyless_contract_and_filter():
     request = seen[0]
     assert request.method == "POST"
     assert str(request.url) == "https://api.keenable.ai/v1/search/public"
-    assert request.headers["X-Keenable-Title"] == "iCode"
+    # AIxCoding branding: keenable title assertion
+    assert request.headers["X-Keenable-Title"] == "AIxCoding"
     assert {"authorization", "x-api-key"}.isdisjoint(key.lower() for key in request.headers)
     assert json.loads(request.content) == {"query": '中 "query" site:example.com', "max_results": 3}
 
