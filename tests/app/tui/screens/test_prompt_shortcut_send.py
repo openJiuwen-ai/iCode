@@ -773,10 +773,17 @@ async def test_an_unavailable_shortcut_comes_back_without_its_owner_and_then_sen
         main, pilot, chat = session.main, session.pilot, session.chat
         draft = await expand_shortcut(session, "zzgone")
         path.unlink()
+        rejection = session.hold()
+        await hold_next(
+            session.bus, ev.Error, rejection, when=lambda error: error.code == "prompt_shortcut_unavailable"
+        )
 
         await pilot.press("enter")
 
-        await await_error(session, "prompt_shortcut_unavailable")
+        await wait_for(rejection.entered.is_set, pilot=pilot, description="shortcut refusal shown")
+        # The error card can already be on screen while the first send still owns admission.
+        assert not chat.text
+        rejection.release()
         await wait_for(
             lambda: chat.text == draft.text and session.bar.draft_owner is None,
             pilot=pilot,
