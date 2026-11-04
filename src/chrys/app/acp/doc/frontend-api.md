@@ -277,7 +277,7 @@ A provider client's automatic resend within a model call adds an entry to `model
 | `profiles/agents/read` | `name` | Full agent profile. **MCP `headers`/`env` values masked as `"***"`.** |
 | `profiles/agents/write` | `profile` | Persist. Masked `"***"` MCP secrets restored from the stored profile. |
 | `profiles/agents/delete` | `name` | Delete a user agent profile. Built-in profiles are rejected; clients should migrate the previous "delete shadow to restore built-in" behavior to `profiles/agents/reset`. |
-| `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, and Memory settings. Returns `changed: false` when no shadow or resettable changes exist. |
+| `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, Memory, and Extensions settings. Returns `changed: false` when no shadow or resettable changes exist. |
 | `profiles/models/list` | — | Model profile summaries (no secrets). |
 | `profiles/models/read` | `id` | Full model profile. **`api_key` masked as `"***"`.** |
 | `profiles/models/write` | `profile` | Persist. `api_key` of `""`/`"***"` preserves the stored key. Omitting `stream` or sending `null` streams for a new profile and keeps the stored value on an update; `false` (or another false spelling such as `0` or `""`) turns streaming off. |

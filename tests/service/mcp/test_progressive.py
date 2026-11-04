@@ -394,6 +394,21 @@ async def test_agent_connect_ignores_reserved_remote_name_excluded_from_permitte
     await adapter.disconnect_all()
 
 
+async def test_tool_namespace_holds_every_name_the_connected_servers_take() -> None:
+    """Extensions load after MCP and their tools yield all of these: deferred tools and loading controls included."""
+    adapter = MCPAdapter(reserved_tool_names=set())
+    fake = _FakeCatalogTool([_function("lookup"), _function("deferred")])
+    config = _config(always_load=["lookup"])
+
+    with patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake):
+        visible = {tool.name for tool in await adapter.connect_all([config])}
+
+    assert "deferred" not in visible
+    assert visible | {"lookup", "deferred"} <= adapter.tool_namespace
+    await adapter.disconnect_all()
+    assert adapter.tool_namespace == frozenset()
+
+
 async def test_connect_all_does_not_downgrade_chrys_name_collision_to_warning() -> None:
     warnings: list[Warning] = []
 

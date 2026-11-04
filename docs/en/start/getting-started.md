@@ -243,4 +243,4 @@ You can continue exploring:
 - [Configure models](../guides/configuration/models.md) to connect to and switch between model services
 - [Working directory](../guides/daily-use/workspaces.md)
 - [Configure approval modes](../guides/configuration/approval.md)
-- Extend iCode with [Skills](../guides/extensions/skills.md) and [MCP](../guides/extensions/mcp.md)
+- Extend iCode with [Skills](../guides/extensions/skills.md), [MCP](../guides/extensions/mcp.md), and [Python extensions](../guides/extensions/python-extensions.md)

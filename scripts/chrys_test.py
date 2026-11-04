@@ -200,6 +200,10 @@ REGULAR_RULES = (
     TestRule("tests/app/tui/screens/test_approval_review_reason.py", ("src/chrys/service/approval/principles.json",)),
     TestRule("tests/foundation/test_documentation.py", ("pyproject.toml", "docs/index.yaml")),
     TestRule("tests/service/acp_client", ("tests/support/acp_stub_agent.py",)),
+    # These install the example extension by copying its source, never importing it.
+    TestRule("tests/service/extensions", ("tests/support/acme_release_extension.py",)),
+    TestRule("tests/integration/engine/test_pipeline_extensions.py", ("tests/support/acme_release_extension.py",)),
+    TestRule("tests/app/tui/screens/test_agent_config_extensions.py", ("tests/support/acme_release_extension.py",)),
     TestRule("tests/service/mcp/test_cache_refresh.py", ("tests/support/mcp_reload_probe_server.py",)),
     TestRule(
         "tests/service/mcp/test_connect_imports.py",

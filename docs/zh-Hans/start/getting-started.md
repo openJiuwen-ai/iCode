@@ -243,4 +243,4 @@ Mermaid 代码块会显示为图表，点击**打开完整图表**可查看、�
 - [配置模型](../guides/configuration/models.md)，连接并切换不同的模型服务
 - [工作目录](../guides/daily-use/workspaces.md)
 - [配置审批模式](../guides/configuration/approval.md)
-- 通过 [Skills](../guides/extensions/skills.md) 和 [MCP](../guides/extensions/mcp.md) 扩展 iCode
+- 通过 [Skills](../guides/extensions/skills.md)、[MCP](../guides/extensions/mcp.md) 和 [Python 扩展](../guides/extensions/python-extensions.md)扩展 iCode

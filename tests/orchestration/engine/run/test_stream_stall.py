@@ -907,7 +907,6 @@ class TestStreamStallPerChunk:
         executor.tool_events = SimpleNamespace()
         executor._ask_user = SimpleNamespace()
         executor.approval = SimpleNamespace()
-        executor._extra_function_middleware = ()
         executor._sleep = SimpleNamespace()
         executor._compaction_strategy = None
         executor._chat_options = {"store": True}

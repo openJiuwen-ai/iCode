@@ -39,7 +39,7 @@ from chrys.app.tui.screens.agents.validation_messages import (
     ACP_FIELD_STRING,
     ACP_MODEL_ID_FIELD,
     ACP_NO_BUILTIN_TOOLS,
-    ACP_NO_CUSTOM_TOOLS,
+    ACP_NO_EXTENSIONS,
     ACP_NO_MCP,
     ACP_NO_NESTED_SUBAGENTS,
     ACP_RESULT_MODE,
@@ -567,8 +567,8 @@ def validate_acp_draft(
         errors.append(_context_error(render_message, prefix, ACP_NO_NESTED_SUBAGENTS.bind()))
     if profile.tools.mcp:
         errors.append(_context_error(render_message, prefix, ACP_NO_MCP.bind()))
-    if profile.tools.custom:
-        errors.append(_context_error(render_message, prefix, ACP_NO_CUSTOM_TOOLS.bind()))
+    if profile.extensions:
+        errors.append(_context_error(render_message, prefix, ACP_NO_EXTENSIONS.bind()))
     if profile.tools.builtins:
         errors.append(_context_error(render_message, prefix, ACP_NO_BUILTIN_TOOLS.bind()))
     return errors

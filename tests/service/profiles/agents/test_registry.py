@@ -180,7 +180,7 @@ def test_builtin_filename_guard_does_not_change_profile_identity(name: str) -> N
     assert reg.get(custom.name) is custom
 
 
-def test_build_builtin_reset_preserves_only_skills_mcp_and_memory() -> None:
+def test_build_builtin_reset_preserves_only_skills_mcp_memory_and_extensions() -> None:
     reg = AgentProfileRegistry()
     reg.load_builtins()
     template = reg.get_builtin_template("Code")
@@ -192,6 +192,7 @@ def test_build_builtin_reset_preserves_only_skills_mcp_and_memory() -> None:
     current.skills = SkillsConfig(paths=["custom-skills"])
     current.tools.mcp = [MCPServerConfig(name="private", transport="http", url="https://example.test")]
     current.memory = MemoryConfig(files=["private.md"])
+    current.extensions = ["acme_release"]
 
     reset = reg.build_builtin_reset("Code", preserve_from=current)
 
@@ -203,8 +204,11 @@ def test_build_builtin_reset_preserves_only_skills_mcp_and_memory() -> None:
     assert reset.skills == current.skills
     assert reset.tools.mcp == current.tools.mcp
     assert reset.memory == current.memory
+    assert reset.extensions == ["acme_release"]
     reset.skills.paths.append("mutated")
+    reset.extensions.append("mutated")
     assert current.skills.paths == ["custom-skills"]
+    assert current.extensions == ["acme_release"]
 
 
 def test_load_builtins() -> None:

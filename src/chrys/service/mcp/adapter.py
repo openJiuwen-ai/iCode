@@ -1024,6 +1024,11 @@ class MCPAdapter:
         return list(dict.fromkeys([*self._leases.keys(), *self._servers.keys()]))
 
     @property
+    def tool_namespace(self) -> frozenset[str]:
+        """Every tool name the connected servers take, deferred tools and progressive-loading controls included."""
+        return frozenset().union(*self._tool_namespace_by_server.values())
+
+    @property
     def tool_names_by_server(self) -> dict[str, list[str]]:
         """Snapshot of server-name -> loaded tool names from the last connect_all call."""
         return {name: list(tools) for name, tools in self._tool_names_by_server.items()}

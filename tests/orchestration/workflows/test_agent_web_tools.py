@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 import chrys.orchestration.workflows.agent_node_build as agent_node_build
+import chrys.service.tools.builtins.web.build as web_build
 from chrys.foundation.events.types import Warning
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.tools.builtins.web.build import WebTools
@@ -42,13 +43,13 @@ async def test_workflow_agent_node_passes_profile_web_configuration(
     profile.tools.web_search = WebSearchConfigPatch(mode="off")
     profile.tools.web_fetch = WebFetchConfigPatch(mode="off")
     calls: list[tuple[Any, ...]] = []
-    original = agent_node_build.assemble_web_tools
+    original = web_build.assemble_web_tools
 
     def capture(categories: list[str], settings: Any, search: Any, fetch: Any, **kwargs: Any) -> WebTools:
         calls.append((search, fetch))
         return original(categories, settings, search, fetch, **kwargs)
 
-    monkeypatch.setattr(agent_node_build, "assemble_web_tools", capture)
+    monkeypatch.setattr(web_build, "assemble_web_tools", capture)
     project = make_project(tmp_path)
     write_workflow(project, "web", _workflow("WebOff"))
     host = make_host(tmp_path, project=project, profiles=[make_profile(), profile])

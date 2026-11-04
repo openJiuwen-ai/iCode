@@ -70,6 +70,7 @@ from tests.support.pipeline_helpers import (
     wait_for_idle,
 )
 from tests.support.symlinks import symlink_or_skip
+from tests.support.tool_packs import install_tools
 from tests.support.trajectory_invariants import assert_trajectory_accounted, assert_trajectory_operation_settlement
 from tests.support.waiting import (
     ENGINE_TEST_WAIT_TIMEOUT,
@@ -905,26 +906,7 @@ async def test_an_approval_round_records_a_pair_the_writer_accepts(tmp_path: Pat
 @pytest.mark.parametrize("reload_during_review", [False, True])
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
 async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path, monkeypatch, reload_during_review):
-    from chrys.service.tools.registry import ToolRegistry
-
-    def load_builtins(
-        registry,
-        categories,
-        runtime=None,
-        settings=None,
-        shell_filter_config=None,
-        session_id=None,
-        session_dir=None,
-        web=None,
-        background_tasks=None,
-        session_wide_background=False,
-    ):
-        registry.register(echo_tool)
-        return [echo_tool]
-
-    monkeypatch.setattr(
-        ToolRegistry, "load_builtins", create_autospec(ToolRegistry.load_builtins, side_effect=load_builtins)
-    )
+    install_tools(monkeypatch, [echo_tool])
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def response(client, messages, *, stream, options, timeout):

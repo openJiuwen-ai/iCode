@@ -9,7 +9,6 @@ Provides:
   Chrys tool loop (no snapshot/restore needed).
 - InterruptMiddleware: Checks for interrupt signals between tool calls.
 - AskUserMiddleware: Intercepts ask_user tool calls to show a dialog.
-- TodoMiddleware: Intercepts todo_write tool calls to update the session todo list.
 - SleepMiddleware: Intercepts sleep tool calls so the frontend can skip them.
 - ResponseBatchCounter: Numbers a main pass's tool-calling responses.
 """
@@ -27,7 +26,6 @@ from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
 from chrys.service.agent_middleware.control.ask_user import AskUserMiddleware
 from chrys.service.agent_middleware.control.interrupt import InterruptMiddleware
 from chrys.service.agent_middleware.control.sleep import SleepMiddleware
-from chrys.service.agent_middleware.control.todo import TodoMiddleware
 from chrys.service.agent_middleware.events.intermediate_text import ResponseBatchCounter
 from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware, SubAgentStatsMiddleware
 from chrys.service.agent_middleware.events.tool_events import ToolEventMiddleware
@@ -50,7 +48,6 @@ __all__ = [
     "SleepMiddleware",
     "SubAgentEventMiddleware",
     "SubAgentStatsMiddleware",
-    "TodoMiddleware",
     "ToolEventMiddleware",
     "_read_file_snapshot",
     "_read_shell_snapshots",

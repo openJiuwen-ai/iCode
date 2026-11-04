@@ -755,6 +755,7 @@ class AgentProfileRegistry:
         template.skills = deepcopy(current.skills)
         template.tools.mcp = deepcopy(current.tools.mcp)
         template.memory = deepcopy(current.memory)
+        template.extensions = list(current.extensions)
         return template
 
     def profiles_referencing(self, name: str) -> list[AgentProfile]:

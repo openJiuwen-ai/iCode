@@ -24,6 +24,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import msg
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.platform.paths import resolve_workspace_path
+from chrys.foundation.tool_approval import declares_requires_approval
 from chrys.foundation.tool_kinds import (
     KIND_FILESYSTEM_READ,
     KIND_FILESYSTEM_WRITE,
@@ -349,7 +350,9 @@ class ApprovalMiddleware(FunctionMiddleware):
         sensitive_filesystem_write = tool_kind == KIND_FILESYSTEM_WRITE and path_arg_may_access_sensitive_data(
             context.arguments
         )
-        policy_requires_approval = self._policy.should_require_approval(tool_name, tool_kind)
+        policy_requires_approval = self._policy.should_require_approval(
+            tool_name, tool_kind, tool_requires_approval=declares_requires_approval(context.function)
+        )
         if (
             not policy_requires_approval
             and not dev_sub_agent_review

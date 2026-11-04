@@ -57,6 +57,7 @@ from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.phase4_stubs import StubLastWordsGenerator
 from tests.support.scripted_clients import HostedMockChatClient
+from tests.support.tool_packs import install_tools
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
@@ -199,6 +200,8 @@ async def create_test_engine(
     max_context_tokens: int = 100_000,
     max_transient_retries: int | None = None,
     surface: SessionSurface | None = None,
+    extensions: list[str] | None = None,
+    builtins: list[str] | None = None,
 ) -> PipelineTestContext:
     """Create a fully wired mock engine without advisory workspace scans.
 
@@ -213,6 +216,8 @@ async def create_test_engine(
         compaction: Custom compaction config (default: disabled).
         max_context_tokens: Model context window size.
         surface: The launch surface a turn records on its session.
+        extensions: The Python extensions the profile enables, loaded as in production.
+        builtins: First-party packs the profile enables, created as in production beside the test tools.
 
     Returns:
         PipelineTestContext ready for test use.
@@ -246,7 +251,8 @@ async def create_test_engine(
     profile = AgentProfile(
         name="test-pipeline",
         instructions="You are a test assistant. Use the tools provided.",
-        tools=ToolsConfig(builtins=[]),
+        tools=ToolsConfig(builtins=builtins or []),
+        extensions=extensions or [],
         skills=skills or SkillsConfig(auto_load_user_agents_skills=False, auto_load_cwd_agents_skills=False),
         approval=ApprovalConfig(default=approval_default, overrides=approval_overrides or {}),
         compaction=compaction or CompactionConfig(enabled=False),
@@ -285,16 +291,9 @@ async def create_test_engine(
     create_client_patcher = pytest.MonkeyPatch()
     create_client_patcher.setattr(builder_module, "create_client", _patched_create_client)
 
-    # Monkey-patch ToolRegistry.load_builtins to inject test tools
-    from chrys.service.tools.registry import ToolRegistry
-
-    def _patched_load_builtins(self: Any, categories: Any, **kwargs: Any) -> list:
-        for t in test_tools:
-            self.register(t)
-        return test_tools
-
-    load_builtins_patcher = pytest.MonkeyPatch()
-    load_builtins_patcher.setattr(ToolRegistry, "load_builtins", _patched_load_builtins)
+    # The build's only local tools are the test tools.
+    tools_patcher = pytest.MonkeyPatch()
+    install_tools(tools_patcher, test_tools, first_party=builtins or ())
 
     engine = assemble_agent_engine(
         bus,
@@ -311,11 +310,11 @@ async def create_test_engine(
         await engine.start(profile)
     except Exception:
         create_client_patcher.undo()
-        load_builtins_patcher.undo()
+        tools_patcher.undo()
         raise
 
-    # Restore ToolRegistry immediately — we only need it during start()
-    load_builtins_patcher.undo()
+    # Restore tool assembly immediately — we only need it during start()
+    tools_patcher.undo()
 
     # Phase 4's real LAST_WORDS generator makes an LLM side call, which would
     # consume scripted MockChatClient responses out from under the main tool

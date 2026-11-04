@@ -106,7 +106,6 @@ if TYPE_CHECKING:
     from chrys.foundation.models.invocations import ContentStatus
     from chrys.foundation.trajectory.context import TrajectoryContext
     from chrys.kernel import AgentResponse, ChatResponse, LoopRecorder
-    from chrys.kernel.middleware import FunctionMiddleware
     from chrys.service.agent_middleware.injection import InjectionMiddleware, QueuedInjection
     from chrys.service.context.compaction import UnifiedContextStrategy
     from chrys.service.context.compaction.strategy import CompactionRetrySnapshot
@@ -199,7 +198,6 @@ class TurnBindings:
         profile_name: str = "",
         workspace_cwd: str = "",
         serialize_implicit_windows: bool = False,
-        extra_function_middleware: Sequence[FunctionMiddleware] = (),
         run_cycle_start_hooks: Sequence[Callable[[], None]] = (),
         hosted_commits_probe: Callable[[], tuple[str, ...]] | None = None,
         hosted_commits_in_flight_probe: Callable[[], tuple[str, ...]] | None = None,
@@ -243,7 +241,6 @@ class TurnBindings:
         self._projector = None
         self._interrupt = InterruptMiddleware()
         self._hook_commit = HookCommitMiddleware()
-        self._extra_function_middleware = tuple(extra_function_middleware)
         # Fired once at the start of every user-initiated run cycle, before
         # the first attempt.  Components that carry state across the cycle's
         # whole-run retry attempts register here so an aborted cycle —
@@ -546,18 +543,16 @@ class TurnBindings:
             drain_consumed_injection_messages=self._injection.drain_consumed_injection_messages,
             commit_consumed_injections=self._injection.commit_logical_call,
         )
-        # Chain order is pinned (first = outermost): extras sit INSIDE
-        # tool_events (a short-circuiting extra must still publish
-        # InvocationToolCallStart/InvocationToolCallResult) and INSIDE approval (no extra can
-        # bypass approval on gated kinds). The hook commit is innermost: nothing after it
-        # can change the arguments the before_tool_call hooks checked.
+        # Chain order is pinned (first = outermost): everything sits inside tool_events,
+        # so a call a middleware answers itself (ask_user, a skipped sleep) still publishes
+        # InvocationToolCallStart/InvocationToolCallResult. The hook commit is innermost:
+        # nothing after it can change the arguments the before_tool_call hooks checked.
         kwargs: AgentRunKwargs = {
             "session": self._session,
             "middleware": [
                 self.tool_events,
                 self._ask_user,
                 self.approval,
-                *self._extra_function_middleware,
                 self._sleep,
                 self._interrupt,
                 self._hook_commit,

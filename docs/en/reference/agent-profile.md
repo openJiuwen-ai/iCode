@@ -83,6 +83,7 @@ If "Code review" appears in the list, the profile has loaded. If it does not app
 | `instructions` | String or list of strings | Empty | Main behavioral instructions for agents of the built-in type. A list is joined into one text, one item per line. External ACP profiles ignore this field. |
 | `model` | Object | `{}` | Binds a model profile. See [model](#model). |
 | `tools` | Object | `{}` | Configures built-in tools, MCP, and shell filtering. See [tools](#tools). |
+| `extensions` | List of strings | `[]` | The Python extensions the agent loads. See [extensions](#extensions). |
 | `approval` | Object | See below | Configures which tool calls require approval. See [approval](#approval). |
 | `skills` | Object | See below | Configures skill sources and inline skills. See [skills](#skills). |
 | `memory` | Object | `{}` | Configures reference files to load automatically. See [memory](#memory). |
@@ -310,6 +311,15 @@ tools:
 
 Network access (the proxy, origin lists, and custom endpoint grants) can be set only in user settings, not in agent profiles. See [Web tools](./settings.md#web-tools) in the settings reference.
 
+## extensions
+
+```yaml
+extensions:
+  - tracker
+```
+
+Ids of the [Python extensions](../guides/extensions/python-extensions.md) the agent loads, in order. An extension that is not installed stays in the list; the agent starts without it, with a warning.
+
 ## approval
 
 `approval` sets the **initial approval level** for tool calls. This differs from the session's **approval mode**: the approval level determines whether a tool call enters the approval process, while the approval mode determines how it is handled once it enters that process.
@@ -388,6 +398,8 @@ If `overrides` is omitted, iCode uses the default overrides: `shell: require`, `
 Skill scripts are an exception: `run_skill_script` requires approval by default. To change this behavior, explicitly set an approval level for `skill`, `run_skill_script`, or `skill.run_skill_script` in `overrides`.
 
 Web tools are also an exception: tools of the `web_search` and `web_fetch` kinds require approval by default, even when `default` is `auto`. This rule applies after the rules in `overrides` and before `default`. To change it, explicitly set an approval level for the kind or tool name in `overrides`, for example `web_search: auto`.
+
+Tools from [Python extensions](../guides/extensions/python-extensions.md) follow the same rule, except those their author marked as safe to run unasked. To change it, set an approval level for the extension's kind or one of its tools, for example `extension.tracker: auto`.
 
 ## skills
 
@@ -520,7 +532,7 @@ For configuration instructions and call verification, see [Configure agents](../
 
 When `acp` appears at the top level, the profile becomes an external ACP agent and is forced to be available only as a sub-agent. The external process determines its task instructions, model, and tools.
 
-External ACP agents do not use `instructions`, `model.profile_id`, `tools`, `skills`, `memory`, `compaction`, `approval`, or `sub_agents` from the current profile. These settings do not affect the external agent's behavior.
+External ACP agents do not use `instructions`, `model.profile_id`, `tools`, `extensions`, `skills`, `memory`, `compaction`, `approval`, or `sub_agents` from the current profile. These settings do not affect the external agent's behavior.
 
 ```yaml
 name: ExternalReviewer

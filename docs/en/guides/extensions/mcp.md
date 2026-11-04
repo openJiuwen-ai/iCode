@@ -4,6 +4,8 @@ Model Context Protocol (MCP) servers can provide iCode agents with external tool
 
 Before connecting an MCP server, confirm that its source is trustworthy. The server may receive tool call arguments and access local files, network services, or account data. Its prompt templates and usage instructions may also affect the agent's behavior.
 
+To give agents tools written as a few Python functions, without running a server, see [Python extensions](./python-extensions.md).
+
 ## Add an MCP server configuration
 
 Enter `/agents mcp` in the input field to open the current agent's "MCP" tab. Added server configurations apply only to the current agent; they are not automatically applied to other agents.

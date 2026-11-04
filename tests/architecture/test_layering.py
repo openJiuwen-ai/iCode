@@ -37,6 +37,7 @@ ROOT_INIT = "__root__"
 _AGENTS_SOURCE_MAP_SECTION = 'AGENTS.md "Source map (src/chrys/)" section'
 
 WORKFLOWS_FACADE = "workflows"
+EXTENSIONS_SDK = "extensions"
 
 TIER_ORDER = {
     FOUNDATION: 0,
@@ -44,6 +45,8 @@ TIER_ORDER = {
     SERVICE: 2,
     # src/chrys/workflows.py re-exports the service-tier SDK for workflow files.
     WORKFLOWS_FACADE: 2,
+    # src/chrys/extensions.py, the Python extension authoring API, imports only the standard library.
+    EXTENSIONS_SDK: 0,
     ORCHESTRATION: 3,
     APP: 4,
 }

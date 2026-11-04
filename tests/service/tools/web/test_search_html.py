@@ -16,8 +16,7 @@ from chrys.service.tools.builtins.web.build import build_web_tools
 from chrys.service.tools.builtins.web.config import parse_provider, parse_search
 from chrys.service.tools.builtins.web.http import WebError
 from chrys.service.tools.builtins.web.search.html import parse_html, result_url
-from chrys.service.tools.registry import ToolRegistry
-from tests.service.tools.web._support import Chunks, assemble
+from tests.service.tools.web._support import Chunks, assemble_agent_tools
 
 _BING = b"""<html><body><ol id="b_results">
 <li class="b_algo"><h2><a href="https://docs.python.org/3/library/asyncio.html">Asyncio documentation</a></h2>
@@ -106,15 +105,14 @@ def test_ddg_page_with_only_ads_fails_closed():
 
 
 @pytest.mark.parametrize("provider_type", ["bing_html", "duckduckgo_html"])
-def test_build_and_registry_require_no_credentials(provider_type):
+async def test_build_and_registry_require_no_credentials(provider_type):
     with patch(
         "chrys.service.tools.builtins.web.build.resolve_search_credentials",
         autospec=True,
         side_effect=AssertionError("secret lookup"),
     ):
-        registry = ToolRegistry()
-        registry.load_builtins(["web_search"], settings=Settings(), web=assemble(["web_search"], config(provider_type)))
-        assert [tool.name for tool in registry.get_by_category("web_search")] == ["web_search"]
+        assembled = await assemble_agent_tools(["web_search"], config(provider_type))
+        assert assembled.by_pack["web_search"] == ["web_search"]
 
 
 @pytest.mark.parametrize("provider_type", ["bing_html", "duckduckgo_html"])

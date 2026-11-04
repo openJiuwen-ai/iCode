@@ -88,7 +88,7 @@ class WebSearchTools:
     def tools(self) -> list:
         return [self._tool]
 
-    @tool(kind=KIND_WEB_SEARCH)
+    @tool(kind=KIND_WEB_SEARCH, requires_approval=True)
     async def web_search(
         self,
         query: Annotated[str, "Web search query; 1-2000 characters after trimming"],

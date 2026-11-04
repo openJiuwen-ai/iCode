@@ -605,7 +605,8 @@
         ["wrapper", "await create_client(active_profile, on_intermediate_text=on_intermediate, session_id=session_id, session_dir=effective_session_dir, tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens)", "unresolved", "chrys.service.llm.clients.create_client"],
         ["awaitable", "await prepared.own_or_release(client.aclose)", "unresolved"],
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_TOOLS, 'Loading built-in tools', status=AGENT_LOAD_STATUS_RUNNING)", "unresolved"],
-        ["wrapper", "await import_off_loop('chrys.service.tools.builtins.web.build', 'chrys.service.tools.registry')", "unresolved", "chrys.foundation.util.imports.import_off_loop"],
+        ["wrapper", "await import_off_loop(*tool_packs.IMPLEMENTATION_MODULES)", "unresolved", "chrys.foundation.util.imports.import_off_loop"],
+        ["awaitable", "await tool_packs.assemble_tools(tool_build)", "unresolved"],
         ["awaitable", "await bus.publish(warning)", "unresolved"],
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_TOOLS, 'Built-in tools loaded', current=builtin_tool_count, total=builtin_tool_count, status=AGENT_LOAD_STATUS_DONE)", "unresolved"],
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_SUB_AGENTS, 'Loading sub-agent tools', current=0, total=sub_agent_total, status=AGENT_LOAD_STATUS_RUNNING)", "unresolved"],
@@ -617,6 +618,8 @@
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_SUB_AGENTS, f'Loaded sub-agent {ref.profile}', server_name=ref.profile, current=index, total=sub_agent_total, status=AGENT_LOAD_STATUS_DONE, subject=ref.profile)", "unresolved"],
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_MCP, 'Connecting MCP servers', total=len(enabled_mcp), status=AGENT_LOAD_STATUS_RUNNING)", "unresolved"],
         ["awaitable", "await mcp_adapter.connect_all(profile.tools.mcp, progress=_mcp_progress)", "unresolved"],
+        ["wrapper", "await tool_packs.assemble_extension_tools(tool_build, profile.extensions, taken=[*(tool.name for tool in tools), *web_tools.hosted, *(mcp_adapter.tool_namespace if mcp_adapter is not None else ())])", "unresolved", "chrys.service.tools.packs.assemble_extension_tools"],
+        ["awaitable", "await bus.publish(warning)", "unresolved"],
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_SKILLS, 'Loading skills', status=AGENT_LOAD_STATUS_RUNNING)", "unresolved"],
         ["wrapper", "await create_skills_provider(profile.skills, runtime=runtime, session_dir=effective_session_dir, project_skills_enabled=settings.project_skills_enabled)", "unresolved", "chrys.service.skills.adapter.create_skills_provider"],
         ["awaitable", "await bus.publish(Warning(code=warn.code, message=warn.message, session_id=session_id))", "unresolved"],
@@ -2662,8 +2665,11 @@
       "SubAgentTools.register._acquire": [
         ["wrapper", "await create_client(sub_active_profile, session_id=sub_agent_session_id, parent_session_id=self._session_id, use_route_session_context=True, session_dir=self._session_dir, tool_result_ceiling_tokens=self._tool_result_ceiling_tokens)", "unresolved", "chrys.service.llm.clients.create_client"],
         ["awaitable", "await prepared.own_or_release(client.aclose)", "unresolved"],
+        ["awaitable", "await tool_packs.assemble_tools(tool_build)", "unresolved"],
         ["awaitable", "await self._bus.publish(warning)", "unresolved"],
         ["awaitable", "await mcp_adapter.connect_all(profile.tools.mcp)", "unresolved"],
+        ["wrapper", "await tool_packs.assemble_extension_tools(tool_build, profile.extensions, taken=[*(tool.name for tool in tools), *web_tools.hosted, *(mcp_adapter.tool_namespace if mcp_adapter is not None else ())])", "unresolved", "chrys.service.tools.packs.assemble_extension_tools"],
+        ["awaitable", "await self._bus.publish(warning)", "unresolved"],
         ["wrapper", "await create_skills_provider(profile.skills, runtime=runtime, session_dir=self._session_dir, project_skills_enabled=settings.project_skills_enabled)", "unresolved", "chrys.service.skills.adapter.create_skills_provider"],
         ["awaitable", "await self._bus.publish(Warning(code=warn.code, message=warn.message))", "unresolved"],
         ["awaitable", "await agent.__aenter__()", "unresolved"],
@@ -2822,9 +2828,12 @@
       "build_kernel_node": [
         ["wrapper", "await create_client(model, session_id=derive_llm_route_session_id(session_id, route_kind='workflow-node', route_parts=(node_id, profile.name, invocation_id), model_profile=model), parent_session_id=session_id, session_dir=res.session_dir, tool_result_ceiling_tokens=res.settings.tool_result_ceiling_tokens)", "unresolved", "chrys.service.llm.clients.create_client"],
         ["awaitable", "await conversation.own_or_release(client.aclose)", "unresolved"],
+        ["awaitable", "await tool_packs.assemble_tools(tool_build)", "unresolved"],
         ["awaitable", "await res.bus.publish(warning)", "unresolved"],
         ["wrapper", "await _register_sub_agents(conversation, profile=profile, model=model, res=res, environment=environment, workspace_roots=workspace_roots, turn_context=turn_context)", "unresolved", "chrys.orchestration.workflows.agent_node_build._register_sub_agents"],
         ["awaitable", "await mcp_adapter.connect_all(profile.tools.mcp)", "unresolved"],
+        ["wrapper", "await tool_packs.assemble_extension_tools(tool_build, profile.extensions, taken=[*(tool.name for tool in tools), *web_tools.hosted, *(mcp_adapter.tool_namespace if mcp_adapter is not None else ())])", "unresolved", "chrys.service.tools.packs.assemble_extension_tools"],
+        ["awaitable", "await res.bus.publish(warning)", "unresolved"],
         ["wrapper", "await create_skills_provider(profile.skills, runtime=environment, session_dir=res.session_dir, project_skills_enabled=res.settings.project_skills_enabled)", "unresolved", "chrys.service.skills.adapter.create_skills_provider"],
         ["awaitable", "await res.bus.publish(Warning(code=warn.code, message=warn.message, session_id=session_id))", "unresolved"],
         ["awaitable", "await res.bus.publish(memory_truncated_warning(memory_content, session_id=session_id))", "unresolved"],
@@ -3680,13 +3689,6 @@
         ["awaitable", "await self._bus.unsubscribe(UserInterrupt, _interrupt_handler)", "unresolved"]
       ]
     },
-    "chrys.service.agent_middleware.control.todo": {
-      "TodoMiddleware.process": [
-        ["awaitable", "await call_next()", "unresolved"],
-        ["awaitable", "await self._tracker.replace(tuple(items))", "unresolved"],
-        ["awaitable", "await self._bus.publish(TodoListUpdated(items=list(applied), session_id=self._session_id))", "unresolved"]
-      ]
-    },
     "chrys.service.agent_middleware.events.hook_dispatch": {
       "apply_before_tool_hooks": [
         ["wrapper", "await check_operation(manager, HookEvent.BEFORE_TOOL_CALL, operation, lambda: _build_payload(session_id=session_id, profile_name=profile_name, tool_name=tool_name, kind=kind, call_id=call_id, args=operation.arguments(), workspace_cwd=workspace_cwd), target_operation_id=target_operation_id, origin=origin)", "unresolved", "chrys.service.hooks.manager.check_operation"]
@@ -4181,6 +4183,15 @@
       ],
       "CompressibleHistoryProvider.before_run": [
         ["awaitable", "await super().before_run(agent=agent, session=session, context=context, state=state)", "unresolved"]
+      ]
+    },
+    "chrys.service.extensions": {
+      "_bind.call": [
+        ["awaitable", "await func(**arguments)", "unresolved"],
+        ["wrapper", "await bound_result_text(text, budget, spill_dir, _SPILL_PREFIX)", "unresolved", "chrys.service.tools.spill.bound_result_text"]
+      ],
+      "load_extensions": [
+        ["thread_pool", "await asyncio.to_thread(_load_extensions, list(dict.fromkeys(extension_ids)))", "unresolved"]
       ]
     },
     "chrys.service.hooks.confirmation": {
@@ -4834,7 +4845,7 @@
     },
     "chrys.service.mcp.result_limits": {
       "truncate_mcp_result": [
-        ["wrapper", "await run_spill_finalizer(_truncate_mcp_string_result, result, budget, spill_dir, plain)", "unresolved", "chrys.service.tools.spill.run_spill_finalizer"],
+        ["wrapper", "await bound_result_text(result, budget, spill_dir, 'mcp')", "unresolved", "chrys.service.tools.spill.bound_result_text"],
         ["wrapper", "await run_spill_finalizer(_truncate_mcp_list_result, result, texts, budget, spill_dir)", "unresolved", "chrys.service.tools.spill.run_spill_finalizer"]
       ]
     },
@@ -5250,6 +5261,12 @@
         ["sleep", "await asyncio.sleep(duration)", "unresolved"]
       ]
     },
+    "chrys.service.tools.builtins.todo": {
+      "TodoTools.todo_write": [
+        ["awaitable", "await self._tracker.replace(items)", "unresolved"],
+        ["awaitable", "await self._bus.publish(TodoListUpdated(items=list(applied), session_id=self._session_id))", "unresolved"]
+      ]
+    },
     "chrys.service.tools.builtins.web.fetch.cache": {
       "FetchCache.flight": [
         ["sync_primitive", "async with lock", "unresolved"]
@@ -5360,9 +5377,17 @@
         ["awaitable", "await self.inner.write(buffer, timeout)", "unresolved"]
       ]
     },
+    "chrys.service.tools.packs": {
+      "assemble_extension_tools": [
+        ["wrapper", "await load_extensions(extension_ids)", "unresolved", "chrys.service.extensions.load_extensions"]
+      ]
+    },
     "chrys.service.tools.spill": {
       "bound_process_output": [
         ["wrapper", "await run_spill_finalizer(_spill_and_truncate_text, dir_path, prefix, lead, text, budget, footer)", "unresolved", "chrys.service.tools.spill.run_spill_finalizer"]
+      ],
+      "bound_result_text": [
+        ["wrapper", "await run_spill_finalizer(_spill_and_bound_result_text, text, budget, spill_dir, prefix, plain)", "unresolved", "chrys.service.tools.spill.run_spill_finalizer"]
       ],
       "run_spill_finalizer": [
         ["thread_pool", "asyncio.to_thread(function, *args)", "unresolved"],

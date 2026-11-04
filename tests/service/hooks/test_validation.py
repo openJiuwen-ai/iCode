@@ -313,6 +313,11 @@ _WARNINGS = {
         "unknown_tool_kind",
         "did you mean 'shell'?",
     ),
+    "malformed-extension-kind": (
+        _hook("after_tool_call", match="{tool_kind: extension.Acme-Release}"),
+        "unknown_tool_kind",
+        "match.tool_kind 'extension.Acme-Release' is not a tool kind",
+    ),
     "profile-in-the-wrong-case": (
         _hook("after_turn", match="{profile: code}"),
         "unknown_profile",
@@ -385,6 +390,8 @@ def test_warnings_name_what_will_not_work_as_written(tmp_path: Path, text: str, 
 
 _FINE = {
     "tool-match-on-a-tool-event": _hook("after_tool_call", match="{tool_kind: shell, profile: Code}"),
+    # An extension's kind is fine whether or not the extension is installed here.
+    "extension-kind": _hook("after_tool_call", match="{tool_kind: extension.acme_release}"),
     "empty-profile": _hook("after_turn", match="{profile: ''}"),
     "block-on-error-of-a-gate": _hook(
         "before_tool_call", match="{tool_name: write_file}", execution="{mode: blocking, on_error: block}"

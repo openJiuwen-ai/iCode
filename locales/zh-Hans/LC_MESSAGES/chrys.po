@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.33.0\n"
+"Project-Id-Version: Chrys 0.34.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -108,6 +108,12 @@ msgstr[0] ""
 "\n"
 "未附加的图像：\n"
 "{files}"
+
+#. English: Agent {agent} starts without extension {extension}: {reason}
+#. chrys-meta={"fingerprint":"535af465201f2170e30c3e7abab778107dbc0d7bd230f78578ae48ab4f8ae190","multiline":false,"placeholders":["agent","extension","reason"]}
+#: src/chrys/service/tools/packs.py
+msgid "builder.extension_unavailable"
+msgstr "智能体 {agent} 启动时未包含扩展 {extension}：{reason}"
 
 #. English: This model's provider runs web search, so the local {tools} tool(s)
 #. were disabled for this run. Provider-run search is not covered by iCode
@@ -2353,15 +2359,16 @@ msgid "tui.agent_config.confirm.delete.title"
 msgstr "删除智能体"
 
 #. English: Reset built-in agent "{display}" to system defaults?  Skills, MCP,
-#. and Memory settings will be preserved. All other changes will be discarded.
-#. chrys-meta={"fingerprint":"991add1024ebc3743242d0a6705b0328e8cbc548c8cff1808de41fee4d373b6b","multiline":true,"placeholders":["display"]}
+#. Memory, and Extensions settings will be preserved. All other changes will be
+#. discarded.
+#. chrys-meta={"fingerprint":"6cc6ce611c7dd4302f9fdf6eb7d3ae9b3aee218f348cd01e54f3bef411282546","multiline":true,"placeholders":["display"]}
 #: src/chrys/app/tui/screens/agents/config.py
 msgid "tui.agent_config.confirm.reset.message"
 msgstr ""
 "将内置智能体\n"
 "“{display}”重置为系统默认设置？\n"
 "\n"
-"Skills、MCP 和 Memory 设置将被保留，其他所有更改都将丢弃。"
+"Skills、MCP、Memory 和扩展设置将被保留，其他所有更改都将丢弃。"
 
 #. English: Reset Agent
 #. chrys-meta={"fingerprint":"d5d9572588e468a399375b67f2252810ea1e8a6aee0a70ba8db9f0a268341ad2","multiline":false,"placeholders":[]}
@@ -3002,14 +3009,14 @@ msgstr "验证错误"
 
 #. English: Ask User
 #. chrys-meta={"fingerprint":"4ba2eb2280d7d5bf7b10a85a98fcfcb2a2a534fd0445feb8a3c35d72d147beff","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.ask_user"
 msgstr "询问用户"
 
 #. English: Prompt the user with one or more questions for input or
 #. clarification
 #. chrys-meta={"fingerprint":"5de19be1cf87af37a87361bad1227fcb8b9fa2835cbac6c11e85312f89219d85","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.ask_user_description"
 msgstr "向用户提出一个或多个问题以获取输入或澄清信息"
 
@@ -3027,91 +3034,141 @@ msgstr "切换类别以启用或禁用"
 
 #. English: Document Converter (PDF, Office)
 #. chrys-meta={"fingerprint":"62cee70c4d6c2d823f4af3fccd88c95961f838db337e01832477ba609c60bd79","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.document_converter"
 msgstr "文档转换器（PDF、Office）"
 
 #. English: Convert PDF, DOCX, PPTX, XLSX, XLS to Markdown
 #. chrys-meta={"fingerprint":"dbdceeef3283c316ca290d9e26bcb67a34ee1bedf415dc976ae064b76aec4595","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.document_converter_description"
 msgstr "将 PDF、DOCX、PPTX、XLSX、XLS 转换为 Markdown"
 
+#. English: Installed more than once, so neither copy loads:
+#. chrys-meta={"fingerprint":"66a2f18dc8d049af42e4e2b536b82ce55655194dfc5c094c91c543bed2f01e83","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extension_conflict"
+msgstr "安装了不止一份，因此都不会加载："
+
+#. English: Not installed: agents start without it
+#. chrys-meta={"fingerprint":"e014ac40e7fda78471806018541fdc4958d49731d88f6a33c8e3bc06d0efcdaf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extension_not_installed"
+msgstr "未安装：智能体启动时不会包含它"
+
+#. English: Skipped {problem}
+#. chrys-meta={"fingerprint":"c3884802052e7c05ab9d2af02cc1cfb0633eff41b707652269a845ab8c7bc0a7","multiline":false,"placeholders":["problem"]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extension_skipped"
+msgstr "已跳过 {problem}"
+
+#. English: Extensions
+#. chrys-meta={"fingerprint":"0370d6fd45a81ff08705c04c324d7bab6b5c8cac84703cb57f52b74c81db3dbc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extensions"
+msgstr "扩展"
+
+#. English: Python extensions installed for {app}. They run inside {app} with
+#. your permissions: install only extensions you trust
+#. chrys-meta={"fingerprint":"5f3c7d99acb98c8d34937b36efe3bbb668375df6f499d3781a122dd1717aa464","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extensions_description"
+msgstr "为 {app} 安装的 Python 扩展。它们在 {app} 内以你的权限运行：只安装你信任的扩展"
+
+#. English: Installed extensions cannot be listed
+#. chrys-meta={"fingerprint":"b010db5a13ac51eb01c1fd075f3e4bf9abbb42d9b28247bf88d79e7bc4742417","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extensions_unreadable"
+msgstr "无法列出已安装的扩展"
+
 #. English: Filesystem Read
 #. chrys-meta={"fingerprint":"62281ba302842e23735f930c9baac021139d9cfbd2cf640d0b50872c1d27777c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_read"
 msgstr "读取文件系统"
 
 #. English: Read files from the filesystem
 #. chrys-meta={"fingerprint":"15cb63b8f3e0cf04816c0f24457556f468e472a6d10399c4b6fe2840378814e3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_read_description"
 msgstr "从文件系统读取文件"
 
 #. English: Filesystem Write
 #. chrys-meta={"fingerprint":"b1ee74a8744dd8c5182552fab47f19de7da0cd25e4d18a624a39f07f521e6e7b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_write"
 msgstr "写入文件系统"
 
 #. English: Create and edit files on the filesystem
 #. chrys-meta={"fingerprint":"df6847fb6e6264cc0e17684d54f05559eae56c369daa7e8660af9cf3002384a9","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_write_description"
 msgstr "在文件系统中创建和编辑文件"
 
+#. English: Looking for installed extensions…
+#. chrys-meta={"fingerprint":"2107859e04f76fd75d6116f838a1bff55926b7104bb26d5b447e47c30c995e46","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.finding_extensions"
+msgstr "正在查找已安装的扩展…"
+
+#. English: No extensions installed. The Python extensions guide (F8) shows how
+#. to write or install one
+#. chrys-meta={"fingerprint":"688ff08e10c5ad4ce99f7ae61c5a49a121dd818531eca8dea9a57c2e3f718e7f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.no_extensions"
+msgstr "尚未安装扩展。Python 扩展指南（F8）介绍如何编写或安装扩展"
+
 #. English: File search
 #. chrys-meta={"fingerprint":"0679fe2ae5bf35ce2a964e8ecb0990ff3acef5402722eae73cf86c98fb32cc8e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.search"
 msgstr "文件搜索"
 
 #. English: Search file contents and find files by pattern
 #. chrys-meta={"fingerprint":"10c97edeb712ad26c4597b8c9db95fb8d7f8a12ed51a4ab5e5ac9b83f8149979","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.search_description"
 msgstr "搜索文件内容并按模式查找文件"
 
 #. English: Shell
 #. chrys-meta={"fingerprint":"c88366863f55792de9cb53be96c7a9a4981bd9a8b27525585019202f8f4c9158","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.shell"
 msgstr "Shell"
 
 #. English: Execute shell commands in a subprocess
 #. chrys-meta={"fingerprint":"6b66f1fa51d3eff2c80bf48e291e1d66e250e01a71c468150862d555a47dafc8","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.shell_description"
 msgstr "在子进程中执行 Shell 命令"
 
 #. English: Todo List
 #. chrys-meta={"fingerprint":"542ce0ea3c6fcce0e77bc1f4279341d6d851b6f629309054b6aeb873cdc55a84","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.todo_list"
 msgstr "待办事项"
 
 #. English: Track multi-step work as a live task checklist
 #. chrys-meta={"fingerprint":"2155386149f0a03a0665a30d3413e5e556411a54c413d60bdd3d73821130b9e3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.todo_list_description"
 msgstr "以实时任务清单跟踪多步骤工作"
 
 #. English: Web fetch
 #. chrys-meta={"fingerprint":"f510d73aab1875c2580ca3559de19155f59ab9bc022acf52dfcb9a4e03c163af","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_fetch"
 msgstr "网页读取"
 
 #. English: Read a page's text by URL
 #. chrys-meta={"fingerprint":"043893ad4830c1ebfee425f78e0b0b01e8f6d4da2ade694c186a118f9abccdfa","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_fetch_description"
 msgstr "按 URL 读取页面文本"
 
 #. English: Web search
 #. chrys-meta={"fingerprint":"f986ea0da9e92ca438eededc408c5cfbc8f9d79120703eddd46a4874b6bdd8fa","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_search"
 msgstr "网络搜索"
 
@@ -3119,7 +3176,7 @@ msgstr "网络搜索"
 #. agent profile names other providers; queries are sent to that service and
 #. may carry details from your conversation, so mind your data and privacy
 #. chrys-meta={"fingerprint":"a3d539dd9c0cc494e68431323f28a245ea989791bd9a16477a1195c47d2bcea1","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_search_description"
 msgstr "在网上搜索链接和摘要。除非智能体配置文件指定了其他提供方，否则使用 Exa（exa.ai）；搜索词会发送给该服务，并可能带有对话中的内容，请注意数据与隐私安全"
 
@@ -3305,11 +3362,11 @@ msgstr "模型 ID"
 msgid "tui.agent_config.validation.acp.no_builtin_tools"
 msgstr "ACP 配置文件不能配置内置工具。"
 
-#. English: ACP profiles cannot configure custom tools.
-#. chrys-meta={"fingerprint":"32e36a9174f906ee23e944c7e649995973a2d70d4200ad9310a0614b029cf4a9","multiline":false,"placeholders":[]}
+#. English: ACP profiles cannot use extensions.
+#. chrys-meta={"fingerprint":"a8b0475610f3b1db610ca569b8bd7cb36066685004b74cb3c98e3d3ca9e5abb4","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/validation_messages.py
-msgid "tui.agent_config.validation.acp.no_custom_tools"
-msgstr "ACP 配置文件不能配置自定义工具。"
+msgid "tui.agent_config.validation.acp.no_extensions"
+msgstr "ACP 配置文件不能使用扩展。"
 
 #. English: ACP profiles cannot configure MCP servers.
 #. chrys-meta={"fingerprint":"f2c70b8f64a2e2b5346762e8d17c2ee4f38d803913d2e08913c6ddf413e98420","multiline":false,"placeholders":[]}
@@ -10638,6 +10695,12 @@ msgstr "项目钩子"
 msgid "tui.runtime_details.section.sub_agent_tools"
 msgstr "子智能体工具"
 
+#. English: Unavailable extensions
+#. chrys-meta={"fingerprint":"da20c6c120ecb78cc05772af898747418966d2b18fad72c8c8f7d2de3361d700","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.section.unavailable_extensions"
+msgstr "不可用的扩展"
+
 #. English: Shortcuts
 #. chrys-meta={"fingerprint":"85a8e1c1cc90a21e40d54ae7f6a87925bb1028e151d567aa10f3b9c7c35005d2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
@@ -17110,6 +17173,9 @@ msgstr "提示已被钩子阻止。"
 #~ "\n"
 #~ "重试路径将仅重新发送原始提示中的文本。请改为在新消息中重新发送图像。"
 
+#~ msgid "builder.tool_pack_unavailable"
+#~ msgstr "智能体 {agent} 启动时未包含工具包 {pack}：{reason}"
+
 #~ msgid "cli.profiles.agents.empty"
 #~ msgstr "未找到代理配置。"
 
@@ -17179,6 +17245,30 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "startup.settings_migration_failed"
 #~ msgstr "无法把设置迁移到 {path}（{error}）。现有配置仍然生效；下次启动会重试迁移。"
 
+#~ msgid "tui.agent_config.tools.custom_packs"
+#~ msgstr "自定义工具包"
+
+#~ msgid "tui.agent_config.tools.custom_packs_description"
+#~ msgstr "为 {app} 安装的 Python 工具包。它们在 {app} 内以你的权限运行：只安装你信任的工具包"
+
+#~ msgid "tui.agent_config.tools.finding_packs"
+#~ msgstr "正在查找已安装的工具包…"
+
+#~ msgid "tui.agent_config.tools.no_packs"
+#~ msgstr "尚未安装工具包。Python 工具包指南（F8）介绍如何编写或安装工具包"
+
+#~ msgid "tui.agent_config.tools.pack_conflict"
+#~ msgstr "安装了不止一份，因此都不会加载：{locations}"
+
+#~ msgid "tui.agent_config.tools.pack_not_installed"
+#~ msgstr "未安装：智能体启动时不会包含它"
+
+#~ msgid "tui.agent_config.tools.pack_skipped"
+#~ msgstr "已跳过 {problem}"
+
+#~ msgid "tui.agent_config.tools.packs_unreadable"
+#~ msgstr "无法列出已安装的工具包"
+
 #~ msgid "tui.agent_config.tools.sleep"
 #~ msgstr "等待"
 
@@ -17193,6 +17283,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.agent_config.tools.web_group"
 #~ msgstr "网页"
+
+#~ msgid "tui.agent_config.validation.acp.no_custom_tools"
+#~ msgstr "ACP 配置文件不能配置自定义工具。"
 
 #~ msgid "tui.app.open_visible_diagram"
 #~ msgstr "打开可见图表"
@@ -17318,6 +17411,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.runtime_details.label.source"
 #~ msgstr "来源"
+
+#~ msgid "tui.runtime_details.section.unavailable_tool_packs"
+#~ msgstr "不可用的工具包"
 
 #~ msgid "tui.runtime_details.shortcut.agent"
 #~ msgstr "智能体 {agent}"

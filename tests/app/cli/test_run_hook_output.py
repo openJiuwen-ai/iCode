@@ -29,8 +29,8 @@ from chrys.kernel import FunctionTool
 from chrys.orchestration.session_host import ChrysSessionHost
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.llm.mock import MockChatClient, MockResponse
-from chrys.service.tools.registry import ToolRegistry
 from tests.orchestration.workflows._hosting import make_host
+from tests.support.tool_packs import install_tools
 
 
 def _real_host(
@@ -45,10 +45,6 @@ def _real_host(
     ) -> MockChatClient:
         client._on_intermediate_text = on_intermediate_text
         return client
-
-    def load_builtins(self: ToolRegistry, _categories: list[str], *_args: object, **_kwargs: object) -> list[Any]:
-        self.register(tool)
-        return [tool]
 
     def build(*, profile_name: str, loaded_settings: LoadedSettings, approval_mode: ApprovalMode, **_kwargs: object):
         assert approval_mode is ApprovalMode.BYPASS
@@ -74,9 +70,7 @@ def _real_host(
     monkeypatch.setattr(
         builder_module, "create_client", create_autospec(builder_module.create_client, side_effect=create_client)
     )
-    monkeypatch.setattr(
-        ToolRegistry, "load_builtins", create_autospec(ToolRegistry.load_builtins, side_effect=load_builtins)
-    )
+    install_tools(monkeypatch, [tool])
     monkeypatch.setattr(run_cli, "ChrysSessionHost", create_autospec(ChrysSessionHost, side_effect=build))
     monkeypatch.setattr(
         headless, "prepare_runtime", create_autospec(headless.prepare_runtime, side_effect=prepare_runtime)

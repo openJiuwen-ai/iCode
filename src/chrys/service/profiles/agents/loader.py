@@ -450,12 +450,24 @@ def _parse_shell_filter(raw: object) -> ShellFilterConfig | None:
     )
 
 
+def _parse_extensions(raw: object) -> list[str]:
+    # YAML comments routinely leave a section behind as null.
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise AgentProfileLoadError("extensions must be a list", field="extensions")
+    if any(not isinstance(extension_id, str) for extension_id in raw):
+        logger.warning("Ignoring non-string entries in extensions")
+    # One that is not installed stays, so a save never drops it; the build warns about it.
+    return list(dict.fromkeys(extension_id for extension_id in raw if isinstance(extension_id, str)))
+
+
 def _parse_tools(raw: object) -> ToolsConfig:
     if raw is None:
         return ToolsConfig()
     from chrys.service.tools.builtins.web.config import mapping, parse_fetch, parse_search
 
-    known_keys = {"builtins", "custom", "mcp", "shell_filter", "web_search", "web_fetch"}
+    known_keys = {"builtins", "mcp", "shell_filter", "web_search", "web_fetch"}
     # YAML comments routinely leave sections behind as null. Older versions also
     # ignored unknown tool keys and categories, so retain the understood subset
     # instead of dropping an otherwise usable user override during an upgrade.
@@ -502,7 +514,6 @@ def _parse_tools(raw: object) -> ToolsConfig:
         raise AgentProfileLoadError(str(err), field="tools") from err
     return ToolsConfig(
         builtins=raw_map.get("builtins", []),
-        custom=raw_map.get("custom", []),
         mcp=_parse_mcp_servers(raw_map.get("mcp", [])),
         shell_filter=_parse_shell_filter(raw_map.get("shell_filter")),
         web_search=web_search,
@@ -727,6 +738,7 @@ def _parse_profile(path: Path, text: str) -> AgentProfile:
             acp=_parse_acp(data.get("acp")) if acp_present else None,
             instructions=_instructions_field(data.get("instructions"), "instructions"),
             tools=_parse_tools(data.get("tools")),
+            extensions=_parse_extensions(data.get("extensions")),
             skills=_parse_skills(data.get("skills")),
             approval=_parse_approval(data.get("approval")),
             sub_agents=_parse_sub_agents(data.get("sub_agents")),
@@ -745,6 +757,9 @@ def _parse_profile(path: Path, text: str) -> AgentProfile:
         if profile.tools != ToolsConfig():
             conflicting.append("tools")
             profile.tools = ToolsConfig()
+        if profile.extensions:
+            conflicting.append("extensions")
+            profile.extensions = []
         if profile.skills != SkillsConfig():
             conflicting.append("skills")
             profile.skills = SkillsConfig()
