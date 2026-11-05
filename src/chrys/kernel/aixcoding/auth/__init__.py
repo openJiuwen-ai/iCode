@@ -1,3 +1,6 @@
+# ruff: noqa: RUF001
+# (Chinese log messages keep full-width punctuation by design,
+#  aixcoding/docs/batches/logging-routing-fixes/design.md signed off 2026-11-05)
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """AIxCoding device-code login: protocol client, storage, and crypto backends.
@@ -42,7 +45,16 @@ from .types import (
     TokenResult,
 )
 
-_log = logging.getLogger(__name__)
+# AIxCoding logging (batches/logging-routing-fixes, A1): literal-name loggers on
+# the aixcoding subtree — the former __name__ logger (chrys.kernel.aixcoding.auth)
+# sat outside it, its DEBUG records silenced by root's INFO threshold; zero-
+# dependency style established in session.py.
+_detail_log = logging.getLogger("aixcoding.detail.auth")
+
+#: AIxCoding detail logging: mirrors DETAIL_LEVEL in diagnostics.logging_support
+#: (ADR-0017); duplicated locally — kernel cross-subpackage imports are
+#: forbidden (test_layering), same as session.py.
+_DETAIL_LEVEL = 5
 
 
 def login_token_header_value() -> str:
@@ -61,8 +73,9 @@ def login_token_header_value() -> str:
     try:
         stored = get_login_session().stored_token
     except Exception:
-        # Read on every request, so a warning per call would spam the log.
-        _log.debug("No login session for the token header.", exc_info=True)
+        # Read on every request, so a public-level record per call would spam
+        # the log — detail volume only (batches/logging-routing-fixes, A1).
+        _detail_log.log(_DETAIL_LEVEL, "读取登录凭证失败，token 请求头未附加。", exc_info=True)
         return ""
     return (stored or "").strip()
 

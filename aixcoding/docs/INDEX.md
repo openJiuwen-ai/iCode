@@ -35,3 +35,4 @@
 | [batches/restructure](batches/restructure/) | 改造专项 | 目录重组执行计划——迁入考古参考（管线外） |
 | [batches/agents-md-note](batches/agents-md-note/) | 注记 | AGENTS.md 定制规范入口段补登记（定制点 C001，管线外） |
 | [batches/upstream-merge-v0.33.0](batches/upstream-merge-v0.33.0/) | 升级批次 | 追上游 v0.33.0（基线 0.32.2 → 0.33.0，目标 ref 8d5a3208 已裁决） |
+| [batches/logging-routing-fixes](batches/logging-routing-fixes/) | 治理批次 | 日志治理①——现存埋点路由修复（子树外 logger 归位、死代码清理、crypto 降级与停用 env 警告补公共通道） |

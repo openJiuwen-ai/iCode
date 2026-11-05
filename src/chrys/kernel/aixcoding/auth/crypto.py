@@ -1,3 +1,6 @@
+# ruff: noqa: RUF001
+# (Chinese log messages keep full-width punctuation by design,
+#  aixcoding/docs/batches/logging-routing-fixes/design.md signed off 2026-11-05)
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """OS-level encryption backends for the stored credential -- zero new deps.
@@ -29,7 +32,16 @@ import subprocess
 import sys
 from typing import Protocol, runtime_checkable
 
-_LOGGER = logging.getLogger(__name__)
+# AIxCoding logging (batches/logging-routing-fixes, A2): literal-name loggers on
+# the aixcoding subtree — the former __name__ logger sat outside it, its DEBUG
+# records silenced by root's INFO threshold; zero-dependency style as session.py.
+_log = logging.getLogger("aixcoding.auth")
+_detail_log = logging.getLogger("aixcoding.detail.auth")
+
+#: AIxCoding detail logging: mirrors DETAIL_LEVEL in diagnostics.logging_support
+#: (ADR-0017); duplicated locally — kernel cross-subpackage imports are
+#: forbidden (test_layering).
+_DETAIL_LEVEL = 5
 
 #: Keychain service name on macOS, and the DPAPI entropy label everywhere else.
 LABEL = "aixcoding-account-auth"
@@ -253,9 +265,19 @@ def get_backend() -> ProtectBackend:
             probe = b"aixcoding-backend-probe"
             if candidate.unprotect(candidate.protect(probe)) == probe:
                 return candidate
+            # AIxCoding logging (batches/logging-routing-fixes, A2): the silent
+            # round-trip mismatch path previously carried no record at all.
+            _detail_log.log(_DETAIL_LEVEL, "加密后端 %s 往返校验不一致。", getattr(factory, "__name__", factory))
         except Exception as exc:
-            _LOGGER.debug("crypto backend %s unusable: %s", getattr(factory, "__name__", factory), exc)
+            # AIxCoding logging (batches/logging-routing-fixes, A2): technical
+            # reason on the detail volume only, never the panel/main volume.
+            _detail_log.log(_DETAIL_LEVEL, "加密后端 %s 探测失败：%s", getattr(factory, "__name__", factory), exc)
             continue
+    # AIxCoding logging (batches/logging-routing-fixes, A2): the fallback is a
+    # user-facing state change (credentials die with the process) — a public
+    # WARNING double-write per DEVELOPMENT.md §9; detail keeps the full picture.
+    _log.warning("系统凭据库不可用，登录凭证将仅保存在内存中，重启后需重新登录。")
+    _detail_log.log(_DETAIL_LEVEL, "系统凭据库不可用，登录凭证将仅保存在内存中，重启后需重新登录。")
     return MemoryBackend()
 
 

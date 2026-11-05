@@ -69,10 +69,13 @@ from chrys.service.profiles.models.schema import (
     ModelProfile,
 )
 
-# AIxCoding 方案六 (2026-11-04): every catalog record is a technical event and
-# lives only on the file-only "aixcoding.detail.catalog" logger (ADR-0017) — the
-# main volume and the F6 panel carry user-facing events only (DEVELOPMENT.md §9).
-# That subtree never propagates to the panel or the upstream log.
+# AIxCoding 方案六 (2026-11-04; revised 2026-11-05 logging-routing-fixes):
+# catalog records are technical events on the file-only "aixcoding.detail.catalog"
+# logger (ADR-0017) — the main volume and the F6 panel carry user-facing events
+# only (DEVELOPMENT.md §9). User-actionable configuration errors (retired env
+# names) are the one exception: they carry a public WARNING double-write.
+# The detail subtree never propagates to the panel or the upstream log.
+_log = logging.getLogger("aixcoding.catalog")
 _detail_log = logging.getLogger("aixcoding.detail.catalog")
 
 #: AIxCoding detail logging: level of the file-only channel; mirrors
@@ -229,6 +232,11 @@ def _warn_retired_env() -> None:
             continue
         if os.environ.get(name):
             _warned_retired_env.add(name)
+            # AIxCoding logging (batches/logging-routing-fixes, D): a retired env
+            # name still set is a user-actionable configuration error — the one
+            # public-channel exception to 方案六's detail-only catalog routing;
+            # double-write per DEVELOPMENT.md §9 (user-facing events hit both).
+            _log.warning("环境变量 %s 已停用且不生效；请改用 AIXCODING_MODEL_CATALOG_* 系列变量。", name)
             _detail_log.log(
                 _DETAIL_LEVEL,
                 "环境变量 %s 已停用且不生效；请改用 AIXCODING_MODEL_CATALOG_* 系列变量。",
