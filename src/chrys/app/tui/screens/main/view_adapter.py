@@ -91,7 +91,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.main.engine_read_model import RollbackReadState
     from chrys.app.tui.screens.main.screen import MainScreen
     from chrys.app.tui.screens.main.state import MainScreenState
-    from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
+    from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffFocus, DiffLoadResult
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_executions import HookExecutionView
@@ -729,6 +729,7 @@ class MainScreenViewAdapter:
         session_id: str,
         all_entries: list[DiffFileEntry],
         load_data: Callable[[], Awaitable[DiffLoadResult]] | None = None,
+        focus: DiffFocus | None = None,
     ) -> None:
         from chrys.app.tui.screens.diff import DiffScreen
 
@@ -740,6 +741,7 @@ class MainScreenViewAdapter:
                 session_id=session_id,
                 all_entries=all_entries,
                 load_data=load_data,
+                focus=focus,
                 locale_controller=self._locale_controller,
             )
         )

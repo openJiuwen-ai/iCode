@@ -208,10 +208,10 @@ class ContextPanel(Widget, can_focus=False):
     ContextPanel {
         height: 100%;
         width: 100%;
-        padding: 0 1;
     }
     ContextPanel > Static {
         height: auto;
+        padding: 0 1;
     }
     ContextPanel > .ctx-label {
         text-style: bold;
@@ -220,18 +220,19 @@ class ContextPanel(Widget, can_focus=False):
     ContextPanel > Sparkline {
         height: 1;
         margin: 0 0 1 0;
+        padding: 0 1;
     }
     ContextPanel > #ctx-session-total {
         margin: 0 0 1 0;
     }
     ContextPanel > RichLog {
         height: 1fr;
-        border: round $tui-border-primary-darken-3 $border-opacity;
+        border: round $tui-border-primary-darken-3 $inner-border-opacity;
         scrollbar-size: 1 1;
         overflow-x: hidden;
     }
     SidebarPanel.-shell-active ContextPanel > RichLog {
-        border: round $tui-border-warning-darken-1 $border-opacity;
+        border: round $tui-border-warning-darken-1 $inner-border-opacity;
     }
     """
 

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
+from textual.containers import Vertical
 from textual.message import Message
 from textual.strip import Strip
 from textual.widget import Widget
@@ -33,6 +34,7 @@ __all__ = ["ConversationToc", "TocItem", "summarize_prompt"]
 _MAX_LABEL = _SUMMARY_MAX_LENGTH + 8
 _TREE_TAB_SIZE = 8
 _TOC_EMPTY = msg("tui.sidebar.toc.empty", fallback="Your conversation will appear here")
+_TOC_TITLE = msg("tui.sidebar.toc.title", fallback="Messages")
 
 
 def _tree_label_text(text: str) -> str:
@@ -67,13 +69,20 @@ class ConversationToc(Widget, can_focus=False):
     DEFAULT_CSS = """
     ConversationToc {
         height: 1fr;
-        padding: 0 0 0 1;
     }
-    ConversationToc > Tree {
-        background: transparent;
+    ConversationToc > #toc-box {
+        height: 1fr;
+        border: round $tui-border-primary-darken-3 $inner-border-opacity;
+        border-title-color: $text-muted;
+        border-title-style: bold;
         padding: 0;
+    }
+    ConversationToc #toc-tree {
+        height: 1fr;
+        background: transparent;
+        padding: 0 0 0 1;
         overflow-x: hidden;
-        scrollbar-size-vertical: 1;
+        scrollbar-size: 1 1;
     }
     ConversationToc Tree > .tree--cursor {
         background: $primary 18%;
@@ -91,7 +100,7 @@ class ConversationToc(Widget, can_focus=False):
     ConversationToc Tree > .tree--guides {
         color: $primary 40%;
     }
-    ConversationToc > .toc-empty {
+    ConversationToc .toc-empty {
         width: 1fr;
         height: 1fr;
         content-align: center middle;
@@ -114,17 +123,23 @@ class ConversationToc(Widget, can_focus=False):
         self._empty_label: Static = SidebarEmptyStateLabel("", classes="toc-empty")
 
     def compose(self) -> ComposeResult:
-        self._tree = _TocTree("TOC", id="toc-tree")
-        self._tree.show_root = False
-        self._tree.show_guides = True
-        self._tree.display = False
-        yield self._tree
-        self._empty_label = SidebarEmptyStateLabel(Text(self._render_message(_TOC_EMPTY.bind())), classes="toc-empty")
-        yield self._empty_label
+        box = Vertical(id="toc-box")
+        box.border_title = Text(self._render_message(_TOC_TITLE.bind()))
+        with box:
+            self._tree = _TocTree("TOC", id="toc-tree")
+            self._tree.show_root = False
+            self._tree.show_guides = True
+            self._tree.display = False
+            yield self._tree
+            self._empty_label = SidebarEmptyStateLabel(
+                Text(self._render_message(_TOC_EMPTY.bind())), classes="toc-empty"
+            )
+            yield self._empty_label
 
     def refresh_localization(self) -> None:
-        """Retranslate the current empty-state text without rebuilding the tree."""
+        """Retranslate the title and empty state without rebuilding the tree."""
         if self.is_mounted:
+            self.query_one("#toc-box").border_title = Text(self._render_message(_TOC_TITLE.bind()))
             self._empty_label.update(Text(self._render_message(_TOC_EMPTY.bind())))
 
     def _render_message(self, reference: MessageRef) -> str:

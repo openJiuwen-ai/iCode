@@ -160,6 +160,8 @@ class SessionCallbacks:
     confirm_stopping_background_tasks: Callable[[], Awaitable[bool]] = _stop_background_tasks_unasked
     """Whether the user lets the running background commands stop as the session ends."""
 
+    refresh_diff_preview: Callable[[bool], None] = lambda _reread: None
+
 
 def _samepath(a: str, b: str) -> bool:
     """Compare paths using OS semantics (handles case-insensitive FS, symlinks)."""
@@ -828,11 +830,14 @@ class SessionHandler:
         info = STATUS_SESSION_RESTORED.bind(session_id=short_id)
         ui.flash_status(info)
         self._agent_load.finish_agent_load(_FINISH_SESSION_RESTORED.bind(session_id=short_id))
+        self._callbacks.refresh_diff_preview(True)
         s.debug("SessionRestored", short_id)
         self._callbacks.post_gc_message(GcReclaimRequested(GcReclaimReason.SESSION_RESTORED, prompt=True))
 
     async def on_session_saved(self, event: SessionSaved) -> None:
         self.debug("SessionSaved", session_short_id(event.session_id or ""))
+        if event.session_id == self._ui().chat_session_id():
+            self._callbacks.refresh_diff_preview(True)
 
     async def _restore_session_title_state(self, session_id: str, *, prefer_recovery: bool = False) -> None:
         """Reload title overlays from the session meta into the UI.
@@ -1118,6 +1123,7 @@ class SessionHandler:
         # can see the live workspace, even before the first message.
         previous_cwd = s.chdir_current_cwd
         s.chdir_current_cwd = event.primary_cwd
+        self._callbacks.refresh_diff_preview(True)
         ui.set_terminal_title_for_cwd(event.primary_cwd)
 
         panel_key = "chdir"

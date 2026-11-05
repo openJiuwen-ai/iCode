@@ -13,9 +13,16 @@ import pytest
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.service.agent_middleware import ToolEventMiddleware
 from chrys.service.mutations.scanner import WorkspaceScanner
-from chrys.service.mutations.store import SnapshotStore
+from chrys.service.mutations.store import SnapshotPolicy, SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
-from chrys.service.mutations.types import MutationOp, MutationSource, RestoreOutcome
+from chrys.service.mutations.types import (
+    MutationOp,
+    MutationProvenance,
+    MutationSource,
+    RestoreOutcome,
+    RollbackExclusionReason,
+    SnapshotSkipReason,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1338,3 +1345,130 @@ class TestMiddlewareMutationTracking:
 
         # Should not raise
         await mw.process(ctx, AsyncMock())
+
+
+class TestUnexecutedFileMutations:
+    """Unexecuted calls retain replay slots without claiming file changes."""
+
+    @pytest.mark.parametrize("kind", ["text", "missing", "too-large", "binary"])
+    def test_settlement_preserves_both_endpoints_and_row(self, tmp_path: Path, kind: str) -> None:
+        target = tmp_path / "file.txt"
+        if kind != "missing":
+            target.write_bytes(b"\x00binary" if kind == "binary" else b"original")
+        store = SnapshotStore(
+            tmp_path / "session", policy=SnapshotPolicy(max_file_bytes=1 if kind == "too-large" else 100)
+        )
+        tracker = MutationTracker(store)
+        tracker.start_turn(1)
+        mutation = tracker.record(str(target), MutationOp.MODIFY, MutationSource.EDIT_FILE, "denied")
+        assert mutation is not None
+        before = (mutation.before_hash, mutation.before_skip)
+
+        tracker.settle_unexecuted(mutation)
+
+        assert (mutation.after_hash, mutation.after_skip) == before
+        assert tracker.get_turn_mutations(1).mutations == [mutation]
+        assert mutation.operation is MutationOp.MODIFY
+
+    def test_next_call_reads_external_edit_after_first_call_was_denied(self, tmp_path: Path) -> None:
+        target = tmp_path / "file.txt"
+        target.write_text("original", encoding="utf-8")
+        tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
+        tracker.start_turn(1)
+        denied = tracker.record(str(target), MutationOp.MODIFY, MutationSource.EDIT_FILE, "denied")
+        assert denied is not None
+        tracker.settle_unexecuted(denied)
+        target.write_text("user changed this", encoding="utf-8")
+
+        following = tracker.record(str(target), MutationOp.MODIFY, MutationSource.EDIT_FILE, "following")
+
+        assert following is not None
+        assert tracker.store.read_blob(following.before_hash) == b"user changed this"
+        assert tracker.store.read_blob(denied.after_hash) == b"original"
+
+    def test_denial_after_real_edit_keeps_turn_and_session_endpoints(self, tmp_path: Path) -> None:
+        target = tmp_path / "file.txt"
+        target.write_text("A", encoding="utf-8")
+        tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
+        tracker.start_turn(1)
+        edited = tracker.record(str(target), MutationOp.MODIFY, MutationSource.EDIT_FILE, "edited")
+        target.write_text("B", encoding="utf-8")
+        tracker.record_after(edited)
+        denied = tracker.record(str(target), MutationOp.MODIFY, MutationSource.EDIT_FILE, "denied")
+        assert denied is not None
+        tracker.settle_unexecuted(denied)
+
+        for summary in (tracker.get_turn_file_summary(1), tracker.get_session_file_summary()):
+            assert list(summary) == [str(target)]
+            assert tracker.store.read_blob(summary[str(target)].before) == b"A"
+            assert tracker.store.read_blob(summary[str(target)].after) == b"B"
+        assert tracker.get_file_edit_snapshots() == [("A", "B"), ("B", "B")]
+
+    @pytest.mark.parametrize("provenance", list(MutationProvenance))
+    @pytest.mark.parametrize("contested", [False, True])
+    def test_only_unchanged_rows_are_omitted_from_every_rollback_plan(
+        self, tmp_path: Path, provenance: MutationProvenance, contested: bool
+    ) -> None:
+        target = tmp_path / "file.txt"
+        target.write_text("A", encoding="utf-8")
+        tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
+        tracker.start_turn(1)
+        row = tracker.record(str(target), MutationOp.MODIFY, MutationSource.EDIT_FILE, "denied", provenance=provenance)
+        assert row is not None
+        row.contested = contested
+        tracker.settle_unexecuted(row)
+
+        for plan in (tracker.get_rollback_plan(1), tracker.get_rollback_plan_for_turns({1})):
+            assert plan.entries == []
+            assert plan.exclusions == []
+            assert plan.paths == set()
+
+    @pytest.mark.parametrize("restore_original", [False, True])
+    def test_real_edits_survive_unchanged_row_filter(self, tmp_path: Path, restore_original: bool) -> None:
+        target = tmp_path / "file.txt"
+        target.write_text("A", encoding="utf-8")
+        tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
+        tracker.start_turn(1)
+        if not restore_original:
+            denied = tracker.record(str(target), MutationOp.MODIFY, MutationSource.EDIT_FILE, "denied")
+            tracker.settle_unexecuted(denied)
+        for index, content in enumerate(["B", "A"] if restore_original else ["B"]):
+            row = tracker.record(str(target), MutationOp.MODIFY, MutationSource.EDIT_FILE, str(index))
+            target.write_text(content, encoding="utf-8")
+            tracker.record_after(row)
+
+        plan = tracker.get_rollback_plan(1)
+
+        assert plan.paths == {str(target)}
+        assert plan.exclusions == []
+        assert tracker.store.read_blob(plan.entries[0][1].content_hash) == b"A"
+
+    def test_skipped_settled_row_still_reports_unrestorable(self, tmp_path: Path) -> None:
+        target = tmp_path / "large.txt"
+        target.write_text("too large", encoding="utf-8")
+        tracker = MutationTracker(SnapshotStore(tmp_path / "session", policy=SnapshotPolicy(max_file_bytes=1)))
+        tracker.start_turn(1)
+        row = tracker.record(str(target), MutationOp.MODIFY, MutationSource.EDIT_FILE, "denied")
+        tracker.settle_unexecuted(row)
+
+        plan = tracker.get_rollback_plan(1)
+
+        assert row.before_skip is SnapshotSkipReason.TOO_LARGE
+        assert plan.entries == []
+        assert plan.exclusions == [(str(target), RollbackExclusionReason.UNRESTORABLE)]
+
+    def test_move_with_equal_destination_endpoints_is_still_a_change(self, tmp_path: Path) -> None:
+        source, destination = tmp_path / "source.txt", tmp_path / "destination.txt"
+        source.write_text("same", encoding="utf-8")
+        destination.write_text("same", encoding="utf-8")
+        tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
+        tracker.start_turn(1)
+        tracker.pre_snapshot([str(source), str(destination)])
+        source.unlink()
+        row = tracker.record(str(destination), MutationOp.MOVE, MutationSource.SHELL, "move", old_path=str(source))
+        assert row.before_hash == row.after_hash
+
+        plan = tracker.get_rollback_plan(1)
+
+        assert plan.paths == {str(source), str(destination)}
+        assert plan.exclusions == []

@@ -244,6 +244,7 @@ def _shell_snapshot_summary(path: str, snapshot: FileMutationTextSnapshot) -> di
             "after_skip": snapshot.after_skip,
             "provenance": snapshot.provenance,
             "contested": snapshot.contested,
+            "last_changed_at": snapshot.last_changed_at,
         }
     )
 

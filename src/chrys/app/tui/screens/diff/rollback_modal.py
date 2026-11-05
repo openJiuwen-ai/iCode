@@ -44,8 +44,10 @@ from textual.widgets import Button, Static, Tree
 from chrys.app.tui.binding_display import CLOSE_BINDING, TOGGLE_VIEW_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str
 from chrys.app.tui.screens.dialogs.base import BaseDialog
-from chrys.app.tui.screens.diff.screen import DiffPeriodPane, _merge_source, filter_and_dedupe_entries
+from chrys.app.tui.screens.diff.screen import DiffPeriodPane
 from chrys.app.tui.util.diff_entries import DiffFileEntry
+from chrys.app.tui.util.diff_labels import filter_and_dedupe_entries
+from chrys.app.tui.util.mutation_sources import merge_mutation_source as _merge_source
 from chrys.app.tui.util.removal import remove_children_shielded, remove_shielded
 from chrys.app.tui.widgets import Checkbox, ChrysLoadingIndicator, Select
 from chrys.foundation.i18n import DisplayBlock, DisplayPath, MessageDef, MessageRef, msg

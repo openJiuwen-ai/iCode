@@ -52,6 +52,7 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
     is_mutable_tool_args,
     set_call_id,
     set_tool_invocation_order,
+    tool_may_have_run,
 )
 from chrys.service.agent_middleware.events.intermediate_text import ResponseBatchCounter
 from chrys.service.agent_middleware.events.rejection_metadata import (
@@ -355,18 +356,32 @@ class ToolEventMiddleware(FunctionMiddleware):
             )
 
         tool_kind = get_tool_kind(context.function) or ""
-        await self._bus.publish(
-            InvocationToolCallStart(
-                origin=origin,
-                tool_name=tool_name,
-                tool_kind=tool_kind,
-                args=args,
-                call_id=call_id,
-                session_id=self._session_id,
+        try:
+            await self._bus.publish(
+                InvocationToolCallStart(
+                    origin=origin,
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    args=args,
+                    call_id=call_id,
+                    session_id=self._session_id,
+                )
             )
-        )
+        except BaseException:
+            if mut_ctx is not None:
+                abort_mutation_tracking(
+                    mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
+                )
+            raise
         if self._on_start_published is not None:
-            await self._on_start_published(provider_call_id)
+            try:
+                await self._on_start_published(provider_call_id)
+            except BaseException:
+                if mut_ctx is not None:
+                    abort_mutation_tracking(
+                        mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
+                    )
+                raise
 
         # Propagate parent call_id into the sub-agent's ``_invoke`` via
         # ContextVar so it can bind invocation_id ↔ parent call_id for the
@@ -446,7 +461,14 @@ class ToolEventMiddleware(FunctionMiddleware):
                     background_request.set()
 
                 move_to_background = _move_to_background
-                await bus.subscribe(ShellToBackground, move_to_background)
+                try:
+                    await bus.subscribe(ShellToBackground, move_to_background)
+                except BaseException:
+                    if mut_ctx is not None:
+                        abort_mutation_tracking(
+                            mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
+                        )
+                    raise
                 background_token = shell_background_request.set(background_request)
 
         started_at = datetime.now(UTC)
@@ -551,9 +573,15 @@ class ToolEventMiddleware(FunctionMiddleware):
                 # so the async finalize below is unreachable — release the
                 # trace wrapper and close the coordination window
                 # synchronously or the registry advertises a live command
-                # to peers until shutdown. The command may have written
-                # before the interrupt, so implicit detection is truncated.
-                abort_mutation_tracking(mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker)
+                # to peers until shutdown. Interrupted before the commit step
+                # (e.g. at approval), the tool never ran; after it, the command
+                # may have written, so implicit detection is truncated.
+                abort_mutation_tracking(
+                    mut_ctx,
+                    self._mutation_coordinator,
+                    tracker=self._mutation_tracker,
+                    may_have_run=tool_may_have_run(context),
+                )
             if not cancelled:
                 try:
                     result_text = error_text or extract_result_text(context.result)
@@ -564,7 +592,9 @@ class ToolEventMiddleware(FunctionMiddleware):
                         # deliberately skipped (the tool never executed), so
                         # release the trace wrapper and close the observation
                         # window here.
-                        abort_mutation_tracking(mut_ctx, self._mutation_coordinator)
+                        abort_mutation_tracking(
+                            mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
+                        )
 
                     # Post-execution mutation tracking
                     metadata: dict[str, Any] = {}
@@ -605,6 +635,8 @@ class ToolEventMiddleware(FunctionMiddleware):
                             metadata["file_bytes_changed"] = mut_result.file_bytes_changed
                         if mut_result.file_hashes is not None:
                             metadata["file_mutation_hashes"] = mut_result.file_hashes
+                        if mut_result.file_changed_at is not None:
+                            metadata["file_changed_at"] = mut_result.file_changed_at
                         if mut_result.shell_snapshots:
                             metadata["shell_file_snapshots"] = mut_result.shell_snapshots
                     if rejected:

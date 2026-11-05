@@ -369,11 +369,20 @@ class MutationTracker:
 
             return mutation
 
-    def record_after(self, mutation: FileMutation) -> None:
+    def settle_unexecuted(self, mutation: FileMutation) -> None:
+        """Close a file-tool row whose tool never ran: after equals before."""
+        with self._state_lock:
+            mutation.after_hash = mutation.before_hash
+            mutation.after_skip = mutation.before_skip
+            mutation.settled = True
+
+    def record_after(self, mutation: FileMutation, *, settled: bool = False) -> None:
         """Snapshot the file AFTER mutation and store the hash.
 
         Called after a tool (write_file, edit_file) completes to
         capture the post-mutation content for session replay diffs.
+        *settled* only once the tool has returned, so nothing can still
+        write the endpoint (see :attr:`FileMutation.settled`).
 
         Also updates ``_last_known_hash`` so subsequent mutations to
         the same file within this turn get an accurate ``before_hash``.
@@ -382,6 +391,7 @@ class MutationTracker:
             after = self._store.save_blob(mutation.path)
             mutation.after_hash = after.content_hash
             mutation.after_skip = after.skip_reason
+            mutation.settled = settled
             # A detector's DELETE is a candidate, not proof of absence:
             # refs can move without touching the worktree, and filesystem
             # probes can fail. Only an observed missing endpoint is deleted.
@@ -867,9 +877,11 @@ class MutationTracker:
 
         Caller must hold ``_state_lock``.
 
-        Safety filters run AFTER earliest-wins selection; every filtered
-        path is reported via :attr:`RollbackPlan.exclusions` (never
-        silent):
+        Paths whose rows all prove no change (equal hashes, no skips or
+        moves) are omitted outright, without a safety exclusion.
+
+        Safety filters run AFTER earliest-wins selection; every unsafe
+        path is reported via :attr:`RollbackPlan.exclusions`:
 
         1. **Provenance** — a path touched by a ``FOREIGN`` row, or by a
            ``contested`` row, is excluded outright (poisoning-style):
@@ -893,10 +905,15 @@ class MutationTracker:
            that escaped content.
         """
         earliest: dict[str, FileSnapshot] = {}
+        changed: set[str] = set()
         foreign_touched: set[str] = set()
         contested: set[str] = set()
         for turn in rolled_back:
             for m in turn.mutations:
+                if not m.proves_no_change:
+                    changed.add(m.path)
+                    if m.old_path is not None:
+                        changed.add(m.old_path)
                 if m.provenance is MutationProvenance.FOREIGN:
                     foreign_touched.add(m.path)
                     if m.old_path:
@@ -944,6 +961,8 @@ class MutationTracker:
         entries: list[tuple[str, FileSnapshot]] = []
         exclusions: list[tuple[str, RollbackExclusionReason]] = []
         for path, snap in earliest.items():
+            if path not in changed:
+                continue
             if path in foreign_touched:
                 exclusions.append((path, RollbackExclusionReason.FOREIGN))
             elif path in contested:

@@ -60,6 +60,7 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
     is_mutable_tool_args,
     set_call_id,
     set_tool_invocation_order,
+    tool_may_have_run,
 )
 from chrys.service.agent_middleware.events.hosted_tools import (
     FinalTextOp,
@@ -574,19 +575,33 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                 tool_operation_id=tool_operation_id(_meta),
             )
 
-        await self._bus.publish(
-            InvocationToolCallStart(
-                origin=origin,
-                agent_name=self._agent_name,
-                tool_name=tool_name,
-                tool_kind=tool_kind,
-                args=args,
-                call_id=call_id,
-                session_id=self._session_id,
+        try:
+            await self._bus.publish(
+                InvocationToolCallStart(
+                    origin=origin,
+                    agent_name=self._agent_name,
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    args=args,
+                    call_id=call_id,
+                    session_id=self._session_id,
+                )
             )
-        )
+        except BaseException:
+            if mut_ctx is not None:
+                abort_mutation_tracking(
+                    mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
+                )
+            raise
         if self._hosted_bridge is not None:
-            await self._hosted_bridge.local_call_start_published(provider_call_id)
+            try:
+                await self._hosted_bridge.local_call_start_published(provider_call_id)
+            except BaseException:
+                if mut_ctx is not None:
+                    abort_mutation_tracking(
+                        mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
+                    )
+                raise
 
         # A delegation from this invocation (a workflow node's, or a nested sub-agent's) binds its
         # child to this call the same way ToolEventMiddleware binds a chat turn's: the child reads
@@ -695,9 +710,15 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                 # so the async finalize below is unreachable — release the
                 # trace wrapper and close the coordination window
                 # synchronously or the registry advertises a live command
-                # to peers until shutdown. The command may have written
-                # before the interrupt, so implicit detection is truncated.
-                abort_mutation_tracking(mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker)
+                # to peers until shutdown. Interrupted before the commit step
+                # (e.g. at approval), the tool never ran; after it, the command
+                # may have written, so implicit detection is truncated.
+                abort_mutation_tracking(
+                    mut_ctx,
+                    self._mutation_coordinator,
+                    tracker=self._mutation_tracker,
+                    may_have_run=tool_may_have_run(context),
+                )
             if not cancelled:
                 try:
                     result_text = error_text or extract_result_text(context.result)
@@ -712,7 +733,9 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                         # deliberately skipped (the tool never executed), so
                         # release the trace wrapper and close the observation
                         # window here.
-                        abort_mutation_tracking(mut_ctx, self._mutation_coordinator)
+                        abort_mutation_tracking(
+                            mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
+                        )
                     if self._stats is not None:
                         self._stats.record_tool_call()
                     self._tool_call_count += 1
@@ -756,6 +779,8 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                             metadata["file_bytes_changed"] = mut_result.file_bytes_changed
                         if mut_result.file_hashes is not None:
                             metadata["file_mutation_hashes"] = mut_result.file_hashes
+                        if mut_result.file_changed_at is not None:
+                            metadata["file_changed_at"] = mut_result.file_changed_at
                         if mut_result.shell_snapshots:
                             metadata["shell_file_snapshots"] = mut_result.shell_snapshots
                     if rejected:

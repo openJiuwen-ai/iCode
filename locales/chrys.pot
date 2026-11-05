@@ -6296,6 +6296,12 @@ msgstr ""
 msgid "tui.diff.file_moved"
 msgstr ""
 
+#. English:  (large file)
+#. chrys-meta={"fingerprint":"db15536aed17034399eacb5203fa5bac5018441ca63757d5cb466a772a95912e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/util/diff_labels.py
+msgid "tui.diff.large_file"
+msgstr ""
+
 #. English: Error: unable to load diff viewer — {error}
 #. chrys-meta={"fingerprint":"34e9895b0bb1e75576ce7cfc03e63c85787fa3e2287ebcb619cc6f576b751d3a","multiline":false,"placeholders":["error"]}
 #: src/chrys/app/tui/screens/diff/screen.py
@@ -6304,7 +6310,7 @@ msgstr ""
 
 #. English:  (no backup)
 #. chrys-meta={"fingerprint":"c37228ae1ef3f92d3724df3c1ed746a863de3a9db910f93316a299eca5f4c134","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/screen.py
+#: src/chrys/app/tui/util/diff_labels.py
 msgid "tui.diff.no_backup"
 msgstr ""
 
@@ -11971,6 +11977,21 @@ msgstr ""
 msgid "tui.sidebar.buddy.species"
 msgstr ""
 
+#. English: File Changes ({count})
+#. English-plural: File Changes ({count})
+#. chrys-meta={"fingerprint":"9f424008012391b9035f4fece187527576bd2f0e2e4f37a4c314b3f2f4e6332c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/diff_preview.py
+msgid "tui.sidebar.changes.title"
+msgid_plural "tui.sidebar.changes.title#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: View all
+#. chrys-meta={"fingerprint":"cf92a75eb64004823d84791e2d49939519b39905a2f41df384f018ab06465f40","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/diff_preview.py
+msgid "tui.sidebar.changes.view_all"
+msgstr ""
+
 #. English: {formatted} message
 #. English-plural: {formatted} messages
 #. chrys-meta={"fingerprint":"1694c49b2685d87eddcb6b7fec72854db3edb06e6dc110a88db4d961ee17e6a8","multiline":false,"placeholders":["formatted"]}
@@ -12205,6 +12226,12 @@ msgstr[1] ""
 msgid "tui.sidebar.tab.buddy"
 msgstr ""
 
+#. English: Chat
+#. chrys-meta={"fingerprint":"6f3d1883841694bc43cd5e19295cc29be33ce21fe16df5c5ebc23e4a823d0b32","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/panel.py
+msgid "tui.sidebar.tab.chat"
+msgstr ""
+
 #. English: Context
 #. chrys-meta={"fingerprint":"568799b368ac02572fc839679f574112d64515edf6186c890b307cc520a65063","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/panel.py
@@ -12221,12 +12248,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"bc590033958e925397df73037927d0966b3d6b872ec389277b25224deed0ebd3","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/panel.py
 msgid "tui.sidebar.tab.hooks"
-msgstr ""
-
-#. English: Messages
-#. chrys-meta={"fingerprint":"dc539a1862021f7a116d2443dde9458f890e3f149671bfc0021d3b6300e6147f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/sidebar/panel.py
-msgid "tui.sidebar.tab.messages"
 msgstr ""
 
 #. English: Tasks
@@ -12257,6 +12278,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5527ce3e5067d8553f30be182a048960f2e3feb512da646af4218605d6f49026","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/toc.py
 msgid "tui.sidebar.toc.empty"
+msgstr ""
+
+#. English: Messages
+#. chrys-meta={"fingerprint":"dc539a1862021f7a116d2443dde9458f890e3f149671bfc0021d3b6300e6147f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/toc.py
+msgid "tui.sidebar.toc.title"
 msgstr ""
 
 #. English: Reload settings, profiles, memory, skills, hooks, MCP servers,

@@ -29,6 +29,7 @@ async def test_conversation_toc_scrollbar_is_one_cell_and_flush_right() -> None:
         toc = pilot.app.query_one(ConversationToc)
         toc.update_items([TocItem(turn_id=f"turn-{i}", summary=f"Turn {i}") for i in range(20)])
         tree = pilot.app.query_one("#toc-tree", Tree)
+        box = toc.query_one("#toc-box")
 
         await wait_for(
             lambda: tree.vertical_scrollbar.region.width == 1,
@@ -37,8 +38,8 @@ async def test_conversation_toc_scrollbar_is_one_cell_and_flush_right() -> None:
         )
 
         assert tree.styles.scrollbar_size_vertical == 1
-        assert tree.region.x == toc.region.x + 1
-        assert tree.vertical_scrollbar.region.right == toc.region.right
+        assert tree.region.x == box.content_region.x
+        assert tree.vertical_scrollbar.region.right == box.region.right - 1
 
 
 @pytest.mark.parametrize("entries", [20, 2], ids=["scrolling", "fitting"])
@@ -59,8 +60,9 @@ async def test_conversation_toc_keeps_a_clear_column_after_a_long_entry(entries:
 
         # What shows of a line is what the scrollbar leaves of it.
         width = tree.scrollable_content_region.width
-        assert width == tree.size.width - scrolling
-        highlighted, plain = (row.crop(0, width) for row in tree.render_lines(Region(0, 0, width, 2)))
+        assert width == tree.content_size.width - scrolling
+        left = tree.styles.padding.left
+        highlighted, plain = tree.render_lines(Region(left, 0, width, 2))
 
         for row, line in ((highlighted, 0), (plain, 1)):
             assert row.text.endswith("x ") and not row.text.endswith("  ")

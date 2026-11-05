@@ -24,10 +24,9 @@ Layout:
 from __future__ import annotations
 
 import functools
-import os
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import PurePath
 from typing import TYPE_CHECKING, ClassVar
 
@@ -45,7 +44,16 @@ from textual.widgets import Static, TabbedContent, TabPane, Tree
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.binding_display import localized_binding
 from chrys.app.tui.i18n import LocaleController, render_str, widget_localizer
-from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult, entry_has_visible_change
+from chrys.app.tui.util.diff_content import DiffContent, read_diff_content
+from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffFocus, DiffLoadResult, entry_has_visible_change
+from chrys.app.tui.util.diff_labels import (
+    entry_badge_text,
+    entry_display_key,
+    entry_label_parts,
+    entry_source_suffix,
+    filter_and_dedupe_entries,
+    is_within_cwd,
+)
 from chrys.app.tui.util.mutation_sources import merge_mutation_source as _merge_source
 from chrys.app.tui.util.removal import remove_children_shielded, remove_shielded
 from chrys.app.tui.widgets import ChrysLoadingIndicator
@@ -54,7 +62,7 @@ from chrys.foundation.i18n import DisplayPath, MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.mutation_scope import MutationScope, WorkflowRunScope
 from chrys.foundation.platform.paths import display_relpath
-from chrys.service.mutations.types import MutationOp, MutationProvenance, MutationSource, SnapshotSkipReason
+from chrys.service.mutations.types import MutationOp, MutationProvenance, SnapshotSkipReason
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -94,7 +102,6 @@ _SKIP_BINARY_FILE = msg("tui.diff.skip_reason.binary_file", fallback="binary fil
 _SKIP_UNREADABLE = msg("tui.diff.skip_reason.unreadable", fallback="file unreadable")
 _CHANGE_LIST = msg("tui.diff.change_list", fallback="Change List")
 _SELECT_FILE = msg("tui.diff.select_file", fallback="Select a file to view changes")
-_NO_BACKUP = msg("tui.diff.no_backup", fallback=" (no backup)")
 _CONTENT_NOT_BACKED_UP = msg(
     "tui.diff.content_not_backed_up",
     fallback="Content not backed up ({reason}): {path}. No diff to display.",
@@ -121,13 +128,6 @@ _EXTERNAL_TREE = msg("tui.diff.external_tree", fallback="External")
 _TURN_TAB = msg("tui.diff.tab.turn", fallback="T{turn_id}")
 _RUN_TAB = msg("tui.diff.tab.run", fallback="Run {number}")
 _ALL_TAB = msg("tui.diff.tab.all", fallback="All")
-
-_OP_SEGMENTS: dict[MutationOp, list[tuple[str, str]]] = {
-    MutationOp.MODIFY: [("[", "bold orange1"), ("+", "bold green"), ("-", "bold red"), ("]", "bold orange1")],
-    MutationOp.CREATE: [("[+]", "bold green")],
-    MutationOp.DELETE: [("[-]", "bold red")],
-    MutationOp.MOVE: [("[→]", "bold cyan")],
-}
 
 # Checkbox prefixes used when DiffPeriodPane runs in checkable mode
 # (currently only from the rollback modal).  Tri-state on folders:
@@ -210,7 +210,7 @@ def _entry_content_subtitle(
     encoding = entry.encoding.upper()
     tail = encoding if entry.is_binary else f"{_text_eol_label(_entry_eol_text(entry), render_message)} - {encoding}"
     parts: list[Text] = []
-    for marker, style in sorted(_entry_source_suffix(entry), key=lambda ms: _BADGE_LEGEND_ORDER.index(ms[0])):
+    for marker, style in sorted(entry_source_suffix(entry), key=lambda ms: _BADGE_LEGEND_ORDER.index(ms[0])):
         legend = Text()
         legend.append(marker, style)
         legend.append(f": {render_message(_BADGE_LEGENDS[marker].bind())}")
@@ -226,27 +226,6 @@ _SKIP_REASON_LABELS: dict[str, MessageDef] = {
     SnapshotSkipReason.BINARY.value: _SKIP_BINARY_FILE,
     SnapshotSkipReason.UNREADABLE.value: _SKIP_UNREADABLE,
 }
-
-
-def _entry_source_suffix(entry: DiffFileEntry) -> list[tuple[str, str]]:
-    """Provenance badges rendered right-aligned at the end of a leaf row.
-
-    ``?`` implicit detection, ``~`` window-diff inference (assumed
-    provenance), ``!`` contested — a peer chrys session also wrote the
-    path, so disk may differ from "our" after state and rollback will
-    exclude it.  ``!`` is dim while the row's own attribution is itself
-    inference (``?``/``~`` rows) and bold yellow on proven rows, where
-    it flags a hard both-sessions-wrote conflict.
-    """
-    badges: list[tuple[str, str]] = []
-    implicit = entry.source == MutationSource.IMPLICIT.value
-    if implicit:
-        badges.append(("?", "bold yellow"))
-    elif entry.inferred:
-        badges.append(("~", "dim"))
-    if entry.contested:
-        badges.append(("!", "dim" if (implicit or entry.inferred) else "bold yellow"))
-    return badges
 
 
 def _checkbox_text(state: str) -> Text:
@@ -331,26 +310,28 @@ class CheckableTree(Tree):
 # ---------------------------------------------------------------------------
 
 
-def _build_period_entries(tracker, turn, cwd: str) -> list[DiffFileEntry]:
+def _build_period_entries(tracker, turn, cwd: str, *, include_content: bool = True) -> list[DiffFileEntry]:
     """Build DiffFileEntry list for a single turn from a deserialized tracker."""
-    from chrys.foundation.text.encoding import EncodingDetector, decode_bytes
-
     last_op: dict[str, MutationOp] = {}
     old_paths: dict[str, str | None] = {}
     sources: dict[str, str] = {}
+    changed_at: dict[str, float] = {}
     for m in turn.mutations:
         # Foreign rows are excluded from the summary fold below; keep
         # this metadata consistent or a peer's op/old_path/source leaks
         # onto a row whose hashes came from our rows only.
         if m.provenance is MutationProvenance.FOREIGN:
             continue
+        if (change_time := m.changed_at) is not None:
+            changed_at[m.path] = max(changed_at.get(m.path, 0.0), change_time)
+            if m.old_path:
+                changed_at[m.old_path] = max(changed_at.get(m.old_path, 0.0), change_time)
         last_op[m.path] = m.operation
         old_paths[m.path] = m.old_path
         sources[m.path] = _merge_source(sources.get(m.path, ""), m.source.value)
         if m.old_path:
             sources[m.old_path] = _merge_source(sources.get(m.old_path, ""), m.source.value)
 
-    detector = EncodingDetector()
     file_summary = {
         path: diff
         for path, diff in tracker.get_period_file_summary(turn.scope).items()
@@ -384,22 +365,7 @@ def _build_period_entries(tracker, turn, cwd: str) -> list[DiffFileEntry]:
             skip = diff.after_skip or diff.before_skip
             content_omitted = skip.value if skip else ""
 
-        before_bytes = store.read_blob(diff.before) if diff.before else None
-        after_bytes = store.read_blob(diff.after) if diff.after else None
-
-        binary = bool(
-            (before_bytes and EncodingDetector.looks_binary(before_bytes))
-            or (after_bytes and EncodingDetector.looks_binary(after_bytes))
-        )
-        before_text = "" if binary or before_bytes is None else decode_bytes(before_bytes)
-        after_text = "" if binary or after_bytes is None else decode_bytes(after_bytes)
-
-        # Detect encoding from the latest available content
-        enc = "utf-8"
-        content_for_detect = after_bytes or before_bytes
-        if content_for_detect and not binary:
-            result = detector.detect_from_bytes(content_for_detect)
-            enc = result.encoding or "utf-8"
+        content = read_diff_content(store, diff.before, diff.after) if include_content else DiffContent(available=False)
 
         op = last_op.get(file_path, MutationOp.MODIFY)
         rel = display_relpath(file_path, cwd)
@@ -409,10 +375,10 @@ def _build_period_entries(tracker, turn, cwd: str) -> list[DiffFileEntry]:
             rel_path=rel,
             operation=op,
             old_path=old_paths.get(file_path),
-            before_text=before_text,
-            after_text=after_text,
-            is_binary=binary,
-            encoding=enc,
+            before_text=content.before_text,
+            after_text=content.after_text,
+            is_binary=content.is_binary,
+            encoding=content.encoding,
             bytes_changed=not diff.is_net_zero or bool(content_omitted),
             before_hash=diff.before,
             after_hash=diff.after,
@@ -420,6 +386,7 @@ def _build_period_entries(tracker, turn, cwd: str) -> list[DiffFileEntry]:
             content_omitted=content_omitted,
             contested=diff.contested,
             inferred=diff.inferred,
+            last_changed_at=changed_at.get(file_path, 0.0),
         )
         if entry_has_visible_change(entry):
             entries.append(entry)
@@ -428,7 +395,7 @@ def _build_period_entries(tracker, turn, cwd: str) -> list[DiffFileEntry]:
     return entries
 
 
-def _build_session_entries(tracker, cwd: str) -> list[DiffFileEntry]:
+def _build_session_entries(tracker, cwd: str, *, include_content: bool = True) -> list[DiffFileEntry]:
     """Build DiffFileEntry list for the net session-wide changeset.
 
     Aggregates mutations across all turns: each file's ``before_text`` is
@@ -436,9 +403,6 @@ def _build_session_entries(tracker, cwd: str) -> list[DiffFileEntry]:
     ``after_text`` is its latest state after the last mutation.
     Net-zero churn is already filtered by ``get_session_file_summary``.
     """
-    from chrys.foundation.text.encoding import EncodingDetector, decode_bytes
-
-    detector = EncodingDetector()
     file_summary = tracker.get_session_file_summary()
     if not file_summary:
         return []
@@ -448,12 +412,17 @@ def _build_session_entries(tracker, cwd: str) -> list[DiffFileEntry]:
     # can be appended with non-monotonic ids via session restore/retry.
     old_paths: dict[str, str | None] = {}
     sources: dict[str, str] = {}
+    changed_at: dict[str, float] = {}
     for turn in sorted(tracker.get_all_periods(), key=lambda period: period.period_index):
         for m in turn.mutations:
             # Match the summary fold: foreign rows must not contribute
             # a MOVE's old_path or their source marker to our entries.
             if m.provenance is MutationProvenance.FOREIGN:
                 continue
+            if (change_time := m.changed_at) is not None:
+                changed_at[m.path] = max(changed_at.get(m.path, 0.0), change_time)
+                if m.old_path:
+                    changed_at[m.old_path] = max(changed_at.get(m.old_path, 0.0), change_time)
             sources[m.path] = _merge_source(sources.get(m.path, ""), m.source.value)
             if m.old_path:
                 old_paths[m.path] = m.old_path
@@ -471,15 +440,7 @@ def _build_session_entries(tracker, cwd: str) -> list[DiffFileEntry]:
             skip = diff.after_skip or diff.before_skip
             content_omitted = skip.value if skip else ""
 
-        before_bytes = store.read_blob(diff.before) if diff.before else None
-        after_bytes = store.read_blob(diff.after) if diff.after else None
-
-        binary = bool(
-            (before_bytes and EncodingDetector.looks_binary(before_bytes))
-            or (after_bytes and EncodingDetector.looks_binary(after_bytes))
-        )
-        before_text = "" if binary or before_bytes is None else decode_bytes(before_bytes)
-        after_text = "" if binary or after_bytes is None else decode_bytes(after_bytes)
+        content = read_diff_content(store, diff.before, diff.after) if include_content else DiffContent(available=False)
 
         # Derive net op from skip-aware existence (a side with a
         # withheld backup still exists on disk).  Net-zero
@@ -495,12 +456,6 @@ def _build_session_entries(tracker, cwd: str) -> list[DiffFileEntry]:
         else:
             op = MutationOp.MODIFY
 
-        enc = "utf-8"
-        content_for_detect = after_bytes or before_bytes
-        if content_for_detect and not binary:
-            det = detector.detect_from_bytes(content_for_detect)
-            enc = det.encoding or "utf-8"
-
         rel = display_relpath(file_path, cwd)
 
         entry = DiffFileEntry(
@@ -508,10 +463,10 @@ def _build_session_entries(tracker, cwd: str) -> list[DiffFileEntry]:
             rel_path=rel,
             operation=op,
             old_path=old_paths.get(file_path),
-            before_text=before_text,
-            after_text=after_text,
-            is_binary=binary,
-            encoding=enc,
+            before_text=content.before_text,
+            after_text=content.after_text,
+            is_binary=content.is_binary,
+            encoding=content.encoding,
             bytes_changed=True,
             before_hash=diff.before,
             after_hash=diff.after,
@@ -519,6 +474,7 @@ def _build_session_entries(tracker, cwd: str) -> list[DiffFileEntry]:
             content_omitted=content_omitted,
             contested=diff.contested,
             inferred=diff.inferred,
+            last_changed_at=changed_at.get(file_path, 0.0),
         )
         if entry_has_visible_change(entry):
             entries.append(entry)
@@ -533,6 +489,7 @@ def load_diff_entries_by_period(
     cwd: str,
     *,
     mutations_data: dict | None = None,
+    include_content: bool = True,
 ) -> DiffLoadResult:
     """Build execution-scoped and session-wide diffs from persisted state."""
     import json
@@ -566,12 +523,14 @@ def load_diff_entries_by_period(
     scopes: dict[int, MutationScope] = {}
     for number, period in enumerate(periods, start=1):
         scopes[number] = period.scope
-        entries = _build_period_entries(tracker, period, cwd) if period.mutations else []
+        entries = (
+            _build_period_entries(tracker, period, cwd, include_content=include_content) if period.mutations else []
+        )
         if entries:
             entries_by_period[number] = entries
 
     return DiffLoadResult(
-        all_entries=_build_session_entries(tracker, cwd),
+        all_entries=_build_session_entries(tracker, cwd, include_content=include_content),
         per_period_entries=entries_by_period,
         total_periods=len(periods),
         scopes=scopes,
@@ -581,41 +540,6 @@ def load_diff_entries_by_period(
 # ---------------------------------------------------------------------------
 # DiffPeriodPane — per-turn content widget
 # ---------------------------------------------------------------------------
-
-
-def _is_within_cwd(rel_path: str) -> bool:
-    """Check if a relative path stays within the CWD (doesn't escape with ..)."""
-    return not rel_path.startswith("..") and not os.path.isabs(rel_path)
-
-
-def _entry_display_key(entry: DiffFileEntry) -> str:
-    """Key matching where an entry renders in the change-list tree."""
-    display_path = entry.rel_path if _is_within_cwd(entry.rel_path) else entry.path
-    return os.path.normpath(display_path)
-
-
-def filter_and_dedupe_entries(entries: list[DiffFileEntry]) -> list[DiffFileEntry]:
-    """Collapse duplicate tree rows and drop entries with no visible change."""
-    latest_by_key: dict[str, DiffFileEntry] = {}
-    key_order: list[str] = []
-    for entry in entries:
-        key = _entry_display_key(entry)
-        if key not in latest_by_key:
-            key_order.append(key)
-            latest_by_key[key] = entry
-            continue
-        # Builders should already aggregate by file. If an older session
-        # or live source still hands us duplicates, the later entry reflects
-        # the newest net state for that tree row.  Badges are sticky
-        # across the collapse (any contested/inferred row marks the key).
-        prev = latest_by_key[key]
-        latest_by_key[key] = replace(
-            entry,
-            source=_merge_source(prev.source, entry.source),
-            contested=prev.contested or entry.contested,
-            inferred=prev.inferred or entry.inferred,
-        )
-    return [latest_by_key[key] for key in key_order if entry_has_visible_change(latest_by_key[key])]
 
 
 def _entry_all_tab_key(entry: DiffFileEntry) -> tuple[str, str, MutationOp, str | None, str, str, str]:
@@ -666,14 +590,21 @@ class DiffPeriodPane(Widget):
             self.selected_count = selected_count
             self.total_count = total_count
 
-    def __init__(self, entries: list[DiffFileEntry], *, checkable: bool = False, lazy: bool = False) -> None:
+    def __init__(
+        self,
+        entries: list[DiffFileEntry],
+        *,
+        checkable: bool = False,
+        lazy: bool = False,
+        initial_display_key: str | None = None,
+    ) -> None:
         super().__init__()
         self._entries = filter_and_dedupe_entries(entries)
         self._diff_cache: dict[str, DiffView] = {}  # path → DiffView widget
         self._active_path: str | None = None
         self._view_overrides: dict[str, bool] = {}  # path → user-set split mode
-        self._cwd_entries = [e for e in self._entries if _is_within_cwd(e.rel_path)]
-        self._ext_entries = [e for e in self._entries if not _is_within_cwd(e.rel_path)]
+        self._cwd_entries = [e for e in self._entries if is_within_cwd(e.rel_path)]
+        self._ext_entries = [e for e in self._entries if not is_within_cwd(e.rel_path)]
         # Checkable mode: leaves render with a [x]/[ ] prefix and folders
         # with [x]/[~]/[ ].  ``_unchecked`` stores leaf paths the user has
         # deselected; default empty = all checked.  Toggled in place via
@@ -686,6 +617,7 @@ class DiffPeriodPane(Widget):
         self._lazy = lazy
         self._initialized = False
         self._initializing = False
+        self._initial_display_key = initial_display_key
 
     def _render_message(self, reference: MessageRef) -> str:
         return render_str(widget_localizer(self), reference)
@@ -739,6 +671,17 @@ class DiffPeriodPane(Widget):
         self._build_workspace_tree()
         if self._ext_entries:
             self._build_external_tree()
+        if self._initial_display_key is not None:
+            for tree in self._iter_trees():
+                node = self._find_display_key(tree.root, self._initial_display_key)
+                if node is not None and isinstance(node.data, DiffFileEntry):
+                    # New leaves acquire line numbers lazily; scrolling needs the built line map.
+                    _ = tree.last_line
+                    tree.move_cursor(node)
+                    tree.scroll_to_node(node, animate=False)
+                    await self._show_file(node.data)
+                    self.call_after_refresh(tree.scroll_to_node, node, animate=False)
+                    return
         # Auto-select first file leaf
         ws_tree = self.query_one(".workspace-tree", Tree)
         first_leaf = self._find_first_leaf(ws_tree.root)
@@ -761,6 +704,16 @@ class DiffPeriodPane(Widget):
                 ext_tree.move_cursor(first)
                 if isinstance(first.data, DiffFileEntry):
                     await self._show_file(first.data)
+
+    @staticmethod
+    def _find_display_key(node: TreeNode, key: str) -> TreeNode | None:  # type: ignore[type-arg]
+        if isinstance(node.data, DiffFileEntry) and entry_display_key(node.data) == key:
+            return node
+        for child in node.children:
+            found = DiffPeriodPane._find_display_key(child, key)
+            if found is not None:
+                return found
+        return None
 
     @staticmethod
     def _find_first_leaf(node: TreeNode) -> TreeNode | None:  # type: ignore[type-arg]
@@ -830,7 +783,7 @@ class DiffPeriodPane(Widget):
     def _leaf_display(entry: DiffFileEntry) -> str:
         """Display name for a leaf: basename in the workspace tree, full
         absolute path in the external tree (which has no folder nodes)."""
-        if _is_within_cwd(entry.rel_path):
+        if is_within_cwd(entry.rel_path):
             return PurePath(entry.rel_path).name
         return entry.path
 
@@ -844,14 +797,11 @@ class DiffPeriodPane(Widget):
         checkbox so the checkbox column stays leftmost.  The name is
         never truncated — rows wider than the pane scroll horizontally.
         """
-        op_segments = _OP_SEGMENTS.get(entry.operation, [("[?]", "bold white")])
-        parts: list[Text | tuple[str, str] | str] = []
+        operation, note = entry_label_parts(entry, self._render_message)
+        parts: list[Text | str] = []
         if self._checkable:
             parts += [_checkbox_text("off" if entry.path in self._unchecked else "on"), " "]
-        parts += [*op_segments, " ", self._leaf_display(entry)]
-        if entry.content_omitted:
-            parts.append((self._render_message(_NO_BACKUP.bind()), "dim"))
-        return Text.assemble(*parts)
+        return Text.assemble(*parts, operation, self._leaf_display(entry), note)
 
     def _leaf_label(self, entry: DiffFileEntry) -> Text:
         """Leaf body plus provenance badges padded into a shared right column.
@@ -861,13 +811,10 @@ class DiffPeriodPane(Widget):
         ``?``/``~``/``!`` line up vertically regardless of name length.
         """
         label = self._leaf_body(entry)
-        badges = _entry_source_suffix(entry)
+        badges = entry_badge_text(entry)
         if badges:
             label.append(" " * self._badge_pad.get(entry.path, 1))
-            for i, (marker, style) in enumerate(badges):
-                if i:
-                    label.append(" ")
-                label.append(marker, style)
+            label.append_text(badges)
         return label
 
     def _assign_badge_pads(self, rows: list[tuple[DiffFileEntry, int]], tree: Tree) -> None:
@@ -883,11 +830,10 @@ class DiffPeriodPane(Widget):
         """
         measured: list[tuple[DiffFileEntry, int, int]] = []
         for entry, indent in rows:
-            badges = _entry_source_suffix(entry)
+            badges = entry_badge_text(entry)
             if not badges:
                 continue
-            badge_width = 2 * len(badges) - 1  # markers joined by single spaces
-            measured.append((entry, indent + self._leaf_body(entry).cell_len, badge_width))
+            measured.append((entry, indent + self._leaf_body(entry).cell_len, badges.cell_len))
         if not measured:
             return
         visible = tree.scrollable_content_region.width
@@ -1273,12 +1219,14 @@ class _DiffScreenContent(Widget):
         *,
         initial_tab_id: str,
         scopes: dict[int, MutationScope],
+        focus: DiffFocus | None = None,
     ) -> None:
         super().__init__(classes="diff-screen-content")
         self._periods_data = periods_data
         self._all_entries = all_entries
         self._initial_tab_id = initial_tab_id
         self._scopes = scopes
+        self._focus = focus
 
     def compose(self) -> ComposeResult:
         render_message = functools.partial(render_str, widget_localizer(self))
@@ -1293,7 +1241,15 @@ class _DiffScreenContent(Widget):
                         ),
                         markup=False,
                     ),
-                    DiffPeriodPane(self._periods_data[turn_id], lazy=True),
+                    DiffPeriodPane(
+                        self._periods_data[turn_id],
+                        lazy=True,
+                        initial_display_key=(
+                            self._focus.display_key
+                            if self._focus is not None and self._initial_tab_id == f"turn-{turn_id}"
+                            else None
+                        ),
+                    ),
                     id=f"turn-{turn_id}",
                 )
             # Keep the session-wide net changeset after the chronological
@@ -1301,7 +1257,11 @@ class _DiffScreenContent(Widget):
             if _should_show_all_tab(self._all_entries, self._periods_data):
                 yield TabPane(
                     Content.from_text(render_message(_ALL_TAB.bind()), markup=False),
-                    DiffPeriodPane(self._all_entries, lazy=True),
+                    DiffPeriodPane(
+                        self._all_entries,
+                        lazy=True,
+                        initial_display_key=self._focus.display_key if self._focus is not None else None,
+                    ),
                     id="turn-all",
                 )
 
@@ -1328,6 +1288,7 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         load_data: Callable[[], Awaitable[DiffLoadResult]] | None = None,
         locale_controller: LocaleController | None = None,
         scopes: dict[int, MutationScope] | None = None,
+        focus: DiffFocus | None = None,
     ) -> None:
         super().__init__()
         self._periods_data = periods_data
@@ -1342,6 +1303,7 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         self._content_loading = True
         self._content_ready = False
         self._close_when_current = False
+        self._focus = focus
 
     def _render_toast(self, reference: MessageRef) -> str:
         controller = self._locale_controller
@@ -1349,6 +1311,8 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
 
     def _initial_tab_id(self) -> str:
         """Return the tab that should be active when the screen opens."""
+        if self._focus is not None and _should_show_all_tab(self._all_entries, self._periods_data):
+            return "turn-all"
         if self._periods_data:
             return f"turn-{max(self._periods_data)}"
         if self._all_entries:
@@ -1412,6 +1376,7 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
                 self._all_entries,
                 initial_tab_id=self._initial_tab_id(),
                 scopes=self._scopes,
+                focus=self._focus,
             )
             content.display = False
             await self.query_one("#diff-container", VerticalGroup).mount(content)
