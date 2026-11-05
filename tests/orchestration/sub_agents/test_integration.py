@@ -84,6 +84,7 @@ from tests.orchestration.sub_agents._pipeline import (
     _SubAgentPipelineCtx,
     use_fast_sub_agent_policy,
 )
+from tests.support.extensions import install_file_extension
 from tests.support.pipeline_helpers import fail_nested_before_response_on_nth
 from tests.support.scripted_clients import FrameworkBoom, HostedMockResponse, hosted_image_result
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -676,6 +677,74 @@ async def test_sub_agent_has_sleep_though_its_profile_omits_it(
         ]
         assert results == ["Slept for 0 seconds."]
         assert _explore_result(ctx).result == "back from the pause"
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_asks_its_extension_contexts_with_its_task(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The child's reminders carry its own profile's extension contexts, asked with the task it was given."""
+    install_file_extension(
+        monkeypatch,
+        "acme_task",
+        "from chrys.extensions import Extension\nextension = Extension()\n\n"
+        "@extension.context\nasync def task(ctx):\n    return f'Asked to: {ctx.prompt}'\n",
+    )
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("inspect the tree"), MockResponse(text="Parent done.")],
+        sub_outcomes=[MockResponse(text="fine")],
+        sub_extensions=["acme_task"],
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        await ctx.wait_for_idle()
+
+        ((sent, _options),) = ctx.sub_client.call_history
+        assert "Asked to: inspect the tree" in (sent[-1].text or "")
+        # The parent's profile enables no extension.
+        parent_texts = [m.text or "" for messages, _ in ctx.main_client.call_history for m in messages]
+        assert not any("<extension_context" in text for text in parent_texts)
+    finally:
+        await ctx.cleanup()
+
+
+_SIGNING_HOOKS = (
+    "from chrys.extensions import Extension, ToolError\nextension = Extension()\n\n"
+    "@extension.before_tool\nasync def no_sleep(call):\n    raise ToolError('No sleeping.')\n\n"
+    "@extension.after_tool\nasync def sign(call, result):\n    return f'{result.text} [acme]'\n"
+)
+
+
+async def test_a_sub_agent_runs_its_extension_tool_hooks_around_its_own_calls(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_file_extension(monkeypatch, "acme_sign", _SIGNING_HOOKS)
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("wait a bit"), MockResponse(text="Parent done.")],
+        sub_outcomes=[
+            MockResponse(tool_calls=[("sleep", "sleep-1", {"seconds": 0, "reason": "wait"})]),
+            MockResponse(text="fine"),
+        ],
+        sub_builtins=["sleep"],
+        sub_extensions=["acme_sign"],
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        await ctx.wait_for_idle()
+
+        sent = [c.result for m in ctx.sub_client.call_history[-1][0] for c in m.contents if c.type == "function_result"]
+        assert sent == ["Error: No sleeping. [acme]"]
+        # The parent's own call is not the child's extensions' to see.
+        parent = [
+            c.result for m in ctx.main_client.call_history[-1][0] for c in m.contents if c.type == "function_result"
+        ]
+        assert parent == ["fine"]
     finally:
         await ctx.cleanup()
 

@@ -1,8 +1,12 @@
 # Python extensions
 
-An extension is a Python module that gives agents more tools. Each tool is an `async def` function: the model sees its name, description, and parameters, and when the model calls the tool, iCode runs your function and passes what it returns back to the model.
+An extension is a Python module that adds to what agents can do. Each part of it is an `async def` function:
 
-An extension runs inside iCode, with your permissions: it can read and change anything you can, and it sees what the agent passes to its tools. Install only extensions you trust, as you would any Python package.
+- A **tool** the model can call: the model sees its name, description, and parameters, and when the model calls the tool, iCode runs your function and passes what it returns back to the model.
+- A **context**: iCode asks it at the start of each turn for text the agent should know, such as the ticket your branch is for. See [Give the agent context each turn](#give-the-agent-context-each-turn).
+- A **tool hook**: it sees each tool call the agent makes, before the call runs, to refuse or change it, or after, to change the result the model reads. See [Check or change tool calls](#check-or-change-tool-calls).
+
+An extension runs inside iCode, with your permissions: it can read and change anything you can, and it sees what the agent passes to its tools. An extension with tool hooks sees every tool call the agent makes and its result. Install only extensions you trust, as you would any Python package.
 
 ## Extensions, MCP servers, and skills
 
@@ -75,7 +79,7 @@ In the agent profile, the same choice is the top-level `extensions` list; see [e
 
 iCode reads an extension's code the first time an agent that uses it starts, and listing extensions in the "Tools" tab runs none of it. After you change or update an extension, restart iCode.
 
-If an extension cannot be loaded, the agent starts without it and iCode shows a warning that says why. To check what loaded, enter `/runtime` and open the "Tools" tab: each extension's tools are listed under the extension's id, and the extensions that did not load are under "Unavailable extensions". See [Troubleshoot](#troubleshoot).
+If an extension cannot be loaded, the agent starts without it and iCode shows a warning that says why. To check what loaded, enter `/runtime` and open the "Tools" tab: each extension's tools, contexts, and tool hooks are listed under the extension's id, and the extensions that did not load are under "Unavailable extensions". See [Troubleshoot](#troubleshoot).
 
 ## Approve extension tools
 
@@ -199,6 +203,87 @@ async def tracker_search(
     return [{"id": i["id"], "title": i["title"], "status": i["status"]} for i in data["issues"]]
 ```
 
+### Give the agent context each turn
+
+Add an `async def` function with `@extension.context` to tell the agent something at the start of each turn, such as the ticket your branch is for or the service your team is on call for. It takes a `TurnContext` and returns text, or `None` when it has nothing to say:
+
+```python
+"""Tell the agent which ticket the current branch is for."""
+
+import asyncio
+import re
+import subprocess
+
+from chrys.extensions import Extension, TurnContext
+
+extension = Extension()
+
+
+def _current_branch(cwd) -> str:
+    result = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,  # never read iCode's own input
+    )
+    return result.stdout.strip()
+
+
+@extension.context
+async def ticket(ctx: TurnContext) -> str | None:
+    """Name the ticket in a branch such as ABC-123-fix-login."""
+    branch = await asyncio.to_thread(_current_branch, ctx.cwd)
+    match = re.match(r"[A-Z]+-\d+", branch)
+    if match is None:
+        return None
+    return f"The current branch {branch} is for ticket {match[0]}. Mention the ticket in commit messages."
+```
+
+- **When it is asked**: when a turn starts: you send a message, a sub-agent gets its task, or a workflow step runs an agent. All of an agent's contexts are asked at the same time, and the turn waits for them, so keep them quick and run blocking work with `await asyncio.to_thread(...)`. Retrying a turn, or a workflow step retrying its agent, keeps the text its contexts gave the first time; each new run of a workflow step asks again. A workflow step's `timeout` starts once its contexts have answered.
+- **What it reads**: `ctx.prompt` is what the turn was asked to do: your message, the sub-agent's task, or the step's prompt. The other fields are those of [`ToolContext`](#what-a-tool-can-read-from-its-context).
+- **What the agent sees**: the text, along with the turn's message. iCode sends it again only when it changes, or when the conversation was condensed and the agent no longer sees it. Returning `None` or blank text tells the agent that the earlier text no longer applies, as does turning the extension off. Text longer than 4,000 tokens is cut short.
+- **Name**: the function's name, or `@extension.context(name="...")`. It uses letters, digits, `_`, and `-`, up to 64 characters, and is unique within the extension. Saved sessions keep the name, so renaming a context makes it a new one.
+- **Failures**: a context that raises an exception, runs longer than its timeout (10 seconds, or `@extension.context(timeout=...)`), or returns something other than text gives nothing that turn, as if it returned `None`. The first time it fails, iCode shows a warning that names it and the error.
+
+### Check or change tool calls
+
+A tool hook sees each tool call the agent makes, of iCode's own tools, MCP tools, sub-agents, and extension tools alike. A sub-agent's own tool calls reach only the hooks of the extensions its own profile turns on. Add an `async def` function with `@extension.before_tool` to check a call before it runs, or with `@extension.after_tool` to change the result the model reads once the call has ended. This extension is saved as `icode_guard.py`:
+
+```python
+"""Keep .env files unchanged and tokens out of tool results."""
+
+import re
+from pathlib import PurePath
+
+from chrys.extensions import Extension, ToolCall, ToolError, ToolResult
+
+extension = Extension()
+
+TOKEN = re.compile(r"ghp_[A-Za-z0-9]{36}")
+
+
+@extension.before_tool
+async def protect_env(call: ToolCall) -> None:
+    if call.kind == "filesystem.write" and PurePath(call.arguments.get("path", "")).name == ".env":
+        raise ToolError("Changing .env files is not allowed; ask the user to change them.")
+
+
+@extension.after_tool
+async def hide_tokens(call: ToolCall, result: ToolResult) -> str | None:
+    if TOKEN.search(result.text):
+        return TOKEN.sub("[token removed]", result.text)
+    return None
+```
+
+- **Before a call**: the hook takes a `ToolCall`: the tool's `name`, its [`kind`](../../reference/tool-kinds-and-names.md), the call's `arguments` as JSON values, its `call_id`, and a `context` with your extension's folders, as a tool's `ToolContext`. Raise `ToolError` to refuse the call: the model reads `Error: <message>`. Return a dict to run the call with those arguments instead; return all of them, not only the ones you change. Return `None` to let the call run as it is. Your [hooks](./hooks.md) and the approval see the arguments your hook left. When you edit a call's arguments while approving it, its before hooks run again on your edit.
+- **After a call**: the hook takes the `ToolCall` and a `ToolResult`: `text`, which is what the model reads; `failed`, whether the call did not succeed; `rejected`, whether it was refused, by you, a hook, or an extension; and `duration_ms`. Return text to replace what the model reads; images and other attachments of the result stay. Return `None` to leave it. When the tool raised an exception, the model reads that error whatever the hook returns.
+- **Order**: hooks run one after another, in the order the agent's extensions are listed and then in the order each extension declares them, and each sees what the previous one left. They run before the hooks you configure in `hooks.yaml`.
+- **Failures**: a before hook that raises anything other than `ToolError`, runs longer than its timeout (10 seconds, or `@extension.before_tool(timeout=...)`), or returns something other than a dict refuses the call. An after hook that raises, runs longer than its timeout, or returns something other than text replaces the result with a note that iCode withheld it. Both messages name the extension and the hook; the model is not shown the error itself, which in the TUI iCode records in `logs/debug.log` in the configuration directory.
+- **What hooks do not see**: tools the model provider runs itself, such as a provider's own web search; calls whose arguments do not fit the tool; and the tool calls of [external ACP agents](./external-acp-agents.md). When you interrupt a call while its after hooks run, the call keeps the result the tool returned.
+
+The calls of one model response run at the same time, so hooks for different calls can run at the same time too.
+
 ### Split an extension into several files
 
 Install the extension as a folder, `<extension id>/`. Its `__init__.py` defines `extension` and the tools, and the first line of its docstring is the description the "Tools" tab shows. Import the folder's other modules with relative imports:
@@ -251,6 +336,29 @@ def test_reads_the_version(tmp_path):
 
 `ToolContext.for_testing(cwd, data_dir=..., session_data_dir=..., agent_name=..., session_id=...)` gives a tool only the folders you pass to it: `ctx.data_dir` raises an error unless you pass `data_dir`, and `ctx.session_data_dir` is `None` unless you pass `session_data_dir`.
 
+Contexts and tool hooks are plain async functions too. Call a context with `TurnContext.for_testing(tmp_path, prompt="...")`, and a hook with a `ToolCall` and a `ToolResult` you build:
+
+```python
+import asyncio
+
+import pytest
+from chrys.extensions import ToolCall, ToolContext, ToolError
+
+from icode_guard import protect_env
+
+
+def test_refuses_to_change_env_files(tmp_path):
+    call = ToolCall(
+        name="write_file",
+        kind="filesystem.write",
+        call_id="call-1",
+        arguments={"path": ".env", "content": "KEY=1"},
+        context=ToolContext.for_testing(tmp_path),
+    )
+    with pytest.raises(ToolError):
+        asyncio.run(protect_env(call))
+```
+
 ### Publish an extension as a package
 
 Name the extension in your package's `pyproject.toml` under the `chrys.extensions` entry point group. The entry's name is the extension id, and its value names the module and its `extension`. This package keeps the extension's code in `icode_pyproject/__init__.py`, next to `pyproject.toml`:
@@ -284,4 +392,7 @@ The package's `description` is what the "Tools" tab shows. iCode runs on Python 
 | "Skipped …" under "Extensions" | The id breaks the id rules above or repeats a built-in tool category. Rename the file or folder. |
 | A warning that the agent starts without the extension | The warning gives the reason: the extension is not installed, is installed twice, failed to import (the message names the error), or has a tool whose name another tool already uses. |
 | A call ends with "Error: Function failed." | The tool raised an exception other than `ToolError`. In the TUI, iCode records it in `logs/debug.log` in the configuration directory. Raise `ToolError` for failures the model should read. |
+| A warning that the agent goes without a context | The context raised an exception, ran longer than its timeout, or returned something other than text. The warning gives the reason; that turn the agent goes without the context. |
+| A call ends with "Extension … before_tool hook … failed …, so the call did not run." | The hook raised an exception other than `ToolError`, ran longer than its timeout, or returned something other than a dict of arguments. The message gives the reason; in the TUI, `logs/debug.log` in the configuration directory has the error. |
+| A result reads "[Extension … after_tool hook … failed …, so iCode withheld this result.]" | The hook raised an exception, ran longer than its timeout, or returned something other than text. In the TUI, `logs/debug.log` in the configuration directory has the error. |
 | A change to the extension has no effect | Restart iCode: each extension is imported only once while iCode runs. |

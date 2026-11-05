@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import sys
 from collections.abc import Callable
 from contextlib import suppress
@@ -16,12 +17,11 @@ import pytest
 
 from chrys.foundation.platform import child_reap
 from chrys.foundation.platform.child_reap import install_stopped_child_reap_fix
+from tests.support.stopped_child import STOPS_ITSELF
 
 # Importing the process module is what installs the shim in the app; the
 # behavioural test below depends on that having happened.
 from chrys.foundation.platform import process as process_mod  # noqa: F401  isort: skip
-
-_STOPS_ITSELF = "import os, signal, time; os.kill(os.getpid(), signal.SIGSTOP); time.sleep(30)"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX job control only")
@@ -34,7 +34,10 @@ async def test_stopped_child_does_not_wedge_the_event_loop() -> None:
     never ticks, and the stopped-process detection that would kill the child
     cannot run either.
     """
-    proc = await asyncio.create_subprocess_exec(sys.executable, "-c", _STOPS_ITSELF, stdin=asyncio.subprocess.DEVNULL)
+    # Its own group, so the cleanup below ends whatever the child started too.
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", STOPS_ITSELF, stdin=asyncio.subprocess.DEVNULL, start_new_session=True
+    )
     ticks = 0
 
     async def heartbeat() -> None:
@@ -52,7 +55,7 @@ async def test_stopped_child_does_not_wedge_the_event_loop() -> None:
         beat.cancel()
         with suppress(asyncio.CancelledError):
             await beat
-        proc.kill()
+        os.killpg(proc.pid, signal.SIGKILL)
         await proc.wait()
 
 

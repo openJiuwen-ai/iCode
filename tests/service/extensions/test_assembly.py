@@ -10,10 +10,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from chrys.foundation.events.types import RuntimeExtensionDetails
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.platform import get_platform
 from chrys.service import extensions
-from chrys.service.tools.packs import ExtensionTools, assemble_extension_tools, assemble_tools
+from chrys.service.tools.packs import ExtensionParts, assemble_extensions, assemble_tools
 from tests.service.extensions._support import extension_build
 from tests.support.extensions import EXAMPLE_EXTENSION_ID, install_distribution_extension, install_file_extension
 
@@ -21,6 +22,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _EXAMPLE_TOOLS = ["acme_project_name", "acme_add_release_note"]
+
+
+def _tools(added: ExtensionParts) -> dict[str, list[str]]:
+    """Each loaded extension's tool names, by extension id."""
+    return {extension_id: details.tools for extension_id, details in added.details.items()}
 
 
 def _extension_naming(*names: str, marker: str = "") -> str:
@@ -36,11 +42,9 @@ def _extension_naming(*names: str, marker: str = "") -> str:
 async def test_extensions_load_in_the_profile_s_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     install_file_extension(monkeypatch)
     install_file_extension(monkeypatch, "acme_ci", _extension_naming("acme_ci_status"))
-    added = await assemble_extension_tools(
-        extension_build(tmp_path), ["acme_ci", EXAMPLE_EXTENSION_ID], taken=["sleep"]
-    )
+    added = await assemble_extensions(extension_build(tmp_path), ["acme_ci", EXAMPLE_EXTENSION_ID], taken=["sleep"])
     assert [tool.name for tool in added.tools] == ["acme_ci_status", *_EXAMPLE_TOOLS]
-    assert added.by_extension == {"acme_ci": ["acme_ci_status"], EXAMPLE_EXTENSION_ID: _EXAMPLE_TOOLS}
+    assert _tools(added) == {"acme_ci": ["acme_ci_status"], EXAMPLE_EXTENSION_ID: _EXAMPLE_TOOLS}
     assert (added.unavailable, added.warnings) == ({}, ())
 
 
@@ -63,8 +67,8 @@ async def test_a_distribution_extension_loads_like_a_file_extension(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     install_distribution_extension(monkeypatch, tmp_path / "site")
-    added = await assemble_extension_tools(extension_build(tmp_path), [EXAMPLE_EXTENSION_ID], taken=[])
-    assert added.by_extension == {EXAMPLE_EXTENSION_ID: _EXAMPLE_TOOLS}
+    added = await assemble_extensions(extension_build(tmp_path), [EXAMPLE_EXTENSION_ID], taken=[])
+    assert _tools(added) == {EXAMPLE_EXTENSION_ID: _EXAMPLE_TOOLS}
 
 
 async def test_only_the_enabled_extensions_are_imported_off_the_event_loop_and_once(
@@ -78,8 +82,8 @@ async def test_only_the_enabled_extensions_are_imported_off_the_event_loop_and_o
     install_file_extension(monkeypatch, "acme_one", source)
     install_file_extension(monkeypatch, "acme_two", _extension_naming("acme_two", marker=str(other)))
     for _ in range(2):
-        added = await assemble_extension_tools(extension_build(tmp_path), ["acme_one"], taken=[])
-        assert added.by_extension == {"acme_one": ["acme_one"]}
+        added = await assemble_extensions(extension_build(tmp_path), ["acme_one"], taken=[])
+        assert _tools(added) == {"acme_one": ["acme_one"]}
     assert enabled.read_text(encoding="utf-8") == "imported\n"
     assert not other.exists()
     assert sys.modules["_chrys_extension_acme_one"].IMPORT_THREAD is not threading.main_thread()
@@ -92,8 +96,8 @@ async def test_a_profile_without_extensions_never_looks_for_them(
         raise AssertionError("discovered extensions")
 
     monkeypatch.setattr(extensions, "discover_extensions", fail)
-    added = await assemble_extension_tools(extension_build(tmp_path), [], taken=[])
-    assert added == ExtensionTools()
+    added = await assemble_extensions(extension_build(tmp_path), [], taken=[])
+    assert added == ExtensionParts()
 
 
 @pytest.mark.parametrize(
@@ -120,8 +124,8 @@ async def test_an_extension_that_cannot_import_is_left_out_and_the_agent_starts(
 ) -> None:
     install_file_extension(monkeypatch, "acme_bad", source)
     install_file_extension(monkeypatch)
-    added = await assemble_extension_tools(extension_build(tmp_path), ["acme_bad", EXAMPLE_EXTENSION_ID], taken=[])
-    assert added.by_extension == {EXAMPLE_EXTENSION_ID: _EXAMPLE_TOOLS}
+    added = await assemble_extensions(extension_build(tmp_path), ["acme_bad", EXAMPLE_EXTENSION_ID], taken=[])
+    assert _tools(added) == {EXAMPLE_EXTENSION_ID: _EXAMPLE_TOOLS}
     assert added.unavailable["acme_bad"].startswith(reason)
     # A module that stopped part-way through leaves nothing behind.
     assert ("_chrys_extension_acme_bad" in sys.modules) is ran
@@ -132,8 +136,8 @@ async def test_extensions_that_are_missing_or_installed_twice_are_left_out(
 ) -> None:
     module = install_file_extension(monkeypatch)
     install_distribution_extension(monkeypatch, tmp_path / "site")
-    added = await assemble_extension_tools(extension_build(tmp_path), ["acme_gone", EXAMPLE_EXTENSION_ID], taken=[])
-    assert added.by_extension == {}
+    added = await assemble_extensions(extension_build(tmp_path), ["acme_gone", EXAMPLE_EXTENSION_ID], taken=[])
+    assert _tools(added) == {}
     assert added.unavailable == {
         "acme_gone": "it is not installed",
         EXAMPLE_EXTENSION_ID: f"it is installed more than once (acme-icode-tools 1.0; {module})",
@@ -149,7 +153,7 @@ async def test_an_extension_whose_tool_takes_a_name_in_use_is_left_out_whole(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str, taken: list[str]
 ) -> None:
     install_file_extension(monkeypatch, "acme_clash", _extension_naming("acme_fine", name))
-    added = await assemble_extension_tools(extension_build(tmp_path), ["acme_clash"], taken=taken)
+    added = await assemble_extensions(extension_build(tmp_path), ["acme_clash"], taken=taken)
     assert added.tools == []
     assert added.unavailable == {"acme_clash": f"its tools {name} have names already in use"}
 
@@ -159,8 +163,8 @@ async def test_a_later_extension_cannot_reuse_an_earlier_extension_s_name(
 ) -> None:
     install_file_extension(monkeypatch, "acme_first", _extension_naming("acme_shared"))
     install_file_extension(monkeypatch, "acme_second", _extension_naming("acme_shared", "acme_own"))
-    added = await assemble_extension_tools(extension_build(tmp_path), ["acme_first", "acme_second"], taken=[])
-    assert added.by_extension == {"acme_first": ["acme_shared"]}
+    added = await assemble_extensions(extension_build(tmp_path), ["acme_first", "acme_second"], taken=[])
+    assert _tools(added) == {"acme_first": ["acme_shared"]}
     assert set(added.unavailable) == {"acme_second"}
 
 
@@ -168,10 +172,65 @@ async def test_each_extension_left_out_is_one_warning_for_this_session(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     install_file_extension(monkeypatch, "acme_bad", "raise RuntimeError('boom')\n")
-    added = await assemble_extension_tools(
-        extension_build(tmp_path, session_id="s-9"), ["acme_bad", "acme_gone"], taken=[]
-    )
+    added = await assemble_extensions(extension_build(tmp_path, session_id="s-9"), ["acme_bad", "acme_gone"], taken=[])
     assert [(w.code, w.session_id) for w in added.warnings] == [("extension_unavailable", "s-9")] * 2
     assert added.warnings[1].message == "Agent Coder starts without extension acme_gone: it is not installed"
     assert format_message(added.warnings[1].display_message) == added.warnings[1].message
     assert "Agent Coder starts without extension acme_bad: importing it failed" in caplog.text
+
+
+def _extension_with_contexts(*names: str, tool: str = "") -> str:
+    lines = ["from chrys.extensions import Extension", "extension = Extension()"]
+    if tool:
+        lines += [f"@extension.tool(name={tool!r})", "async def tool() -> str:", "    return ''"]
+    for name in names:
+        lines += [f"@extension.context(name={name!r})", f"async def {name}(ctx):", "    return ctx.prompt"]
+    return "\n".join(lines) + "\n"
+
+
+async def test_contexts_follow_the_profile_s_order_and_leave_with_an_extension_left_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    install_file_extension(monkeypatch, "acme_ticket", _extension_with_contexts("ticket", "branch"))
+    install_file_extension(monkeypatch, "acme_ci", _extension_with_contexts("ci"))
+    install_file_extension(monkeypatch, "acme_clash", _extension_with_contexts("lost", tool="lookup"))
+    added = await assemble_extensions(
+        extension_build(tmp_path), ["acme_ci", "acme_clash", "acme_ticket"], taken=["lookup"]
+    )
+    assert [context.catalog_name for context in added.contexts] == [
+        "extension.acme_ci.ci",
+        "extension.acme_ticket.ticket",
+        "extension.acme_ticket.branch",
+    ]
+    assert set(added.unavailable) == {"acme_clash"}
+    assert _tools(added) == {"acme_ci": [], "acme_ticket": []}
+    assert added.tool_hooks is None
+
+
+_BEFORE = "@extension.before_tool\nasync def guard(call):\n    return None\n"
+_AFTER = "@extension.after_tool\nasync def sign(call, result):\n    return None\n"
+
+
+async def test_tool_hooks_follow_the_profile_s_order_and_the_details_list_what_each_extension_gives(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    install_file_extension(
+        monkeypatch, "acme_all", _extension_with_contexts("ticket", tool="acme_all_lookup") + _BEFORE + _AFTER
+    )
+    install_file_extension(monkeypatch, "acme_guard", _extension_with_contexts() + _BEFORE)
+    install_file_extension(monkeypatch, "acme_clash", _extension_with_contexts(tool="lookup") + _BEFORE + _AFTER)
+    added = await assemble_extensions(
+        extension_build(tmp_path), ["acme_guard", "acme_clash", "acme_all"], taken=["lookup"]
+    )
+    assert added.tool_hooks is not None
+    assert [(hook.extension_id, hook.declaration.name) for hook in added.tool_hooks.before] == [
+        ("acme_guard", "guard"),
+        ("acme_all", "guard"),
+    ]
+    assert [(hook.extension_id, hook.declaration.name) for hook in added.tool_hooks.after] == [("acme_all", "sign")]
+    assert added.details == {
+        "acme_guard": RuntimeExtensionDetails(before_tool_hooks=["guard"]),
+        "acme_all": RuntimeExtensionDetails(
+            tools=["acme_all_lookup"], contexts=["ticket"], before_tool_hooks=["guard"], after_tool_hooks=["sign"]
+        ),
+    }

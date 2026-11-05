@@ -367,6 +367,15 @@ class WorkflowAgentShell:
                 **self._parts.run_kwargs.get("client_kwargs", {}),
                 TRAJECTORY_CONTEXT_KWARG: trajectory_context,
             }
+        if isinstance(self._parts, KernelNodeParts):
+            # Once per run of the node, as its other reminders: a later attempt keeps their text, so the opener its
+            # kept work follows renders as first sent. Before the deadline starts, each under its own timeout: a
+            # deadline that cancelled them would cancel the run, not time the node out. The pass task inherits the
+            # turn they fill.
+            for warning in await self._parts.reminder.refresh_extension_context(prompt, keep=True):
+                await self._resources.bus.publish(warning)
+            if self._abort_cause is not None:
+                return AgentAttemptResult("cancelled")
         # The pass's begin() withdraws what the retry input dropped, once its views carry the transcript on.
         request, self._withdrawn = self._next_request(backend)
         self._passes += 1

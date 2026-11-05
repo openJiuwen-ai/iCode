@@ -32,6 +32,7 @@ from chrys.foundation.events.types import (
     CompactionFinished,
     CompactionStarted,
     InvocationRetryAttempt,
+    RuntimeExtensionDetails,
     Warning,
 )
 from chrys.foundation.i18n import DisplayBlock
@@ -703,7 +704,9 @@ async def test_build_agent_loads_extensions_last_so_their_tools_yield_every_name
     extension_warnings = [warning for warning in warnings if warning.code == "extension_unavailable"]
     if name == "acme_free":
         assert result.tool_names[-2:] == ["acme_fine", "acme_free"]
-        assert result.runtime_details.extension_tools == {"acme_clash": ["acme_fine", "acme_free"]}
+        assert result.runtime_details.extensions == {
+            "acme_clash": RuntimeExtensionDetails(tools=["acme_fine", "acme_free"])
+        }
         assert extension_warnings == []
     else:
         assert "acme_fine" not in result.tool_names

@@ -31,6 +31,7 @@ from chrys.foundation.platform.process import (
     wait_for_subprocess,
     windows_hidden_subprocess_kwargs,
 )
+from tests.support.stopped_child import STOPS_ITSELF
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
@@ -934,18 +935,13 @@ async def test_file_not_found_propagates():
 @pytest.mark.asyncio
 async def test_timeout_kills_stopped_grandchild_holding_pipe():
     """Cleanup kills the whole process group even after the wrapper exits."""
+    child = "import os; print(os.getpid(), flush=True); " + STOPS_ITSELF
     script = textwrap.dedent(
-        """
-        import os
-        import signal
+        f"""
         import subprocess
         import sys
 
-        subprocess.Popen([
-            sys.executable,
-            "-c",
-            "import os, signal, time; print(os.getpid(), flush=True); os.kill(os.getpid(), signal.SIGSTOP); time.sleep(30)",
-        ])
+        subprocess.Popen([sys.executable, "-c", {child!r}])
         """
     )
 

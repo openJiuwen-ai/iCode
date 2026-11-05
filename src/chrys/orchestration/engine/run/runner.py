@@ -202,6 +202,7 @@ class TurnRunner:
                     self._current.require_loaded().reminder_middleware.prepare_turn(
                         usage=self._session.runtime_meta.last_usage_details or None
                     )
+                await self._ask_extension_contexts(typed)
             self._current.require_loaded().bindings.approval.set_user_messages([typed] if typed else [])
             self._turn_state.set_current_input(text, contents, created_at)
             if preamble is not None:
@@ -317,6 +318,8 @@ class TurnRunner:
                         preserve_last_words=True,
                         preserve_turn_reminders=True,
                     )
+                # What the turn's opener asked; a retry that kept the turn's reminders keeps their text.
+                await self._ask_extension_contexts(next(iter(self._current_turn_user_messages()), ""), keep=True)
             approval_context = self._retry_approval_context_messages(additional_text)
             if approval_context:
                 self._current.require_loaded().bindings.approval.set_user_messages(approval_context)
@@ -661,6 +664,12 @@ class TurnRunner:
                 notice,
                 cwd=self._session.workspace.primary_cwd if self._session.workspace is not None else None,
             )
+
+    async def _ask_extension_contexts(self, prompt: str, *, keep: bool = False) -> None:
+        """Ask the prepared turn's extension contexts for their text; each failure is reported."""
+        reminder = self._current.require_loaded().reminder_middleware
+        for warning in await reminder.refresh_extension_context(prompt, keep=keep):
+            await self._bus.publish(warning)
 
     async def _refresh_runtime_skills(self, *, update_active_turn: bool = False) -> None:
         """Refresh runtime skills and optionally update the active reminder snapshot."""

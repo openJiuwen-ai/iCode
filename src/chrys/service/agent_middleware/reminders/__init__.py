@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from .archive_pointer import ArchivePointerSource
 from .background_tasks import BackgroundTasksSource
 from .context_usage import ContextWarningSource
+from .extension_context import ExtensionContextSource
 from .file_change import FileChangeSource
 from .mcp import McpSource
 from .profile_switch import ProfileSwitchSource
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.service.context.compaction.spill import SpillQuota
+    from chrys.service.extensions import BoundContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +53,7 @@ class ReminderSources:
     file_change: FileChangeSource
     profile_switch: ProfileSwitchSource
     archive_pointer: ArchivePointerSource
+    extension_context: ExtensionContextSource
 
 
 def build_sources(
@@ -70,6 +73,7 @@ def build_sources(
     file_read_available: bool,
     spill_quota: SpillQuota | None,
     catalog_pointer_enabled: bool,
+    extension_contexts: Sequence[BoundContext],
 ) -> ReminderSources:
     """The sources for one middleware, from its constructor inputs."""
     return ReminderSources(
@@ -92,4 +96,5 @@ def build_sources(
             spill_quota=spill_quota,
             enabled=catalog_pointer_enabled,
         ),
+        extension_context=ExtensionContextSource(extension_contexts),
     )
