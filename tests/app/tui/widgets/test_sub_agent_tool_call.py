@@ -42,6 +42,7 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_FAILED_METADATA_KEY,
 )
+from chrys.foundation.util.sub_agent_context import SUB_AGENT_PROGRESS_METADATA_KEY
 from tests.support.tui_helpers import (
     LocalizedWidgetApp,
     click_copy_button,
@@ -740,6 +741,74 @@ def test_sub_agent_done_subtitle_keeps_ctx_tokens() -> None:
     tc._progress_total_usage_tokens = 236_100
 
     assert tc._render_subtitle() == "Tool calls: 21 · Ctx: 57.7k tokens · Spend: 236.1k tokens · Duration: 2m 12s"
+
+
+def _panel_subtitle(tc: SubAgentToolCall) -> str:
+    """The counters line the card's panel shows on its bottom border."""
+    subtitle = tc.query_one("#sa-panel").border_subtitle
+    return subtitle.plain if isinstance(subtitle, Text) else str(subtitle)
+
+
+@pytest.mark.parametrize(
+    ("result", "status"),
+    [("A story.", "complete"), ("Error: sub-agent 'Explore' failed — boom", "error")],
+    ids=["complete", "error"],
+)
+async def test_a_restored_card_shows_the_counters_its_saved_result_keeps(result: str, status: str) -> None:
+    progress = {
+        "tool_calls": 3,
+        "context_tokens": 9_100,
+        "usage_tokens": 25_700,
+        "unreported_attempts": 1,
+        "compactions": 2,
+    }
+    async with LocalizedWidgetApp(
+        lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "write a story"})
+    ).run_test() as pilot:
+        tc = pilot.app.query_one(SubAgentToolCall)
+        tc.tool_kind = KIND_SUB_AGENT
+        # A replayed card gets only its saved result: no progress or inner tool events ever reach it.
+        tc.set_complete(result, duration_ms=18_000, metadata={SUB_AGENT_PROGRESS_METADATA_KEY: progress})
+        await pilot.pause()
+
+        assert tc.status == status
+        assert _panel_subtitle(tc) == (
+            "Tool calls: 3 · Ctx: 9.1k tokens · Spend: 25.7k tokens · 1 unreported attempt"
+            " · Compactions: 2 · Duration: 18s"
+        )
+
+
+async def test_a_live_card_keeps_the_counters_it_saw_over_the_saved_ones() -> None:
+    async with LocalizedWidgetApp(
+        lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "investigate usage"})
+    ).run_test() as pilot:
+        tc = pilot.app.query_one(SubAgentToolCall)
+        tc.tool_kind = KIND_SUB_AGENT
+        await tc.add_inner_tool_start("inner1", "read_file", {"path": "README.md"})
+        tc.update_progress(1, 4_000, 6_000)
+        tc.set_complete(
+            "Done.",
+            duration_ms=2_000,
+            metadata={SUB_AGENT_PROGRESS_METADATA_KEY: {"tool_calls": 7, "context_tokens": 1, "usage_tokens": 2}},
+        )
+        await pilot.pause()
+
+        assert _panel_subtitle(tc) == ("Tool calls: 1 · Ctx: 4.0k tokens · Spend: 6.0k tokens · Duration: 2s")
+
+
+@pytest.mark.parametrize(
+    "progress",
+    [None, "12", ["tool_calls"], {"tool_calls": True, "context_tokens": -5, "usage_tokens": "9", "compactions": 1.5}],
+    ids=["absent", "string", "list", "bad-counts"],
+)
+def test_a_saved_result_without_usable_counters_shows_none(progress: object) -> None:
+    tc = SubAgentToolCall("c1", "Explore", args={"prompt": "investigate usage"})
+    tc.tool_kind = KIND_SUB_AGENT
+    metadata = {} if progress is None else {SUB_AGENT_PROGRESS_METADATA_KEY: progress}
+
+    tc.set_complete("Done.", duration_ms=2_000, metadata=metadata)
+
+    assert tc._render_subtitle() == "Duration: 2s"
 
 
 def test_sub_agent_subtitle_shows_compaction_count_only_after_commit() -> None:

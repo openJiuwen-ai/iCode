@@ -81,6 +81,7 @@ def _call(day: date = _TODAY, **overrides: Any) -> UsageCall:
         "day": day,
         "hour": 12,
         "model": "model-a",
+        "profile": "",
         "source": "main",
         "project": "/w/alpha",
         "new_input": 1000,
@@ -754,6 +755,11 @@ async def test_the_groups_list_their_numbers_and_cycle_with_g() -> None:
         assert _row_names(dialog)[0] == "beta"
 
         await pilot.press("g")
+        assert _chosen(dialog, "usage-groups") == "Profile"
+        assert _headers(dialog) == ["Profile", "", "New", "Input", "Output", "Hit", "Calls", "Failed"]
+        assert _row_names(dialog) == ["Other profiles"]
+
+        await pilot.press("g")
         assert _chosen(dialog, "usage-groups") == "Model"
 
 
@@ -916,6 +922,8 @@ async def test_the_unknown_cases_read_as_words() -> None:
         assert _row_names(dialog) == ["new_role"]
         await pilot.press("g")
         assert _row_names(dialog) == ["Other workspaces"]
+        await pilot.press("g")
+        assert _row_names(dialog) == ["Other profiles"]
 
 
 def test_project_labels_widen_only_as_far_as_needed() -> None:
@@ -1837,7 +1845,9 @@ async def test_opening_from_a_populated_main_screen_does_not_restyle_recompose_o
 
         monkeypatch.setattr(main_screen.query_one(ChrysFooter), "recompose", record_footer_recompose)
 
-        monkeypatch.setattr(usage_report, "load_usage_report", lambda _store, _cancel: _sample_report())
+        monkeypatch.setattr(
+            usage_report, "load_usage_report", lambda _store, _cancel, *, profile_names: _sample_report()
+        )
         main_screen._config_actions.open_usage()
         await wait_for(lambda: isinstance(app.screen, UsageDialog), pilot=pilot, description="usage open")
         dialog = app.screen

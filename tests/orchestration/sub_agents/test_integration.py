@@ -60,7 +60,10 @@ from chrys.foundation.hosted_tools import HostedToolFamily
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.platform import get_platform
 from chrys.foundation.tool_kinds import KIND_SKILL
-from chrys.foundation.util.sub_agent_context import SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY
+from chrys.foundation.util.sub_agent_context import (
+    SUB_AGENT_PROGRESS_METADATA_KEY,
+    SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY,
+)
 from chrys.kernel import ChatResponseUpdate, Content
 from chrys.orchestration.engine.state.machine import EngineState
 from chrys.service.context.compaction.last_words import LastWordsGenerator
@@ -289,6 +292,7 @@ async def test_sub_agent_usage_updates_flow_before_parent_tool_finishes(
     tmp_path: Path,
     fast_sub_agent_controller: None,
     agent_engine,
+    engine_services,
 ) -> None:
     """Sub-agent usage publishes live UsageUpdate events and cumulative card progress."""
     ctx = await _make_ctx(
@@ -366,6 +370,18 @@ async def test_sub_agent_usage_updates_flow_before_parent_tool_finishes(
             if (isinstance(e, InvocationToolCallResult) and e.origin.kind == "turn") and e.tool_name == "Explore"
         )
         assert final_progress_index < parent_result_index
+        # The saved parent result keeps the run's final counters, so a restored card shows them too.
+        [metadata] = [
+            content.additional_properties[TOOL_RESULT_METADATA_KEY]
+            for message in engine_services(ctx.engine).history.messages
+            for content in message.contents
+            if content.type == "function_result" and content.call_id == "call-1"
+        ]
+        assert metadata[SUB_AGENT_PROGRESS_METADATA_KEY] == {
+            "tool_calls": 2,
+            "context_tokens": 11,
+            "usage_tokens": 57,
+        }
     finally:
         await ctx.cleanup()
 

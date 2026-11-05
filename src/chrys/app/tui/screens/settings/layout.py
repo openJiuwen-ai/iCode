@@ -100,8 +100,8 @@ _HINT_MODEL_ROLE_APPROVAL_JUDGE = msg(
     "tui.settings.hint.model.role.approval_judge",
     fallback="Model that judges tool approvals in auto mode.",
 )
-_HINT_MODEL_ROLE_BUDDY_MODEL_ID = msg(
-    "tui.settings.hint.model.role.buddy_model_id",
+_HINT_MODEL_ROLE_BUDDY = msg(
+    "tui.settings.hint.model.role.buddy",
     fallback="Model that writes what the buddy says when petted.",
 )
 _HINT_LLM_RETRY_MAX_TRANSIENT = msg(
@@ -254,8 +254,6 @@ class Suggestions(Enum):
     AGENT_PROFILES = auto()
     MODEL_PROFILES = auto()
     """``(profile id, display name)`` — for keys that store a profile id."""
-    MODEL_IDS = auto()
-    """``(model id, model id)`` across the registered profiles — for keys that store a bare model id."""
 
 
 class RowKind(Enum):
@@ -381,9 +379,9 @@ TABS: tuple[SettingsTab, ...] = (
                         suggestions=Suggestions.MODEL_PROFILES,
                     ),
                     SettingRowSpec(
-                        "model.role.buddy_model_id",
-                        hint=_HINT_MODEL_ROLE_BUDDY_MODEL_ID,
-                        suggestions=Suggestions.MODEL_IDS,
+                        "model.role.buddy",
+                        hint=_HINT_MODEL_ROLE_BUDDY,
+                        suggestions=Suggestions.MODEL_PROFILES,
                     ),
                 ),
             ),

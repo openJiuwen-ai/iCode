@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -436,12 +436,15 @@ async def create_client(
         A chat client stack compatible with Chrys' kernel runtime; closing it
         (``aclose``) closes the provider SDK client and its HTTP pool.
     """
+    from chrys.service.llm.observer import exchange_connection_facts
+
     provider = profile.provider
     # Tool-loop knobs for ToolLoopLayer. Intentional headroom on iterations:
     # long autonomous sessions can chain many tool calls.
     stack_kwargs: dict[str, Any] = {
         "on_intermediate_text": on_intermediate_text,
         "tool_result_ceiling_tokens": tool_result_ceiling_tokens,
+        "connection": exchange_connection_facts(profile),
     }
     if provider == "mock":
         from chrys.service.llm.mock import MockChatClient
@@ -600,6 +603,7 @@ def _assemble_stack(
     parent_session_id: str | None,
     use_route_session_context: bool,
     on_intermediate_text: Callable[[str], None] | None,
+    connection: Mapping[str, str],
     max_iterations: int,
     max_consecutive_errors: int,
     tool_result_ceiling_tokens: int | None,
@@ -619,7 +623,7 @@ def _assemble_stack(
     wire_client: Any = client_cls.from_sdk_client(
         sdk_client,
         model=model_id,
-        observer=WireCallObserver(on_intermediate_text=on_intermediate_text),
+        observer=WireCallObserver(on_intermediate_text=on_intermediate_text, connection=connection),
         request_headers=RequestHeaders(
             session_id=session_id,
             parent_session_id=parent_session_id,

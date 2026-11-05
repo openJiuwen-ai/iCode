@@ -94,8 +94,12 @@ def _dangerous_setting_warnings(loaded: LoadedSettings) -> list[Warning]:
 
 
 def _migrate_legacy_settings() -> list[Warning]:
-    """Import notification preferences and refresh retired theme names at startup."""
-    from chrys.foundation.config.migrations import migrate_notifications_v0, migrate_renamed_theme
+    """Import notification preferences and move retired theme names and keys at startup."""
+    from chrys.foundation.config.migrations import (
+        migrate_buddy_model_profile,
+        migrate_notifications_v0,
+        migrate_renamed_theme,
+    )
     from chrys.foundation.config.user_settings import user_settings_path
 
     warnings: list[Warning] = []
@@ -117,7 +121,33 @@ def _migrate_legacy_settings() -> list[Warning]:
         migrate_renamed_theme()
     except Exception:
         logger.info("Could not rename the saved theme in %s", user_settings_path(), exc_info=True)
+    try:
+        migrate_buddy_model_profile(_buddy_model_profile)
+    except Exception:
+        logger.info("Could not move the saved buddy model in %s", user_settings_path(), exc_info=True)
     return warnings
+
+
+def _buddy_model_profile(model_id: str) -> str | None:
+    """The model profile a saved bare buddy model id becomes, for ``migrate_buddy_model_profile``.
+
+    A value that already names a profile stays; a model exactly one profile
+    serves becomes that profile's id; anything else becomes ``""``, the active
+    profile. While a profile file or the directory cannot be read, the answer
+    could change once it can, so it is None and the value waits.
+    """
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.resolver import resolve_profile_selector
+
+    registry = ModelProfileRegistry()
+    directory, scan = registry.read_profiles()
+    if scan.invalid or scan.directory_error is not None:
+        return None
+    registry.install_profiles(directory, scan)
+    if resolve_profile_selector(registry, model_id) is not None:
+        return model_id
+    serving = [profile.id for profile in registry.list_profiles() if profile.model_id == model_id]
+    return serving[0] if len(serving) == 1 else ""
 
 
 def catalog_load_warning(warning: CatalogLoadWarning) -> Warning:

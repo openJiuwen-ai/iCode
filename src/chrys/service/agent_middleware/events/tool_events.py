@@ -393,6 +393,7 @@ class ToolEventMiddleware(FunctionMiddleware):
         sub_agent_metadata = None
         if is_sub_agent:
             from chrys.foundation.util.sub_agent_context import (
+                SUB_AGENT_PROGRESS_METADATA_KEY,
                 SUB_AGENT_RESULT_COMMIT_CALLBACK_KEY,
                 SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY,
                 SubAgentParentResultMetadata,
@@ -658,6 +659,10 @@ class ToolEventMiddleware(FunctionMiddleware):
                             metadata[SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY] = (
                                 sub_agent_metadata.transcript_final_text
                             )
+                        if sub_agent_metadata.progress is not None and (
+                            progress := sub_agent_metadata.progress.to_metadata()
+                        ):
+                            metadata[SUB_AGENT_PROGRESS_METADATA_KEY] = progress
                     if errored:
                         metadata[TOOL_ERRORED_METADATA_KEY] = True
                     structured_failed = tool_result_metadata_failure_state(metadata) is True

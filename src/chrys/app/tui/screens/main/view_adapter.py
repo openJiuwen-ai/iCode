@@ -8,7 +8,7 @@ import contextlib
 import inspect
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -248,11 +248,13 @@ class MainScreenViewAdapter:
             )
         )
 
-    def open_usage(self) -> None:
+    def open_usage(self, profile_names: Mapping[str, str]) -> None:
         from chrys.app.tui.screens.dialogs.usage import UsageDialog
         from chrys.service.analytics.usage_report import load_usage_report
 
-        self._screen.app.push_screen(UsageDialog(partial(load_usage_report, self._state_store)))
+        self._screen.app.push_screen(
+            UsageDialog(partial(load_usage_report, self._state_store, profile_names=profile_names))
+        )
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None:
         self._screen.run_worker(awaitable, exclusive=False, group=group)

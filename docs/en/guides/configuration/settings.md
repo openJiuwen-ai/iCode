@@ -94,7 +94,7 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 | --- | --- | --- |
 | Session title model | Defaults to "Use active model". Used only when [Auto-generate session titles](#sessions) is enabled. | On close |
 | Approval judge model | Defaults to "Use active model". Used only in [automatic approval mode](./approval.md#understand-the-three-approval-modes). | On close |
-| Buddy model | Defaults to "Use active model". Used for the Buddy companion feature. | On close |
+| Buddy model | Defaults to "Use active model". Used for the Buddy companion feature. Lists the same model profiles as the other model roles; Buddy then uses that profile's own provider, address and model. | On close |
 
 #### LLM
 

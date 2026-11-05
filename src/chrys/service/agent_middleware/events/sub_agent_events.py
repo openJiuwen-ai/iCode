@@ -35,6 +35,7 @@ from chrys.foundation.trajectory.context import bind_tool_operation, reset_tool_
 from chrys.foundation.trajectory.event_types import ToolOutcome
 from chrys.foundation.trajectory_timing import build_trajectory_timing, stamp_trajectory_timing
 from chrys.foundation.util.sub_agent_context import (
+    SUB_AGENT_PROGRESS_METADATA_KEY,
     SUB_AGENT_RESULT_COMMIT_CALLBACK_KEY,
     SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY,
     SubAgentParentResultMetadata,
@@ -289,6 +290,9 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     provider_status=view.provider_status,
                 )
             )
+            # A hosted call never passes this middleware's ``process``, which counts the local ones.
+            self._count_tool_call()
+            await self._publish_progress()
         elif isinstance(operation, HostedToolArgsOp):
             await self._bus.publish(
                 InvocationToolCallArgsUpdated(
@@ -345,6 +349,16 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     provider_status=view.provider_status,
                 )
             )
+
+    def _count_tool_call(self) -> None:
+        """Count one tool call, local or hosted, alike in the live progress and the totals the run keeps.
+
+        A frontend shows the live count while the run lasts and the kept one
+        once it is reopened, so the two must count the same calls.
+        """
+        if self._stats is not None:
+            self._stats.record_tool_call()
+        self._tool_call_count += 1
 
     def record_usage(self, total_tokens: int, total_usage_tokens: int) -> None:
         """Record sub-agent usage and publish progress from the usage callback."""
@@ -736,9 +750,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                         abort_mutation_tracking(
                             mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
                         )
-                    if self._stats is not None:
-                        self._stats.record_tool_call()
-                    self._tool_call_count += 1
+                    self._count_tool_call()
 
                     # Post-execution mutation tracking (skip for rejected tools)
                     metadata: dict[str, Any] = {}
@@ -802,6 +814,10 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                             metadata[SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY] = (
                                 sub_agent_metadata.transcript_final_text
                             )
+                        if sub_agent_metadata.progress is not None and (
+                            progress := sub_agent_metadata.progress.to_metadata()
+                        ):
+                            metadata[SUB_AGENT_PROGRESS_METADATA_KEY] = progress
                     if errored:
                         metadata[TOOL_ERRORED_METADATA_KEY] = True
                     structured_failed = tool_result_metadata_failure_state(metadata) is True

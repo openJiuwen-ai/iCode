@@ -373,6 +373,9 @@ class SubAgentTools:
         self._controllers: dict[str, SubAgentToolShell] = {}
         self._pending_cleanup_paths: set[Path] = set()
         self._invocation_emitters: dict[str, BoundEmitter] = {}
+        # Committed context compactions per live kernel invocation, for the
+        # counters its parent result keeps (``SubAgentProgressTotals``).
+        self._committed_compactions: dict[str, int] = {}
 
     def _emitter_for(self, invocation_id: str) -> BoundEmitter:
         """Resolve a registered callback key; missing keys never borrow identity."""
@@ -1278,6 +1281,8 @@ class SubAgentTools:
                     log_stats.total_tokens = policy.backend.latest_context_tokens
                     log_stats.total_usage_tokens = policy.backend.total_usage_tokens
                     log_stats.usage_unreported_attempts = policy.backend.usage_unreported_attempts
+                    if parent_metadata is not None:
+                        parent_metadata.progress = log_stats.totals()
                 if log_writer is not None and not log_finalized:
                     try:
                         if policy is not None and policy.backend.last_spec is not None:
@@ -1445,6 +1450,7 @@ class SubAgentTools:
                 )
                 emitter = BoundEmitter(self._bus, origin)
                 self._invocation_emitters[invocation_id] = emitter
+                self._committed_compactions[invocation_id] = 0
                 invocation_session_id = _derive_invocation_session_id(invocation_id)
                 invocation_token = invocation_routing_key.set(invocation_id)
                 # In-process: the child's events inline into this writer under
@@ -1894,6 +1900,11 @@ class SubAgentTools:
                         cleanup_cancelled = True
                     except Exception:
                         logger.debug("sub-agent progress flush failed for invocation %s", invocation_id, exc_info=True)
+                if parent_result_metadata is not None:
+                    # Final now: every usage callback and tool completion has run.
+                    parent_result_metadata.progress = log_stats.totals(
+                        compactions=self._committed_compactions.get(invocation_id, 0)
+                    )
                 if self._drain_parent_usage_publishes is not None:
                     try:
                         await self._drain_parent_usage_publishes()
@@ -1923,6 +1934,7 @@ class SubAgentTools:
                 if invocation_id:
                     self._controllers.pop(invocation_id, None)
                     self._invocation_emitters.pop(invocation_id, None)
+                    self._committed_compactions.pop(invocation_id, None)
                 if stopped and background_tasks is not None:
                     # Ended before the turn goes on, which an interrupt (cancelling
                     # more than once) and then a rollback can follow. Only once the
@@ -2070,6 +2082,9 @@ class SubAgentTools:
             )
             return
         if status.stage == "committed":
+            invocation_id = emitter.origin.invocation_id
+            if invocation_id in self._committed_compactions:
+                self._committed_compactions[invocation_id] += 1
             # Post-commit confirmation — a distinct event, NOT a second
             # finished signal: the card's compaction line already flipped on
             # finished-ok, this only drives the "Compactions: N" counter.

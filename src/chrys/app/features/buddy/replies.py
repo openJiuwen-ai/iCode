@@ -8,7 +8,7 @@ import asyncio
 import logging
 import secrets
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import HistoryMarkerKind
@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from chrys.kernel import Message
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.models.registry import ModelProfileRegistry
-    from chrys.service.profiles.models.schema import ModelProfile
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +68,8 @@ async def _ask_model(buddy: Buddy) -> str:
     from chrys.service.llm.clients import scoped_client
     from chrys.service.llm.one_shot import get_final_response
     from chrys.service.llm.route_sessions import derive_llm_route_session_id
-    from chrys.service.profiles.models.resolver import resolve_active_profile
+    from chrys.service.profiles.models.options import effective_chat_options
+    from chrys.service.profiles.models.resolver import resolve_active_profile, resolve_selectable_profile
 
     # The live engine knows the session's model, mid-session switches included. Before any
     # session exists there is none, and the settings on disk decide instead. They are read
@@ -88,10 +88,13 @@ async def _ask_model(buddy: Buddy) -> str:
     profile = engine.active_model_profile if engine is not None else None
     if profile is None:
         profile = resolve_active_profile(registry, settings)
-    model_id = settings.buddy_model or profile.model_id
-    if registry is None and model_id != profile.model_id:
-        # The swapped-in model's cap is in the profiles on disk, read off-thread like the settings.
-        registry = await asyncio.to_thread(_profiles_on_disk)
+    if selector := settings.buddy_model_profile:
+        if registry is None:
+            # The profiles are on disk, read off-thread like the settings.
+            registry = await asyncio.to_thread(_profiles_on_disk)
+        # The chosen profile answers over its own connection, like the other model roles. One
+        # that is gone or not filled in yet has no model to ask: the active one answers.
+        profile = resolve_selectable_profile(registry, selector) or profile
 
     request = "You have just been petted."
     conversation = _recent_conversation(engine)
@@ -122,7 +125,7 @@ async def _ask_model(buddy: Buddy) -> str:
                 Message(role="user", contents=[request]),
             ],
             stream=profile.stream,
-            options=_call_options(profile, model_id, registry),
+            options={"model": profile.model_id, **(effective_chat_options(profile) or {})},
             timeout=profile.http_read_timeout,
         )
     return (response.text or "").strip()
@@ -150,37 +153,6 @@ def _is_marker(message: Message) -> bool:
 
 def _tail(text: str) -> str:
     return text if len(text) <= _HISTORY_MESSAGE_CHARS else "…" + text[-_HISTORY_MESSAGE_CHARS:]
-
-
-def _call_options(profile: ModelProfile, model_id: str, registry: ModelProfileRegistry | None) -> dict[str, Any]:
-    """Request options for a reply from *model_id* under *profile*.
-
-    They start as the profile's own. When the buddy model setting swaps the
-    model, the profile's output cap may exceed what that model accepts, so it
-    gives way to the cap of the swapped-in model's own profile, or to no cap
-    when that model has none configured. The caller loads *registry* whenever
-    the model is swapped; without one, nothing is known about the model.
-    """
-    from chrys.service.profiles.models.options import OUTPUT_CAP_OPTION_ALIASES, effective_chat_options
-
-    options: dict[str, Any] = {"model": model_id, **(effective_chat_options(profile) or {})}
-    if model_id != profile.model_id:
-        for alias in OUTPUT_CAP_OPTION_ALIASES:
-            options.pop(alias, None)
-        cap = _output_cap(model_id, registry) if registry is not None else None
-        if cap is not None:
-            options["max_tokens"] = cap
-    return options
-
-
-def _output_cap(model_id: str, registry: ModelProfileRegistry) -> int | None:
-    """The output cap the configured profiles agree on for *model_id*, or None when they name none or differ."""
-    caps = {
-        profile.max_output_tokens
-        for profile in registry.list_profiles()
-        if profile.model_id == model_id and profile.max_output_tokens > 0
-    }
-    return caps.pop() if len(caps) == 1 else None
 
 
 def _profiles_on_disk() -> ModelProfileRegistry:

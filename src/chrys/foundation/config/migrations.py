@@ -17,12 +17,14 @@ The document wins on an initial import and while a pending source is unchanged,
 so retrying cannot undo later panel edits. A changed pending source or a source
 written after completion represents newer legacy preferences and wins instead.
 
-Theme renames update one value under the settings lock and need no ledger.
+Theme renames update one value under the settings lock and need no ledger, and
+so does moving the buddy model setting to the key the other model roles use.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,6 +48,8 @@ from chrys.foundation.util.lock import FileLock
 logger = logging.getLogger(__name__)
 
 NOTIFICATIONS_COMPONENT = "notifications_v0"
+# Where the buddy model setting was saved while it held a bare model id.
+RETIRED_BUDDY_MODEL_KEY = "model.role.buddy_model_id"
 
 
 class _AlreadyComplete(Exception):
@@ -238,6 +242,74 @@ def _renamed_theme(doc: dict[str, Any] | None, key: str) -> str | None:
         return None
     saved = flatten_user_doc(doc, frozenset({key}))[0].get(key)
     return RENAMED_THEMES.get(saved.strip()) if isinstance(saved, str) else None
+
+
+def migrate_buddy_model_profile(successor: Callable[[str], str | None]) -> MigrationResult:
+    """Move a saved :data:`RETIRED_BUDDY_MODEL_KEY` to the buddy's model profile setting.
+
+    The retired key held a bare model id, asked of the active profile's
+    connection; the setting now names a model profile, like the other model
+    roles. *successor* maps a saved value to the selector that replaces it,
+    ``""`` when no profile fits — the buddy then follows the active profile —
+    or None when it cannot tell yet, which leaves the document alone for the
+    next start. A value already saved under the new key wins, and the retired
+    one is only dropped.
+
+    Like :func:`migrate_renamed_theme` it needs no ledger, and looks before
+    locking so the ordinary start, with nothing to move, writes nothing.
+    """
+    path = user_settings_path()
+    key = specs_by_field(Settings)["buddy_model_profile"].key
+    done = MigrationResult(migrated={}, performed=False)
+    looked = _retired_buddy_model(read_yaml_doc(path), key)
+    if looked is None:
+        return done
+    successors: dict[str, str | None] = {}
+
+    def replacement(saved: str) -> str | None:
+        if saved not in successors:
+            successors[saved] = successor(saved) if saved else ""
+        return successors[saved]
+
+    if replacement(looked) is None:
+        return done
+    migrated: dict[str, Any] = {}
+
+    def move(doc: dict[str, Any]) -> dict[str, Any]:
+        saved = _retired_buddy_model(doc, key)
+        if saved is None:
+            # Another process got here between the look and the lock.
+            raise _AlreadyComplete
+        value = replacement(saved)
+        if value is None:
+            raise _AlreadyComplete
+        if value:
+            migrated[key] = value
+        return apply_settings_patch(doc, migrated, remove=(RETIRED_BUDDY_MODEL_KEY,))
+
+    try:
+        update_yaml_doc(path, move)
+    except _AlreadyComplete:
+        return done
+    return MigrationResult(migrated=dict(migrated), performed=True)
+
+
+def _retired_buddy_model(doc: dict[str, Any] | None, key: str) -> str | None:
+    """The value to move from the document's retired buddy key; None when there is nothing to move.
+
+    It is ``""`` when the retired key is only to be dropped: it holds no text,
+    or the new *key* holds a choice, which wins. ``""`` there is one too: the
+    panel saves "use the active model" that way.
+    """
+    if doc is None:
+        return None
+    flat = flatten_user_doc(doc, frozenset({key, RETIRED_BUDDY_MODEL_KEY}))[0]
+    if RETIRED_BUDDY_MODEL_KEY not in flat:
+        return None
+    saved = flat[RETIRED_BUDDY_MODEL_KEY]
+    if not isinstance(saved, str) or isinstance(flat.get(key), str):
+        return ""
+    return saved.strip()
 
 
 def _mark_complete(doc: dict[str, Any]) -> dict[str, Any]:
