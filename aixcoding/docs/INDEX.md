@@ -29,6 +29,7 @@
 | [batches/windows-matrix](batches/windows-matrix/) | 治理批次 | 定制门扩 Windows 矩阵（test/govern/gate 三层，DPAPI 平台真实用例实跑） |
 | [batches/composition-tests](batches/composition-tests/) | 治理批次 | 服务组合测试（登录→LLM 请求→登出的生产组装链路，凭据生命周期闭环） |
 | [batches/docs-reorg](batches/docs-reorg/) | 治理批次 | docs 目录分层组织（`batches/` 布局 + 本索引，ADR-0016） |
+| [batches/catalog-readonly-coverage](batches/catalog-readonly-coverage/) | 治理批次 | catalog 只读行为正向测试覆盖盘点与补缺（覆盖矩阵落盘 + busy 恒只读 + 指示器 configure 入口锚定） |
 | [batches/upstream-merge-v0.32.2](batches/upstream-merge-v0.32.2/) | 升级批次 | 追上游 v0.32.2（基线 0.31.0 → 0.32.2） |
 | [batches/launcher-retirement](batches/launcher-retirement/) | 退役批次 | 退役 diagnostics launcher（ADR-0013） |
 | [batches/restructure](batches/restructure/) | 改造专项 | 目录重组执行计划——迁入考古参考（管线外） |
