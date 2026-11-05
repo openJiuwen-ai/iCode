@@ -147,6 +147,9 @@ def test_a1_failure_lands_on_detail_only(
     detail_capture: list[logging.LogRecord],
     subtree_spies: dict[str, list[logging.LogRecord]],
 ) -> None:
+    import chrys.kernel.aixcoding.auth as auth_module
+
+    monkeypatch.setattr(auth_module, "_token_header_failures_logged", set())  # order-proof
     monkeypatch.setattr(
         "chrys.kernel.aixcoding.auth.get_login_session",
         lambda: (_ for _ in ()).throw(RuntimeError("boom")),
@@ -166,6 +169,33 @@ def test_a1_failure_lands_on_detail_only(
     assert subtree_spies["chrys.kernel.aixcoding.auth"] == []
 
 
+def test_a1_persistent_failure_logs_once_per_exception_type(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    detail_capture: list[logging.LogRecord],
+) -> None:
+    """PR #95 review C1: a persistent failure must not flood the detail volume.
+
+    Same-type recurrences stay silent (identical stack, no diagnostic loss);
+    a new exception type is a new failure and gets its own record.
+    """
+    import chrys.kernel.aixcoding.auth as auth_module
+
+    monkeypatch.setattr(auth_module, "_token_header_failures_logged", set())
+    calls = iter([RuntimeError("boom"), RuntimeError("boom again"), OSError("different failure")])
+
+    def _failing_session():
+        raise next(calls)
+
+    monkeypatch.setattr("chrys.kernel.aixcoding.auth.get_login_session", _failing_session)
+    for _ in range(3):
+        assert login_token_header_value() == ""
+    assert len(detail_capture) == 2, "one record per exception type, not per request"
+    assert detail_capture[0].exc_info[0] is RuntimeError
+    assert detail_capture[1].exc_info[0] is OSError
+    assert [r for r in caplog.records if r.name == "aixcoding.auth"] == []
+
+
 def test_a1_anonymous_without_error_is_silent(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -182,7 +212,7 @@ def test_a1_anonymous_without_error_is_silent(
     )
     assert login_token_header_value() == ""
     assert detail_capture == []
-    assert caplog.text == ""
+    assert [r for r in caplog.records if r.name == "aixcoding.auth"] == []
 
 
 # ── A2: crypto get_backend ────────────────────────────────────────────────
@@ -200,6 +230,10 @@ def test_a2_exploding_exhausts_candidates_full_double_write(
     detail_texts = [r.getMessage() for r in detail_capture]
     assert any("加密后端 _Exploding 探测失败" in text and "headless session" in text for text in detail_texts)
     assert A2_WARNING in detail_texts, "the public WARNING must be double-written to detail"
+    # PR #95 review C7: pin crypto.py's local _DETAIL_LEVEL copy through an
+    # actual levelno assertion (the existing pins cover only session.py's copy).
+    warning_detail = [r for r in detail_capture if r.getMessage() == A2_WARNING]
+    assert warning_detail and warning_detail[0].levelno == DETAIL_LEVEL
 
     public = [r for r in caplog.records if r.name == "aixcoding.auth"]
     assert len(public) == 1

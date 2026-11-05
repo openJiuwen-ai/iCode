@@ -56,6 +56,15 @@ _detail_log = logging.getLogger("aixcoding.detail.auth")
 #: forbidden (test_layering), same as session.py.
 _DETAIL_LEVEL = 5
 
+#: AIxCoding logging (PR #95 review C1): rate guard for the per-request token
+#: header failure record — a persistent construction failure would otherwise
+#: flood the 1MB*4 detail volume (one full traceback per LLM request) and roll
+#: away the surrounding history. First occurrence per exception type keeps the
+#: stack; same-type recurrences stay silent. That silence is a deliberate
+#: trade-off (volume protection over recurrence diagnostics): the same type may
+#: arise from a different failure point, whose details are then not re-logged.
+_token_header_failures_logged: set[type[BaseException]] = set()
+
 
 def login_token_header_value() -> str:
     """The login token as the ``token`` header value, or ``""`` when absent.
@@ -72,10 +81,14 @@ def login_token_header_value() -> str:
     """
     try:
         stored = get_login_session().stored_token
-    except Exception:
+    except Exception as exc:
         # Read on every request, so a public-level record per call would spam
-        # the log — detail volume only (batches/logging-routing-fixes, A1).
-        _detail_log.log(_DETAIL_LEVEL, "读取登录凭证失败，token 请求头未附加。", exc_info=True)
+        # the log — detail volume only (batches/logging-routing-fixes, A1) and
+        # once per exception type (PR #95 review C1: a persistent failure must
+        # not flood the detail volume with identical tracebacks).
+        if type(exc) not in _token_header_failures_logged:
+            _token_header_failures_logged.add(type(exc))
+            _detail_log.log(_DETAIL_LEVEL, "读取登录凭证失败，token 请求头未附加。", exc_info=True)
         return ""
     return (stored or "").strip()
 
