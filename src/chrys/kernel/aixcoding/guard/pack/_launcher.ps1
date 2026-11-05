@@ -10,13 +10,21 @@
 #      aliases (the Store stubs are reparse points, whatever their length);
 #   2. the interpreter the packaged iCode unpacks on first run under
 #      %LOCALAPPDATA%\pyapp\data\chrys\<hash>\<version>\python\python.exe.
-# The script to run is passed as GUARD_SCRIPT (relative to the hooks
-# directory, e.g. `guard\_prompt_guard.py` or `scripts\session.py`); any
-# extra argv elements are forwarded to it.  Keep this file ASCII-only:
-# Windows PowerShell 5.1 parses BOM-less files as ANSI.
+# The script to run is passed as GUARD_SCRIPT: a path relative to the hooks
+# directory (e.g. `guard\_prompt_guard.py` or `scripts\session.py`) or an
+# absolute path (e.g. the `guardctl.cmd` next to this launcher); any extra argv
+# elements are forwarded to it.  Keep this file ASCII-only: Windows PowerShell
+# 5.1 parses BOM-less files as ANSI.
 $ErrorActionPreference = 'SilentlyContinue'
 $hooksRoot = Split-Path -Parent $PSScriptRoot
-$script = Join-Path $hooksRoot $env:GUARD_SCRIPT
+$script = $env:GUARD_SCRIPT
+if ([string]::IsNullOrEmpty($script)) {
+  [Console]::Error.WriteLine('[guard] GUARD_SCRIPT is not set')
+  exit 1
+}
+if (-not [System.IO.Path]::IsPathRooted($script)) {
+  $script = Join-Path $hooksRoot $script
+}
 $py = ''
 foreach ($dir in ($env:PATH -split ';')) {
   if (-not $dir) { continue }

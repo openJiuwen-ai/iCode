@@ -36,3 +36,4 @@
 | [batches/agents-md-note](batches/agents-md-note/) | 注记 | AGENTS.md 定制规范入口段补登记（定制点 C001，管线外） |
 | [batches/upstream-merge-v0.33.0](batches/upstream-merge-v0.33.0/) | 升级批次 | 追上游 v0.33.0（基线 0.32.2 → 0.33.0，目标 ref 8d5a3208 已裁决） |
 | [batches/guard-hooks](batches/guard-hooks/) | 功能批次 | 安全护栏迁入（提示词层 + 工具层阻塞拦截规则包 + 启动自装，`src/chrys/kernel/aixcoding/guard`） |
+| [batches/guard-switches](batches/guard-switches/) | 功能批次 | 护栏开关（总开关 / 单规则 / 写入范围，`guardctl.py` + 免 uv 入口 `guardctl.cmd` / `guardctl.sh`） |

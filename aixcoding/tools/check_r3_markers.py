@@ -61,7 +61,8 @@ def main(argv: list[str] | None = None, repo: Path | None = None) -> int:
                 f"_common.MARKER_EXEMPTIONS registry (R3)"
             )
             continue
-        if suffix not in common.HASH_COMMENT_SUFFIXES:
+        scanner_supported = Path(rel).name in common.HASH_COMMENT_FILENAMES or suffix in common.HASH_COMMENT_SUFFIXES
+        if not scanner_supported:
             violations.append(
                 f"{rel}: unsupported suffix '{suffix or '(none)'}' — scanner cannot verify a "
                 f"marker; register an exemption or extend the scanner (aixcoding/tools/_common.py)"

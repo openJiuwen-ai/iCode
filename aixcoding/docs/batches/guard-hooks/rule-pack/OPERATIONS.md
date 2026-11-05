@@ -128,11 +128,11 @@ ls -la        git status       uv run pytest tests/service/hooks -x
 | `IN-07` 同义语义簇 | `拒绝`/`禁用`/`拦截`/`阻断` 在正常对话里极常见 | `"enabled": false` |
 | `T-SHELL-03-1` 命令链接 | 几乎所有复合命令（`cd x && pytest`） | `"enabled": false` |
 | `T-NET-02` 网络默认 | 所有公网访问 | `"enabled": false` 或往 `settings.network.allowed_hosts` 加白名单 |
-| `T-FS-01` 写入白名单 | 写工作区外任何路径（含家目录） | `settings.write_scope.allow_outside_workspace: true` |
+| `T-FS-01` 写入白名单 | 写工作区外任何路径（含家目录） | 出厂已不拦；被 `guardctl workspace restrict` 收紧后用 `guardctl workspace allow` 放开，或改 `settings.write_scope.allow_outside_workspace: true` |
 | `T-FS-02` 路径黑名单 | `dlp`/`falcon` 等词若出现在项目目录名里 | 删对应词条；新增路径词条一律写成带分隔符锚定的 `regex`（见 [MANUAL_TESTS.md 10.4](MANUAL_TESTS.md)），避免退化成子串匹配 |
 | `T-PY-02` 字节码自省 | `dis.dis` / `__code__` 在正常 Python 调试里会出现 | 收窄词典 |
 | `T-SHELL-04` Shell 内建 | `source`/`exec` 在构建脚本里偶尔合法 | `"enabled": false` |
-| `T-SHELL-05` 写到工作区外 | 构建脚本确实要写 `/tmp` 或家目录缓存 | `settings.write_scope.allow_outside_workspace: true`（与 `T-FS-01` 共用同一个开关），或改用 `temp_prefixes` 把目录纳入白名单 |
+| `T-SHELL-05` 写到工作区外 | 构建脚本确实要写 `/tmp` 或家目录缓存 | 出厂不拦；被收紧后用 `guardctl workspace allow`（与 `T-FS-01` 共用同一个开关），或改用 `temp_prefixes` 把目录纳入白名单 |
 
 #### 已修掉的两处典型误报（不要再往回改）
 
@@ -204,6 +204,13 @@ uv run python -m aixcoding.tools.guard_install_merge
 
 **不需要重启 iCode**（只改脚本和词典）。
 
+**现场开关不要写进 `rules.json`**：它是随包分发的出厂文件，每次启动都会被重新安装
+覆盖。总开关、单规则开关、写入范围开关落在 `guard_state.json`（不在 payload 里，
+重装、升级都不动它），用 `guardctl` 改；没有 uv 的机器用安装时带上的免 uv 入口：
+Windows 上 `<配置目录>/hooks/guard/guardctl.cmd status`，macOS / Linux 上
+`~/.chrys/hooks/guard/guardctl.sh status`。命令与语义见 [SWITCHES.md](SWITCHES.md)。
+下文的 `settings.*` 都是**出厂值**。
+
 ### 4.1 全局开关（`settings`）
 
 ```jsonc
@@ -272,7 +279,7 @@ uv run python -m aixcoding.tools.guard_install_merge
 uv run python -m aixcoding.tests.guard.guard_pack_selftest
 ```
 
-60 个用例：每条规则一个正例，外加「日常开发不应被拦」的负例，按 iCode 真实子进程协议跑两个入口脚本，以及安装脚本的解释器探测 / 启动器改写逻辑。**自检不过不要部署。**
+100 个用例：每条规则一个正例，外加「日常开发不应被拦」的负例，按 iCode 真实子进程协议跑两个入口脚本，以及安装脚本的解释器探测 / 启动器改写逻辑、开关层（总开关 / 单规则 / 写入范围 / 状态文件损坏兜底）与免 uv 入口（`guardctl.cmd` / `guardctl.sh`）。**自检不过不要部署。**
 
 ---
 

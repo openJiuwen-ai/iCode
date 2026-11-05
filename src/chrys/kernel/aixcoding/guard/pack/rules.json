@@ -16,7 +16,7 @@
     "fail_closed": true,
     "self_timeout_seconds": 4.0,
     "write_scope": {
-      "allow_outside_workspace": false,
+      "allow_outside_workspace": true,
       "temp_prefixes": ["icode-session-"],
       "readonly_globs": ["**/docs/**", "**/help/**"]
     },

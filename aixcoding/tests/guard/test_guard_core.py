@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import subprocess
 from pathlib import Path
@@ -39,8 +40,27 @@ def _workspace_symlink(tmp_path: Path) -> tuple[Path, Path]:
     return workspace, link
 
 
-def _tool_call(kind: str, name: str, args: dict[str, object], cwd: Path) -> list[str]:
-    config = guard.load_config()
+def _restrict_write_scope(config: guard.GuardConfig | None = None) -> guard.GuardConfig:
+    """Load the shipped rules with writes outside the workspace blocked.
+
+    The factory default allows them, so an escape test has to turn the
+    restriction on explicitly.
+    """
+    base = config or guard.load_config()
+    data = copy.deepcopy(base.source)
+    scope = dict(data["settings"].get("write_scope") or {})
+    scope["allow_outside_workspace"] = False
+    data["settings"] = {**data["settings"], "write_scope": scope}
+    return guard.GuardConfig(data, path=base.path)
+
+
+def _tool_call(
+    kind: str,
+    name: str,
+    args: dict[str, object],
+    cwd: Path,
+    config: guard.GuardConfig | None = None,
+) -> list[str]:
     payload = {
         "schema": 1,
         "event": "before_tool_call",
@@ -49,25 +69,28 @@ def _tool_call(kind: str, name: str, args: dict[str, object], cwd: Path) -> list
         "cwd": str(cwd),
         "tool": {"name": name, "kind": kind, "call_id": "c1", "args": args},
     }
-    return [hit.rule_id for hit in guard.evaluate_tool_call(config, payload)]
+    return [hit.rule_id for hit in guard.evaluate_tool_call(config or guard.load_config(), payload)]
 
 
 def test_workspace_symlink_cannot_escape_shell_write_scope(tmp_path: Path) -> None:
     workspace, _link = _workspace_symlink(tmp_path)
+    config = _restrict_write_scope()
 
-    ids = _tool_call("shell", "bash", {"command": "echo x > link/escaped.txt", "reason": ""}, workspace)
+    ids = _tool_call("shell", "bash", {"command": "echo x > link/escaped.txt", "reason": ""}, workspace, config)
 
     assert "T-SHELL-05" in ids
 
 
 def test_workspace_symlink_cannot_escape_filesystem_write_scope(tmp_path: Path) -> None:
     workspace, _link = _workspace_symlink(tmp_path)
+    config = _restrict_write_scope()
 
     ids = _tool_call(
         "filesystem.write",
         "write_file",
         {"path": "link/escaped.txt", "content": "x"},
         workspace,
+        config,
     )
 
     assert "T-FS-01" in ids

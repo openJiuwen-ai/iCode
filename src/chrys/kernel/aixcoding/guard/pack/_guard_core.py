@@ -41,6 +41,18 @@ RULES_PATH_ENV = "AIXCODING_GUARD_RULES"
 AUDIT_PATH_ENV = "AIXCODING_GUARD_AUDIT"
 """可用该环境变量覆盖留痕文件路径。"""
 
+STATE_FILE_NAME = "guard_state.json"
+"""开关状态文件，与 ``rules.json`` 同目录。
+
+总开关和单条规则的开关都写在这里，**不写进** ``rules.json``：``rules.json``
+是随包分发的规则文件，每次启动 iCode 都会被重新安装覆盖（见
+``chrys.kernel.aixcoding.guard.guard_install``），写在它里面的开关下一次启动
+就没了。状态文件不在安装 payload 列表里，因此升级、重新安装都不会动它。
+"""
+
+STATE_PATH_ENV = "AIXCODING_GUARD_STATE"
+"""可用该环境变量指向另一份状态文件（测试或多套策略切换用）。"""
+
 MAX_SNIPPET_CHARS = 80
 """命中片段在用户提示里最多展示的字符数。"""
 
@@ -182,6 +194,18 @@ def _validate_dictionaries(value: Any) -> dict[str, Any]:
     return dictionaries
 
 
+def _state_flag(label: str, value: Any) -> bool | None:
+    """把状态文件里的开关值解析成布尔；非布尔值记告警并返回 ``None``。
+
+    状态文件是现场手改的，``"false"``（字符串）在 ``bool()`` 下为真，直接取真值
+    会把"关掉护栏"变成"护栏照旧"，属于静默反向。这里只认真布尔。
+    """
+    if isinstance(value, bool):
+        return value
+    _log(f"开关状态值必须是布尔值，已忽略：{label}={value!r}")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 配置
 # ---------------------------------------------------------------------------
@@ -190,9 +214,16 @@ def _validate_dictionaries(value: Any) -> dict[str, Any]:
 class GuardConfig:
     """``rules.json`` 的内存视图。"""
 
-    __slots__ = ("dictionaries", "path", "prompt_rules", "settings", "source", "tool_rules")
+    __slots__ = ("dictionaries", "path", "prompt_rules", "settings", "source", "state", "state_path", "tool_rules")
 
-    def __init__(self, data: dict[str, Any], *, path: Path) -> None:
+    def __init__(
+        self,
+        data: dict[str, Any],
+        *,
+        path: Path,
+        state: dict[str, Any] | None = None,
+        state_path: Path | None = None,
+    ) -> None:
         self.source = data
         self.path = path
         self.settings = _validate_settings(data.get("settings"))
@@ -202,6 +233,8 @@ class GuardConfig:
         rule_ids = [str(rule["id"]) for rule in (*self.prompt_rules, *self.tool_rules)]
         if len(rule_ids) != len(set(rule_ids)):
             raise GuardError("规则 id 必须全局唯一")
+        self.state = dict(state or {})
+        self.state_path = state_path
 
     # -- 设置读取 ---------------------------------------------------------
 
@@ -243,6 +276,43 @@ class GuardConfig:
     def fail_closed(self) -> bool:
         return bool(self.setting("fail_closed", True))
 
+    @property
+    def master_enabled(self) -> bool:
+        """总开关：状态文件优先，其次 ``settings.enabled``，都没有时默认开。
+
+        状态文件里显式写了 ``enabled`` 就以它为准；没写时沿用规则文件里的
+        ``settings.enabled``（出厂为 ``true``），再没有就是开。
+        """
+        if "enabled" in self.state:
+            override = _state_flag("enabled", self.state["enabled"])
+            if override is not None:
+                return override
+        return bool(self.setting("enabled", True))
+
+    def rule_override(self, rule_id: str) -> bool | None:
+        """状态文件对某条规则的开关覆盖；没有（或非法）覆盖返回 ``None``。"""
+        overrides = self.state.get("rules")
+        if not isinstance(overrides, dict) or rule_id not in overrides:
+            return None
+        value = overrides[rule_id]
+        if isinstance(value, dict):
+            value = value.get("enabled")
+        if value is None:
+            return None
+        return _state_flag(f"rules.{rule_id}", value)
+
+    @property
+    def write_scope_restricted(self) -> bool:
+        """是否限制写入工作区内（状态文件可覆盖出厂值）。
+
+        出厂默认**不限制**：``settings.write_scope.allow_outside_workspace`` 为
+        ``true`` 时，写到工作区以外的路径照常放行（``T-FS-01`` 与 ``T-SHELL-05``
+        因此不触发）。现场用状态文件把它改回限制——状态文件优先于出厂值，
+        与规则开关同一套覆盖逻辑。
+        """
+        scope = self.sub_setting("write_scope", {})
+        return not bool(scope.get("allow_outside_workspace", True))
+
 
 def config_home() -> Path:
     """推断 ``<config_dir>``（通常是 ``~/.chrys``）。
@@ -275,14 +345,81 @@ def rules_file() -> Path:
     return Path(__file__).resolve().parent / RULES_FILE_NAME
 
 
+def state_file(rules_path: Path) -> Path:
+    """返回本次要加载的状态文件路径（默认与规则文件同目录）。"""
+    override = os.environ.get(STATE_PATH_ENV)
+    if override:
+        return Path(override)
+    return rules_path.parent / STATE_FILE_NAME
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    """读取开关状态文件。
+
+    文件不存在 = 没改过开关 = 出厂默认（总开关开，规则按 ``rules.json``）。
+    文件损坏时按出厂默认处理并告警：宁可多拦一次，也不要因为一个坏文件把
+    护栏整个静默关掉。
+    """
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        _log(f"开关状态文件不可读，按出厂默认处理（{path}）：{exc}")
+        return {}
+    if not isinstance(data, dict):
+        _log(f"开关状态文件顶层必须是对象，按出厂默认处理（{path}）")
+        return {}
+    return data
+
+
+def apply_state(config: GuardConfig) -> None:
+    """把状态文件里的开关覆盖写进配置。
+
+    覆盖优先于 ``rules.json``：状态文件是现场改的开关，规则文件是随包分发的
+    出厂状态。覆盖分两类：
+
+    * ``rules``——单条规则的 ``enabled``；
+    * ``write_scope``——写入范围设置，按键合并，不影响同级的其他键。
+
+    覆盖值一律做类型校验（见 :func:`_state_flag`），非法值忽略并告警——
+    不因为一处手改错误把整个开关方向反转。
+    """
+    scope = config.state.get("write_scope")
+    if isinstance(scope, dict):
+        merged = dict(config.settings.get("write_scope") or {})
+        for key, value in scope.items():
+            if key == "allow_outside_workspace":
+                flag = _state_flag(f"write_scope.{key}", value)
+                if flag is not None:
+                    merged[key] = flag
+            elif key in {"temp_prefixes", "readonly_globs"} and isinstance(value, list):
+                merged[key] = value
+            else:
+                _log(f"写入范围覆盖项非法，已忽略：{key}={value!r}")
+        config.settings["write_scope"] = merged
+    overrides = config.state.get("rules")
+    if not isinstance(overrides, dict):
+        if overrides is not None:
+            _log(f"开关状态文件的 rules 必须是对象，已忽略：{type(overrides).__name__}")
+        return
+    for rule in (*config.prompt_rules, *config.tool_rules):
+        override = config.rule_override(str(rule.get("id") or ""))
+        if override is not None:
+            rule["enabled"] = override
+
+
 def load_config() -> GuardConfig:
-    """读取并解析规则文件；任何异常都冒泡给调用方走失败兜底。"""
+    """读取并解析规则文件与开关状态；任何异常都冒泡给调用方走失败兜底。"""
     path = rules_file()
     raw = path.read_text(encoding="utf-8")
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise GuardError(f"规则文件顶层必须是对象：{path}")
-    return GuardConfig(data, path=path)
+    state_path = state_file(path)
+    config = GuardConfig(data, path=path, state=load_state(state_path), state_path=state_path)
+    apply_state(config)
+    return config
 
 
 # ---------------------------------------------------------------------------
@@ -766,14 +903,17 @@ _NULL_TARGETS = frozenset({"nul", ".\\nul", "devnull", "/dev/null", "/dev/stdout
 
 
 def _write_scope_evidence(config: GuardConfig, cwd: str, raws: list[str], *, source: str) -> list[Evidence]:
-    """写入范围判定：只允许工作区内与 ``$TEMP/icode-session-**``，帮助文档只读。
+    """写入范围判定：限制开启时只放行工作区内与 ``$TEMP/icode-session-**``，帮助文档只读。
 
     T-FS-01（文件系统工具的 path 参数）与 T-SHELL-05（shell 命令里解析出的写
     目标）共用这一套判定，两类入口的处置口径保持一致。
+
+    限不限制由 ``settings.write_scope.allow_outside_workspace`` 决定（出厂
+    ``true`` = 不限制）；现场可以用状态文件覆盖（``guardctl workspace restrict``）。
     """
-    scope = config.sub_setting("write_scope", {})
-    if scope.get("allow_outside_workspace", False):
+    if not config.write_scope_restricted:
         return []
+    scope = config.sub_setting("write_scope", {})
     workspace = _resolve_workspace(cwd)
     workspace_scope = _canonical_scope(cwd, None) or workspace
     temp_root = _posix_abs(tempfile.gettempdir()) or ""
@@ -1453,7 +1593,8 @@ def run_hook(layer: str) -> int:
     try:
         payload = read_payload()
         config = load_config()
-        if not config.setting("enabled", True):
+        if not config.master_enabled:
+            _log("总开关已关闭，本次不检查")
             return 0
         deadline = started + config.self_timeout_seconds
         if layer == "prompt":

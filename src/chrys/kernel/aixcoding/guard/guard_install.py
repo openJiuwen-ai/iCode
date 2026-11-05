@@ -31,6 +31,7 @@ import contextlib
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -58,15 +59,40 @@ GUARD_TEMPLATE_NAME = "hooks.yaml"
 GUARD_SUBDIR = "guard"
 """Scripts and the rule dictionary go here, beside ``hooks.yaml``."""
 
-GUARD_PAYLOAD_FILES = ("_prompt_guard.py", "_tool_guard.py", "_guard_core.py", "rules.json", "_launcher.ps1")
-"""Files a hook subprocess needs at run time.
+GUARD_PAYLOAD_FILES = (
+    "_prompt_guard.py",
+    "_tool_guard.py",
+    "_guard_core.py",
+    "rules.json",
+    "_launcher.ps1",
+    "guardctl.py",
+    "guardctl.cmd",
+    "guardctl.sh",
+)
+"""Files the guard needs on disk: the two hook entry points, the shared engine,
+the rule dictionary, the Windows interpreter launcher, and the switch manager.
 
 These files live in ``pack/`` beside this module — the single source of truth
 shipped inside the wheel through ``packages = ["src/chrys"]``. ``_launcher.ps1``
 is the Windows interpreter launcher the shipped ``hooks.yaml`` template
 invokes; on POSIX it is copied but unused.
-Legacy installs (before 0.31.0) shipped the guard scripts without the leading
-underscore; :func:`_copy_payload` removes those leftovers.
+
+``guardctl.py`` is not needed by the hook subprocesses themselves — it is the
+management tool for the master switch and the per-rule switches, and it only
+works next to ``rules.json`` (it edits ``guard_state.json`` beside it). It is
+copied here so users can run it where the guard actually lives:
+``python <config_dir>/hooks/guard/guardctl.py status``.
+
+``guardctl.cmd`` / ``guardctl.sh`` are its Windows / POSIX entry points for
+machines without ``uv``: they find a usable interpreter at run time (the
+Windows one through ``_launcher.ps1``), so the switch manager works with
+neither ``uv`` nor a PATH python. The POSIX script is installed with the owner
+execute bit set.
+
+``guard_state.json`` is deliberately **not** in this list: it holds the user's
+switch positions and must survive every reinstall. Legacy installs (before
+0.31.0) shipped the guard scripts without the leading underscore;
+:func:`_copy_payload` removes those leftovers.
 """
 
 LEGACY_PAYLOAD_FILES = ("prompt_guard.py", "tool_guard.py", "guard_core.py")
@@ -458,9 +484,23 @@ def _copy_payload(source_dir: Path, target_dir: Path) -> None:
     guard_dir.mkdir(parents=True, exist_ok=True)
     for name in GUARD_PAYLOAD_FILES:
         _copy_file_atomic(source_dir / name, guard_dir / name)
+    _apply_executable_permissions(guard_dir / "guardctl.sh")
     for name in LEGACY_PAYLOAD_FILES:
         with contextlib.suppress(OSError):
             (guard_dir / name).unlink(missing_ok=True)
+
+
+def _apply_executable_permissions(path: Path) -> None:
+    """Add the owner execute bit to the POSIX entry point (no-op on Windows).
+
+    Only the execute bit is added: the script belongs to the user who
+    installed the guard, not to everyone on the machine.
+    """
+    if sys.platform == "win32":
+        return
+    with contextlib.suppress(OSError, AttributeError):
+        mode = stat.S_IMODE(path.stat().st_mode)
+        os.chmod(path, mode | 0o100)
 
 
 def _copy_file_atomic(source: Path, destination: Path) -> None:

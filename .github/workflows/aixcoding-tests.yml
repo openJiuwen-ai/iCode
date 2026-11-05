@@ -77,6 +77,10 @@ jobs:
     name: Guard hooks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    env:
+      # Windows 运行器控制台是 cp1252/cp936：自检会打印中文，不固定 UTF-8 会
+      # UnicodeEncodeError，用例全过也被判失败。
+      PYTHONUTF8: "1"
     strategy:
       fail-fast: false
       matrix:

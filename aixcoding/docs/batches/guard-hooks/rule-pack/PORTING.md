@@ -80,14 +80,18 @@
 
 如果你只是想"所有地方都拦"，用全局，别折腾项目级。
 
-### 2.4 4 个文件各自干什么
+### 2.4 每个文件各自干什么
 
 | 文件 | 作用 | 依赖 |
 | --- | --- | --- |
 | `_prompt_guard.py` | `user_prompt_submit` 事件的入口，读 payload、跑规则、写决策 | 只 import `_guard_core` |
 | `_tool_guard.py` | `before_tool_call` 事件的入口，同上 | 只 import `_guard_core` |
-| `_guard_core.py` | 规则引擎：加载 `rules.json`、匹配检测器、决定拦/放| **只用标准库** |
-| `rules.json` | 唯一的配置面：词典、规则、开关、提示文案 | — |
+| `_guard_core.py` | 规则引擎：加载 `rules.json` 与 `guard_state.json`、匹配检测器、决定拦/放| **只用标准库** |
+| `rules.json` | 唯一的配置面：词典、规则、出厂开关、提示文案 | — |
+| `guardctl.py` | 开关管理（总开关 / 单条规则 / 写入范围），写 `guard_state.json` | 只 import `_guard_core`，纯标准库，3.9+ |
+| `guardctl.cmd` | `guardctl.py` 的 Windows 免 uv 入口，借 `_launcher.ps1` 现找解释器 | **纯 ASCII、无 BOM、CRLF**（cmd.exe 解析标签所需，`.gitattributes` 里钉 `*.cmd text eol=crlf`） |
+| `guardctl.sh` | `guardctl.py` 的 POSIX 免 uv 入口，现找 `python3` / `python` | POSIX sh；**纯 ASCII、无 BOM**，安装时补属主执行位（`.gitattributes` 里钉 `*.sh text eol=lf`） |
+| `guard_state.json` | 现场开关状态，**不在 payload 列表里**（重装保留） | — |
 
 `_guard_core.py` 只用标准库（`json` / `re` / `pathlib` / `urllib.parse` / `ipaddress` …），所以 hook 脚本**不依赖项目 venv 里的任何第三方包**。详见 4.5。
 
@@ -377,7 +381,7 @@ uv run python -m aixcoding.tools.guard_install_merge
 
 这个脚本做四件事：
 
-1. 复制 5 个运行时文件到 `<配置目录>/hooks/guard/`
+1. 复制 8 个运行时文件到 `<配置目录>/hooks/guard/`（POSIX 上给 `guardctl.sh` 补执行位）
 2. 把两条 hook 的 `run` 升级成不依赖本机 Python 的形态：Windows 上是 PowerShell 启动器
    （每次执行时现找 python，见 3.7），Linux / macOS 上改回 `type: script`；`--python`
    指定解释器时则钉死成绝对路径
@@ -407,9 +411,11 @@ uv run python -m aixcoding.tools.guard_install_merge --check
 $guard = "$env:APPDATA\chrys\hooks\guard"
 New-Item -ItemType Directory -Force -Path $guard
 
-# 2. 拷 4 个文件
+# 2. 拷 8 个文件
 Copy-Item src\chrys\kernel\aixcoding\guard\pack\_prompt_guard.py, src\chrys\kernel\aixcoding\guard\pack\_tool_guard.py, `
-          src\chrys\kernel\aixcoding\guard\pack\_guard_core.py, src\chrys\kernel\aixcoding\guard\pack\rules.json -Destination $guard
+          src\chrys\kernel\aixcoding\guard\pack\_guard_core.py, src\chrys\kernel\aixcoding\guard\pack\rules.json, `
+          src\chrys\kernel\aixcoding\guard\pack\_launcher.ps1, src\chrys\kernel\aixcoding\guard\pack\guardctl.py, `
+          src\chrys\kernel\aixcoding\guard\pack\guardctl.cmd, src\chrys\kernel\aixcoding\guard\pack\guardctl.sh -Destination $guard
 
 # 3. 编辑 $env:APPDATA\chrys\hooks\hooks.yaml，把 3.1 那两段追加到 hooks: 列表
 ```

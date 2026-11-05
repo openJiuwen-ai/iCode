@@ -72,6 +72,8 @@ MARKER_KEYWORD = "AIxCoding"
 HASH_COMMENT_SUFFIXES = frozenset(
     {".py", ".pyi", ".tcss", ".toml", ".yaml", ".yml", ".cfg", ".ini", ".sh", ".ps1", ".txt", ".css", ".md"}
 )
+# Extension-less dotfiles whose '#' lines are real comments (Path.suffix is empty).
+HASH_COMMENT_FILENAMES = frozenset({".gitattributes"})
 # Structured/binary formats where a marker comment is impossible (R3: those
 # custom points register an exemption below instead).
 MARKER_EXEMPT_SUFFIXES = frozenset({".json", ".mo", ".exe", ".png", ".jpg", ".ico", ".woff", ".woff2"})
@@ -250,6 +252,8 @@ def scan_file(relpath: str, path: Path) -> list[MarkerHit]:
     suffix = path.suffix.lower()
     if suffix in MARKER_EXEMPT_SUFFIXES:
         return []
+    if path.name in HASH_COMMENT_FILENAMES:
+        return scan_text_file(relpath, path)
     if suffix in (".py", ".pyi"):
         return scan_python_file(relpath, path)
     if suffix in HASH_COMMENT_SUFFIXES:

@@ -9,6 +9,7 @@ startup-wiring cases moved to ``test_anchors.py`` (the wiring now lives inside
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -256,3 +257,43 @@ def test_source_checkout_asset_dir_is_the_packaged_rule_pack() -> None:
     assert (resolved / "hooks.yaml").is_file()
     assert resolved == guard_install.GUARD_ASSET_DIR
     assert resolved.name == "pack"
+
+
+def test_switch_state_survives_a_reinstall(tmp_path: Path) -> None:
+    """``guard_state.json`` holds the user's switch positions, not shipped content.
+
+    Every startup reinstalls the rule pack, which overwrites ``rules.json``; the
+    switch file must stay untouched or the user's master switch and per-rule
+    switches would silently reset on the next launch.
+    """
+    hooks_dir = tmp_path / "hooks"
+    install_guard_hooks(hooks_dir=hooks_dir)
+    state_file = hooks_dir / GUARD_SUBDIR / "guard_state.json"
+    state = {"version": 1, "enabled": False, "rules": {"IN-07": False}}
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+
+    install_guard_hooks(hooks_dir=hooks_dir)
+
+    assert json.loads(state_file.read_text(encoding="utf-8")) == state
+
+
+def test_switch_manager_is_installed_next_to_the_rules(tmp_path: Path) -> None:
+    """``guardctl`` only works beside ``rules.json`` (it edits the state file)."""
+    hooks_dir = tmp_path / "hooks"
+
+    install_guard_hooks(hooks_dir=hooks_dir)
+
+    assert (hooks_dir / GUARD_SUBDIR / "guardctl.py").is_file()
+    assert (hooks_dir / GUARD_SUBDIR / "guardctl.cmd").is_file()
+    assert (hooks_dir / GUARD_SUBDIR / "guardctl.sh").is_file()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_posix_switch_entry_point_is_installed_executable(tmp_path: Path) -> None:
+    """``guardctl.sh`` must be runnable straight after the install."""
+    hooks_dir = tmp_path / "hooks"
+
+    install_guard_hooks(hooks_dir=hooks_dir)
+
+    mode = (hooks_dir / GUARD_SUBDIR / "guardctl.sh").stat().st_mode
+    assert mode & 0o111, "guardctl.sh must be executable after install"

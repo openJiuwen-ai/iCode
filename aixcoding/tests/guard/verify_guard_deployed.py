@@ -141,6 +141,14 @@ def invoke(script: str, payload: dict) -> tuple[int, dict, str]:
         root = Path(tmp)
         payload_file = root / "payload.json"
         result_file = root / "result.json"
+        # 出厂值不限制工作区外写入，而 F01 要验证的是受限时的拦截：用临时状态
+        # 文件把限制打开（`AIXCODING_GUARD_STATE` 让引擎读它而不是现场那份），
+        # 跑完随临时目录一起消失，绝不改用户已部署的开关。
+        state_file = root / "guard_state.json"
+        state_file.write_text(
+            json.dumps({"version": 1, "write_scope": {"allow_outside_workspace": False}}),
+            encoding="utf-8",
+        )
         payload_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         result_file.write_text("", encoding="utf-8")
         env = dict(
@@ -149,6 +157,7 @@ def invoke(script: str, payload: dict) -> tuple[int, dict, str]:
             CHRYS_HOOK_RESULT=str(result_file),
             CHRYS_HOOK_ID="verify",
             AIXCODING_GUARD_AUDIT=str(root / "audit.jsonl"),
+            AIXCODING_GUARD_STATE=str(state_file),
         )
         completed = subprocess.run(
             [sys.executable, str(GUARD_DIR / script)],

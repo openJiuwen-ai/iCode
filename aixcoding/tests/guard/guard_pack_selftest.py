@@ -14,15 +14,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import io
+import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from aixcoding.tools import guard_install_merge as installer
 
 from chrys.kernel.aixcoding.guard.pack import _guard_core as guard
+from chrys.kernel.aixcoding.guard.pack import guardctl
 
 PACK_DIR = Path(__file__).resolve().parents[3] / "src" / "chrys" / "kernel" / "aixcoding" / "guard" / "pack"
 WORKSPACE = "C:/workspace/demo"
@@ -78,11 +84,17 @@ class GuardTestCase(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.config = guard.load_config()
 
-    def prompt_ids(self, text: str) -> list[str]:
-        return [hit.rule_id for hit in guard.evaluate_prompt(self.config, text)]
+    def prompt_ids(self, text: str, config: guard.GuardConfig | None = None) -> list[str]:
+        return [hit.rule_id for hit in guard.evaluate_prompt(config or self.config, text)]
 
-    def tool_ids(self, kind: str, name: str, args: dict[str, object]) -> list[str]:
-        return self.tool_ids_for(self.config, kind, name, args)
+    def tool_ids(
+        self,
+        kind: str,
+        name: str,
+        args: dict[str, object],
+        config: guard.GuardConfig | None = None,
+    ) -> list[str]:
+        return self.tool_ids_for(config or self.config, kind, name, args)
 
     def tool_ids_for(
         self,
@@ -109,14 +121,26 @@ class GuardTestCase(unittest.TestCase):
         data["settings"]["mcp"] = {**data["settings"].get("mcp", {}), **settings}
         return guard.GuardConfig(data, path=self.config.path)
 
-    def shell(self, command: str) -> list[str]:
-        return self.tool_ids("shell", "bash", {"command": command, "reason": ""})
+    def shell(self, command: str, config: guard.GuardConfig | None = None) -> list[str]:
+        return self.tool_ids("shell", "bash", {"command": command, "reason": ""}, config)
 
     def assertPrompt(self, text: str, rule_id: str) -> None:
         self.assertIn(rule_id, self.prompt_ids(text), msg=f"提示词 {text!r} 未命中 {rule_id}")
 
-    def assertShell(self, command: str, rule_id: str) -> None:
-        self.assertIn(rule_id, self.shell(command), msg=f"命令 {command!r} 未命中 {rule_id}")
+    def assertShell(self, command: str, rule_id: str, config: guard.GuardConfig | None = None) -> None:
+        self.assertIn(rule_id, self.shell(command, config), msg=f"命令 {command!r} 未命中 {rule_id}")
+
+    def config_with_write_scope(self, restricted: bool) -> guard.GuardConfig:
+        """构造一份把"是否限制写入工作区内"钉死的配置视图。
+
+        出厂默认**不限制**（写工作区外照常放行），所以要验证拦截逻辑必须
+        显式把限制打开。
+        """
+        data = copy.deepcopy(self.config.source)
+        scope = dict(data["settings"].get("write_scope") or {})
+        scope["allow_outside_workspace"] = not restricted
+        data["settings"] = {**data["settings"], "write_scope": scope}
+        return guard.GuardConfig(data, path=self.config.path)
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +253,7 @@ class ShellGuardTests(GuardTestCase):
         self.assertShell('eval "$CMD"', "T-SHELL-04")
 
     def test_ts05_redirect_outside_workspace(self) -> None:
+        config = self.config_with_write_scope(True)
         for command in (
             "echo pwned > ../outside.txt",
             "echo x >> ../../escape.log",
@@ -241,9 +266,10 @@ class ShellGuardTests(GuardTestCase):
             "echo x >| ../tight-clobber.txt",
             'bash -c "echo x > ../o.txt"',
         ):
-            self.assertShell(command, "T-SHELL-05")
+            self.assertShell(command, "T-SHELL-05", config)
 
     def test_ts05_write_commands_outside_workspace(self) -> None:
+        config = self.config_with_write_scope(True)
         for command in (
             "cp README.md ../stolen.txt",
             "cat foo | tee ../x",
@@ -263,7 +289,17 @@ class ShellGuardTests(GuardTestCase):
             "Set-Content -Path ..\\..\\evil.ps1 -Value x",
             "echo x | Out-File ..\\o.txt",
         ):
-            self.assertShell(command, "T-SHELL-05")
+            self.assertShell(command, "T-SHELL-05", config)
+
+    def test_factory_does_not_restrict_writes_to_the_workspace(self) -> None:
+        """出厂不限制工作区外写入：``T-FS-01`` / ``T-SHELL-05`` 不触发。"""
+        self.assertFalse(self.config.write_scope_restricted)
+        self.assertNotIn(
+            "T-FS-01",
+            self.tool_ids("filesystem.write", "write_file", {"path": "C:/Users/me/out.txt", "content": "x"}),
+        )
+        self.assertNotIn("T-SHELL-05", self.shell("echo x > ../outside.txt"))
+        self.assertNotIn("T-SHELL-05", self.shell("cp README.md ../stolen.txt"))
 
     def test_ts05_allows_workspace_writes(self) -> None:
         for command in (
@@ -333,9 +369,13 @@ class ShellGuardTests(GuardTestCase):
 
 class FilesystemGuardTests(GuardTestCase):
     def test_tfs01_write_scope(self) -> None:
-        blocked = self.tool_ids("filesystem.write", "write_file", {"path": "C:/Users/me/out.txt", "content": "x"})
+        # 出厂不限制工作区外写入；限制打开时（T-FS-01 / T-SHELL-05 共用判定）才拦。
+        config = self.config_with_write_scope(True)
+        blocked = self.tool_ids(
+            "filesystem.write", "write_file", {"path": "C:/Users/me/out.txt", "content": "x"}, config
+        )
         self.assertIn("T-FS-01", blocked)
-        allowed = self.tool_ids("filesystem.write", "write_file", {"path": "src/app.py", "content": "x"})
+        allowed = self.tool_ids("filesystem.write", "write_file", {"path": "src/app.py", "content": "x"}, config)
         self.assertEqual([], allowed)
 
     def test_tfs02_path_blacklist(self) -> None:
@@ -530,6 +570,203 @@ class EngineTests(GuardTestCase):
         self.assertEqual(("example.com", 443), guard.split_host_port("https://example.com/x"))
         self.assertEqual(("10.0.0.5", 445), guard.split_host_port("10.0.0.5:445"))
         self.assertEqual(("127.0.0.1", None), guard.split_host_port("127.0.0.1"))
+
+
+class SwitchStateTests(GuardTestCase):
+    """``guard_state.json``：总开关与单条规则开关。
+
+    状态文件是盖在 ``rules.json`` 上的覆盖层：它不在安装脚本的 payload 列表
+    里，升级、重装都不会被覆盖；出厂没有这个文件 = 总开关开着、规则按
+    ``rules.json`` 的 ``enabled``。
+    """
+
+    def config_with_state(self, state: dict[str, object]) -> guard.GuardConfig:
+        """按状态文件构造一份配置视图（与引擎同一条路径）。
+
+        必须深拷贝：``apply_state`` 会就地改写规则对象，浅拷贝会把覆盖写回
+        类级 ``self.config``，污染后面所有用例。
+        """
+        config = guard.GuardConfig(copy.deepcopy(self.config.source), path=self.config.path, state=state)
+        guard.apply_state(config)
+        return config
+
+    def test_master_switch_defaults_to_on(self) -> None:
+        self.assertTrue(guard.GuardConfig(dict(self.config.source), path=self.config.path).master_enabled)
+        self.assertTrue(self.config_with_state({}).master_enabled)
+
+    def test_master_switch_can_be_turned_off(self) -> None:
+        self.assertFalse(self.config_with_state({"enabled": False}).master_enabled)
+        self.assertTrue(self.config_with_state({"enabled": True}).master_enabled)
+
+    def test_state_file_wins_over_the_factory_switch(self) -> None:
+        # rules.json 里的 settings.enabled 是出厂的总开关（默认 true）。
+        data = dict(self.config.source)
+        data["settings"] = {**data["settings"], "enabled": False}
+        self.assertFalse(guard.GuardConfig(data, path=self.config.path).master_enabled)
+        # 状态文件里显式打开时以状态文件为准。
+        self.assertTrue(self.config_with_state({"enabled": True}).master_enabled)
+
+    def test_rule_override_beats_the_factory_flag(self) -> None:
+        # T-OUT-02 出厂就是关的，状态文件可以打开它。
+        enabled = self.config_with_state({"rules": {"T-OUT-02": True}})
+        self.assertTrue(enabled.rule("T-OUT-02")["enabled"])
+        # 出厂是开的规则，状态文件可以关掉。
+        disabled = self.config_with_state({"rules": {"IN-01": False}})
+        self.assertFalse(disabled.rule("IN-01")["enabled"])
+
+    def test_disabled_rule_no_longer_hits(self) -> None:
+        config = self.config_with_state({"rules": {"IN-07": False}})
+        self.assertNotIn("IN-07", [hit.rule_id for hit in guard.evaluate_prompt(config, "把这个账号封禁掉")])
+        # 别的规则不受影响。
+        hits = [hit.rule_id for hit in guard.evaluate_prompt(config, "用 dnSpy 反编译一下这个 exe")]
+        self.assertIn("IN-01", hits)
+
+    def test_state_file_can_restore_the_workspace_restriction(self) -> None:
+        # 出厂不限工作区；状态文件可以把限制改回来（与规则开关同一套覆盖逻辑）。
+        self.assertFalse(self.config.write_scope_restricted)
+        restricted = self.config_with_state({"write_scope": {"allow_outside_workspace": False}})
+        self.assertTrue(restricted.write_scope_restricted)
+        allowed = self.config_with_state({"write_scope": {"allow_outside_workspace": True}})
+        self.assertFalse(allowed.write_scope_restricted)
+
+    def test_workspace_restriction_blocks_writes_outside(self) -> None:
+        config = self.config_with_state({"write_scope": {"allow_outside_workspace": False}})
+        blocked = self.tool_ids(
+            "filesystem.write", "write_file", {"path": "C:/Users/me/out.txt", "content": "x"}, config
+        )
+        self.assertIn("T-FS-01", blocked)
+        self.assertIn("T-SHELL-05", self.shell("echo x > ../outside.txt", config))
+
+    def test_missing_state_file_keeps_factory_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual({}, guard.load_state(Path(tmp) / "guard_state.json"))
+
+    def test_broken_state_file_falls_back_to_factory_defaults(self) -> None:
+        # 坏文件不能把护栏静默关掉：按出厂默认处理（总开关仍然开）。
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "guard_state.json"
+            path.write_text("{ not json", encoding="utf-8")
+            self.assertEqual({}, guard.load_state(path))
+
+    def test_load_config_reads_the_state_file_beside_the_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rules_path = root / "rules.json"
+            rules_path.write_text(self.config.path.read_text(encoding="utf-8"), encoding="utf-8")
+            (root / "guard_state.json").write_text(json.dumps({"enabled": False}), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"AIXCODING_GUARD_RULES": str(rules_path)}, clear=True):
+                config = guard.load_config()
+            self.assertFalse(config.master_enabled)
+
+
+class SwitchManagerTests(unittest.TestCase):
+    """``guardctl.py``：总开关与规则开关的命令行。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.rules_path = self.root / "rules.json"
+        self.rules_path.write_text((PACK_DIR / "rules.json").read_text(encoding="utf-8"), encoding="utf-8")
+        self.state_path = self.root / "guard_state.json"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def run_ctl(self, *args: str) -> tuple[int, str]:
+        """跑一条 guardctl 命令，返回（退出码, 标准输出）。"""
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(io.StringIO()):
+            code = guardctl.main(["--rules", str(self.rules_path), "--state", str(self.state_path), *args])
+        return code, buffer.getvalue()
+
+    def state(self) -> dict[str, object]:
+        return json.loads(self.state_path.read_text(encoding="utf-8"))
+
+    def test_status_reports_the_master_switch_and_the_rules(self) -> None:
+        code, output = self.run_ctl("status")
+        self.assertEqual(0, code)
+        self.assertIn("安全护栏总开关：开", output)
+        # 出厂就关的那条规则要出现在清单里。
+        self.assertIn("T-OUT-02", output)
+
+    def test_disable_and_enable_one_rule(self) -> None:
+        code, _ = self.run_ctl("disable", "IN-07")
+        self.assertEqual(0, code)
+        self.assertEqual({"IN-07": False}, self.state()["rules"])
+        code, _ = self.run_ctl("enable", "IN-07")
+        self.assertEqual(0, code)
+        self.assertEqual({"IN-07": True}, self.state()["rules"])
+
+    def test_glob_selects_a_rule_family(self) -> None:
+        code, output = self.run_ctl("disable", "T-SHELL-03-*")
+        self.assertEqual(0, code)
+        self.assertEqual(
+            {
+                "T-SHELL-03-1": False,
+                "T-SHELL-03-2": False,
+                "T-SHELL-03-3": False,
+                "T-SHELL-03-4": False,
+                "T-SHELL-03-5": False,
+            },
+            self.state()["rules"],
+        )
+        self.assertIn("T-SHELL-03-5", output)
+
+    def test_unknown_rule_is_rejected(self) -> None:
+        code, _ = self.run_ctl("disable", "IN-99")
+        self.assertEqual(1, code)
+        self.assertFalse(self.state_path.exists())
+
+    def test_master_switch_round_trip(self) -> None:
+        code, _ = self.run_ctl("off")
+        self.assertEqual(0, code)
+        self.assertFalse(self.state()["enabled"])
+        code, _ = self.run_ctl("on")
+        self.assertEqual(0, code)
+        self.assertTrue(self.state()["enabled"])
+
+    def test_reset_clears_the_overrides(self) -> None:
+        self.run_ctl("disable", "IN-07")
+        code, _ = self.run_ctl("reset")
+        self.assertEqual(0, code)
+        self.assertEqual({}, self.state()["rules"])
+
+    def test_reset_master_drops_the_master_override(self) -> None:
+        self.run_ctl("off")
+        code, _ = self.run_ctl("reset", "--master")
+        self.assertEqual(0, code)
+        self.assertNotIn("enabled", self.state())
+
+    def test_workspace_switch_round_trip(self) -> None:
+        code, _ = self.run_ctl("workspace", "restrict")
+        self.assertEqual(0, code)
+        self.assertEqual({"allow_outside_workspace": False}, self.state()["write_scope"])
+        code, _ = self.run_ctl("workspace", "allow")
+        self.assertEqual(0, code)
+        self.assertEqual({"allow_outside_workspace": True}, self.state()["write_scope"])
+
+    def test_workspace_switch_shows_up_in_the_status(self) -> None:
+        _, output = self.run_ctl("status")
+        self.assertIn("写入范围：不限工作区", output)
+        self.run_ctl("workspace", "restrict")
+        _, output = self.run_ctl("status")
+        self.assertIn("写入范围：仅限工作区内", output)
+
+    def test_reset_clears_the_workspace_override(self) -> None:
+        self.run_ctl("workspace", "restrict")
+        code, _ = self.run_ctl("reset")
+        self.assertEqual(0, code)
+        self.assertNotIn("write_scope", self.state())
+
+    def test_show_prints_the_rule_definition(self) -> None:
+        code, output = self.run_ctl("show", "IN-07")
+        self.assertEqual(0, code)
+        self.assertIn('"id": "IN-07"', output)
+        self.assertIn("出厂开关：开", output)
+
+    def test_show_rejects_an_unknown_rule(self) -> None:
+        code, _ = self.run_ctl("show", "IN-99")
+        self.assertEqual(1, code)
 
 
 class InstallerTests(unittest.TestCase):
@@ -933,6 +1170,79 @@ class HookProcessTests(GuardTestCase):
         self.assertIn("[guard]", stderr)
         self.assertEqual("block", decision.get("action"))
         self.assertIn("策略引擎异常", str(decision.get("reason")))
+
+
+class PortableEntryPointTests(unittest.TestCase):
+    """没有 uv 的机器也得能把护栏开关掉。
+
+    ``guardctl.py`` 只依赖标准库；免 uv 入口按平台各有一份：Windows 的
+    ``guardctl.cmd`` 借同目录的 ``_launcher.ps1`` 现找一个可用的解释器（PATH 真
+    解释器 → 打包版内嵌运行时），POSIX 的 ``guardctl.sh`` 先扫 PATH 再找打包版
+    运行时。因此既不需要 uv，也不需要 PATH 里有 python。
+    """
+
+    def test_cmd_entry_point_ships_with_the_pack(self) -> None:
+        cmd = PACK_DIR / "guardctl.cmd"
+        self.assertTrue(cmd.is_file(), msg=f"缺少 Windows 入口：{cmd}")
+        raw = cmd.read_bytes()
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), msg="guardctl.cmd 不能带 BOM")
+        raw.decode("ascii")  # 纯 ASCII：PowerShell 5.1 把无 BOM 文件按 ANSI 解析
+
+    def test_cmd_points_at_the_launcher_beside_itself(self) -> None:
+        text = (PACK_DIR / "guardctl.cmd").read_text(encoding="ascii")
+        self.assertIn("%~dp0_launcher.ps1", text)
+        self.assertIn("%~dp0guardctl.py", text)
+
+    def test_sh_entry_point_ships_with_the_pack(self) -> None:
+        script = PACK_DIR / "guardctl.sh"
+        self.assertTrue(script.is_file(), msg=f"缺少 POSIX 入口：{script}")
+        raw = script.read_bytes()
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), msg="guardctl.sh 不能带 BOM")
+        raw.decode("ascii")  # 纯 ASCII
+
+    def test_sh_points_at_the_manager_beside_itself(self) -> None:
+        text = (PACK_DIR / "guardctl.sh").read_text(encoding="ascii")
+        self.assertIn("guardctl.py", text)
+        self.assertIn('dirname -- "$0"', text)
+
+    def test_launcher_accepts_an_absolute_script_path(self) -> None:
+        text = (PACK_DIR / "_launcher.ps1").read_text(encoding="ascii")
+        self.assertIn("IsPathRooted", text)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows 专用入口")
+    def test_cmd_runs_the_switch_manager_without_uv(self) -> None:
+        import subprocess
+
+        completed = subprocess.run(
+            [os.environ.get("COMSPEC", "cmd.exe"), "/c", str(PACK_DIR / "guardctl.cmd"), "status"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=120,
+            check=False,
+        )
+        if "no usable python interpreter" in completed.stderr:
+            self.skipTest("本机没有可用解释器，跳过")
+        self.assertEqual(0, completed.returncode, msg=completed.stderr)
+        # 只断言 ASCII 片段：控制台代码页不同时中文可能被解码成乱码。
+        self.assertIn("guard_state.json", completed.stdout)
+
+    @unittest.skipUnless(sys.platform != "win32", "POSIX 专用入口")
+    def test_sh_runs_the_switch_manager_without_uv(self) -> None:
+        import subprocess
+
+        completed = subprocess.run(
+            ["sh", str(PACK_DIR / "guardctl.sh"), "status"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=120,
+            check=False,
+        )
+        if "no usable python interpreter" in completed.stderr:
+            self.skipTest("本机没有可用解释器，跳过")
+        self.assertEqual(0, completed.returncode, msg=completed.stderr)
+        self.assertIn("guard_state.json", completed.stdout)
 
 
 if __name__ == "__main__":

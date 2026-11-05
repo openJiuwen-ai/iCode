@@ -43,6 +43,7 @@ import contextlib
 import os
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -57,7 +58,25 @@ def _write(message: str = "") -> None:
 
 GUARD_SUBDIR = "guard"
 GUARD_HOOK_ID = "security-prompt-guard"
-PAYLOAD_FILES = ("_prompt_guard.py", "_tool_guard.py", "_guard_core.py", "rules.json", "_launcher.ps1")
+PAYLOAD_FILES = (
+    "_prompt_guard.py",
+    "_tool_guard.py",
+    "_guard_core.py",
+    "rules.json",
+    "_launcher.ps1",
+    "guardctl.py",
+    "guardctl.cmd",
+    "guardctl.sh",
+)
+"""复制到 ``guard/`` 子目录的文件。
+
+``guardctl.py`` 是开关管理工具（总开关 + 单条规则开关 + 写入范围开关），放在这里
+才能和规则文件、状态文件待在一起：``python <config_dir>/hooks/guard/guardctl.py status``。
+
+``guardctl.cmd`` / ``guardctl.sh`` 是它在 Windows / POSIX 上的免 uv 入口：双击或
+``guardctl.cmd status`` / ``./guardctl.sh status`` 就能跑，内部现找一个可用的解释器。
+POSIX 入口复制后补属主执行位。
+"""
 
 SEED = "version: 1\n\nhooks:\n"
 """配置不存在时写入的最小骨架。``hooks:`` 留空（null）而不是 ``[]``：追加的条目是块序列。"""
@@ -87,6 +106,18 @@ def hook_entries(snippet: Path) -> str:
     return block[block.index(marker) + len(marker) :].rstrip("\n")
 
 
+def _apply_executable_permissions(path: Path) -> None:
+    """给 POSIX 入口脚本补上属主执行位（Windows 上没有这个概念，忽略）。
+
+    只加执行位，不改已有的读写权限：脚本只应由安装它的那个用户运行。
+    """
+    if sys.platform == "win32" or path.suffix != ".sh":
+        return
+    with contextlib.suppress(OSError, AttributeError):
+        mode = stat.S_IMODE(path.stat().st_mode)
+        os.chmod(path, mode | 0o100)
+
+
 def copy_payload(here: Path, target: Path) -> list[str]:
     """复制脚本与词典到 ``guard/`` 子目录，返回复制成功的文件名。"""
     dest = target / GUARD_SUBDIR
@@ -100,6 +131,7 @@ def copy_payload(here: Path, target: Path) -> list[str]:
         if not src.exists():
             raise SystemExit(f"规则包文件缺失：{src}")
         shutil.copyfile(src, dest / name)
+        _apply_executable_permissions(dest / name)
         written.append(name)
     return written
 

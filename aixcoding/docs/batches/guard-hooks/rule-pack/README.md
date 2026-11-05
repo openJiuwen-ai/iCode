@@ -17,19 +17,22 @@
 | `hooks.yaml` | Hook 配置片段（安装脚本从这里取 `hooks` 列表） |
 | `_prompt_guard.py` | `user_prompt_submit` 入口（规则 IN-01 ~ IN-09） |
 | `_tool_guard.py` | `before_tool_call` 入口（规则 T-*） |
-| `_guard_core.py` | 共享引擎：加载规则、匹配、留痕、写决策 |
-| `rules.json` | **唯一需要维护的文件**：词典 + 规则 + 全局设置 |
-| `aixcoding/tests/guard/guard_pack_selftest.py` | 标准库自检（70 条，每条规则一个正例，含若干"日常开发不应被拦"的负例） |
+| `_guard_core.py` | 共享引擎：加载规则与开关状态、匹配、留痕、写决策 |
+| `rules.json` | **唯一需要维护的文件**：词典 + 规则 + 全局设置（出厂值） |
+| `guardctl.py` | 开关管理：总开关 / 单条规则 / 写入范围，见 [SWITCHES.md](SWITCHES.md) |
+| `guardctl.cmd` | `guardctl.py` 的 Windows 免 uv 入口（借 `_launcher.ps1` 现找解释器） |
+| `guardctl.sh` | `guardctl.py` 的 POSIX 免 uv 入口（现找 `python3` / `python`，安装时带执行位） |
+| `aixcoding/tests/guard/guard_pack_selftest.py` | 标准库自检（100 条，每条规则一个正例，含若干"日常开发不应被拦"的负例与开关层用例） |
 | [OPERATIONS.md](OPERATIONS.md) | 使用与运维手册：拦截清单、配置、排查、**版本升级迁移** |
 | [PORTING.md](PORTING.md) | **新拉一份 iCode 源码怎么复现拦截**：文件放哪、hook 配什么、怎么生效 |
-| [MANUAL_TESTS.md](MANUAL_TESTS.md) | 90 条手工测试用例与预期结果（预期均为实测） |
+| [MANUAL_TESTS.md](MANUAL_TESTS.md) | 106 条手工测试用例与预期结果（预期均为实测） |
 
 > 日常使用、排查与版本升级迁移见 [OPERATIONS.md](OPERATIONS.md)。
 
 ## 安装
 
 **用合并安装脚本**：多数机器的 `<config_dir>/hooks/hooks.yaml` 里已经存在其他 hook
-（遥测、审计等），直接覆盖会把它们全部弄丢。脚本的做法是把 4 个文件复制到
+（遥测、审计等），直接覆盖会把它们全部弄丢。脚本的做法是把 payload 的 8 个文件复制到
 `hooks/guard/` 子目录，再把两个 hook **追加**到已有的 `hooks` 列表末尾：
 
 ```bash
@@ -96,15 +99,30 @@ hook 请把 `run` 改回 `type: script` 或自行配置路径。
 
 要求：脚本只依赖标准库，兼容 Python 3.9+；解释器由启动器在 hook 执行时现找（见上）。
 
+## 开关
+
+**护栏默认开着，规则内容在 `rules.json`，现场开关在 `guard_state.json`**（不在 payload
+里，重装、升级都不动它）。改开关不要改 `rules.json`：每次启动都会被重新安装覆盖。
+
+```bash
+guardctl.cmd status                # Windows：装好的护栏目录里直接跑
+~/.chrys/hooks/guard/guardctl.sh status   # macOS / Linux
+uv run python -m aixcoding.tools.guard_install_merge --check   # 只看安装状态
+```
+
+`guardctl.py` 只用标准库，`guardctl.cmd` / `guardctl.sh` 是免 uv 入口（执行时现找
+解释器）。命令、语义、开关文件格式与排查见 [SWITCHES.md](SWITCHES.md)。
+
 ## 自检
 
 ```bash
 uv run python -m aixcoding.tests.guard.guard_pack_selftest -v
 ```
 
-60 个用例：每条规则各一个正例，外加 `ls -la` / `git status` / `uv run pytest ...` / 读写工作区内 `.py`、访问 `127.0.0.1` 等**必须放行**的负例，
-最后 4 个用例按 iCode 的真实子进程协议（`CHRYS_HOOK_PAYLOAD_FILE` /
-`CHRYS_HOOK_RESULT`）跑一遍两个入口脚本，另有一组用例盯安装脚本的解释器探测与启动器改写。
+100 个用例：每条规则各一个正例，外加 `ls -la` / `git status` / `uv run pytest ...` / 读写工作区内 `.py`、访问 `127.0.0.1` 等**必须放行**的负例，
+按 iCode 的真实子进程协议（`CHRYS_HOOK_PAYLOAD_FILE` /
+`CHRYS_HOOK_RESULT`）跑一遍两个入口脚本，另有一组用例盯安装脚本的解释器探测与启动器改写、
+开关层（总开关 / 单规则 / 写入范围 / 状态文件损坏兜底）与免 uv 入口。
 
 改完 `rules.json` 先跑一遍自检，确认没有把正常会话打死。
 
@@ -246,6 +264,7 @@ iCode 以子进程方式运行 Hook，子进程的 `stdin` 是 `DEVNULL`，**Hoo
 | --- | --- |
 | `AIXCODING_GUARD_RULES` | 指向另一份 `rules.json` |
 | `AIXCODING_GUARD_AUDIT` | 覆盖留痕文件路径 |
+| `AIXCODING_GUARD_STATE` | 指向另一份 `guard_state.json`（开关状态） |
 
 ### 留痕
 
