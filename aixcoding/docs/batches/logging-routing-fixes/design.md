@@ -34,8 +34,8 @@ requirements 草案曾列 B 项（删 `catalog.py:681`"重复行破坏 path-only
 
 ```python
 # 替换 :45 的 _log = logging.getLogger(__name__)
-_detail_log = logging.getLogger("aixcoding.detail.auth")   # 直写字面名，session.py 零依赖先例
-_DETAIL_LEVEL = 5                                          # 本地常量，session.py/catalog.py 同款
+_detail_log = logging.getLogger("aixcoding.detail.auth")  # 直写字面名，session.py 零依赖先例
+_DETAIL_LEVEL = 5  # 本地常量，session.py/catalog.py 同款
 # :65 改为（文案语义修正：stored_token 返回 None 的正常未登录不进此分支，
 # 真正到达这里的是会话构造/凭证读取失败——peer review M5，原英文亦有此歧义）
 _detail_log.log(_DETAIL_LEVEL, "读取登录凭证失败，token 请求头未附加。", exc_info=True)
@@ -62,7 +62,7 @@ Linux `PlaintextBackend`（显式明文，probe 通过）**不**打 WARNING—�
 **D `catalog.py`（停用环境变量警告）**：
 
 ```python
-_log = logging.getLogger("aixcoding.catalog")   # catalog 域首个公共通道记录
+_log = logging.getLogger("aixcoding.catalog")  # catalog 域首个公共通道记录
 # _warn_retired_env 内（:230-236）改为双打：
 _log.warning("环境变量 %s 已停用且不生效；请改用 AIXCODING_MODEL_CATALOG_* 系列变量。", name)
 _detail_log.log(_DETAIL_LEVEL, "环境变量 %s 已停用且不生效；请改用 AIXCODING_MODEL_CATALOG_* 系列变量。", name)
