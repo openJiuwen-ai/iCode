@@ -17,7 +17,6 @@ Design: aixcoding/docs/batches/tui/design.md
 from __future__ import annotations
 
 import contextlib
-import logging
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from chrys.foundation.i18n import msg
@@ -28,8 +27,6 @@ if TYPE_CHECKING:
     from typing import Any
 
     from textual.screen import Screen
-
-logger = logging.getLogger(__name__)
 
 _LOGIN_MANAGED_TOAST = "登录由桌面端管理"
 _LOGOUT_MANAGED_TOAST = "登出由桌面端管理"
