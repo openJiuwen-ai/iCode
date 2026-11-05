@@ -413,10 +413,11 @@ def make_session_handler(
     state, services, _live_diff = main_screen_parts(screen)
     setters = ScreenSetters(screen, state, services)
 
-    def clear_suggestion_file_cache() -> None:
+    def discard_suggestion_file_index() -> None:
         suggestions = getattr(screen, "_suggestions", None)
-        if suggestions is not None:
-            suggestions.file_cache = None
+        discard = getattr(suggestions, "discard_file_index", None)
+        if callable(discard):
+            discard()
 
     def post_gc_message(message: object) -> None:
         messages = getattr(screen, "_gc_messages", None)
@@ -458,7 +459,7 @@ def make_session_handler(
             set_workspace_cwd=setters.set_workspace_cwd,
             update_subtitle=lambda: _call_screen_hook(screen, "_update_subtitle"),
             update_toc=lambda: _call_screen_hook(screen, "_update_toc"),
-            clear_suggestion_file_cache=clear_suggestion_file_cache,
+            discard_suggestion_file_index=discard_suggestion_file_index,
             start_worker=lambda work: start_fake_worker(screen, work),
             post_gc_message=post_gc_message,
             debug=lambda key, message="": _call_screen_hook(screen, "_debug", key, message),
@@ -479,11 +480,6 @@ def status_trail(value: StatusTrail) -> str:
     if isinstance(value, tuple):
         return " · ".join(status_text(part.message if isinstance(part, TrailCount) else part) for part in value)
     return status_text(value)
-
-
-def stale_file_cache(*paths: str) -> list[ProjectPathSuggestion]:
-    """Build a suggestion file cache standing in for a prior ``@`` scan."""
-    return [ProjectPathSuggestion(path=path, kind="file") for path in paths]
 
 
 def make_live_mutation(
@@ -984,6 +980,7 @@ class SuggestionListStub:
         self.last_title: str | None = None
         self.last_empty_text: str | None = None
         self.last_keep_selection = False
+        self.chosen_value: str | None = None
         self.is_visible = False
         self.is_loading = False
         self.select_result = False
