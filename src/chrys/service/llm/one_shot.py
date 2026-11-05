@@ -9,6 +9,7 @@ import logging
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.util.once_close import finish_close
 from chrys.kernel import report_wire_progress, wire_progress_scope
 
 if TYPE_CHECKING:
@@ -98,6 +99,15 @@ async def get_final_response(
             # call) keeps that pull's stall watchdog alive chunk by chunk.
             report_wire_progress()
         return await _await_with_timeout(result.get_final_response(), timeout, "LLM final response")
+    except asyncio.CancelledError:
+        # An async update transform runs outside ResponseStream's protected wire pull.
+        # Cancellation there still needs to close the stream and drain its cleanup.
+        close_task = asyncio.create_task(cleanup_response_stream(result))
+        try:
+            await finish_close(close_task)
+        except Exception:
+            _log.debug("Failed to run ResponseStream cleanup hook after cancellation", exc_info=True)
+        raise
     except TimeoutError:
         try:
             await cleanup_response_stream(result)

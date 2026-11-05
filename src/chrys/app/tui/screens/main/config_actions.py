@@ -64,6 +64,12 @@ class RuntimeConfigCallbacks:
     debug: Callable[[str, str], None]
     notification_service: Callable[[], NotificationService]
     settings_coordinator: Callable[[], SettingsCoordinator]
+    user_picked: Callable[[], None]
+    """The user chose an agent or model; a prompt shortcut's pending switch gives way to it.
+
+    Only the ``#`` and ``$`` pickers choose one. A settings dialog's ``"switched"`` result is not a
+    choice: both dialogs return it only when they fall back after the session's profile was deleted,
+    renamed or (agents) retired to sub-agent use, so no dialog result calls this."""
 
 
 def resolve_approval_mode(arg: str, current: ApprovalMode) -> ApprovalMode:
@@ -189,7 +195,11 @@ class RuntimeConfigController:
         )
 
     async def on_model_picked(self, profile_id: str) -> None:
-        """Persist a picked model profile and request a backend settings reload."""
+        """Persist a picked model profile and request a backend settings reload.
+
+        The pick is for this session and the default together, so it also ends
+        the session's own model (a prompt shortcut's, a restored session's).
+        """
         if self._services.execution_busy():
             return
         from chrys.foundation.events.types import SettingsReload
@@ -205,7 +215,8 @@ class RuntimeConfigController:
                 timeout=5,
             )
             return
-        await self._services.bus.publish(SettingsReload())
+        await self._services.bus.publish(SettingsReload(model_chosen=True))
+        self._callbacks.user_picked()
 
     def start_agent_profile_switch(self, profile_name: str) -> object:
         """Run :meth:`switch_agent_profile` in a screen worker."""
@@ -218,7 +229,17 @@ class RuntimeConfigController:
         from chrys.foundation.events.types import AgentProfileSwitch
 
         await self._services.bus.publish(AgentProfileSwitch(profile_name=profile_name))
+        self._callbacks.user_picked()
         self._callbacks.debug("AgentProfileSwitch", profile_name)
+
+    def _config_read_only(self) -> bool:
+        """Whether a config dialog opening now is read-only: a turn runs, or a send in flight will start one.
+
+        A dialog reads the session once, as it opens. A prompt shortcut's send
+        holds its claim from its switch until its turn starts: the switch and
+        the turn land under whatever opened meanwhile.
+        """
+        return self._state.run.agent_running or self._state.submit.active or self._services.execution_busy()
 
     def open_model_config(self) -> None:
         """Schedule opening the model configuration modal."""
@@ -276,7 +297,11 @@ class RuntimeConfigController:
             self._model_config_opening = False
 
     async def on_model_config_result(self, result: str) -> None:
-        """Handle model config modal result — reload settings if applied."""
+        """Handle model config modal result — reload settings if applied.
+
+        ``"deleted"``: a profile was deleted; the reload drops whatever the
+        session used that is gone. ``"updated"``: a Save, announced.
+        """
         if not result:
             return
         from chrys.foundation.events.types import SettingsReload
@@ -286,8 +311,9 @@ class RuntimeConfigController:
             directory, profiles = await asyncio.to_thread(registry.read_profiles)
             registry.install_profiles(directory, profiles)
         await self._adopt_global_default_when_nothing_active()
+        # The engine drops whatever the reload finds gone (the session's own model included).
         await self._services.bus.publish(SettingsReload())
-        if result != "switched":
+        if result == "updated":
             self._view.notify(_MODEL_PROFILE_UPDATED.bind(), title=_MODEL_SETTINGS_TITLE.bind())
         self._callbacks.debug("ModelConfig", result)
 
@@ -328,6 +354,10 @@ class RuntimeConfigController:
     def open_runtime_details(self, *, initial_tab: str | None = None) -> None:
         """Open the active runtime details modal, on *initial_tab* when given."""
         self._view.open_runtime_details(self._state.runtime.details, initial_tab=initial_tab)
+
+    def open_usage(self) -> None:
+        """Open the token usage modal."""
+        self._view.open_usage()
 
     def open_settings(self, initial_tab: str) -> None:
         """Open the Settings dialog on *initial_tab*."""
@@ -375,7 +405,7 @@ class RuntimeConfigController:
                 workspace_cwd=self._state.workspace_marker.current_cwd or None,
                 workspace_roots=list(self._state.workspace.roots),
                 on_saved=self.on_agent_config_saved,
-                read_only=self._state.run.agent_running or self._services.execution_busy(),
+                read_only=self._config_read_only(),
                 **kwargs,
             ),
             self._start_agent_config_result,
@@ -426,7 +456,8 @@ class RuntimeConfigController:
             new_profile = self._services.agent_registry.get(new_active_name)
             if new_profile is not None:
                 label = new_profile.display_name or new_profile.name
-                await self._services.bus.publish(AgentProfileSwitch(profile_name=new_active_name))
+                # Not the user's pick: new sessions keep starting on their agent unless it was this one.
+                await self._services.bus.publish(AgentProfileSwitch(profile_name=new_active_name, source="fallback"))
                 if pending_switch is None:
                     self._view.notify(_AGENT_SWITCHED.bind(label=label), title=_AGENT_TITLE.bind())
                 self._callbacks.debug("AgentConfig", f"switched → {new_active_name}")

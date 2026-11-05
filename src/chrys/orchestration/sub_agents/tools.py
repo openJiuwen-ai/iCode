@@ -1013,8 +1013,6 @@ class SubAgentTools:
                         ),
                         stats=log_stats,
                         runner="acp",
-                        acp_command=config.command,
-                        acp_args=config.args,
                     )
                     stderr_path = _acp_stderr_path(self._session_dir, log_writer, invocation_id)
                     try:

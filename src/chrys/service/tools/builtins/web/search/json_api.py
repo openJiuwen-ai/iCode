@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Keyed JSON search APIs: the official Tavily, Brave and Exa adapters and declarative custom_http."""
+"""JSON search APIs: the official Tavily, Brave and Exa adapters, keyless Keenable and declarative custom_http."""
 
 from __future__ import annotations
 
@@ -10,8 +10,9 @@ from typing import Any
 
 import httpx
 
+from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.net.url import normalize_url
-from chrys.service.tools.builtins.web.config import SearchProviderConfig
+from chrys.service.tools.builtins.web.config import ANONYMOUS_SEARCH_ENDPOINTS, SearchProviderConfig
 from chrys.service.tools.builtins.web.credentials import ResolvedSearchCredentials
 from chrys.service.tools.builtins.web.http import WebError, bounded_body, check_status
 from chrys.service.tools.builtins.web.search.providers import ENVIRONMENT_FAILURES, site_filtered
@@ -109,7 +110,7 @@ class _WireRequest:
 
 @dataclass(frozen=True)
 class JsonApiProvider:
-    """One selected keyed or custom JSON API, with an isolated credential snapshot."""
+    """One selected keyed, keyless or custom JSON API, with an isolated credential snapshot."""
 
     id: str
     config: SearchProviderConfig
@@ -121,6 +122,9 @@ class JsonApiProvider:
 
     def falls_through(self, failure: WebError) -> bool:
         # A 4xx from a keyed API is about our key or quota: the user must see it.
+        # A keyless API holds no key of ours, so its 4xx is the service refusing the query.
+        if failure.code == "http_4xx" and self.config.type in ANONYMOUS_SEARCH_ENDPOINTS:
+            return True
         return failure.code in ENVIRONMENT_FAILURES
 
     async def search(self, request: SearchRequest, *, http: httpx.AsyncClient) -> SearchResponse:
@@ -200,6 +204,14 @@ class JsonApiProvider:
                 {"X-Subscription-Token": secrets[cfg.api_key_env]},
                 params={"q": request.query, "count": request.limit},
                 mapping={**_DEFAULT_MAPPING, "results_pointer": "/web/results", "snippet_pointer": "/description"},
+            )
+        if cfg.type == "keenable":
+            # The keyless endpoint requires an app name; its result text is in snippet.
+            return _WireRequest(
+                "POST",
+                {"X-Keenable-Title": APP_DISPLAY_NAME},
+                body={"query": request.query, "max_results": request.limit},
+                mapping={**_DEFAULT_MAPPING, "snippet_pointer": "/snippet"},
             )
         inputs = {
             "query": request.query,

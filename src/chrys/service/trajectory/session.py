@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import threading
@@ -70,16 +71,52 @@ MAX_ACTIVATION_ATTEMPTS: Final = 2
 
 
 class TrajectoryDisabledReason:
-    """Why a session records nothing (diagnostics only; never persisted)."""
+    """Why a session records nothing; never persisted.
+
+    Every reason but ``NO_SESSION_DIR`` (nothing to record into) and
+    ``CLOSED`` is reported once to ``on_activation_failed``, which the engine
+    turns into a warning carrying the reason.
+    """
 
     NO_SESSION_DIR = "no_session_dir"
     LEASE_HELD = "lease_held"
     KEY_UNAVAILABLE = "key_unavailable"
+    PERMISSION = "permission"
+    """The session's files refused this user: owner, mode, ACL, a link, or a read-only folder."""
     ACTIVATION_FAILED = "activation_failed"
     SCHEMA_TOO_NEW = "schema_too_new"
     UNREADABLE_TAIL = "unreadable_tail"
     SEQUENCE_EXHAUSTED = "sequence_exhausted"
     CLOSED = "closed"
+
+
+_UNREPORTED_REASONS: Final = frozenset({TrajectoryDisabledReason.NO_SESSION_DIR, TrajectoryDisabledReason.CLOSED})
+_PERMISSION_ERRNOS: Final = frozenset({errno.EACCES, errno.EPERM, errno.EROFS, errno.ELOOP})
+# ERROR_ACCESS_DENIED, ERROR_WRITE_PROTECT, ERROR_NETWORK_ACCESS_DENIED.
+_WINDOWS_PERMISSION_ERRORS: Final = frozenset({5, 19, 65})
+
+
+def _activation_failure_reason(exc: Exception) -> str:
+    """``PERMISSION`` when the session's files refused this user, else ``ACTIVATION_FAILED``."""
+    if isinstance(exc, PermissionError):
+        return TrajectoryDisabledReason.PERMISSION
+    if isinstance(exc, SecureFileError):
+        from chrys.foundation.platform import get_platform
+
+        if exc.errno is None:
+            # Raised by the owner-only checks themselves: the wrong owner, group
+            # or other mode bits, an ACL, a link in the path.
+            return TrajectoryDisabledReason.PERMISSION
+        if get_platform().is_windows:
+            # A Win32 error code, which must not be read as an errno.
+            return (
+                TrajectoryDisabledReason.PERMISSION
+                if exc.errno in _WINDOWS_PERMISSION_ERRORS
+                else TrajectoryDisabledReason.ACTIVATION_FAILED
+            )
+    if isinstance(exc, OSError) and exc.errno in _PERMISSION_ERRNOS:
+        return TrajectoryDisabledReason.PERMISSION
+    return TrajectoryDisabledReason.ACTIVATION_FAILED
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,7 +212,7 @@ class SessionTrajectory:
         self._activation_lock = threading.Lock()
         self._activation = _Activation()
         self._activation_attempts = 0
-        self._activation_failure_reported = False
+        self._disabled_reported = False
         # A writer whose prelude failed belongs only to the thread holding
         # ``_activation_lock``. Publishing it through ``_activation`` would
         # expose a transient ACTIVATION_FAILED verdict to lock-free emitters,
@@ -479,17 +516,17 @@ class SessionTrajectory:
                 self._activation_attempts += 1
                 try:
                     self._activate_locked()
-                except Exception:
+                except Exception as exc:
                     logger.warning("Trajectory activation failed for session %s", self._session_id, exc_info=True)
                     if self._reset_failed_activation() and self._activation_attempts < MAX_ACTIVATION_ATTEMPTS:
                         continue
-                    self._disable(TrajectoryDisabledReason.ACTIVATION_FAILED)
-                    self._report_activation_failure()
+                    self._disable(_activation_failure_reason(exc))
                 except BaseException:
                     # Preserve cancellation/interrupt propagation, but do not
                     # strand the private failed writer and its file lease.
                     self._reset_failed_activation()
                     raise
+                self._report_disabled()
                 return
 
     def _reset_failed_activation(self) -> bool:
@@ -512,12 +549,19 @@ class SessionTrajectory:
         self._recovery = None
         return True
 
-    def _report_activation_failure(self) -> None:
-        if self._activation_failure_reported or self._on_activation_failed is None:
+    def _report_disabled(self) -> None:
+        """Report, once, why this activation left the session recording nothing."""
+        reason = self._activation.disabled_reason
+        if (
+            reason is None
+            or reason in _UNREPORTED_REASONS
+            or self._disabled_reported
+            or self._on_activation_failed is None
+        ):
             return
-        self._activation_failure_reported = True
+        self._disabled_reported = True
         try:
-            self._on_activation_failed(TrajectoryDisabledReason.ACTIVATION_FAILED)
+            self._on_activation_failed(reason)
         except Exception:
             logger.debug("Trajectory activation failure callback failed", exc_info=True)
 

@@ -853,7 +853,7 @@ class HistoryReplayPlanner:
                 # "continue" and keep rendering via the positional fallback.
                 if extra.get(HistoryMarkerKind.CONTINUATION_KEY):
                     continue
-                text = "\n".join(_text_parts(contents)).strip()
+                text = contents_text(contents)
                 profile_switch_to = str(extra.get(HistoryMarkerKind.PROFILE_SWITCH_TO_KEY) or "")
                 if not text:
                     if profile_switch_to:
@@ -1819,6 +1819,11 @@ def _visible_text_variants(contents: list[Any]) -> list[str]:
         variants.append("\n".join(all_parts).strip())
         variants.append("".join(all_parts).strip())
     return [text for text in variants if text]
+
+
+def contents_text(contents: list[Any]) -> str:
+    """A user message's text as its contents hold it: what the model received, shown live and on replay alike."""
+    return "\n".join(_text_parts(contents)).strip()
 
 
 def _text_parts(contents: list[Any]) -> list[str]:

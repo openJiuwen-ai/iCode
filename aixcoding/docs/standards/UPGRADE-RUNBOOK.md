@@ -5,8 +5,8 @@
 
 ## 当前基线（每次升级完成后人工更新，自 customization-registry 批次起由本节承载）
 
-- 当前所基于的上游版本：0.32.2
-- 最近一次升级完成日期：2026-10-31（upstream-merge-v0.32.2 批次）
+- 当前所基于的上游版本：0.33.0
+- 最近一次升级完成日期：2026-11-04（upstream-merge-v0.33.0 批次）
 - 定制点全景按需视图：`uv run python aixcoding/tools/gen_customizations.py --report`（实时对账，勿编辑不落盘）
 > 升级节奏与债务控制条款见 DEVELOPMENT.md §8 正文。
 

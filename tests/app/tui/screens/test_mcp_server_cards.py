@@ -6,18 +6,21 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from textual.app import App, ComposeResult
 from textual.screen import Screen
-from textual.widgets import Button, Input, OptionList, Static, TextArea
+from textual.widgets import Button, Input, OptionList, Static, TabbedContent, TextArea
 from textual.widgets.collapsible import CollapsibleTitle
 
 from chrys.app.tui.i18n import LocaleController
+from chrys.app.tui.screens.agents.mcp_picker import MCPPickerDialog
 from chrys.app.tui.screens.agents.panels.mcp import MCPConfigPanel, MCPConnectionCard
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.dialogs.connection_test import ConnectionTestDialog
 from chrys.foundation.config.settings import Settings
+from chrys.service.profiles.agents.loader import load_profile_from_yaml
 from chrys.service.profiles.agents.schema import MCPServerConfig, SubAgentRef, SubAgentsConfig, ToolsConfig
 from tests.app.tui.screens._agent_config_support import (
     _DEFAULT_WAIT_TIMEOUT,
@@ -307,6 +310,35 @@ async def test_mcp_server_delete_dirties_the_agent_draft_only_once_confirmed() -
         )
 
 
+async def test_string_yaml_timeout_reports_error_before_mcp_tab_opens_and_can_be_corrected(tmp_path: Path) -> None:
+    path = tmp_path / "source.yaml"
+    path.write_text(
+        "name: Code\ndisplay_name: Code\ndescription: Coding agent\ninstructions: Help with code\ntools:\n  mcp:\n"
+        '    - name: server\n      transport: stdio\n      command: server\n      timeout: "30"\n',
+        encoding="utf-8",
+    )
+    registry = registry_with(load_profile_from_yaml(path))
+    async with open_agent_config(registry, current_profile="Code", initial_tab="basic") as (screen, pilot):
+        assert not screen.query(MCPConfigPanel)
+        errors = _capture_errors(screen)
+        save = screen.query_one("#ac-save", Button)
+        screen.query_one("#bc-description", TextArea).text = "Edited description"
+        await wait_for(lambda: not save.disabled, pilot=pilot, description="description enables Save")
+        save.press()
+        await wait_for(lambda: bool(errors), pilot=pilot, description="string timeout reports validation error")
+        assert "timeout must be a positive integer" in errors[0]
+        screen.query_one("#ac-tabs", TabbedContent).active = "mcp"
+        await wait_for(
+            lambda: bool(screen.query("#mcp-timeout-0")), pilot=pilot, description="timeout field opens for correction"
+        )
+        # The field parses the quoted YAML value as an integer, so it intentionally differs from the draft.
+        await wait_for(lambda: not screen._hydrating, pilot=pilot, description="timeout editor is ready")
+        screen.query_one("#mcp-timeout-0", Input).value = "45"
+        save.press()
+        await wait_for(lambda: save.disabled, pilot=pilot, description="corrected timeout saves")
+        assert registry.get("Code").tools.mcp[0].request_timeout == 45
+
+
 async def test_save_unfolds_the_cards_that_fail_validation() -> None:
     registry = _mcp_agent_registry("good", "bad")
 
@@ -556,6 +588,18 @@ async def _add_valid_server(screen, pilot) -> MCPConnectionCard:
     panel = screen._live_panel(MCPConfigPanel)
     count = len(panel.card_folds())
     panel.query_one("#mcp-add-btn", Button).press()
+    await wait_for(
+        lambda: (
+            len(panel.query(MCPConnectionCard)) == count + 1
+            or (isinstance(pilot.app.screen, MCPPickerDialog) and pilot.app.screen.is_mounted)
+        ),
+        pilot=pilot,
+        description="Add opens the picker or inserts a blank card",
+    )
+    if isinstance(pilot.app.screen, MCPPickerDialog):
+        options = pilot.app.screen.query_one(OptionList)
+        option = options.get_option("action:create")
+        options.post_message(OptionList.OptionSelected(options, option, options.get_option_index("action:create")))
     added, *_ = await _cards_laid_out(panel, pilot, count + 1)
     added.query_one("#mcp-cmd-0", TextArea).text = "python server.py"
     save = screen.query_one("#ac-save", Button)

@@ -635,7 +635,7 @@ async def test_submit_without_configured_model_blocks_and_restores_draft(
         await pilot.pause()
         screen = app.main_screen
         submitted: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", lambda text, _draft=None: submitted.append(text))
 
         screen.post_message(InputBar.UserSubmitted("hello world"))
         await pilot.pause()
@@ -686,7 +686,7 @@ async def test_submit_with_selectable_model_proceeds_without_dialog(
         await pilot.pause()
         screen = app.main_screen
         submitted: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", lambda text, _draft=None: submitted.append(text))
 
         screen.post_message(InputBar.UserSubmitted("hello"))
         await pilot.pause()
@@ -723,7 +723,7 @@ async def test_submit_with_confirmed_unconfigured_fallback_still_blocks(
         await pilot.pause()
         screen = app.main_screen
         submitted: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", lambda text, _draft=None: submitted.append(text))
         screen._state.runtime.details = _unconfigured_runtime_details(model_id)
         screen._state.runtime.details_confirmed = True
 
@@ -745,7 +745,7 @@ async def test_confirmed_blank_details_defer_to_selectable_registry(
         await pilot.pause()
         screen = app.main_screen
         submitted: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", lambda text, _draft=None: submitted.append(text))
         screen._state.runtime.details = _unconfigured_runtime_details("")
         screen._state.runtime.details_confirmed = True
 
@@ -766,7 +766,7 @@ async def test_guard_confirm_opens_picker_when_profiles_are_selectable(
         await pilot.pause()
         screen = app.main_screen
         submitted: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", lambda text, _draft=None: submitted.append(text))
         screen._state.runtime.details = _unconfigured_runtime_details(UNCONFIGURED_MODEL_ID)
         screen._state.runtime.details_confirmed = True
 
@@ -829,7 +829,7 @@ async def test_submit_with_confirmed_runtime_model_bypasses_guard(
         await pilot.pause()
         screen = app.main_screen
         submitted: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", lambda text, _draft=None: submitted.append(text))
         screen._state.runtime.details = _runtime_details("Runtime Model")
         screen._state.runtime.details_confirmed = True
 
@@ -856,7 +856,7 @@ async def test_slash_command_dispatch_bypasses_model_guard(
             dispatched.append(text)
             return True
 
-        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", lambda text, _draft=None: submitted.append(text))
         monkeypatch.setattr(screen._suggestions, "dispatch_slash_command", record_dispatch)
 
         screen.post_message(InputBar.UserSubmitted("/help"))
@@ -878,7 +878,7 @@ async def test_runtime_skill_selection_blocks_when_model_unconfigured(
         await pilot.pause()
         screen = app.main_screen
         submitted: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", lambda text, _draft=None: submitted.append(text))
 
         screen._suggestions.on_suggestion_selected("commands", "review", execute=True, kind="skill")
         await pilot.pause()
@@ -898,7 +898,7 @@ async def test_runtime_skill_selection_submits_with_confirmed_model(
         await pilot.pause()
         screen = app.main_screen
         submitted: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", lambda text, _draft=None: submitted.append(text))
         screen._state.runtime.details = _runtime_details("Runtime Model")
         screen._state.runtime.details_confirmed = True
 
@@ -921,7 +921,7 @@ async def test_retry_blocks_when_model_unconfigured(
         await pilot.pause()
         screen = app.main_screen
         retried: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "request_retry", retried.append)
+        monkeypatch.setattr(screen._input_flow, "request_retry", lambda text, _draft=None: retried.append(text))
 
         screen.post_message(InputBar.RetryRequested(text="carry on"))
         await pilot.pause()
@@ -942,7 +942,7 @@ async def test_blocked_submit_hand_back_never_overwrites_a_draft_typed_in_the_ga
         await pilot.pause()
         screen = app.main_screen
         submitted: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", lambda text, _draft=None: submitted.append(text))
         input_bar = screen.query_one(InputBar)
 
         screen.post_message(InputBar.UserSubmitted(text="the blocked message"))
@@ -966,7 +966,7 @@ async def test_blocked_retry_hand_back_never_overwrites_a_draft_typed_in_the_gap
         await pilot.pause()
         screen = app.main_screen
         retried: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "request_retry", retried.append)
+        monkeypatch.setattr(screen._input_flow, "request_retry", lambda text, _draft=None: retried.append(text))
         input_bar = screen.query_one(InputBar)
 
         screen.post_message(InputBar.RetryRequested(text="carry on"))
@@ -988,7 +988,7 @@ async def test_status_action_retry_blocks_when_model_unconfigured(
         await pilot.pause()
         screen = app.main_screen
         retried: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "request_retry", retried.append)
+        monkeypatch.setattr(screen._input_flow, "request_retry", lambda text, _draft=None: retried.append(text))
         screen.query_one(InputBar).retry_mode = True
 
         screen.post_message(ConversationStatusAction.Pressed())
@@ -1008,7 +1008,7 @@ async def test_retry_proceeds_with_confirmed_model(
         await pilot.pause()
         screen = app.main_screen
         retried: list[str] = []
-        monkeypatch.setattr(screen._input_flow, "request_retry", retried.append)
+        monkeypatch.setattr(screen._input_flow, "request_retry", lambda text, _draft=None: retried.append(text))
         screen._state.runtime.details = _runtime_details("Runtime Model")
         screen._state.runtime.details_confirmed = True
 

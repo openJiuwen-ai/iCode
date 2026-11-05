@@ -1,12 +1,14 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Saved-model reapplication on session restore and the boundaries of its rollback."""
+"""Saved-model reapplication on session restore: the restored session's own model, never the default."""
 
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -28,6 +30,7 @@ from chrys.service.profiles.agents.schema import (
     AgentProfile,
     ModelConfig,
 )
+from chrys.service.profiles.models.resolver import active_model_profile_fields
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
 from tests.orchestration.engine._recovery_helpers import (
@@ -45,7 +48,8 @@ from tests.support.loaded_agents import install_loaded_agent
 def _pinned_model_profile_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Give ``CHRYS_MODEL_PROFILE`` back at teardown, whatever the restore under test wrote to it.
 
-    A saved-model restore mirrors the selection into the environment. ``delenv(raising=False)``
+    A saved-model restore must not write the process pointer (its environment
+    mirror); this keeps a regression from leaking past the test. ``delenv(raising=False)``
     on an absent variable records nothing to undo, so the absent case is pinned by a
     set-then-delete pair instead.
     """
@@ -57,7 +61,7 @@ def _pinned_model_profile_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CHRYS_MODEL_PROFILE", previous)
 
 
-async def test_tui_session_restore_reapplies_saved_model_without_touching_dotenv(
+async def test_tui_session_restore_runs_the_saved_model_as_the_sessions_own_without_moving_the_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -84,7 +88,7 @@ async def test_tui_session_restore_reapplies_saved_model_without_touching_dotenv
     )
     started_model_ids: list[str] = []
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fake_start(
@@ -92,14 +96,15 @@ async def test_tui_session_restore_reapplies_saved_model_without_touching_dotenv
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         assert start_profile is agent_profile
         assert operation == "restore"
-        # The reapplied model travels on the staged load; a successful build
-        # commits it, so a fake simulating one must install it.
-        if staged_loaded is not None:
-            engine.settings_handle.install(staged_loaded)
+        # The reapplied model travels as the session's own choice; a successful
+        # build commits it with the staged load, so a fake simulating one must.
+        handle = engine.settings_handle
+        handle.install_prepared(handle.prepare(staged_loaded or handle.base, session=session))
         started_model_ids.append(engine.settings.model_profile)
 
     monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
@@ -115,8 +120,10 @@ async def test_tui_session_restore_reapplies_saved_model_without_touching_dotenv
     assert started_model_ids == [saved_model.id]
     assert engine.settings.model_profile == saved_model.id
     assert engine.settings.model_profile_override == ""
-    assert os.environ["CHRYS_MODEL_PROFILE"] == saved_model.id
-    assert Settings.from_env().model_profile == saved_model.id
+    assert engine.settings_handle.session_model == saved_model.id
+    assert engine.settings_handle.base.settings.model_profile != saved_model.id
+    # The default new sessions start on did not move: no pointer write, no dotenv write.
+    assert "CHRYS_MODEL_PROFILE" not in os.environ
     assert dotenv.read_bytes() == original_dotenv
 
 
@@ -139,13 +146,14 @@ def test_saved_model_restore_clears_the_previous_sessions_pin() -> None:
         model_registry=_model_registry(saved_model),
     )
 
-    staged, token = engine.lifecycle._reapply_saved_model_profile(
+    choice = engine.lifecycle._restored_session_choice(
         _session_meta(model_profile_id=saved_model.id),
         _profile("Code"),
-        engine.loaded_settings,
+        engine.settings_handle.base,
     )
+    staged = engine.settings_handle.prepare(engine.settings_handle.base, session=choice).effective
 
-    assert token is not None
+    assert choice == active_model_profile_fields(saved_model)
     assert staged.settings.model_profile == saved_model.id
     assert staged.settings.model_profile_override == ""
     assert staged.settings.model_profile_override_sub_agents is False
@@ -167,13 +175,13 @@ def test_saved_model_restore_moves_settings_and_provenance_together() -> None:
         model_registry=_model_registry(saved_model),
     )
 
-    staged, token = engine.lifecycle._reapply_saved_model_profile(
+    choice = engine.lifecycle._restored_session_choice(
         _session_meta(model_profile_id=saved_model.id),
         _profile("Code"),
-        engine.loaded_settings,
+        engine.settings_handle.base,
     )
+    staged = engine.settings_handle.prepare(engine.settings_handle.base, session=choice).effective
 
-    assert token is not None
     assert staged.settings.model_profile == saved_model.id
     assert staged.source_for("model.profile.active").layer is Source.SESSION
     # The transform stays staged: the live settings have not moved.
@@ -183,7 +191,7 @@ def test_saved_model_restore_moves_settings_and_provenance_together() -> None:
 async def test_a_failed_reload_after_a_saved_model_restore_keeps_the_restored_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The rollback restores ``loaded_settings``, so it had to have been updated.
+    """A reload that fails changes nothing: the session keeps the model it runs on.
 
     Otherwise a reload that fails puts the pre-restore model back into
     ``settings`` while the executor the failure kept running is still bound to
@@ -197,20 +205,20 @@ async def test_a_failed_reload_after_a_saved_model_restore_keeps_the_restored_mo
     )
     engine.session.agent_profile = _profile("Code")
     install_loaded_agent(engine, loaded=None)
-    staged, _token = engine.lifecycle._reapply_saved_model_profile(
+    choice = engine.lifecycle._restored_session_choice(
         _session_meta(model_profile_id=saved_model.id),
         _profile("Code"),
-        engine.loaded_settings,
+        engine.settings_handle.base,
     )
-    # The restore build's commit, minimally: the reapplied selection goes live.
-    engine.settings_handle.install(staged)
-    engine.session.model_profile_pinned = True
+    # The restore build's commit, minimally: the session's own model goes live.
+    engine.settings_handle.install_prepared(engine.settings_handle.prepare(engine.settings_handle.base, session=choice))
 
     async def failing_start(
         profile: AgentProfile,
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         _ = profile, operation
@@ -249,14 +257,13 @@ def test_saved_model_restore_short_circuits_without_side_effects(
     engine = assemble_agent_engine(EventBus(), settings=settings, model_registry=_model_registry(*profiles))
     monkeypatch.setenv("CHRYS_MODEL_PROFILE", "environment-before")
 
-    staged, token = engine.lifecycle._reapply_saved_model_profile(
+    choice = engine.lifecycle._restored_session_choice(
         _session_meta(model_profile_id=saved_model_id),
         _profile("Code"),
-        engine.loaded_settings,
+        engine.settings_handle.base,
     )
 
-    assert token is None
-    assert staged is engine.loaded_settings
+    assert choice == {}
     assert engine.settings is settings
     assert engine.settings.model_profile_override == "existing-override"
     assert os.environ["CHRYS_MODEL_PROFILE"] == "environment-before"
@@ -284,14 +291,13 @@ def test_saved_model_restore_skips_registered_agent_binding_without_side_effects
     )
     monkeypatch.setenv("CHRYS_MODEL_PROFILE", "environment-before")
 
-    staged, token = engine.lifecycle._reapply_saved_model_profile(
+    choice = engine.lifecycle._restored_session_choice(
         _session_meta(model_profile_id=saved_model.id),
         agent_profile,
-        engine.loaded_settings,
+        engine.settings_handle.base,
     )
 
-    assert token is None
-    assert staged is engine.loaded_settings
+    assert choice == {}
     assert engine.settings is settings
     assert engine.settings.model_profile_override == "existing-override"
     assert os.environ["CHRYS_MODEL_PROFILE"] == "environment-before"
@@ -317,7 +323,7 @@ async def test_session_restore_default_gate_does_not_apply_saved_model(
     )
     started_model_ids: list[str] = []
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fake_start(
@@ -325,9 +331,11 @@ async def test_session_restore_default_gate_does_not_apply_saved_model(
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         assert operation == "restore"
+        assert not session
         started_model_ids.append(engine.settings.model_profile)
 
     monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
@@ -346,7 +354,7 @@ async def test_session_restore_default_gate_does_not_apply_saved_model(
     assert os.environ["CHRYS_MODEL_PROFILE"] == "environment-before"
 
 
-async def test_saved_model_restore_rolls_back_when_start_fails_before_executor_install(
+async def test_saved_model_restore_changes_nothing_when_start_fails_before_its_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -364,7 +372,7 @@ async def test_saved_model_restore_rolls_back_when_start_fails_before_executor_i
         model_registry=_model_registry(saved_model),
     )
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fail_start(
@@ -372,13 +380,13 @@ async def test_saved_model_restore_rolls_back_when_start_fails_before_executor_i
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         assert operation == "restore"
-        # The reapplied model arrives staged; a build that fails before its
-        # commit never installs it, so the live settings must not have moved.
-        assert staged_loaded is not None
-        assert staged_loaded.settings.model_profile == saved_model.id
+        # The reapplied model arrives staged as the session's own; a build that
+        # fails before its commit never installs it, so nothing live has moved.
+        assert session == active_model_profile_fields(saved_model)
         assert engine.settings.model_profile == "old-model"
         raise RuntimeError("start failed")
 
@@ -417,7 +425,7 @@ async def test_saved_model_restore_does_not_roll_back_after_executor_install(
     )
     replacement_executor = MagicMock()
 
-    async def fake_shutdown() -> None:
+    async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
     async def fail_after_install(
@@ -425,13 +433,14 @@ async def test_saved_model_restore_does_not_roll_back_after_executor_install(
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         assert operation == "restore"
         # The build's commit: settings and executor go live together, and the
         # failure lands after it.
-        if staged_loaded is not None:
-            engine.settings_handle.install(staged_loaded)
+        handle = engine.settings_handle
+        handle.install_prepared(handle.prepare(staged_loaded or handle.base, session=session))
         install_loaded_agent(engine, bindings=replacement_executor)
         raise RuntimeError("post-install failure")
 
@@ -451,7 +460,7 @@ async def test_saved_model_restore_does_not_roll_back_after_executor_install(
     # with it — and a post-install failure must not resurrect either field.
     assert engine.settings.model_profile == saved_model.id
     assert engine.settings.model_profile_override == ""
-    assert os.environ["CHRYS_MODEL_PROFILE"] == saved_model.id
+    assert os.environ["CHRYS_MODEL_PROFILE"] == "environment-before"
 
 
 async def test_saved_model_restore_stays_applied_after_successful_start_and_later_hydrate_failure(
@@ -489,4 +498,4 @@ async def test_saved_model_restore_stays_applied_after_successful_start_and_late
     # with it — and a failure after a successful start must not roll it back.
     assert engine.settings.model_profile == saved_model.id
     assert engine.settings.model_profile_override == ""
-    assert os.environ["CHRYS_MODEL_PROFILE"] == saved_model.id
+    assert os.environ["CHRYS_MODEL_PROFILE"] == "environment-before"

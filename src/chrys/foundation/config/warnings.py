@@ -101,21 +101,21 @@ _PROJECT_CONFIG_DORMANT = msg(
     "settings.project_config_dormant",
     fallback=(
         "Found project settings in {path} ({keys}), but they are not loaded. To apply them, turn on "
-        "Load project settings under Settings → Security → Project trust (project.config_enabled)."
+        "Load project settings under Settings → Safety → Project trust (project.config_enabled)."
     ),
 )
 _PROJECT_HOOKS_DORMANT = msg(
     "settings.project_hooks_dormant",
     fallback=(
         "Found project hooks in {path}, but they are not loaded. To run them, turn on "
-        "Load project hooks under Settings → Security → Project trust (project.hooks_enabled)."
+        "Load project hooks under Settings → Safety → Project trust (project.hooks_enabled)."
     ),
 )
 _PROJECT_SKILLS_DORMANT = msg(
     "settings.project_skills_dormant",
     fallback=(
         "Found project skills in {path}. They are not loaded automatically; to load them, turn on "
-        "Load project skills under Settings → Security → Project trust (project.skills_enabled) and keep the "
+        "Load project skills under Settings → Safety → Project trust (project.skills_enabled) and keep the "
         "agent's Load skills from working folder option on."
     ),
 )

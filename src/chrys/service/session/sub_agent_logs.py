@@ -136,8 +136,6 @@ class SubAgentSessionLogWriter:
         working_dirs: list[str] | None = None,
         stats: SubAgentLogStats | None = None,
         runner: str = "kernel",
-        acp_command: str = "",
-        acp_args: list[str] | None = None,
     ) -> None:
         self._parent_session_dir = parent_session_dir
         self._parent_session_id = parent_session_id or ""
@@ -153,8 +151,8 @@ class SubAgentSessionLogWriter:
         self._working_dirs = list(working_dirs or ([primary_cwd] if primary_cwd else []))
         self._stats = stats or SubAgentLogStats()
         self._runner = runner
-        self._acp_command = acp_command
-        self._acp_args = list(acp_args or [])
+        self._acp_command = ""
+        self._acp_args: list[str] = []
         self._created_at = _utc_now()
         self._lock = asyncio.Lock()
         self._active = False

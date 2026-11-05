@@ -9,7 +9,7 @@ import contextlib
 import errno
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import BinaryIO
 
@@ -17,6 +17,7 @@ from acp import default_environment
 
 from chrys.foundation.platform.files import SecureFileError, secure_open_owner_only
 from chrys.foundation.platform.process import ManagedStdioProcess, spawn_managed_stdio_process
+from chrys.foundation.util.env_templates import EnvVarResolutionError, command_handles_in
 
 from .errors import AcpClientError, AcpConfigError, classify_spawn_error
 from .spec import AcpAgentSpec
@@ -196,6 +197,28 @@ class AcpSpawnResult:
     @property
     def stderr_tail(self) -> str:
         return self.stderr.tail
+
+
+async def with_fresh_tokens(spec: AcpAgentSpec) -> AcpAgentSpec:
+    """Return *spec* with a token just fetched for each ``{{!command}}`` in its arguments and environment.
+
+    A running agent can't be given a new one, so each launch fetches its own.  Only
+    the launch gets this copy: the spec the audit records keeps its handles.
+    """
+    values = [*spec.args, *spec.env.values()]
+    if not command_handles_in(values):
+        return spec
+    from chrys.service.command_credentials import refresh, substitute
+
+    try:
+        await refresh(values)
+    except EnvVarResolutionError as exc:
+        raise AcpConfigError(str(exc), cause=exc) from exc
+    return replace(
+        spec,
+        args=tuple(substitute(arg) for arg in spec.args),
+        env={key: substitute(value) for key, value in spec.env.items()},
+    )
 
 
 async def spawn_acp_process(spec: AcpAgentSpec) -> AcpSpawnResult:

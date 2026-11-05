@@ -8,6 +8,7 @@ import asyncio
 import base64
 import dataclasses
 import json
+import threading
 
 import pytest
 from acp.schema import (
@@ -33,13 +34,15 @@ from chrys.foundation.events.types import (
     InvocationToolCallStart,
 )
 from chrys.foundation.models.invocations import InvocationOrigin
-from chrys.foundation.text.images import MAX_IMAGE_BYTES
+from chrys.foundation.text.images import MAX_IMAGE_BYTES, compress_image_data
 from chrys.foundation.tool_result_metadata import TOOL_FAILED_METADATA_KEY, TOOL_INTERRUPTED_METADATA_KEY
+from chrys.orchestration.invoker import acp_protocol as acp_protocol_module
 from chrys.orchestration.invoker.acp_protocol import AcpUpdateTranslator, preview_text
 from chrys.service.acp_client import client as acp_client_module
 from chrys.service.acp_client.errors import AcpTransportError
 from tests.orchestration.sub_agents._acp_fakes import session_notification
 from tests.support.event_capture import capture_events
+from tests.support.images import noisy_image_bytes
 from tests.support.waiting import wait_for
 
 
@@ -334,7 +337,12 @@ async def test_translator_extracts_every_tool_content_variant_and_flushes_interr
     assert results[1].provider_status == "interrupted"
 
 
-async def test_translator_accepts_maximum_supported_image_size() -> None:
+# No decoder reads this many repeated bytes, so the translator keeps them as they
+# came: 4 MiB in base64, past the 5 MiB budget when charged twice.
+_LARGE_UNDECODABLE_IMAGE_BYTES = 3 * 1024 * 1024
+
+
+async def test_translator_accepts_a_large_image_through_the_observer_buffer() -> None:
     bus = EventBus()
     results = await capture_events(bus, InvocationToolCallResult)
     translator = AcpUpdateTranslator(
@@ -345,7 +353,7 @@ async def test_translator_accepts_maximum_supported_image_size() -> None:
         attempt=1,
         origin=InvocationOrigin("sub_agent", "", "inv", None),
     )
-    encoded = base64.b64encode(b"x" * MAX_IMAGE_BYTES).decode("ascii")
+    encoded = base64.b64encode(b"x" * _LARGE_UNDECODABLE_IMAGE_BYTES).decode("ascii")
 
     notification = session_notification(
         ToolCallProgress(
@@ -383,7 +391,7 @@ async def test_translator_charges_repeated_image_snapshot_once() -> None:
         attempt=1,
         origin=InvocationOrigin("sub_agent", "", "inv", None),
     )
-    encoded = base64.b64encode(b"x" * MAX_IMAGE_BYTES).decode("ascii")
+    encoded = base64.b64encode(b"x" * _LARGE_UNDECODABLE_IMAGE_BYTES).decode("ascii")
 
     for seq, status in enumerate(("in_progress", "completed"), start=1):
         await translator.put(
@@ -418,7 +426,7 @@ async def test_translator_replaces_partial_image_charge_with_final_snapshot() ->
     )
     snapshots = (
         (base64.b64encode(b"p" * (1024 * 1024)).decode("ascii"), "in_progress"),
-        (base64.b64encode(b"f" * MAX_IMAGE_BYTES).decode("ascii"), "completed"),
+        (base64.b64encode(b"f" * _LARGE_UNDECODABLE_IMAGE_BYTES).decode("ascii"), "completed"),
     )
 
     for seq, (encoded, status) in enumerate(snapshots, start=1):
@@ -454,7 +462,7 @@ async def test_translator_charges_images_retained_by_separate_calls() -> None:
     )
 
     for seq, byte in enumerate((b"a", b"b"), start=1):
-        encoded = base64.b64encode(byte * MAX_IMAGE_BYTES).decode("ascii")
+        encoded = base64.b64encode(byte * _LARGE_UNDECODABLE_IMAGE_BYTES).decode("ascii")
         notification = session_notification(
             ToolCallProgress(
                 sessionUpdate="tool_call_update",
@@ -474,6 +482,82 @@ async def test_translator_charges_images_retained_by_separate_calls() -> None:
         else:
             with pytest.raises(AcpTransportError, match="translated update budget"):
                 await translator.put(seq, notification)
+
+
+def _image_update(call_id: str, data: bytes) -> SessionNotification:
+    return session_notification(
+        ToolCallProgress(
+            sessionUpdate="tool_call_update",
+            toolCallId=call_id,
+            title="Image",
+            content=[
+                ContentToolCallContent(
+                    type="content",
+                    content=ImageContentBlock(
+                        type="image", data=base64.b64encode(data).decode("ascii"), mimeType="image/png"
+                    ),
+                )
+            ],
+            status="completed",
+        )
+    )
+
+
+def _image_translator(bus: EventBus) -> AcpUpdateTranslator:
+    return AcpUpdateTranslator(
+        event_bus=bus,
+        session_id=None,
+        agent_name="External",
+        invocation_id="inv",
+        attempt=1,
+        origin=InvocationOrigin("sub_agent", "", "inv", None),
+    )
+
+
+async def test_translator_keeps_an_image_over_the_send_limit_compressed() -> None:
+    bus = EventBus()
+    results = await capture_events(bus, InvocationToolCallResult)
+    source = noisy_image_bytes("PNG")
+    assert len(source) > MAX_IMAGE_BYTES
+
+    await _image_translator(bus).put(1, _image_update("image", source))
+
+    (image,) = results[0].image_contents
+    assert image.media_type == "image/jpeg"
+    data = base64.b64decode((image.uri or "").split(",", 1)[1])
+    assert data.startswith(b"\xff\xd8\xff")
+    assert len(data) <= MAX_IMAGE_BYTES
+
+
+async def test_translator_keeps_an_image_it_cannot_decode_as_it_came() -> None:
+    bus = EventBus()
+    results = await capture_events(bus, InvocationToolCallResult)
+    source = b"\x89PNG\r\n\x1a\n" + b"x" * MAX_IMAGE_BYTES
+
+    await _image_translator(bus).put(1, _image_update("image", source))
+
+    (image,) = results[0].image_contents
+    assert image.media_type == "image/png"
+    assert base64.b64decode((image.uri or "").split(",", 1)[1]) == source
+
+
+async def test_translator_compresses_images_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    loop_thread = threading.get_ident()
+    compressing_threads: list[int] = []
+
+    def recording_compress(data: bytes) -> bytes:
+        compressing_threads.append(threading.get_ident())
+        return compress_image_data(data)
+
+    monkeypatch.setattr(acp_protocol_module, "compress_image_data", recording_compress)
+    bus = EventBus()
+    results = await capture_events(bus, InvocationToolCallResult)
+
+    await _image_translator(bus).put(1, _image_update("image", noisy_image_bytes("PNG")))
+
+    assert len(compressing_threads) == 1
+    assert compressing_threads[0] != loop_thread
+    assert results[0].image_contents[0].media_type == "image/jpeg"
 
 
 def _wide_patch(call_id: str, status: str) -> SessionNotification:

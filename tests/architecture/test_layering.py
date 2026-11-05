@@ -1782,6 +1782,14 @@ def test_background_tasks_have_declared_owners() -> None:
         ("run/coordinator", "TurnCoordinator", "_admit_user_message"): (2, "execution lease run task"),
         ("run/retry", "RetryCoordinator", "_handle_user_retry"): (2, "execution lease run task"),
         ("run/retry", "RetryCoordinator", "_create_retry_run_task"): (2, "execution lease run task"),
+        ("run/shortcut_commands", "ShortcutCommands", "_run"): (
+            2,
+            "prompt commands and their invalidation waiter, both drained before _run returns",
+        ),
+        ("run/shortcut_commands", "ShortcutCommands", "_deliver"): (
+            1,
+            "prompt commands running/ended publication, drained whole by its finish_close caller",
+        ),
         ("run/runner", "TurnRunner", "_withdraw_answer"): (
             1,
             "answer withdrawal publication, drained whole by its finish_close caller",
@@ -1792,6 +1800,14 @@ def test_background_tasks_have_declared_owners() -> None:
             "SessionLifecycle",
             "_start_locked._report_trajectory_activation_failure._publish_warning",
         ): (1, "activation callback local set"),
+        ("side_questions", "SideQuestions", "request"): (
+            1,
+            "tracked request; user cancellation, rollback or session end cancels it with a bounded cleanup grace period",
+        ),
+        ("side_questions", "SideQuestions", "_run"): (
+            1,
+            "separately tracked commit; quiesce invalidates queued writes under the session write lock",
+        ),
         ("state/session_writer", "SessionWriter", "save_checkpoint"): (1, "writer recovery drain task"),
         ("state/session_writer", "SessionWriter", "persist_now"): (1, "writer strict write set"),
         ("state/session_writer", "SessionWriter", "persist_barrier"): (1, "writer strict write set"),

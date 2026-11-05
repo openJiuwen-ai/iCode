@@ -1,0 +1,316 @@
+UsageDialog {
+    align: center middle;
+    background: $background 40%;
+}
+
+#usage-container {
+    width: 94%;
+    max-width: 136;
+    height: 94%;
+    max-height: 52;
+    layers: base status;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+    border-subtitle-color: $text-muted;
+    background: $surface;
+    padding: 0;
+}
+
+/* Until there are numbers, one centred line covers both tabs. */
+#usage-status {
+    layer: status;
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+    text-align: center;
+    color: $text-muted;
+    background: $surface;
+}
+
+#usage-tabs {
+    height: 1fr;
+}
+
+#usage-tabs ContentSwitcher {
+    height: 1fr;
+}
+
+#usage-tabs TabPane {
+    height: 1fr;
+    padding: 0;
+}
+
+.usage-pane {
+    width: 100%;
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+.usage-pane > Static,
+.usage-controls > Static,
+#usage-calendar-left > Static,
+#usage-day > Static {
+    width: 100%;
+    height: 1;
+    text-wrap: nowrap;
+}
+
+/* Sections read like the settings dialog's groups; a short window drops their frames. */
+.usage-section {
+    width: 100%;
+    padding: 0 1;
+    border: round $tui-border-foreground 15%;
+    border-title-color: $secondary;
+    border-title-style: bold;
+}
+
+.usage-section-label {
+    display: none;
+}
+
+.usage-controls {
+    width: 100%;
+    height: 1;
+}
+
+.usage-controls > .usage-section-label {
+    width: auto;
+    margin: 0 1 0 0;
+    color: $secondary;
+    text-style: bold;
+}
+
+#usage-container Button.usage-choice {
+    width: auto;
+    height: 1;
+    min-width: 6;
+    margin: 0 1 0 0;
+    padding: 0 1;
+    border: none;
+    background: $primary 20%;
+    color: $primary;
+    text-style: none;
+}
+
+#usage-container Button.usage-choice:hover {
+    background: $primary 40%;
+}
+
+#usage-container Button.usage-choice:disabled {
+    background: transparent;
+    color: $text-muted;
+}
+
+#usage-container Button.usage-choice.-selected {
+    background: $primary;
+    color: auto;
+    text-style: bold;
+}
+
+.usage-controls > .usage-controls-end {
+    width: 1fr;
+    text-align: right;
+    color: $text-muted;
+}
+
+/* Overview */
+#usage-ranges {
+    width: 100%;
+}
+
+#usage-kpis {
+    width: 100%;
+    height: 2;
+    margin: 1 0;
+}
+
+.usage-pane #usage-kpis .usage-kpi {
+    width: 1fr;
+    height: 2;
+    padding: 0 0 0 1;
+    border-left: outer $tui-border-foreground 25%;
+}
+
+.usage-pane #usage-kpis #usage-kpi-new {
+    color: $accent;
+    border-left: outer $tui-border-accent;
+}
+
+#usage-trend {
+    height: 1fr;
+    min-height: 8;
+    max-height: 20;
+}
+
+#usage-chart {
+    width: 100%;
+    height: 1fr;
+    margin: 1 0 0 0;
+    text-wrap: nowrap;
+    color: $accent;
+}
+
+#usage-chart > .usage-chart--axis {
+    color: $text-muted;
+}
+
+#usage-chart > .usage-chart--track {
+    color: $foreground 30%;
+}
+
+App:ansi #usage-chart > .usage-chart--track {
+    color: ansi_bright_black;
+}
+
+#usage-groups {
+    height: 1fr;
+    min-height: 8;
+}
+
+#usage-rows {
+    width: 100%;
+    height: 1fr;
+    overflow-x: hidden;
+    background: transparent;
+    scrollbar-size: 1 1;
+}
+
+#usage-rows > .usage-rows--share {
+    color: $accent;
+}
+
+#usage-rows > .datatable--cursor {
+    background: $primary 25%;
+    color: $text;
+    text-style: bold;
+}
+
+#usage-container.-compact .usage-section {
+    padding: 0;
+    border: none;
+}
+
+#usage-container.-compact .usage-section-label {
+    display: block;
+}
+
+#usage-container.-compact #usage-kpis {
+    margin: 0;
+}
+
+#usage-container.-compact #usage-trend {
+    min-height: 5;
+}
+
+#usage-container.-compact #usage-groups {
+    min-height: 5;
+}
+
+/* Calendar */
+#usage-calendar {
+    width: 100%;
+    height: 1fr;
+    min-height: 10;
+}
+
+#usage-calendar-left {
+    width: 1fr;
+    height: 100%;
+    padding: 0 1 0 0;
+}
+
+#usage-month-bar {
+    width: 100%;
+    height: 1;
+    margin: 0 0 1 0;
+}
+
+#usage-month-bar > #usage-month {
+    width: 12;
+    margin: 0 1 0 0;
+    text-align: center;
+    text-style: bold;
+}
+
+#usage-container.-compact #usage-day {
+    width: 32;
+}
+
+#usage-container.-compact #usage-month-bar,
+#usage-container.-compact #usage-heat-legend {
+    margin: 0;
+}
+
+#usage-heat-legend {
+    margin: 1 0 0 0;
+}
+
+#usage-calendar-grid {
+    width: 100%;
+    height: 1fr;
+    text-wrap: nowrap;
+}
+
+#usage-calendar-grid > .usage-grid--heat-0 {
+    background: $foreground 6%;
+    color: $text-muted;
+}
+
+App:ansi #usage-calendar-grid > .usage-grid--heat-0 {
+    background: transparent;
+}
+
+#usage-calendar-grid > .usage-grid--heat-1 {
+    background: $accent 22%;
+    color: auto;
+}
+
+#usage-calendar-grid > .usage-grid--heat-2 {
+    background: $accent 42%;
+    color: auto;
+}
+
+#usage-calendar-grid > .usage-grid--heat-3 {
+    background: $accent 68%;
+    color: auto;
+}
+
+#usage-calendar-grid > .usage-grid--heat-4 {
+    background: $accent;
+    color: auto;
+}
+
+#usage-calendar-grid > .usage-grid--selected {
+    background: $primary;
+    color: auto;
+    text-style: bold;
+}
+
+#usage-calendar-grid > .usage-grid--outside {
+    color: $text-muted;
+    text-style: dim;
+}
+
+#usage-calendar-grid > .usage-grid--head {
+    color: $text-muted;
+}
+
+#usage-day {
+    width: 36;
+    height: 100%;
+}
+
+#usage-container.-narrow #usage-day {
+    display: none;
+}
+
+#usage-day > #usage-calendar-detail {
+    height: 1fr;
+}
+
+.usage-pane > .usage-note {
+    color: $text-muted;
+    text-overflow: ellipsis;
+}

@@ -33,7 +33,7 @@ from chrys.app.tui.util.git_branch import GitBranchMonitor
 from chrys.app.tui.widgets.chat.messages import AgentMessage, UserMessage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
-from chrys.app.tui.widgets.chrome.input_bar import InputBar, InputDraftSnapshot
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar, InputDraftSnapshot
 from chrys.app.tui.widgets.editor import (
     MESSAGE_EDITOR_CHARACTER_LIMIT_STATUS,
     MESSAGE_EDITOR_MAX_CHARACTERS,
@@ -1261,7 +1261,7 @@ async def test_main_screen_rejects_oversize_draft_before_opening_editor(monkeypa
         monkeypatch.setattr(
             input_bar,
             "snapshot_draft",
-            lambda: InputDraftSnapshot("x" * (MESSAGE_EDITOR_MAX_CHARACTERS + 1), (0, 0), 0),
+            lambda: InputDraftSnapshot(ChatDraft("x" * (MESSAGE_EDITOR_MAX_CHARACTERS + 1)), (0, 0), 0),
         )
         input_bar.focus_input()
         await wait_for(

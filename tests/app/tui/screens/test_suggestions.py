@@ -21,8 +21,10 @@ from chrys.app.tui.support import prompt_search as prompt_search_module
 from chrys.app.tui.support.prompt_search import PromptMatch, PromptSearchIndex, PromptSearchResult
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeSkillDetails
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.prompt_shortcuts import PromptShortcut
 from tests.support.tui_helpers import (
     AgentProfileStub,
     AgentRegistryStub,
@@ -52,6 +54,76 @@ def test_view_adapter_suggestions_ignore_teardown_nomatches() -> None:
     view.hide_suggestions()
 
     assert screen.input_bar.replacements == []
+
+
+async def test_a_shortcut_read_landing_while_the_screen_is_torn_down_reads_no_widget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removal and shutdown prune the screen's widgets while the screen is still
+    attached: a shortcut read that lands then keeps its result but reads no
+    draft and refreshes no list, as a widget it asked for would be gone."""
+    started = threading.Event()
+    release = threading.Event()
+    landed = PromptShortcut(name="zznew", template="New body", path="/somewhere/zznew.md")
+
+    def held_read(**_folders: object) -> list[PromptShortcut]:
+        started.set()
+        assert release.wait(ENGINE_TURN_TIMEOUT)
+        return [landed]
+
+    monkeypatch.setattr(suggestions_module, "load_prompt_shortcuts", held_read)
+    screen = make_suggestion_screen()
+    handler = make_suggestion_handler(screen)
+    handler.build_slash_commands()
+    screen.input_bar.value = "/zz"
+    handler.on_slash_triggered()
+    assert screen.input_bar.suggestions_active
+    [read] = screen.workers
+    assert await asyncio.to_thread(started.wait, ENGINE_TURN_TIMEOUT)
+
+    # Teardown begins as Textual runs it: the screen is marked, then its widgets go,
+    # innermost first: the input bar is still there, still showing the list, when
+    # its own text area is not.
+    screen._pruning = True
+
+    class _PrunedInputBar:
+        suggestions_active = True
+
+        @property
+        def value(self) -> str:
+            raise NoMatches("#chat-input")
+
+    pruned_bar = _PrunedInputBar()
+
+    def pruned(cls: type) -> object:
+        if cls.__name__ == "InputBar":
+            return pruned_bar
+        raise NoMatches(cls.__name__)
+
+    screen.query_one = pruned
+    release.set()
+    await asyncio.wait_for(read.wait(), ENGINE_TURN_TIMEOUT)
+
+    assert handler._shortcuts() == [landed]
+
+
+def test_a_typed_name_resolves_to_one_answer_every_entry_acts_on() -> None:
+    """Command, then skill, then shortcut (by name, case-insensitively); anything else names nothing."""
+    screen = make_suggestion_screen()
+    handler = make_suggestion_handler(screen)
+    handler.build_slash_commands()
+    screen.state.runtime.details = AgentRuntimeDetails(skill_details=[RuntimeSkillDetails(name="zzskill")])
+    shortcut = PromptShortcut(name="ZzTrans", template="Translate", path="/somewhere/ZzTrans.md")
+    # The read for the folders in force has landed.
+    handler._prompt_shortcuts = [shortcut]
+    handler._prompt_shortcuts_folders = handler._prompt_shortcut_folders()
+
+    assert handler.resolve_typed_name("/help me").kind == "command"
+    assert handler.resolve_typed_name("/zzskill do it").kind == "skill"
+    typed = handler.resolve_typed_name("/zztrans formal hi")
+    assert (typed.kind, typed.shortcut, typed.arguments) == ("shortcut", shortcut, "formal hi")
+    assert handler.resolve_typed_name("/etc/hosts is broken").kind == "none"
+    assert handler.resolve_typed_name("plain text").kind == "none"
 
 
 def test_show_suggestions_titles_popup_per_mode() -> None:
@@ -813,7 +885,7 @@ async def test_dismiss_during_prompt_history_search_drops_its_result(monkeypatch
     assert index.queries == [""]
 
 
-def test_update_suggestions_rerenders_border_title_in_active_locale() -> None:
+async def test_update_suggestions_rerenders_border_title_in_active_locale() -> None:
     """Per-keystroke rebuilds re-supply the title so a popup opened before a
     locale switch does not keep its stale-language border."""
     screen = make_suggestion_screen()
@@ -825,6 +897,9 @@ def test_update_suggestions_rerenders_border_title_in_active_locale() -> None:
     handler.on_text_changed("/r")
 
     assert screen.suggestion_list.last_title == "命令"
+    # Filtering before any shortcut read started one: the test owns it.
+    for worker in screen.workers:
+        await asyncio.wait_for(worker.wait(), ENGINE_TURN_TIMEOUT)
 
 
 def test_model_trigger_filters_selectable_profiles_and_switches_by_profile_id() -> None:
@@ -891,6 +966,24 @@ def test_model_trigger_does_not_bypass_locked_runtime_selection(selection_source
     assert screen.suggestion_list.is_visible is False
 
 
+@pytest.mark.parametrize(
+    ("confirmed", "running", "current"),
+    [(False, "", "current-id"), (True, "fast-id", "fast-id"), (True, "", "current-id")],
+    ids=["before-runtime", "runtime-named", "runtime-named-none"],
+)
+def test_model_list_marks_the_model_the_session_runs(confirmed: bool, running: str, current: str) -> None:
+    """The ``$`` list marks what runs (``running_model``); a runtime answer naming no model keeps the launch setting."""
+    screen = make_suggestion_screen()
+    _register_model_profiles(screen)
+    screen.state.runtime.details_confirmed = confirmed
+    screen.state.runtime.details.model.profile_id = running
+    handler = make_suggestion_handler(screen)
+
+    _items, disabled = handler._get_model_items()
+
+    assert disabled == {current}
+
+
 def _register_agent_profiles(screen: SuggestionScreen) -> None:
     screen.services.agent_registry = AgentRegistryStub(
         [
@@ -923,8 +1016,9 @@ def test_trigger_enter_submits_unmatched_text_but_keeps_a_matched_draft(
     typed: str,
     submits: bool,
 ) -> None:
-    """Enter with nothing highlighted submits the draft only when the typed
-    trigger matches no profile; text that names the active profile stays put."""
+    """Enter with nothing highlighted submits the draft, through the input bar's
+    own submit path, only when the typed trigger matches no profile; text that
+    names the active profile stays put."""
     screen = make_suggestion_screen()
     register_profiles(screen)
     screen.input_bar.value = typed
@@ -935,13 +1029,14 @@ def test_trigger_enter_submits_unmatched_text_but_keeps_a_matched_draft(
     assert handler.on_suggestion_select(execute=True) is True
 
     if submits:
-        assert screen.input_bar.value == ""
-        assert screen.submitted == [typed]
+        assert screen.input_bar.submitted_drafts == [typed]
         assert screen.suggestion_list.is_visible is False
     else:
         assert screen.input_bar.value == typed
-        assert screen.submitted == []
+        assert screen.input_bar.submitted_drafts == []
         assert screen.suggestion_list.is_visible is True
+    # The handler never sends the text itself: the input bar's router decides where it goes.
+    assert screen.submitted == []
 
 
 def test_command_suggestion_enter_without_selection_keeps_submit_fallback() -> None:
@@ -953,5 +1048,6 @@ def test_command_suggestion_enter_without_selection_keeps_submit_fallback() -> N
 
     assert handler.on_suggestion_select(execute=True) is True
 
-    assert screen.input_bar.value == ""
-    assert screen.submitted == ["/mcp"]
+    # As Enter with the list closed: the input bar's own submit path takes the draft.
+    assert screen.input_bar.submitted_drafts == ["/mcp"]
+    assert screen.submitted == []

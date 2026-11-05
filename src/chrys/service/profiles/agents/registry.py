@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+from chrys.foundation.config.settings import DEFAULT_AGENT_PROFILE
 from chrys.service.profiles.agents.loader import (
     AgentProfileLoadError,
     load_profile_from_yaml,
@@ -726,3 +727,38 @@ class AgentProfileRegistry:
         count = self.load_builtins()
         count += self.load_user_profiles(target)
         return count
+
+
+def resolve_launch_profile(registry: AgentProfileRegistry, preferred_name: str) -> AgentProfile | None:
+    """Resolve a main agent for a fresh start, falling back through Code to the first visible profile.
+
+    The TUI's launch profile, and the agent a new session starts on once the
+    one it named no longer resolves.
+    """
+    requested = preferred_name.strip() or DEFAULT_AGENT_PROFILE
+    # Match the TUI picker: hidden and sub-agent-only profiles are not valid main launch profiles.
+    profiles = registry.list_profiles()
+    by_name = {profile.name: profile for profile in profiles}
+
+    profile = resolve_profile_selector(profiles, requested)
+    if profile is not None:
+        return profile
+
+    if requested != DEFAULT_AGENT_PROFILE:
+        fallback = by_name.get(DEFAULT_AGENT_PROFILE)
+        if fallback is not None:
+            logger.warning(
+                "Default agent profile %r is not usable as a launch profile, falling back to %r.",
+                requested,
+                DEFAULT_AGENT_PROFILE,
+            )
+            return fallback
+
+    if profiles:
+        logger.warning(
+            "Default agent profile %r is not usable as a launch profile, falling back to %r.",
+            requested,
+            profiles[0].name,
+        )
+        return profiles[0]
+    return None

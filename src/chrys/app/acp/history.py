@@ -12,9 +12,11 @@ from typing import Any, TypeGuard
 
 from acp import schema as acp_schema
 from acp.helpers import (
+    image_block,
     start_tool_call,
     tool_content,
     update_tool_call,
+    update_user_message,
     update_user_message_text,
 )
 from acp.interfaces import Client
@@ -309,11 +311,10 @@ async def replay_session_history(
             # the update schema has no injection concept.
             if isinstance(additional, dict) and additional.get(HistoryMarkerKind.CONTINUATION_KEY):
                 continue
-            if text:
+            for update in _user_message_chunks(message, text):
                 # Only the message that OPENED the turn carries the id the
                 # client submitted; an injection or a retry note inside the
                 # turn is a different message and has no client-side id.
-                update = update_user_message_text(text)
                 update.message_id = opening_user_message.get(message_index)
                 if turn_meta:
                     update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
@@ -568,6 +569,28 @@ def _message_text(message: dict[str, object]) -> str:
             if isinstance(text, str) and text:
                 parts.append(text)
     return "\n\n".join(parts)
+
+
+def _user_message_chunks(message: dict[str, object], text: str) -> list[acp_schema.UserMessageChunk]:
+    """A user message's *text*, then each image it was sent with.
+
+    Both an ACP prompt and the TUI save a message's images after its text, as
+    data contents holding the bytes.
+    """
+    chunks = [update_user_message_text(text)] if text else []
+    for content in _contents(message):
+        media_type = content.get("media_type")
+        uri = content.get("uri")
+        if (
+            content.get("type") == "data"
+            and isinstance(media_type, str)
+            and media_type.startswith("image/")
+            and isinstance(uri, str)
+            and uri.startswith("data:")
+            and ";base64," in uri
+        ):
+            chunks.append(update_user_message(image_block(uri.split(",", 1)[1], media_type)))
+    return chunks
 
 
 def _contents(message: dict[str, object]) -> list[dict[str, object]]:

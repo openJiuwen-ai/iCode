@@ -9,6 +9,8 @@ import asyncio
 import pytest
 
 from chrys.app.tui.screens.main.submit_state import SubmitState
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
+from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 
 
 def test_submit_state_begin_sets_active_text_and_clears_blocked() -> None:
@@ -64,3 +66,36 @@ async def test_submit_state_is_in_publish_only_on_its_publishing_task() -> None:
 
     state.clear()
     assert state.in_publish() is False
+
+
+def test_what_a_submit_hands_back_goes_back_once() -> None:
+    state = SubmitState()
+    draft = ChatDraft("Review !`git diff`", owner=ShortcutIntent("review", "", "", path="/s/review.md"))
+    state.begin(draft.text, draft=draft, session_generation=3, cwd="/repo")
+
+    assert state.take_draft_for(lambda: (3, "/repo")) == draft
+    # A refusal handler and the sender may both ask: only the first gets it.
+    assert state.take_draft_for(lambda: (3, "/repo")) is None
+
+
+def test_a_plain_submit_hands_back_its_text() -> None:
+    state = SubmitState()
+    state.begin("plain")
+
+    assert state.take_draft_for(lambda: (0, "")) == "plain"
+    assert state.take_draft_for(lambda: (0, "")) is None
+
+
+@pytest.mark.parametrize(
+    ("generation", "cwd", "drop_owner"),
+    [(4, "/repo", False), (3, "/elsewhere", False), (3, "/repo", True)],
+    ids=["another-session", "another-folder", "shortcut-gone"],
+)
+def test_a_draft_going_back_elsewhere_is_no_longer_its_shortcuts(generation: int, cwd: str, drop_owner: bool) -> None:
+    state = SubmitState()
+    draft = ChatDraft("Review !`git diff`", owner=ShortcutIntent("review", "", "", path="/s/review.md"))
+    state.begin(draft.text, draft=draft, session_generation=3, cwd="/repo")
+
+    back = state.take_draft_for(lambda: (generation, cwd), drop_owner=drop_owner)
+
+    assert back == ChatDraft(draft.text)

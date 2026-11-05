@@ -302,14 +302,18 @@ def decode_usage(usage: CompletionUsage, *, variant: ChatCompletionsVariant) -> 
 def add_deepseek_cache_usage(details: UsageDetails, usage: Any) -> None:
     """Add DeepSeek's prompt-cache hits, reported top-level as ``prompt_cache_hit_tokens``.
 
-    The kernel keys do not cover it, so it goes under a namespaced key the
-    usage middleware lets through. The Responses decoder reads it too.
+    It goes under a namespaced key the usage middleware lets through, and fills
+    the kernel's cache-read count when the provider reported no other, since
+    that count is what the trajectory's usage buckets read. The Responses
+    decoder reads it too.
     """
     hits = getattr(usage, "prompt_cache_hit_tokens", None)
     if hits is None:
         hits = (getattr(usage, "model_extra", None) or {}).get("prompt_cache_hit_tokens")
     if hits is not None:
-        cast("dict[str, Any]", details)["deepseek.prompt_cache_hit_tokens"] = int(hits)
+        counts = cast("dict[str, Any]", details)
+        counts["deepseek.prompt_cache_hit_tokens"] = int(hits)
+        counts.setdefault("cache_read_input_token_count", int(hits))
 
 
 def text_contents(choice: Choice | ChunkChoice) -> list[Content]:

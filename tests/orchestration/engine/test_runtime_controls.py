@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, create_autospec
@@ -96,6 +97,7 @@ async def test_profile_switch_retries_start_when_no_executor(monkeypatch: pytest
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         calls.append((profile, operation))
@@ -200,6 +202,7 @@ async def test_workspace_change_starts_from_failed_build_without_executor(
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         calls.append((start_profile, operation))
@@ -722,6 +725,7 @@ async def test_concurrent_profile_switch_waiters_supersede_after_first_rebuild(
         *,
         operation: str = "switch",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
     ) -> None:
         _ = workspace, operation
         calls.append(profile.name)
@@ -789,6 +793,7 @@ async def test_runtime_mutation_success_publishes_before_rebuild_permit_release(
         *,
         operation: str = "switch",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
     ) -> None:
         _ = workspace, operation
         install_loaded_agent(

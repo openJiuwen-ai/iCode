@@ -413,7 +413,7 @@ def _wait_parent_families(category: str | None) -> frozenset[str] | None:
         return frozenset({"tool.operation", "sub_agent"})
     if category == WaitCategory.MCP_CONNECT:
         return frozenset({"tool.operation"})
-    if category in {WaitCategory.INPUT_ADMISSION, WaitCategory.TOOL_ADMISSION}:
+    if category in {WaitCategory.INPUT_ADMISSION, WaitCategory.TOOL_ADMISSION, WaitCategory.PROMPT_COMMANDS}:
         return frozenset({"preparation"})
     if category == WaitCategory.RATE_LIMIT:
         return _MODEL_OPERATION_FAMILIES
@@ -516,7 +516,12 @@ def _slice_attributes(node: _ResolvedNode) -> _SliceAttributes | None:
     if family == "turn.suspension":
         return _SliceAttributes.waiting("sub-agent suspension")
     if family in {"wait", "approval", "retry"}:
-        if family == "wait" and _payload_str(node.start.payload, "category") == "input_admission":
+        if family == "wait" and _payload_str(node.start.payload, "category") in {
+            WaitCategory.INPUT_ADMISSION,
+            WaitCategory.PROMPT_COMMANDS,
+        }:
+            # Part of the admission's own preparation time: the gates it passes and
+            # the commands the user's prompt runs, not time spent waiting.
             return None
         owner = (
             "approval" if family == "approval" or _payload_str(node.start.payload, "category") == "approval" else family

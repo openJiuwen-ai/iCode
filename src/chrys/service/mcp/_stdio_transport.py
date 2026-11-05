@@ -35,6 +35,7 @@ from chrys.foundation.platform.runtime_paths import (
     which_excluding_runtime,
 )
 from chrys.foundation.text.tool_output import process_carriage_returns, strip_ansi
+from chrys.foundation.util.env_templates import COMMAND_HANDLE_RE, command_handles_in
 from chrys.service.mcp._tool_mixins import _NoPrePagePingMixin, _StructuredContentFallbackMixin
 from chrys.service.mcp.owned import MCPStdioTool
 
@@ -289,8 +290,13 @@ def _inherited_stdio_environment(extra: dict[str, str] | None = None) -> dict[st
     packaged PyApp runs, Chrys runtime executable directories are moved behind
     user/system PATH entries so commands like ``uvx`` resolve the user's
     install first and fall back to the embedded runtime only if needed.
+
+    An inherited value holding a ``{{!command}}`` handle is dropped as well: only
+    the server's own settings may run a command and receive its token.
     """
-    env: dict[str, str] = {k: v for k, v in os.environ.items() if not v.startswith("()")}
+    env: dict[str, str] = {
+        k: v for k, v in os.environ.items() if not v.startswith("()") and not COMMAND_HANDLE_RE.search(v)
+    }
     strip_python_runtime_overrides(env)
     extra_keys = set(extra or ())
     if extra:
@@ -364,6 +370,13 @@ async def tolerant_stdio_client(
 
     diagnostics = process_diagnostics or _StdioProcessDiagnostics()
     diagnostics.reset()
+
+    # A child keeps the environment it starts with, so each launch gets a token just fetched.
+    if server.env and command_handles_in(server.env.values()):
+        from chrys.service.command_credentials import refresh, substitute
+
+        await refresh(server.env.values())
+        server = server.model_copy(update={"env": {name: substitute(value) for name, value in server.env.items()}})
 
     try:
         from mcp.client.stdio import (

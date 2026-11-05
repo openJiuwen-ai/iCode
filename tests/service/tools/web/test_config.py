@@ -25,6 +25,7 @@ _CUSTOM = {
         pytest.param({"type": "exa_mcp"}, id="exa_mcp"),
         pytest.param({"type": "bing_html"}, id="bing_html"),
         pytest.param({"type": "duckduckgo_html"}, id="duckduckgo_html"),
+        pytest.param({"type": "keenable"}, id="keenable"),
         pytest.param({"type": "tavily", "api_key_env": "TAVILY_API_KEY"}, id="tavily"),
         pytest.param({"type": "brave", "api_key_env": "BRAVE_API_KEY"}, id="brave"),
         pytest.param({"type": "exa", "api_key_env": "EXA_API_KEY"}, id="exa"),

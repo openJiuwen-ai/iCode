@@ -285,7 +285,10 @@ class DocumentImageSink:
                 "image/webp": ".webp",
             }[media_type]
             return data, suffix
-        normalized = compress_image_data(data, max_bytes=MAX_STORED_IMAGE_BYTES, formats=DOCUMENT_IMAGE_DECODE_FORMATS)
+        # Every pixel kept: viewing the stored copy fits it to what a model is sent.
+        normalized = compress_image_data(
+            data, max_bytes=MAX_STORED_IMAGE_BYTES, formats=DOCUMENT_IMAGE_DECODE_FORMATS, max_edge=None
+        )
         if len(normalized) > MAX_STORED_IMAGE_BYTES:
             raise ImageProcessingError("normalized embedded image exceeds the storage limit")
         return normalized, ".jpg"

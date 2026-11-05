@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Shared card chrome for agent configuration panels."""
+"""Shared card chrome for configuration panels."""
 
 from __future__ import annotations
 

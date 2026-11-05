@@ -855,6 +855,7 @@ def test_the_tui_entry_point_assembles_an_engine_that_records_hook_runs(
     monkeypatch.setattr(tui_app, "stop_debug_logging", lambda _runtime: None)
     monkeypatch.setattr(tui_app, "_restore_terminal_after_run", lambda _app: None)
     monkeypatch.setattr(tui_app, "_reset_terminal_title_after_run", lambda: None)
+    monkeypatch.setattr(tui_app, "ask_terminal", lambda _env, *, enabled: None)
     monkeypatch.setattr(tui_app, "EventBus", object)
     monkeypatch.setattr(tui_app, "AgentProfileRegistry", _Registry)
     monkeypatch.setattr(tui_app, "ModelProfileRegistry", _Registry)

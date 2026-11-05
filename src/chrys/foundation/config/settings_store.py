@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
@@ -204,10 +204,14 @@ class LoadedSettings:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PreparedSettings:
-    """A layered load and its already computed runtime overlay."""
+    """A layered load, the session's own selection over it, and the effective value computed from both."""
 
     base: LoadedSettings
     effective: LoadedSettings
+    session: Mapping[str, Any] = field(default_factory=dict)
+    """The ``Source.SESSION`` values ``effective`` carries over ``base``: the session's own choices."""
+    runtime_revision: int = 0
+    """Which live choices ``effective`` was composed with (``SettingsHandle``'s count of them)."""
 
 
 class SettingsHandle:
@@ -224,16 +228,25 @@ class SettingsHandle:
     a caller can hold one across a rebuild and know it did not move underneath
     them; this names the place where moving is the point.
 
+    Three parts, composed in this order: the layered load (``base``), the
+    session's own choices (``Source.SESSION``: the model a session runs on
+    when it is not the default), and live choices (``Source.RUNTIME``). The two
+    upper parts are kept apart from the load so that reloading and rolling back
+    — both of which replace the whole layered value — need not know about them,
+    and so that a session's own choice can end without a reload.
+
     Per session, never process-global. ACP runs many sessions in one process
     with their own project roots and model pins, so a shared cell above the
     session is a cell where one session's pin becomes another's.
     """
 
-    __slots__ = ("_base", "_effective", "_runtime")
+    __slots__ = ("_base", "_effective", "_runtime", "_runtime_revision", "_session")
 
     def __init__(self, loaded: LoadedSettings) -> None:
         self._base = loaded
+        self._session: dict[str, Any] = {}
         self._runtime: dict[str, Any] = {}
+        self._runtime_revision = 0
         self._effective = loaded
 
     @property
@@ -246,8 +259,28 @@ class SettingsHandle:
         """Current values, for the readers that have no use for provenance."""
         return self._effective.settings
 
+    @property
+    def base(self) -> LoadedSettings:
+        """The layered load alone: what a re-load is compared against and a rebuild on the current settings stages.
+
+        Never :attr:`loaded` for those: installing an effective value as the
+        next load would fold the session's own choices into it, where ending
+        them could no longer take them back out.
+        """
+        return self._base
+
+    @property
+    def session_values(self) -> dict[str, Any]:
+        """The session's own choices (a copy), as ``Settings`` field names."""
+        return dict(self._session)
+
+    @property
+    def session_model(self) -> str:
+        """The model profile the session chose for itself; empty when it runs on the default."""
+        return str(self._session.get("model_profile", ""))
+
     def install(self, loaded: LoadedSettings) -> None:
-        """Replace the layered load. Live choices stay on top of the new one.
+        """Replace the layered load. The session's own and live choices stay on top of the new one.
 
         A reload re-reads the files and the environment, which is every layer
         *except* the one a live choice lives in — ``Source.RUNTIME`` is defined
@@ -263,15 +296,34 @@ class SettingsHandle:
         """
         self.install_prepared(self.prepare(loaded))
 
-    def prepare(self, loaded: LoadedSettings) -> PreparedSettings:
-        """Compute a candidate overlay without changing the installed settings."""
-        effective = loaded.overlay(Source.RUNTIME, **self._runtime) if self._runtime else loaded
-        return PreparedSettings(base=loaded, effective=effective)
+    def prepare(self, loaded: LoadedSettings, *, session: Mapping[str, Any] | None = None) -> PreparedSettings:
+        """Compute *loaded* with the session's own choices (*session*, else the current ones) and live choices on top.
+
+        Changes nothing installed: a rebuild is configured from the result and
+        its commit installs it.
+        """
+        values = dict(self._session if session is None else session)
+        return PreparedSettings(
+            base=loaded,
+            effective=self._compose(loaded, values),
+            session=values,
+            runtime_revision=self._runtime_revision,
+        )
 
     def install_prepared(self, prepared: PreparedSettings) -> None:
-        """Install values whose runtime overlay has already succeeded."""
+        """Install values whose overlays have already succeeded, with the session's own choices they carry.
+
+        A live choice made while a rebuild ran (after :meth:`prepare`) is not
+        lost when the rebuild commits: the effective value is composed again
+        with it, from values that were checked when they were chosen. Otherwise
+        nothing is recomputed — a commit installs what was prepared.
+        """
         self._base = prepared.base
-        self._effective = prepared.effective
+        self._session = dict(prepared.session)
+        if prepared.runtime_revision == self._runtime_revision:
+            self._effective = prepared.effective
+        else:
+            self._reapply()
 
     def override(self, **values: Any) -> None:
         """Record a live choice, credited to ``Source.RUNTIME``.
@@ -281,6 +333,7 @@ class SettingsHandle:
         do so without deciding what to do about choices they know nothing about.
         """
         self._runtime.update(values)
+        self._runtime_revision += 1
         self._reapply()
 
     def persist_approval_default(self, mode: str, *, persist: Callable[[str], None]) -> str:
@@ -290,14 +343,18 @@ class SettingsHandle:
         self.override(default_approval_mode=default)
         return default
 
+    def _compose(self, base: LoadedSettings, session: Mapping[str, Any]) -> LoadedSettings:
+        effective = base.overlay(Source.SESSION, **session) if session else base
+        return effective.overlay(Source.RUNTIME, **self._runtime) if self._runtime else effective
+
     def _reapply(self) -> None:
-        """Rebuild the effective value: the load, then live choices on top.
+        """Rebuild the effective value: the load, the session's own choices, then live choices on top.
 
         Recomputed from ``_base`` every time rather than accumulated, so a
         rollback that restores an older load cannot resurrect an override that
         was replaced in the meantime, and repeating one is a no-op.
         """
-        self._effective = self._base.overlay(Source.RUNTIME, **self._runtime) if self._runtime else self._base
+        self._effective = self._compose(self._base, self._session)
 
 
 def load_settings(

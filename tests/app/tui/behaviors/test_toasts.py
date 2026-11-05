@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from textual import __version__ as textual_version
+from textual.app import App
 from textual.screen import ModalScreen
 from textual.widgets import Static
 from textual.widgets._toast import Toast, ToastRack
@@ -30,6 +31,8 @@ if TYPE_CHECKING:
 def test_the_toast_rack_fork_matches_the_pinned_textual() -> None:
     """A Textual upgrade must explicitly re-audit the private toast rack fork."""
     assert textual_version == toasts.TEXTUAL_TOAST_RACK_FORK_VERSION
+    # ``dismiss_toast`` calls this private method.
+    assert callable(getattr(App, "_unnotify", None))
 
 
 def _racked(screen: Screen[Any]) -> list[str]:

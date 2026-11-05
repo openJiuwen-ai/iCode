@@ -423,6 +423,8 @@ def test_install_sh_refuses_what_it_cannot_install(tmp_path: Path, args: tuple[s
 # takes the stall timeouts of pwsh 7.4 and later, as the real cmdlet there does.
 _PS_STUBS = r"""
 $ErrorActionPreference = 'Stop'
+# Only the shell's own modules, so looking up a command reads none of the machine's others.
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
 function Get-Served([string]$Uri) {
     Add-Content -LiteralPath (Join-Path $env:FAKE_SERVED 'requests.log') -Value $Uri
     $file = Join-Path $env:FAKE_SERVED ($Uri -replace '[/:]', '_')
@@ -558,6 +560,10 @@ def _ps_machine(tmp_path: Path, shell: str) -> _PsMachine:
             "USERPROFILE": str(profile),
             "APPDATA": str(profile / "Roaming"),
             "LOCALAPPDATA": str(profile / "Local"),
+            # Where pwsh keeps its user modules, settings and cache off Windows.
+            "XDG_DATA_HOME": str(profile / "data"),
+            "XDG_CONFIG_HOME": str(profile / "config"),
+            "XDG_CACHE_HOME": str(profile / "cache"),
             "TMPDIR": str(temp),
             "TEMP": str(temp),
             "TMP": str(temp),
@@ -710,6 +716,50 @@ def test_install_ps1_fails_when_aixcoding_cli_install_does(tmp_path: Path, shell
     assert result.returncode != 0
     assert "aixcoding-cli install failed (exit code 3)." in result.stdout + result.stderr
     assert not any(_GITCODE in url for url in machine.server.requests())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="pwsh's user modules live in the real Documents folder there.")
+def test_install_ps1_runs_with_only_the_shells_own_modules(tmp_path: Path) -> None:
+    """The machine's own modules stay out of the run, so they cannot slow it or answer its commands.
+
+    A cmdlet's first use otherwise searches the module folders ahead of the shell's own, and a
+    command found nowhere searches all of them; the CI image keeps large module sets in both.
+    """
+    machine = _ps_machine(tmp_path, "pwsh")
+    # The user's modules, searched ahead of the shell's at each shell module's first use. This one
+    # answers Get-Content, the run's first cmdlet.
+    early = Path(machine.env["XDG_DATA_HOME"]) / "powershell" / "Modules" / "Early"
+    early.mkdir(parents=True)
+    (early / "Early.psm1").write_text("function Get-Content { throw 'A machine module answered.' }\n", encoding="utf-8")
+    (early / "Early.psd1").write_text(
+        "@{ RootModule = 'Early.psm1'; ModuleVersion = '1.0'; FunctionsToExport = 'Get-Content' }\n", encoding="utf-8"
+    )
+    # Inherited module folders, which pwsh searches after its own. Looking for an `icode` that
+    # is not on PATH reaches them, and loads this module, which marks that it was loaded.
+    machine_modules = tmp_path / "machine-modules"
+    late = machine_modules / "Late"
+    late.mkdir(parents=True)
+    (late / "Late.psm1").write_text(
+        "[IO.File]::WriteAllText(\"$PSScriptRoot/loaded\", '')\nfunction icode {}\n", encoding="utf-8"
+    )
+    (late / "Late.psd1").write_text(
+        "@{ RootModule = 'Late.psm1'; ModuleVersion = '1.0'; FunctionsToExport = 'icode' }\n", encoding="utf-8"
+    )
+    machine.env["PSModulePath"] = str(machine_modules)
+    sums = f"{_GITHUB}/latest/download/SHA256SUMS.txt"
+    machine.server.release(_GITHUB, f"v{_LATEST}", _windows_packages(), sums_at=sums)
+
+    searched = machine._run(["-NoProfile", "-NonInteractive", "-Command", "$PSHOME; $env:PSModulePath"])
+    result = machine.run()
+
+    # Started this way, pwsh searches the user's folder before its own modules and the inherited one after.
+    pshome, module_path = searched.stdout.splitlines()
+    folders = module_path.split(os.pathsep)
+    own = os.path.join(pshome, "Modules")
+    assert folders.index(str(early.parent)) < folders.index(own) < folders.index(str(machine_modules)), folders
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert machine.started() is not None
+    assert not (late / "loaded").exists()
 
 
 # Windows cannot run the shell scripts that stand in for an installed `chrys.exe` here.

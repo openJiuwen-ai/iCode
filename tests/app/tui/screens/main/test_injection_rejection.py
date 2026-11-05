@@ -23,7 +23,7 @@ from chrys.app.tui.screens.main import MainScreen
 from chrys.app.tui.screens.main.event_handlers import BackendEventHandler
 from chrys.app.tui.screens.main.input_flow import InputFlowController
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, RunState
-from chrys.app.tui.widgets.chrome.input_bar import InputBar
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
@@ -61,7 +61,8 @@ class _InputBar:
         self.locked = False
         self.value = ""
 
-    def restore_draft(self, text: str) -> bool:
+    def restore_draft(self, draft: str | ChatDraft) -> bool:
+        text = draft.text if isinstance(draft, ChatDraft) else draft
         if not text or self.value:
             return False
         self.value = text
@@ -177,6 +178,9 @@ class _Harness:
             def show(self, text: object) -> None:
                 pass
 
+            def note_output_text(self, text: str) -> None:
+                pass
+
         class _ChatPanel:
             async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
                 harness.chat_errors.append(message)
@@ -258,6 +262,9 @@ class _Harness:
             commit_profile_switch_marker=lambda: None,
             post_gc_message=lambda _message: None,
             debug=lambda _key, _msg: None,
+            pending_switch=lambda _draft: None,
+            model_left_out=lambda: None,
+            show_error_notice=lambda _error: None,
         )
 
     async def start(self, on_message: Callable[[UserMessage], Awaitable[None]] | None = None) -> None:

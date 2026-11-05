@@ -14,7 +14,6 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, TypeGuard
 
 from rich.cells import cell_len
-from rich.console import Group
 from rich.text import Text
 from textual.containers import Horizontal
 from textual.css.query import NoMatches
@@ -51,7 +50,8 @@ from chrys.app.tui.widgets.chat.fold_rows import (
     text_preview,
     text_tail,
 )
-from chrys.app.tui.widgets.chat.image_preview import ChatImagePreview, ImagePreviewGrid, extract_image_previews
+from chrys.app.tui.widgets.chat.image_preview import extract_image_previews
+from chrys.app.tui.widgets.chat.image_view import TerminalImages
 from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
 from chrys.app.tui.widgets.chat.transcript_panel import note_fold
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
@@ -208,42 +208,14 @@ class _UserHeader(Static):
         return "[You]", "\n"
 
 
-class _UserImagePreview(Static):
-    """Non-selectable image-preview renderer for a user message."""
-
-    ALLOW_SELECT = False
+class _UserImagePreview(TerminalImages):
+    """The images a user message carries, one blank row below its text."""
 
     DEFAULT_CSS = """
     _UserImagePreview {
-        height: auto;
-        background: transparent;
+        padding-top: 1;
     }
     """
-
-    def __init__(self, image_previews: list[ChatImagePreview]) -> None:
-        self._image_previews = image_previews
-        self._image_preview_lines: dict[int, list[Text]] = {}
-        super().__init__()
-
-    def render(self) -> Group:
-        max_width = self.content_size.width or self.size.width or 80
-        return Group(Text(""), *self._render_image_preview_lines(max_width=max_width))
-
-    def _render_image_preview_lines(self, *, max_width: int) -> list[Text]:
-        """Return cached image-preview render lines for the current message width."""
-        lines = self._image_preview_lines.get(max_width)
-        if lines is None:
-            lines = ImagePreviewGrid(self._image_previews, max_width=max_width).render_lines()
-            self._image_preview_lines[max_width] = lines
-        return lines
-
-    def on_resize(self, _event: Any = None) -> None:
-        """Refresh image previews when terminal width changes."""
-        self.refresh()
-
-    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        _ = selection
-        return None
 
 
 class MessageHeaderRow(Horizontal):

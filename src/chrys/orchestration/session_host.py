@@ -194,7 +194,7 @@ def allows_headless_event(event: Event) -> bool:
         return False
     if not isinstance(event, InvocationEvent):
         return True
-    if event.origin.root.kind == "workflow_node":
+    if event.origin.root.kind in {"workflow_node", "side_question"}:
         return False
     return event.origin.kind == "turn" or not isinstance(event, _InvocationProse)
 
@@ -410,6 +410,11 @@ class ChrysSessionHost:
     def vision_enabled(self) -> bool:
         """Whether the currently built runtime model accepts image input."""
         return self._engine.runtime_details.model.vision
+
+    @property
+    def image_send_limit_bytes(self) -> int:
+        """The most bytes an image sent with a prompt takes; a larger one is compressed."""
+        return self._engine.settings.image_send_limit_bytes()
 
     @property
     def running_background_tasks(self) -> int:

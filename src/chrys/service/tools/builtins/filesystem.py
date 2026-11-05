@@ -25,7 +25,7 @@ from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import replace_with_retry, surrogate_safe_text
 from chrys.foundation.platform.paths import resolve_existing_path, resolve_workspace_path
-from chrys.foundation.text.images import ImageProcessingError, load_image_file
+from chrys.foundation.text.images import MAX_IMAGE_BYTES, ImageProcessingError, load_image_file
 from chrys.foundation.text.lines import normalize_line_endings, split_lines
 from chrys.kernel import Content
 from chrys.service.tools.approval_targets import ApprovedTargets, approved_write_path, file_write_target
@@ -532,6 +532,7 @@ def _view_image_impl(
     *,
     base_cwd: str | None = None,
     session_dir: Path | None = None,
+    max_image_bytes: int = MAX_IMAGE_BYTES,
 ) -> list[Content]:
     from pathlib import Path
 
@@ -580,7 +581,7 @@ def _view_image_impl(
                 )
             ]
 
-        loaded = load_image_file(source_path)
+        loaded = load_image_file(source_path, max_bytes=max_image_bytes)
         metadata = {
             "width": loaded.width,
             "height": loaded.height,
@@ -979,6 +980,8 @@ class FilesystemTools:
         runtime: SessionEnvironment,
         session_dir: Path | None = None,
         session_id: str = "",
+        *,
+        max_image_bytes: int = MAX_IMAGE_BYTES,
     ) -> None:
         self._runtime = runtime
         self._session_dir = resolve_tool_session_dir(
@@ -986,6 +989,7 @@ class FilesystemTools:
             session_id=session_id,
             session_dir=session_dir,
         )
+        self._max_image_bytes = max_image_bytes
 
     def tools(self) -> list:
         """Return filesystem tools for this runtime context."""
@@ -1033,7 +1037,9 @@ class FilesystemTools:
         same size this tool returns; call it for one only when it is not in the
         conversation.
         """
-        return _view_image_impl(path, base_cwd=self._runtime.cwd, session_dir=self._session_dir)
+        return _view_image_impl(
+            path, base_cwd=self._runtime.cwd, session_dir=self._session_dir, max_image_bytes=self._max_image_bytes
+        )
 
     @tool(kind=KIND_FILESYSTEM_WRITE)
     def write_file(

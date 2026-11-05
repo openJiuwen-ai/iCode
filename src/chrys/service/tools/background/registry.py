@@ -86,6 +86,8 @@ class TaskScope:
 
     @classmethod
     def of(cls, origin: InvocationOrigin) -> TaskScope:
+        if origin.kind == "side_question":
+            raise ValueError("Side questions cannot own background tools")
         return cls() if origin.kind == "turn" else cls(origin.kind, origin.invocation_id)
 
 

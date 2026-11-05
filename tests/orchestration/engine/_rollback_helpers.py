@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -164,12 +164,16 @@ def fake_start_factory(engine: AgentEngine) -> Callable[..., Awaitable[None]]:
     """``engine.start`` stand-in that installs the profile, a stub executor, and staged settings."""
 
     async def _fake_start(
-        profile: AgentProfile, *, operation: str = "startup", staged_loaded: LoadedSettings | None = None
+        profile: AgentProfile,
+        *,
+        operation: str = "startup",
+        staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
     ) -> None:
         engine.session.agent_profile = profile
         install_loaded_agent(engine, bindings=_StubExec())  # type: ignore[assignment]
         if staged_loaded is not None:
-            engine.settings_handle.install(staged_loaded)
+            engine.settings_handle.install_prepared(engine.settings_handle.prepare(staged_loaded, session=session))
 
     return _fake_start
 

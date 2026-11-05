@@ -28,15 +28,25 @@ TRAJECTORY_KEY_FILE_NAME = "trajectory-hmac.key"
 
 
 def ensure_owner_only_directory(path: Path) -> None:
-    """Create *path* privately (0700) and tighten an existing POSIX mode."""
+    """Create *path* privately (0700) and tighten an existing POSIX mode; a link there is a SecureFileError."""
     from chrys.foundation.platform import get_platform
 
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except FileExistsError as exc:
+        # A dangling link, or a link to a file, fails here before the open below sees it.
+        _refuse_a_link(path, exc)
+        raise
     if get_platform().is_windows:
         return
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        # Refused by O_NOFOLLOW, which reports it as ELOOP or ENOTDIR depending on the OS.
+        _refuse_a_link(path, exc)
+        raise
     try:
         info = os.fstat(fd)
         if not stat.S_ISDIR(info.st_mode):
@@ -44,6 +54,12 @@ def ensure_owner_only_directory(path: Path) -> None:
         os.fchmod(fd, 0o700)
     finally:
         os.close(fd)
+
+
+def _refuse_a_link(path: Path, exc: OSError) -> None:
+    """Name a symbolic link at *path* as insecure rather than as the OS error it caused."""
+    if path.is_symlink():
+        raise SecureFileError(f"Owner-only directory is a symbolic link: {path}") from exc
 
 
 def load_or_create_fingerprint_key(config_dir: Path, *, timeout: float = 5.0) -> bytes:

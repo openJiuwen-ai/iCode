@@ -63,6 +63,9 @@ def _make_controller(
         commit_profile_switch_marker=lambda: None,
         post_gc_message=lambda _message: None,
         debug=lambda _key, _msg: None,
+        pending_switch=lambda _draft: None,
+        model_left_out=lambda: None,
+        show_error_notice=lambda _error: None,
     )
 
 

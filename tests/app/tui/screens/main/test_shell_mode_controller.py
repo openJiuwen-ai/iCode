@@ -143,6 +143,7 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
     from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
     from chrys.app.tui.widgets.chrome.hook_indicator import HookIndicator
     from chrys.app.tui.widgets.chrome.input_bar import InputBar
+    from chrys.app.tui.widgets.chrome.prompt_card import PromptCard
     from chrys.app.tui.widgets.chrome.status_bar import StatusBar
     from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
     from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
@@ -214,6 +215,9 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
         def focus_input(self) -> None:
             calls.append(("input_focus", None))
 
+    class _FakePromptCard:
+        display = True
+
     class _FakeFooter:
         display = True
 
@@ -228,11 +232,13 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
             calls.append(("sidebar_remove", class_name))
 
     chat = _FakeChat()
+    chat_column = _FakeChat()
     session_json = _FakeSessionJson()
     dashboard = _FakeDashboard()
     shell = _FakeShell()
     status = _FakeStatus()
     input_bar = _FakeInput()
+    prompt_card = _FakePromptCard()
     footer = _FakeFooter()
     hook_indicator = _FakeHookIndicator()
     sidebar = _FakeSidebar()
@@ -241,6 +247,8 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
         # The footer row holds the Footer and the hook indicator; shell mode hides the row.
         if cls == "#footer-row":
             return footer
+        if cls == "#chat-column":
+            return chat_column
         if cls is ChatPanel:
             return chat
         if cls is SessionJsonPanel:
@@ -253,6 +261,9 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
             return status
         if cls is InputBar:
             return input_bar
+        # The prompt shortcut card belongs to the input area: a surface without the input hides it too.
+        if cls is PromptCard:
+            return prompt_card
         if cls is Footer:
             return footer
         if cls is HookIndicator:
@@ -285,6 +296,7 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
     assert state.shell.active is True
     assert chat.display is False
     assert input_bar.display is False
+    assert prompt_card.display is False
     assert footer.display is False
     # Hidden with its row; its own display follows the app mode only.
     assert hook_indicator.display is True
@@ -296,6 +308,7 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
     assert state.shell.active is False
     assert chat.display is True
     assert input_bar.display is True
+    assert prompt_card.display is True
     assert footer.display is True
     assert hook_indicator.display is True
     assert ("shell_hide", None) in calls

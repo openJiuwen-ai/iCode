@@ -30,7 +30,7 @@ from chrys.service.todos.tracker import TodoTracker
 from chrys.service.trajectory.preparation import PreparationOutcome
 
 if TYPE_CHECKING:
-    from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle
+    from chrys.foundation.config.settings_store import LoadedSettings, PreparedSettings
     from chrys.foundation.events.bus import EventBus
     from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
     from chrys.orchestration.engine.state.active_session import ActiveSession
@@ -66,13 +66,14 @@ class StagedBuild:
     executor they configured — so live state either describes the old build
     entirely or the new one entirely, never a mixture.
 
-    ``loaded`` carries settings and provenance as the one value they already
-    are; the agent profile, the workspace, the hook manager and the
-    mutation-coordinator target are the other four things a rebuild may
-    change. Six commitments, one commit point.
+    ``prepared`` carries settings and provenance as the one value they already
+    are — the load, the session's own choices over it and the effective value
+    the build reads (:attr:`loaded`); the agent profile, the workspace, the hook
+    manager and the mutation-coordinator target are the other four things a
+    rebuild may change. Six commitments, one commit point.
     """
 
-    loaded: LoadedSettings
+    prepared: PreparedSettings
     agent_profile: AgentProfile
     """The profile the build is configured from, recorded by the commit.
 
@@ -93,12 +94,17 @@ class StagedBuild:
     build closes the candidate instead (see :func:`build_agent`).
     """
 
+    @property
+    def loaded(self) -> LoadedSettings:
+        """The effective settings the build is configured from, the session's own choices included."""
+        return self.prepared.effective
+
 
 def stage_build(
     *,
     session: ActiveSession,
     persistence: SessionPersistence,
-    loaded: LoadedSettings,
+    prepared: PreparedSettings,
     agent_profile: AgentProfile,
     workspace: Workspace | None,
     hook_manager: HookManager | None,
@@ -113,7 +119,7 @@ def stage_build(
     build commits.
     """
     coordinator = session.mutation_coordinator
-    if not loaded.settings.mutation_coordination:
+    if not prepared.effective.settings.mutation_coordination:
         coordinator = None
     elif coordinator is None:
         session_dir = session.session_dir if persistence.state_store is not None else None
@@ -125,7 +131,7 @@ def stage_build(
                 session_id=session.session_id,
             )
     return StagedBuild(
-        loaded=loaded,
+        prepared=prepared,
         agent_profile=agent_profile,
         workspace=workspace,
         hook_manager=hook_manager,
@@ -145,7 +151,6 @@ async def build_agent(
     profile: AgentProfile,
     *,
     session: ActiveSession,
-    settings_handle: SettingsHandle,
     persistence: SessionPersistence,
     bus: EventBus,
     agent_registry: AgentProfileRegistry | None,
@@ -335,7 +340,7 @@ async def build_agent(
         # The judge creates its client on first evaluation, never during the
         # build, so the build's own rollback has nothing of it to close.
         result.prepared.own(approval_judge.aclose)
-        settings = settings_handle.prepare(staged.loaded)
+        settings = staged.prepared
         result.loop_recorder.on_pre_wire_barrier = checkpoints.persist_barrier
         result.loop_recorder.on_result_checkpoint = checkpoints.save_checkpoint
         result.bindings.inputs.recovery_input_recorder = turn_state.set_current_input

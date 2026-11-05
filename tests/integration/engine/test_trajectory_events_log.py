@@ -37,6 +37,8 @@ from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.trajectory.envelope import TrajectoryEvent
 from chrys.foundation.trajectory.event_types import EventType, ProfileKind, TurnEndReason
 from chrys.foundation.trajectory.ids import is_valid_analytics_id
+from chrys.foundation.trajectory.keys import ensure_owner_only_directory
+from chrys.foundation.trajectory.lease import WriterLease
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY, OPERATION_ID_KEY
 from chrys.foundation.trajectory.reader import read_trajectory
 from chrys.foundation.trajectory.segments import reassemble_array_slice
@@ -57,6 +59,7 @@ from chrys.service.trajectory.session import (
     TrajectoryDisabledReason,
     trajectory_dir,
     trajectory_events_path,
+    trajectory_lease_path,
 )
 from tests.support.formal_approval import predicate_values
 from tests.support.pipeline_helpers import (
@@ -177,8 +180,35 @@ async def test_persistent_activation_failure_retries_then_warns_the_user_once(
     await ctx.cleanup()
 
     assert attempts == 2
-    assert [warning.code for warning in warnings] == ["trajectory_activation_failed"]
+    assert [(warning.code, warning.reason) for warning in warnings] == [
+        ("trajectory_activation_failed", "activation_failed")
+    ]
     assert warnings[0].display_message is not None
+
+
+@pytest.mark.asyncio
+async def test_a_session_another_writer_holds_warns_the_user_with_the_reason(tmp_path: Path) -> None:
+    """A refused activation, not only a failed one, tells the user recording is off, and why."""
+    ctx = await create_test_engine([MockResponse(text="hello back")], tmp_path)
+    warnings: list[Warning] = []
+
+    async def _collect(event: Warning) -> None:
+        warnings.append(event)
+
+    await ctx.bus.subscribe(Warning, _collect)
+    session_dir = _session_dir(ctx)
+    ensure_owner_only_directory(trajectory_dir(session_dir))
+    holder = WriterLease.try_acquire(trajectory_lease_path(session_dir))
+    assert holder is not None
+    try:
+        await ctx.send_message("hello")
+        assert await wait_until(lambda: bool(warnings))
+    finally:
+        await ctx.cleanup()
+        holder.release()
+
+    assert [(warning.code, warning.reason) for warning in warnings] == [("trajectory_activation_failed", "lease_held")]
+    assert warnings[0].session_id == ctx.session_id
 
 
 @pytest.mark.asyncio

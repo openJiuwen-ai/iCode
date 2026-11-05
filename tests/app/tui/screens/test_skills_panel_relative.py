@@ -152,6 +152,25 @@ async def test_missing_absolute_preview_says_path_does_not_exist(
         assert "Missing in current workspace" not in str(preview.content)
 
 
+@pytest.mark.parametrize("name", ["a\x1b[31mred", "bad\udcff"], ids=["escape-sequence", "undecodable-byte"])
+@pytest.mark.asyncio
+async def test_preview_shows_a_cleaned_copy_while_the_row_keeps_the_raw_path(
+    name: str, lexical_preview: Callable[..., None]
+) -> None:
+    """A folder name's control character or undecodable byte never reaches the terminal; the saved path is as typed."""
+    path = f"/abs/{name}"
+    lexical_preview(path)
+    app = _SkillsPanelApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cards = await _mount_panel(SkillsConfigPanel(SkillsConfig(paths=[path])), pilot)
+        preview = str(cards[0].query_one("#sk-preview-0", Label).content)
+
+        assert "Current: /abs/" in preview
+        assert "\x1b" not in preview
+        assert not any("\ud800" <= char <= "\udfff" for char in preview)
+        assert cards[0].get_path() == path
+
+
 @pytest.mark.asyncio
 async def test_skill_dir_preview_handles_resolve_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     app = _SkillsPanelApp()

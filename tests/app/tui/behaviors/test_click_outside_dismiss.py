@@ -10,7 +10,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.events import MouseDown
-from textual.geometry import Offset
+from textual.geometry import Offset, Region
 from textual.screen import ModalScreen
 from textual.selection import SELECT_ALL
 from textual.widgets import OptionList, Static
@@ -238,7 +238,12 @@ async def test_base_dialog_discards_detached_selection_hit(monkeypatch: pytest.M
         def stale_content_hit(_x: int, _y: int) -> tuple[Static | None, Offset | None]:
             return label, Offset(0, 0)
 
+        def stale_hit(_x: int, _y: int) -> tuple[Static, Region]:
+            return label, Region(1, 1, 10, 1)
+
+        # The layout before the removal answers both, as the screen's one map does.
         monkeypatch.setattr(dialog, "get_widget_and_offset_at", stale_content_hit)
+        monkeypatch.setattr(dialog, "get_widget_at", stale_hit)
 
         dialog._forward_event(
             MouseDown(

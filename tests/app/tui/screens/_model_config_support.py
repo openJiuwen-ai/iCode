@@ -113,7 +113,7 @@ async def _model_config_result_events(result: str, registry: ModelProfileRegistr
         state=MainScreenState(),
         services=MainScreenServices(bus=bus, model_registry=registry),
         view=cast(Any, SimpleNamespace(notify=lambda *_args, **_kwargs: None)),
-        callbacks=cast(Any, SimpleNamespace(debug=lambda _key, _message="": None)),
+        callbacks=cast(Any, SimpleNamespace(debug=lambda _key, _message="": None, user_picked=lambda: None)),
     )
     await controller.on_model_config_result(result)
     return published

@@ -41,6 +41,18 @@ A task you stop shows no mark, and the mark clears when you start the next task.
 
 When you stop a task or it fails, the part of the reply that already appeared stays in the conversation and in the saved session, and the agent reads it when you send your next message. If you click **Retry** or **Continue** without typing anything instead, the agent writes the reply again: when it starts, the text it writes again is removed, and tool calls stay.
 
+## Ask a side question
+
+Enter `/btw <question>` to ask about the current conversation while the main task continues. The side question uses the current model and existing conversation text and tool results. It cannot read new files, run commands, or use tools. Very long reference text may be shortened to fit the model's context window. Prompt-submission hooks also check side questions: a blocked question is not sent to the model, and any hook reminders apply only to that side question.
+
+A **Side Questions** card opens below the main chat and takes half of the chat area. **Answer** shows a thinking animation, then the complete answer all at once. **Question** shows your full question. Long content scrolls within the card. Use the previous/next arrows to browse questions in the order you asked them; browsing keeps your selected tab. Only one side question can run at a time.
+
+Click **✕** or press **Esc** to close the card. Closing a running question cancels it; a completed answer is kept. You can ask another side question immediately after closing the card. If a completion menu is open, the first **Esc** closes that menu. The main task continues independently, and **Ctrl+B** still interrupts the main task.
+
+Enter `/btw` without a question to reopen the latest answer. If this session has no side questions, a warning appears. Saved questions survive restart and session restore and are copied when you fork a session. Failed or cancelled questions are not saved. Clearing or deleting the session, or rolling back to its starting screen, removes its side questions. Switching to another session, reopening the current session, or rolling back cancels a running side question. Answers stay available. Changing the model or agent, or forking and staying in the current session, lets it continue. Side questions do not enter the main conversation and have no follow-up or quote-back action.
+
+Answers appear before saving finishes. If saving fails, a warning appears and the answer stays available until you leave the session. Copy anything you need before leaving. Leaving the session, clearing it, rolling back to its starting screen, or exiting the app may discard a save still in progress. Asking a side question does not change an existing session's position in the recent-session list.
+
 ## Resume an existing session
 
 When the agent is idle, enter `/resume` in the input field to resume the most recent chat session.
@@ -53,11 +65,13 @@ To find and resume another session, press **F1**, click `f1 Sessions`, or enter 
 - **Search sessions**: Enter a session ID, title, directory, or a prompt you previously entered in the search field at the bottom. The search covers only the current page.
 - **Resume a session**: Select a session and click "Resume". You can also double-click it, or select it with the up and down arrow keys and press Enter. iCode closes the current conversation view, loads the selected session, and switches the working directory to the session's saved primary working directory; the current session remains saved in the list. Before resuming, check the working directory that will be restored in the list's "Directory" column. If that directory no longer exists, iCode asks you to choose another folder; see [If the working directory is deleted or moved](workspaces.md#if-the-working-directory-is-deleted-or-moved).
 
+A resumed session continues on the agent and model it was saved with. That doesn't change the agent and model a new session (`/new`) starts on: the agent you last chose with `#` (or started with) and your default model.
+
 When you resume a long conversation, iCode shows its most recent part first so you can continue right away; earlier messages keep loading above it for a few seconds.
 
 A resumed conversation shows the model's saved thinking folded to one line above the reply it led to: **Thought:**, followed by how the thinking begins; click it to unfold it. If a reply was interrupted or failed, the thinking shown for the request that was cut off is not saved, so it does not appear.
 
-Successful turns also fold their intermediate activity by default. Each mid-turn user addition, and each compaction card from compacting during the turn, stays visible and starts a separate activity section. Its header counts the section's tool calls and what they were, for example `12 tool calls · 8 reads · 4 commands`, ending with how many failed or were interrupted, if any; a section without tool calls, or in compressed history, reads **Activity**. Click the header to inspect that section while keeping its inner details in their current state. A section holding only a thinking block, or only text between tool calls, folds to that block's own row instead. For keyboard access, `/fold` toggles activity sections, tool groups, thinking and text between tool calls together: it collapses them if any are open, and expands them otherwise. Thinking that is still being written and controls waiting for your input are left as they are. Copy commands still include intermediate replies and keep their original message counts. Turn off **Automatically fold completed turns** in [Settings](../configuration/settings.md#display-preferences) to keep future completed turns and subsequently opened sessions expanded. The last turn recovered from a crash stays open.
+Successful turns also fold their intermediate activity by default. Each mid-turn user addition, and each compaction card from compacting during the turn, stays visible and starts a separate activity section. Its header counts the section's tool calls and what they were, for example `12 tool calls: 8 reads · 4 commands`, ending with how many failed or were interrupted, if any; a section without tool calls, or in compressed history, reads **Activity**. Click the header to inspect that section while keeping its inner details in their current state. A section holding only a thinking block, or only text between tool calls, folds to that block's own row instead. For keyboard access, `/fold` toggles activity sections, tool groups, thinking and text between tool calls together: it collapses them if any are open, and expands them otherwise. Thinking that is still being written and controls waiting for your input are left as they are. Copy commands still include intermediate replies and keep their original message counts. Turn off **Automatically fold completed turns** in [Settings](../configuration/settings.md#display-preferences) to keep future completed turns and subsequently opened sessions expanded. The last turn recovered from a crash stays open.
 
 Clicking an activity header keeps focus in the input field. A restored turn waiting for sub-agents stays open. Compressed history shows only some tool details, so these sections are all labeled **Activity**.
 
@@ -108,9 +122,34 @@ Before starting, finish the current task and close other iCode instances, then f
 
 Migration keeps the original data in the source directory; it is not deleted automatically. After confirming that migration is complete, if you need to free up space, close iCode and archive or delete the old `sessions` directory shown under "From" in the migration window. Manual deletion cannot be undone.
 
+## Check token usage and speed
+
+While an agent replies, the status bar above the input shows how fast text is arriving, for example `92 tok/s`. It goes away when no text has arrived for a few seconds, such as while a tool runs. It is a rough figure counted from the text on screen.
+
+To see usage across all your sessions, type `/usage`. The window has two tabs: click one, or press **Tab**, to switch. The window's bottom border lists the keys for the tab you are on, and **Esc** closes it. The numbers are from when the window opened; type `/usage` again for newer ones.
+
+**Overview** shows one date range at a time. Click a range at the top, or press the left and right arrow keys:
+
+- **New**: the tokens this range added: input the provider did not serve from its cache, plus output, including thinking. This is the number to watch; cached input is listed separately because it is much larger and usually costs much less.
+- **Hit**: how much of the input came from the provider's cache.
+- **Trend**: new tokens over the range: hour by hour for **Today**, day by day for **This week**. For a longer range, click **Daily** or **Weekly**, or press **t**. A column with only the faint pattern has no new tokens.
+- **Group**: a table of totals by model, by source (the main agent, sub-agents, workflow nodes and background tasks such as session titles) or by project. Click a button above the table or press **g** to switch. The up and down arrow keys, or a click, move between rows. On a narrow window the table shows fewer columns.
+- **TPS**: tokens per second, how fast a model produced output, from its first chunk to the end of the response, across all the requests that streamed. It depends on your provider and your network, so it may differ from a provider's published speed.
+
+**Calendar** shows one month of new tokens, with stronger colors on heavier days; the line under the calendar says what each color means, or only the lowest and highest on a narrow window. When the window has room, each day also shows its tokens. Click a day or use the arrow keys, and the panel beside the calendar shows that day's numbers and top models; a very narrow window leaves the panel out. Click the arrows beside the month, or press **[** and **]**, to change the month.
+
+Keep in mind:
+
+- Days follow your computer's time zone, and weeks start on Monday.
+- Requests that ended before the provider reported usage count as calls but add no tokens. The line at the bottom of **Overview** says how many there were in the range, and the foot of the day panel says how many on that day.
+- Deleted sessions and external ACP agents are not counted.
+- Sessions saved by older versions may show fewer cache reads for DeepSeek and no usage for requests that failed partway.
+
 ## Inspect session timing
 
 Press **F12** to open the trajectory dashboard. **Overview** summarizes time and usage; **Timeline** shows individual turns and operations; **Insights** helps explain delays; **Session data** shows the saved session. Long sessions are analyzed in the background while a loading indicator is visible. The timing analysis preserves overlapping operations, so parallel work is not counted twice on a critical path.
+
+If iCode can't record a session's trajectory, it shows a warning that trajectory recording is off for the session. You can keep working as usual; only the dashboard and the export get nothing new from that session. Workflow runs don't show this warning. Common causes are an earlier recording of the session that hasn't stopped yet (closing the iCode windows that had the session open ends it), files in the session's `trajectory` folder that other users can read or that belong to another user, a `trajectory` folder that is a link, a trajectory key (`trajectory-hmac.key` in the iCode configuration directory) that iCode can't read, and a trajectory that iCode can't safely add to, such as one written by a newer iCode version.
 
 If a shell command's file content comparison cannot be completed because a file is unreadable, the file-change overview marks detection as incomplete. The recorded change list may omit changes; check the affected files or your Git diff before relying on it for rollback. Files deliberately excluded from content comparison by the size or binary-file limits do not by themselves trigger this warning.
 

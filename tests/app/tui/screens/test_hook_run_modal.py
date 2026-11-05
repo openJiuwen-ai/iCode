@@ -160,13 +160,14 @@ async def _open(pilot, app: _ModalApp) -> HookRunModal:
 # --- Title, tab choice, Input ---------------------------------------------------
 
 
-async def test_an_ended_run_opens_on_output_with_its_title_and_state() -> None:
+async def test_an_ended_run_opens_on_input_with_its_title_and_state() -> None:
     record = _record(outcome=HookOutcome.FAILED, exit_code=3)
     app = _ModalApp(_detail(record, io=_io(stderr="boom"), applied=HookRunApplied(not_applied="failed")))
     async with app.run_test(size=(120, 40)) as pilot:
         modal = await _open(pilot, app)
         assert _title(modal) == "Hook #7 · guard"
-        assert _active(modal) == "hook-run-output"
+        # The first tab from the first paint on: no switch to Output after it.
+        assert not await wait_until(lambda: _active(modal) != "hook-run-input", pilot=pilot, timeout=0.5)
         subtitle = _subtitle(modal)
         assert "exit 3" in subtitle
         assert "500ms" in subtitle or "0.5s" in subtitle, subtitle
@@ -581,9 +582,11 @@ def _notices(app: App) -> list[str]:
 
 
 async def _ended_with_output(pilot) -> HookRunModal:
+    """Open the dialog and click its Output tab, as a user does: it opens on Input."""
     modal = await _open(pilot, pilot.app)
     tabs = modal.query_one(TabbedContent)
-    await wait_for(lambda: tabs.active == "hook-run-output", pilot=pilot, description="opened on output")
+    await click_when_settled(pilot, modal.query_one("#--content-tab-hook-run-output"))
+    await wait_for(lambda: tabs.active == "hook-run-output", pilot=pilot, description="on output")
     return modal
 
 

@@ -404,18 +404,12 @@ class HookRunModal(BaseDialog[None]):
 
     def on_mount(self) -> None:
         self._show_state()
-        # Like ToolDetailModal: switch tabs once they mounted, never through ``initial=``.
-        # An ended run opens on what it returned; one still in flight has only its input yet.
-        if self._shown.record.state == "ended":
-            self.call_after_refresh(self._open_output)
+        # Every run opens on its first tab, Input: switching tabs after the
+        # first paint would flash it, and an ended run's Output is one click away.
         if self._shown.record.state != "ended" or self._tail is not None:
             self._timer = self.set_interval(_POLL_SECONDS, self._poll)
         if self._tail is not None:
             self._read_log()
-
-    def _open_output(self) -> None:
-        with contextlib.suppress(NoMatches):
-            self.query_one(TabbedContent).active = "hook-run-output"
 
     def _text(self, reference: MessageRef) -> str:
         return render_str(widget_localizer(self), reference)

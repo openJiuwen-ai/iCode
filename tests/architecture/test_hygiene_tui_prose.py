@@ -30,6 +30,7 @@ _TUI_PROSE_SINK_ALLOWLIST: set[tuple[Path, str, str]] = {
     (Path("src/chrys/app/tui/widgets/chat/messages.py"), "Static", "thinking"),
     # API-key format hint — data shape, not prose (settled ruling).
     (Path("src/chrys/app/tui/screens/models/screen.py"), "placeholder", "sk-..."),
+    # The command token is the card title in every locale; its surrounding prose is localized.
 }
 
 

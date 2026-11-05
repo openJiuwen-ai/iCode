@@ -90,7 +90,7 @@ def test_document_image_storage_limits_align_with_session_and_model_boundaries()
     assert MAX_SESSION_IMAGE_FILES == 8192
     assert MAX_STORED_IMAGE_BYTES == MAX_IMAGE_SOURCE_BYTES == 50 * 1024 * 1024
     assert MAX_TOTAL_IMAGE_BYTES == MAX_SESSION_IMAGE_BYTES == 512 * 1024 * 1024
-    assert MAX_MODEL_IMAGE_BYTES == 3 * 1024 * 1024
+    assert MAX_MODEL_IMAGE_BYTES == 256 * 1024
 
 
 def test_normalize_document_text_repairs_pairs_and_replaces_lone_surrogates() -> None:

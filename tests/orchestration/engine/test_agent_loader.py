@@ -97,7 +97,7 @@ async def test_loader_release_closes_only_coordinator_displaced_at_install(
     new_coordinator = old_coordinator if reuse_coordinator else create_autospec(MutationCoordinator, instance=True)
     engine.session.mutation_coordinator = old_coordinator
     staged = StagedBuild(
-        loaded=engine.loaded_settings,
+        prepared=engine.settings_handle.prepare(engine.settings_handle.base),
         agent_profile=_profile(),
         workspace=None,
         hook_manager=None,

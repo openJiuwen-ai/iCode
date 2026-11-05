@@ -13,7 +13,7 @@ Choose an installation location based on where the skill should be available and
 | `<working-directory>/.agents/skills` | Make skills available only in the current working directory | Loaded only after you turn on “Load project skills”; can also be disabled per agent |
 | Custom directory | Load skills from a specific location | Must be added manually to the corresponding agent's configuration |
 
-Here, `<working-directory>` is the current working directory. Skills in a working directory come with the repository, so iCode does not load them until you turn on “Load project skills” under “Settings → Security → Project trust” (`project.skills_enabled`). When the working directory has skills that are not loaded, iCode shows a notice. When you switch working directories, iCode reloads the skills from the new working directory.
+Here, `<working-directory>` is the current working directory. Skills in a working directory come with the repository, so iCode does not load them until you turn on “Load project skills” under “Settings → Safety → Project trust” (`project.skills_enabled`). When the working directory has skills that are not loaded, iCode shows a notice. When you switch working directories, iCode reloads the skills from the new working directory.
 
 The two user-level skills directories have the following paths on each platform:
 
@@ -38,7 +38,7 @@ To check or adjust an agent's skill configuration:
 2. Confirm that the source corresponding to the skill's location is enabled:
 
    * "Load skills from user folder (if present)" corresponds to the Agent Skills shared directory.
-   * "Load skills from working folder (if present)" corresponds to `<working-directory>/.agents/skills`. It takes effect only while “Load project skills” is on in “Settings → Security → Project trust”.
+   * "Load skills from working folder (if present)" corresponds to `<working-directory>/.agents/skills`. It takes effect only while “Load project skills” is on in “Settings → Safety → Project trust”.
 
 3. If the skill is in another directory, click "+ Add" and enter the directory containing the skill:
 

@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import pytest
 from acp import schema as acp_schema
+from acp.helpers import image_block, text_block
 
+from chrys.app.acp.content import convert_prompt_blocks
 from chrys.app.acp.history import replay_session_history
 from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY, HistoryMarkerKind
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE, KIND_MCP, KIND_SHELL
@@ -25,10 +28,12 @@ from chrys.kernel import (
     Message,
     set_excluded,
 )
+from chrys.orchestration.engine.run.attachments import ImageAttachment, build_user_contents
 from chrys.service.llm.reasoning_display import REASONING_SUMMARY_KEY
 from chrys.service.session.message_metadata import TOOL_CALL_KIND_METADATA_KEY, TOOL_RESULT_METADATA_KEY
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.acp_wire import acp_outgoing_json
+from tests.support.images import image_bytes
 
 
 class _FakeClient:
@@ -503,6 +508,59 @@ async def test_replay_session_history_streams_legacy_unflagged_continue(tmp_path
         if notification.update.session_update == "user_message_chunk"
     ]
     assert [chunk.content.text for chunk in user_chunks] == ["start task", "continue"]
+
+
+@pytest.mark.asyncio
+async def test_replay_session_history_sends_user_images_after_their_text(tmp_path) -> None:
+    """A user message replays the images it was sent with after its text, as an ACP prompt or the TUI saved them."""
+    png, jpeg = image_bytes("PNG"), image_bytes("JPEG")
+
+    def encoded(data: bytes) -> str:
+        return base64.b64encode(data).decode()
+
+    def prompted(*blocks: Any) -> Message:
+        converted = convert_prompt_blocks(list(blocks), vision_enabled=True).message
+        return Message("user", converted.prepared_contents)
+
+    attachment = ImageAttachment(
+        path=tmp_path / "shot.png", mention="@shot.png", media_type="image/png", data=png, size=len(png)
+    )
+    store = JsonFileStateStore(tmp_path / "sessions")
+    await store.save_session(
+        "s1",
+        {
+            "messages": [
+                prompted(
+                    text_block("compare these"),
+                    image_block(encoded(png), "image/png"),
+                    image_block(encoded(jpeg), "image/jpeg"),
+                ),
+                Message("assistant", ["they differ"]),
+                Message("user", build_user_contents("what is in @shot.png", [attachment])),
+                Message("assistant", ["a red square"]),
+                prompted(image_block(encoded(png), "image/png")),
+            ]
+        },
+        agent_profile="Code",
+        primary_cwd=str(tmp_path),
+    )
+    client = _FakeClient()
+
+    await replay_session_history(client, store, "s1")
+
+    user_chunks = [
+        notification.update
+        for notification in client.updates
+        if notification.update.session_update == "user_message_chunk"
+    ]
+    assert [chunk.content for chunk in user_chunks] == [
+        text_block("compare these"),
+        image_block(encoded(png), "image/png"),
+        image_block(encoded(jpeg), "image/jpeg"),
+        text_block("what is in @shot.png"),
+        image_block(encoded(png), "image/png"),
+        image_block(encoded(png), "image/png"),
+    ]
 
 
 # --- exchange-shape pins ------------------------------------------------

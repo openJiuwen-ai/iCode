@@ -682,7 +682,7 @@ def test_view_image_success_metadata_with_surrogate_path_is_utf8_safe(monkeypatc
     monkeypatch.setattr(
         filesystem_module,
         "load_image_file",
-        lambda path: LoadedImage(data=_jpeg_bytes(), media_type="image/jpeg", width=2, height=2),
+        lambda path, *, max_bytes: LoadedImage(data=_jpeg_bytes(), media_type="image/jpeg", width=2, height=2),
     )
 
     result = view_image(raw_path)

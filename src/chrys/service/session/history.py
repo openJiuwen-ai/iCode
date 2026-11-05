@@ -13,10 +13,12 @@ are visible to Agent's history provider immediately.
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
 import logging
 from collections.abc import Hashable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -35,6 +37,7 @@ from chrys.foundation.models.turns import (
     user_text_matches,
 )
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.text.images import LoadedImage, data_uri_payload_info
 from chrys.foundation.tool_invocation_order import read_tool_invocation_order
 from chrys.foundation.tool_kinds import KIND_SUB_AGENT
 from chrys.foundation.trajectory.metadata import ensure_analytics_item_id
@@ -48,6 +51,7 @@ from chrys.kernel.exchanges import (
     iter_exchanges,
     pair_results,
 )
+from chrys.kernel.images import is_image_content
 from chrys.service.agent_middleware.events.tool_events import ToolBatchRecord
 from chrys.service.agent_middleware.injection import ConsumedInjection
 from chrys.service.session.message_metadata import (
@@ -59,6 +63,7 @@ from chrys.service.session.message_metadata import (
 )
 from chrys.service.session.sub_agent_logs import SUB_AGENT_RESTORE_CONSUMED_KEY
 from chrys.service.trajectory.items import ensure_history_item_ids
+from chrys.service.vision import invalidate_image_token_count
 
 if TYPE_CHECKING:
     from chrys.kernel.exchanges import Exchange, ExchangePairing, Occurrence, PairingKey
@@ -129,6 +134,29 @@ def _message_has_image_content(message: Message) -> bool:
 
 def _contents_have_image_content(contents: list[Any]) -> bool:
     return any(not isinstance(content, str) and _content_is_image(content) for content in contents)
+
+
+@dataclass(frozen=True)
+class OversizedImage:
+    """An inline image of the history over a send limit, with the payload it was read with."""
+
+    message: Message
+    content: Content
+    uri: str
+
+
+def _inline_image_over(content: Content, max_bytes: int) -> bool:
+    uri = content.uri
+    if content.type != "data" or not isinstance(uri, str) or not uri.startswith("data:"):
+        return False
+    if not is_image_content(content):
+        return False
+    # Base64 takes four characters for every three bytes: most images are
+    # told apart by the length of their URI alone.
+    if len(uri) * 3 // 4 <= max_bytes:
+        return False
+    size, _payload = data_uri_payload_info(uri)
+    return size is not None and size > max_bytes
 
 
 # Trim's pairing row: actionable local function calls only (hosted
@@ -1534,6 +1562,52 @@ class SessionHistoryManager:
             if stamp_message_created_at(msg, timestamp):
                 count += 1
         return count
+
+    def images_over(self, max_bytes: int) -> list[OversizedImage]:
+        """Return the inline images over *max_bytes* that every request sends again.
+
+        Those are the images of user messages and of tool results. An image
+        in a reply belongs to the provider's record of that reply and stays
+        as it is.
+        """
+        oversized: list[OversizedImage] = []
+        for message in self.messages:
+            for content in message.contents:
+                if message.role == "user" and _inline_image_over(content, max_bytes):
+                    oversized.append(OversizedImage(message, content, content.uri))
+                elif content.type == "function_result":
+                    oversized.extend(
+                        OversizedImage(message, item, item.uri)
+                        for item in content.items or ()
+                        if _inline_image_over(item, max_bytes)
+                    )
+        return oversized
+
+    def shrink_images(self, shrunk: Sequence[tuple[OversizedImage, LoadedImage]]) -> int:
+        """Write each shrunk image over the image it was made from, and return how many were written.
+
+        The content object stays the same, as the anchors that match a
+        request's messages back to the history go by it; an image whose
+        content changed since it was read is left alone.
+        """
+        written = 0
+        for image, replacement in shrunk:
+            content = image.content
+            if content.uri is not image.uri:
+                continue
+            encoded = base64.b64encode(replacement.data).decode("ascii")
+            content.uri = f"data:{replacement.media_type};base64,{encoded}"
+            content.media_type = replacement.media_type
+            properties = content.additional_properties
+            properties["width"] = replacement.width
+            properties["height"] = replacement.height
+            for key, value in (("media_type", replacement.media_type), ("size", replacement.size)):
+                if key in properties:
+                    properties[key] = value
+            # The message's cached estimate counted the larger image.
+            invalidate_image_token_count(image.message)
+            written += 1
+        return written
 
     def persist_consumed_injections(self, injections: list[ConsumedInjection]) -> None:
         """Insert consumed injection messages into session history.

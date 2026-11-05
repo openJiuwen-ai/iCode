@@ -4,16 +4,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from chrys.foundation.text.images import (
     IMAGE_DECODE_FORMATS,
+    MAX_IMAGE_BYTES,
     ImageProcessingError,
     compress_image_data,
     inspect_image_dimensions,
+    load_image_file,
+    shrink_image_data,
     wire_image_media_type,
 )
-from tests.support.images import image_bytes
+from tests.support.images import broken_chunk_png, image_bytes, noisy_image_bytes
 
 
 @pytest.mark.parametrize(
@@ -76,3 +81,65 @@ def test_a_caller_names_any_wider_format_set_it_decodes() -> None:
 
     assert inspect_image_dimensions(data, formats=formats) == (3, 2)
     assert compress_image_data(data, formats=formats).startswith(b"\xff\xd8\xff")
+
+
+def test_an_image_within_the_send_limit_is_sent_as_it_is(tmp_path: Path) -> None:
+    source = image_bytes("PNG", size=(640, 480))
+    assert len(source) <= MAX_IMAGE_BYTES
+    path = tmp_path / "small.png"
+    path.write_bytes(source)
+
+    loaded = load_image_file(path)
+
+    assert loaded.data == source
+    assert loaded.media_type == "image/png"
+
+
+def test_an_image_over_the_send_limit_is_sent_as_a_jpeg_within_it(tmp_path: Path) -> None:
+    source = noisy_image_bytes("PNG")
+    assert len(source) > MAX_IMAGE_BYTES
+    path = tmp_path / "large.png"
+    path.write_bytes(source)
+
+    loaded = load_image_file(path)
+
+    assert loaded.media_type == "image/jpeg"
+    assert loaded.data.startswith(b"\xff\xd8\xff")
+    assert loaded.size <= MAX_IMAGE_BYTES
+    # Within the limit at a JPEG quality on the ladder, so never scaled down.
+    assert (loaded.width, loaded.height) == (640, 480)
+
+
+def test_compression_fits_the_long_edge_before_anything_else() -> None:
+    compressed = compress_image_data(image_bytes("PNG", size=(4000, 1000)))
+
+    assert inspect_image_dimensions(compressed) == (2048, 512)
+
+
+def test_compression_never_enlarges_an_image() -> None:
+    assert inspect_image_dimensions(compress_image_data(image_bytes("PNG", size=(30, 20)))) == (30, 20)
+
+
+def test_compression_scales_down_what_no_quality_on_the_ladder_fits() -> None:
+    compressed = compress_image_data(noisy_image_bytes("PNG", size=(2048, 2048)))
+
+    assert len(compressed) <= MAX_IMAGE_BYTES
+    width, height = inspect_image_dimensions(compressed)
+    assert width == height
+    assert width < 2048
+
+
+def test_an_image_no_size_fits_names_the_limit() -> None:
+    # Under what the headers of even a one-pixel JPEG take.
+    with pytest.raises(ImageProcessingError, match="still larger than 300 bytes after compression"):
+        compress_image_data(noisy_image_bytes("PNG"), max_bytes=300)
+
+
+def test_an_image_whose_header_reads_but_whose_data_is_broken_is_unreadable() -> None:
+    broken = broken_chunk_png()
+    # Pillow reads the header, then raises a SyntaxError decoding the data.
+    assert inspect_image_dimensions(broken) == (640, 480)
+
+    with pytest.raises(ImageProcessingError, match="could not be read as a supported image"):
+        compress_image_data(broken, max_bytes=64 * 1024)
+    assert shrink_image_data(broken, max_bytes=64 * 1024) is None

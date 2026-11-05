@@ -11,10 +11,10 @@ from textual.app import App, ComposeResult
 from textual.widget import Widget
 from textual.widgets import Button, Label
 
-from chrys.app.tui.screens.agents.panels.config_card import ConfigCard
 from chrys.app.tui.screens.agents.panels.memory import MemoryFileCard, MemoryFolderCard
-from chrys.app.tui.screens.agents.panels.path_entry import PathEntryCard
 from chrys.app.tui.screens.agents.panels.skills import SkillDirCard
+from chrys.app.tui.widgets.config_card import ConfigCard
+from chrys.app.tui.widgets.path_entry import PathEntryCard
 from tests.support.waiting import wait_for
 
 

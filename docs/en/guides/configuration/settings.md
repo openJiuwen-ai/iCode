@@ -1,6 +1,6 @@
 # Configure iCode settings
 
-iCode settings control the interface appearance, default agent, sessions, tools, notifications, and some security options. This guide explains how to configure these basics in the terminal user interface (TUI) and check when changes take effect.
+iCode settings control the interface appearance, default agent, sessions, tools, notifications, and some safety options. This guide explains how to configure these basics in the terminal user interface (TUI) and check when changes take effect.
 
 To edit `settings.yaml` directly or configure settings through environment variables, see the [iCode settings file reference](../../reference/settings.md) for file locations, settings keys, and source precedence.
 
@@ -22,12 +22,12 @@ You can also open a tab directly with `/settings <tab>`:
 | --- | --- | --- |
 | General | `general` | Appearance, input and updates |
 | Models & Agents | `models` | Default agent, model roles, and request retries |
-| Security | `security` | Approval, project trust, diagnostics, and telemetry |
+| Safety | `safety` | Approval, project trust, credentials, diagnostics, and telemetry |
 | Sessions | `sessions` | Session titles, storage, and rollback |
-| Tools | `tools` | File search, web tools, agent questions, tool detail display, and workspace notices |
+| Tools | `tools` | File search, images, web tools, agent questions, tool detail display, and workspace notices |
 | Notifications | `notifications` | Notification toggles, delivery methods, and events |
 
-For example, enter `/settings security` to open the **Security** tab directly.
+For example, enter `/settings safety` to open the **Safety** tab directly.
 
 ### Save changes and check when they take effect
 
@@ -61,7 +61,8 @@ The "Takes effect" column in the following tables describes each setting's usual
 | --- | --- | --- |
 | Expand thinking by default | Disabled by default (`ui.chat.show_thinking`). When enabled, new thinking is expanded above the reply while the model writes it, when the model service returns it as readable text. When disabled, it stays on one line, which shows the newest words as they arrive. Either way, it folds to one line showing how the thinking begins once the model moves on to a tool call or its reply. You can click it at any time to read it in full. Thinking the service returns only in encrypted form is never shown. Thinking already in the conversation keeps its state when you change this. | Immediately |
 | Expand tool details by default | Disabled by default (`ui.chat.tool_groups_expanded`). When enabled, new tool groups are expanded by default. When disabled, they are collapsed and show only a summary and the current operation. You can click a tool group at any time to expand its details. | Immediately |
-| Automatically fold completed turns | Enabled by default (`ui.chat.fold_finished_turns`). After a successful reply, folds thinking, tool calls and intermediate replies under a header that counts the tool calls by kind, such as `12 tool calls · 8 reads · 4 commands`, or **Activity** when there were no tools or the turn is in compressed history. User messages, including mid-turn additions, and the final reply remain visible. Click the header to toggle one section, or type `/fold` to collapse or expand activity sections, tool groups, thinking and text between tool calls with the keyboard. Errors, interruptions and the last turn recovered after a crash stay visible; a turn without a visible final reply is not automatically folded. Existing folds keep your choice. | Future completed turns and sessions you open afterwards |
+| Automatically fold completed turns | Enabled by default (`ui.chat.fold_finished_turns`). After a successful reply, folds thinking, tool calls and intermediate replies under a header that counts the tool calls by kind, such as `12 tool calls: 8 reads · 4 commands`, or **Activity** when there were no tools or the turn is in compressed history. User messages, including mid-turn additions, and the final reply remain visible. Click the header to toggle one section, or type `/fold` to collapse or expand activity sections, tool groups, thinking and text between tool calls with the keyboard. Errors, interruptions and the last turn recovered after a crash stay visible; a turn without a visible final reply is not automatically folded. Existing folds keep your choice. | Future completed turns and sessions you open afterwards |
+| Full-color images | Enabled by default (`ui.chat.image_graphics`). In Ghostty, kitty and iTerm2 3.7.5 or later, images in the conversation, such as attached screenshots and images that tools return, are shown in full color at the terminal's own resolution; in WezTerm, VS Code and Windows Terminal 1.22 or later, at 10 by 20 pixels to a character cell. VS Code shows them only with `terminal.integrated.enableImages` on and GPU acceleration (`terminal.integrated.gpuAcceleration`) not turned off. Over SSH, Ghostty, kitty and iTerm2 show them in full color too when `COLORTERM=truecolor` is set on the remote host, for example in its shell profile. To tell which terminal it runs in, iCode asks the terminal as it starts; a terminal that never answers delays the start by up to a second and a half. In other terminals, inside tmux, screen or Zellij, or with this setting off, images are drawn with colored blocks, two pixels to a character cell. In WezTerm, VS Code and Windows Terminal, an image shows as colored blocks while the conversation scrolls and sharpens once it stops. If images still show as blocks in Windows Terminal, start iCode from a Windows Terminal tab rather than from a console window that Windows opened in Windows Terminal. | After restart |
 
 #### Input
 
@@ -101,7 +102,7 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 | --- | --- | --- |
 | Max transient retries | Sets the maximum number of automatic retries for errors that may resolve shortly, such as temporary network interruptions, request timeouts, temporary model service unavailability, or server rate limits. It does not retry problems that waiting cannot resolve, such as invalid model configuration or request parameters. A higher limit gives temporary failures more chances to recover; if retries keep failing, it also increases the wait and the number of model requests before the final failure. Leave blank to use the TUI default; set to `0` to disable automatic retries. This setting does not cover the one resend after iCode compacts a full context window, or the one resend of a reply that came back with no answer. | On close |
 
-### Security
+### Safety
 
 #### Approval
 
@@ -121,6 +122,12 @@ Project settings, hooks, and skills come with the repository you open, so all th
 | Load project settings | Reads `.chrys/settings.yaml` in the current working directory and applies its project settings, such as request retries, automatic session titles, and working directory notices. See [Project-level settings](../../reference/settings.md#project-level-settings) for allowed keys and override restrictions. | On close |
 | Load project hooks | Controls whether iCode loads hooks from `.chrys/hooks` in the current working directory; it does not affect user-level hooks. To create and validate hooks, see [Configure and write hooks](../extensions/hooks.md). For the complete configuration fields, see the [Hooks configuration reference](../../reference/hooks.md). | On close |
 | Load project skills | Controls whether iCode loads skills from `.agents/skills` in the current working directory; it does not affect your own skills directories. See [Install and use skills](../extensions/skills.md). | On close |
+
+#### Credentials
+
+| Setting | Effect and notes | Takes effect |
+| --- | --- | --- |
+| Credential command refresh interval (seconds) | How often iCode runs a `{{!command}}` value again, at least 60 seconds. The default is 3600 (one hour). A key the service refuses is replaced at once, whatever this says. See [Get an API key from a command](./models.md#get-an-api-key-from-a-command). | After restart |
 
 #### Diagnostics
 
@@ -182,6 +189,12 @@ For telemetry data types, storage locations, endpoint precedence, and collector 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
 | Respect .gitignore | Applies Git ignore rules to grep and glob searches. When off, hidden paths are still skipped, and other ignore files such as `.ignore` still apply. | On close |
+
+#### Images
+
+| Setting | Effect and notes | Takes effect |
+| --- | --- | --- |
+| Image size limit (KB) | The largest an image's file can be when it is sent to the model, from 32 to 3072 KB. The default is 256. In the request an image takes about a third more than its file, since it is sent as text. A larger image that you attach, that the agent views, or that an ACP client sends is compressed to a JPEG within the limit; the image file itself is not changed. Each new turn and each retry also compresses the images sent earlier in the session that are larger than the limit, and the session keeps the compressed copies, so an image that an MCP tool returns is compressed from the next turn or retry on. If a request with images fails because it is too large, for example with an HTTP 413 error from a gateway, lower the limit and retry. With a lower limit the model sees less detail in each image. | On close |
 
 #### Web search
 

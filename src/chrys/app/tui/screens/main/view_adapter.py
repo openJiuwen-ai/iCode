@@ -9,6 +9,7 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from textual.css.query import NoMatches
@@ -39,6 +40,7 @@ from chrys.app.tui.screens.main.ports import (
 from chrys.app.tui.screens.main.runtime_info import with_background_count
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
+from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.widgets import PromptDraft
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
 from chrys.app.tui.widgets.chat.panel import ChatPanel
@@ -46,7 +48,8 @@ from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
 from chrys.app.tui.widgets.chrome.hook_indicator import HookIndicator
 from chrys.app.tui.widgets.chrome.image_paste import clipboard_image_dir_for_session
-from chrys.app.tui.widgets.chrome.input_bar import InputBar
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar
+from chrys.app.tui.widgets.chrome.prompt_card import PromptCard
 from chrys.app.tui.widgets.chrome.status_bar import (
     STATUS_AGENT_LOAD_FAILED,
     STATUS_INTERACTIVE_MODE,
@@ -233,7 +236,20 @@ class MainScreenViewAdapter:
     def open_runtime_details(self, details: AgentRuntimeDetails, *, initial_tab: str | None = None) -> None:
         from chrys.app.tui.screens.dialogs.runtime_details import RuntimeDetailsDialog
 
-        self._screen.app.push_screen(RuntimeDetailsDialog(details, initial_tab=initial_tab))
+        self._screen.app.push_screen(
+            RuntimeDetailsDialog(
+                details,
+                initial_tab=initial_tab,
+                load_shortcuts=self._screen.prompt_shortcut_sources_loader(),
+                shortcut_model=self._screen.shortcut_model_text,
+            )
+        )
+
+    def open_usage(self) -> None:
+        from chrys.app.tui.screens.dialogs.usage import UsageDialog
+        from chrys.service.analytics.usage_report import load_usage_report
+
+        self._screen.app.push_screen(UsageDialog(partial(load_usage_report, self._state_store)))
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None:
         self._screen.run_worker(awaitable, exclusive=False, group=group)
@@ -349,6 +365,9 @@ class MainScreenViewAdapter:
 
     def show_status(self, text: StatusMessage) -> None:
         self._screen.query_one(StatusBar).show(text)
+
+    def note_output_text(self, text: str) -> None:
+        self._screen.query_one(StatusBar).note_output_text(text)
 
     def clear_status(self) -> None:
         self._screen.query_one(StatusBar).clear_status()
@@ -473,11 +492,11 @@ class MainScreenViewAdapter:
         if input_bar.locked or input_bar.value.strip() == text:
             input_bar.unlock_and_clear()
 
-    def restore_input_draft(self, text: str) -> bool:
-        """Hand *text* back to an empty composer; a draft already there wins."""
-        return self._screen.query_one(InputBar).restore_draft(text)
+    def restore_input_draft(self, draft: str | ChatDraft) -> bool:
+        """Hand *draft* back to an empty composer, whole (fields, owner); a draft already there wins."""
+        return self._screen.query_one(InputBar).restore_draft(draft)
 
-    def restore_input_text(self, text: str) -> InputRestore | None:
+    def restore_input_text(self, draft: str | ChatDraft) -> InputRestore | None:
         """Hand a consumed prompt back to an empty composer, or a queued one's.
 
         Returns proof of that restore for a caller that has to rewrite the same
@@ -486,19 +505,22 @@ class MainScreenViewAdapter:
 
         Every attempt consumes a generation, declined ones included, so an
         outstanding credential dies the moment anything else tries to restore.
+        *draft* goes back whole when it is one (a prompt shortcut's fields and
+        owner included).
         """
         self._input_restore_generation += 1
+        whole = draft if isinstance(draft, ChatDraft) else ChatDraft(draft)
         input_bar = self._screen.query_one(InputBar)
         if input_bar.locked:
             input_bar.unlock_and_keep()
             # A queued message's composer stays read-only from its Enter, which
             # sends the text stripped: holding *text*, it still holds that
             # message, and unlocking it hands the message back.
-            if input_bar.value.strip() == text:
+            if input_bar.value.strip() == whole.text.strip():
                 return InputRestore(generation=self._input_restore_generation, text=input_bar.value)
-        if not input_bar.restore_draft(text):
+        if not input_bar.restore_draft(whole):
             return None
-        return InputRestore(generation=self._input_restore_generation, text=text)
+        return InputRestore(generation=self._input_restore_generation, text=whole.text)
 
     def rewrite_restored_input(self, restore: InputRestore | None, text: str) -> bool:
         """Rewrite the text *restore* put there, while that restore still stands.
@@ -520,7 +542,9 @@ class MainScreenViewAdapter:
         # Rewriting identical text would still reset the cursor and break an
         # in-progress IME composition, so leave the composer alone.
         if text != restore.text:
-            input_bar.value = text
+            # The restore's own draft, rewritten: the prompt shortcut it came back
+            # with stays its owner (its commands follow the new text).
+            input_bar.set_draft(ChatDraft(text, owner=input_bar.draft_owner))
         return True
 
     async def change_shell_directory(self, cwd: str) -> None:
@@ -637,8 +661,11 @@ class MainScreenViewAdapter:
         self._screen._workflow_panel.display = workflow and not dashboard.foreground and not shell
         chat = not workflow and not dashboard.foreground and not shell
         self._screen.query_one(ChatPanel).display = chat
+        self._screen.query_one("#chat-column").display = chat
         self._screen.query_one(StatusBar).display = shell or chat
         self._screen.query_one(InputBar).display = chat
+        # The card belongs to the input: it never stays on a surface that hides it.
+        self._screen.query_one(PromptCard).display = chat
         # The footer row: the Footer and the hook indicator hide together.
         self._screen.query_one("#footer-row").display = not shell
         # It shows the chat session's hook runs only: a workflow's hooks run on
@@ -1393,7 +1420,8 @@ class MainScreenViewAdapter:
 
     @property
     def is_attached(self) -> bool:
-        return self._screen.is_attached
+        # Not only attached: removal and shutdown prune the screen's widgets while it still is.
+        return composed_live(self._screen)
 
     @property
     def suggestions_active(self) -> bool:
@@ -1434,12 +1462,18 @@ class MainScreenViewAdapter:
         title: str | None = None,
         empty_text: str | None = None,
         keep_selection: bool = False,
+        initial: str | None = None,
     ) -> None:
         from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 
         with contextlib.suppress(NoMatches):
             self._screen.query_one(SuggestionList).update(
-                list(items), disabled=disabled, title=title, empty_text=empty_text, keep_selection=keep_selection
+                list(items),
+                disabled=disabled,
+                initial=initial,
+                title=title,
+                empty_text=empty_text,
+                keep_selection=keep_selection,
             )
 
     def hide_suggestions(self) -> None:
@@ -1505,6 +1539,12 @@ class MainScreenViewAdapter:
 
     def replace_input_trigger_text(self, trigger: str, replacement: str) -> None:
         self._screen.query_one(InputBar).replace_trigger_text(trigger, replacement)
+
+    def expand_prompt_in_input(self, draft: ChatDraft) -> None:
+        self._screen.query_one(InputBar).expand_prompt(draft)
+
+    def submit_input(self) -> None:
+        self._screen.query_one(InputBar).submit_input()
 
     # -------------------------------------------------------------- #
     # Shell mode, focus, and paste

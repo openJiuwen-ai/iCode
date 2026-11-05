@@ -99,6 +99,10 @@ class HistoryMarkerKind:
     # re-renders them on every later call so the conversation prefix stays
     # byte-identical across turns; the message's own contents never hold them.
     SYSTEM_REMINDERS_KEY: Final[str] = "_chrys_system_reminders"
+    # What the user typed, on a user message whose text was sent otherwise (a
+    # prompt shortcut's ``!`command``` placeholders replaced by their output).
+    # The approval judge reads it as the user's request; command output is data.
+    TYPED_TEXT_KEY: Final[str] = "_chrys_typed_text"
 
     TURN: Final[str] = "turn"
     SUMMARY: Final[str] = "summary"
@@ -111,14 +115,23 @@ class HistoryMarkerKind:
 
 
 def copy_reminder_record(source: Mapping[str, Any] | None, target: dict[str, Any]) -> None:
-    """Carry *source*'s reminder record onto *target*, another copy of the same user message.
+    """Carry *source*'s per-message record onto *target*, another copy of the same user message.
 
-    A rebuilt copy that lost the record would render bare on later requests
-    and change the cached prefix from there on, so every site that rebuilds
-    a user message calls this: the persisted injection copy, retry replay and
-    its failure fallback, the crash-recovery checkpoint and a child's retry
-    seed.  Entries are copied fresh: the source dict may still be live.
+    The record is what the message carried on its established request (its
+    reminders) and what the user typed when that differs from its text
+    (``TYPED_TEXT_KEY``). A rebuilt copy that lost the reminders would render
+    bare on later requests and change the cached prefix from there on, and one
+    that lost the typed text would show the approval judge command output as
+    the user's request, so every site that rebuilds a user message calls this:
+    the persisted injection copy, retry replay and its failure fallback, the
+    crash-recovery checkpoint and a child's retry seed.  Entries are copied
+    fresh: the source dict may still be live.
     """
-    record = source.get(HistoryMarkerKind.SYSTEM_REMINDERS_KEY) if source is not None else None
+    if source is None:
+        return
+    record = source.get(HistoryMarkerKind.SYSTEM_REMINDERS_KEY)
     if isinstance(record, list) and record:
         target[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] = [dict(entry) for entry in record if isinstance(entry, dict)]
+    typed = source.get(HistoryMarkerKind.TYPED_TEXT_KEY)
+    if isinstance(typed, str) and typed:
+        target[HistoryMarkerKind.TYPED_TEXT_KEY] = typed

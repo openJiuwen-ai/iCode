@@ -488,11 +488,13 @@ async def test_re_dispatched_hooks_target_the_tool_operation_they_can_still_bloc
             _event: HookEvent,
             _payload: dict[str, Any],
             *,
+            scope: str = "turn",
             target_operation_id: str | None = None,
             trajectory_context: object | None = None,
             origin: InvocationOrigin | None = None,
             operation: HookOperation | None = None,
         ) -> HookDecision:
+            assert scope == "turn"
             self.targets.append(target_operation_id)
             return HookDecision()
 

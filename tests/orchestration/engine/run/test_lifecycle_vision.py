@@ -91,6 +91,7 @@ async def run_and_save(
     run_scope=None,
     injection_window=None,
     user_message_id: str | None = None,
+    typed_text: str | None = None,
 ) -> None:
     await make_turn_runner(
         current=host.current,
@@ -117,6 +118,7 @@ async def run_and_save(
         run_scope=run_scope,
         injection_window=injection_window,
         user_message_id=user_message_id,
+        typed_text=typed_text,
     )
 
 
@@ -198,10 +200,10 @@ class _Executor:
     def record_pre_run_interrupt(self) -> None:
         self.was_interrupted = True
 
-    def begin_invocation(self) -> None:
+    def begin_invocation(self, *, typed_text: str | None = None) -> None:
         pass
 
-    def fresh_request(self, contents: list[Any], created_at: Any = None):
+    def fresh_request(self, contents: list[Any], created_at: Any = None, *, typed_text: str | None = None):
         return contents, created_at
 
     @asynccontextmanager
@@ -268,6 +270,9 @@ class _History:
 
     def tag_last_user_message(self, *_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("tag_last_user_message should not be called")
+
+    def images_over(self, _max_bytes: int) -> list[object]:
+        return []
 
     def merge_loop_messages(self, _loop_recorder: object, *, insert_index: int | None = None) -> None:
         return None
@@ -443,6 +448,7 @@ class _Host:
         run_scope=None,
         injection_window=None,
         user_message_id: str | None = None,
+        typed_text: str | None = None,
     ) -> None:
         await run_and_save(
             self,
@@ -453,6 +459,7 @@ class _Host:
             run_scope=run_scope,
             injection_window=injection_window,
             user_message_id=user_message_id,
+            typed_text=typed_text,
         )
 
     async def _post_run(self) -> None:
@@ -1011,7 +1018,7 @@ async def test_run_and_save_loads_small_image_attachments_off_event_loop(
     loop_progress_before_executor: list[bool] = []
     progress_marked = threading.Event()
 
-    def slow_load_image_attachments(mentions: list[Any]) -> AttachmentParseResult:
+    def slow_load_image_attachments(mentions: list[Any], *, max_bytes: int) -> AttachmentParseResult:
         # Hold the load open until the marker task has provably run on
         # the event loop.  Loaded off-loop (executor thread), this
         # handshake completes immediately; if the load ever regresses
@@ -1108,7 +1115,7 @@ async def test_fresh_user_message_stale_admission_suppresses_attachment_error_af
             errors=[],
         )
 
-    def load_attachments(_mentions: list[ImageMention]) -> AttachmentParseResult:
+    def load_attachments(_mentions: list[ImageMention], *, max_bytes: int) -> AttachmentParseResult:
         entered.set()
         release.wait(timeout=2)
         return AttachmentParseResult(attachments=[], errors=["@stale.png: stale load error"])
@@ -1203,7 +1210,7 @@ async def test_run_and_save_emits_compression_events_for_oversize_images(
         f.truncate(MAX_IMAGE_BYTES + 1)
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=True)
 
-    def fake_load_image_attachments(mentions: list[Any]) -> AttachmentParseResult:
+    def fake_load_image_attachments(mentions: list[Any], *, max_bytes: int) -> AttachmentParseResult:
         mention = mentions[0]
         return AttachmentParseResult(
             attachments=[
@@ -1245,7 +1252,7 @@ async def test_run_and_save_times_out_slow_image_compression(
         f.truncate(MAX_IMAGE_BYTES + 1)
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=True)
 
-    def slow_load_image_attachments(_mentions: list[Any]) -> AttachmentParseResult:
+    def slow_load_image_attachments(_mentions: list[Any], *, max_bytes: int) -> AttachmentParseResult:
         time.sleep(0.05)
         return AttachmentParseResult(attachments=[], errors=[])
 
@@ -1342,7 +1349,7 @@ async def test_fresh_image_load_error_publishes_legacy_and_localized_messages(
         bus=host._bus,
         history=host._history,
         fsm=host._fsm,
-        load_attachments=lambda _mentions: AttachmentParseResult(attachments=[], errors=load_errors),
+        load_attachments=lambda _mentions, *, max_bytes: AttachmentParseResult(attachments=[], errors=load_errors),
     )
 
     result = await preparer.prepare_fresh(

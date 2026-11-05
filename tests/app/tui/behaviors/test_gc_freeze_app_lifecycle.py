@@ -66,7 +66,7 @@ async def test_enabled_gc_freeze_real_app_lifecycle_returns_two_runs_to_baseline
             assert app._gc_freeze.frozen is True
             assert app._gc_freeze_watchdog is not None
             assert app._main_screen is not None
-            assert len(app._main_screen._gc_freeze_participants) == 5
+            assert len(app._main_screen._gc_freeze_participants) == 6
             assert gc.get_freeze_count() > 0
 
         assert gc.get_freeze_count() == 0

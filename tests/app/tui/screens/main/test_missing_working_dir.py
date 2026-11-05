@@ -23,6 +23,7 @@ from chrys.app.tui.screens.dialogs.file_picker import FilePicker, FilePickerMode
 from chrys.app.tui.screens.main.session_handlers import RestoreRequest, SessionHandler
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.main.workspace_actions import MissingDirReason, WorkspaceCallbacks, WorkspaceController
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import Error, SessionRestore, WorkspaceChange
@@ -519,7 +520,8 @@ class _Composer:
     def unlock_and_keep(self) -> None:
         self.locked = False
 
-    def restore_draft(self, text: str) -> bool:
+    def restore_draft(self, draft: str | ChatDraft) -> bool:
+        text = draft.text if isinstance(draft, ChatDraft) else draft
         if not text or self.value:
             return False
         self.value = text

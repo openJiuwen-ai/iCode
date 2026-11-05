@@ -169,6 +169,35 @@ def reorder_path_demoting_runtime(env: MutableMapping[str, str]) -> MutableMappi
     return env
 
 
+def build_shell_subprocess_env() -> dict[str, str]:
+    """Build the environment for a user's shell command whose output is captured, not shown on a terminal.
+
+    The shell tool (its PTY and pipe paths) and a prompt shortcut's
+    ``!`command``` placeholders share it: plain, uncoloured UTF-8 output, no
+    pager, and the user's own tools ahead of the packaged runtime's.
+    """
+    env = os.environ.copy()
+    env["TERM"] = "dumb"
+    env["CHRYS"] = "1"
+    env["NO_COLOR"] = "1"
+    # Force UTF-8 output from Python subprocesses (and other tools
+    # that respect these variables) so CJK text is never garbled.
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    # Prevent git (and other tools) from launching a pager, which
+    # would block forever waiting for interactive input.
+    env["GIT_PAGER"] = "cat"
+    env["PAGER"] = "cat"
+    # Suppress colour-forcing variables
+    env.pop("FORCE_COLOR", None)
+    env.pop("COLORTERM", None)
+    env.pop("CLICOLOR_FORCE", None)
+    # Shell commands intentionally mirror the user's environment more closely
+    # than managed hook/skill/MCP subprocesses, so keep PYTHONHOME/PYTHONPATH.
+    reorder_path_demoting_runtime(env)
+    return env
+
+
 def which_excluding_runtime(
     name: str,
     *,

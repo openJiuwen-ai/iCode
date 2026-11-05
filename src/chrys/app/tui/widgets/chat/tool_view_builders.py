@@ -17,7 +17,8 @@ from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.util.source_text import sanitize_source_text
-from chrys.app.tui.widgets.chat.image_preview import ImagePreviewGrid, extract_image_previews
+from chrys.app.tui.widgets.chat.image_preview import extract_image_previews
+from chrys.app.tui.widgets.chat.image_view import TerminalImages
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.syntax_theme import transparent_syntax
 from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
@@ -136,26 +137,19 @@ def build_output_views(
     return widgets
 
 
-class ToolViewImage(Static):
+class ToolViewImage(TerminalImages):
     """Full-width terminal image preview for the tool detail Output tab."""
 
     def __init__(self, image_contents: Sequence[Any]) -> None:
-        super().__init__("", classes="tool-view-image")
-        self._previews = extract_image_previews(image_contents)
-
-    def render(self) -> ImagePreviewGrid | Text:
-        if not self._previews:
-            return Text(render_str(widget_localizer(self), _TOOL_VIEW_IMAGE_UNAVAILABLE.bind()), style="dim")
-        max_width = self.content_size.width or self.size.width or 80
-        return ImagePreviewGrid(
-            self._previews,
-            max_width=max_width,
+        super().__init__(
+            extract_image_previews(image_contents),
             max_rows=_TOOL_VIEW_IMAGE_MAX_ROWS,
             allow_upscale=True,
+            classes="tool-view-image",
         )
 
-    def on_resize(self) -> None:
-        self.refresh(layout=True)
+    def render(self) -> Text:
+        return Text(render_str(widget_localizer(self), _TOOL_VIEW_IMAGE_UNAVAILABLE.bind()), style="dim")
 
 
 def _scalar_text(value: object) -> Text:

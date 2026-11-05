@@ -7,14 +7,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from textual import events
+from textual.css.scalar import Scalar
 from textual.dom import NoScreen
+from textual.widget import Widget
 
 from chrys.foundation.patches.textual_reflow_reuse import reflow_reusing_records
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-    from textual.widget import Widget
 
 
 def set_widget_visibility_without_layout(widget: Widget, visible: bool) -> bool:
@@ -42,8 +42,29 @@ def set_widgets_visibility_without_layout(changes: Iterable[tuple[Widget, bool |
 
     Returns whether any local visibility rule changed.
     """
+    return set_rules_without_layout(visibility=changes)
+
+
+def set_rules_without_layout(
+    *,
+    visibility: Iterable[tuple[Widget, bool | None]] = (),
+    heights: Iterable[tuple[Widget, int]] = (),
+    remap: bool = True,
+) -> bool:
+    """Write visibility and fixed-height rules directly, then remap the screen once, with no layout.
+
+    *visibility* as :func:`set_widgets_visibility_without_layout` takes it. Each
+    of *heights* pins a widget to that many rows; a changed one drops the
+    recorded arrangement of the widget and its ancestors, so the one remap
+    places them again (a widget sized by what it shows, such as an overlay
+    card, stays out of the screen's layout this way). With *remap* False
+    nothing is remapped yet: for a hidden widget, the flip that shows it
+    remaps it. All widgets must live on the same screen.
+
+    Returns whether any rule changed.
+    """
     changed: list[Widget] = []
-    for widget, visible in changes:
+    for widget, visible in visibility:
         rule_changed = (
             widget.styles.clear_rule("visibility")
             if visible is None
@@ -53,11 +74,18 @@ def set_widgets_visibility_without_layout(changes: Iterable[tuple[Widget, bool |
             if visible is False:
                 _blur_focus_within(widget)
             changed.append(widget)
+    for widget, rows in heights:
+        if widget.styles.set_rule("height", Scalar.from_number(rows)):
+            for node in widget.ancestors_with_self:
+                if isinstance(node, Widget):
+                    node._clear_arrangement_cache()
+            changed.append(widget)
     if not changed:
         return False
-    _sync_compositor_after_visibility_change(changed[0])
-    for widget in changed:
-        widget.refresh()
+    if remap:
+        _sync_compositor_after_visibility_change(changed[0])
+        for widget in changed:
+            widget.refresh()
     return True
 
 

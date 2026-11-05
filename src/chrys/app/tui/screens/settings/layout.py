@@ -19,7 +19,7 @@ from chrys.foundation.i18n import MessageDef, msg
 # ── Tab titles ─────────────────────────────────────────────────────────
 _TAB_GENERAL = msg("tui.settings.tab.general", fallback="General")
 _TAB_MODELS_AGENTS = msg("tui.settings.tab.models_agents", fallback="Models & Agents")
-_TAB_SECURITY = msg("tui.settings.tab.security", fallback="Security")
+_TAB_SAFETY = msg("tui.settings.tab.safety", fallback="Safety")
 _TAB_SESSIONS = msg("tui.settings.tab.sessions", fallback="Sessions")
 _TAB_TOOLS = msg("tui.settings.tab.tools", fallback="Tools")
 _TAB_NOTIFICATIONS = msg("tui.settings.tab.notifications", fallback="Notifications")
@@ -34,6 +34,7 @@ _SECTION_MODEL_ROLES = msg("tui.settings.section.model_roles", fallback="Model r
 _SECTION_LLM = msg("tui.settings.section.llm", fallback="LLM")
 _SECTION_APPROVAL = msg("tui.settings.section.approval", fallback="Approval")
 _SECTION_PROJECT_TRUST = msg("tui.settings.section.project_trust", fallback="Project trust")
+_SECTION_CREDENTIALS = msg("tui.settings.section.credentials", fallback="Credentials")
 _SECTION_DIAGNOSTICS = msg("tui.settings.section.diagnostics", fallback="Diagnostics")
 _SECTION_TELEMETRY = msg("tui.settings.section.telemetry", fallback="Telemetry")
 _SECTION_LOCATION = msg("tui.settings.section.location", fallback="Location")
@@ -42,6 +43,7 @@ _SECTION_DISPLAY = msg("tui.settings.section.display", fallback="Display prefere
 _SECTION_WORKSPACE_NOTICE = msg("tui.settings.section.workspace_notice", fallback="Workspace notice")
 _SECTION_NOTIFICATIONS = msg("tui.settings.section.notifications", fallback="Notifications")
 _SECTION_FILE_SEARCH = msg("tui.settings.section.file_search", fallback="File search")
+_SECTION_IMAGES = msg("tui.settings.section.images", fallback="Images")
 _SECTION_WEB = msg("tui.settings.section.web", fallback="Web search")
 _SECTION_ASK_USER = msg("tui.settings.section.ask_user", fallback="Ask user")
 
@@ -66,6 +68,14 @@ _HINT_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
 _HINT_UI_CHAT_FOLD_FINISHED_TURNS = msg(
     "tui.settings.hint.ui.chat.fold_finished_turns",
     fallback="Fold activity after successful replies. Applies to future completed turns and sessions opened afterwards; existing folds keep their state.",
+)
+_HINT_UI_CHAT_IMAGE_GRAPHICS = msg(
+    "tui.settings.hint.ui.chat.image_graphics",
+    fallback=(
+        "Show images in full color in Ghostty, kitty, iTerm2 3.7.5 or later, WezTerm, VS Code with terminal images "
+        "on and Windows Terminal 1.22 or later, asking the terminal at startup which one it is. When off, or in "
+        "other terminals, images are drawn with colored blocks."
+    ),
 )
 _HINT_APP_UPDATE_CHECK = msg(
     "tui.settings.hint.app.update_check",
@@ -98,6 +108,10 @@ _HINT_MODEL_ROLE_BUDDY_MODEL_ID = msg(
 _HINT_LLM_RETRY_MAX_TRANSIENT = msg(
     "tui.settings.hint.llm.retry.max_transient",
     fallback="Blank = the frontend default ({default}); 0 = never retry; at most {maximum}.",
+)
+_HINT_LLM_CREDENTIAL_COMMAND_TTL_SECONDS = msg(
+    "tui.settings.hint.llm.credential_command.ttl_seconds",
+    fallback="How often a {{{{!command}}}} value runs again; at least 60 seconds. A token the service refuses is replaced at once.",
 )
 _HINT_APPROVAL_DEFAULT_MODE = msg(
     "tui.settings.hint.approval.default_mode",
@@ -175,6 +189,13 @@ _HINT_ROLLBACK_SNAPSHOTS_KEEP = msg(
 _HINT_SEARCH_RESPECT_GITIGNORE = msg(
     "tui.settings.hint.tools.search.respect_gitignore",
     fallback="Apply Git ignore rules to grep and glob searches. Hidden paths and other ignore rules still apply when off.",
+)
+_HINT_TOOLS_IMAGE_SEND_LIMIT_KB = msg(
+    "tui.settings.hint.tools.image.send_limit_kb",
+    fallback=(
+        "Larger images are compressed before they are sent, earlier ones in the session included; "
+        "from 32 to 3072, default {default}. Lower it if a request with images fails as too large, then retry."
+    ),
 )
 _HINT_TOOLS_ASK_USER_INLINE = msg(
     "tui.settings.hint.tools.ask_user.inline",
@@ -320,6 +341,7 @@ TABS: tuple[SettingsTab, ...] = (
                     SettingRowSpec("ui.chat.show_thinking", hint=_HINT_UI_CHAT_THINKING_EXPANDED),
                     SettingRowSpec("ui.chat.tool_groups_expanded", hint=_HINT_UI_CHAT_TOOL_GROUPS_EXPANDED),
                     SettingRowSpec("ui.chat.fold_finished_turns", hint=_HINT_UI_CHAT_FOLD_FINISHED_TURNS),
+                    SettingRowSpec("ui.chat.image_graphics", hint=_HINT_UI_CHAT_IMAGE_GRAPHICS),
                 ),
             ),
             SettingsSection(
@@ -380,8 +402,8 @@ TABS: tuple[SettingsTab, ...] = (
         ),
     ),
     SettingsTab(
-        id="security",
-        title=_TAB_SECURITY,
+        id="safety",
+        title=_TAB_SAFETY,
         sections=(
             SettingsSection(
                 _SECTION_APPROVAL,
@@ -399,6 +421,10 @@ TABS: tuple[SettingsTab, ...] = (
                     SettingRowSpec("project.hooks_enabled", hint=_HINT_PROJECT_HOOKS_ENABLED),
                     SettingRowSpec("project.skills_enabled", hint=_HINT_PROJECT_SKILLS_ENABLED),
                 ),
+            ),
+            SettingsSection(
+                _SECTION_CREDENTIALS,
+                (SettingRowSpec("llm.credential_command.ttl_seconds", hint=_HINT_LLM_CREDENTIAL_COMMAND_TTL_SECONDS),),
             ),
             SettingsSection(
                 _SECTION_DIAGNOSTICS,
@@ -452,6 +478,16 @@ TABS: tuple[SettingsTab, ...] = (
             SettingsSection(
                 _SECTION_FILE_SEARCH,
                 (SettingRowSpec("tools.search.respect_gitignore", hint=_HINT_SEARCH_RESPECT_GITIGNORE),),
+            ),
+            SettingsSection(
+                _SECTION_IMAGES,
+                (
+                    SettingRowSpec(
+                        "tools.image.send_limit_kb",
+                        hint=_HINT_TOOLS_IMAGE_SEND_LIMIT_KB,
+                        hint_args=HintArgs.FIELD_DEFAULT,
+                    ),
+                ),
             ),
             SettingsSection(
                 _SECTION_WEB,

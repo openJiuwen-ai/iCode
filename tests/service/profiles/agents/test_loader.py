@@ -627,6 +627,36 @@ def test_load_profiles_from_nonexistent_dir(tmp_path: Path) -> None:
     assert result == []
 
 
+@pytest.mark.parametrize("transport,field", [("stdio", "env"), ("http", "headers")])
+def test_mcp_mapping_coerces_values_without_resolving_templates(tmp_path: Path, transport: str, field: str) -> None:
+    path = tmp_path / "mcp.yaml"
+    values = {"PORT": 8080, "FLAG": True, "TOKEN": "{{!must-not-run}}"}
+    path.write_text(
+        yaml.safe_dump({"name": "Code", "tools": {"mcp": [{"name": "server", "transport": transport, field: values}]}}),
+        encoding="utf-8",
+    )
+
+    server = load_profile_from_yaml(path).tools.mcp[0]
+
+    assert (server.env if field == "env" else server.headers) == {
+        "PORT": "8080",
+        "FLAG": "True",
+        "TOKEN": "{{!must-not-run}}",
+    }
+
+
+@pytest.mark.parametrize("transport,field", [("stdio", "env"), ("http", "headers")])
+def test_mcp_rejects_non_mapping_environment_and_headers(tmp_path: Path, transport: str, field: str) -> None:
+    path = tmp_path / "mcp.yaml"
+    path.write_text(
+        yaml.safe_dump({"name": "Code", "tools": {"mcp": [{"name": "server", "transport": transport, field: []}]}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AgentProfileLoadError, match=rf"tools\.mcp\.{field}.*must be a mapping"):
+        load_profile_from_yaml(path)
+
+
 def test_load_mcp_all_transports(tmp_path: Path) -> None:
     """Verify MCP transport types parse correctly from YAML."""
     p = tmp_path / "mcp.yaml"

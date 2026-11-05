@@ -453,12 +453,8 @@ App:ansi DataTable {
     background: transparent;
 }
 
-/* ANSI card surfaces and checkbox toggles. */
-App:ansi SubAgentCard,
-App:ansi MCPConnectionCard,
-App:ansi SkillDirCard,
-App:ansi MemoryFileCard,
-App:ansi MemoryFolderCard {
+/* ANSI card surfaces and checkbox toggles: every config card, whichever dialog shows it. */
+App:ansi ConfigCard {
     background: $control-background-muted;
     border: solid $tui-border-foreground 25%;
 }

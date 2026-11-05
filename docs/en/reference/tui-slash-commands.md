@@ -6,6 +6,8 @@ Slash commands are shortcuts entered in the terminal user interface (TUI) input 
 
 A slash command must start at the beginning of the input, with the command and its arguments on the same line.
 
+`/btw` also accepts a question spanning multiple lines.
+
 - Valid example: `/diff` runs as a command.
 - Invalid example: `Please run /diff` does not trigger a command.
 
@@ -36,6 +38,7 @@ In this table:
 
 | Command and usage | Aliases | Description | Options |
 | --- | --- | --- | --- |
+| `/btw [question]` | — | Ask a side question using the current conversation while the main task continues. The answer appears in a separate card below the chat. See [Ask a side question](../guides/daily-use/sessions.md#ask-a-side-question). | `question`: optional; may span multiple lines. Omit it to reopen saved side questions for this session. |
 | `/new` | — | Start a new session and keep the current session. See [Switch to a new session](../guides/daily-use/sessions.md#switch-to-a-new-session). | — |
 | `/clear` | — | Delete the current session and start a new one. This cannot be undone after confirmation. See [Switch to a new session](../guides/daily-use/sessions.md#switch-to-a-new-session). | — |
 | `/exit` | `/quit` | Exit iCode and return to the terminal. | — |
@@ -54,11 +57,18 @@ In this table:
 | `/models` | — | Open the model configuration dialog. See [Configure models](../guides/configuration/models.md). | — |
 | `/buddy [command]` | — | Manage your Buddy companion. Only `hatch` is available before hatching; the other options become available afterward. | No argument: press **Space** or **Enter** to show available commands.<br>`hatch`: hatch a new companion.<br>`info`: show companion information.<br>`pet`: interact with the companion and generate a response.<br>`mute`: toggle companion notifications.<br>`name <new-name>`: rename the companion to `new-name`. |
 | `/agents [target]` | `/agent`<br>`/config` | Open the agent configuration dialog. See [Open the agent configuration window](../guides/configuration/agents.md#open-the-agent-configuration-window). | No argument: press **Space** or **Enter** to show available tabs.<br>`target`: open a specific tab directly. Available values are `basic`, `instructions`, `tools`, `sub-agents`, `skills`, `mcp`, `memory`, and `compaction`.<br>Argument aliases: `subagents` is equivalent to `sub-agents`; `skill` is equivalent to `skills`. |
-| `/runtime` | `/details` | Open the "Runtime Details" dialog to view the current model profile and model ID, built-in tools grouped by tool kind, context management tools, sub-agent tools, MCP tools grouped by server, skills grouped by source, loaded hooks, and preconfigured memory files. | — |
-| `/settings [tab]` | — | Open the settings dialog. See [Configure iCode settings](../guides/configuration/settings.md#settings-dialog). | `tab`: open a specific tab directly. Available values are `general`, `models`, `security`, `sessions`, `tools`, and `notifications`. With no argument, press **Space** or **Enter** to show available tabs. |
+| `/runtime` | `/details` | Open the "Runtime Details" dialog to view the current model profile and model ID, built-in tools grouped by tool kind, context management tools, sub-agent tools, MCP tools grouped by server, prompt shortcuts grouped by source folder, skills grouped by source, loaded hooks, and preconfigured memory files. | — |
+| `/usage` | — | Open the token usage window, with totals, trends and speed across all your sessions. See [Check token usage and speed](../guides/daily-use/sessions.md#check-token-usage-and-speed). | — |
+| `/settings [tab]` | — | Open the settings dialog. See [Configure iCode settings](../guides/configuration/settings.md#settings-dialog). | `tab`: open a specific tab directly. Available values are `general`, `models`, `safety`, `sessions`, `tools`, and `notifications`. With no argument, press **Space** or **Enter** to show available tabs. |
 | `/workflow` | — | Open Workflow mode and select a workflow. See [Create and run workflows](../guides/running/workflows.md). | — |
 | `/help` | — | Open the "iCode User Guide" dialog, which shows this documentation. You can also press **F8** or click `f8 Help` in the footer. | — |
 | `/man [command]` | — | Show iCode command help. | No argument: press **Space** or **Enter** to show commands with help available.<br>`command`: a command name or alias. Show the specified command's name, usage, description, aliases, and options. |
+
+## Prompt shortcuts
+
+Prompt shortcuts are prompts you save as Markdown files in `~/.chrys/shortcuts` (Windows: `%APPDATA%\chrys\shortcuts`) or `.chrys/shortcuts` in your project. They are listed in the “Prompt Shortcuts” group after you type `/`; choosing one, or typing `/name arguments` and pressing **Tab** or **Enter**, fills its prompt into the input field for you to edit and send. To write them, see [Write and use shortcuts](../guides/extensions/shortcuts.md).
+
+When you type a name, built-in commands come first, then skills, then prompt shortcuts.
 
 ## Skill commands
 

@@ -156,6 +156,12 @@ class ExecutionLease:
 
     active_admissions: dict[int, PromptAdmissionRecord] = field(default_factory=dict)
 
+    # Active admissions running a prompt shortcut's ``!`command``` placeholders: the
+    # execution counts as busy from their start until the admission ends (its turn
+    # started, or it was refused), and their trajectory waits close with the admission.
+    prompt_command_admissions: set[int] = field(default_factory=set, repr=False, compare=False)
+    prompt_command_waits: dict[int, WaitTrace] = field(default_factory=dict, repr=False, compare=False)
+
     pre_admission_preparations: dict[str, PreAdmissionPreparationEntry] = field(
         default_factory=dict,
         repr=False,
@@ -538,12 +544,45 @@ class ExecutionLease:
         return pending
 
     def clear_active_admissions(self, *, outcome: str) -> None:
-        """Clear active admissions and terminalize their preparation scopes."""
+        """Clear active admissions and terminalize their preparation scopes, child waits first."""
+        for wait in self.prompt_command_waits.values():
+            wait.finished_soon(outcome=WaitOutcome.CANCELLED)
+        self.prompt_command_waits.clear()
         for admission in self.active_admissions.values():
             if admission.preparation_trace is not None:
                 admission.preparation_trace.finished_soon(outcome=outcome)
         self.active_admissions.clear()
         self.active_admissions_idle.set()
+        if self.prompt_command_admissions:
+            self.prompt_command_admissions.clear()
+            self._notify_execution()
+
+    def begin_prompt_commands(self, admission: PromptAdmissionScope, wait: WaitTrace | None) -> bool:
+        """Mark *admission* as running its prompt-shortcut commands; False when it is no longer active.
+
+        The execution is busy from now until :meth:`end_prompt_commands`, called
+        when the admission itself ends — after its turn started, so the state
+        goes from the commands to the turn without passing through idle. *wait*
+        is the commands' trajectory wait: closed here if the admission is
+        cleared first (:meth:`clear_active_admissions`).
+        """
+        if admission.admission_id not in self.active_admissions:
+            return False
+        self.prompt_command_admissions.add(admission.admission_id)
+        if wait is not None:
+            self.prompt_command_waits[admission.admission_id] = wait
+        self._notify_execution()
+        return True
+
+    def take_prompt_commands_wait(self, admission: PromptAdmissionScope) -> WaitTrace | None:
+        """Hand the commands' wait back to the step that closes it; None when a clear already closed it."""
+        return self.prompt_command_waits.pop(admission.admission_id, None)
+
+    def end_prompt_commands(self, admission: PromptAdmissionScope) -> None:
+        """The admission that ran prompt-shortcut commands ended; a no-op for any other."""
+        if admission.admission_id in self.prompt_command_admissions:
+            self.prompt_command_admissions.discard(admission.admission_id)
+            self._notify_execution()
 
     def upsert_pending_retry_from_admission(
         self,
@@ -700,8 +739,9 @@ class ExecutionLease:
                 observed.add(task)
 
     def execution_busy(self) -> bool:
-        """Lifecycle-busy predicate: a live turn task (prepare through save) or a held workflow run."""
-        return self.turn_busy() or self.workflow is not None
+        """Lifecycle-busy predicate: a live turn task (prepare through save), a held workflow run, or an
+        admission running a prompt shortcut's commands."""
+        return self.turn_busy() or self.workflow is not None or bool(self.prompt_command_admissions)
 
     def turn_busy(self) -> bool:
         """The turn half of :meth:`execution_busy`: the top-level task includes prepare and save."""
@@ -719,6 +759,9 @@ class ExecutionLease:
             )
         if self.turn_busy():
             return ExecutionSnapshot("turn", cancellable=True)
+        if self.prompt_command_admissions:
+            # The turn is being prepared: Esc withdraws the message, there is no run to interrupt yet.
+            return ExecutionSnapshot("turn", cancellable=False)
         return ExecutionSnapshot("idle")
 
     def workflow_start_allowed(self) -> bool:

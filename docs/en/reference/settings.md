@@ -41,6 +41,7 @@ In the tables, “None” means there is no corresponding environment variable, 
 | `ui.chat.tool_groups_expanded` | None | `false` | Boolean; whether newly displayed tool groups expand their details by default |
 | `ui.chat.show_thinking` | None | `false` | Boolean; whether new readable thinking in the TUI chat is expanded above the reply while the model writes it; when `false`, it stays on one line, which shows the newest words as the model writes them. Either way it folds once the model moves on. Thinking the service returns only in encrypted form is never shown |
 | `ui.chat.fold_finished_turns` | None | `true` | Boolean; automatically fold intermediate activity after successful replies. Applies to future completed turns and subsequently opened sessions; existing sections keep their state. User messages and final replies remain visible |
+| `ui.chat.image_graphics` | None | `true` | Boolean; ask the terminal what it is at startup, and in Ghostty, kitty, iTerm2 3.7.5 or later, WezTerm, VS Code with terminal images on and Windows Terminal 1.22 or later show conversation images in full color with the terminal's own graphics; when `false` the terminal is not asked and, as in other terminals, images are drawn with colored blocks. Read at startup |
 | `ui.chat.file_snapshot_inline_chars` | `CHRYS_TUI_FILE_SNAPSHOT_INLINE_CHARS` | `131072` | Integer; limits the before-and-after file content loaded directly with a file edit card, measured by their combined byte size. Within the limit, content loads with the card and the header shows the exact numbers of added and deleted lines. Above the limit, if snapshot references are available, content is read only when the diff is expanded, and the header does not show exact line counts. `0` or a negative value sets the limit to zero; inline content may still be retained when no snapshot references are available. This setting controls only how the card loads content; `mutations.snapshot.max_file_mb` and `mutations.snapshot.skip_binary` determine whether file content is backed up |
 | `history.prompt.enabled` | `CHRYS_HISTORY_DISABLE` | `true` | Boolean; save and read input history across sessions. Disabling it does not delete existing records. The environment variable has the opposite meaning: only the exact value `1` disables history; other values do not |
 | `app.update_check` | `CHRYS_UPDATE_CHECK` | `true` | Boolean; once a day, when the TUI starts, look up the newest iCode version and, when it is newer, show it on the welcome screen with the command that upgrades iCode. The request carries none of your personal information or data. `icode run`, `icode acp` and `icode serve` never check |
@@ -58,6 +59,7 @@ Model role keys take the ID or unique name of an existing model profile. Buddy d
 | `model.role.session_title` | `CHRYS_MODEL_PROFILE_SESSION_TITLE` | Unset | String; the model profile used to generate session titles automatically. Uses the current model when unset |
 | `model.role.buddy_model_id` | `CHRYS_PET_MODEL` | Unset | String; the model used by Buddy, using the current model profile's connection. Uses the current model when unset |
 | `llm.retry.max_transient` | `CHRYS_MAX_TRANSIENT_RETRIES` | `null` | Integer or `null`; `null` uses the default retry count for the launch command: `10` for the TUI (including `icode serve`) and `icode acp`, or `18` for `icode run` and `icode workflow run`. The wait before each retry grows, up to 10 minutes. `0` disables automatic retries for transient errors; negative values are invalid; capped at `50` |
+| `llm.credential_command.ttl_seconds` | `CHRYS_CREDENTIAL_COMMAND_TTL_SECONDS` | `3600` | Integer; how long, in seconds, a value from a `{{!command}}` placeholder is used before the next request runs the command again. Minimum `60`. A value the service refuses is replaced at once. Takes effect after a restart. See [Get an API key from a command](../guides/configuration/models.md#get-an-api-key-from-a-command) |
 
 Transient error retries handle recoverable errors such as temporary network failures, request timeouts, and rate limits. Raising the count also increases the wait and number of requests before a final failure. This number is not the total number of model requests for the entire task.
 
@@ -96,6 +98,7 @@ Changing the session storage root does not automatically move existing sessions.
 | YAML key | Environment variable | Default | Type, values, and effect |
 | --- | --- | --- | --- |
 | `tools.search.respect_gitignore` | None | `true` | Boolean; apply `.gitignore` rules to grep and glob searches. When `false`, hidden paths are still skipped and other ignore files such as `.ignore` still apply |
+| `tools.image.send_limit_kb` | `CHRYS_IMAGE_SEND_LIMIT_KB` | `256` | Integer from `32` to `3072`; values outside are clamped. The most KB an image's file takes when sent to the model (about a third more in the request, as base64). A larger image is compressed to a JPEG within it when it is attached, viewed, or sent by an ACP client; at the start of each turn and retry, larger images sent earlier in the session are compressed too |
 | `tools.ask_user.inline` | `CHRYS_ASK_USER_INLINE` | `false` | Boolean; show agent questions in the TUI conversation instead of a dialog |
 | `tools.ask_user.timeout_seconds` | `CHRYS_ASK_USER_TIMEOUT_SECONDS` | `900` | Integer or `null`; seconds to wait for an answer. On timeout, a timeout result is returned to the agent. `0`, a negative value, or `null` in user YAML means wait indefinitely |
 | `tools.result.ceiling_tokens` | `CHRYS_TOOL_RESULT_CEILING_TOKENS` | `64000` | Integer; final length limit for a single tool result before it is passed to the model, in tokens. `0` disables this limit; positive values have a minimum of `2000`; negative values are invalid |
@@ -202,7 +205,7 @@ These are the general rules for values in settings files and environment variabl
 
 ## Project-level settings
 
-Project settings are not loaded by default. First enable them in the user `settings.yaml`, or turn on “Load project settings” under “Settings → Security” in the TUI:
+Project settings are not loaded by default. First enable them in the user `settings.yaml`, or turn on “Load project settings” under “Settings → Safety” in the TUI:
 
 ```yaml
 project:

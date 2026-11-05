@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Shared path-entry card primitive for agent configuration panels."""
+"""Shared path-entry card primitive for configuration panels."""
 
 from __future__ import annotations
 
@@ -17,16 +17,16 @@ from textual.message import Message
 from textual.widgets import Button, Label
 
 from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.screens.agents.panels.config_card import ConfigCard
 from chrys.app.tui.widgets import Checkbox, ConfigActionButton
 from chrys.app.tui.widgets import EnhancedInput as Input
+from chrys.app.tui.widgets.config_card import ConfigCard
 from chrys.foundation.i18n import MessageDef, msg
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 _BROWSE = msg("tui.agent_config.path_entry.browse", fallback="Browse")
-_WORKSPACE_RELATIVE = msg("tui.agent_config.path_entry.workspace_relative", fallback="Workspace relative")
+WORKSPACE_RELATIVE = msg("tui.agent_config.path_entry.workspace_relative", fallback="Workspace relative")
 
 
 class PathEntryCard(ConfigCard):
@@ -118,7 +118,7 @@ class PathEntryCard(ConfigCard):
                     yield browse
             if self._supports_file_path_mode:
                 relative = Checkbox(
-                    render_str(localizer, _WORKSPACE_RELATIVE.bind()),
+                    render_str(localizer, WORKSPACE_RELATIVE.bind()),
                     value=self._is_relative,
                     id=self._relative_checkbox_id,
                     classes=f"{self._style_prefix}-rel-cb",

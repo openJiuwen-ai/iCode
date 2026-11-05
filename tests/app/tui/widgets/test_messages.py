@@ -5,13 +5,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from io import StringIO
 from unittest.mock import patch
 
 import pytest
 from PIL import Image
 from rich.color import ColorSystem
-from rich.console import Console
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -25,7 +23,7 @@ from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.theme import CHRYS_THEME, TuiVariableDefaultsMixin
 from chrys.app.tui.widgets.chat import image_preview as image_preview_module
 from chrys.app.tui.widgets.chat.fold_rows import AGENT_LABEL, OPEN_ARROW, THOUGHT_LABEL
-from chrys.app.tui.widgets.chat.image_preview import ImagePreviewGrid, extract_image_previews
+from chrys.app.tui.widgets.chat.image_preview import extract_image_previews
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     ConversationStatusAction,
@@ -113,19 +111,21 @@ async def test_user_message_body_shows_control_characters_as_text() -> None:
         assert msg.text == text
 
 
-def test_user_message_renders_embedded_image_preview() -> None:
+async def test_user_message_renders_embedded_image_preview_below_a_blank_row() -> None:
     contents = [
         "look at @shot.png",
         Content.from_data(data=png_bytes((240, 80, 80)), media_type="image/png"),
     ]
-    msg = UserMessage("look at @shot.png", contents=contents)
 
-    console = Console(width=80, record=True, force_terminal=True, color_system="truecolor")
-    console.print(_UserImagePreview(msg._image_previews).render())
-    rendered = console.export_text(styles=False)
+    async with WidgetApp(lambda: UserMessage("look at @shot.png", contents=contents)).run_test(size=(80, 20)) as pilot:
+        msg = pilot.app.query_one(UserMessage)
+        preview = msg.query_one(_UserImagePreview)
+        await wait_for(lambda: preview.content_size.height == 10, pilot=pilot, description="the image is laid out")
 
-    assert "\u2580" in rendered
-    assert len(msg._image_previews) == 1
+        assert len(msg._image_previews) == 1
+        assert preview.region.height == 11
+        assert preview.styles.padding.top == 1
+        assert all(preview.render_line(y).text == "\u2580" * 32 for y in range(10))
 
 
 async def test_user_message_with_embedded_image_keeps_text_selectable() -> None:
@@ -142,7 +142,7 @@ async def test_user_message_with_embedded_image_keeps_text_selectable() -> None:
         image_widget = msg.query_one(_UserImagePreview)
         widget, offset = pilot.app.screen.get_widget_and_offset_at(text_widget.region.x + 6, text_widget.region.y)
         image_hit, image_offset = pilot.app.screen.get_widget_and_offset_at(
-            image_widget.region.x, image_widget.region.y
+            image_widget.content_region.x, image_widget.content_region.y
         )
 
         assert widget is text_widget
@@ -244,29 +244,6 @@ def test_image_preview_extracts_bounded_display_copy() -> None:
     assert previews[0].image.height <= 512
 
 
-def test_user_image_preview_caches_render_lines(monkeypatch: pytest.MonkeyPatch) -> None:
-    contents = [
-        "look at @shot.png",
-        Content.from_data(data=png_bytes((240, 80, 80)), media_type="image/png"),
-    ]
-    calls = 0
-    original_render_lines = ImagePreviewGrid.render_lines
-
-    def render_lines(grid: ImagePreviewGrid) -> list[Text]:
-        nonlocal calls
-        calls += 1
-        return original_render_lines(grid)
-
-    monkeypatch.setattr("chrys.app.tui.widgets.chat.messages.ImagePreviewGrid.render_lines", render_lines)
-    msg = UserMessage("look at @shot.png", contents=contents)
-    preview = _UserImagePreview(msg._image_previews)
-
-    preview.render()
-    preview.render()
-
-    assert calls == 1
-
-
 def test_image_preview_extract_ignores_decompression_bomb(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -292,35 +269,6 @@ def test_image_preview_decodes_only_whitelisted_formats() -> None:
     assert [preview.media_type for preview in previews] == ["image/bmp"]
 
 
-def test_image_preview_grid_renders_multiple_images_in_one_row_and_resizes() -> None:
-    contents = [
-        Content.from_data(data=png_bytes((240, 80, 80), size=(48, 30)), media_type="image/png"),
-        Content.from_data(data=png_bytes((80, 180, 120), size=(48, 30)), media_type="image/png"),
-    ]
-    previews = extract_image_previews(contents)
-
-    wide_lines = ImagePreviewGrid(previews, max_width=42, max_rows=6).render_lines()
-    narrow_lines = ImagePreviewGrid(previews, max_width=20, max_rows=6).render_lines()
-
-    assert len(previews) == 2
-    assert 0 < len(wide_lines) <= 6
-    assert 0 < len(narrow_lines) <= 6
-    assert max(line.cell_len for line in wide_lines) <= 42
-    assert max(line.cell_len for line in narrow_lines) <= 20
-    assert max(line.cell_len for line in narrow_lines) < max(line.cell_len for line in wide_lines)
-
-
-def test_image_preview_grid_can_upscale_to_requested_width() -> None:
-    previews = extract_image_previews(
-        [Content.from_data(data=png_bytes((240, 80, 80), size=(4, 2)), media_type="image/png")]
-    )
-
-    lines = ImagePreviewGrid(previews, max_width=20, max_rows=100, allow_upscale=True).render_lines()
-
-    assert max(line.cell_len for line in lines) == 20
-    assert len(lines) == 5
-
-
 async def test_replay_history_decodes_image_previews_from_base64_contents() -> None:
     raw_messages = [
         {
@@ -341,12 +289,9 @@ async def test_replay_history_decodes_image_previews_from_base64_contents() -> N
         msg = panel.query_one(UserMessage)
         assert msg._text == "look at @a.png and @b.png"
         assert len(msg._image_previews) == 2
-        # Route to an in-memory buffer: Textual.run_test hijacks sys.stdout,
-        # which on Windows resolves to a cp1252 stream that cannot encode the
-        # user-bubble glyphs. record=True still captures into Rich's buffer.
-        console = Console(file=StringIO(), width=80, record=True, force_terminal=True, color_system="truecolor")
-        console.print(msg.query_one(_UserImagePreview).render())
-        assert "\u2580" in console.export_text(styles=False)
+        preview = msg.query_one(_UserImagePreview)
+        await wait_for(lambda: preview.content_size.height > 0, pilot=pilot, description="the images are laid out")
+        assert "\u2580" in preview.render_line(0).text
 
 
 async def test_replay_history_decodes_tool_result_images_from_base64_items() -> None:

@@ -231,7 +231,7 @@ class SettingsDialog(BaseDialog[None]):
         tabs = self.query_one("#settings-tabs", TabbedContent)
         for tab in TABS:
             tabs.get_tab(pane_id(tab.id)).label = render_str(localizer, tab.title.bind())
-            if tab.id == NOTIFICATIONS_TAB_ID or tab.id not in self._mounted_tabs:
+            if tab.custom_pane or tab.id not in self._mounted_tabs:
                 # A tab not handed to mount yet titles its sections when it is.
                 continue
             pane = self.query_one(f"#{pane_id(tab.id)}", TabPane)

@@ -51,6 +51,8 @@ class PreparationOutcome:
     TARGET_STALE: Final = "target_stale"
     REJECTED: Final = "rejected"
     IMAGE_REJECTED: Final = "image_rejected"
+    COMMAND_FAILED: Final = "command_failed"
+    """A prompt shortcut's ``!`command``` failed to start, timed out or was stopped."""
     NOT_READY: Final = "not_ready"
     PREPARATION_FAILED: Final = "preparation_failed"
     CONFLICT: Final = "conflict"

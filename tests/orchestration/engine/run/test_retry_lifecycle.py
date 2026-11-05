@@ -27,12 +27,13 @@ from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeModelDetai
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.turns import UserMessageKind
 from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.text.images import LoadedImage
 from chrys.kernel import Content, Message
 from chrys.orchestration.engine.state.machine import EngineState, EngineStateMachine, Trigger
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
-from chrys.service.session.history import SessionHistoryManager
+from chrys.service.session.history import OversizedImage, SessionHistoryManager
 from tests.support.components import make_current, make_turn_state
 from tests.support.loaded_agents import SkillRefreshLoader, install_loaded_agent, make_manifest
 from tests.support.reminder_inputs import manifest_entry
@@ -206,6 +207,12 @@ class _History:
 
     def tag_last_user_message(self, key: str, value: str) -> None:
         self.tags.append((key, value))
+
+    def images_over(self, max_bytes: int) -> list[OversizedImage]:
+        return self._input_history.images_over(max_bytes)
+
+    def shrink_images(self, shrunk: Sequence[tuple[OversizedImage, LoadedImage]]) -> int:
+        return self._input_history.shrink_images(shrunk)
 
     def merge_loop_messages(self, _loop_recorder: object, *, insert_index: int | None = None) -> None:
         return None

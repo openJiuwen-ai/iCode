@@ -24,6 +24,7 @@ from chrys.foundation.models.hook_confirmations import (
 )
 from chrys.foundation.models.hook_executions import HookExecutionView
 from chrys.foundation.models.invocations import ContentChannel, ContentStatus, InvocationOrigin
+from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.models.todos import TodoItem
 from chrys.foundation.models.workflow_session import (
     WorkflowModelSelection,
@@ -112,6 +113,16 @@ class InvocationEvent(Event):
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class PromptShortcutRef:
+    """The prompt shortcut a message's draft was expanded from, as the frontend's list loaded it."""
+
+    name: str
+    """The name typed after ``/``."""
+    path: str
+    """``PromptShortcut.path``: the file it was read from."""
+
+
 @dataclass
 class UserMessage(Event):
     """User sends a message to the agent."""
@@ -123,7 +134,9 @@ class UserMessage(Event):
     prepared_contents: list[Any] | None = field(default=None, repr=False, compare=False)
     # Set by frontends that submit while a run is active so the resulting
     # mid-run injection can be correlated and cancelled (``UserInjectCancel``)
-    # before the model sees it. ``None`` for ordinary fresh-turn submits.
+    # before the model sees it, and by a frontend for any message the user can
+    # withdraw while it is admitted (one carrying ``prompt_shortcut``). ``None``
+    # for ordinary fresh-turn submits.
     injection_id: str | None = None
     # Set by the backend, before its publish returns, when this message opened
     # a new turn — also for an injection submit whose run ended before it was
@@ -133,6 +146,54 @@ class UserMessage(Event):
     # the replay of this exact message. ``None`` for every frontend that has no
     # id of its own; the backend mints one before the turn starts.
     client_message_id: str | None = None
+    # The shortcut this message's draft was expanded from, set only when its
+    # text holds ``!`command``` placeholders: the engine runs them for that
+    # shortcut, if it still loads it, once the prompt hooks have passed, and
+    # sends their output in their place. Never joins a running turn.
+    prompt_shortcut: PromptShortcutRef | None = None
+
+
+@dataclass
+class SideQuestionRequested(Event):
+    """Ask once beside the main turn, without adding to its history."""
+
+    request_id: str = ""
+    question: str = ""
+    accepted: bool = field(default=False, compare=False)
+
+
+@dataclass
+class SideQuestionCancelled(Event):
+    """Close the named side question without interrupting the main turn."""
+
+    request_id: str = ""
+
+
+@dataclass
+class SideQuestionsReset(Event):
+    """The session ended or rolled back; close its side-question card."""
+
+
+@dataclass
+class SideQuestionHistoryRequested(Event):
+    """Read the current session's completed questions without invoking a model."""
+
+    entries: tuple[SideQuestionEntry, ...] = field(default=(), compare=False)
+    accepted: bool = field(default=False, compare=False)
+    failed: bool = field(default=False, compare=False)
+
+
+@dataclass(kw_only=True)
+class InvocationSideQuestionFailed(InvocationEvent):
+    """A side question could not answer or persist; exception details stay in logs."""
+
+    kind: Literal["answer", "save", "blocked"] = "answer"
+    reason: str = ""
+
+
+@dataclass(kw_only=True)
+class InvocationSideQuestionEnded(InvocationEvent):
+    """The backend cancelled a side question, including during a session operation."""
 
 
 @dataclass
@@ -302,6 +363,30 @@ class AgentProfileSwitch(Event):
     """User switches to a different agent profile."""
 
     profile_name: str = ""
+    source: Literal["user", "fallback"] = "user"
+    """``user``: the user's own pick, which new sessions also start on. ``fallback``: a
+    frontend replacing the session's agent after its profile was deleted, renamed or retired."""
+
+
+@dataclass
+class SessionOnlySwitch(Event):
+    """Switch this session's own agent and/or model in one rebuild, or neither (a prompt shortcut's).
+
+    New sessions keep starting on the agent and model they did. The engine
+    sets ``applied`` before the publish returns: True when what was asked is
+    in force, False when nothing changed (a refusal or failure was published).
+    A model the agent would not run is no part of what can be asked: the
+    engine leaves it out and says so in ``model_left_out``.
+    """
+
+    agent: str = ""
+    """Agent profile name; empty keeps the session's agent."""
+    model_profile: str = ""
+    """Model profile id; empty keeps the session's model."""
+    applied: bool = field(default=False, compare=False)
+    model_left_out: bool = field(default=False, compare=False)
+    """Set by the engine: the agent the switch runs on binds a model of its own (or an override is set),
+    which runs over the one asked for, so that one was not made the session's."""
 
 
 @dataclass
@@ -322,6 +407,9 @@ class ConfigUpdate(Event):
 @dataclass
 class SettingsReload(Event):
     """User updated .env settings — engine should reload Settings and rebuild agent."""
+
+    model_chosen: bool = False
+    """The user picked the default model for this session too (``$``): the session's own model ends."""
 
 
 @dataclass
@@ -1119,6 +1207,8 @@ class Warning(Event):
     message: str = ""
     """Pre-rendered English retained byte-for-byte for compatibility consumers."""
     display_message: MessageRef | None = None
+    reason: str = ""
+    """Machine-readable cause within ``code``, for callers that act on it; empty when ``code`` says it all."""
 
 
 @dataclass
@@ -1251,6 +1341,24 @@ class ImageAttachmentCompressionFinished(Event):
     """Image attachment compression has finished before a user turn is sent."""
 
     image_count: int = 0
+
+
+@dataclass
+class PromptCommandsRunning(Event):
+    """A message's prompt-shortcut ``!`command``` placeholders started running, before its turn starts."""
+
+    count: int = 0
+    injection_id: str | None = None
+    """The message's ``UserMessage.injection_id``."""
+
+
+@dataclass
+class PromptCommandsEnded(Event):
+    """The commands a :class:`PromptCommandsRunning` announced ended; always follows one, whatever ended them."""
+
+    outcome: Literal["completed", "command_failed", "cancelled"] = "completed"
+    injection_id: str | None = None
+    """The message's ``UserMessage.injection_id``."""
 
 
 @dataclass

@@ -237,6 +237,8 @@ class WaitCategory:
     TOOL_ADMISSION = "tool_admission"
     HOOK_CONFIRMATION = "hook_confirmation"
     """A hook's ``ask`` waiting for the user (codes only; the hook's reason stays out)."""
+    PROMPT_COMMANDS = "prompt_commands"
+    """A message's prompt-shortcut ``!`command``` placeholders running before its turn (outcome only)."""
 
 
 class ProfileKind:

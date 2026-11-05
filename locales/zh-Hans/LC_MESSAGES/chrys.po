@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.32.2\n"
+"Project-Id-Version: Chrys 0.33.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -206,12 +206,18 @@ msgstr "无法加载项目钩子配置：{detail}。已禁用项目钩子；全�
 msgid "construction.service_session_incompatible"
 msgstr "先前的 OpenAI Responses 服务会话与当前智能体配置、工作区、模型配置或服务地址不兼容，或存储已禁用。{app_name} 将仅从本地历史记录继续。"
 
-#. English: Trajectory recording could not start and has been disabled for this
-#. session.
-#. chrys-meta={"fingerprint":"67020f0175a7a2b0413932bf9a05582d7a4debcf941968f058445c18e7f31a66","multiline":false,"placeholders":[]}
+#. English: Detailed trajectory recording is off for this session; your task
+#. can continue.
+#. chrys-meta={"fingerprint":"dc19fb815bca13dfbbb3d6c7406ed71fa3d2dffd25fe54b477ec65f033d2c910","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "construction.trajectory_activation_failed"
-msgstr "轨迹记录无法启动，已为此会话禁用。"
+msgstr "此会话的详细轨迹记录已关闭，任务可以继续。"
+
+#. English: Model profile '{profile_id}' not found
+#. chrys-meta={"fingerprint":"5a33b040dd79831725bbe1011477eb6f0fe317752443876f63310bc532486969","multiline":false,"placeholders":["profile_id"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.model_profile_not_found"
+msgstr "未找到模型配置“{profile_id}”"
 
 #. English: No active agent — cannot switch model
 #. chrys-meta={"fingerprint":"0eb68fe3143e750485fd38d2b6c5145940256aaba7fb6c654ea4b2f67554d981","multiline":false,"placeholders":[]}
@@ -266,6 +272,39 @@ msgstr "智能体基础设施正在加载，已忽略中断。"
 #: src/chrys/orchestration/engine/run/coordinator.py
 msgid "coordinator.prompt_admission_conflict"
 msgstr "另一个轮次已经开始，无法接纳此提示。"
+
+#. English: The command {command} could not start ({detail}). Nothing was sent.
+#. chrys-meta={"fingerprint":"ba99b6ad60457d292f6362f06ca177fd832a88fe9145ae70e892dd4ce5a704e2","multiline":false,"placeholders":["command","detail"]}
+#: src/chrys/orchestration/engine/run/shortcut_commands.py
+msgid "coordinator.prompt_command_not_started"
+msgstr "命令 {command} 无法启动（{detail}），消息未发送。"
+
+#. English: The command {command} was stopped. Nothing was sent.
+#. chrys-meta={"fingerprint":"06b3821d08dd0a0302bbf597aa85612358e7413587e2013e34d6e117065bed5f","multiline":false,"placeholders":["command"]}
+#: src/chrys/orchestration/engine/run/shortcut_commands.py
+msgid "coordinator.prompt_command_stopped"
+msgstr "命令 {command} 已被停止，消息未发送。"
+
+#. English: The command {command} did not finish within {seconds} seconds.
+#. Nothing was sent.
+#. chrys-meta={"fingerprint":"5afc83d83c9d064fbcaa765f463c23b07b888e390858073cdc605f37fe113787","multiline":false,"placeholders":["command","seconds"]}
+#: src/chrys/orchestration/engine/run/shortcut_commands.py
+msgid "coordinator.prompt_command_timed_out"
+msgstr "命令 {command} 未在 {seconds} 秒内结束，消息未发送。"
+
+#. English: A shortcut's prompt that runs commands is not added to a running
+#. task. Send it when the task ends.
+#. chrys-meta={"fingerprint":"a4bdba6881e2e4eb7237c33c9eb92ecbef013ffc6e130505364fbc2a298cb2cc","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/run/coordinator.py
+msgid "coordinator.prompt_shortcut_busy"
+msgstr "会运行命令的快捷指令提示词不会加入正在运行的任务，请等任务结束后再发送。"
+
+#. English: /{name} is not a shortcut in this working folder any more, so its
+#. commands did not run. Nothing was sent.
+#. chrys-meta={"fingerprint":"5a6c676ca8c1e4cf8bf041273eb325296124ba640a954c34d8cc6e1c17019b65","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/run/shortcut_commands.py
+msgid "coordinator.prompt_shortcut_unavailable"
+msgstr "/{name} 已不是这个工作目录中的快捷指令，它的命令没有运行，消息未发送。"
 
 #. English: Cannot fork while the agent is still loading.
 #. chrys-meta={"fingerprint":"58707a7fdc91fb94c1d0a6b41ca778e9dd23734a19936db26b4b12b62962e20e","multiline":false,"placeholders":[]}
@@ -958,6 +997,12 @@ msgstr "上下文警告阈值"
 msgid "settings.history.prompt.enabled.label"
 msgstr "保存提示词历史"
 
+#. English: Credential command refresh interval (seconds)
+#. chrys-meta={"fingerprint":"881e643e078c60d678dbf44dab477bf459f1be252a6c92313a23bf6339c0267e","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.llm.credential_command.ttl_seconds.label"
+msgstr "凭据命令刷新间隔（秒）"
+
 #. English: Max transient retries
 #. chrys-meta={"fingerprint":"d5460f5ca26e427c6b0b266cf04c7d364d9e116aeaa4d3158676c7a1e16a0d01","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -1135,29 +1180,29 @@ msgid "settings.project.skills_enabled.label"
 msgstr "加载项目 Skills"
 
 #. English: Found project settings in {path} ({keys}), but they are not loaded.
-#. To apply them, turn on Load project settings under Settings → Security →
+#. To apply them, turn on Load project settings under Settings → Safety →
 #. Project trust (project.config_enabled).
-#. chrys-meta={"fingerprint":"b0e3dbf84eeb05e707cea468caca1d59f2b66a1c3be0b7b08be880e0172acd34","multiline":false,"placeholders":["keys","path"]}
+#. chrys-meta={"fingerprint":"0da01f2749b1cbfc944e1ebe38724c1ca1797004a728fb60dccd5a169e91a645","multiline":false,"placeholders":["keys","path"]}
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.project_config_dormant"
-msgstr "在 {path} 中发现项目设置（{keys}），但尚未加载。如需应用，请在 设置 → 安全 → 项目信任 中勾选“加载项目设置”（project.config_enabled）。"
+msgstr "在 {path} 中发现项目设置（{keys}），但尚未加载。如需应用，请在 设置 → 安全管控 → 项目信任 中勾选“加载项目设置”（project.config_enabled）。"
 
 #. English: Found project hooks in {path}, but they are not loaded. To run
-#. them, turn on Load project hooks under Settings → Security → Project trust
+#. them, turn on Load project hooks under Settings → Safety → Project trust
 #. (project.hooks_enabled).
-#. chrys-meta={"fingerprint":"5ec1234a8618ca2a204bd38c28f662e4600c42779c85aa5f670f458d731f99a8","multiline":false,"placeholders":["path"]}
+#. chrys-meta={"fingerprint":"cd4a080a5c645b5c000b009e2f3b7981fad1f1a623166d31bd3594ae47020d2e","multiline":false,"placeholders":["path"]}
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.project_hooks_dormant"
-msgstr "在 {path} 中发现项目钩子，但尚未加载。如需运行，请在 设置 → 安全 → 项目信任 中勾选“加载项目钩子”（project.hooks_enabled）。"
+msgstr "在 {path} 中发现项目钩子，但尚未加载。如需运行，请在 设置 → 安全管控 → 项目信任 中勾选“加载项目钩子”（project.hooks_enabled）。"
 
 #. English: Found project skills in {path}. They are not loaded automatically;
-#. to load them, turn on Load project skills under Settings → Security →
-#. Project trust (project.skills_enabled) and keep the agent's Load skills from
-#. working folder option on.
-#. chrys-meta={"fingerprint":"f6443d8c10bf7c5ebc4b047d577fbd2eebc4f00ed9a1072eaa4659a93753f10e","multiline":false,"placeholders":["path"]}
+#. to load them, turn on Load project skills under Settings → Safety → Project
+#. trust (project.skills_enabled) and keep the agent's Load skills from working
+#. folder option on.
+#. chrys-meta={"fingerprint":"4c94c15d7a79a9735c3584fae604120142833197ede868e8ee4e071a4072fc6c","multiline":false,"placeholders":["path"]}
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.project_skills_dormant"
-msgstr "在 {path} 中发现项目 Skills，不会自动加载。如需加载，请在 设置 → 安全 → 项目信任 中勾选“加载项目 Skills”（project.skills_enabled），并保持智能体的“从工作文件夹加载 Skills”选项开启。"
+msgstr "在 {path} 中发现项目 Skills，不会自动加载。如需加载，请在 设置 → 安全管控 → 项目信任 中勾选“加载项目 Skills”（project.skills_enabled），并保持智能体的“从工作文件夹加载 Skills”选项开启。"
 
 #. English: Ignoring {source}={raw}: expected a boolean.
 #. chrys-meta={"fingerprint":"f804369b50e63015f7f5a7096b0d54c6de66e96fd168736853c1690d0ad9c6e2","multiline":false,"placeholders":["raw","source"]}
@@ -1269,6 +1314,12 @@ msgstr "在对话中显示提问"
 #: src/chrys/foundation/config/settings.py
 msgid "settings.tools.ask_user.timeout_seconds.label"
 msgstr "询问用户超时（秒）"
+
+#. English: Image size limit (KB)
+#. chrys-meta={"fingerprint":"17cd1ab5a9d1279bd8c6d410ec50c41607ccd3b0ef6876e1c1f492ff569e4a06","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.tools.image.send_limit_kb.label"
+msgstr "图片大小上限（KB）"
 
 #. English: Tool result ceiling (tokens)
 #. chrys-meta={"fingerprint":"3084c2a0b19e95311fe3ca34e27d3efcf045f0f49ab2b210b2528cc72f866e88","multiline":false,"placeholders":[]}
@@ -1395,6 +1446,12 @@ msgstr "内联文件快照上限（字符）"
 #: src/chrys/foundation/config/settings.py
 msgid "settings.ui.chat.fold_finished_turns.label"
 msgstr "自动折叠已完成轮次"
+
+#. English: Full-color images
+#. chrys-meta={"fingerprint":"f7bdad3865459dc049b6b8babf8b6cfd87fb48b926019174798e5cfabd5cb35b","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.ui.chat.image_graphics.label"
+msgstr "全彩图片"
 
 #. English: Expand thinking by default
 #. chrys-meta={"fingerprint":"3d187e34709e9b4d6156cc40d0b44cb6e74930750947e596a8c9d11dc9f5a349","multiline":false,"placeholders":[]}
@@ -2297,13 +2354,13 @@ msgstr ""
 
 #. English: Browse
 #. chrys-meta={"fingerprint":"5b8da0b3f4083a121254ee46691d5802ce1c7232b1b26578396fd5c87dee2bdc","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/path_entry.py
+#: src/chrys/app/tui/widgets/path_entry.py
 msgid "tui.agent_config.path_entry.browse"
 msgstr "浏览"
 
 #. English: Workspace relative
 #. chrys-meta={"fingerprint":"6ecdc0c8fa786951d94fabaf21e3ef8c26b72f1e68f7eeb8ec2d6f649f8b7409","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/path_entry.py
+#: src/chrys/app/tui/widgets/path_entry.py
 msgid "tui.agent_config.path_entry.workspace_relative"
 msgstr "工作区相对路径"
 
@@ -2345,7 +2402,7 @@ msgstr "智能体配置已保存"
 
 #. English: Absolute path - Turn off Workspace relative
 #. chrys-meta={"fingerprint":"4c4597bcea777e5ad2ff42b6fadef12f1ff39ae8523fbe51fbe4d3e2879016c8","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/skills.py
+#: src/chrys/app/tui/widgets/directory_path.py
 msgid "tui.agent_config.skills.absolute_path_error"
 msgstr "这是绝对路径 - 请关闭“工作区相对路径”"
 
@@ -2370,7 +2427,7 @@ msgstr "开启“从工作文件夹加载 Skills”和“加载项目 Skills”�
 
 #. English: Current: {path}{note}
 #. chrys-meta={"fingerprint":"ee8d7834268ff7bbfeb4c2af55076f6d2688400865331e6ed66bb14dec4f39d5","multiline":false,"placeholders":["note","path"]}
-#: src/chrys/app/tui/screens/agents/panels/skills.py
+#: src/chrys/app/tui/widgets/directory_path.py
 msgid "tui.agent_config.skills.current_path"
 msgstr "当前：{path}{note}"
 
@@ -2418,23 +2475,23 @@ msgid "tui.agent_config.skills.load_working_folder"
 msgstr "从工作文件夹加载 Skills（如果存在）"
 
 #. English: Auto-load skills from the agents skills directory under the current
-#. working folder when Load project skills is on under Settings → Security →
+#. working folder when Load project skills is on under Settings → Safety →
 #. Project trust. Reloaded automatically when the workspace cwd changes (/chdir
 #. or file picker).
-#. chrys-meta={"fingerprint":"ac4c8359baf2210072172b628ea16e352768bb6eb35b90c0e8a564e3730a815b","multiline":false,"placeholders":[]}
+#. chrys-meta={"fingerprint":"01ee7f4d82049a5eec12eceb6435cd810664d38141638a5d6ac2dfdd04668e68","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/skills.py
 msgid "tui.agent_config.skills.load_working_folder_tooltip"
-msgstr "在 设置 → 安全 → 项目信任 中勾选“加载项目 Skills”后，从当前工作文件夹下的 agents Skill 目录自动加载 Skills。工作区 cwd 发生变化（/chdir 或文件选择器）时会自动重新加载。"
+msgstr "在 设置 → 安全管控 → 项目信任 中勾选“加载项目 Skills”后，从当前工作文件夹下的 agents Skill 目录自动加载 Skills。工作区 cwd 发生变化（/chdir 或文件选择器）时会自动重新加载。"
 
 #. English: Missing in current workspace
 #. chrys-meta={"fingerprint":"f3a14b222d8a443dd8b95290a39d6cae1867d4662251bbdc08514b69acb073f5","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/skills.py
+#: src/chrys/app/tui/widgets/directory_path.py
 msgid "tui.agent_config.skills.missing_in_workspace"
 msgstr "当前工作区中不存在"
 
 #. English: Path does not exist
 #. chrys-meta={"fingerprint":"c76632a774fcf1a6756a52db56f4fcbe3759b435a55f19ddba64122caf6bb7e3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/skills.py
+#: src/chrys/app/tui/widgets/directory_path.py
 msgid "tui.agent_config.skills.path_missing"
 msgstr "路径不存在"
 
@@ -2470,19 +2527,19 @@ msgstr "relative\\path\\to\\skills"
 
 #. English:   · {note}
 #. chrys-meta={"fingerprint":"010b6c8128c1a86949b86c5b6eac14bf1dbc2a8d04a7ef3f08cb244212c6c70c","multiline":false,"placeholders":["note"]}
-#: src/chrys/app/tui/screens/agents/panels/skills.py
+#: src/chrys/app/tui/widgets/directory_path.py
 msgid "tui.agent_config.skills.preview_note"
 msgstr "  · {note}"
 
 #. English: Relative path - Enable Workspace relative
 #. chrys-meta={"fingerprint":"7db87795c06eea8d55fec5950707dc7254ae6420e89ce8d82a099009c0524f57","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/skills.py
+#: src/chrys/app/tui/widgets/directory_path.py
 msgid "tui.agent_config.skills.relative_path_error"
 msgstr "这是相对路径 - 请启用“工作区相对路径”"
 
 #. English: Resolved at session runtime
 #. chrys-meta={"fingerprint":"79ac14ca3209e2d8ad8475599d8ea620fef71f3ac11c8312f7ca6725dbc7eebf","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/skills.py
+#: src/chrys/app/tui/widgets/directory_path.py
 msgid "tui.agent_config.skills.resolved_at_runtime"
 msgstr "将在会话运行时解析"
 
@@ -4592,6 +4649,112 @@ msgstr "切换视图"
 msgid "tui.binding.trajectory"
 msgstr "轨迹"
 
+#. English: The side question was blocked by a hook. {reason}
+#. chrys-meta={"fingerprint":"df8d40213042ff7026f2f110cbf39c34e228db140572dfbf8ba7222f65a37d67","multiline":true,"placeholders":["reason"]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.blocked"
+msgstr ""
+"顺便问被 hook 拦截。\n"
+"{reason}"
+
+#. English: A side question is running. Close it before asking another.
+#. chrys-meta={"fingerprint":"92de309b7e58326a7a78075ea3ab636f35d994e05a08866dc47bcad10ac6d064","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/btw.py
+msgid "tui.btw.busy"
+msgstr "顺便问正在进行，请先关闭后再提问。"
+
+#. English: Close (Esc)
+#. chrys-meta={"fingerprint":"b09f4877f716a524b31df2f4863094c5298400fbb96c37dc6c61e80c63dbb2f7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.close"
+msgstr "关闭（Esc）"
+
+#. English: No side questions yet. Use /btw <question> to ask one.
+#. chrys-meta={"fingerprint":"8ee5ab59844428add7ab975035d60221148b88ec140a648f4c1314fbf0a48d58","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.empty"
+msgstr "暂无顺便问记录。输入 /btw <问题> 开始提问。"
+
+#. English: The side question could not finish. Close it and ask again.
+#. chrys-meta={"fingerprint":"603ec56ccd3f7991ab75746b43a7bd74c48b0365626b29927f25eda92153bc43","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.failed"
+msgstr "顺便问未能完成，请关闭后重新提问。"
+
+#. English: Next side question
+#. chrys-meta={"fingerprint":"dfe2b73c9ca1cdd7246bea7ccedf0ef42aa2a68581467df9821e2346530eb6ef","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.next"
+msgstr "下一个顺便问"
+
+#. English: Open side questions
+#. chrys-meta={"fingerprint":"620d78335be5c73eace923e574663a4bf15916a16bacabd7f91be8b8f2568a1f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.btw.open"
+msgstr "打开顺便问记录"
+
+#. English: Previous side question
+#. chrys-meta={"fingerprint":"c8aca1e89cd66446ef99ce917fb384acc0bc2a9adf7c09fa8e20b2557a875b99","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.previous"
+msgstr "上一个顺便问"
+
+#. English: Side question history could not be read. Your saved file was kept.
+#. chrys-meta={"fingerprint":"a26d854d6bf7dbae8ba50b9e226f943c50d2a9353a5aae329043660fffc05cd5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.read_failed"
+msgstr "无法读取顺便问记录，原有文件已保留。"
+
+#. English: Loading side questions...
+#. chrys-meta={"fingerprint":"ab20bc1d04f7cbbbb35aac038bb17cb0ec12eaf1a010ad7a4ea8628bac24ff3f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.reading"
+msgstr "正在读取顺便问记录…"
+
+#. English: This side answer could not be saved. It stays available until you
+#. leave this session.
+#. chrys-meta={"fingerprint":"8ac8ffedf2c96146445c4364b7daddbb1a0c3bf2b424e37028b5834d7628b18d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.save_failed"
+msgstr "这条顺便问的回答未能保存，离开此会话前仍可查看。"
+
+#. English: Send side question
+#. chrys-meta={"fingerprint":"5c53a809d60b05f1916183b7107cdb107cabe7a7504aa532a82aefc2de32840d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.btw.send"
+msgstr "发送顺便问"
+
+#. English: Answer
+#. chrys-meta={"fingerprint":"4a0af57df1047a39b77bfcd4c6c440fd72a7bd4fe7633d6b27867ce1a315e7dc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.tab.output"
+msgstr "回答"
+
+#. English: Question
+#. chrys-meta={"fingerprint":"868d8746d7e4b42628701a19d6e690b87aba5774ee5f5dc5774b509ada6d57dd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.tab.question"
+msgstr "问题"
+
+#. English: Thinking...
+#. chrys-meta={"fingerprint":"4b4ca080bc36c9e58a1cfb4e47bf7b603b5381bd3ca3353a6ce22c2e2bf8b017","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.thinking"
+msgstr "正在思考…"
+
+#. English: Side Questions
+#. chrys-meta={"fingerprint":"7270bf11fb3d44ce27afedb1fb1bd547ba3fab7bbabdd70fa557b07f14a0873f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.title"
+msgstr "顺便问"
+
+#. English: Side questions are unavailable while the session is changing. Try
+#. again when it is ready.
+#. chrys-meta={"fingerprint":"f5c705f7bb7ce3507537eb294911e626468e394cca5ec2dac5a11e93a094b224","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.unavailable"
+msgstr "会话正在切换，暂时无法使用顺便问。请就绪后重试。"
+
 #. English: evolution {stage}
 #. chrys-meta={"fingerprint":"213dcab508e98efe844bd6e8477d10f7e22a0d6cc09837a04e065130c59ad0b7","multiline":false,"placeholders":["stage"]}
 #: src/chrys/app/features/buddy/commands.py
@@ -4870,13 +5033,13 @@ msgstr "{label}："
 msgid "tui.chat.process.activity"
 msgstr "执行过程"
 
-#. English: {count} tool call
-#. English-plural: {count} tool calls
-#. chrys-meta={"fingerprint":"ec082f1fa6316a686791fa505626ee8709d5c2ae44119621fafdeda352a0f456","multiline":false,"placeholders":[]}
+#. English: {count} tool call:
+#. English-plural: {count} tool calls:
+#. chrys-meta={"fingerprint":"0c5a01de8fa3464dcf67ca4b720b27d1d78d465fd69665b7cd30b0f0cf1e2d0e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/process_block.py
 msgid "tui.chat.process.tool_calls"
 msgid_plural "tui.chat.process.tool_calls#plural"
-msgstr[0] "{count} 次工具调用"
+msgstr[0] "{count} 次工具调用："
 
 #. English: {message} Retrying in {delay_seconds}s
 #. ({attempt}/{max_attempts})...
@@ -5103,6 +5266,12 @@ msgstr "管理智能体配置"
 msgid "tui.commands.description.approval"
 msgstr "切换审批模式：manual → auto → bypass"
 
+#. English: Ask a side question without changing the main task
+#. chrys-meta={"fingerprint":"a4bd6b9c446277437e73faadd25d474ce39e9efc76e2d7fe80c58d5decb4141e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.commands.description.btw"
+msgstr "顺便问一个问题，不改变主任务"
+
 #. English: Hatch, pet and look after your buddy
 #. chrys-meta={"fingerprint":"cb54466977309d63bd1dd99072d253df407389fc282d6fa057cf0ec07fcbc13b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
@@ -5222,6 +5391,12 @@ msgstr "打开设置面板"
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.theme"
 msgstr "设置配色主题"
+
+#. English: Show token usage and speed across all sessions
+#. chrys-meta={"fingerprint":"90f80aee7c0be8101ea88677d855e8fadfbdcb599c78e05aacf0251b494db07d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.commands.description.usage"
+msgstr "查看所有会话的 token 用量和速度"
 
 #. English: Show help for /{name}
 #. chrys-meta={"fingerprint":"df2f841cd072593f47ac017908fec4bba0bf4a4a9b63698b72a1fb72c5b8ebbb","multiline":false,"placeholders":["name"]}
@@ -7159,6 +7334,16 @@ msgstr "输入消息（{shortcut} 打开编辑器）"
 msgid "tui.input.placeholder.shell"
 msgstr "终端"
 
+#. English: {count} highlighted placeholder is not filled in. Press Enter again
+#. to send as is.
+#. English-plural: {count} highlighted placeholders are not filled in. Press
+#. Enter again to send as is.
+#. chrys-meta={"fingerprint":"1a3cd73633091cd964ae6e91ce47d9b6bae1470095b15591d6eed7c1478305dd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.prompt_fields_pending"
+msgid_plural "tui.input.prompt_fields_pending#plural"
+msgstr[0] "还有 {count} 处高亮的待填位置未填写。再按一次回车按原样发送。"
+
 #. English: Queued
 #. chrys-meta={"fingerprint":"c4442bc21ce24ef79d0ee677283811ada44d78aafca431b2a52d36beefb768eb","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
@@ -7171,11 +7356,25 @@ msgstr "已排队"
 msgid "tui.input.retry"
 msgstr "重试"
 
+#. English: Running {count} command… Esc to cancel
+#. English-plural: Running {count} commands… Esc to cancel
+#. chrys-meta={"fingerprint":"42c109ca663063aa97936b1d998e5b5a5e3642da3a440c9928dbdcb47d8d77c8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/input_flow.py
+msgid "tui.input.running_commands"
+msgid_plural "tui.input.running_commands#plural"
+msgstr[0] "正在运行 {count} 条命令… 按 Esc 取消"
+
 #. English: Send
 #. chrys-meta={"fingerprint":"add273c721eb680a4f9e1ba65e55d47c739397f22134aed96cfbd8551edd51f7","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
 msgid "tui.input.send"
 msgstr "发送"
+
+#. English: Not sent
+#. chrys-meta={"fingerprint":"5e6e692b341d8fec43f56581cd87beba2cb80e7f08ced823d0efb4c5f932f569","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.title.prompt_fields_pending"
+msgstr "未发送"
 
 #. English: Unknown /language locale: {locale}
 #. chrys-meta={"fingerprint":"4d292dcabca19d8e83a4e4154dc99205ebb29202f9caa3faa127810a6991a759","multiline":false,"placeholders":["locale"]}
@@ -7403,6 +7602,39 @@ msgstr ""
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.approval.mode_hint"
 msgstr "使用 Tab 补全可直接切换到指定模式。"
+
+#. English: Use /btw <question> to ask using the conversation's existing text
+#. and tool results. Use /btw alone to reopen this session's latest saved
+#. answer.  The main task continues separately. The side question cannot use
+#. tools and does not enter the main conversation. Its card appears below the
+#. chat, leaving the sidebar at full height.  The Answer tab opens by default,
+#. showing a thinking animation until the complete answer is ready. The
+#. Question tab keeps your full question. Long content scrolls within each tab.
+#. Previous/next buttons browse saved answers without changing your selected
+#. tab, and are disabled while generating.  Completed answers are kept with the
+#. session. Clearing, deleting, or rolling back to the starting screen removes
+#. them. Prompt-submission hooks also check side questions. Failed or cancelled
+#. questions are not saved. Escape or the close icon cancels a running question
+#. or hides the card, keeping saved answers. Only one side question can run at
+#. a time.
+#. chrys-meta={"fingerprint":"626194918c365b2d5eb3fe660e264720e2e33b4ba64ecec049e9d71afbbacb36","multiline":true,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.man.btw.body"
+msgstr ""
+"输入 /btw <问题>，根据对话中已有的文字和工具结果顺便提问。\n"
+"输入不带问题的 /btw，可重开本会话最新保存的答案。\n"
+"\n"
+"主任务独立继续运行。顺便问不能使用工具，也不会进入主对话。\n"
+"顺便问卡片显示在聊天区域下方，右侧栏保持完整高度。\n"
+"\n"
+"默认打开回答标签页，先显示思考动效，完整答案就绪后一次性显示。\n"
+"问题标签页保留完整问题，长内容在各标签页内滚动。\n"
+"前后按钮用于浏览已保存的答案，翻页时保留当前标签，生成期间不可翻页。\n"
+"\n"
+"完整答案随会话保存。清空、删除会话或回滚到起始画面时会一并移除。\n"
+"提交提示的 hook 也会检查顺便问。\n"
+"失败或取消的顺便问不保存。按 Esc 或点击关闭图标可取消正在进行的顺便问，\n"
+"或隐藏卡片并保留已保存的答案。同一时间只能运行一个顺便问。"
 
 #. English: Look after the buddy that lives in the sidebar.      Subcommands:
 #. hatch   - Hatch your buddy (there is only ever one)         info    - Show
@@ -7781,9 +8013,10 @@ msgstr ""
 
 #. English: Open the active runtime details dialog.      Shows:         - The
 #. active model profile and model ID         - Built-in tools grouped by
-#. category         - MCP tools grouped by server         - Skills grouped by
-#. source directory         - Preconfigured memory files grouped by source
-#. chrys-meta={"fingerprint":"354e9af7b944f3b013833ac8844f9c0fd9be99de428590b2d67338bbb9161adb","multiline":true,"placeholders":[]}
+#. category         - MCP tools grouped by server         - Prompt shortcuts
+#. grouped by source folder         - Skills grouped by source directory
+#. - Preconfigured memory files grouped by source
+#. chrys-meta={"fingerprint":"b09211b1e9b90d6fe5c4a4f83e2e9bb8eab810d3d27dbca8a7b17468b4a51b33","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.runtime.body"
 msgstr ""
@@ -7793,6 +8026,7 @@ msgstr ""
 "        - 当前模型配置和模型 ID\n"
 "        - 按类别分组的内置工具\n"
 "        - 按服务器分组的 MCP 工具\n"
+"        - 按来源目录分组的快捷指令\n"
 "        - 按来源目录分组的 Skills\n"
 "        - 按来源分组的预配置记忆文件"
 
@@ -7811,16 +8045,16 @@ msgstr ""
 "    - 查看会话元数据（日期、轮次等）"
 
 #. English: Open the Settings panel (F10), optionally on a tab.      Tabs:
-#. general, models, security, sessions, tools, notifications.     Changes are
+#. general, models, safety, sessions, tools, notifications.     Changes are
 #. saved as you make them; the panel says when each     one takes effect
 #. (immediately, on close, or after a restart).
-#. chrys-meta={"fingerprint":"2b21b292bfa8fe449d092f675cb2e23fad6d0607e94377403171d53efc617d23","multiline":true,"placeholders":[]}
+#. chrys-meta={"fingerprint":"5c7e46d01f4170b6f6120715078ba33e941c370d206f8594bb0f3245f1cd8736","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.settings.body"
 msgstr ""
 "打开设置面板（F10），可指定打开某个标签页。\n"
 "\n"
-"    标签页：general、models、security、sessions、tools、notifications。\n"
+"    标签页：general、models、safety、sessions、tools、notifications。\n"
 "    修改即时保存；面板会说明每一项何时生效\n"
 "    （立即、关闭时或重启后）。"
 
@@ -7837,6 +8071,25 @@ msgstr ""
 "指定主题名称时，直接切换到该主题。\n"
 "\n"
 "在 /theme 后使用 Tab 补全可列出可用主题。"
+
+#. English: Open the token usage dialog, read from every saved session.
+#. Overview: new tokens by date range, their trend over time,     and totals by
+#. model, source or project, with each model's speed.     Calendar: new tokens
+#. day by day, and one day's details.      New tokens are the input not served
+#. from the provider's cache,     plus the output, thinking included. Deleted
+#. sessions and external     ACP agents are not counted.
+#. chrys-meta={"fingerprint":"d3b60b05e938038df9d11299b1c3fba744067836a2467c91b19245632b1bb892","multiline":true,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.man.usage.body"
+msgstr ""
+"打开 token 用量对话框，数据来自所有已保存的会话。\n"
+"\n"
+"    总览：按日期范围查看新增 token 及其趋势，\n"
+"    并按模型、来源或项目查看合计，以及每个模型的速度。\n"
+"    日历：逐日查看新增 token，以及某一天的详情。\n"
+"\n"
+"    新增 token 指未命中服务商缓存的输入，加上输出（含思考）。\n"
+"    已删除的会话和外部 ACP 智能体不计入。"
 
 #. English: Page {page}/{total}  ↑ Up ↓ Down  Esc to close
 #. chrys-meta={"fingerprint":"e1b6bb1c681766b73689e1414e355a82c2c04e1e34bcb7423b93cc9f082686b5","multiline":false,"placeholders":["page","total"]}
@@ -8400,6 +8653,56 @@ msgstr "请等待 MCP 连接测试完成后再添加服务器。"
 #: src/chrys/app/tui/screens/agents/panels/mcp.py
 msgid "tui.mcp.wait_before_removing"
 msgstr "请等待 MCP 连接测试完成后再移除服务器。"
+
+#. English: Already added
+#. chrys-meta={"fingerprint":"a4e7059ee254337d820a0f3c026b71621e5af14f3cdf25a47cbcad23b5b8645d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.added"
+msgstr "已添加"
+
+#. English: Connection already configured: {name}
+#. chrys-meta={"fingerprint":"5d8752145dd77a46c42ce0c1b3edf70d10c8430589eae858b479891c935c4bb6","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.connection_conflict"
+msgstr "已配置相同连接：{name}"
+
+#. English: + New MCP configuration…
+#. chrys-meta={"fingerprint":"19eef18c8c386587c0e69a38f8d412ff3dd796f9147e3d4827a45ecd7c3c948f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.create"
+msgstr "+ 新建 MCP 配置…"
+
+#. English: Disabled
+#. chrys-meta={"fingerprint":"8a6b944baa3fb6debaf2f00d1ef1e3b326d63d5a78db27135c4545eede038bbd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.disabled"
+msgstr "已禁用"
+
+#. English: {count} invalid configuration hidden
+#. English-plural: {count} invalid configurations hidden
+#. chrys-meta={"fingerprint":"31a5eea1fe10de515dc2a69d70da7979d7f92dd97c0d3ba50b3622bb120e1685","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.hidden"
+msgid_plural "tui.mcp_picker.hidden#plural"
+msgstr[0] "已隐藏 {count} 个无效的配置"
+
+#. English: Same name already exists with different settings
+#. chrys-meta={"fingerprint":"c1b39dafe717be7864f5541bb2ea671f9a28e9cb7f45cd356b4706fd55db069e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.name_conflict"
+msgstr "已存在同名配置，设置不同"
+
+#. English: Sources: {names}
+#. chrys-meta={"fingerprint":"ab0000f1466a23b64a324b5d166789847de6a2518fc3df7f0b9f7d9d70d581ad","multiline":false,"placeholders":["names"]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.sources"
+msgstr "来源：{names}"
+
+#. English: Add MCP Server
+#. chrys-meta={"fingerprint":"19062bdbd2c2002d4696bdb0c8c62b7d449b46596bff1bbd650f0ad11f65b0c0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/mcp_picker.py
+msgid "tui.mcp_picker.title"
+msgstr "添加 MCP 服务器"
 
 #. English: API Key
 #. chrys-meta={"fingerprint":"7e1e8f9cba473062ba1a1095adb5698709ea2c6c71b537e9fe3c941f99ef39a9","multiline":false,"placeholders":[]}
@@ -9291,6 +9594,122 @@ msgstr ""
 msgid "tui.prompt_cache.title"
 msgstr "提示词缓存未开启"
 
+#. English: Agent
+#. chrys-meta={"fingerprint":"776d9c6caf787f533a3dc88dd3977c72f4d683a010e52a6787a377fe58bc5f51","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/prompt_card.py
+msgid "tui.prompt_card.agent"
+msgstr "智能体"
+
+#. English: Configured agent {name} not found; using the current agent
+#. {current} instead
+#. chrys-meta={"fingerprint":"517d00d2b8578290ad0c69eb16068ef782714387a02ede9ceb55820bc90ce0fb","multiline":false,"placeholders":["current","name"]}
+#: src/chrys/app/tui/widgets/chrome/prompt_card.py
+msgid "tui.prompt_card.agent_not_found"
+msgstr "没有找到配置的智能体 {name}，改用当前的智能体 {current}"
+
+#. English: Send it when the current task ends, or press “✕ Don't switch” to
+#. add it to the task as is.
+#. chrys-meta={"fingerprint":"05badd3f66f6ed07b0b228803efccc3d0532a2257ccbac1330f77b8c854630e2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/prompt_card.py
+msgid "tui.prompt_card.busy"
+msgstr "请等当前任务结束后再发送，或点“✕ 不切换”，作为普通消息插入当前任务。"
+
+#. English: This prompt runs commands when sent: send it when the current task
+#. ends.
+#. chrys-meta={"fingerprint":"07e0ae826c7e76fd10c897e05f307cda2da8e20868f68bac4802edb567cb58ac","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/prompt_card.py
+msgid "tui.prompt_card.busy_commands"
+msgstr "这条提示词发送时会运行命令，请等当前任务结束后再发送。"
+
+#. English: {count} command in the input runs when sent
+#. English-plural: {count} commands in the input run when sent
+#. chrys-meta={"fingerprint":"5f4000d1d4159ffd5acf4e315235436fb6d00937d5908188bac1cc04aa915810","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/prompt_card.py
+msgid "tui.prompt_card.command_count"
+msgid_plural "tui.prompt_card.command_count#plural"
+msgstr[0] "发送时运行输入栏中的 {count} 条命令"
+
+#. English: Commands
+#. chrys-meta={"fingerprint":"dc942cc1dbefc59c6feee09f4e1b2288c69be8b8e01a485d55fbe78ac2303e2d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/prompt_card.py
+msgid "tui.prompt_card.commands"
+msgstr "命令"
+
+#. English: Continue sends a note as typed. Press Enter to send this prompt as
+#. a new message.
+#. chrys-meta={"fingerprint":"f636537c02b3e25cae96bda995d9f18d8bf73eb2051e745ca710e61b16eb48e1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/prompt_card.py
+msgid "tui.prompt_card.continue_is_a_note"
+msgstr "“继续”会把输入内容作为备注原样发送。按 Enter 将这条提示词作为新消息发送。"
+
+#. English: Don't switch
+#. chrys-meta={"fingerprint":"847b06d0be60dcf8eb4116c16813b11069a7a0353c2de2f7f743e42709fe2c80","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/prompt_card.py
+msgid "tui.prompt_card.dont_switch"
+msgstr "不切换"
+
+#. English: Model
+#. chrys-meta={"fingerprint":"c820b93516ff203603ed60a227ea14ad662f6ca472bb143e0987a574f55d0eba","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/prompt_card.py
+msgid "tui.prompt_card.model"
+msgstr "模型"
+
+#. English: The agent fixes its own model, so the card's model was not applied.
+#. chrys-meta={"fingerprint":"f2a13a4aaabc2879b0b80bb1dfccc175d29ad700e4b5daacde5e309252a2e5b9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/prompt_card.py
+msgid "tui.prompt_card.model_locked"
+msgstr "该智能体固定使用自己的模型，卡片中的模型没有生效。"
+
+#. English: Configured model {name} not found; using the current model
+#. {current} instead
+#. chrys-meta={"fingerprint":"db92b9e635f644d84f6c7bfd427de1e04c88c870aa13078c8362e74c1b4a1ec0","multiline":false,"placeholders":["current","name"]}
+#: src/chrys/app/tui/widgets/chrome/prompt_card.py
+msgid "tui.prompt_card.model_not_found"
+msgstr "没有找到配置的模型 {name}，改用当前的模型 {current}"
+
+#. English: Applies when sent and stays on for this session
+#. chrys-meta={"fingerprint":"dde3231a0520fa218a3ece3fbcbdba1ce594ba76d54f13cca334b6917010c5bf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/prompt_card.py
+msgid "tui.prompt_card.note"
+msgstr "发送时生效，之后本会话一直使用"
+
+#. English: Don't switch the agent and model
+#. chrys-meta={"fingerprint":"1504c1303b9080586daa7344502b8a90e15b77368c1cca0519a475481ec403dc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/prompt_card.py
+msgid "tui.prompt_card.remove"
+msgstr "不切换智能体和模型"
+
+#. English: Prompt shortcut
+#. chrys-meta={"fingerprint":"c8656f0ed5ab920c024c257ed3314e5744912a82454cc00baf63e7262f63c632","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/prompt_card.py
+msgid "tui.prompt_card.title"
+msgstr "快捷指令"
+
+#. English: argument {position}
+#. chrys-meta={"fingerprint":"bbacbd307582043c1bf1623a3109244ec9ef163cc3feb010bbed26065f12b5ab","multiline":false,"placeholders":["position"]}
+#: src/chrys/app/tui/screens/main/suggestions.py
+msgid "tui.prompt_shortcuts.hint.argument"
+msgstr "参数{position}"
+
+#. English: arguments
+#. chrys-meta={"fingerprint":"1a572977385ef3f2c0e05ac45b2c7afad8fe010e82d534d384acc94cd87aed24","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/suggestions.py
+msgid "tui.prompt_shortcuts.hint.arguments"
+msgstr "参数"
+
+#. English: Prompt shortcuts are still being read; press Enter again in a
+#. moment.
+#. chrys-meta={"fingerprint":"ba10880757a86351d6a3d61fa3ee82b88ded7660b9aa1bba92dd129582a40a83","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.prompt_shortcuts.loading"
+msgstr "快捷指令还在读取中，请稍后再按一次 Enter。"
+
+#. English: Prompt shortcuts are still being read; press Tab again in a moment.
+#. chrys-meta={"fingerprint":"be9ca4f9ab6b1c33719a48c334bda72eff21112528790531a5a8f68364569b59","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.prompt_shortcuts.loading_tab"
+msgstr "快捷指令还在读取中，请稍后再按一次 Tab。"
+
 #. English: Retry not started
 #. chrys-meta={"fingerprint":"7db136937dd3eb95b5c20273a433b782ffdd84353028e636f4d66a547f509d8b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/event_handlers.py
@@ -9657,6 +10076,12 @@ msgstr "没有可用的活跃模型配置详情。"
 msgid "tui.runtime_details.empty.preconfigured_files"
 msgstr "未加载预配置文件。"
 
+#. English: No prompt shortcuts loaded.
+#. chrys-meta={"fingerprint":"578a8ee937691c16e3dbcf81ece1d9bfa2d9cc8b8ed0ac51757e2d7de1778114","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.empty.shortcuts"
+msgstr "未加载快捷指令。"
+
 #. English: No skills loaded.
 #. chrys-meta={"fingerprint":"e5883b60903ee2e2b664b486bed3b08ee8c26455f44019a5b502175ae786f49d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
@@ -9765,6 +10190,12 @@ msgstr "流式传输"
 msgid "tui.runtime_details.label.vision"
 msgstr "视觉"
 
+#. English: Reading prompt shortcuts…
+#. chrys-meta={"fingerprint":"2df10d99b3cb7b5c8da7708123ea0db2f6890fff63cd0ebc184d923d6d894c53","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.loading.shortcuts"
+msgstr "正在读取快捷指令…"
+
 #. English: MCP
 #. chrys-meta={"fingerprint":"514d843808e589bbda61e7411b81f0852f438af4c3d891b727c9cf62df91aedb","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
@@ -9831,6 +10262,12 @@ msgstr "项目钩子"
 msgid "tui.runtime_details.section.sub_agent_tools"
 msgstr "子智能体工具"
 
+#. English: Shortcuts
+#. chrys-meta={"fingerprint":"85a8e1c1cc90a21e40d54ae7f6a87925bb1028e151d567aa10f3b9c7c35005d2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.shortcuts"
+msgstr "快捷指令"
+
 #. English: Skills
 #. chrys-meta={"fingerprint":"668b020a24aa380b78a6dd8481470ccf4b24e5a7665d6f3e72725b1d180b3437","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
@@ -9872,12 +10309,6 @@ msgstr "已创建分支 {fork_id}"
 #: src/chrys/app/tui/screens/main/session_handlers.py
 msgid "tui.session.fork.dialog_failed"
 msgstr "无法打开派生对话框"
-
-#. English: Cannot fork an empty session
-#. chrys-meta={"fingerprint":"e2bb6cb7f29148395cfa0d4d89ec9f24dfcc91db90e4645ca5e78b5041ad2fff","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/session_handlers.py
-msgid "tui.session.fork.empty_session"
-msgstr "无法派生空会话"
 
 #. English: No active session to fork
 #. chrys-meta={"fingerprint":"dab5a5ca81ec3300d6fe3bd7befbb84abfecc78d53e1249f68fd2207a97a5a28","multiline":false,"placeholders":[]}
@@ -10554,6 +10985,13 @@ msgstr "TUI 和 ACP 等待人工审批的秒数，超时后拒绝本次调用。
 msgid "tui.settings.hint.history.prompt.enabled"
 msgstr "记住你输入过的内容，之后可用 Ctrl+R 找回。"
 
+#. English: How often a {{{{!command}}}} value runs again; at least 60 seconds.
+#. A token the service refuses is replaced at once.
+#. chrys-meta={"fingerprint":"2d30655e2148d8cd370ba159007649a942918a7e832c8b92933ad277f92fc3ca","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.llm.credential_command.ttl_seconds"
+msgstr "{{{{!command}}}} 值重新运行的间隔，最少 60 秒。服务拒绝令牌时会立即更换。"
+
 #. English: Blank = the frontend default ({default}); 0 = never retry; at most
 #. {maximum}.
 #. chrys-meta={"fingerprint":"6a8589bec0a732e09d05d785106f2926581a8d6e85896d9cfd17d9b340fe7216","multiline":false,"placeholders":["default","maximum"]}
@@ -10673,6 +11111,14 @@ msgstr "把智能体的提问直接显示在对话里，而不是弹出窗口。
 msgid "tui.settings.hint.tools.ask_user.timeout_seconds"
 msgstr "留空 = 默认 {default} 秒；0 = 不超时。"
 
+#. English: Larger images are compressed before they are sent, earlier ones in
+#. the session included; from 32 to 3072, default {default}. Lower it if a
+#. request with images fails as too large, then retry.
+#. chrys-meta={"fingerprint":"7b419ad0b038dc3cf63979fc291bfa8a20fb97cbb350416cebfe10df2eea27e9","multiline":false,"placeholders":["default"]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.tools.image.send_limit_kb"
+msgstr "超过此大小的图片先压缩再发送，会话中之前的图片也一样；取值 32 到 3072，默认 {default}。带图片的请求因过大而失败时，调低此值后重试。"
+
 #. English: Apply Git ignore rules to grep and glob searches. Hidden paths and
 #. other ignore rules still apply when off.
 #. chrys-meta={"fingerprint":"71a61b74a3e3fd76d7f8bc2782b4475cb49662131e7f2170bdfddc4e663a0e39","multiline":false,"placeholders":[]}
@@ -10742,6 +11188,15 @@ msgstr "JSON 列表，列出网络搜索可以访问的私有网络或本地网�
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.fold_finished_turns"
 msgstr "成功回复后折叠执行过程。适用于之后完成的轮次和之后打开的会话；已有折叠块保持当前状态。"
+
+#. English: Show images in full color in Ghostty, kitty, iTerm2 3.7.5 or later,
+#. WezTerm, VS Code with terminal images on and Windows Terminal 1.22 or later,
+#. asking the terminal at startup which one it is. When off, or in other
+#. terminals, images are drawn with colored blocks.
+#. chrys-meta={"fingerprint":"5c545554ef6729a1c740b6e9cbd8a4f2f57fb3e2fa449b522fd7e61aa0b635a6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.ui.chat.image_graphics"
+msgstr "在 Ghostty、kitty、iTerm2 3.7.5 及以上版本、WezTerm、开启了终端图片的 VS Code 和 Windows Terminal 1.22 及以上版本中以全彩显示图片，为此启动时会询问终端类型。关闭此项或在其他终端中，图片以彩色色块绘制。"
 
 #. English: Show new thinking expanded while the model writes it. When off, it
 #. stays on one line, its newest words running along it. Either way it folds to
@@ -10938,6 +11393,12 @@ msgstr "审批"
 msgid "tui.settings.section.ask_user"
 msgstr "询问用户"
 
+#. English: Credentials
+#. chrys-meta={"fingerprint":"704b73b498a32d0be384a1d0e9b270fb95692f00341307bf227ae6d3b6b7bd94","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.section.credentials"
+msgstr "凭据"
+
 #. English: Diagnostics
 #. chrys-meta={"fingerprint":"acb086a97483ad15195a9c3e452caae73cef2e696e7cc679d7a32968150681ed","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
@@ -10955,6 +11416,12 @@ msgstr "显示偏好"
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.section.file_search"
 msgstr "文件搜索"
+
+#. English: Images
+#. chrys-meta={"fingerprint":"a487743debd0f14b53a104585687084d16042140ea1c0fc4b112d15ae55686ac","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.section.images"
+msgstr "图片"
 
 #. English: Input
 #. chrys-meta={"fingerprint":"aa801f5aa47a9644ff6d258e4f0dc34a47b07d38685b021f96fe2a5f3c4e0ee6","multiline":false,"placeholders":[]}
@@ -11122,11 +11589,11 @@ msgstr "模型与智能体"
 msgid "tui.settings.tab.notifications"
 msgstr "通知"
 
-#. English: Security
-#. chrys-meta={"fingerprint":"6d3bcdb95ce3aa583fc6e498b7084e2c0dcd10abfc205c83470d4eae5f35bf94","multiline":false,"placeholders":[]}
+#. English: Safety
+#. chrys-meta={"fingerprint":"5dda52f20881249d011c9813c1430092262843e001ee2cb0570848380916ef4d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.tab.security"
-msgstr "安全"
+msgid "tui.settings.tab.safety"
+msgstr "安全管控"
 
 #. English: Sessions
 #. chrys-meta={"fingerprint":"c5cc776a4d7579ddf82b6d982259975f712ab352028d2c5a15b02fa329179077","multiline":false,"placeholders":[]}
@@ -11607,7 +12074,7 @@ msgstr "正在压缩对话..."
 #. chrys-meta={"fingerprint":"e68402a24f79f585991b060723722bc0d76e3b06565a924f35fc13ae8ad243b1","multiline":false,"placeholders":["elapsed"]}
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
 msgid "tui.status.completed"
-msgstr "已在 {elapsed} 内完成"
+msgstr "已完成，用时 {elapsed}"
 
 #. English: Custom title cleared
 #. chrys-meta={"fingerprint":"baa42e9dc1999c164953a609524fd83e48f2a1d2114721151d63846ed3fc1903","multiline":false,"placeholders":[]}
@@ -11686,6 +12153,12 @@ msgstr "模型"
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
 msgid "tui.status.opened_fork"
 msgstr "已打开分支：{fork_id}"
+
+#. English: {speed} tok/s
+#. chrys-meta={"fingerprint":"d5b8de6c5c81b1f37f8bea2977fda5ee5178feb97b4a53a928795ec201999f02","multiline":false,"placeholders":["speed"]}
+#: src/chrys/app/tui/widgets/chrome/status_bar.py
+msgid "tui.status.output_speed"
+msgstr "{speed} tok/s"
 
 #. English: Resuming
 #. chrys-meta={"fingerprint":"4fdab1e59a815cd3f0e81b914511674495b1732de1f51fafbec40f4727b0ed80","multiline":false,"placeholders":[]}
@@ -11781,7 +12254,7 @@ msgstr "上一条消息仍在发送中"
 #. chrys-meta={"fingerprint":"8ae58c7af153c48d15b5a3ca0dec78fb2407ef03d4fc4ac04033c005afea7cf6","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
 msgid "tui.status.streaming"
-msgstr "正在输出..."
+msgstr "正在回复…"
 
 #. English: Thinking
 #. chrys-meta={"fingerprint":"035935186d9026b49ead3077c1b3018b71e54f9bbee3e2a1276b907b14516ca3","multiline":false,"placeholders":[]}
@@ -11885,6 +12358,12 @@ msgstr[0] "提示词历史 · {count} 条匹配"
 msgid "tui.suggestions.prompt_history_title_shown_matches"
 msgid_plural "tui.suggestions.prompt_history_title_shown_matches#plural"
 msgstr[0] "提示词历史 · 共 {count} 条匹配，显示前 {shown} 条"
+
+#. English: Prompt Shortcuts
+#. chrys-meta={"fingerprint":"7c1d12cfaf8cfed1ef6d803d28bc395976157fab230ff809a410bcf0a8a6d663","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/suggestions.py
+msgid "tui.suggestions.prompt_shortcuts"
+msgstr "快捷指令"
 
 #. English: shadowed by /{name}
 #. chrys-meta={"fingerprint":"c6e9d455a22ca69ecf7c15a92b895855fdbacc8c707c815f809ea22116849bab","multiline":false,"placeholders":["name"]}
@@ -14435,6 +14914,12 @@ msgstr "已放弃：无目标"
 msgid "tui.trajectory.preparation_outcome.cancelled"
 msgstr "已取消"
 
+#. English: command failed
+#. chrys-meta={"fingerprint":"cd5d4bb62ec9320e2136b7a0dab23e6abe3d259ceede37e024e58e3adedbb71e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/trajectory/overview.py
+msgid "tui.trajectory.preparation_outcome.command_failed"
+msgstr "命令失败"
+
 #. English: completed
 #. chrys-meta={"fingerprint":"03e4d77d5b021bb4e5c21d4acd951db894b769916410b5a2106dbe4cb5a0e191","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/overview.py
@@ -14858,6 +15343,334 @@ msgstr "各轮时间分布 · 第 {turn} 轮"
 msgid "tui.transcript.fold.compressed"
 msgstr "已压缩"
 
+#. English: {year}-{month}
+#. chrys-meta={"fingerprint":"2296c3cf7d1759fdfc1a1162728fa5726561475730789f128d94e35e0379119d","multiline":false,"placeholders":["month","year"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.month"
+msgstr "{year}年{month}月"
+
+#. English: Top models
+#. chrys-meta={"fingerprint":"d9c45656bc8ccda10e0e2888a25c12b6445db7aaca3224db5ee51f9b8cdbbff1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.top_models"
+msgstr "主要模型"
+
+#. English: Week
+#. chrys-meta={"fingerprint":"61cd6a9473937dd9a81527e6a123a50409cc75d95c45884c546bc661d3f5ee00","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.week_total"
+msgstr "周新增"
+
+#. English: Mon Tue Wed Thu Fri Sat Sun
+#. chrys-meta={"fingerprint":"70bb5e0433da628025ba9337bf8f4abcd01b7a0c7babbf47f210ba7a319672ec","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.weekdays"
+msgstr "周一 周二 周三 周四 周五 周六 周日"
+
+#. English: Mo Tu We Th Fr Sa Su
+#. chrys-meta={"fingerprint":"13f7f03fb064900cbc0010bb59fd2e8be1e156bb0f717496c0249970ddebbcc0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.calendar.weekdays_short"
+msgstr "一 二 三 四 五 六 日"
+
+#. English: Hit
+#. chrys-meta={"fingerprint":"05a192dfe7d70f4b6d6965b78872500cdb6cfe573d2c3bf460468b3de722766b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.column.hit"
+msgstr "命中"
+
+#. English: New
+#. chrys-meta={"fingerprint":"6a784056227bb0fe6dc62f0f9bacf89cfaea66004e0b7ab7d8502ea670a49ab4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.column.new"
+msgstr "新增"
+
+#. English: TPS
+#. chrys-meta={"fingerprint":"ff4294673ea2773f78e7b343acf59c8db8800704df4dce7c4344cd1eac6bee52","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.column.speed"
+msgstr "速率"
+
+#. English: No model calls recorded yet.
+#. chrys-meta={"fingerprint":"4638f25ec1ef2eb201c96bf5f30c576c5ee0f364994480ed6de7c92a3a47afb8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.empty"
+msgstr "还没有模型调用记录。"
+
+#. English: Could not read usage.
+#. chrys-meta={"fingerprint":"4115ed20386af66c2aa2d360c66dd3bcb22608a5b2279f4c1d8d3399c29ca2c3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.failed"
+msgstr "读取用量失败。"
+
+#. English: Group
+#. chrys-meta={"fingerprint":"e2c1840e2cfa264951e9348cdefb5ca21bb2b618a23a71361617bcd09289c16d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group"
+msgstr "分组"
+
+#. English: Model
+#. chrys-meta={"fingerprint":"c820b93516ff203603ed60a227ea14ad662f6ca472bb143e0987a574f55d0eba","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.model"
+msgstr "模型"
+
+#. English: Project
+#. chrys-meta={"fingerprint":"bb494880de8a82165303fb5db8a2bd69147f6fff4874591b25d51ec1569bafb1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.project"
+msgstr "项目"
+
+#. English: Source
+#. chrys-meta={"fingerprint":"8a23381b73255be7becb386ff5bf8b4846f3fcba4f6d5404413d16d72d5ed687","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.source"
+msgstr "来源"
+
+#. English: ←→↑↓ day  {month_keys} month
+#. chrys-meta={"fingerprint":"70046dd55dfcbc816a5a4ca2f75929dc4a54b663b7143f2e41acdca740a2373f","multiline":false,"placeholders":["month_keys"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.keys.calendar"
+msgstr "←→↑↓ 选日期  {month_keys} 换月"
+
+#. English: ←→ range  t scale  g group  ↑↓ row
+#. chrys-meta={"fingerprint":"3c69c7fbe4a02f7fda8bfd5c0acaec8c9de1635231d0198e220395f8093bb83d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.keys.overview"
+msgstr "←→ 范围  t 日/周  g 分组  ↑↓ 选行"
+
+#. English: ←→ range  g group  ↑↓ row
+#. chrys-meta={"fingerprint":"2e08806590d25c6c6c81edc7e2da3d41e20ea0b9ba09950d32368ce204d8dc57","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.keys.overview_fixed_scale"
+msgstr "←→ 范围  g 分组  ↑↓ 选行"
+
+#. English: Cached
+#. chrys-meta={"fingerprint":"bad67fee0c3718027c694e6884148ceffc88383f0a7c33079ca81d18dd0ad3c4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.cached"
+msgstr "缓存读"
+
+#. English: Input
+#. chrys-meta={"fingerprint":"aa801f5aa47a9644ff6d258e4f0dc34a47b07d38685b021f96fe2a5f3c4e0ee6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.input"
+msgstr "新输入"
+
+#. English: TPS
+#. chrys-meta={"fingerprint":"ff4294673ea2773f78e7b343acf59c8db8800704df4dce7c4344cd1eac6bee52","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.speed"
+msgstr "速率"
+
+#. English: Time
+#. chrys-meta={"fingerprint":"dce8c787e4d26fbeb18d23d65541d6bf1fcb3a15099300e963e4b49f5d1d4e8a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.kpi.time"
+msgstr "耗时"
+
+#. English: Cache read
+#. chrys-meta={"fingerprint":"687accd9497f5127ef89db0a94b14b982d526ea210f3a503216de870e1fec009","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.cache_read"
+msgstr "缓存读"
+
+#. English: Calls
+#. chrys-meta={"fingerprint":"1ec55490d7fdabdf53205bcf206a678399e2426471802dcd44a38a467da87ed1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.calls"
+msgstr "调用"
+
+#. English: Failed
+#. chrys-meta={"fingerprint":"13d2e4ee23334630408fe0ffecabfab3876a64d44dd00ffaefb56d8ca90b0da8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.failed"
+msgstr "失败"
+
+#. English: New input
+#. chrys-meta={"fingerprint":"41704227570599c31de6e1c6bf3f493415c241d33866c323cca9f4ed3808c277","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.new_input"
+msgstr "新输入"
+
+#. English: Output
+#. chrys-meta={"fingerprint":"05859c2cb178f6b52e68ea789358b4f6d9958c27ad628104ccee05f67586426d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.label.output"
+msgstr "输出"
+
+#. English: Reading usage from every session…
+#. chrys-meta={"fingerprint":"0e800ab999b6729551bb1a759933628ec61c23fa49a3502b6f34052e4c8f7f6e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.loading"
+msgstr "正在读取所有会话的用量…"
+
+#. English: Unknown model
+#. chrys-meta={"fingerprint":"56be977d14bd94bfd99ffd8c01bb9cfff6a1ce4fadeb4430013a8587223fd916","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.model.unknown"
+msgstr "未知模型"
+
+#. English: no deleted sessions/external ACP
+#. chrys-meta={"fingerprint":"227326e99706858f18dd312a7ff9695275ab0c043702e16622224e0874fc3e90","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.scope"
+msgstr "不含已删除会话和外部 ACP"
+
+#. English: from {day}
+#. chrys-meta={"fingerprint":"c8f559c14b3ed684df7768c0df4b8d54b448eb0debd7d302b6266e8f8668aa99","multiline":false,"placeholders":["day"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.since"
+msgstr "始于 {day}"
+
+#. English: {count} log unreadable
+#. English-plural: {count} logs unreadable
+#. chrys-meta={"fingerprint":"e79d3d44be868323e918d5f9054c8f7a177caaec5a9bac422ede9ba788e6f3ee","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.unreadable"
+msgid_plural "tui.usage.note.unreadable#plural"
+msgstr[0] "{count} 个日志无法读取"
+
+#. English: {count} call unreported
+#. English-plural: {count} calls unreported
+#. chrys-meta={"fingerprint":"30edcd48c57cf2756f9abd1332255aaf4f23a3d446a15e63f0b1cdf45decc658","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.note.unreported"
+msgid_plural "tui.usage.note.unreported#plural"
+msgstr[0] "{count} 次调用未报告用量"
+
+#. English: Other workspaces
+#. chrys-meta={"fingerprint":"6d7805200d84a36fdff69306ab89e5d5baf0d2008448aa2166941869367ba36c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.project.other"
+msgstr "其他工作区"
+
+#. English: All
+#. chrys-meta={"fingerprint":"d24a279dbbad5c28bcf04fa0ca9ee667b53e32c0267123d319c0cee855dbdce8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.all"
+msgstr "全部"
+
+#. English: 30 days
+#. chrys-meta={"fingerprint":"abae31b65340147c30524f41173823d892accaf4e7bec9875b530cd93339faa1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.last_30_days"
+msgstr "近30天"
+
+#. English: This month
+#. chrys-meta={"fingerprint":"745458fe70202ca1d3efc7518aa83f097fb4719953f53d8f69d4595355abf16c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.month"
+msgstr "本月"
+
+#. English: Today
+#. chrys-meta={"fingerprint":"7b10a8bc136b317c40c28bf8608267d91fe8cbac80e3585e21d2a45af61fc15a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.today"
+msgstr "今天"
+
+#. English: This week
+#. chrys-meta={"fingerprint":"d148aad810da76712f69d54164c2334c0f3a2b0ff3a36eb5182e1b3fa315a6f0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.range.week"
+msgstr "本周"
+
+#. English: Approval judge
+#. chrys-meta={"fingerprint":"f644ea340d9f9ca7a08fce7bc7adc142595b67c8f1f422396319ba970c688bfc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.approval_judge"
+msgstr "审批判断"
+
+#. English: Compaction
+#. chrys-meta={"fingerprint":"7e3ffa2bd48daa53319a31743b1640fdb4ba309f934f972b709485b4baf35a3e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.compaction"
+msgstr "上下文压缩"
+
+#. English: Last Words
+#. chrys-meta={"fingerprint":"d3cb0e1ad12951982f0a857ab8baaeafaf2e37779f56254a30eb4690e109d373","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.completer"
+msgstr "Last Words"
+
+#. English: Main agent
+#. chrys-meta={"fingerprint":"2a6d7b7905e27f4347f243fecd0fd6331e8bfa169a9cc24685d5b5b14d3a91cc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.main"
+msgstr "主智能体"
+
+#. English: Side questions
+#. chrys-meta={"fingerprint":"99cd49d604f2aad8fe773afdc8fb95c2fa57a9c8f6750d049007f27ff5bdeefe","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.side_question"
+msgstr "顺便问"
+
+#. English: Sub-agent
+#. chrys-meta={"fingerprint":"89e0801e2952d3706eaa1b79629dcc3805be3cc23fadb72c9ca4949a1afbcc26","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.sub_agent"
+msgstr "子智能体"
+
+#. English: Session titles
+#. chrys-meta={"fingerprint":"568a23da6683fedebd695559ee88ad159b3b9feb83dce85eedcb39ac0ca15a94","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.title_gen"
+msgstr "标题生成"
+
+#. English: Workflow node
+#. chrys-meta={"fingerprint":"9dbd1483c31f15ae36e1996e3c1666505ef17ee28148945caf224bb0b80ad8b5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.source.workflow_node"
+msgstr "工作流节点"
+
+#. English: Calendar
+#. chrys-meta={"fingerprint":"ad64b46121327a123ac5c482bc73c25bb22ab33d5c23e6710b609a245779303d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.tab.calendar"
+msgstr "日历"
+
+#. English: Overview
+#. chrys-meta={"fingerprint":"b9ad84991d7daa4ad9f8a22fdf25f00dd38773173eb33646e011e7646ed19e29","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.tab.overview"
+msgstr "总览"
+
+#. English: Token Usage
+#. chrys-meta={"fingerprint":"166392622df9e6afbd731270bea93f53e61e809361e48c75c8045e7e417b949c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.title"
+msgstr "Token 用量"
+
+#. English: Token Usage · reading…
+#. chrys-meta={"fingerprint":"129ed1bb3e00db5fde63388316a7003ec6ebb8477c01e064ed7e01f3f6609548","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.title_reading"
+msgstr "Token 用量 · 读取中…"
+
+#. English: Trend
+#. chrys-meta={"fingerprint":"c348c443cf33d5961408e81501360e952ee7a9af71540711421358a4917a6681","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend"
+msgstr "趋势"
+
+#. English: Daily
+#. chrys-meta={"fingerprint":"347474e5a57b89c8c8a3abb20ebb1ae2a7fe0ac8edfe6b3ef84a37e9caecd57b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend.daily"
+msgstr "按日"
+
+#. English: peak {value}
+#. chrys-meta={"fingerprint":"1ec02a7ce56fd85aad42968f1e44d42b438cbb9721055da20cb1a3ad59f85dfd","multiline":false,"placeholders":["value"]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend.peak"
+msgstr "峰值 {value}"
+
+#. English: Weekly
+#. chrys-meta={"fingerprint":"56dabaa7e3c3d626ed9a56bd103a3b2413e97b221fc8b7e45ac390e8919e1765","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.trend.weekly"
+msgstr "按周"
+
 #. English: OK
 #. chrys-meta={"fingerprint":"6df638960a5ede1f4a19b118e821e01478abe5fc851a4370ac9574784032e9f0","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/vision_unsupported.py
@@ -15201,6 +16014,14 @@ msgstr[0] "{count} 天"
 msgid "tui.workflow.elapsed.hours"
 msgid_plural "tui.workflow.elapsed.hours#plural"
 msgstr[0] "{count} 小时"
+
+#. English: {count} ms
+#. English-plural: {count} ms
+#. chrys-meta={"fingerprint":"f073175ef03342b955d65e08c496f0641de28fa0638b2b2db9be9728776e1656","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.elapsed.milliseconds"
+msgid_plural "tui.workflow.elapsed.milliseconds#plural"
+msgstr[0] "{count} 毫秒"
 
 #. English: {count} minute
 #. English-plural: {count} minutes
@@ -15951,6 +16772,15 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "run.unexpected_error"
 #~ msgstr "发生意外错误。"
 
+#~ msgid "settings.prompt_shortcuts.load_user_folder.label"
+#~ msgstr "从用户目录加载快捷指令（如果存在）"
+
+#~ msgid "settings.prompt_shortcuts.load_working_folder.label"
+#~ msgstr "从工作目录加载快捷指令（如果存在）"
+
+#~ msgid "settings.prompt_shortcuts.paths.label"
+#~ msgstr "快捷指令目录"
+
 #~ msgid "settings.value_clamped"
 #~ msgstr "{source}={raw}：{detail}，已改用 {adjusted}。"
 
@@ -15990,6 +16820,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.binding.notifications"
 #~ msgstr "通知"
+
+#~ msgid "tui.btw.subtitle"
+#~ msgstr "关闭结束本次顺便问"
 
 #~ msgid "tui.buddy.hums"
 #~ msgstr "💭 {name} 若有所思地哼着歌..."
@@ -16036,6 +16869,9 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "tui.diagram.toggle_view"
 #~ msgstr "切换源码和渲染图"
 
+#~ msgid "tui.input.sending"
+#~ msgstr "发送中"
+
 #~ msgid "tui.man.login.body"
 #~ msgstr ""
 #~ "打开 AIxCoding 设备码登录对话框。\n"
@@ -16081,8 +16917,47 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "tui.notifications.save_rejected"
 #~ msgstr "无法保存通知设置；存储拒绝了：{keys}。"
 
+#~ msgid "tui.prompt_card.cancelled"
+#~ msgstr "已取消发送"
+
+#~ msgid "tui.prompt_card.loading"
+#~ msgstr "未发送：智能体还在启动，准备好后请再发送一次"
+
+#~ msgid "tui.prompt_card.running"
+#~ msgstr "正在运行命令… 按 Esc 取消"
+
+#~ msgid "tui.prompt_card.send_failed"
+#~ msgstr "未发送：出现了问题，详情请查看日志"
+
+#~ msgid "tui.prompt_card.sending"
+#~ msgstr "正在执行 {command}… 按 Esc 取消"
+
+#~ msgid "tui.prompt_card.session_changed"
+#~ msgstr "未发送：准备提示词期间会话或工作目录已切换"
+
+#~ msgid "tui.prompt_card.shell_start_failed"
+#~ msgstr "未发送：{command} 无法启动"
+
+#~ msgid "tui.prompt_card.shell_stopped"
+#~ msgstr "未发送：{command} 被停止"
+
+#~ msgid "tui.prompt_card.shell_timeout"
+#~ msgstr "未发送：{command} 未在限定时间内完成"
+
+#~ msgid "tui.prompt_card.switch_failed"
+#~ msgstr "未发送：无法切换到 {target}"
+
 #~ msgid "tui.runtime_details.label.source"
 #~ msgstr "来源"
+
+#~ msgid "tui.runtime_details.shortcut.agent"
+#~ msgstr "智能体 {agent}"
+
+#~ msgid "tui.runtime_details.shortcut.model"
+#~ msgstr "模型 {model}"
+
+#~ msgid "tui.session.fork.empty_session"
+#~ msgstr "无法派生空会话"
 
 #~ msgid "tui.sessions.run_count"
 #~ msgstr "{count_text} 次运行"
@@ -16092,6 +16967,51 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.settings.migrate.button.copy"
 #~ msgstr "复制"
+
+#~ msgid "tui.settings.prompt_shortcuts.add"
+#~ msgstr "+ 添加"
+
+#~ msgid "tui.settings.prompt_shortcuts.description"
+#~ msgstr "配置 / 列表从哪里读取快捷指令。目前只支持 Markdown（.md）文件。"
+
+#~ msgid "tui.settings.prompt_shortcuts.directory"
+#~ msgstr "快捷指令目录"
+
+#~ msgid "tui.settings.prompt_shortcuts.empty"
+#~ msgstr "未添加其他目录"
+
+#~ msgid "tui.settings.prompt_shortcuts.guide_link"
+#~ msgstr "如何编写快捷指令 →"
+
+#~ msgid "tui.settings.prompt_shortcuts.load_user_folder"
+#~ msgstr "从用户目录加载快捷指令（如果存在）"
+
+#~ msgid "tui.settings.prompt_shortcuts.load_working_folder"
+#~ msgstr "从工作目录加载快捷指令（如果存在）"
+
+#~ msgid "tui.settings.prompt_shortcuts.placeholder.absolute_linux"
+#~ msgstr "/home/you/prompts"
+
+#~ msgid "tui.settings.prompt_shortcuts.placeholder.absolute_macos"
+#~ msgstr "/Users/you/prompts"
+
+#~ msgid "tui.settings.prompt_shortcuts.placeholder.absolute_windows"
+#~ msgstr "C:\\path\\to\\prompts"
+
+#~ msgid "tui.settings.prompt_shortcuts.placeholder.relative_posix"
+#~ msgstr "relative/path/to/prompts"
+
+#~ msgid "tui.settings.prompt_shortcuts.placeholder.relative_windows"
+#~ msgstr "relative\\path\\to\\prompts"
+
+#~ msgid "tui.settings.prompt_shortcuts.title"
+#~ msgstr "快捷指令目录"
+
+#~ msgid "tui.settings.prompt_shortcuts.working_folder_scope"
+#~ msgstr "{path} 及其上级目录（直到仓库根目录）"
+
+#~ msgid "tui.settings.section.prompt_shortcuts"
+#~ msgstr "快捷指令"
 
 #~ msgid "tui.settings.section.session"
 #~ msgstr "会话"
@@ -16104,6 +17024,12 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.settings.section.web_search"
 #~ msgstr "网络搜索"
+
+#~ msgid "tui.settings.tab.prompt_shortcuts"
+#~ msgstr "快捷指令"
+
+#~ msgid "tui.settings.tab.security"
+#~ msgstr "安全"
 
 #~ msgid "tui.sidebar.background.pid"
 #~ msgstr "pid {pid}"
@@ -16293,6 +17219,12 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.trajectory.operation_unresolved"
 #~ msgstr "{precision}：{reason}"
+
+#~ msgid "tui.usage.period"
+#~ msgstr "{start} 至 {end}"
+
+#~ msgid "tui.usage.title_snapshot"
+#~ msgstr "用量 · 快照 {time}"
 
 #~ msgid "tui.vision_unsupported.title.input_not_available"
 #~ msgstr "图像输入不可用"

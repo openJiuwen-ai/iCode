@@ -1444,18 +1444,17 @@ class ToolCall(BaseToolCard):
         return text
 
     def _render_image_contents(self, image_contents: list[Any] | None) -> None:
-        from chrys.app.tui.widgets.chat.image_preview import ImagePreviewGrid, extract_image_previews
+        from chrys.app.tui.widgets.chat.image_preview import extract_image_previews
+        from chrys.app.tui.widgets.chat.image_view import TerminalImages
 
         previews = extract_image_previews(image_contents)
-        existing: Static | None = None
+        existing: TerminalImages | None = None
         with suppress(Exception):
-            existing = self.query_one("#tc-images", Static)
+            existing = self.query_one("#tc-images", TerminalImages)
         if not previews:
             if existing is not None:
                 existing.remove()
             return
-        max_width = self.content_size.width or self.size.width or 80
-        grid = ImagePreviewGrid(previews, max_width=max_width)
         try:
             panel = self.query_one("#tc-panel")
         except NoMatches:
@@ -1468,10 +1467,10 @@ class ToolCall(BaseToolCard):
         if subtitle:
             panel.border_subtitle = Text(subtitle)
         if existing is not None:
-            existing.update(grid)
+            existing.set_previews(previews)
         else:
             with suppress(Exception):
-                panel.mount(Static(grid, id="tc-images"))
+                panel.mount(TerminalImages(previews, id="tc-images"))
 
     def set_complete(self, result: str, duration_ms: int = 0, **kwargs: Any) -> None:
         """Mark this tool call as complete."""

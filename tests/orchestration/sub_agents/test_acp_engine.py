@@ -64,6 +64,7 @@ async def _start_acp_engine(
     flag_path: Path | None = None,
     expected_tools: list[str] | None = None,
     allow_user_interaction: bool = True,
+    launch_fields: dict[str, Any] | None = None,
 ) -> tuple[Any, EventBus, MockChatClient, dict[type, list[Any]]]:
     # Both processes use the same isolated workspace; stub code/import paths
     # stay absolute so no repository checkout is needed as the working directory.
@@ -147,12 +148,15 @@ async def _start_acp_engine(
         display_name="External",
         sub_agent_only=True,
         acp=AcpAgentConfig(
-            command=sys.executable,
-            args=[str(STUB_SCRIPT)],
-            env=env,
-            cwd=str(workdir),
-            handshake_timeout_seconds=20,
-            idle_timeout_seconds=2,
+            **{
+                "command": sys.executable,
+                "args": [str(STUB_SCRIPT)],
+                "env": env,
+                "cwd": str(workdir),
+                "handshake_timeout_seconds": 20,
+                "idle_timeout_seconds": 2,
+                **(launch_fields or {}),
+            }
         ),
     )
     registry = AgentProfileRegistry()
@@ -216,6 +220,45 @@ async def test_acp_profile_runs_through_agent_engine_with_usage_and_audit(
     assert envelope["acp_state"]["launch"]["args"] == ["<redacted>"]
     if os.name != "nt":
         assert audit_paths[0].stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "launch_fields",
+    [
+        {"command": "{{!tool --password hunter2}}"},
+        {"command": "{{CHRYS_TEST_NOT_SET}}", "args": ["--header {{!tool --password hunter2}}"]},
+    ],
+    ids=["refused_command", "another_field_unresolved"],
+)
+@pytest.mark.asyncio
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
+async def test_a_launch_that_never_resolved_records_no_command_text_in_the_audit(
+    launch_fields: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    agent_engine: Any,
+) -> None:
+    engine, bus, main_client, captured = await _start_acp_engine(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_engine=agent_engine,
+        scenario="usage_gauge",
+        launch_fields=launch_fields,
+    )
+
+    await bus.publish(UserMessage(text="Delegate this"))
+    await wait_for(lambda: main_client.call_count == 2, timeout=20, description="parent completion")
+    await engine.wait_for_run_task()
+
+    results = [event for event in captured.get(InvocationToolCallResult, []) if event.tool_name == "Explore"]
+    assert results and results[-1].result.startswith("Error: ")
+    assert "hunter2" not in results[-1].result
+    session_dir = engine.session.session_dir
+    assert session_dir is not None
+    audit_paths = list((session_dir / "sub_agents" / "sessions").glob("*.json"))
+    assert len(audit_paths) == 1
+    assert "hunter2" not in audit_paths[0].read_text(encoding="utf-8")
+    assert json.loads(audit_paths[0].read_text(encoding="utf-8"))["acp_state"]["launch"]["command"] == ""
 
 
 @pytest.mark.asyncio

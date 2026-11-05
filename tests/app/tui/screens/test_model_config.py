@@ -540,13 +540,13 @@ async def test_model_config_delete_runtime_effective_reloads_from_global_default
         assert registry.get(runtime_effective.id) is None
         assert get_global_default_profile_id() == global_default.id
         assert os.environ["CHRYS_MODEL_PROFILE"] == global_default.id
-        assert result == "switched"
+        assert result == "deleted"
 
     published = await _model_config_result_events(result, registry)
     assert len(published) == 1
 
 
-async def test_model_config_delete_global_default_leaves_other_runtime_untouched(
+async def test_model_config_delete_global_default_leaves_the_pointer_and_reloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from chrys.service.profiles.models.env_bridge import (
@@ -572,10 +572,11 @@ async def test_model_config_delete_global_default_leaves_other_runtime_untouched
         assert registry.get(global_default.id) is None
         assert get_global_default_profile_id() == promoted_default.id
         assert os.environ["CHRYS_MODEL_PROFILE"] == runtime_effective.id
-        assert result == ""
+        # Any deletion reloads: the engine drops whatever the session used that is gone.
+        assert result == "deleted"
 
     published = await _model_config_result_events(result, registry)
-    assert published == []
+    assert len(published) == 1
 
 
 async def test_model_config_delete_recognizes_name_based_process_pointer(
@@ -599,7 +600,7 @@ async def test_model_config_delete_recognizes_name_based_process_pointer(
         result = screen._cancel_result()
 
         assert os.environ["CHRYS_MODEL_PROFILE"] == global_default.id
-        assert result == "switched"
+        assert result == "deleted"
 
 
 async def test_model_config_delete_global_default_promotes_first_selectable(
@@ -664,7 +665,7 @@ async def test_model_config_delete_runtime_effective_skips_unresolvable_file_def
         # deleted; the process pointer still lands on a usable profile.
         assert get_global_default_profile_id() == file_default_pointer
         assert os.environ["CHRYS_MODEL_PROFILE"] == selectable.id
-        assert result == "switched"
+        assert result == "deleted"
 
 
 async def test_model_config_delete_runtime_effective_clears_pointer_when_nothing_selectable(

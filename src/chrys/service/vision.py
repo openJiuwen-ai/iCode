@@ -32,7 +32,7 @@ def image_stub_middleware_for_model(*, vision_enabled: bool) -> ChatMiddleware:
     return NonVisionImageStubMiddleware()
 
 
-def _invalidate_image_token_count(message: Message) -> None:
+def invalidate_image_token_count(message: Message) -> None:
     """Drop only the estimate, preserving shared exclusion and summary metadata."""
     annotation = message.additional_properties.get(GROUP_ANNOTATION_KEY)
     if isinstance(annotation, dict):
@@ -48,7 +48,7 @@ class VisionImageTokenCacheMiddleware(ChatMiddleware):
     async def process(self, context: ChatContext, call_next: Any) -> None:
         for message in context.messages:
             if message.additional_properties.pop(_IMAGE_STUB_TOKEN_VIEW_KEY, False):
-                _invalidate_image_token_count(message)
+                invalidate_image_token_count(message)
         await call_next()
 
 
@@ -70,7 +70,7 @@ class NonVisionImageStubMiddleware(ChatMiddleware):
                 # The history retains the image, but this call counts its stub.
                 # Invalidate on every replacement: an earlier full-history
                 # annotation may have counted the original image in between calls.
-                _invalidate_image_token_count(message)
+                invalidate_image_token_count(message)
                 message.additional_properties[_IMAGE_STUB_TOKEN_VIEW_KEY] = True
                 refreshed = Message(
                     message.role,

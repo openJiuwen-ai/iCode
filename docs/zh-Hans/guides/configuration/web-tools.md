@@ -74,6 +74,7 @@ tools:
 | `exa_mcp` | Exa 公开端点，即 `auto` 默认使用的服务 |
 | `bing_html` | Bing 搜索结果页 |
 | `duckduckgo_html` | DuckDuckGo 的 HTML 搜索结果页 |
+| `keenable` | Keenable 的公开搜索 API（keenable.ai） |
 
 这些类型只接受 `type` 字段：端点固定，不接受凭据。例如，改用 DuckDuckGo 代替 Exa：
 
@@ -89,6 +90,8 @@ tools:
 ```
 
 `bing_html` 和 `duckduckgo_html` 读取的是普通搜索结果页，而不是官方 API，可用性和结果质量取决于该服务和本地网络。结果不包含广告和生成式回答。遇到验证码、同意页面或无法识别的页面布局时，会报告错误，而不会当作空结果返回。
+
+`keenable` 只把搜索词和所需结果数量发送到 `https://api.keenable.ai/v1/search/public`，并附带请求头 `X-Keenable-Title: iCode`。无需 API 密钥或账号；该服务按 IP 地址设有免费额度的速率限制。
 
 ### 需要密钥的搜索 API
 
@@ -125,7 +128,7 @@ iCode 从启动 iCode 时的环境变量或用户 `.env` 文件（macOS / Linux�
 - 无法连接提供方：其域名无法解析、解析到私有地址，或者连接因重试也无法解决的原因被拒绝（例如证书被代理拒绝）。
 - 请求对该提供方来说过大，例如搜索词过长，放进 URL 后超出长度限制。
 - 提供方返回重定向、验证码或同意页面，或者其响应过大、使用不支持的压缩方式或无法读取。
-- `exa_mcp`、`bing_html` 或 `duckduckgo_html` 返回任意 HTTP 4xx 错误，或 `exa_mcp` 报告搜索失败（例如触发了免费版的频率限制）。`exa_mcp` 返回空结果属于正常回答，回退链会就此停止。
+- `exa_mcp`、`bing_html`、`duckduckgo_html` 或 `keenable` 返回任意 HTTP 4xx 错误，或 `exa_mcp` 报告搜索失败（例如触发了免费版的频率限制）。`exa_mcp` 返回空结果属于正常回答，回退链会就此停止。
 
 如果看到 `Error: exa_rate_limited`，说明 Exa 报告匿名搜索已触发限流。iCode 不会立即重试这类错误；如果回退链中还有提供方，会继续尝试下一个。当 Exa 是最后一个提供方时（默认配置也属于这种情况），错误提示会建议稍后再试，或配置[需要密钥的搜索 API](#需要密钥的搜索-api)。
 

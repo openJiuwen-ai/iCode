@@ -18,6 +18,7 @@ from chrys.foundation.config.settings import MAX_TRANSIENT_RETRIES_LIMIT, Settin
 from chrys.foundation.config.settings_store import load_settings, persist
 from chrys.foundation.config.spec import Apply, Kind, SettingOrigin, Source, specs_by_field
 from chrys.foundation.config.user_settings import user_settings_path
+from chrys.foundation.text.images import MAX_IMAGE_BYTES
 
 
 @pytest.fixture
@@ -50,6 +51,19 @@ def test_search_ignore_setting_defaults_and_round_trips(config_dir: Path) -> Non
     assert yaml.safe_load(user_settings_path().read_text())["tools"]["search"]["respect_gitignore"] is False
     persist({key: True})
     assert load_settings().settings.search_respect_gitignore is True
+
+
+def test_image_send_limit_defaults_to_the_compression_target_clamps_and_round_trips(config_dir: Path) -> None:
+    key = "tools.image.send_limit_kb"
+    freeze_process_env()
+    assert load_settings(env={}).settings.image_send_limit_bytes() == MAX_IMAGE_BYTES
+    assert load_settings(env={"CHRYS_IMAGE_SEND_LIMIT_KB": "8"}).settings.image_send_limit_kb == 32
+    assert load_settings(env={"CHRYS_IMAGE_SEND_LIMIT_KB": "99999"}).settings.image_send_limit_kb == 3072
+    persist({key: 128})
+    loaded = load_settings()
+    assert loaded.settings.image_send_limit_bytes() == 128 * 1024
+    assert loaded.source_for(key).layer is Source.USER
+    assert yaml.safe_load(user_settings_path().read_text())["tools"]["image"]["send_limit_kb"] == 128
 
 
 def test_the_approval_dialog_waits_for_auto_review_by_default_and_round_trips(config_dir: Path) -> None:

@@ -41,6 +41,7 @@ llm:
 | `ui.chat.tool_groups_expanded` | 无 | `false` | 布尔值；新出现的工具组是否默认展开详情 |
 | `ui.chat.show_thinking` | 无 | `false` | 布尔值；TUI 对话中新的可读思考在模型写出时是否在回复上方展开；为 `false` 时只显示一行，滚动显示最新内容。无论开关，模型继续下一步后思考都会折叠。服务只以加密形式返回的思考不会显示 |
 | `ui.chat.fold_finished_turns` | 无 | `true` | 布尔值；成功回复后自动折叠中间执行过程。适用于之后完成的轮次及之后打开的会话，已有过程块保持当前状态。用户消息和最终回复始终可见 |
+| `ui.chat.image_graphics` | 无 | `true` | 布尔值；启动时询问终端类型，并在 Ghostty、kitty、iTerm2 3.7.5 及以上版本、WezTerm、开启了终端图片的 VS Code 和 Windows Terminal 1.22 及以上版本中，用终端自身的图形能力全彩显示对话中的图片；为 `false` 时不询问终端，图片与在其他终端中一样以彩色色块绘制。启动时读取 |
 | `ui.chat.file_snapshot_inline_chars` | `CHRYS_TUI_FILE_SNAPSHOT_INLINE_CHARS` | `131072` | 整数；控制文件编辑卡片直接载入的改动前后内容上限，按两者字节数合计判断。不超过上限时随卡片载入，标题显示具体的增删行数；超过上限且有可用快照引用时，展开差异才读取，标题不显示具体行数。`0` 或负数将上限设为零；没有可用快照引用时仍可能保留内联内容。此设置只控制卡片的内容载入方式；是否备份文件内容由 `mutations.snapshot.max_file_mb` 和 `mutations.snapshot.skip_binary` 决定 |
 | `history.prompt.enabled` | `CHRYS_HISTORY_DISABLE` | `true` | 布尔值；跨会话保存和读取输入历史，关闭不会删除已有记录。环境变量含义相反：只有精确的 `1` 禁用历史，其他值不禁用 |
 | `app.update_check` | `CHRYS_UPDATE_CHECK` | `true` | 布尔值；TUI 每天启动时最多查询一次 iCode 的最新版本，有新版本时在欢迎页显示新版本号和升级 iCode 的命令。查询请求不包含你的任何个人信息或数据。`icode run`、`icode acp` 和 `icode serve` 不会查询 |
@@ -58,6 +59,7 @@ llm:
 | `model.role.session_title` | `CHRYS_MODEL_PROFILE_SESSION_TITLE` | 未指定 | 字符串；自动生成会话标题使用的模型配置，未指定时使用当前模型 |
 | `model.role.buddy_model_id` | `CHRYS_PET_MODEL` | 未指定 | 字符串；Buddy 伙伴使用的模型，沿用当前模型配置的连接；未指定时使用当前模型 |
 | `llm.retry.max_transient` | `CHRYS_MAX_TRANSIENT_RETRIES` | `null` | 整数或 `null`；`null` 使用当前启动入口的默认次数：TUI（含 `icode serve`）和 `icode acp` 为 `10` 次，`icode run` 和 `icode workflow run` 为 `18` 次。每次重试前的等待逐次变长，最长 10 分钟。`0` 禁用瞬时错误自动重试，负数无效，上限 `50` |
+| `llm.credential_command.ttl_seconds` | `CHRYS_CREDENTIAL_COMMAND_TTL_SECONDS` | `3600` | 整数；`{{!command}}` 占位符得到的值可以使用多少秒，之后下一次请求前重新运行命令。最小 `60`。服务拒绝该值时会立即更换。重启后生效。参阅[通过命令获取 API 密钥](../guides/configuration/models.md#通过命令获取-api-密钥) |
 
 瞬时错误重试用于临时网络故障、请求超时、限流等可恢复错误。提高次数也会增加最终失败前的等待时间和请求次数；该数字不等于整个任务的模型请求总数。
 
@@ -96,6 +98,7 @@ llm:
 | YAML 键 | 环境变量 | 默认值 | 类型、取值与效果 |
 | --- | --- | --- | --- |
 | `tools.search.respect_gitignore` | 无 | `true` | 布尔值；grep 和 glob 搜索时应用 `.gitignore` 规则。设为 `false` 时仍会跳过隐藏路径，`.ignore` 等其他忽略文件也仍然生效 |
+| `tools.image.send_limit_kb` | `CHRYS_IMAGE_SEND_LIMIT_KB` | `256` | 整数，`32` 到 `3072`，超出范围时取最近的边界值；发给模型的一张图片的文件最多占用的 KB 数（在请求中以 base64 发送，约多三分之一）。附加、查看或由 ACP 客户端发送的图片超过它时压缩为不超过它的 JPEG；每轮和每次重试开始时，会话中之前发送的、超过它的图片也会压缩 |
 | `tools.ask_user.inline` | `CHRYS_ASK_USER_INLINE` | `false` | 布尔值；TUI 中将智能体提问显示在对话中，而不是弹出窗口 |
 | `tools.ask_user.timeout_seconds` | `CHRYS_ASK_USER_TIMEOUT_SECONDS` | `900` | 整数或 `null`；等待回答的秒数，超时后向智能体返回超时结果；`0`、负数或用户 YAML 的 `null` 表示无限等待 |
 | `tools.result.ceiling_tokens` | `CHRYS_TOOL_RESULT_CEILING_TOKENS` | `64000` | 整数；单条工具结果交给模型前的最终长度上限，单位 token。`0` 关闭此限制；正数最小 `2000`，负数无效 |
@@ -202,7 +205,7 @@ llm:
 
 ## 项目级设置
 
-项目设置默认不加载。先在用户 `settings.yaml` 中启用，或在 TUI 的“设置 → 安全”中打开“加载项目设置”：
+项目设置默认不加载。先在用户 `settings.yaml` 中启用，或在 TUI 的“设置 → 安全管控”中打开“加载项目设置”：
 
 ```yaml
 project:

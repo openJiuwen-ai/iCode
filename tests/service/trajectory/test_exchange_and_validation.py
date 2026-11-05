@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from chrys.foundation.errors.kinds import ErrorKind
+from chrys.foundation.errors.provider import ProviderResponseError
 from chrys.foundation.trajectory.context import (
     TRAJECTORY_EXCHANGE_KWARG,
     ExchangeTrace,
@@ -195,6 +196,89 @@ async def test_a_client_owned_exchange_closes_itself_when_it_fails() -> None:
     # The failed exchange carries what the error was, not only its type: a
     # reader classifying why the request died has nothing else to go on.
     assert finished.payload["error_kind"] == ErrorKind.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_a_client_owned_exchange_records_the_tokens_its_failed_response_spent() -> None:
+    sink = FakeSink()
+    trace = ExchangeTrace(_exchange_context(sink))
+    trace.started()
+
+    async def _boom() -> None:
+        raise ProviderResponseError(
+            "server_error",
+            "failed midway",
+            retryable=False,
+            usage_details={"input_token_count": 100, "cache_read_input_token_count": 40, "output_token_count": 7},
+        )
+
+    with pytest.raises(ProviderResponseError):
+        await ExchangeRecorder(trace, owned=True).wrap_awaitable(_boom())
+
+    finished = sink.only(EventType.MODEL_EXCHANGE_FINISHED)
+    assert finished.payload["outcome"] == ExchangeOutcome.ERROR
+    normalized = finished.payload["usage"]["normalized"]
+    assert (normalized["input_total"], normalized["cache_read"], normalized["output_total"]) == (100, 40, 7)
+    assert finished.measurements["/payload/usage/normalized/input_total"]["source"] == MeasurementSource.PROVIDER
+    assert finished.measurements["/payload/usage/normalized/output_total"]["source"] == MeasurementSource.PROVIDER
+
+
+@pytest.mark.asyncio
+async def test_a_client_owned_exchange_with_no_usage_to_report_records_none() -> None:
+    sink = FakeSink()
+    trace = ExchangeTrace(_exchange_context(sink))
+    trace.started()
+
+    async def _boom() -> None:
+        raise ProviderResponseError("server_error", "failed at once", retryable=False)
+
+    with pytest.raises(ProviderResponseError):
+        await ExchangeRecorder(trace, owned=True).wrap_awaitable(_boom())
+
+    assert "usage" not in sink.only(EventType.MODEL_EXCHANGE_FINISHED).payload
+
+
+def test_a_finished_exchange_with_no_response_model_says_which_model_was_asked() -> None:
+    sink = FakeSink()
+    trace = ExchangeTrace(_exchange_context(sink))
+    trace.started(payload={"request_model": "asked"})
+
+    trace.finished(outcome=ExchangeOutcome.ERROR)
+
+    assert sink.only(EventType.MODEL_EXCHANGE_FINISHED).payload["request_model"] == "asked"
+
+
+def test_a_failed_exchange_names_the_model_it_asked_rather_than_its_profiles() -> None:
+    """A per-request override beats the profile's model on the start marker, so it must on the close too."""
+    sink = FakeSink()
+    trace = ExchangeTrace(_exchange_context(sink).with_exchange_facts({"request_model": "profile"}))
+    trace.started(payload={"request_model": "override"})
+
+    trace.finished(outcome=ExchangeOutcome.ERROR)
+
+    assert sink.only(EventType.MODEL_EXCHANGE_FINISHED).payload["request_model"] == "override"
+
+
+def test_a_finished_exchange_with_a_response_model_needs_no_request_model() -> None:
+    sink = FakeSink()
+    trace = ExchangeTrace(_exchange_context(sink))
+    trace.started(payload={"request_model": "asked"})
+
+    trace.finished(outcome=ExchangeOutcome.SUCCESS, payload={"response_model": "answered"})
+
+    payload = sink.only(EventType.MODEL_EXCHANGE_FINISHED).payload
+    assert payload["response_model"] == "answered"
+    assert "request_model" not in payload
+
+
+def test_a_finished_exchange_that_never_named_a_model_stays_silent_about_it() -> None:
+    sink = FakeSink()
+    trace = ExchangeTrace(_exchange_context(sink))
+    trace.started()
+
+    trace.finished(outcome=ExchangeOutcome.ERROR)
+
+    assert "request_model" not in sink.only(EventType.MODEL_EXCHANGE_FINISHED).payload
 
 
 # ---------------------------------------------------------------------- ValidationTrace

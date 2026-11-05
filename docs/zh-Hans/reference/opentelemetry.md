@@ -14,7 +14,7 @@ iCode 可通过 OpenTelemetry 记录智能体运行过程中产生的以下遥�
 
 ### 启用配置
 
-OpenTelemetry 默认关闭。可在终端用户界面（Terminal User Interface，TUI）的[设置 → 安全 → 遥测](../guides/configuration/settings.md#遥测)中启用，也可使用以下环境变量。**本页配置均在重启 iCode 后生效。**
+OpenTelemetry 默认关闭。可在终端用户界面（Terminal User Interface，TUI）的[设置 → 安全管控 → 遥测](../guides/configuration/settings.md#遥测)中启用，也可使用以下环境变量。**本页配置均在重启 iCode 后生效。**
 
 | 环境变量 | 默认值 | 作用 |
 | --- | --- | --- |

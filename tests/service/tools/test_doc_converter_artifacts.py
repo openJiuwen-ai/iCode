@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from chrys.foundation.platform import get_platform
+from chrys.foundation.text.images import COMPRESSED_IMAGE_MAX_EDGE, inspect_image_dimensions
 from chrys.service.tools.builtins.doc_converter import (
     _write_unique_markdown,
 )
@@ -340,6 +341,19 @@ def test_document_image_sink_converts_scanned_page_formats(tmp_path: Path, image
 
     assert occurrence is not None
     assert [path.suffix for path in root.iterdir()] == [".jpg"]
+
+
+def test_document_image_sink_keeps_every_pixel_of_a_converted_image(tmp_path: Path) -> None:
+    # Wider than an image sent to a model is: that fitting happens when the copy is viewed.
+    size = (COMPRESSED_IMAGE_MAX_EDGE * 2, 500)
+    root = tmp_path / "session" / "doc_converter"
+    sink = DocumentImageSink(root, source_stem="report")
+
+    assert sink.try_reserve_occurrence()
+    assert sink.save_image(image_bytes("TIFF", size=size), location="Page 1", ordinal=1, source_name="scan")
+
+    (stored,) = root.iterdir()
+    assert inspect_image_dimensions(stored.read_bytes()) == size
 
 
 def _emf_header() -> bytes:
