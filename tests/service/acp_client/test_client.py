@@ -26,6 +26,7 @@ from chrys.service.acp_client import (
 from chrys.service.acp_client import _transport as transport_mod
 from chrys.service.acp_client import client as client_mod
 from tests.support.acp_stub_agent import WIDE_PATCH_FILES
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 from .helpers import CallbackRecorder, connected_client, make_spec, residual_client_tasks
@@ -787,12 +788,15 @@ async def test_permission_flood_beyond_cap_is_auto_rejected_without_callbacks(tm
     client, _callbacks = await connected_client(tmp_path, scenario="permission_flood", callbacks=callbacks)
     prompt_task = asyncio.create_task(client.prompt("flood"))
     try:
-        await wait_for(
-            lambda: (
-                client._pump is not None and client._pump._request_frames == 12 and len(callbacks.permission_calls) == 8
-            ),
-            description="permission flood arrival",
-        )
+        with earlier_tests_heap_frozen():
+            await wait_for(
+                lambda: (
+                    client._pump is not None
+                    and client._pump._request_frames == 12
+                    and len(callbacks.permission_calls) == 8
+                ),
+                description="permission flood arrival",
+            )
         callbacks.permission_gate.set()
         await prompt_task
     finally:

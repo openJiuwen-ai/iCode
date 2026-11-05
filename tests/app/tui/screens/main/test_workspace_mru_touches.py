@@ -21,7 +21,6 @@ from tests.support.tui_helpers import (
     main_screen_state_at,
     make_backend_handler,
     make_session_handler,
-    stale_file_cache,
 )
 
 # ──────────── workspace MRU touch scheduling ───────────────────────────
@@ -76,7 +75,7 @@ def _make_mru_workspace_screen(calls: list[tuple[str, object]]) -> SimpleNamespa
     state.runtime.profile = "Code Agent"
     return SimpleNamespace(
         _state=state,
-        _suggestions=SimpleNamespace(file_cache=stale_file_cache("stale.py")),
+        _suggestions=SimpleNamespace(discard_file_index=lambda: None),
         query_one=query_one,
         _session_title=fake_session_title(),
         _debug=lambda *_args: None,

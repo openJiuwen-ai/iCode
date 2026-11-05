@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from rich.text import Text
 from textual.content import Content
+from textual.worker import WorkerCancelled
 
 from chrys.app.tui.i18n import render_str
 from chrys.app.tui.screens.main.buddy_command import BuddyCommandController
@@ -35,6 +37,7 @@ from chrys.app.tui.widgets.chrome.commands import (
     is_slash_command_candidate,
     parse_slash_draft,
 )
+from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex, WorkspacePathIndex
 from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft, ShortcutIntent
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.foundation.i18n import MessageRef, msg
@@ -50,7 +53,7 @@ from chrys.service.prompt_shortcuts import (
     prompt_shortcut_sources,
 )
 
-_FILE_QUERY_DEBOUNCE_SECONDS = 0.04
+_FILE_QUERY_DEBOUNCE_SECONDS = 0.016
 _FILE_QUERY_LIMIT = 30
 # The list shows the best this many prompts; search covers every stored prompt.
 _PROMPT_HISTORY_DISPLAY_LIMIT = 100
@@ -131,8 +134,7 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
     from chrys.app.tui.i18n import LocaleController
-    from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex
-    from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
+    from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathSuggestion
     from chrys.foundation.events.types import RuntimeSkillDetails
 
 
@@ -189,16 +191,14 @@ class SuggestionHandler:
         self._callbacks = callbacks
         self._locale_controller = locale_controller
         self._suggestion_mode: str | None = None
-        self._file_cache: list[ProjectPathSuggestion] | None = None
-        self._file_cache_root: str | None = None
-        self._file_index: ProjectPathIndex | None = None
-        self._file_index_root: str | None = None
-        self._file_cache_generation = 0
+        self._file_index: WorkspacePathIndex | None = None
         self._file_query_revision = 0
         self._file_latest_query = ""
-        self._file_query_pending: tuple[str, int] | None = None
+        self._file_query_pending: tuple[str, int, bool] | None = None
+        # Set by a keystroke's query and cleared once file rows show: the rows after it reset the highlight.
+        self._file_query_resets_highlight = False
         self._file_query_worker: Worker[None] | None = None
-        self._file_warmup_requested_root: str | None = None
+        self._file_rescan_requested = False
         self._file_warmup_worker: Worker[None] | None = None
         self._prompt_history_revision = 0
         self._prompt_history_index: PromptSearchIndex | None = None
@@ -903,7 +903,18 @@ class SuggestionHandler:
         """Show file search suggestions."""
         self._file_latest_query = ""
         self._invalidate_file_query_results()
-        self._show_suggestions_loading("files")
+        index = self._file_index_for(self._current_file_root())
+        snapshot = index.snapshot
+        if snapshot is None:
+            self._show_suggestions_loading("files")
+        else:
+            # The resident snapshot answers at once, even a stale one; the worker
+            # below rescans in the background and swaps the result in.
+            self._show_suggestions(
+                "files", self._file_suggestion_items(snapshot.head(limit=_FILE_QUERY_LIMIT), index=snapshot)
+            )
+            if index.current:
+                return
         self._callbacks.start_worker(self.show_file_suggestions_async)
 
     def on_agent_triggered(self) -> None:
@@ -1036,15 +1047,65 @@ class SuggestionHandler:
         return any(match not in disabled for match in matches)
 
     async def show_file_suggestions_async(self) -> None:
-        """Show file suggestions; ``on_file_triggered`` runs this in a screen worker."""
+        """Show file suggestions; ``on_file_triggered`` runs this in a screen worker.
+
+        A current snapshot answers immediately; a missing or stale one waits here
+        for the rescan, which runs in this worker rather than on input.
+        """
         if self._suggestion_mode != "files" or not self._view.is_attached:
             return
-        root = self._current_file_root()
-        if self._has_current_file_index(root):
-            self._show_latest_file_query_or_head()
+        if self._file_index_for(self._current_file_root()).current:
+            # An earlier rescan finished after the trigger showed the stale rows the user may be choosing from.
+            self._show_latest_file_query_or_head(keep_selection=True)
             return
+        with contextlib.suppress(WorkerCancelled):
+            # Unmounting the screen cancels the rescan worker; that is not a failure of this one.
+            await self._request_file_rescan().wait()
 
-        self._file_warmup_requested_root = root
+    def _current_file_root(self) -> str:
+        """Return the cwd that file suggestions should be scoped to."""
+        return self._state.workspace_marker.current_cwd or self._state.workspace.current_cwd or safe_getcwd()
+
+    def _file_index_for(self, root: str) -> WorkspacePathIndex:
+        """Return the resident index for *root*, replacing one kept for another root."""
+        index = self._file_index
+        if index is not None and index.root == root:
+            return index
+        index = WorkspacePathIndex(root)
+        self._file_index = index
+        self._invalidate_file_query_results()
+        return index
+
+    def _file_snapshot(self) -> ProjectPathIndex | None:
+        """Return the snapshot installed for the current root, without building one."""
+        index = self._file_index
+        if index is None or index.root != self._current_file_root():
+            return None
+        return index.snapshot
+
+    def mark_file_index_stale(self) -> None:
+        """Mark the resident snapshot stale: the turn or rollback that just ended may have changed files.
+
+        The next ``@`` still answers from it at once and rescans in the
+        background.  A turn's after-turn hooks run after its UI stops and may
+        change files too, so a scan that ran before they finished is marked
+        stale again once they have.
+        """
+        # An index made here is still marked: a first ``@`` typed while the hooks run scans before they finish.
+        index = self._file_index_for(self._current_file_root())
+        index.mark_stale()
+        lifecycle = self._services.turn_lifecycle_task()
+        if lifecycle is not None and not lifecycle.done():
+            lifecycle.add_done_callback(lambda _task: index.mark_stale())
+
+    def discard_file_index(self) -> None:
+        """Drop the snapshot before another workspace or session takes over."""
+        self._file_index = None
+        self._invalidate_file_query_results()
+
+    def _request_file_rescan(self) -> Worker[None]:
+        """Ask the warmup worker to make the shown root's snapshot current, starting it if idle."""
+        self._file_rescan_requested = True
         worker = self._file_warmup_worker
         if worker is None or worker.is_finished:
             worker = self._view.run_suggestion_worker(
@@ -1053,91 +1114,34 @@ class SuggestionHandler:
                 group="file-suggestions",
             )
             self._file_warmup_worker = worker
-        await worker.wait()
-
-    def _current_file_root(self) -> str:
-        """Return the cwd that file suggestions should be scoped to."""
-        return self._state.workspace_marker.current_cwd or self._state.workspace.current_cwd or safe_getcwd()
-
-    def _has_current_file_index(self, root: str) -> bool:
-        """Return whether the current cache/index pair is ready for *root*."""
-        return (
-            self._file_cache is not None
-            and self._file_cache_root == root
-            and self._file_index is not None
-            and self._file_index_root == root
-        )
+        return worker
 
     async def _run_file_warmup_loop(self) -> None:
-        """Coalesced scan/index warmup for file suggestions."""
-        from chrys.app.tui.widgets.chrome.file_scanner import scan_project_paths
+        """Coalesced rescans, one at a time, of the root the files popup shows.
 
-        while self._file_warmup_requested_root is not None:
-            root = self._file_warmup_requested_root
-            self._file_warmup_requested_root = None
-            if self._has_current_file_index(root):
-                self._show_latest_file_query_or_head()
-                continue
-
-            cache_generation = self._file_cache_generation
-            if not self._file_warmup_context_current(root, cache_generation):
-                self._request_latest_file_warmup_if_active()
-                continue
-
-            scan = await scan_project_paths(root)
-            if not self._file_warmup_context_current(root, cache_generation):
-                self._request_latest_file_warmup_if_active()
-                continue
-
-            index = await asyncio.to_thread(self._build_file_index, scan)
-            if not self._file_warmup_context_current(root, cache_generation):
-                self._request_latest_file_warmup_if_active()
-                continue
-
-            self._install_file_cache(root, scan, index)
-            self._show_latest_file_query_or_head()
-
-    def _request_latest_file_warmup_if_active(self) -> None:
-        """Request one follow-up warmup for the current root if file suggestions are still active."""
-        if self._suggestion_mode == "files" and self._view.is_attached:
-            self._file_warmup_requested_root = self._current_file_root()
-
-    def _file_warmup_context_current(self, root: str, cache_generation: int) -> bool:
-        """Return whether a warmed scan/index is still allowed to install."""
-        return (
-            self._view.is_attached
-            and self._suggestion_mode == "files"
-            and self._current_file_root() == root
-            and cache_generation == self._file_cache_generation
-        )
-
-    def _install_file_cache(
-        self,
-        root: str,
-        scan: ProjectPathScanResult,
-        index: ProjectPathIndex,
-    ) -> None:
-        """Install a scanned file cache and already-built query index for *root*."""
-        self._file_cache = scan.paths
-        self._file_cache_root = root
-        self._file_index = index
-        self._file_index_root = root
-
-    def _current_file_index(self) -> ProjectPathIndex | None:
-        """Return the current file index without building one synchronously."""
-        if self._file_cache is None:
-            return None
-        root = self._file_cache_root or self._current_file_root()
-        if self._file_index is None or self._file_index_root != root:
-            return None
-        return self._file_index
-
-    @staticmethod
-    def _build_file_index(scan: ProjectPathScanResult) -> ProjectPathIndex:
-        """Build a project path index from a scanner result."""
-        from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex
-
-        return ProjectPathIndex.build(scan)
+        A rescan swaps its result into the open popup keeping the highlighted
+        row, since the user may already be choosing from the stale list.
+        """
+        while self._file_rescan_requested:
+            self._file_rescan_requested = False
+            if self._suggestion_mode != "files" or not self._view.is_attached:
+                return
+            index = self._file_index_for(self._current_file_root())
+            if not index.current:
+                installed = await index.rescan()
+                if self._file_index is not index or index.root != self._current_file_root():
+                    # The workspace changed while scanning: the popup now wants the new root.
+                    self._file_rescan_requested = True
+                    continue
+                if not installed:
+                    # Keep whatever snapshot there is; without one, end the loading state.
+                    if index.snapshot is None:
+                        self._show_or_update_file_suggestions([])
+                    return
+                if index.stale:
+                    # A turn ended while this scan ran, so it may predate that turn's changes.
+                    self._file_rescan_requested = True
+            self._show_latest_file_query_or_head(keep_selection=True)
 
     def _file_suggestion_items(
         self,
@@ -1164,28 +1168,40 @@ class SuggestionHandler:
             )
         return items
 
-    def _show_latest_file_query_or_head(self) -> None:
+    def _show_latest_file_query_or_head(self, *, keep_selection: bool = False) -> None:
         """Display the current file query, preserving immediate empty-query head behavior."""
         if self._suggestion_mode != "files" or not self._view.is_attached:
             return
-        index = self._current_file_index()
-        if index is None:
+        snapshot = self._file_snapshot()
+        if snapshot is None:
             return
         query = self._file_latest_query
         if query:
-            self._enqueue_file_query(query)
+            self._enqueue_file_query(query, keep_selection=keep_selection)
         else:
             self._invalidate_file_query_results()
-            self._show_or_update_file_suggestions(index.head(limit=_FILE_QUERY_LIMIT))
+            self._show_or_update_file_suggestions(snapshot.head(limit=_FILE_QUERY_LIMIT), keep_selection=keep_selection)
 
-    def _show_or_update_file_suggestions(self, paths: list[ProjectPathSuggestion]) -> None:
+    def _show_or_update_file_suggestions(
+        self,
+        paths: list[ProjectPathSuggestion],
+        *,
+        keep_selection: bool = False,
+    ) -> None:
         """Show or update the file suggestion list with *paths*."""
         if self._suggestion_mode != "files" or not self._view.is_attached:
             return
 
-        items = self._file_suggestion_items(paths, index=self._current_file_index())
+        self._file_query_resets_highlight = False
+        items = self._file_suggestion_items(paths, index=self._file_snapshot())
         if self._view.suggestions_active:
-            self._view.update_suggestions(items, title=self._suggestion_title("files"))
+            chosen = self._view.chosen_suggestion() if keep_selection else None
+            if chosen is not None and all(item.value != chosen for item in items):
+                # The rescan pushed the row the user moved to out of the shown
+                # rows: replacing them would move the highlight onto a file nobody
+                # chose. The new snapshot is installed, so the next keystroke shows it.
+                return
+            self._view.update_suggestions(items, title=self._suggestion_title("files"), keep_selection=keep_selection)
         else:
             self._show_suggestions("files", items)
 
@@ -1194,14 +1210,21 @@ class SuggestionHandler:
         self._file_query_revision += 1
         self._file_query_pending = None
 
-    def _enqueue_file_query(self, query: str) -> None:
-        """Record and schedule the latest file query."""
+    def _enqueue_file_query(self, query: str, *, keep_selection: bool = False) -> None:
+        """Record and schedule the latest file query.
+
+        A keystroke's query resets the highlight. A rescan's re-query keeps it,
+        unless it replaces a keystroke's query whose rows were not shown yet.
+        """
+        if not keep_selection:
+            self._file_query_resets_highlight = True
         self._file_latest_query = query
         self._file_query_revision += 1
         revision = self._file_query_revision
-        if self._file_cache is None and self._file_index is None:
+        if self._file_snapshot() is None:
+            # Fast path only: without a snapshot the query waits for the cold build.
             return
-        self._file_query_pending = (query, revision)
+        self._file_query_pending = (query, revision, not self._file_query_resets_highlight)
         if self._file_query_worker is None or self._file_query_worker.is_finished:
             self._file_query_worker = self._view.run_suggestion_worker(
                 self._run_file_query_loop(),
@@ -1210,65 +1233,35 @@ class SuggestionHandler:
             )
 
     async def _run_file_query_loop(self) -> None:
-        """Debounced, coalesced file-query worker loop."""
+        """Debounced, coalesced file-query worker loop reading the installed snapshot."""
         while self._file_query_pending is not None:
-            query, revision = self._file_query_pending
+            query, revision, keep_selection = self._file_query_pending
             self._file_query_pending = None
             await asyncio.sleep(_FILE_QUERY_DEBOUNCE_SECONDS)
             if self._file_query_pending is not None:
                 continue
 
-            index = await self._ensure_file_index_for_query(revision)
-            root = self._file_index_root
-            if index is None or root is None or not self._file_query_context_current(revision, root, index):
+            snapshot = self._file_snapshot()
+            if snapshot is None:
                 continue
+            matches = await asyncio.to_thread(snapshot.query, query, limit=_FILE_QUERY_LIMIT)
+            if self._file_query_context_current(revision, snapshot):
+                self._apply_file_query_result(matches, keep_selection=keep_selection)
 
-            matches = await asyncio.to_thread(index.query, query, limit=_FILE_QUERY_LIMIT)
-            if self._file_query_context_current(revision, root, index):
-                self._apply_file_query_result(matches)
-
-    async def _ensure_file_index_for_query(self, revision: int) -> ProjectPathIndex | None:
-        """Build the current cache index off-loop when a test-injected cache needs one."""
-        index = self._current_file_index()
-        if index is not None:
-            return index
-        if self._file_cache is None:
-            return None
-
-        root = self._file_cache_root or self._current_file_root()
-        paths = self._file_cache
-        cache_generation = self._file_cache_generation
-        from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult
-
-        scan = ProjectPathScanResult.from_suggestions(root=root, paths=paths)
-        index = await asyncio.to_thread(self._build_file_index, scan)
-        if (
-            revision != self._file_query_revision
-            or cache_generation != self._file_cache_generation
-            or paths is not self._file_cache
-            or self._current_file_root() != root
-        ):
-            return None
-        self._file_index = index
-        self._file_index_root = root
-        return index
-
-    def _file_query_context_current(self, revision: int, root: str, index: ProjectPathIndex) -> bool:
+    def _file_query_context_current(self, revision: int, snapshot: ProjectPathIndex) -> bool:
         """Return whether a query result is still allowed to update the UI."""
         return (
             revision == self._file_query_revision
             and self._view.is_attached
             and self._suggestion_mode == "files"
-            and self._file_index is index
-            and self._file_index_root == root
-            and self._current_file_root() == root
+            and self._file_snapshot() is snapshot
         )
 
-    def _apply_file_query_result(self, matches: list[ProjectPathSuggestion]) -> None:
+    def _apply_file_query_result(self, matches: list[ProjectPathSuggestion], *, keep_selection: bool = False) -> None:
         """Apply current file-query results to the suggestion list."""
         if not self._view.is_attached:
             return
-        self._show_or_update_file_suggestions(matches)
+        self._show_or_update_file_suggestions(matches, keep_selection=keep_selection)
 
     # -------------------------------------------------------------- #
     # Filtering as user types
@@ -1384,10 +1377,10 @@ class SuggestionHandler:
             else:
                 self._file_latest_query = ""
                 self._invalidate_file_query_results()
-                index = self._current_file_index()
-                if index is not None:
+                snapshot = self._file_snapshot()
+                if snapshot is not None:
                     self._view.update_suggestions(
-                        self._file_suggestion_items(index.head(limit=_FILE_QUERY_LIMIT), index=index),
+                        self._file_suggestion_items(snapshot.head(limit=_FILE_QUERY_LIMIT), index=snapshot),
                         title=self._suggestion_title("files"),
                     )
 
@@ -1534,16 +1527,3 @@ class SuggestionHandler:
     @property
     def suggestion_mode(self) -> str | None:
         return self._suggestion_mode
-
-    @property
-    def file_cache(self) -> list[ProjectPathSuggestion] | None:
-        return self._file_cache
-
-    @file_cache.setter
-    def file_cache(self, value: list[ProjectPathSuggestion] | None) -> None:
-        self._file_cache = value
-        self._file_cache_root = None
-        self._file_index = None
-        self._file_index_root = None
-        self._file_cache_generation += 1
-        self._invalidate_file_query_results()

@@ -1540,6 +1540,14 @@ class MainScreenViewAdapter:
 
         return bool(self._screen.query_one(SuggestionList).select_highlighted(execute=execute))
 
+    def chosen_suggestion(self) -> str | None:
+        from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
+
+        try:
+            return self._screen.query_one(SuggestionList).chosen_value
+        except NoMatches:
+            return None
+
     def show_subcommand_suggestions(
         self,
         items: Sequence[SuggestionEntry],
