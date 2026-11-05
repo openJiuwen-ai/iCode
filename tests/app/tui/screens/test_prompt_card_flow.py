@@ -968,10 +968,10 @@ async def test_a_command_in_a_folded_paste_shows_on_the_card_and_runs_with_its_s
         main, chat, sent, _switches = await _ready_with_engine_echo(pilot, monkeypatch, bus)
         await _expand_with_card(pilot, main, chat, "zzstatus", "Status: !`echo clean`")
 
-        pasted = "one\ntwo\nthree\n!`echo pasted`"
+        pasted = "one\ntwo\nthree\nfour\nfive\n!`echo pasted`"
         chat.select_all()
         chat.post_message(events.Paste(pasted))
-        await wait_for(lambda: chat.text == "[Pasted text #1 +3 lines]", pilot=pilot, description="paste folded")
+        await wait_for(lambda: chat.text == "[Pasted text #1 +5 lines]", pilot=pilot, description="paste folded")
 
         state = _card(main).state
         assert state is not None

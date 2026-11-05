@@ -1131,7 +1131,7 @@ async def test_a_queued_message_with_labels_is_still_the_message_its_sent_text_n
         assert restore is not None
         assert not input_bar.locked
         assert input_bar.value == "explain [Quote #1] "
-        assert input_bar.draft().sent_text() == sent == "explain “it failed”"
+        assert input_bar.draft().sent_text() == sent == "explain \n> it failed"
 
 
 @pytest.mark.asyncio

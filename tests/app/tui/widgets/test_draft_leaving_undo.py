@@ -13,7 +13,7 @@ from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft, ShortcutIntent
 from chrys.foundation.text.draft_references import iter_reference_labels
 from tests.support.waiting import wait_for
 
-_FOUR_LINES = "one\ntwo\nthree\nfour"
+_SIX_LINES = "one\ntwo\nthree\nfour\nfive\nsix"
 _DEPLOY = ShortcutIntent("deploy", "", "")
 
 
@@ -55,7 +55,7 @@ async def _send(app: _App, pilot, *, presses: int = 1) -> InputBar.UserSubmitted
 
 async def _labelled(text_area: _ChatTextArea) -> None:
     text_area.insert("see ")
-    await text_area._on_paste(Paste(_FOUR_LINES))
+    await text_area._on_paste(Paste(_SIX_LINES))
     assert text_area.insert_reference("quote", "said")
 
 
@@ -84,7 +84,7 @@ async def test_a_sent_draft_with_labels_comes_back_with_its_labels_live() -> Non
 
         text_area.action_undo()
 
-        assert _live(text_area) == ["[Pasted text #1 +3 lines]", "[Quote #1]"]
+        assert _live(text_area) == ["[Pasted text #1 +5 lines]", "[Quote #1]"]
         assert input_bar.draft().sent_text() == sent.text
 
 
@@ -162,19 +162,19 @@ async def test_redo_back_over_a_send_keeps_the_next_drafts_labels_live() -> None
         text_area.focus()
         await _labelled(text_area)
         await _send(app, pilot)
-        await text_area._on_paste(Paste("a\nb\nc\nd"))
+        await text_area._on_paste(Paste("a\nb\nc\nd\ne\nf"))
         next_draft = input_bar.draft()
 
         text_area.action_undo()  # the paste
         text_area.action_undo()  # the send
-        assert _live(text_area) == ["[Pasted text #1 +3 lines]", "[Quote #1]"]
+        assert _live(text_area) == ["[Pasted text #1 +5 lines]", "[Quote #1]"]
         text_area.action_redo()  # the send
         assert input_bar.value == ""
         text_area.action_redo()  # the paste
 
         assert input_bar.draft() == next_draft
-        assert _live(text_area) == ["[Pasted text #1 +3 lines]"]
-        assert input_bar.draft().sent_text() == "a\nb\nc\nd"
+        assert _live(text_area) == ["[Pasted text #1 +5 lines]"]
+        assert input_bar.draft().sent_text() == "a\nb\nc\nd\ne\nf"
 
 
 @pytest.mark.asyncio
@@ -218,13 +218,13 @@ async def test_a_refused_draft_handed_back_does_not_come_back_a_second_time() ->
     async with app.run_test(size=(100, 30)) as pilot:
         input_bar, text_area = _parts(app)
         text_area.focus()
-        await text_area._on_paste(Paste(_FOUR_LINES))
+        await text_area._on_paste(Paste(_SIX_LINES))
         before = input_bar.draft()
         await _send(app, pilot)
 
         assert input_bar.restore_draft(before)
         assert input_bar.draft() == before
-        assert _live(text_area) == ["[Pasted text #1 +3 lines]"]
+        assert _live(text_area) == ["[Pasted text #1 +5 lines]"]
 
         # The send did not happen after all: no redo sends it away again.
         text_area.action_redo()

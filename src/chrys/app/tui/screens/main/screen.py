@@ -29,6 +29,7 @@ from textual.screen import Screen
 from textual.selection import Selection, SelectState
 from textual.timer import Timer
 from textual.widget import Widget
+from textual.widgets.text_area import Document
 
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.binding_display import QUIT_BINDING, localized_binding
@@ -129,6 +130,7 @@ from chrys.app.tui.widgets.chrome.input_bar import (
     default_submit_route,
 )
 from chrys.app.tui.widgets.chrome.prompt_card import PromptCard
+from chrys.app.tui.widgets.chrome.prompt_draft import ExpandedDraft, expand_draft
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 from chrys.app.tui.widgets.editor import MESSAGE_EDITOR_MAX_CHARACTERS, EditorBufferSnapshot, EditorMode
@@ -162,6 +164,7 @@ from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
 from chrys.foundation.platform import get_platform, safe_getcwd
+from chrys.foundation.text.draft_references import iter_reference_labels
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.models.resolver import model_for_agent
 from chrys.service.profiles.models.schema import UNCONFIGURED_MODEL_ID, is_model_profile_selectable
@@ -1495,7 +1498,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._open_reference_preview(event.reference)
 
     def _open_reference_preview(self, reference: DraftReference) -> None:
-        """Show what a draft label stands for, over whatever screen is on top (the editor too)."""
+        """Preview an image or quote label clicked in the input box."""
         from chrys.app.tui.screens.dialogs.reference_preview import ReferencePreviewDialog
 
         self.app.push_screen(
@@ -1886,63 +1889,122 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     # ------------------------------------------------------------------ #
 
     @on(InputBar.EditorRequested)
-    def _on_editor_requested(self, _event: InputBar.EditorRequested) -> None:
+    def _on_editor_requested(self, event: InputBar.EditorRequested) -> None:
         from chrys.app.tui.screens.dialogs.editor import EditorDialog
 
         if isinstance(self.app.screen, EditorDialog):
             return
         input_bar = self.query_one(InputBar)
         snapshot = input_bar.snapshot_draft()
-        if len(snapshot.text) > MESSAGE_EDITOR_MAX_CHARACTERS:
-            self._view_adapter.notify(
-                _EDITOR_DRAFT_TOO_LARGE.bind(limit=f"{MESSAGE_EDITOR_MAX_CHARACTERS:,}"),
-                title=_EDITOR_DRAFT_TOO_LARGE_TITLE.bind(),
-                severity="warning",
-            )
+        if event.reference_start is not None:
+            self._open_paste_editor(input_bar, snapshot.draft, event.reference_start)
+            return
+        position = Document(snapshot.text).get_index_from_location(snapshot.cursor_location)
+        expanded = expand_draft(snapshot.draft, position)
+        cursor = expanded.cursor
+        if self._too_large_for_editor(expanded.text):
             return
         dialog = EditorDialog(
-            EditorBufferSnapshot(snapshot.text, snapshot.cursor_location, snapshot.revision),
+            EditorBufferSnapshot(
+                expanded.text, Document(expanded.text).get_location_from_index(cursor), snapshot.revision
+            ),
             mode=self._editor_mode,
             can_commit=input_bar.can_commit_editor_draft,
             current_draft_revision=lambda: input_bar.draft_revision,
-            draft=snapshot.draft,
+            draft=expanded.draft,
             paste_cwd=input_bar.paste_cwd,
             clipboard_image_dir=input_bar.clipboard_image_dir,
-            open_reference=self._open_reference_preview,
         )
         # It edits the whole draft it opened on and returns it whole.
         opened_mode = self._editor_mode
         self._view_adapter.push_screen(
-            dialog, lambda result: self._on_editor_result(result, opened=snapshot, opened_mode=opened_mode)
+            dialog,
+            lambda result: self._on_editor_result(result, opened=snapshot, expanded=expanded, opened_mode=opened_mode),
         )
 
+    def _too_large_for_editor(self, text: str) -> bool:
+        if len(text) <= MESSAGE_EDITOR_MAX_CHARACTERS:
+            return False
+        self._view_adapter.notify(
+            _EDITOR_DRAFT_TOO_LARGE.bind(limit=f"{MESSAGE_EDITOR_MAX_CHARACTERS:,}"),
+            title=_EDITOR_DRAFT_TOO_LARGE_TITLE.bind(),
+            severity="warning",
+        )
+        return True
+
+    def _open_paste_editor(self, input_bar: InputBar, draft: ChatDraft, start: int) -> None:
+        """Edit one folded paste on its own, titled by its label; saving it is one undo step of the draft."""
+        from chrys.app.tui.screens.dialogs.editor import EditorDialog
+
+        label = next(
+            (label for label in iter_reference_labels(draft.text, draft.references) if label.start == start), None
+        )
+        if label is None or label.reference.kind != "paste":
+            return
+        entry = label.reference
+        if self._too_large_for_editor(entry.content):
+            return
+        dialog = EditorDialog(
+            EditorBufferSnapshot(entry.content, (0, 0), input_bar.draft_revision),
+            mode=self._editor_mode,
+            can_commit=input_bar.can_commit_editor_draft,
+            # The same guard as Ctrl+O: a draft that changed meanwhile asks for a second commit.
+            current_draft_revision=lambda: input_bar.draft_revision,
+            title=entry.label,
+            paste_cwd=input_bar.paste_cwd,
+            clipboard_image_dir=input_bar.clipboard_image_dir,
+        )
+        opened_mode = self._editor_mode
+
+        def saved(result: EditorDialogResult) -> None:
+            self._remember_editor_mode(result.mode, opened_mode)
+            if result.accepted:
+                input_bar.edit_paste(entry, result.text, start=start)
+            input_bar.focus_input()
+
+        self._view_adapter.push_screen(dialog, saved)
+
     def _on_editor_result(
-        self, result: EditorDialogResult, *, opened: InputDraftSnapshot, opened_mode: EditorMode
+        self,
+        result: EditorDialogResult,
+        *,
+        opened: InputDraftSnapshot,
+        expanded: ExpandedDraft,
+        opened_mode: EditorMode,
     ) -> None:
+        self._remember_editor_mode(result.mode, opened_mode)
+        if not result.accepted:
+            return
+        input_bar = self.query_one(InputBar)
+        if result.draft == expanded.draft:
+            # A clean editor preserves the exact original labels and their sending whitespace.
+            position = Document(result.text).get_index_from_location(result.cursor_location)
+            cursor = Document(opened.text).get_location_from_index(expanded.original_position(position))
+            if input_bar.draft_revision != opened.revision:
+                input_bar.replace_editor_draft(opened.draft, cursor_location=cursor)
+            else:
+                input_bar.move_draft_cursor(cursor)
+        else:
+            input_bar.replace_editor_draft(result.draft, cursor_location=result.cursor_location)
+        input_bar.focus_input()
+
+    def _remember_editor_mode(self, mode: EditorMode, opened_mode: EditorMode) -> None:
+        """Keep a keymap switched in the editor (F3) as the setting."""
         # Against the mode it opened in: a reload may have moved ours since, which is not the user's choice.
-        if result.mode is not opened_mode:
-            self._editor_mode = result.mode
+        if mode is not opened_mode:
+            self._editor_mode = mode
             # The same write-point contract as theme and locale: the shared
             # settings handle records the choice as a RUNTIME override, so
             # settings keep describing the screen even when the swallowed
             # disk write below fails.
             if self._on_editor_keymap_changed is not None:
-                self._on_editor_keymap_changed(result.mode.value)
-            error = persist_editor_keymap(result.mode.value)
+                self._on_editor_keymap_changed(mode.value)
+            error = persist_editor_keymap(mode.value)
             handle = self._services.settings_handle
             if error is not None:
                 self._notify_settings_failure(error)
             elif handle is not None:
-                handle.confirm_written({"ui.editor.keymap": result.mode.value})
-        if not result.accepted:
-            return
-        input_bar = self.query_one(InputBar)
-        # Unchanged, and nothing else written meanwhile, the draft stays as it is.
-        # Otherwise the edited draft, whole (labels, fields, owner), replaces whatever
-        # is there now, its cursor where the editor left it.
-        if result.draft != opened.draft or input_bar.draft_revision != opened.revision:
-            input_bar.set_draft(result.draft, cursor_location=result.cursor_location)
-        input_bar.focus_input()
+                handle.confirm_written({"ui.editor.keymap": mode.value})
 
     # ------------------------------------------------------------------ #
     # Shell mode

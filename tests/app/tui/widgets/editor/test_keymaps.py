@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from itertools import product
 
 import pytest
 
@@ -159,11 +161,17 @@ class _Host:
         return self.text[start:end]
 
     def replace_editor_range(self, source_range: EditorTextRange, text: str) -> None:
-        start, end = sorted((_offset(self.text, source_range.start), _offset(self.text, source_range.end)))
+        self.replace_editor_ranges([(source_range, text)])
+
+    def replace_editor_ranges(self, replacements: Sequence[tuple[EditorTextRange, str]]) -> None:
+        if not replacements:
+            return
         self._undo.append((self.text, self.cursor))
         self._redo.clear()
-        self.text = self.text[:start] + text + self.text[end:]
-        self.cursor = _location(self.text, start + len(text))
+        for source_range, text in reversed(replacements):
+            start, end = sorted((_offset(self.text, source_range.start), _offset(self.text, source_range.end)))
+            self.text = self.text[:start] + text + self.text[end:]
+            self.cursor = _location(self.text, start + len(text))
         self.selection_range = EditorTextRange(self.cursor, self.cursor)
         self.edits += 1
         self.activity += 1
@@ -171,8 +179,7 @@ class _Host:
     def delete_editor_range(self, source_range: EditorTextRange) -> None:
         self.replace_editor_range(source_range, "")
 
-    def editor_atomic_spans(self, row: int) -> list[tuple[int, int]]:
-        del row
+    def editor_unit_spans(self) -> list[tuple[int, int]]:
         return []
 
     def editor_undo(self) -> None:
@@ -848,3 +855,234 @@ def test_vim_undo_does_not_cross_an_earlier_edit(sequence: list[str]) -> None:
         keymap.handle_key(_stroke(key), host)
     host.editor_undo()
     assert host.text == seeded
+
+
+@dataclass
+class _AtomicHost(_Host):
+    spans: dict[int, list[tuple[int, int]]] = field(default_factory=dict)
+    replacement_batches: list[tuple[str, tuple[tuple[EditorTextRange, str], ...]]] = field(default_factory=list)
+
+    def editor_unit_spans(self) -> list[tuple[int, int]]:
+        return [
+            (_offset(self.text, (row, low)), _offset(self.text, (row, high)))
+            for row, spans in self.spans.items()
+            for low, high in spans
+        ]
+
+    def replace_editor_ranges(self, replacements: Sequence[tuple[EditorTextRange, str]]) -> None:
+        self.replacement_batches.append((self.text, tuple(replacements)))
+        super().replace_editor_ranges(replacements)
+
+
+def _assert_preserving_writer_contract(host: _AtomicHost) -> None:
+    for original, replacements in host.replacement_batches:
+        previous_end = (0, 0)
+        for source_range, replacement in replacements:
+            assert previous_end <= source_range.start <= source_range.end
+            previous_end = source_range.end
+            start = _offset(original, source_range.start)
+            end = _offset(original, source_range.end)
+            if original[start:end] == replacement:
+                continue
+            for row, spans in host.spans.items():
+                for low, high in spans:
+                    unit_start = _offset(original, (row, low))
+                    unit_end = _offset(original, (row, high))
+                    assert end <= unit_start or start >= unit_end
+
+
+@pytest.mark.parametrize(
+    ("text", "spans", "count", "expected", "cursor"),
+    [
+        ("argument 1 z", [(0, 10)], 1, "argument 1 z", 10),
+        ("ß argument 1 z", [(2, 12)], 3, "SS argument 1 z", 13),
+        ("ﬃargument 1İ z", [(1, 11)], 3, "FFIargument 1i̇ z", 15),
+        ("İargument 1ﬃ z", [(1, 11)], 3, "i̇argument 1FFI z", 15),
+        ("aFIELD[L]z", [(1, 6), (6, 9)], 3, "AFIELD[L]z", 9),
+        ("aFIELD[L]z", [(1, 6), (6, 9)], 5, "AFIELD[L]Z", 9),
+        ("aFIELD", [(1, 6)], 5, "AFIELD", 1),
+        ("xabcdefghz", [(4, 9), (1, 6)], 3, "XabcdefghZ", 9),
+    ],
+)
+def test_vim_toggle_skips_atomic_units_and_uses_written_character_lengths(
+    text: str, spans: list[tuple[int, int]], count: int, expected: str, cursor: int
+) -> None:
+    host = _AtomicHost(text, spans={0: spans})
+    keymap = VimKeymap()
+    for key in [*str(count), "~"]:
+        keymap.handle_key(_stroke(key), host)
+
+    assert host.text == expected
+    assert host.cursor == (0, cursor)
+    assert host.edits == 1
+    assert len(host.replacement_batches) == 1
+    _assert_preserving_writer_contract(host)
+    keymap.handle_key(_stroke("u"), host)
+    assert host.text == text
+    keymap.handle_key(_stroke("ctrl+r"), host)
+    assert host.text == expected
+
+
+def test_vim_toggle_only_units_keeps_its_own_unchanged_undo_step() -> None:
+    host = _AtomicHost("FIELD", spans={0: [(0, 5)]})
+    host.replace_editor_range(EditorTextRange((0, 5), (0, 5)), "!")
+    host.move_editor_cursor((0, 0))
+    keymap = VimKeymap()
+    keymap.handle_key(_stroke("~"), host)
+    assert host.text == "FIELD!"
+    assert host.edits == 2
+    keymap.handle_key(_stroke("u"), host)
+    assert host.text == "FIELD!"
+    keymap.handle_key(_stroke("u"), host)
+    assert host.text == "FIELD"
+
+
+@pytest.mark.parametrize(
+    ("text", "spans", "count", "expected", "cursor"),
+    [
+        ("ab \nargument 1", {1: [(0, 10)]}, 2, "ab argument 1", 2),
+        ("ab\n  argument 1", {1: [(2, 12)]}, 2, "ab argument 1", 2),
+        ("ab\n\targument 1", {1: [(1, 11)]}, 2, "ab argument 1", 2),
+        ("ab\n  \ncd", {}, 3, "ab  cd", 2),
+        ("FIELD  \n [L]\t\n  LAST  ", {0: [(0, 5)], 1: [(1, 4)], 2: [(2, 6)]}, 3, "FIELD [L] LAST", 5),
+        ("ab\n   ", {}, 2, "ab ", 2),
+        (" \n\t\n", {}, 3, "  ", 0),
+        ("ab\n\ncd\t", {}, 3, "ab  cd", 2),
+    ],
+)
+def test_vim_join_edits_only_seams_and_final_trailing_whitespace(
+    text: str, spans: dict[int, list[tuple[int, int]]], count: int, expected: str, cursor: int
+) -> None:
+    host = _AtomicHost(text, spans=spans)
+    keymap = VimKeymap()
+    for key in [*str(count), "J"]:
+        keymap.handle_key(_stroke(key), host)
+    assert host.text == expected
+    assert host.cursor == (0, cursor)
+    assert host.edits == 1
+    assert len(host.replacement_batches) == 1
+    _assert_preserving_writer_contract(host)
+    keymap.handle_key(_stroke("u"), host)
+    assert host.text == text
+    keymap.handle_key(_stroke("ctrl+r"), host)
+    assert host.text == expected
+
+
+def test_vim_join_small_exhaustive_inputs_match_existing_text_and_cursor_rules() -> None:
+    fragments = ["", "a", " a ", "\ta\t", " ", "\t"]
+    for parts in product(fragments, repeat=3):
+        for row in (0, 1):
+            for count in (2, 3):
+                text = "\n".join(parts)
+                _keymap, host = _run_vim([*str(count), "J"], text, (row, 0))
+                end_row = min(row + count - 1, len(parts) - 1)
+                joined = " ".join([parts[row].rstrip(), *(line.strip() for line in parts[row + 1 : end_row + 1])])
+                expected = "\n".join([*parts[:row], joined, *parts[end_row + 1 :]])
+                assert host.text == expected, (parts, row, count)
+                assert host.cursor == (row, min(len(parts[row].rstrip()), max(len(joined) - 1, 0)))
+
+
+def test_vim_join_last_line_does_not_write_or_add_an_undo_step() -> None:
+    keymap, host = _run_vim(["J"], "first\nlast", (1, 2))
+    assert host.text == "first\nlast"
+    assert host.cursor == (1, 2)
+    assert host.edits == 0
+    assert keymap.state is VimState.NORMAL
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["ab\ncd\nef", "ab \n  \ncd", " \n\t\n", " ab \n  cd  \n\tef\t", "ab\ncd\n   "],
+)
+def test_vim_join_coalesces_plain_text_seams_into_one_replacement(text: str) -> None:
+    host = _AtomicHost(text)
+    keymap = VimKeymap()
+    for key in "3J":
+        keymap.handle_key(_stroke(key), host)
+    parts = text.split("\n")
+    assert host.text == " ".join([parts[0].rstrip(), *(part.strip() for part in parts[1:])])
+    assert len(host.replacement_batches) == 1
+    assert len(host.replacement_batches[0][1]) == 1
+    assert host.replacement_batches[0][1][0][0] == EditorTextRange((0, 0), (2, len(parts[-1])))
+    assert host.edits == 1
+    keymap.handle_key(_stroke("u"), host)
+    assert host.text == text
+
+
+@pytest.mark.parametrize(
+    ("protected_rows", "expected_replacements"),
+    [((), 1), ((0,), 1), ((2,), 2), ((4,), 2), ((0, 2, 4), 3), ((0, 1, 2, 3, 4), 5)],
+)
+def test_vim_join_breaks_coalesced_replacements_only_at_lines_with_units(
+    protected_rows: tuple[int, ...], expected_replacements: int
+) -> None:
+    lines = ["ab ", "  one  ", "\ttwo\t", "  three  ", "  four  "]
+    spans = {row: [(len(lines[row]) - len(lines[row].lstrip()), len(lines[row].rstrip()))] for row in protected_rows}
+    text = "\n".join(lines)
+    host = _AtomicHost(text, spans=spans)
+    keymap = VimKeymap()
+    for key in "5J":
+        keymap.handle_key(_stroke(key), host)
+    assert host.text == "ab one two three four"
+    assert host.cursor == (0, 2)
+    assert len(host.replacement_batches) == 1
+    assert len(host.replacement_batches[0][1]) == expected_replacements
+    assert host.replacement_batches[0][1][0][0].start == (0, 2 if 0 in protected_rows else 0)
+    _assert_preserving_writer_contract(host)
+    keymap.handle_key(_stroke("u"), host)
+    assert host.text == text
+    keymap.handle_key(_stroke("ctrl+r"), host)
+    assert host.text == "ab one two three four"
+
+
+@pytest.mark.parametrize("keys", [["o"], ["O"], ["y", "y", "p"], ["y", "y", "P"]])
+def test_vim_other_inserting_writers_leave_units_outside_their_ranges(keys: list[str]) -> None:
+    host = _AtomicHost("FIELD rest\nlast", spans={0: [(0, 5)]})
+    keymap = VimKeymap()
+    for key in keys:
+        keymap.handle_key(_stroke(key), host)
+    assert host.edits == 1
+    _assert_preserving_writer_contract(host)
+
+
+@pytest.mark.parametrize(
+    "keys",
+    [["x"], ["d", "w"], ["c", "w"], ["D"], ["C"], ["s"], ["S"], ["d", "i", "w"], ["r", "Q"], ["v", "d"], ["v", "c"]],
+)
+def test_vim_other_replacing_writers_intend_to_remove_touched_units(keys: list[str]) -> None:
+    host = _AtomicHost("FIELD rest", spans={0: [(0, 5)]})
+    keymap = VimKeymap()
+    for key in keys:
+        keymap.handle_key(_stroke(key), host)
+    assert host.edits == 1
+    assert len(host.replacement_batches) == 1
+    original, replacements = host.replacement_batches[0]
+    for source_range, replacement in replacements:
+        assert _offset(original, source_range.start) < 5
+        assert _offset(original, source_range.end) > 0
+        assert replacement in {"", "Q"}
+
+
+@pytest.mark.parametrize("keys", [["ctrl+d"], ["alt+d"], ["ctrl+k"], ["ctrl+space", "alt+f", "ctrl+w"]])
+def test_emacs_deleting_writers_intend_to_remove_touched_units(keys: list[str]) -> None:
+    host = _AtomicHost("FIELD rest", spans={0: [(0, 5)]})
+    keymap = EmacsKeymap()
+    for key in keys:
+        keymap.handle_key(_stroke(key), host)
+    assert host.edits == 1
+    for original, replacements in host.replacement_batches:
+        for source_range, replacement in replacements:
+            assert _offset(original, source_range.start) < 5
+            assert _offset(original, source_range.end) > 0
+            assert replacement == ""
+
+
+def test_emacs_yank_inserts_next_to_units_without_rewriting_them() -> None:
+    host = _AtomicHost("FIELD rest", cursor=(0, 6), spans={0: [(0, 5)]})
+    keymap = EmacsKeymap()
+    keymap.handle_key(_stroke("ctrl+k"), host)
+    host.replacement_batches.clear()
+    host.move_editor_cursor((0, 0))
+    keymap.handle_key(_stroke("ctrl+y"), host)
+    assert host.text == "restFIELD "
+    _assert_preserving_writer_contract(host)

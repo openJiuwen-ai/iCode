@@ -2,8 +2,8 @@
 
 """Large modal editor for preparing a multi-line chat draft.
 
-It edits the whole draft (labels, prompt fields, owner) by the input box's
-rules (``DraftEditor``) and hands the whole draft back.
+It edits the expanded sending text, prompt fields and owner by the input
+box's rules (``DraftEditor``), then hands the whole draft back.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_loca
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.widgets.chrome.draft_editor import DraftEditor
-from chrys.app.tui.widgets.chrome.draft_text_area import DraftTextArea
 from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.editor import (
     EditorBufferSnapshot,
@@ -40,7 +39,6 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
     from chrys.app.tui.widgets.editor.types import EditorLocation
-    from chrys.foundation.text.draft_references import DraftReference
 
 
 _UNSAVED_WARNING = msg(
@@ -148,21 +146,23 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
         can_commit: Callable[[], bool] = lambda: True,
         current_draft_revision: Callable[[], int] | None = None,
         draft: ChatDraft | None = None,
+        title: str = "",
         paste_cwd: str = "",
         clipboard_image_dir: Path | None = None,
-        open_reference: Callable[[DraftReference], None] | None = None,
     ) -> None:
         """Edit *draft* (the snapshot's text when none), opened at the snapshot's cursor.
 
+        *title* replaces "Prompt Editor" when the editor holds one part of the
+        draft, such as a folded paste named by its label.
+
         *paste_cwd* and *clipboard_image_dir* are the input box's, so a paste
-        lands as it would there; *open_reference* shows what a clicked label
-        stands for, as the input box does.
+        resolves the same paths and stores clipboard images in the same place.
         """
         self._entry_snapshot = snapshot
+        self._title = title
         self._entry_draft = draft if draft is not None else ChatDraft(snapshot.text)
         self._paste_cwd = paste_cwd
         self._clipboard_image_dir = clipboard_image_dir
-        self._open_reference = open_reference
         self._mode = EditorMode.parse(mode)
         self._can_commit = can_commit
         self._current_draft_revision = current_draft_revision or (lambda: snapshot.draft_revision)
@@ -180,7 +180,7 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
     def compose(self) -> ComposeResult:
         render_message = self._render_message
         with VerticalGroup(id="editor-dialog", classes=f"editor-mode-{self._mode.value}") as container:
-            container.border_title = Text(render_message(_EDITOR_TITLE.bind()))
+            container.border_title = Text(self._title or render_message(_EDITOR_TITLE.bind()))
             container.border_subtitle = Text(render_message(_EDITOR_MODE_MESSAGES[self._mode].bind()))
             with HorizontalGroup(id="editor-header"):
                 yield Static(Text(render_message(_MODE_LABEL.bind())), id="editor-mode-label")
@@ -251,12 +251,6 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
         event.prevent_default()
         event.stop()
         self._handle_intent(event.intent)
-
-    @on(DraftTextArea.ReferenceClicked)
-    def _on_reference_clicked(self, event: DraftTextArea.ReferenceClicked) -> None:
-        event.stop()
-        if self._open_reference is not None:
-            self._open_reference(event.reference)
 
     @on(MessageEditor.EditActivity)
     def _on_editor_edit_activity(self, event: MessageEditor.EditActivity) -> None:

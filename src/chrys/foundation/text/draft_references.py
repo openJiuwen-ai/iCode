@@ -13,8 +13,9 @@ their own.
 
 In the composer a live label is one unit. Two rules keep it whole, applied
 where every cursor move and every edit already pass: a cursor or selection
-end never rests inside a label (:func:`label_boundary`), and an edit that
-reaches into a label takes all of it (:func:`label_safe_range`). Typing,
+end never rests inside a unit (:func:`unit_boundary`), and an edit that
+reaches into a unit takes all of it (:func:`unit_safe_range`); the composer
+passes its live labels and prompt fields as the units. Typing,
 pasting, deleting and inserting a new label follow from those two.
 
 A label's text is written once, when its entry is registered, in the
@@ -24,7 +25,7 @@ stays live when the language changes later.
 Text leaves the composer through one function, :func:`expand_references`,
 and each label becomes what it stands for in place: an image label its
 ``@file`` mention (the engine's attachment path), a pasted-text label the text
-it folded, a quote label its text in quotation marks. One level only, as
+it folded, a quote label its text as a block quote. One level only, as
 Claude Code does: label text inside a paste or a quote is just text. What is
 sent is what the model, the transcript and the prompt history see; labels
 exist only in the composer, and sent text never turns back into them.
@@ -39,7 +40,7 @@ Pasted text is the user's own words and acts like typed text.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -68,10 +69,12 @@ def paste_folds(text: str, *, screen_rows: int) -> bool:
     """Whether pasted *text* folds into a ``[Pasted text #n]`` label rather than showing inline.
 
     It folds when it is longer than :data:`PASTE_FOLD_MIN_CHARS` or holds more
-    newlines than ``max(0, min(screen_rows - 10, 2))``: three or more on any
-    usual terminal, fewer on a very short one.
+    than five visible lines. A trailing newline does not add a line; a very
+    short terminal keeps fewer lines, leaving ten rows for the rest of the UI.
     """
-    return len(text) > PASTE_FOLD_MIN_CHARS or text.count("\n") > max(0, min(screen_rows - 10, 2))
+    # Newlines only, as the label counts them: other line separators stay inside a line.
+    newlines = text.removesuffix("\n").count("\n")
+    return len(text) > PASTE_FOLD_MIN_CHARS or newlines > max(0, min(screen_rows - 10, 4))
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,8 +99,9 @@ class DraftReference:
 class DraftReferences:
     """What a draft's labels stand for, numbered from 1 per kind.
 
-    Only ever grows while the draft lives, so undo and a paste back find what
-    a label stood for; the next message starts over, numbering from 1.
+    Grows while the draft lives, so undo and a paste back find what a label
+    stood for; the next message starts over, numbering from 1. Saving an
+    edited paste replaces its entry in one undo step that keeps both tables.
     """
 
     entries: tuple[DraftReference, ...] = ()
@@ -116,6 +120,12 @@ class DraftReferences:
         number = max((entry.number for entry in self.entries if entry.kind == kind), default=0) + 1
         entry = DraftReference(kind, number, content, label(kind, number, content))
         return DraftReferences((*self.entries, entry)), entry
+
+    def with_replaced(self, entry: DraftReference) -> DraftReferences:
+        """These references with the entry of *entry*'s kind and number replaced by *entry*."""
+        return DraftReferences(
+            tuple(entry if (old.kind, old.number) == (entry.kind, entry.number) else old for old in self.entries)
+        )
 
 
 EMPTY_REFERENCES = DraftReferences()
@@ -148,27 +158,33 @@ def iter_reference_labels(text: str, references: DraftReferences) -> list[Refere
     return labels
 
 
-def label_boundary(text: str, references: DraftReferences, index: int, *, forward: bool) -> int:
-    """*index*, or the edge of the live label it falls strictly inside: its end moving *forward*, else its start."""
-    for label in iter_reference_labels(text, references):
-        if label.start < index < label.end:
-            return label.end if forward else label.start
-    return index
+def unit_boundary(spans: Sequence[tuple[int, int]], index: int, *, forward: bool) -> int:
+    """*index*, or the edge in its direction that falls inside none of the ordered unit *spans*."""
+    while True:
+        previous = index
+        for start, end in spans:
+            if start < index < end:
+                index = end if forward else start
+        if index == previous:
+            return index
 
 
-def label_safe_range(text: str, references: DraftReferences, start: int, end: int) -> tuple[int, int]:
-    """The ``[start, end)`` an edit of *text* applies to so that it cuts no live label.
+def unit_safe_range(spans: Sequence[tuple[int, int]], start: int, end: int) -> tuple[int, int]:
+    """The ``[start, end)`` an edit applies to so that it cuts none of the ordered unit *spans*.
 
-    A range reaching into a label grows to take the whole label; an insertion
-    point inside one moves to its end.
+    A range reaching into a unit grows until it takes every intersecting unit
+    whole; an insertion point inside one moves to the next safe edge.
     """
-    for label in iter_reference_labels(text, references):
-        if start == end:
-            if label.start < start < label.end:
-                return label.end, label.end
-        elif label.start < end and start < label.end:
-            start, end = min(start, label.start), max(end, label.end)
-    return start, end
+    if start == end:
+        index = unit_boundary(spans, start, forward=True)
+        return index, index
+    while True:
+        previous = start, end
+        for unit_start, unit_end in spans:
+            if unit_start < end and start < unit_end:
+                start, end = min(start, unit_start), max(end, unit_end)
+        if (start, end) == previous:
+            return start, end
 
 
 # Stands in for a space inside a label while text is split into words; a
@@ -203,15 +219,14 @@ def expand_references(text: str, references: DraftReferences) -> str:
     """*text* as it leaves the composer: every live label replaced, in place, by what it sends.
 
     An image label becomes its ``@file`` mention, a pasted-text label the text
-    it folded, a quote label its text: one line between quotation marks,
-    several as a Markdown block quote on lines of their own
-    (:func:`quote_form`). Text without live labels comes back unchanged.
+    it folded, a quote label its text as a Markdown block quote on lines of
+    its own (:func:`quote_form`). Text without live labels comes back unchanged.
     """
     return expand_with_quote_spans(text, references)[0]
 
 
 def expand_with_quote_spans(text: str, references: DraftReferences) -> tuple[str, list[tuple[int, int]]]:
-    """:func:`expand_references`, and the ``[start, end)`` of each quote in the result, quotation marks included."""
+    """:func:`expand_references`, and the ``[start, end)`` of each quote in the result, its block quote markers included."""
     pieces: list[str] = []
     quotes: list[tuple[int, int]] = []
     length = 0
@@ -220,18 +235,24 @@ def expand_with_quote_spans(text: str, references: DraftReferences) -> tuple[str
         entry = label.reference
         pieces.append(text[last : label.start])
         length += label.start - last
+        replacement = reference_replacement(text, label)
         if entry.kind == "quote":
-            replacement = quote_form(text, label)
             quotes.append((length, length + len(replacement)))
-        elif entry.kind == "image":
-            replacement = _set_apart(text, label, format_file_mention(entry.content))
-        else:
-            replacement = entry.content
         pieces.append(replacement)
         length += len(replacement)
         last = label.end
     pieces.append(text[last:])
     return "".join(pieces), quotes
+
+
+def reference_replacement(text: str, label: ReferenceLabel) -> str:
+    """The send form of one live *label*, shared by sending and opening the prompt editor."""
+    entry = label.reference
+    if entry.kind == "quote":
+        return quote_form(text, label)
+    if entry.kind == "image":
+        return _set_apart(text, label, format_file_mention(entry.content))
+    return entry.content
 
 
 def image_labels_to_paths(text: str, references: DraftReferences) -> str:
@@ -254,14 +275,12 @@ def inert_quote(text: str) -> str:
 def quote_form(text: str, label: ReferenceLabel) -> str:
     """What the quote *label* in *text* sends: its text, made inert (:func:`inert_quote`).
 
-    One line goes in place between quotation marks. Several go as a Markdown
-    block quote, set on lines of their own and ended by a blank line, so the
-    Markdown someone else wrote (a heading, a list, a code fence) stays
-    inside the quote instead of reshaping the message around it.
+    It goes as a Markdown block quote, one line or several, set on lines of
+    its own and ended by a blank line, so it shows as a quote in the message
+    and the Markdown someone else wrote (a heading, a list, a code fence)
+    stays inside it instead of reshaping the message around it.
     """
     body = inert_quote(label.reference.content).strip("\n")
-    if "\n" not in body:
-        return f"“{body}”"
     block = "\n".join(f"> {line}" if line else ">" for line in body.split("\n"))
     before = text[: label.start]
     after = text[label.end :]
@@ -312,10 +331,11 @@ __all__ = [
     "image_labels_to_paths",
     "inert_quote",
     "iter_reference_labels",
-    "label_boundary",
-    "label_safe_range",
     "labels_as_words",
     "labels_from_words",
     "paste_folds",
     "quote_form",
+    "reference_replacement",
+    "unit_boundary",
+    "unit_safe_range",
 ]
