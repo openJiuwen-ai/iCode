@@ -75,7 +75,7 @@ from chrys.service.prompt_shortcuts import load_prompt_shortcuts, prompt_shortcu
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.scripted_clients import FrameworkBoom
 from tests.support.tui_app_harness import make_chrys_app
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_when_settled, hold_prompt_fields_confirm_window
 from tests.support.waiting import (
     ENGINE_TEST_WAIT_TIMEOUT,
     ENGINE_TURN_TIMEOUT,
@@ -736,6 +736,7 @@ async def test_a_refused_message_comes_back_whole_and_only_once(
     agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_shortcut("zzreview", "Review $1 with !`echo checked`")
+    hold_prompt_fields_confirm_window(monkeypatch)
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         main, pilot, chat = session.main, session.pilot, session.chat
         draft = await expand_shortcut(session, "zzreview")
@@ -1271,6 +1272,7 @@ async def test_every_submit_route_asks_about_unfilled_fields_first(
     reached with fields by keys. ``list_fallback`` takes the route the fallback takes once the list
     has let Enter through, the input bar's ``submit_input``; ``send_button`` is the Send button."""
     write_shortcut("zzfields", "Review $1 and $2")
+    hold_prompt_fields_confirm_window(monkeypatch)
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         main, pilot, app = session.main, session.pilot, session.app
         draft = await expand_shortcut(session, "zzfields")
