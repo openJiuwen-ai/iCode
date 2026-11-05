@@ -9940,10 +9940,28 @@ msgstr ""
 msgid "tui.reference_preview.path"
 msgstr ""
 
+#. English: Esc saves and closes
+#. chrys-meta={"fingerprint":"32a903e1bf0b343c0386e8bd70a34e505c25210cb22320e0135d97788c0caf34","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.save_hint"
+msgstr ""
+
+#. English: The label is no longer in the draft; changes were not saved.
+#. chrys-meta={"fingerprint":"84fad47fdbc220c78e2378d02e977473469bdd2619c62fde46d77fcaf232e4b4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.reference_preview.stale"
+msgstr ""
+
 #. English: This image cannot be shown.
 #. chrys-meta={"fingerprint":"c66ef735462f45c1657eeeacbfb48476aabb23fa452d304be8b3716f513f34f6","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/reference_preview.py
 msgid "tui.reference_preview.unreadable"
+msgstr ""
+
+#. English: ZZ / Ctrl+O saves and closes
+#. chrys-meta={"fingerprint":"fb62e6173bd9a59b229fa40bc86424c9e828f9198082f07f20fa8c8296661860","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.vim_save_hint"
 msgstr ""
 
 #. English: Retry not started

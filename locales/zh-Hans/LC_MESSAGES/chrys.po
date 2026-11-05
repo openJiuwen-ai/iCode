@@ -10162,11 +10162,29 @@ msgstr "图片文件已无法读取。"
 msgid "tui.reference_preview.path"
 msgstr "路径：{path}"
 
+#. English: Esc saves and closes
+#. chrys-meta={"fingerprint":"32a903e1bf0b343c0386e8bd70a34e505c25210cb22320e0135d97788c0caf34","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.save_hint"
+msgstr "Esc 保存并关闭"
+
+#. English: The label is no longer in the draft; changes were not saved.
+#. chrys-meta={"fingerprint":"84fad47fdbc220c78e2378d02e977473469bdd2619c62fde46d77fcaf232e4b4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.reference_preview.stale"
+msgstr "标签已不在草稿中，修改未保存"
+
 #. English: This image cannot be shown.
 #. chrys-meta={"fingerprint":"c66ef735462f45c1657eeeacbfb48476aabb23fa452d304be8b3716f513f34f6","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/reference_preview.py
 msgid "tui.reference_preview.unreadable"
 msgstr "无法显示这张图片。"
+
+#. English: ZZ / Ctrl+O saves and closes
+#. chrys-meta={"fingerprint":"fb62e6173bd9a59b229fa40bc86424c9e828f9198082f07f20fa8c8296661860","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.vim_save_hint"
+msgstr "ZZ / Ctrl+O 保存并关闭"
 
 #. English: Retry not started
 #. chrys-meta={"fingerprint":"7db136937dd3eb95b5c20273a433b782ffdd84353028e636f4d66a547f509d8b","multiline":false,"placeholders":[]}

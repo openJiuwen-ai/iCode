@@ -64,6 +64,33 @@ def test_every_kind_has_the_same_fields() -> None:
     )
 
 
+def test_replacing_one_entry_keeps_its_place_and_every_other_entry() -> None:
+    references, _labels = _with(("quote", "said"), ("paste", "old\ntext"), ("image", "/a.png"))
+    changed = DraftReference("paste", 1, "new\ntext\nwith\nlines")
+
+    updated = references.with_replaced(changed)
+
+    assert updated.entries == (DraftReference("quote", 1, "said"), changed, DraftReference("image", 1, "/a.png"))
+    assert references.entries == (
+        DraftReference("quote", 1, "said"),
+        DraftReference("paste", 1, "old\ntext"),
+        DraftReference("image", 1, "/a.png"),
+    )
+    updated, next_paste = updated.with_new("paste", "another")
+    assert next_paste.number == 2
+    assert updated.get("paste", 1) == changed
+
+
+def test_replacing_one_entry_changes_only_its_live_label_and_sent_content() -> None:
+    references, _labels = _with(("paste", "old\ntext"), ("quote", "said"))
+    updated = references.with_replaced(DraftReference("paste", 1, "new\ntext\nwith\nlines"))
+    text = "[Pasted text #1 +1 lines] [Pasted text #1 +3 lines] [Quote #1]"
+
+    assert _live(text, references) == ["[Pasted text #1 +1 lines]", "[Quote #1]"]
+    assert _live(text, updated) == ["[Pasted text #1 +3 lines]", "[Quote #1]"]
+    assert expand_references(text, updated) == "[Pasted text #1 +1 lines] new\ntext\nwith\nlines “said”"
+
+
 def test_a_paste_folds_past_800_characters_or_too_many_newlines_for_the_screen() -> None:
     assert not paste_folds("x" * 800, screen_rows=40)
     assert paste_folds("x" * 801, screen_rows=40)
@@ -193,24 +220,58 @@ def test_image_labels_become_paths_for_a_model_without_vision_and_other_labels_s
 def test_a_position_inside_a_label_goes_to_the_edge_it_moves_toward() -> None:
     references, _labels = _with(("quote", "q"))
     text = "a [Quote #1] b"
+    spans = [(label.start, label.end) for label in iter_reference_labels(text, references)]
 
-    assert label_boundary(text, references, 5, forward=True) == 12
-    assert label_boundary(text, references, 5, forward=False) == 2
-    assert label_boundary(text, references, 2, forward=True) == 2
-    assert label_boundary(text, references, 12, forward=False) == 12
-    assert label_boundary(text, EMPTY_REFERENCES, 5, forward=True) == 5
+    assert label_boundary(spans, 5, forward=True) == 12
+    assert label_boundary(spans, 5, forward=False) == 2
+    assert label_boundary(spans, 2, forward=True) == 2
+    assert label_boundary(spans, 12, forward=False) == 12
+    assert label_boundary([], 5, forward=True) == 5
 
 
 def test_an_edit_takes_a_label_it_reaches_into_whole_and_inserts_beside_one() -> None:
     references, _labels = _with(("quote", "q"), ("paste", "p\nq"))
     text = "a [Quote #1][Pasted text #1 +1 lines] b"
+    spans = [(label.start, label.end) for label in iter_reference_labels(text, references)]
 
-    assert label_safe_range(text, references, 11, 12) == (2, 12)
-    assert label_safe_range(text, references, 12, 13) == (12, 37)
-    assert label_safe_range(text, references, 11, 13) == (2, 37)
-    assert label_safe_range(text, references, 5, 5) == (12, 12)
-    assert label_safe_range(text, references, 12, 12) == (12, 12)
-    assert label_safe_range(text, references, 0, 1) == (0, 1)
+    assert label_safe_range(spans, 11, 12) == (2, 12)
+    assert label_safe_range(spans, 12, 13) == (12, 37)
+    assert label_safe_range(spans, 11, 13) == (2, 37)
+    assert label_safe_range(spans, 5, 5) == (12, 12)
+    assert label_safe_range(spans, 12, 12) == (12, 12)
+    assert label_safe_range(spans, 0, 1) == (0, 1)
+
+
+def test_adjacent_units_keep_their_shared_edge_and_edit_independently() -> None:
+    spans = [(2, 5), (5, 9)]
+
+    assert label_boundary(spans, 3, forward=True) == 5
+    assert label_boundary(spans, 7, forward=False) == 5
+    assert label_boundary(spans, 5, forward=True) == 5
+    assert label_safe_range(spans, 3, 4) == (2, 5)
+    assert label_safe_range(spans, 6, 7) == (5, 9)
+    assert label_safe_range(spans, 4, 6) == (2, 9)
+    assert label_safe_range(spans, 5, 5) == (5, 5)
+
+
+def test_overlapping_units_have_safe_cursor_edges_in_both_directions() -> None:
+    spans = [(2, 7), (5, 11), (9, 15)]
+
+    assert label_boundary(spans, 3, forward=True) == 15
+    assert label_boundary(spans, 13, forward=False) == 2
+    assert label_boundary(spans, 2, forward=False) == 2
+    assert label_boundary(spans, 15, forward=True) == 15
+
+
+def test_overlapping_units_expand_edits_until_no_unit_is_cut() -> None:
+    spans = [(2, 7), (5, 11), (9, 15), (15, 18)]
+
+    assert label_safe_range(spans, 3, 4) == (2, 15)
+    assert label_safe_range(spans, 12, 13) == (2, 15)
+    assert label_safe_range(spans, 6, 6) == (15, 15)
+    assert label_safe_range(spans, 15, 15) == (15, 15)
+    assert label_safe_range(spans, 14, 16) == (2, 18)
+    assert label_safe_range([], 3, 4) == (3, 4)
 
 
 def test_a_live_label_is_one_word_when_text_is_split_on_whitespace() -> None:

@@ -150,7 +150,7 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
         draft: ChatDraft | None = None,
         paste_cwd: str = "",
         clipboard_image_dir: Path | None = None,
-        open_reference: Callable[[DraftReference], None] | None = None,
+        open_reference: Callable[[DraftReference, DraftTextArea], None] | None = None,
     ) -> None:
         """Edit *draft* (the snapshot's text when none), opened at the snapshot's cursor.
 
@@ -256,7 +256,7 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
     def _on_reference_clicked(self, event: DraftTextArea.ReferenceClicked) -> None:
         event.stop()
         if self._open_reference is not None:
-            self._open_reference(event.reference)
+            self._open_reference(event.reference, event.area)
 
     @on(MessageEditor.EditActivity)
     def _on_editor_edit_activity(self, event: MessageEditor.EditActivity) -> None:
