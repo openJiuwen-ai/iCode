@@ -208,6 +208,14 @@ def bootstrap_runtime(
     """
     set_process_title()
 
+    # AIxCoding guard: install bundled security guard hooks (src/chrys/kernel/aixcoding/guard)
+    try:
+        from chrys.kernel.aixcoding.guard.guard_install import install_guard_hooks
+
+        install_guard_hooks()
+    except Exception:
+        logger.warning("Security guard hooks could not be installed; the guard is not active.", exc_info=True)
+
     if configure_stdio:
         configure_utf8_stdio()
 

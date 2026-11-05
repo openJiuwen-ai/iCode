@@ -1,0 +1,84 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+#
+# iCode 安全拦截 Hook 配置。
+#
+# 安装（推荐合并脚本，不会覆盖已有的 hooks.yaml）：
+#   uv run python guard_hooks/_install_merge.py
+#
+# 解释器策略（为什么不用 type: script）：iCode 从 PATH 现选解释器的顺序是
+# uv → python3 → python，且不过滤 Microsoft 应用商店的转发存根——只要 python3
+# 命中 %LOCALAPPDATA%\Microsoft\WindowsApps 里的存根，hook 就起不来（exit 9009），
+# 配合 on_error: block 等于每句话都被拦下。所以这里用 PowerShell 启动器
+# （guard\_launcher.ps1）在每次执行时现找一个真实的 python：
+#   1. PATH 上的 python.exe（跳过 0 字节与转发点存根）；
+#   2. 打包版 iCode 首次运行自动解压的内嵌解释器
+#      %LOCALAPPDATA%\pyapp\data\chrys\<hash>\<version>\python\python.exe。
+# 因此这份配置是可移植的：换一台电脑把整个 hooks 目录（含 guard/）拷过去即可，
+# 不需要那台机器预装 Python，也不需要重新安装。argv 里的启动器路径是相对路径，
+# 由 cwd: ${chrys_home}/hooks 定位，所以手动安装面向用户级配置目录。
+#
+# Linux / macOS：PowerShell 启动器只适用于 Windows。POSIX 上请把 run 改回
+# type: script（iCode 从 PATH 现选 python3，POSIX 没有商店存根问题）；用
+# _install_merge.py 安装时脚本会自动完成这个改写，手动拷贝时才需要自己改。
+#
+# 手动：把 guard/ 整个子目录（含 _launcher.ps1）复制到
+#   <config_dir>/hooks/guard/（默认 %APPDATA%\chrys\hooks\guard\），再把本文件
+#   的 hooks 列表追加到那里的 hooks.yaml 末尾。
+#
+# 校验：aixcoding-cli hook validate   查看：aixcoding-cli hook list
+version: 1
+
+settings:
+  shutdown_grace_seconds: 30
+  max_parallel_hooks: 4
+
+hooks:
+  # 提示词层拦截：IN-01 ~ IN-09。
+  # on_error: block + timeout_seconds: 120 即规则表的"失败兜底"：子进程超时、
+  # 崩溃或引擎异常时本轮请求直接被拦下，而不是静默放行。
+  - id: security-prompt-guard
+    event: user_prompt_submit
+    description: 提示词层安全拦截（反编译/攻击工具、注入 payload、任意 IP 与内网资产、合规类，命中即打断并提示）
+    run:
+      type: command
+      cwd: ${chrys_home}/hooks
+      argv:
+        - 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+        - '-NoProfile'
+        - '-NonInteractive'
+        - '-ExecutionPolicy'
+        - 'Bypass'
+        - '-File'
+        - 'guard\_launcher.ps1'
+      env:
+        GUARD_SCRIPT: guard\_prompt_guard.py
+    execution:
+      mode: blocking
+      timeout_seconds: 120
+      on_error: block
+
+  # 工具调用前拦截：T-* 全量规则。
+  - id: security-tool-guard
+    event: before_tool_call
+    description: 工具调用前安全拦截（Shell/PowerShell/Python、文件系统、网络、MCP、敏感信息）
+    run:
+      type: command
+      cwd: ${chrys_home}/hooks
+      argv:
+        - 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+        - '-NoProfile'
+        - '-NonInteractive'
+        - '-ExecutionPolicy'
+        - 'Bypass'
+        - '-File'
+        - 'guard\_launcher.ps1'
+      env:
+        GUARD_SCRIPT: guard\_tool_guard.py
+    execution:
+      mode: blocking
+      timeout_seconds: 120
+      on_error: block
+
+# 流式输出层（STREAM_CHUNK · _stream_guard.py）按需求本次不实现。
+# 当前 Hook 子进程标准输入为 DEVNULL，脚本无法改写流式输出，也无法与用户
+# 实时交互；该层需要 iCode 侧提供可改写/可中断的输出通道后再落地。

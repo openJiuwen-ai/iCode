@@ -153,6 +153,10 @@ fix = true
 # Workflow SDK and worker host run inside any Python >= 3.9 interpreter (see per-file-ignores below)
 "src/chrys/service/workflows/sdk/*" = "py39"
 "src/chrys/service/workflows/worker_host.py" = "py39"
+# AIxCoding guard: bundled rule pack lint profile (src/chrys/kernel/aixcoding/guard/pack)
+# Payloads run under whichever PATH python the hook runner finds (3.9+), so the
+# formatter must keep parenthesized except syntax rather than emit PEP 758.
+"src/chrys/kernel/aixcoding/guard/pack/*.py" = "py39"
 
 [tool.ruff.lint]
 select = [
@@ -210,6 +214,12 @@ ignore = [
 "src/chrys/service/aixcoding/**" = ["RUF001"]
 # AIxCoding custom tests: fake creds/asserts, frozen Chinese-message assertions (aixcoding/tests)
 "aixcoding/tests/**" = ["S", "PERF401", "RUF001"]
+# Rule messages and operator docs are Chinese; punctuation is intentional
+# (approved: batches/guard-hooks/design.md, R13 exemption ledger)
+"src/chrys/kernel/aixcoding/guard/pack/*" = ["RUF001", "RUF002", "RUF003"]
+"aixcoding/tests/guard/guard_pack_selftest.py" = ["RUF002", "RUF003"]
+"aixcoding/tests/guard/verify_guard_deployed.py" = ["RUF002", "RUF003"]
+"aixcoding/tools/guard_install_merge.py" = ["RUF001", "RUF002", "RUF003"]
 # Tests — relax security checks, tolerate loop-append pattern
 "tests/**" = ["S", "PERF401"]
 # Golden workflow example: user-facing Chinese prose keeps its full-width punctuation

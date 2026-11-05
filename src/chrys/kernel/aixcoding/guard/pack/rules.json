@@ -1,0 +1,631 @@
+{
+  "version": 1,
+  "meta": {
+    "name": "iCode 安全拦截规则集",
+    "source": "拦截规则一览表.xlsx",
+    "scope": "提示词层（user_prompt_submit）+ 工具调用前（before_tool_call）；流式输出层暂未实现",
+    "maintainer_note": "本文件是唯一需要按客户环境维护的文件。脚本不硬编码任何规则，改完下次 Hook 触发即生效。"
+  },
+  "settings": {
+    "enabled": true,
+    "audit_log": "${chrys_home}/hooks/guard_audit.jsonl",
+    "audit_on_allow": false,
+    "max_scan_chars": 262144,
+    "block_message": "操作不合规，请修改后重试。",
+    "confirm_disposition": "block",
+    "fail_closed": true,
+    "self_timeout_seconds": 4.0,
+    "write_scope": {
+      "allow_outside_workspace": false,
+      "temp_prefixes": ["icode-session-"],
+      "readonly_globs": ["**/docs/**", "**/help/**"]
+    },
+    "network": {
+      "allowed_networks": ["127.0.0.0/8", "::1/128"],
+      "allowed_hosts": ["localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"],
+      "default_disposition": "confirm"
+    },
+    "mcp": {
+      "allowed_servers": [],
+      "allowed_profiles": []
+    }
+  },
+  "dictionaries": {
+    "reverse_engineering_tools": [
+      "dnSpy",
+      "IDA",
+      "IDA Pro",
+      "Ghidra",
+      "x64dbg",
+      "x32dbg",
+      "OllyDbg",
+      "PE-bear",
+      "ProcessHacker",
+      "WinDbg",
+      "Frida",
+      "pycdc",
+      "retdec",
+      "radare2",
+      "Cutter",
+      "Binary Ninja",
+      "ImmunityDbg",
+      "procexp",
+      "PEStudio",
+      "dnSpyEx"
+    ],
+    "attack_tools": [
+      "nmap",
+      "sqlmap",
+      "hydra",
+      "masscan",
+      "mimikatz",
+      "msfconsole",
+      "metasploit",
+      "Responder.py",
+      "ntlmrelayx",
+      "cobaltstrike",
+      "nikto"
+    ],
+    "sql_injection_payloads": [
+      { "name": "union_select", "value": "\\bunion\\s+(?:all\\s+)?select\\b" },
+      { "name": "tautology", "value": "\\b(?:or|and)\\s+['\"]?\\d+['\"]?\\s*=\\s*['\"]?\\d+" },
+      { "name": "always_true", "value": "'\\s*or\\s*'?1'?'\\s*=\\s*'?1" },
+      { "name": "catalog", "value": "\\b(?:information_schema|sysobjects|syscolumns|pg_catalog)\\b" },
+      { "name": "ddl", "value": "\\b(?:drop|truncate|alter)\\s+table\\b" },
+      { "name": "time_based", "value": "\\b(?:sleep|benchmark|pg_sleep|waitfor\\s+delay)\\s*\\(" },
+      { "name": "load_file", "value": "\\bload_file\\s*\\(" },
+      { "name": "cmdshell", "value": "\\bexec(?:ute)?\\s+(?:xp_)?cmdshell\\b" }
+    ],
+    "xss_payloads": [
+      { "name": "script_open", "value": "<\\s*script\\b[^>]*>" },
+      { "name": "script_close", "value": "<\\s*/\\s*script\\s*>" },
+      { "name": "event_handler", "value": "\\bon(?:error|load|mouseover|click|focus|blur|submit)\\s*=" },
+      { "name": "javascript_uri", "value": "javascript\\s*:" },
+      { "name": "remote_tag", "value": "<\\s*(?:iframe|img|svg|object|embed)\\b[^>]*\\bsrc\\s*=" },
+      { "name": "dom_sink", "value": "document\\.(?:cookie|domain|location|write)" },
+      { "name": "charcode_obfuscation", "value": "String\\.fromCharCode\\s*\\(" }
+    ],
+    "path_traversal_payloads": [
+      { "name": "double_dot", "value": "\\.\\.[\\\\/]\\.\\.[\\\\/]" },
+      { "name": "url_encoded", "value": "%2e%2e%2f|%2e%2e%5c|\\.\\.%2f" },
+      { "name": "etc_passwd", "value": "/etc/(?:passwd|shadow|sudoers|hosts|group|fstab)" },
+      { "name": "proc_self", "value": "/proc/self/(?:environ|cmdline|mem|maps)" },
+      { "name": "system32", "value": "[A-Za-z]:\\\\+Windows\\\\+System32" },
+      { "name": "boot_ini", "value": "\\bboot\\.ini" },
+      { "name": "ssh_keys", "value": "\\.ssh/(?:id_rsa|id_ed25519|authorized_keys|known_hosts)" }
+    ],
+    "intranet_hostnames": [
+      "\\b[a-z0-9][a-z0-9-]*\\.(?:local|corp|intra|intranet|lan|internal|home)\\b"
+    ],
+    "business_systems": [
+      "elearning",
+      "edip",
+      "ccrc",
+      "oa系统",
+      "统一身份认证",
+      "内网门户",
+      "学习平台",
+      "考试系统",
+      "阅卷系统",
+      "教务系统"
+    ],
+    "blocked_synonyms": ["封禁", "禁用", "拒绝", "拦截", "阻断", "封堵"],
+    "compliance_phrases": [
+      { "name": "decompile_confidential", "value": "(?:反编译|逆向|脱壳).{0,24}(?:保密|机密|涉密|秘密)" },
+      { "name": "asset_confidential", "value": "(?:终端|资产|源代码|代码).{0,12}(?:保密|涉密)" },
+      { "name": "exam_privilege", "value": "(?:越权|未授权|无权限|绕过权限).{0,12}(?:考试|阅卷|答卷|成绩|教务)" },
+      { "name": "audit_evasion", "value": "(?:绕过|规避|逃避|屏蔽|去除).{0,18}(?:审计|审计日志|管控|终端审计|EDR|杀软|防病毒|USB管控|上网行为|行为审计)" },
+      { "name": "endpoint_disable", "value": "(?:卸载|停止|禁用|关闭).{0,14}(?:终端管理|端点管理|EDR|杀软|防病毒|审计客户端|管控客户端)" },
+      { "name": "log_tampering", "value": "(?:删除|清空|伪造|篡改).{0,14}(?:日志|审计日志|操作日志)" },
+      { "name": "exam_exfiltration", "value": "(?:导出|下载|拉取|抓取).{0,14}(?:答卷|考试答案|试题|成绩)" }
+    ],
+    "shell_dangerous": [
+      { "name": "rm_rf", "value": "\\brm\\s+-[a-z]*[rf][a-z]*\\b" },
+      { "name": "rm_root", "value": "\\brm\\s+(?:--no-preserve-root|-fr|-rf)\\b" },
+      { "name": "rm_root_path", "value": "\\brm\\s+(?:-[a-zA-Z]+\\s+)+(?:/|~|\\$HOME)\\b" },
+      { "name": "mkfs", "value": "\\bmkfs(?:\\.[a-z0-9]+)?\\b" },
+      { "name": "partition", "value": "\\b(?:fdisk|sfdisk|parted|diskpart)\\b" },
+      { "name": "format_volume", "value": "\\bformat\\s+[a-z]:" },
+      { "name": "dd_image", "value": "\\bdd\\s+if=" },
+      { "name": "sudo", "value": "\\bsudo\\b" },
+      { "name": "overwrite_system_file", "value": ">\\s*/etc/(?:passwd|shadow|sudoers|hosts|group|fstab)|>>\\s*/etc/" },
+      { "name": "overwrite_windows_system", "value": "(?:>|>>)\\s*[A-Za-z]:\\\\+Windows\\\\+(?:System32|SysWOW64)" },
+      { "name": "chmod_world_writable", "value": "\\bchmod\\s+(?:-R\\s+)?(?:777|666|a\\+rwx)\\b" },
+      { "name": "reverse_shell", "value": "\\bnc\\b[^\\n]*\\s-[a-z]*e[a-z]*\\b|(?:ba|z|k)?sh\\s+-i\\s*(?:>&|>\\s*/dev/tcp)|/dev/tcp/" },
+      { "name": "curl_pipe_shell", "value": "\\b(?:curl|wget)\\b[^|\\n]*\\|\\s*(?:ba|z|k|da)?sh\\b" },
+      { "name": "path_tampering", "value": "(?:^|\\s)(?:export\\s+)?PATH=|\\$PATH\\s*=\\s*" },
+      { "name": "history_wipe", "value": "\\bhistory\\s+-c\\b" }
+    ],
+    "zsh_attacks": [
+      { "name": "zsh_equals_expansion", "value": "(?<![A-Za-z0-9_=])=\\(" },
+      { "name": "null_byte", "value": "[\\x00]|\\\\x00|%00" },
+      { "name": "zero_width", "value": "[\\u200b\\u200c\\u200d\\u200e\\u200f\\u202a\\u202b\\u202c\\u202d\\u202e\\u2060\\ufeff]" },
+      { "name": "zsh_glob", "value": "(?:(?<![@\\s])[@#]|[*?~^])\\([^()]*\\)" },
+      { "name": "process_substitution", "value": "(?<![0-9<>])[<>]\\([^)]*\\)|\\$\\(<[^)]*\\)" },
+      { "name": "autoload", "value": "\\bautoload\\b" }
+    ],
+    "command_injection": [
+      { "name": "chaining", "value": ";;|&&|\\|\\|" },
+      { "name": "backtick", "value": "`" },
+      { "name": "nested_substitution", "value": "\\$\\([^()]*\\$\\(" },
+      { "name": "heredoc", "value": "<<-?\\s*['\"]?\\w+" },
+      { "name": "base64_decode", "value": "\\bbase64\\s+(?:-d|-D|--decode)\\b" }
+    ],
+    "shell_builtins": ["eval", "source", "exec", "trap"],
+    "ps_usb_audit": [
+      { "name": "wmi_usb", "value": "Get-(?:WmiObject|CimInstance)[^\\n]*Win32_USB" },
+      { "name": "usb_class", "value": "Win32_USB(?:Hub|Controller)" },
+      { "name": "registry_usbstor", "value": "Get-ItemProperty[^\\n]*USBSTOR" },
+      { "name": "setupapi_log", "value": "setupapi\\.dev\\.log" },
+      { "name": "usbdevice_json", "value": "USBDevice\\.json" },
+      { "name": "usb_enum_key", "value": "Enum\\\\USB(?:STOR)?" },
+      { "name": "usb_volume", "value": "Get-Volume[^\\n]*USB" }
+    ],
+    "ps_reverse_tools": [
+      { "name": "reverse_binary", "value": "\\b(?:dnspy|ghidra|x64dbg|x32dbg|ollydbg|windbg|frida|pycdc|retdec|radare2|cutter)\\b" },
+      { "name": "reverse_action", "value": "\\b(?:decompile|decompyle|decompiler|disassemble|disasm|dumpbin)\\b" },
+      { "name": "reverse_cn", "value": "反编译|逆向分析" }
+    ],
+    "ps_antidebug": [
+      "IsDebuggerPresent",
+      "NtQueryInformationProcess",
+      "CheckRemoteDebuggerPresent",
+      "NtSetInformationThread",
+      "OutputDebugString",
+      "anti-?debug(?:ger)?"
+    ],
+    "python_reverse_imports": [
+      { "name": "reverse_import", "value": "\\b(?:import|from)\\s+(?:capstone|unicorn|frida|pefile|lief|angr|keystone|r2pipe|pydumpck)\\b" },
+      { "name": "reverse_module_use", "value": "\\b(?:capstone|unicorn|frida|pefile|lief|angr|keystone)\\." },
+      { "name": "reverse_module_flag", "value": "-m\\s+(?:frida|pycdc|uncompyle6|decompyle3)" }
+    ],
+    "python_bytecode_introspection": [
+      { "name": "marshal", "value": "\\bmarshal\\.(?:loads|load|dump|dumps)\\b" },
+      { "name": "dis_module", "value": "\\bdis\\.dis(?:assemble)?\\b" },
+      { "name": "code_object", "value": "\\.__code__\\b" },
+      { "name": "code_consts", "value": "\\bco_(?:consts|names|code|filename)\\b" },
+      { "name": "code_type", "value": "\\btypes\\.CodeType\\b" },
+      { "name": "reflection", "value": "\\bgetmembers\\s*\\(" }
+    ],
+    "python_decompilers": ["pycdc", "uncompyle6", "decompyle3", "xdis", "pyinstxtractor"],
+    "blocked_path_fragments": [
+      "sentinelone",
+      "s1agent",
+      "crowdstrike",
+      "falcon",
+      "tanium",
+      "appex",
+      "edrsvc",
+      "symantec",
+      "\\ass\\",
+      "/ass/",
+      "\\ass_",
+      "_ass\\",
+      "终端审计",
+      "终端保密",
+      "dlp",
+      "天桥科技",
+      "防病毒",
+      { "name": "ssh_dir", "regex": true, "value": "(?:^|[/\\\\])\\.ssh[/\\\\]" },
+      { "name": "private_key", "regex": true, "value": "(?:^|[/\\\\])id_(?:rsa|dsa|ecdsa|ed25519)(?:\\.pub)?$" },
+      { "name": "authorized_keys", "regex": true, "value": "(?:^|[/\\\\])authorized_keys$" },
+      { "name": "aws_dir", "regex": true, "value": "(?:^|[/\\\\])\\.aws[/\\\\]" },
+      { "name": "kube_dir", "regex": true, "value": "(?:^|[/\\\\])\\.kube[/\\\\]" },
+      { "name": "git_credentials", "regex": true, "value": "\\.git-credentials$" },
+      { "name": "npmrc", "regex": true, "value": "\\.npmrc$" },
+      { "name": "pypirc", "regex": true, "value": "\\.pypirc$" }
+    ],
+    "blocked_extensions": [
+      ".dll",
+      ".exe",
+      ".sys",
+      ".cpl",
+      ".ocx",
+      ".scr",
+      ".drv",
+      ".pyd",
+      ".so",
+      ".dylib",
+      ".bin",
+      ".com",
+      ".class",
+      ".jar",
+      ".war",
+      ".ear",
+      ".msi",
+      ".appx",
+      ".apk",
+      ".ipa",
+      ".cab",
+      ".img",
+      ".pyc"
+    ],
+    "blocked_hosts": [
+      "22.122.49.168",
+      "elearning",
+      "edip",
+      "ccrc",
+      { "regex": true, "value": "\\.(?:local|internal|corp|intra|lan)$" }
+    ],
+    "secrets": [
+      { "name": "AWS AccessKey", "value": "\\b(?:AKIA|ASIA|ABIA|ACCA|A3T[A-Z0-9])[A-Z0-9]{16}\\b" },
+      { "name": "AWS SecretKey", "value": "\\baws[a-z0-9_]{0,20}['\"][0-9a-zA-Z/+]{40}['\"]" },
+      { "name": "GitHub PAT", "value": "\\bgh[pousr]_[A-Za-z0-9]{30,}\\b" },
+      { "name": "GitLab PAT", "value": "\\bglpat-[A-Za-z0-9_-]{20,}\\b" },
+      { "name": "JWT", "value": "\\beyJ[A-Za-z0-9_-]{8,}\\.eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\b" },
+      { "name": "PEM 私钥", "value": "-----BEGIN\\s+(?:RSA\\s+|EC\\s+|DSA\\s+|OPENSSH\\s+|PGP\\s+)?PRIVATE KEY-----" },
+      {
+        "name": "数据库连接串",
+        "value": "\\b(?:mysql|postgres(?:ql)?|mongodb(?:\\+srv)?|rediss?|mssql|sqlserver|oracle|amqp|jdbc:[a-z0-9]+)://[^\\s:@/]+:[^\\s@/]+@"
+      },
+      { "name": "明文口令", "value": "\\b(?:password|passwd|pwd)\\s*[:=]\\s*['\"][^'\"]{6,}['\"]" },
+      { "name": "令牌/密钥", "value": "\\b(?:secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)\\s*[:=]\\s*['\"][A-Za-z0-9_-]{16,}['\"]" }
+    ],
+    "high_entropy_strings": [
+      { "name": "长十六进制串", "value": "\\b[A-Fa-f0-9]{40,}\\b" },
+      { "name": "长 Base64 串", "value": "\\b[A-Za-z0-9+/]{60,}={0,2}\\b" }
+    ],
+    "dangerous_ports": [
+      21, 22, 23, 25, 110, 135, 139, 143, 389, 445, 636, 1433, 1521, 3306, 3389, 4444, 5432, 5555, 5985, 5986, 6379, 9200, 11211, 27017
+    ],
+    "internal_networks": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "::1/128"],
+    "blocked_networks": ["0.0.0.0/0", "::/0"]
+  },
+  "prompt_rules": [
+    {
+      "id": "IN-01",
+      "name": "反编译工具",
+      "disposition": "confirm",
+      "audit": true,
+      "detect": [{ "type": "keyword", "dictionary": "reverse_engineering_tools" }]
+    },
+    {
+      "id": "IN-02",
+      "name": "攻击工具",
+      "disposition": "confirm",
+      "audit": true,
+      "detect": [{ "type": "keyword", "dictionary": "attack_tools" }]
+    },
+    {
+      "id": "IN-03",
+      "name": "SQL 注入 payload",
+      "disposition": "confirm",
+      "audit": true,
+      "detect": [{ "type": "regex", "dictionary": "sql_injection_payloads" }]
+    },
+    {
+      "id": "IN-04",
+      "name": "XSS payload",
+      "disposition": "confirm",
+      "audit": true,
+      "detect": [{ "type": "regex", "dictionary": "xss_payloads" }]
+    },
+    {
+      "id": "IN-05",
+      "name": "路径穿越 / LFI",
+      "disposition": "confirm",
+      "audit": true,
+      "detect": [{ "type": "regex", "dictionary": "path_traversal_payloads" }]
+    },
+    {
+      "id": "IN-06",
+      "name": "非回环 IP / 内网资产",
+      "disposition": "confirm",
+      "audit": true,
+      "detect": [
+        { "type": "keyword", "dictionary": "business_systems" },
+        { "type": "regex", "dictionary": "intranet_hostnames" },
+        { "type": "ip_cidr", "dictionary": "blocked_networks" }
+      ]
+    },
+    {
+      "id": "IN-07",
+      "name": "同义语义簇",
+      "disposition": "confirm",
+      "audit": true,
+      "detect": [{ "type": "keyword", "dictionary": "blocked_synonyms" }]
+    },
+    {
+      "id": "IN-08",
+      "name": "合规类（强制留痕）",
+      "disposition": "confirm",
+      "audit": true,
+      "detect": [{ "type": "regex", "dictionary": "compliance_phrases" }]
+    },
+    {
+      "id": "IN-09",
+      "name": "失败兜底（超时 / 崩溃 / 引擎异常）",
+      "disposition": "block",
+      "audit": true,
+      "detect": [],
+      "note": "由引擎自身异常处理 + hooks.yaml 的 on_error: block / timeout_seconds: 5 落地，此处无检测项，仅作规则映射锚点。"
+    }
+  ],
+  "tool_rules": [
+    {
+      "id": "T-SHELL-01",
+      "name": "危险命令",
+      "layer": "Bash",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command", "reason"] },
+      "detect": [{ "type": "regex", "dictionary": "shell_dangerous" }]
+    },
+    {
+      "id": "T-SHELL-02-1",
+      "name": "Zsh 等号扩展",
+      "layer": "Bash",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "regex", "dictionary": "zsh_attacks", "names": ["zsh_equals_expansion"] }]
+    },
+    {
+      "id": "T-SHELL-02-2",
+      "name": "Null byte",
+      "layer": "Bash",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "regex", "dictionary": "zsh_attacks", "names": ["null_byte"] }]
+    },
+    {
+      "id": "T-SHELL-02-3",
+      "name": "零宽字符",
+      "layer": "Bash",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "regex", "dictionary": "zsh_attacks", "names": ["zero_width"] }]
+    },
+    {
+      "id": "T-SHELL-02-4",
+      "name": "Zsh glob 限定符",
+      "layer": "Bash",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "regex", "dictionary": "zsh_attacks", "names": ["zsh_glob"] }]
+    },
+    {
+      "id": "T-SHELL-02-5",
+      "name": "进程替换",
+      "layer": "Bash",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "regex", "dictionary": "zsh_attacks", "names": ["process_substitution"] }]
+    },
+    {
+      "id": "T-SHELL-02-6",
+      "name": "autoload",
+      "layer": "Bash",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "regex", "dictionary": "zsh_attacks", "names": ["autoload"] }]
+    },
+    {
+      "id": "T-SHELL-03-1",
+      "name": "命令链接（;; / && / ||）",
+      "layer": "Bash",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "regex", "dictionary": "command_injection", "names": ["chaining"] }],
+      "note": "命中面极广（几乎所有复合命令）。误伤过多时把本规则 enabled 置为 false。"
+    },
+    {
+      "id": "T-SHELL-03-2",
+      "name": "反引号命令替换",
+      "layer": "Bash",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "regex", "dictionary": "command_injection", "names": ["backtick"] }]
+    },
+    {
+      "id": "T-SHELL-03-3",
+      "name": "嵌套命令替换",
+      "layer": "Bash",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "regex", "dictionary": "command_injection", "names": ["nested_substitution"] }]
+    },
+    {
+      "id": "T-SHELL-03-4",
+      "name": "here-doc",
+      "layer": "Bash",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "regex", "dictionary": "command_injection", "names": ["heredoc"] }]
+    },
+    {
+      "id": "T-SHELL-03-5",
+      "name": "base64 解码执行",
+      "layer": "Bash",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "regex", "dictionary": "command_injection", "names": ["base64_decode"] }]
+    },
+    {
+      "id": "T-SHELL-04",
+      "name": "Shell 内建（eval / source / exec / trap）",
+      "layer": "Bash",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "keyword", "dictionary": "shell_builtins" }]
+    },
+    {
+      "id": "T-SHELL-05",
+      "name": "Shell 写到工作目录外",
+      "layer": "Bash",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command"] },
+      "detect": [{ "type": "shell_write_target" }]
+    },
+    {
+      "id": "T-PS-01",
+      "name": "USB 审计取证",
+      "layer": "PowerShell",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command", "reason"] },
+      "detect": [{ "type": "regex", "dictionary": "ps_usb_audit" }]
+    },
+    {
+      "id": "T-PS-02",
+      "name": "逆向工具",
+      "layer": "PowerShell",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command", "reason"] },
+      "detect": [{ "type": "regex", "dictionary": "ps_reverse_tools" }]
+    },
+    {
+      "id": "T-PS-03",
+      "name": "反调试 API",
+      "layer": "PowerShell",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command", "reason"] },
+      "detect": [{ "type": "regex", "dictionary": "ps_antidebug" }]
+    },
+    {
+      "id": "T-PY-01",
+      "name": "Python 逆向库导入",
+      "layer": "Python",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command", "reason"] },
+      "detect": [{ "type": "regex", "dictionary": "python_reverse_imports" }]
+    },
+    {
+      "id": "T-PY-02",
+      "name": "Python 字节码自省",
+      "layer": "Python",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command", "reason"] },
+      "detect": [{ "type": "regex", "dictionary": "python_bytecode_introspection" }]
+    },
+    {
+      "id": "T-PY-03",
+      "name": "Python 反编译器",
+      "layer": "Python",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["shell"], "arg_keys": ["command", "reason"] },
+      "detect": [{ "type": "regex", "dictionary": "python_decompilers" }]
+    },
+    {
+      "id": "T-FS-01",
+      "name": "写入白名单",
+      "layer": "文件系统",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["filesystem.write"] },
+      "detect": [{ "type": "write_scope" }]
+    },
+    {
+      "id": "T-FS-02",
+      "name": "文件路径黑名单",
+      "layer": "文件系统",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["filesystem.read", "filesystem.write", "search"] },
+      "detect": [{ "type": "path", "dictionary": "blocked_path_fragments" }]
+    },
+    {
+      "id": "T-FS-03",
+      "name": "扩展名黑名单（拒打开）",
+      "layer": "文件系统",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["filesystem.read"] },
+      "detect": [{ "type": "extension", "dictionary": "blocked_extensions" }]
+    },
+    {
+      "id": "T-NET-01",
+      "name": "网络黑名单（内网资产 / 业务系统 / 危险端口）",
+      "layer": "网络",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["web_fetch", "web_search", "mcp"] },
+      "detect": [{ "type": "url", "mode": "blocked" }]
+    },
+    {
+      "id": "T-NET-02",
+      "name": "网络默认处置（非白名单地址）",
+      "layer": "网络",
+      "disposition": "confirm",
+      "audit": true,
+      "applies_to": { "kinds": ["web_fetch", "web_search", "mcp"] },
+      "detect": [{ "type": "url", "mode": "default" }],
+      "note": "白名单（loopback / 10 / 172.16 / 192.168）不命中本规则。"
+    },
+    {
+      "id": "T-MCP-01",
+      "name": "MCP Server 白名单",
+      "layer": "MCP",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["mcp"] },
+      "detect": [{ "type": "mcp_server" }],
+      "note": "settings.mcp.allowed_servers 为空时本子校验不生效（未配置即不启用）。"
+    },
+    {
+      "id": "T-MCP-02",
+      "name": "MCP 入参 Schema 基本校验",
+      "layer": "MCP",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["mcp"] },
+      "detect": [{ "type": "mcp_args_schema" }]
+    },
+    {
+      "id": "T-MCP-03",
+      "name": "MCP 调用方上下文",
+      "layer": "MCP",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["mcp"] },
+      "detect": [{ "type": "caller_context" }]
+    },
+    {
+      "id": "T-MCP-04",
+      "name": "MCP 沙箱静态扫描",
+      "layer": "MCP",
+      "disposition": "block",
+      "audit": true,
+      "applies_to": { "kinds": ["mcp"] },
+      "detect": [
+        { "type": "rule_refs", "rules": ["T-SHELL-01", "T-PS-01", "T-PY-01", "T-FS-02", "T-FS-03", "T-OUT-01"] }
+      ]
+    },
+    {
+      "id": "T-OUT-01",
+      "name": "敏感信息进入调用参数",
+      "layer": "输出",
+      "disposition": "block",
+      "audit": true,
+      "detect": [{ "type": "secret", "dictionary": "secrets" }],
+      "note": "Hook 只能看到入参，看不到工具返回值；输出侧扫描属于流式输出层，本次未实现。"
+    },
+    {
+      "id": "T-OUT-02",
+      "name": "高熵长串",
+      "layer": "输出",
+      "disposition": "confirm",
+      "audit": true,
+      "enabled": false,
+      "detect": [{ "type": "secret", "dictionary": "high_entropy_strings" }],
+      "note": "误报率高（正常代码里的 sha256 / base64 资源也会命中），默认关闭，需要时置为 true。"
+    }
+  ]
+}
