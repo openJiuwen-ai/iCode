@@ -53,8 +53,12 @@ check OK — 98 registration row(s) / 135 marker(s) across 10 design(s), 0 retir
 ### 5. `check_docs.py`
 
 ```
-scanned 19 ADR(s), 26 design(s), 24 self-review(s) — OK
+scanned 19 ADR(s), 26 design(s), 25 self-review(s) — OK
 ```
+
+> PR #92 评审 C0 处置（2026-11-05）：本节初记 24 系 self-review.md 落盘前时点的真实输出，
+> 追加 verification 时未随复跑更新；交付态复跑为 25（本批次 self-review.md 落库所致），
+> 已更正——后续引用以本行为准。
 
 ## 2026-11-05 变异验证（design"变异验证授权边界"节执行，临时修改已全部还原）
 

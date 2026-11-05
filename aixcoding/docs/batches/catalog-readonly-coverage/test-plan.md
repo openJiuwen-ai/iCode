@@ -20,7 +20,7 @@
 | 10 | registry 整替 × 只读入口端到端组合 | 无（会话语义由 catalog-sync 假设 7 钉死；端到端需真 app+engine） | — | 不补（design 风险节依据） |
 | 11 | handler 层 read_only 守卫单测（_on_delete 等） | 无（UI 路径已被维度 1 display=False 挡死，击穿需双变异） | — | 不补（G3，design 风险节依据） |
 | 12 | C134 删除链（F4→删→重载→重建） | 上游测试已 C134 skip——我方语义下删除不成立 | upstream-merge-v0.33.0 | 不触碰（另行呈报才可动） |
-| 13 | C135 models 参数（send-in-flight 打开只读） | 上游测试已 C135 skip；**维度本体由本批次 G1 等价接管**——C135 的 commands-running 时点落在 `execution_busy()`，G1 四态覆盖 `_config_read_only()` 全部输入面 | upstream-merge-v0.33.0 + 本批次 | G1 补齐 |
+| 13 | C135 models 参数（send-in-flight 打开只读） | 上游测试已 C135 skip；**维度本体由本批次 G1 等价接管**——C135 的 commands-running 时点落在 `execution_busy()`，G1 四态锚定三信号单真+全真（组合态不设：恒只读与信号无关，任一信号真即足以检出，PR #92 评审 C1 措辞） | upstream-merge-v0.33.0 + 本批次 | G1 补齐 |
 | 14 | 运行中指示器点击 | 上游语义 `execution_busy()` 早退静默忽略（`config_actions.py:161-162`） | 上游 | 不补（上游域，非只读维度） |
 | 15 | picker MANAGE 消费侧接线（dismiss → open_model_config） | 无（C045 锚定 picker 侧，消费侧空白） | — | 不补（G2b 可选项，design 留档，默认不做） |
 

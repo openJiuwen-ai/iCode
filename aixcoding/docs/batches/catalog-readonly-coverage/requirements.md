@@ -49,7 +49,7 @@ upstream-merge-v0.33.0 批次将上游两组与本方 catalog 只读管控语义
 - [ ] busy 四态（上游 `_config_read_only()` 三信号 `agent_running` / `submit.active` /
       `execution_busy()` 各自单独 True + 三者全 True）下，
       `RuntimeConfigController._open_model_config()` 推入的 `ModelConfigScreen`
-      均满足 `_read_only is True`（与既有 idle 用例互补，覆盖判定输入全集——
+      均满足 `_read_only is True`（与既有 idle 用例互补，三信号单真+全真四态锚定——
       C135 维度本体的等价接管）；
 - [ ] `on_model_tag_clicked("configure")` 经 `open_model_config()` → 捕获并 await
       `_open_model_config()` 协程的真实路由链推入的屏 `_read_only is True`；

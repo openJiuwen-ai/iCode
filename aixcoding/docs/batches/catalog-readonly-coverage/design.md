@@ -14,6 +14,9 @@
 > 修复——B1 G2 协程驱动改为"捕获协程 + await"；B2 V1 变异改为 `not _config_read_only()`
 > 取反形态并修正文字；B3 新增"变异验证授权边界"节，"零上游改动"统一为最终交付 diff 口径；
 > S1 G1 参数化扩为三信号四态（补 `submit.active`），等价接管表述随之成立。
+> 2026-11-05 PR #92 peer review（C1）措辞精确化——"四态 = 判定全部输入面"更正为
+> "三信号单真 + 全真四态，组合态不设（不增检出力）"；正文非 R2 内容，按 §4.1
+> 签认分档不触发重签，git 留痕。
 
 ## 方案概述
 
@@ -33,7 +36,9 @@ RuntimeConfigController (config_actions.py)
                                  (marker C035, config_actions.py:282-285)
 
 上游 _config_read_only() (L235-242) = agent_running or submit.active or execution_busy()
-——G1 四态 = 三信号各自单独 True + 三者全 True，即该判定的全部输入面；
+——G1 四态 = 三信号各自单独 True + 三者全 True；两两组合态不设——被锚语义为恒
+  read_only=True（与信号取值无关），任一信号为真即足以使条件类变异（V1）暴露，
+  组合态不增加检出力（PR #92 评审 C1 措辞精确化）。
   恒只读语义 ⊇ 条件只读语义，四态锚定使"C135 维度本体等价接管"成立
   （C135 时点 commands-running 由 execution_busy() 覆盖，其余两信号窗口一并锚定）。
 ```
@@ -85,7 +90,8 @@ R1 自查：最终交付零上游改动（R2 节删除；变异验证临时修�
 `agent_running-only` / `execution_busy-only` / `submit-active-only` / `all-three`）：
 helper 构造对应态 → `await controller._open_model_config()`（T1 同款直调，测试协程内
 `to_thread` 正常完成）→ 断言 `pushed[0]` 为 `ModelConfigScreen` 且 `_read_only is True`。
-四态 = 上游 `_config_read_only()` 三判定的全部输入面。不测 `agent_loading`（上游
+四态锚定三信号的单真态与全真态；两两组合态不设（被锚语义与信号取值无关，任一信号
+真即足以检出条件类变异，组合态不增检出力——PR #92 评审 C1）。不测 `agent_loading`（上游
 "loading 拒绝打开"是入口拒绝行为，非只读维度，上游域）。
 
 **G2 `test_model_indicator_configure_entry_opens_read_only`**（async）：helper 构造 idle

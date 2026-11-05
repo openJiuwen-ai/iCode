@@ -20,7 +20,10 @@ push → 责任人网页建 PR）。
 - [x] 变异验证 V1/V2（红面符合预期互不误伤 → 还原复绿 → 零残留 diff，证据入 verification.md）
 - [x] 双 AI 自审（评审 AI：Kimi-K3.1-Pro / CodeBuddy，3 轮全通过，S1/N1 已处置）→ self-review.md 草案落盘
 - [x] 责任人签认 self-review.md（2026-11-05，确认意见：无特别意见）
-- [ ] 交付：PR（逐条授权 add/commit/push；CI 证据只归 PR checks）
+- [x] 交付：PR #92（b3de2a20，CI 23 checks 全绿：aixcoding quality/upstream gate 双门禁过）
+- [x] PR #92 peer review（0 代码缺陷/0 幻觉 API；C0 计数时点 + C1 措辞两候选经裁决已修，
+  追加 commit 至原 PR）
+- [ ] 修复 commit push 后责任人合并 PR #92
 
 ## 挂起与备忘
 
