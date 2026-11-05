@@ -46,7 +46,7 @@ from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolCall, ToolGroup
-from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex
+from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex, WorkspacePathIndex
 from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.waiting import wait_for
@@ -667,16 +667,13 @@ def test_post_freeze_lru_renewal_keeps_refilled_links_collectible(surface: str) 
 
 def test_suggestion_participant_blocks_popup_without_releasing_warm_cache() -> None:
     handler = object.__new__(SuggestionHandler)
-    warm_cache = [ProjectPathSuggestion("src/chrys/app.py", "file")]
-    warm_index = object()
+    warm_index = WorkspacePathIndex("/repo")
     handler._view = SimpleNamespace(suggestions_active=True)
-    handler._file_cache = warm_cache
     handler._file_index = warm_index
 
     assert handler.gc_freeze_block_reason() is GcFreezeBlockReason.SUGGESTIONS_VISIBLE
     handler.prepare_for_gc_freeze()
     handler.after_gc_freeze()
-    assert handler._file_cache is warm_cache
     assert handler._file_index is warm_index
 
     handler._view.suggestions_active = False

@@ -133,6 +133,7 @@ class RollbackController:
         set_has_messages: Callable[[bool], None],
         post_gc_message: Callable[[GcReclaimRequested], object],
         debug: Callable[[str, str], None],
+        invalidate_file_index: Callable[[], None],
         refresh_diff_preview: Callable[[], None] = lambda: None,
         locale_controller: LocaleController | None = None,
         confirm_stopping_background_tasks: Callable[[int], Awaitable[bool]] | None = None,
@@ -150,6 +151,7 @@ class RollbackController:
         self._set_has_messages = set_has_messages
         self._post_gc_message = post_gc_message
         self._debug = debug
+        self._invalidate_file_index = invalidate_file_index
         self._locale_controller = locale_controller
         self._confirm_stopping_background_tasks = confirm_stopping_background_tasks
         """Whether the user lets the background commands that the turns after a turn started stop."""
@@ -512,6 +514,9 @@ class RollbackController:
 
     async def on_result(self, event: RollbackResult) -> None:
         """Surface rollback outcomes, refresh welcome state, and restore rolled-back input."""
+        # A rollback restores files outside any turn, so no turn end marks the
+        # resident ``@`` snapshot stale for it.
+        self._invalidate_file_index()
         self._refresh_diff_preview()
         is_welcome = event.target_turn == 0
         if is_welcome:

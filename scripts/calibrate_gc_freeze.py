@@ -420,9 +420,9 @@ def _build_file_cache(count: int) -> tuple[ProjectPathScanResult, ProjectPathInd
 
 
 def _install_file_cache(screen: MainScreen, count: int) -> ProjectPathIndex:
-    scan, index = _build_file_cache(count)
-    root = screen._suggestions._current_file_root()
-    screen._suggestions._install_file_cache(root, scan, index)
+    _scan, index = _build_file_cache(count)
+    suggestions = screen._suggestions
+    suggestions._file_index_for(suggestions._current_file_root()).snapshot = index
     return index
 
 

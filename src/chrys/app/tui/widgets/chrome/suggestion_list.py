@@ -159,6 +159,15 @@ class SuggestionList(Widget):
         """Return whether the popup is waiting for its initial result set."""
         return self._loading
 
+    @property
+    def chosen_value(self) -> str | None:
+        """Return the highlighted row's value once the highlight left the first selectable row, else None."""
+        highlighted = self._highlighted
+        if highlighted is None or highlighted >= len(self._values):
+            return None
+        first = next((row for row, disabled in enumerate(self._disabled) if not disabled), None)
+        return None if highlighted == first else self._values[highlighted]
+
     def show_loading(self, mode: str, *, title: str = "") -> None:
         """Show an immediate, non-selectable loading state for *mode*."""
         self._mode = mode
