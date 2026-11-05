@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for notification migration and saved theme renames."""
+"""Tests for notification migration, saved theme renames and the moved buddy model setting."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import chrys.foundation.config.migrations as migrations
 import chrys.foundation.platform as platform_mod
 from chrys.foundation.config.migrations import (
     NOTIFICATIONS_COMPONENT,
+    migrate_buddy_model_profile,
     migrate_notifications_v0,
     migrate_renamed_theme,
 )
@@ -442,3 +443,153 @@ def test_a_retired_theme_name_cannot_be_saved_again(config_dir: Path) -> None:
     persist_theme("chrys-dark")
 
     assert _read_doc(config_dir)["ui"]["theme"] == "chrys"
+
+
+# ── The buddy model setting, moved to a model profile key ───────────────
+
+
+class _Successors:
+    """A successor that answers from *table* and notes every value it was asked about."""
+
+    def __init__(self, table: dict[str, str | None]) -> None:
+        self.table = table
+        self.asked: list[str] = []
+
+    def __call__(self, model_id: str) -> str | None:
+        self.asked.append(model_id)
+        return self.table[model_id]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "model:\n  role:\n    buddy_model_id: glm-4.6\n    session_title: Titles\n",
+        "model.role.buddy_model_id: glm-4.6\nmodel:\n  role:\n    session_title: Titles\n",
+    ],
+    ids=["nested", "dotted"],
+)
+def test_a_saved_buddy_model_moves_to_the_profile_that_replaces_it(config_dir: Path, text: str) -> None:
+    path = _write_settings(config_dir, text + "mystery: kept\n")
+    successor = _Successors({"glm-4.6": "work-profile"})
+
+    result = migrate_buddy_model_profile(successor)
+
+    assert result.performed
+    assert result.migrated == {"model.role.buddy": "work-profile"}
+    doc = _read_doc(config_dir)
+    assert doc["model"] == {"role": {"buddy": "work-profile", "session_title": "Titles"}}
+    assert doc["mystery"] == "kept"
+    assert "buddy_model_id" not in path.read_text(encoding="utf-8")
+    assert "migrations" not in doc
+    # The look and the lock saw the same value: the profiles were read once.
+    assert successor.asked == ["glm-4.6"]
+    assert not migrate_buddy_model_profile(successor).performed
+    assert successor.asked == ["glm-4.6"]
+    freeze_process_env()
+    assert load_settings().settings.buddy_model_profile == "work-profile"
+
+
+def test_a_buddy_model_no_profile_fits_is_dropped_for_the_active_profile(config_dir: Path) -> None:
+    _write_settings(config_dir, "model:\n  role:\n    buddy_model_id: gpt-gone\nmystery: kept\n")
+
+    result = migrate_buddy_model_profile(_Successors({"gpt-gone": ""}))
+
+    assert result.performed
+    assert result.migrated == {}
+    # Nothing is written in its place, and no ``model: {role: {}}`` is left behind.
+    doc = _read_doc(config_dir)
+    assert "model" not in doc
+    assert doc["mystery"] == "kept"
+
+
+def test_a_buddy_model_whose_profile_cannot_be_told_yet_waits(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = "model:\n  role:\n    buddy_model_id: glm-4.6\n"
+    path = _write_settings(config_dir, text)
+    write = create_autospec(migrations.update_yaml_doc, side_effect=AssertionError("nothing to write"))
+    monkeypatch.setattr(migrations, "update_yaml_doc", write)
+
+    assert not migrate_buddy_model_profile(_Successors({"glm-4.6": None})).performed
+
+    write.assert_not_called()
+    assert path.read_text(encoding="utf-8") == text
+
+
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        # A value saved under the new key is newer than the retired one, and wins.
+        ("model:\n  role:\n    buddy_model_id: glm-4.6\n    buddy: Personal\n", {"buddy": "Personal"}),
+        # "Use active model" chosen in the panel while the move waited is a choice too.
+        ("model:\n  role:\n    buddy_model_id: glm-4.6\n    buddy: ''\n", {"buddy": ""}),
+        ("model:\n  role:\n    buddy_model_id: ''\n", None),
+        ("model:\n  role:\n    buddy_model_id: '   '\n", None),
+        ("model:\n  role:\n    buddy_model_id:\n", None),
+        ("model:\n  role:\n    buddy_model_id: 7\n", None),
+        ("model:\n  role:\n    buddy_model_id:\n      nested: x\n", None),
+    ],
+    ids=["new-key-set", "new-key-active", "empty", "blank", "null", "number", "mapping"],
+)
+def test_a_retired_buddy_key_with_nothing_to_move_is_dropped_unasked(
+    config_dir: Path, text: str, kept: dict[str, str] | None
+) -> None:
+    _write_settings(config_dir, text)
+    successor = _Successors({})
+
+    assert migrate_buddy_model_profile(successor).performed
+
+    assert successor.asked == []
+    doc = _read_doc(config_dir)
+    assert doc.get("model") == (None if kept is None else {"role": kept})
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["model:\n  role:\n    buddy: Personal\n", "model:\n  role:\n    session_title: Titles\n", ": not yaml\n"],
+)
+def test_a_document_without_the_retired_buddy_key_costs_no_write_and_no_profile_read(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    path = _write_settings(config_dir, text)
+    write = create_autospec(migrations.update_yaml_doc, side_effect=AssertionError("nothing to write"))
+    monkeypatch.setattr(migrations, "update_yaml_doc", write)
+    successor = _Successors({})
+
+    assert not migrate_buddy_model_profile(successor).performed
+
+    write.assert_not_called()
+    assert successor.asked == []
+    assert path.read_text(encoding="utf-8") == text
+
+
+def test_moving_the_buddy_model_does_not_create_the_config_directory(config_dir: Path) -> None:
+    assert not migrate_buddy_model_profile(_Successors({})).performed
+    assert not config_dir.exists()
+
+
+def test_a_buddy_model_changed_between_the_look_and_the_lock_moves_as_it_is_then(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_settings(config_dir, "model:\n  role:\n    buddy_model_id: gpt-new\n")
+    look = create_autospec(migrations.read_yaml_doc, return_value={"model": {"role": {"buddy_model_id": "gpt-old"}}})
+    monkeypatch.setattr(migrations, "read_yaml_doc", look)
+    successor = _Successors({"gpt-old": "old-profile", "gpt-new": "new-profile"})
+
+    assert migrate_buddy_model_profile(successor).migrated == {"model.role.buddy": "new-profile"}
+
+    assert successor.asked == ["gpt-old", "gpt-new"]
+    assert _read_doc(config_dir)["model"] == {"role": {"buddy": "new-profile"}}
+
+
+def test_a_buddy_model_moved_between_the_look_and_the_lock_is_left_alone(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = "model:\n  role:\n    buddy: other-profile\n"
+    path = _write_settings(config_dir, text)
+    look = create_autospec(migrations.read_yaml_doc, return_value={"model": {"role": {"buddy_model_id": "glm-4.6"}}})
+    monkeypatch.setattr(migrations, "read_yaml_doc", look)
+
+    assert not migrate_buddy_model_profile(_Successors({"glm-4.6": "work-profile"})).performed
+
+    assert path.read_text(encoding="utf-8") == text

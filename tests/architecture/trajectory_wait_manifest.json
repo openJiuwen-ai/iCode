@@ -3801,6 +3801,7 @@
       "SubAgentEventMiddleware._publish_hosted_operation": [
         ["awaitable", "await self._end_text_segment('failed' if bridge.shows_failed_attempt else 'completed')", "unresolved"],
         ["awaitable", "await self._bus.publish(InvocationToolCallStart(origin=origin, **common, tool_kind=HOSTED_TOOL_DEFAULT_KIND_BY_FAMILY.get(view.family, ''), args=view.arguments, provider_item_type=view.provider_item_type, provider_call_id=view.provider_call_id, provider_status=view.provider_status))", "unresolved"],
+        ["wrapper", "await self._publish_progress()", "unresolved", "chrys.service.agent_middleware.events.sub_agent_events.SubAgentEventMiddleware._publish_progress"],
         ["awaitable", "await self._bus.publish(InvocationToolCallArgsUpdated(origin=origin, **common, tool_kind=HOSTED_TOOL_DEFAULT_KIND_BY_FAMILY.get(view.family, ''), args=view.arguments, provider_item_type=view.provider_item_type, provider_call_id=view.provider_call_id, provider_status=view.provider_status))", "unresolved"],
         ["awaitable", "await self._bus.publish(InvocationToolCallProgress(origin=origin, **common, lines=view.result_text.splitlines(), image_contents=view.image_contents, snapshot_metadata=view.metadata, provider_item_type=view.provider_item_type, provider_call_id=view.provider_call_id, provider_status=view.provider_status))", "unresolved"],
         ["awaitable", "await self._bus.publish(InvocationToolCallStatusUpdated(origin=origin, **common, status=view.status, provider_status=view.provider_status, metadata=metadata))", "unresolved"],

@@ -111,7 +111,6 @@ class StubPorts:
         self.themes = ["chrys", "chrys-legacy", "textual-dark"]
         self.agent_profiles = [("code", "Code"), ("chat", "Chat")]
         self.model_profiles = [("model-one", "Model One"), ("model-two", "Model Two")]
-        self.model_ids = [("vendor/one", "vendor/one"), ("vendor/two", "vendor/two")]
         self.notification_ports = StubNotificationPorts()
         self.storage = StubSessionStorage(root, default_root)
 
@@ -129,8 +128,6 @@ class StubPorts:
             return list(self.agent_profiles)
         if source is Suggestions.MODEL_PROFILES:
             return list(self.model_profiles)
-        if source is Suggestions.MODEL_IDS:
-            return list(self.model_ids)
         return []
 
     def schedule_persist(self, values: Mapping[str, Any]) -> None:

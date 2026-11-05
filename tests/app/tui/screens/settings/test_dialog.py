@@ -397,7 +397,7 @@ async def test_input_rows_commit_through_the_field_coercer(
     tab: str,
     edits: list[tuple[str, int | None, str | None, str]],
 ) -> None:
-    ports = StubPorts(Settings(max_transient_retries=9, buddy_model="old-model", ask_user_timeout_seconds=45))
+    ports = StubPorts(Settings(max_transient_retries=9, buddy_model_profile="old-model", ask_user_timeout_seconds=45))
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
         dialog = await _open(pilot, ports, initial_tab=tab)
@@ -505,20 +505,28 @@ async def test_reproject_repaints_values_without_writing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_buddy_model_is_picked_from_the_registered_model_ids() -> None:
+async def test_every_model_role_is_picked_from_the_same_model_profiles() -> None:
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
         dialog = await _open(pilot, ports, initial_tab="models")
         await pilot.pause()
-        select = _rows(dialog)["model.role.buddy_model_id"].query_one(Select)
+        rows = _rows(dialog)
+        roles = ("model.role.session_title", "model.role.approval_judge", "model.role.buddy")
 
-        # Blank stores "" and reads "Use active model"; the options are bare model ids.
-        assert select.value == ""
-        assert [str(prompt) for prompt, _value in select._options] == ["Use active model", "vendor/one", "vendor/two"]
-        select.value = "vendor/two"
+        # Blank stores "" and reads "Use active model"; every role then offers the model profiles by name.
+        for key in roles:
+            select = rows[key].query_one(Select)
+            assert select.value == ""
+            assert [(str(prompt), value) for prompt, value in select._options] == [
+                ("Use active model", ""),
+                ("Model One", "model-one"),
+                ("Model Two", "model-two"),
+            ], key
+        select = rows["model.role.buddy"].query_one(Select)
+        select.value = "model-two"
         await pilot.pause()
-        assert ports.persisted == [{"model.role.buddy_model_id": "vendor/two"}]
+        assert ports.persisted == [{"model.role.buddy": "model-two"}]
 
         # A blank retry cap shows the frontend default it falls back to.
         retries = _rows(dialog)["llm.retry.max_transient"].query_one(Input)

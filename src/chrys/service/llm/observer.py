@@ -42,7 +42,7 @@ from chrys.foundation.errors import ProviderResponseError, classify_error
 from chrys.foundation.trajectory.context import ExchangeTrace, TrajectoryContext, current_trajectory
 from chrys.foundation.trajectory.envelope import ActorKind
 from chrys.foundation.trajectory.event_types import ContinuationMode, ExchangeOutcome
-from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.trajectory.ids import is_valid_id, new_analytics_id
 from chrys.foundation.trajectory.usage import exchange_usage_payload
 from chrys.foundation.trajectory_timing import build_trajectory_timing, stamp_trajectory_timing
 from chrys.kernel import in_internal_side_call
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from chrys.kernel.types import ChatResponseUpdate
+    from chrys.service.profiles.models.schema import ModelProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,14 +174,30 @@ def resolve_exchange_trace(forwarded: object, *, internal_side_call: bool) -> Ex
     return ExchangeTrace(context.with_exchange(new_analytics_id()))
 
 
+def exchange_connection_facts(profile: ModelProfile) -> dict[str, str]:
+    """The model profile a wire client sends through, as both exchange markers carry it.
+
+    Only the profile's opaque id and its wire dialect: never its name or
+    address, which the user writes. Every client reports them, so the usage of
+    a sub-agent, a workflow node or a side call counts under the profile that
+    served it, as the main agent's does.
+    """
+    facts = {"provider": profile.provider, "api_style": profile.api_style}
+    # An id the log would reject costs the whole exchange, not one field.
+    if is_valid_id("model_profile_id", profile.id):
+        facts["model_profile_id"] = profile.id
+    return facts
+
+
 def exchange_request_facts(options: Mapping[str, Any], *, stream: bool) -> dict[str, Any]:
     """``model.exchange.started`` facts the wire client knows at request time.
 
     The client's own provider name stays out of this: it is the OTel dialect
     label (every OpenAI-compatible client answers ``openai``), while the
-    ``provider`` both exchange markers carry is the model profile's — and the
-    request facts are spread last, so reporting it here would overwrite the
-    profile's answer on the start marker alone.
+    ``provider`` both exchange markers carry is the model profile's
+    (:func:`exchange_connection_facts`) — and the request facts are spread
+    last, so reporting it here would overwrite the profile's answer on the
+    start marker alone.
     """
     facts: dict[str, Any] = {
         "stream": stream,
@@ -233,18 +250,19 @@ class ExchangeRecorder:
     knows which one it was.
     """
 
-    __slots__ = ("_owned", "_trace")
+    __slots__ = ("_connection", "_owned", "_trace")
 
-    def __init__(self, trace: ExchangeTrace, *, owned: bool) -> None:
+    def __init__(self, trace: ExchangeTrace, *, owned: bool, connection: Mapping[str, str] | None = None) -> None:
         self._trace = trace
         self._owned = owned
+        self._connection = connection
 
     @property
     def context(self) -> TrajectoryContext:
         return self._trace.context
 
     def started(self, options: Mapping[str, Any], *, stream: bool) -> None:
-        self._trace.started(payload=exchange_request_facts(options, stream=stream))
+        self._trace.started(payload=exchange_request_facts(options, stream=stream), connection=self._connection)
 
     def finished(self, response: ChatResponse[Any]) -> None:
         payload, measurements = exchange_response_facts(response)
@@ -319,10 +337,12 @@ def open_exchange(
     stream: bool,
     forwarded_trace: object,
     internal_side_call: bool,
+    connection: Mapping[str, str] | None = None,
 ) -> ExchangeRecorder | None:
     """Resolve the exchange this request reports to and write its start marker.
 
-    Returns None when no trace is active for the request.
+    *connection* is the client's :func:`exchange_connection_facts`. Returns
+    None when no trace is active for the request.
     """
     trace = resolve_exchange_trace(forwarded_trace, internal_side_call=internal_side_call)
     if trace is None:
@@ -335,7 +355,7 @@ def open_exchange(
         trace.set_context_revision(record_context_revision(trace.context, messages))
     # A trace the resolver minted here belongs to this client; one the loop
     # handed down is closed by the loop.
-    recorder = ExchangeRecorder(trace, owned=trace is not forwarded_trace)
+    recorder = ExchangeRecorder(trace, owned=trace is not forwarded_trace, connection=connection)
     recorder.started(options, stream=stream)
     return recorder
 
@@ -348,10 +368,16 @@ class WireCallObserver:
     share no state.
     """
 
-    __slots__ = ("_on_intermediate_text",)
+    __slots__ = ("_connection", "_on_intermediate_text")
 
-    def __init__(self, *, on_intermediate_text: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        on_intermediate_text: Callable[[str], None] | None = None,
+        connection: Mapping[str, str] | None = None,
+    ) -> None:
         self._on_intermediate_text = on_intermediate_text
+        self._connection = connection
 
     def begin(
         self,
@@ -369,6 +395,7 @@ class WireCallObserver:
             stream=stream,
             forwarded_trace=forwarded_trace,
             internal_side_call=internal_side_call,
+            connection=self._connection,
         )
         if internal_side_call:
             return WireCall(recorder, stream=stream)

@@ -53,7 +53,7 @@ In the tables, “None” means there is no corresponding environment variable, 
 
 ### Agents, models, and requests
 
-Model role keys take the ID or unique name of an existing model profile. Buddy does not select a model profile: its key takes the model name used by the model service (`model_id`).
+Model role keys take the ID or unique name of an existing model profile. `model.role.buddy` replaces `model.role.buddy_model_id` from earlier versions, which took a model name: when iCode starts, it replaces a saved model name with the model profile that uses that model. If no model profile uses it, or more than one does, the old value is removed and Buddy uses the current model. `CHRYS_PET_MODEL` is no longer read; set `CHRYS_MODEL_PROFILE_BUDDY` to a model profile's ID or name instead.
 
 | YAML key | Environment variable | Default | Type, values, and effect |
 | --- | --- | --- | --- |
@@ -61,7 +61,7 @@ Model role keys take the ID or unique name of an existing model profile. Buddy d
 | `model.profile.active` | `CHRYS_MODEL_PROFILE` | Unset | String; select an existing model profile as the fallback when the agent has no valid `model.profile_id`. An explicit `--model` takes precedence over this key but still serves as a fallback; explicitly switching models in an ACP session takes precedence over the model specified by the agent |
 | `model.role.approval_judge` | `CHRYS_MODEL_PROFILE_APPROVAL_JUDGE` | Unset | String; the model profile used for automatic approval. Uses the current model when unset |
 | `model.role.session_title` | `CHRYS_MODEL_PROFILE_SESSION_TITLE` | Unset | String; the model profile used to generate session titles automatically. Uses the current model when unset |
-| `model.role.buddy_model_id` | `CHRYS_PET_MODEL` | Unset | String; the model used by Buddy, using the current model profile's connection. Uses the current model when unset |
+| `model.role.buddy` | `CHRYS_MODEL_PROFILE_BUDDY` | Unset | String; the model profile used by Buddy, with that profile's own provider, address and model. Uses the current model when unset |
 | `llm.retry.max_transient` | `CHRYS_MAX_TRANSIENT_RETRIES` | `null` | Integer or `null`; `null` uses the default retry count for the launch command: `10` for the TUI (including `icode serve`) and `icode acp`, or `18` for `icode run` and `icode workflow run`. The wait before each retry grows, up to 10 minutes. `0` disables automatic retries for transient errors; negative values are invalid; capped at `50` |
 | `llm.credential_command.ttl_seconds` | `CHRYS_CREDENTIAL_COMMAND_TTL_SECONDS` | `3600` | Integer; how long, in seconds, a value from a `{{!command}}` placeholder is used before the next request runs the command again. Minimum `60`. A value the service refuses is replaced at once. Takes effect after a restart. See [Get an API key from a command](../guides/configuration/models.md#get-an-api-key-from-a-command) |
 

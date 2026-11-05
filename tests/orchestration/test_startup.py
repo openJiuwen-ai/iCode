@@ -210,6 +210,101 @@ def test_bootstrap_draws_the_renamed_theme_even_when_the_document_cannot_be_rewr
     assert "chrys-dark" in document.read_text(encoding="utf-8")
 
 
+_WORK = "0123456789abcdef0123456789abcdef"
+_PERSONAL = "fedcba9876543210fedcba9876543210"
+
+
+def _save_model_profiles(*profiles: tuple[str, str, str]) -> None:
+    """Write (id, name, model) profiles where the app keeps them."""
+    from chrys.service.profiles.models.schema import ModelProfile
+    from chrys.service.profiles.models.serializer import save_profile
+
+    for profile_id, name, model_id in profiles:
+        save_profile(ModelProfile(id=profile_id, name=name, model_id=model_id, base_url="https://x.example/v1"))
+
+
+@pytest.mark.parametrize(
+    ("saved", "profiles", "moved"),
+    [
+        # The one profile that serves the model takes its place.
+        ("glm-4.6", [(_WORK, "Work", "glm-4.6"), (_PERSONAL, "Personal", "gpt-5")], _WORK),
+        # A value that already names a profile stays as written.
+        ("Personal", [(_WORK, "Work", "glm-4.6"), (_PERSONAL, "Personal", "gpt-5")], "Personal"),
+        (_WORK, [(_WORK, "Work", "glm-4.6")], _WORK),
+        # Two profiles serve it, or none: the buddy follows the active profile.
+        ("glm-4.6", [(_WORK, "Work", "glm-4.6"), (_PERSONAL, "Personal", "glm-4.6")], ""),
+        ("gpt-gone", [(_WORK, "Work", "glm-4.6")], ""),
+        ("glm-4.6", [], ""),
+    ],
+    ids=["one-profile-serves-it", "a-profile-name", "a-profile-id", "two-serve-it", "none-serves-it", "no-profiles"],
+)
+def test_bootstrap_moves_a_saved_buddy_model_to_a_model_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, saved: str, profiles: list[tuple[str, str, str]], moved: str
+) -> None:
+    _quiet_bootstrap(monkeypatch, tmp_path)
+    monkeypatch.delenv("CHRYS_MODEL_PROFILE_BUDDY", raising=False)
+    _save_model_profiles(*profiles)
+    document = tmp_path / "config" / "settings.yaml"
+    document.write_text(f"model:\n  role:\n    buddy_model_id: {saved}\n", encoding="utf-8")
+
+    bootstrap = startup.bootstrap_runtime()
+
+    assert bootstrap.settings.buddy_model_profile == moved
+    doc = yaml.safe_load(document.read_text(encoding="utf-8"))
+    assert doc.get("model") == ({"role": {"buddy": moved}} if moved else None)
+    assert bootstrap.warnings == []
+
+
+def test_bootstrap_leaves_a_saved_buddy_model_while_a_profile_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The unreadable file may be the profile it belongs to: the move waits for a start that can tell."""
+    _quiet_bootstrap(monkeypatch, tmp_path)
+    monkeypatch.delenv("CHRYS_MODEL_PROFILE_BUDDY", raising=False)
+    _save_model_profiles((_PERSONAL, "Personal", "gpt-5"))
+    (tmp_path / "config" / "models" / "broken.yaml").write_text("id: [unclosed\n", encoding="utf-8")
+    document = tmp_path / "config" / "settings.yaml"
+    document.write_text("model:\n  role:\n    buddy_model_id: glm-4.6\n", encoding="utf-8")
+
+    bootstrap = startup.bootstrap_runtime()
+
+    assert bootstrap.settings.buddy_model_profile == ""
+    assert yaml.safe_load(document.read_text(encoding="utf-8"))["model"] == {"role": {"buddy_model_id": "glm-4.6"}}
+
+
+def test_bootstrap_leaves_a_saved_buddy_model_while_the_profiles_directory_cannot_be_listed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _quiet_bootstrap(monkeypatch, tmp_path)
+    monkeypatch.delenv("CHRYS_MODEL_PROFILE_BUDDY", raising=False)
+    (tmp_path / "config" / "models").write_text("not a directory\n", encoding="utf-8")
+    document = tmp_path / "config" / "settings.yaml"
+    document.write_text("model:\n  role:\n    buddy_model_id: glm-4.6\n", encoding="utf-8")
+
+    startup.bootstrap_runtime()
+
+    assert yaml.safe_load(document.read_text(encoding="utf-8"))["model"] == {"role": {"buddy_model_id": "glm-4.6"}}
+
+
+def test_bootstrap_starts_when_the_buddy_model_cannot_be_moved(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """The buddy follows the active profile meanwhile, which is not worth a warning."""
+    _quiet_bootstrap(monkeypatch, tmp_path)
+    monkeypatch.delenv("CHRYS_MODEL_PROFILE_BUDDY", raising=False)
+    document = tmp_path / "config" / "settings.yaml"
+    document.write_text("model:\n  role:\n    buddy_model_id: glm-4.6\n", encoding="utf-8")
+
+    def explode(_successor: object) -> None:
+        raise TimeoutError("lock busy")
+
+    monkeypatch.setattr("chrys.foundation.config.migrations.migrate_buddy_model_profile", explode)
+
+    bootstrap = startup.bootstrap_runtime()
+
+    assert bootstrap.settings.buddy_model_profile == ""
+    assert bootstrap.warnings == []
+    assert "buddy_model_id" in document.read_text(encoding="utf-8")
+
+
 def test_bootstrap_migrates_the_notifications_file_before_loading(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """Legacy notification toggles move into ``settings.yaml`` and still take effect."""
     _quiet_bootstrap(monkeypatch, tmp_path)

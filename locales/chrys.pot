@@ -1274,7 +1274,7 @@ msgstr ""
 #. English: Buddy model
 #. chrys-meta={"fingerprint":"639cbc46db6fb15f9747fa24936f4a22222b7f6d2b7e07dd066f3a4214049066","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
-msgid "settings.model.role.buddy_model_id.label"
+msgid "settings.model.role.buddy.label"
 msgstr ""
 
 #. English: Session title model
@@ -8291,11 +8291,13 @@ msgstr ""
 
 #. English: Open the token usage dialog, read from every saved session.
 #. Overview: new tokens by date range, their trend over time,     and totals by
-#. model, source or project, with each model's speed.     Calendar: new tokens
-#. day by day, and one day's details.      New tokens are the input not served
-#. from the provider's cache,     plus the output, thinking included. Deleted
-#. sessions and external     ACP agents are not counted.
-#. chrys-meta={"fingerprint":"d3b60b05e938038df9d11299b1c3fba744067836a2467c91b19245632b1bb892","multiline":true,"placeholders":[]}
+#. model, source, project or model profile, with each     model's speed. A
+#. model used through several of your profiles is     shown once for each.
+#. Calendar: new tokens day by day, and one day's details.      New tokens are
+#. the input not served from the provider's cache,     plus the output,
+#. thinking included. Deleted sessions and external     ACP agents are not
+#. counted.
+#. chrys-meta={"fingerprint":"a87aa08d2639c51b43157a086c097d76e872dbba2633ac4b416249d6d2bb8e62","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.usage.body"
 msgstr ""
@@ -11255,7 +11257,7 @@ msgstr ""
 #. English: Model that writes what the buddy says when petted.
 #. chrys-meta={"fingerprint":"931f45640e05798485642104d8c820c06b0e793fa6e8fa9bdf98fa2f2466cc65","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.model.role.buddy_model_id"
+msgid "tui.settings.hint.model.role.buddy"
 msgstr ""
 
 #. English: Model that writes session titles.
@@ -15765,6 +15767,12 @@ msgstr ""
 msgid "tui.usage.group.model"
 msgstr ""
 
+#. English: Profile
+#. chrys-meta={"fingerprint":"1f32e5bec5d54398a6c913fbd43a7560087c02343db62f7787dcff3926ae39c4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.profile"
+msgstr ""
+
 #. English: Project
 #. chrys-meta={"fingerprint":"bb494880de8a82165303fb5db8a2bd69147f6fff4874591b25d51ec1569bafb1","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
@@ -15890,6 +15898,12 @@ msgid "tui.usage.note.unreported"
 msgid_plural "tui.usage.note.unreported#plural"
 msgstr[0] ""
 msgstr[1] ""
+
+#. English: Other profiles
+#. chrys-meta={"fingerprint":"fa4919283bfc36cffdd2cb8d70c78fc0e0870bf186fad1652a8c9fd73dd291a0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.profile.other"
+msgstr ""
 
 #. English: Other workspaces
 #. chrys-meta={"fingerprint":"6d7805200d84a36fdff69306ab89e5d5baf0d2008448aa2166941869367ba36c","multiline":false,"placeholders":[]}
