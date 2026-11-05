@@ -4830,7 +4830,7 @@
         ["awaitable", "await evaluator.run_suite(dataset, output_dir=out, on_event=on_event if project_task else None, task_id=project_task)", "unresolved"]
       ],
       "RsiServiceContext.evaluate_task": [
-        ["wrapper", "await self.evaluate_dataset(dataset_path, runner=runner, output_dir=Path(task.run_dir) / 'evaluations', task_id=task_id)", "unresolved", "chrys.service.rsi.context.RsiServiceContext.evaluate_dataset"]
+        ["wrapper", "await self.evaluate_dataset(dataset_path, runner=runner, output_dir=out, task_id=task_id)", "unresolved", "chrys.service.rsi.context.RsiServiceContext.evaluate_dataset"]
       ],
       "RsiServiceContext.optimize_task": [
         ["awaitable", "await loop.run(task_id, base_profile=profile, evaluate=evaluate, max_epochs=epochs, instruction=task.optimization_instruction, events=events)", "unresolved"]
@@ -4864,9 +4864,10 @@
     },
     "chrys.service.rsi.optimizer": {
       "OptimizeLoop.run": [
-        ["awaitable", "await evaluate(baseline_snap.profile, 'baseline', None)", "unresolved"],
+        ["awaitable", "await evaluate(baseline_snap.profile, baseline_id, None)", "unresolved"],
         ["awaitable", "await self.optimizer.propose(working_profile, failed, instruction=instruction, epoch=epoch)", "unresolved"],
-        ["awaitable", "await evaluate(snap.profile, candidate_id, failed_ids)", "unresolved"]
+        ["awaitable", "await evaluate(snap.profile, candidate_id, failed_ids)", "unresolved"],
+        ["awaitable", "await evaluate(snap.profile, candidate_id, None)", "unresolved"]
       ]
     },
     "chrys.service.rsi.provider": {

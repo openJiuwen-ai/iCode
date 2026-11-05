@@ -174,7 +174,28 @@ def _copy_tree(source: Path, dest: Path) -> None:
         shutil.copytree(source, dest, symlinks=True, ignore_dangling_symlinks=True)
     except OSError as exc:
         raise RsiBadRequest(f"workdir copy failed: {exc}") from exc
+    _sanitize_copied_git_metadata(dest)
     _refuse_escaping_symlinks(dest, label="copied workdir")
+
+
+def _sanitize_copied_git_metadata(dest: Path) -> None:
+    """Drop or neutralize ``.git`` so a linked worktree copy cannot reach the real repo.
+
+    A gitfile ``.git`` (``gitdir: …``) points at the caller's repository; leaving
+    it in place lets BYPASS agents ``git checkout`` / ``commit`` against the
+    user's real worktree. Directory ``.git`` is also removed so the private
+    copy is a plain tree (use ``git_clone`` / ``git_worktree`` when git is needed).
+    """
+    git_entry = dest / ".git"
+    if not git_entry.exists() and not git_entry.is_symlink():
+        return
+    try:
+        if git_entry.is_dir() and not git_entry.is_symlink():
+            shutil.rmtree(git_entry)
+        else:
+            git_entry.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RsiBadRequest(f"workdir copy could not detach .git metadata: {exc}") from exc
 
 
 def _refuse_escaping_symlinks(root: Path, *, label: str = "workdir.from") -> None:
@@ -196,16 +217,20 @@ def _refuse_escaping_symlinks(root: Path, *, label: str = "workdir.from") -> Non
 
 def _git_clone(source: Path, dest: Path, *, ref: str | None) -> None:
     _require_git_repo(source)
-    args = ["clone", "--local", "--no-hardlinks", str(source), str(dest)]
+    dest_abs = dest.resolve()
+    args = ["clone", "--local", "--no-hardlinks", str(source.resolve()), str(dest_abs)]
     _run_git(args, cwd=None, check=True)
     if ref:
-        _run_git(["checkout", "--force", ref], cwd=dest, check=True)
+        _run_git(["checkout", "--force", ref], cwd=dest_abs, check=True)
 
 
 def _git_worktree(source: Path, dest: Path, *, ref: str | None) -> None:
     _require_git_repo(source)
+    # Always absolute: relative dest would resolve inside the source repo cwd.
+    dest_abs = dest if dest.is_absolute() else dest.resolve()
+    dest_abs.parent.mkdir(parents=True, exist_ok=True)
     target = ref or "HEAD"
-    _run_git(["worktree", "add", "--detach", str(dest), target], cwd=source, check=True)
+    _run_git(["worktree", "add", "--detach", str(dest_abs), target], cwd=source, check=True)
 
 
 def _require_git_repo(path: Path) -> None:

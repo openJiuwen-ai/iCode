@@ -90,9 +90,14 @@ def parse_mutation(raw: dict[str, Any]) -> Mutation:
             raise RsiBadRequest(
                 "upsert_inline_skill.name is invalid; use 1-64 lowercase letters, numbers, and single hyphens"
             )
+        description = str(raw.get("description") or "")
+        if not description.strip():
+            raise RsiBadRequest("upsert_inline_skill.description is required")
+        if len(description) > 1024:
+            raise RsiBadRequest("upsert_inline_skill.description must be 1024 characters or fewer")
         return UpsertInlineSkill(
             name=name,
-            description=str(raw.get("description") or ""),
+            description=description,
             instructions=str(raw.get("instructions") or ""),
         )
     if kind == "remove_inline_skill":

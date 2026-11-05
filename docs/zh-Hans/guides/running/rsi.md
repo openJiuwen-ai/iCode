@@ -4,7 +4,7 @@ RSI（recursive self-improvement）是一套**实验性离线闭环**：用固�
 
 **目前唯一支持的使用方式是命令行。** 没有 TUI 面板，也没有 ACP 入口。请在终端使用 `icode rsi …`。任务保存在 `<config_dir>/rsi/tasks/`（macOS/Linux 上通常为 `~/.chrys/rsi/tasks/`），与聊天会话、workflow 会话相互独立。
 
-在线评测和在线 optimize 使用 `ApprovalMode.BYPASS`（与 `icode run` 相同）。导出的 profile 在依赖之前务必人工审阅。
+在线评测和在线 optimize **不会弹出工具审批**（与 `icode run` 相同的 headless 模式）。导出的 profile 在依赖之前务必人工审阅。
 
 ## 闭环如何串起来
 
@@ -38,13 +38,13 @@ RSI（recursive self-improvement）是一套**实验性离线闭环**：用固�
 | 查看 | 读分数、演进树、分析、候选 YAML | `get` / `tree` / 任务目录下的文件 |
 | 导出 | 把最佳候选拷出去审阅（不会热加载） | `install` |
 
-`icode rsi start` **不是**上面这条闭环。它仍跑 Phase 1 的 **mock** provider，只用来锻炼任务 worker 与树投影。真打分用 `eval`；带门控的搜索用 `optimize`。
+`icode rsi start` **不是**上面这条闭环。它仍跑 **mock** provider，只用来锻炼任务 worker 与树投影。真打分用 `eval`；带门控的搜索用 `optimize`。
 
 ## 典型操作指南（live optimize）
 
 目标：在小型 `script_based` 数据集上，用真模型改进 profile，再导出胜出候选供审阅。
 
-仓库自带的 live 样例是 **`playground/rsi/complex-calc/`**（Rust 复数计算器）。需要现成数据集时直接用这棵树；完整的 create → eval → optimize → install 说明见 [演示样例：Rust 复数计算器](#演示样例rust-复数计算器)。下面步骤是同一套闭环，适用于你自己编写的任意数据集。
+live 样例 **`playground/rsi/complex-calc/`**（Rust 复数计算器）在**源码仓库**里，**不在 PyPI wheel** 中——需 clone 或 checkout iCode 才能使用。完整的 create → eval → optimize → install 说明见 [演示样例：Rust 复数计算器](#演示样例rust-复数计算器)。下面步骤是同一套闭环，适用于你自己编写的任意数据集。
 
 ### 1. 编写数据集
 
@@ -104,8 +104,8 @@ icode rsi optimize rsi-<id> --agent Code -m <model> --epochs 2 --timeout 180
 
 1. **Baseline** — 用基线 profile（`Code`，除非 `--profile` 指向 YAML）跑完全部 case。
 2. **Propose** — optimizer 模型阅读失败摘要，只能发出白名单 mutation（`append_instructions`、`upsert_inline_skill`、`remove_inline_skill`）。
-3. **Materialize** — 写入 `<task>/run/candidates/epoch-N/`。
-4. **Gate** — **只重跑仍失败的 case**，与此前已通过结果合并；仅当**整套分数严格升高**时采纳。
+3. **Materialize** — 写入 `<task>/run/candidates/<run>-epoch-N/`（每次 optimize 有独立 run id，重跑不会覆盖上一次的 baseline）。
+4. **Gate** — 先**只重跑仍失败的 case**（快速拒绝）；合并分数看起来更好时，再**用完整套件确认**后才采纳。`perfect` / `best` 一律以完整套件结果为准；`best.json` 只在本轮跑完后写入。
 5. 直到 epoch 用尽、分数已完美，或模型返回空的 `{"mutations":[]}`（主动停止）。模型调用失败或非法 JSON 会 **drop** 该轮并继续；被丢弃的提议不会安装。
 
 Stdout 含 `baseline_score`、`best_score`、`best_candidate`、`epochs`、`dropped`、`perfect`。
@@ -178,7 +178,7 @@ icode rsi delete rsi-<id>
 | `tree` | 查看 | 打印演进树（mock `start` 或 `optimize` 之后） |
 | `install` | 导出 | 拷出最佳候选 YAML；除非 `--user` + `--user-dir`，否则不写用户 agents |
 | `delete` | 清理 | 删除 `CREATED` 或已结束任务的目录 |
-| `start` | **仅 mock** | 排队跑 Phase 1 mock provider（不是真 optimize） |
+| `start` | **仅 mock** | 排队跑 mock provider（不是真 optimize） |
 
 ## 数据集格式（chrys-rsi.dataset.v1）
 
@@ -241,7 +241,7 @@ icode rsi delete rsi-<id>
 #### 为什么适合当演示
 
 - **难度够，基线经常是 `0.0`。** 普通四则运算可能过；判分还要求右结合 `2^3^2` → `512+0i`、倒数 `(2-i)^(-1)`、裸 `i` / `-i`、无括号优先级，以及畸形输入如 `1++2i` 必须**非零退出**（不能静默把 `++` 收成 `+`）。
-- **标准答案不在 workdir。** 逛目录的 agent 无法从种子读到期望表；答案只在数据集里的 `check.py`（随任务拷贝）。
+- **标准答案不在 workdir。** 空 seed 里没有期望表。**已知限制：** live case 跑时跳过工具审批（同 `icode run`），agent 若愿意可以读取任务 `input/` 下拷贝的可信 `check.py`——设计数据集时请考虑这一点。
 - **Optimize 有明确可修点。** 典型失败是解析 / 优先级 / 非法退出。成功的 epoch 常是 `append_instructions` 和/或 `upsert_inline_skill`（例如简短的「严格词法 / 拒绝 `1++2i`」技能），而不是整段替换 profile。
 - **Live runner 先加载 builtins**，再叠候选 profile，因此 Code 声明的 Explore/General 会像普通 headless 会话一样解析到。
 
@@ -309,7 +309,7 @@ profile 其余部分未改（tools、approval、子 agent、原有 instruction �
 | 候选 | 父节点 | Mutation | 门控分数 | 结果 |
 |------|--------|----------|----------|------|
 | baseline | — | — | `0.0` | 作为起点 ADOPT（套件失败；常见 findings：`2^3^2` 和/或 `1++2i`） |
-| epoch-1 | baseline | 仅 `append_instructions`（更宽的「严格词法 / `++` / `^`」说明） | `0.0` | REJECTED — 仍挂在 `1++2i`（有时还有别的陷阱） |
+| epoch-1 | baseline | 仅 `append_instructions`（更宽的「严格词法 / `++` / `^`」说明） | `0.0` | REJECTED — 分数未超过基线（常仍挂在 `1++2i`，直到 inline skill 落地） |
 | epoch-2 | baseline | 上文的 `append_instructions` + `upsert_inline_skill` | `1.0` | ADOPTED / best — 构建 + 全部算式 + 非法退出均过 |
 
 Epoch-2 的父节点仍是 **baseline**，不是 epoch-1：被拒绝的 epoch 不会叠进下一轮候选。本机可用 `icode rsi tree <task>`、`run/analysis/epoch-N.json`，以及 `diff run/candidates/baseline/Code.yaml run/candidates/epoch-2/Code.yaml` 核对。之后重跑可能写出不同措辞；预期形态是对着 failure summary 的小段 instruction / skill 叠层，而不是整份重写 profile。
@@ -323,9 +323,9 @@ Epoch-2 的父节点仍是 **baseline**，不是 epoch-1：被拒绝的 epoch �
 
 默认 stub optimize 使用确定性 proposer 与 profile-aware stub runner（指令标记形如 `rsi:case:<case_id>`），不会调用模型。
 
-基线之后，后续每一轮只重跑仍然失败的 case，已经通过的结果保持不变，并且不再复查。因此候选分数把那些已通过的 case 仍视为通过。
+基线之后，后续每一轮先只重跑仍然失败的 case（快速拒绝）。合并分数看起来更好时，optimize 会在采纳前**再跑完整套件**，因此弄坏了原先已通过 case 的候选不会被写成 `best` / `perfect`。
 
-`--agent NAME` 把每个候选的评测改为 headless 会话，并让模型按同一白名单提出改动。基线 profile 是 `NAME`，除非 `--profile` 指向一份 YAML。`--optimizer-model` 选择提议模型；`-m` 选择跑 case 的模型。省略 `--optimizer-model` 时，提议模型与跑 case 的模型相同。只传 `--optimizer-model`、不传 `--agent` 时仍会调用提议模型，但候选分数由 stub runner 计算。Live 候选 runner 会先加载 builtins 与用户 agents，再把突变后的 profile 注册上去，因此 Code 声明的 Explore/General 等子 agent 会像普通 iCode 会话一样解析到。
+`--agent NAME` 把每个候选的评测改为 headless 会话，并让模型按同一白名单提出改动。基线 profile 是 `NAME`，除非 `--profile` 指向一份 YAML。`--optimizer-model` 选择提议模型；`-m` 选择跑 case 的模型（省略 `-m` 时用当前激活模型——即使设置了 `--optimizer-model`）。只传 `--optimizer-model`、不传 `--agent` 时仍会调用提议模型，但候选分数由 stub runner 计算。Live 候选 runner 会先加载 builtins 与用户 agents，再把突变后的 profile 注册上去，因此 Code 声明的 Explore/General 等子 agent 会像普通 iCode 会话一样解析到。
 
 ## 状态与边界
 

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -64,7 +65,7 @@ class MutationOptimizer(Protocol):
 class OptimizeEvents(Protocol):
     """Synchronous tree updates around one optimize run (no extra awaits)."""
 
-    def baseline(self, *, score: float, total_epochs: int) -> None: ...
+    def baseline(self, *, candidate_id: str, score: float, total_epochs: int) -> None: ...
 
     def candidate(
         self,
@@ -143,10 +144,12 @@ class OptimizeResult:
     best_candidate_id: str
     epochs: tuple[EpochResult, ...]
     perfect: bool
+    run_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
+            "run_id": self.run_id,
             "baseline_score": self.baseline_score,
             "best_score": self.best_score,
             "best_candidate_id": self.best_candidate_id,
@@ -165,6 +168,10 @@ class OptimizeResult:
                 for e in self.epochs
             ],
         }
+
+
+def _new_optimize_run_id() -> str:
+    return f"r{secrets.token_hex(4)}"
 
 
 class OptimizeLoop:
@@ -188,38 +195,37 @@ class OptimizeLoop:
         max_epochs: int,
         instruction: str | None = None,
         events: OptimizeEvents | None = None,
+        run_id: str | None = None,
     ) -> OptimizeResult:
         """Run the gated optimize loop.
 
         ``evaluate`` is ``(profile, label, case_ids) -> EvalSuiteResult``.
-        ``case_ids`` is ``None`` for a full-dataset run. A gate passes only the
-        case ids that are still failing; their records are merged onto the
-        current best suite before the score is compared.
+        ``case_ids`` is ``None`` for a full-dataset run. A gate first re-runs
+        only still-failing ids (fast reject), then a candidate that looks better
+        is confirmed on the full suite before adoption. ``best.json`` is written
+        only after this run finishes successfully (interrupt leaves the prior
+        pointer alone). Candidate ids are scoped by ``run_id`` so re-optimize
+        never overwrites an earlier run's baseline/epoch directories.
         """
         if max_epochs < 1:
             max_epochs = 1
+        opt_run = (run_id or _new_optimize_run_id()).strip() or _new_optimize_run_id()
 
+        baseline_id = f"{opt_run}-baseline"
         baseline_snap = materialize_candidate(
             self.store,
             task_id,
-            candidate_id="baseline",
+            candidate_id=baseline_id,
             base_profile=base_profile,
             mutations=(),
             epoch=0,
         )
-        baseline_eval = await evaluate(baseline_snap.profile, "baseline", None)
+        baseline_eval = await evaluate(baseline_snap.profile, baseline_id, None)
         best_score = baseline_eval.score
         best_snap = baseline_snap
         best_eval = baseline_eval
-        write_best_pointer(
-            self.store,
-            task_id,
-            candidate_id=best_snap.candidate_id,
-            score=best_score,
-            profile_path=best_snap.profile_path,
-        )
         if events is not None:
-            events.baseline(score=best_score, total_epochs=max_epochs)
+            events.baseline(candidate_id=baseline_id, score=best_score, total_epochs=max_epochs)
 
         epochs: list[EpochResult] = []
         working_profile = baseline_snap.profile
@@ -235,11 +241,12 @@ class OptimizeLoop:
                 instruction=instruction,
                 epoch=epoch,
             )
+            candidate_id = f"{opt_run}-epoch-{epoch}"
             if proposal.dropped:
                 epochs.append(
                     EpochResult(
                         epoch=epoch,
-                        candidate_id=f"epoch-{epoch}",
+                        candidate_id=candidate_id,
                         score=best_score,
                         passed=best_eval.passed_count,
                         total=best_eval.total_count,
@@ -251,7 +258,7 @@ class OptimizeLoop:
                 if events is not None:
                     events.candidate(
                         epoch=epoch,
-                        candidate_id=f"epoch-{epoch}",
+                        candidate_id=candidate_id,
                         parent_id=parent_id,
                         score=best_score,
                         best_score=best_score,
@@ -264,7 +271,6 @@ class OptimizeLoop:
             mutations = list(proposal.mutations)
             if not mutations:
                 break
-            candidate_id = f"epoch-{epoch}"
             snap = materialize_candidate(
                 self.store,
                 task_id,
@@ -277,14 +283,44 @@ class OptimizeLoop:
             failed_ids = [record.case_id for record in failed]
             gated_partial = await evaluate(snap.profile, candidate_id, failed_ids)
             gated = merge_suite(best_eval, gated_partial)
-            adopted = gated.score > best_score
+            # Fast reject when the failed subset did not improve the merged score.
+            if gated.score <= best_score:
+                epochs.append(
+                    EpochResult(
+                        epoch=epoch,
+                        candidate_id=candidate_id,
+                        score=gated.score,
+                        passed=gated.passed_count,
+                        total=gated.total_count,
+                        adopted=False,
+                        mutations=tuple(m.to_dict() for m in mutations),
+                    )
+                )
+                if events is not None:
+                    events.candidate(
+                        epoch=epoch,
+                        candidate_id=candidate_id,
+                        parent_id=parent_id,
+                        score=gated.score,
+                        best_score=best_score,
+                        baseline_score=baseline_eval.score,
+                        adopted=False,
+                        total_epochs=max_epochs,
+                        summary=", ".join(mutation.kind for mutation in mutations),
+                    )
+                continue
+
+            # Full-suite confirm before adopting (guards regressions on prior passes).
+            confirmed = await evaluate(snap.profile, candidate_id, None)
+            adopted = confirmed.score > best_score
+            report_score = confirmed.score
             epochs.append(
                 EpochResult(
                     epoch=epoch,
                     candidate_id=candidate_id,
-                    score=gated.score,
-                    passed=gated.passed_count,
-                    total=gated.total_count,
+                    score=report_score,
+                    passed=confirmed.passed_count,
+                    total=confirmed.total_count,
                     adopted=adopted,
                     mutations=tuple(m.to_dict() for m in mutations),
                 )
@@ -294,37 +330,42 @@ class OptimizeLoop:
                     epoch=epoch,
                     candidate_id=candidate_id,
                     parent_id=parent_id,
-                    score=gated.score,
-                    best_score=gated.score if adopted else best_score,
+                    score=report_score,
+                    best_score=confirmed.score if adopted else best_score,
                     baseline_score=baseline_eval.score,
                     adopted=adopted,
                     total_epochs=max_epochs,
                     summary=", ".join(mutation.kind for mutation in mutations),
                 )
             if adopted:
-                best_score = gated.score
+                best_score = confirmed.score
                 best_snap = snap
-                best_eval = gated
+                best_eval = confirmed
                 working_profile = snap.profile
                 parent_id = snap.candidate_id
-                write_best_pointer(
-                    self.store,
-                    task_id,
-                    candidate_id=best_snap.candidate_id,
-                    score=best_score,
-                    profile_path=best_snap.profile_path,
-                )
-                _write_candidate_score_meta(snap, score=gated.score, adopted=True)
+                _write_candidate_score_meta(snap, score=confirmed.score, adopted=True)
 
+        # Deferred: only commit best.json after a completed run so an interrupted
+        # re-optimize cannot point install at an unevaluated overwrite.
+        write_best_pointer(
+            self.store,
+            task_id,
+            candidate_id=best_snap.candidate_id,
+            score=best_score,
+            profile_path=best_snap.profile_path,
+        )
         _write_candidate_score_meta(best_snap, score=best_score, adopted=True, best=True)
 
+        # best_eval is always from a full-suite evaluate (baseline or confirmed adopt).
+        perfect = best_eval.passed_count == best_eval.total_count and best_eval.total_count > 0
         return OptimizeResult(
             task_id=task_id,
             baseline_score=baseline_eval.score,
             best_score=best_score,
             best_candidate_id=best_snap.candidate_id,
             epochs=tuple(epochs),
-            perfect=best_eval.passed_count == best_eval.total_count and best_eval.total_count > 0,
+            perfect=perfect,
+            run_id=opt_run,
         )
 
 

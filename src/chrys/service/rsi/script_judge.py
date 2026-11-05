@@ -14,6 +14,7 @@ from pathlib import Path
 from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 from chrys.service.rsi.dataset import RsiCase, ScriptExpect
 from chrys.service.rsi.errors import RsiDatasetInvalid
+from chrys.service.rsi.paths import safe_relpath_under
 
 # Trusted check scripts may build toolchains (e.g. cargo); keep parity with the
 # default per-case headless timeout rather than failing healthy cold builds.
@@ -128,9 +129,8 @@ def _run_check_script(
     if not script_rel:
         return []
     root = dataset_dir.resolve()
-    script_path = (root / script_rel).resolve()
     try:
-        script_path.relative_to(root)
+        script_path = safe_relpath_under(root, script_rel, field="evaluation.script")
     except ValueError:
         return [JudgeFinding("script", "script path escaped dataset directory")]
     if not script_path.is_file():
@@ -149,6 +149,9 @@ def _run_check_script(
         "CHRYS_RSI_RESPONSE_PATH": str(response_file.resolve()),
         "CHRYS_RSI_DATASET_DIR": str(root),
     }
+    popen_kwargs: dict[str, object] = {}
+    if sys.platform != "win32":
+        popen_kwargs["start_new_session"] = True
     try:
         completed = subprocess.run(  # noqa: S603 - trusted dataset-local script, absolute interpreter
             [sys.executable, str(script_path)],
@@ -157,8 +160,11 @@ def _run_check_script(
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_SCRIPT_TIMEOUT_SECONDS,
             check=False,
+            **popen_kwargs,
             **windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
@@ -173,15 +179,10 @@ def _run_check_script(
 
 
 def _safe_under(root: Path, rel: str) -> Path | None:
-    cleaned = str(rel).strip().replace("\\", "/")
-    if not cleaned or cleaned.startswith("/") or ".." in Path(cleaned).parts:
-        return None
-    candidate = (root / cleaned).resolve()
     try:
-        candidate.relative_to(root)
+        return safe_relpath_under(root, rel, field="path")
     except ValueError:
         return None
-    return candidate
 
 
 def ensure_case_script_valid(case: RsiCase, dataset_dir: Path) -> None:
@@ -189,9 +190,8 @@ def ensure_case_script_valid(case: RsiCase, dataset_dir: Path) -> None:
     if not case.script:
         return
     root = dataset_dir.resolve()
-    candidate = (root / case.script).resolve()
     try:
-        candidate.relative_to(root)
+        candidate = safe_relpath_under(root, case.script, field="evaluation.script")
     except ValueError as exc:
         raise RsiDatasetInvalid(f"case {case.case_id}: script escapes dataset directory") from exc
     if not candidate.is_file():

@@ -5,11 +5,15 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import atomic_write_text
+
+# Case / relative path ids: no separators, no ``.`` / ``..``, ASCII-safe.
+_CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def resolve_rsi_tasks_root(config_dir: str | Path | None = None, *, create: bool = True) -> Path:
@@ -42,6 +46,49 @@ def ensure_directory(path: Path) -> Path:
     """Create *path* (and parents) and return the resolved directory."""
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
+
+
+def is_forbidden_absolute_relpath(rel: str) -> bool:
+    """True for POSIX absolute, Windows drive, or UNC path tokens."""
+    cleaned = str(rel or "").strip().replace("\\", "/")
+    if not cleaned:
+        return False
+    if cleaned.startswith("/"):
+        return True
+    # Windows drive: ``C:`` / ``C:/…`` (also catches ``C:foo`` as absolute-ish)
+    return bool(len(cleaned) >= 2 and cleaned[0].isalpha() and cleaned[1] == ":")
+
+
+def validate_case_id(case_id: str) -> str:
+    """Return a sanitized case id or raise ``ValueError``."""
+    cleaned = str(case_id or "").strip()
+    if not cleaned or cleaned in {".", ".."} or "/" in cleaned or "\\" in cleaned:
+        raise ValueError(f"invalid case_id: {case_id!r}")
+    if not _CASE_ID_RE.fullmatch(cleaned):
+        raise ValueError(
+            f"invalid case_id: {case_id!r}; use 1-128 letters, digits, '.', '_' or '-' (must start with alphanumeric)"
+        )
+    return cleaned
+
+
+def safe_relpath_under(root: Path, relative: str, *, field: str = "path") -> Path:
+    """Resolve *relative* under *root*; refuse absolutes, ``..``, and escapes.
+
+    The returned path is resolved. Callers that only need a relative string
+    should use ``relative_to(root.resolve())`` on the result.
+    """
+    cleaned = str(relative or "").strip().replace("\\", "/")
+    if not cleaned or is_forbidden_absolute_relpath(cleaned) or ".." in Path(cleaned).parts:
+        raise ValueError(f"invalid {field}: {relative!r}")
+    if any(part in {"", ".", ".."} for part in Path(cleaned).parts):
+        raise ValueError(f"invalid {field}: {relative!r}")
+    base = Path(root).resolve()
+    candidate = (base / cleaned).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(f"{field} escapes root: {relative!r}") from exc
+    return candidate
 
 
 def resolve_under(root: Path, relative: str) -> Path:

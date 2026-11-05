@@ -16,7 +16,8 @@ from chrys.app.cli.rsi_headless import build_candidate_runner_factory, build_cas
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.spec import Source
 from chrys.foundation.platform.files import surrogate_safe_text
-from chrys.service.profiles.agents.loader import load_profile_from_yaml
+from chrys.foundation.platform.signals import hangup_as_interrupt
+from chrys.service.profiles.agents.loader import AgentProfileLoadError, load_profile_from_yaml
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -29,6 +30,7 @@ from chrys.service.profiles.models.resolver import (
 from chrys.service.profiles.models.schema import ModelProfile, is_model_profile_selectable
 from chrys.service.rsi import RsiError, RsiServiceContext, build_rsi_service_context, validate_dataset_file
 from chrys.service.rsi.llm_optimizer import LlmOptimizer, complete_with_model_profile
+from chrys.service.rsi.models import TaskStatus
 
 
 def _write_stderr(message: str) -> None:
@@ -234,6 +236,31 @@ def _emit(payload: object, *, as_json: bool, lines: list[str] | None = None) -> 
     _write_stdout(str(payload))
 
 
+def _expanded_path(value: str | None) -> Path | None:
+    if value is None or not str(value).strip():
+        return None
+    return Path(value).expanduser()
+
+
+def _get_detail_lines(detail: dict[str, object]) -> list[str]:
+    config = detail.get("config")
+    config_dict = config if isinstance(config, dict) else {}
+    lines = [
+        f"task_id={detail['task_id']}",
+        f"name={detail['name']}",
+        f"status={detail['status']}",
+        f"scenario={detail['scenario']}",
+        f"max_iterations={config_dict.get('max_iterations')}",
+        f"input_file={config_dict.get('input_file')}",
+    ]
+    lines.extend(
+        f"{key}={config_dict[key]}"
+        for key in sorted(config_dict)
+        if str(key).startswith(("last_eval_", "last_optimize_"))
+    )
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``chrys rsi`` / ``icode rsi``."""
     parser = build_parser()
@@ -241,87 +268,93 @@ def main(argv: list[str] | None = None) -> int:
     prepared = _prepare_runtime()
     ctx = build_rsi_service_context()
     try:
-        if args.command == "create":
-            result = ctx.create_task(
-                name=args.name,
-                max_iterations=args.max_iterations,
-                optimization_instruction=args.instruction,
-                dataset_path=args.dataset,
-            )
-            _emit(
-                result,
-                as_json=args.json,
-                lines=[f"{result['task_id']}\t{result['status']}"],
-            )
-            return 0
-        if args.command == "list":
-            tasks = ctx.list_tasks()
-            _emit(
-                tasks,
-                as_json=args.json,
-                lines=[f"{item['task_id']}\t{item['status']}\t{item['scenario']}\t{item['name']}" for item in tasks]
-                or ["(no RSI tasks)"],
-            )
-            return 0
-        if args.command == "get":
-            detail = ctx.get_task(args.task_id)
-            _emit(
-                detail,
-                as_json=args.json,
-                lines=[
-                    f"task_id={detail['task_id']}",
-                    f"name={detail['name']}",
-                    f"status={detail['status']}",
-                    f"scenario={detail['scenario']}",
-                    f"max_iterations={detail['config']['max_iterations']}",
-                    f"input_file={detail['config'].get('input_file')}",
-                ],
-            )
-            return 0
-        if args.command == "start":
-            return asyncio.run(_start(ctx, args.task_id, as_json=args.json, wait=not args.no_wait))
-        if args.command == "tree":
-            tree_payload = ctx.get_tree(args.task_id)
-            nodes = tree_payload.get("nodes") or []
-            _emit(
-                tree_payload,
-                as_json=args.json,
-                lines=[
-                    f"{node.get('node_id')}\t{node.get('type')}\t"
-                    f"score={node.get('score')}\t{node.get('description') or ''}"
-                    for node in nodes
-                ]
-                or ["(empty tree)"],
-            )
-            return 0
-        if args.command == "delete":
-            ctx.delete_task(args.task_id)
-            _write_stdout(f"deleted {args.task_id}")
-            return 0
-        if args.command == "dataset" and args.dataset_command == "validate":
-            result = validate_dataset_file(args.path)
-            _emit(
-                result,
-                as_json=args.json,
-                lines=(
-                    [f"valid={result['valid']}", f"sample_count={result['sample_count']}"]
-                    if result["valid"]
-                    else ["valid=false", *(f"{err['code']}: {err['reason']}" for err in result["errors"])]
-                ),
-            )
-            return 0 if result["valid"] else 1
-        if args.command == "eval":
-            return asyncio.run(_eval(ctx, args, prepared))
-        if args.command == "optimize":
-            return asyncio.run(_optimize(ctx, args, prepared))
-        if args.command == "install":
-            return _install(ctx, args)
+        with hangup_as_interrupt():
+            return _dispatch(args, ctx, prepared, parser)
+    except KeyboardInterrupt:
+        _write_stderr("Interrupted")
+        return 130
     except RsiError as exc:
         _write_stderr(f"Error: [{exc.code}] {exc.message}")
+        return 1
+    except AgentProfileLoadError as exc:
+        _write_stderr(f"Error: {exc}")
+        return 1
+    except OSError as exc:
+        _write_stderr(f"Error: {exc}")
         return 1
     except ValueError as exc:
         _write_stderr(f"Error: {exc}")
         return 1
+
+
+def _dispatch(args: argparse.Namespace, ctx: RsiServiceContext, prepared: headless.PreparedRuntime, parser) -> int:
+    if args.command == "create":
+        result = ctx.create_task(
+            name=args.name,
+            max_iterations=args.max_iterations,
+            optimization_instruction=args.instruction,
+            dataset_path=_expanded_path(args.dataset),
+        )
+        _emit(
+            result,
+            as_json=args.json,
+            lines=[f"{result['task_id']}\t{result['status']}"],
+        )
+        return 0
+    if args.command == "list":
+        tasks = ctx.list_tasks()
+        _emit(
+            tasks,
+            as_json=args.json,
+            lines=[f"{item['task_id']}\t{item['status']}\t{item['scenario']}\t{item['name']}" for item in tasks]
+            or ["(no RSI tasks)"],
+        )
+        return 0
+    if args.command == "get":
+        detail = ctx.get_task(args.task_id)
+        _emit(
+            detail,
+            as_json=args.json,
+            lines=_get_detail_lines(detail),
+        )
+        return 0
+    if args.command == "start":
+        return asyncio.run(_start(ctx, args.task_id, as_json=args.json, wait=not args.no_wait))
+    if args.command == "tree":
+        tree_payload = ctx.get_tree(args.task_id)
+        nodes = tree_payload.get("nodes") or []
+        _emit(
+            tree_payload,
+            as_json=args.json,
+            lines=[
+                f"{node.get('node_id')}\t{node.get('type')}\tscore={node.get('score')}\t{node.get('description') or ''}"
+                for node in nodes
+            ]
+            or ["(empty tree)"],
+        )
+        return 0
+    if args.command == "delete":
+        ctx.delete_task(args.task_id)
+        _write_stdout(f"deleted {args.task_id}")
+        return 0
+    if args.command == "dataset" and args.dataset_command == "validate":
+        result = validate_dataset_file(str(Path(args.path).expanduser()))
+        _emit(
+            result,
+            as_json=args.json,
+            lines=(
+                [f"valid={result['valid']}", f"sample_count={result['sample_count']}"]
+                if result["valid"]
+                else ["valid=false", *(f"{err['code']}: {err['reason']}" for err in result["errors"])]
+            ),
+        )
+        return 0 if result["valid"] else 1
+    if args.command == "eval":
+        return asyncio.run(_eval(ctx, args, prepared))
+    if args.command == "optimize":
+        return asyncio.run(_optimize(ctx, args, prepared))
+    if args.command == "install":
+        return _install(ctx, args)
     _write_stderr(f"Error: unknown command {args.command!r}")
     return 2
 
@@ -331,6 +364,8 @@ async def _start(ctx: RsiServiceContext, task_id: str, *, as_json: bool, wait: b
     if wait:
         await ctx.wait_idle()
         result = {"task_id": task_id, "status": ctx.get_task(task_id)["status"]}
+    else:
+        result = {"task_id": task_id, "status": TaskStatus.QUEUED.value}
     _emit(
         result,
         as_json=as_json,
@@ -370,11 +405,15 @@ async def _eval(ctx: RsiServiceContext, args: argparse.Namespace, prepared: head
         model_registry=model_registry,
         timeout=args.timeout,
     )
+    out_dir = _expanded_path(args.out)
     if args.task:
-        result = await ctx.evaluate_task(args.task, runner=runner)
+        result = await ctx.evaluate_task(args.task, runner=runner, output_dir=out_dir)
     else:
-        out = Path(args.out) if args.out else None
-        result = await ctx.evaluate_dataset(args.dataset, runner=runner, output_dir=out)
+        dataset_path = _expanded_path(args.dataset)
+        if dataset_path is None:
+            _write_stderr("Error: --dataset is required")
+            return 2
+        result = await ctx.evaluate_dataset(dataset_path, runner=runner, output_dir=out_dir)
 
     payload = {
         "run_id": result.run_id,
@@ -402,7 +441,11 @@ async def _eval(ctx: RsiServiceContext, args: argparse.Namespace, prepared: head
 async def _optimize(ctx: RsiServiceContext, args: argparse.Namespace, prepared: headless.PreparedRuntime) -> int:
     base: AgentProfile | None = None
     if args.profile:
-        base = load_profile_from_yaml(Path(args.profile))
+        profile_path = _expanded_path(args.profile)
+        if profile_path is None:
+            _write_stderr("Error: --profile path is empty")
+            return 2
+        base = load_profile_from_yaml(profile_path)
     elif args.agent:
         base = _load_agent_profile(args.agent)
         if base is None:
@@ -484,8 +527,11 @@ def _bind_live_optimizer(
     if optimizer_profile is None:
         _write_stderr(f"Error: {error}")
         return 1
+    # Cases run on -m / the active model. --optimizer-model alone must not
+    # pull case eval onto the proposer model.
     tester = optimizer_profile
-    if args.agent and args.model and args.optimizer_model and args.model != args.optimizer_model:
+    if args.agent:
+        # None → active profile (not args.optimizer_model).
         tester, error = _select_model(registry, args.model, prepared)
         if tester is None:
             _write_stderr(f"Error: {error}")
@@ -518,8 +564,8 @@ def _install(ctx: RsiServiceContext, args: argparse.Namespace) -> int:
         return 2
     summary = ctx.install_best(
         args.task_id,
-        destination=Path(args.out) if args.out else None,
-        user_agents_dir=Path(args.user_dir) if args.user_dir else None,
+        destination=_expanded_path(args.out),
+        user_agents_dir=_expanded_path(args.user_dir),
         write_user=bool(args.user),
     )
     _emit(

@@ -180,13 +180,17 @@ def read_best_pointer(store: RsiTaskStore, task_id: str) -> dict[str, Any]:
     return data
 
 
-def export_profile_yaml(source: Path, destination: Path) -> Path:
-    """Copy a candidate profile YAML to an explicit install location."""
+def export_profile_yaml(source: Path, destination: Path, *, overwrite: bool = False) -> Path:
+    """Copy a candidate profile YAML to an explicit install location (owner-only)."""
+    from chrys.foundation.platform.files import atomic_write_owner_only_text
+
     if not source.is_file():
         raise RsiNotFound(f"profile not found: {source}")
-    destination = destination.resolve()
+    destination = destination.expanduser().resolve()
+    if destination.exists() and not overwrite:
+        raise RsiBadRequest(f"export destination already exists (pass overwrite): {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    atomic_write_owner_only_text(destination, source.read_text(encoding="utf-8"))
     return destination
 
 

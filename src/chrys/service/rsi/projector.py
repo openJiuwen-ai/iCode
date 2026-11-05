@@ -27,6 +27,7 @@ class RsiProjector:
 
     def register_root(self, task_id: str, *, baseline: float | None = None, description: str = "baseline") -> None:
         with self._lock:
+            self._ensure_loaded_locked(task_id)
             nodes = self._nodes.setdefault(task_id, {})
             if _ROOT in nodes:
                 return

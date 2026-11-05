@@ -186,5 +186,6 @@ async def test_optimize_reruns_only_failing_cases(tmp_path: Path) -> None:
     assert result.baseline_score == 0.5
     assert result.best_score == 1.0
     assert result.epochs[0].adopted is True
-    assert calls[0] == ["already-ok", "need-hello"]
-    assert calls[1] == ["need-hello"]
+    assert calls[0] == ["already-ok", "need-hello"]  # baseline full suite
+    assert calls[1] == ["need-hello"]  # gate: only still-failing ids
+    assert calls[2] == ["already-ok", "need-hello"]  # full-suite confirm before adopt

@@ -4,7 +4,7 @@ RSI (recursive self-improvement) is an **experimental offline loop**: score an a
 
 **CLI is the only supported way to run RSI.** There is no TUI panel and no ACP surface for these experiments. Use `icode rsi …` in a terminal. Tasks live under `<config_dir>/rsi/tasks/` (for example `~/.chrys/rsi/tasks/` on macOS and Linux) and stay separate from chat and workflow sessions.
 
-Live eval and live optimize use `ApprovalMode.BYPASS` (same as `icode run`). Always review exported profiles before you rely on them.
+Live eval and live optimize run **without approval prompts** (same headless mode as `icode run`). Always review exported profiles before you rely on them.
 
 ## How the loop fits together
 
@@ -38,13 +38,13 @@ Live eval and live optimize use `ApprovalMode.BYPASS` (same as `icode run`). Alw
 | Inspect | Read scores, tree, analysis, candidate YAML | `get` / `tree` / files under the task |
 | Export | Copy the best candidate out for review (not hot-load) | `install` |
 
-`icode rsi start` is **not** this loop. It still runs a Phase 1 **mock** provider that only exercises the task worker and tree projection. For real scoring use `eval`; for gated search use `optimize`.
+`icode rsi start` is **not** this loop. It still runs a **mock** provider that only exercises the task worker and tree projection. For real scoring use `eval`; for gated search use `optimize`.
 
 ## Typical walkthrough (live optimize)
 
 Goal: improve a profile on a small `script_based` dataset with a real model, then export the winner for review.
 
-The shipped live sample is **`playground/rsi/complex-calc/`** (Rust complex calculator). Use that tree when you want a ready-made dataset; the section [Demo sample: Rust complex calculator](#demo-sample-rust-complex-calculator) walks through create → eval → optimize → install on it. The steps below are the same loop for any dataset you write yourself.
+The live sample **`playground/rsi/complex-calc/`** (Rust complex calculator) ships in the **source repo**, not in the PyPI wheel — clone or checkout iCode to use it. The section [Demo sample: Rust complex calculator](#demo-sample-rust-complex-calculator) walks through create → eval → optimize → install on it. The steps below are the same loop for any dataset you write yourself.
 
 ### 1. Write a dataset
 
@@ -104,8 +104,8 @@ What happens inside one `optimize`:
 
 1. **Baseline** — run every case with the base profile (`Code`, unless `--profile` points at a YAML).
 2. **Propose** — an optimizer model reads failure summaries and may emit only whitelisted mutations (`append_instructions`, `upsert_inline_skill`, `remove_inline_skill`).
-3. **Materialize** — write a candidate under `<task>/run/candidates/epoch-N/`.
-4. **Gate** — re-run **only cases that are still failing**; merge those results with earlier passes; adopt only if the **suite score strictly increases**.
+3. **Materialize** — write a candidate under `<task>/run/candidates/<run>-epoch-N/` (each optimize run gets its own id so a re-run never overwrites an earlier baseline).
+4. **Gate** — first re-run **only cases that are still failing** (fast reject). If the merged score looks better, **confirm on the full suite** before adopting. `perfect` and `best` always reflect a full-suite result; `best.json` is written only when the run finishes.
 5. Repeat until epochs are exhausted, the score is perfect, or the optimizer returns an empty `{"mutations":[]}` (deliberate stop). A bad model call or invalid JSON **drops** that epoch and continues; nothing from a dropped proposal is installed.
 
 Stdout includes `baseline_score`, `best_score`, `best_candidate`, `epochs`, `dropped`, and `perfect`.
@@ -241,7 +241,7 @@ Requires `cargo` on `PATH`. Trusted script timeout is 300s (cold builds). Case-r
 #### Why this suite is a good demo
 
 - **Hard enough that baseline often scores `0.0`.** Soft arithmetic can pass; the judge also requires right-associative `2^3^2` → `512+0i`, reciprocal `(2-i)^(-1)`, bare `i` / `-i`, precedence without parentheses, and **non-zero exit** on malformed input such as `1++2i` (must not silently collapse `++`).
-- **Ground truth is not in the workdir.** A browsing agent cannot read the expect table from the seed; only `check.py` under the dataset (copied into the task) holds answers.
+- **Ground truth is not in the workdir.** The empty seed does not contain expected answers. **Known limit:** live case runs skip tool approval (like `icode run`), so an agent can read trusted `check.py` under the task `input/` if it chooses — keep sensitive scoring logic in mind when you design datasets.
 - **Optimize has something to fix.** Typical failures are parser/precedence/invalid-exit bugs. Successful epochs often `append_instructions` and/or `upsert_inline_skill` (for example a short “strict lexer / reject `1++2i`” skill) rather than rewriting the whole profile.
 - **Live runners load builtins first**, then overlay the candidate, so Code’s Explore/General sub-agents resolve like a normal headless session.
 
@@ -309,7 +309,7 @@ How that search looked on the tree (same run):
 | Candidate | Parent | Mutations | Gate score | Outcome |
 |-----------|--------|-----------|------------|---------|
 | baseline | — | — | `0.0` | ADOPTED as starting point (suite failed; typical findings: `2^3^2` and/or `1++2i`) |
-| epoch-1 | baseline | `append_instructions` only (broader “strict lexer / `++` / `^`” note) | `0.0` | REJECTED — still failed `1++2i` (and sometimes other traps) |
+| epoch-1 | baseline | `append_instructions` only (broader “strict lexer / `++` / `^`” note) | `0.0` | REJECTED — score did not beat baseline (often still failing `1++2i` until the inline skill lands) |
 | epoch-2 | baseline | `append_instructions` + `upsert_inline_skill` above | `1.0` | ADOPTED / best — build + all expressions + invalid exits passed |
 
 Epoch-2’s parent was still **baseline**, not epoch-1: a rejected epoch does not stack into the next candidate. Inspect the same facts on your machine with `icode rsi tree <task>`, `run/analysis/epoch-N.json`, and `diff run/candidates/baseline/Code.yaml run/candidates/epoch-2/Code.yaml`. Later runs may propose different text; the shape to expect is small instruction/skill overlays aimed at the failure summary, not a full profile rewrite.
@@ -323,9 +323,9 @@ Allowed mutations:
 
 Default stub optimize uses a deterministic proposer plus a profile-aware stub runner (instruction markers of the form `rsi:case:<case_id>`). That path does not call a model.
 
-After the baseline, each later epoch re-runs only cases that are still failing and keeps prior results for the rest. A passing case is not re-checked, so a candidate is scored as if those cases still pass.
+After the baseline, each later epoch first re-runs only cases that are still failing (fast reject). When that merged score looks better, optimize **re-runs the full suite** before adopting, so a candidate that breaks a previously passing case is not kept as `best` / `perfect`.
 
-`--agent NAME` switches case evaluation to a headless session and asks a model to propose the same whitelist. The base profile is `NAME`, unless `--profile` points at a YAML file. `--optimizer-model` selects the proposer; `-m` selects the model that runs the cases. When `--optimizer-model` is omitted, the proposer uses the case-run model. Passing `--optimizer-model` without `--agent` still calls the proposer, but scores candidates with the stub runner. Live candidate runners load builtins and user agents first, then register the mutated profile on top, so declared sub-agents such as Code's Explore/General resolve like a normal iCode session.
+`--agent NAME` switches case evaluation to a headless session and asks a model to propose the same whitelist. The base profile is `NAME`, unless `--profile` points at a YAML file. `--optimizer-model` selects the proposer; `-m` selects the model that runs the cases (the active model when `-m` is omitted — even if `--optimizer-model` is set). Passing `--optimizer-model` without `--agent` still calls the proposer, but scores candidates with the stub runner. Live candidate runners load builtins and user agents first, then register the mutated profile on top, so declared sub-agents such as Code's Explore/General resolve like a normal iCode session.
 
 ## Status and limits
 

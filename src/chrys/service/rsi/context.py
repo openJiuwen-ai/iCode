@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
-from collections.abc import Collection
+from collections.abc import Collection, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,7 @@ from chrys.service.rsi.optimizer import (
     OptimizeResult,
     StubOptimizer,
 )
-from chrys.service.rsi.paths import resolve_rsi_tasks_root, task_dir
+from chrys.service.rsi.paths import resolve_rsi_tasks_root, safe_relpath_under, task_dir, write_json_atomic
 from chrys.service.rsi.projector import RsiProjector
 from chrys.service.rsi.provider import MockRsiProvider, RsiProvider
 from chrys.service.rsi.snapshot import (
@@ -42,6 +43,8 @@ from chrys.service.rsi.snapshot import (
 from chrys.service.rsi.store import RsiTaskStore
 from chrys.service.rsi.workdir_seed import snapshot_seed_for_task
 from chrys.service.rsi.worker import PushCallback, RsiWorker
+
+_BUSY_LOCK_NAME = ".rsi_busy"
 
 
 class RsiServiceContext:
@@ -81,6 +84,17 @@ class RsiServiceContext:
 
             self.store.add_status_hook(_hook)
 
+    @contextlib.contextmanager
+    def _task_busy_lock(self, task_id: str) -> Iterator[None]:
+        lock = task_dir(self.tasks_root, task_id) / "run" / _BUSY_LOCK_NAME
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text("busy", encoding="utf-8")
+        try:
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                lock.unlink(missing_ok=True)
+
     def create_task(
         self,
         *,
@@ -108,49 +122,58 @@ class RsiServiceContext:
             model_refs=dict(model_refs or {}),
         )
         created = self.store.create(task)
-        if dataset is not None:
-            input_dir = task_dir(self.tasks_root, created.task_id) / "input"
-            input_dir.mkdir(parents=True, exist_ok=True)
-            target = input_dir / "dataset.json"
-            payload = json.loads(dataset.source_path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise RsiBadRequest("dataset root must be an object")
-            cases_raw = payload.get("cases")
-            if not isinstance(cases_raw, list):
-                raise RsiBadRequest("dataset cases must be an array")
-            dataset_dir = dataset.source_path.parent
-            # Copy sibling check scripts referenced by the dataset.
-            for case in dataset.cases:
-                if not case.script:
-                    continue
-                src = dataset_dir / case.script
-                dest = input_dir / case.script
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if src.is_file():
-                    shutil.copy2(src, dest)
-            # Snapshot workdir seeds into the task so later eval never opens the
-            # caller's original tree in-place; rewrite cases to copy from seeds/.
-            for case, case_raw in zip(dataset.cases, cases_raw, strict=True):
-                if not isinstance(case_raw, dict):
-                    raise RsiBadRequest("dataset case must be an object")
-                if case.workdir is None:
-                    continue
-                seed_dest = input_dir / "seeds" / case.case_id
-                rewritten = snapshot_seed_for_task(
-                    case.workdir,
-                    dest=seed_dest,
-                    dataset_dir=dataset_dir,
-                )
-                case_raw["workdir"] = rewritten.to_dict()
-            target.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-            created.input_file = str(target.resolve())
-            created.config = {
-                **dict(created.config or {}),
-                "dataset_id": dataset.dataset_id,
-                "sample_count": dataset.sample_count,
-            }
-            created = self.store.save(created)
-        self.projector.register_root(created.task_id)
+        try:
+            if dataset is not None:
+                input_dir = task_dir(self.tasks_root, created.task_id) / "input"
+                input_dir.mkdir(parents=True, exist_ok=True)
+                target = input_dir / "dataset.json"
+                payload = json.loads(dataset.source_path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    raise RsiBadRequest("dataset root must be an object")
+                cases_raw = payload.get("cases")
+                if not isinstance(cases_raw, list):
+                    raise RsiBadRequest("dataset cases must be an array")
+                dataset_dir = dataset.source_path.parent
+                # Copy sibling check scripts under input/ using sanitized relative paths.
+                for case in dataset.cases:
+                    if not case.script:
+                        continue
+                    try:
+                        src = safe_relpath_under(dataset_dir, case.script, field="evaluation.script")
+                        dest = safe_relpath_under(input_dir, case.script, field="evaluation.script")
+                    except ValueError as exc:
+                        raise RsiBadRequest(f"case {case.case_id}: script path escapes sandbox") from exc
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if src.is_file():
+                        shutil.copy2(src, dest)
+                # Snapshot workdir seeds into the task so later eval never opens the
+                # caller's original tree in-place; rewrite cases to copy from seeds/.
+                for case, case_raw in zip(dataset.cases, cases_raw, strict=True):
+                    if not isinstance(case_raw, dict):
+                        raise RsiBadRequest("dataset case must be an object")
+                    if case.workdir is None:
+                        continue
+                    seed_dest = input_dir / "seeds" / case.case_id
+                    rewritten = snapshot_seed_for_task(
+                        case.workdir,
+                        dest=seed_dest,
+                        dataset_dir=dataset_dir,
+                    )
+                    case_raw["workdir"] = rewritten.to_dict()
+                write_json_atomic(target, payload)
+                created.input_file = str(target.resolve())
+                created.config = {
+                    **dict(created.config or {}),
+                    "dataset_id": dataset.dataset_id,
+                    "sample_count": dataset.sample_count,
+                }
+                created = self.store.save(created)
+            self.projector.register_root(created.task_id)
+        except Exception:
+            # create left an orphan task dir; remove it before surfacing the error.
+            with contextlib.suppress(Exception):
+                self.store.delete(created.task_id)
+            raise
         return {
             "task_id": created.task_id,
             "status": created.status,
@@ -167,6 +190,13 @@ class RsiServiceContext:
         return task.get_projection(progress=self.projector.derive_progress(task_id))
 
     def delete_task(self, task_id: str) -> None:
+        task = self.store.get(task_id)
+        if task.status in {TaskStatus.RUNNING.value, TaskStatus.QUEUED.value}:
+            raise RsiBadRequest(f"task {task_id} is {task.status}; terminate it before delete")
+        # Also refuse while an optimize/eval lock file marks in-flight work.
+        lock = task_dir(self.tasks_root, task_id) / "run" / ".rsi_busy"
+        if lock.is_file():
+            raise RsiBadRequest(f"task {task_id} has an active eval/optimize; wait or terminate first")
         self.store.delete(task_id)
 
     def start(self, task_id: str) -> dict[str, Any]:
@@ -219,26 +249,34 @@ class RsiServiceContext:
             task_id=project_task,
         )
 
-    async def evaluate_task(self, task_id: str, *, runner: CaseRunner | None = None) -> EvalSuiteResult:
+    async def evaluate_task(
+        self,
+        task_id: str,
+        *,
+        runner: CaseRunner | None = None,
+        output_dir: Path | None = None,
+    ) -> EvalSuiteResult:
         task = self.store.get(task_id)
         dataset_path = task.input_file
         if not dataset_path:
             raise RsiBadRequest(f"task {task_id} has no dataset; create with --dataset")
-        result = await self.evaluate_dataset(
-            dataset_path,
-            runner=runner,
-            output_dir=Path(task.run_dir) / "evaluations",
-            task_id=task_id,
-        )
-        task.config = {
-            **dict(task.config or {}),
-            "last_eval_run_id": result.run_id,
-            "last_eval_score": result.score,
-            "last_eval_passed": result.passed_count,
-            "last_eval_total": result.total_count,
-            "last_eval_scorecard": str(result.scorecard_path),
-        }
-        self.store.save(task)
+        out = output_dir if output_dir is not None else Path(task.run_dir) / "evaluations"
+        with self._task_busy_lock(task_id):
+            result = await self.evaluate_dataset(
+                dataset_path,
+                runner=runner,
+                output_dir=out,
+                task_id=task_id,
+            )
+            task.config = {
+                **dict(task.config or {}),
+                "last_eval_run_id": result.run_id,
+                "last_eval_score": result.score,
+                "last_eval_passed": result.passed_count,
+                "last_eval_total": result.total_count,
+                "last_eval_scorecard": str(result.scorecard_path),
+            }
+            self.store.save(task)
         return result
 
     async def optimize_task(
@@ -283,22 +321,23 @@ class RsiServiceContext:
                 case_ids=case_ids,
             )
 
-        result = await loop.run(
-            task_id,
-            base_profile=profile,
-            evaluate=evaluate,
-            max_epochs=epochs,
-            instruction=task.optimization_instruction,
-            events=events,
-        )
-        task.config = {
-            **dict(task.config or {}),
-            "last_optimize_best_candidate": result.best_candidate_id,
-            "last_optimize_best_score": result.best_score,
-            "last_optimize_baseline_score": result.baseline_score,
-            "last_optimize_perfect": result.perfect,
-        }
-        self.store.save(task)
+        with self._task_busy_lock(task_id):
+            result = await loop.run(
+                task_id,
+                base_profile=profile,
+                evaluate=evaluate,
+                max_epochs=epochs,
+                instruction=task.optimization_instruction,
+                events=events,
+            )
+            task.config = {
+                **dict(task.config or {}),
+                "last_optimize_best_candidate": result.best_candidate_id,
+                "last_optimize_best_score": result.best_score,
+                "last_optimize_baseline_score": result.baseline_score,
+                "last_optimize_perfect": result.perfect,
+            }
+            self.store.save(task)
         return result
 
     def record_optimize_node(
@@ -366,7 +405,9 @@ class RsiServiceContext:
             dest = Path(destination)
         else:
             dest = best_export_path(self.store, task_id, snap.profile.name)
-        written = export_profile_yaml(snap.profile_path, dest)
+        # Task export/ default may rewrite the same path; user-dir installs refuse overwrite.
+        overwrite = not write_user and destination is None
+        written = export_profile_yaml(snap.profile_path, dest, overwrite=overwrite)
         summary = dump_best_summary(self.store, task_id)
         summary["export_path"] = str(written)
         summary["wrote_user_agents"] = bool(write_user)
@@ -383,10 +424,10 @@ class _OptimizeTreeEvents:
         self._ctx = ctx
         self._task_id = task_id
 
-    def baseline(self, *, score: float, total_epochs: int) -> None:
+    def baseline(self, *, candidate_id: str, score: float, total_epochs: int) -> None:
         self._ctx.record_optimize_node(
             self._task_id,
-            ref="baseline",
+            ref=candidate_id,
             parent_ref="root",
             adopted=True,
             score=score,

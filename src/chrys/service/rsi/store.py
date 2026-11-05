@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import stat
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -17,6 +19,13 @@ from chrys.service.rsi.paths import task_dir
 from chrys.service.rsi.workdir_seed import release_workdir_seeds_under
 
 StatusHook = Callable[[RsiTask, str | None], None]
+
+
+def _force_remove(func, path, exc) -> None:
+    if func not in (os.unlink, os.rmdir):
+        raise exc
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 
 class RsiTaskStore:
@@ -80,7 +89,7 @@ class RsiTaskStore:
                 raise RsiTaskStateConflict(f"cannot delete task in status {task.status}")
             directory = task_dir(self.tasks_root, task_id)
             release_workdir_seeds_under(directory)
-            shutil.rmtree(directory)
+            shutil.rmtree(directory, onexc=_force_remove)
 
     def update_status(
         self,

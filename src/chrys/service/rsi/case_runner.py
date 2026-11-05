@@ -15,6 +15,7 @@ from typing import Protocol
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.rsi.dataset import RsiCase
 from chrys.service.rsi.mutations import case_marker
+from chrys.service.rsi.paths import safe_relpath_under
 
 
 @dataclass(slots=True, frozen=True)
@@ -52,7 +53,15 @@ class StubCaseRunner:
                 error="stub runner requires case.fixture (use headless runner for live agents)",
             )
         for rel, content in fixture.files.items():
-            target = workdir / rel
+            try:
+                target = safe_relpath_under(workdir, rel, field="fixture.files")
+            except ValueError as exc:
+                return CaseRunResult(
+                    case_id=case.case_id,
+                    response_text="",
+                    workdir=workdir,
+                    error=f"fixture path escapes workdir: {exc}",
+                )
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         return CaseRunResult(
@@ -97,23 +106,31 @@ def _inline_skill_text(profile: AgentProfile) -> str:
 def _synthesize_passing_case(case: RsiCase, workdir: Path) -> CaseRunResult:
     """Write files / response that satisfy declarative expect checks."""
     expect = case.expect
-    for rel, content in expect.file_equals.items():
-        target = workdir / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-    for rel, needles in expect.file_contains.items():
-        if rel in expect.file_equals:
-            continue
-        target = workdir / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        body = "\n".join(needles) if needles else ""
-        target.write_text(body + ("\n" if body and not body.endswith("\n") else ""), encoding="utf-8")
-    for rel in expect.files_exist:
-        target = workdir / rel
-        if target.is_file():
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("", encoding="utf-8")
+    try:
+        for rel, content in expect.file_equals.items():
+            target = safe_relpath_under(workdir, rel, field="file_equals")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        for rel, needles in expect.file_contains.items():
+            if rel in expect.file_equals:
+                continue
+            target = safe_relpath_under(workdir, rel, field="file_contains")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            body = "\n".join(needles) if needles else ""
+            target.write_text(body + ("\n" if body and not body.endswith("\n") else ""), encoding="utf-8")
+        for rel in expect.files_exist:
+            target = safe_relpath_under(workdir, rel, field="files_exist")
+            if target.is_file():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("", encoding="utf-8")
+    except ValueError as exc:
+        return CaseRunResult(
+            case_id=case.case_id,
+            response_text="",
+            workdir=workdir,
+            error=f"expect path escapes workdir: {exc}",
+        )
     response_parts = list(expect.response_contains) or ["ok"]
     return CaseRunResult(
         case_id=case.case_id,

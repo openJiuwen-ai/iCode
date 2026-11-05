@@ -102,20 +102,28 @@ class RsiTask:
         progress: dict[str, Any] | None = None,
         best_artifact: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        cfg = dict(self.config or {})
+        last_run_fields = {
+            key: value for key, value in cfg.items() if str(key).startswith(("last_eval_", "last_optimize_"))
+        }
+        config_block: dict[str, Any] = {
+            "model": {
+                "optimizer": (self.model_refs or {}).get("optimizer"),
+                "tester": (self.model_refs or {}).get("tester"),
+            },
+            "max_iterations": self.max_iterations,
+            "optimization_instruction": self.optimization_instruction,
+            "input_file": self.input_file,
+            "dataset_id": cfg.get("dataset_id"),
+            "sample_count": cfg.get("sample_count"),
+            **last_run_fields,
+        }
         payload: dict[str, Any] = {
             "task_id": self.task_id,
             "name": self.name,
             "scenario": self.scenario,
             "status": self.status,
-            "config": {
-                "model": {
-                    "optimizer": (self.model_refs or {}).get("optimizer"),
-                    "tester": (self.model_refs or {}).get("tester"),
-                },
-                "max_iterations": self.max_iterations,
-                "optimization_instruction": self.optimization_instruction,
-                "input_file": self.input_file,
-            },
+            "config": config_block,
             "progress": progress,
             "best_artifact": best_artifact,
             "created_at": self.created_at,

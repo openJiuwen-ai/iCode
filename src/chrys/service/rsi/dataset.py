@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from chrys.service.rsi.errors import RsiBadRequest, RsiDatasetInvalid
+from chrys.service.rsi.paths import is_forbidden_absolute_relpath, safe_relpath_under, validate_case_id
 from chrys.service.rsi.workdir_seed import WORKDIR_STRATEGIES, WorkdirSeed, WorkdirStrategy
 
 SCHEMA_VERSION = 1
@@ -98,13 +99,18 @@ def parse_dataset(payload: dict[str, Any], *, source_path: Path) -> RsiDataset:
 
     cases: list[RsiCase] = []
     seen: set[str] = set()
+    seen_casefold: set[str] = set()
     for index, item in enumerate(cases_raw, start=1):
         if not isinstance(item, dict):
             raise RsiDatasetInvalid(f"cases[{index}] must be an object")
         case = _parse_case(item, index=index, dataset_dir=source_path.parent)
         if case.case_id in seen:
             raise RsiDatasetInvalid(f"duplicate case_id: {case.case_id}")
+        folded = case.case_id.casefold()
+        if folded in seen_casefold:
+            raise RsiDatasetInvalid(f"duplicate case_id under case-insensitive filesystems: {case.case_id!r}")
         seen.add(case.case_id)
+        seen_casefold.add(folded)
         cases.append(case)
 
     return RsiDataset(
@@ -153,9 +159,10 @@ def validate_dataset_file(path: str | Path) -> dict[str, Any]:
 
 
 def _parse_case(item: dict[str, Any], *, index: int, dataset_dir: Path) -> RsiCase:
-    case_id = str(item.get("case_id") or "").strip()
-    if not case_id or Path(case_id).name != case_id:
-        raise RsiDatasetInvalid(f"cases[{index}] has invalid case_id")
+    try:
+        case_id = validate_case_id(str(item.get("case_id") or ""))
+    except ValueError as exc:
+        raise RsiDatasetInvalid(f"cases[{index}] has invalid case_id: {exc}") from exc
     prompt = str(item.get("prompt") or "")
     if not prompt.strip():
         raise RsiDatasetInvalid(f"case {case_id}: prompt is required")
@@ -231,9 +238,10 @@ def _parse_fixture(raw: Any, *, case_id: str) -> CaseFixture | None:
         raise RsiDatasetInvalid(f"case {case_id}: fixture.files must be an object")
     files: dict[str, str] = {}
     for key, value in files_raw.items():
-        rel = str(key).strip().replace("\\", "/")
-        if not rel or rel.startswith("/") or ".." in Path(rel).parts:
-            raise RsiDatasetInvalid(f"case {case_id}: fixture file path is invalid: {key!r}")
+        try:
+            rel = _validate_workdir_relpath(str(key), field="fixture.files", case_id=case_id)
+        except RsiDatasetInvalid:
+            raise
         files[rel] = str(value)
     return CaseFixture(response=str(raw.get("response") or ""), files=files)
 
@@ -266,14 +274,21 @@ def _parse_workdir(raw: Any, *, case_id: str) -> WorkdirSeed | None:
 
 
 def _ensure_script_inside_dataset(dataset_dir: Path, script_rel: str, *, case_id: str) -> None:
-    root = dataset_dir.resolve()
-    candidate = (root / script_rel).resolve()
     try:
-        candidate.relative_to(root)
+        candidate = safe_relpath_under(dataset_dir, script_rel, field="evaluation.script")
     except ValueError as exc:
         raise RsiDatasetInvalid(f"case {case_id}: script escapes dataset directory") from exc
     if not candidate.is_file():
         raise RsiDatasetInvalid(f"case {case_id}: script not found: {script_rel}")
+
+
+def _validate_workdir_relpath(rel: str, *, field: str, case_id: str) -> str:
+    cleaned = str(rel).strip().replace("\\", "/")
+    if not cleaned or is_forbidden_absolute_relpath(cleaned) or ".." in Path(cleaned).parts:
+        raise RsiDatasetInvalid(f"case {case_id}: {field} path is invalid: {rel!r}")
+    if any(part in {"", ".", ".."} for part in Path(cleaned).parts):
+        raise RsiDatasetInvalid(f"case {case_id}: {field} path is invalid: {rel!r}")
+    return cleaned
 
 
 def _string_tuple(value: Any, *, field: str, case_id: str) -> tuple[str, ...]:
@@ -285,7 +300,10 @@ def _string_tuple(value: Any, *, field: str, case_id: str) -> tuple[str, ...]:
     for item in value:
         if not isinstance(item, str):
             raise RsiDatasetInvalid(f"case {case_id}: {field} entries must be strings")
-        out.append(item)
+        if field == "files_exist":
+            out.append(_validate_workdir_relpath(item, field=field, case_id=case_id))
+        else:
+            out.append(item)
     return tuple(out)
 
 
@@ -296,9 +314,7 @@ def _string_map(value: Any, *, field: str, case_id: str) -> dict[str, str]:
         raise RsiDatasetInvalid(f"case {case_id}: {field} must be an object")
     out: dict[str, str] = {}
     for key, item in value.items():
-        rel = str(key).strip().replace("\\", "/")
-        if not rel or rel.startswith("/") or ".." in Path(rel).parts:
-            raise RsiDatasetInvalid(f"case {case_id}: {field} path is invalid: {key!r}")
+        rel = _validate_workdir_relpath(str(key), field=field, case_id=case_id)
         if not isinstance(item, str):
             raise RsiDatasetInvalid(f"case {case_id}: {field} values must be strings")
         out[rel] = item
@@ -312,8 +328,6 @@ def _string_map_tuple(value: Any, *, field: str, case_id: str) -> dict[str, tupl
         raise RsiDatasetInvalid(f"case {case_id}: {field} must be an object")
     out: dict[str, tuple[str, ...]] = {}
     for key, item in value.items():
-        rel = str(key).strip().replace("\\", "/")
-        if not rel or rel.startswith("/") or ".." in Path(rel).parts:
-            raise RsiDatasetInvalid(f"case {case_id}: {field} path is invalid: {key!r}")
+        rel = _validate_workdir_relpath(str(key), field=field, case_id=case_id)
         out[rel] = _string_tuple(item, field=f"{field}[{key}]", case_id=case_id)
     return out
