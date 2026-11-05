@@ -4,7 +4,7 @@
 
 ## 状态
 
-双 AI 自审 findings 全部修复（2026-11-05，评审 AI：CodeBuddy / Kimi-K3.1-Pro，1 blocker + 3 suggestion 全修，回归 58/466 全绿，见 self-review.md）。**下一步：增量复审 → self-review.md 责任人签认 → PR**（git 写操作逐条授权）。
+PR #95 评审处置落地（2026-11-05）：CI 绿；peer review 10 候选中 C1（A1 频控，扩范围获批）+ C2（§9 补例）+ C3/C4/C5（文档收尾）+ C7（levelno 断言）+ C8（按名过滤）已实施，C6（PR 描述数字）责任人网页修正，C9/C10 知悉留档——追加 commit 至同 PR 后等 CI 绿→合并。
 
 ## 待办
 
@@ -19,13 +19,13 @@
 - [x] 实施 A3：`login.py`（删 `__name__` logger；回调失败改 detail 中文 + exc_info）
 - [x] 实施 C：`login_actions.py`（删未使用 import 与 logger，-2 行）
 - [x] 实施 D：`catalog.py`（新增 `_log`；`_warn_retired_env` 双打；:72 定调注释修订）
-- [x] 测试：新增 `test_routing_fixes.py`（7 用例）；修订 `test_catalog_sync.py`（:699 反转 + 公共卷哨兵）
-- [x] 机器验证：四连全绿 + ruff check/format 全过（verify.py --smart 选项 A 拆分覆盖，见 verification.md）
-- [x] verification.md（机器验证证据 + 实施期注记五条 + 可选目验项）
-- [x] 双 AI 自审评审 + 修复（评审 AI：CodeBuddy / Kimi-K3.1-Pro，2026-11-05；1 blocker + 3 suggestion 全修，回归 58/466 全绿）
-- [x] 增量复审（通过，无新增 finding，blocker 清零，2026-11-05）
-- [ ] self-review.md 责任人签认
-- [ ] PR：commit（message 规范预审）→ push → 责任人网页建 PR（git 写操作逐条授权）
+- [x] 测试：新增 `test_routing_fixes.py`（8 用例：路由 7 + PR #95 C1 频控 1）；修订 `test_catalog_sync.py`（:699 反转 + 公共卷哨兵 + 双写钉死）
+- [x] 机器验证：四连全绿 + ruff check/format 全过（verify.py --smart 选项 A 拆分覆盖，见 verification.md；C1 增量后全量 467/1248/59 亦落盘）
+- [x] verification.md（机器验证证据 + 实施期注记 + 人工目验三场景 + PR #95 处置增量节）
+- [x] 双 AI 自审评审 + 修复（评审 AI：CodeBuddy / Kimi-K3.1-Pro，2026-11-05；1 blocker + 3 suggestion 全修，增量复审通过 blocker 清零）
+- [x] self-review.md 责任人签认（2026-11-05）；PR #95 评审记录追加（首轮 10 候选 + 增量 1 Major/1 Minor，全部闭环）
+- [x] PR #95：commit `79e58f3f` + `06b95a54`（CI 格式修复）已推送，CI 绿；首轮 peer review 10 候选处置（C1-C8 落地、C6 责任人网页修正、C9/C10 知悉）
+- [ ] PR #95 评审处置增量 commit（C1 频控 + C2 §9 + 文档收尾）→ push → CI 绿 → 责任人合并
 
 ## 挂起与备忘
 

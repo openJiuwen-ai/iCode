@@ -75,6 +75,27 @@ uv run ruff check/format --check <两测试文件>        → All checks passed 
 
 修复后回归：目标测试 58 passed（2.41s）、定制套件全量 466 passed, 4 skipped（52.81s）、ruff 全过（test_catalog_sync.py 一处 format 折行）。
 
-## 下一步
+## PR #95 评审处置增量（2026-11-05）
 
-增量复审（评审 AI 只审修复增量）→ self-review.md 责任人签认 → PR（git 写操作逐条授权）。
+**首轮 peer review（head 06b95a54）**：10 候选、无阻塞级工程缺陷，处置——C1（A1 无频控，扩范围获批：进程级 once 守卫，每异常类型一条带栈、同类型后续静默）；C2（DEVELOPMENT.md §9 补"用户可操作的配置错误属用户功能事件"例外）；C3/C4/C5（plan/test-plan/requirements 收尾同步）；C7（A2 双写补 levelno 断言钉 crypto 常量副本）；C8（匿名用例改按名过滤）；C6（PR 描述数字，责任人网页修正）；C9/C10（知悉留档）。
+
+**增量评审（频控守卫落地后）**：1 Major（验收勾选引用旧增量数字/verification 未更新/plan 待办漂移）+ 1 Minor（用户场景"每次失败"与频控口径矛盾；注释绝对化表述）——均已处置：本节补齐当前工作树全量证据，requirements 场景与勾选说明更新，守卫注释改为取舍表述，self-review.md 补记，plan 待办同步。
+
+**C1 增量后全量验证（当前工作树）**：
+
+```
+uv run pytest aixcoding/tests/auth/test_routing_fixes.py aixcoding/tests/catalog/test_catalog_sync.py -n0 -q
+  → 59 passed in 1.66s（路由 8 用例含新增频控用例 + catalog 51）
+uv run pytest aixcoding/tests -n0 -q
+  → 467 passed, 4 skipped in 53.75s（基线 466 + C1 用例 1）
+uv run pytest tests/architecture -n0 -q
+  → 1248 passed, 3 skipped in 146.32s
+uv run ruff check aixcoding/ src/chrys/kernel/aixcoding/auth/__init__.py
+  → All checks passed（含 RUF003 乘号修正）
+uv run ruff format --check aixcoding/ src/chrys/kernel/aixcoding/auth/__init__.py
+  → 256 files already formatted
+uv run python aixcoding/tools/gen_customizations.py --strict
+  → check OK — 98 registration row(s) / 135 marker(s) / 0 warning(s)
+```
+
+（评审 AI 独立复核：目标 59 passed、ruff/format 通过、对账 0/0；未复跑全量套件，本节上述全量数字为 AI 本机实跑。）

@@ -34,20 +34,23 @@
 
 ## 用户场景
 
-1. 排查"LLM 请求未带 token"：`aixcoding.detail.log` 可见每次失败的原因（异常栈，中文消息）；
+1. 排查"LLM 请求未带 token"：`aixcoding.detail.log` 可见**每种异常类型首次失败**的完整原因（异常栈，中文消息）；同类型后续静默（C1 频控取舍：防刷屏优先于复发诊断，新异常类型会再记一条）；
 2. crypto 后端降级（如 DPAPI 不可用）：用户在主卷/面板看到一条可操作 WARNING（重启后需重新登录）；开发在 detail 卷看到各后端探测失败原因；
 3. 用户误配停用环境变量：主卷/面板出现 WARNING，指明改用 `AIXCODING_MODEL_CATALOG_*`。
 
 ## 验收标准
 
-- [ ] 三处子树外 logger 名（`chrys.kernel.aixcoding.*` / `chrys.app.aixcoding.*`）不再有定制埋点调用（测试断言目标卷收到记录且子树外名字零分发）；
-- [ ] A1：detail 卷含中文记录（"读取登录凭证失败"口径，M5 修正）+ exc_info；主卷/面板无记录（防刷屏）；
-- [ ] A2：①主卷 WARNING 且不含技术细节（哨兵：后端名/异常文本不进公共卷）；②detail 同文案双写（M2）；③factory 异常路径与往返不一致路径（Garbage 形态）均有独立 detail 断言（M1）；④probe 成功路径两卷零记录；⑤健康候选经提前返回路径（`:255`）两卷零 WARNING——factory 失败≠降级，告警仅在候选耗尽的最终降级点（peer review2 M1 口径）；
-- [ ] A3：detail 卷有中文记录 + exc_info；主卷零记录；
-- [ ] C：`login_actions.py` 无未使用 import 与 logger；
-- [ ] D：配置停用变量时主卷出现 WARNING（既有断言 :699 已反转）；detail 卷同文案双写；其余 catalog 记录仍 detail-only（例外范围钉死为"用户可操作的配置错误"一类）；
-- [ ] `uv run python aixcoding/tools/verify.py --smart --paths <全部改动文件>` 通过；`uv run pytest aixcoding/tests -n0` 全绿；`uv run pytest tests/architecture -n0` 全绿；
-- [ ] `uv run python aixcoding/tools/gen_customizations.py`（含 `--strict`）0 error / 0 warning（D 修订 catalog.py:72 注释文本后对账义务）。
+- [x] 三处子树外 logger 名（`chrys.kernel.aixcoding.*` / `chrys.app.aixcoding.*`）不再有定制埋点调用（测试断言目标卷收到记录且子树外名字零分发）；
+- [x] A1：detail 卷含中文记录（"读取登录凭证失败"口径，M5 修正）+ exc_info；主卷/面板无记录（防刷屏）；
+- [x] A1 持续故障频控：每异常类型一条带栈记录，同类型后续静默（PR #95 review C1 增补，进程级 once 守卫）；
+- [x] A2：①主卷 WARNING 且不含技术细节（哨兵：后端名/异常文本不进公共卷）；②detail 同文案双写（M2）；③factory 异常路径与往返不一致路径（Garbage 形态）均有独立 detail 断言（M1）；④probe 成功路径两卷零记录；⑤健康候选经提前返回路径（`:255`）两卷零 WARNING——factory 失败≠降级，告警仅在候选耗尽的最终降级点（peer review2 M1 口径）；
+- [x] A3：detail 卷有中文记录 + exc_info；主卷零记录；
+- [x] C：`login_actions.py` 无未使用 import 与 logger；
+- [x] D：配置停用变量时主卷出现 WARNING（既有断言 :699 已反转）；detail 卷同文案双写；其余 catalog 记录仍 detail-only（例外范围钉死为"用户可操作的配置错误"一类）；
+- [x] `uv run python aixcoding/tools/verify.py --smart --paths <全部改动文件>` 通过；`uv run pytest aixcoding/tests -n0` 全绿；`uv run pytest tests/architecture -n0` 全绿；
+- [x] `uv run python aixcoding/tools/gen_customizations.py`（含 `--strict`）0 error / 0 warning（D 修订 catalog.py:72 注释文本后对账义务）。
+
+> 勾选说明（2026-11-05，随 PR #95 评审处置增量更新）：机器验证证据见 verification.md（含 C1 增量后全量：目标 59 passed、aixcoding/tests 467 passed / 4 skipped、architecture 1248 passed / 3 skipped、对账 0 warning）；verify.py --smart 统一入口经责任人裁决（选项 A）以拆分验证等效覆盖；PR #95 首轮评审对四项测试与全部门禁独立复核通过、增量评审两轮闭环（见 self-review.md）。
 
 ## 开放问题
 

@@ -13,16 +13,19 @@
 
 ## 覆盖矩阵
 
+> 实施期注记（2026-11-05，PR #95 review C4 回写）：规划用例名以实施为准——"哨兵"并入 A2 异常耗尽用例（7 用例）；PR #95 评审后新增 C1 频控用例（共 8）。
+
 | 验收标准（requirements.md） | 测试入口（文件::用例） | 类型 |
 |---|---|---|
 | 子树外 logger 名零分发 | test_routing_fixes.py::A1/A2/A3 各自间谍断言 | 单元 |
-| A1 detail 记录（"读取登录凭证失败"口径 + exc_info），主卷/面板无 | test_routing_fixes.py::test_a1_token_header_failure_detail_only | 单元 |
-| A2-①主卷 WARNING 无技术细节（哨兵） | test_routing_fixes.py::test_a2_warning_sentinel | 单元 |
-| A2-②detail 同文案双写 | 同上（detail 捕获断言同文案） | 单元 |
-| A2-③异常路径与往返不一致路径独立 detail 断言 | test_routing_fixes.py::test_a2_exploding_exhausts / test_a2_garbage_exhausts | 单元 |
-| A2-④probe 成功两卷零记录 | test_routing_fixes.py::test_a2_healthy_probe_silent | 单元 |
-| A2-⑤健康候选 `:255` 提前返回零 WARNING | test_routing_fixes.py::test_a2_healthy_candidate_no_warning | 单元 |
-| A3 detail 记录 + exc_info，主卷零 | test_routing_fixes.py::test_a3_callback_failure_detail_only | 单元 |
+| A1 detail 记录（"读取登录凭证失败"口径 + exc_info），主卷/面板无 | test_routing_fixes.py::test_a1_failure_lands_on_detail_only | 单元 |
+| A1 持续故障频控（每异常类型一条，PR #95 review C1） | test_routing_fixes.py::test_a1_persistent_failure_logs_once_per_exception_type | 单元 |
+| A2-①主卷 WARNING 无技术细节（哨兵，并入异常耗尽用例） | test_routing_fixes.py::test_a2_exploding_exhausts_candidates_full_double_write | 单元 |
+| A2-②detail 同文案双写 + levelno 断言（C7） | 同上 | 单元 |
+| A2-③异常路径与往返不一致路径独立 detail 断言 | test_a2_exploding_exhausts_candidates_full_double_write / test_a2_garbage_roundtrip_mismatch_is_recorded | 单元 |
+| A2-④probe 成功两卷零记录 | test_routing_fixes.py::test_a2_healthy_probe_is_silent | 单元 |
+| A2-⑤健康候选 `:255` 提前返回零 WARNING | test_routing_fixes.py::test_a2_healthy_candidate_short_circuits_without_warning | 单元 |
+| A3 detail 记录 + exc_info，主卷零 | test_routing_fixes.py::test_a3_callback_failure_lands_on_detail_only | 单元 |
 | C 无未使用 import/logger | ruff F401/F841 门禁兜底（回归命令） | 检查 |
 | D 公共 WARNING + detail 双写；既有断言反转 | test_catalog_sync.py 修订（:699 反转 + 新增双写断言；:697/:698 不动） | 单元修订 |
 | D 其余 catalog 记录仍 detail-only（例外钉死一类） | test_catalog_sync.py 既有 detail-only 用例回归不动 | 回归 |

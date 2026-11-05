@@ -52,9 +52,12 @@ uv run ruff check / format --check（两测试文件）
 - 独立验证：目标测试 **58 passed in 1.56s**；ruff `All checks passed!`；format `2 files already formatted`；
 - 确认修复未引入评审范围外改动。
 
-主要问题清零（评审→修复→复审循环收敛）。
+主要问题清零（评审→修复→复审循环收敛）。责任人签认本档（2026-11-05）后进入 PR。
 
-## 待办
+## PR #95 peer review 记录（2026-11-05，评审方：独立 peer review）
 
-- [x] 增量复审（通过，blocker 清零，2026-11-05）
-- [ ] 责任人签认本档 → PR（git 写操作逐条授权）
+**首轮（head 06b95a54，CI 绿）**：R2/R11 清单内（0 上游/0 依赖）、幻觉 API 未发现（8 符号逐个核实+4 项破坏性实验）、10 候选无阻塞级工程缺陷。处置：C1 频控（扩范围获批，once 守卫落地）、C2 §9 补例、C3/C4/C5 文档收尾、C7 levelno 断言、C8 按名过滤、C6 责任人网页修正 PR 描述、C9/C10 知悉留档。
+
+**增量评审（频控守卫落地后）**：1 Major（验收勾选/verification 引用旧增量数字，plan 待办漂移）+ 1 Minor（用户场景"每次失败"与频控口径矛盾、注释绝对化表述）——均已处置：architecture 补跑 1248 passed，全量证据更新至 verification.md 增量节（467/1248/59、对账 0 warning），requirements 场景与勾选说明同步，守卫注释改为取舍表述，plan 待办同步。评审确认"实现符合已批准的 C1 验收口径"。
+
+（记录档追加，不触发重签——R10。）
