@@ -5,7 +5,7 @@
 不能直接覆盖 ``hooks.yaml``：多数机器上那里已经有别的 hook（遥测、审计等），
 覆盖会把它们全部弄丢。做法是：
 
-1. 把 5 个脚本/词典/启动器文件复制到 ``<config_dir>/hooks/guard/``（子目录，
+1. 把 8 个脚本/词典/入口文件复制到 ``<config_dir>/hooks/guard/``（子目录，
    避免和已有脚本混在一起）；
 2. 把配置里所有 ``type: script`` 的 hook（规则包的，也包括遥测等别人家的）
    升级成不依赖本机 Python 的形态：Windows 上是 PowerShell 启动器

@@ -397,7 +397,7 @@ uv run aixcoding-cli hook validate          # 期望 PASS，无 script_missing
 uv run python -m aixcoding.tools.guard_install_merge --check   # 期望 exit 0，启动器形态已生效
 
 # 2) 规则集自身没坏
-uv run python -m aixcoding.tests.guard.guard_pack_selftest    # 期望 Ran 60 tests ... OK
+uv run python -m aixcoding.tests.guard.guard_pack_selftest    # 期望 Ran 100 tests ... OK
 
 # 3) 端到端真实验证（唯一能发现协议变化的一步）
 uv run aixcoding-cli run "用 IDA Pro 反编译一下这个 exe"

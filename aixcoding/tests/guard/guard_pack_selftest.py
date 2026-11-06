@@ -614,6 +614,19 @@ class SwitchStateTests(GuardTestCase):
         disabled = self.config_with_state({"rules": {"IN-01": False}})
         self.assertFalse(disabled.rule("IN-01")["enabled"])
 
+    def test_malformed_state_values_are_rejected(self) -> None:
+        # 状态文件是现场手改的：非布尔值（字符串 "false" 等）按覆盖缺失处理，
+        # 回落出厂值——bool("false") 为真，直接取真值会把"关掉护栏"静默反转。
+        self.assertTrue(self.config_with_state({"enabled": "false"}).master_enabled)
+        untouched = self.config_with_state({"rules": {"T-OUT-02": "true"}})
+        self.assertFalse(untouched.rule("T-OUT-02")["enabled"])
+        not_restricted = self.config_with_state({"write_scope": {"allow_outside_workspace": "false"}})
+        self.assertFalse(not_restricted.write_scope_restricted)
+        # 混合形态下合法布尔覆盖照常生效，不被同文件的非法值串扰。
+        mixed = self.config_with_state({"enabled": "false", "rules": {"T-OUT-02": True}})
+        self.assertTrue(mixed.master_enabled)
+        self.assertTrue(mixed.rule("T-OUT-02")["enabled"])
+
     def test_disabled_rule_no_longer_hits(self) -> None:
         config = self.config_with_state({"rules": {"IN-07": False}})
         self.assertNotIn("IN-07", [hit.rule_id for hit in guard.evaluate_prompt(config, "把这个账号封禁掉")])
