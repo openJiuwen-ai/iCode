@@ -162,19 +162,20 @@ class Hold:
 class ScriptedModel(MockChatClient):
     """The one model every build of the session gets.
 
-    It answers ``Done.`` to every request, unless the test queued a failure
-    (the turn fails, and the composer enters retry mode) or a hold (the request
-    waits, so a turn is running).
+    It answers ``Done.`` to every request, unless the test queued a response
+    (``scripted``), a failure (the turn fails, and the composer enters retry
+    mode) or a hold (the request waits, so a turn is running).
     """
 
     def __init__(self) -> None:
         super().__init__(responses=[])
         self.failures: list[BaseException] = []
         self.hold: Hold | None = None
+        self.scripted: list[MockResponse] = []
 
     def _next_response(self) -> MockResponse:
         self._call_index += 1
-        return MockResponse(text="Done.")
+        return self.scripted.pop(0) if self.scripted else MockResponse(text="Done.")
 
     def _inner_get_response(self, *, messages: Any, stream: bool, options: Any, **kwargs: Any) -> Any:
         if self.failures:
@@ -347,6 +348,7 @@ async def running_session(
     monkeypatch: pytest.MonkeyPatch,
     *,
     agents: Sequence[AgentProfile] = (),
+    registry: AgentProfileRegistry | None = None,
     models: ModelProfileRegistry | None = None,
     settings: Settings | None = None,
     startup_agent: str = ALPHA,
@@ -371,9 +373,10 @@ async def running_session(
     model = ScriptedModel()
     builds = Builds(model)
     monkeypatch.setattr(builder_module, "create_client", builds.create_client)
-    registry = AgentProfileRegistry()
-    for profile in agents or (make_agent(ALPHA), make_agent(BETA)):
-        registry.register(profile)
+    if registry is None:
+        registry = AgentProfileRegistry()
+        for profile in agents or (make_agent(ALPHA), make_agent(BETA)):
+            registry.register(profile)
     models = models if models is not None else mock_models()
     engine = agent_engine(
         bus,

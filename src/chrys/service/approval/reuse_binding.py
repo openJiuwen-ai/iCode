@@ -32,8 +32,8 @@ if TYPE_CHECKING:
     from chrys.kernel.middleware import FunctionInvocationContext
 
 # Arguments that change neither what a command does nor where it runs. A
-# remembered call never names a working_dir (an empty one means the session's).
-_UNBOUND_SHELL_ARGS = frozenset({"command", "reason", "timeout", "max_tokens", "working_dir"})
+# remembered call never names a workdir (an empty one means the session's).
+_UNBOUND_SHELL_ARGS = frozenset({"command", "reason", "timeout", "max_output_tokens", "workdir"})
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,7 @@ class ApprovalReuseBinding:
         if (
             not isinstance(owner, ShellTools)
             or targets.cwd is None
-            or args.get("working_dir")
+            or args.get("workdir")
             or not isinstance(command, str)
         ):
             return None

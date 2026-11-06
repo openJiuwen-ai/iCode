@@ -11,7 +11,7 @@ metadata and the usage.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from openai.types.chat.chat_completion import ChatCompletion, Choice
@@ -20,6 +20,7 @@ from openai.types.chat.chat_completion_message_custom_tool_call import ChatCompl
 from chrys.foundation.errors import ProviderResponseError
 from chrys.kernel import CONTEXT_WINDOW_FILLED_KEY, ChatResponse, Content, FinishReason, Message, UsageDetails
 from chrys.service.llm.openai_timestamps import openai_created_at_iso
+from chrys.service.llm.refusals import refused_calls_error
 
 from .reasoning import message_reasoning, message_reasoning_props
 from .validation import raise_invalid_response
@@ -171,26 +172,6 @@ def finish_failure(
                 usage_details=usage_details,
             )
     return None
-
-
-def refused_calls_error(
-    observed_contents: Sequence[Content] = (), *, usage_details: UsageDetails | None = None
-) -> ProviderResponseError:
-    """The failure of a response that refused or was filtered, yet asks for tool calls.
-
-    The calls are never run: the response's own verdict is that it should
-    not go on, and that verdict stands even when the response also failed
-    or was cut off. *observed_contents* is the hosted work the response
-    showed but never yielded.
-    """
-    return ProviderResponseError(
-        "content_filter",
-        "The response was refused or filtered, so the tool calls it requested were not run.",
-        retryable=False,
-        invalidates_continuation_token=True,
-        observed_contents=tuple(observed_contents),
-        usage_details=usage_details,
-    )
 
 
 def has_refusal(message: ChatCompletionMessage | ChoiceDelta | None) -> bool:

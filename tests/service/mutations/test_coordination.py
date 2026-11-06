@@ -882,7 +882,7 @@ class TestPipelineIntegration:
         ctx = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": f"echo x > {f}", "working_dir": str(root)},
+            {"command": f"echo x > {f}", "workdir": str(root)},
             "call-2",
             is_shell=True,
             workspace_cwd=str(root),

@@ -43,7 +43,7 @@ The following steps create an agent of the **Built-in** type. To connect an exte
 3. On the **Instructions** tab, enter system instructions to define the agent's behavior. System instructions cannot be empty.
 
 4. Configure the other tabs as needed:
-    - **Tools**: Select the built-in tools the agent can call. See [Configure tools](./tools.md).
+    - **Tools**: Select the built-in tools and the [Python extensions](../extensions/python-extensions.md) the agent can call. See [Configure tools](./tools.md).
     - **Sub-Agents**: Add sub-agents this agent can call. See [Configure sub-agents for an agent](#configure-sub-agents-for-an-agent).
     - **Skills**: Configure where the agent loads skills from. See [Install and use skills](../extensions/skills.md).
     - **MCP**: Connect MCP servers and configure the MCP tools the agent can use. See [Connect MCP servers](../extensions/mcp.md).
@@ -104,7 +104,7 @@ When you edit and save a built-in agent, iCode creates a user profile file with 
 
 At startup, iCode gives precedence to the user profile file with the same name, instead of merging user and built-in settings field by field. As a result, after an iCode upgrade, updates to built-in defaults such as agent instructions are not automatically applied to that agent.
 
-To adopt the built-in defaults from the current version, reset the built-in agent. Resetting preserves only skills, MCP server, and memory settings. Instructions, compaction, and all other settings return to the current version's built-in defaults.
+To adopt the built-in defaults from the current version, reset the built-in agent. Resetting preserves only skills, MCP server, memory, and [extension](../extensions/python-extensions.md) settings. Instructions, compaction, and all other settings return to the current version's built-in defaults.
 
 To reset an agent:
 
@@ -114,7 +114,7 @@ To reset an agent:
 
 Reset changes remain pending in the configuration window until saved. Closing the window discards unsaved changes.
 
-After a reset, if the user profile file with the same name no longer exists, future upgrades use the new built-in configuration directly. If the file remains because it preserves custom skills, MCP server, or memory settings, you still need to reset the agent again after future upgrades to adopt updated built-in defaults.
+After a reset, if the user profile file with the same name no longer exists, future upgrades use the new built-in configuration directly. If the file remains because it preserves custom skills, MCP server, memory, or extension settings, you still need to reset the agent again after future upgrades to adopt updated built-in defaults.
 
 ## Configure models and sub-agents
 

@@ -130,6 +130,7 @@ def _make_handler(screen: _SuggestionScreen) -> SuggestionHandler:
             configure_model=screen._open_model_config,
             configure_agent=screen._open_agent_config,
             configure_agent_tab=screen._open_agent_config_tab,
+            reload_settings=lambda: None,
             show_runtime_details=lambda: None,
             show_usage=lambda: None,
             configure_settings=lambda _tab: None,

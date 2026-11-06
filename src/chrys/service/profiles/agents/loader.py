@@ -8,7 +8,6 @@ import logging
 import math
 import ntpath
 import re
-from dataclasses import dataclass
 from pathlib import PurePath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -42,6 +41,7 @@ from chrys.service.profiles.agents.schema import (
     ToolsConfig,
 )
 from chrys.service.profiles.coercion import coerce_bool
+from chrys.service.profiles.file_scan import ProfileDirScan, ProfileLoadError, read_profile_mapping, scan_profiles
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class AgentProfileLoadError(Exception):
+class AgentProfileLoadError(ProfileLoadError):
     """Raised when an agent profile YAML file cannot be loaded or validated."""
 
 
@@ -68,7 +68,7 @@ def _mapping_section(raw: object, section: str) -> dict[str, Any]:
         return {}
     if not isinstance(raw, dict):
         msg = f"Agent profile section '{section}' must be a mapping, got {type(raw).__name__}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field=section)
     return cast("dict[str, Any]", raw)
 
 
@@ -78,7 +78,7 @@ def _list_section(raw: object, section: str) -> list[Any]:
         return []
     if not isinstance(raw, list):
         msg = f"Agent profile section '{section}' must be a list, got {type(raw).__name__}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field=section)
     return raw
 
 
@@ -86,7 +86,7 @@ def _mapping_entry(raw: object, section: str) -> dict[str, Any]:
     """Return a list entry mapping or raise a profile load error."""
     if not isinstance(raw, dict):
         msg = f"Agent profile section '{section}' entries must be mappings, got {type(raw).__name__}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field=section)
     return cast("dict[str, Any]", raw)
 
 
@@ -96,7 +96,7 @@ def _string_list_field(raw: object, field: str) -> list[str]:
         return []
     if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
         msg = f"Agent profile field '{field}' must be a list of strings; got {raw!r}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field=field)
     return list(cast("list[str]", raw))
 
 
@@ -111,7 +111,7 @@ def _instructions_field(raw: object, field: str) -> str:
         return raw
     if not isinstance(raw, list):
         msg = f"Agent profile field '{field}' must be a string or a list of strings; got {type(raw).__name__}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field=field)
     for index, item in enumerate(raw, start=1):
         if not isinstance(item, str):
             # YAML reads an unquoted `- Note: text` or `- Heading:` item as a mapping.
@@ -119,7 +119,7 @@ def _instructions_field(raw: object, field: str) -> str:
                 f"Agent profile field '{field}' must be a string or a list of strings; item {index} is a "
                 f"{type(item).__name__} (quote list items that contain ': ' or end with ':')"
             )
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field=field)
     return "\n".join(cast("list[str]", raw))
 
 
@@ -128,17 +128,19 @@ def _approval_rule(raw: object, field: str) -> Literal["auto", "require", "skip"
     if not isinstance(raw, str) or raw not in _VALID_APPROVAL_RULES:
         allowed = ", ".join(sorted(_VALID_APPROVAL_RULES))
         msg = f"Agent profile field '{field}' must be one of: {allowed}; got {raw!r}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(
+            msg, field="approval.overrides" if field.startswith("approval.overrides.") else field
+        )
     return cast("Literal['auto', 'require', 'skip']", raw)
 
 
 def _acp_string(raw: object, field: str, *, reject_nul: bool = False) -> str:
     if type(raw) is not str:
         msg = f"Agent profile field 'acp.{field}' must be a string; got {raw!r}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field="acp.env" if field.startswith("env.") else f"acp.{field}")
     if reject_nul and "\0" in raw:
         msg = f"Agent profile field 'acp.{field}' must not contain an embedded NUL"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field="acp.env" if field.startswith("env.") else f"acp.{field}")
     return raw
 
 
@@ -150,17 +152,17 @@ def _acp_timeout(
     allow_zero: bool,
 ) -> float:
     if type(raw) not in {int, float}:
-        logger.warning("Invalid acp.%s %r; using default %s", field, raw, default)
+        logger.warning("Invalid acp.%s; using default %s", field, default)
         return default
     try:
         value = float(cast("int | float", raw))
     except OverflowError:
         # YAML ints are arbitrary-precision; one absurd timeout must not
         # abort loading the whole profile registry.
-        logger.warning("Invalid acp.%s %r; using default %s", field, raw, default)
+        logger.warning("Invalid acp.%s; using default %s", field, default)
         return default
     if not math.isfinite(value) or value < 0 or (not allow_zero and value == 0):
-        logger.warning("Invalid acp.%s %r; using default %s", field, raw, default)
+        logger.warning("Invalid acp.%s; using default %s", field, default)
         return default
     return value
 
@@ -178,58 +180,58 @@ def _parse_acp(raw: object) -> AcpAgentConfig:
     raw_args = raw_map.get("args", defaults.args)
     if type(raw_args) is not list:
         msg = f"Agent profile field 'acp.args' must be a list of strings; got {raw_args!r}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field="acp.args")
     args = [_acp_string(value, f"args[{index}]", reject_nul=True) for index, value in enumerate(raw_args)]
 
     raw_env = raw_map.get("env", defaults.env)
     if type(raw_env) is not dict:
         msg = f"Agent profile field 'acp.env' must be a mapping of strings; got {raw_env!r}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field="acp.env")
     env: dict[str, str] = {}
     env_keys: set[str] = set()
     for key, value in raw_env.items():
         if type(key) is not str or _ENV_NAME_RE.fullmatch(key) is None:
             msg = f"Agent profile field 'acp.env' has invalid environment variable name {key!r}"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="acp.env")
         folded = key.casefold()
         if folded == _ACP_DEPTH_ENV.casefold():
             msg = f"Agent profile field 'acp.env' reserves {_ACP_DEPTH_ENV!r} for {APP_DISPLAY_NAME}"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="acp.env")
         if folded in env_keys:
             msg = f"Agent profile field 'acp.env' has case-insensitive duplicate key {key!r}"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="acp.env")
         env_keys.add(folded)
         env[key] = _acp_string(value, f"env.{key}", reject_nul=True)
 
     raw_options = raw_map.get("config_options", defaults.config_options)
     if type(raw_options) is not dict:
         msg = f"Agent profile field 'acp.config_options' must be a mapping; got {raw_options!r}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field="acp.config_options")
     config_options: dict[str, str | bool] = {}
     for key, value in raw_options.items():
         if type(key) is not str or not key:
             msg = f"Agent profile field 'acp.config_options' keys must be non-empty strings; got {key!r}"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="acp.config_options")
         if type(value) not in {str, bool}:
             msg = (
                 "Agent profile field 'acp.config_options' values must be strings or booleans; "
                 f"got {value!r} for {key!r}"
             )
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="acp.config_options")
         config_options[key] = value
 
     allow_external_cwd = raw_map.get("allow_external_cwd", defaults.allow_external_cwd)
     if type(allow_external_cwd) is not bool:
         msg = f"Agent profile field 'acp.allow_external_cwd' must be a boolean; got {allow_external_cwd!r}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field="acp.allow_external_cwd")
     best_effort_options = raw_map.get("best_effort_options", defaults.best_effort_options)
     if type(best_effort_options) is not bool:
         msg = f"Agent profile field 'acp.best_effort_options' must be a boolean; got {best_effort_options!r}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field="acp.best_effort_options")
     result_mode = raw_map.get("result_mode", defaults.result_mode)
     if type(result_mode) is not str or result_mode not in _ACP_RESULT_MODES:
         msg = f"Agent profile field 'acp.result_mode' must be one of: last_segment, transcript; got {result_mode!r}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field="acp.result_mode")
 
     return AcpAgentConfig(
         command=command,
@@ -263,14 +265,14 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
         entry = _mapping_entry(raw_entry, "tools.mcp")
         if "name" not in entry:
             msg = "MCP server missing required 'name' field"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="tools.mcp.name")
         if "transport" not in entry:
             msg = f"MCP server '{entry.get('name', '?')}' missing required 'transport' field"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="tools.mcp.transport")
         transport = entry["transport"]
-        if transport not in _VALID_TRANSPORTS:
+        if not isinstance(transport, str) or transport not in _VALID_TRANSPORTS:
             msg = f"MCP server '{entry.get('name', '?')}' has invalid transport '{transport}', must be one of {_VALID_TRANSPORTS}"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="tools.mcp.transport")
         allowed_tools = (
             None
             if entry.get("allowed_tools") is None
@@ -284,7 +286,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
         )
         if prefix_error is not None:
             msg = f"MCP server '{entry.get('name', '?')}' has invalid tool name prefix: {prefix_error}"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="tools.mcp.tool_name_prefix")
         always_load = _string_list_field(entry.get("always_load"), "tools.mcp.always_load")
         policy_errors = validate_mcp_tool_loading_policy(
             allowed_tools=allowed_tools,
@@ -293,7 +295,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
         )
         if policy_errors:
             msg = f"MCP server '{entry.get('name', '?')}' has invalid tool loading policy: {' '.join(policy_errors)}"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="tools.mcp")
         max_tool_result_tokens = entry.get("max_tool_result_tokens")
         if not (
             max_tool_result_tokens is None
@@ -303,7 +305,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 f"MCP server '{entry.get('name', '?')}' has invalid max_tool_result_tokens; "
                 "expected null, 0, or an integer of at least 100"
             )
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="tools.mcp.max_tool_result_tokens")
         configs.append(
             MCPServerConfig(
                 name=entry["name"],
@@ -347,7 +349,7 @@ def _parse_skill_resources(raw: object, section: str) -> list[SkillResourceConfi
         entry = _mapping_entry(raw_entry, section)
         if "name" not in entry:
             msg = f"Skill resource in '{section}' missing required 'name' field"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field=f"{section}.name")
         resources.append(
             SkillResourceConfig(
                 name=entry["name"],
@@ -365,7 +367,7 @@ def _parse_skill_scripts(raw: object, section: str) -> list[SkillScriptConfig]:
         entry = _mapping_entry(raw_entry, section)
         if "name" not in entry:
             msg = f"Skill script in '{section}' missing required 'name' field"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field=f"{section}.name")
         scripts.append(
             SkillScriptConfig(
                 name=entry["name"],
@@ -382,24 +384,24 @@ def _validate_inline_skill_metadata(entry: dict[str, Any], index: int) -> None:
     name = entry["name"]
     if not isinstance(name, str) or not name.strip():
         msg = f"{location}.name must be a non-empty string"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field=f"{location}.name")
     if not _SKILL_NAME_RE.fullmatch(name):
         msg = (
             f"{location}.name '{name}' is not a valid skill name; "
             "use 1-64 lowercase letters, numbers, and single hyphens, with no leading or trailing hyphen."
         )
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field=f"{location}.name")
 
     description = entry.get("description", "")
     if not isinstance(description, str):
         msg = f"{location}.description must be a string"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field=f"{location}.description")
     if not description.strip():
         msg = f"{location}.description is required for inline skills"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field=f"{location}.description")
     if len(description) > _MAX_SKILL_DESCRIPTION_LENGTH:
         msg = f"{location}.description must be {_MAX_SKILL_DESCRIPTION_LENGTH} characters or fewer"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field=f"{location}.description")
 
 
 def _parse_skills(raw: object) -> SkillsConfig:
@@ -411,7 +413,7 @@ def _parse_skills(raw: object) -> SkillsConfig:
         entry = _mapping_entry(raw_entry, "skills.inline")
         if "name" not in entry:
             msg = "Inline skill missing required 'name' field"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field=f"skills.inline[{index}].name")
         _validate_inline_skill_metadata(entry, index)
         inline.append(
             SkillConfig(
@@ -448,12 +450,24 @@ def _parse_shell_filter(raw: object) -> ShellFilterConfig | None:
     )
 
 
+def _parse_extensions(raw: object) -> list[str]:
+    # YAML comments routinely leave a section behind as null.
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise AgentProfileLoadError("extensions must be a list", field="extensions")
+    if any(not isinstance(extension_id, str) for extension_id in raw):
+        logger.warning("Ignoring non-string entries in extensions")
+    # One that is not installed stays, so a save never drops it; the build warns about it.
+    return list(dict.fromkeys(extension_id for extension_id in raw if isinstance(extension_id, str)))
+
+
 def _parse_tools(raw: object) -> ToolsConfig:
     if raw is None:
         return ToolsConfig()
     from chrys.service.tools.builtins.web.config import mapping, parse_fetch, parse_search
 
-    known_keys = {"builtins", "custom", "mcp", "shell_filter", "web_search", "web_fetch"}
+    known_keys = {"builtins", "mcp", "shell_filter", "web_search", "web_fetch"}
     # YAML comments routinely leave sections behind as null. Older versions also
     # ignored unknown tool keys and categories, so retain the understood subset
     # instead of dropping an otherwise usable user override during an upgrade.
@@ -497,10 +511,9 @@ def _parse_tools(raw: object) -> ToolsConfig:
         web_search = parse_search(search_raw) if "web_search" in raw_map else None
         web_fetch = parse_fetch(fetch_raw) if "web_fetch" in raw_map else None
     except ValueError as err:
-        raise AgentProfileLoadError(str(err)) from err
+        raise AgentProfileLoadError(str(err), field="tools") from err
     return ToolsConfig(
         builtins=raw_map.get("builtins", []),
-        custom=raw_map.get("custom", []),
         mcp=_parse_mcp_servers(raw_map.get("mcp", [])),
         shell_filter=_parse_shell_filter(raw_map.get("shell_filter")),
         web_search=web_search,
@@ -519,12 +532,12 @@ def _parse_approval(raw: object) -> ApprovalConfig:
     else:
         if not isinstance(raw_overrides, dict):
             msg = f"Agent profile section 'approval.overrides' must be a mapping, got {type(raw_overrides).__name__}"
-            raise AgentProfileLoadError(msg)
+            raise AgentProfileLoadError(msg, field="approval.overrides")
         overrides = {}
         for key, value in raw_overrides.items():
             if not isinstance(key, str) or not key:
                 msg = f"Agent profile section 'approval.overrides' keys must be non-empty strings, got {key!r}"
-                raise AgentProfileLoadError(msg)
+                raise AgentProfileLoadError(msg, field="approval.overrides")
             # Keys are bare kinds, ``kind.tool_name`` compounds, or bare tool
             # names; legacy pre-P1 keys carried a ``chrys.`` prefix.
             normalized_key = strip_legacy_kind_prefix(key, allow_tool_suffix=True, source="approval.overrides")
@@ -540,7 +553,10 @@ def _parse_model(raw: object, source: str = "") -> ModelConfig:
     if raw is None:
         return ModelConfig()
     raw_map = _mapping_section(raw, "model")
-    profile_id = (raw_map.get("profile_id") or "").strip()
+    raw_id = raw_map.get("profile_id") or ""
+    if not isinstance(raw_id, str):
+        raise AgentProfileLoadError("Agent profile field 'model.profile_id' must be text", field="model.profile_id")
+    profile_id = raw_id.strip()
     # Legacy key ``profile`` (previously stored a model-profile *name*) is
     # ignored — the new schema is id-only.  Emit a one-line warning so
     # users know to re-select their model profile via the TUI.
@@ -575,7 +591,7 @@ def _parse_compaction(raw: object) -> CompactionConfig:
     last_words_template = raw_map.get("last_words_template", defaults.last_words_template)
     if not isinstance(last_words_template, str):
         msg = f"Agent profile field 'compaction.last_words_template' must be a string; got {last_words_template!r}"
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field="compaction.last_words_template")
     phase4_side_call_token_budget = raw_map.get(
         "phase4_side_call_token_budget",
         defaults.phase4_side_call_token_budget,
@@ -592,7 +608,7 @@ def _parse_compaction(raw: object) -> CompactionConfig:
             "Agent profile field 'compaction.phase4_side_call_token_budget' must be "
             f"an integer >= -1 (-1 means unlimited) or null; got {phase4_side_call_token_budget!r}"
         )
-        raise AgentProfileLoadError(msg)
+        raise AgentProfileLoadError(msg, field="compaction.phase4_side_call_token_budget")
     return CompactionConfig(
         enabled=not legacy_disabled,
         last_words_template=last_words_template,
@@ -677,24 +693,27 @@ def load_profile_from_yaml(path: Path) -> AgentProfile:
     except (OSError, UnicodeError) as e:
         raise AgentProfileLoadError(f"Cannot read agent profile file {path}: {e}") from e
 
+    return _parse_profile(path, text)
+
+
+def _parse_profile(path: Path, text: str) -> AgentProfile:
     try:
-        data = yaml.safe_load(text)
+        data = read_profile_mapping(text)
     except (yaml.YAMLError, AttributeError, LookupError, TypeError, ValueError) as e:
         # PyYAML scalar constructors can raise built-in errors for invalid values.
         raise AgentProfileLoadError(f"Invalid YAML in {path}: {e}") from e
 
-    if not isinstance(data, dict):
-        raise AgentProfileLoadError(f"Agent profile YAML must be a mapping, got {type(data).__name__} in {path}")
-
     if "name" not in data:
-        raise AgentProfileLoadError(f"Agent profile YAML missing required 'name' field in {path}")
+        raise AgentProfileLoadError(f"Agent profile YAML missing required 'name' field in {path}", field="name")
     raw_name = data["name"]
     if not isinstance(raw_name, str) or not raw_name.strip():
-        raise AgentProfileLoadError(f"Agent profile 'name' must be a non-empty string in {path}")
+        raise AgentProfileLoadError(f"Agent profile 'name' must be a non-empty string in {path}", field="name")
     name = raw_name.strip()
     if not is_filename_safe_profile_name(name):
         raise AgentProfileLoadError(
-            f"Agent profile name {name!r} in {path} is not filename-safe; use a bare name, not a path"
+            f"Agent profile name {name!r} in {path} is not filename-safe; use a bare name, not a path",
+            field="name",
+            log_reason="Agent profile name is not filename-safe",
         )
 
     if "hooks" in data:
@@ -705,7 +724,7 @@ def load_profile_from_yaml(path: Path) -> AgentProfile:
 
     raw_id = data.get("id")
     if raw_id is not None and not isinstance(raw_id, str):
-        raise AgentProfileLoadError(f"Agent profile 'id' must be a string or null in {path}")
+        raise AgentProfileLoadError(f"Agent profile 'id' must be a string or null in {path}", field="id")
     profile_id = (raw_id or "").strip()
     acp_present = "acp" in data
 
@@ -719,6 +738,7 @@ def load_profile_from_yaml(path: Path) -> AgentProfile:
             acp=_parse_acp(data.get("acp")) if acp_present else None,
             instructions=_instructions_field(data.get("instructions"), "instructions"),
             tools=_parse_tools(data.get("tools")),
+            extensions=_parse_extensions(data.get("extensions")),
             skills=_parse_skills(data.get("skills")),
             approval=_parse_approval(data.get("approval")),
             sub_agents=_parse_sub_agents(data.get("sub_agents")),
@@ -737,6 +757,9 @@ def load_profile_from_yaml(path: Path) -> AgentProfile:
         if profile.tools != ToolsConfig():
             conflicting.append("tools")
             profile.tools = ToolsConfig()
+        if profile.extensions:
+            conflicting.append("extensions")
+            profile.extensions = []
         if profile.skills != SkillsConfig():
             conflicting.append("skills")
             profile.skills = SkillsConfig()
@@ -767,41 +790,13 @@ def load_profile_from_yaml(path: Path) -> AgentProfile:
         raise AgentProfileLoadError(f"Invalid agent profile structure in {path}: {e}") from e
 
 
-@dataclass(frozen=True)
-class ProfileDirScan:
-    """The profiles parsed from one directory, with their source paths, and the files skipped as invalid."""
-
-    loaded: list[tuple[Path, AgentProfile]]
-    invalid: list[Path]
-
-
-def scan_profile_dir(directory: Path) -> ProfileDirScan:
-    """Load all agent profile YAML files from a directory, recording the ones that fail to parse.
-
-    Non-YAML files are ignored, and so are dotfiles even when their suffix is
-    YAML.  Files that fail to parse are skipped with a warning and listed in
-    ``invalid``.  ``*.yaml`` files come before ``*.yml`` files, each group in
-    sorted order.
-    """
-    loaded: list[tuple[Path, AgentProfile]] = []
-    invalid: list[Path] = []
-    if not directory.is_dir():
-        return ProfileDirScan(loaded, invalid)
-    for pattern in ("*.yaml", "*.yml"):
-        for path in sorted(directory.glob(pattern)):
-            if path.name.startswith("."):
-                continue
-            try:
-                loaded.append((path, load_profile_from_yaml(path)))
-            except AgentProfileLoadError as exc:
-                # Skip invalid files — caller can use load_profile_from_yaml for strict loading.
-                # A dropped user file silently falls back to a builtin of the same name, so
-                # this must be loud enough to be noticed in a support log.
-                logger.error(
-                    "Skipping invalid agent profile %s: %s (any builtin with this name stays active)", path, exc
-                )
-                invalid.append(path)
-    return ProfileDirScan(loaded, invalid)
+def scan_profile_dir(directory: Path) -> ProfileDirScan[AgentProfile]:
+    scan = scan_profiles(directory, _parse_profile, AgentProfileLoadError, skip_hidden=True)
+    for path, issue in scan.invalid.items():
+        logger.error(
+            "Skipping invalid agent profile %s: %s (any builtin with this name stays active)", path, issue.reason
+        )
+    return scan
 
 
 def load_profile_files_from_dir(directory: Path) -> list[tuple[Path, AgentProfile]]:

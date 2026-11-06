@@ -88,28 +88,6 @@ def test_any_yaml_shaped_raw_value_composes_without_raising() -> None:
         assert "tools.result.ceiling_tokens" in event.message
 
 
-def test_a_dotenv_layer_warning_names_the_variable_and_the_file() -> None:
-    """A dotenv file spells the variable, so the dotted key would not be findable."""
-    env_file = Path("/home/me/.chrys/.env")
-    loaded = LoadedSettings(
-        settings=Settings(),
-        provenance={},
-        warnings=(
-            SettingsWarning(
-                key="ui.theme",
-                origin=SettingOrigin(layer=Source.USER_ENV, path=env_file),
-                outcome=invalid("mauve", CoerceReason.NOT_A_CHOICE, choices=("chrys", "chrys-legacy")),
-            ),
-        ),
-    )
-
-    (event,) = settings_warning_events(loaded)
-
-    assert "CHRYS_THEME" in event.message
-    assert str(env_file) in event.message
-    assert "ui.theme" not in event.message
-
-
 def test_every_reason_a_coercer_can_report_has_a_sentence() -> None:
     """A reason with no message would be a load that warns about nothing."""
     missing = [reason.name for reason in CoerceReason if reason not in _REASON_MESSAGES]

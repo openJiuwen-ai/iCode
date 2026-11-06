@@ -2,7 +2,7 @@
 
 Built-in tools let agents access files, search content, execute shell commands, and use other iCode features. This guide explains how to enable or disable built-in tool kinds for an agent in the terminal user interface (TUI).
 
-Tools provided by MCP servers are not built-in tools and must be managed separately in [MCP configuration](../extensions/mcp.md).
+Tools provided by MCP servers are not built-in tools and must be managed separately in [MCP configuration](../extensions/mcp.md). Tools from [Python extensions](../extensions/python-extensions.md) are turned on in the same "Tools" tab, under "Extensions".
 
 For the tool kind values and individual tool names used in agent configuration and hooks, see [Tool kinds and names](../../reference/tool-kinds-and-names.md).
 

@@ -4,6 +4,8 @@ Model Context Protocol (MCP) servers can provide iCode agents with external tool
 
 Before connecting an MCP server, confirm that its source is trustworthy. The server may receive tool call arguments and access local files, network services, or account data. Its prompt templates and usage instructions may also affect the agent's behavior.
 
+To give agents tools written as a few Python functions, without running a server, see [Python extensions](./python-extensions.md).
+
 ## Add an MCP server configuration
 
 Enter `/agents mcp` in the input field to open the current agent's "MCP" tab. Added server configurations apply only to the current agent; they are not automatically applied to other agents.
@@ -97,6 +99,28 @@ If the test fails:
 
 - For HTTP servers, check the URL, authentication headers, environment variables, and proxy and TLS settings.
 - For STDIO servers, first inspect the executable, working directory, process exit code, and tail of standard error shown in the connection error. Then check the command, arguments, and environment variables, and confirm that the command can start in the indicated working directory. iCode shows only a limited amount of standard error output. For complete logs, enable logging as described in the server's documentation. Remove sensitive information such as tokens and credentials before sharing diagnostics.
+
+## Reconnect with /reload
+
+`/reload` tries a new connection to each enabled MCP server of the current agent and its sub-agents, while the existing connections stay open. The next request uses the tools, prompt templates, and usage instructions each server now reports. Every server has its own result, so a failure on one doesn't affect the others:
+
+| The new connection | What happens | In the summary |
+| --- | --- | --- |
+| Succeeds | iCode switches to it and closes the old connection | Nothing for this server |
+| Fails, the server's configuration is unchanged, and the old connection still responds | iCode keeps using the old connection | `reconnect failed, using the existing connection`, with the reason |
+| Fails, and the configuration changed, for example the address, a token, or "Available Tool Scope" | The server is unavailable, even if the old connection still works, so nothing keeps the old token's or scope's access | `is unavailable`, with the reason |
+| Fails, and the old connection doesn't respond or there was none | The server is unavailable | `is unavailable`, with the reason |
+
+The reason names only the kind of failure, such as a refused connection or rejected credentials. It never repeats what the server said, because that text can hold a credential; the server's own logs have the details.
+
+An unavailable server's tools are removed from the agent; fix the problem and run `/reload` again. A server you removed or disabled loses its tools and its connection closes, with no reconnect attempt.
+
+Two results are normal:
+
+- A successful reconnect starts a new session on the server, so remote state such as an open browser page or a login can be reset.
+- A STDIO server that holds a port or file exclusively may not be able to start beside its old instance, so every reconnect can fail. While the configuration is unchanged and the old connection responds, the summary keeps saying that iCode is using the existing connection.
+
+Saving in the settings or agent dialogs doesn't force a reconnect: a server whose configuration didn't change keeps its connection.
 
 ## Verify MCP tool calls
 

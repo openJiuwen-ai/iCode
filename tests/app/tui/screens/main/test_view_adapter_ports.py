@@ -83,7 +83,7 @@ async def test_main_view_status_callers_preserve_message_refs_for_live_retransla
         async def prepare_retry(self) -> None:
             return
 
-        async def add_retry(self, *_args: object) -> None:
+        async def add_retry(self, *_args: object, deadline: float | None = None, wait_id: str = "") -> None:
             return
 
     class _Terminal:

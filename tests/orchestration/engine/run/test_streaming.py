@@ -52,10 +52,10 @@ from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
-from chrys.service.tools.registry import ToolRegistry
 from tests.orchestration.engine.run._engine_run_helpers import _PROFILE, _make_registry
 from tests.support.event_capture import collect_events
 from tests.support.pipeline_helpers import echo_tool, make_mock_settings_and_registry
+from tests.support.tool_packs import install_tools
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for
 
 if TYPE_CHECKING:
@@ -161,7 +161,7 @@ async def _start(
         return client
 
     monkeypatch.setattr(builder_module, "create_client", _create_client)
-    monkeypatch.setattr(ToolRegistry, "load_builtins", _load_echo_tool)
+    install_tools(monkeypatch, [echo_tool])
     store = JsonFileStateStore(tmp_path)
     engine = agent_engine(
         bus,
@@ -174,11 +174,6 @@ async def _start(
     )
     await engine.start(_PROFILE)
     return _Started(engine=engine, bus=bus, events=events, store=store)
-
-
-def _load_echo_tool(self: ToolRegistry, _categories: object, **_kwargs: object) -> list:
-    self.register(echo_tool)
-    return [echo_tool]
 
 
 def _turn_events[E](events: list[object], cls: type[E]) -> list[E]:

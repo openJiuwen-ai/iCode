@@ -61,7 +61,7 @@ Before enabling this option, confirm the data storage location, access permissio
 
 Remote export requires a running OTLP collector that accepts OTLP/gRPC. Use the endpoint and authentication information provided by the collector when configuring the connection.
 
-The standard `OTEL_*` variables below can also be set in a `.env` file in the working directory or in the user `.env` file (macOS / Linux: `~/.chrys/.env`; Windows: `%APPDATA%\chrys\.env`). At startup, values from these files replace variables of the same name exported in the shell.
+Set the standard `OTEL_*` variables below in the environment that starts iCode. Changes take effect after restarting iCode; `.env` files are not loaded.
 
 ### Endpoint precedence
 

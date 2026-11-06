@@ -369,49 +369,45 @@ def test_trajectory_in_an_existing_directory_loads_settings(tmp_path: Path, monk
 # --- icode agent / icode model -----------------------------------------------
 
 
-def _stub_profiles_runtime(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    calls: list[str] = []
-
-    def prepare_runtime() -> Settings:
-        calls.append("prepare")
-        raise _PastLaunchCheck
-
-    monkeypatch.setattr(profiles_cli, "_prepare_runtime", prepare_runtime)
-    return calls
-
-
-def _profiles_main(command: str, argv: list[str]) -> int:
-    return profiles_cli.agents_main(argv) if command == "agents" else profiles_cli.models_main(argv)
-
-
 @pytest.mark.parametrize("as_json", [False, True], ids=["text", "json"])
 @pytest.mark.parametrize("command", ["agents", "models"])
-def test_profile_listing_from_a_deleted_directory_stops_before_loading_settings(
+def test_profile_listing_from_a_deleted_directory_uses_user_settings(
     command: str, as_json: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _enter_deleted_directory(tmp_path, monkeypatch)
-    calls = _stub_profiles_runtime(monkeypatch)
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.service.profiles.models.schema import ModelProfile
+    from chrys.service.profiles.models.serializer import save_profile
 
-    rc = _profiles_main(command, ["--json"] if as_json else [])
+    save_profile(ModelProfile(id="local", name="Local"))
+    user_settings_path().write_text(
+        "agent:\n  default_profile: QA\nmodel:\n  profile:\n    active: local\n", encoding="utf-8"
+    )
+    for key in ("NO_PROXY", "no_proxy", "CHRYS_MODEL_PROFILE"):
+        monkeypatch.setenv(key, "")
+        monkeypatch.delenv(key)
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setattr("chrys.orchestration.startup.configure_utf8_stdio", lambda: None)
+    monkeypatch.setattr("chrys.orchestration.startup.set_process_title", lambda title="chrys": None)
+    monkeypatch.setattr("chrys.foundation.patches.apply_all", lambda: None)
+    _enter_deleted_directory(tmp_path, monkeypatch)
+
+    main = profiles_cli.agents_main if command == "agents" else profiles_cli.models_main
+    rc = main(["--json"] if as_json else [])
 
     output = capsys.readouterr()
-    assert rc == 1
-    assert calls == []
-    assert output.out == ""
+    assert rc == 0
+    assert output.err == ""
     if as_json:
-        assert json.loads(output.err) == {"error": _MISSING_WITHOUT_WORKDIR, "code": "working_dir_missing"}
+        payload = json.loads(output.out)
+        if command == "agents":
+            assert payload["default"] == "QA"
+            assert {profile["name"] for profile in payload["agents"]} >= {"Code", "QA"}
+        else:
+            assert payload["active"] == "local"
+            assert [profile["id"] for profile in payload["models"] if profile["active"]] == ["local"]
     else:
-        assert output.err == f"Error: {_MISSING_WITHOUT_WORKDIR}\n"
-
-
-@pytest.mark.parametrize("command", ["agents", "models"])
-def test_profile_listing_in_an_existing_directory_loads_settings(command: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _stub_profiles_runtime(monkeypatch)
-
-    with pytest.raises(_PastLaunchCheck):
-        _profiles_main(command, [])
-
-    assert calls == ["prepare"]
+        selected = "QA" if command == "agents" else "local"
+        assert any(line.split()[:2] == ["*", selected] for line in output.out.splitlines())
 
 
 # --- icode hook ---------------------------------------------------------------

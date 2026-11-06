@@ -282,7 +282,7 @@ async def test_shell_detected_mutations_keep_the_tool_operation_from_prepare_to_
     context = await prepare_mutation_tracking(
         tracker,
         "shell",
-        {"command": "chmod +x .", "working_dir": str(repo)},
+        {"command": "chmod +x .", "workdir": str(repo)},
         "shell",
         True,
         str(repo),

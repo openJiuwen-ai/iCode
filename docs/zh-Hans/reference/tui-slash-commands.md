@@ -57,6 +57,7 @@
 | `/models` | — | 打开模型配置窗口。详见[配置模型](../guides/configuration/models.md)。 | — |
 | `/buddy [command]` | — | 管理 Buddy 伙伴。尚未孵化时，只能使用 `hatch`；孵化后可使用其余选项。 | 省略参数：按空格键或 **Enter** 显示可用命令。<br>`hatch`：孵化新伙伴。<br>`info`：显示伙伴信息。<br>`pet`：与伙伴互动并生成回复。<br>`mute`：开启或关闭伙伴通知。<br>`name <new-name>`：将伙伴重命名为 `new-name`。 |
 | `/agents [target]` | `/agent`<br>`/config` | 打开智能体配置窗口。详见[配置智能体](../guides/configuration/agents.md#打开智能体配置窗口)。 | 省略参数：按空格键或 **Enter** 显示可用标签页。<br>`target`：直接打开指定标签页。可用值为 `basic`、`instructions`、`tools`、`sub-agents`、`skills`、`mcp`、`memory` 和 `compaction`。<br>参数别名：`subagents` 等同于 `sub-agents`，`skill` 等同于 `skills`。 |
+| `/reload` | — | 空闲且主题编辑器已关闭时，重新读取设置、智能体和模型配置、[钩子](../guides/extensions/hooks.md#用-reload-应用修改)、记忆文件、Skills、[主题](themes.md)及[快捷指令](../guides/extensions/shortcuts.md)，并[重新连接 MCP 服务器](../guides/extensions/mcp.md#用-reload-重新连接)。 | — |
 | `/runtime` | `/details` | 打开“运行时详情”窗口，查看当前模型配置和模型 ID、按类别分组的内置工具、上下文管理工具、子智能体工具、按服务器分组的 MCP 工具、按来源目录分组的快捷指令、按来源分组的 Skills、已加载的钩子，以及预配置记忆文件。 | — |
 | `/usage` | — | 打开 token 用量窗口，查看所有会话的合计、趋势和速度。详见[查看 token 用量和速度](../guides/daily-use/sessions.md#查看-token-用量和速度)。 | — |
 | `/settings [tab]` | — | 打开设置窗口。详见[配置 iCode 设置](../guides/configuration/settings.md#设置窗口)。 | `tab`：直接打开指定标签页。可用值为 `general`、`models`、`safety`、`sessions`、`tools` 和 `notifications`。省略参数时，按空格键或 **Enter** 显示可用标签页。 |

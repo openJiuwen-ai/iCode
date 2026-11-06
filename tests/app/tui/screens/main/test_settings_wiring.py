@@ -7,6 +7,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+import pytest
 from textual.widgets import Static
 
 from chrys.app.tui.screens.dialogs.approval.dialog import ApprovalDialog
@@ -45,10 +46,14 @@ class _Coordinator(SettingsCoordinator):
         return self.projected[key]
 
 
-def test_write_and_reload_feedback_reach_only_an_existing_coordinator() -> None:
+def test_write_and_reload_feedback_reach_only_an_existing_coordinator(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every queue write originates from the panel, so feedback arriving before
     the panel was ever opened has nothing to update — and must not build the
-    coordinator (which needs a running app) as a side effect."""
+    coordinator (which needs a running app) as a side effect. The shared handle
+    hears of the write either way: a notification choice is saved with no panel."""
+    confirmed: list[object] = []
+    app = SimpleNamespace(settings_handle=SimpleNamespace(confirm_written=confirmed.append))
+    monkeypatch.setattr(screen_module.MainScreen, "app", property(lambda _self: app))
     screen = object.__new__(screen_module.MainScreen)
     result = PersistResult(written={"session.title.auto": False}, rejected={})
 
@@ -64,6 +69,7 @@ def test_write_and_reload_feedback_reach_only_an_existing_coordinator() -> None:
 
     assert coordinator.written == [result]
     assert coordinator.reloaded == 1
+    assert confirmed == [result.written, result.written]
 
 
 def test_save_failures_toast_and_snap_the_panel_back() -> None:
@@ -273,3 +279,39 @@ async def test_after_a_timeout_the_next_approval_still_delivers_the_users_answer
             await wait_for(lambda: showing("next"), pilot=pilot, description="third approval is shown")
     finally:
         await bus.unsubscribe(ApprovalResponse, collect)
+
+
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
+async def test_reload_command_flushes_panel_before_publishing_and_refuses_failed_save(tmp_path: Path) -> None:
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.foundation.events.types import SettingsReload
+    from tests.support.tui_app_harness import SessionGenerationEngine
+
+    bus = EventBus()
+    seen = []
+    path = user_settings_path()
+
+    async def observe(event: SettingsReload) -> None:
+        assert event.session_id == "started-but-not-ready"
+        seen.append((event.manual, path.read_text(encoding="utf-8")))
+
+    await bus.subscribe(SettingsReload, observe)
+
+    class BeforeSessionReady(SessionGenerationEngine):
+        session_id = "started-but-not-ready"
+
+    app = make_chrys_app(tmp_path, event_bus=bus, engine=BeforeSessionReady())
+    async with app.run_test(size=(120, 36)):
+        main = app._main_screen
+        assert main is not None
+        main._settings_persistence().schedule({"trajectory.verify_commands": "my-test-command"})
+        assert main._suggestions.dispatch_slash_command("/reload")
+        await main.workers.wait_for_complete()
+        assert len(seen) == 1
+        assert seen[0][0] and "my-test-command" in seen[0][1]
+        path.write_text("ui: [broken", encoding="utf-8")
+        main._settings_persistence().schedule({"trajectory.verify_commands": "rejected"})
+        assert main._suggestions.dispatch_slash_command("/reload")
+        await main.workers.wait_for_complete()
+        assert len(seen) == 1
+        assert path.read_text(encoding="utf-8") == "ui: [broken"

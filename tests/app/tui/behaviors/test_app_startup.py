@@ -256,9 +256,7 @@ def test_main_restores_terminal_when_app_run_raises(
     monkeypatch.setattr(
         startup_mod,
         "bootstrap_runtime",
-        lambda *, dotenv_override, project_root: RuntimeBootstrap(
-            loaded=LoadedSettings(settings=Settings(), provenance={})
-        ),
+        lambda *, project_root: RuntimeBootstrap(loaded=LoadedSettings(settings=Settings(), provenance={})),
     )
     monkeypatch.setattr(logs_mod, "install_log_handler", lambda: None)
     monkeypatch.setattr(tui_app, "configure_debug_logging", lambda _path: object())
@@ -347,8 +345,7 @@ def test_main_passes_startup_args_to_app(
     monkeypatch.setattr(startup_mod, "configure_utf8_stdio", lambda: None)
     bootstrap_roots: list[Path] = []
 
-    def _fake_bootstrap(*, dotenv_override: bool, project_root: Path) -> RuntimeBootstrap:
-        _ = dotenv_override
+    def _fake_bootstrap(*, project_root: Path) -> RuntimeBootstrap:
         bootstrap_roots.append(project_root)
         return RuntimeBootstrap(loaded=LoadedSettings(settings=Settings(), provenance={}))
 

@@ -10,9 +10,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from chrys.service.profiles.models.loader import load_profiles_from_dir
+from chrys.service.profiles.models.loader import scan_profile_dir
 
 if TYPE_CHECKING:
+    from chrys.service.profiles.file_scan import ProfileDirScan
     from chrys.service.profiles.models.schema import ModelProfile
 
 logger = logging.getLogger(__name__)
@@ -39,11 +40,35 @@ class ModelProfileRegistry:
         # from its own thread while the UI reads it, so every access goes
         # through one lock.
         self._lock = threading.RLock()
+        self.sources: dict[Path, ModelProfile] = {}
+        self.revision = 0
 
-    def register(self, profile: ModelProfile) -> None:
+    @property
+    def directory(self) -> Path:
+        return self._user_dir or _default_user_dir()
+
+    def reload_base(self) -> ModelProfileRegistry:
+        view = ModelProfileRegistry()
+        view._user_dir = self._user_dir
+        disk_ids = {p.id for p in self.sources.values()}
+        view._profiles = {key: p for key, p in self._profiles.items() if key not in disk_ids}
+        return view
+
+    def install_reload(self, view: ModelProfileRegistry) -> None:
+        with self._lock:
+            self._profiles = view._profiles
+            self.sources = view.sources
+            self.revision += 1
+
+    def register(self, profile: ModelProfile, *, source: Path | None = None) -> None:
         """Register a model profile."""
         with self._lock:
             self._profiles[profile.id] = profile
+            if source is not None:
+                self.sources[source] = profile
+            elif self._user_dir is not None:
+                self.sources[self._user_dir / f"{profile.id}.yaml"] = profile
+            self.revision += 1
 
     def get(self, profile_id: str) -> ModelProfile | None:
         """Get a registered model profile by ID."""
@@ -60,16 +85,16 @@ class ModelProfileRegistry:
         with self._lock:
             return list(self._profiles.keys())
 
-    def read_profiles(self, directory: Path | None = None) -> tuple[Path, list[ModelProfile]]:
+    def read_profiles(self, directory: Path | None = None) -> tuple[Path, ProfileDirScan[ModelProfile]]:
         """Read profile files without mutating this registry.
 
         Keeping acquisition separate lets async frontends move disk I/O to a
         worker thread and install the result back on their owning event loop.
         """
         target = directory or _default_user_dir()
-        return target, load_profiles_from_dir(target)
+        return target, scan_profile_dir(target)
 
-    def install_profiles(self, directory: Path, profiles: list[ModelProfile]) -> int:
+    def install_profiles(self, directory: Path, profiles: ProfileDirScan[ModelProfile]) -> int:
         """Install profiles already read from *directory* into this registry."""
         with self._lock:
             self._user_dir = directory
@@ -78,7 +103,7 @@ class ModelProfileRegistry:
             # (avoids the user creating two profiles that only differ in
             # case and then being unable to tell them apart in listings).
             seen_names: dict[str, str] = {}
-            for profile in profiles:
+            for path, profile in profiles.loaded:
                 key = profile.name.casefold()
                 if key in seen_names:
                     logger.warning(
@@ -90,8 +115,8 @@ class ModelProfileRegistry:
                     )
                 else:
                     seen_names[key] = profile.id
-                self.register(profile)
-            return len(profiles)
+                self.register(profile, source=path)
+            return len(profiles.loaded)
 
     def load_profiles(self, directory: Path | None = None) -> int:
         """Load model profiles from a directory.
@@ -109,7 +134,11 @@ class ModelProfileRegistry:
     def remove(self, profile_id: str) -> bool:
         """Remove a profile from the registry."""
         with self._lock:
-            return self._profiles.pop(profile_id, None) is not None
+            if self._profiles.pop(profile_id, None) is None:
+                return False
+            self.sources = {path: p for path, p in self.sources.items() if p.id != profile_id}
+            self.revision += 1
+            return True
 
     def install_snapshot(self, profiles: Sequence[ModelProfile]) -> int:
         """Replace the whole set with *profiles* — one swap, no disk I/O.
@@ -125,6 +154,8 @@ class ModelProfileRegistry:
         # section: one dict swap, zero disk I/O under the lock).
         with self._lock:
             self._profiles = {profile.id: profile for profile in profiles}
+            self.sources = {}
+            self.revision += 1
             return len(self._profiles)
 
     def load_all(self, user_dir: Path | None = None) -> int:

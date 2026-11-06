@@ -34,7 +34,6 @@ from chrys.orchestration.session_host import ChrysSessionHost
 from chrys.service.acp_client import AcpAgentClient, AcpConnectError
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.schema import AcpAgentConfig, AgentProfile
-from chrys.service.tools.registry import ToolRegistry
 from chrys.service.workflows.layout import run_dir
 from chrys.service.workflows.transcript import read_node_transcript
 from tests.orchestration.workflows._hosting import (
@@ -52,6 +51,7 @@ from tests.support.acp_fixtures import STUB_SCRIPT
 from tests.support.event_capture import capture_event_sequence
 from tests.support.provider_errors import openai_status
 from tests.support.scripted_clients import HostedMockChatClient, HostedMockResponse
+from tests.support.tool_packs import install_tools
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 pytestmark = pytest.mark.asyncio
@@ -466,11 +466,7 @@ def _install_hold_tool(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
 
     tool = FunctionTool(func=hold, name="hold", description="Waits until the pass ends")
 
-    def load_builtins(self: ToolRegistry, _categories: Any, **_kwargs: Any) -> list[FunctionTool]:
-        self.register(tool)
-        return [tool]
-
-    monkeypatch.setattr(ToolRegistry, "load_builtins", load_builtins)
+    install_tools(monkeypatch, [tool])
     return entered
 
 

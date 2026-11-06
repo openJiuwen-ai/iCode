@@ -7,8 +7,8 @@ clamping and fallback live in exactly one place instead of being re-derived by
 each reader (dataclass default, ACP validator, headless warning path, …).
 
 Coercers take a **raw** value from any layer and normalise it to one canonical
-value. YAML hands over already-typed values (``true``, ``50``); dotenv and the
-process environment hand over strings. Both must land on the same result, so
+value. YAML hands over already-typed values (``true``, ``50``); the process
+environment supplies strings. Both must land on the same result, so
 the grammar below is defined once and every coercer accepts the native type
 and the string spelling of it.
 

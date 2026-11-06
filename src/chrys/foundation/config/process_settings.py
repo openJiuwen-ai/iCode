@@ -4,12 +4,8 @@
 
 A handful of settings are consumed by code that has no engine, no session and
 no ``Settings`` in reach: an import-time module constant, a probe cached behind
-a process lock, a TUI helper called from a widget. They read ``os.environ``
-directly today, which works only because bootstrap injects every ``CHRYS_*``
-into it. Once the dotenv layers stop being injected, those readers go blind —
-so they need a source that is neither the environment nor a per-session object.
-
-That source is this module: one snapshot, written once by the entrypoint
+a process lock, a TUI helper called from a widget. Their settings come from
+this module: one snapshot, written once by the entrypoint
 bootstrap, read by everyone else. It carries **only** fields declared
 ``Apply.RESTART``, which is the same statement from the other side — a value
 that a restart is required to change is exactly a value a process snapshot can

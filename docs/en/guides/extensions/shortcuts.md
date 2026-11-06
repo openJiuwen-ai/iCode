@@ -11,7 +11,7 @@ iCode reads shortcuts from two places:
 | Your shortcuts | `~/.chrys/shortcuts` | `%APPDATA%\chrys\shortcuts` |
 | The project's shortcuts | `.chrys/shortcuts` in the working directory and its parent directories up to the repository root | Same |
 
-New and changed files show the next time you type `/`.
+New and changed files show the next time you type `/`, or after `/reload`.
 
 A project's `.chrys/shortcuts` must stay inside the repository: if it is a link to a folder outside it, iCode skips it.
 
@@ -73,7 +73,7 @@ While a task is running, a prompt that runs commands or switches the agent or mo
 
 Such a prompt always starts a new turn. After a task stopped or failed, press **Enter** to send it; the **Continue** button sends what is in the input field as a note, as typed, so it leaves such a prompt where it is.
 
-Once you choose a shortcut, the input field holds that shortcut's prompt until you clear it or replace it, however much you edit it. Every `` !`…` `` you can see in it when you press **Enter** runs, including any you typed or pasted. A message you type yourself without choosing a shortcut never runs commands.
+Once you choose a shortcut, the input field holds that shortcut's prompt until you clear it or replace it, however much you edit it. Every `` !`…` `` in it when you press **Enter** runs, including any you typed or pasted. That includes one inside a **[Pasted text #n]** label, which you see only when you click the label. One inside a **[Quote #n]** label does not run: a quote is sent as plain text. A message you type yourself without choosing a shortcut never runs commands.
 
 ### Agent and model
 

@@ -2,7 +2,7 @@
 
 iCode 使用工具类别（`tool_kind`）对用途或来源相近的工具进行分组，使用工具名称（`tool_name`）标识具体工具。同一类别可以包含多个工具，例如 `filesystem.write` 类别包含 `write_file` 和 `edit_file`。
 
-在终端用户界面（Terminal User Interface，TUI）的输入栏中输入 `/runtime`，或点击输入栏上方状态栏右端显示的工具数量，打开“运行时详情”窗口。“工具”标签页列出按类别分组的内置工具，以及上下文管理工具和子智能体工具，“MCP”标签页列出按服务器分组的 MCP 工具名称。Skill 工具不会在该窗口中列出。智能体只能调用当前已加载的工具。
+在终端用户界面（Terminal User Interface，TUI）的输入栏中输入 `/runtime`，或点击输入栏上方状态栏右端显示的工具数量，打开“运行时详情”窗口。“工具”标签页列出按类别分组的内置工具、按扩展 ID 分组的扩展工具，以及上下文管理工具和子智能体工具，“MCP”标签页列出按服务器分组的 MCP 工具名称。Skill 工具不会在该窗口中列出。智能体只能调用当前已加载的工具。
 
 ## 类别和名称概览
 
@@ -22,6 +22,7 @@ iCode 使用工具类别（`tool_kind`）对用途或来源相近的工具进行
 | `todo` | 是 | 维护待办事项 | `todo_write` |
 | `sub_agent` | 否 | 调用子智能体 | 由智能体配置决定 |
 | `mcp` | 否 | MCP 服务器工具和按需加载控制工具 | 由 MCP 服务器及其配置决定 |
+| `extension.<扩展 ID>` | 否，通过 `extensions` 启用 | [Python 扩展](../guides/extensions/python-extensions.md)中的工具 | 由扩展决定 |
 | `skill` | 否 | 加载 Skill、读取资源和运行脚本 | `load_skill`、`read_skill_resource`、`run_skill_script` |
 | `context` | 否 | 压缩和查询对话上下文 | `compress_context`、`recall_context`、`list_compressed_contexts` |
 
@@ -42,6 +43,12 @@ ACP 会话还会提供 `list_workspace_dirs`，用于列出主工作目录和 AC
 `sub_agent` 类别中，每个工具对应一个可调用的子智能体。工具名称由智能体配置中的 [`sub_agents.agents[].tool_name`](./agent-profile.md#sub_agents) 决定；省略该字段时，默认使用子智能体的配置名称。
 
 显式设置的 `tool_name` 必须以字母或下划线开头，之后只能包含字母、数字或下划线。省略 `tool_name` 时直接使用配置名称，因此工具名称可能包含连字符或以数字开头。同一父智能体内的工具名称不能重复。
+
+## 扩展中的工具名称
+
+每个 [Python 扩展](../guides/extensions/python-extensions.md)都有自己的类别 `extension.<扩展 ID>`，例如 `extension.tracker`，其中的工具名称由作者决定。扩展不能使用 iCode 工具、子智能体、该智能体的 MCP 服务器提供的工具或同一智能体使用的其他扩展中的工具名称：只要有一个名称已被占用，整个扩展都不会加载。扩展中与其他系统上的 iCode 工具同名的工具（例如 `bash`）会显示为普通工具调用。
+
+在 `approval.overrides` 和 Hooks 的 `match.tool_kind` 中，无论扩展是否已安装，`extension.<扩展 ID>` 都是有效的类别。
 
 ## MCP 工具名称
 

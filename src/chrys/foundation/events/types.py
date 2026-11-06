@@ -347,6 +347,17 @@ class SleepSkip(Event):
 
 
 @dataclass
+class RetryWaitSkip(Event):
+    """User ends the wait before a main-turn retry (frontend → backend).
+
+    It wakes only the wait whose notice carried ``wait_id``; once that wait
+    has ended, it does nothing.
+    """
+
+    wait_id: str = ""
+
+
+@dataclass
 class ShellToBackground(Event):
     """User moves the shell commands the main agent runs now to the background."""
 
@@ -406,10 +417,19 @@ class ConfigUpdate(Event):
 
 @dataclass
 class SettingsReload(Event):
-    """User updated .env settings — engine should reload Settings and rebuild agent."""
+    """Reload settings from their sources and rebuild the agent."""
 
+    manual: bool = False
     model_chosen: bool = False
     """The user picked the default model for this session too (``$``): the session's own model ends."""
+    tui_projection: dict[str, str | bool] = field(default_factory=dict)
+    """Settings field names and values the requesting screen is actually displaying."""
+    available_themes: tuple[str, ...] | None = None
+    """Theme names registered by the requesting TUI, when present."""
+    session_scoped_model: bool = False
+    """With ``manual``: the model this reload selects stays with this session, as ACP's hosts share one pointer."""
+    follow_process_model: bool = False
+    """The default model was just set for the whole process: what this session settled on earlier ends."""
 
 
 @dataclass
@@ -431,7 +451,7 @@ class SetModelProfile(Event):
     """User switches the active model profile for this session only.
 
     The engine swaps ``settings.model_profile`` in-memory and soft-restarts the
-    agent — no global ``.env`` write — so each session can run a different model
+    agent without changing the saved default, so each session can run a different model
     without colliding on process-wide environment state.  The engine echoes
     ``ModelProfileSwitched`` once the rebuild completes.
     """
@@ -759,6 +779,8 @@ class InvocationRetryAttempt(InvocationEvent):
     """Shown after ``display_message`` (e.g. "seems offline"); never without it."""
     detail: str = ""
     """Raw untranslated diagnostic component separated from a fixed wrapper."""
+    wait_id: str = ""
+    """Names the wait before this retry that :class:`RetryWaitSkip` can end early; empty when it can't be skipped."""
 
 
 @dataclass
@@ -1209,6 +1231,7 @@ class Warning(Event):
     display_message: MessageRef | None = None
     reason: str = ""
     """Machine-readable cause within ``code``, for callers that act on it; empty when ``code`` says it all."""
+    display_hint: MessageRef | None = None
 
 
 @dataclass
@@ -1262,6 +1285,10 @@ class AgentRuntimeDetails:
 
     model: RuntimeModelDetails = field(default_factory=RuntimeModelDetails)
     builtin_tools: dict[str, list[str]] = field(default_factory=dict)
+    extension_tools: dict[str, list[str]] = field(default_factory=dict)
+    """Each extension's tools, by extension id."""
+    extension_failures: dict[str, str] = field(default_factory=dict)
+    """Why each extension the profile enables was left out, by extension id."""
     web_search_providers: dict[str, str] = field(default_factory=dict)
     context_tools: list[str] = field(default_factory=list)
     """The context management tools the agent has besides its built-in ones: compressing and recalling context."""
@@ -1621,6 +1648,9 @@ class SettingsReloaded(Event):
     distinguish success from an ``AgentLoadFailed`` rebuild failure.
     """
 
+    manual: bool = False
+    """It answers a ``SettingsReload(manual=True)``: the frontend also follows what the files now say."""
+    report: tuple[MessageRef, ...] = ()
     runtime_details: AgentRuntimeDetails = field(default_factory=AgentRuntimeDetails)
 
 

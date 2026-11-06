@@ -265,17 +265,32 @@ def pytest_configure(config: pytest.Config) -> None:
     Chrys, not their test run — but the ENV layer cannot tell the difference,
     and neither can the assertions that prove a code path did *not* mirror a
     value into the environment: they read ``"CHRYS_X" not in os.environ`` and
-    would fail on that developer's machine while passing in CI. Classified
-    rather than listed, so a setting is covered the day its ``env`` alias is
-    declared, and stripped here rather than in a session fixture because the
+    would fail on that developer's machine while passing in CI. Setting aliases
+    come from metadata; internal process carriers are listed explicitly below.
+    Both are stripped here rather than in a session fixture because the
     leak guard above snapshots the environment before the first fixture runs
     and would restore whatever a fixture removed.
     """
     _arm_config_dir_redirect()
 
-    from chrys.foundation.config.env_layers import classify_env_name
+    from chrys.foundation.config.process_env import canonical_env_name
+    from chrys.foundation.config.settings import Settings
+    from chrys.foundation.config.spec import specs_by_field
 
-    exported = {name: value for name, value in os.environ.items() if classify_env_name(name) is not None}
+    names = {entry.env for entry in specs_by_field(Settings).values() if entry.env is not None}
+    # Internal carriers are maintained here alongside their production owners:
+    # hooks/runner.py, acp_client/spawn.py, and platform/runtime_paths.py.
+    names.update(
+        {
+            "CHRYS_HOOK_ID",
+            "CHRYS_HOOK_EVENT",
+            "CHRYS_HOOK_PAYLOAD_FILE",
+            "CHRYS_HOOK_RESULT",
+            "CHRYS_ACP_SUBAGENT_DEPTH",
+            "CHRYS_FORCE_FROZEN",
+        }
+    )
+    exported = {name: value for name, value in os.environ.items() if canonical_env_name(name) in names}
     for name in exported:
         del os.environ[name]
     config.stash[_STRIPPED_CHRYS_ENV] = exported
@@ -340,7 +355,7 @@ def _uninstalled_process_settings() -> Iterator[None]:
     Anything that runs ``bootstrap_runtime`` installs one for the rest of the
     process, which would then outrank the env every later test sets up.
     """
-    from chrys.foundation.config.env_layers import _reset_process_env_snapshot_for_tests
+    from chrys.foundation.config.process_env import _reset_process_env_snapshot_for_tests
     from chrys.foundation.config.process_settings import reset_process_settings
     from chrys.foundation.config.runtime_pointer import _reset_model_pointer_for_tests
 
@@ -509,7 +524,7 @@ def _isolate_platform_config_dir(request: pytest.FixtureRequest, tmp_path: Path)
     """Point ``get_platform().config_dir`` at the per-test temp directory.
 
     The backstop under every writer that takes its path from the platform
-    singleton — the settings document, the dotenv file, model profiles,
+    singleton — the settings document, model profiles,
     skills. Those writers are best-effort by design (``persist_theme`` and its
     siblings log and swallow), so a test that forgets to redirect the config
     dir does not fail: it silently edits the developer's real ``~/.chrys``,
@@ -588,10 +603,10 @@ def _isolated_working_directory(tmp_path_factory: pytest.TempPathFactory, monkey
     """Run every test from its own empty directory rather than the checkout.
 
     Product code falls back to the process working directory for the
-    workspace, the bootstrap ``.env`` and relative writes. From the repository
+    workspace, project settings and relative writes. From the repository
     root, every engine turn in a test captured the whole checkout as a git
     workspace (``rev-parse``, ``symbolic-ref`` and ``status`` over thousands of
-    files, twice per turn) and could read a developer's own ``.env``. The
+    files, twice per turn) and could read local project configuration. The
     directory sits beside ``tmp_path`` rather than inside it, so tests that
     list their ``tmp_path`` see only what they created, and its name carries
     no test name, so text that echoes the working directory stays neutral.

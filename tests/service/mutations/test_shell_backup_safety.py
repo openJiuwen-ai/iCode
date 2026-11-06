@@ -40,7 +40,7 @@ async def test_unreadable_moved_source_keeps_destination_out_of_rollback(
     tracker = MutationTracker(store)
     tracker.start_turn(1)
     context = await prepare_mutation_tracking(
-        tracker, "shell", {"command": "opaque-launcher", "working_dir": str(repo)}, "move", True, str(repo)
+        tracker, "shell", {"command": "opaque-launcher", "workdir": str(repo)}, "move", True, str(repo)
     )
     source.rename(destination)
     _git(repo, "add", "-A")
@@ -84,7 +84,7 @@ async def test_directory_alias_children_keep_physical_identity_across_shell(
     tracker.start_turn(1)
     command = "rm alias/file.txt alias" if action == "remove_both" else "rm alias"
     context = await prepare_mutation_tracking(
-        tracker, "shell", {"command": command, "working_dir": str(repo)}, "shell", True, str(repo)
+        tracker, "shell", {"command": command, "workdir": str(repo)}, "shell", True, str(repo)
     )
     if action == "unlink":
         alias.unlink()
@@ -150,7 +150,7 @@ async def test_child_backup_budget_keeps_explicit_files_and_drops_unbacked_obser
         context = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": "chmod +x data explicit.txt", "working_dir": str(repo)},
+            {"command": "chmod +x data explicit.txt", "workdir": str(repo)},
             "shell",
             True,
             str(repo),

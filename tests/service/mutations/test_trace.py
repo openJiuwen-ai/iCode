@@ -305,7 +305,7 @@ class TestPipelineTraceLifecycle:
         tracker.start_turn(1)
 
         ctx = await prepare_mutation_tracking(
-            tracker, "shell", {"command": "true", "working_dir": str(root)}, "c1", is_shell=True
+            tracker, "shell", {"command": "true", "workdir": str(root)}, "c1", is_shell=True
         )
         assert ctx.trace_file == str(trace_file)
         prefix = shell_trace_argv.get()
@@ -358,7 +358,7 @@ class TestPipelineTraceLifecycle:
         ctx = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": f"echo x > {f}", "working_dir": str(root)},
+            {"command": f"echo x > {f}", "workdir": str(root)},
             "c1",
             is_shell=True,
             workspace_cwd=str(root),
@@ -395,7 +395,7 @@ class TestPipelineTraceLifecycle:
         ctx = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": f"echo x > {f}", "working_dir": str(root)},
+            {"command": f"echo x > {f}", "workdir": str(root)},
             "c1",
             is_shell=True,
             workspace_cwd=str(root),
@@ -429,7 +429,7 @@ class TestPipelineTraceLifecycle:
         ctx = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": f"echo x > {f}", "working_dir": str(root)},
+            {"command": f"echo x > {f}", "workdir": str(root)},
             "c1",
             is_shell=True,
             workspace_cwd=str(root),
@@ -518,7 +518,7 @@ class TestAbortReleasesTrace:
         ctx = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": "true", "working_dir": str(root)},
+            {"command": "true", "workdir": str(root)},
             "c1",
             is_shell=True,
             workspace_cwd=str(root),
@@ -700,7 +700,7 @@ class TestAbortReleasesTrace:
             await prepare_mutation_tracking(
                 tracker,
                 "shell",
-                {"command": "true", "working_dir": str(root)},
+                {"command": "true", "workdir": str(root)},
                 "c1",
                 is_shell=True,
                 workspace_cwd=str(root),
@@ -745,7 +745,7 @@ class TestAbortReleasesTrace:
         ctx = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": "true", "working_dir": str(root)},
+            {"command": "true", "workdir": str(root)},
             "c1",
             is_shell=True,
             workspace_cwd=str(root),
@@ -826,7 +826,7 @@ class TestWindowOpenCancellation:
             prepare_mutation_tracking(
                 tracker,
                 "shell",
-                {"command": "true", "working_dir": str(root)},
+                {"command": "true", "workdir": str(root)},
                 "c1",
                 is_shell=True,
                 workspace_cwd=str(root),

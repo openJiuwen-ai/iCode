@@ -642,7 +642,7 @@ async def test_agent_config_clone_builtin_saves_editable_custom_copy(
     assert copied.description == original.description
     assert copied.instructions == original.instructions
     assert set(copied.tools.builtins) == set(original.tools.builtins)
-    assert copied.tools.custom == original.tools.custom
+    assert copied.extensions == original.extensions
     assert copied.tools.mcp == original.tools.mcp
     assert copied.tools.shell_filter == original.tools.shell_filter
     assert copied.skills.paths == original.skills.paths

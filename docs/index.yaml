@@ -75,6 +75,8 @@ topics:
         path: guides/extensions/skills.md
       - id: mcp
         path: guides/extensions/mcp.md
+      - id: python_extensions
+        path: guides/extensions/python-extensions.md
       - id: hooks
         path: guides/extensions/hooks.md
       - id: shortcuts

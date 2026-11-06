@@ -205,6 +205,14 @@ Some terminals, including macOS's built-in Terminal and some tmux setups, can't 
 
 In other multi-line fields, **Enter** and **Shift+Enter** start a new line. In the Ctrl+O editor, press **Ctrl+O** or **Ctrl+Enter** to commit.
 
+### Attach images, quote the conversation and paste long text
+
+Paste a screenshot or an image, or drop an image file into the message box, and it shows as **[Image #1]**. To quote part of the conversation, select it with the mouse and click **Quote** when it appears; **[Quote #1]** is added where the cursor is. Long pasted text, more than 800 characters or four lines or more, shows as **[Pasted text #1 +3 lines]**. Keep typing around them as usual; each message numbers each kind from 1.
+
+Click a label to see what it stands for: an image shows its file path and the picture, a quote or pasted text shows the whole text. A label is edited as one piece: the cursor steps over it, and Backspace or Delete removes all of it. The full-screen prompt editor (Ctrl+O) works the same way, labels included.
+
+When you send, each label is replaced by what it stands for: the images go to the model with your message, pasted text goes back where its label was, and a quote of one line goes in its place inside quotation marks. A quote of several lines goes on lines of its own as a block quote, so any headings, lists or code in it stay inside the quote. A quote is what someone else said, so an `@file` or `` !`command` `` in it does nothing: it is sent with a backslash in front so it stays plain text. Pasted text counts as your own words and works like typed text. Your message, and what you bring back with the Up arrow or from prompt history, shows that full text rather than the labels. After you send a message, press **Ctrl+Z** in the empty message box to get the whole message back, labels included.
+
 ### Read and copy replies
 
 All agents' replies support Markdown, formulas and Mermaid diagrams. Formulas in your own messages are not rendered as math.
@@ -235,4 +243,4 @@ You can continue exploring:
 - [Configure models](../guides/configuration/models.md) to connect to and switch between model services
 - [Working directory](../guides/daily-use/workspaces.md)
 - [Configure approval modes](../guides/configuration/approval.md)
-- Extend iCode with [Skills](../guides/extensions/skills.md) and [MCP](../guides/extensions/mcp.md)
+- Extend iCode with [Skills](../guides/extensions/skills.md), [MCP](../guides/extensions/mcp.md), and [Python extensions](../guides/extensions/python-extensions.md)

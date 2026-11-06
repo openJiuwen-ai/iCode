@@ -16,12 +16,13 @@ from chrys.app.tui.screens.main.ports import (
 
 if TYPE_CHECKING:
     from chrys.app.tui.screens.main.state import MainScreenState
-    from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
+    from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
     from chrys.app.tui.widgets.sidebar.context import ContextUsageState
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_executions import HookExecutionView
     from chrys.foundation.models.invocations import ContentChannel
     from chrys.foundation.models.todos import TodoItem
+    from chrys.foundation.text.draft_references import DraftReferences
     from chrys.service.approval.policy import ApprovalMode
 
 
@@ -140,8 +141,10 @@ class MainScreenPresenter:
     def restore_input_text(self, draft: str | ChatDraft) -> InputRestore | None:
         return self._view.restore_input_text(draft)
 
-    def rewrite_restored_input(self, restore: InputRestore | None, text: str) -> bool:
-        return self._view.rewrite_restored_input(restore, text)
+    def rewrite_restored_input(
+        self, restore: InputRestore | None, text: str, *, references: DraftReferences | None = None
+    ) -> bool:
+        return self._view.rewrite_restored_input(restore, text, references=references)
 
     def unlock_input_keep_if_locked(self) -> None:
         self._view.unlock_input_keep_if_locked()

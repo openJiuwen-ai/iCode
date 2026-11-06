@@ -399,7 +399,7 @@ async def test_session_host_streams_runtime_update_during_turn(monkeypatch: pyte
 @pytest.mark.asyncio
 async def test_session_host_streams_todo_list_updated_during_turn(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     # Both public stream entry points delegate to _iter_turn_events; this happy path covers both by construction.
-    # TodoMiddleware publishes TodoListUpdated mid-turn with session_id stamped.
+    # todo_write publishes TodoListUpdated mid-turn with session_id stamped.
     # The stream test pins BOTH halves of that contract: the type is in
     # _HEADLESS_RUN_EVENT_TYPES, and a sessionless publish is dropped by
     # _event_belongs_to_session (so only a stamped event reaches ACP clients).

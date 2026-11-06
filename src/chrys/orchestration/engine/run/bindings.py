@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import traceback
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
@@ -104,7 +106,6 @@ if TYPE_CHECKING:
     from chrys.foundation.models.invocations import ContentStatus
     from chrys.foundation.trajectory.context import TrajectoryContext
     from chrys.kernel import AgentResponse, ChatResponse, LoopRecorder
-    from chrys.kernel.middleware import FunctionMiddleware
     from chrys.service.agent_middleware.injection import InjectionMiddleware, QueuedInjection
     from chrys.service.context.compaction import UnifiedContextStrategy
     from chrys.service.context.compaction.strategy import CompactionRetrySnapshot
@@ -117,11 +118,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_RETRY_WAIT_POLL_SECONDS = 1.0
+"""Longest a retry wait goes without reading the interrupt latch."""
+
 
 class _AssistantMessageEventKwargs(TypedDict, total=False):
     """Optional timestamp forwarded to ``InvocationMessage``."""
 
     timestamp: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _RetryWait:
+    """The wait a retry notice announced: the user's skip or an interrupt ends it early."""
+
+    wait_id: str
+    woken: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +171,8 @@ class TurnBindings:
     _max_retries_override: int | None = None
     _hosted_bridge: HostedPresentationBridge | None = None
     _projector: ContentProjector | None = None
+    # The wait the last retry notice announced, until the sleep after it ends.
+    _retry_wait: _RetryWait | None = None
 
     def __init__(
         self,
@@ -184,7 +198,6 @@ class TurnBindings:
         profile_name: str = "",
         workspace_cwd: str = "",
         serialize_implicit_windows: bool = False,
-        extra_function_middleware: Sequence[FunctionMiddleware] = (),
         run_cycle_start_hooks: Sequence[Callable[[], None]] = (),
         hosted_commits_probe: Callable[[], tuple[str, ...]] | None = None,
         hosted_commits_in_flight_probe: Callable[[], tuple[str, ...]] | None = None,
@@ -228,7 +241,6 @@ class TurnBindings:
         self._projector = None
         self._interrupt = InterruptMiddleware()
         self._hook_commit = HookCommitMiddleware()
-        self._extra_function_middleware = tuple(extra_function_middleware)
         # Fired once at the start of every user-initiated run cycle, before
         # the first attempt.  Components that carry state across the cycle's
         # whole-run retry attempts register here so an aborted cycle —
@@ -531,18 +543,16 @@ class TurnBindings:
             drain_consumed_injection_messages=self._injection.drain_consumed_injection_messages,
             commit_consumed_injections=self._injection.commit_logical_call,
         )
-        # Chain order is pinned (first = outermost): extras sit INSIDE
-        # tool_events (a short-circuiting extra must still publish
-        # InvocationToolCallStart/InvocationToolCallResult) and INSIDE approval (no extra can
-        # bypass approval on gated kinds). The hook commit is innermost: nothing after it
-        # can change the arguments the before_tool_call hooks checked.
+        # Chain order is pinned (first = outermost): everything sits inside tool_events,
+        # so a call a middleware answers itself (ask_user, a skipped sleep) still publishes
+        # InvocationToolCallStart/InvocationToolCallResult. The hook commit is innermost:
+        # nothing after it can change the arguments the before_tool_call hooks checked.
         kwargs: AgentRunKwargs = {
             "session": self._session,
             "middleware": [
                 self.tool_events,
                 self._ask_user,
                 self.approval,
-                *self._extra_function_middleware,
                 self._sleep,
                 self._interrupt,
                 self._hook_commit,
@@ -624,6 +634,7 @@ class TurnBindings:
         self.state.last_error = ""
         self.state.partial_answer = ()
         self._interrupt.reset()
+        self._retry_wait = None
         self._attempt_trace.reset()
         self._hosted_run_generation = next_hosted_run_generation()
         emitter = self._emitter
@@ -701,6 +712,7 @@ class TurnBindings:
                 self.state.partial_answer = self._projector.take_unlanded_answer()
             self._projector = None
             self._interrupt.reset()
+            self._retry_wait = None
             self.state.running = False
             if self._bound_emitter is not None:
                 self._invocation_publishers.unbind(self._bound_emitter.origin)
@@ -771,6 +783,9 @@ class TurnBindings:
         if self._hosted_bridge is not None and self.inputs.pending_continuation_token is None:
             await self._hosted_bridge.attempt_rejected(message)
         display_message, display_hint = display_fields(exc, retry_notice=True)
+        # Armed before the notice is published: a skip sent as soon as a frontend shows it still finds the wait.
+        wait = _RetryWait(uuid.uuid4().hex) if delay_seconds > 0 else None
+        self._retry_wait = wait
         await self._emitter.publish(
             InvocationRetryAttempt(
                 origin=self._emitter.origin,
@@ -782,6 +797,7 @@ class TurnBindings:
                 session_id=self._session_id,
                 display_message=display_message,
                 display_hint=display_hint,
+                wait_id=wait.wait_id if wait is not None else "",
             )
         )
 
@@ -829,6 +845,8 @@ class TurnBindings:
         """
         generation = self._hosted_run_generation
         self._interrupt.set_interrupted()
+        if self._retry_wait is not None:
+            self._retry_wait.woken.set()
         if self._hosted_bridge is not None:
             await self._hosted_bridge.attempt_rejected("Execution interrupted", status=HostedToolStatus.INTERRUPTED)
         if self._hosted_run_generation != generation:
@@ -874,12 +892,36 @@ class TurnBindings:
             await self._bus.unsubscribe(InvocationToolCallResult, _on_tool_result)
 
     async def _interruptible_sleep(self, seconds: int) -> bool:
-        """Sleep in 1-second ticks, returning True if interrupted."""
-        for _ in range(seconds):
-            if self._interrupt.is_interrupted:
-                return True
-            await asyncio.sleep(1)
+        """Wait *seconds* before a retry, returning True if interrupted.
+
+        The wait the last retry notice announced ends early when the user
+        skips it or an interrupt arrives; the interrupt latch is also read
+        every ``_RETRY_WAIT_POLL_SECONDS``.
+        """
+        wait = self._retry_wait
+        woken = wait.woken if wait is not None else asyncio.Event()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + seconds
+        try:
+            while not self._interrupt.is_interrupted and not woken.is_set():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(woken.wait(), timeout=min(_RETRY_WAIT_POLL_SECONDS, remaining))
+        finally:
+            # Only this wait is over: a skip naming it from now on does nothing.
+            if self._retry_wait is wait:
+                self._retry_wait = None
         return self._interrupt.is_interrupted
+
+    def skip_retry_wait(self, wait_id: str) -> bool:
+        """End the wait the retry notice with *wait_id* announced; False when that wait is not the current one."""
+        wait = self._retry_wait
+        if not wait_id or wait is None or wait.wait_id != wait_id:
+            return False
+        wait.woken.set()
+        return True
 
     def inject(
         self,

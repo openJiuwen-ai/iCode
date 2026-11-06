@@ -177,6 +177,12 @@ def _lines(text: str) -> list[str]:
     return text.split("\n")
 
 
+def _after_character(host: EditorCommandHost, row: int, column: int, line_length: int) -> int:
+    """The column after the character under the cursor; an atomic span (a live label) is one character."""
+    after = next((high for low, high in host.editor_atomic_spans(row) if low == column), column + 1)
+    return min(after, line_length)
+
+
 def _normal_location(text: str, location: EditorLocation) -> EditorLocation:
     lines = _lines(text)
     row = min(max(location[0], 0), len(lines) - 1)
@@ -358,6 +364,10 @@ class VimKeymap:
 
     def prepare_delegated_paste(self) -> bool:
         """Permit direct document paste only while Vim is in Insert state."""
+        return self._state is VimState.INSERT
+
+    def accepts_text(self) -> bool:
+        """Only Insert state types into the document."""
         return self._state is VimState.INSERT
 
     def _handle_normal(self, stroke: EditorKeyStroke, host: EditorCommandHost) -> EditorKeyResult:
@@ -686,7 +696,7 @@ class VimKeymap:
         elif command == "I":
             location = row, _first_non_blank(line)
         elif command == "a":
-            location = row, min(column + 1, len(line))
+            location = row, _after_character(host, row, column, len(line))
         elif command == "A":
             location = row, len(line)
         elif command == "o":
@@ -947,14 +957,26 @@ class VimKeymap:
         text = host.editor_text
         row, column = _normal_location(text, host.editor_cursor_location)
         line = _lines(text)[row]
-        end = min(column + count, len(line))
-        source_range = EditorTextRange((row, column), (row, end))
-        current = host.read_editor_range(source_range)
-        if not current:
+        # An atomic span (a live label) counts as one character and keeps its text.
+        atomic = host.editor_atomic_spans(row)
+        start = next((low for low, high in atomic if low < column < high), column)
+        end = start
+        pieces: list[str] = []
+        for _ in range(count):
+            if end >= len(line):
+                break
+            span = next(((low, high) for low, high in atomic if low == end), None)
+            if span is not None:
+                pieces.append(line[span[0] : span[1]])
+                end = span[1]
+                continue
+            character = line[end]
+            pieces.append(character.lower() if character.isupper() else character.upper())
+            end += 1
+        if end == start:
             host.notify_editor_activity()
             return
-        replacement = "".join(character.lower() if character.isupper() else character.upper() for character in current)
-        host.replace_editor_range(source_range, replacement)
+        host.replace_editor_range(EditorTextRange((row, start), (row, end)), "".join(pieces))
         host.move_editor_cursor(_normal_location(host.editor_text, (row, end)))
 
     def _paste(self, *, after: bool, count: int, host: EditorCommandHost) -> EditorStatus:
@@ -985,7 +1007,7 @@ class VimKeymap:
             target_row = row + 1 if after else row
             host.move_editor_cursor((min(target_row, len(_lines(host.editor_text)) - 1), 0))
             return ""
-        location = row, min(column + 1, len(_lines(text)[row])) if after else column
+        location = (row, _after_character(host, row, column, len(_lines(text)[row]))) if after else (row, column)
         insertion_offset = location_to_offset(text, location)
         host.replace_editor_range(EditorTextRange(location, location), payload)
         target = offset_to_location(host.editor_text, insertion_offset + len(payload) - 1)

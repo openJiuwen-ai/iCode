@@ -35,9 +35,10 @@ from chrys.kernel import (
     TextSpanRegion,
     UsageDetails,
 )
-from chrys.service.llm.chat_completions.decode import add_deepseek_cache_usage, refused_calls_error
+from chrys.service.llm.chat_completions.decode import add_deepseek_cache_usage
 from chrys.service.llm.openai_timestamps import openai_created_at_iso
 from chrys.service.llm.reasoning_display import REASONING_SUMMARY_KEY
+from chrys.service.llm.refusals import refused_calls_error
 from chrys.service.profiles.models.options import effective_store_option
 
 from .hosted import decode_hosted_item, to_payload

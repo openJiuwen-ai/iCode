@@ -63,7 +63,7 @@ It checks the project and global hook files without running any hook. It lists e
 PASS 1 file · 1 hook
 ```
 
-Project hooks are not loaded by default. In the terminal user interface (TUI), press **F10** to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Safety**. If it is already on, switch sessions or restart iCode to apply the configuration on disk.
+Project hooks are not loaded by default. In the terminal user interface (TUI), press **F10** to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Safety**. If it is already on, run `/reload` while idle, switch sessions, or restart iCode to apply the configuration on disk.
 
 Run `icode hook list` to see the hooks a session started in this directory loads. The `Project hooks` line should end with `(loaded)`, with `record-turn` listed below it.
 
@@ -116,7 +116,7 @@ The script returns `action: block` and the rejection reason through the result f
 
 `on_error: block` also rejects the tool call if the script fails to start, times out, or returns a nonzero exit code. Use it for checks that must keep the restriction in place when they fail. This hook blocks only matching `filesystem.write` calls; shell commands are unaffected.
 
-After switching sessions or restarting iCode, create a dedicated test file, `hook-demo/.env`, with known content such as `HOOK_TEST=unchanged`. Ask the agent to attempt one modification using only `write_file` or `edit_file`, then stop after rejection without using the shell or another method. Check that the tool call is rejected before execution and displays the reason provided by the script. Then confirm that the file content is unchanged. You can delete `hook-demo/.env` after verification.
+After running `/reload`, switching sessions, or restarting iCode, create a dedicated test file, `hook-demo/.env`, with known content such as `HOOK_TEST=unchanged`. Ask the agent to attempt one modification using only `write_file` or `edit_file`, then stop after rejection without using the shell or another method. Check that the tool call is rejected before execution and displays the reason provided by the script. Then confirm that the file content is unchanged. You can delete `hook-demo/.env` after verification.
 
 ## Example: ask before an operation
 
@@ -189,7 +189,7 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file
     )
 ```
 
-Switch sessions or restart iCode to apply the configuration. The system reminder takes effect only after the blocking hook finishes successfully. iCode wraps the reminder in `<system-reminder>` tags and sends it to the model along with the user's submitted message. The reminder does not appear in the TUI conversation and is not saved in session data.
+Run `/reload`, switch sessions, or restart iCode to apply the configuration. The system reminder takes effect only after the blocking hook finishes successfully. iCode wraps the reminder in `<system-reminder>` tags and sends it to the model along with the user's submitted message. The reminder does not appear in the TUI conversation and is not saved in session data.
 
 To confirm that a `user_prompt_submit` hook is working, or to inspect the actual system reminder sent to the model, check the raw HTTP log of model requests. This log contains unredacted API keys and full conversation content, so enable it only temporarily for troubleshooting. In the TUI, press **F10**, go to **Safety** > **Diagnostics**, enable **Capture raw model HTTP requests**, and restart iCode. Submit a message using the Code agent, then search for the reminder text "After modifying Python files" in `llm_raw_http.jsonl` in the current session directory. For its location, see [Find the session ID and storage location](../daily-use/sessions.md#find-the-session-id-and-storage-location). After verification, disable **Capture raw model HTTP requests** and restart iCode again.
 
@@ -206,6 +206,17 @@ For most hooks, choose an execution mode based on whether the current operation 
 | Send ordinary notifications or record information in a task that can be interrupted by exit | `fire_and_forget` | iCode continues immediately and does not wait when the current turn or session ends; this is the default mode |
 
 An asynchronous hook (`async`) does not delay the event that triggered it or the current operation. When the current turn or session ends, if an applicable asynchronous hook is still running, iCode waits for it to finish before ending the turn or session. iCode does not wait for asynchronous hooks triggered by `user_interrupt`. The wait limit at session end is configurable in [Global settings](../../reference/hooks.md#global-settings). To retry unfinished tasks after iCode exits, also configure `delivery: durable`.
+
+## Apply edits with /reload
+
+After you edit a hooks file, run `/reload` while the session is idle. It reads the global hooks file and, if **Load project hooks** is on, the project one. The next event uses what you saved.
+
+- **Nothing changed**: your hooks carry on undisturbed, including any `async` hook that is still running.
+- **Rules changed**: the new rules replace the old ones. iCode ends the old set the way it does when a session ends: it waits for running `async` hooks within the wait limit, then stops any that remain. `session_start` hooks don't run again.
+- **A file can't be read, or a rule in it is invalid**: iCode keeps every rule now in effect, so a rule that was blocking an operation goes on blocking it. The summary names the file and the rule. Fix the file and run `/reload` again. To remove a rule on purpose, delete it or set `enabled: false`.
+- **The same edit turns project hooks on or off, and a hooks file has a problem**: the reload stops and nothing changes, settings included. The message names the problem and says whether project hooks are still loaded.
+
+A `/btw` question doesn't hold up the reload. If its hook check is still running when the rules are replaced, the question ends with a failure and nothing is sent to the model, so ask it again. A question that has already passed its check finishes as usual.
 
 ## See which hooks ran
 

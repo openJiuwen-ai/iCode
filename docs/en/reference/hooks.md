@@ -45,7 +45,7 @@ If a file cannot be decoded using the detected encoding, iCode reports a configu
 
 Project hooks are not loaded by default, because they come with the repository you open. To load them, press **F10** in the terminal user interface (TUI) to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Safety** (`project.hooks_enabled`). When the working directory has project hooks that are not loaded, iCode shows a notice. Global hooks are always loaded.
 
-Editing a hook configuration file on disk does not take effect immediately. After editing, switch sessions or restart iCode to reload the configuration. Changes to hook scripts alone do not require a reload; the next time the hook is triggered, it uses the new script content.
+Editing a hook configuration file on disk does not take effect immediately. After editing, run `/reload` while idle, switch sessions, or restart iCode to load the configuration. Changes to hook scripts alone do not require a reload; the next time the hook is triggered, it uses the new script content.
 
 Enter `/runtime` in the TUI and open the **Hooks** tab to view the currently loaded project and global hooks. In a terminal, [`icode hook list`](#icode-hook-list) shows the hooks a session started in the current directory loads, and [`icode hook validate`](#icode-hook-validate) checks the configuration files.
 
@@ -238,6 +238,22 @@ Matching follows these rules:
 - Condition values must be strings. In YAML, quote numbers and booleans: an unquoted value such as `equals: 10` or `equals: true` is a configuration error that disables every hook in the file.
 - Non-string arguments are converted with Python's `str()` before comparison, so JSON `true` and `false` become `True` and `False` (match them with `equals: "True"`), and lists and objects use Python's representation.
 - Use YAML single-quoted strings for regular expressions where possible; backslashes must be escaped inside double quotes. A hook whose regular expression is invalid is skipped when the session starts and a warning names the hook and its file; the other hooks in the file still run.
+
+#### Renamed shell arguments
+
+The shell tool's `working_dir` argument is now `workdir`, and `max_tokens` is now `max_output_tokens`. Hooks written for the old names keep working for now:
+
+- `match.args` on an old name matches the new argument of shell calls.
+- A hook script still finds the old names in `tool.args` of a shell call, next to the new ones.
+- An old name a hook returns in `args_override` changes the new argument.
+
+A durable hook task left unfinished by an earlier version of iCode, retried after the update, gives its script the new names as well as the old ones.
+
+Support for the old names will be removed in a later release, so rename them in hooks for the shell and update scripts to read and return the new names. `icode hook validate` reports a hook that still uses an old name as `retired_shell_arg`:
+
+- A hook with `tool_kind: shell`: rename the argument.
+- A hook without `tool_kind`, warned for `working_dir` only: rename it and add `tool_kind: shell` only if the hook is for the shell. A tool name alone does not settle it, since another tool, such as an MCP tool, may have any name, including a shell's, and keeps its own `working_dir`; a hook for both needs one hook per tool. `max_tokens` is not reported here, because `read_file` and `web_fetch` take it too.
+- A hook for another tool kind is not warned: it matches that tool's own arguments.
 
 ## Run configuration
 
@@ -710,6 +726,7 @@ These problems are warnings:
 | `on_error_block_ignored` | `on_error: block` is set on a hook that cannot block, so its failures are handled as `warn` |
 | `durable_blocking` | `delivery: durable` is set on a blocking hook, which does not use it |
 | `broad_before_tool_call` | A `before_tool_call` hook has no match conditions, so it runs for every tool call |
+| `retired_shell_arg` | `match.args` uses an old shell argument name: `working_dir`, or `max_tokens` with `tool_kind: shell`; it still matches shell calls for now. See [Renamed shell arguments](#renamed-shell-arguments) |
 | `duplicate_id_across_files` | The project and global files both define this `id`; both hooks run |
 | `shadowed_file` | The folder holds more than one hook configuration file; only the first is read (see [Configuration file locations](#configuration-file-locations)) |
 | `program_not_found` | The program that runs an enabled hook's command or script is not found on `PATH`, or on Windows is only the placeholder that offers Python from the Microsoft Store |

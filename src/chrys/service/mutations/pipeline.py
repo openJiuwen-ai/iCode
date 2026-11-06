@@ -159,7 +159,7 @@ def _track_shell_scan_before(tracker: MutationTracker, args: dict, workspace_cwd
     from chrys.service.mutations.scanner import WorkspaceScanner
 
     command = args.get("command", "")
-    raw_cwd = args.get("working_dir") or args.get("cwd") or workspace_cwd
+    raw_cwd = args.get("workdir") or args.get("cwd") or workspace_cwd
     cwd = resolve_workspace_path(raw_cwd, base_cwd=workspace_cwd) if raw_cwd else resolve_workspace_path(".")
 
     targets = ShellMutationDetector.detect_targets(command, cwd)
@@ -258,7 +258,7 @@ async def _track_git_capture_before(
     """Capture git state before a shell command for implicit change detection."""
     from chrys.service.mutations.git_calibrator import GitDiffCalibrator
 
-    raw_cwd = args.get("working_dir") or args.get("cwd") or workspace_cwd
+    raw_cwd = args.get("workdir") or args.get("cwd") or workspace_cwd
     cwd = resolve_workspace_path(raw_cwd, base_cwd=workspace_cwd) if raw_cwd else resolve_workspace_path(".")
 
     def _capture() -> GitDiffCalibrator | None:
@@ -505,7 +505,7 @@ async def prepare_mutation_tracking(
     # of the observation.  A peer write in a pre-scan gap would be
     # attributed by the diff yet never overlap our interval otherwise.
     if coordinator is not None and (is_shell or tool_name in _IMPLICIT_WRITE_TOOLS):
-        raw_cwd = args.get("working_dir") or args.get("cwd") or workspace_cwd
+        raw_cwd = args.get("workdir") or args.get("cwd") or workspace_cwd
         cwd = resolve_workspace_path(raw_cwd, base_cwd=workspace_cwd) if raw_cwd else resolve_workspace_path(".")
         scope = _git_calibration_scope_paths(cwd, workspace_cwd)
         ctx.window_opened_at = time.time()

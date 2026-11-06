@@ -1373,10 +1373,10 @@ async def calibrate(
             )
             whole_app_gate_passed = (
                 # Census of MainScreen.on_mount's registrations: chat panel,
-                # trajectory dashboard, session JSON panel, shell panel, and
+                # /btw panel, trajectory dashboard, session JSON panel, shell panel, and
                 # suggestions. A drifted count means a surface joined or left
                 # the freeze protocol without recalibration.
-                participant_count == 5
+                participant_count == 6
                 and watchdog_timer_active
                 and buddy_timer_active
                 and status_timer_active

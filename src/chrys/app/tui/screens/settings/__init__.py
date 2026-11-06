@@ -17,6 +17,7 @@ from chrys.app.tui.screens.settings.layout import (
     rendered_keys,
 )
 from chrys.app.tui.screens.settings.ports import NotificationPorts, SessionStoragePorts, SettingsPanelPorts
+from chrys.app.tui.screens.settings.provenance import is_greyed_layer
 
 if TYPE_CHECKING:
     from chrys.app.tui.screens.settings.dialog import SettingsDialog
@@ -35,6 +36,7 @@ __all__ = [
     "SettingsDialog",
     "SettingsPanelPorts",
     "Suggestions",
+    "is_greyed_layer",
     "rendered_keys",
 ]
 

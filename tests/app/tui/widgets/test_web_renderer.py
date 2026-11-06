@@ -87,7 +87,7 @@ async def test_tools_panel_save_preserves_web_categories():
             yield panel
 
     async with Host().run_test():
-        assert set(panel.get_config()) == {"web_search", "web_fetch", "search"}
+        assert set(panel.get_config().builtins) == {"web_search", "web_fetch", "search"}
 
 
 async def test_tools_panel_save_keeps_categories_it_has_no_switch_for():
@@ -98,7 +98,7 @@ async def test_tools_panel_save_keeps_categories_it_has_no_switch_for():
             yield panel
 
     async with Host().run_test():
-        assert panel.get_config() == ["search", "future_tool"]
+        assert panel.get_config().builtins == ["search", "future_tool"]
 
 
 async def test_web_search_card_drops_sources_whose_url_carries_c1_controls():

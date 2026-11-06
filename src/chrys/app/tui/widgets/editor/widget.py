@@ -326,6 +326,10 @@ class MessageEditor(MarkdownHighlightedTextArea):
         self.history.checkpoint()
         self.notify_editor_activity()
 
+    def editor_atomic_spans(self, row: int) -> list[tuple[int, int]]:
+        del row
+        return []
+
     def editor_undo(self) -> None:
         self.action_undo()
         self.notify_editor_activity()

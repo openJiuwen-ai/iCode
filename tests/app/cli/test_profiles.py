@@ -51,10 +51,9 @@ class FakeModelRegistry:
 
 
 def _patch_runtime(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
-    def fake_bootstrap_runtime(**kwargs: Any) -> RuntimeBootstrap:
-        assert kwargs["dotenv_override"] is True
-        assert kwargs["configure_stdio"] is True
-        assert kwargs["setup_telemetry"] is False
+    def fake_bootstrap_runtime(*, configure_stdio: bool, setup_telemetry: bool) -> RuntimeBootstrap:
+        assert configure_stdio is True
+        assert setup_telemetry is False
         return RuntimeBootstrap(loaded=LoadedSettings(settings=settings, provenance={}))
 
     monkeypatch.setattr(profiles_cli, "bootstrap_runtime", fake_bootstrap_runtime)
