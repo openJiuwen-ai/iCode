@@ -143,7 +143,8 @@ async def test_retry_compaction_pressure_and_progress_are_scoped_to_the_node(
             )
         )
         await wait_for(lambda: bool(surface.query(RetryMessage)), pilot=pilot)
-        assert "Temporary provider error" in surface.query_one(RetryMessage).render().plain
+        retry_body = surface.query_one(RetryMessage).query_one(".status-body", Static)
+        assert "Temporary provider error" in retry_body.render().plain
         await bus.publish(events.InvocationCompactionStarted(origin=origin, compaction_id="fold"))
         await wait_for(lambda: bool(surface.query(CompactionCard)), pilot=pilot)
         assert not surface.query(RetryMessage)

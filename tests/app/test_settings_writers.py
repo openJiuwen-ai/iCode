@@ -29,15 +29,22 @@ def test_all_settings_writers_interleave_without_losing_keys(
 ) -> None:
     """Every persistence surface funnels into one locked document write.
 
-    The dotenv file is not that channel any more: it keeps only the user's own
-    variables, and no writer here may touch it or mirror into the process
+    No writer here may touch legacy files or mirror into the process
     environment — a mirrored value would come back as the ``ENV`` layer and
     outrank the very document these writes target.
     """
     fake = dataclasses.replace(platform_mod.get_platform(), config_dir=tmp_path, data_dir=tmp_path)
     monkeypatch.setattr(platform_mod, "get_platform", lambda: fake)
-    for key in ("CHRYS_THEME", "CHRYS_LOCALE", "CHRYS_DEFAULT_APPROVAL_MODE", "CHRYS_EDITOR_KEYMAP"):
-        monkeypatch.delenv(key, raising=False)
+    env_keys = (
+        "CHRYS_THEME",
+        "CHRYS_LOCALE",
+        "CHRYS_DEFAULT_APPROVAL_MODE",
+        "CHRYS_EDITOR_KEYMAP",
+        "CHRYS_MODEL_PROFILE",
+    )
+    for key in env_keys:
+        monkeypatch.setenv(key, "")
+        monkeypatch.delenv(key)
     env_path = tmp_path / ".env"
     env_original = "# preserve\nOPENAI_API_KEY=legacy\nUNRELATED=keep\n"
     env_path.write_text(env_original, encoding="utf-8")
@@ -61,5 +68,5 @@ def test_all_settings_writers_interleave_without_losing_keys(
     assert doc["model"]["profile"]["active"] == "model-id"
     assert doc["rollback"]["snapshots_keep"] == 7
     assert env_path.read_text(encoding="utf-8") == env_original
-    for key in ("CHRYS_THEME", "CHRYS_LOCALE", "CHRYS_DEFAULT_APPROVAL_MODE", "CHRYS_EDITOR_KEYMAP"):
+    for key in env_keys:
         assert key not in os.environ

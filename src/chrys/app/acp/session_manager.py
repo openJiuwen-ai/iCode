@@ -13,9 +13,9 @@ import threading
 import uuid
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path
-from typing import Any, TypeGuard, TypeVar, cast
+from typing import Any, Final, TypeGuard, TypeVar, cast
 
 from acp import schema as acp_schema
 
@@ -25,7 +25,13 @@ from chrys.app.features.session_title.updater import SessionTitleUpdater
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.context import EvalContext
 from chrys.foundation.config.process_settings import reattribute_command_line, route_restart_settings
-from chrys.foundation.config.runtime_pointer import MODEL_POINTER_ENV, set_model_pointer
+from chrys.foundation.config.runtime_pointer import (
+    MODEL_POINTER_ENV,
+    MODEL_POINTER_KEY,
+    SessionDefaultModel,
+    model_selection_revision,
+    set_model_pointer,
+)
 from chrys.foundation.config.settings_store import LoadedSettings, load_settings, persist
 from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.config.user_settings import flatten_user_doc, user_settings_path
@@ -53,6 +59,8 @@ from chrys.foundation.events.types import (
     WorkspaceChange,
     WorkspaceUpdated,
 )
+from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.messages import MessageRef
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import WorkingDir, Workspace
 from chrys.foundation.platform.files import surrogate_safe_text
@@ -115,6 +123,10 @@ _SUPPORTED_CONFIG_OPTIONS: tuple[AcpConfigOption, ...] = (
 
 class AcpSessionError(RuntimeError):
     """Raised when an ACP session request cannot be fulfilled."""
+
+
+FULL_RELOAD_BUDGET_SECONDS: Final = 300.0
+"""How long a full reload may take, starting before the wait for the session's mutation lock."""
 
 
 @dataclass
@@ -401,7 +413,7 @@ class AcpSessionManager:
         return {"name": name, "deleted": deleted}
 
     def reset_agent_profile(self, name: str) -> dict[str, object]:
-        """Reset a built-in agent while retaining Skills, MCP, and Memory settings."""
+        """Reset a built-in agent while retaining Skills, MCP, Memory, and Extensions settings."""
         self.load_registries()
         name = _safe_profile_file_stem(name, field_name="agent profile name")
         current = self._agent_registry.get(name)
@@ -534,7 +546,7 @@ class AcpSessionManager:
             if option.env_alias == MODEL_POINTER_ENV:
                 pointer = str(stored) if stored else None
                 set_model_pointer(pointer, origin=SettingOrigin(layer=Source.PROCESS_RUNTIME))
-            self._refresh_default_settings_from_env()
+            self._refresh_default_settings()
         return {
             "key": key,
             "envKey": option.env_alias,
@@ -1021,7 +1033,7 @@ class AcpSessionManager:
         *,
         timeout_message: str,
         failure_message: str,
-        timeout: float = 60,
+        timeout: float | None = 60,
         warnings: list[Warning] | None = None,
     ) -> _RuntimeEventT:
         """Publish a runtime-control command and await its result event.
@@ -1059,7 +1071,7 @@ class AcpSessionManager:
         *,
         timeout_message: str,
         failure_message: str,
-        timeout: float = 60,
+        timeout: float | None = 60,
         warnings: list[Warning] | None = None,
     ) -> _RuntimeEventT:
         """Publish a runtime-control command while the session mutation lock is held."""
@@ -1101,7 +1113,7 @@ class AcpSessionManager:
             await bus.unsubscribe(Warning, _on_warning)
 
     async def set_model_profile(self, session_id: str, profile_id: str) -> ModelProfileSwitched:
-        """Switch the active model for this session only (no global .env write)."""
+        """Switch the active model for this session while preserving the saved default."""
         self.load_registries()
         if not profile_id or self._model_registry.get(profile_id) is None:
             msg = f"Model profile not found: {profile_id}"
@@ -1161,7 +1173,13 @@ class AcpSessionManager:
         transcript = await self._state_store.load_session_transcript(canonical_id, prefer_recovery=prefer_recovery)
         return canonical_id, self._state_store.session_dir(canonical_id), transcript.turns if transcript else []
 
-    async def reload_settings(self, session_id: str, *, warnings: list[Warning] | None = None) -> SettingsReloaded:
+    async def reload_settings(
+        self,
+        session_id: str,
+        *,
+        warnings: list[Warning] | None = None,
+        follow_process_model: bool = False,
+    ) -> SettingsReloaded:
         """Reload settings/profile files for an active session.
 
         Awaits the rebuild so a failed soft-restart (``AgentLoadFailed``, which
@@ -1175,20 +1193,85 @@ class AcpSessionManager:
                 values was dropped has been misinformed. Nothing else on the bus
                 is listening: warnings published outside a prompt turn reach no
                 subscriber, and the bus does not replay them to later ones.
+            follow_process_model: The default model was just set for the whole
+                process, so what this session settled on earlier ends.
         """
         session = self.get(session_id)
-        self._agent_registry.load_all()
-        self._model_registry.load_all()
-        result = await self._await_runtime_mutation(
-            session,
-            SettingsReload(),
-            SettingsReloaded,
-            timeout_message="Timed out waiting for settings reload.",
-            failure_message="Settings reload failed.",
-            warnings=warnings,
-        )
-        await asyncio.to_thread(self._refresh_default_settings_from_env)
+        async with session.mutation_lock:
+            # Under the lock: this moves the registries' versions, which a full
+            # reload of this session holding the lock is about to check.
+            self._agent_registry.load_all()
+            self._model_registry.load_all()
+            result = await self._await_runtime_mutation_locked(
+                session,
+                SettingsReload(follow_process_model=follow_process_model),
+                SettingsReloaded,
+                timeout_message="Timed out waiting for settings reload.",
+                failure_message="Settings reload failed.",
+                warnings=warnings,
+            )
+        await asyncio.to_thread(self._refresh_default_settings)
         return result
+
+    async def reload_settings_full(
+        self, session_id: str, *, warnings: list[Warning] | None = None
+    ) -> dict[str, JsonValue]:
+        """Reread everything for one session, within one budget from before the wait for its lock.
+
+        The strict read, the catalogs, hooks and a reconnect of each MCP server
+        run as the TUI's ``/reload`` does, inside the publish, with the model it
+        selects staying on this session. A timeout cancels whatever is running:
+        an uncommitted candidate is dropped, the permit and the lock are released,
+        and a turn being finished is only waited for, never cancelled.
+
+        Past the commit point the reply says what was installed, even when the
+        rest of the reload failed or ran out of time.
+        """
+        session = self.get(session_id)
+        handle = session.host.engine.settings_handle
+        deadline = asyncio.get_running_loop().time() + FULL_RELOAD_BUDGET_SECONDS
+        before: LoadedSettings | None = None
+        result: SettingsReloaded | None = None
+        unfinished: str | None = None
+        try:
+            async with asyncio.timeout_at(deadline), session.mutation_lock:
+                before = handle.base
+                result = await self._await_runtime_mutation_locked(
+                    session,
+                    SettingsReload(manual=True, session_scoped_model=True, session_id=session.host.session_id),
+                    SettingsReloaded,
+                    timeout_message="Timed out waiting for full settings reload.",
+                    failure_message="Full settings reload failed.",
+                    # The request's deadline is the only one: this one would start after the publish.
+                    timeout=None,
+                    warnings=warnings,
+                )
+        except TimeoutError as exc:
+            unfinished = f"Timed out after {FULL_RELOAD_BUDGET_SECONDS:g} seconds."
+            if before is None or handle.base is before:
+                raise AcpSessionError(f"Full settings reload failed: {unfinished} Nothing was changed.") from exc
+        except AcpSessionError as exc:
+            if before is None or handle.base is before:
+                raise
+            unfinished = str(exc)
+        # The rebuild may have fallen back from an agent whose file went away.
+        session.profile_name = session.host.engine.current_profile_snapshot().to_profile or session.profile_name
+        try:
+            async with asyncio.timeout_at(deadline):
+                await asyncio.to_thread(self._refresh_default_settings, strict=True)
+        except Exception:
+            # Installed already, and a new session reads the files for itself.
+            logger.warning("Could not refresh the ACP defaults after a full reload", exc_info=True)
+        lines = result.report if result is not None else ()
+        reply: dict[str, JsonValue] = {
+            "scope": "full",
+            "installed": True,
+            "complete": unfinished is None,
+            "report": [entry for line in lines if (entry := _report_line(line)) is not None],
+        }
+        if unfinished is not None:
+            reply["detail"] = unfinished
+        return reply
 
     async def apply_config_option(
         self,
@@ -1218,7 +1301,11 @@ class AcpSessionManager:
         # reads the file back, and this server answers every other request on
         # the same event loop.
         result = await asyncio.to_thread(self.set_config_option, key, value)
-        await self.reload_settings(session_id, warnings=warnings)
+        await self.reload_settings(
+            session_id,
+            warnings=warnings,
+            follow_process_model=_config_option(key).env_alias == MODEL_POINTER_ENV,
+        )
         return result
 
     async def set_workspace(self, session_id: str, primary_cwd: str) -> WorkspaceUpdated:
@@ -1453,10 +1540,11 @@ class AcpSessionManager:
                     frontend_default_max_transient_retries=base.settings.frontend_default_max_transient_retries
                 ),
             )
+            candidate = _past_stale_seeded_pointer(candidate)
             loaded, _deferred = route_restart_settings(reattribute_command_line(candidate, base), base)
             return loaded.overlay(Source.CLI, ask_user_timeout_seconds=base.settings.ask_user_timeout_seconds)
 
-    def _refresh_default_settings_from_env(self) -> None:
+    def _refresh_default_settings(self, *, strict: bool = False) -> None:
         # Read, route and publish as one step. Every writer refreshes after its
         # own write, so serializing this makes the last refresh to publish also
         # the last to read — without the lock, two clients configuring two
@@ -1466,7 +1554,7 @@ class AcpSessionManager:
         # rather than only at the write sites because a reload refreshes too.
         with self._global_settings_lock:
             # The launch-time ``--ask-user-timeout`` is a CLI value, not something a
-            # re-read of the environment can produce, so it is carried across as the
+            # settings reload can produce, so it is carried across as the
             # layer it came from rather than folded into the new load.
             timeout = self._loaded_settings.settings.ask_user_timeout_seconds
             # RESTART routing applies to future sessions too: one process, one
@@ -1474,8 +1562,60 @@ class AcpSessionManager:
             # the already-running hosts cannot. The deferred keys need no report
             # here — the session that triggered the refresh had its own reload,
             # which already said so on its bus.
-            loaded, _deferred = route_restart_settings(load_settings(), self._loaded_settings)
+            #
+            # Strict after a full reload: an unreadable file then raises, leaving
+            # the defaults as they were. That read's model is for the session that
+            # asked; these defaults say what a new session will get.
+            if strict:
+                load_settings(manual_reload=True, session_scoped_model=True)
+            fresh = _past_stale_seeded_pointer(load_settings())
+            loaded, _deferred = route_restart_settings(fresh, self._loaded_settings)
             self._loaded_settings = loaded.overlay(Source.CLI, ask_user_timeout_seconds=timeout)
+
+
+def _past_stale_seeded_pointer(loaded: LoadedSettings) -> LoadedSettings:
+    """Let the file's current model through a pointer that startup seeded from an older version of it.
+
+    Startup parks the file's model in the process pointer, credited to the file,
+    and the pointer outranks the file on every later load. A session built after
+    the file changed would start on what it used to say, so it takes the file's
+    value now and keeps it until a process-wide model choice is made.
+    A pointer from any other source (a shell export, a process-wide selection)
+    is a real choice and stands, as it does when the file cannot be read.
+    """
+    origin = loaded.source_for(MODEL_POINTER_KEY)
+    value = loaded.file_model
+    if origin.layer is not Source.USER or loaded.document_error is not None or loaded.settings.model_profile == value:
+        return loaded
+    settled = SessionDefaultModel(
+        value, origin if value else SettingOrigin(layer=Source.DEFAULT), model_selection_revision()
+    )
+    return replace(
+        loaded,
+        settings=replace(loaded.settings, model_profile=value),
+        provenance={**loaded.provenance, MODEL_POINTER_KEY: settled.origin},
+        session_default_model=settled,
+    )
+
+
+def _report_line(line: MessageRef) -> dict[str, JsonValue] | None:
+    """One line of a full reload's summary, saying what an ACP server does rather than what the TUI does."""
+    key = line.definition.key
+    if key == "controls.reload_done":
+        message = "Reloaded settings, profiles, memory, skills, hooks and MCP servers."
+    elif key == "controls.reload_next_launch":
+        keys = format_message(line).partition(": ")[2]
+        message = f"Not used for new sessions, which start with the agent and approval mode this server was launched with: {keys}"
+    elif key == "controls.reload_applied":
+        # The TUI's list of what took effect includes what only the TUI uses.
+        return None
+    elif key == "controls.settings_restart_required":
+        # Some of these only the TUI reads, and restarting this server applies nothing to them.
+        keys = format_message(line).partition(": ")[2].removesuffix(".")
+        message = f"Not applied by this reload: {keys}"
+    else:
+        message = format_message(line)
+    return {"key": key, "message": message}
 
 
 def _mcp_overlay(

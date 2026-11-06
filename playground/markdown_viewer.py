@@ -771,5 +771,5 @@ class MarkdownPlayground(TuiVariableDefaultsMixin, App):
 if __name__ == "__main__":
     from chrys.orchestration.startup import bootstrap_runtime
 
-    bootstrap_runtime(dotenv_override=False, setup_telemetry=False)
+    bootstrap_runtime(setup_telemetry=False)
     MarkdownPlayground().run()

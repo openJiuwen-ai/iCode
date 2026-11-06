@@ -12,8 +12,8 @@ LAST_WORDS side call reports an exchange of its own, that concurrent
 requests on one client keep their own exchange traces, the exact chat and
 tool span attributes, the exact User-Agent, that a profile header spelled in
 another case goes out once, the text a failed request is wrapped in, the SDK
-retry hook Chrys overrides, and that importing the package loads no provider
-SDK.
+retry hook Chrys overrides, that importing the package loads no provider
+SDK, and that building an Anthropic client loads no OpenAI SDK.
 """
 
 from __future__ import annotations
@@ -933,15 +933,10 @@ def test_the_anthropic_sdk_asks_whether_to_retry_with_the_caught_error() -> None
 # ---------------------------------------------------------------------------
 
 
-def test_importing_the_llm_package_loads_no_provider_sdk(tmp_path: Any) -> None:
+def _fresh_interpreter_output(code: str, tmp_path: Any) -> str:
+    """Run *code* in a fresh interpreter and return what it printed."""
     home = str(tmp_path)
     env = {**os.environ, "HOME": home, "USERPROFILE": home, "APPDATA": home}
-    code = (
-        "import sys\n"
-        "import chrys.service.llm\n"
-        "import chrys.service.llm.clients\n"
-        "print(sorted(name for name in ('openai', 'anthropic') if name in sys.modules))\n"
-    )
     result = subprocess.run(
         [sys.executable, "-c", code],
         env=env,
@@ -953,7 +948,63 @@ def test_importing_the_llm_package_loads_no_provider_sdk(tmp_path: Any) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "[]"
+    return result.stdout.strip()
+
+
+_PRINT_PROVIDER_SDKS = "import sys\nprint(sorted(name for name in ('openai', 'anthropic') if name in sys.modules))\n"
+
+_BUILD_CLIENTS = textwrap.dedent(
+    """
+    import asyncio
+    from chrys.service.llm.clients import create_client
+    from chrys.service.profiles.models.schema import ModelProfile
+
+    async def build(*providers):
+        for provider in providers:
+            profile = ModelProfile(id="p", name="p", provider=provider, model_id="m", api_key="k")
+            client = await create_client(profile)
+            await client.aclose()
+    """
+)
+
+
+def test_importing_the_llm_package_loads_no_provider_sdk(tmp_path: Any) -> None:
+    code = "import chrys.service.llm\nimport chrys.service.llm.clients\n" + _PRINT_PROVIDER_SDKS
+    assert _fresh_interpreter_output(code, tmp_path) == "[]"
+
+
+def test_building_an_anthropic_client_loads_no_openai_sdk(tmp_path: Any) -> None:
+    # The OpenAI SDK is close to a thousand modules, which a cold start imports
+    # while the agent builds.
+    code = _BUILD_CLIENTS + "asyncio.run(build('anthropic'))\n" + _PRINT_PROVIDER_SDKS
+    assert _fresh_interpreter_output(code, tmp_path) == "['anthropic']"
+
+
+def test_building_a_client_imports_its_sdk_off_the_event_loop(tmp_path: Any) -> None:
+    # Imported on the event loop, an SDK froze the TUI for as long as it took.
+    code = _BUILD_CLIENTS + textwrap.dedent(
+        """
+        import sys, threading
+
+        class ImportThreads:
+            # Notes the thread of each SDK's first import, and finds nothing.
+            on_main_thread = {}
+
+            def find_spec(self, name, path=None, target=None):
+                if name in ("anthropic", "openai", "openai.resources", "openai.resources.responses"):
+                    self.on_main_thread.setdefault(name, threading.current_thread() is threading.main_thread())
+                return None
+
+        sys.meta_path.insert(0, ImportThreads())
+        asyncio.run(build("anthropic", "openai"))
+        print(sorted(ImportThreads.on_main_thread.items()))
+        """
+    )
+    # The OpenAI client imports its resources on first use: a build that
+    # leaves them to the first request freezes the TUI there instead.
+    assert _fresh_interpreter_output(code, tmp_path) == (
+        "[('anthropic', False), ('openai', False), ('openai.resources', False), ('openai.resources.responses', False)]"
+    )
 
 
 def test_every_combo_is_a_distinct_pair() -> None:

@@ -10,7 +10,7 @@ publication run exactly as in production.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import httpx
@@ -43,6 +43,14 @@ class ProviderTurn:
     terminal: Error | InvocationMessage
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderTurnProgress:
+    """What a turn still running has sent and published so far: both lists grow as it goes on."""
+
+    requests: list[httpx.Request]
+    retries: list[InvocationRetryAttempt]
+
+
 def mock_provider_profile(
     provider: str,
     *,
@@ -73,10 +81,13 @@ async def run_mock_provider_turn(
     respond: Callable[[httpx.Request], httpx.Response],
     *,
     user_message: UserMessage | None = None,
+    backoff_seconds: tuple[int, ...] = (0,),
+    during_turn: Callable[[EventBus, ProviderTurnProgress], Awaitable[None]] | None = None,
 ) -> ProviderTurn:
     """Run one turn of *user_message* (default ``hello``) whose provider HTTP traffic *respond* answers.
 
-    Retries back off 0 s.
+    Retries back off *backoff_seconds* (0 s by default). *during_turn*, given, runs once the message is
+    published and before the turn's terminal event is awaited.
     """
     requests: list[httpx.Request] = []
 
@@ -88,7 +99,7 @@ async def run_mock_provider_turn(
     import chrys.service.llm.clients as clients_module
 
     monkeypatch.setattr(clients_module, "_build_profile_http_client", lambda *args, **kwargs: http_client)
-    monkeypatch.setattr(TurnBindings, "_BACKOFF_SCHEDULE", (0,))
+    monkeypatch.setattr(TurnBindings, "_BACKOFF_SCHEDULE", backoff_seconds)
     registry = ModelProfileRegistry()
     registry.register(model_profile)
     bus = EventBus()
@@ -117,6 +128,8 @@ async def run_mock_provider_turn(
     try:
         await engine.start(profile)
         await bus.publish(user_message or UserMessage(text="hello"))
+        if during_turn is not None:
+            await during_turn(bus, ProviderTurnProgress(requests=requests, retries=retries))
         await wait_for(terminal.done, timeout=ENGINE_TURN_TIMEOUT, description="terminal engine event")
     finally:
         await engine.shutdown()

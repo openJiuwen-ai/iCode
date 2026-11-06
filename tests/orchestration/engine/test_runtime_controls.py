@@ -530,6 +530,8 @@ async def test_runtime_control_denials_publish_captured_session_id(
 
     async def deny_with_new_live_session(
         _token: lifecycle_permits.RebuildControlToken,
+        *,
+        reject_running: bool = False,
     ) -> lifecycle_permits.RebuildPermitDenied:
         engine.session.session_id = "new-session"
         return denied

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -39,6 +40,8 @@ from chrys.app.tui.support.gc_freeze import (
 from chrys.app.tui.util.removal import remove_all_shielded, remove_shielded
 from chrys.app.tui.util.shimmer import FRAME_SECONDS
 from chrys.app.tui.util.source_text import sanitize_source_text
+from chrys.app.tui.util.static_update import update_static_in_place
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.fold_gap import FOLD_GAP_ROWS, FoldGap
 from chrys.app.tui.widgets.chat.fold_rows import (
     AGENT_LABEL,
@@ -59,12 +62,13 @@ from chrys.app.tui.widgets.loading import GatedAnimation
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.markdown.parser import create_user_text_markdown_parser
 from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block
 from chrys.foundation.util.time import parse_created_at
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult, RenderResult
     from textual.await_complete import AwaitComplete
+    from textual.timer import Timer
 
     from chrys.foundation.models.invocations import ContentChannel
 
@@ -117,6 +121,13 @@ _RETRY_MESSAGE = msg(
     fallback="{message} Retrying in {delay_seconds}s ({attempt}/{max_attempts})...",
     multiline=True,
 )
+_RETRY_COUNTDOWN = msg("tui.chat.retry_countdown", fallback="Retrying in {seconds}s ({attempt}/{max_attempts})")
+_RETRY_STARTED = msg("tui.chat.retry_started", fallback="Retrying ({attempt}/{max_attempts})...")
+_RETRY_NOW = msg("tui.chat.retry_now", fallback="Retry Now")
+_RETRY_COUNTDOWN_TICK_SLACK_SECONDS = 0.02
+"""How long after the remaining time crosses a whole second the countdown repaints, so it reads the new second."""
+_RETRY_NOW_GAP_CELLS = 2
+"""Retry Now's left margin beside the countdown, as RetryMessage.DEFAULT_CSS sets it."""
 
 
 def _format_duration_ms(duration_ms: int) -> str:
@@ -1483,8 +1494,22 @@ class ErrorMessage(ProcessMember):
         self.post_message(ConversationStatusAction.Pressed())
 
 
-class RetryMessage(Static, ProcessMember):
-    """Transient retry notice — shown while the executor waits before retrying."""
+class RetryNowClicked(Message):
+    """User clicked Retry Now on a retry notice that counts down."""
+
+    def __init__(self, wait_id: str) -> None:
+        super().__init__()
+        self.wait_id = wait_id
+
+
+class RetryMessage(ProcessMember):
+    """Transient retry notice — shown while the executor waits before retrying.
+
+    Given the *deadline* of the wait (``time.monotonic()``), it counts down the
+    seconds left and then says the retry has begun; with a *wait_id* as well, a
+    Retry Now button ends the wait at once. Without a deadline it shows the
+    wait it was told about, as nested transcripts replay it.
+    """
 
     DEFAULT_CSS = """
     RetryMessage {
@@ -1492,21 +1517,118 @@ class RetryMessage(Static, ProcessMember):
         padding: 0 1 0 2;
         border-left: thick $tui-border-status-error $border-opacity;
         height: auto;
+    }
+    RetryMessage > .status-body {
+        height: auto;
         color: $error;
+    }
+    RetryMessage > .retry-countdown-row {
+        height: 1;
+    }
+    RetryMessage > .retry-countdown-row > .retry-countdown {
+        height: 1;
+        color: $error;
+    }
+    RetryMessage > .retry-countdown-row.-stacked {
+        layout: vertical;
+        height: auto;
+    }
+    RetryMessage > .retry-countdown-row > Button {
+        height: 1;
+        min-width: 10;
+        margin: 0 0 0 2;
+        border: none;
+        background: $error;
+        color: $button-color-foreground;
+        text-style: bold;
+    }
+    RetryMessage > .retry-countdown-row > Button:hover,
+    RetryMessage > .retry-countdown-row > Button:focus,
+    RetryMessage > .retry-countdown-row > Button.-active {
+        background: $foreground;
+        color: $background;
+        text-style: bold;
+    }
+    RetryMessage > .retry-countdown-row.-stacked > Button {
+        margin: 0;
     }
     """
 
-    def __init__(self, message: str, attempt: int, max_attempts: int, delay_seconds: int) -> None:
+    def __init__(
+        self,
+        message: str,
+        attempt: int,
+        max_attempts: int,
+        delay_seconds: int,
+        *,
+        deadline: float | None = None,
+        wait_id: str = "",
+    ) -> None:
         self._message = message
         self._attempt = attempt
         self._max_attempts = max_attempts
         self._delay = delay_seconds
+        self._deadline = deadline
+        self._wait_id = wait_id if deadline is not None else ""
+        self._retry_started = False
+        self._timer: Timer | None = None
+        self._row_cells: int | None = None
+        """Cells the countdown and Retry Now take on one row; None without the button."""
         super().__init__()
 
-    def render(self) -> Text:
+    @property
+    def retry_started(self) -> bool:
+        """Whether the countdown is over: the wait ran out or the user clicked Retry Now."""
+        return self._retry_started
+
+    def compose(self) -> ComposeResult:
+        yield Static(self._body_text(), classes="status-body")
+        if self._deadline is None:
+            return
+        self._retry_started = self._remaining_seconds() <= 0
+        with Horizontal(classes="retry-countdown-row"):
+            countdown = self._countdown_text()
+            label = Static(countdown, classes="retry-countdown")
+            # The seconds left only shrink: sized for the first text and the one that ends the wait,
+            # the label keeps its width as they lose digits, so a tick repaints the card in place
+            # instead of laying the transcript out, and the button beside it stays put.
+            label_cells = max(countdown.cell_len, self._started_text().cell_len)
+            label.styles.width = label_cells
+            yield label
+            if self._wait_id and not self._retry_started:
+                button_label = self._render_message(_RETRY_NOW.bind())
+                width = cell_len(button_label) + 4
+                button = Button(button_label, compact=True, classes="retry-now-btn")
+                button.styles.width = width
+                button.styles.min_width = width
+                self._row_cells = label_cells + _RETRY_NOW_GAP_CELLS + width
+                yield button
+
+    def on_mount(self) -> None:
+        if self._deadline is not None and not self._retry_started:
+            self._schedule_tick()
+
+    def on_unmount(self) -> None:
+        self._stop_timer()
+
+    def on_resize(self) -> None:
+        self._fit_countdown_row()
+
+    def _fit_countdown_row(self) -> None:
+        """Put Retry Now under the countdown while the card is too narrow for both on one row."""
+        if self._row_cells is None:
+            return
+        with contextlib.suppress(NoMatches):
+            row = self.query_one(".retry-countdown-row", Horizontal)
+            row.set_class(self.content_size.width < self._row_cells, "-stacked")
+
+    def _body_text(self) -> Text:
         t = Text()
         t.append(self._render_message(INTERRUPTED_ERROR_HEADER_MESSAGE.bind()), style="bold")
         t.append("\n")
+        if self._deadline is not None:
+            t.append(sanitize_legacy_block(self._message))
+            return t
         t.append(
             self._render_message(
                 _RETRY_MESSAGE.bind(
@@ -1518,6 +1640,77 @@ class RetryMessage(Static, ProcessMember):
             ),
         )
         return t
+
+    def _remaining_seconds(self) -> float:
+        return 0.0 if self._deadline is None else self._deadline - time.monotonic()
+
+    def _countdown_text(self) -> Text:
+        remaining = self._remaining_seconds()
+        if self._retry_started or remaining <= 0:
+            return self._started_text()
+        reference = _RETRY_COUNTDOWN.bind(
+            seconds=math.ceil(remaining), attempt=self._attempt, max_attempts=self._max_attempts
+        )
+        return Text(self._render_message(reference))
+
+    def _started_text(self) -> Text:
+        return Text(self._render_message(_RETRY_STARTED.bind(attempt=self._attempt, max_attempts=self._max_attempts)))
+
+    def _show_countdown(self) -> None:
+        with contextlib.suppress(NoMatches):
+            label = self.query_one(".retry-countdown", Static)
+            text = self._countdown_text()
+            width = label.styles.width
+            if width is not None and text.cell_len > width.value:
+                # The locale changed under the card: widen the label once for the longer text.
+                if self._row_cells is not None:
+                    self._row_cells += text.cell_len - int(width.value)
+                label.styles.width = text.cell_len
+                self._fit_countdown_row()
+            update_static_in_place(label, text)
+
+    def _schedule_tick(self) -> None:
+        remaining = self._remaining_seconds()
+        # The seconds shown drop by one when the time left crosses the next whole second.
+        until_next_second = remaining - (math.ceil(remaining) - 1)
+        self._timer = self.set_timer(until_next_second + _RETRY_COUNTDOWN_TICK_SLACK_SECONDS, self._tick)
+
+    def _tick(self) -> None:
+        self._timer = None
+        if self._retry_started:
+            return
+        if self._remaining_seconds() <= 0:
+            self._start_retry()
+            return
+        # Only a shown card repaints (a folded process, scrolled away, under a modal): repainting one
+        # outside the visible cut makes the next geometry read rebuild the compositor map for the
+        # whole transcript. Each tick renders the time left now, so the first tick after the card
+        # shows again paints it.
+        if is_widget_shown_on_active_screen(self):
+            self._show_countdown()
+        self._schedule_tick()
+
+    def _start_retry(self) -> None:
+        """Show that the retry has begun: the countdown and its button are done."""
+        self._retry_started = True
+        self._stop_timer()
+        with contextlib.suppress(NoMatches):
+            self.query_one(".retry-now-btn", Button).display = False
+        self._show_countdown()
+
+    def _stop_timer(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if not event.button.has_class("retry-now-btn"):
+            return
+        event.stop()
+        if self._retry_started:
+            return
+        self.post_message(RetryNowClicked(self._wait_id))
+        self._start_retry()
 
     def _render_message(self, reference: MessageRef) -> str:
         return render_str(widget_localizer(self), reference)

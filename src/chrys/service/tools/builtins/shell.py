@@ -15,7 +15,7 @@ available).
 
 Each output stream is captured within a byte limit that keeps its head and
 tail (``foundation/platform/output_capture.py``), and the result is truncated
-to ``max_tokens`` with a 1:2 head:tail ratio.  Every backend first assembles
+to ``max_output_tokens`` with a 1:2 head:tail ratio.  Every backend first assembles
 the same canonical result shape; when a session directory is available, the
 cleaned result is spilled there before the bounded view is returned.
 """
@@ -162,11 +162,13 @@ def _record_background_task(task: BackgroundTask) -> None:
     record_tool_success()
 
 
-def _working_dir_not_found(resolved: str, working_dir: str) -> str:
+def _workdir_not_found(resolved: str, workdir: str) -> str:
+    # The kind and details key name the working directory, as ``working_dir_changed``
+    # does, not the argument: they stay what clients and saved sessions already read.
     return tool_error(
         "working_dir_not_found",
-        f"working_dir not found — {resolved}",
-        details={"working_dir": working_dir, "resolved_path": resolved},
+        f"workdir not found — {resolved}",
+        details={"working_dir": workdir, "resolved_path": resolved},
     )
 
 
@@ -823,16 +825,16 @@ class ShellTools:
 
     def approval_targets(self, arguments: dict[str, object]) -> ApprovedTargets:
         """The directory a command will run in; an unresolvable one is left to ``execute``."""
-        working_dir = arguments.get("working_dir")
-        if working_dir is not None and not isinstance(working_dir, str):
+        workdir = arguments.get("workdir")
+        if workdir is not None and not isinstance(workdir, str):
             return ApprovedTargets()
         try:
-            return ApprovedTargets(cwd=physical_dir(self._command_cwd(working_dir)))
+            return ApprovedTargets(cwd=physical_dir(self._command_cwd(workdir)))
         except OSError, ValueError:
             return ApprovedTargets()
 
-    def _command_cwd(self, working_dir: str | None) -> str:
-        return resolve_workspace_path(working_dir, base_cwd=self._runtime.cwd) if working_dir else self._runtime.cwd
+    def _command_cwd(self, workdir: str | None) -> str:
+        return resolve_workspace_path(workdir, base_cwd=self._runtime.cwd) if workdir else self._runtime.cwd
 
     async def _bound_result(
         self, canonical: str, budget: int, captures: Sequence[CapturedOutput] = (), *, lead: str = ""
@@ -914,14 +916,14 @@ class ShellTools:
             "entire batch returns. Calls that depend on this result or could conflict through shared "
             "state must go in a later response. "
             f"{handle_note}"
-            "Output is truncated to max_tokens (default 8000) preserving the first "
+            "Output is truncated to max_output_tokens (default 8000) preserving the first "
             "and last portions with a truncation notice in the middle. Very large output "
             "keeps only its beginning and end; the middle cannot be recovered. When possible, "
             "the kept output is saved under the current session directory. "
             f"{output_guidance}"
             "Set reason to a brief user-facing intent in the same language as the user's latest prompt; "
             "it is shown to the user and audit logs. "
-            "Use timeout, working_dir, and max_tokens to control runtime, cwd, and output size. "
+            "Use timeout, workdir, and max_output_tokens to control runtime, cwd, and output size. "
             "Do NOT use the shell to read/write/edit files or search code — "
             "use the dedicated read_file, write_file, edit_file, grep, and glob tools instead. "
             "Do NOT run interactive/TUI programs (vim, nano, less, htop, top) "
@@ -1047,18 +1049,18 @@ class ShellTools:
         command: Annotated[str, "The command to execute in the platform's default shell."],
         reason: Annotated[str, SHELL_REASON_DESCRIPTION],
         timeout: Annotated[int, "Timeout in seconds. Default: 30."] = 30,
-        working_dir: Annotated[
+        workdir: Annotated[
             str | None,
             "Working directory for the command. Relative paths are resolved against the session workspace. "
             "Default: session workspace directory.",
         ] = None,
-        max_tokens: Annotated[
+        max_output_tokens: Annotated[
             int,
             "Token budget for command output. Large outputs are truncated to fit.",
         ] = _DEFAULT_MAX_TOKENS,
     ) -> str:
         """Execute a shell command on the current platform."""
-        budget = max(100, max_tokens)
+        budget = max(100, max_output_tokens)
         tasks = self._tasks
         # Validate command against filter policy (if configured); the command
         # this shell is given to stop a background task always passes.
@@ -1072,15 +1074,15 @@ class ShellTools:
                     details={"command": command, "reason": result.reason},
                 )
 
-        if working_dir:
-            missing_base = missing_base_cwd_error(working_dir, self._runtime.cwd)
+        if workdir:
+            missing_base = missing_base_cwd_error(workdir, self._runtime.cwd)
             if missing_base is not None:
                 _record_shell_error()
                 return missing_base
-            cwd = self._command_cwd(working_dir)
+            cwd = self._command_cwd(workdir)
             if not os.path.isdir(cwd):
                 _record_shell_error()
-                return _working_dir_not_found(cwd, working_dir)
+                return _workdir_not_found(cwd, workdir)
         else:
             cwd = self._runtime.cwd
         pinned_cwd = approved_cwd()
@@ -1097,17 +1099,15 @@ class ShellTools:
             cwd = pinned_cwd
 
         if tasks is None:
-            return await self._run(command, reason, cwd, timeout, budget, working_dir)
+            return await self._run(command, reason, cwd, timeout, budget, workdir)
         # A stop file may come from another tool: stop its task before a new
         # command can reach for the same port or files.
         stopped = await tasks.stop_requested()
-        result = await self._run(command, reason, cwd, timeout, budget, working_dir)
+        result = await self._run(command, reason, cwd, timeout, budget, workdir)
         stopped += [task for task in await tasks.stop_requested() if task not in stopped]
         return _with_stop_notes(result, stopped)
 
-    async def _run(
-        self, command: str, reason: str, cwd: str, timeout: int, budget: int, working_dir: str | None
-    ) -> str:
+    async def _run(self, command: str, reason: str, cwd: str, timeout: int, budget: int, workdir: str | None) -> str:
         shell = self._shell
         try:
             if sys.platform == "win32":
@@ -1151,8 +1151,8 @@ class ShellTools:
             return tool_error("process_stopped", "command entered stopped state and was terminated.")
         except MissingWorkingDirectoryError as exc:
             _record_shell_error()
-            if working_dir:
-                return _working_dir_not_found(exc.path, working_dir)
+            if workdir:
+                return _workdir_not_found(exc.path, workdir)
             return working_dir_missing_error(exc.path)
         except FileNotFoundError:
             _record_shell_error()

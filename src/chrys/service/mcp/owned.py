@@ -32,6 +32,7 @@ from chrys.foundation.text.model_json import model_json
 from chrys.foundation.tool_call_context import set_tool_context
 from chrys.foundation.trajectory.context import current_tool_operation_id
 from chrys.foundation.trajectory.event_types import WaitCategory
+from chrys.foundation.util.imports import import_off_loop
 from chrys.kernel import Content, normalize_tools
 from chrys.kernel._tool_expansion import _set_tool_expander
 from chrys.kernel.exceptions import ModelVisibleToolError, ToolException, ToolExecutionException
@@ -546,6 +547,8 @@ class MCPTool:
 
         if not self.session:
             try:
+                # The SDK is hundreds of modules, which the first connect of a run imports.
+                await import_off_loop("mcp")
                 transport = await self._exit_stack.enter_async_context(self.get_mcp_client())
             except (Exception, asyncio.CancelledError) as ex:
                 cancelled, cleanup_error = await self._close_and_check_cancelled(ex)
@@ -679,6 +682,31 @@ class MCPTool:
             await self._reconnect_or_raise(mcp_exc)
         except Exception as ex:
             await self._reconnect_or_raise(ex)
+
+    async def probe_session(self, *, timeout: float) -> str | None:
+        """Ask the current session for one bounded ping, never reconnecting.
+
+        Returns None when that same session answered; a server that does not
+        implement ping answers -32601, which still proves the session is alive.
+        Otherwise returns why the session could not be verified, in text that
+        holds no server-sent content.
+        """
+        from mcp.shared.exceptions import McpError
+
+        session = self.session
+        if session is None or not self.is_connected:
+            return "the connection is closed"
+        try:
+            async with asyncio.timeout(timeout):
+                await session.send_ping()
+        except TimeoutError:
+            return f"no answer to ping within {timeout:g}s"
+        except McpError as exc:
+            if exc.error.code != -32601:
+                return f"ping failed with error {exc.error.code}"
+        except Exception as exc:
+            return f"ping failed ({type(exc).__name__})"
+        return None if self.session is session else "the session was replaced during the check"
 
     async def _reconnect_or_raise(self, ex: BaseException) -> None:
         logger.info("MCP connection invalid or closed. Reconnecting...")

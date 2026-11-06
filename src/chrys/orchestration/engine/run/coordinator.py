@@ -19,6 +19,7 @@ from chrys.foundation.events.types import (
     InvocationPaused,
     InvocationResumed,
     InvocationRetryRequested,
+    RetryWaitSkip,
     UserInject,
     UserInjectCancel,
     UserInjectResult,
@@ -773,6 +774,12 @@ class TurnCoordinator:
                 and not preparation.finished_state
             ):
                 await preparation.finished(outcome=PreparationOutcome.PREPARATION_FAILED)
+
+    def on_retry_wait_skip(self, event: RetryWaitSkip) -> None:
+        """End the wait before the current turn's retry that *event* names; a wait that is over is left alone."""
+        executor = self._current.loaded.bindings if self._current.loaded is not None else None
+        if executor is not None:
+            executor.skip_retry_wait(event.wait_id)
 
     async def on_user_inject_cancel(self, event: UserInjectCancel) -> None:
         """Withdraw a queued mid-run injection before the model sees it.

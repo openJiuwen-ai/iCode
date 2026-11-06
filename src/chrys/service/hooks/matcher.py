@@ -20,6 +20,8 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from chrys.service.hooks.retired_shell_args import matched_arg_name
+
 if TYPE_CHECKING:
     from chrys.service.hooks.schema import HookArgMatch, HookConfig, HookMatch
 
@@ -62,7 +64,8 @@ def _match_clause(clause: HookMatch, payload: dict[str, Any]) -> bool:
         if not isinstance(tool_args, dict):
             return False
         for name, arg_match in clause.args.items():
-            if not _match_arg(arg_match, tool_args.get(name)):
+            # DEPRECATED: matched_arg_name reads a retired shell argument name as its new one.
+            if not _match_arg(arg_match, tool_args.get(matched_arg_name(tool, name))):
                 return False
 
     return True

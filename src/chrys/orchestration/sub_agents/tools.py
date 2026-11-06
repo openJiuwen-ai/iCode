@@ -39,7 +39,6 @@ from chrys.foundation.platform.files import (
 )
 from chrys.foundation.retry import RetryAttemptInfo
 from chrys.foundation.tool_kinds import (
-    KIND_ASK_USER,
     KIND_FILESYSTEM_READ,
     KIND_SHELL,
     KIND_SUB_AGENT,
@@ -115,14 +114,12 @@ from chrys.service.session.sub_agent_logs import (
     sessions_dir,
 )
 from chrys.service.state.serializers import serialized_message_payload
+from chrys.service.tools import packs as tool_packs
 from chrys.service.tools.background import TaskScope
-from chrys.service.tools.builtins.web.build import assemble_web_tools
 from chrys.service.tools.names import chrys_reserved_tool_names
-from chrys.service.tools.registry import ToolRegistry
 from chrys.service.tools.result_metadata import tool_error, tool_result_metadata
 from chrys.service.trajectory.sub_agents import SubAgentStatus as TrajectorySubAgentStatus
 from chrys.service.trajectory.sub_agents import SubAgentTrace
-from chrys.service.vision import filter_image_tools
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Mapping
@@ -448,35 +445,26 @@ class SubAgentTools:
             )
 
             # Build sub-agent's own tools from its profile
-            tool_registry = ToolRegistry(vision_enabled=sub_active_profile.vision)
-            builtin_categories = profile.tools.builtins or []
-            web_tools = assemble_web_tools(
-                builtin_categories,
-                settings,
-                profile.tools.web_search,
-                profile.tools.web_fetch,
-                chat_options=chat_options,
-                agent=profile.name,
-                model_profile_id=sub_active_profile.id,
-                session_id=self._session_id,
-            )
-            tool_registry.load_builtins(
-                builtin_categories,
+            tool_build = tool_packs.ToolBuild(
+                tools=profile.tools,
+                agent_name=profile.name,
                 runtime=runtime,
                 settings=settings,
-                shell_filter_config=profile.tools.shell_filter,
                 session_id=self._session_id,
                 session_dir=self._session_dir,
-                web=web_tools,
+                model_profile_id=sub_active_profile.id,
+                chat_options=chat_options,
+                vision=sub_active_profile.vision,
+                allow_user_interaction=self._allow_user_interaction,
                 background_tasks=self._background_tasks,
             )
+            assembled_tools = await tool_packs.assemble_tools(tool_build)
+            web_tools = assembled_tools.web
             if self._bus is not None:
-                for warning in web_tools.warnings:
+                for warning in assembled_tools.warnings:
                     await self._bus.publish(warning)
 
-            tools = filter_image_tools(tool_registry.get_all(), vision_enabled=sub_active_profile.vision)
-            if not self._allow_user_interaction:
-                tools = [tool for tool in tools if get_tool_kind(tool) != KIND_ASK_USER]
+            tools = list(assembled_tools.tools)
 
             # Load MCP tools from the sub-agent's profile
             mcp_adapter: MCPAdapter | None = None
@@ -499,6 +487,21 @@ class SubAgentTools:
                 warn_if_tool_loading_unbinds_thinking(
                     profile, sub_active_profile, chat_options, mcp_adapter.tool_names_by_server
                 )
+
+            # Extensions come last: their tools yield every name the agent's other tools take.
+            extension_tools = await tool_packs.assemble_extension_tools(
+                tool_build,
+                profile.extensions,
+                taken=[
+                    *(tool.name for tool in tools),
+                    *web_tools.hosted,
+                    *(mcp_adapter.tool_namespace if mcp_adapter is not None else ()),
+                ],
+            )
+            if self._bus is not None:
+                for warning in extension_tools.warnings:
+                    await self._bus.publish(warning)
+            tools.extend(extension_tools.tools)
 
             # Wire compaction + usage tracking for sub-agents.  Compression
             # tools (compress_context, recall_context, list_compressed_contexts)

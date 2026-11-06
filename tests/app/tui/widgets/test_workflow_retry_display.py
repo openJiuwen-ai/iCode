@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from textual.widgets import Static
+
 from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     AgentTranscriptJournal,
     AgentTranscriptSurface,
@@ -39,7 +41,7 @@ async def test_a_retry_notice_shows_the_display_and_its_hint() -> None:
         journal.record(operation)
         await wait_for(lambda: bool(surface.query(RetryMessage)), pilot=pilot)
 
-        text = surface.query_one(RetryMessage).render().plain
+        text = surface.query_one(RetryMessage).query_one(".status-body", Static).render().plain
         localizer = Localizer("en")
         assert f"{localizer.render(_DNS)} {localizer.render(_HINT)}" in text
         assert "Connection error." not in text

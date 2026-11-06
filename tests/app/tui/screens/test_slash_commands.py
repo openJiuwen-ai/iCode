@@ -133,6 +133,7 @@ def test_build_slash_commands_uses_agents_and_no_legacy_entries() -> None:
     names = [c.name for c in commands]
 
     assert "agents" in names
+    assert "reload" in names
     assert "runtime" in names
     assert "settings" in names
     assert "notifications" not in names

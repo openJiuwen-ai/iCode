@@ -15,7 +15,7 @@ import pytest
 import chrys.foundation.platform as platform_mod
 from chrys.foundation.config.coercion import CoerceReason, CoerceStatus
 from chrys.foundation.config.context import EvalContext
-from chrys.foundation.config.env_layers import freeze_process_env
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import load_settings
 from chrys.foundation.config.spec import ProjectMerge, Source, specs_by_field

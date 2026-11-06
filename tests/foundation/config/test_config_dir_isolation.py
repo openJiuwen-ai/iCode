@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from chrys.foundation.config.env_file import config_env_path, update_env_file
 from chrys.foundation.config.settings import persist_theme
 from chrys.foundation.config.user_settings import user_settings_path
 from chrys.foundation.platform import get_platform
@@ -21,25 +20,21 @@ def _config_dir_a_session_fixture_sees() -> Path:
 
 
 def test_writers_that_forgot_to_redirect_land_in_the_temp_dir(tmp_path: Path) -> None:
-    """Neither writer here redirects anything — that is the whole point.
+    """The writer does not redirect anything — that is the whole point.
 
-    Both take their path from the platform singleton, and ``persist_theme``
+    The path comes from the platform singleton, and ``persist_theme``
     swallows its own failures, so without the guard this test would quietly
     rewrite the developer's ``~/.chrys`` and still pass.
 
-    Which is why the destinations are checked before anything is written: the
+    Which is why the destination is checked before anything is written: the
     one test whose job is to fail when the guard breaks must not do the damage
     it is meant to catch on its way to failing.
     """
-    env_path = config_env_path()
     settings_path = user_settings_path()
-    assert env_path.is_relative_to(tmp_path)
     assert settings_path.is_relative_to(tmp_path)
 
-    update_env_file({"CHRYS_CANARY": "1"})
     persist_theme("chrys-legacy")
 
-    assert "CHRYS_CANARY" in env_path.read_text(encoding="utf-8")
     assert "chrys-legacy" in settings_path.read_text(encoding="utf-8")
 
 

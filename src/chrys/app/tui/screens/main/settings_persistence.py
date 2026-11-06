@@ -49,6 +49,8 @@ class SettingsPersistenceQueue:
         self._flush_lock_timeout_seconds = flush_lock_timeout_seconds
         self._pending_values: dict[str, Any] = {}
         self._pending_removals: dict[str, None] = {}
+        self.failures = 0
+        self._flush_lock = asyncio.Lock()
         self.save_generation = 0
         self.save_task: asyncio.Task[None] | None = None
         self.save_persisting = False
@@ -78,7 +80,14 @@ class SettingsPersistenceQueue:
         self.save_task = task
         task.add_done_callback(self._on_save_done)
 
-    async def flush(self, *, notify_on_failure: bool = False) -> None:
+    async def flush(self, *, notify_on_failure: bool = False) -> bool:
+        """Join concurrent flushes, including their disk write, and report failure."""
+        failures = self.failures
+        async with self._flush_lock:
+            await self._flush_pending(notify_on_failure=notify_on_failure)
+        return failures == self.failures
+
+    async def _flush_pending(self, *, notify_on_failure: bool) -> None:
         """Force any pending debounced write to complete immediately.
 
         ``notify_on_failure`` surfaces an environmental failure (lock, I/O)
@@ -129,6 +138,7 @@ class SettingsPersistenceQueue:
             else:
                 result = await asyncio.to_thread(persist, values, remove=removals, lock_timeout=lock_timeout)
         except Exception as exc:
+            self.failures += 1
             self._logger.warning("Failed to save settings", exc_info=True)
             if notify_on_failure:
                 self._notify_failure(exc)
@@ -138,6 +148,7 @@ class SettingsPersistenceQueue:
             # store refused, and the whole batch stayed out of the file. Always
             # surfaced, flush included — silence here is the panel showing an
             # edit that never landed.
+            self.failures += 1
             self._logger.warning("Settings batch rejected: %s", ", ".join(result.rejected))
             self._notify_rejected(result)
             return

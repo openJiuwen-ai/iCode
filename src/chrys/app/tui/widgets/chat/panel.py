@@ -30,6 +30,7 @@ from textual.widget import Widget
 
 from chrys.app.tui.behaviors.right_click_copy import cancel_textual_mouse_chain
 from chrys.app.tui.support.gc_freeze import GcFreezeBlockReason, raise_gc_freeze_hook_errors
+from chrys.app.tui.util.placement import pin_fixed_placement
 from chrys.app.tui.util.removal import finish_shielded, remove_shielded
 from chrys.app.tui.widgets import ASK_USER_INTERACTIVE_CLASS
 from chrys.foundation.patches.textual_precompose import precompose_tree
@@ -614,45 +615,23 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         return self._scroll_controller.arrange(size, optimal=optimal)
 
     def _place_scroll_to_bottom_button(self, result: DockArrangeResult, size: Size) -> None:
-        """Keep the scroll-bottom affordance fixed to the viewport bottom.
+        """Keep the scroll-bottom affordance fixed to the viewport bottom, centred.
 
-        Runs on every arrange call — including cache hits that hand back the
-        same ``DockArrangeResult`` instance — so it must be idempotent and
-        cheap: the button sits at the tail of the transcript children, and an
-        already-patched placement returns without touching the result.
-        Resetting ``result._spatial_map`` forces an O(children) rebuild on the
-        next spatial query; doing that per scroll frame dominated scrolling on
+        It stays a ChatPanel child for click routing and lifecycle. It sits at
+        the tail of the transcript children, where the pin's search starts:
+        rebuilding the spatial map per scroll frame dominated scrolling on
         large transcripts.
         """
         button = self._scroll_to_bottom_button
         if button is None:
             return
-        placements = result.placements
-        for index in range(len(placements) - 1, -1, -1):
-            placement = placements[index]
-            if placement.widget is not button:
-                continue
-            width = min(max(1, placement.region.width), max(1, size.width))
-            height = min(max(1, placement.region.height), max(1, size.height))
-            x = max(0, (size.width - width) // 2)
-            y = max(0, size.height - height)
-            region = Region(x, y, width, height)
-            if placement.fixed and placement.region == region and placement.offset == Offset():
-                return
-            placements[index] = placement._replace(
-                region=region,
-                offset=Offset(),
-                order=2**31 - 1,
-                # Textual will otherwise apply the container's scroll offset
-                # to this normal child.  Keep it viewport-relative while still
-                # mounted inside ChatPanel for click routing and lifecycle.
-                fixed=True,
-                # The fixed region owns positioning; the button's CSS
-                # ``position: absolute`` only exists to keep it out of flow.
-                absolute=False,
-            )
-            result._spatial_map = None
-            return
+
+        def bottom_centre(arranged: Region) -> Region:
+            width = min(max(1, arranged.width), max(1, size.width))
+            height = min(max(1, arranged.height), max(1, size.height))
+            return Region(max(0, (size.width - width) // 2), max(0, size.height - height), width, height)
+
+        pin_fixed_placement(result, button, bottom_centre)
 
     def _reanchor_after_settle(self) -> None:
         """Re-engage the anchor and pin to settled ``max_scroll_y``."""
@@ -1781,9 +1760,20 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Display an error message, replacing any trailing error/interrupted widget."""
         await self._live_renderer.add_error(text, action_label=action_label)
 
-    async def add_retry(self, message: str, attempt: int, max_attempts: int, delay_seconds: int) -> None:
+    async def add_retry(
+        self,
+        message: str,
+        attempt: int,
+        max_attempts: int,
+        delay_seconds: int,
+        *,
+        deadline: float | None = None,
+        wait_id: str = "",
+    ) -> None:
         """Display a retry notice, replacing any trailing status widget."""
-        await self._live_renderer.add_retry(message, attempt, max_attempts, delay_seconds)
+        await self._live_renderer.add_retry(
+            message, attempt, max_attempts, delay_seconds, deadline=deadline, wait_id=wait_id
+        )
 
     async def prepare_retry(self) -> None:
         """Finalise pending widgets before a main-agent stream retry.

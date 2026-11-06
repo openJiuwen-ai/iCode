@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 
-from chrys.foundation.errors import clean_error_message
+from chrys.foundation.errors import ErrorKind, classify_error, clean_error_message, iter_explicit_graph
 from chrys.service.mcp._stdio_transport import (
     MAX_BANNER_LINE_CHARS,
     MAX_STDIO_STDERR_BYTES_CAPTURED,
@@ -14,6 +14,52 @@ from chrys.service.mcp._stdio_transport import (
     _display_path,
     _stderr_preview,
 )
+
+_DIAGNOSTIC_MAX_CHARS = 300
+_FAILED_TO_CONNECT = "failed to connect"
+_DIAGNOSTICS = {
+    ErrorKind.NO_ROUTE: "no route to the server",
+    ErrorKind.HOST_UNREACHABLE: "the server's host is unreachable",
+    ErrorKind.DNS_FAILED: "the server's host name could not be resolved",
+    ErrorKind.CONNECTION_REFUSED: "the connection was refused",
+    ErrorKind.CONNECT_TIMEOUT: "connecting timed out",
+    ErrorKind.READ_TIMEOUT: "the server did not answer in time",
+    ErrorKind.WRITE_TIMEOUT: "sending to the server timed out",
+    ErrorKind.CONNECTION_LOST: "the connection was lost",
+    ErrorKind.PROXY_REJECTED: "the proxy could not reach the server",
+    ErrorKind.PROXY_AUTH_FAILED: "the proxy rejected the credentials",
+    ErrorKind.TLS_FAILED: "the secure connection failed",
+    ErrorKind.INVALID_ENDPOINT: "the server address is invalid",
+    ErrorKind.AUTH_FAILED: "the server rejected the credentials",
+    ErrorKind.RATE_LIMITED: "the server is limiting requests",
+    ErrorKind.SERVER_ERROR: "the server reported an error",
+}
+
+
+def mcp_failure_diagnostic(error: BaseException) -> str:
+    """One line saying why a connection failed, fit for a user-facing report.
+
+    A fixed phrase for the kind of failure, never the failure's own text: what a
+    server, a library or a URL says can repeat a credential, and no list of known
+    values covers one a command supplied. The log keeps the full error.
+    """
+    if isinstance(error, MCPToolConfigurationError) and error.cause is not None:
+        # Chrys's own words, naming the tools to fix.
+        return clean_error_message(error.cause).partition("\n")[0][:_DIAGNOSTIC_MAX_CHARS]
+    cause = error.cause if isinstance(error, MCPConnectionError) else error
+    if cause is None:
+        return _FAILED_TO_CONNECT
+    if (
+        isinstance(error, MCPConnectionError)
+        and error.transport == "stdio"
+        and any(isinstance(node, FileNotFoundError | PermissionError) for node in iter_explicit_graph(cause))
+    ):
+        text = "the server command could not be started"
+    else:
+        text = _DIAGNOSTICS.get(classify_error(cause).kind, _FAILED_TO_CONNECT)
+    if isinstance(error, MCPConnectionError) and error.process_exit_code is not None:
+        text = f"{text} (exit code {error.process_exit_code})"
+    return text
 
 
 class MCPConnectionError(RuntimeError):

@@ -117,7 +117,7 @@ tools:
         api_key_env: EXA_API_KEY
 ```
 
-iCode reads the key from the environment that started iCode or from your user `.env` file (macOS / Linux: `~/.chrys/.env`; Windows: `%APPDATA%\chrys\.env`). A variable set in the starting environment takes precedence, even when it is empty. A `.env` file in the working directory cannot provide web credentials. The user `.env` file is read each time the agent is built, so after changing it, save the agent again or restart iCode. Only the keys of the providers the agent actually uses are read.
+iCode reads the key from the environment that started iCode. Set it before starting iCode; after changing it, restart iCode. A missing or empty variable cannot provide a credential. User and working-directory `.env` files are not loaded. Only the keys of the providers the agent actually uses are read.
 
 ### Fall back to another provider
 
@@ -335,7 +335,7 @@ See the [DeepSeek Responses API guide](https://api-docs.deepseek.com/guides/resp
 
 ## When web tools do not appear
 
-If iCode cannot set up an agent's web tools, for example because a key variable is missing or a custom endpoint is not granted, the agent still starts without them and iCode shows a warning that names the agent and the reason. Fix the configuration, then save the agent again or restart iCode.
+If iCode cannot set up an agent's web tools, for example because a key variable is missing or a custom endpoint is not granted, the agent still starts without them and iCode shows a warning that names the agent and the reason. If a key variable is missing or has changed, set it in the launch environment and restart iCode. For other configuration fixes, save the agent again or restart iCode.
 
 Also check that:
 

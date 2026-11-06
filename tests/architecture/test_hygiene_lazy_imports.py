@@ -91,7 +91,6 @@ _DISTRIBUTION_IMPORT_ROOTS: Mapping[str, frozenset[str]] = {
     "pytest": frozenset({"py", "pytest"}),
     "pytest-xdist": frozenset({"xdist"}),
     "python-docx": frozenset({"docx"}),
-    "python-dotenv": frozenset({"dotenv"}),
     "python-pptx": frozenset({"pptx"}),
     "pywinpty": frozenset({"winpty"}),
     "pyyaml": frozenset({"yaml"}),

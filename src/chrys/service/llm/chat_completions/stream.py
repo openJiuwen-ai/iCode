@@ -47,6 +47,7 @@ from chrys.kernel import (
 )
 from chrys.kernel.exceptions import ChatClientInvalidResponseException
 from chrys.service.llm.openai_timestamps import normalize_openai_created_payload, openai_created_at_iso
+from chrys.service.llm.refusals import refused_calls_error
 
 from .decode import (
     choice_metadata,
@@ -56,7 +57,6 @@ from .decode import (
     finish_reason,
     has_answer,
     has_refusal,
-    refused_calls_error,
     response_metadata,
     text_contents,
 )

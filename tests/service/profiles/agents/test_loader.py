@@ -397,10 +397,11 @@ def test_load_tools_null_sections_mean_absent(tmp_path: Path) -> None:
     """YAML comment leftovers like `builtins:`/`mcp:` null must not reject the profile."""
     p = tmp_path / "null-sections.yaml"
     p.write_text(
-        "name: nully\ntools:\n  builtins:\n  mcp:\n  custom:\n  web_search:\n  web_fetch:\n",
+        "name: nully\nextensions:\ntools:\n  builtins:\n  mcp:\n  web_search:\n  web_fetch:\n",
         encoding="utf-8",
     )
     profile = load_profile_from_yaml(p)
+    assert profile.extensions == []
     assert profile.tools.builtins == []
     assert profile.tools.mcp == []
     assert profile.tools.web_search is None
@@ -447,6 +448,31 @@ def test_load_tools_drops_non_string_categories_with_a_warning(
         profile = load_profile_from_yaml(p)
     assert profile.tools.builtins == ["shell"]
     assert "non-string entries in tools.builtins" in caplog.text
+
+
+def test_load_profile_keeps_extensions_in_order_whether_or_not_installed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    p = tmp_path / "extended.yaml"
+    p.write_text(
+        "name: extended\nextensions: [acme_release, null, acme_ci, acme_release, 3]\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING):
+        profile = load_profile_from_yaml(p)
+    # The loader never looks for the extensions: one missing now stays, and the build reports it.
+    assert profile.extensions == ["acme_release", "acme_ci"]
+    assert "non-string entries in extensions" in caplog.text
+
+    saved = save_profile(profile, target_dir=tmp_path / "saved")
+    assert yaml.safe_load(saved.read_text(encoding="utf-8"))["extensions"] == ["acme_release", "acme_ci"]
+
+
+def test_load_profile_rejects_extensions_that_are_not_a_list(tmp_path: Path) -> None:
+    p = tmp_path / "extended.yaml"
+    p.write_text("name: extended\nextensions: acme_release\n", encoding="utf-8")
+    with pytest.raises(AgentProfileLoadError, match=r"extensions must be a list"):
+        load_profile_from_yaml(p)
 
 
 def test_load_tools_accepts_legacy_yaml_boolean_web_modes(tmp_path: Path) -> None:
@@ -1293,6 +1319,13 @@ model:
     )
     profile = load_profile_from_yaml(p)
     assert profile.model.profile_id == "abcdef123456"
+
+
+@pytest.mark.parametrize("value", ["null", "''", "[]", "{}", "false", "0", "0.0"])
+def test_empty_model_profile_id_loads_as_unbound(tmp_path: Path, value: str) -> None:
+    path = tmp_path / "agent.yaml"
+    path.write_text(f"name: Writer\nmodel: {{profile_id: {value}}}\n", encoding="utf-8")
+    assert load_profile_from_yaml(path).model.profile_id == ""
 
 
 def test_load_model_legacy_profile_ignored(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

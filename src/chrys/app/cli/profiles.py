@@ -13,8 +13,6 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from chrys.app.cli import headless
-from chrys.app.cli.launch_cwd import LAUNCH_CWD_MISSING_CODE, launch_cwd_missing_message
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import DEFAULT_AGENT_PROFILE, Settings
 from chrys.foundation.config.warnings import settings_warning_events
@@ -82,8 +80,6 @@ def agents_main(argv: list[str] | None = None) -> int:
     parser = build_agents_parser()
     args = parser.parse_args(argv)
     _ = args.command
-    if _launch_cwd_missing(as_json=args.json):
-        return 1
 
     settings = _prepare_runtime()
     agent_registry = AgentProfileRegistry()
@@ -119,8 +115,6 @@ def models_main(argv: list[str] | None = None) -> int:
     parser = build_models_parser()
     args = parser.parse_args(argv)
     _ = args.command
-    if _launch_cwd_missing(as_json=args.json):
-        return 1
 
     settings = _prepare_runtime()
     registry = ModelProfileRegistry()
@@ -143,19 +137,10 @@ def models_main(argv: list[str] | None = None) -> int:
 
 
 def _prepare_runtime() -> Settings:
-    bootstrap = bootstrap_runtime(dotenv_override=True, configure_stdio=True, setup_telemetry=False)
+    bootstrap = bootstrap_runtime(configure_stdio=True, setup_telemetry=False)
     for warning in (*bootstrap.warnings, *settings_warning_events(bootstrap.loaded)):
         _write_warning(warning)
     return bootstrap.settings
-
-
-def _launch_cwd_missing(*, as_json: bool) -> bool:
-    """Report a launch directory that no longer exists; ``True`` when the command must stop."""
-    message = launch_cwd_missing_message(workdir_flag=False)
-    if message is None:
-        return False
-    headless.write_error(message, as_json=as_json, code=LAUNCH_CWD_MISSING_CODE)
-    return True
 
 
 def _write_warning(warning: Warning) -> None:

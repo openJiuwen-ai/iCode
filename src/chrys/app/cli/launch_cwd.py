@@ -2,11 +2,10 @@
 
 """Check that the directory a command was launched from still exists.
 
-A shell can keep a directory as its cwd after it was deleted or moved. Every
-entry point resolves its workspace, ``.env`` and project settings against that
-directory, so each one checks it once after parsing its arguments (and after
-``-C`` changed into another directory), and stops with one clear line instead
-of a traceback from deep inside startup.
+A shell can keep a directory as its cwd after it was deleted or moved. Commands
+that use the cwd to resolve a workspace or project settings check it after
+parsing their arguments. A valid absolute ``-C`` path also passes this check.
+Otherwise, a missing cwd stops the command with a single error message.
 """
 
 from __future__ import annotations

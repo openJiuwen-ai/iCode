@@ -15,8 +15,9 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.service.profiles.agents.schema import ToolsConfig
 from chrys.service.tools.builtins import search
-from chrys.service.tools.registry import ToolRegistry
+from chrys.service.tools.packs import ToolBuild, assemble_tools
 
 
 @pytest.fixture
@@ -43,12 +44,19 @@ def project(tmp_path: Path, git_repo_factory) -> Path:
 
 @pytest.mark.parametrize("respect", [True, False])
 @pytest.mark.parametrize("pattern", [None, "*", "*.py", "**"])
-async def test_registry_search_tools_apply_ignore_policy(project: Path, respect: bool, pattern: str | None) -> None:
+async def test_assembled_search_tools_apply_ignore_policy(project: Path, respect: bool, pattern: str | None) -> None:
     runtime = SessionEnvironment.capture(workspace=Workspace.from_cwd(str(project)))
-    registry = ToolRegistry()
-    registry.load_builtins(["search"], runtime=runtime, settings=Settings(search_respect_gitignore=respect))
-    grep_result = await registry.get("grep")("SEARCH_NEEDLE", glob=pattern)
-    glob_result = await registry.get("glob")(pattern or "*")
+    assembled = await assemble_tools(
+        ToolBuild(
+            tools=ToolsConfig(builtins=["search"]),
+            agent_name="test",
+            runtime=runtime,
+            settings=Settings(search_respect_gitignore=respect),
+        )
+    )
+    tools = {tool.name: tool for tool in assembled.tools}
+    grep_result = await tools["grep"]("SEARCH_NEEDLE", glob=pattern)
+    glob_result = await tools["glob"](pattern or "*")
 
     for result in (grep_result, glob_result):
         assert "visible.py" in result

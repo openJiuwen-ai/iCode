@@ -216,20 +216,18 @@ def _export_turns(selector: str, out: Path, *, force: bool) -> int:
 
 
 def _prepare_runtime() -> Settings:
-    """Load the layered environment so path settings match ``chrys run``.
+    """Load settings from their sources so paths match ``chrys run``.
 
     Without this the sessions directory would resolve against the bare shell
     environment, silently reading a different session root than the one the
-    recording process wrote under when a ``.env`` names one. The loaded
+    recording process wrote under when settings name one. The loaded
     settings are returned so the export analyzes with the same configuration
     (verify commands) the TUI dashboard uses, not built-in defaults.
     """
     from chrys.foundation.config.warnings import settings_warning_events
     from chrys.orchestration.startup import bootstrap_runtime
 
-    bootstrap = bootstrap_runtime(
-        dotenv_override=True, configure_stdio=True, setup_telemetry=False, project_root=Path(os.getcwd())
-    )
+    bootstrap = bootstrap_runtime(configure_stdio=True, setup_telemetry=False, project_root=Path(os.getcwd()))
     for warning in (*bootstrap.warnings, *settings_warning_events(bootstrap.loaded)):
         _write_stderr(f"Warning: {warning.message}")
     return bootstrap.loaded.settings

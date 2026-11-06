@@ -401,12 +401,41 @@ async def test_pty_pipeline_unlisted_shell_keeps_native_semantics(pipeline_statu
     assert "[exit_code: 0]" in result
 
 
-async def test_execute_with_working_dir(shell: ShellTools, tmp_path: str) -> None:
-    result = await shell.execute("pwd", reason="test", working_dir=str(tmp_path))
+def test_schema_uses_the_argument_names_other_harnesses_use(shell: ShellTools) -> None:
+    """Models carry ``workdir``/``max_output_tokens`` over from other harnesses; the old names are gone."""
+    execute = shell.tools()[0]
+    properties = execute.parameters()["properties"]
+
+    assert set(properties) == {"command", "reason", "timeout", "workdir", "max_output_tokens"}
+    assert "Use timeout, workdir, and max_output_tokens to control" in execute.description
+    assert "working_dir" not in execute.description
+    assert "max_tokens" not in execute.description.replace("max_output_tokens", "")
+
+
+@pytest.mark.parametrize("legacy", [{"working_dir": "sub"}, {"max_tokens": 100}])
+async def test_legacy_argument_names_are_rejected_before_the_command_runs(
+    tmp_path: Path, legacy: dict[str, object]
+) -> None:
+    """A call still using a retired name fails instead of running with that argument's default."""
+    (tmp_path / "sub").mkdir()
+    runtime = SessionEnvironment.capture()
+    execute = ShellTools(
+        SessionEnvironment(cwd=str(tmp_path), platform=runtime.platform, session_id=runtime.session_id)
+    ).tools()[0]
+
+    with pytest.raises(TypeError, match="Unexpected argument"):
+        await execute.invoke(arguments={"command": "echo ran > ran.txt", "reason": "test", **legacy})
+
+    assert not (tmp_path / "ran.txt").exists()
+    assert not (tmp_path / "sub" / "ran.txt").exists()
+
+
+async def test_execute_with_workdir(shell: ShellTools, tmp_path: str) -> None:
+    result = await shell.execute("pwd", reason="test", workdir=str(tmp_path))
     assert "[exit_code: 0]" in result
 
 
-async def test_execute_with_relative_working_dir_resolves_against_runtime_cwd(tmp_path: Path) -> None:
+async def test_execute_with_relative_workdir_resolves_against_runtime_cwd(tmp_path: Path) -> None:
     runtime = SessionEnvironment.capture()
     workspace = tmp_path / "workspace"
     subdir = workspace / "subdir"
@@ -420,7 +449,7 @@ async def test_execute_with_relative_working_dir_resolves_against_runtime_cwd(tm
     )
 
     cmd = _python_cwd_command(shell._shell.name)
-    result = await shell.execute(cmd, reason="test", working_dir="subdir")
+    result = await shell.execute(cmd, reason="test", workdir="subdir")
 
     assert "[exit_code: 0]" in result
     assert str(subdir.resolve()) in result
@@ -468,13 +497,13 @@ def test_tools_description_includes_guidance() -> None:
 # ───────────────────────── Output truncation ──────────────────────────
 
 
-async def test_execute_with_max_tokens(shell: ShellTools) -> None:
-    """Large output is truncated when max_tokens is small."""
+async def test_execute_with_max_output_tokens(shell: ShellTools) -> None:
+    """Large output is truncated when max_output_tokens is small."""
     if sys.platform == "win32":
         cmd = 'uv run python -c "for i in range(10000): print(i)"'
     else:
         cmd = "seq 1 10000"
-    result = await shell.execute(cmd, reason="test", max_tokens=200)
+    result = await shell.execute(cmd, reason="test", max_output_tokens=200)
     assert "truncated" in result.lower()
     assert "[exit_code: 0]" in result
 

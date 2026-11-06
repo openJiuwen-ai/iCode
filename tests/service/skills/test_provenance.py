@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from chrys.foundation.tool_approval import declares_requires_approval
 from chrys.foundation.tool_call_context import (
     MAX_CONTEXT_VALUE_CHARS,
     resolve_tool_call_context,
@@ -54,6 +55,13 @@ async def test_all_three_skill_tools_carry_kind_and_builder() -> None:
     context = resolve_tool_call_context(tools["load_skill"], {"skill_name": "pdf"})
     assert context["skill_name"] == "pdf"
     assert context["skill_revision"] == _skill_revision(_provider_skill(provider))
+
+
+async def test_only_the_script_tool_declares_the_approval_floor() -> None:
+    """A skill script is an ordinary subprocess; loading or reading a skill only reads text."""
+    provider = await _provider(_inline_skill())
+    declared = {t.name: declares_requires_approval(t) for t in provider._chrys_tools}
+    assert declared == {"load_skill": False, "read_skill_resource": False, "run_skill_script": True}
 
 
 def _provider_skill(provider: ChrysSkillsProvider) -> Skill:

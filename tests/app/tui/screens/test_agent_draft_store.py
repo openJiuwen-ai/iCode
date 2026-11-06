@@ -340,14 +340,14 @@ def test_validate_acp_draft_rejects_model_driven_sections() -> None:
     profile.acp = AcpAgentConfig(command="agent")
     profile.tools = ToolsConfig(
         builtins=["read_file"],
-        custom=["custom"],
         mcp=[MCPServerConfig(name="remote", transport="http", url="https://example.test")],
     )
+    profile.extensions = ["acme_release"]
     profile.sub_agents = SubAgentsConfig(agents=[SubAgentRef(profile="Other")])
 
     errors = validate_acp_draft("External", profile)
 
     assert "External: ACP profiles cannot configure nested sub-agents." in errors
     assert "External: ACP profiles cannot configure MCP servers." in errors
-    assert "External: ACP profiles cannot configure custom tools." in errors
+    assert "External: ACP profiles cannot use extensions." in errors
     assert "External: ACP profiles cannot configure built-in tools." in errors

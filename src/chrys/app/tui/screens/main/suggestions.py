@@ -35,12 +35,12 @@ from chrys.app.tui.widgets.chrome.commands import (
     is_slash_command_candidate,
     parse_slash_draft,
 )
-from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
-from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft, ShortcutIntent
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar, sanitize_terminal_block
 from chrys.foundation.platform import safe_getcwd
+from chrys.foundation.text.draft_references import labels_as_words, labels_from_words
 from chrys.service.profiles.models.schema import is_model_profile_selectable
 from chrys.service.prompt_shortcuts import (
     PromptShortcut,
@@ -876,13 +876,15 @@ class SuggestionHandler:
 
     def _expand_prompt_shortcut(self, command: PromptShortcut, arguments: str) -> None:
         # The file's text reaches the terminal through the input bar: no escape or control codes, tabs kept.
+        # A label in the arguments is one argument, as it is one unit in the draft;
+        # the expansion keeps every offset, so its fields still line up.
         expansion = expand_template(
             sanitize_terminal_block(command.template),
-            arguments,
+            labels_as_words(arguments, self._view.input_references()),
             default_hint=self._default_prompt_hint,
         )
         owner = ShortcutIntent(command.name, command.agent, command.model, path=command.path)
-        self._view.expand_prompt_in_input(ChatDraft(expansion.text, tuple(expansion.fields), owner))
+        self._view.expand_prompt_in_input(ChatDraft(labels_from_words(expansion.text), tuple(expansion.fields), owner))
 
     def _default_prompt_hint(self, position: int | None) -> str:
         if position is None:

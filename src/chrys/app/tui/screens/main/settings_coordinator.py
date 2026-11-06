@@ -25,10 +25,12 @@ from chrys.app.tui.screens.settings import (
     NotificationPorts,
     SessionStoragePorts,
     Suggestions,
+    is_greyed_layer,
     rendered_keys,
 )
+from chrys.foundation.config.errors import config_error_display
 from chrys.foundation.config.settings import Settings, probe_session_root
-from chrys.foundation.config.spec import Apply, ChoiceProvider, Source, field_names_by_key, specs_by_key
+from chrys.foundation.config.spec import Apply, ChoiceProvider, field_names_by_key, specs_by_key
 from chrys.foundation.events.types import SettingsReload
 from chrys.foundation.i18n import msg
 
@@ -47,8 +49,6 @@ logger = logging.getLogger(__name__)
 _CONFIRM_TITLE = msg("tui.settings.confirm.title", fallback="Confirm setting")
 _CONFIRM_BUTTON = msg("tui.settings.confirm.button", fallback="Continue")
 SETTINGS_TITLE = msg("tui.settings.title", fallback="Settings")
-
-_GREYED_LAYERS = frozenset({Source.PROJECT, Source.USER_ENV, Source.ENV})
 
 # RELOAD keys the TUI reads only at startup: the engine's rebuild keeps its
 # current agent profile and approval mode, so a reload triggered for these
@@ -160,6 +160,8 @@ class SettingsCoordinator:
         self._close_epoch = 0
         self._ack = False
         self._finalize_task: asyncio.Task[None] | None = None
+        self.finalize_failures = 0
+        self._last_finalize_error: str | MessageRef | None = None
         self._dialog: weakref.ReferenceType[Any] | None = None
         self._dialog_open = False
         self._notifications = _NotificationPortsImpl(callbacks)
@@ -225,6 +227,7 @@ class SettingsCoordinator:
             # row must show that, not the choice that did not take.
             self._reproject_dialog()
         elif key == "trajectory.verify_commands":
+            self._queue.schedule({key: str(value)})
             self._callbacks.apply_trajectory_verify_commands(str(value))
         elif key == "ui.chat.tool_groups_expanded":
             self._callbacks.apply_tool_groups_expanded(bool(value))
@@ -245,7 +248,7 @@ class SettingsCoordinator:
         loaded = self._settings_handle.loaded
         values = _values_by_key(loaded)
         current = values[key]
-        if loaded.source_for(key).layer in _GREYED_LAYERS:
+        if is_greyed_layer(loaded.source_for(key)):
             self._desired.pop(key, None)
             return current
         if key in self._desired and self._desired[key] == current:
@@ -328,8 +331,18 @@ class SettingsCoordinator:
         loaded = self._settings_handle.loaded
         values = _values_by_key(loaded)
         for key in list(self._desired):
-            if loaded.source_for(key).layer in _GREYED_LAYERS or values[key] == self._desired[key]:
+            if is_greyed_layer(loaded.source_for(key)) or values[key] == self._desired[key]:
                 del self._desired[key]
+
+    async def wait_for_finalize(self, failures_before_flush: int) -> str | MessageRef | None:
+        """Also surface a task that failed and was cleared while the caller flushed the write queue."""
+        task = self._finalize_task
+        if task is not None:
+            try:
+                await asyncio.shield(task)
+            except Exception as exc:
+                return config_error_display(exc)
+        return self._last_finalize_error if self.finalize_failures != failures_before_flush else None
 
     async def _finalize(self) -> None:
         while True:
@@ -371,7 +384,9 @@ class SettingsCoordinator:
             task.result()
         except asyncio.CancelledError:
             pass
-        except Exception:
+        except Exception as exc:
+            self.finalize_failures += 1
+            self._last_finalize_error = config_error_display(exc)
             logger.debug("Settings finalize task failed", exc_info=True)
 
 

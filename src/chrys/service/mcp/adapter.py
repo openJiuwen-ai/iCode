@@ -857,6 +857,7 @@ class MCPAdapter:
             except MCPToolConfigurationError:
                 raise
             except MCPConnectionError as exc:
+                self._cache.note_connect_failure(config, exc)
                 await self._publish_failure(exc)
                 failed += 1
                 if progress is not None:
@@ -865,6 +866,7 @@ class MCPAdapter:
             except Exception as exc:
                 err = MCPConnectionError(config.name, config.transport, exc)
                 self._failures[config.name] = err
+                self._cache.note_connect_failure(config, err)
                 await self._publish_failure(err)
                 failed += 1
                 if progress is not None:
@@ -1002,7 +1004,8 @@ class MCPAdapter:
             err.cause,
             exc_info=err.cause,
         )
-        if self._bus is None:
+        # A refresh's own report names this failure, without the server's stderr.
+        if self._bus is None or self._cache.refreshing:
             return
         from chrys.foundation.events.types import Warning as WarningEvent
 
@@ -1019,6 +1022,11 @@ class MCPAdapter:
     def server_names(self) -> list[str]:
         """Names of currently connected MCP servers."""
         return list(dict.fromkeys([*self._leases.keys(), *self._servers.keys()]))
+
+    @property
+    def tool_namespace(self) -> frozenset[str]:
+        """Every tool name the connected servers take, deferred tools and progressive-loading controls included."""
+        return frozenset().union(*self._tool_namespace_by_server.values())
 
     @property
     def tool_names_by_server(self) -> dict[str, list[str]]:

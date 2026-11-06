@@ -199,3 +199,36 @@ async def test_transition_reads_session_after_admission_wait(monkeypatch: pytest
     finally:
         resume.set()
         await task
+
+
+async def test_manual_reload_sees_turn_started_by_an_inflight_admission_before_draining() -> None:
+    session = make_session(persistence=SessionPersistence(None, EventBus()), workspace=None, approval_mode=None)
+    state = make_turn_state()
+    executing = asyncio.Event()
+    permits = LifecyclePermits(turn_state=state, session=session, turn_executing=executing.is_set)
+    token = permits.capture_control_token()
+    admission = state.lease.reserve_prompt_admission(
+        kind="fresh", session_generation=token.session_generation, build_generation=token.build_generation
+    )
+    assert admission is not None
+    refresh = asyncio.create_task(permits.acquire_rebuild_permit(token, reject_running=True))
+
+    async def run_until_released() -> None:
+        await release.wait()
+
+    release = asyncio.Event()
+    runner = asyncio.create_task(run_until_released())
+    state.lease.run_task = runner
+    try:
+        await asyncio.sleep(0)  # Let the reload reach the outstanding admission.
+        assert not refresh.done()
+        executing.set()
+        state.lease.release_prompt_admission(admission)
+        await wait_for(refresh.done, description="manual refresh refused before turn drain")
+        assert isinstance(await refresh, RebuildPermitDenied)
+        assert not runner.done()
+    finally:
+        release.set()
+        state.lease.release_prompt_admission(admission)
+        await runner
+        await refresh
