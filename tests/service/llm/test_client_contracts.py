@@ -973,38 +973,75 @@ def test_importing_the_llm_package_loads_no_provider_sdk(tmp_path: Any) -> None:
     assert _fresh_interpreter_output(code, tmp_path) == "[]"
 
 
-def test_building_an_anthropic_client_loads_no_openai_sdk(tmp_path: Any) -> None:
-    # The OpenAI SDK is close to a thousand modules, which a cold start imports
-    # while the agent builds.
-    code = _BUILD_CLIENTS + "asyncio.run(build('anthropic'))\n" + _PRINT_PROVIDER_SDKS
-    assert _fresh_interpreter_output(code, tmp_path) == "['anthropic']"
+_RECORD_FIRST_THREADS = textwrap.dedent(
+    """
+    import platform, sys, threading
+
+    class FirstThreads:
+        # Notes the thread that first imports each SDK module, and finds nothing.
+        on_main_thread = {}
+
+        @classmethod
+        def note(cls, name):
+            cls.on_main_thread.setdefault(name, threading.current_thread() is threading.main_thread())
+
+        def find_spec(self, name, path=None, target=None):
+            if name in ("anthropic", "openai", "openai.resources", "openai.resources.responses"):
+                self.note(name)
+            return None
+
+    def platform_name(*args, **kwargs):
+        # The real one first runs `uname -p` and `file -b`, which would make
+        # this probe three process starts.
+        FirstThreads.note("platform.platform")
+        return "Probe-1.0"
+
+    real_uname = platform.uname
+
+    def uname():
+        # Queries WMI on Windows the first time.
+        FirstThreads.note("platform.uname")
+        return real_uname()
+
+    platform.platform = platform_name
+    platform.uname = uname
+    sys.meta_path.insert(0, FirstThreads())
+    """
+)
 
 
-def test_building_a_client_imports_its_sdk_off_the_event_loop(tmp_path: Any) -> None:
-    # Imported on the event loop, an SDK froze the TUI for as long as it took.
-    code = _BUILD_CLIENTS + textwrap.dedent(
-        """
-        import sys, threading
-
-        class ImportThreads:
-            # Notes the thread of each SDK's first import, and finds nothing.
-            on_main_thread = {}
-
-            def find_spec(self, name, path=None, target=None):
-                if name in ("anthropic", "openai", "openai.resources", "openai.resources.responses"):
-                    self.on_main_thread.setdefault(name, threading.current_thread() is threading.main_thread())
-                return None
-
-        sys.meta_path.insert(0, ImportThreads())
-        asyncio.run(build("anthropic", "openai"))
-        print(sorted(ImportThreads.on_main_thread.items()))
-        """
+@pytest.mark.parametrize(
+    ("provider", "first_threads"),
+    [
+        # Not the OpenAI SDK: close to a thousand modules, which a cold start
+        # imports while the agent builds.
+        ("anthropic", [("anthropic", False), ("platform.uname", False)]),
+        # The OpenAI client imports its resources on first use: a build that
+        # leaves them to the first request freezes the TUI there instead.
+        (
+            "openai",
+            [
+                ("openai", False),
+                ("openai.resources", False),
+                ("openai.resources.responses", False),
+                ("platform.platform", False),
+                ("platform.uname", False),
+            ],
+        ),
+    ],
+)
+def test_building_a_client_imports_only_its_sdk_and_asks_the_os_off_the_event_loop(
+    provider: str, first_threads: list[tuple[str, bool]], tmp_path: Any
+) -> None:
+    # Imported on the event loop, an SDK froze the TUI for as long as it took,
+    # and so did the processes the OS lookup runs. One SDK per interpreter:
+    # both at once took a loaded macOS runner past what a process start gets.
+    code = (
+        _BUILD_CLIENTS
+        + _RECORD_FIRST_THREADS
+        + f"asyncio.run(build({provider!r}))\nprint(sorted(FirstThreads.on_main_thread.items()))\n"
     )
-    # The OpenAI client imports its resources on first use: a build that
-    # leaves them to the first request freezes the TUI there instead.
-    assert _fresh_interpreter_output(code, tmp_path) == (
-        "[('anthropic', False), ('openai', False), ('openai.resources', False), ('openai.resources.responses', False)]"
-    )
+    assert _fresh_interpreter_output(code, tmp_path) == str(first_threads)
 
 
 def test_every_combo_is_a_distinct_pair() -> None:

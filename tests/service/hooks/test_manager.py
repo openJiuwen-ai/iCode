@@ -45,6 +45,7 @@ from chrys.service.trajectory.hooks import HookOutcome
 from chrys.service.trajectory.session import SessionStartInfo, SessionTrajectory, trajectory_events_path
 from tests.service.trajectory._fakes import FakeSink, make_context
 from tests.support.gc_isolation import earlier_tests_heap_frozen
+from tests.support.stopped_child import STOPS_ITSELF
 from tests.support.trajectory_invariants import assert_trajectory_file_accounted, assert_trajectory_operation_settlement
 from tests.support.waiting import wait_until
 
@@ -297,17 +298,13 @@ async def test_blocking_hook_timeout_with_on_error_block(hooks_dir: Path) -> Non
 async def test_a_block_by_a_stopped_hook_says_it_stopped_past_a_long_stderr(hooks_dir: Path, tmp_path: Path) -> None:
     """The reason is cut at 200 characters of stderr, which the stopped note only ends."""
     pid_file = tmp_path / "child.pid"
+    child = f"import os, pathlib; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); {STOPS_ITSELF}"
     script = textwrap.dedent(
         f"""
         import subprocess, sys
         sys.stderr.write("x" * 500)
         sys.stderr.flush()
-        subprocess.Popen([
-            sys.executable,
-            "-c",
-            "import os, pathlib, signal, time; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
-            "os.kill(os.getpid(), signal.SIGSTOP); time.sleep(30)",
-        ])
+        subprocess.Popen([sys.executable, "-c", {child!r}])
         """
     )
     hook = _hook(hook_id="stops", event=HookEvent.BEFORE_TOOL_CALL, script=script, timeout=10, on_error="block")

@@ -703,7 +703,7 @@ async def build_agent(
             warn_if_tool_loading_unbinds_thinking(profile, active_profile, chat_options, mcp_tools_by_server)
 
         # Extensions come last: their tools yield every name the agent's other tools take.
-        extension_tools = await tool_packs.assemble_extension_tools(
+        extensions = await tool_packs.assemble_extensions(
             tool_build,
             profile.extensions,
             taken=[
@@ -712,9 +712,9 @@ async def build_agent(
                 *(mcp_adapter.tool_namespace if mcp_adapter is not None else ()),
             ],
         )
-        for warning in extension_tools.warnings:
+        for warning in extensions.warnings:
             await bus.publish(warning)
-        tools.extend(extension_tools.tools)
+        tools.extend(extensions.tools)
 
         # Build skills provider (if configured)
         await _progress(AGENT_LOAD_PHASE_SKILLS, "Loading skills", status=AGENT_LOAD_STATUS_RUNNING)
@@ -771,8 +771,8 @@ async def build_agent(
                 selection_source=model_selection.source,
             ),
             builtin_tools=builtin_tools,
-            extension_tools=extension_tools.by_extension,
-            extension_failures=extension_tools.unavailable,
+            extensions=extensions.details,
+            extension_failures=extensions.unavailable,
             web_search_providers=web_tools.provider_origins(),
             context_tools=context_tool_names,
             sub_agent_tools=sub_agent_tool_names,
@@ -817,6 +817,7 @@ async def build_agent(
             ),
             mcp_instructions_provider=mcp_adapter.render_instructions_reminder if mcp_adapter is not None else None,
             file_change_provider=file_change_provider,
+            extension_contexts=extensions.contexts,
         )
 
         # Wire up Phase 4 LAST_WORDS generator for the main agent.  Sub-agents
@@ -943,6 +944,7 @@ async def build_agent(
                     [effective_session_dir / COMPACTIONS_DIR_NAME] if effective_session_dir else None
                 ),
                 turn_context=turn_context,
+                extension_hooks=extensions.tool_hooks,
             ),
         )
         ask_user_middleware = create_ask_user(
@@ -984,6 +986,7 @@ async def build_agent(
             tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
             background_tasks=background_tasks,
             shows_answer_text=shows_answer_text,
+            extension_hooks=extensions.tool_hooks,
         )
 
         return AgentBuildResult(

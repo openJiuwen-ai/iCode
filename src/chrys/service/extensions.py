@@ -12,11 +12,16 @@ enables it, off the event loop and once per process, so a changed extension
 takes effect after a restart. An id that two sources claim is a conflict:
 neither loads.
 
-Binding turns each declared tool into a ``FunctionTool`` of kind
-``extension.<id>`` carrying the tool's own approval declaration. The binder
+:func:`bind_extension` binds everything an extension declares for one agent
+build. Each declared tool becomes a ``FunctionTool`` of kind ``extension.<id>``
+carrying the tool's own approval declaration. The binder
 passes the kernel's validated arguments through unchanged, adds the
 ``ToolContext``, turns a ``ToolError`` into ``tool_error`` and bounds the result
-text as MCP results are.
+text as MCP results are. Each declared context becomes a :class:`BoundContext`
+that the agent's reminder middleware asks once per turn
+(``reminders/extension_context.py``), and each tool hook a
+:class:`BoundToolHook` the tool middlewares run
+(``agent_middleware/events/extension_hooks.py``).
 """
 
 from __future__ import annotations
@@ -34,13 +39,15 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from chrys.extensions import Extension, ToolContext, ToolError
+from chrys.extensions import Extension, ToolContext, ToolError, TurnContext
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.events.types import RuntimeExtensionDetails, Warning
+from chrys.foundation.i18n import msg
 from chrys.foundation.platform import get_platform
 from chrys.foundation.tool_kinds import EXTENSION_ID_PATTERN, extension_kind
 
 if TYPE_CHECKING:
-    from chrys.extensions import ToolDeclaration
+    from chrys.extensions import ContextDeclaration, ToolDeclaration, ToolHookDeclaration
     from chrys.kernel import FunctionTool
     from chrys.service.tools.packs import ToolBuild
 
@@ -51,6 +58,13 @@ EXTENSIONS_DIR_NAME = "extensions"
 """``<config_dir>/extensions``: the user's own extension files."""
 EXTENSION_DATA_DIR_NAME = "extension-data"
 """Each extension's private folder lives at ``<config_dir or session dir>/extension-data/<id>``."""
+EXTENSION_CATALOG_PREFIX = "extension."
+"""An extension context's reminder record name is ``extension.<id>.<name>``."""
+
+_EXTENSION_CONTEXT_FAILED = msg(
+    "builder.extension_context_failed",
+    fallback="Agent {agent} goes without context {context} from extension {extension}: {reason}",
+)
 
 _SPILL_PREFIX = "extension"
 
@@ -247,24 +261,107 @@ def _exec_file_extension(extension_id: str, module_path: Path) -> object:
     return vars(module).get("extension")
 
 
-def bind_extension_tools(extension_id: str, extension: Extension, build: ToolBuild) -> list[FunctionTool]:
-    """The extension's tools for one agent build, in declaration order."""
+@dataclass(frozen=True, slots=True)
+class BoundContext:
+    """One ``@extension.context`` function, bound for one agent build."""
+
+    extension_id: str
+    declaration: ContextDeclaration
+    agent_name: str
+    session_id: str | None
+    turn_context: Callable[[str], TurnContext]
+    """The ``TurnContext`` for a turn, given its prompt."""
+
+    @property
+    def catalog_name(self) -> str:
+        """The name the agent's reminders record its text under, kept in saved sessions."""
+        return f"{EXTENSION_CATALOG_PREFIX}{self.extension_id}.{self.declaration.name}"
+
+
+@dataclass(frozen=True, slots=True)
+class BoundToolHook:
+    """One ``@extension.before_tool`` or ``@extension.after_tool`` function, bound for one agent build."""
+
+    extension_id: str
+    declaration: ToolHookDeclaration
+    context: ToolContext
+    """The ``ToolCall.context`` it gets: its own extension's folders, whichever tool is called."""
+
+
+@dataclass(frozen=True, slots=True)
+class BoundExtension:
+    """What one extension gives one agent build, each part in declaration order."""
+
+    tools: list[FunctionTool]
+    contexts: list[BoundContext]
+    before_tool_hooks: list[BoundToolHook]
+    after_tool_hooks: list[BoundToolHook]
+
+    @property
+    def details(self) -> RuntimeExtensionDetails:
+        """What the runtime details dialog lists for it."""
+        return RuntimeExtensionDetails(
+            tools=[tool.name for tool in self.tools],
+            contexts=[context.declaration.name for context in self.contexts],
+            before_tool_hooks=[hook.declaration.name for hook in self.before_tool_hooks],
+            after_tool_hooks=[hook.declaration.name for hook in self.after_tool_hooks],
+        )
+
+
+def bind_extension(extension_id: str, extension: Extension, build: ToolBuild) -> BoundExtension:
+    """Everything the extension declares, bound for one agent build."""
+    fields = _context_fields(extension_id, build)
+    hook_context = ToolContext(**fields)
+
+    def turn_context(prompt: str) -> TurnContext:
+        return TurnContext(prompt=prompt, **fields)
+
+    tool_context = partial(ToolContext, **fields)
+    return BoundExtension(
+        tools=[_bind(extension_id, declaration, tool_context, build.session_dir) for declaration in extension.tools],
+        contexts=[
+            BoundContext(extension_id, declaration, build.agent_name, build.session_id or None, turn_context)
+            for declaration in extension.contexts
+        ],
+        before_tool_hooks=[
+            BoundToolHook(extension_id, declaration, hook_context) for declaration in extension.before_tool_hooks
+        ],
+        after_tool_hooks=[
+            BoundToolHook(extension_id, declaration, hook_context) for declaration in extension.after_tool_hooks
+        ],
+    )
+
+
+def context_failed_warning(context: BoundContext, reason: str) -> Warning:
+    """The warning that one of an agent's extension contexts gave nothing this turn because it failed."""
+    name = context.declaration.name
+    message = f"Agent {context.agent_name} goes without context {name} from extension {context.extension_id}: {reason}"
+    return Warning(
+        code="extension_context_failed",
+        message=message,
+        display_message=_EXTENSION_CONTEXT_FAILED.bind(
+            agent=context.agent_name, context=name, extension=context.extension_id, reason=reason
+        ),
+        session_id=context.session_id,
+    )
+
+
+def _context_fields(extension_id: str, build: ToolBuild) -> dict[str, Any]:
+    """What the extension's ``ToolContext`` and ``TurnContext`` say about the build."""
     runtime = build.runtime
     folders = tuple(Path(path) for path in dict.fromkeys([runtime.cwd, *(wd.path for wd in runtime.working_dirs)]))
-    context = partial(
-        ToolContext,
-        cwd=folders[0],
-        workspace_dirs=folders,
-        agent_name=build.agent_name,
-        session_id=build.session_id or None,
-        _data_dir=partial(_private_dir, get_platform().config_dir / EXTENSION_DATA_DIR_NAME / extension_id),
-        _session_data_dir=(
+    return {
+        "cwd": folders[0],
+        "workspace_dirs": folders,
+        "agent_name": build.agent_name,
+        "session_id": build.session_id or None,
+        "_data_dir": partial(_private_dir, get_platform().config_dir / EXTENSION_DATA_DIR_NAME / extension_id),
+        "_session_data_dir": (
             partial(_private_dir, build.session_dir / EXTENSION_DATA_DIR_NAME / extension_id)
             if build.session_dir is not None
             else _no_dir
         ),
-    )
-    return [_bind(extension_id, declaration, context, build.session_dir) for declaration in extension.tools]
+    }
 
 
 def _private_dir(path: Path) -> Path:

@@ -129,6 +129,7 @@ if TYPE_CHECKING:
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker
     from chrys.orchestration.sub_agents.acp_policy import AcpSubAgentPolicy
+    from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.context.compaction import PreCompactInfo
     from chrys.service.context.compaction.last_words import CompactionStatus
@@ -359,6 +360,7 @@ class SubAgentTools:
         self._chat_options_by_tool: dict[str, dict[str, Any] | None] = {}  # tool_name → agent.run(options=...)
         self._model_provenance_by_tool: dict[str, SubAgentModelProvenance] = {}
         self._approval_policies: dict[str, ApprovalPolicy] = {}  # tool_name → ApprovalPolicy
+        self._extension_hooks: dict[str, ExtensionToolHooks | None] = {}  # tool_name → its extensions' tool hooks
         self._tool_kinds: dict[str, dict[str, str]] = {}  # tool_name → {fn_name → kind}
         self._display_names: dict[str, str] = {}  # tool_name → human-readable agent name
         self._acp_profiles: dict[str, AgentProfile] = {}
@@ -492,7 +494,7 @@ class SubAgentTools:
                 )
 
             # Extensions come last: their tools yield every name the agent's other tools take.
-            extension_tools = await tool_packs.assemble_extension_tools(
+            extensions = await tool_packs.assemble_extensions(
                 tool_build,
                 profile.extensions,
                 taken=[
@@ -502,9 +504,9 @@ class SubAgentTools:
                 ],
             )
             if self._bus is not None:
-                for warning in extension_tools.warnings:
+                for warning in extensions.warnings:
                     await self._bus.publish(warning)
-            tools.extend(extension_tools.tools)
+            tools.extend(extensions.tools)
 
             # Wire compaction + usage tracking for sub-agents.  Compression
             # tools (compress_context, recall_context, list_compressed_contexts)
@@ -587,6 +589,7 @@ class SubAgentTools:
                 catalog_pointer_enabled=False,
                 skill_catalog_provider=skills_provider.render_catalog_reminder if skills_provider else None,
                 mcp_instructions_provider=mcp_adapter.render_instructions_reminder if mcp_adapter is not None else None,
+                extension_contexts=extensions.contexts,
             )
 
             # Wire Phase 4 LAST_WORDS for the sub-agent.  Sub-agents run long
@@ -672,6 +675,7 @@ class SubAgentTools:
             # approval rules (e.g. shell: require) as the main agent.
             approval_config = self._parent_approval if self._parent_approval is not None else profile.approval
             self._approval_policies[tool_name] = ApprovalPolicy(approval_config, tools=tools)
+            self._extension_hooks[tool_name] = extensions.tool_hooks
             self._tool_kinds[tool_name] = {t.name: k for t in tools if (k := get_tool_kind(t))}
             self._display_names[tool_name] = profile.display_name or profile.name
             self._hook_profile_names[tool_name] = profile.name
@@ -746,6 +750,7 @@ class SubAgentTools:
                     mcp_instructions_provider=sub_mcp.render_instructions_reminder
                     if (sub_mcp := self._mcp_adapters.get(tool_name)) is not None
                     else None,
+                    extension_contexts=extensions.contexts,
                 )
 
                 async def _publish_last_words_retry(
@@ -1544,6 +1549,11 @@ class SubAgentTools:
                     target_operation_id=sub_agent_trace.operation_id if sub_agent_trace is not None else None,
                 )
                 sub_agent_hook_started = True
+                # After the start event, so the parent's card shows the child while its contexts answer.
+                context_warnings = await invocation_reminder.refresh_extension_context(prompt)
+                if self._bus is not None:
+                    for warning in context_warnings:
+                        await self._bus.publish(warning)
 
                 middleware = []
                 loop_recorder = LoopRecorder(
@@ -1565,6 +1575,7 @@ class SubAgentTools:
                         serialize_implicit_windows=self._serialize_implicit_windows,
                         stats=log_stats,
                         tool_result_ceiling_tokens=self._tool_result_ceiling_tokens,
+                        extension_hooks=self._extension_hooks.get(tool_name),
                     )
                     middleware.append(sub_event_mw)
                     # AskUser middleware — sub-agent ask_user calls show the
@@ -1608,6 +1619,7 @@ class SubAgentTools:
                                     [self._session_dir / COMPACTIONS_DIR_NAME] if self._session_dir else None
                                 ),
                                 turn_context=self._turn_context,
+                                extension_hooks=self._extension_hooks.get(tool_name),
                             ),
                         )
                         approval_mw.bind_publisher(emitter)

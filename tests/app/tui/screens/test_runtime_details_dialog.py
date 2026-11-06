@@ -20,6 +20,7 @@ from chrys.app.tui.screens.dialogs.runtime_details import (
 )
 from chrys.foundation.events.types import (
     AgentRuntimeDetails,
+    RuntimeExtensionDetails,
     RuntimeHookDetails,
     RuntimeHookSourceDetails,
     RuntimeModelDetails,
@@ -200,7 +201,12 @@ def test_runtime_details_dialog_lists_context_tools_before_sub_agent_tools() -> 
 def test_runtime_details_dialog_lists_each_extension_after_icode_s_tools_and_why_any_is_missing() -> None:
     details = AgentRuntimeDetails(
         builtin_tools={"sleep": ["sleep"]},
-        extension_tools={"acme_release": ["acme_project_name", "acme_add_release_note"]},
+        extensions={
+            "acme_release": RuntimeExtensionDetails(tools=["acme_project_name", "acme_add_release_note"]),
+            "acme_ticket": RuntimeExtensionDetails(
+                contexts=["ticket"], before_tool_hooks=["guard"], after_tool_hooks=["redact", "sign"]
+            ),
+        },
         extension_failures={"acme_gone": "it is not installed"},
         context_tools=["compress_context"],
     )
@@ -210,11 +216,19 @@ def test_runtime_details_dialog_lists_each_extension_after_icode_s_tools_and_why
     assert [str(section.border_title) for section in sections] == [
         "sleep",
         "acme_release",
+        "acme_ticket",
         "Unavailable extensions",
         "Context management tools",
     ]
     assert _section_text(sections[1]).splitlines() == ["acme_project_name", "acme_add_release_note"]
-    assert _section_text(sections[2]) == "acme_gone: it is not installed"
+    # An extension without tools still shows what it gives.
+    assert _section_text(sections[2]).splitlines() == [
+        "Context each turn: ticket",
+        "Before tool calls: guard",
+        "After tool calls: redact",
+        "After tool calls: sign",
+    ]
+    assert _section_text(sections[3]) == "acme_gone: it is not installed"
 
 
 def test_runtime_details_dialog_shows_an_extension_s_import_error_without_its_control_characters() -> None:

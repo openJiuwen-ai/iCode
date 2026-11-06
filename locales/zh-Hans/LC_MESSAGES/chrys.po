@@ -109,6 +109,13 @@ msgstr[0] ""
 "未附加的图像：\n"
 "{files}"
 
+#. English: Agent {agent} goes without context {context} from extension
+#. {extension}: {reason}
+#. chrys-meta={"fingerprint":"78a560aa18e054326a363d9d3bf1def7eadd319d2b31570dcfcfa8b52526f063","multiline":false,"placeholders":["agent","context","extension","reason"]}
+#: src/chrys/service/extensions.py
+msgid "builder.extension_context_failed"
+msgstr "智能体 {agent} 本轮缺少扩展 {extension} 的上下文 {context}：{reason}"
+
 #. English: Agent {agent} starts without extension {extension}: {reason}
 #. chrys-meta={"fingerprint":"535af465201f2170e30c3e7abab778107dbc0d7bd230f78578ae48ab4f8ae190","multiline":false,"placeholders":["agent","extension","reason"]}
 #: src/chrys/service/tools/packs.py
@@ -10551,6 +10558,24 @@ msgstr "未加载 Skills。"
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
 msgid "tui.runtime_details.empty.tools"
 msgstr "未加载内置工具或子智能体工具。"
+
+#. English: After tool calls: {name}
+#. chrys-meta={"fingerprint":"fe334eb1710d7d83e369e946d87290f2d950d555acfc11a79c456a9a4c63c318","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.extension.after_tool"
+msgstr "工具调用后：{name}"
+
+#. English: Before tool calls: {name}
+#. chrys-meta={"fingerprint":"f4dcc991135d891da4ba94ddd2366fdeae9829466f77f184f2e2a8cf70cab353","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.extension.before_tool"
+msgstr "工具调用前：{name}"
+
+#. English: Context each turn: {name}
+#. chrys-meta={"fingerprint":"ac01b90dc082ae43b76af98a7fbc52e3295c09078d586a7696a215f6c270c70c","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.extension.context"
+msgstr "每轮上下文：{name}"
 
 #. English: Files
 #. chrys-meta={"fingerprint":"4b7adbbf83c89f58eee633676f53c80b5817f1051bde68a510ee8db1553136bc","multiline":false,"placeholders":[]}

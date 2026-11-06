@@ -29,11 +29,16 @@ Only reminders not already visible are added to the last user message:
   differs — a switch made before a retry reaches the retried request, and
   Code → QA → Code → QA across retries sends the last notice again;
 - catalogs — standing context: runtime environment, sub-agent tip, todo
-  list, background commands, skill catalog, MCP server instructions, archive-catalog pointer —
+  list, background commands, skill catalog, MCP server instructions, the
+  agent's extension contexts, archive-catalog pointer —
   whenever the latest version of that catalog in view differs: a changed
   catalog (changed back included), or one whose carrier a context fold took
   out of view, is sent again, and one no longer offered is replaced by a
   notice that it no longer applies where it has one.
+
+Extension contexts are async, so ``prepare_turn()`` cannot ask them: the
+caller that starts a turn awaits ``refresh_extension_context()`` right after
+it, and a retry that preserves the turn's reminders keeps their text.
 
 A call that continues a service-side conversation (``conversation_id``)
 sends only the new messages, so what that conversation holds is out of view:
@@ -73,14 +78,17 @@ from chrys.kernel.middleware import ChatMiddleware
 from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
 
 from .reminders import ReminderSources, build_sources
+from .reminders.extension_context import withdrawn_notice as extension_withdrawn_notice
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Sequence
 
+    from chrys.foundation.events.types import Warning
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.kernel.middleware import ChatContext
     from chrys.service.context.compaction.last_words_state import LastWordsTurn
     from chrys.service.context.compaction.spill import SpillQuota
+    from chrys.service.extensions import BoundContext
 
     from .reminders.base import CatalogSource
     from .reminders.file_change import FileChangeTurn
@@ -234,7 +242,7 @@ def _catalog_updates(
     updates = [item for item in current if latest.get(_catalog_key(item)) != item.text]
     offered = {_catalog_key(item) for item in current}
     for name, text in latest.items():
-        withdrawn = withdrawn_notices.get(name)
+        withdrawn = withdrawn_notices.get(name) or extension_withdrawn_notice(name)
         if name not in offered and withdrawn is not None and text != withdrawn:
             updates.append(_ReminderItem("catalog", withdrawn, name))
     return updates
@@ -277,6 +285,8 @@ class TurnReminderState:
     """Turn-start background commands of the main agent (None when it never had any)."""
     skill_catalog: str | None = None
     mcp_instructions: str | None = None
+    extension_catalogs: tuple[tuple[str, str], ...] | None = None
+    """``(catalog name, text)`` per extension context that gave text this turn; None until asked."""
     switch: SwitchSnapshot | None = None
     """The switch this turn announces, with its notice: a retry keeps the
     opener's turn group, and the notice must still reach the retried request."""
@@ -411,6 +421,7 @@ class SystemReminderMiddleware(ChatMiddleware):
         background_tasks_provider: Callable[[], str | None] | None = None,
         mcp_instructions_provider: Callable[[], str | None] | None = None,
         file_change_provider: Callable[[], str | None] | None = None,
+        extension_contexts: Sequence[BoundContext] = (),
         last_words: LastWordsPort | None = None,
     ) -> None:
         """*last_words* comes from ``create_reminder``; the middleware keeps its turns on the state's holder.
@@ -434,6 +445,7 @@ class SystemReminderMiddleware(ChatMiddleware):
             file_read_available=file_read_available,
             spill_quota=spill_quota,
             catalog_pointer_enabled=catalog_pointer_enabled,
+            extension_contexts=extension_contexts,
         )
         sources = self._sources
         self._withdrawn_notices = _withdrawn_notices(
@@ -492,6 +504,7 @@ class SystemReminderMiddleware(ChatMiddleware):
                 background_tasks=previous.background_tasks,
                 skill_catalog=previous.skill_catalog,
                 mcp_instructions=previous.mcp_instructions,
+                extension_catalogs=previous.extension_catalogs,
                 switch=previous.switch,
             )
         else:
@@ -759,6 +772,30 @@ class SystemReminderMiddleware(ChatMiddleware):
             return
         state.skill_catalog = self._sources.skills.snapshot()
 
+    async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[Warning, ...]:
+        """Ask the agent's extension contexts for the prepared turn's text; the failures to report come back.
+
+        *prompt* is what the turn was asked to do. With *keep*, a turn that
+        already has their text keeps it: a retry that preserved the turn's
+        reminders sends the same text, and asks only when nothing was kept
+        (the first retry after a restart). Without a prepared turn this does
+        nothing.
+
+        A task that did not inherit the prepared turn (a workflow node's pass
+        the user retried from another task) takes it on here, so the model
+        calls it starts send the text it stores.
+        """
+        state = self._turns.current()
+        if state is None:
+            return ()
+        if self._turns.local() is None:
+            self._turns.install_local(state)
+        if keep and state.extension_catalogs is not None:
+            return ()
+        catalogs, warnings = await self._sources.extension_context.collect(prompt)
+        state.extension_catalogs = catalogs
+        return warnings
+
     # ------------------------------------------------------------------
     # ChatMiddleware interface
     # ------------------------------------------------------------------
@@ -895,6 +932,7 @@ class SystemReminderMiddleware(ChatMiddleware):
                 (self._sources.background_tasks.name, state.background_tasks),
                 (self._sources.skills.name, state.skill_catalog),
                 (self._sources.mcp.name, state.mcp_instructions),
+                *(state.extension_catalogs or ()),
                 (self._sources.archive_pointer.name, self._sources.archive_pointer.current_text()),
             )
             if text

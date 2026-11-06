@@ -21,7 +21,7 @@ from chrys.foundation.tool_kinds import get_tool_kind
 from chrys.foundation.tool_result_metadata import TOOL_ERROR_KIND_METADATA_KEY, TOOL_FAILED_METADATA_KEY
 from chrys.kernel import FunctionTool
 from chrys.service.approval.policy import ApprovalPolicy
-from chrys.service.extensions import bind_extension_tools
+from chrys.service.extensions import bind_extension
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from chrys.service.tools.result_metadata import tool_result_metadata
 from chrys.service.tools.spill import TOOL_RESULTS_DIR_NAME
@@ -43,7 +43,7 @@ def _tool_metadata() -> Iterator[dict[str, object]]:
 
 def _bound(extension: Extension, tmp_path: Path, *, session_dir: Path | None = None) -> dict[str, FunctionTool]:
     build = extension_build(tmp_path, session_dir=session_dir)
-    return {tool.name: tool for tool in bind_extension_tools("demo", extension, build)}
+    return {tool.name: tool for tool in bind_extension("demo", extension, build).tools}
 
 
 async def _call(tool: FunctionTool, **arguments: Any) -> Any:
@@ -103,7 +103,7 @@ async def test_a_tool_gets_validated_arguments_and_this_agent_s_context(tmp_path
 
     extra = tmp_path / "docs"
     build = extension_build(tmp_path, extra_dirs=(extra, tmp_path), session_dir=tmp_path / "session")
-    (tool,) = bind_extension_tools("demo", extension, build)
+    (tool,) = bind_extension("demo", extension, build).tools
     assert await _call(tool, note={"title": "T", "tags": ["a"]}) == ""
     with pytest.raises(TypeError, match="Invalid arguments"):
         await _call(tool, note={"title": "T"})

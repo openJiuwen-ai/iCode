@@ -1280,13 +1280,23 @@ class RuntimeHookSourceDetails:
 
 
 @dataclass
+class RuntimeExtensionDetails:
+    """What one Python extension gives the agent, each list in declaration order."""
+
+    tools: list[str] = field(default_factory=list)
+    contexts: list[str] = field(default_factory=list)
+    before_tool_hooks: list[str] = field(default_factory=list)
+    after_tool_hooks: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AgentRuntimeDetails:
     """Grouped runtime metadata for the TUI details dialog."""
 
     model: RuntimeModelDetails = field(default_factory=RuntimeModelDetails)
     builtin_tools: dict[str, list[str]] = field(default_factory=dict)
-    extension_tools: dict[str, list[str]] = field(default_factory=dict)
-    """Each extension's tools, by extension id."""
+    extensions: dict[str, RuntimeExtensionDetails] = field(default_factory=dict)
+    """What each extension the agent loaded gives it, by extension id, in the profile's order."""
     extension_failures: dict[str, str] = field(default_factory=dict)
     """Why each extension the profile enables was left out, by extension id."""
     web_search_providers: dict[str, str] = field(default_factory=dict)

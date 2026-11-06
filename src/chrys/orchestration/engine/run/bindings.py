@@ -106,6 +106,7 @@ if TYPE_CHECKING:
     from chrys.foundation.models.invocations import ContentStatus
     from chrys.foundation.trajectory.context import TrajectoryContext
     from chrys.kernel import AgentResponse, ChatResponse, LoopRecorder
+    from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
     from chrys.service.agent_middleware.injection import InjectionMiddleware, QueuedInjection
     from chrys.service.context.compaction import UnifiedContextStrategy
     from chrys.service.context.compaction.strategy import CompactionRetrySnapshot
@@ -206,6 +207,7 @@ class TurnBindings:
         tool_result_ceiling_tokens: int | None = None,
         background_tasks: BackgroundTasks | None = None,
         shows_answer_text: bool = True,
+        extension_hooks: ExtensionToolHooks | None = None,
     ) -> None:
         self.resource_scope = conversation
         self._agent = agent
@@ -341,6 +343,7 @@ class TurnBindings:
             mutation_coordinator=mutation_coordinator,
             on_start_published=self._local_call_start_published,
             tool_result_ceiling_tokens=tool_result_ceiling_tokens,
+            extension_hooks=extension_hooks,
         )
 
     @property

@@ -278,6 +278,9 @@ class _Reminder:
         self.prepare_calls.append(kwargs)
         self.sources.profile_switch.consumed_switch_to = None
 
+    async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+        return ()
+
     def take_undelivered_file_change(self) -> str | None:
         return None
 

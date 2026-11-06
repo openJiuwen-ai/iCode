@@ -35,6 +35,7 @@ API styles) lives in ``chrys.service.llm.providers``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -218,6 +219,11 @@ def _validate_sdk_wire_charset(profile: ModelProfile, client: Any) -> None:
     pre-request charset gate as profile-owned values.  Non-string sentinels
     such as OpenAI's ``Omit`` are ignored because the SDK removes them before
     constructing ``httpx.Headers``.
+
+    Reading them can block, so it runs on a worker thread, as the SDKs learn
+    the OS for a request: their headers name it, and the OpenAI SDK first asks
+    ``platform.platform()``, which runs ``uname -p`` and ``file -b`` (on
+    Windows, ``platform.uname()``, which both read, queries WMI).
     """
     effective_headers = dict(client.auth_headers)
     effective_headers.update(client.default_headers)
@@ -493,7 +499,7 @@ async def create_client(
         max_consecutive_errors=10,
     )
     try:
-        return _build_client_stack(
+        return await _build_client_stack(
             profile,
             spec,
             api_key=api_key,
@@ -516,7 +522,7 @@ def _unknown_provider(provider: str) -> ValueError:
     )
 
 
-def _build_client_stack(
+async def _build_client_stack(
     profile: ModelProfile,
     spec: ProviderSpec,
     *,
@@ -545,7 +551,7 @@ def _build_client_stack(
             base_url_env=spec.base_url_env,
             default_base_url="" if spec.native_sdk else spec.default_base_url,
         )
-    _validate_sdk_wire_charset(profile, sdk_client)
+    await asyncio.to_thread(_validate_sdk_wire_charset, profile, sdk_client)
     client_cls = _wire_client_class(profile.provider, _api_style(profile, spec))
     return _assemble_stack(client_cls, sdk_client, **stack_kwargs)
 

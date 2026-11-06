@@ -8,8 +8,8 @@ the pack's tools for one agent build from a :class:`ToolBuild`. iCode's own tool
 categories are the first-party packs below. Every agent build — the main
 agent, a sub-agent, a workflow node — assembles its local tools through
 :func:`assemble_tools`, then, after every other tool it has (its sub-agents' and
-MCP servers' included), the tools of the Python extensions its profile's
-``extensions`` lists through :func:`assemble_extension_tools`
+MCP servers' included), the tools, contexts and tool hooks of the Python
+extensions its profile's ``extensions`` lists through :func:`assemble_extensions`
 (:mod:`chrys.service.extensions` finds, imports and binds them).
 
 This module stays light: each ``create`` imports its implementation when it
@@ -24,7 +24,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
-from chrys.foundation.events.types import Warning
+from chrys.foundation.events.types import RuntimeExtensionDetails, Warning
 from chrys.foundation.i18n import MessageDef, msg
 from chrys.foundation.tool_kinds import KIND_ASK_USER, get_tool_kind
 from chrys.service.profiles.agents.schema import ALWAYS_LOADED_TOOL_CATEGORIES
@@ -36,6 +36,8 @@ if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.kernel import FunctionTool
+    from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
+    from chrys.service.extensions import BoundContext, BoundToolHook
     from chrys.service.profiles.agents.schema import ShellFilterConfig, ToolsConfig
     from chrys.service.todos.tracker import TodoTracker
     from chrys.service.tools.background import BackgroundTasks
@@ -156,12 +158,16 @@ class AssembledTools:
 
 
 @dataclass(frozen=True, slots=True)
-class ExtensionTools:
-    """One agent build's extension tools."""
+class ExtensionParts:
+    """What one agent build takes from its extensions."""
 
     tools: list[FunctionTool] = field(default_factory=list)
-    by_extension: dict[str, list[str]] = field(default_factory=dict)
-    """Tool names per extension, in the profile's order."""
+    contexts: list[BoundContext] = field(default_factory=list)
+    """The context functions the agent's reminders ask each turn, in the profile's order."""
+    tool_hooks: ExtensionToolHooks | None = None
+    """The tool hooks its tool middlewares run, in the profile's order; None when no extension declares one."""
+    details: dict[str, RuntimeExtensionDetails] = field(default_factory=dict)
+    """What each extension the agent loaded gives it, by extension id, in the profile's order."""
     unavailable: dict[str, str] = field(default_factory=dict)
     """Why each extension the profile enables was left out."""
     warnings: tuple[Warning, ...] = ()
@@ -322,46 +328,58 @@ async def assemble_tools(build: ToolBuild) -> AssembledTools:
     return AssembledTools(tools=tools, web=web, by_pack=by_pack, warnings=web.warnings)
 
 
-async def assemble_extension_tools(
+async def assemble_extensions(
     build: ToolBuild, extension_ids: Sequence[str], *, taken: Iterable[str]
-) -> ExtensionTools:
-    """The tools of the extensions the profile enables (*extension_ids*), in its order, after every other tool.
+) -> ExtensionParts:
+    """The tools, contexts and tool hooks of the extensions the profile enables (*extension_ids*), in its order.
+
+    Their tools come after every other tool.
 
     *taken* is every name the agent's other tools take: its local, sub-agent and
     provider-hosted tools and all its MCP servers' (deferred ones included). The
     extensions come last so that they yield: one that cannot load, or one of
     whose tools repeats a name in *taken*, one of iCode's own tool names or an
-    earlier extension's, is left out whole, and the agent starts either way.
+    earlier extension's, is left out whole, contexts included, and the agent
+    starts either way.
     """
     if not extension_ids:
-        return ExtensionTools()
-    from chrys.service.extensions import bind_extension_tools, load_extensions
+        return ExtensionParts()
+    from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
+    from chrys.service.extensions import bind_extension, load_extensions
     from chrys.service.tools.names import chrys_reserved_tool_names
 
     taken = chrys_reserved_tool_names().union(taken)
     tools: list[FunctionTool] = []
-    by_extension: dict[str, list[str]] = {}
+    contexts: list[BoundContext] = []
+    before_tool: list[BoundToolHook] = []
+    after_tool: list[BoundToolHook] = []
+    details: dict[str, RuntimeExtensionDetails] = {}
     unavailable: dict[str, str] = {}
     for loaded in await load_extensions(extension_ids):
         if loaded.extension is None:
             unavailable[loaded.id] = loaded.problem
             continue
         try:
-            created = bind_extension_tools(loaded.id, loaded.extension, build)
+            bound = bind_extension(loaded.id, loaded.extension, build)
         except Exception as exc:
             logger.warning("Extension %s could not be set up", loaded.id, exc_info=True)
-            unavailable[loaded.id] = f"setting up its tools failed: {type(exc).__name__}: {exc}"
+            unavailable[loaded.id] = f"setting it up failed: {type(exc).__name__}: {exc}"
             continue
-        names = [tool.name for tool in created]
+        names = [tool.name for tool in bound.tools]
         if clashes := sorted(taken.intersection(names)):
             unavailable[loaded.id] = f"its tools {', '.join(clashes)} have names already in use"
             continue
-        tools.extend(created)
-        by_extension[loaded.id] = names
+        tools.extend(bound.tools)
+        contexts.extend(bound.contexts)
+        before_tool.extend(bound.before_tool_hooks)
+        after_tool.extend(bound.after_tool_hooks)
+        details[loaded.id] = bound.details
         taken.update(names)
-    return ExtensionTools(
+    return ExtensionParts(
         tools=tools,
-        by_extension=by_extension,
+        contexts=contexts,
+        tool_hooks=ExtensionToolHooks(tuple(before_tool), tuple(after_tool)) if before_tool or after_tool else None,
+        details=details,
         unavailable=unavailable,
         warnings=tuple(
             _extension_unavailable_warning(build, extension_id, reason) for extension_id, reason in unavailable.items()

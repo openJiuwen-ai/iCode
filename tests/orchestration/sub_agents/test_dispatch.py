@@ -336,6 +336,9 @@ async def test_sub_agent_concurrency_limit_rejects_excess_and_releases_slot(
         def prepare_turn(self) -> None:
             return None
 
+        async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+            return ()
+
     class _Agent:
         client = MockChatClient()
 
@@ -372,6 +375,9 @@ async def test_local_sub_agent_missing_limit_uses_shared_default() -> None:
     class _Reminder:
         def prepare_turn(self) -> None:
             return None
+
+        async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+            return ()
 
     class _Agent:
         client = MockChatClient()
@@ -448,6 +454,9 @@ async def test_sub_agent_invocation_closes_approval_middleware(monkeypatch: pyte
         def prepare_turn(self) -> None:
             pass
 
+        async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+            return ()
+
     class _Agent:
         client = MockChatClient()
 
@@ -503,6 +512,9 @@ async def test_sub_agent_cleanup_continues_when_usage_drain_is_cancelled(
     class _Reminder:
         def prepare_turn(self) -> None:
             return None
+
+        async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+            return ()
 
     class _Agent:
         client = MockChatClient()
@@ -575,6 +587,9 @@ async def test_pre_controller_hook_cancellation_keeps_terminal_audit_discoverabl
             def prepare_turn(self) -> None:
                 return None
 
+            async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+                return ()
+
         class _Agent:
             client = MockChatClient()
 
@@ -637,6 +652,9 @@ async def test_sub_agent_cleanup_handles_failure_before_event_middleware_assignm
     class _Reminder:
         def prepare_turn(self) -> None:
             return None
+
+        async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+            return ()
 
     class _Agent:
         client = MockChatClient()
