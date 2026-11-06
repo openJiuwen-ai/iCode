@@ -31,7 +31,7 @@
 - **上游代码**：`src/chrys/`（各 tier 目录下的 `aixcoding/` 子目录除外）、`tests/`、`locales/`、`scripts/`、`docs/`、`pyproject.toml` 及根级配置。**上游测试（`tests/`）视同上游源码。** 上游目录内不落定制文件。
 - **定制代码**（新增文件的唯一合法落点，均以 `aixcoding` 命名）：
   - `src/chrys/{tier}/aixcoding/` —— 产品定制代码（按 tier 落位，ADR-0011），进 wheel；档位判据见 R9 与 `DIRECTORY.md §3`
-  - 仓库根 `aixcoding/` —— 纯开发资产：`tests/`、`docs/`、`mock/`、`tools/`，不进 wheel
+  - 仓库根 `aixcoding/` —— 开发资产与分发物料：`tests/`、`docs/`、`mock/`、`tools/`、`release/`（随制品分发物料，ADR-0020），不进 wheel
 - **定制测试**：唯一落点 `aixcoding/tests/`，独立于上游默认收集（显式运行命令见 §4，CI 执行点见 §9）。
 - **定制点**：每一处获批的上游修改，或每一个独立定制模块。
 - 落点判定、目录蓝图、tier/import 机制、mock 结构约定等细则见 `aixcoding/docs/standards/DIRECTORY.md`；决策理由与被否决备选见 `aixcoding/docs/standards/adr/`。

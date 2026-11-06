@@ -19,12 +19,13 @@ iCode-fork/
 │   │   └── telemetry/ 等          #     适配层模块（批次待迁，进度见 batches/restructure/plan.md）
 │   └── app/aixcoding/             #   app 档（引用宿主 UI 设施的定制界面）
 │       └── tui/                   #     产品 UI（被 app 接线点同层调用；批次待迁）
-├── aixcoding/                    # 纯开发资产，不进 wheel
+├── aixcoding/                    # 开发资产与分发物料，不进 wheel
 │   ├── docs/                     #   standards/（规范族+全局 ADR+模板+评审清单）、INDEX.md（目录导航）、
 │   │                             #   batches/<name>/（全部批次/专项目录平铺，见 DEVELOPMENT.md §6 与 ADR-0016）
 │   ├── tests/                    #   【唯一】定制测试落点（显式运行）
 │   ├── mock/                     #   【唯一】自建 mock 专区（纯实现，契约测试在 tests/mock/）
 │   ├── tools/                    #   开发工具脚本（校验/脚手架等，如 check_docs.py）
+│   ├── release/                  #   【唯一】随制品分发物料落点（安装器脚本、用户安装手册；ADR-0020）
 │   ├── __init__.py               #   命名空间锚点（例外登记见 §8）
 │   └── README.md                 #   专区导览
 ├── tests/                        # 纯上游测试，零定制文件
@@ -44,7 +45,8 @@ iCode-fork/
 | 会进发布包（被产品运行时用到）？ | `src/chrys/{tier}/aixcoding/`（按依赖落位，档位判据见 §3；ADR-0011） |
 | 是测试？ | `aixcoding/tests/` |
 | 是 mock（模拟外部后端服务）？ | `aixcoding/mock/` |
-| 是文档？ | `aixcoding/docs/`（规范族进 `standards/`，其余一律 `batches/<name>/`，见 ADR-0016） |
+| 是随制品分发的物料（安装器脚本、用户安装手册等分发给最终用户的资产）？ | `aixcoding/release/`（先于"文档"判定——安装手册等分发文档按此行命中，ADR-0020） |
+| 是文档？ | `aixcoding/docs/`（规范族进 `standards/`，其余一律 `batches/<name>/`，见 ADR-0016；非随制品分发） |
 | 是开发工具脚本（校验、脚手架等）？ | `aixcoding/tools/` |
 | 以上都不是 | 停下：先在方案中论证归属，必要时修订本文 |
 
@@ -64,9 +66,10 @@ iCode-fork/
 - **例外（结构性挂接边）**：包内个别模块对宿主的向上挂接（进程入口、钩子注册，非业务库依赖）不改变整包档位——历史上经 `_DAG_EDGE_ALLOWLIST` 豁免（ADR-0011 决策 2/5），**该通道已随 launcher 退役整体移除（ADR-0013）；替代路径是内联接线（挂接模块按 ADR-0011 判据落 app 档，或入口直接调用——auth-logging 批次 `ensure_file_sink` 入口接线即先例），重建前任何向上 import 均为架构违规；豁免通道原则上不再重建——豁免机制是升级摩擦的永久来源，确需重建时属架构决策，须 ADR（含理由）+ 责任人签认，不得以任何形式先行登记**。
 - 依赖上涨 → test_layering 红 → 挪档（反馈回路闭环）；`tui` 的依赖边界：仅限宿主 UI 基础设施（对话框基类、控件、绑定展示、主题），**不得**引用 service / orchestration 业务逻辑。
 
-## 4. 根 `aixcoding/`（纯开发资产）
+## 4. 根 `aixcoding/`（开发资产与分发物料）
 
-- 目录构成：`docs/`、`tests/`、`mock/`、`tools/` 与 README（例外登记见 §8）；**不放任何产品代码**。
+- 目录构成：`docs/`、`tests/`、`mock/`、`tools/`、`release/` 与 README（例外登记见 §8）；**不放任何产品代码**。
+- `release/` 承载**随制品分发物料**（安装器脚本、用户安装手册）——经内网镜像分发给最终用户的资产，非开发过程消费；不进 wheel 与本目录其余部分一致（设立决策与备选否决见 ADR-0020）。
 - 不进 wheel 的机制是 `pyproject.toml` 的 `packages = ["src/chrys"]`——与目录内有无 `__init__.py` 无关。
 - **import 机制**：`aixcoding/tests/conftest.py` 负责把仓库根加入 `sys.path`，此后开发资产以 `aixcoding.mock.<name>` 等包路径导入（mock 专区结构见 §6）。测试目录自身**不加** `__init__.py`（保持 pytest 的无包收集模式）。
 - 产品代码（打包运行时）**不得** import `aixcoding.*`——根命名空间只存在于开发仓库内，wheel 里没有它。产品代码只 import `chrys.{tier}.aixcoding.*`。
