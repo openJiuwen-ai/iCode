@@ -214,11 +214,10 @@ ignore = [
 "src/chrys/service/aixcoding/**" = ["RUF001"]
 # AIxCoding custom tests: fake creds/asserts, frozen Chinese-message assertions (aixcoding/tests)
 "aixcoding/tests/**" = ["S", "PERF401", "RUF001"]
-# Rule messages and operator docs are Chinese; punctuation is intentional
+# Guard rule messages, operator output and test assets keep Chinese full-width punctuation
 # (approved: batches/guard-hooks/design.md, R13 exemption ledger)
 "src/chrys/kernel/aixcoding/guard/pack/*" = ["RUF001", "RUF002", "RUF003"]
-"aixcoding/tests/guard/guard_pack_selftest.py" = ["RUF002", "RUF003"]
-"aixcoding/tests/guard/verify_guard_deployed.py" = ["RUF002", "RUF003"]
+"aixcoding/tests/guard/**" = ["RUF002", "RUF003"]
 "aixcoding/tools/guard_install_merge.py" = ["RUF001", "RUF002", "RUF003"]
 # Tests — relax security checks, tolerate loop-append pattern
 "tests/**" = ["S", "PERF401"]

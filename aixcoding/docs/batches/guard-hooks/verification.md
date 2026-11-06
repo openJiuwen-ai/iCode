@@ -115,4 +115,5 @@
 | 6 | `ruff check --no-fix` + `ruff format --check`（两改动文件） | `All checks passed!` / `2 files already formatted` |
 | 7 | `ty check --error-on-warning --python-platform {linux,darwin,win32} src/chrys` | 三平台均 `All checks passed!` |
 
-CI 侧待远端复跑确认：Guard hooks（ubuntu/macos）、Custom tests（ubuntu）、quality gate。
+CI 侧已远端复跑确认（2026-11-06 复审实测，head `40e1dfba`）：Guard hooks 三平台、
+Custom tests（ubuntu）、quality gate 全部 success，AIxCoding Tests 与 Upstream CI 双绿。
