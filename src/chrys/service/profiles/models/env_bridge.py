@@ -13,6 +13,8 @@ profile activation.
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Callable
 
 from chrys.foundation.config.runtime_pointer import MODEL_POINTER_KEY, get_model_pointer, set_model_pointer
 from chrys.foundation.config.settings_store import persist
@@ -27,6 +29,24 @@ Uppercase wins; httpx falls back to lowercase only when ``NO_PROXY`` is
 unset/empty.  Anything that writes or scrubs the bypass list must touch
 both forms so a stale lowercase value can't shadow the canonical one.
 """
+
+_PROXY_URL_ENV_VARS: tuple[str, ...] = (
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+)
+"""The proxy-address variables httpx reads, both casings of each.
+
+httpx takes only the ``http``, ``https`` and ``all`` entries of
+``urllib.request.getproxies()``, which prefers the lowercase name.  Each
+name is checked on its own: a bad value under either casing can be the
+one httpx reads.
+"""
+
+_URL_SCHEME_PREFIX = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
 
 
 def _persist_pointer(profile_id: str) -> None:
@@ -119,6 +139,52 @@ def is_valid_no_proxy(value: str) -> bool:
     return all(_validate_no_proxy_entry(entry) for entry in entries)
 
 
+def is_valid_proxy_url(value: str) -> bool:
+    """Return True if httpx can build a proxy from *value* read from the environment.
+
+    Mirrors ``httpx._utils.get_environment_proxies`` (a value without
+    ``://`` is given ``http://``) and then ``httpx.Proxy``, the step of
+    client construction that rejects a proxy address: an unsupported
+    scheme such as ``socks://`` or ``socks4://``, or a malformed URL.
+    Asking httpx itself, not a copied scheme list, keeps the verdict in
+    step with the pinned httpx.  Empty is valid: urllib skips empty values.
+    """
+    if not value:
+        return True
+    from httpx import InvalidURL, Proxy
+
+    try:
+        Proxy(value if "://" in value else f"http://{value}")
+    except InvalidURL, ValueError:
+        return False
+    return True
+
+
+def _mask_proxy_credentials(value: str) -> str:
+    """Hide the user info of a proxy address before it is shown.
+
+    The cut is textual and errs toward hiding too much: a value httpx
+    rejects need not parse as a URL, and a password may hold a raw ``/``,
+    ``@`` or ``://``, so everything before the last ``@`` goes but a
+    leading scheme, kept only when it is one by RFC 3986's grammar.
+    """
+    if "@" not in value:
+        return value
+    scheme = _URL_SCHEME_PREFIX.match(value)
+    return f"{scheme.group(0) if scheme else ''}***@{value.rpartition('@')[2]}"
+
+
+def _scrub_env(names: tuple[str, ...], is_valid: Callable[[str], bool]) -> dict[str, str]:
+    scrubbed: dict[str, str] = {}
+    for var in names:
+        raw = os.environ.get(var)
+        if raw is None or is_valid(raw):
+            continue
+        scrubbed[var] = raw
+        del os.environ[var]
+    return scrubbed
+
+
 def sanitize_no_proxy_env() -> dict[str, str]:
     """Remove invalid ``NO_PROXY`` / ``no_proxy`` env vars; return what was scrubbed.
 
@@ -132,11 +198,24 @@ def sanitize_no_proxy_env() -> dict[str, str]:
     when nothing was wrong).  Caller surfaces a user-visible warning per
     entry.
     """
-    scrubbed: dict[str, str] = {}
-    for var in _NO_PROXY_ENV_VARS:
-        raw = os.environ.get(var)
-        if raw is None or is_valid_no_proxy(raw):
-            continue
-        scrubbed[var] = raw
-        del os.environ[var]
-    return scrubbed
+    return _scrub_env(_NO_PROXY_ENV_VARS, is_valid_no_proxy)
+
+
+def sanitize_proxy_url_env() -> dict[str, str]:
+    """Remove proxy-address env vars httpx can't use; return what was scrubbed.
+
+    Called once at startup, beside :func:`sanitize_no_proxy_env` and for the
+    same reason: every httpx client that reads the environment (model
+    requests, HTTP MCP servers, the update check) builds a proxy from these
+    values when it is constructed, and one it can't build — a desktop's
+    ``ALL_PROXY=socks://…`` — fails that construction.  A profile's proxy
+    bypass can't help: its mounts are applied only after the proxies are
+    built.  The value is dropped, never rewritten, since only the user knows
+    which protocol it meant.
+
+    Returns a mapping from var name to the scrubbed value with any
+    credentials masked, since the caller shows it in a warning per entry.
+    """
+    return {
+        var: _mask_proxy_credentials(raw) for var, raw in _scrub_env(_PROXY_URL_ENV_VARS, is_valid_proxy_url).items()
+    }

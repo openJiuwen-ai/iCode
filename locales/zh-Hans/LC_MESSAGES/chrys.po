@@ -1791,6 +1791,14 @@ msgstr "保留的最近工作区数"
 msgid "startup.invalid_no_proxy_env"
 msgstr "环境变量 {var} 的值对 httpx 无效，已忽略（{value}）。请移除或修正该环境变量。"
 
+#. English: {var} is not a proxy address {app} can use and was ignored
+#. ({value}). Use an http://, https://, socks5:// or socks5h:// address, or
+#. remove this environment value.
+#. chrys-meta={"fingerprint":"3ded826f128c71a6acf506c8a238ae02cbd0209f09b21ae43e542308b889b8e6","multiline":false,"placeholders":["app","value","var"]}
+#: src/chrys/orchestration/startup.py
+msgid "startup.invalid_proxy_env"
+msgstr "环境变量 {var} 不是 {app} 可用的代理地址，已忽略（{value}）。请改用 http://、https://、socks5:// 或 socks5h:// 地址，或移除该环境变量。"
+
 #. English: Notification migration into {path} failed ({error}). It will retry
 #. on the next start. Until then, your previous notification preferences may
 #. not apply.

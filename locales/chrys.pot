@@ -1757,6 +1757,14 @@ msgstr ""
 msgid "startup.invalid_no_proxy_env"
 msgstr ""
 
+#. English: {var} is not a proxy address {app} can use and was ignored
+#. ({value}). Use an http://, https://, socks5:// or socks5h:// address, or
+#. remove this environment value.
+#. chrys-meta={"fingerprint":"3ded826f128c71a6acf506c8a238ae02cbd0209f09b21ae43e542308b889b8e6","multiline":false,"placeholders":["app","value","var"]}
+#: src/chrys/orchestration/startup.py
+msgid "startup.invalid_proxy_env"
+msgstr ""
+
 #. English: Notification migration into {path} failed ({error}). It will retry
 #. on the next start. Until then, your previous notification preferences may
 #. not apply.
