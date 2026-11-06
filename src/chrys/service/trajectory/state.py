@@ -3,9 +3,9 @@
 """Turn identity persisted alongside the conversation (``chrys_trajectory`` state key).
 
 ``turn_id`` is minted per logical turn and never reused, so it survives the
-ordinal shifting ``turn_number`` goes through: a failed or cancelled turn
-leaves the saved ``turn_counter`` behind the running one, and a rollback may
-hand an ordinal out again. Identity is therefore the id, and the registry is
+ordinal shifting ``turn_number`` goes through: older sessions can carry
+counter drift, and a rollback may hand an ordinal out again. Identity is
+therefore the id, and the registry is
 an append-ordered list — a later turn never overwrites an earlier one's
 identity even when they share an ordinal.
 
@@ -95,6 +95,20 @@ def turn_records(state: dict[str, Any] | None) -> list[TurnRecord]:
         if record is not None:
             records.append(record)
     return records
+
+
+def discard_last_turn(state: dict[str, Any], *, turn_number: int) -> TurnRecord | None:
+    """Remove just the empty turn being replaced, preserving older identities."""
+    entries = _entries_for_read(state)
+    for index in range(len(entries) - 1, -1, -1):
+        record = _record_from_entry(entries[index])
+        if record is None:
+            continue
+        if record.turn_number != turn_number:
+            return None
+        del _entries_for_write(state)[index]
+        return record
+    return None
 
 
 def legacy_turn_records(state: dict[str, Any] | None) -> list[TurnRecord] | None:

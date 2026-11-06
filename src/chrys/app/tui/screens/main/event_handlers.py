@@ -79,6 +79,7 @@ from chrys.foundation.events.types import (
     CompactionStarted,
     ContextCompressed,
     Error,
+    FreshTurnCleaned,
     HookConfirmationRequest,
     HookConfirmationWithdrawn,
     HookExecutionsChanged,
@@ -107,10 +108,12 @@ from chrys.foundation.events.types import (
     InvocationToolCallStart,
     InvocationToolCallStatusUpdated,
     QuestionToUser,
+    RollbackSnapshotsChanged,
     SessionReady,
     SettingsReloaded,
     TodoListUpdated,
     ToolCompacted,
+    TurnStarted,
     UsageUpdate,
     UserInjectResult,
     Warning,
@@ -248,6 +251,7 @@ class BackendEventCallbacks:
     prompt_missing_working_dir: Callable[[MissingDirReason], None] = lambda _reason: None
 
     refresh_diff_preview: Callable[[bool], None] = lambda _reread: None
+    refresh_rollback_targets: Callable[[], object] = lambda: None
 
 
 def _usage_source_debug_suffix(source_id: str, *, main_source_id: str) -> str:
@@ -408,7 +412,9 @@ class BackendEventHandler:
         | InvocationContentDelta
         | InvocationContentFinished
         | InvocationContentAbandoned
-        | Error,
+        | Error
+        | FreshTurnCleaned
+        | TurnStarted,
     ) -> bool:
         """Return whether *event* was sourced before the current UI run."""
         started_at = self._state.run.started_at
@@ -1068,6 +1074,32 @@ class BackendEventHandler:
         )
         self._ui().set_tool_info(trail)
 
+    async def on_fresh_turn_cleaned(self, event: FreshTurnCleaned) -> None:
+        """Apply cleanup only after the accepted opener has mounted."""
+        await self.apply_turn_event(event)
+
+    async def on_turn_started(self, event: TurnStarted) -> None:
+        """Use the backend's index for a fresh opener; retries keep their existing opener."""
+        await self.apply_turn_event(event)
+
+    async def apply_turn_event(self, event: FreshTurnCleaned | TurnStarted) -> None:
+        """Filter and apply a live or deferred turn fact through the same render gate."""
+        if (
+            self._predates_active_run(event)
+            or (event.session_id or "") != self._ui().chat_session_id()
+            or (isinstance(event, TurnStarted) and event.is_retry)
+        ):
+            return
+        if self._state.render_gate.defers(event):
+            self._state.render_gate.defer(event)
+            return
+        if isinstance(event, FreshTurnCleaned):
+            await self._ui().apply_fresh_turn_cleanup(
+                retired_previous_turn=event.retired_previous_turn, removed_followups=event.removed_followups
+            )
+        else:
+            self._ui().apply_turn_started(event.turn_number)
+
     async def on_agent_thinking(self, _event: AgentThinking) -> None:
         s = self
         if not s.agent_running:
@@ -1075,6 +1107,12 @@ class BackendEventHandler:
 
         self._ui().show_status(STATUS_THINKING.bind())
         s.debug("AgentThinking")
+
+    async def on_rollback_snapshots_changed(self, event: RollbackSnapshotsChanged) -> None:
+        """Refresh only the current session's retained rollback targets."""
+        if (event.session_id or "") != self._ui().chat_session_id():
+            return
+        self._callbacks.refresh_rollback_targets()
 
     def _admits_turn_render(
         self,

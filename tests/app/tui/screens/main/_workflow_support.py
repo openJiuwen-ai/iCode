@@ -53,6 +53,9 @@ class WorkflowEngine(SessionGenerationEngine):
     def execution(self) -> ExecutionSnapshot:
         return self.snapshot
 
+    def available_rollback_turns(self) -> list[int]:
+        return []
+
     async def set_execution(self, snapshot: ExecutionSnapshot, bus: EventBus) -> None:
         self.snapshot = snapshot
         await bus.publish(ExecutionChanged(snapshot=snapshot))

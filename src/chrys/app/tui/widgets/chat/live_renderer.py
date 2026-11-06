@@ -36,6 +36,8 @@ from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
 from chrys.foundation.i18n.formatting import format_message
 
 if TYPE_CHECKING:
+    from textual.widget import Widget
+
     from chrys.app.tui.widgets.chat.tool_call import ToolGroup
     from chrys.foundation.models.invocations import ContentChannel
 
@@ -55,6 +57,8 @@ class LiveTranscriptRenderer:
         localization: TranscriptLocalizationPort | None = None,
         thinking_expanded: Callable[[], bool] | None = None,
         fold_passed_text: bool = False,
+        rollback_targets: Callable[[], set[int]] | None = None,
+        cleanup_failed_input: bool = False,
     ) -> None:
         self._mount = mount
         self._ui = ui
@@ -62,7 +66,10 @@ class LiveTranscriptRenderer:
         self._query = query
         self._toc = toc
         self._tools = tools
+        self._rollback_targets = rollback_targets or set
+        self._cleanup_failed_input = cleanup_failed_input
         self._resolve_message = localization.render if localization is not None else format_message
+        self._pending_user_message: UserMessage | None = None
         self._current_agent_msg: AgentMessage | None = None
         self._streamed_answer: AgentMessage | None = None
         """The answer text streamed last, until more of the turn follows it: the turn's completion stamps it.
@@ -115,6 +122,7 @@ class LiveTranscriptRenderer:
 
     def reset_for_clear(self) -> None:
         """Clear per-transcript cursors while preserving durable metadata."""
+        self._pending_user_message = None
         self._current_agent_msg = None
         self._streamed_answer = None
         self._compaction_cards.clear()
@@ -171,7 +179,12 @@ class LiveTranscriptRenderer:
         await self._ui.dismiss_welcome_for_content()
         if not is_injection:
             self._ui.on_live_user_turn_started()
-            await self._remove_failed_turn()
+            if self._cleanup_failed_input:
+                await self._remove_nested_failed_input()
+            else:
+                status = self._status.failed_turn_status()
+                if isinstance(status, (ErrorMessage, InterruptedMessage, RetryMessage)):
+                    await remove_shielded(status)
             self._answer_streamed = False
             self._streamed_answer = None
             self._thinking_to_fold = None
@@ -188,34 +201,97 @@ class LiveTranscriptRenderer:
             widget = UserMessage(text, timestamp=timestamp, is_injection=True, contents=contents)
         else:
             turn_id, _item = self._toc.begin_user_turn(text)
-            widget = UserMessage(text, timestamp=timestamp, contents=contents)
+            turn_number = _item.turn_index
+            widget = UserMessage(
+                text,
+                timestamp=timestamp,
+                contents=contents,
+                turn_number=turn_number,
+                rollback_available=UserMessage.undo_link_available(turn_number, self._rollback_targets()),
+            )
         widget.id = turn_id
+        if not is_injection:
+            self._pending_user_message = widget
         await self._mount.mount_transcript_widget(widget)
         self._ui.scroll_user_message_to_top(widget)
 
-    async def _remove_failed_turn(self) -> None:
-        """Remove a trailing failed turn status and its preceding prompt."""
+    async def _remove_nested_failed_input(self) -> None:
+        """Preserve nested journals' local cleanup: they have no backend turn-boundary stream."""
         status = self._status.failed_turn_status()
         if not isinstance(status, (ErrorMessage, InterruptedMessage, RetryMessage)):
             return
-        # Anchor the prompt to this status before awaiting removal. Notices
-        # appended after the failure must not change its predecessor; a notice
-        # or output before the status remains a boundary against older input.
         prompt = self._status.preceding_content(status)
-        # Thinking alone leaves nothing in history: a response that landed
-        # with no more than thinking is rejected, and a stream cut off is not
-        # kept. The prompt it followed is dropped as if the model wrote nothing.
-        thinking: list[ThinkingMessage] = []
-        while isinstance(prompt, ThinkingMessage):
-            thinking.append(prompt)
+        tail: list[Widget] = []
+        while isinstance(prompt, (ThinkingMessage, UserMessage)):
+            tail.append(prompt)
+            if isinstance(prompt, UserMessage) and not prompt.is_injection:
+                break
             prompt = self._status.preceding_content(prompt)
         await remove_shielded(status)
-        if isinstance(prompt, UserMessage):
-            # Drop the entry first: a cancelled removal still takes the prompt away.
-            self._toc.remove_failed_prompt(prompt.id)
-            await remove_all_shielded([prompt, *thinking])
+        if isinstance(prompt, UserMessage) and not prompt.is_injection:
+            for widget in tail:
+                if isinstance(widget, UserMessage):
+                    self._toc.remove_failed_prompt(widget.id)
+            await remove_all_shielded(tail)
         else:
-            self._toc.remember_failed_turn_without_user_removal()
+            unanswered_end = 0
+            for index, widget in enumerate(tail, start=1):
+                if isinstance(widget, UserMessage):
+                    self._toc.remove_failed_prompt(widget.id)
+                    unanswered_end = index
+            if unanswered_end:
+                await remove_all_shielded(tail[:unanswered_end])
+
+    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_followups: int) -> None:
+        """Project the backend's cleanup result onto the preceding turn, without judging its output."""
+        pending = self._pending_user_message
+        children = self._query.transcript_content_children()
+        if pending is None or pending not in children:
+            return
+        previous = children[: children.index(pending)]
+        opener = next(
+            (
+                index
+                for index, widget in reversed(list(enumerate(previous)))
+                if isinstance(widget, UserMessage) and not widget.is_injection
+            ),
+            None,
+        )
+        if opener is None:
+            return
+        preceding_turn = previous[opener:]
+        if retired_previous_turn:
+            removed = [
+                widget
+                for widget in preceding_turn
+                if isinstance(widget, (UserMessage, ThinkingMessage, ErrorMessage, InterruptedMessage, RetryMessage))
+            ]
+        elif removed_followups:
+            notes = [widget for widget in preceding_turn if isinstance(widget, UserMessage) and widget.is_injection]
+            selected = notes[-removed_followups:]
+            if not selected:
+                return
+            first = preceding_turn.index(selected[0])
+            removed = [
+                widget for widget in preceding_turn[first:] if isinstance(widget, ThinkingMessage) or widget in selected
+            ]
+        else:
+            return
+        for widget in removed:
+            if isinstance(widget, UserMessage):
+                self._toc.remove_failed_prompt(widget.id)
+        await remove_all_shielded(removed)
+
+    def apply_turn_started(self, turn_number: int) -> None:
+        """Bind the live opener and its TOC children to the backend's turn number."""
+        message = self._pending_user_message
+        if message is None:
+            return
+        self._pending_user_message = None
+        self._toc.apply_turn_marker(turn_number)
+        message.turn_number = turn_number
+        message.set_rollback_available(UserMessage.undo_link_available(turn_number, self._rollback_targets()))
+        self._ui.scroll_user_message_to_top(message)
 
     async def add_answer_delta(self, segment_id: str, text: str) -> None:
         """Stream new answer text into its segment's message, mounting it once the text is not blank."""
@@ -528,7 +604,13 @@ class LiveTranscriptRenderer:
 
         copy = resolve_interrupted_message_copy(reason, source, self._resolve_message)
         label = copy.retry_action if source == "error" else copy.continue_action
-        msg = InterruptedMessage(copy.reason, source, action_label=label if show_action else None, header=copy.header)
+        msg = InterruptedMessage(
+            copy.reason,
+            source,
+            action_label=label if show_action else None,
+            header=copy.header,
+            offers_discard=show_action and source != "error",
+        )
         await self._mount.mount_transcript_widget(msg)
         self._ui.on_status_message_mounted()
 

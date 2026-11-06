@@ -357,8 +357,13 @@ async def test_replayed_thinking_in_a_compressed_part_shows_as_compressed() -> N
         await panel.replay_history([fold], compressed_blocks={"ctx-1": block})
         await panel.wait_replay_complete()
 
-        # A compressed part shows no local tools; each response's thinking still shows on its own.
-        assert _shape(panel)[1:4] == [("thinking", "Look at a."), ("thinking", "Done thinking."), ("answer", "Old.")]
+        assert _shape(panel)[1:5] == [
+            ("thinking", "Look at a."),
+            ("tools", "1"),
+            ("thinking", "Done thinking."),
+            ("answer", "Old."),
+        ]
+        assert panel.query_one(ToolGroup).has_class("--compressed")
         assert [message.has_class("--compressed") for message in panel.query(ThinkingMessage)] == [True, True]
 
 

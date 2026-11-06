@@ -44,6 +44,7 @@ from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.runner import HookResult
 from chrys.service.hooks.schema import HookConfig, HookDecision, HookExecution, HookRun, HooksFile
+from chrys.service.session.history import FreshTurnCleanup
 from chrys.service.skills.model import SkillProviderWarning
 from chrys.service.trajectory.preparation import PreparationOutcome
 from chrys.service.trajectory.waits import WaitOutcome
@@ -268,14 +269,15 @@ class _Fsm:
 class _History:
     def __init__(self) -> None:
         self.removed_trailing_markers = 0
-        self.removed_orphaned_user_messages = 0
+        self.prepared_fresh_turns = 0
         self.messages: list[Message] = []
 
     def remove_trailing_markers(self) -> None:
         self.removed_trailing_markers += 1
 
-    def remove_orphaned_user_message(self) -> None:
-        self.removed_orphaned_user_messages += 1
+    def prepare_fresh_turn(self, *, other_records_present: bool = False) -> FreshTurnCleanup:
+        self.prepared_fresh_turns += 1
+        return FreshTurnCleanup()
 
     def has_trailing_error_markers(self) -> bool:
         return False

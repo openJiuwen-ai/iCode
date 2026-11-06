@@ -15,6 +15,13 @@
       "reason": "Execution-state notification delivery and draining have no enclosing trajectory interval proven for every call path.",
       "when": "all_paths"
     },
+    "rollback-boundary-work": {
+      "classification": "B",
+      "container_rule": "unresolved_outer_container",
+      "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+      "reason": "Fresh-turn cleanup and user rollback publish branch transitions, persist session state and notify frontends before a new main-turn interval exists; no enclosing trajectory interval is proven on every entry path.",
+      "when": "all_paths"
+    },
     "session-transition-work": {
       "classification": "B",
       "container_rule": "unresolved_outer_container",
@@ -723,7 +730,7 @@
         ["awaitable", "await self._turns.on_user_retry(event)", "unresolved"]
       ],
       "AgentEngine._on_user_rollback": [
-        ["wrapper", "await self._session_operation('roll back', lambda: self._rollback.on_user_rollback(event, atomic_copy_file=atomic_copy_file, lock_timeout_seconds=SESSION_WRITE_LOCK_TIMEOUT_SECONDS))", "unresolved", "chrys.orchestration.engine.engine.AgentEngine._session_operation"]
+        ["wrapper", "await self._session_operation('roll back', lambda: self._rollback.on_user_rollback(event, atomic_copy_file=atomic_copy_file, lock_timeout_seconds=SESSION_WRITE_LOCK_TIMEOUT_SECONDS), workflow_active_display=_WORKFLOW_ROLLBACK_ACTIVE.bind())", "unresolved", "chrys.orchestration.engine.engine.AgentEngine._session_operation"]
       ],
       "AgentEngine._on_workspace_change": [
         ["awaitable", "await self._controls.on_workspace_change(event)", "unresolved"]
@@ -737,7 +744,7 @@
         ["awaitable", "await self._hook_confirmations.close()", "unresolved"]
       ],
       "AgentEngine._session_operation": [
-        ["awaitable", "await self._bus.publish(Error(code='workflow_active', message=f'Cannot {operation} while a workflow run is active. Cancel the workflow run first.', session_id=target_session_id or self._session.session_id))", "unresolved"],
+        ["awaitable", "await self._bus.publish(Error(code='workflow_active', message=f'Cannot {operation} while a workflow run is active. Cancel the workflow run first.', display_message=workflow_active_display, session_id=target_session_id or self._session.session_id))", "unresolved"],
         ["awaitable", "await run()", "unresolved"]
       ],
       "AgentEngine._subscribe_event_handlers": [
@@ -938,7 +945,7 @@
         ["awaitable", "await self._lifecycle.reset_session_to_welcome(sid, write_lock_held=welcome_lock_lease.held, after_delete=welcome_file_rollback, before_restart=welcome_lock_lease.release)", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='rollback_reset_failed', message='Rollback to welcome could not reset the session because the session state is busy.', display_message=_ROLLBACK_RESET_FAILED.bind(), session_id=sid))", "unresolved"],
         ["awaitable", "await self._trajectory_recorder.rollback(superseded_turns=rollback_turns, target_turns=[])", "unresolved"],
-        ["awaitable", "await self._bus.publish(RollbackResult(session_id=sid, target_turn=0, rolled_back_user_text=rolled_back_user_text, files_reverted=files_reverted, restore_results=restore_results, exclusions=plan_exclusions, warnings=plan_warnings, superseded_turn_ids=superseded_turn_ids))", "unresolved"],
+        ["awaitable", "await self._bus.publish(RollbackResult(session_id=sid, target_turn=0, rolled_back_user_text=rolled_back_user_text, files_reverted=files_reverted, restore_results=restore_results, exclusions=plan_exclusions, warnings=plan_warnings, superseded_turn_ids=superseded_turn_ids, discarded_turn_count=discarded_turn_count))", "unresolved"],
         ["awaitable", "await self._bus.publish(Warning(code='rollback_snapshot_missing', message=f'Snapshot for turn {target_turn} is missing.', display_message=_ROLLBACK_SNAPSHOT_MISSING.bind(target_turn=target_turn), session_id=sid))", "unresolved"],
         ["awaitable", "await tasks.stop_turns_after(target_turn)", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='rollback_swap_locked', message=f'Timed out waiting for session lock: {exc}', display_message=_ROLLBACK_SWAP_LOCKED.bind(detail=DisplayBlock(str(exc))), session_id=sid))", "unresolved"],
@@ -947,7 +954,7 @@
         ["awaitable", "await self._trajectory_recorder.rollback(superseded_turns=superseded_for_record, target_turns=snapshot.turns)", "unresolved"],
         ["awaitable", "await self._lifecycle.on_session_restore(SessionRestore(session_id=sid, ignore_recovery=True))", "unresolved"],
         ["awaitable", "await self._writer.save_current_session()", "unresolved"],
-        ["awaitable", "await self._bus.publish(RollbackResult(session_id=sid, target_turn=target_turn, rolled_back_user_text=rolled_back_user_text, files_reverted=files_reverted, restore_results=restore_results, exclusions=plan_exclusions, warnings=plan_warnings, superseded_turn_ids=superseded_turn_ids))", "unresolved"]
+        ["awaitable", "await self._bus.publish(RollbackResult(session_id=sid, target_turn=target_turn, rolled_back_user_text=rolled_back_user_text, files_reverted=files_reverted, restore_results=restore_results, exclusions=plan_exclusions, warnings=plan_warnings, superseded_turn_ids=superseded_turn_ids, discarded_turn_count=discarded_turn_count))", "unresolved"]
       ],
       "RollbackController._execute_user_rollback_with_permit": [
         ["awaitable", "await self._writer.flush()", "unresolved"],
@@ -1163,6 +1170,11 @@
         ["awaitable", "await self._bus.publish(Error(code='prompt_shortcut_busy', message='A message running prompt shortcut commands cannot join a running turn', display_message=_COORDINATOR_PROMPT_SHORTCUT_BUSY.bind(), session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.REJECTED)", "unresolved"]
       ],
+      "TurnCoordinator._settle_fresh_cleanup": [
+        ["awaitable", "await self._writer.save_current_session(raise_on_error=True)", "rollback-boundary-work"],
+        ["awaitable", "await self._trajectory_recorder.retire_turn(retired_turn=cleanup.retired_turn, target_turns=turn_records(self._history.state))", "rollback-boundary-work"],
+        ["awaitable", "await self._bus.publish(FreshTurnCleaned(session_id=self._session.session_id, retired_previous_turn=cleanup.retired_previous_turn, removed_followups=cleanup.removed_followups))", "rollback-boundary-work"]
+      ],
       "TurnCoordinator._start_pre_admission_preparation": [
         ["awaitable", "await preparation.started()", "unresolved"]
       ],
@@ -1222,10 +1234,11 @@
         ["wrapper", "await self.run_retry(additional_text, created_at=created_at, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.run_retry"]
       ],
       "TurnCoordinator.run_and_save": [
-        ["wrapper", "await self.run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure, user_message_id=user_message_id, typed_text=typed_text)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.run_fresh"]
+        ["wrapper", "await finish_close(asyncio.create_task(self._settle_fresh_cleanup(cleanup)))", "unresolved", "chrys.foundation.util.once_close.finish_close"],
+        ["wrapper", "await self.run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure, user_message_id=user_message_id, typed_text=typed_text, skip_rollback_snapshot=skip_snapshot)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.run_fresh"]
       ],
       "TurnCoordinator.run_fresh": [
-        ["awaitable", "await self._runner().run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure, user_message_id=user_message_id, typed_text=typed_text)", "unresolved"]
+        ["awaitable", "await self._runner().run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure, user_message_id=user_message_id, typed_text=typed_text, skip_rollback_snapshot=skip_rollback_snapshot)", "unresolved"]
       ],
       "TurnCoordinator.run_retry": [
         ["awaitable", "await self._runner().run_retry(additional_text, created_at=created_at, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved"]
@@ -1447,6 +1460,7 @@
         ["wrapper", "await self._compute_workspace_notice(is_retry=False)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._compute_workspace_notice"],
         ["awaitable", "await self._content.shrink_history_images()", "unresolved"],
         ["thread_pool", "await asyncio.to_thread(write_rollback_snapshot)", "unresolved"],
+        ["awaitable", "await self._bus.publish(RollbackSnapshotsChanged(session_id=self._session.session_id))", "unresolved"],
         ["wrapper", "await self._refresh_runtime_skills(update_active_turn=False)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._refresh_runtime_skills"],
         ["wrapper", "await self._ask_extension_contexts(typed)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._ask_extension_contexts"],
         ["awaitable", "await preamble.finished(outcome=PreparationOutcome.HANDOFF)", "unresolved"],
@@ -1919,6 +1933,11 @@
         ["wrapper", "await self.turn_finished(end_reason=end_reason)", "unresolved", "chrys.orchestration.engine.trajectory.TrajectoryRecorder.turn_finished"],
         ["awaitable", "await trajectory.close(reason=reason)", "unresolved"]
       ],
+      "TrajectoryRecorder._supersede_branch": [
+        ["awaitable", "await trajectory.ensure_active()", "rollback-boundary-work"],
+        ["wrapper", "await _emit(trajectory, EventDraft(event_type=EventType.SESSION_ROLLBACK, actor=trajectory.main_actor), payload_factory=_payload)", "rollback-boundary-work", "chrys.orchestration.engine.trajectory._emit"],
+        ["wrapper", "await _emit(trajectory, EventDraft(event_type=EventType.BRANCH_SUPERSEDED, actor=trajectory.main_actor, payload={'branch_id': old_branch, 'superseded_by': new_branch}))", "rollback-boundary-work", "chrys.orchestration.engine.trajectory._emit"]
+      ],
       "TrajectoryRecorder.checkpoint": [
         ["awaitable", "await trajectory.checkpoint()", "unresolved"]
       ],
@@ -1937,10 +1956,11 @@
       "TrajectoryRecorder.profile_switched": [
         ["wrapper", "await _emit(trajectory, EventDraft(event_type=EventType.PROFILE_SWITCHED, actor=trajectory.main_actor, turn_id=self.current_turn_id, payload={'kind': kind, 'from_fingerprint': from_fingerprint, 'to_fingerprint': to_fingerprint}))", "unresolved", "chrys.orchestration.engine.trajectory._emit"]
       ],
+      "TrajectoryRecorder.retire_turn": [
+        ["wrapper", "await self._supersede_branch(superseded_turns=[retired_turn], target_turns=target_turns, reason_code=ROLLBACK_REASON_FRESH_TURN_RETIRED)", "rollback-boundary-work", "chrys.orchestration.engine.trajectory.TrajectoryRecorder._supersede_branch"]
+      ],
       "TrajectoryRecorder.rollback": [
-        ["awaitable", "await trajectory.ensure_active()", "unresolved"],
-        ["wrapper", "await _emit(trajectory, EventDraft(event_type=EventType.SESSION_ROLLBACK, actor=trajectory.main_actor), payload_factory=_payload)", "unresolved", "chrys.orchestration.engine.trajectory._emit"],
-        ["wrapper", "await _emit(trajectory, EventDraft(event_type=EventType.BRANCH_SUPERSEDED, actor=trajectory.main_actor, payload={'branch_id': old_branch, 'superseded_by': new_branch}))", "unresolved", "chrys.orchestration.engine.trajectory._emit"]
+        ["wrapper", "await self._supersede_branch(superseded_turns=superseded_turns, target_turns=target_turns, reason_code=ROLLBACK_REASON_USER)", "rollback-boundary-work", "chrys.orchestration.engine.trajectory.TrajectoryRecorder._supersede_branch"]
       ],
       "TrajectoryRecorder.turn_finished": [
         ["multi_wait", "await asyncio.wait([turn.start_settlement])", "unresolved"],

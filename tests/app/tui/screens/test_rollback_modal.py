@@ -21,7 +21,6 @@ from textual.widgets._select import SelectOverlay
 
 from chrys.app.tui.app import ChrysApp
 from chrys.app.tui.screens.diff.rollback_modal import (
-    _LATEST_SENTINEL,
     RollbackLoadCancelled,
     RollbackModal,
     RollbackProgressModal,
@@ -337,7 +336,7 @@ async def test_rollback_loading_height_matches_completed_empty_preview(tmp_path:
         await pilot.pause()
         container = modal.query_one("#rollback-container", VerticalGroup)
         loading_height = container.outer_size.height
-        assert loading_height == 15
+        assert loading_height == 17
 
         release_state_load.set()
         await _wait_for_content_ready(modal, pilot)
@@ -366,7 +365,7 @@ async def test_rollback_progress_modal_blocks_until_operation_finishes() -> None
 
         assert host.screen is modal
         assert modal.query_one("#rollback-progress-loading", ChrysLoadingIndicator)
-        assert modal.query_one("#rollback-progress-container", VerticalGroup).outer_size.height == 15
+        assert modal.query_one("#rollback-progress-container", VerticalGroup).outer_size.height == 17
 
         await pilot.press("escape")
         await pilot.click(offset=(0, 0))
@@ -478,6 +477,7 @@ async def test_direct_rollback_replaces_progress_modal_with_single_restore_modal
         mutation_tracker = None
         mutation_coordinator = None
         current_turn_number = 2
+        conversation_revision = 1
         session_generation = 1
         turn_lifecycle_task = None
 
@@ -901,7 +901,7 @@ async def test_rollback_load_error_survives_removed_loading_shell(
             assert (
                 modal.query_one("#rollback-load-error", Static)
                 .render()
-                .plain.startswith("Error: unable to load rollback preview")
+                .plain.startswith("Error: unable to load discard preview")
             )
 
 
@@ -980,7 +980,7 @@ async def test_rollback_default_state_dismisses_with_full_revert(tmp_path: Path)
         cb = host.screen.query_one("#revert-checkbox", Checkbox)
         assert cb.value is True
         assert cb.render().plain.startswith(CHECKED_MARKER)
-        assert "Revert 2 file changes" in str(cb.label)
+        assert "Also restore 2 checked files" in str(cb.label)
 
         # Press the single Rollback button.
         host.screen.query_one("#btn-rollback", Button).press()
@@ -1053,7 +1053,7 @@ async def test_rollback_with_all_files_unselected_skips_revert(tmp_path: Path) -
             description="rollback checkbox becomes unchecked",
         )
         assert cb.value is False
-        assert "Revert 0 file changes" in str(cb.label)
+        assert "Also restore 0 checked files" in str(cb.label)
 
         host.screen.query_one("#btn-rollback", Button).press()
         await pilot.pause()
@@ -1065,8 +1065,8 @@ async def test_rollback_with_all_files_unselected_skips_revert(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_rollback_label_reflects_partial_selection(tmp_path: Path) -> None:
-    """Un-ticking one file updates the checkbox label to "Revert 1 file
-    change" (singular) and the dismissal carries only that path."""
+    """Un-ticking one file updates the checkbox label to "Also restore 1 checked
+    file" (singular) and the dismissal carries only that path."""
     tracker = _make_tracker_with_two_changes(tmp_path)
     modal = _mk_modal(tracker, tmp_path)
     modal._selected_turn = 0  # session start (non-empty diff in fixture)
@@ -1087,11 +1087,11 @@ async def test_rollback_label_reflects_partial_selection(tmp_path: Path) -> None
         # Singular form when selected == 1.  The label update rides a
         # SelectionChanged message, so poll rather than pause once.
         await wait_for(
-            lambda: "Revert 1 file change" in str(cb.label),
+            lambda: "Also restore 1 checked file" in str(cb.label),
             pilot=pilot,
             description="rollback checkbox describes one file change",
         )
-        assert "Revert 1 file change" in str(cb.label)
+        assert "Also restore 1 checked file" in str(cb.label)
         assert "changes" not in str(cb.label) or str(cb.label).count("changes") == 0
         assert cb.value is True
 
@@ -1134,7 +1134,7 @@ async def test_unchecking_footer_checkbox_clears_tree_selection(tmp_path: Path) 
         cb.value = False
         await pilot.pause()
         assert pane.selected_paths() == []
-        assert "Revert 0 file changes" in str(cb.label)
+        assert "Also restore 0 checked files" in str(cb.label)
 
         # Re-check → tree should re-populate.
         cb.value = True
@@ -1143,7 +1143,7 @@ async def test_unchecking_footer_checkbox_clears_tree_selection(tmp_path: Path) 
             str(tmp_path / "a.txt"),
             str(tmp_path / "b.txt"),
         }
-        assert "Revert 2 file changes" in str(cb.label)
+        assert "Also restore 2 checked files" in str(cb.label)
 
 
 @pytest.mark.asyncio
@@ -1169,7 +1169,7 @@ async def test_footer_checkbox_label_updates_without_selection_changed_message(
         await pilot.pause()
         await pilot.pause()
         assert pane.selected_paths() == []
-        assert "Revert 0 file changes" in str(cb.label)
+        assert "Also restore 0 checked files" in str(cb.label)
 
         posted_messages: list[object] = []
         with monkeypatch.context() as m:
@@ -1182,7 +1182,7 @@ async def test_footer_checkbox_label_updates_without_selection_changed_message(
             str(tmp_path / "a.txt"),
             str(tmp_path / "b.txt"),
         }
-        assert "Revert 2 file changes" in str(cb.label)
+        assert "Also restore 2 checked files" in str(cb.label)
 
 
 @pytest.mark.asyncio
@@ -1236,11 +1236,7 @@ async def test_footer_checkbox_cascade_does_not_loop(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_rollback_button_label_uses_target_directly(tmp_path: Path) -> None:
-    """Under "keep N turns", the button label is a straight substitution
-    — no gap-aware lookup.  Selecting ``target_turn=3`` with
-    ``available_turns=[0, 3]`` (only the welcome target and one
-    surviving snapshot) shows "Discard conversation after Turn 3".
-    """
+    """An engine target of 3 labels the first removed turn, 4."""
     tracker = _make_tracker_with_two_changes(tmp_path)
     modal = RollbackModal(
         tracker=tracker,
@@ -1255,13 +1251,13 @@ async def test_rollback_button_label_uses_target_directly(tmp_path: Path) -> Non
         await pilot.pause()
         await _wait_for_content_ready(modal, pilot)
         btn = host.screen.query_one("#btn-rollback", Button)
-        assert str(btn.label) == "Discard conversation after Turn 3"
+        assert str(btn.label) == "Discard turn 4"
 
 
 @pytest.mark.asyncio
 async def test_rollback_button_label_is_discard_all_on_welcome(tmp_path: Path) -> None:
     """Selecting the welcome target (``target_turn=0``) collapses the
-    button label to "Discard All"."""
+    button label to "Discard all turns"."""
     tracker = _make_tracker_with_two_changes(tmp_path)
     modal = RollbackModal(
         tracker=tracker,
@@ -1276,7 +1272,7 @@ async def test_rollback_button_label_is_discard_all_on_welcome(tmp_path: Path) -
         await pilot.pause()
         await _wait_for_content_ready(modal, pilot)
         btn = host.screen.query_one("#btn-rollback", Button)
-        assert str(btn.label) == "Discard All"
+        assert str(btn.label) == "Discard all turns"
 
 
 # ---------------------------------------------------------------------------
@@ -1291,7 +1287,7 @@ def test_turn_picker_preview_keeps_longer_prompt_by_default(tmp_path: Path) -> N
         tracker=tracker,
         available_turns=[0, 1],
         cwd=str(tmp_path),
-        turn_prompts={1: prompt},
+        turn_prompts={2: prompt},
     )
 
     labels_by_value = {value: label for label, value in modal._build_turn_options()}
@@ -1311,7 +1307,7 @@ async def test_turn_picker_wrapped_prompt_aligns_continuations_with_message(tmp_
         tracker=tracker,
         available_turns=[0, 1],
         cwd=str(tmp_path),
-        turn_prompts={1: prompt},
+        turn_prompts={2: prompt},
         current_turn=2,
     )
     host = _ModalHostApp(modal)
@@ -1338,13 +1334,7 @@ async def test_turn_picker_wrapped_prompt_aligns_continuations_with_message(tmp_
 
 @pytest.mark.asyncio
 async def test_turn_picker_layout_with_gapped_available_turns(tmp_path: Path) -> None:
-    """``available_turns=[0, 3]`` (welcome + one surviving target, gap
-    at 1 and 2) → dropdown shows:
-
-    - disabled ``Turn 4 (Current)`` (sentinel value, ``max + 1``)
-    - selectable ``Turn 3`` (target_turn=3 — keep turns 1..3)
-    - selectable ``Session start  — discard all`` (target_turn=0)
-    """
+    """Gapped engine targets offer turns 4 and 1, without an informational row."""
     tracker = _make_tracker_with_two_changes(tmp_path)
     modal = RollbackModal(
         tracker=tracker,
@@ -1352,49 +1342,16 @@ async def test_turn_picker_layout_with_gapped_available_turns(tmp_path: Path) ->
         cwd=str(tmp_path),
         turn_prompts={},
     )
-    # Default selection = max(available) = 3 → "Turn 3" row selected.
+    # The latest target keeps the default selection.
     host = _ModalHostApp(modal)
     async with host.run_test() as pilot:
         await pilot.pause()
         await _wait_for_content_ready(modal, pilot)
         select = host.screen.query_one("#rollback-turn-select", Select)
-        # Values in dropdown order: sentinel, 3, 0.
+        # Values remain backend targets.
         values = [value for _prompt, value in select._options]  # type: ignore[attr-defined]
-        assert values == [_LATEST_SENTINEL, 3, 0]
+        assert values == [3, 0]
         assert select.value == 3
-
-
-@pytest.mark.asyncio
-async def test_turn_picker_snaps_back_from_latest_sentinel(tmp_path: Path) -> None:
-    """Picking the disabled "latest (current)" row must revert to the
-    previous selection rather than dispatching a no-op rollback."""
-    tracker = _make_tracker_with_two_changes(tmp_path)
-    modal = RollbackModal(
-        tracker=tracker,
-        available_turns=[0, 1],
-        cwd=str(tmp_path),
-        turn_prompts={},
-    )
-    host = _ModalHostApp(modal)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        await _wait_for_content_ready(modal, pilot)
-        select = host.screen.query_one("#rollback-turn-select", Select)
-        # Start on the "Turn 1" target (value=1).
-        assert select.value == 1
-        # Programmatically jump to the sentinel — should be rejected
-        # and snap back to 1.  The snap-back rides the message pump
-        # (value setter -> Select.Changed -> handler revert), so on
-        # Windows under xdist load a single ``pilot.pause()`` can return
-        # mid-chain — poll the observable value instead.
-        select.value = _LATEST_SENTINEL
-        await wait_for(
-            lambda: select.value == 1,
-            pilot=pilot,
-            description="rollback turn selector reaches turn one",
-        )
-        assert select.value == 1
-        assert modal._selected_turn == 1
 
 
 @pytest.mark.asyncio
@@ -1542,9 +1499,7 @@ async def test_metadata_only_rollback_preview_stays_selectable(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_turn_picker_full_chain_without_gaps(tmp_path: Path) -> None:
-    """``available_turns=[0..4]`` renders one selectable "Turn N" row
-    per non-zero target, plus the latest sentinel and session-start
-    rows."""
+    """Every retained target labels its first removed turn, including target 0."""
     tracker = _make_tracker_with_two_changes(tmp_path)
     modal = RollbackModal(
         tracker=tracker,
@@ -1557,58 +1512,9 @@ async def test_turn_picker_full_chain_without_gaps(tmp_path: Path) -> None:
         await pilot.pause()
         await _wait_for_content_ready(modal, pilot)
         select = host.screen.query_one("#rollback-turn-select", Select)
-        # sentinel + targets [4,3,2,1] (descending, excluding 0) + 0.
+        # Descending engine targets, with no sentinel.
         values = [value for _prompt, value in select._options]  # type: ignore[attr-defined]
-        assert values == [_LATEST_SENTINEL, 4, 3, 2, 1, 0]
-
-
-@pytest.mark.asyncio
-async def test_sentinel_uses_engine_current_turn_when_snapshots_deleted(tmp_path: Path) -> None:
-    """When every ``turn_N.json`` snapshot has been manually deleted,
-    ``available_turns`` collapses to ``[0]`` but the session still has
-    real turns — the sentinel row must label itself using the engine's
-    ``current_turn_number`` (e.g. ``Turn 5 (Current)``) rather than
-    the misleading ``max(available) + 1 = 1``.
-    """
-    tracker = _make_tracker_with_two_changes(tmp_path)
-    modal = RollbackModal(
-        tracker=tracker,
-        available_turns=[0],
-        cwd=str(tmp_path),
-        turn_prompts={1: "msg 1", 2: "msg 2", 3: "msg 3", 4: "msg 4", 5: "msg 5"},
-        current_turn=5,
-    )
-    host = _ModalHostApp(modal)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        await _wait_for_content_ready(modal, pilot)
-        select = host.screen.query_one("#rollback-turn-select", Select)
-        # Prompts: sentinel row + session-start.
-        labels = [str(prompt) for prompt, _value in select._options]  # type: ignore[attr-defined]
-        assert labels[0].startswith("Turn 5 (Current)")
-
-
-@pytest.mark.asyncio
-async def test_sentinel_falls_back_to_max_plus_one_without_current_turn(tmp_path: Path) -> None:
-    """Back-compat: when ``current_turn`` is not supplied, the sentinel
-    label derives from ``max(available_turns) + 1`` as before.  This
-    keeps older test fixtures (that only pass ``available_turns``)
-    working without modification.
-    """
-    tracker = _make_tracker_with_two_changes(tmp_path)
-    modal = RollbackModal(
-        tracker=tracker,
-        available_turns=[0, 1, 2],
-        cwd=str(tmp_path),
-        turn_prompts={},
-    )
-    host = _ModalHostApp(modal)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        await _wait_for_content_ready(modal, pilot)
-        select = host.screen.query_one("#rollback-turn-select", Select)
-        labels = [str(prompt) for prompt, _value in select._options]  # type: ignore[attr-defined]
-        assert labels[0].startswith("Turn 3 (Current)")
+        assert values == [4, 3, 2, 1, 0]
 
 
 # ---------------------------------------------------------------------------

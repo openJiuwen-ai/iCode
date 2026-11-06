@@ -471,6 +471,19 @@ class AgentThinking(Event):
 
 
 @dataclass
+class RollbackSnapshotsChanged(Event):
+    """Snapshot capture and retention finished; frontends may refresh rollback targets."""
+
+
+@dataclass
+class FreshTurnCleaned(Event):
+    """The previous failed turn's committed cleanup, before a fresh turn starts."""
+
+    retired_previous_turn: bool = False
+    removed_followups: int = 0
+
+
+@dataclass
 class TurnStarted(Event):
     """A turn — a logical user question — began executing (backend → frontend).
 
@@ -1585,6 +1598,9 @@ class RollbackResult(Event):
     Includes turns a fork inherited and never ran here, which nothing in this
     session's log can describe — this event is the only place their loss is
     reported. The TUI ignores it."""
+
+    discarded_turn_count: int = 0
+    """Number of history turns removed, independent of trajectory registry availability."""
 
     files_reverted: int = 0
     """Count of files that were actually changed on disk by the revert

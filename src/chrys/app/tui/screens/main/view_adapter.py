@@ -43,7 +43,7 @@ from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.widgets import PromptDraft
-from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
+from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
@@ -324,6 +324,16 @@ class MainScreenViewAdapter:
     async def render_user_retry_note(self, text: str, *, created_at: datetime) -> None:
         await self._screen.query_one(ChatPanel).add_user_message(text, is_injection=True, created_at=created_at)
 
+    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_followups: int) -> None:
+        await self._screen.query_one(ChatPanel).apply_fresh_turn_cleanup(
+            retired_previous_turn=retired_previous_turn, removed_followups=removed_followups
+        )
+        self.update_toc(live=True)
+
+    def apply_turn_started(self, turn_number: int) -> None:
+        self._screen.query_one(ChatPanel).apply_turn_started(turn_number)
+        self.update_toc(live=True)
+
     def hide_trailing_status_action(self) -> None:
         self._screen.query_one(ChatPanel).hide_trailing_status_action()
 
@@ -354,11 +364,14 @@ class MainScreenViewAdapter:
     async def render_interrupted(self) -> None:
         await self._screen.query_one(ChatPanel).add_interrupted()
 
-    def update_toc(self) -> None:
+    def update_toc(self, *, live: bool = False) -> None:
         with contextlib.suppress(Exception):
             chat = self._screen.query_one(ChatPanel)
             toc = self._screen.query_one(ConversationToc)
-            toc.update_items(chat.toc_items)
+            if live:
+                toc.update_live_items(chat.toc_items)
+            else:
+                toc.update_items(chat.toc_items)
 
     # -------------------------------------------------------------- #
     # Status/header/chat presentation
@@ -754,6 +767,7 @@ class MainScreenViewAdapter:
         cwd: str,
         load_state: Callable[[], Awaitable[RollbackReadState | None]],
         on_result: object,
+        initial_selection: int | None = None,
     ) -> None:
         from chrys.app.tui.screens.diff import RollbackModal
 
@@ -765,8 +779,12 @@ class MainScreenViewAdapter:
             cwd=cwd,
             load_state=modal_load_state,
             locale_controller=self._locale_controller,
+            initial_selection=initial_selection,
         )
         _push_screen_untyped(self._screen.app, modal, on_result)
+
+    def set_rollback_targets(self, targets: set[int]) -> None:
+        self._screen.query_one(ChatPanel).set_rollback_targets(targets)
 
     def open_rollback_progress_modal(self, operation: Callable[[], Awaitable[None]]) -> None:
         from chrys.app.tui.screens.diff import RollbackProgressModal
@@ -838,9 +856,10 @@ class MainScreenViewAdapter:
         messages: list[dict[str, Any]],
         *,
         initial_profile: str,
-        file_snapshots: dict[str, list[FileSnapshotPayload]] | None,
+        file_snapshots: dict[FileSnapshotKey, list[FileSnapshotPayload]] | None,
         compressed_blocks: dict[str, CompressedBlock] | None,
         recovered_from_sidecar: bool = False,
+        rollback_targets: set[int] | None = None,
     ) -> None:
         await self._screen.query_one(ChatPanel).replay_history(
             messages,
@@ -848,6 +867,7 @@ class MainScreenViewAdapter:
             file_snapshots=file_snapshots,
             compressed_blocks=compressed_blocks,
             recovered_from_sidecar=recovered_from_sidecar,
+            rollback_targets=rollback_targets,
         )
 
     async def add_answer_delta(self, segment_id: str, text: str) -> None:
@@ -1431,9 +1451,13 @@ class MainScreenViewAdapter:
     def notify_ask_user(self) -> None:
         self.notify_event(NotificationEvent.ASK_USER)
 
-    def focus_input(self) -> None:
+    def focus_input(self, *, cursor_at_end: bool = False) -> None:
         with contextlib.suppress(Exception):
-            self._screen.query_one(InputBar).focus_input()
+            input_bar = self._screen.query_one(InputBar)
+            if cursor_at_end:
+                input_bar.focus_input(cursor_at_end=True)
+            else:
+                input_bar.focus_input()
 
     # -------------------------------------------------------------- #
     # Suggestions

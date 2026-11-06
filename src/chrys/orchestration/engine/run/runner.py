@@ -10,7 +10,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from chrys.foundation.events.types import InvocationAnswerWithdrawn, TurnStarted
+from chrys.foundation.events.types import InvocationAnswerWithdrawn, RollbackSnapshotsChanged, TurnStarted
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.turns import current_turn_start, is_continuation_message
 from chrys.foundation.trajectory.ids import new_analytics_id
@@ -138,6 +138,7 @@ class TurnRunner:
         binding_failure: Exception | None = None,
         user_message_id: str | None = None,
         typed_text: str | None = None,
+        skip_rollback_snapshot: bool = False,
     ) -> None:
         """Execute a fresh agent turn and finalize it.
 
@@ -188,8 +189,10 @@ class TurnRunner:
             )
             await self._compute_workspace_notice(is_retry=False)
             await self._content.shrink_history_images()
-            write_rollback_snapshot = capture_snapshot_writer(self._session, self._settings_handle)
-            await asyncio.to_thread(write_rollback_snapshot)
+            if not skip_rollback_snapshot:
+                write_rollback_snapshot = capture_snapshot_writer(self._session, self._settings_handle)
+                await asyncio.to_thread(write_rollback_snapshot)
+                await self._bus.publish(RollbackSnapshotsChanged(session_id=self._session.session_id))
             await self._refresh_runtime_skills(update_active_turn=False)
             self._queue_skill_reference_reminder(typed, for_next_turn=True)
             if self._current.loaded is not None:

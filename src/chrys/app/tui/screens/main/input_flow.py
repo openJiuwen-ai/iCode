@@ -27,6 +27,7 @@ from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_RESUMING, STATUS_THINKING
 from chrys.foundation.events.types import (
     Error,
+    FreshTurnCleaned,
     InvocationContentAbandoned,
     InvocationContentDelta,
     InvocationContentFinished,
@@ -35,6 +36,7 @@ from chrys.foundation.events.types import (
     PromptCommandsRunning,
     PromptShortcutRef,
     SessionOnlySwitch,
+    TurnStarted,
     UserInjectCancel,
     UserInterrupt,
     UserMessage,
@@ -70,6 +72,7 @@ class InputFlowController:
             [InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned], Awaitable[None]
         ],
         handle_error: Callable[[Error], Awaitable[None]],
+        handle_turn_event: Callable[[FreshTurnCleaned | TurnStarted], Awaitable[None]],
         set_agent_running: Callable[[bool], None],
         set_has_messages: Callable[[bool], None],
         clear_workspace_marker: Callable[[], None],
@@ -88,6 +91,7 @@ class InputFlowController:
         self._handle_agent_message = handle_agent_message
         self._handle_agent_content = handle_agent_content
         self._handle_error = handle_error
+        self._handle_turn_event = handle_turn_event
         self._set_agent_running = set_agent_running
         self._set_has_messages = set_has_messages
         self._clear_workspace_marker = clear_workspace_marker
@@ -292,7 +296,7 @@ class InputFlowController:
             self._state.render_gate.finish(rendered=rendered)
 
         await self.flush_deferred_agent_messages()
-        self._view.update_toc()
+        self._view.update_toc(live=True)
 
     async def queue_injection(self, text: str, draft: ChatDraft | None = None) -> None:
         """Queue a user message for mid-run injection without chat display; *draft* is the composer's whole draft."""
@@ -356,6 +360,8 @@ class InputFlowController:
             await self._handle_agent_content(event)
         elif isinstance(event, Error):
             await self._handle_error(event)
+        elif isinstance(event, (FreshTurnCleaned, TurnStarted)):
+            await self._handle_turn_event(event)
 
     async def publish_interrupt(self) -> None:
         """Publish an interrupt and update local UI state after the backend sees it."""

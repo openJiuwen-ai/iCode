@@ -209,7 +209,7 @@ async def test_a_user_message_ends_a_column_short_of_the_scrollbar() -> None:
         assert typed.region.right == note.region.right == scrollbar.x - 1
 
 
-async def test_user_copy_button_shows_only_for_text_outside_compressed_history(
+async def test_user_copy_button_shows_for_text_including_compressed_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contents = [Content.from_data(data=png_bytes((240, 80, 80)), media_type="image/png")]
@@ -226,7 +226,7 @@ async def test_user_copy_button_shows_only_for_text_outside_compressed_history(
 
         assert typed.query_one(MessageCopyButton).display is True
         assert injected.query_one(MessageCopyButton).display is True
-        assert compressed.query_one(MessageCopyButton).display is False
+        assert compressed.query_one(MessageCopyButton).display is True
         assert image_only.query_one(MessageCopyButton).display is False
 
         image_only.copy_user_message()
@@ -381,7 +381,7 @@ def test_message_headers_include_dim_timestamp_when_present() -> None:
         (
             "en",
             "Agent",
-            "copy",
+            "Copy",
             "Copy raw agent response",
             "Copy your raw message",
             "✗ Error\ntemporary failure Retrying in 7s (2/4)...",
@@ -556,6 +556,8 @@ async def test_agent_copy_button_sits_next_to_header_timestamp() -> None:
 
         assert copy_button.display is True
         assert copy_button.region.x == header.region.right
+        assert copy_button.content_region.x - header.content_region.right == 2
+        assert copy_button.content_region.width == len("Copy")
 
 
 async def test_empty_agent_message_hides_copy_button(monkeypatch: pytest.MonkeyPatch) -> None:

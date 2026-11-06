@@ -330,6 +330,8 @@ async def test_a_new_prompt_drops_a_failed_prompt_with_the_thinking_it_alone_got
         await cp.add_interrupted()
 
         await cp.add_user_message("replacement prompt")
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_followups=0)
+        cp.apply_turn_started(1)
 
         assert _shape(cp) == [("user", "replacement prompt")]
         assert [item.summary for item in cp.toc_items] == ["replacement prompt"]

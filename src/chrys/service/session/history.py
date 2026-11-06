@@ -27,6 +27,7 @@ from chrys.foundation.models.history_markers import (
     ANSWER_SEGMENT_KEY,
     AWAITING_SUB_AGENTS_MESSAGE,
     EXECUTION_INTERRUPTED_MESSAGE,
+    SESSION_CLOSED_MESSAGE,
     HistoryMarkerKind,
     copy_reminder_record,
 )
@@ -34,6 +35,7 @@ from chrys.foundation.models.turns import (
     UserMessageKind,
     current_turn_start,
     is_continuation_message,
+    opens_turn,
     user_text_matches,
 )
 from chrys.foundation.platform.files import surrogate_safe_text
@@ -342,6 +344,15 @@ def stamp_history_item_ids(state: dict[str, Any]) -> None:
         ensure_history_item_ids(messages)
 
 
+@dataclass(frozen=True)
+class FreshTurnCleanup:
+    """The history edits committed before admitting the next logical turn."""
+
+    retired_previous_turn: bool = False
+    removed_followups: int = 0
+    retained_other_records: bool = False
+
+
 class SessionHistoryManager:
     """Owns all mutations to the ``chrys_history`` session state dict.
 
@@ -578,28 +589,94 @@ class SessionHistoryManager:
             if m.additional_properties.get(HistoryMarkerKind.KEY) != HistoryMarkerKind.AWAITING_SUB_AGENTS
         ]
 
-    def remove_orphaned_user_message(self) -> None:
-        """Remove a trailing user message that received no model response.
+    def prepare_fresh_turn(self, *, other_records_present: bool = False) -> FreshTurnCleanup:
+        """Clean the failed turn without merging it into the next one.
 
-        After ``remove_trailing_markers()`` strips error/turn markers, the
-        last message may be a user message with zero assistant or tool
-        responses after it.  This means the model produced nothing before
-        failing (e.g. 401 auth error).  Removing it keeps the persisted
-        history consistent with what the user saw during the live session
-        — the failed message disappeared when they typed a new one.
-
-        If the model DID produce output (tool calls, partial response)
-        before failing, the user message and model output are preserved.
+        Return the edits the frontend must apply. User input and reasoning
+        alone leave no work to preserve; a completed answer or a tool call
+        keeps this turn's structural marker and its ordinal. Mutation records
+        also retain the boundary even when history contains no model output.
+        Retry keeps using
+        ``remove_trailing_markers`` because it resumes the same turn.
         """
         state = self._state
         if state is None:
-            return
+            return FreshTurnCleanup()
         messages = state.get("messages")
         if not isinstance(messages, list) or not messages:
-            return
-        if messages[-1].role == "user":
-            logger.debug("remove_orphaned_user_message: removing '%s'", (messages[-1].text or "")[:60])
-            messages.pop()
+            return FreshTurnCleanup()
+        end = len(messages)
+        while (
+            end
+            and messages[end - 1].additional_properties.get(HistoryMarkerKind.KEY)
+            in HistoryMarkerKind.SESSION_COUNT_EXCLUDED
+        ):
+            end -= 1
+        start = current_turn_start(messages[:end])
+        region = messages[start:end]
+        has_work = any(
+            message.role != "user"
+            and any(
+                content.type not in {"text_reasoning", "usage"}
+                and (content.type != "text" or bool((content.text or "").strip()))
+                for content in message.contents
+            )
+            for message in region
+        )
+        if not has_work and not other_records_present and any(opens_turn(message) for message in region):
+            removed_markers = sum(
+                message.additional_properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN
+                for message in messages[end:]
+            )
+            del messages[start:]
+            state["turn_counter"] = max(0, state.get("turn_counter", 0) - removed_markers)
+            return FreshTurnCleanup(retired_previous_turn=True)
+
+        # A retry's unanswered guidance belongs to this turn, but is not work
+        # for the next prompt to inherit. Keep the opener even when malformed
+        # old histories lack its marker.
+        status_start = end
+        removed_followups = 0
+        # Reasoning after an unanswered note belongs to that note. Scan it
+        # with the notes, but keep earlier reasoning that followed real work.
+        tail = end
+        while tail > start:
+            message = messages[tail - 1]
+            if message.role == "user" and not opens_turn(message):
+                removed_followups += 1
+                tail -= 1
+                end = tail
+            elif message.role == "assistant" and all(
+                content.type in {"text_reasoning", "usage"} for content in message.contents
+            ):
+                tail -= 1
+            else:
+                break
+        state["messages"] = messages[:end] + [
+            message
+            for message in messages[status_start:]
+            if message.additional_properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN
+        ]
+        return FreshTurnCleanup(
+            removed_followups=removed_followups,
+            retained_other_records=not has_work and other_records_present,
+        )
+
+    def close_unfinished_turn(self) -> bool:
+        """Give a restored in-flight turn the same boundary as a crash checkpoint."""
+        messages = self.messages
+        if not messages or messages[-1].additional_properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN:
+            return False
+        if not any(opens_turn(message) for message in messages[current_turn_start(messages) :]):
+            return False
+        if self.trailing_status_marker() is None:
+            self.insert_interrupted_marker(
+                reason=format_message(SESSION_CLOSED_MESSAGE.bind()),
+                source="",
+                status_code=HistoryMarkerKind.STATUS_SESSION_CLOSED,
+            )
+        self.insert_turn_marker()
+        return True
 
     def remove_all_status_markers(self) -> None:
         """Remove ALL interrupted/error/awaiting-sub-agents markers from history.

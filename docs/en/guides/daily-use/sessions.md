@@ -1,6 +1,6 @@
 # Manage and resume sessions
 
-A session contains conversation history and related data, such as rollback snapshots and diagnostic logs. iCode saves sessions automatically so you can resume a conversation or look up past tasks later. This guide explains how to switch, name, find, resume, and delete sessions in the terminal user interface (TUI), and how to migrate existing sessions when changing their storage location.
+A session contains conversation history and related data, such as snapshots for discarding turns and diagnostic logs. iCode saves sessions automatically so you can resume a conversation or look up past tasks later. This guide explains how to switch, name, find, resume, and delete sessions in the terminal user interface (TUI), and how to migrate existing sessions when changing their storage location.
 
 ## Switch to a new session
 
@@ -71,9 +71,9 @@ When you resume a long conversation, iCode shows its most recent part first so y
 
 A resumed conversation shows the model's saved thinking folded to one line above the reply it led to: **Thought:**, followed by how the thinking begins; click it to unfold it. If a reply was interrupted or failed, the thinking shown for the request that was cut off is not saved, so it does not appear.
 
-Successful turns also fold their intermediate activity by default. Each mid-turn user addition, and each compaction card from compacting during the turn, stays visible and starts a separate activity section. Its header counts the section's tool calls and what they were, for example `12 tool calls: 8 reads · 4 commands`, ending with how many failed or were interrupted, if any; a section without tool calls, or in compressed history, reads **Activity**. Click the header to inspect that section while keeping its inner details in their current state. A section holding only a thinking block, or only text between tool calls, folds to that block's own row instead. For keyboard access, `/fold` toggles activity sections, tool groups, thinking and text between tool calls together: it collapses them if any are open, and expands them otherwise. Thinking that is still being written and controls waiting for your input are left as they are. Copy commands still include intermediate replies and keep their original message counts. Turn off **Automatically fold completed turns** in [Settings](../configuration/settings.md#display-preferences) to keep future completed turns and subsequently opened sessions expanded. The last turn recovered from a crash stays open.
+Successful turns also fold their intermediate activity by default. Each mid-turn user addition, and each compaction card from compacting during the turn, stays visible and starts a separate activity section. Its header counts the section's tool calls and what they were, for example `12 tool calls: 8 reads · 4 commands`, ending with how many failed or were interrupted, if any; a section without tool calls reads **Activity**. Click the header to inspect that section while keeping its inner details in their current state. A section holding only a thinking block, or only text between tool calls, folds to that block's own row instead. For keyboard access, `/fold` toggles activity sections, tool groups, thinking and text between tool calls together: it collapses them if any are open, and expands them otherwise. Thinking that is still being written and controls waiting for your input are left as they are. Copy commands still include intermediate replies and keep their original message counts. Turn off **Automatically fold completed turns** in [Settings](../configuration/settings.md#display-preferences) to keep future completed turns and subsequently opened sessions expanded. The last turn recovered from a crash stays open.
 
-Clicking an activity header keeps focus in the input field. A restored turn waiting for sub-agents stays open. Compressed history shows only some tool details, so these sections are all labeled **Activity**.
+Clicking an activity header keeps focus in the input field. A restored turn waiting for sub-agents stays open. Compressed history uses the same tool counts and activity titles.
 
 If a resumed conversation continues on a different model service than before, some earlier reasoning may be left out; see [Switch the current model profile](../configuration/models.md#switch-the-current-model-profile).
 
@@ -81,7 +81,7 @@ If a resumed conversation continues on a different model service than before, so
 
 Open the "Chat Sessions" window and first check the session ID, directory, and last active time. If you are unsure, resume the session to check its contents, then return to the "Chat Sessions" window. Select a session you no longer need and click "Delete".
 
-Once you confirm deletion, the session's conversation history, rollback snapshots, diagnostic data, and other session contents are permanently deleted and cannot be recovered. Deleting a session does not undo changes the agent has already made to working directory files.
+Once you confirm deletion, the session's conversation history, snapshots for discarding turns, diagnostic data, and other session contents are permanently deleted and cannot be recovered. Deleting a session does not undo changes the agent has already made to working directory files.
 
 Deleting the current session also starts a new session, like `/clear`. A session open in another iCode instance cannot be deleted; close that instance first. If iCode cannot remove all of a session's files, it shows an error; close any program that may have those files open, then try again.
 
@@ -152,7 +152,7 @@ Press **F12** to open the trajectory dashboard. **Overview** summarizes time and
 
 If iCode can't record a session's trajectory, it shows a warning that trajectory recording is off for the session. You can keep working as usual; only the dashboard and the export get nothing new from that session. Workflow runs don't show this warning. Common causes are an earlier recording of the session that hasn't stopped yet (closing the iCode windows that had the session open ends it), files in the session's `trajectory` folder that other users can read or that belong to another user, a `trajectory` folder that is a link, a trajectory key (`trajectory-hmac.key` in the iCode configuration directory) that iCode can't read, and a trajectory that iCode can't safely add to, such as one written by a newer iCode version.
 
-If a shell command's file content comparison cannot be completed because a file is unreadable, the file-change overview marks detection as incomplete. The recorded change list may omit changes; check the affected files or your Git diff before relying on it for rollback. Files deliberately excluded from content comparison by the size or binary-file limits do not by themselves trigger this warning.
+If a shell command's file content comparison cannot be completed because a file is unreadable, the file-change overview marks detection as incomplete. The recorded change list may omit changes; check the affected files or your Git diff before relying on it to discard turns and restore files. Files deliberately excluded from content comparison by the size or binary-file limits do not by themselves trigger this warning.
 
 ## Link file changes and model requests in session data
 

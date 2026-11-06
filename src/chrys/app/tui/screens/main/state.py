@@ -23,11 +23,13 @@ if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.events.types import (
         BackgroundTasksChanged,
+        FreshTurnCleaned,
         HookExecutionsChanged,
         InvocationContentAbandoned,
         InvocationContentDelta,
         InvocationContentFinished,
         InvocationMessage,
+        TurnStarted,
     )
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -35,7 +37,13 @@ if TYPE_CHECKING:
     from chrys.service.state.store import StateStore
 
     DeferredTurnEvent = (
-        InvocationMessage | InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned | Error
+        InvocationMessage
+        | InvocationContentDelta
+        | InvocationContentFinished
+        | InvocationContentAbandoned
+        | Error
+        | FreshTurnCleaned
+        | TurnStarted
     )
 
 

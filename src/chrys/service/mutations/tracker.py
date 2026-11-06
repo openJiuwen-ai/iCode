@@ -40,6 +40,7 @@ from chrys.foundation.models.mutation_scope import MutationScope, WorkflowRunSco
 from chrys.service.mutations.git_state import entry_display_path
 from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.types import (
+    FileEditSnapshotRef,
     FileHashDiff,
     FileMutation,
     FileSnapshot,
@@ -218,6 +219,25 @@ class MutationTracker:
         from disk while still recording under the same turn.
         """
         with self._state_lock:
+            self._last_known_hash.clear()
+            self._last_known_skip.clear()
+
+    def has_turn_work(self, turn_id: int) -> bool:
+        """Whether a Chat turn owns mutations, incomplete detection, or snapshots."""
+        with self._state_lock:
+            return any(
+                turn.turn_id == turn_id and (turn.mutations or turn.detection_truncated) for turn in self._log.turns
+            ) or any(snapshot.period_index == turn_id for snapshot in self._log.snapshots.values())
+
+    def discard_empty_turn(self, turn_id: int) -> None:
+        """Forget the last no-work Chat turn before its ordinal is reused."""
+        with self._state_lock:
+            turn = self.current_turn
+            if turn is None or turn.turn_id != turn_id:
+                return
+            if self.has_turn_work(turn_id):
+                raise ValueError("Cannot discard a turn containing file work")
+            self._log.periods.pop()
             self._last_known_hash.clear()
             self._last_known_skip.clear()
 
@@ -851,21 +871,22 @@ class MutationTracker:
                     results.append((before_text, after_text))
             return results
 
-    def get_file_edit_snapshot_refs(self) -> list[FileHashDiff]:
+    def get_file_edit_snapshot_refs(self) -> list[FileEditSnapshotRef]:
         """Return before/after blob hashes for all file-tool mutations, in order."""
         with self._state_lock:
             _file_sources = {MutationSource.WRITE_FILE, MutationSource.EDIT_FILE}
-            results: list[FileHashDiff] = []
+            results: list[FileEditSnapshotRef] = []
             for turn in self._log.periods:
                 for m in turn.mutations:
                     if m.source not in _file_sources:
                         continue
                     results.append(
-                        FileHashDiff(
+                        FileEditSnapshotRef(
                             before=m.before_hash,
                             after=m.after_hash,
                             before_skip=m.before_skip,
                             after_skip=m.after_skip,
+                            tool_operation_id=m.tool_operation_id,
                         )
                     )
             return results

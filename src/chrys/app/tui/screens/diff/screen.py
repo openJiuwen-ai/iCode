@@ -597,8 +597,10 @@ class DiffPeriodPane(Widget):
         checkable: bool = False,
         lazy: bool = False,
         initial_display_key: str | None = None,
+        column_titles: tuple[str, str] | None = None,
     ) -> None:
         super().__init__()
+        self._column_titles = column_titles
         self._entries = filter_and_dedupe_entries(entries)
         self._diff_cache: dict[str, DiffView] = {}  # path → DiffView widget
         self._active_path: str | None = None
@@ -1151,6 +1153,7 @@ class DiffPeriodPane(Widget):
                 entry.before_text,
                 entry.after_text,
                 id=f"dv-{hash(entry.path) & 0xFFFFFFFF:08x}",
+                column_titles=self._column_titles,
             )
             await dv.prepare()
             split = self._view_overrides.get(entry.path)

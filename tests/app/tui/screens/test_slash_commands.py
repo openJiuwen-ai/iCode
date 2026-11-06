@@ -219,7 +219,7 @@ def test_rollback_man_page_documents_direct_relative_and_absolute_forms() -> Non
     commands = handler.build_slash_commands()
     rollback = next(command for command in commands if command.name == "rollback")
 
-    assert format_message(rollback.description) == "Discard recent turns or return to a specific turn"
+    assert format_message(rollback.description) == "Discard recent turns or discard starting from a turn"
     assert rollback.subcommands is None
     assert rollback.synopsis is not None
     assert rollback.options_help is not None

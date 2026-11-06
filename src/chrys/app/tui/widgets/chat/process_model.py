@@ -15,7 +15,6 @@ type EntryKind = Literal[
 @dataclass(frozen=True)
 class ProcessEntry:
     kind: EntryKind
-    compressed: bool = False
     failure_after: bool = False
     """An omitted replay status follows this entry, without becoming process content."""
 
@@ -27,7 +26,6 @@ class ProcessSegment:
     index: int
     members: tuple[int, ...]
     fold: bool
-    compressed: bool
 
 
 def plan_process_segments(entries: list[ProcessEntry], *, protect_last_turn: bool = False) -> list[ProcessSegment]:
@@ -71,7 +69,6 @@ def plan_process_segments(entries: list[ProcessEntry], *, protect_last_turn: boo
                     segment,
                     members,
                     success and not protected,
-                    entries[opener].compressed,
                 )
             )
     return result

@@ -42,6 +42,10 @@ _PREPARED_IMAGE = {"type": "image", "media_type": "image/png"}
 """An image content the backend prepared: never text, so the user bubble shows only the message's text."""
 
 
+async def _unused_turn_event(event: object) -> None:
+    raise AssertionError(f"unexpected turn fact: {event!r}")
+
+
 class _FakeInputFlowView:
     def __init__(self) -> None:
         self.calls: list[object] = []
@@ -98,7 +102,7 @@ class _FakeInputFlowView:
     async def render_interrupted(self) -> None:
         self.calls.append("interrupted")
 
-    def update_toc(self) -> None:
+    def update_toc(self, *, live: bool = False) -> None:
         self.calls.append("toc")
 
     def restore_input_draft(self, draft: str | ChatDraft) -> bool:
@@ -160,6 +164,7 @@ def _make_input_flow_controller(
         handle_agent_message=handle_agent_message or _default_handle_agent_message,
         handle_agent_content=handle_agent_content or _default_handle_agent_content,
         handle_error=handle_error or _default_handle_error,
+        handle_turn_event=_unused_turn_event,
         set_agent_running=_set_agent_running,
         set_has_messages=_set_has_messages,
         clear_workspace_marker=lambda: setattr(state.workspace_marker, "original_cwd", None),

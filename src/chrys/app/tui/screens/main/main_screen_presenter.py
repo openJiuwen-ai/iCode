@@ -36,6 +36,14 @@ class MainScreenPresenter:
     def chat_session_id(self) -> str:
         return self._view.chat_session_id()
 
+    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_followups: int) -> None:
+        await self._view.apply_fresh_turn_cleanup(
+            retired_previous_turn=retired_previous_turn, removed_followups=removed_followups
+        )
+
+    def apply_turn_started(self, turn_number: int) -> None:
+        self._view.apply_turn_started(turn_number)
+
     def set_tool_info(self, trail: StatusTrail) -> None:
         self._view.set_tool_info(trail)
 

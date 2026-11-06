@@ -1825,8 +1825,6 @@ class SessionLifecycle:
         for warning in restore_warnings:
             await self._bus.publish(replace(warning, session_id=self._session.session_id))
 
-        self._session.turn_number = state.get("turn_counter", 0) if state else 0
-
         if self._current.loaded is not None and state:
             self._current.loaded.bindings.backend.history_state = state
             if self._current.loaded is not None:
@@ -1949,7 +1947,12 @@ class SessionLifecycle:
                 if orphaned:
                     logger.info("Session restore: marked %d sub-agent audit log(s) orphaned", orphaned)
 
+            restored_history_changed = self._history.close_unfinished_turn() or restored_history_changed
             self._restore_terminal_fsm_from_history()
+
+        # Interrupted recovery can append the missing final boundary above.
+        restored_state = self._history.state if self._history.is_bound else state or {}
+        self._session.turn_number = restored_state.get("turn_counter", 0)
 
         if restored_history_changed:
             saved = False

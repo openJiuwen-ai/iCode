@@ -23,6 +23,7 @@ from chrys.foundation.i18n.formatting import format_message
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.widgets.tree import TreeNode
 
     from chrys.app.tui.i18n import LocaleController
 
@@ -152,6 +153,54 @@ class ConversationToc(Widget, can_focus=False):
         self._items = items
         self._rebuild_tree()
 
+    def update_live_items(self, items: list[TocItem]) -> None:
+        """Apply live additions and removals without rebuilding retained nodes.
+
+        Live cleanup preserves the relative order of surviving entries. Only
+        the backend's turn index labels a live opener; pending openers have no
+        number until TurnStarted provides it.
+        """
+        self._items = items
+        tree = self._tree
+        if tree is None:
+            return
+        self._empty_label.display = not items
+        tree.display = bool(items)
+        self._update_live_nodes(tree.root, items, top_level=True)
+
+    def _update_live_nodes(self, parent: TreeNode[str], items: list[TocItem], *, top_level: bool) -> None:
+        nodes = {node.data: node for node in parent.children}
+        wanted = {item.turn_id for item in items}
+        for node in tuple(parent.children):
+            if node.data not in wanted:
+                node.remove()
+        for index, item in enumerate(items):
+            label = self._item_label(item, turn_index=item.turn_index, top_level=top_level)
+            node = nodes.get(item.turn_id)
+            if node is None:
+                node = parent.add(
+                    label,
+                    data=item.turn_id,
+                    before=index,
+                    expand=bool(item.children),
+                    allow_expand=False,
+                )
+            else:
+                if node.label != label:
+                    node.set_label(label)
+                if item.children and not node.children:
+                    node.expand()
+            self._update_live_nodes(node, item.children, top_level=False)
+
+    @staticmethod
+    def _item_label(item: TocItem, *, turn_index: int | None, top_level: bool) -> Text:
+        prefix = f"{turn_index}. " if top_level and turn_index is not None else ""
+        raw = _tree_label_text(prefix + item.summary)
+        limit = _MAX_LABEL if top_level else _MAX_LABEL - 2
+        if len(raw) > limit:
+            raw = raw[: limit - 3] + "..."
+        return Text(raw, style="dim") if item.compressed else Text(raw)
+
     def _rebuild_tree(self) -> None:
         if self._tree is None:
             return
@@ -159,20 +208,15 @@ class ConversationToc(Widget, can_focus=False):
         self._empty_label.display = not self._items
         self._tree.display = bool(self._items)
         for i, item in enumerate(self._items, start=1):
-            raw = _tree_label_text(f"{i}. {item.summary}")
-            if len(raw) > _MAX_LABEL:
-                raw = raw[: _MAX_LABEL - 3] + "..."
-            label = Text(raw, style="dim") if item.compressed else Text(raw)
+            label = self._item_label(
+                item, turn_index=item.turn_index if item.turn_index is not None else i, top_level=True
+            )
             if item.children:
                 node = self._tree.root.add(label, data=item.turn_id)
                 node.expand()
                 node.allow_expand = False
                 for child in item.children:
-                    raw_child = _tree_label_text(child.summary)
-                    if len(raw_child) > _MAX_LABEL - 2:
-                        raw_child = raw_child[: _MAX_LABEL - 5] + "..."
-                    child_label = Text(raw_child, style="dim") if child.compressed else Text(raw_child)
-                    node.add_leaf(child_label, data=child.turn_id)
+                    node.add_leaf(self._item_label(child, turn_index=None, top_level=False), data=child.turn_id)
             else:
                 self._tree.root.add_leaf(label, data=item.turn_id)
 

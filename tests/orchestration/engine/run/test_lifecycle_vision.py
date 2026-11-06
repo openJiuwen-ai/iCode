@@ -26,6 +26,7 @@ from chrys.foundation.events.types import (
     Error,
     ImageAttachmentCompressionFinished,
     ImageAttachmentCompressionStarted,
+    RollbackSnapshotsChanged,
     RuntimeModelDetails,
     TurnStarted,
     UserMessage,
@@ -51,6 +52,7 @@ from chrys.service.agent_middleware.system_reminder import SystemReminderMiddlew
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.schema import HookDecision
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
+from chrys.service.session.history import FreshTurnCleanup, SessionHistoryManager
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationTrace
 from chrys.service.trajectory.state import TRAJECTORY_STATE_KEY
@@ -92,7 +94,11 @@ async def run_and_save(
     injection_window=None,
     user_message_id: str | None = None,
     typed_text: str | None = None,
+    cleanup_required: bool = False,
 ) -> None:
+    if cleanup_required:
+        host._history.close_unfinished_turn()
+        host._history.prepare_fresh_turn()
     await make_turn_runner(
         current=host.current,
         session=host.session,
@@ -262,8 +268,11 @@ class _History:
     def remove_trailing_markers(self) -> None:
         raise AssertionError("history markers should not be removed")
 
-    def remove_orphaned_user_message(self) -> None:
-        raise AssertionError("orphaned user message should not be removed")
+    def close_unfinished_turn(self) -> bool:
+        raise AssertionError("failed turn should not be closed")
+
+    def prepare_fresh_turn(self, *, other_records_present: bool = False) -> FreshTurnCleanup:
+        raise AssertionError("failed turn should not be cleaned")
 
     def ensure_user_message(self, *_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("ensure_user_message should not be called")
@@ -324,8 +333,7 @@ class _MutableHistory(_History):
     def __init__(self, messages: list[Message]) -> None:
         super().__init__()
         self.messages = messages
-        self.removed_trailing_markers = 0
-        self.removed_orphans = 0
+        self.state = {"messages": self.messages, "turn_counter": 1}
 
     def has_trailing_error_markers(self) -> bool:
         for message in reversed(self.messages):
@@ -335,19 +343,17 @@ class _MutableHistory(_History):
             return chrys_kind in HistoryMarkerKind.STATUS_MARKERS
         return False
 
-    def remove_trailing_markers(self) -> None:
-        while self.messages:
-            chrys_kind = self.messages[-1].additional_properties.get(HistoryMarkerKind.KEY)
-            if chrys_kind in HistoryMarkerKind.SESSION_COUNT_EXCLUDED:
-                self.messages.pop()
-                self.removed_trailing_markers += 1
-                continue
-            break
+    def close_unfinished_turn(self) -> bool:
+        manager = SessionHistoryManager()
+        manager.bind(self.state)
+        return manager.close_unfinished_turn()
 
-    def remove_orphaned_user_message(self) -> None:
-        if self.messages and self.messages[-1].role == "user":
-            self.messages.pop()
-            self.removed_orphans += 1
+    def prepare_fresh_turn(self, *, other_records_present: bool = False) -> FreshTurnCleanup:
+        manager = SessionHistoryManager()
+        manager.bind(self.state)
+        removed = manager.prepare_fresh_turn(other_records_present=other_records_present)
+        self.messages = manager.messages
+        return removed
 
     def ensure_user_message(self, *_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("ensure_user_message should not be called")
@@ -449,6 +455,7 @@ class _Host:
         injection_window=None,
         user_message_id: str | None = None,
         typed_text: str | None = None,
+        cleanup_required: bool = False,
     ) -> None:
         await run_and_save(
             self,
@@ -460,6 +467,7 @@ class _Host:
             injection_window=injection_window,
             user_message_id=user_message_id,
             typed_text=typed_text,
+            cleanup_required=cleanup_required,
         )
 
     async def _post_run(self) -> None:
@@ -729,7 +737,8 @@ async def test_run_and_save_sends_image_content_when_model_profile_supports_visi
     await run_and_save(host, "describe @shot.png", created_at=created_at)
 
     events = [event for event in host._bus.events if not isinstance(event, TurnStarted)]
-    assert events == []
+    assert [type(event) for event in events] == [RollbackSnapshotsChanged]
+    assert events[0].session_id == "session-1"
     assert host.current.loaded.bindings.user_message == "describe @shot.png"
     assert len(host.current.loaded.bindings.run_calls) == 1
     contents, call_created_at = host.current.loaded.bindings.run_calls[0]
@@ -1233,6 +1242,7 @@ async def test_run_and_save_emits_compression_events_for_oversize_images(
     assert [type(event) for event in events] == [
         ImageAttachmentCompressionStarted,
         ImageAttachmentCompressionFinished,
+        RollbackSnapshotsChanged,
     ]
     assert events[0].image_count == 1
     assert events[1].image_count == 1
@@ -1479,8 +1489,8 @@ async def test_text_only_follow_up_ignores_failed_orphan_image_turn(
     assert len(host.current.loaded.bindings.run_calls) == 1
     contents, _created_at = host.current.loaded.bindings.run_calls[0]
     assert contents == ["plain follow-up"]
-    assert history.removed_trailing_markers == 2
-    assert history.removed_orphans == 1
+    assert history.messages == []
+    assert history.state["turn_counter"] == 0
 
 
 @pytest.mark.asyncio

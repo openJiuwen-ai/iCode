@@ -120,7 +120,7 @@ _LEFT_BEHIND_MESSAGE = msg(
 _IGNORE = msg("tui.background_task.button.ignore", fallback="Ignore")
 ROLLBACK_NOTE = msg(
     "tui.background_task.stop_all.rollback_note",
-    fallback="Rollback may not restore what they changed while in the background.",
+    fallback="Discarding turns may not restore what they changed while in the background.",
 )
 
 
