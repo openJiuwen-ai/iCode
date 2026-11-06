@@ -51,7 +51,7 @@ fork-full 首轮：custom 513 全绿；upstream **4 failed / 34868 passed**。�
 
 | # | 测试 | 根因 | 处置 | 登记 |
 |---|---|---|---|---|
-| A1 | `test_manual_reload.py::test_manual_model_continues_through_chdir_and_model_dialog` | L193 `press("f4")` 打开 ModelConfigScreen 断言链一环，F4 被我方 catalog 禁用 → 5s 超时 | 函数级 skip + marker，reason 同 C134 前缀 | C136 |
+| A1 | `test_manual_reload.py::test_manual_model_continues_through_chdir_and_model_dialog` | L193 `press("f4")` 打开 ModelConfigScreen 断言链一环，F4 被我方 catalog 禁用 → 5s 超时 | 函数级 skip + marker，reason 同 C134 前缀；**chdir 覆盖披露（PR #99 评审候选 2，责任人 2026-11-06 裁决接受折中）**：chdir→reload 链路由同文件存活测试 `test_reload_reports_applied_deferred_and_conflicting_values_once`（L277-304，L298 同款 WorkspaceChange）保留；模型指针连续性有非 chdir 覆盖（L271-274）；chdir×模型指针精确组合缺口已知悉接受（拆测试扩大 R2 面不值） | C136 |
 | A2 | `test_manual_reload.py::test_deleted_default_with_unwritable_settings_still_chooses_a_model_and_rebuilds` | 经 `_delete_in_the_models_dialog`（C134 同 helper）对话框删除默认模型 | 函数级 skip + marker，reason 与 C134 逐字一致 | C137 |
 | A3 | `test_reload_profiles.py::test_later_model_editor_save_rebuilds_children_from_the_shared_registry` | 后半段 F4 模型编辑器编辑保存 | 函数级 skip + marker，同前缀；前半段 reload 覆盖由同文件其余测试保留 | C138 |
 | B1 | `test_discovery.py::test_entries_that_are_not_extensions_are_ignored_and_bad_ids_are_skipped` | 断言硬编码 `iCode's own tool categories` vs 我方运行时 `AIxCoding's`（branding 绑定） | 断言品牌适配 + marker（同 C133 先例） | C139 |
@@ -113,6 +113,13 @@ removal_condition 原文："上游自带跨线程安全且整替语义有官方�
 - **2026-11-06 B1 窗口处置口径**（design 签认阶段）：采纳建议案——接受窄窗口短暂回退 + 下轮 catalog sync 自愈；互斥/revision 检测两备选否决留痕（design 融合方案第 4 点）。
 - **2026-11-06 C030/C031 淘汰候选**：**责任人裁决保留**（第五节对比分析成立——上游 reload 协议不满足"跨线程安全"条件，不构成〔上游等价〕命中；融合并存维持）。
 - **2026-11-06 R2 增补批准**：fork-full 暴露的 4 处上游新测试冲突适配（C136–C139）经责任人批准；skip reason 统一 C134 同款前缀（组内一致便于下次升级 grep）。
+- **2026-11-06 PR #99 独立评审（外部 AI，临时 worktree 独立环境复跑）**：blocker 0、候选 2 项交裁决——
+  - 候选 1（两新测试文件合跑跨文件状态污染，-n8 挂 5/-n0 挂 1、各自单跑全绿、**上游 05679bec 树同法复现同样失败**=上游 v0.34.0 固有，本 PR 未引入）：**裁决采纳留痕**——加入 plan/self-review 下次升级复核清单（合跑污染现象+单跑口径），不动代码；
+  - 候选 2（C136 skip 的 chdir 前半段覆盖声明缺失）：**裁决接受折中留痕**——覆盖事实核查与披露见第二节 A1 行；
+  - 评审侧 23 failed 全部为评审机无 pwsh 7 的环境差异（internal_installer 契约测试，本 PR 未触及），非代码回归；
+  - 评审对 B1/B2 破坏性实验（双红后还原）确认为真实锚定非 vacuous；sources 收敛核对项①目录一致性独立复核成立。
+- **2026-11-06 PR CI macOS job 失败事件**：`test_settings_reload_full.py::test_what_belongs_to_the_session_outlasts_a_full_reload_with_the_servers_its_client_supplied[servers0]`（MCP client-server Connection refused→IndexError）；归因=上游 v0.34.0 新增测试在 loaded macOS runner 的环境性 flake 家族（fixture stderr DEVNULL 吞可观测性；本地 Windows 稳定绿；上游同期 2c4645f "stop two timing flakes on loaded macOS runners" 佐证该 runner 家族问题，但**该提交不涉及本测试链**——已抓 commit 详情核实改的是另两处 TUI 测试等待超时）。处置=re-run 验证（结果追加于下）。
+- **2026-11-06 re-run 结果**：**macOS job 重跑通过、无失败**——flake 坐实（loaded macOS runner 环境性，非代码回归），双 CI 至此全绿。
 - **2026-11-06 实现评审（外部 AI）三 finding 处置**：
   - I1（docstring 口径超前）：**已消解**——评审信息滞后，B1 裁决与 design 签认均已完成，docstring 与事实一致，不改；
   - I2（reload_base 无锁读）：**记录在案不改**——评审论证成立：CPython 引用整替下迭代器绑定旧 dict 对象，catalog sync 整替不影响读方迭代；`register` 原地插入仅发生在 TUI 事件循环，与 `reload_base` 同线程串行。与 B1 窗口同域同级别，后续如需补锁走独立批次；

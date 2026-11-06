@@ -41,6 +41,8 @@
   环境噪音（本批两轮 fork-full 均未触发）；
 - C136–C138 的 skip 在上游追加新用例时会显式暴露（设计意图），下次升级须复核
   `test_manual_reload.py` / `test_reload_profiles.py` / `test_models_dialog_deletion.py`；
+  **两文件合跑存在跨文件状态污染（PR #99 评审候选 1，上游固有：合跑失败、单跑全绿、
+  上游树同法复现）——排障按单文件单跑口径，勿按合跑误判回归**；
 - I2（reload_base 无锁读）/I3（B1 测试空 view 简化）记录在案不处置（verification 第六节）；
 - B1 窗口已裁决接受+自愈；若未来实证频发可凭 design 否决留痕重开裁决。
 

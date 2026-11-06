@@ -42,4 +42,5 @@ headless 冒烟 `--version` = 0.34.0。
 - **reload_base 无锁读（I2）/B1 测试空 view（I3）**：记录留痕不处置（verification 第六节）。
 - **下次升级复核点**：C136–C138 skip 的上游用例追加会显式暴露（设计意图）；
   `test_manual_reload.py` / `test_reload_profiles.py` / `test_models_dialog_deletion.py`
-  为固定关注文件。
+  为固定关注文件；**两文件合跑存在跨文件状态污染（上游 v0.34.0 固有，PR #99 评审实证：
+  合跑 -n8 挂 5/-n0 挂 1、各自单跑全绿、上游树同法复现）——复核/排障时按单文件单跑口径**。
