@@ -86,7 +86,8 @@ def test_get_platform_provides_the_guard_config_dir() -> None:
     info = get_platform()
 
     assert info.config_dir.is_absolute()
-    assert conventional_config_dir().name == "chrys"
+    # Windows: %APPDATA%\chrys — macOS / Linux: ~/.chrys
+    assert conventional_config_dir().name in ("chrys", ".chrys")
 
 
 def test_guard_hooks_yaml_loads_under_the_upstream_contract() -> None:

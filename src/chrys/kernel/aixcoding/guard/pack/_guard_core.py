@@ -1208,12 +1208,18 @@ def _native_resolved(cwd: str, raw: str | None) -> Path | None:
 
     selftest drives Windows-style paths on every platform, so a drive-letter
     path on POSIX stays lexical instead of being misresolved as relative.
+    A relative raw under a Windows-style cwd is lexical too: on POSIX
+    ``Path("C:/ws")`` is relative and would be anchored at the process cwd,
+    silently moving the comparison away from the workspace.
     """
     if sys.platform != "win32":
         if raw is not None and _WIN_DRIVE.match(raw):
             return None
-        if raw is None and cwd and _WIN_DRIVE.match(cwd):
-            return None
+        if cwd and _WIN_DRIVE.match(cwd):
+            if raw is None:
+                return None
+            if not Path(raw).expanduser().is_absolute():
+                return None
     base = Path(cwd).expanduser() if cwd else Path.cwd()
     candidate = base if raw is None else Path(raw).expanduser()
     if raw is not None and not candidate.is_absolute():
