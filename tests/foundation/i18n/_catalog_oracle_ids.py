@@ -201,6 +201,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "session_host.session_not_found",
     "session_host.session_not_found_with_recent",
     "startup.invalid_no_proxy_env",
+    "startup.invalid_proxy_env",
     "startup.notifications_migration_failed",
     "startup.notifications_migration_retry",
     "startup.raw_http_capture_on",

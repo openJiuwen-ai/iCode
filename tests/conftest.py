@@ -267,7 +267,8 @@ def pytest_configure(config: pytest.Config) -> None:
     value into the environment: they read ``"CHRYS_X" not in os.environ`` and
     would fail on that developer's machine while passing in CI. Setting aliases
     come from metadata; internal process carriers are listed explicitly below.
-    Both are stripped here rather than in a session fixture because the
+    Proxy variables httpx can't use go too (``_unusable_proxy_env``). All are
+    stripped here rather than in a session fixture because the
     leak guard above snapshots the environment before the first fixture runs
     and would restore whatever a fixture removed.
     """
@@ -291,6 +292,7 @@ def pytest_configure(config: pytest.Config) -> None:
         }
     )
     exported = {name: value for name, value in os.environ.items() if canonical_env_name(name) in names}
+    exported.update(_unusable_proxy_env())
     for name in exported:
         del os.environ[name]
     config.stash[_STRIPPED_CHRYS_ENV] = exported
@@ -312,6 +314,26 @@ def pytest_configure(config: pytest.Config) -> None:
     sampler = start_stall_sampler_from_environment()
     if sampler is not None:
         config.stash[_STALL_SAMPLER] = sampler
+
+
+def _unusable_proxy_env() -> dict[str, str]:
+    """The proxy variables httpx can't use, which every bootstrap deletes from ``os.environ``.
+
+    A Linux desktop can export ``ALL_PROXY=socks://…``. A test that bootstraps
+    would delete it behind ``monkeypatch``'s back and fail the leak guard on
+    that developer's machine while passing in CI, so the run starts without
+    such values, as the code under test would leave it.
+    """
+    from chrys.service.profiles.models.env_bridge import is_valid_no_proxy, is_valid_proxy_url
+
+    unusable: dict[str, str] = {}
+    for name, value in os.environ.items():
+        key = name.lower()
+        if (key in {"http_proxy", "https_proxy", "all_proxy"} and not is_valid_proxy_url(value)) or (
+            key == "no_proxy" and not is_valid_no_proxy(value)
+        ):
+            unusable[name] = value
+    return unusable
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:

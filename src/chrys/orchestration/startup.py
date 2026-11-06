@@ -11,6 +11,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.context import EvalContext
 from chrys.foundation.config.errors import ConfigError
 from chrys.foundation.config.process_settings import install_process_settings, settle_session_root
@@ -26,6 +27,13 @@ logger = logging.getLogger(__name__)
 _INVALID_NO_PROXY_ENV = msg(
     "startup.invalid_no_proxy_env",
     fallback="{var} is invalid for httpx and was ignored ({value}). Remove or fix this environment value.",
+)
+_INVALID_PROXY_ENV = msg(
+    "startup.invalid_proxy_env",
+    fallback=(
+        "{var} is not a proxy address {app} can use and was ignored ({value}). "
+        "Use an http://, https://, socks5:// or socks5h:// address, or remove this environment value."
+    ),
 )
 _CATALOG_LOAD_FAILED = msg(
     "i18n.catalog_load_failed",
@@ -213,18 +221,29 @@ def bootstrap_runtime(
         configure_utf8_stdio()
 
     from chrys.foundation.config.process_env import freeze_process_env
-    from chrys.service.profiles.models.env_bridge import sanitize_no_proxy_env
+    from chrys.service.profiles.models.env_bridge import sanitize_no_proxy_env, sanitize_proxy_url_env
 
     freeze_process_env()
 
     warnings = [
+        Warning(
+            code="invalid_proxy",
+            message=(
+                f"{var} is not a proxy address {APP_DISPLAY_NAME} can use and was ignored ({value!r}). "
+                "Use an http://, https://, socks5:// or socks5h:// address, or remove this environment value."
+            ),
+            display_message=_INVALID_PROXY_ENV.bind(var=var, app=APP_DISPLAY_NAME, value=repr(value)),
+        )
+        for var, value in sanitize_proxy_url_env().items()
+    ]
+    warnings.extend(
         Warning(
             code="invalid_no_proxy",
             message=f"{var} is invalid for httpx and was ignored ({value!r}). Remove or fix this environment value.",
             display_message=_INVALID_NO_PROXY_ENV.bind(var=var, value=repr(value)),
         )
         for var, value in sanitize_no_proxy_env().items()
-    ]
+    )
     warnings.extend(_migrate_legacy_settings())
 
     if apply_patches:

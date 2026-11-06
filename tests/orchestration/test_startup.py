@@ -34,8 +34,9 @@ def _isolate_startup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: fake_platform)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(startup, "set_process_title", lambda title="chrys": None)
-    monkeypatch.delenv("NO_PROXY", raising=False)
-    monkeypatch.delenv("no_proxy", raising=False)
+    for name in list(os.environ):
+        if name.lower().endswith("_proxy"):
+            monkeypatch.delenv(name)
 
 
 def _claim_env_name(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
@@ -100,6 +101,85 @@ def test_bootstrap_runtime_returns_invalid_no_proxy_warning(monkeypatch: pytest.
     assert isinstance(warning.display_message, MessageRef)
     assert warning.display_message.definition is startup._INVALID_NO_PROXY_ENV
     assert dict(warning.display_message.args) == {"var": "NO_PROXY", "value": "'[::1]'"}
+
+
+def test_bootstrap_runtime_drops_a_proxy_address_httpx_cannot_use(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """A desktop's ``ALL_PROXY=socks://…`` is dropped with a warning; a usable proxy stays."""
+    _isolate_startup(monkeypatch, tmp_path)
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:7897/")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897/")
+    monkeypatch.setattr("chrys.foundation.patches.apply_all", lambda: None)
+    monkeypatch.setattr("chrys.foundation.observability.setup.setup_otel", lambda _settings: None)
+
+    bootstrap = startup.bootstrap_runtime()
+
+    assert "ALL_PROXY" not in os.environ
+    assert os.environ["HTTPS_PROXY"] == "http://127.0.0.1:7897/"
+    assert len(bootstrap.warnings) == 1
+    warning = bootstrap.warnings[0]
+    assert isinstance(warning, WarningEvent)
+    assert warning.code == "invalid_proxy"
+    assert warning.message == (
+        "ALL_PROXY is not a proxy address iCode can use and was ignored ('socks://127.0.0.1:7897/'). "
+        "Use an http://, https://, socks5:// or socks5h:// address, or remove this environment value."
+    )
+    assert isinstance(warning.display_message, MessageRef)
+    assert warning.display_message.definition is startup._INVALID_PROXY_ENV
+    assert dict(warning.display_message.args) == {
+        "var": "ALL_PROXY",
+        "app": "iCode",
+        "value": "'socks://127.0.0.1:7897/'",
+    }
+
+
+def test_bootstrap_runtime_masks_proxy_credentials_in_the_warning(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    _isolate_startup(monkeypatch, tmp_path)
+    monkeypatch.setenv("ALL_PROXY", "socks://alice:s3cret@proxy.example:1080")
+    monkeypatch.setattr("chrys.foundation.patches.apply_all", lambda: None)
+    monkeypatch.setattr("chrys.foundation.observability.setup.setup_otel", lambda _settings: None)
+
+    [warning] = startup.bootstrap_runtime().warnings
+
+    assert "ALL_PROXY" not in os.environ
+    assert isinstance(warning.display_message, MessageRef)
+    assert dict(warning.display_message.args)["value"] == "'socks://***@proxy.example:1080'"
+    assert "'socks://***@proxy.example:1080'" in warning.message
+    assert "s3cret" not in warning.message
+    assert "alice" not in warning.message
+
+
+@pytest.mark.parametrize("bypass_proxy", [False, True])
+async def test_model_client_builds_after_bootstrap_with_a_socks_env_proxy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, bypass_proxy: bool
+) -> None:
+    """``ALL_PROXY=socks://…`` no longer stops the model client from being built, bypass or not."""
+    import httpx
+
+    from chrys.service.llm.clients import _build_profile_http_client
+    from chrys.service.profiles.models.schema import ModelProfile
+
+    _isolate_startup(monkeypatch, tmp_path)
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:7897")
+    # Some proxy variable must outlive the scrub, or urllib falls back to the
+    # macOS/Windows system proxy settings. Not ``*``: httpx would then build
+    # no proxy at all and the test would pass without the scrub.
+    monkeypatch.setenv("NO_PROXY", "localhost")
+    monkeypatch.setattr("chrys.foundation.patches.apply_all", lambda: None)
+    monkeypatch.setattr("chrys.foundation.observability.setup.setup_otel", lambda _settings: None)
+    profile = ModelProfile(
+        id="p",
+        name="p",
+        provider="anthropic",
+        model_id="test-model",
+        api_key="sk-test",
+        base_url="https://provider.example",
+        bypass_proxy=bypass_proxy,
+    )
+
+    startup.bootstrap_runtime()
+
+    client = _build_profile_http_client(profile, httpx.Timeout(5.0))
+    await client.aclose()
 
 
 def test_bootstrap_runtime_returns_no_warnings_when_env_clean(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
