@@ -66,7 +66,7 @@ rules.json（随包，每次启动重装）         guard_state.json（现场，
 
 | 文件 | 改什么 | 预估行数 | 标记注释位置 |
 |---|---|---|---|
-| `.gitattributes` | `# Shell` 段增一行 `*.cmd text eol=crlf`，保证 `guardctl.cmd` 检出为 CRLF（`* text=auto` 不会把 `.cmd` 规范成 LF） | +1 行（含 C138 标记注释共 +2） | 新增行上方单行标记（`AIxCoding guard: … (C138)`） |
+| `.gitattributes` | `# Shell` 段增一行 `*.cmd text eol=crlf`，保证 `guardctl.cmd` 检出为 CRLF（`* text=auto` 不会把 `.cmd` 规范成 LF） | +1 行（含 C142 标记注释共 +2） | 新增行上方单行标记（`AIxCoding guard: … (C142)`） |
 
 **R1 自查（必答）**：业务逻辑是否已全部外置到定制模块？是——开关引擎在
 `src/chrys/kernel/aixcoding/guard/pack/_guard_core.py`，管理入口在同目录
@@ -97,7 +97,7 @@ rules.json（随包，每次启动重装）         guard_state.json（现场，
 
 | id | 落点 | marker 锚 | 预期计数 | anchor | risk | removal_condition |
 |---|---|---|---|---|---|---|
-| C138 | `.gitattributes` | AIxCoding guard: | 1 | （批次锚注） | 低：上游重排该文件段序时可能被覆盖 | 〔上游重排〕`.gitattributes` 不再需要单独行尾声明（如上游统一声明 `*.cmd`） |
+| C142 | `.gitattributes` | AIxCoding guard: | 1 | （批次锚注） | 低：上游重排该文件段序时可能被覆盖 | 〔上游重排〕`.gitattributes` 不再需要单独行尾声明（如上游统一声明 `*.cmd`） |
 
 ## 风险与最坏情况
 
