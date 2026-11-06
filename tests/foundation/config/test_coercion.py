@@ -76,7 +76,7 @@ def test_bool_coercer_rejects_everything_outside_the_grammar(raw: object) -> Non
     assert result.usable is False
 
 
-def test_bool_coercer_is_agnostic_to_yaml_versus_dotenv_spelling() -> None:
+def test_bool_coercer_is_agnostic_to_yaml_versus_environment_spelling() -> None:
     """The regression F4 named: ``7`` and ``"7"`` must not disagree."""
     assert bool_coercer()("7").status is bool_coercer()(7).status
 

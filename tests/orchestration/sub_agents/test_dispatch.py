@@ -60,6 +60,7 @@ from chrys.service.profiles.agents.schema import (
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.session.sub_agent_logs import sessions_dir
 from tests.orchestration.invoker._runtime_fixtures import SubAgentPolicyDouble, runtime_for_shell
+from tests.support.tool_packs import install_tools
 
 
 @dataclass
@@ -681,16 +682,6 @@ async def test_sub_agent_last_words_retry_callback_publishes_current_invocation(
     await bus.subscribe(InvocationStarted, _capture_start)
     await bus.subscribe(InvocationRetryAttempt, _capture_retry)
 
-    class _ToolRegistry:
-        def __init__(self, *, vision_enabled: bool = False) -> None:
-            self.vision_enabled = vision_enabled
-
-        def load_builtins(self, *_args: object, **_kwargs: object) -> None:
-            return None
-
-        def get_all(self) -> list[object]:
-            return []
-
     class _Agent:
         def __init__(self, **kwargs: object) -> None:
             self.client = kwargs.get("client")
@@ -729,7 +720,7 @@ async def test_sub_agent_last_words_retry_callback_publishes_current_invocation(
             )
             return "done"
 
-    monkeypatch.setattr(sub_agent_module, "ToolRegistry", _ToolRegistry)
+    install_tools(monkeypatch)
     monkeypatch.setattr(runtime_factory_module, "Agent", _Agent)
     monkeypatch.setattr(runtime_factory_module, "LastWordsGenerator", _LastWordsGenerator)
     monkeypatch.setattr(sub_agent_module, "KernelSubAgentPolicy", _Controller)
@@ -795,16 +786,6 @@ async def test_sub_agent_compaction_status_callback_publishes_current_invocation
     await bus.subscribe(InvocationCompactionFinished, _capture_compaction_finished)
     await bus.subscribe(InvocationCompactionCommitted, _capture_compaction_committed)
 
-    class _ToolRegistry:
-        def __init__(self, *, vision_enabled: bool = False) -> None:
-            self.vision_enabled = vision_enabled
-
-        def load_builtins(self, *_args: object, **_kwargs: object) -> None:
-            return None
-
-        def get_all(self) -> list[object]:
-            return []
-
     class _Agent:
         def __init__(self, **kwargs: object) -> None:
             self.client = kwargs.get("client")
@@ -852,7 +833,7 @@ async def test_sub_agent_compaction_status_callback_publishes_current_invocation
             await captured_publish_status(CompactionStatus(compaction_id="c-1", stage="committed"))
             return "done"
 
-    monkeypatch.setattr(sub_agent_module, "ToolRegistry", _ToolRegistry)
+    install_tools(monkeypatch)
     monkeypatch.setattr(runtime_factory_module, "Agent", _Agent)
     monkeypatch.setattr(runtime_factory_module, "LastWordsGenerator", _LastWordsGenerator)
     monkeypatch.setattr(sub_agent_module, "KernelSubAgentPolicy", _Controller)
@@ -918,16 +899,6 @@ async def test_registered_parallel_invocations_get_independent_compaction_state(
 ) -> None:
     """Same-tool concurrent invocations must not share usage/compaction strategy objects."""
 
-    class _ToolRegistry:
-        def __init__(self, *, vision_enabled: bool = False) -> None:
-            self.vision_enabled = vision_enabled
-
-        def load_builtins(self, *_args: object, **_kwargs: object) -> None:
-            return None
-
-        def get_all(self) -> list[object]:
-            return []
-
     class _Agent:
         def __init__(self, **kwargs: object) -> None:
             self.client = kwargs.get("client")
@@ -978,7 +949,7 @@ async def test_registered_parallel_invocations_get_independent_compaction_state(
             await both_started.wait()
             return "done"
 
-    monkeypatch.setattr(sub_agent_module, "ToolRegistry", _ToolRegistry)
+    install_tools(monkeypatch)
     monkeypatch.setattr(runtime_factory_module, "Agent", _Agent)
     monkeypatch.setattr(sub_agent_module, "KernelSubAgentPolicy", _Controller)
     monkeypatch.setattr(

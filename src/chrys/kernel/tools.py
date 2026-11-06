@@ -62,6 +62,11 @@ from ._null_overlay import (
     restore_explicit_nulls,
 )
 from ._serialization import SerializationMixin
+from ._tool_arg_errors import (
+    _accepts_arbitrary_argument_names,
+    _rejects_unexpected_arguments,
+    _unexpected_argument_names,
+)
 from .exceptions import ModelVisibleToolError, ToolException
 from .middleware import FunctionInvocationContext
 
@@ -577,6 +582,16 @@ class FunctionTool(SerializationMixin):
             self._null_overlay_policy_cached = policy
         return self._null_overlay_policy_cached
 
+    def _reject_unexpected_arguments(self, arguments: Mapping[str, Any]) -> None:
+        """Raise ``TypeError`` for top-level keys this typed tool does not accept, as the loop does."""
+        schema = self.parameters()
+        if not _rejects_unexpected_arguments(schema, typed_model_dump=True) or _accepts_arbitrary_argument_names(
+            self.input_model
+        ):
+            return
+        if _unexpected_argument_names(arguments, schema, reject_unexpected=True, input_model=self.input_model):
+            raise TypeError(f"Unexpected argument(s) for '{self.name}'.")
+
     def _dump_arguments(self, validated: BaseModel) -> dict[str, Any]:
         """Dump once, then apply the cached static explicit-null policy."""
         if self.input_model is None:
@@ -662,6 +677,10 @@ class FunctionTool(SerializationMixin):
                 elif isinstance(arguments, Mapping):
                     parsed_arguments = dict(arguments)
                     if self.input_model is not None and not self._schema_supplied:
+                        # Pydantic ignores an unadvertised key: reject what the tool loop's
+                        # pre-check rejects, or a misnamed argument is dropped and the call
+                        # runs on its default (a command in the wrong folder).
+                        self._reject_unexpected_arguments(parsed_arguments)
                         try:
                             validation_arguments = copy.deepcopy(parsed_arguments)
                         except Exception:

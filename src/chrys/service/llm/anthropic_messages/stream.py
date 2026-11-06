@@ -39,7 +39,7 @@ from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.hosted_tools import HeldHostedEvidence, HostedToolPhase
 from chrys.foundation.reasoning_origin import ReasoningOrigin
 from chrys.kernel import ChatResponseUpdate, Content, UsageDetails, normalize_stream_usage
-from chrys.service.llm.chat_completions.decode import refused_calls_error
+from chrys.service.llm.refusals import refused_calls_error
 
 from .decode import (
     decode_blocks,

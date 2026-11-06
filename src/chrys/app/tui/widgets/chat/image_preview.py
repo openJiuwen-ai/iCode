@@ -74,6 +74,13 @@ def extract_image_previews(contents: Sequence[Any] | None) -> list[ChatImagePrev
     return previews
 
 
+def image_preview_from_bytes(data: bytes, media_type: str) -> ChatImagePreview:
+    """A preview of an image file's *data*; raises what decoding it raises (see ``extract_image_previews``)."""
+    image = _load_preview_image(data)
+    data_uri = f"data:{media_type};base64,{base64.b64encode(data).decode('ascii')}"
+    return ChatImagePreview(image=image, media_type=media_type, data_uri=data_uri)
+
+
 def layout_image_row(
     images: Sequence[ChatImagePreview],
     *,

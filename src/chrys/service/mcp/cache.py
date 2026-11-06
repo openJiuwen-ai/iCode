@@ -16,6 +16,13 @@ The likely shape of that opt-out is a profile flag such as
 agent/session/share-boundary component in the cache key for those configs so
 they still benefit from caching inside the chosen boundary without sharing one
 server-side client session across independent agents.
+
+A manual reload opens one refresh round (:meth:`MCPConnectionCache.begin_refresh`).
+Every key the rebuild asks for that already has a connection gets one fresh
+attempt, shared by the main agent and its sub-agents. Old leases keep working
+meanwhile: the candidate stays beside the entry it would replace until the
+rebuild commits, and an aborted round closes it and leaves the entry in place.
+Ordinary rebuilds open no round and reuse live connections as before.
 """
 
 from __future__ import annotations
@@ -28,19 +35,21 @@ import json
 import logging
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.config.process_env import canonical_env_name
+from chrys.foundation.config.runtime_pointer import MODEL_POINTER_ENV
 from chrys.foundation.tool_call_context import get_tool_context, set_tool_context
 from chrys.foundation.tool_kinds import KIND_MCP, get_tool_kind, set_tool_kind
 from chrys.foundation.util.env_templates import resolve_env_template_mapping
 from chrys.kernel import FunctionTool
 from chrys.service.mcp import _connection
 from chrys.service.mcp._stdio_transport import _inherited_stdio_environment
-from chrys.service.mcp.errors import MCPConnectionError
+from chrys.service.mcp.errors import MCPConnectionError, mcp_failure_diagnostic
 from chrys.service.mcp.result_limits import _MCP_PROMPT_TOOL_KEY, truncate_mcp_result
 
 if TYPE_CHECKING:
@@ -51,6 +60,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 IDLE_TTL_SECONDS = 300
+SESSION_PROBE_TIMEOUT_SECONDS = 5
+
+
+@dataclass(eq=False)
+class MCPConnectionEntry:
+    """Internal cache entry for one canonical MCP server config; identity is what tells generations apart."""
+
+    key: str
+    config: MCPServerConfig
+    mcp_tool: MCPTool | None
+    refcount: int
+    last_used: datetime
+    connect_task: asyncio.Task[MCPTool] | None
 
 
 @dataclass(frozen=True)
@@ -62,18 +84,31 @@ class MCPConnectionLease:
     config: MCPServerConfig
     functions: list[FunctionTool]
     mcp_tool: MCPTool
+    # The generation this lease holds: a refresh can install another entry under the same key.
+    entry: MCPConnectionEntry = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class MCPRefreshReport:
+    """One server a refresh could not simply reconnect; ``detail`` holds nothing a server or a library wrote."""
+
+    server_name: str
+    kept_existing: bool
+    detail: str
 
 
 @dataclass
-class MCPConnectionEntry:
-    """Internal cache entry for one canonical MCP server config."""
+class _RefreshRound:
+    """What one refresh tried, kept beside the live entries until it commits or aborts."""
 
-    key: str
-    config: MCPServerConfig
-    mcp_tool: MCPTool | None
-    refcount: int
-    last_used: datetime
-    connect_task: asyncio.Task[MCPTool] | None
+    attempts: dict[str, asyncio.Task[MCPConnectionEntry]] = field(default_factory=dict)
+    # Each candidate holds one reference of the round's, so an early release cannot close it.
+    candidates: list[MCPConnectionEntry] = field(default_factory=list)
+    unverified: list[MCPConnectionEntry] = field(default_factory=list)
+    requested: set[str] = field(default_factory=set)
+    first_connections: set[str] = field(default_factory=set)
+    failures: dict[str, tuple[bool, BaseException]] = field(default_factory=dict)
+    probe_problems: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -135,12 +170,17 @@ def resolve_mcp_effective_config(config: MCPServerConfig, *, stdio_cwd: str | No
     if config.transport == "stdio":
         stdio_env = _resolved_stdio_env(config)
         child_env = _inherited_stdio_environment(stdio_env)
+        key_env = {k: v for k, v in child_env.items() if canonical_env_name(k) != MODEL_POINTER_ENV}
+        for name, value in stdio_env.items():
+            if canonical_env_name(name) == MODEL_POINTER_ENV:
+                key_env[MODEL_POINTER_ENV] = value
         resolved_stdio_cwd = stdio_cwd or os.getcwd()
         payload["stdio"] = {
             "command": config.command,
             "args": list(config.args),
             "encoding": config.encoding,
-            "env": _stable_mapping(child_env),
+            # Switching models does not change the server unless its configuration uses the pointer.
+            "env": _stable_mapping(key_env),
             "cwd": resolved_stdio_cwd,
         }
         stdio_env = child_env
@@ -230,11 +270,148 @@ class MCPConnectionCache:
         self._entries: dict[str, MCPConnectionEntry] = {}
         self._lock = asyncio.Lock()
         self._closed = False
+        self._refresh: _RefreshRound | None = None
+        # No longer handed out; each closes when its last lease is released.
+        self._retired: set[MCPConnectionEntry] = set()
+        # Cancelled connects still closing. A handshake that hangs holds its connection's
+        # lifecycle until its timeout, so nothing waits for these but close_all().
+        self._detached: set[asyncio.Task[Any]] = set()
 
     @property
     def closed(self) -> bool:
         """Whether ``close_all()`` has permanently closed this cache."""
         return self._closed
+
+    @property
+    def refreshing(self) -> bool:
+        """Whether a refresh round is open, whose report names each failure."""
+        return self._refresh is not None
+
+    def begin_refresh(self) -> None:
+        """Open a refresh round; the caller ends it with :meth:`commit_refresh` or :meth:`abort_refresh`."""
+        if self._refresh is not None:
+            raise RuntimeError("An MCP refresh is already open")
+        self._refresh = _RefreshRound()
+
+    def note_connect_failure(self, config: MCPServerConfig, error: BaseException) -> None:
+        """Record that a consumer of the open round, if any, could not use *config*'s server."""
+        if self._refresh is not None:
+            self._refresh.failures[config.name] = (False, error)
+
+    async def commit_refresh(self) -> tuple[MCPRefreshReport, ...]:
+        """Make the round's connections current and retire what the rebuilt runtime no longer uses.
+
+        Call once the rebuilt runtime is installed, before releasing the one it
+        replaced: an old entry then closes with its last lease. An entry the round
+        never asked for belongs to a server that was removed, disabled or
+        reconfigured, so nothing may reconnect to it through this cache again.
+        """
+        round_ = self._refresh
+        self._refresh = None
+        if round_ is None:
+            return ()
+        self._detach_attempts(round_)
+        stale: list[MCPTool] = []
+        async with self._lock:
+            for candidate in round_.candidates:
+                candidate.refcount -= 1
+                previous = self._entries.get(candidate.key)
+                self._entries[candidate.key] = candidate
+                if previous is not None:
+                    stale.extend(self._retire_locked(previous))
+            for entry in round_.unverified:
+                stale.extend(self._retire_locked(entry))
+            for key, entry in list(self._entries.items()):
+                if key not in round_.requested:
+                    stale.extend(self._retire_locked(entry))
+        await self._close_untracked_tools(stale)
+        return self._refresh_reports(round_)
+
+    async def abort_refresh(self) -> None:
+        """Close what the round opened and leave every connection the running runtime holds untouched."""
+        round_ = self._refresh
+        self._refresh = None
+        if round_ is None:
+            return
+        self._detach_attempts(round_)
+        stale: list[MCPTool] = []
+        async with self._lock:
+            for candidate in round_.candidates:
+                candidate.refcount -= 1
+                stale.extend(self._retire_locked(candidate))
+            for key in round_.first_connections:
+                entry = self._entries.get(key)
+                if entry is None:
+                    continue
+                if entry.connect_task is not None:
+                    self._detach(entry.connect_task)
+                stale.extend(self._retire_locked(entry))
+        await self._close_untracked_tools(stale)
+
+    def _detach_attempts(self, round_: _RefreshRound) -> None:
+        for attempt in round_.attempts.values():
+            self._detach(attempt)
+
+    def _detach(self, task: asyncio.Task[Any]) -> None:
+        if task.done():
+            return
+        task.cancel()
+        self._detached.add(task)
+        task.add_done_callback(self._detached.discard)
+
+    def _retire_locked(self, entry: MCPConnectionEntry) -> list[MCPTool]:
+        """Stop handing *entry* out; returns its tool when no lease still holds it."""
+        if self._entries.get(entry.key) is entry:
+            del self._entries[entry.key]
+        if entry.mcp_tool is None:
+            return []
+        if entry.refcount > 0:
+            self._retired.add(entry)
+            return []
+        self._retired.discard(entry)
+        return [entry.mcp_tool]
+
+    @staticmethod
+    def _refresh_reports(round_: _RefreshRound) -> tuple[MCPRefreshReport, ...]:
+        reports = []
+        for name, (kept_existing, error) in sorted(round_.failures.items()):
+            detail = mcp_failure_diagnostic(error)
+            if (problem := round_.probe_problems.get(name)) is not None:
+                detail = f"{detail}; existing connection: {problem}"
+            reports.append(MCPRefreshReport(name, kept_existing, detail))
+        return tuple(reports)
+
+    async def _refresh_connection(
+        self, round_: _RefreshRound, entry: MCPConnectionEntry, effective: MCPEffectiveConfig
+    ) -> MCPConnectionEntry:
+        """Try one fresh connection beside *entry*, falling back to *entry* only while it proves healthy."""
+        config = effective.config
+        try:
+            mcp_tool = await self._open_marked_tool(effective)
+        except Exception as exc:
+            logger.warning("MCP server '%s' did not reconnect: %s", config.name, exc)
+            error = self._connection_error(config, exc)
+            problem = (
+                await entry.mcp_tool.probe_session(timeout=SESSION_PROBE_TIMEOUT_SECONDS)
+                if entry.mcp_tool is not None
+                else "the connection is closed"
+            )
+            if problem is None:
+                round_.failures.setdefault(config.name, (True, error))
+                return entry
+            round_.probe_problems[config.name] = problem
+            round_.unverified.append(entry)
+            raise error from exc
+        candidate = MCPConnectionEntry(
+            key=entry.key,
+            config=config,
+            mcp_tool=mcp_tool,
+            refcount=1,
+            last_used=datetime.now(UTC),
+            connect_task=None,
+        )
+        round_.candidates.append(candidate)
+        return candidate
 
     async def acquire(self, config: MCPServerConfig, *, stdio_cwd: str | None = None) -> MCPConnectionLease:
         """Acquire a lease for ``config``, connecting once per cache key."""
@@ -246,6 +423,7 @@ class MCPConnectionCache:
 
         lease: MCPConnectionLease | None = None
         task: asyncio.Task[MCPTool] | None = None
+        attempt: asyncio.Task[MCPConnectionEntry] | None = None
         async with self._lock:
             if self._closed:
                 raise RuntimeError("MCP connection cache is closed")
@@ -257,7 +435,21 @@ class MCPConnectionCache:
             if self._closed:
                 raise RuntimeError("MCP connection cache is closed")
             entry = self._entries.get(key)
-            if entry is not None and entry.mcp_tool is not None:
+            round_ = self._refresh
+            if round_ is not None:
+                round_.requested.add(key)
+                attempt = round_.attempts.get(key)
+                # A connection this round opened itself is already fresh.
+                refreshable = key not in round_.first_connections and entry is not None and entry.mcp_tool is not None
+                if attempt is None and refreshable:
+                    attempt = asyncio.create_task(self._refresh_connection(round_, entry, effective))
+                    attempt.add_done_callback(_consume_task_exception)
+                    round_.attempts[key] = attempt
+                elif attempt is None:
+                    round_.first_connections.add(key)
+            if attempt is not None:
+                pass
+            elif entry is not None and entry.mcp_tool is not None:
                 lease = self._lease_from_entry(entry)
                 entry.refcount += 1
             else:
@@ -276,6 +468,14 @@ class MCPConnectionCache:
                     entry.connect_task.add_done_callback(_consume_task_exception)
                 task = entry.connect_task
 
+        if attempt is not None:
+            refreshed = await asyncio.shield(attempt)
+            async with self._lock:
+                if self._closed:
+                    raise RuntimeError("MCP connection cache is closed")
+                lease = self._lease_from_entry(refreshed)
+                refreshed.refcount += 1
+                return lease
         if lease is not None:
             return lease
         if task is None:
@@ -296,12 +496,14 @@ class MCPConnectionCache:
         """Release a previously acquired lease."""
         stale_tools: list[MCPTool] = []
         async with self._lock:
-            entry = self._entries.get(lease.key)
-            if entry is not None and entry.refcount > 0:
+            entry = lease.entry
+            if entry.refcount > 0:
                 entry.refcount -= 1
                 if entry.refcount == 0:
                     entry.last_used = datetime.now(UTC)
             stale_tools = self._collect_idle_locked(datetime.now(UTC), self._idle_ttl_seconds)
+            if entry.refcount == 0 and entry in self._retired:
+                stale_tools.extend(self._retire_locked(entry))
         await self._close_untracked_tools(stale_tools)
 
     async def prune_idle(self, *, max_idle_seconds: float | None = None) -> None:
@@ -318,12 +520,22 @@ class MCPConnectionCache:
 
     async def close_all(self) -> None:
         """Close every live MCP connection and reject future acquires."""
+        round_ = self._refresh
+        self._refresh = None
+        if round_ is not None:
+            self._detach_attempts(round_)
         async with self._lock:
             self._closed = True
-            entries = list(self._entries.values())
+            entries = [*self._entries.values(), *self._retired]
+            if round_ is not None:
+                entries.extend(round_.candidates)
             self._entries.clear()
+            self._retired.clear()
 
-        tasks = [entry.connect_task for entry in entries if entry.connect_task is not None]
+        tasks: list[asyncio.Task[Any]] = [
+            *self._detached,
+            *(entry.connect_task for entry in entries if entry.connect_task is not None),
+        ]
         tools = [entry.mcp_tool for entry in entries if entry.mcp_tool is not None]
         for task in tasks:
             if not task.done():
@@ -338,9 +550,7 @@ class MCPConnectionCache:
         mcp_tool: MCPTool | None = None
         stored = False
         try:
-            mcp_tool = await self._open_mcp_tool(effective)
-            for tool in list(mcp_tool.functions):
-                set_tool_kind(tool, KIND_MCP)
+            mcp_tool = await self._open_marked_tool(effective)
             try:
                 async with self._lock:
                     entry = self._entries.get(key)
@@ -365,6 +575,12 @@ class MCPConnectionCache:
                 if entry is not None and entry.connect_task is asyncio.current_task():
                     self._entries.pop(key, None)
             raise
+
+    async def _open_marked_tool(self, effective: MCPEffectiveConfig) -> MCPTool:
+        mcp_tool = await self._open_mcp_tool(effective)
+        for tool in list(mcp_tool.functions):
+            set_tool_kind(tool, KIND_MCP)
+        return mcp_tool
 
     async def _open_mcp_tool(self, effective: MCPEffectiveConfig) -> MCPTool:
         """Create and enter one live MCPTool, wrapping failures like MCPAdapter."""
@@ -425,6 +641,7 @@ class MCPConnectionCache:
             config=entry.config,
             functions=functions,
             mcp_tool=entry.mcp_tool,
+            entry=entry,
         )
 
     def _collect_idle_locked(self, now: datetime, max_idle_seconds: float) -> list[MCPTool]:

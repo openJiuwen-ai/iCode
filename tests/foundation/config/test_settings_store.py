@@ -12,7 +12,7 @@ import yaml
 
 import chrys.foundation.platform as platform_mod
 from chrys.foundation.config.coercion import CoerceReason, CoerceStatus
-from chrys.foundation.config.env_layers import freeze_process_env
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.runtime_pointer import set_model_pointer
 from chrys.foundation.config.settings import MAX_TRANSIENT_RETRIES_LIMIT, Settings
 from chrys.foundation.config.settings_store import load_settings, persist
@@ -119,42 +119,15 @@ def test_a_user_yaml_value_loads_with_the_file_as_its_origin(config_dir: Path, m
     assert origin.path == path
 
 
-def test_the_user_dotenv_outranks_the_user_yaml(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear_theme(monkeypatch)
-    freeze_process_env()
-    _write_user_yaml(config_dir, "ui:\n  theme: from-yaml\n")
-    env_path = _write_user_env(config_dir, "CHRYS_THEME=from-dotenv\n")
-
-    loaded = load_settings()
-
-    assert loaded.settings.theme == "from-dotenv"
-    origin = loaded.source_for("ui.theme")
-    assert origin.layer is Source.USER_ENV
-    assert origin.path == env_path
-
-
-def test_the_real_environment_outranks_both_user_files(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_real_environment_outranks_user_settings(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHRYS_THEME", "from-shell")
     freeze_process_env()
     _write_user_yaml(config_dir, "ui:\n  theme: from-yaml\n")
-    _write_user_env(config_dir, "CHRYS_THEME=from-dotenv\n")
 
     loaded = load_settings()
 
     assert loaded.settings.theme == "from-shell"
     assert loaded.source_for("ui.theme").layer is Source.ENV
-
-
-def test_a_blank_user_dotenv_value_falls_through_to_the_yaml(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear_theme(monkeypatch)
-    freeze_process_env()
-    _write_user_yaml(config_dir, "ui:\n  theme: from-yaml\n")
-    _write_user_env(config_dir, "CHRYS_THEME=\n")
-
-    loaded = load_settings()
-
-    assert loaded.settings.theme == "from-yaml"
-    assert loaded.source_for("ui.theme").layer is Source.USER
 
 
 def test_files_stay_unread_until_bootstrap_freezes_the_environment(
@@ -234,21 +207,6 @@ def test_an_unparseable_user_yaml_loads_as_empty(config_dir: Path, monkeypatch: 
 
     assert loaded.source_for("ui.theme").layer is Source.DEFAULT
     assert loaded.unknown_keys == ()
-
-
-def test_a_lowercase_dotenv_spelling_answers_only_on_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear_theme(monkeypatch)
-    freeze_process_env()
-    for os_name, expected_layer in (("windows", Source.USER_ENV), ("linux", Source.DEFAULT)):
-        fake = dataclasses.replace(
-            platform_mod.get_platform(),
-            os_name=os_name,
-            config_dir=tmp_path / os_name / "config",
-            data_dir=tmp_path / os_name / "data",
-        )
-        monkeypatch.setattr(platform_mod, "get_platform", lambda fake=fake: fake)
-        _write_user_env(fake.config_dir, "chrys_theme=folded\n")
-        assert load_settings().source_for("ui.theme").layer is expected_layer, os_name
 
 
 # ── persist ──────────────────────────────────────────────────────────
@@ -421,3 +379,94 @@ def test_approval_timeout_preserves_explicit_zero_and_positive_values(config_dir
     loaded = load_settings(env={"CHRYS_APPROVAL_TIMEOUT_SECONDS": str(seconds)})
     assert loaded.settings.approval_timeout_seconds == seconds
     assert not loaded.warnings
+
+
+@pytest.mark.parametrize("yaml_theme", [None, "chrys-legacy"])
+def test_settings_reload_ignores_legacy_files(config_dir, tmp_path, monkeypatch, yaml_theme) -> None:
+    _clear_theme(monkeypatch)
+    freeze_process_env()
+    project = tmp_path / "workspace"
+    project.mkdir()
+    if yaml_theme is not None:
+        _write_user_yaml(config_dir, f"ui:\n  theme: {yaml_theme}\n")
+    user_env = _write_user_env(config_dir, "CHRYS_THEME=solar\n")
+    project_env = project / ".env"
+    project_env.write_text("CHRYS_THEME=solar\n", encoding="utf-8")
+
+    for changed in ("solar", "midnight"):
+        for path in (user_env, project_env):
+            path.write_text(f"CHRYS_THEME={changed}\n", encoding="utf-8")
+        loaded = load_settings(project_root=project)
+        assert loaded.settings.theme == (yaml_theme or Settings().theme)
+        assert loaded.source_for("ui.theme").layer is (Source.USER if yaml_theme else Source.DEFAULT)
+        assert loaded.warnings == ()
+        for path in (user_env, project_env):
+            assert path.read_text(encoding="utf-8") == f"CHRYS_THEME={changed}\n"
+
+
+@pytest.mark.parametrize(
+    ("launch", "select", "file_default", "effective"),
+    [
+        ("cli", True, "Y", "Y"),
+        ("env", True, "Y", "Y"),
+        ("", False, "G", "P"),
+    ],
+)
+def test_manual_reload_only_adopts_external_model_edits(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch, launch: str, select: bool, file_default: str, effective: str
+) -> None:
+    from chrys.foundation.config.runtime_pointer import MODEL_POINTER_KEY, get_model_pointer
+    from chrys.foundation.config.settings_store import SettingsHandle
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.profiles.models.env_bridge import activate_model_profile, set_global_default_profile_id
+
+    path = _write_user_yaml(config_dir, "model.profile.active: P\n")
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
+    if launch == "env":
+        monkeypatch.setenv("CHRYS_MODEL_PROFILE", "E")
+    handle = SettingsHandle(bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded)
+    if launch == "cli":
+        set_model_pointer("X", origin=SettingOrigin(layer=Source.CLI))
+    if select:
+        activate_model_profile("Y")
+    else:
+        set_global_default_profile_id("G")
+    assert load_settings(manual_reload=True).file_model == file_default
+    assert load_settings(manual_reload=True).settings.model_profile == effective
+    path.write_text("model.profile.active: B\n", encoding="utf-8")
+    candidate = load_settings(manual_reload=True)
+    assert candidate.model_edit is not None
+    expected = {"cli": "X", "env": "E", "": "B"}[launch]
+    assert candidate.settings.model_profile == expected
+    handle.install(candidate)
+    assert get_model_pointer()[0] == expected
+    assert load_settings().settings.model_profile == expected
+    assert load_settings(manual_reload=True).model_edit is None
+    if not launch:
+        path.unlink()
+        handle.install(load_settings(manual_reload=True))
+        assert not get_model_pointer()[0]
+        assert not load_settings().settings.model_profile
+        assert handle.loaded.source_for(MODEL_POINTER_KEY).layer is Source.DEFAULT
+
+
+def test_bad_edit_keeps_last_document_across_readers_and_refuses_writes(config_dir: Path) -> None:
+    from chrys.foundation.config.settings import persist_theme
+    from chrys.foundation.config.yaml_store import ConfigDocumentError, backup_path_for
+    from chrys.service.profiles.models.env_bridge import get_global_default_profile_id
+
+    freeze_process_env()
+    path = _write_user_yaml(config_dir, "tools.ask_user.timeout_seconds: 65\nmodel.profile.active: A\n")
+    backup_path_for(path).write_text("tools.ask_user.timeout_seconds: 50\n", encoding="utf-8")
+    assert load_settings().settings.ask_user_timeout_seconds == 65
+    poison = b"tools: [broken: 70"
+    path.write_bytes(poison)
+    with pytest.raises(ConfigDocumentError, match="line 1"):
+        load_settings(manual_reload=True)
+    assert get_global_default_profile_id() == "A"
+    loaded = load_settings(project_root=config_dir.parent)
+    assert loaded.document_error
+    assert loaded.settings.ask_user_timeout_seconds == 65
+    assert isinstance(persist_theme("chrys"), ConfigDocumentError)
+    assert path.read_bytes() == poison
+    assert backup_path_for(path).read_text(encoding="utf-8") == "tools.ask_user.timeout_seconds: 50\n"

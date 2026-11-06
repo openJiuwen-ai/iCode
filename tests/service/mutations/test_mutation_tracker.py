@@ -1267,7 +1267,7 @@ class TestMiddlewareMutationTracking:
         ctx = MagicMock()
         ctx.function.name = "zsh"
         ctx.function.chrys_kind = "shell"
-        ctx.arguments = {"command": "rm victim.txt", "working_dir": str(tmp_path)}
+        ctx.arguments = {"command": "rm victim.txt", "workdir": str(tmp_path)}
         ctx.result = "ok"
 
         async def fake_shell():
@@ -1312,7 +1312,7 @@ class TestMiddlewareMutationTracking:
         ctx = MagicMock()
         ctx.function.name = "bash"
         ctx.function.chrys_kind = "shell"
-        ctx.arguments = {"command": "echo 'new' > output.txt", "working_dir": str(tmp_path)}
+        ctx.arguments = {"command": "echo 'new' > output.txt", "workdir": str(tmp_path)}
         ctx.result = "ok"
 
         async def fake_shell():

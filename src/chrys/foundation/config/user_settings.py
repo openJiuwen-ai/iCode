@@ -23,7 +23,7 @@ RESERVED_DOC_KEYS: Final = frozenset({"schema_version", "migrations"})
 
 
 def user_settings_path() -> Path:
-    """The user-layer settings document, next to the config dotenv."""
+    """The user-layer settings document in the platform configuration directory."""
     from chrys.foundation.platform import get_platform
 
     return get_platform().config_dir / "settings.yaml"

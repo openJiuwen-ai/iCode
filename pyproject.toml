@@ -2,7 +2,7 @@
 # The PyPI distribution name; the import package, the commands' code name and
 # ~/.chrys keep "chrys" (src/chrys/__init__.py::DISTRIBUTION_NAME).
 name = "iCode-TUI"
-version = "0.33.0"
+version = "0.34.0"
 description = "A general-purpose extensible agent platform for rapidly building and evolving custom agents."
 readme = "README.pypi.md"
 requires-python = ">=3.14"
@@ -28,7 +28,6 @@ dependencies = [
     # exporter on 1.x, instrumentation on the matching 0.NNbM line) and are
     # bumped together. uv.lock holds the resolved version.
     "opentelemetry-api>=1.45.1,<2",
-    "python-dotenv==1.2.4",
     "pyyaml==6.0.3",
     "charset-normalizer==3.5.2",
     "mcp==1.30.0",
@@ -60,7 +59,7 @@ dependencies = [
     "watchdog==6.0.0",
     "pywinpty==3.1.0; sys_platform == 'win32'",
     # Document conversion (read_document).
-    "pypdf==6.21.2",
+    "pypdf==6.21.4",
     "python-docx==1.2.0",
     "python-pptx==1.0.2",
     "openpyxl==3.1.5",

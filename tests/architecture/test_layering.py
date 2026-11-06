@@ -37,6 +37,7 @@ ROOT_INIT = "__root__"
 _AGENTS_SOURCE_MAP_SECTION = 'AGENTS.md "Source map (src/chrys/)" section'
 
 WORKFLOWS_FACADE = "workflows"
+EXTENSIONS_SDK = "extensions"
 
 TIER_ORDER = {
     FOUNDATION: 0,
@@ -44,6 +45,8 @@ TIER_ORDER = {
     SERVICE: 2,
     # src/chrys/workflows.py re-exports the service-tier SDK for workflow files.
     WORKFLOWS_FACADE: 2,
+    # src/chrys/extensions.py, the Python extension authoring API, imports only the standard library.
+    EXTENSIONS_SDK: 0,
     ORCHESTRATION: 3,
     APP: 4,
 }
@@ -1778,6 +1781,18 @@ def test_background_tasks_have_declared_owners() -> None:
             1,
             "lease snapshot chain; each publication awaits its predecessor, drained at run completion and owner shutdown",
         ),
+        ("loader", "AgentLoader", "_install_candidate"): (
+            1,
+            "the candidate build drains profile normalization with finish_close before installing or discarding it",
+        ),
+        ("loader", "AgentLoader", "_commit_mcp_refresh"): (
+            1,
+            "a manual reload's connection commit, drained with finish_close before the reload goes on",
+        ),
+        ("loader", "AgentLoader", "_settle_failed_build"): (
+            1,
+            "a failed reload's connection abort, drained with finish_close before the hook manager settles",
+        ),
         ("loader", "AgentLoader", "start_outbox_recovery"): (1, "session outbox recovery task"),
         ("run/coordinator", "TurnCoordinator", "_admit_user_message"): (2, "execution lease run task"),
         ("run/retry", "RetryCoordinator", "_handle_user_retry"): (2, "execution lease run task"),
@@ -1807,6 +1822,10 @@ def test_background_tasks_have_declared_owners() -> None:
         ("side_questions", "SideQuestions", "_run"): (
             1,
             "separately tracked commit; quiesce invalidates queued writes under the session write lock",
+        ),
+        ("state/controls", "RuntimeControls", "on_settings_reload"): (
+            1,
+            "a reload without an active agent drains profile normalization before releasing the rebuild permit",
         ),
         ("state/session_writer", "SessionWriter", "save_checkpoint"): (1, "writer recovery drain task"),
         ("state/session_writer", "SessionWriter", "persist_now"): (1, "writer strict write set"),

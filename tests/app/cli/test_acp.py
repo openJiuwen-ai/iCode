@@ -12,7 +12,7 @@ import pytest
 
 from chrys.app.acp.transport import AbortableMessageSender
 from chrys.app.cli import acp as acp_cli
-from chrys.foundation.config.env_layers import freeze_process_env
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, load_settings, persist
 from chrys.orchestration.startup import RuntimeBootstrap
@@ -113,20 +113,19 @@ def test_configure_logging_stderr_handler_blocks_propagated_info_records() -> No
             root.addHandler(handler)
 
 
-def test_prepare_runtime_loads_dotenv_from_resolved_workdir(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prepare_runtime_configures_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
     loaded = LoadedSettings(settings=Settings(), provenance={})
 
-    def fake_bootstrap_runtime(**kwargs: Any) -> RuntimeBootstrap:
-        seen.update(kwargs)
+    def fake_bootstrap_runtime(*, configure_stdio: bool) -> RuntimeBootstrap:
+        seen["configure_stdio"] = configure_stdio
         return RuntimeBootstrap(loaded=loaded)
 
     monkeypatch.setattr(acp_cli, "bootstrap_runtime", fake_bootstrap_runtime)
 
-    assert acp_cli._prepare_runtime("/repo") is loaded
-    assert seen["dotenv_cwd"] == "/repo"
-    assert seen["dotenv_override"] is True
-    assert seen["configure_stdio"] is True
+    assert acp_cli._prepare_runtime() is loaded
+
+    assert seen == {"configure_stdio": True}
 
 
 def test_prepare_runtime_reports_rejected_settings_on_stderr(
@@ -135,7 +134,7 @@ def test_prepare_runtime_reports_rejected_settings_on_stderr(
 ) -> None:
     """Every root used to keep only ``.settings``, so these said nothing."""
     loaded = load_settings(env={"CHRYS_SESSION_TITLE_AUTO": "nonsense"})
-    monkeypatch.setattr(acp_cli, "bootstrap_runtime", lambda **_kwargs: RuntimeBootstrap(loaded=loaded))
+    monkeypatch.setattr(acp_cli, "bootstrap_runtime", lambda *, configure_stdio: RuntimeBootstrap(loaded=loaded))
 
     acp_cli._prepare_runtime()
 
@@ -147,7 +146,7 @@ def test_prepare_runtime_uses_interactive_transient_retry_default(monkeypatch: p
     monkeypatch.setattr(
         acp_cli,
         "bootstrap_runtime",
-        lambda **_kwargs: RuntimeBootstrap(loaded=LoadedSettings(settings=Settings.from_env(), provenance={})),
+        lambda *, configure_stdio: RuntimeBootstrap(loaded=load_settings()),
     )
 
     loaded = acp_cli._prepare_runtime()
@@ -186,11 +185,8 @@ async def test_run_command_wires_buddy_callback_and_approval_timeout(
     async def _run_agent(server: _Server) -> None:
         captured["server"] = server
 
-    monkeypatch.setattr(
-        acp_cli,
-        "_prepare_runtime",
-        lambda _process_cwd=None: load_settings(),
-    )
+    loaded = load_settings()
+    monkeypatch.setattr(acp_cli, "_prepare_runtime", lambda: loaded)
     monkeypatch.setattr(acp_cli, "AgentProfileRegistry", _Registry)
     monkeypatch.setattr(acp_cli, "ModelProfileRegistry", _Registry)
     monkeypatch.setattr(acp_cli, "AcpSessionManager", _Manager)

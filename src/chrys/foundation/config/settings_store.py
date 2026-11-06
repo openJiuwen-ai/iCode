@@ -3,7 +3,7 @@
 """The one place settings are assembled from their sources.
 
 ``Settings`` is a plain value object; this module is what turns the layered
-sources into one: the user document, the dotenv files beside it, the process
+sources into one: the user document, the process
 environment as it stood before bootstrap, the project trust domain under the
 caller's ``project_root``, and the pins a frontend passes in.
 
@@ -35,17 +35,24 @@ from typing import Any, Final
 
 from chrys.foundation.config.coercion import Coerced, CoerceReason, CoerceStatus, invalid
 from chrys.foundation.config.context import EvalContext
-from chrys.foundation.config.env_file import config_env_path
-from chrys.foundation.config.env_layers import (
-    POINTER_ENV_NAMES,
-    canonical_env_name,
-    process_env_snapshot,
-    read_dotenv_layer,
+from chrys.foundation.config.errors import MODEL_ID_EXPECTED, ConfigValueError
+from chrys.foundation.config.process_env import process_env_snapshot
+from chrys.foundation.config.runtime_pointer import (
+    MODEL_POINTER_ENV,
+    MODEL_POINTER_KEY,
+    ModelFileChange,
+    SessionDefaultModel,
+    check_model_selection_revision,
+    external_model_edit,
+    get_model_pointer,
+    model_selection_revision,
+    remember_file_model,
+    session_model_decision,
 )
-from chrys.foundation.config.runtime_pointer import get_model_pointer
 from chrys.foundation.config.settings import DEFAULT_MAX_TRANSIENT_RETRIES, Settings
 from chrys.foundation.config.spec import (
     FILE_SOURCES,
+    Apply,
     InvalidPolicy,
     Kind,
     ProjectMerge,
@@ -58,10 +65,11 @@ from chrys.foundation.config.spec import (
 from chrys.foundation.config.user_settings import apply_settings_patch, flatten_user_doc, user_settings_path
 from chrys.foundation.config.yaml_store import (
     LOCK_TIMEOUT_SECONDS,
-    read_yaml_doc,
     read_yaml_doc_readonly,
+    read_yaml_document,
     update_yaml_doc,
 )
+from chrys.foundation.i18n import DisplayPath, MessageRef
 from chrys.foundation.platform.runtime_paths import same_path
 
 logger = logging.getLogger(__name__)
@@ -71,7 +79,13 @@ DEFAULT_EVAL_CONTEXT = EvalContext(frontend_default_max_transient_retries=DEFAUL
 
 _FRONTEND_DEFAULT_FIELD = "frontend_default_max_transient_retries"
 
+
 _EMPTY_MAP: Final[Mapping[str, Any]] = MappingProxyType({})
+
+_LIVE_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
+    {entry.key: name for name, entry in specs_by_field(Settings).items() if entry.apply is Apply.LIVE}
+)
+"""Dotted key → ``Settings`` field for the tier a frontend puts in force itself, as a live choice."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +168,23 @@ class LoadedSettings:
     dormant_project_sources: tuple[DormantProjectSource, ...] = ()
     """Project hooks and skills discovered while their setting is off, reported the same way."""
 
+    file_values: Mapping[str, Any] = field(default_factory=dict)
+    """Typed values requested on disk, keyed by field name for manual reload reporting."""
+    file_model: str = ""
+    document_error: MessageRef | None = None
+    model_edit: ModelFileChange | None = None
+    manual_model_revision: int | None = None
+    session_scoped_model: bool = False
+    """This load's model decision belongs to its session: installing it records it there, not in the pointer."""
+    session_default_model: SessionDefaultModel | None = None
+    """The default this session settled on, which outranks the process pointer on every load of the session."""
+    confirmed_overrides: Mapping[str, int] = field(default_factory=dict)
+    """Live choices known to be on disk before this load read the files (field name → override version).
+
+    Set only on a manual reload's candidate. These are the choices the load may
+    have overtaken: see :meth:`SettingsHandle.confirmed_overrides`.
+    """
+
     def overlay(self, layer: Source, **values: Any) -> LoadedSettings:
         """Return a copy carrying *values*, credited to *layer*.
 
@@ -212,6 +243,8 @@ class PreparedSettings:
     """The ``Source.SESSION`` values ``effective`` carries over ``base``: the session's own choices."""
     runtime_revision: int = 0
     """Which live choices ``effective`` was composed with (``SettingsHandle``'s count of them)."""
+    released: Mapping[str, int] = field(default_factory=dict)
+    """Live choices ``effective`` leaves out because the file moved past them (field name → override version)."""
 
 
 class SettingsHandle:
@@ -240,13 +273,15 @@ class SettingsHandle:
     session is a cell where one session's pin becomes another's.
     """
 
-    __slots__ = ("_base", "_effective", "_runtime", "_runtime_revision", "_session")
+    __slots__ = ("_base", "_confirmed", "_effective", "_runtime", "_runtime_revision", "_runtime_versions", "_session")
 
     def __init__(self, loaded: LoadedSettings) -> None:
         self._base = loaded
         self._session: dict[str, Any] = {}
         self._runtime: dict[str, Any] = {}
         self._runtime_revision = 0
+        self._runtime_versions: dict[str, int] = {}
+        self._confirmed: dict[str, int] = {}
         self._effective = loaded
 
     @property
@@ -289,10 +324,8 @@ class SettingsHandle:
         would not even follow it back: Textual keeps showing the theme that was
         chosen, so the settings would simply stop describing the screen.
 
-        The window where that is not merely a misattribution is real, because
-        ``persist_theme`` and its siblings log and swallow their failures: when
-        the write to disk did not land, this overlay is the only record that the
-        choice was ever made.
+        A failed save is reported to the user. Until the next launch this
+        overlay still describes the choice the screen is showing.
         """
         self.install_prepared(self.prepare(loaded))
 
@@ -303,11 +336,13 @@ class SettingsHandle:
         its commit installs it.
         """
         values = dict(self._session if session is None else session)
+        released = self._overtaken_by(loaded)
         return PreparedSettings(
             base=loaded,
-            effective=self._compose(loaded, values),
+            effective=self._compose(loaded, values, without=released),
             session=values,
             runtime_revision=self._runtime_revision,
+            released=released,
         )
 
     def install_prepared(self, prepared: PreparedSettings) -> None:
@@ -317,10 +352,63 @@ class SettingsHandle:
         lost when the rebuild commits: the effective value is composed again
         with it, from values that were checked when they were chosen. Otherwise
         nothing is recomputed — a commit installs what was prepared.
+
+        The live choices the file moved past end here, with the load that shows
+        it, unless the user chose again since the file was read.
         """
+        if prepared.base.session_scoped_model:
+            base = prepared.base
+            origin = base.source_for(MODEL_POINTER_KEY)
+            # A caller's pin decided this load instead, and says nothing about the default.
+            settled = (
+                base.session_default_model
+                if origin.layer is Source.SESSION
+                else SessionDefaultModel(base.settings.model_profile, origin, model_selection_revision())
+            )
+            prepared = replace(
+                prepared,
+                base=replace(
+                    base,
+                    model_edit=None,
+                    manual_model_revision=None,
+                    session_scoped_model=False,
+                    session_default_model=settled,
+                ),
+                effective=replace(
+                    prepared.effective,
+                    model_edit=None,
+                    manual_model_revision=None,
+                    session_scoped_model=False,
+                    session_default_model=settled,
+                ),
+            )
+        elif prepared.base.manual_model_revision is not None:
+            if prepared.base.model_edit is None:
+                check_model_selection_revision(prepared.base.manual_model_revision)
+            else:
+                prepared.base.model_edit.commit()
+            prepared = replace(
+                prepared,
+                base=replace(prepared.base, model_edit=None, manual_model_revision=None),
+                effective=replace(prepared.effective, model_edit=None, manual_model_revision=None),
+            )
+        if prepared.base.confirmed_overrides:
+            prepared = replace(
+                prepared,
+                base=replace(prepared.base, confirmed_overrides={}),
+                effective=replace(prepared.effective, confirmed_overrides={}),
+            )
+        composed_current = prepared.runtime_revision == self._runtime_revision
         self._base = prepared.base
         self._session = dict(prepared.session)
-        if prepared.runtime_revision == self._runtime_revision:
+        ended = [name for name, version in prepared.released.items() if self._runtime_versions.get(name) == version]
+        for name in ended:
+            del self._runtime[name], self._runtime_versions[name]
+            self._confirmed.pop(name, None)
+        if ended:
+            # A rebuild prepared before this point composed these choices in.
+            self._runtime_revision += 1
+        if composed_current:
             self._effective = prepared.effective
         else:
             self._reapply()
@@ -334,18 +422,71 @@ class SettingsHandle:
         """
         self._runtime.update(values)
         self._runtime_revision += 1
+        for name in values:
+            self._runtime_versions[name] = self._runtime_revision
+            self._confirmed.pop(name, None)
         self._reapply()
 
-    def persist_approval_default(self, mode: str, *, persist: Callable[[str], None]) -> str:
+    def confirm_written(self, written: Mapping[str, Any]) -> None:
+        """Note which live choices reached the file: *written* maps dotted keys to the values stored.
+
+        Checked key by key against the choice in force, so a write that a newer
+        choice has overtaken confirms nothing, and a batch can confirm part of
+        what it carried. Only the LIVE tier counts: other overrides describe a
+        launch default rather than the screen, and no reload lets go of them.
+        """
+        for key, value in written.items():
+            name = _LIVE_FIELDS.get(key)
+            if name in self._runtime and self._runtime[name] == value:
+                self._confirmed[name] = self._runtime_versions[name]
+
+    def confirmed_overrides(self) -> dict[str, int]:
+        """The live choices known to be on disk now (field name → override version).
+
+        Taken before a manual reload reads the files. A choice is released only
+        when the file then says something else, and only if it is still the
+        same choice when the load is prepared and again when it is installed.
+        """
+        return dict(self._confirmed)
+
+    def persist_approval_default(self, mode: str, *, persist: Callable[[str], Exception | None]) -> str:
         """Persist a global choice and mirror its safe launch default in the runtime overlay."""
-        persist(mode)
+        failure = persist(mode)
+        if failure is not None:
+            raise failure
         default = "auto" if mode == "bypass" else mode
         self.override(default_approval_mode=default)
         return default
 
-    def _compose(self, base: LoadedSettings, session: Mapping[str, Any]) -> LoadedSettings:
+    def _overtaken_by(self, loaded: LoadedSettings) -> dict[str, int]:
+        """The confirmed choices *loaded* moved past: a hand edit or removal, and not a value it refused.
+
+        A file that still holds the choice releases nothing, so a reload with no
+        edit leaves the overlay and every value it decides exactly as they were.
+        A value refused in the user's file keeps the choice in force: the warning
+        names the bad edit, and the screen has no better value to follow. Another
+        layer's refusal (a project may not set most of these keys) says nothing
+        about that edit.
+        """
+        rejected = {
+            _LIVE_FIELDS.get(warning.key)
+            for warning in loaded.warnings
+            if warning.rejected and warning.origin.layer is Source.USER
+        }
+        return {
+            name: version
+            for name, version in loaded.confirmed_overrides.items()
+            if self._runtime_versions.get(name) == version
+            and name not in rejected
+            and (name not in loaded.file_values or loaded.file_values[name] != self._runtime[name])
+        }
+
+    def _compose(
+        self, base: LoadedSettings, session: Mapping[str, Any], *, without: Mapping[str, Any] = _EMPTY_MAP
+    ) -> LoadedSettings:
         effective = base.overlay(Source.SESSION, **session) if session else base
-        return effective.overlay(Source.RUNTIME, **self._runtime) if self._runtime else effective
+        runtime = {name: value for name, value in self._runtime.items() if name not in without}
+        return effective.overlay(Source.RUNTIME, **runtime) if runtime else effective
 
     def _reapply(self) -> None:
         """Rebuild the effective value: the load, the session's own choices, then live choices on top.
@@ -362,6 +503,9 @@ def load_settings(
     project_root: Path | None = None,
     eval_context: EvalContext = DEFAULT_EVAL_CONTEXT,
     env: Mapping[str, str] | None = None,
+    manual_reload: bool = False,
+    session_scoped_model: bool = False,
+    session_default_model: SessionDefaultModel | None = None,
     **pins: Any,
 ) -> LoadedSettings:
     """Assemble settings from every source, resolving each key downwards.
@@ -378,6 +522,12 @@ def load_settings(
             it afterwards would arrive after the verdicts it informs.
         env: Environment to read instead of ``os.environ``. Tests inject here;
             production passes nothing.
+        manual_reload: Read the files strictly and judge an external model edit.
+        session_scoped_model: With ``manual_reload``, decide the default model
+            for this session from the launch and the file, without reading or
+            racing the process pointer.
+        session_default_model: What this session settled on earlier; it outranks
+            the process pointer. A pin in *pins* outranks it in turn.
         **pins: Explicit per-caller values that outrank every source, e.g. a
             session's restored model profile or a frontend's own default.
     """
@@ -412,7 +562,8 @@ def load_settings(
     # layers off along with the real environment — a test passing ``env={}``
     # must not read the developer's own ``~/.chrys`` *or* the project files:
     # hermetic means hermetic, whatever root was passed alongside.
-    file_layers = _read_file_layers(specs, project_root) if env is None else None
+    revision = model_selection_revision() if manual_reload else None
+    file_layers = _read_file_layers(specs, project_root, strict=manual_reload) if env is None else None
     # Phase one: the project trust domain is audited completely before any
     # winner is chosen, so a project value a higher layer shadows still gets
     # its policy verdict and its warning.
@@ -451,9 +602,50 @@ def load_settings(
     # an unknown name falls out of ``Settings(**values)`` as a ``TypeError``.
     values.update({name: value for name, value in pins.items() if name not in specs})
 
+    raw_model = file_layers.user_yaml.get(MODEL_POINTER_KEY) if file_layers else None
+    file_model = raw_model.strip() if isinstance(raw_model, str) else ""
+    edit = None
+    if session_default_model is not None and model_selection_revision() != session_default_model.revision:
+        session_default_model = None
+    if session_default_model is not None and "model_profile" not in pins:
+        values["model_profile"] = session_default_model.value
+        provenance[MODEL_POINTER_KEY] = session_default_model.origin
+    if manual_reload and file_layers and "model_profile" not in pins:
+        if MODEL_POINTER_KEY in file_layers.user_yaml and raw_model is not None and not isinstance(raw_model, str):
+            raise ConfigValueError(MODEL_ID_EXPECTED.bind(path=DisplayPath(str(file_layers.user_yaml_path))))
+        edit = (session_model_decision if session_scoped_model else external_model_edit)(
+            file_model,
+            file_origin=SettingOrigin(layer=Source.USER, path=file_layers.user_yaml_path)
+            if file_model
+            else SettingOrigin(layer=Source.DEFAULT),
+            exported=source.get(MODEL_POINTER_ENV, "").strip(),
+        )
+        if edit is not None:
+            values["model_profile"] = edit.value
+            provenance[MODEL_POINTER_KEY] = edit.origin
+    file_values: dict[str, Any] = {}
+    if manual_reload and file_layers is not None:
+        for name, entry in specs.items():
+            if not entry.persist:
+                continue
+            if name in project.values:
+                file_values[name] = project.values[name]
+            elif entry.key in file_layers.user_yaml:
+                verdict = _user_doc_verdict(entry, file_layers.user_yaml[entry.key])
+                if verdict.usable:
+                    file_values[name] = verdict.value
+    if revision is not None and not session_scoped_model:
+        check_model_selection_revision(revision)
     settings = Settings(**values)
     return LoadedSettings(
         settings=settings,
+        file_values=file_values,
+        file_model=file_model,
+        model_edit=edit,
+        manual_model_revision=revision,
+        session_scoped_model=session_scoped_model,
+        session_default_model=session_default_model,
+        document_error=file_layers.error if file_layers else None,
         provenance=provenance,
         warnings=tuple(warnings),
         sealed_keys=frozenset(sealed),
@@ -534,62 +726,35 @@ class _FileLayers:
     """Dotted key → raw value, from ``~/.chrys/settings.yaml``."""
 
     user_yaml_path: Path
-    user_env: Mapping[str, str]
-    """Canonically folded env name → value, from ``~/.chrys/.env``."""
-
-    user_env_path: Path
     unknown_keys: tuple[str, ...]
 
+    error: MessageRef | None = None
     project_yaml: Mapping[str, Any] = _EMPTY_MAP
-    """Dotted key → raw value, from ``<root>/.chrys/settings.yaml``.
-
-    The project layer's only file. A repository's ``.env`` is deliberately
-    not read: dotenv is the legacy channel on its way out, so its ``CHRYS_*``
-    lines stay inert rather than becoming a second project entrance.
-    """
+    """Dotted key → raw value, from ``<root>/.chrys/settings.yaml``."""
 
     project_yaml_unknown: tuple[str, ...] = ()
     project_yaml_path: Path | None = None
     """``None`` when no distinct project document applies."""
 
 
-def _read_file_layers(specs: Mapping[str, SettingSpec], project_root: Path | None) -> _FileLayers | None:
+def _read_file_layers(
+    specs: Mapping[str, SettingSpec], project_root: Path | None, *, strict: bool = False
+) -> _FileLayers | None:
     """Read the file-borne layers, or ``None`` before bootstrap froze the env.
 
     The snapshot gate is the hermeticity gate: a process that never called
     :func:`freeze_process_env` — every test that constructs settings directly —
     has not opted into this machine's home directory, so the files stay
     unread rather than leaking one developer's ``~/.chrys`` into assertions.
-    It is also what the dotenv layer resolves against: values interpolate over
-    the environment as it was at bootstrap, never the mutated live one.
     """
     snapshot = process_env_snapshot()
     if snapshot is None:
         return None
     yaml_path = user_settings_path()
-    # ``None`` covers both "no document yet" and "nothing parseable", and an
-    # unparseable document must load as empty rather than not at all: the
-    # environment layers above it still apply, and the panel still opens.
-    try:
-        doc = read_yaml_doc(yaml_path) or {}
-    except TimeoutError:
-        # Another process was inside the document's lock for the whole wait.
-        # The same rule as an unparseable file, for a stronger reason: this
-        # read is on the startup path of every entry point, so raising here
-        # means a second Chrys cannot start at all while the first is stalled
-        # mid-write. The values genuinely are not in force this launch, which
-        # is exactly what provenance will report, and the dotenv layer below
-        # needs no lock and still applies.
-        logger.warning("Settings document was busy; loading without it: %s", yaml_path, exc_info=True)
-        doc = {}
+    read = read_yaml_document(yaml_path, strict=strict)
+    doc = read.doc or {}
     known_keys = frozenset(entry.key for entry in specs.values())
     values, unknown = flatten_user_doc(doc, known_keys)
-    env_path = config_env_path()
-    layer = read_dotenv_layer(env_path, base=snapshot.values)
-    # Fold names the way the OS does, so on Windows a lowercase spelling in
-    # the file still answers for the uppercase alias. Later spellings win the
-    # collision, matching dotenv's own later-assignment-wins rule.
-    user_env = {canonical_env_name(env_name): value for env_name, value in layer.items()}
 
     project_yaml: Mapping[str, Any] = _EMPTY_MAP
     project_yaml_unknown: tuple[str, ...] = ()
@@ -604,14 +769,15 @@ def _read_file_layers(specs: Mapping[str, SettingSpec], project_root: Path | Non
             project_yaml_path = candidate
             # Same empty-on-unparseable rule as the user document, read without
             # lock, backup or repair — the file lives in someone's working tree.
-            project_doc = read_yaml_doc_readonly(project_yaml_path) or {}
+            gate = specs["project_config_enabled"]
+            trusted = _user_doc_verdict(gate, values.get(gate.key)).value is True
+            project_doc = read_yaml_doc_readonly(project_yaml_path, strict=strict and trusted) or {}
             project_yaml, project_yaml_unknown = flatten_user_doc(project_doc, known_keys)
 
     return _FileLayers(
+        error=read.error,
         user_yaml=values,
         user_yaml_path=yaml_path,
-        user_env=user_env,
-        user_env_path=env_path,
         unknown_keys=unknown,
         project_yaml=project_yaml,
         project_yaml_unknown=project_yaml_unknown,
@@ -847,7 +1013,7 @@ def _layers(
         # unregistered value is a real shell export and stays ``ENV``. Injected
         # test environments are hermetic, so the process-global registration
         # only speaks for the process environment.
-        if real_process and entry.env in POINTER_ENV_NAMES:
+        if real_process and entry.env == MODEL_POINTER_ENV:
             raw, registered = get_model_pointer()
             origin = registered if registered is not None else SettingOrigin(layer=Source.ENV)
         else:
@@ -862,11 +1028,6 @@ def _layers(
 
     if file_layers is None:
         return
-
-    if entry.env is not None and (folded := canonical_env_name(entry.env)) in file_layers.user_env:
-        coerced = (entry.env_coerce or entry.coerce)(file_layers.user_env[folded])
-        if coerced.status is not CoerceStatus.MISSING:
-            yield coerced, SettingOrigin(layer=Source.USER_ENV, path=file_layers.user_env_path)
 
     # The project layer contributes what phase one already judged, at the
     # verdict it judged it — a shadowed project value was audited there, so
@@ -1041,7 +1202,17 @@ def persist(
     if rejected:
         return PersistResult(written={}, rejected=rejected)
     if written or removals:
-        update_yaml_doc(path, lambda doc: apply_settings_patch(doc, written, removals), lock_timeout=lock_timeout)
+
+        def record_selection() -> None:
+            if MODEL_POINTER_KEY in written or MODEL_POINTER_KEY in removals:
+                remember_file_model(str(written.get(MODEL_POINTER_KEY, "")))
+
+        update_yaml_doc(
+            path,
+            lambda doc: apply_settings_patch(doc, written, removals),
+            lock_timeout=lock_timeout,
+            committed=record_selection,
+        )
     return PersistResult(written=written, rejected={})
 
 

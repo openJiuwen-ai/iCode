@@ -10,18 +10,20 @@ import logging
 import reprlib
 from collections.abc import Awaitable, Callable
 from functools import partial
+from pathlib import Path
 from types import FunctionType, MethodType
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from textual import __version__ as TEXTUAL_VERSION
 from textual import on, work
+from textual._arrange import DockArrangeResult
 from textual.actions import SkipAction
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.events import DescendantFocus, Key, Paste, Resize, ScreenResume, ScreenSuspend
-from textual.geometry import Offset, Size
+from textual.geometry import Offset, Region, Size
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.selection import Selection, SelectState
@@ -89,10 +91,12 @@ from chrys.app.tui.support.gc_freeze import (
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.util.liveness import composed_live
+from chrys.app.tui.util.placement import pin_fixed_placement
 from chrys.app.tui.widgets.btw import BtwPanel, ChatColumn
-from chrys.app.tui.widgets.chat.messages import ConversationStatusAction
+from chrys.app.tui.widgets.chat.messages import ConversationStatusAction, RetryNowClicked
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
+from chrys.app.tui.widgets.chat.quote_popup import QuoteSelectionPopup
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserInlineSubmitted
 from chrys.app.tui.widgets.chat.renderers.sleep import SleepSkipClicked
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentAbortClicked, SubAgentRetryClicked
@@ -126,6 +130,7 @@ from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
 from chrys.app.tui.widgets.workflow import text as workflow_text
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.app.tui.widgets.workflow.panel import WorkflowPanel
+from chrys.foundation.config.errors import RELOAD_SESSION_CHANGED, config_error_display
 from chrys.foundation.config.settings import (
     DEFAULT_LOCALE,
     DEFAULT_TRAJECTORY_VERIFY_COMMANDS,
@@ -150,8 +155,6 @@ from chrys.service.profiles.models.schema import UNCONFIGURED_MODEL_ID, is_model
 from chrys.service.session.sub_agent_transcript import load_persisted_sub_agent_transcript
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from textual.app import ComposeResult
     from textual.notifications import SeverityLevel
     from textual.theme import Theme
@@ -164,12 +167,14 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.sessions import WorkflowSessionPick
     from chrys.app.tui.screens.themes import ThemeEditorPanel
     from chrys.app.tui.screens.themes.picker import ThemesScreen
+    from chrys.app.tui.theme_loader import UserThemeScan
     from chrys.app.tui.themes.store import ThemeFileRevision, UserThemeStore
     from chrys.app.update_check import UpdateNotice
     from chrys.foundation.config.settings_store import PersistResult, SettingsHandle
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_runs import HookRunDetail, HookRunRecord
+    from chrys.foundation.text.draft_references import DraftReference
     from chrys.kernel.aixcoding.auth import AccountInfo
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -192,6 +197,10 @@ _SHORTCUTS_LOADING_TAB = msg(
     "tui.prompt_shortcuts.loading_tab",
     fallback="Prompt shortcuts are still being read; press Tab again in a moment.",
 )
+_QUOTE_INPUT_UNAVAILABLE = msg(
+    "tui.quote.input_unavailable",
+    fallback="The message input cannot take a quote right now.",
+)
 _SESSIONS_BINDING = msg("tui.binding.sessions", fallback="Sessions")
 _AGENTS_BINDING = msg("tui.binding.agents", fallback="Agents")
 _MODELS_BINDING = msg("tui.binding.models", fallback="Models")
@@ -200,6 +209,16 @@ _HELP_BINDING = msg("tui.binding.help", fallback="Help")
 _SIDEBAR_BINDING = msg("tui.binding.sidebar", fallback="Sidebar")
 _THEMES_BINDING = msg("tui.binding.themes", fallback="Themes")
 _SETTINGS_BINDING = msg("tui.binding.settings", fallback="Settings")
+_RELOAD_FINALIZE_FAILED = msg(
+    "tui.settings.reload_finalize_failed", fallback="Could not finish saving the Settings panel. Reload stopped."
+)
+_WORKFLOW_RELOAD_BUSY = msg(
+    "tui.settings.reload_workflow_busy", fallback="Wait for the workflow run to finish before reloading settings."
+)
+_THEME_EDITOR_RELOAD_BUSY = msg(
+    "tui.settings.reload_theme_editor_busy", fallback="Close the theme editor before reloading settings."
+)
+
 _SETTINGS_REJECTED = msg(
     "tui.settings.save_rejected",
     fallback="Could not save settings; the store rejected: {keys}.",
@@ -350,6 +369,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._gc_freeze_participants: tuple[GcFreezeParticipant, ...] = ()
         self.theme_editor: ThemeEditorPanel | None = None
         self._theme_editor_opening = False
+        self._manual_reload_themes: UserThemeScan | None = None
+        self._manual_reloads_running = 0
         self._shell_requested_after_editor = False
         # Seeded with the engine's launch mode: the startup ApprovalModeUpdated
         # sync then confirms what the header already shows, instead of
@@ -428,6 +449,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         )
         self._copy_actions = CopyActionController(view=self._view_adapter, debug=self._debug)
         self._chat_selection = ChatSelectionController(self)
+        # The text the pill offers to quote, snapshotted when its drag ended.
+        self._pending_quote_pick: str | None = None
+        # Where the drag is and the leaf it started on, recorded on every selection update.
+        self._quote_pointer: Offset | None = None
+        self._quote_source_leaf: Widget | None = None
+        # The pill itself: ``arrange`` reads it every frame, so no query.
+        self._quote_pill: QuoteSelectionPopup | None = None
         self._diff_controller = self._new_diff_controller()
         self._rollback_controller = self._new_rollback_controller()
         self._navigation = self._new_navigation_controller()
@@ -472,6 +500,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 refresh_notification_settings=self._refresh_notification_settings,
                 refresh_trajectory_verify_commands=self._refresh_trajectory_verify_commands,
                 settings_reloaded=self._on_settings_reloaded_for_panel,
+                follow_manual_reload=self._follow_manual_reload,
             ),
             runtime_info=self._runtime_info,
             live_diff=self._live_diff,
@@ -627,8 +656,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def _apply_tool_groups_expanded(self, value: bool) -> None:
         """Persist the live choice; existing groups deliberately keep their state."""
-        persist_tool_groups_expanded(value)
-        cast("ChrysApp", self.app).settings_handle.override(tool_groups_expanded=value)
+        handle = cast("ChrysApp", self.app).settings_handle
+        handle.override(tool_groups_expanded=value)
+        error = persist_tool_groups_expanded(value)
+        if error is None:
+            handle.confirm_written({"ui.chat.tool_groups_expanded": value})
+        else:
+            self._notify_settings_failure(error)
 
     def _apply_approval_defer_while_judging(self, value: bool) -> None:
         """Put the choice in force; requests already waiting keep the choice they arrived under."""
@@ -696,9 +730,19 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         return coordinator if isinstance(coordinator, SettingsCoordinator) else None
 
     def _on_settings_written(self, result: PersistResult) -> None:
+        cast("ChrysApp", self.app).settings_handle.confirm_written(result.written)
         coordinator = self._existing_settings_coordinator()
         if coordinator is not None:
             coordinator.on_written(result)
+
+    def _follow_manual_reload(self) -> None:
+        """Put what the files now say on screen. Showing a value is not choosing it: nothing is written or overlaid."""
+        app = cast("ChrysApp", self.app)
+        if self._manual_reload_themes is not None:
+            app.follow_user_themes(self._manual_reload_themes)
+        self._navigation.follow_language()
+        self._editor_mode = EditorMode.parse(app.settings_handle.settings.editor_keymap)
+        self._suggestions.refresh_prompt_shortcuts()
 
     def _on_settings_reloaded_for_panel(self) -> None:
         coordinator = self._existing_settings_coordinator()
@@ -706,7 +750,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             coordinator.on_reloaded()
 
     def _notify_settings_failure(self, exc: Exception) -> None:
-        self._view_adapter.notify(str(exc), title=SETTINGS_TITLE.bind(), severity="error", timeout=5)
+        self._view_adapter.notify(config_error_display(exc), title=SETTINGS_TITLE.bind(), severity="error", timeout=5)
         coordinator = self._existing_settings_coordinator()
         if coordinator is not None:
             coordinator.on_write_failed()
@@ -877,6 +921,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             configure_model=self._open_model_config,
             configure_agent=self._open_agent_config,
             configure_agent_tab=self._open_agent_config_tab,
+            reload_settings=self._start_manual_reload,
             show_runtime_details=self.action_runtime_details,
             show_usage=self._config_actions.open_usage,
             configure_settings=self._open_settings,
@@ -1143,6 +1188,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         return False
 
     def compose(self) -> ComposeResult:
+        # An overlay child placed first: its flow origin is the screen origin,
+        # so the pinned placement in ``arrange`` lands on exact screen cells.
+        self._quote_pill = QuoteSelectionPopup(locale_controller=self._locale_controller)
+        yield self._quote_pill
         yield AppHeader(locale_controller=self._locale_controller, show_mode_badge=True).data_bind(
             subtitle_parts=MainScreen.header_subtitle_parts,
             approval_mode=MainScreen.header_approval_mode,
@@ -1189,6 +1238,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         yield SuggestionList(locale_controller=self._locale_controller)
         input_bar = InputBar(locale_controller=self._locale_controller)
         input_bar.submit_router = self._route_submit
+        input_bar.draft_place = self._input_flow.place
         yield input_bar.data_bind(
             agent_running=MainScreen.agent_running_state,
             agent_loading=MainScreen.agent_loading_state,
@@ -1302,12 +1352,19 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         in a long chat. Drags whose both endpoints sit in the ChatPanel go
         through :class:`ChatSelectionController` instead; anything else
         (single-widget selections, non-chat surfaces) keeps stock behavior.
+
+        The quote offer at the drag's end needs its pointer and starting leaf
+        on both paths, so they are recorded before the routing decision.
         """
         if select_state is None or select_state.end is None:
             if select_state is None:
                 self._chat_selection.clear()
+                self._quote_pointer = None
+                self._quote_source_leaf = None
             super()._watch__select_state(select_state)
             return
+        self._quote_pointer = Offset(select_state.screen_offset.x, select_state.screen_offset.y)
+        self._quote_source_leaf = select_state.start.content_widget
         if not select_state.is_attached_to_dom() or select_state.is_single_content_widget:
             self._chat_selection.clear()
             super()._watch__select_state(select_state)
@@ -1337,11 +1394,108 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def clear_selection(self) -> None:
         """Clear the chat logical selection along with screen selection state."""
         self._chat_selection.clear()
+        self._hide_quote_popup()
         super().clear_selection()
 
     def schedule_chat_selection_reprojection(self, panel: ChatPanel) -> None:
         """Keep chat selection highlights aligned after the transcript scrolls."""
+        # The quote pill sits at the drag's end; a scroll moves that away.
+        self._hide_quote_popup()
         self._chat_selection.schedule_reproject(panel)
+
+    def _watch__selecting(self, selecting: bool) -> None:
+        """Offer to quote a transcript selection the moment its drag ends."""
+        super()._watch__selecting(selecting)
+        if selecting:
+            self._hide_quote_popup()
+            return
+        self._offer_quote_for_finished_selection()
+
+    # -- quoting the conversation ---------------------------------------------
+
+    def _quote_popup(self) -> QuoteSelectionPopup | None:
+        """The mounted quote pill, if this screen is still alive."""
+        pill = self._quote_pill
+        return pill if pill is not None and pill.is_mounted else None
+
+    def _hide_quote_popup(self) -> None:
+        # The pick stays: Textual clears the selection (and hides the pill) on
+        # the press's own mouse-up, which can be handled before its Requested.
+        popup = self._quote_popup()
+        if popup is not None:
+            popup.hide()
+
+    def _offer_quote_for_finished_selection(self) -> None:
+        """Show the pill for a finished drag over transcript text."""
+        pointer = self._quote_pointer
+        if pointer is None:
+            return
+        leaf = self._chat_selection.first_leaf or self._quote_source_leaf
+        panel = next((node for node in leaf.ancestors_with_self if isinstance(node, ChatPanel)), None) if leaf else None
+        if panel is None:
+            return
+        text = self.get_selected_text()
+        if text is None or not text.strip():
+            return
+        popup = self._quote_popup()
+        if popup is None:
+            return
+        # The selected words, not the blank lines a drag across messages picks up around them.
+        self._pending_quote_pick = text.strip()
+        # Inside the transcript it quotes from, never over its border or the sidebar.
+        popup.place_near(pointer, within=panel.content_region)
+
+    def on_quote_selection_popup_requested(self, event: QuoteSelectionPopup.Requested) -> None:
+        """Put the selection the pill offered into the draft as a ``[Quote #n]`` label."""
+        event.stop()
+        pick, self._pending_quote_pick = self._pending_quote_pick, None
+        self.clear_selection()
+        if pick is None:
+            return
+        if not self.query_one(InputBar).insert_reference("quote", pick):
+            self.notify(
+                render_str(self._language_localizer(), _QUOTE_INPUT_UNAVAILABLE.bind()),
+                severity="warning",
+                markup=False,
+            )
+
+    @on(InputBar.ReferenceOpened)
+    def _on_reference_opened(self, event: InputBar.ReferenceOpened) -> None:
+        """Show what a clicked draft label stands for."""
+        event.stop()
+        self._open_reference_preview(event.reference)
+
+    def _open_reference_preview(self, reference: DraftReference) -> None:
+        """Show what a draft label stands for, over whatever screen is on top (the editor too)."""
+        from chrys.app.tui.screens.dialogs.reference_preview import ReferencePreviewDialog
+
+        self.app.push_screen(
+            ReferencePreviewDialog(
+                reference,
+                cwd=Path(self._state.workspace.current_cwd),
+                locale_controller=self._locale_controller,
+            )
+        )
+
+    def arrange(self, size: Size, _optimal: bool = False) -> DockArrangeResult:
+        """Pin the quote pill to its target screen region on every arrange."""
+        result = super().arrange(size, _optimal)
+        self._place_quote_popup(result, size)
+        return result
+
+    def _place_quote_popup(self, result: DockArrangeResult, size: Size) -> None:
+        """Keep the quote pill on the cells its drag ended on, clamped onto the screen; nothing while it is hidden."""
+        popup = self._quote_popup()
+        target = popup.target_region if popup is not None else None
+        if popup is None or target is None:
+            return
+        region = Region(
+            min(max(0, target.x), max(0, size.width - target.width)),
+            min(max(0, target.y), max(0, size.height - target.height)),
+            target.width,
+            target.height,
+        )
+        pin_fixed_placement(result, popup, lambda _arranged: region)
 
     def _compositor_refresh(self) -> None:
         """Forward each repaint to the dialog above this screen once.
@@ -1734,29 +1888,43 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             mode=self._editor_mode,
             can_commit=input_bar.can_commit_editor_draft,
             current_draft_revision=lambda: input_bar.draft_revision,
+            draft=snapshot.draft,
+            paste_cwd=input_bar.paste_cwd,
+            clipboard_image_dir=input_bar.clipboard_image_dir,
+            open_reference=self._open_reference_preview,
         )
-        # What it returns is the draft it opened on (the snapshot holds it whole), edited.
-        self._view_adapter.push_screen(dialog, lambda result: self._on_editor_result(result, opened=snapshot))
+        # It edits the whole draft it opened on and returns it whole.
+        opened_mode = self._editor_mode
+        self._view_adapter.push_screen(
+            dialog, lambda result: self._on_editor_result(result, opened=snapshot, opened_mode=opened_mode)
+        )
 
-    def _on_editor_result(self, result: EditorDialogResult, *, opened: InputDraftSnapshot) -> None:
-        if result.mode is not self._editor_mode:
+    def _on_editor_result(
+        self, result: EditorDialogResult, *, opened: InputDraftSnapshot, opened_mode: EditorMode
+    ) -> None:
+        # Against the mode it opened in: a reload may have moved ours since, which is not the user's choice.
+        if result.mode is not opened_mode:
             self._editor_mode = result.mode
-            persist_editor_keymap(result.mode.value)
             # The same write-point contract as theme and locale: the shared
             # settings handle records the choice as a RUNTIME override, so
             # settings keep describing the screen even when the swallowed
-            # disk write above failed.
+            # disk write below fails.
             if self._on_editor_keymap_changed is not None:
                 self._on_editor_keymap_changed(result.mode.value)
+            error = persist_editor_keymap(result.mode.value)
+            handle = self._services.settings_handle
+            if error is not None:
+                self._notify_settings_failure(error)
+            elif handle is not None:
+                handle.confirm_written({"ui.editor.keymap": result.mode.value})
         if not result.accepted:
             return
         input_bar = self.query_one(InputBar)
-        # Unchanged, and nothing else written meanwhile, the draft stays as it is, fields
-        # included. Otherwise the editor's text replaces whatever is there now, still
-        # belonging to the shortcut the draft it opened on belonged to; the fields cannot
-        # follow an editor's edits.
-        if result.text != opened.text or input_bar.draft_revision != opened.revision:
-            input_bar.set_draft(ChatDraft(result.text, owner=opened.draft.owner))
+        # Unchanged, and nothing else written meanwhile, the draft stays as it is.
+        # Otherwise the edited draft, whole (labels, fields, owner), replaces whatever
+        # is there now, its cursor where the editor left it.
+        if result.draft != opened.draft or input_bar.draft_revision != opened.revision:
+            input_bar.set_draft(result.draft, cursor_location=result.cursor_location)
         input_bar.focus_input()
 
     # ------------------------------------------------------------------ #
@@ -1944,7 +2112,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return default_submit_route(request)
         draft = request.draft
         intent: SubmitRoute = "continue" if request.continue_turn else "message"
-        text = draft.text.strip()
+        text = draft.command_text()
         slash = parse_slash_draft(text)
         if request.runs_commands and slash is not None and slash.name == "btw":
             if not slash.arguments.strip():
@@ -2113,6 +2281,78 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def action_settings(self) -> None:
         """Open the Settings dialog (F10)."""
         self._open_settings()
+
+    def _start_manual_reload(self) -> None:
+        if self._services.execution().kind == "workflow":
+            self._warn_slash_command(_WORKFLOW_RELOAD_BUSY.bind(), title=SETTINGS_TITLE.bind())
+            return
+        if self.theme_editor is not None or self._theme_editor_opening:
+            # The editor owns the theme on screen and the file it is editing.
+            self._warn_slash_command(_THEME_EDITOR_RELOAD_BUSY.bind(), title=SETTINGS_TITLE.bind())
+            return
+        engine = self._services.engine_provider
+        # SessionReady has not populated the chat ID after a failed first build.
+        session_id = self.chat_session_id or (engine().session_id if engine is not None else None)
+        self._start_worker(partial(self._reload_settings_from_disk, session_id, self._services.session_generation()))
+
+    async def _reload_settings_from_disk(self, session_id: str | None, generation: int) -> None:
+        self._manual_reloads_running += 1
+        try:
+            await self._flush_and_publish_manual_reload(session_id, generation)
+        finally:
+            self._manual_reloads_running -= 1
+
+    async def _flush_and_publish_manual_reload(self, session_id: str | None, generation: int) -> None:
+        from chrys.app.tui.theme_loader import scan_user_themes
+        from chrys.foundation.events.types import SettingsReload
+
+        queue = self._settings_persistence()
+        failures = queue.failures
+        coordinator = self._existing_settings_coordinator()
+        finalize_failures = coordinator.finalize_failures if coordinator is not None else 0
+        while True:
+            writes = queue.save_generation
+            if not await queue.flush(notify_on_failure=True):
+                return
+            coordinator = self._existing_settings_coordinator()
+            if coordinator is not None:
+                error = await coordinator.wait_for_finalize(finalize_failures)
+                if error is not None:
+                    self._view_adapter.notify(error, title=_RELOAD_FINALIZE_FAILED.bind(), severity="error", timeout=8)
+                    return
+            if queue.failures != failures:
+                return
+            if writes == queue.save_generation:
+                break
+        if generation == self._services.session_generation() and (
+            not self.chat_session_id or session_id == self.chat_session_id
+        ):
+            projection: dict[str, str | bool] = {
+                **self._notification_service().settings.to_settings_fields(),
+                "trajectory_verify_commands": self._trajectory_verify_commands,
+                "theme": self.app.theme,
+                "locale": self._language_localizer().requested_locale,
+                "editor_keymap": self._editor_mode.value,
+            }
+            # Off the loop, and only put on screen if the whole reload succeeds.
+            themes = await asyncio.to_thread(scan_user_themes)
+            self._manual_reload_themes = themes
+            try:
+                await self._services.bus.publish(
+                    SettingsReload(
+                        manual=True,
+                        session_id=session_id or None,
+                        tui_projection=projection,
+                        available_themes=cast("ChrysApp", self.app).themes_after(themes),
+                    )
+                )
+            finally:
+                if self._manual_reload_themes is themes:
+                    self._manual_reload_themes = None
+            for warning in themes.warnings:
+                await self._services.bus.publish(warning)
+        else:
+            self._warn_slash_command(RELOAD_SESSION_CHANGED.bind(), title=SETTINGS_TITLE.bind())
 
     def action_runtime_details(self) -> None:
         """Open the active runtime details modal."""
@@ -2443,6 +2683,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         event.stop()
         await self._tool_actions.skip_sleep(event.call_id)
 
+    async def on_retry_now_clicked(self, event: RetryNowClicked) -> None:
+        """Bubbled from the Retry Now button of the main chat's retry notice."""
+        event.stop()
+        await self._tool_actions.skip_retry_wait(event.wait_id)
+
     async def on_ask_user_inline_submitted(self, event: AskUserInlineSubmitted) -> None:
         """Bubbled from :class:`AskUserToolCall` inline response controls."""
         event.stop()
@@ -2481,6 +2726,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 render_str(self._language_localizer(), THEME_PREVIEW_HINT.bind()), severity="warning", markup=False
             )
             self.theme_editor.editor.focus_first_swatch()
+            return
+        if self._manual_reloads_running:
+            # Its preview would own the theme just when the reload puts the file's on screen.
             return
         self._navigation.pick_theme()
 

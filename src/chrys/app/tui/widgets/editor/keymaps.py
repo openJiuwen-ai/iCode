@@ -127,6 +127,10 @@ class StandardKeymap:
         """Allow ordinary Textual paste handling."""
         return True
 
+    def accepts_text(self) -> bool:
+        """Standard mode always types into the document."""
+        return True
+
 
 class EmacsKeymap:
     """Emacs navigation, mark/region, and a modal-local kill ring."""
@@ -214,6 +218,10 @@ class EmacsKeymap:
     def prepare_delegated_paste(self) -> bool:
         """Allow paste after deactivating any Emacs region."""
         self.prepare_delegated_edit()
+        return True
+
+    def accepts_text(self) -> bool:
+        """Emacs mode always types into the document."""
         return True
 
     def _active_region(self, host: EditorCommandHost) -> EditorTextRange | None:

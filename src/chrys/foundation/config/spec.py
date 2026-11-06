@@ -47,20 +47,7 @@ class Source(Enum):
     """``~/.chrys/settings.yaml`` — the only layer the settings panel writes."""
 
     PROJECT = auto()
-    """``<root>/.chrys/settings.yaml`` — gated by the project trust domain.
-
-    The only project-level source, deliberately: dotenv is the legacy channel
-    on its way out, so a repository's ``.env`` never becomes a settings layer
-    — its ``CHRYS_*`` lines are inert.
-    """
-
-    USER_ENV = auto()
-    """``~/.chrys/.env`` — read-only: the legacy file, and where it is migrated from.
-
-    Nothing writes here any more. That is what stops a saved setting from
-    landing in a layer above the document the panel edits, where the panel
-    could no longer change it back.
-    """
+    """``<root>/.chrys/settings.yaml`` — gated by the project trust domain."""
 
     ENV = auto()
     """The real process environment, snapshotted before bootstrap."""
@@ -92,16 +79,8 @@ class Source(Enum):
     """
 
 
-FILE_SOURCES = frozenset({Source.USER, Source.PROJECT, Source.USER_ENV})
+FILE_SOURCES = frozenset({Source.USER, Source.PROJECT})
 """The layers backed by a file on disk, which must name it in their origin."""
-
-ENV_SOURCES = frozenset({Source.USER_ENV, Source.ENV})
-"""The layers where a value is spelled as an environment variable.
-
-Not an implementation detail: it decides what a message may call the thing the
-user has to go and edit. Someone who wrote ``CHRYS_THEME=x`` in a dotenv file
-has never seen the dotted key, whichever of these layers read it.
-"""
 
 
 @dataclass(frozen=True, slots=True)

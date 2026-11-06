@@ -19,7 +19,7 @@ from statistics import median
 from threading import Event
 from typing import NamedTuple, cast
 
-from chrys.foundation.tool_kinds import TOOL_KINDS
+from chrys.foundation.tool_kinds import TOOL_KINDS, is_extension_kind
 from chrys.foundation.trajectory.sequences import SequenceRange
 from chrys.service.analytics._context_evidence import _RevisionResolution
 from chrys.service.analytics._facts import (
@@ -77,7 +77,8 @@ def _tool_insights(actions: tuple[ActionOperation, ...], turns: list[TurnAnalysi
     grouped: dict[tuple[str, str | None], list[ActionOperation]] = defaultdict(list)
     unclassified = 0
     for action in actions:
-        tool_kind = action.tool_kind if action.tool_kind in TOOL_KINDS else "unclassified"
+        kind = action.tool_kind
+        tool_kind = kind if kind is not None and (kind in TOOL_KINDS or is_extension_kind(kind)) else "unclassified"
         if tool_kind == "unclassified":
             unclassified += 1
         grouped[(tool_kind, action.tool_name)].append(action)

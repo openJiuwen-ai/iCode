@@ -436,7 +436,7 @@ async def test_agent_and_retry_chrome_render_at_mount_locale(
         user_copy_button = user.query_one(MessageCopyButton)
         assert user_copy_button.render().plain == button_text
         assert user_copy_button.tooltip == user_tooltip
-        assert retry.render().plain == retry_text
+        assert retry.query_one(".status-body", Static).render().plain == retry_text
         assert error._render_text().plain == error_text
 
 
@@ -707,7 +707,7 @@ async def test_chrys_conversation_status_rails_keep_semantic_colors() -> None:
             assert border_color.g == pytest.approx(expected_color.g, abs=1)
             assert border_color.b == pytest.approx(expected_color.b, abs=1)
             assert border_color.a == 0.8
-            body = widget if isinstance(widget, RetryMessage) else widget.query_one(".status-body", Static)
+            body = widget.query_one(".status-body", Static)
             assert body.styles.color == expected_color
 
 

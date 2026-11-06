@@ -24,7 +24,7 @@ from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCall
 from chrys.foundation.hosted_tools import HostedToolFamily
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
-from chrys.foundation.tool_kinds import KIND_MCP, KIND_SUB_AGENT
+from chrys.foundation.tool_kinds import KIND_MCP, KIND_SUB_AGENT, is_extension_kind
 from chrys.foundation.tool_result_metadata import TOOL_FAILURE_TEXT_SYNTHESIZED_METADATA_KEY
 
 # Registry maps tool names to widget factories that follow the ToolCall protocol.
@@ -66,7 +66,8 @@ _HOSTED_TITLE_BY_FAMILY: dict[str, MessageDef] = {
 }
 
 # Kinds whose tool names are foreign- or user-chosen (MCP server tools,
-# sub-agent profiles): the chrys-owned name registry must not resolve them —
+# sub-agent profiles, and every extension's ``extension.<id>``): the
+# chrys-owned name registry must not resolve them —
 # a sub-agent or MCP tool legitimately named e.g. "bash" is not our shell
 # tool. KIND_SHELL stays name-first: its names are chrys-stamped and the kind
 # is deliberately split across renderers (execute vs. list_workspace_dirs).
@@ -158,7 +159,8 @@ def create_tool_widget(
     if provider_hosted:
         cls = _HOSTED_FAMILY_REGISTRY.get(hosted_family) or HostedToolCall
     else:
-        named = _REGISTRY.get(tool_name) if tool_kind not in _NAME_OPAQUE_KINDS else None
+        name_opaque = tool_kind in _NAME_OPAQUE_KINDS or is_extension_kind(tool_kind)
+        named = _REGISTRY.get(tool_name) if not name_opaque else None
         cls = named or _KIND_REGISTRY.get(tool_kind) or ToolCall
     widget = cls(call_id, tool_name, args_summary, args=args)
     if isinstance(widget, BaseToolCard):

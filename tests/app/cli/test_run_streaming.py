@@ -28,8 +28,8 @@ from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.session_host import ChrysSessionHost
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.llm.mock import MockChatClient, MockResponse
-from chrys.service.tools.registry import ToolRegistry
 from tests.orchestration.workflows._hosting import make_host
+from tests.support.tool_packs import install_tools
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 _DURATION = re.compile(r"\b\d+\.\ds\b")
@@ -53,10 +53,6 @@ def _real_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, client: MockChat
     ) -> MockChatClient:
         client._on_intermediate_text = on_intermediate_text
         return client
-
-    def load_builtins(self: ToolRegistry, _categories: list[str], *_args: object, **_kwargs: object) -> list[Any]:
-        self.register(tool)
-        return [tool]
 
     def build(
         *,
@@ -84,9 +80,7 @@ def _real_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, client: MockChat
     monkeypatch.setattr(
         builder_module, "create_client", create_autospec(builder_module.create_client, side_effect=create_client)
     )
-    monkeypatch.setattr(
-        ToolRegistry, "load_builtins", create_autospec(ToolRegistry.load_builtins, side_effect=load_builtins)
-    )
+    install_tools(monkeypatch, [tool])
     monkeypatch.setattr(run_cli, "ChrysSessionHost", create_autospec(ChrysSessionHost, side_effect=build))
     monkeypatch.setattr(
         headless, "prepare_runtime", create_autospec(headless.prepare_runtime, side_effect=prepare_runtime)

@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.33.0\n"
+"Project-Id-Version: Chrys 0.34.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -145,6 +145,12 @@ msgstr[0] ""
 "未附加的图像：\n"
 "{files}"
 
+#. English: Agent {agent} starts without extension {extension}: {reason}
+#. chrys-meta={"fingerprint":"535af465201f2170e30c3e7abab778107dbc0d7bd230f78578ae48ab4f8ae190","multiline":false,"placeholders":["agent","extension","reason"]}
+#: src/chrys/service/tools/packs.py
+msgid "builder.extension_unavailable"
+msgstr "智能体 {agent} 启动时未包含扩展 {extension}：{reason}"
+
 #. English: This model's provider runs web search, so the local {tools} tool(s)
 #. were disabled for this run. Provider-run search is not covered by {app}
 #. approval rules or network grants. Remove the hosted web tool declaration
@@ -237,11 +243,201 @@ msgstr "未配置智能体配置注册表，无法切换智能体配置"
 msgid "controls.profile_not_found"
 msgstr "未找到智能体配置“{profile_name}”"
 
-#. English: Saved; takes effect after restart: {keys}.
-#. chrys-meta={"fingerprint":"787d958260109fe1e8ed49b815a95e7e1d03aef008f14ab439ab505e6b88d078","multiline":false,"placeholders":["keys"]}
+#. English: Agent '{old}' is no longer available. Using '{new}'.
+#. chrys-meta={"fingerprint":"a130868598167662423f644ba7b154ce2f800a5048303c0d47a11589bd574f05","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_agent_fallback"
+msgstr "智能体“{old}”已不可用，已切换到“{new}”。"
+
+#. English: Agent '{old}' is now named '{new}'.
+#. chrys-meta={"fingerprint":"fab19454999f6de87bb54112c942a01b746a9499b1d193d05a1bcb06b1df1e03","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_agent_renamed"
+msgstr "智能体“{old}”已更名为“{new}”。"
+
+#. English: Applied: {keys}
+#. chrys-meta={"fingerprint":"00c0e6d433265c03461a938cccfa6c4ab5fb758f544edf9bd2f516d22cc244c3","multiline":false,"placeholders":["keys"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_applied"
+msgstr "已应用：{keys}"
+
+#. English: Reload when the current turn or workflow finishes.
+#. chrys-meta={"fingerprint":"b5cde9be8c1a377eff6259057789e5621309d24c8ca027f708a5318e8c45fb59","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_busy"
+msgstr "请等当前回合或工作流结束后再执行 /reload。"
+
+#. English: Reloaded settings, profiles, memory, skills, hooks, MCP servers,
+#. themes and prompt shortcuts.
+#. chrys-meta={"fingerprint":"399d57d2a45da329d41a50b2cca0f2bec9bf37be1aab7506e21831c953446ace","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_done"
+msgstr "已重新加载设置、智能体与模型配置、记忆、Skills、钩子、MCP 服务器、主题和快捷指令。"
+
+#. English: The previous turn was cancelled while settings were waiting to
+#. reload.
+#. chrys-meta={"fingerprint":"fa4ad16859f5cdf84af8d86c3c511cd79716871cb44ed134ae1e50378b30174d","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/lifecycle_permits.py
+msgid "controls.reload_drain_cancelled"
+msgstr "等待刷新设置时，上一回合已被取消。"
+
+#. English: Could not finish the previous turn before reloading: {detail}
+#. chrys-meta={"fingerprint":"18b388747f97de465eaa25b5b4e8dc263187c866e49437e4f5fa522477ce1d1e","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/state/lifecycle_permits.py
+msgid "controls.reload_drain_failed"
+msgstr "刷新设置前无法完成上一回合的收尾：{detail}"
+
+#. English: Reload stopped: the hooks the new project trust setting needs can't
+#. be used. {detail} Settings and hooks stay as they were, with project hooks
+#. still loaded.
+#. chrys-meta={"fingerprint":"6c046aaeb3be103e7340a9bf62d5ad06359c3a76b0a21d842348b24fe608fc35","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hook_trust_failed_loaded"
+msgstr ""
+"刷新已停止：新的项目信任设置所需的钩子无法使用。\n"
+"{detail}\n"
+"设置和钩子保持原样，项目钩子仍然加载。"
+
+#. English: Reload stopped: the hooks the new project trust setting needs can't
+#. be used. {detail} Settings and hooks stay as they were, with project hooks
+#. still not loaded.
+#. chrys-meta={"fingerprint":"43d62042627309f1d98fc56b9f0b0547c2b98cd1d05cf09a73bde3b73c1fc8ba","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hook_trust_failed_not_loaded"
+msgstr ""
+"刷新已停止：新的项目信任设置所需的钩子无法使用。\n"
+"{detail}\n"
+"设置和钩子保持原样，项目钩子仍未加载。"
+
+#. English: Hooks were not updated; the previous rules stay in effect. {detail}
+#. chrys-meta={"fingerprint":"aabb75f0f22eb539222b8d19f7751517d251f21e6dcb061bdb59e498af8eadf1","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hooks_kept"
+msgstr ""
+"钩子未更新，原有规则继续生效。\n"
+"{detail}"
+
+#. English: Some hooks could not be loaded; the rest are in effect. {detail}
+#. chrys-meta={"fingerprint":"64bc23e763bd56e147207a897fef68f65cb588294a216e9dc24bd6a84a8f1b09","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hooks_partly_loaded"
+msgstr ""
+"部分钩子无法加载，其余钩子已生效。\n"
+"{detail}"
+
+#. English: Kept the current model: '{model}' is unavailable. Check the model
+#. profile file and run /reload again.
+#. chrys-meta={"fingerprint":"ec978a9242efbf79d6a2e1329e25a1dee86930387f1237978292c020550c66d1","multiline":false,"placeholders":["model"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_kept_model"
+msgstr "已保留当前模型。“{model}”不可用，请检查模型配置文件后再次执行 /reload。"
+
+#. English: Wait for the agent to finish loading, then run /reload again.
+#. chrys-meta={"fingerprint":"941008e0342e2bec5449cd2d2abb28d6c598f5d7f813ab8918179cd5a24befd0","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_loading"
+msgstr "请等智能体加载完成后再执行 /reload。"
+
+#. English: MCP server '{server}': reconnect failed, using the existing
+#. connection. {detail}
+#. chrys-meta={"fingerprint":"71163ce56e31c2b24dbcdd0815bf854839b5ba1427839d6f3fde1acb33453f93","multiline":false,"placeholders":["detail","server"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_mcp_kept"
+msgstr "MCP 服务器“{server}”：重连失败，沿用旧连接。{detail}"
+
+#. English: MCP server '{server}' is unavailable: {detail}
+#. chrys-meta={"fingerprint":"ffb865a515a9b4e1930c2352e5faa55f1fa833f1db7fec067949a8d17db6fb38","multiline":false,"placeholders":["detail","server"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_mcp_unavailable"
+msgstr "MCP 服务器“{server}”不可用：{detail}"
+
+#. English: Agent '{agent}' references missing model '{missing}'. Using
+#. '{actual}'.
+#. chrys-meta={"fingerprint":"e1bfcff98768c2dda7ef80df1b1fb10e6032f17c3b1f06d1029ff4aeb1d828e5","multiline":false,"placeholders":["actual","agent","missing"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_missing_bound_model"
+msgstr "智能体“{agent}”绑定的模型“{missing}”不存在，当前使用“{actual}”。"
+
+#. English: Model '{old}' is no longer selectable. Using '{new}' as the
+#. default.
+#. chrys-meta={"fingerprint":"701eb361512b92594fbb1ec144c26e55a20013264b957af94654983cd174690b","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_model_fallback"
+msgstr "模型“{old}”已不可选，现使用“{new}”作为默认模型。"
+
+#. English: Applies next launch: {keys}
+#. chrys-meta={"fingerprint":"a6db90ffb672d9b69a9ad8335ba7a41453e9f22f520ea58ba0e3a8a5a42d72bc","multiline":false,"placeholders":["keys"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_next_launch"
+msgstr "下次启动生效：{keys}"
+
+#. English: No main agent is available. Kept the previous runtime.
+#. chrys-meta={"fingerprint":"c63552c6063925d9c518314ea12ede288120bd69228d04c8fa5ba44e8d89d547","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_no_agent"
+msgstr "没有可用的主智能体，已保留原会话配置。"
+
+#. English: The session changed before settings could reload.
+#. chrys-meta={"fingerprint":"0b3ed5e40f5ffb4cc2c04b791192bae29cb1408caf7136e80cff6bc310a77125","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/errors.py
+msgid "controls.reload_session_changed"
+msgstr "当前会话已切换，设置未刷新。"
+
+#. English: Session model '{model}' is no longer selectable. The session now
+#. uses its default model.
+#. chrys-meta={"fingerprint":"6f97a6d3b117226b0cb118a4092b77f5787fd78ff6b6846839e9bfe3343b4aa4","multiline":false,"placeholders":["model"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_session_model_removed"
+msgstr "会话模型“{model}”已不可选，当前会话改用默认模型。"
+
+#. English: Reloaded settings. No agent is active.
+#. chrys-meta={"fingerprint":"afd39507e1b644a357ce3bcd7b37db1792eba0725f68b442a3ffe1550bc5d52d","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_settings_only"
+msgstr "已重新加载设置。当前没有活动智能体。"
+
+#. English: Overridden by a higher-priority choice: {keys}
+#. chrys-meta={"fingerprint":"010d595a87bd72ab674477dbe3faf2590465f0fed7ee4c3c012c76256b2cecbf","multiline":false,"placeholders":["keys"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_shadowed"
+msgstr "被更高优先级的选择覆盖：{keys}"
+
+#. English: Settings cannot reload during shutdown.
+#. chrys-meta={"fingerprint":"501f900608f15c1d563663e5d6e7ece3b8e35051da461e072a7962f6e8aa9dc6","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_shutdown"
+msgstr "正在退出，无法刷新设置。"
+
+#. English: A newer agent load took precedence. Run /reload again.
+#. chrys-meta={"fingerprint":"7040f85acfcd2b955c4e48ea673c126992861e14f83be8310b14a60dd4610acf","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_superseded"
+msgstr "已有更新的智能体加载操作，请重新执行 /reload。"
+
+#. English: Agent '{parent}' references '{child}'. Its tool '{tool}' is
+#. unavailable.
+#. chrys-meta={"fingerprint":"626b21d01e2470451feb473f9a1e4c6e2b12ea03b21f6d73810e34dc93ece503","multiline":false,"placeholders":["child","parent","tool"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_unavailable_child"
+msgstr "智能体“{parent}”引用的子智能体“{child}”不可用，工具“{tool}”未加载。"
+
+#. English: Model profile is unavailable: {model}
+#. chrys-meta={"fingerprint":"309636cd0cc28606573698ecf2fb04f9a7c79b3457858e76c87ed475e04ec8c1","multiline":false,"placeholders":["model"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_unavailable_model"
+msgstr "模型配置不可用：{model}。"
+
+#. English: Theme '{theme}' is unavailable in this session.
+#. chrys-meta={"fingerprint":"2da05e094b4a84ac331419a2365c674a94e7bc7e55a3c94a9b0af4ff552c398a","multiline":false,"placeholders":["theme"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_unknown_theme"
+msgstr "此会话中没有可用的主题“{theme}”。"
+
+#. English: Restart to apply these settings: {keys}.
+#. chrys-meta={"fingerprint":"58a78efc37d84e54f532e99c0df0973b9fbbff5223608eb47574448dbc8fc04a","multiline":false,"placeholders":["keys"]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.settings_restart_required"
-msgstr "已保存；重启后生效：{keys}。"
+msgstr "以下设置需重启后生效：{keys}。"
 
 #. English: Cannot change the working directory: {path} does not exist.
 #. chrys-meta={"fingerprint":"a65947fbb2a1685469d4e7b418c5bd3b11d44b21ae07cfec374c9afcd4b5e9c8","multiline":false,"placeholders":["path"]}
@@ -676,6 +872,61 @@ msgstr "Hosted Tool Discovery"
 msgid "i18n.catalog_load_failed"
 msgstr "无法加载语言设置 {locale} 的翻译资源，改用英文。"
 
+#. English: Reloaded agent and model profile definitions.
+#. chrys-meta={"fingerprint":"e4cbc2b8a17979fc36c60f27fa9f453e43f5437624a290c4cf75a334eabc4462","multiline":false,"placeholders":[]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_changed"
+msgstr "已更新智能体和模型配置。"
+
+#. English: Cannot list {path}. The profile directories were not reloaded.
+#. chrys-meta={"fingerprint":"80df279c6cc31a695cde05f5013ea6ef19535804fabcdb3f3242151204beee1c","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_directory_failed"
+msgstr "无法列出 {path} 中的文件。智能体和模型配置均未重新加载。"
+
+#. English: Profile files already changed: {changes}
+#. chrys-meta={"fingerprint":"3a2f58e1358588eff3a1f8f5405f8318308b76854915c28ee09ff561f6640c03","multiline":false,"placeholders":["changes"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_disk_changes"
+msgstr "已改动的配置文件：{changes}"
+
+#. English: The profile file changed before it could be normalized: {path}
+#. chrys-meta={"fingerprint":"da22e1c5660a410005be3c74343f16398ea993bcc1415eaebdbddc664a350137","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_file_changed"
+msgstr "整理文件前检测到内容发生了变化：{path}"
+
+#. English: Could not register {path} under its profile name. Check for a
+#. conflicting filename.
+#. chrys-meta={"fingerprint":"b935617d374b4625150dbd57eddc085e07f248fde500d30e6440a46f8c8e5b82","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_file_conflict"
+msgstr "无法按智能体名称注册 {path}，请检查文件名是否冲突。"
+
+#. English: Skipped invalid or unreadable profile files: {paths}
+#. chrys-meta={"fingerprint":"7fb9500ed342974da5b9e7ef5726c2290f2ba7283a90e8af849b055217e88ef3","multiline":false,"placeholders":["paths"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_invalid"
+msgstr "已跳过无效或无法读取的配置文件：{paths}"
+
+#. English: Kept the last loaded version of these profile files: {paths}
+#. chrys-meta={"fingerprint":"99bc4cd5c9a2cfa476a18c3b3dcb229c876ee198cb13de749eb8edb36cbdb163","multiline":false,"placeholders":["paths"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_kept"
+msgstr "以下配置文件继续使用上次成功加载的版本：{paths}"
+
+#. English: Could not normalize {path}: {reason}
+#. chrys-meta={"fingerprint":"d6f93c1cce42a4b1beda38b793de8a31078a6ac3220f4c8dd3bfcc79de255fc3","multiline":false,"placeholders":["path","reason"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_normalize_failed"
+msgstr "无法整理 {path}：{reason}"
+
+#. English: Profiles changed while reloading. Run /reload again.
+#. chrys-meta={"fingerprint":"9b3edeceec8b2a992b02606c80921b2b0857ea5899816286d2b9497550917f87","multiline":false,"placeholders":[]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_stale"
+msgstr "刷新期间配置发生了变化，请再次执行 /reload。"
+
 #. English: Images cannot be added while the agent is responding.  Wait for the
 #. current response to finish, then send the image in a new message.
 #. chrys-meta={"fingerprint":"19fea43b9400b956c1585d69dd8a2dced2973043a74b02ffcb5751a5677e9458","multiline":true,"placeholders":[]}
@@ -991,11 +1242,60 @@ msgstr "{source}={raw} 低于下限，已改用 {limit}。"
 msgid "settings.context.warn_threshold_pct.label"
 msgstr "上下文警告阈值"
 
+#. English: {path}: expected a YAML mapping within the configuration size
+#. limits.
+#. chrys-meta={"fingerprint":"6becb58c44cc338ddc6d110b98ea5c919b88f3d348c888de4302a5e211cf4ca5","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_invalid_mapping"
+msgstr "{path}：需要符合配置大小限制的 YAML 映射。"
+
+#. English: {path}: unreadable or invalid project YAML document.
+#. chrys-meta={"fingerprint":"15a37c04d7af60e8771c143eea5df927b6a5194b6337a16ca1ec0f59b69a4a36","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_invalid_project"
+msgstr "{path}：项目 YAML 文件不可读或格式无效。"
+
+#. English: {path}: invalid YAML or text encoding.
+#. chrys-meta={"fingerprint":"3985e4208171c02cddda226d697dcdc8006c5ee3993618bfcc1d3ac9a84ca027","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_invalid_yaml"
+msgstr "{path}：YAML 格式或文本编码无效。"
+
+#. English: {path}: invalid YAML at line {line}, column {column}.
+#. chrys-meta={"fingerprint":"ea5aa4cd925a5b76fb2f316ce21aad1a057886ea4fdc51b90af80979a4d1b2a7","multiline":false,"placeholders":["column","line","path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_invalid_yaml_at"
+msgstr "{path}：第 {line} 行第 {column} 列的 YAML 语法有误。"
+
+#. English: Timed out waiting for the lock on {path}.
+#. chrys-meta={"fingerprint":"bbbbdb1b67a4f4c24fba1142471d35707cfea8a1d1f3bf4e80f8e73dd55baba9","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_lock_timeout"
+msgstr "等待 {path} 的文件锁超时。"
+
+#. English: Settings could not be read. Using the last available configuration.
+#. chrys-meta={"fingerprint":"b9656ce5ab8045d947ae3e1b786c4edc6f7c21f84688aeb98930a60506015c3a","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.document_read_failed"
+msgstr "无法读取设置，已使用最近可用的配置。"
+
+#. English: Cannot read {path}: {detail}
+#. chrys-meta={"fingerprint":"b0f94e8fe21c798d9e636b77b2ad61d13c8a455d4955260cc72a1c4aeb5f7582","multiline":false,"placeholders":["detail","path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_unreadable"
+msgstr "无法读取 {path}：{detail}"
+
 #. English: Save prompt history
 #. chrys-meta={"fingerprint":"13ccf737d1cfc849550262751b32576f593ac1e0b4a99192437ab3c519048ff8","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
 msgid "settings.history.prompt.enabled.label"
 msgstr "保存提示词历史"
+
+#. English: Invalid value for {key}.
+#. chrys-meta={"fingerprint":"a1007d478e6c5329cbd6fc4394ab6c10442000150231a91f7807df96fbc2c587","multiline":false,"placeholders":["key"]}
+#: src/chrys/foundation/config/errors.py
+msgid "settings.invalid_value_for_key"
+msgstr "{key} 的值无效。"
 
 #. English: Credential command refresh interval (seconds)
 #. chrys-meta={"fingerprint":"881e643e078c60d678dbf44dab477bf459f1be252a6c92313a23bf6339c0267e","multiline":false,"placeholders":[]}
@@ -1058,6 +1358,18 @@ msgstr "Buddy 模型"
 #: src/chrys/foundation/config/settings.py
 msgid "settings.model.role.session_title.label"
 msgstr "会话标题模型"
+
+#. English: {path}: model.profile.active must be a model profile name or ID.
+#. chrys-meta={"fingerprint":"5641b48ce33b7e491456d288b315090ebfe068682e246f326e83407ee21d46f3","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/errors.py
+msgid "settings.model_id_expected"
+msgstr "{path}：model.profile.active 必须是模型配置的名称或 ID。"
+
+#. English: Model selection changed during reload. Run /reload again.
+#. chrys-meta={"fingerprint":"34e930b26ef79652a605e959360680a2467f5193c83e1ccbaee67bc56b122809","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/runtime_pointer.py
+msgid "settings.model_selection_changed"
+msgstr "刷新期间模型选择已更改，请重新执行 /reload。"
 
 #. English: Mutation coordination
 #. chrys-meta={"fingerprint":"dbbb25f61a0d70961427295b459688511b4cf822c30611bd831abc0c625e51c4","multiline":false,"placeholders":[]}
@@ -1514,13 +1826,20 @@ msgstr "保留的最近工作区数"
 msgid "startup.invalid_no_proxy_env"
 msgstr "环境变量 {var} 的值对 httpx 无效，已忽略（{value}）。请移除或修正该环境变量。"
 
-#. English: Could not migrate notification preferences into {path} ({error}).
-#. This start uses the default notification settings; migration retries on the
-#. next start.
-#. chrys-meta={"fingerprint":"416f42d4fd4ff05ab4122281a848df3087283e8b0ff0fdb2cf0362e4c8304516","multiline":false,"placeholders":["error","path"]}
+#. English: Notification migration into {path} failed ({error}). It will retry
+#. on the next start. Until then, your previous notification preferences may
+#. not apply.
+#. chrys-meta={"fingerprint":"ca6afca981b6a5c78f8b576a6523ba825865b1cd376250665f16519d8a8f056d","multiline":false,"placeholders":["error","path"]}
 #: src/chrys/orchestration/startup.py
 msgid "startup.notifications_migration_failed"
-msgstr "无法把通知偏好迁移到 {path}（{error}）。本次启动使用默认通知设置；下次启动会重试迁移。"
+msgstr "将通知偏好迁移到 {path} 时出错（{error}）。下次启动时会重试。在此之前，原有的通知偏好可能不会生效。"
+
+#. English: Could not import previous notification preferences. The migration
+#. will retry on the next start.
+#. chrys-meta={"fingerprint":"bc0fe9d6acdac94d2216b0b6836d36e36f94a69fdcfb16095d267e6d698fb920","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/startup.py
+msgid "startup.notifications_migration_retry"
+msgstr "无法导入以往的通知偏好，下次启动时将重试。"
 
 #. English: Raw HTTP capture is on ({source}): request and response logs record
 #. API keys, prompts and model output unredacted. Turn it off when you are
@@ -1529,13 +1848,6 @@ msgstr "无法把通知偏好迁移到 {path}（{error}）。本次启动使用�
 #: src/chrys/orchestration/startup.py
 msgid "startup.raw_http_capture_on"
 msgstr "原始 HTTP 抓包已开启（{source}）：请求与响应日志会原样记录 API key、提示词和模型输出。用完请及时关闭。"
-
-#. English: Could not migrate settings into {path} ({error}). Your existing
-#. configuration still applies; migration retries on the next start.
-#. chrys-meta={"fingerprint":"c187a2768849d0804673afaac83fea8a95c21525f62a8a3c66500457b9291a5b","multiline":false,"placeholders":["error","path"]}
-#: src/chrys/orchestration/startup.py
-msgid "startup.settings_migration_failed"
-msgstr "无法把设置迁移到 {path}（{error}）。现有配置仍然生效；下次启动会重试迁移。"
 
 #. English: Continue
 #. chrys-meta={"fingerprint":"167e575361c5e16ba03f613cc29c5da6ba716b02f2d070a5e8a84325e46e1e26","multiline":false,"placeholders":[]}
@@ -2089,15 +2401,16 @@ msgid "tui.agent_config.confirm.delete.title"
 msgstr "删除智能体"
 
 #. English: Reset built-in agent "{display}" to system defaults?  Skills, MCP,
-#. and Memory settings will be preserved. All other changes will be discarded.
-#. chrys-meta={"fingerprint":"991add1024ebc3743242d0a6705b0328e8cbc548c8cff1808de41fee4d373b6b","multiline":true,"placeholders":["display"]}
+#. Memory, and Extensions settings will be preserved. All other changes will be
+#. discarded.
+#. chrys-meta={"fingerprint":"6cc6ce611c7dd4302f9fdf6eb7d3ae9b3aee218f348cd01e54f3bef411282546","multiline":true,"placeholders":["display"]}
 #: src/chrys/app/tui/screens/agents/config.py
 msgid "tui.agent_config.confirm.reset.message"
 msgstr ""
 "将内置智能体\n"
 "“{display}”重置为系统默认设置？\n"
 "\n"
-"Skills、MCP 和 Memory 设置将被保留，其他所有更改都将丢弃。"
+"Skills、MCP、Memory 和扩展设置将被保留，其他所有更改都将丢弃。"
 
 #. English: Reset Agent
 #. chrys-meta={"fingerprint":"d5d9572588e468a399375b67f2252810ea1e8a6aee0a70ba8db9f0a268341ad2","multiline":false,"placeholders":[]}
@@ -2738,14 +3051,14 @@ msgstr "验证错误"
 
 #. English: Ask User
 #. chrys-meta={"fingerprint":"4ba2eb2280d7d5bf7b10a85a98fcfcb2a2a534fd0445feb8a3c35d72d147beff","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.ask_user"
 msgstr "询问用户"
 
 #. English: Prompt the user with one or more questions for input or
 #. clarification
 #. chrys-meta={"fingerprint":"5de19be1cf87af37a87361bad1227fcb8b9fa2835cbac6c11e85312f89219d85","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.ask_user_description"
 msgstr "向用户提出一个或多个问题以获取输入或澄清信息"
 
@@ -2763,91 +3076,141 @@ msgstr "切换类别以启用或禁用"
 
 #. English: Document Converter (PDF, Office)
 #. chrys-meta={"fingerprint":"62cee70c4d6c2d823f4af3fccd88c95961f838db337e01832477ba609c60bd79","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.document_converter"
 msgstr "文档转换器（PDF、Office）"
 
 #. English: Convert PDF, DOCX, PPTX, XLSX, XLS to Markdown
 #. chrys-meta={"fingerprint":"dbdceeef3283c316ca290d9e26bcb67a34ee1bedf415dc976ae064b76aec4595","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.document_converter_description"
 msgstr "将 PDF、DOCX、PPTX、XLSX、XLS 转换为 Markdown"
 
+#. English: Installed more than once, so neither copy loads:
+#. chrys-meta={"fingerprint":"66a2f18dc8d049af42e4e2b536b82ce55655194dfc5c094c91c543bed2f01e83","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extension_conflict"
+msgstr "安装了不止一份，因此都不会加载："
+
+#. English: Not installed: agents start without it
+#. chrys-meta={"fingerprint":"e014ac40e7fda78471806018541fdc4958d49731d88f6a33c8e3bc06d0efcdaf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extension_not_installed"
+msgstr "未安装：智能体启动时不会包含它"
+
+#. English: Skipped {problem}
+#. chrys-meta={"fingerprint":"c3884802052e7c05ab9d2af02cc1cfb0633eff41b707652269a845ab8c7bc0a7","multiline":false,"placeholders":["problem"]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extension_skipped"
+msgstr "已跳过 {problem}"
+
+#. English: Extensions
+#. chrys-meta={"fingerprint":"0370d6fd45a81ff08705c04c324d7bab6b5c8cac84703cb57f52b74c81db3dbc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extensions"
+msgstr "扩展"
+
+#. English: Python extensions installed for {app}. They run inside {app} with
+#. your permissions: install only extensions you trust
+#. chrys-meta={"fingerprint":"5f3c7d99acb98c8d34937b36efe3bbb668375df6f499d3781a122dd1717aa464","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extensions_description"
+msgstr "为 {app} 安装的 Python 扩展。它们在 {app} 内以你的权限运行：只安装你信任的扩展"
+
+#. English: Installed extensions cannot be listed
+#. chrys-meta={"fingerprint":"b010db5a13ac51eb01c1fd075f3e4bf9abbb42d9b28247bf88d79e7bc4742417","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extensions_unreadable"
+msgstr "无法列出已安装的扩展"
+
 #. English: Filesystem Read
 #. chrys-meta={"fingerprint":"62281ba302842e23735f930c9baac021139d9cfbd2cf640d0b50872c1d27777c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_read"
 msgstr "读取文件系统"
 
 #. English: Read files from the filesystem
 #. chrys-meta={"fingerprint":"15cb63b8f3e0cf04816c0f24457556f468e472a6d10399c4b6fe2840378814e3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_read_description"
 msgstr "从文件系统读取文件"
 
 #. English: Filesystem Write
 #. chrys-meta={"fingerprint":"b1ee74a8744dd8c5182552fab47f19de7da0cd25e4d18a624a39f07f521e6e7b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_write"
 msgstr "写入文件系统"
 
 #. English: Create and edit files on the filesystem
 #. chrys-meta={"fingerprint":"df6847fb6e6264cc0e17684d54f05559eae56c369daa7e8660af9cf3002384a9","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_write_description"
 msgstr "在文件系统中创建和编辑文件"
 
+#. English: Looking for installed extensions…
+#. chrys-meta={"fingerprint":"2107859e04f76fd75d6116f838a1bff55926b7104bb26d5b447e47c30c995e46","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.finding_extensions"
+msgstr "正在查找已安装的扩展…"
+
+#. English: No extensions installed. The Python extensions guide (F8) shows how
+#. to write or install one
+#. chrys-meta={"fingerprint":"688ff08e10c5ad4ce99f7ae61c5a49a121dd818531eca8dea9a57c2e3f718e7f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.no_extensions"
+msgstr "尚未安装扩展。Python 扩展指南（F8）介绍如何编写或安装扩展"
+
 #. English: File search
 #. chrys-meta={"fingerprint":"0679fe2ae5bf35ce2a964e8ecb0990ff3acef5402722eae73cf86c98fb32cc8e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.search"
 msgstr "文件搜索"
 
 #. English: Search file contents and find files by pattern
 #. chrys-meta={"fingerprint":"10c97edeb712ad26c4597b8c9db95fb8d7f8a12ed51a4ab5e5ac9b83f8149979","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.search_description"
 msgstr "搜索文件内容并按模式查找文件"
 
 #. English: Shell
 #. chrys-meta={"fingerprint":"c88366863f55792de9cb53be96c7a9a4981bd9a8b27525585019202f8f4c9158","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.shell"
 msgstr "Shell"
 
 #. English: Execute shell commands in a subprocess
 #. chrys-meta={"fingerprint":"6b66f1fa51d3eff2c80bf48e291e1d66e250e01a71c468150862d555a47dafc8","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.shell_description"
 msgstr "在子进程中执行 Shell 命令"
 
 #. English: Todo List
 #. chrys-meta={"fingerprint":"542ce0ea3c6fcce0e77bc1f4279341d6d851b6f629309054b6aeb873cdc55a84","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.todo_list"
 msgstr "待办事项"
 
 #. English: Track multi-step work as a live task checklist
 #. chrys-meta={"fingerprint":"2155386149f0a03a0665a30d3413e5e556411a54c413d60bdd3d73821130b9e3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.todo_list_description"
 msgstr "以实时任务清单跟踪多步骤工作"
 
 #. English: Web fetch
 #. chrys-meta={"fingerprint":"f510d73aab1875c2580ca3559de19155f59ab9bc022acf52dfcb9a4e03c163af","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_fetch"
 msgstr "网页读取"
 
 #. English: Read a page's text by URL
 #. chrys-meta={"fingerprint":"043893ad4830c1ebfee425f78e0b0b01e8f6d4da2ade694c186a118f9abccdfa","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_fetch_description"
 msgstr "按 URL 读取页面文本"
 
 #. English: Web search
 #. chrys-meta={"fingerprint":"f986ea0da9e92ca438eededc408c5cfbc8f9d79120703eddd46a4874b6bdd8fa","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_search"
 msgstr "网络搜索"
 
@@ -2855,7 +3218,7 @@ msgstr "网络搜索"
 #. agent profile names other providers; queries are sent to that service and
 #. may carry details from your conversation, so mind your data and privacy
 #. chrys-meta={"fingerprint":"a3d539dd9c0cc494e68431323f28a245ea989791bd9a16477a1195c47d2bcea1","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_search_description"
 msgstr "在网上搜索链接和摘要。除非智能体配置文件指定了其他提供方，否则使用 Exa（exa.ai）；搜索词会发送给该服务，并可能带有对话中的内容，请注意数据与隐私安全"
 
@@ -3041,11 +3404,11 @@ msgstr "模型 ID"
 msgid "tui.agent_config.validation.acp.no_builtin_tools"
 msgstr "ACP 配置文件不能配置内置工具。"
 
-#. English: ACP profiles cannot configure custom tools.
-#. chrys-meta={"fingerprint":"32e36a9174f906ee23e944c7e649995973a2d70d4200ad9310a0614b029cf4a9","multiline":false,"placeholders":[]}
+#. English: ACP profiles cannot use extensions.
+#. chrys-meta={"fingerprint":"a8b0475610f3b1db610ca569b8bd7cb36066685004b74cb3c98e3d3ca9e5abb4","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/validation_messages.py
-msgid "tui.agent_config.validation.acp.no_custom_tools"
-msgstr "ACP 配置文件不能配置自定义工具。"
+msgid "tui.agent_config.validation.acp.no_extensions"
+msgstr "ACP 配置文件不能使用扩展。"
 
 #. English: ACP profiles cannot configure MCP servers.
 #. chrys-meta={"fingerprint":"f2c70b8f64a2e2b5346762e8d17c2ee4f38d803913d2e08913c6ddf413e98420","multiline":false,"placeholders":[]}
@@ -5041,12 +5404,30 @@ msgid "tui.chat.process.tool_calls"
 msgid_plural "tui.chat.process.tool_calls#plural"
 msgstr[0] "{count} 次工具调用："
 
+#. English: Retrying in {seconds}s ({attempt}/{max_attempts})
+#. chrys-meta={"fingerprint":"4f437e9b65b0047a997ca67f72183c057aa5255abd72b935f248bcee165085dd","multiline":false,"placeholders":["attempt","max_attempts","seconds"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.retry_countdown"
+msgstr "{seconds} 秒后重试（{attempt}/{max_attempts}）"
+
 #. English: {message} Retrying in {delay_seconds}s
 #. ({attempt}/{max_attempts})...
 #. chrys-meta={"fingerprint":"2a539b6b7df6647ca02c8adcddd628c1096c2c87869f07ce542cec434098d512","multiline":true,"placeholders":["attempt","delay_seconds","max_attempts","message"]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.retry_message"
 msgstr "{message} 正在重试，等待 {delay_seconds} 秒（{attempt}/{max_attempts}）..."
+
+#. English: Retry Now
+#. chrys-meta={"fingerprint":"4582af9e8d91cbe3d2fcc01807a59a4556726b4825b47d9962f05148e4ab1fc1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.retry_now"
+msgstr "立刻重试"
+
+#. English: Retrying ({attempt}/{max_attempts})...
+#. chrys-meta={"fingerprint":"8d0fadd9e4cd1e9648a527bec4a366eff113b393cf0c5bb7b2a22d85190e544f","multiline":false,"placeholders":["attempt","max_attempts"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.retry_started"
+msgstr "正在重试（{attempt}/{max_attempts}）..."
 
 #. English: Scroll to bottom {glyph}
 #. chrys-meta={"fingerprint":"1c1e350450ef0e2c953ccaf0f580650e998976b93fddf268032c8aea8cfbe4ef","multiline":false,"placeholders":["glyph"]}
@@ -6077,6 +6458,43 @@ msgstr "第 {turn_id} 轮"
 #: src/chrys/app/tui/screens/diff/screen.py
 msgid "tui.diff.title"
 msgstr "文件变更查看器"
+
+#. English: Image #{number}
+#. chrys-meta={"fingerprint":"3ccbb7b3b7d5a3d2972da8c90ec05727248326e41d0ee0adaccd7b067e9a725a","multiline":false,"placeholders":["number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.image"
+msgstr "图片 #{number}"
+
+#. English: Pasted text #{number}
+#. chrys-meta={"fingerprint":"a09065ee1a830889339c0b27110c0a8ecce8b44f5e8e258037287f065479fc18","multiline":false,"placeholders":["number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.paste"
+msgstr "粘贴文本 #{number}"
+
+#. English: Pasted text #{number} +{lines} lines
+#. chrys-meta={"fingerprint":"d913d6337a0b43e6e727300b8e1702b9aac018c9f51bf6dc609cdf26201683a5","multiline":false,"placeholders":["lines","number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.paste_lines"
+msgstr "粘贴文本 #{number} +{lines} 行"
+
+#. English: Quote #{number}
+#. chrys-meta={"fingerprint":"8131243910b631f03cc2962d1fc0f2234209e5b1b1752e072a2e635f6d1d2a01","multiline":false,"placeholders":["number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.quote"
+msgstr "引用 #{number}"
+
+#. English: Quote truncated: {original_tokens} tokens exceeds the {limit}-token
+#. limit.
+#. chrys-meta={"fingerprint":"0179da74259526111826747f4a471481d2a47fe5fc8c5f51bf533100cb4d936a","multiline":false,"placeholders":["limit","original_tokens"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.quote_truncated"
+msgstr "引用内容已截断：{original_tokens} 个词元超出 {limit} 个词元的限制。"
+
+#. English: Quote truncated
+#. chrys-meta={"fingerprint":"9adcd7f5619aa9dc45e7b13ecb488579a469299c4ab4f9008fb94fdfb7c0e103","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.title.quote_truncated"
+msgstr "引用内容已截断"
 
 #. English: Commit
 #. chrys-meta={"fingerprint":"a9ea9bc02cd01a400ac2e05c80ee665281710d028f24c44469b3f8bf2ea73c00","multiline":false,"placeholders":[]}
@@ -7350,6 +7768,13 @@ msgstr[0] "还有 {count} 处高亮的待填位置未填写。再按一次回车
 msgid "tui.input.queued"
 msgstr "已排队"
 
+#. English: A quote inside a !`command` would run as part of it. Move the quote
+#. out of the command to send.
+#. chrys-meta={"fingerprint":"01b58ef98922fc3e499f33c9443bb0251b357c47fe98f02a9f8ddfbc63f9524d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.quote_in_command"
+msgstr "!`命令` 里的引用会被当作命令的一部分执行。请把引用移到命令外面再发送。"
+
 #. English: Retry
 #. chrys-meta={"fingerprint":"8d1f1fcb3503341e5c6f3f3a1b3299129d2fb1258f711734492a20316c6158af","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
@@ -7374,6 +7799,12 @@ msgstr "发送"
 #. chrys-meta={"fingerprint":"5e6e692b341d8fec43f56581cd87beba2cb80e7f08ced823d0efb4c5f932f569","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
 msgid "tui.input.title.prompt_fields_pending"
+msgstr "未发送"
+
+#. English: Not sent
+#. chrys-meta={"fingerprint":"5e6e692b341d8fec43f56581cd87beba2cb80e7f08ced823d0efb4c5f932f569","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.title.quote_in_command"
 msgstr "未发送"
 
 #. English: Unknown /language locale: {locale}
@@ -7948,6 +8379,15 @@ msgstr "此命令不接受其他选项。"
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.options.supports_subcommands"
 msgstr "此命令支持子命令。"
+
+#. English: Read settings, agent profiles, model profiles, hooks, themes and
+#. prompt shortcuts from disk, reconnect MCP servers, then rebuild the current
+#. agent with its memory and skills. Run this command when the current turn or
+#. workflow has finished.
+#. chrys-meta={"fingerprint":"a0dfe8bbc2ba1ade5d6f707e924f0b4a006621d7b8717cbb6e5a9c37bf901a58","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.man.reload.body"
+msgstr "从磁盘读取设置、智能体和模型配置、钩子、主题以及快捷指令，重新连接 MCP 服务器，然后重新加载当前智能体的记忆和 Skills。请在当前回合或工作流结束后执行。"
 
 #. English: With a title argument, apply it directly as the custom session
 #. title. Without one (or with only whitespace), open the session title editor
@@ -9710,6 +10150,42 @@ msgstr "快捷指令还在读取中，请稍后再按一次 Enter。"
 msgid "tui.prompt_shortcuts.loading_tab"
 msgstr "快捷指令还在读取中，请稍后再按一次 Tab。"
 
+#. English: Quote
+#. chrys-meta={"fingerprint":"b56f5707a79d26529841e989a546164a27d878233381ef580e3fffa074064d97","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/quote_popup.py
+msgid "tui.quote.action"
+msgstr "引用"
+
+#. English: The message input cannot take a quote right now.
+#. chrys-meta={"fingerprint":"d18638da52c62272e849df046bafd5ad2e2ca44d608529bf3fcdd2a63ad7366b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.quote.input_unavailable"
+msgstr "输入框现在无法插入引用。"
+
+#. English: Loading image…
+#. chrys-meta={"fingerprint":"2e0e3cfa77e3b1575c836a2910774c9d8b5320bc55a79df3c0382e0e704759ca","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.loading"
+msgstr "正在加载图片…"
+
+#. English: The image file can no longer be read.
+#. chrys-meta={"fingerprint":"1665edb900fd0863fa3fae2d2eeae2d8bfcc146c11d4628dce49c607f723ac9a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.missing"
+msgstr "图片文件已无法读取。"
+
+#. English: Path: {path}
+#. chrys-meta={"fingerprint":"20faefd025f55bd564eb151a9897cc545779f2eb7b9da3fe0f9a283b2f51b5df","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.path"
+msgstr "路径：{path}"
+
+#. English: This image cannot be shown.
+#. chrys-meta={"fingerprint":"c66ef735462f45c1657eeeacbfb48476aabb23fa452d304be8b3716f513f34f6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.unreadable"
+msgstr "无法显示这张图片。"
+
 #. English: Retry not started
 #. chrys-meta={"fingerprint":"7db136937dd3eb95b5c20273a433b782ffdd84353028e636f4d66a547f509d8b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/event_handlers.py
@@ -10262,6 +10738,12 @@ msgstr "项目钩子"
 msgid "tui.runtime_details.section.sub_agent_tools"
 msgstr "子智能体工具"
 
+#. English: Unavailable extensions
+#. chrys-meta={"fingerprint":"da20c6c120ecb78cc05772af898747418966d2b18fad72c8c8f7d2de3361d700","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.section.unavailable_extensions"
+msgstr "不可用的扩展"
+
 #. English: Shortcuts
 #. chrys-meta={"fingerprint":"85a8e1c1cc90a21e40d54ae7f6a87925bb1028e151d567aa10f3b9c7c35005d2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
@@ -10772,12 +11254,6 @@ msgstr "逐项风险检查"
 #: src/chrys/app/tui/screens/settings/rows.py
 msgid "tui.settings.badge.dangerous"
 msgstr "⚠"
-
-#. English: .env
-#. chrys-meta={"fingerprint":"c630002d7846209302449747f54abe10c83970e2d0809f599cedfaaa1aceb2c4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/provenance.py
-msgid "tui.settings.badge.dotenv"
-msgstr ".env"
 
 #. English: env
 #. chrys-meta={"fingerprint":"9fe735277fb86d01895e548b4d397e022d6c481a28c521781be18cbc6f3fbde5","multiline":false,"placeholders":[]}
@@ -11333,12 +11809,6 @@ msgstr "到"
 msgid "tui.settings.provenance.cli"
 msgstr "本会话由命令行选项设定；保存的值在下次启动时生效。"
 
-#. English: Overridden by {path} ({variable}).
-#. chrys-meta={"fingerprint":"4ce961a584b9ab97bc87bd541c9fd7149fd7bbf641d82b3d97ba939b4edfcf41","multiline":false,"placeholders":["path","variable"]}
-#: src/chrys/app/tui/screens/settings/provenance.py
-msgid "tui.settings.provenance.dotenv"
-msgstr "被 {path}（{variable}）覆盖。"
-
 #. English: Set by environment variable {variable}.
 #. chrys-meta={"fingerprint":"331300911d84befd8907bb25c9656b755c987775e20105db34d9dc171b88cd0f","multiline":false,"placeholders":["variable"]}
 #: src/chrys/app/tui/screens/settings/provenance.py
@@ -11362,6 +11832,24 @@ msgstr "保存的值被拒绝，当前使用内置默认值。"
 #: src/chrys/app/tui/screens/settings/provenance.py
 msgid "tui.settings.provenance.session"
 msgstr "已为本会话固定；保存的值适用于新会话。"
+
+#. English: Could not finish saving the Settings panel. Reload stopped.
+#. chrys-meta={"fingerprint":"f9d2fd6a83efef08231b569e10f7ac5e98a97805cd8af43ccd8e7dfd644dea4b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.settings.reload_finalize_failed"
+msgstr "设置面板未能完成保存，本次刷新已停止。"
+
+#. English: Close the theme editor before reloading settings.
+#. chrys-meta={"fingerprint":"4e5b557d5df930f79f74141a517a8b734257cbf2f3a912c35d55d3216c78494a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.settings.reload_theme_editor_busy"
+msgstr "请先关闭主题编辑器，再重新加载设置。"
+
+#. English: Wait for the workflow run to finish before reloading settings.
+#. chrys-meta={"fingerprint":"f4455ec9d7f3f3d742e58508d5ba4cfc6f3fdc3bc7736a16c45262fdccde7f9e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.settings.reload_workflow_busy"
+msgstr "请等工作流运行结束后再刷新设置。"
 
 #. English: Could not save settings; the store rejected: {keys}.
 #. chrys-meta={"fingerprint":"16a74971b57de5711328da353dbee3a64d24fe1089f8b419d04f51f960848eac","multiline":false,"placeholders":["keys"]}
@@ -12008,6 +12496,13 @@ msgstr "待办"
 #: src/chrys/app/tui/widgets/sidebar/toc.py
 msgid "tui.sidebar.toc.empty"
 msgstr "你的对话将显示在这里"
+
+#. English: Reload settings, profiles, memory, skills, hooks, MCP servers,
+#. themes and prompt shortcuts
+#. chrys-meta={"fingerprint":"997389a23bb77d18bc898490f75dd781e2f91effe2bdd38f95566f833ac9ef9e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.slash.reload_description"
+msgstr "重新加载设置、智能体与模型配置、记忆、Skills、钩子、MCP 服务器、主题和快捷指令"
 
 #. English: Session {session_id} was not found.
 #. chrys-meta={"fingerprint":"a5c2002c8e98be1f6de66c9e7ceb5fd6595b9dcfc1595822cbd0bc7cdf8036c6","multiline":false,"placeholders":["session_id"]}
@@ -16721,6 +17216,9 @@ msgstr "提示已被钩子阻止。"
 #~ "\n"
 #~ "重试路径将仅重新发送原始提示中的文本。请改为在新消息中重新发送图像。"
 
+#~ msgid "builder.tool_pack_unavailable"
+#~ msgstr "智能体 {agent} 启动时未包含工具包 {pack}：{reason}"
+
 #~ msgid "cli.profiles.agents.empty"
 #~ msgstr "未找到代理配置。"
 
@@ -16787,6 +17285,33 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "settings.value_rejected"
 #~ msgstr "已忽略 {source}={raw}：{detail}。"
 
+#~ msgid "startup.settings_migration_failed"
+#~ msgstr "无法把设置迁移到 {path}（{error}）。现有配置仍然生效；下次启动会重试迁移。"
+
+#~ msgid "tui.agent_config.tools.custom_packs"
+#~ msgstr "自定义工具包"
+
+#~ msgid "tui.agent_config.tools.custom_packs_description"
+#~ msgstr "为 {app} 安装的 Python 工具包。它们在 {app} 内以你的权限运行：只安装你信任的工具包"
+
+#~ msgid "tui.agent_config.tools.finding_packs"
+#~ msgstr "正在查找已安装的工具包…"
+
+#~ msgid "tui.agent_config.tools.no_packs"
+#~ msgstr "尚未安装工具包。Python 工具包指南（F8）介绍如何编写或安装工具包"
+
+#~ msgid "tui.agent_config.tools.pack_conflict"
+#~ msgstr "安装了不止一份，因此都不会加载：{locations}"
+
+#~ msgid "tui.agent_config.tools.pack_not_installed"
+#~ msgstr "未安装：智能体启动时不会包含它"
+
+#~ msgid "tui.agent_config.tools.pack_skipped"
+#~ msgstr "已跳过 {problem}"
+
+#~ msgid "tui.agent_config.tools.packs_unreadable"
+#~ msgstr "无法列出已安装的工具包"
+
 #~ msgid "tui.agent_config.tools.sleep"
 #~ msgstr "等待"
 
@@ -16801,6 +17326,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.agent_config.tools.web_group"
 #~ msgstr "网页"
+
+#~ msgid "tui.agent_config.validation.acp.no_custom_tools"
+#~ msgstr "ACP 配置文件不能配置自定义工具。"
 
 #~ msgid "tui.app.open_visible_diagram"
 #~ msgstr "打开可见图表"
@@ -16950,6 +17478,9 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "tui.runtime_details.label.source"
 #~ msgstr "来源"
 
+#~ msgid "tui.runtime_details.section.unavailable_tool_packs"
+#~ msgstr "不可用的工具包"
+
 #~ msgid "tui.runtime_details.shortcut.agent"
 #~ msgstr "智能体 {agent}"
 
@@ -16961,6 +17492,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.sessions.run_count"
 #~ msgstr "{count_text} 次运行"
+
+#~ msgid "tui.settings.badge.dotenv"
+#~ msgstr ".env"
 
 #~ msgid "tui.settings.hint.trajectory.verify_commands"
 #~ msgstr "以逗号分隔、视为测试、构建或代码检查验证的命令词或短语。"
@@ -17009,6 +17543,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.settings.prompt_shortcuts.working_folder_scope"
 #~ msgstr "{path} 及其上级目录（直到仓库根目录）"
+
+#~ msgid "tui.settings.provenance.dotenv"
+#~ msgstr "被 {path}（{variable}）覆盖。"
 
 #~ msgid "tui.settings.section.prompt_shortcuts"
 #~ msgstr "快捷指令"

@@ -70,7 +70,7 @@ async def test_session_approved_command_requires_approval_with_working_dir(setup
         assert len(binding.service.rules()) == 1
         for working_dir in (runtime.cwd + "/main", "~", "../main"):
             redirected = invocation(tool, command)
-            redirected.arguments["working_dir"] = working_dir
+            redirected.arguments["workdir"] = working_dir
             if opaque_context:
                 redirected.kwargs["host_context"] = object()
             await middleware.process(redirected, called)
@@ -104,7 +104,7 @@ async def test_explicit_working_dir_approval_never_mints_reuse(setup, choice):
     try:
         for working_dir in (runtime.cwd, runtime.cwd, runtime.cwd + "/other"):
             ctx = invocation(tool, "git reset --hard")
-            ctx.arguments["working_dir"] = working_dir
+            ctx.arguments["workdir"] = working_dir
             await middleware.process(ctx, called)
             assert not binding.service.rules()
         assert len(requests) == called.await_count == 3
@@ -120,7 +120,7 @@ def test_working_dir_cannot_bypass_reuse_guard_with_opaque_arguments(setup, opaq
     ctx = FunctionInvocationContext(tool, {"command": "git reset --hard"})
     first = reuse_candidate(binding, ctx)
     assert first and binding.service.remember(first, "EXACT_SESSION")
-    ctx.arguments["working_dir"] = runtime.cwd + "/other"
+    ctx.arguments["workdir"] = runtime.cwd + "/other"
     if opaque_context == "kwargs":
         ctx.kwargs["host_context"] = object()
     elif opaque_context == "arguments":
@@ -136,5 +136,5 @@ def test_empty_working_dir_is_the_session_folder(setup, working_dir):
     remembered = reuse_candidate(binding, invocation(tool, "git status"))
     assert remembered and binding.service.remember(remembered, "EXACT_SESSION")
     ctx = invocation(tool, "git status")
-    ctx.arguments["working_dir"] = working_dir
+    ctx.arguments["workdir"] = working_dir
     assert binding.service.match(reuse_candidate(binding, ctx))

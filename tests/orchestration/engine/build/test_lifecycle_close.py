@@ -95,6 +95,9 @@ class _FakeExecutor:
 
 
 class _Permits:
+    def staged_profiles(self) -> None:
+        return None
+
     def advance_build_generation(self) -> None:
         return None
 

@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
+from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -168,18 +171,43 @@ def user_theme_warning(path: Path | str, reason: str) -> Warning:
     return Warning(code="user_theme_skipped", message=reason, display_message=display)
 
 
-def load_user_themes(directory: Path | None = None) -> tuple[list[Theme], list[Warning]]:
+@dataclass(frozen=True, slots=True)
+class UserThemeScan:
+    """What one read of the theme folder found, telling a deleted theme from one it could not read."""
+
+    themes: tuple[Theme, ...] = ()
+    warnings: tuple[Warning, ...] = ()
+    unreadable: frozenset[str] = frozenset()
+    """Names of files that are there but did not load; a theme already in use under one stays."""
+    listed: bool = True
+    """False when the folder itself could not be listed, which says nothing about any theme."""
+
+    def absent_from(self, names: Iterable[str]) -> set[str]:
+        """Which of *names* this scan shows were deleted."""
+        if not self.listed:
+            return set()
+        return set(names) - {theme.name for theme in self.themes} - self.unreadable
+
+
+def scan_user_themes(directory: Path | None = None) -> UserThemeScan:
     """Discover and parse every user theme under *directory*.
 
-    Returns ``(themes, warnings)``; per-file failures become warning events
-    (publishable on the bus) and the file is skipped, mirroring how an
-    invalid agent profile behaves.
+    Per-file failures become warning events (publishable on the bus) and the
+    file is skipped, mirroring how an invalid agent profile behaves.
     """
     root = directory if directory is not None else default_theme_directory()
+    try:
+        os.scandir(root).close()
+    except FileNotFoundError:
+        # A link to a missing target (an unmounted disk, say) is not a deleted folder.
+        return UserThemeScan(listed=not (root.is_symlink() or root.is_junction()))
+    except NotADirectoryError:
+        return UserThemeScan()
+    except OSError as e:
+        return UserThemeScan(warnings=(user_theme_warning(root, f"Cannot read the folder: {e}"),), listed=False)
     themes: list[Theme] = []
     warnings: list[Warning] = []
-    if not root.is_dir():
-        return themes, warnings
+    unreadable: set[str] = set()
     seen: set[str] = set()
     paths = sorted(root.glob("*.yaml")) + sorted(root.glob("*.yml"))
     for path in paths:
@@ -196,7 +224,14 @@ def load_user_themes(directory: Path | None = None) -> tuple[list[Theme], list[W
         except UserThemeLoadError as e:
             warnings.append(user_theme_warning(path, str(e)))
             logger.warning("Skipping user theme file %s: %s", path, e)
+            unreadable.add(name)
             continue
         seen.add(name)
         themes.append(theme)
-    return themes, warnings
+    return UserThemeScan(tuple(themes), tuple(warnings), frozenset(unreadable))
+
+
+def load_user_themes(directory: Path | None = None) -> tuple[list[Theme], list[Warning]]:
+    """Return every usable user theme under *directory* and a warning for each file skipped."""
+    scan = scan_user_themes(directory)
+    return list(scan.themes), list(scan.warnings)

@@ -33,7 +33,9 @@ import threading
 from dataclasses import dataclass
 from typing import Final
 
-from chrys.foundation.config.spec import SettingOrigin
+from chrys.foundation.config.errors import ConfigError
+from chrys.foundation.config.spec import SettingOrigin, Source
+from chrys.foundation.i18n import msg
 
 MODEL_POINTER_ENV: Final = "CHRYS_MODEL_PROFILE"
 """The pointer's carrier variable in ``os.environ``."""
@@ -61,6 +63,107 @@ _registered_origin: SettingOrigin | None = None
 _generation = 0
 
 
+_file_choice = ""
+_launch_choice = ""
+
+
+_MODEL_SELECTION_CHANGED = msg(
+    "settings.model_selection_changed", fallback="Model selection changed during reload. Run /reload again."
+)
+
+
+class StaleModelFileChange(ConfigError, RuntimeError):
+    """A newer selection superseded the in-flight rebuild."""
+
+
+@dataclass(frozen=True, slots=True)
+class ModelFileChange:
+    """An external model edit awaiting a successful TUI rebuild."""
+
+    file_value: str
+    value: str
+    origin: SettingOrigin
+    generation: int
+
+    def commit(self) -> None:
+        global _file_choice
+        with _lock:
+            if self.generation != _generation:
+                raise StaleModelFileChange(_MODEL_SELECTION_CHANGED.bind())
+            _write_pointer(self.value or None, self.origin)
+            _file_choice = self.file_value
+
+
+@dataclass(frozen=True, slots=True)
+class SessionDefaultModel:
+    """The default model one session settled on, kept apart from the process pointer.
+
+    An ACP process serves many sessions from one pointer, so a full reload's
+    choice stays with the session that made it and travels on every later load
+    of that session. An empty ``value`` records that the default is gone, so a
+    load cannot bring it back from a pointer that still names it. ``revision`` is
+    :func:`model_selection_revision` when it was settled: any process-wide model
+    choice since then came after it, and the session follows that instead.
+    """
+
+    value: str
+    origin: SettingOrigin
+    revision: int
+
+
+def model_selection_revision() -> int:
+    with _lock:
+        return _generation
+
+
+def check_model_selection_revision(expected: int) -> None:
+    if model_selection_revision() != expected:
+        raise StaleModelFileChange(_MODEL_SELECTION_CHANGED.bind())
+
+
+def remember_file_model(value: str) -> None:
+    """Record bootstrap or a successful write of this particular key."""
+    global _file_choice, _generation
+    with _lock:
+        _file_choice = value
+        _generation += 1
+
+
+def _launch_or_file_model(value: str, file_origin: SettingOrigin, exported: str) -> tuple[str, SettingOrigin]:
+    """What the launch and the file say the model is, leaving out the live pointer: caller holds :data:`_lock`."""
+    if _launch_choice:
+        return _launch_choice, SettingOrigin(layer=Source.CLI)
+    if exported:
+        return exported, SettingOrigin(layer=Source.ENV)
+    return value, file_origin
+
+
+def external_model_edit(value: str, *, file_origin: SettingOrigin, exported: str) -> ModelFileChange | None:
+    with _lock:
+        if value == _file_choice:
+            return None
+        selected, origin = _launch_or_file_model(value, file_origin, exported)
+        return ModelFileChange(value, selected, origin, _generation)
+
+
+def session_model_decision(value: str, *, file_origin: SettingOrigin, exported: str) -> ModelFileChange:
+    """Decide one session's default afresh: never a change to the pointer, so nothing here commits it."""
+    with _lock:
+        selected, origin = _launch_or_file_model(value, file_origin, exported)
+        return ModelFileChange(value, selected, origin, _generation)
+
+
+def _write_pointer(value: str | None, origin: SettingOrigin) -> None:
+    global _registered_origin, _generation
+    if value is None:
+        os.environ.pop(MODEL_POINTER_ENV, None)
+        _registered_origin = None
+    else:
+        os.environ[MODEL_POINTER_ENV] = value
+        _registered_origin = origin
+    _generation += 1
+
+
 def set_model_pointer(value: str | None, *, origin: SettingOrigin) -> PointerToken:
     """Write the pointer and record who wrote it; return the replaced state.
 
@@ -70,20 +173,12 @@ def set_model_pointer(value: str | None, *, origin: SettingOrigin) -> PointerTok
     old value back into ``os.environ`` by hand leaves the origin describing
     the write that was just rolled back.
     """
-    global _registered_origin, _generation
+    global _launch_choice
     with _lock:
-        token = PointerToken(
-            value=os.environ.get(MODEL_POINTER_ENV),
-            origin=_registered_origin,
-            generation=_generation,
-        )
-        if value is None:
-            os.environ.pop(MODEL_POINTER_ENV, None)
-            _registered_origin = None
-        else:
-            os.environ[MODEL_POINTER_ENV] = value
-            _registered_origin = origin
-        _generation += 1
+        token = PointerToken(os.environ.get(MODEL_POINTER_ENV), _registered_origin, _generation)
+        if origin.layer is Source.CLI:
+            _launch_choice = value or ""
+        _write_pointer(value, origin)
         return token
 
 
@@ -127,7 +222,9 @@ def get_model_pointer() -> tuple[str, SettingOrigin | None]:
 
 
 def _reset_model_pointer_for_tests() -> None:
-    global _registered_origin, _generation
+    global _registered_origin, _generation, _file_choice, _launch_choice
     with _lock:
         _registered_origin = None
         _generation = 0
+        _file_choice = ""
+        _launch_choice = ""

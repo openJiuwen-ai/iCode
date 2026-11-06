@@ -28,7 +28,7 @@ from chrys.kernel import (
     UsageDetails,
 )
 from chrys.kernel._content import _ANTHROPIC_REDACTED_THINKING_KEY
-from chrys.service.llm.chat_completions.decode import refused_calls_error
+from chrys.service.llm.refusals import refused_calls_error
 
 from . import server_tools
 

@@ -197,6 +197,51 @@ def test_runtime_details_dialog_lists_context_tools_before_sub_agent_tools() -> 
     assert _section_text(sections[1]).splitlines() == ["compress_context", "recall_context", "list_compressed_contexts"]
 
 
+def test_runtime_details_dialog_lists_each_extension_after_icode_s_tools_and_why_any_is_missing() -> None:
+    details = AgentRuntimeDetails(
+        builtin_tools={"sleep": ["sleep"]},
+        extension_tools={"acme_release": ["acme_project_name", "acme_add_release_note"]},
+        extension_failures={"acme_gone": "it is not installed"},
+        context_tools=["compress_context"],
+    )
+
+    sections = RuntimeDetailsDialog(details)._tool_sections()
+
+    assert [str(section.border_title) for section in sections] == [
+        "sleep",
+        "acme_release",
+        "Unavailable extensions",
+        "Context management tools",
+    ]
+    assert _section_text(sections[1]).splitlines() == ["acme_project_name", "acme_add_release_note"]
+    assert _section_text(sections[2]) == "acme_gone: it is not installed"
+
+
+def test_runtime_details_dialog_shows_an_extension_s_import_error_without_its_control_characters() -> None:
+    details = AgentRuntimeDetails(
+        extension_failures={"acme_bad": "importing it failed: RuntimeError: \x1b[2Jgone\nsecond line"},
+    )
+
+    (section,) = RuntimeDetailsDialog(details)._tool_sections()
+
+    text = _section_text(section)
+    assert "\x1b" not in text
+    assert text.startswith("acme_bad: importing it failed: RuntimeError: ")
+    assert text.splitlines()[-1] == "second line"
+
+
+def test_runtime_details_dialog_shows_an_extension_s_undecodable_path_without_lone_surrogates() -> None:
+    details = AgentRuntimeDetails(
+        extension_failures={"acme_twice": "it is installed more than once (acme 1.0; /home/caf\udce9/acme_twice.py)"},
+    )
+
+    (section,) = RuntimeDetailsDialog(details)._tool_sections()
+
+    text = _section_text(section)
+    assert text.encode("utf-8")
+    assert text.startswith("acme_twice: it is installed more than once (acme 1.0; /home/caf")
+
+
 def test_runtime_details_dialog_groups_mcp_tools_and_failures() -> None:
     details = AgentRuntimeDetails(
         mcp_tools={

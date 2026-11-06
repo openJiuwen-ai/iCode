@@ -11,7 +11,7 @@ from unittest.mock import create_autospec
 import pytest
 
 import chrys.orchestration.engine.build.builder as builder_module
-from chrys.foundation.config.env_layers import freeze_process_env
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings_store import persist
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import InvocationToolCallResult, SettingsReload, UserMessage

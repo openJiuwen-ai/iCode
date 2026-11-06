@@ -11,9 +11,11 @@ with orphaned MCP subprocesses or an un-exited Agent.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
+import sys
 from collections.abc import Awaitable, Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
@@ -57,8 +59,9 @@ from chrys.service.profiles.models.resolver import ModelSelection
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.session.persistence import agent_profile_context_fingerprint, model_profile_context_fingerprint
 from chrys.service.skills.model import SkillProviderWarning
-from chrys.service.tools.registry import ToolRegistry
+from chrys.service.tools import packs as tool_packs
 from tests.support.close_races import ReleaseGate, assert_cancel_during_rollback
+from tests.support.extensions import install_file_extension
 
 
 def _assert_warning_display_message(
@@ -90,11 +93,17 @@ def _agent_mock() -> MagicMock:
     return agent_mock
 
 
-def _registry_mock() -> MagicMock:
-    registry = MagicMock()
-    registry.get_all.return_value = []
-    registry.get_by_category.return_value = []
-    return registry
+_REAL_ASSEMBLE = tool_packs.assemble_tools
+
+
+def _capturing_assembly(captured: list[tool_packs.AssembledTools]) -> Callable[[tool_packs.ToolBuild], Any]:
+    """Assemble the real tools, keeping each result in *captured*."""
+
+    async def assemble(build: tool_packs.ToolBuild) -> tool_packs.AssembledTools:
+        captured.append(await _REAL_ASSEMBLE(build))
+        return captured[-1]
+
+    return assemble
 
 
 def test_runtime_api_style_labels_openai_compatible_transports() -> None:
@@ -110,22 +119,18 @@ def _build_agent_env(
     *,
     mcp_mock: MagicMock | MCPAdapter | None,
     agent_mock: MagicMock,
-    tool_registry: object | None = None,
+    real_packs: bool = False,
     model_profile: ModelProfile | None = None,
     chat_options: dict[str, Any] | None = None,
 ):
     """Patch every external dependency of ``build_agent`` so the test drives
     only the rollback logic.
 
-    Function-local imports (``ToolRegistry``, ``MCPAdapter``,
+    Function-local imports (tool assembly, ``MCPAdapter``,
     ``create_skills_provider``, ``SubAgentTools``) are patched at their
     source modules; module-level bindings are patched on ``agent_builder``.
+    The packs yield no tools unless *real_packs*; the web tools are always assembled.
     """
-
-    if tool_registry is None:
-        tool_registry = MagicMock()
-        tool_registry.get_all.return_value = []
-        tool_registry.load_builtins = MagicMock()
 
     fake_ctx = MagicMock()
     fake_ctx.providers = []
@@ -153,7 +158,7 @@ def _build_agent_env(
         patch.object(ab, "LoopRecorder", return_value=MagicMock()),
         patch.object(runtime_factory_module, "SystemReminderMiddleware", reminder_cls),
         patch.object(runtime_factory_module, "LastWordsGenerator", last_words_cls),
-        patch("chrys.service.tools.registry.ToolRegistry", return_value=tool_registry),
+        nullcontext() if real_packs else patch.object(tool_packs, "create_packs", return_value=[]),
         patch("chrys.service.skills.adapter.create_skills_provider", new=AsyncMock(return_value=(None, []))),
         mcp_patch as mcp_cls,
     ):
@@ -233,9 +238,6 @@ async def test_build_agent_surfaces_missing_chat_options_env(monkeypatch: pytest
         chat_options='{"metadata": {"token": "{{CHRYS_MISSING_CHAT_OPTION}}"}}',
     )
 
-    fake_tool_registry = MagicMock()
-    fake_tool_registry.get_all.return_value = []
-    fake_tool_registry.load_builtins = MagicMock()
     fake_ctx = MagicMock()
     fake_ctx.providers = []
     fake_ctx.middleware = []
@@ -251,7 +253,7 @@ async def test_build_agent_surfaces_missing_chat_options_env(monkeypatch: pytest
             "resolve_selection_for_agent",
             return_value=ModelSelection(active_profile, "active"),
         ),
-        patch("chrys.service.tools.registry.ToolRegistry", return_value=fake_tool_registry),
+        patch.object(tool_packs, "create_packs", return_value=[]),
         pytest.raises(EnvVarResolutionError) as info,
     ):
         await _invoke_build_agent(profile)
@@ -547,17 +549,19 @@ async def test_build_agent_reports_hosted_web_tools_that_displace_a_local_catego
     profile = AgentProfile(name="test", tools=ToolsConfig(builtins=["web_search"]))
     bus = EventBus()
     warnings = await _capture_warnings(bus)
-    registry = _registry_mock()
+    captured: list[tool_packs.AssembledTools] = []
     hosted = {"tools": [{"type": "web_search"}]}
 
     with (
         _build_agent_env(mcp_mock=None, agent_mock=_agent_mock()),
+        patch.object(
+            tool_packs, "assemble_tools", create_autospec(_REAL_ASSEMBLE, side_effect=_capturing_assembly(captured))
+        ),
         patch.object(ab, "effective_chat_options", return_value=hosted),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
         patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
-        patch("chrys.service.tools.registry.ToolRegistry", return_value=registry),
     ):
         await _invoke_build_agent(profile, session_id="session-1", bus=bus)
 
@@ -565,7 +569,7 @@ async def test_build_agent_reports_hosted_web_tools_that_displace_a_local_catego
     assert warnings[0].session_id == "session-1"
     assert "web_search" in warnings[0].message
     assert "test-id" in warnings[0].message
-    assert registry.load_builtins.call_args.kwargs["web"].hosted == {"web_search"}
+    assert [result.web.hosted for result in captured] == [{"web_search"}]
     _assert_warning_display_message(
         warnings[0], "builder.hosted_web_tools_preferred", {"tools": "web_search", "app": "AIxCoding"}
     )
@@ -576,7 +580,7 @@ async def test_build_agent_does_not_expose_displaced_local_web_tool_to_model() -
     hosted = {"tools": [{"type": "web_search_2025_08_26"}]}
 
     with (
-        _build_agent_env(mcp_mock=None, agent_mock=_agent_mock(), tool_registry=ToolRegistry()),
+        _build_agent_env(mcp_mock=None, agent_mock=_agent_mock(), real_packs=True),
         patch.object(ab, "effective_chat_options", return_value=hosted),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
         patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
@@ -588,12 +592,55 @@ async def test_build_agent_does_not_expose_displaced_local_web_tool_to_model() -
     assert "web_search" not in result.tool_names
 
 
+# Pinned apart from ``packs.IMPLEMENTATION_MODULES``: dropping one there must fail here.
+_TOOL_IMPLEMENTATION_MODULES = (
+    "chrys.service.tools.builtins.filesystem",
+    "chrys.service.tools.builtins.search",
+    "chrys.service.tools.builtins.web.build",
+    "chrys.service.tools.builtins.shell",
+    "chrys.service.tools.builtins.ask_user",
+    "chrys.service.tools.builtins.todo",
+    "chrys.service.tools.builtins.sleep",
+    "chrys.service.vision",
+)
+
+
+async def test_build_agent_imports_the_tool_implementations_off_the_event_loop(monkeypatch) -> None:
+    # A cold start spends a visible part of the build importing them, which on
+    # the event loop would freeze the TUI's loading animation.
+    agent_mock = _agent_mock()
+    agent_mock.__aenter__ = AsyncMock(side_effect=RuntimeError("stop after the tools"))
+    loaded = {name: importlib.import_module(name) for name in _TOOL_IMPLEMENTATION_MODULES}
+    warmed: list[tuple[str, ...]] = []
+
+    async def import_off_loop(*requested: str) -> None:
+        warmed.append(requested)
+        for name in requested:
+            if name in loaded:
+                monkeypatch.setitem(sys.modules, name, loaded[name])
+
+    # The document converter, enabled by few agents, loads when created.
+    every_pack = [pack.id for pack in tool_packs.BUILTIN_PACKS if pack.id != "doc_converter"]
+    with (
+        _build_agent_env(mcp_mock=None, agent_mock=agent_mock, real_packs=True),
+        patch.object(ab, "import_off_loop", import_off_loop),
+        pytest.raises(RuntimeError, match="stop after the tools"),
+    ):
+        # Until the build hands them to the worker, importing them fails.
+        for name in _TOOL_IMPLEMENTATION_MODULES:
+            monkeypatch.setitem(sys.modules, name, None)
+        await _invoke_build_agent(AgentProfile(name="test", tools=ToolsConfig(builtins=every_pack)))
+
+    assert len(warmed) == 1
+    assert set(_TOOL_IMPLEMENTATION_MODULES) <= set(warmed[0])
+
+
 async def test_build_agent_loads_sleep_though_the_profile_omits_it() -> None:
     """Every agent has sleep, headless runs included; the runtime details list it like any builtin."""
     profile = AgentProfile(name="test", tools=ToolsConfig(builtins=["todo"]))
 
     with (
-        _build_agent_env(mcp_mock=None, agent_mock=_agent_mock(), tool_registry=ToolRegistry()),
+        _build_agent_env(mcp_mock=None, agent_mock=_agent_mock(), real_packs=True),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
         patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
@@ -605,27 +652,94 @@ async def test_build_agent_loads_sleep_though_the_profile_omits_it() -> None:
     assert result.runtime_details.builtin_tools == {"todo": ["todo_write"], "sleep": ["sleep"]}
 
 
+@pytest.mark.parametrize(
+    ("name", "builtins", "chat_options", "mcp_namespace"),
+    [
+        ("acme_free", [], None, frozenset({"lookup"})),
+        ("todo_write", ["todo"], None, frozenset()),
+        ("web_search", [], {"tools": [{"type": "web_search"}]}, frozenset()),
+        ("lookup", [], None, frozenset({"lookup", "load_srv_tools"})),
+    ],
+    ids=["no-clash", "local-tool", "hosted", "mcp-tool-not-yet-loaded"],
+)
+async def test_build_agent_loads_extensions_last_so_their_tools_yield_every_name_its_other_tools_take(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    builtins: list[str],
+    chat_options: dict[str, Any] | None,
+    mcp_namespace: frozenset[str],
+) -> None:
+    install_file_extension(
+        monkeypatch,
+        "acme_clash",
+        "from chrys.extensions import Extension\nextension = Extension()\n"
+        "@extension.tool\nasync def acme_fine() -> str:\n    return ''\n"
+        f"@extension.tool(name={name!r})\nasync def other() -> str:\n    return ''\n",
+    )
+    # The MCP server's tool is deferred: it is in the server's namespace, not among the tools it returns.
+    mcp_mock = MagicMock()
+    mcp_mock.connect_all = AsyncMock(return_value=[])
+    mcp_mock.disconnect_all = AsyncMock()
+    mcp_mock.tool_namespace = mcp_namespace
+    mcp_mock.tool_names_by_server = {}
+    mcp_mock.failures = {}
+    profile = AgentProfile(
+        name="test",
+        tools=ToolsConfig(
+            builtins=builtins,
+            mcp=[MCPServerConfig(name="srv", transport="stdio", command="python")],
+        ),
+        extensions=["acme_clash"],
+    )
+    bus = EventBus()
+    warnings = await _capture_warnings(bus)
+
+    with (
+        _build_agent_env(mcp_mock=mcp_mock, agent_mock=_agent_mock(), real_packs=True, chat_options=chat_options),
+        patch.object(ab, "TurnBindings", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
+        patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
+        patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
+    ):
+        result = await _invoke_build_agent(profile, session_id="session-1", bus=bus)
+
+    extension_warnings = [warning for warning in warnings if warning.code == "extension_unavailable"]
+    if name == "acme_free":
+        assert result.tool_names[-2:] == ["acme_fine", "acme_free"]
+        assert result.runtime_details.extension_tools == {"acme_clash": ["acme_fine", "acme_free"]}
+        assert extension_warnings == []
+    else:
+        assert "acme_fine" not in result.tool_names
+        reason = f"its tools {name} have names already in use"
+        assert result.runtime_details.extension_failures == {"acme_clash": reason}
+        assert [warning.message for warning in extension_warnings] == [
+            f"Agent test starts without extension acme_clash: {reason}"
+        ]
+
+
 async def test_build_agent_omits_hosted_web_notice_when_no_local_category_yields() -> None:
     """A declaration that displaces nothing local must not claim it disabled a tool."""
     profile = AgentProfile(name="test", tools=ToolsConfig(builtins=[]))
     bus = EventBus()
     warnings = await _capture_warnings(bus)
-    registry = _registry_mock()
+    captured: list[tool_packs.AssembledTools] = []
     hosted = {"tools": [{"type": "web_search"}]}
 
     with (
         _build_agent_env(mcp_mock=None, agent_mock=_agent_mock()),
+        patch.object(
+            tool_packs, "assemble_tools", create_autospec(_REAL_ASSEMBLE, side_effect=_capturing_assembly(captured))
+        ),
         patch.object(ab, "effective_chat_options", return_value=hosted),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
         patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
-        patch("chrys.service.tools.registry.ToolRegistry", return_value=registry),
     ):
         await _invoke_build_agent(profile, session_id="session-1", bus=bus)
 
     assert warnings == []
-    assert registry.load_builtins.call_args.kwargs["web"].hosted == {"web_search"}
+    assert [result.web.hosted for result in captured] == [{"web_search"}]
 
 
 async def test_build_agent_publishes_semantic_memory_truncation_warning() -> None:

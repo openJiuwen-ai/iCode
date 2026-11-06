@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import logging
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from functools import partial
@@ -48,8 +49,9 @@ from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
 from chrys.app.tui.widgets.chrome.hook_indicator import HookIndicator
 from chrys.app.tui.widgets.chrome.image_paste import clipboard_image_dir_for_session
-from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar
+from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.prompt_card import PromptCard
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.chrome.status_bar import (
     STATUS_AGENT_LOAD_FAILED,
     STATUS_INTERACTIVE_MODE,
@@ -74,6 +76,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.ask_user import AskUserAnswer
+from chrys.foundation.text.draft_references import DraftReferences
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
 from chrys.service.trajectory.session import trajectory_events_path
@@ -505,25 +508,31 @@ class MainScreenViewAdapter:
 
         Every attempt consumes a generation, declined ones included, so an
         outstanding credential dies the moment anything else tries to restore.
-        *draft* goes back whole when it is one (a prompt shortcut's fields and
-        owner included).
+        *draft* goes back whole when it is one (a prompt shortcut's fields,
+        owner and labels included); a plain string is sent text and comes back
+        as that text.
         """
         self._input_restore_generation += 1
         whole = draft if isinstance(draft, ChatDraft) else ChatDraft(draft)
         input_bar = self._screen.query_one(InputBar)
         if input_bar.locked:
             input_bar.unlock_and_keep()
-            # A queued message's composer stays read-only from its Enter, which
-            # sends the text stripped: holding *text*, it still holds that
-            # message, and unlocking it hands the message back.
-            if input_bar.value.strip() == whole.text.strip():
+            # A queued message's composer stays read-only from its Enter: when
+            # what it would send is what is handed back, it still holds that
+            # message (its labels included), and unlocking it hands it back.
+            if input_bar.draft().sent_text() == whole.sent_text():
                 return InputRestore(generation=self._input_restore_generation, text=input_bar.value)
         if not input_bar.restore_draft(whole):
             return None
         return InputRestore(generation=self._input_restore_generation, text=whole.text)
 
-    def rewrite_restored_input(self, restore: InputRestore | None, text: str) -> bool:
+    def rewrite_restored_input(
+        self, restore: InputRestore | None, text: str, *, references: DraftReferences | None = None
+    ) -> bool:
         """Rewrite the text *restore* put there, while that restore still stands.
+
+        *references*, when given, replace what the draft's labels stand for
+        (a rewrite inside a folded paste); otherwise the labels keep theirs.
 
         Authority comes from the credential, never from what the composer reads:
         it buys nothing once the restore never happened, or any later restore —
@@ -539,12 +548,14 @@ class MainScreenViewAdapter:
         input_bar = self._screen.query_one(InputBar)
         if input_bar.value != restore.text:
             return False
-        # Rewriting identical text would still reset the cursor and break an
+        # Rewriting an identical draft would still reset the cursor and break an
         # in-progress IME composition, so leave the composer alone.
-        if text != restore.text:
+        current = input_bar.draft()
+        table = current.references if references is None else references
+        if text != restore.text or table != current.references:
             # The restore's own draft, rewritten: the prompt shortcut it came back
             # with stays its owner (its commands follow the new text).
-            input_bar.set_draft(ChatDraft(text, owner=input_bar.draft_owner))
+            input_bar.set_draft(ChatDraft(text, owner=current.owner, references=table))
         return True
 
     async def change_shell_directory(self, cwd: str) -> None:
@@ -1231,10 +1242,16 @@ class MainScreenViewAdapter:
         attempt: int,
         max_attempts: int,
         delay_seconds: int,
+        *,
+        wait_id: str = "",
     ) -> None:
         panel = self._screen.query_one(ChatPanel)
         await panel.prepare_retry()
-        await panel.add_retry(message, attempt, max_attempts, delay_seconds)
+        # The backend starts its wait once every handler has seen this notice, so a card that counts
+        # down from just before it mounts never ends after that wait: Retry Now is shown only while
+        # it can still end the wait.
+        deadline = time.monotonic() + delay_seconds
+        await panel.add_retry(message, attempt, max_attempts, delay_seconds, deadline=deadline, wait_id=wait_id)
         self.show_status(STATUS_RETRYING.bind(attempt=attempt, max_attempts=max_attempts))
 
     # -------------------------------------------------------------- #
@@ -1533,6 +1550,9 @@ class MainScreenViewAdapter:
 
     def input_value(self) -> str:
         return str(self._screen.query_one(InputBar).value)
+
+    def input_references(self) -> DraftReferences:
+        return self._screen.query_one(InputBar).draft().references
 
     def set_input_value(self, value: str) -> None:
         self._screen.query_one(InputBar).value = value

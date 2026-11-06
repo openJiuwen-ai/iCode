@@ -2,10 +2,9 @@
 
 """Pins the TurnBindings function-middleware chain.
 
-The chain order is a contract (first = outermost): extras sit INSIDE
-``tool_events`` — a short-circuiting extra must still publish
-``ToolCallStart``/``ToolCallResult`` — and INSIDE ``approval`` so no extra
-can bypass approval on gated kinds.
+The chain order is a contract (first = outermost): everything sits inside
+``tool_events``, so a call a middleware answers itself (``ask_user``) still
+publishes ``ToolCallStart``/``ToolCallResult``.
 """
 
 from __future__ import annotations
@@ -48,7 +47,7 @@ class _PassThrough(FunctionMiddleware):
 
 
 class _ShortCircuit(FunctionMiddleware):
-    """Sets the result without calling next — the ask_user/todo intercept shape."""
+    """Sets the result without calling next — the ask_user intercept shape."""
 
     def __init__(self) -> None:
         self.calls = 0
@@ -77,11 +76,11 @@ def _make_executor(
     *,
     agent: Any = None,
     event_bus: EventBus | None = None,
-    extras: tuple[FunctionMiddleware, ...] = (),
+    ask_user: FunctionMiddleware | None = None,
     compaction_strategy: Any = None,
     run_cycle_start_hooks: tuple[Any, ...] = (),
 ) -> tuple[TurnBindings, FunctionMiddleware, FunctionMiddleware]:
-    ask_user = _PassThrough()
+    ask_user = ask_user if ask_user is not None else _PassThrough()
     approval = create_autospec(ApprovalMiddleware, instance=True)
     approval.process.side_effect = _PassThrough().process
     executor = TurnBindings(
@@ -93,32 +92,13 @@ def _make_executor(
         ask_user_middleware=ask_user,  # type: ignore[arg-type]
         injection_middleware=MagicMock(),
         compaction_strategy=compaction_strategy,
-        extra_function_middleware=extras,
         run_cycle_start_hooks=run_cycle_start_hooks,
     )
     return executor, ask_user, approval
 
 
 def test_chain_order_is_pinned() -> None:
-    """[tool_events, ask_user, approval, *extras, sleep, interrupt, hook_commit] — identity."""
-    extra_a, extra_b = _PassThrough(), _PassThrough()
-    executor, ask_user, approval = _make_executor(extras=(extra_a, extra_b))
-
-    middleware = executor._build_run_kwargs()["middleware"]
-
-    assert middleware == [
-        executor.tool_events,
-        ask_user,
-        approval,
-        extra_a,
-        extra_b,
-        executor._sleep,
-        executor._interrupt,
-        executor._hook_commit,
-    ]
-
-
-def test_chain_without_extras_keeps_base_order() -> None:
+    """[tool_events, ask_user, approval, sleep, interrupt, hook_commit] — identity."""
     executor, ask_user, approval = _make_executor()
 
     middleware = executor._build_run_kwargs()["middleware"]
@@ -187,8 +167,8 @@ def test_compaction_tokenizer_is_forwarded_to_the_agent_run() -> None:
 
 
 @pytest.mark.asyncio
-async def test_short_circuiting_extra_still_publishes_tool_events() -> None:
-    """Extras sit inside tool_events: a result set without call_next still
+async def test_a_call_ask_user_answers_itself_still_publishes_tool_events() -> None:
+    """ask_user sits inside tool_events: a result set without call_next still
     yields ToolCallStart AND ToolCallResult, and the tool body never runs."""
     bus = EventBus()
     starts: list[InvocationToolCallStart] = []
@@ -204,12 +184,12 @@ async def test_short_circuiting_extra_still_publishes_tool_events() -> None:
     await bus.subscribe(InvocationToolCallResult, _on_result)
 
     short_circuit = _ShortCircuit()
-    executor, _ask_user, _approval = _make_executor(event_bus=bus, extras=(short_circuit,))
+    executor, _ask_user, _approval = _make_executor(event_bus=bus, ask_user=short_circuit)
     middleware = executor._build_run_kwargs()["middleware"]
 
     @tool(name="boom")
     async def boom(text: str) -> str:
-        raise AssertionError("tool body must not run — the extra short-circuits")
+        raise AssertionError("tool body must not run — ask_user short-circuits")
 
     call = Content.from_function_call(call_id="c1", name="boom", arguments={"text": "x"})
     turns = [

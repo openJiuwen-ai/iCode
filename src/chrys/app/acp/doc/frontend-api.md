@@ -115,8 +115,9 @@ Approval mode uses ACP's native session-mode mechanism, not an extension:
 - Changes are pushed as the standard `current_mode_update` (`session/update`).
 
 The switch is **per-session**: it updates the live approval middleware and does
-not write the global settings-document default. Persisting a default approval
-mode for future sessions is handled by `session/set_config_option`.
+not write the global settings-document default. `session/set_config_option` can
+persist a default approval mode, which is what a later TUI launch reads: every
+session of an ACP server starts on the server's own `--approval`.
 
 ### Session models — model switch (standard, per-session)
 
@@ -276,13 +277,73 @@ A provider client's automatic resend within a model call adds an entry to `model
 | `profiles/agents/read` | `name` | Full agent profile. **MCP `headers`/`env` values masked as `"***"`.** |
 | `profiles/agents/write` | `profile` | Persist. Masked `"***"` MCP secrets restored from the stored profile. |
 | `profiles/agents/delete` | `name` | Delete a user agent profile. Built-in profiles are rejected; clients should migrate the previous "delete shadow to restore built-in" behavior to `profiles/agents/reset`. |
-| `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, and Memory settings. Returns `changed: false` when no shadow or resettable changes exist. |
+| `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, Memory, and Extensions settings. Returns `changed: false` when no shadow or resettable changes exist. |
 | `profiles/models/list` | — | Model profile summaries (no secrets). |
 | `profiles/models/read` | `id` | Full model profile. **`api_key` masked as `"***"`.** |
 | `profiles/models/write` | `profile` | Persist. `api_key` of `""`/`"***"` preserves the stored key. Omitting `stream` or sending `null` streams for a new profile and keeps the stored value on an update; `false` (or another false spelling such as `0` or `""`) turns streaming off. |
 | `profiles/models/delete` | `id` | Delete a model profile. |
-| `settings/reload` | `sessionId` | Reload registries + soft-restart. Awaits the rebuild: a failed reload returns an error, success pushes `chrys/runtime_update`. |
+| `settings/reload` | `sessionId`, optional `scope` | Reload registries + soft-restart. Awaits the rebuild: a failed reload returns an error, success pushes `chrys/runtime_update`. Without `scope` (also what `session/set_config_option` runs) it returns `{}`, and an MCP server whose configuration is unchanged keeps its connection. `scope: "full"` is described below; any other `scope` is an invalid-params error. |
 | `mcp/test` | `server` | One-shot HTTP MCP connection test. Client-supplied stdio is rejected. |
+
+### Full reload
+
+`settings/reload` with `{"sessionId": "…", "scope": "full"}` rereads what the TUI's
+`/reload` rereads for that one session: settings files (strictly, so an unreadable
+file fails the request), agent and model profiles, memory, skills, hooks, and a new
+handshake with each MCP server of the session. Themes and prompt shortcuts belong to
+the TUI and are not part of it.
+
+```json
+{
+  "scope": "full",
+  "installed": true,
+  "complete": true,
+  "report": [{"key": "controls.reload_done", "message": "Reloaded settings, profiles, memory, skills, hooks and MCP servers."}]
+}
+```
+
+- `report` lists what happened, in English. `key` identifies the kind of line. It does
+  not list which settings changed; `controls.settings_restart_required` lists the
+  changed settings this reload did not apply, some of which only the TUI reads.
+- The whole request has 300 seconds, counted from before it waits for the session's
+  other runtime changes, and covers finishing a turn that is ending, the reload
+  itself and its completion. Each MCP server gets its usual connection timeout
+  (30 seconds by default) inside that. A request made while a turn is running is
+  refused with an error.
+- When the time runs out or the reload fails before the new runtime is installed,
+  the request returns an error and the session keeps what it was running. The turn
+  being finished is not cancelled.
+- After the new runtime is installed the request succeeds, whatever happens to the
+  remaining steps. `complete: false` says they did not finish, `detail` says why,
+  and `report` may be empty.
+
+**The model selection belongs to the session.** A full reload decides the session's
+default model from the launch and the settings file as they are now, and keeps that
+decision on the session: it never changes the model of another session or the
+process-wide selection. Later plain reloads, `session/set_config_option` for other
+keys and `session/set_workspace` keep it, and the next full reload decides again. If
+the key was removed, the session has no default until the file names one. A model
+chosen with `set_session_model` is the session's own and is kept while its profile
+file exists; once the file is gone, a full reload drops the choice, uses the session's
+default and reports `controls.reload_session_model_removed`. Setting
+`model.profile.active` through `session/set_config_option` is a process-wide choice:
+the target session follows it at once, other sessions without a model of their own
+at their next reload, and new sessions start with it. Without such a choice, a new
+session starts from the settings file as it is at that moment.
+
+Definitions in profile files are shared across sessions: a full reload updates them
+for every session's next use without rebuilding or reconnecting any other session.
+A definition found deleted is gone for the other sessions too: one still running that
+model keeps it until its next rebuild (a plain reload, `session/set_config_option`,
+`session/set_workspace` or an agent switch). That rebuild moves to the session's default
+model when only its agent named the removed one, and otherwise leaves it with no model
+(`chrys/runtime_update` carries an empty `modelProfileId`) until the client selects one
+or that session does a full reload.
+Two sessions doing this at once can make one of them fail with a request to try again.
+New sessions start with the `--agent` and `--approval` the server was launched with,
+not `agent.default_profile` or `approval.default_mode`; the report says so when they
+change. When a session's agent file is gone, a full reload falls back to
+`agent.default_profile` (or `Code`) and reports it.
 
 ### Backend → client callback
 
@@ -580,7 +641,8 @@ ACP has a native config mechanism (`config_options` on `session/new`,
   the TUI and future processes. ACP config options have no "global application
   setting" concept.
 - **Defaults vs. live state.** Keys like `default_agent` / `default_approval_mode`
-  are defaults for the *next* session, not live controls for the current one.
+  are defaults for the next TUI launch, not live controls: an ACP server's new
+  sessions start with the `--agent` and `--approval` it was launched with.
   `default_approval_mode=bypass` is downgraded to `auto` by the settings store's
   own `persist` so a later launch never starts in unattended approval.
 - **Type.** ACP config options are `select` / `boolean` only;

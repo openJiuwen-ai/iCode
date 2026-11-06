@@ -8,7 +8,8 @@ import pytest
 from textual import events
 from textual.app import App, ComposeResult
 
-from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar, _ChatTextArea, shift_prompt_fields
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar, _ChatTextArea
+from chrys.app.tui.widgets.chrome.prompt_draft import shift_prompt_fields
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 
@@ -261,7 +262,7 @@ async def test_field_highlight_on_a_long_draft_reads_no_offsets_per_painted_line
         # The second field runs from ``$Y`` across the line break into ``across``.
         app.query_one(InputBar).expand_prompt(ChatDraft(text, ((first, first + 2), (second, len(text) - 3))))
         await wait_for(lambda: chat.text == text, pilot=pilot, description="prompt expanded")
-        style = chat.get_component_rich_style("chat-input--prompt-field", partial=False)
+        style = chat.get_component_rich_style("draft--prompt-field", partial=False)
 
         def styled(row: int) -> list[tuple[int, int]]:
             return [(span.start, span.end) for span in chat.get_line(row).spans if span.style == style]

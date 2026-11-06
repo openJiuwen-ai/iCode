@@ -8,12 +8,13 @@ from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import TYPE_CHECKING
 
-from chrys.app.tui.i18n import LocaleSwitchStatus
+from chrys.app.tui.i18n import LocaleSwitchResult, LocaleSwitchStatus
 from chrys.app.tui.language import LANGUAGE_PICKER_TITLE
 from chrys.app.tui.screens.main.session_handlers import CLEAR_SESSION_TITLE
 from chrys.app.tui.screens.main.state import MainScreenServices
 from chrys.app.tui.screens.sessions import WorkflowSessionPick
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.config.errors import config_error_display
 from chrys.foundation.i18n import msg
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.startup import catalog_load_warning
@@ -201,7 +202,19 @@ class MainNavigationController:
         controller = self._locale_controller
         if controller is None:
             return
-        result = controller.switch_locale(requested_locale)
+        self._report_locale_result(controller.switch_locale(requested_locale))
+
+    def follow_language(self) -> None:
+        """Put the locale a reload left in the settings on screen; only a failed bundle has anything to say."""
+        controller = self._locale_controller
+        if controller is not None:
+            self._report_locale_result(controller.follow_settings())
+
+    def _report_locale_result(self, result: LocaleSwitchResult) -> None:
+        if result.persist_error is not None:
+            self._view.notify(
+                config_error_display(result.persist_error), title=LANGUAGE_PICKER_TITLE.bind(), severity="error"
+            )
         if result.status is not LocaleSwitchStatus.LOAD_FAILED or result.warning is None:
             return
         notice = catalog_load_warning(result.warning)

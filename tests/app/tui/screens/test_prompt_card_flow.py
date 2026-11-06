@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,10 +16,12 @@ import chrys.app.tui.i18n as tui_i18n
 from chrys.app.tui.app import ChrysApp
 from chrys.app.tui.screens.dialogs.editor import EditorDialog, EditorDialogResult
 from chrys.app.tui.screens.main.screen import MainScreen
+from chrys.app.tui.widgets.chrome.draft_editor import DraftEditor
 from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar, _ChatTextArea
 from chrys.app.tui.widgets.chrome.prompt_card import CardState, PromptCard
 from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
+from chrys.app.tui.widgets.editor import EditorMode
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
@@ -33,6 +36,7 @@ from chrys.foundation.events.types import (
     UserMessage,
 )
 from chrys.foundation.platform import get_platform
+from chrys.foundation.text.draft_references import iter_reference_labels
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
@@ -140,7 +144,12 @@ async def test_replacing_the_draft_with_a_slash_command_runs_it_and_drops_the_ca
 ) -> None:
     _global_shortcut("zzqa", "---\nagent: QA\n---\nReview this")
     bus = EventBus()
-    app = make_chrys_app(tmp_path / "state", agent_registry=_two_agent_registry(tmp_path), event_bus=bus)
+    app = make_chrys_app(
+        tmp_path / "state",
+        engine=SessionGenerationEngine(),
+        agent_registry=_two_agent_registry(tmp_path),
+        event_bus=bus,
+    )
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, sent = await _ready(pilot, monkeypatch)
         switches = await _record_switches(bus)
@@ -169,6 +178,16 @@ async def test_replacing_the_draft_with_a_slash_command_runs_it_and_drops_the_ca
         assert sent.texts == []
 
 
+def _edited(dialog: object, text: str, mode: EditorMode) -> EditorDialogResult:
+    """The result committing *dialog*'s draft with its text made *text*, as typing it there would."""
+    assert isinstance(dialog, EditorDialog)
+    draft = dialog.query_one(DraftEditor).chat_draft()
+    if text != draft.text:
+        # Typing over a placeholder makes it the user's text: no field outlives a rewrite.
+        draft = replace(draft, text=text, fields=())
+    return EditorDialogResult(accepted=True, draft=draft, cursor_location=(0, 0), mode=mode)
+
+
 async def test_full_screen_editor_result_keeps_the_card(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _global_shortcut("zzqa", "---\nagent: QA\n---\nReview this")
     app = make_chrys_app(tmp_path / "state", agent_registry=_two_agent_registry(tmp_path))
@@ -179,7 +198,7 @@ async def test_full_screen_editor_result_keeps_the_card(tmp_path: Path, monkeypa
 
         await pilot.press("ctrl+o")
         await wait_for(lambda: isinstance(app.screen, EditorDialog), pilot=pilot, description="editor open")
-        app.screen.dismiss(EditorDialogResult(accepted=True, text="Review this file instead", mode=main._editor_mode))
+        app.screen.dismiss(_edited(app.screen, "Review this file instead", main._editor_mode))
 
         await wait_for(lambda: chat.text == "Review this file instead", pilot=pilot, description="editor text applied")
         await pilot.pause()
@@ -205,7 +224,7 @@ async def test_an_editor_left_unchanged_keeps_the_draft_whole(tmp_path: Path, mo
 
         await pilot.press("ctrl+o")
         await wait_for(lambda: isinstance(app.screen, EditorDialog), pilot=pilot, description="editor open")
-        app.screen.dismiss(EditorDialogResult(accepted=True, text=before.text, mode=main._editor_mode))
+        app.screen.dismiss(_edited(app.screen, before.text, main._editor_mode))
         await wait_for(lambda: app.screen is main, pilot=pilot, description="editor closed")
         await pilot.pause()
 
@@ -258,7 +277,7 @@ async def test_an_editor_opened_before_a_draft_came_back_overwrites_it_and_ends_
         )
         await wait_for(lambda: main._prompt_card.active, pilot=pilot, description="draft landed with its card")
 
-        editor.dismiss(EditorDialogResult(accepted=True, text="Something else", mode=main._editor_mode))
+        editor.dismiss(_edited(editor, "Something else", main._editor_mode))
         await wait_for(lambda: chat.text == "Something else", pilot=pilot, description="editor text applied")
         await pilot.pause()
 
@@ -402,7 +421,12 @@ async def test_the_card_hides_with_the_input_bar_and_comes_back_with_it(
 async def test_dont_switch_button_drops_the_switch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _global_shortcut("zzqa", "---\nagent: QA\n---\nReview this")
     bus = EventBus()
-    app = make_chrys_app(tmp_path / "state", agent_registry=_two_agent_registry(tmp_path), event_bus=bus)
+    app = make_chrys_app(
+        tmp_path / "state",
+        engine=SessionGenerationEngine(),
+        agent_registry=_two_agent_registry(tmp_path),
+        event_bus=bus,
+    )
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, sent = await _ready(pilot, monkeypatch)
         switches = await _record_switches(bus)
@@ -927,3 +951,51 @@ async def test_the_cards_model_row_measures_against_what_the_target_agent_would_
     async with app.run_test(size=(120, 40)) as pilot:
         main, _chat, _sent = await _ready(pilot, monkeypatch)
         assert main._prompt_card_current_model("Bound")[0] == runs
+
+
+async def test_a_command_in_a_folded_paste_shows_on_the_card_and_runs_with_its_shortcut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _global_shortcut("zzstatus", "Status: !`echo clean`")
+    bus = EventBus()
+    app = make_chrys_app(
+        tmp_path / "state",
+        agent_registry=_two_agent_registry(tmp_path),
+        event_bus=bus,
+        engine=SessionGenerationEngine(),
+    )
+    async with app.run_test(size=(120, 40)) as pilot:
+        main, chat, sent, _switches = await _ready_with_engine_echo(pilot, monkeypatch, bus)
+        await _expand_with_card(pilot, main, chat, "zzstatus", "Status: !`echo clean`")
+
+        pasted = "one\ntwo\nthree\n!`echo pasted`"
+        chat.select_all()
+        chat.post_message(events.Paste(pasted))
+        await wait_for(lambda: chat.text == "[Pasted text #1 +3 lines]", pilot=pilot, description="paste folded")
+
+        state = _card(main).state
+        assert state is not None
+        assert state.commands == 1
+        await pilot.press("enter")
+        await wait_for(lambda: sent.texts == [pasted], pilot=pilot, description="sent with its shortcut")
+        assert sent.refs[-1] is not None and sent.refs[-1].name == "zzstatus"
+
+
+async def test_expanding_a_shortcut_keeps_the_labels_typed_as_its_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _global_shortcut("zzpair", "First: $1\nRest: $2")
+    app = make_chrys_app(tmp_path / "state", agent_registry=_two_agent_registry(tmp_path))
+    async with app.run_test(size=(120, 40)) as pilot:
+        _main, chat, _sent = await _ready(pilot, monkeypatch)
+        await _type(pilot, "/zzpair ")
+        assert chat.insert_reference("image", "/shots/a.png")
+        assert chat.insert_reference("quote", "said")
+        await _type(pilot, "more")
+
+        await pilot.press("tab")
+        await wait_for(lambda: chat.text.startswith("First:"), pilot=pilot, description="shortcut expanded")
+
+        assert chat.text == "First: [Image #1]\nRest: [Quote #1] more"
+        live = [chat.text[label.start : label.end] for label in iter_reference_labels(chat.text, chat.references)]
+        assert live == ["[Image #1]", "[Quote #1]"]

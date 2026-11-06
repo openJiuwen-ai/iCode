@@ -1111,6 +1111,27 @@ async def test_restore_input_text_hands_back_a_refused_queued_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_queued_message_with_labels_is_still_the_message_its_sent_text_names() -> None:
+    """The composer holds labels and the hand-back holds what they sent: the same message, labels kept."""
+    async with _InputBarApp().run_test(size=(120, 15)) as pilot:
+        input_bar = pilot.app.query_one(InputBar)
+        text_area = input_bar.query_one("#chat-input", _ChatTextArea)
+        adapter = _draft_restore_adapter(input_bar)
+        text_area.focus()
+        text_area.insert("explain")
+        assert input_bar.insert_reference("quote", "it failed")
+        sent = input_bar.draft().sent_text()
+        input_bar.lock_with_text()
+
+        restore = adapter.restore_input_text(sent)
+
+        assert restore is not None
+        assert not input_bar.locked
+        assert input_bar.value == "explain [Quote #1] "
+        assert input_bar.draft().sent_text() == sent == "explain “it failed”"
+
+
+@pytest.mark.asyncio
 async def test_restore_input_text_unlocks_before_deferring_to_a_live_draft() -> None:
     """Abandoned injections still unlock the bar even when the restore is skipped."""
     async with _InputBarApp().run_test(size=(120, 15)) as pilot:

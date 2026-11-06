@@ -215,7 +215,6 @@ class ToolsConfig:
     """Tool set configuration for an agent profile."""
 
     builtins: list[str] = field(default_factory=list)
-    custom: list[str] = field(default_factory=list)
     mcp: list[MCPServerConfig] = field(default_factory=list)
     shell_filter: ShellFilterConfig | None = None
     web_search: WebSearchConfigPatch | None = None
@@ -370,6 +369,8 @@ class AgentProfile:
     acp: AcpAgentConfig | None = None
     instructions: str = ""
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    extensions: list[str] = field(default_factory=list)
+    """The Python extensions the agent loads, by id, in order; one that is not installed stays listed."""
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     approval: ApprovalConfig = field(default_factory=ApprovalConfig)
     sub_agents: SubAgentsConfig = field(default_factory=SubAgentsConfig)

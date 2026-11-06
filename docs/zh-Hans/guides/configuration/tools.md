@@ -2,7 +2,7 @@
 
 内置工具为智能体提供访问文件、搜索内容、执行 Shell 命令以及使用其他 iCode 功能的能力。本指南介绍如何在终端用户界面（Terminal User Interface，TUI）中为智能体启用或停用内置工具类别。
 
-MCP 服务器提供的工具不属于内置工具，需要在 [MCP 配置](../extensions/mcp.md)中单独管理。
+MCP 服务器提供的工具不属于内置工具，需要在 [MCP 配置](../extensions/mcp.md)中单独管理。[Python 扩展](../extensions/python-extensions.md)中的工具在同一个“工具”标签页的“扩展”下启用。
 
 需要查询智能体配置和 Hooks 中使用的工具类别值及具体工具名称时，参阅[工具类别和名称](../../reference/tool-kinds-and-names.md)。
 

@@ -547,11 +547,23 @@ class LiveTranscriptRenderer:
         await self._mount.mount_transcript_widget(msg)
         self._ui.on_status_message_mounted()
 
-    async def add_retry(self, message: str, attempt: int, max_attempts: int, delay_seconds: int) -> None:
-        """Display a retry notice, replacing any trailing status widget."""
+    async def add_retry(
+        self,
+        message: str,
+        attempt: int,
+        max_attempts: int,
+        delay_seconds: int,
+        *,
+        deadline: float | None = None,
+        wait_id: str = "",
+    ) -> None:
+        """Display a retry notice, replacing any trailing status widget.
+
+        With the wait's *deadline* (``time.monotonic()``) it counts down; see :class:`RetryMessage`.
+        """
         await self._status.remove_trailing_status()
         self._tools.end_group()
-        msg = RetryMessage(message, attempt, max_attempts, delay_seconds)
+        msg = RetryMessage(message, attempt, max_attempts, delay_seconds, deadline=deadline, wait_id=wait_id)
         await self._mount.mount_transcript_widget(msg)
         self._ui.on_status_message_mounted()
 

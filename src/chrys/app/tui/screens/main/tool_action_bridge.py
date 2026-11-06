@@ -15,6 +15,7 @@ from chrys.foundation.events.types import (
     HookConfirmationResponse,
     InvocationAbortRequested,
     InvocationRetryRequested,
+    RetryWaitSkip,
     ShellToBackground,
     SleepSkip,
 )
@@ -44,6 +45,11 @@ class ToolActionBridge:
         """Publish a sleep-skip request."""
         await self._publisher.publish(SleepSkip(call_id=call_id))
         self._log(f"SleepSkip call={call_id}")
+
+    async def skip_retry_wait(self, wait_id: str) -> None:
+        """Publish a request to retry now instead of waiting out the backoff."""
+        await self._publisher.publish(RetryWaitSkip(wait_id=wait_id))
+        self._log(f"RetryWaitSkip wait={wait_id}")
 
     async def move_shells_to_background(self) -> None:
         """Publish a request to move the main agent's running shell commands to the background."""

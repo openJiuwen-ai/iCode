@@ -61,7 +61,7 @@ OpenTelemetry 默认关闭。可在终端用户界面（Terminal User Interface�
 
 远端导出需要已运行且接收 OTLP/gRPC 的 OTLP 收集器。配置时，请使用收集器提供的端点和认证信息。
 
-下文的标准 `OTEL_*` 变量也可以写在工作目录的 `.env` 文件或用户 `.env` 文件（macOS / Linux：`~/.chrys/.env`；Windows：`%APPDATA%\chrys\.env`）中。启动时，这些文件中的值会覆盖 shell 中导出的同名变量。
+请在启动 iCode 的环境中设置下文的标准 `OTEL_*` 变量。修改后需重启 iCode 才会生效；iCode 不加载 `.env` 文件。
 
 ### 端点优先级
 

@@ -19,7 +19,7 @@ from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.util.removal import remove_children_shielded
 from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeModelDetails
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block, sanitize_legacy_scalar
 from chrys.foundation.platform.files import surrogate_safe_text
 
 if TYPE_CHECKING:
@@ -83,6 +83,7 @@ _NO_MODEL_PROFILE = msg(
 )
 _CONTEXT_TOOLS = msg("tui.runtime_details.section.context_tools", fallback="Context management tools")
 _SUB_AGENT_TOOLS = msg("tui.runtime_details.section.sub_agent_tools", fallback="Sub-agent tools")
+_UNAVAILABLE_EXTENSIONS = msg("tui.runtime_details.section.unavailable_extensions", fallback="Unavailable extensions")
 _NO_TOOLS = msg(
     "tui.runtime_details.empty.tools",
     fallback="No built-in or sub-agent tools loaded.",
@@ -305,6 +306,16 @@ class RuntimeDetailsDialog(BaseDialog[None]):
             sections.append(self._section(category, _unique(lines)))
         if web_providers and "web_search" not in self._details.builtin_tools:
             sections.append(self._section("web_search", web_providers))
+        for extension_id, names in self._details.extension_tools.items():
+            sections.append(self._section(sanitize_legacy_scalar(extension_id), _unique(names)))
+        if self._details.extension_failures:
+            # An extension's import error is its own text: it may hold terminal control sequences,
+            # and a reason may name a path whose undecodable bytes are lone surrogates.
+            lines = [
+                f"{sanitize_legacy_scalar(extension_id)}: {sanitize_legacy_block(surrogate_safe_text(reason))}"
+                for extension_id, reason in self._details.extension_failures.items()
+            ]
+            sections.append(self._section(_UNAVAILABLE_EXTENSIONS.bind(), lines))
         if self._details.context_tools:
             sections.append(self._section(_CONTEXT_TOOLS.bind(), _unique(self._details.context_tools)))
         if self._details.sub_agent_tools:

@@ -36,8 +36,8 @@ def test_acp_stdio_stdout_contains_only_json_rpc(tmp_path) -> None:
     env["USERPROFILE"] = os.fspath(home)
     env["APPDATA"] = os.fspath(tmp_path / "appdata")
     env["NO_PROXY"] = "[::1]"
-    # Both the config directory and cwd must be private: bootstrap loads the
-    # cwd's .env as well. Exercise the installed package, not repository config.
+    # Keep user configuration and the session workspace private. Exercise the
+    # installed package without reading repository configuration.
     home.mkdir()
     stderr_path = tmp_path / "acp-stderr.log"
     startup_failure: str | None = None

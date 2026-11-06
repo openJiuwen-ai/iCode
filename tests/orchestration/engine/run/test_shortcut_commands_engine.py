@@ -79,7 +79,6 @@ from chrys.service.prompt_shortcuts import (
     prompt_shortcut_folders,
 )
 from chrys.service.state.store import JsonFileStateStore
-from chrys.service.tools.registry import ToolRegistry
 from chrys.service.trajectory.preparation import PreparationOutcome
 from chrys.service.trajectory.session import trajectory_events_path
 from chrys.service.trajectory.waits import WaitOutcome
@@ -88,6 +87,7 @@ from tests.support.images import image_bytes
 from tests.support.llm_client_engines import parent_profile
 from tests.support.scripted_clients import ErrorMockChatClient
 from tests.support.scripted_wire import ScriptedWire, pin_wire_inputs, route_clients_to
+from tests.support.tool_packs import install_tools
 from tests.support.waiting import (
     ENGINE_TEST_WAIT_TIMEOUT,
     ENGINE_TURN_TIMEOUT,
@@ -202,16 +202,7 @@ async def _start(
         builder_module, "create_client", create_autospec(builder_module.create_client, side_effect=client_for)
     )
     if tools:
-        registered = list(tools)
-
-        def load_builtins(registry: ToolRegistry, *_args: object, **_kwargs: object) -> list[FunctionTool]:
-            for tool in registered:
-                registry.register(tool)
-            return registered
-
-        monkeypatch.setattr(
-            ToolRegistry, "load_builtins", create_autospec(ToolRegistry.load_builtins, side_effect=load_builtins)
-        )
+        install_tools(monkeypatch, tools)
     profile = _profile(approval or ApprovalConfig(default="auto"))
     agents = AgentProfileRegistry()
     agents.register(profile)

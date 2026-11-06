@@ -1252,3 +1252,44 @@ async def test_response_detail_logged(
     for fragment in ("'id': 'a'", "'name': 'Alpha'", "'model_id': 'm-a'", "'base_url': 'http://x/v1'", "'id': 'b'"):
         assert fragment in message, f"missing {fragment} in {message}"
     assert "响应详情" not in caplog.text, "the detail stays off the main channel"
+
+
+def test_reload_after_snapshot_keeps_catalog_entries(tmp_path: Path) -> None:
+    """B2 (upstream-merge-v0.34.0): a reload right after a catalog snapshot converges.
+
+    install_snapshot clears sources (catalog entries carry no disk-source identity
+    yet), so reload_base keeps every catalog entry in the view (disk_ids is empty);
+    the install_reload install must lose nothing and duplicate nothing.
+    """
+    directory = tmp_path / "models"
+    directory.mkdir()
+    (directory / "a.yaml").write_text("name: A\n", encoding="utf-8")
+    registry = ModelProfileRegistry()
+    assert registry.load_profiles(directory) == 1
+
+    assert registry.install_snapshot((_profile("a"), _profile("c"))) == 2
+    view = registry.reload_base()
+    registry.install_reload(view)
+    assert sorted(registry.list_ids()) == ["a", "c"]
+
+
+def test_reload_window_rollback_recovers_on_next_snapshot(tmp_path: Path) -> None:
+    """B1 (upstream-merge-v0.34.0): the accepted reload window rolls back and self-heals.
+
+    A catalog snapshot landing between reload_base and install_reload (with the disk
+    scan already behind it) is overwritten by the stale view; the next periodic
+    snapshot restore is the sanctioned recovery (design ruling 2026-11-06).
+    """
+    directory = tmp_path / "models"
+    directory.mkdir()
+    (directory / "a.yaml").write_text("name: A\n", encoding="utf-8")
+    registry = ModelProfileRegistry()
+    assert registry.load_profiles(directory) == 1
+
+    view = registry.reload_base()
+    assert registry.install_snapshot((_profile("a"), _profile("c"))) == 2
+    registry.install_reload(view)
+    assert registry.list_ids() == [], "the stale view rolls the catalog push back"
+
+    assert registry.install_snapshot((_profile("a"), _profile("c"))) == 2
+    assert sorted(registry.list_ids()) == ["a", "c"], "the next sync heals the window"

@@ -12,6 +12,7 @@ import yaml
 
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.service.profiles.coercion import coerce_bool
+from chrys.service.profiles.file_scan import ProfileDirScan, ProfileLoadError, read_profile_mapping, scan_profiles
 from chrys.service.profiles.models.options import OUTPUT_CAP_OPTION_ALIASES, output_cap_option_value
 from chrys.service.profiles.models.schema import (
     API_STYLE_CHAT_COMPLETIONS,
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class ModelProfileLoadError(Exception):
+class ModelProfileLoadError(ProfileLoadError):
     """Raised when a model profile YAML file cannot be loaded or validated."""
 
 
@@ -44,12 +45,12 @@ def _coerce_int(data: dict[str, object], field: str, default: int, path: Path) -
     value: Any = data.get(field, default)
     if isinstance(value, bool):
         msg = f"Model profile field '{field}' must be an integer in {path}, got {value!r}"
-        raise ModelProfileLoadError(msg)
+        raise ModelProfileLoadError(msg, field=field)
     try:
         return int(value)
-    except (TypeError, ValueError) as e:
+    except (TypeError, ValueError, OverflowError) as e:
         msg = f"Model profile field '{field}' must be an integer in {path}, got {value!r}"
-        raise ModelProfileLoadError(msg) from e
+        raise ModelProfileLoadError(msg, field=field) from e
 
 
 def _coerce_float(data: dict[str, object], field: str, default: float, path: Path) -> float:
@@ -60,12 +61,12 @@ def _coerce_float(data: dict[str, object], field: str, default: float, path: Pat
     value: Any = data.get(field, default)
     if isinstance(value, bool):
         msg = f"Model profile field '{field}' must be a number in {path}, got {value!r}"
-        raise ModelProfileLoadError(msg)
+        raise ModelProfileLoadError(msg, field=field)
     try:
         return float(value)
-    except (TypeError, ValueError) as e:
+    except (TypeError, ValueError, OverflowError) as e:
         msg = f"Model profile field '{field}' must be a number in {path}, got {value!r}"
-        raise ModelProfileLoadError(msg) from e
+        raise ModelProfileLoadError(msg, field=field) from e
 
 
 def _coerce_api_style(data: dict[str, object], path: Path) -> ApiStyle:
@@ -76,10 +77,9 @@ def _coerce_api_style(data: dict[str, object], path: Path) -> ApiStyle:
         if value in VALID_API_STYLES:
             return cast("ApiStyle", value)
     logger.warning(
-        "Model profile field 'api_style' must be one of %s in %s, got %r; using %r",
+        "Model profile field 'api_style' must be one of %s in %s; using %r",
         ", ".join(sorted(VALID_API_STYLES)),
         path,
-        raw,
         API_STYLE_CHAT_COMPLETIONS,
     )
     return API_STYLE_CHAT_COMPLETIONS
@@ -95,7 +95,7 @@ def _coerce_thinking_block_binding(data: dict[str, object], path: Path) -> Think
             f"Model profile field 'thinking_block_binding' must be one of "
             f"{', '.join(sorted(VALID_THINKING_BLOCK_BINDINGS))} in {path}, got {value!r}"
         )
-        raise ModelProfileLoadError(msg)
+        raise ModelProfileLoadError(msg, field="thinking_block_binding")
     return cast("ThinkingBlockBinding", value)
 
 
@@ -196,20 +196,34 @@ def load_profile_from_yaml(path: Path) -> ModelProfile:
     except (OSError, UnicodeError) as e:
         raise ModelProfileLoadError(f"Cannot read model profile file {path}: {e}") from e
 
+    return _parse_profile(path, text)
+
+
+def _parse_profile(path: Path, text: str) -> ModelProfile:
     try:
-        data = yaml.safe_load(text)
-    except yaml.YAMLError as e:
+        data = read_profile_mapping(text)
+    except (yaml.YAMLError, AttributeError, LookupError, TypeError, ValueError) as e:
         raise ModelProfileLoadError(f"Invalid YAML in {path}: {e}") from e
 
-    if not isinstance(data, dict):
-        raise ModelProfileLoadError(f"Model profile YAML must be a mapping, got {type(data).__name__} in {path}")
-
     if "name" not in data:
-        raise ModelProfileLoadError(f"Model profile YAML missing required 'name' field in {path}")
+        raise ModelProfileLoadError(f"Model profile YAML missing required 'name' field in {path}", field="name")
 
     from chrys.service.context.compaction.budgets import MIN_DERIVABLE_CONTEXT_TOKENS
 
     profile_id = data.get("id", path.stem)
+    for field, value in (("id", profile_id), ("name", data["name"])):
+        if not isinstance(value, str) or not value.strip():
+            raise ModelProfileLoadError(f"Model profile {field} must be nonempty text in {path}", field=field)
+    # Empty optional connection fields have always selected the client defaults.
+    for field in ("base_url", "api_key", "http_headers"):
+        if data.get(field) is None:
+            data[field] = ""
+    if not isinstance(data["http_headers"], str):
+        logger.warning("Model profile field 'http_headers' in %s must be a JSON string; ignoring it", path)
+        data["http_headers"] = ""
+    for field in ("provider", "model_id", "base_url", "api_key"):
+        if field in data and not isinstance(data[field], str):
+            raise ModelProfileLoadError(f"Model profile field '{field}' must be text in {path}", field=field)
     chat_options, max_output_tokens = _migrate_chat_options_output_cap(data, path)
     max_context_tokens = _coerce_int(
         data,
@@ -257,26 +271,13 @@ def load_profile_from_yaml(path: Path) -> ModelProfile:
         raise ModelProfileLoadError(f"Invalid model profile structure in {path}: {e}") from e
 
 
+def scan_profile_dir(directory: Path) -> ProfileDirScan[ModelProfile]:
+    scan = scan_profiles(directory, _parse_profile, ModelProfileLoadError, skip_hidden=False)
+    for path, issue in scan.invalid.items():
+        logger.warning("Skipping invalid model profile %s: %s", path, issue.reason)
+    return scan
+
+
 def load_profiles_from_dir(directory: Path) -> list[ModelProfile]:
-    """Load all model profile YAML files from a directory.
-
-    Non-YAML files and files that fail to parse are skipped.
-    """
-    if not directory.is_dir():
-        return []
-
-    profiles: list[ModelProfile] = []
-    for path in sorted(directory.glob("*.yaml")):
-        try:
-            profiles.append(load_profile_from_yaml(path))
-        except ModelProfileLoadError as exc:
-            logger.warning("Skipping invalid model profile %s: %s", path, exc)
-            continue
-    for path in sorted(directory.glob("*.yml")):
-        try:
-            profiles.append(load_profile_from_yaml(path))
-        except ModelProfileLoadError as exc:
-            logger.warning("Skipping invalid model profile %s: %s", path, exc)
-            continue
-
-    return profiles
+    """Return the valid profiles in the startup loader's normal order."""
+    return [profile for _, profile in scan_profile_dir(directory).loaded]

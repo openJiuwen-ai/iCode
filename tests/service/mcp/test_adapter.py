@@ -612,6 +612,7 @@ async def test_registration_revalidation_failure_releases_unregistered_lease() -
         config=config,
         functions=[function],
         mcp_tool=fake,  # type: ignore[arg-type]
+        entry=MagicMock(),
     )
     cache = MagicMock()
     cache.acquire = AsyncMock(return_value=lease)

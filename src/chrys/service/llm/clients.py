@@ -58,8 +58,9 @@ from chrys.foundation.util.header_charset import (
     model_id_charset_error,
 )
 from chrys.foundation.util.httpx_helpers import BYPASS_PROXY_MOUNTS
+from chrys.foundation.util.imports import import_off_loop
 from chrys.foundation.util.once_close import OnceClose
-from chrys.service.llm.providers import PROVIDERS, ProviderSpec
+from chrys.service.llm.providers import PROVIDERS, ProviderSpec, SdkFamily
 from chrys.service.profiles.models.options import parse_chat_options, parse_http_headers
 from chrys.service.profiles.models.schema import ModelProfile
 
@@ -72,6 +73,14 @@ if TYPE_CHECKING:
     from chrys.service.llm.wire_client import WireClient
 
 _log = logging.getLogger(__name__)
+
+# Each SDK family's modules a client imports by its first request. The OpenAI
+# client imports its resources (some 500 modules) only when a request first
+# reaches ``client.chat`` or ``client.responses``, and the Responses ones apart.
+_SDK_MODULES: dict[SdkFamily, tuple[str, ...]] = {
+    "anthropic": ("anthropic",),
+    "openai": ("openai", "openai.resources", "openai.resources.responses"),
+}
 
 
 def _build_user_agent(sdk_user_agent: str | None = None) -> str:
@@ -441,6 +450,8 @@ async def create_client(
     spec = PROVIDERS.get(provider)
     if spec is None:
         raise _unknown_provider(provider)
+    # Hundreds to thousands of modules, which the first client of a run imports.
+    await import_off_loop(*_SDK_MODULES[spec.sdk])
 
     api_key = _resolve_profile_api_key(profile)
     headers = _build_default_headers(

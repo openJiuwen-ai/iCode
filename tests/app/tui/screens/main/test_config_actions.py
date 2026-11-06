@@ -283,7 +283,7 @@ async def test_failed_settings_reload_keeps_confirmed_runtime_and_cache_without_
 
     await controller.on_model_picked("new-id")
 
-    # The durable pointer landed in the document; the user's dotenv is not touched.
+    # Saving the default writes settings.yaml and preserves any legacy .env file.
     doc = yaml.safe_load((tmp_path / "settings.yaml").read_text(encoding="utf-8"))
     assert doc["model"]["profile"]["active"] == "new-id"
     assert (tmp_path / ".env").read_text(encoding="utf-8") == "CHRYS_MODEL_PROFILE=old-id\n"

@@ -16,7 +16,7 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
 
 if TYPE_CHECKING:
-    from chrys.foundation.config.settings import Settings
+    from chrys.foundation.config.settings_store import LoadedSettings
     from chrys.orchestration.engine.build.construction import StagedBuild
     from chrys.service.mutations.tracker import MutationTracker
     from chrys.service.profiles.agents.schema import AgentProfile
@@ -24,10 +24,10 @@ if TYPE_CHECKING:
     from chrys.service.todos.tracker import TodoTracker
 
 
-def session_pin_overrides(session: ActiveSession, settings: Settings) -> dict[str, Any]:
+def session_pin_overrides(session: ActiveSession, loaded: LoadedSettings) -> dict[str, Any]:
     """Snapshot the per-session pins every re-load of *session*'s settings must carry.
 
-    *settings* is the layered load (``SettingsHandle.base``), never the
+    *loaded* is the layered load (``SettingsHandle.base``), never the
     effective value: a session's own model (``Source.SESSION`` in the handle)
     is kept apart from the load and is not a pin. Pins travel only while
     pinned, so an unpinned session picks up a changed env value on its next
@@ -38,11 +38,16 @@ def session_pin_overrides(session: ActiveSession, settings: Settings) -> dict[st
       ``--model``).
     * ``ask_user_timeout_seconds`` — pinned when ACP owns the ask_user lifetime
       (set via dataclasses.replace at launch — see app/cli/acp.py).
+    * ``session_default_model`` — the default a full ACP reload settled on for
+      this session; not a pin, since the next full reload decides it afresh.
     * ``frontend_default_max_transient_retries`` — launch-mode policy; travels
       as the reload eval context instead, and the separate env-derived override
       is deliberately re-read.
     """
+    settings = loaded.settings
     overrides: dict[str, Any] = {}
+    if loaded.session_default_model is not None:
+        overrides["session_default_model"] = loaded.session_default_model
     if session.ask_user_timeout_pinned:
         overrides["ask_user_timeout_seconds"] = settings.ask_user_timeout_seconds
     if session.model_profile_pinned:

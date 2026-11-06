@@ -409,6 +409,9 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
             self.restored = draft
             return True
 
+        def draft(self) -> ChatDraft:
+            return ChatDraft(self.value)
+
         def unlock_and_keep(self) -> None:
             self.locked = False
             order.append("unlock")
@@ -516,6 +519,9 @@ async def test_rejected_retry_keeps_mounted_action_until_next_retry_is_accepted(
             text = draft.text if isinstance(draft, ChatDraft) else draft
             self.value = text
             return True
+
+        def draft(self) -> ChatDraft:
+            return ChatDraft(self.value)
 
         def unlock_and_keep(self) -> None:
             self.locked = False

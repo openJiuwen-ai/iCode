@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import MISSING, fields
 from typing import TYPE_CHECKING, Any
 
@@ -158,6 +159,10 @@ def stored_profile_name(name: str) -> str | None:
     return load_profile_from_yaml(target).name
 
 
+# A normalization must compare and rewrite against the same revision as the editor.
+profile_write_lock = threading.RLock()
+
+
 def save_profile(profile: AgentProfile, *, target_dir: Path | None = None) -> Path:
     """Serialize *profile* to YAML and write to ``{target_dir}/{name}.yaml``.
 
@@ -173,7 +178,8 @@ def save_profile(profile: AgentProfile, *, target_dir: Path | None = None) -> Pa
     path = out_dir / f"{profile.name}.yaml"
     data = profile_to_dict(profile)
     text = dump_yaml(data)
-    atomic_write_owner_only_text(path, text)
+    with profile_write_lock:
+        atomic_write_owner_only_text(path, text)
     logger.debug("Saved agent profile to %s", path)
     return path
 
@@ -189,8 +195,9 @@ def delete_profile(name: str) -> bool:
     """
     _require_filename_safe_name(name)
     path = _user_profiles_dir() / f"{name}.yaml"
-    if path.is_file():
-        path.unlink()
-        logger.debug("Deleted agent profile %s", path)
-        return True
+    with profile_write_lock:
+        if path.is_file():
+            path.unlink()
+            logger.debug("Deleted agent profile %s", path)
+            return True
     return False

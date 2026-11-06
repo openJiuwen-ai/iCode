@@ -13,11 +13,13 @@ import psutil
 import pytest
 
 import chrys.service.prompt_shortcuts.shell as shell_module
+from chrys.foundation.text.draft_references import inert_quote
 from chrys.service.prompt_shortcuts.shell import (
     SHELL_OUTPUT_LIMIT_BYTES,
     ShellInterpolationError,
     interpolate_shell,
     run_shell_command,
+    shell_command_spans,
     shell_commands,
 )
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -34,6 +36,18 @@ def posix_shell(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_shell_commands_lists_every_placeholder_in_order_with_duplicates() -> None:
     text = "a !`git status` b !`ls -la` c !`git status`"
     assert shell_commands(text) == ["git status", "ls -la", "git status"]
+
+
+def test_a_backslash_before_the_bang_keeps_a_placeholder_text() -> None:
+    text = "run !`ls` but not \\!`rm -rf build`, then !`pwd`"
+
+    assert shell_commands(text) == ["ls", "pwd"]
+    assert shell_command_spans(text) == [(4, 9), (41, 47)]
+
+
+def test_a_quote_as_it_is_sent_holds_no_command() -> None:
+    # The escape a quote is sent with is the one this scanner reads as text.
+    assert shell_commands(inert_quote("run !`ls` then !`pwd`")) == []
 
 
 def test_shell_commands_without_placeholders_is_empty() -> None:
