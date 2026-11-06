@@ -8,6 +8,10 @@ from __future__ import annotations
 def _escape_cell(value: object) -> str:
     """Stringify and escape a cell value for use inside a Markdown table."""
     text = str(value) if value is not None else ""
+    # A table row is a single line: a raw line break would split the row and
+    # leave its remaining cells outside the table.  <br> keeps the line break
+    # visible inside the cell.
+    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
     return text.replace("|", "\\|")
 
 
@@ -15,7 +19,8 @@ def rows_to_markdown_table(rows: list[tuple]) -> str:
     """Convert a list of row tuples to a Markdown table.
 
     The first row is used as the header.  Pipe characters in cell values
-    are escaped so they don't break the table structure.
+    are escaped and line breaks become ``<br>`` so neither breaks the table
+    structure.
     """
     if not rows:
         return ""

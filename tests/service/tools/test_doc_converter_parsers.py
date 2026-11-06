@@ -851,3 +851,18 @@ def test_table_pipe_escaping() -> None:
     result = rows_to_markdown_table(rows)
     assert "| Header | Formula |" in result
     assert r"| A\|B | x \| y |" in result
+
+
+def test_table_newline_escaping() -> None:
+    """Line breaks in cell values become <br> so each table row stays one line."""
+    from chrys.service.tools.builtins.doc_converter.parsers._table import rows_to_markdown_table
+
+    rows = [("Header", "Note"), ("a\nb", "c\r\nd"), ("e\rf", "g|h\ni")]
+    result = rows_to_markdown_table(rows)
+
+    assert result.splitlines() == [
+        "| Header | Note |",
+        "| --- | --- |",
+        "| a<br>b | c<br>d |",
+        "| e<br>f | g\\|h<br>i |",
+    ]
