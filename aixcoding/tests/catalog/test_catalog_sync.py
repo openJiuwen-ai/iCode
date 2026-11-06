@@ -696,7 +696,31 @@ def test_retired_env_names_warn_and_do_not_apply(
     warnings = "\n".join(record.getMessage() for record in detail_capture)  # 方案六: detail volume
     assert retired_name in warnings, f"the retired name {retired_name} should be warned about"
     assert f"retired-value-for-{retired_name}" not in warnings, "values must not leak into the log"
-    assert retired_name not in caplog.text, "the retired-name warning stays off the main volume"
+    # logging-routing-fixes D: a still-set retired env name is a user-actionable
+    # configuration error — the one public-channel exception to 方案六's
+    # detail-only catalog routing; it must reach the main volume as a WARNING.
+    public = [
+        record for record in caplog.records if record.name == "aixcoding.catalog" and record.levelno == logging.WARNING
+    ]
+    assert any(retired_name in record.getMessage() for record in public), (
+        "the retired-name warning must reach the main volume as a WARNING (logging-routing-fixes D)"
+    )
+    assert not any(f"retired-value-for-{retired_name}" in record.getMessage() for record in public), (
+        "values must not leak into the public volume either"
+    )
+    # Pin the double-write shape (self-review S3): a DETAIL record from
+    # aixcoding.detail.catalog whose text matches the public WARNING — a text
+    # drift between the two volumes must fail here, not slip through.
+    detail_records = [
+        record
+        for record in detail_capture
+        if record.name == "aixcoding.detail.catalog" and retired_name in record.getMessage()
+    ]
+    assert detail_records, "the detail double-write must come from aixcoding.detail.catalog"
+    assert detail_records[0].levelno == catalog_module._DETAIL_LEVEL, "the detail side logs at DETAIL level"
+    assert any(detail_records[0].getMessage() == record.getMessage() for record in public), (
+        "the detail copy must match the public WARNING text"
+    )
 
 
 def test_new_env_names_take_priority(monkeypatch: pytest.MonkeyPatch) -> None:

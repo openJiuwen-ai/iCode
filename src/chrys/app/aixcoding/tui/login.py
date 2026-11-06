@@ -46,7 +46,6 @@ from chrys.kernel.aixcoding.auth import (
 )
 from chrys.kernel.aixcoding.diagnostics.logging_support import DETAIL_LEVEL
 
-logger = logging.getLogger(__name__)
 _auth_log = logging.getLogger("aixcoding.auth")
 _detail_log = logging.getLogger("aixcoding.detail.auth")
 _DETAIL_LEVEL = DETAIL_LEVEL
@@ -131,7 +130,9 @@ class LoginDialog(BaseDialog[AccountInfo | None]):
             try:
                 self._on_login_success(account)
             except Exception:
-                logger.exception("Login success callback failed; continuing to dismiss the dialog.")
+                # AIxCoding logging (batches/logging-routing-fixes, A3): login
+                # already succeeded and the dialog still dismisses — detail only.
+                _detail_log.log(_DETAIL_LEVEL, "登录成功回调失败，继续关闭登录对话框。", exc_info=True)
         self.dismiss_when_topmost(account)
 
     def _show_code(self, code: DeviceCode) -> None:
