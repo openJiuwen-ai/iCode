@@ -20,7 +20,7 @@
 
 # Shell
 *.sh text eol=lf
-# AIxCoding guard: guardctl.cmd is invoked by cmd.exe; keep CRLF so setlocal/labels parse (C138)
+# AIxCoding guard: guardctl.cmd is invoked by cmd.exe; keep CRLF so setlocal/labels parse (C142)
 *.cmd text eol=crlf
 
 # CSS

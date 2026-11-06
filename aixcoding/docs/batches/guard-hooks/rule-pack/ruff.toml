@@ -3,7 +3,7 @@
 # 历史归档：0.28 分支仓库根规则包曾使用的 lint 配置。
 #
 # 规则包已迁入 src/chrys/kernel/aixcoding/guard/pack/，现行门禁由 pyproject.toml
-# 的 C137 最小条目承载；本文件仅保留迁移记录，不参与任何命令。
+# 的 C141 最小条目承载；本文件仅保留迁移记录，不参与任何命令。
 
 line-length = 120
 target-version = "py39"

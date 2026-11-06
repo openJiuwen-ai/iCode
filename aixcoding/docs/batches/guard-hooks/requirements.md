@@ -44,7 +44,7 @@ hooks 并存策略 / 文档品牌词）按 0.33.0 基线机制重审（见 desig
       含 T-MCP-01～03 与必需规则 ID 集）；
 - [ ] 部署验证脚本（对已装规则包跑 MANUAL_TESTS 全量用例）三平台全绿；
 - [ ] wheel / 离线包内含规则包全部运行时资产（打包冒烟；无 force-include、无仓库根副本）；
-- [ ] `gen_customizations.py --strict` 对账全绿（C136/C137 已登记）；
+- [ ] `gen_customizations.py --strict` 对账全绿（C140/C141 已登记）；
 - [ ] ruff / ruff format / ty 全绿（仅 design「R13 新增豁免清单」列出的最小豁免）。
 
 ## 开放问题

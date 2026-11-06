@@ -16,7 +16,7 @@
 - **行为锚定测试**（§5：真调上游符号断言行为，禁 mock 锚点本身）：
   - `get_platform()`（假设 2）：真调断言 `config_dir` 路径语义；
   - hooks 事件/配置契约（假设 3）：用上游 `service.hooks.loader` 真实加载包内 `hooks.yaml`；
-  - `bootstrap_runtime()`（C136，假设 1）：临时环境隔离子进程真实调用，断言护栏落位；
+  - `bootstrap_runtime()`（C140，假设 1）：临时环境隔离子进程真实调用，断言护栏落位；
   - `PYAPP_PROJECT_NAME`（假设 4）：扫描构建脚本；
   - hatch 包内资产（假设 5）：`test_packaging.py` 校验运行时文件完整、无仓库根副本、无
     force-include 映射；wheel 内容实证归 CI Build。
@@ -31,8 +31,8 @@
 | 3. 每条规则一个正例且必需 ID 不缺 | `guard_pack_selftest.py` 70 条；`test_every_required_rule_id_is_present` | 规则自检 |
 | 4. 部署验证三平台全绿（MANUAL_TESTS 64 例） | CI guard job 的 `verify_guard_deployed.py` | 端到端 |
 | 5. wheel 内含全部运行时资产 | `test_packaging.py::test_runtime_pack_is_complete_and_fully_classified`、`::test_hatch_packages_the_pack_without_a_force_include_mapping`；CI Build / wheel 检查 | 契约 + 端到端 |
-| 6. `gen_customizations --strict` 全绿 | `verify.py`（C136/C137 登记在位） | 契约 |
-| 7. ruff / format / ty 全绿 | C137 最小豁免下跑三门禁；无 T201/noqa/ty override | 契约 |
+| 6. `gen_customizations --strict` 全绿 | `verify.py`（C140/C141 登记在位） | 契约 |
+| 7. ruff / format / ty 全绿 | C141 最小豁免下跑三门禁；无 T201/noqa/ty override | 契约 |
 | 8. 非法规则配置与决策写入故障不得静默放行 | `guard_pack_selftest.py::test_malformed_rules_are_rejected_instead_of_skipped`、`::test_bad_confirm_disposition_is_rejected`、`::test_prompt_hook_returns_nonzero_when_block_decision_cannot_be_written` | 规则 + 子进程 |
 | 9. F7 写入范围无绕过 | selftest 的紧贴重定向 / `zip` / `Copy-Item`·`Move-Item` 用例；`test_guard_core.py` 的真实 junction/symlink 双入口用例 | 规则 + 真实文件系统 |
 

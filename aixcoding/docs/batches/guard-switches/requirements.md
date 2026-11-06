@@ -68,7 +68,7 @@ Windows 免 uv 入口（`guardctl.cmd`）。本批次把该能力移植到 0.33.
 - [ ] 环境变量统一 `AIXCODING_GUARD_RULES` / `_AUDIT` / `_STATE`；
 - [ ] CI `guard` job 三平台通过（含 `PYTHONUTF8: "1"`）；
 - [ ] ruff / ruff format / ty（三平台）/ `check_docs.py` 全绿；
-- [ ] `gen_customizations.py --strict` 全绿（新增 C138）。
+- [ ] `gen_customizations.py --strict` 全绿（新增 C142）。
 
 ## 开放问题
 

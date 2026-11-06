@@ -30,7 +30,7 @@ _BOOTSTRAP_SCRIPT = textwrap.dedent(
     """
     from chrys.orchestration.startup import bootstrap_runtime
 
-    bootstrap_runtime(dotenv_override=False, apply_patches=False, setup_telemetry=False)
+    bootstrap_runtime(apply_patches=False, setup_telemetry=False)
     print("BOOTSTRAP_OK")
     """
 )
@@ -44,7 +44,7 @@ _BOOTSTRAP_SURVIVES_FAILURE_SCRIPT = textwrap.dedent(
         raise RuntimeError("boom")
 
     guard_install.install_guard_hooks = _boom
-    bootstrap_runtime(dotenv_override=False, apply_patches=False, setup_telemetry=False)
+    bootstrap_runtime(apply_patches=False, setup_telemetry=False)
     print("BOOTSTRAP_SURVIVED")
     """
 )
@@ -106,7 +106,7 @@ def test_guard_hooks_yaml_loads_under_the_upstream_contract() -> None:
 
 
 def test_bootstrap_installs_the_guard(tmp_path: Path) -> None:
-    """Anchor: the C136 wiring — bootstrap really installs into the config dir."""
+    """Anchor: the C140 wiring — bootstrap really installs into the config dir."""
     completed = _run_bootstrap(_BOOTSTRAP_SCRIPT, tmp_path)
 
     assert completed.returncode == 0, completed.stderr[-2000:]

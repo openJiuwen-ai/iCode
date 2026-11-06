@@ -40,7 +40,7 @@
   命令改为新模块/脚本路径。
 
 上游接触面合计 **2 文件 18 行**：`orchestration/startup.py`（+8）+ `pyproject.toml`
-（C137 最小 lint/type 配置 +10）。
+（C141 最小 lint/type 配置 +10）。
 
 结构：
 
@@ -82,13 +82,13 @@ force-include）。第二 AI 自审 F1 指出仓库根落点与 R4 冲突，责�
 |---|---|---|---|---|---|
 | D1 接线点 | **A. `bootstrap_runtime()` 内一处** | 覆盖全部会话入口；与基线统一入口机制同构（R12），受 `test_entrypoint_bootstrap` 守护 | `serve` / `install` / `uninstall` 不触发安装 | startup.py 1 文件 +8 行 | **选 A** |
 | | B. app.py `main()` 顶部照旧形态 | 所有子命令都装 | 绕开基线 bootstrap，R12 反例风险 | app.py 1 文件 ~10 行 | 否决 |
-| D2 规则包落点 | **A. tier 内 `kernel/aixcoding/guard/pack/` 随包** | 源码树＝安装树，单一资产路径；符合 R4/R9 | payload 落入 src 扫描面，需要最小 lint/type 豁免 | pyproject 10 行（C137） | **选 A（F1 责任人裁决）** |
+| D2 规则包落点 | **A. tier 内 `kernel/aixcoding/guard/pack/` 随包** | 源码树＝安装树，单一资产路径；符合 R4/R9 | payload 落入 src 扫描面，需要最小 lint/type 豁免 | pyproject 10 行（C141） | **选 A（F1 责任人裁决）** |
 | | B. 仓库根 + force-include | 天然出圈，旧分支验证形态 | 违反 R4 新文件落点，需规范例外 | pyproject force-include 10 行 | 否决 |
 | D3 运维文档落点 | **A. `aixcoding/docs/batches/guard-hooks/rule-pack/`** | 符合 R4 文档落点；维护者随批次查阅 | 不进 wheel | 零 | **选 A** |
 | | B. 随 wheel 分发 | 用户包内可查 | 文档无运行价值，且需额外打包配置 | pyproject 增条目 | 否决 |
 | D4 手工安装器 | **A. `aixcoding/tools/guard_install_merge.py`** | 保留排查/特殊环境通道，符合 R4 | 非运行时资产 | 零 | **选 A** |
 | | B. 退役 | 目录更干净 | 丢手工复现通道 | 零 | 否决 |
-| D5 lint 配置 | **A. 主仓最小例外（C137）** | 单一 lint 体系；例外可在 pyproject 集中审计 | R2 增 pyproject 10 行 | pyproject 10 行 | **选 A** |
+| D5 lint 配置 | **A. 主仓最小例外（C141）** | 单一 lint 体系；例外可在 pyproject 集中审计 | R2 增 pyproject 10 行 | pyproject 10 行 | **选 A** |
 | | B. pack 内自带 ruff.toml | 不污染主配置 | 在 src 内制造第二套门禁，遮蔽主仓规则 | 零上游行数但治理冲突 | 否决 |
 
 **R12 专题（目标基线下是否有比旧实现更好的方案）**：
@@ -103,8 +103,8 @@ force-include）。第二 AI 自审 F1 指出仓库根落点与 R4 冲突，责�
 
 | 文件 | 改什么 | 预估行数 | 标记注释位置 |
 |---|---|---|---|
-| `src/chrys/orchestration/startup.py` | `bootstrap_runtime()` 函数体开头加护栏安装：lazy import `chrys.kernel.aixcoding.guard.guard_install.install_guard_hooks` + `try/except Exception` 全吞错 + `logger.warning`（fail-open） | +8 行 | 调用处上方单行标记（C136） |
-| `pyproject.toml` | 最小 lint/type 配置：payload 的 py39 per-file target、中文文案 RUF001/2/3 per-file ignores；无打包映射 | +10 行（含注释与 C137 标记） | 新增条目段首单行标记（C137） |
+| `src/chrys/orchestration/startup.py` | `bootstrap_runtime()` 函数体开头加护栏安装：lazy import `chrys.kernel.aixcoding.guard.guard_install.install_guard_hooks` + `try/except Exception` 全吞错 + `logger.warning`（fail-open） | +8 行 | 调用处上方单行标记（C140） |
+| `pyproject.toml` | 最小 lint/type 配置：payload 的 py39 per-file target、中文文案 RUF001/2/3 per-file ignores；无打包映射 | +10 行（含注释与 C141 标记） | 新增条目段首单行标记（C141） |
 
 **R1 自查（必答）**：业务逻辑全部外置定制包（guard_install 与 payload 均在
 `src/chrys/kernel/aixcoding/guard/`；测试/工具/文档按 R4 分流）？是。接线点最小化
@@ -128,11 +128,11 @@ force-include）。第二 AI 自审 F1 指出仓库根落点与 R4 冲突，责�
 
 | 形态 | 位置 | 为什么必须 | 批准指向 |
 |---|---|---|---|
-| pytest/ruff per-file target `py39` | `pyproject.toml`（C137） | hook 子进程使用 PATH 上任意 Python（3.9+）；主仓 py314 format 会把带括号 except 改写为 PEP 758，py<3.14 语法错误导致 hook fail-closed | design 本文 + C137 |
-| RUF001/2/3 per-file ignores | `pyproject.toml`（C137） | 规则用户文案、运维输出与中文注释使用全角标点；改 ASCII 会改变用户可见文案 | design 本文 + C137 |
+| pytest/ruff per-file target `py39` | `pyproject.toml`（C141） | hook 子进程使用 PATH 上任意 Python（3.9+）；主仓 py314 format 会把带括号 except 改写为 PEP 758，py<3.14 语法错误导致 hook fail-closed | design 本文 + C141 |
+| RUF001/2/3 per-file ignores | `pyproject.toml`（C141） | 规则用户文案、运维输出与中文注释使用全角标点；改 ASCII 会改变用户可见文案 | design 本文 + C141 |
 | `# ty: ignore[unresolved-import]` ×2 | `pack/_prompt_guard.py`、`pack/_tool_guard.py` | 脚本复制到用户 hooks 目录后以同目录名导入 `_guard_core`，静态解析无法成立 | design 本文 |
-| RUF002/003 per-file ignores | `aixcoding/tests/guard/**`（C137） | guard 测试资产（用例消息、中文 docstring、部署验证输出）使用全角标点；`--isolated` 实测去掉豁免后单文件 127 处真实命中（peer review 2026-11-06 复核）；目录级形态下其余 4 个 pytest 文件 ruff 探针零命中，后续新测试自动继承免再走 R13 呈批 | design 本文 + C137 |
-| RUF001/2/3 per-file ignores | `aixcoding/tools/guard_install_merge.py`（C137） | 手工安装器的中文输出与注释；不在 `aixcoding/tests/**` 既有豁免池内，需自带 RUF001 | design 本文 + C137 |
+| RUF002/003 per-file ignores | `aixcoding/tests/guard/**`（C141） | guard 测试资产（用例消息、中文 docstring、部署验证输出）使用全角标点；`--isolated` 实测去掉豁免后单文件 127 处真实命中（peer review 2026-11-06 复核）；目录级形态下其余 4 个 pytest 文件 ruff 探针零命中，后续新测试自动继承免再走 R13 呈批 | design 本文 + C141 |
+| RUF001/2/3 per-file ignores | `aixcoding/tools/guard_install_merge.py`（C141） | 手工安装器的中文输出与注释；不在 `aixcoding/tests/**` 既有豁免池内，需自带 RUF001 | design 本文 + C141 |
 
 未新增：T201 豁免（手工工具改用 `sys.stdout.write`）、`# noqa`、ty 文件级 override、
 force-include、仓库根例外。`aixcoding/tests/**` 既有豁免仍仅 RUF001，未扩大；
@@ -182,8 +182,8 @@ force-include、仓库根例外。`aixcoding/tests/**` 既有豁免仍仅 RUF001
 
 | id | 落点 | marker 锚 | 预期计数 | anchor | risk | removal_condition |
 |---|---|---|---|---|---|---|
-| C136 | src/chrys/orchestration/startup.py | AIxCoding guard: install bundled security guard hooks | 1 | `bootstrap_runtime`（orchestration/startup.py，含入口豁免清单） | 中（改核心引导函数） | 〔上游机制替代〕上游自带 hook 规则包分发/安装机制，或安全护栏特性整体退役（届时按 UPGRADE-RUNBOOK §5 淘汰检查呈报裁决） |
-| C137 | pyproject.toml | AIxCoding guard: bundled rule pack lint profile | 1 | `[tool.ruff.per-file-target-version]` 与 `[tool.ruff.lint.per-file-ignores]` 的 guard 条目（门禁配置，静态声明） | 高（lint/type 门禁配置） | 〔上游机制替代〕payload 最低解释器提升到 3.14 且文案改为 ASCII 后摘除；或护栏整体退役时摘除 |
+| C140 | src/chrys/orchestration/startup.py | AIxCoding guard: install bundled security guard hooks | 1 | `bootstrap_runtime`（orchestration/startup.py，含入口豁免清单） | 中（改核心引导函数） | 〔上游机制替代〕上游自带 hook 规则包分发/安装机制，或安全护栏特性整体退役（届时按 UPGRADE-RUNBOOK §5 淘汰检查呈报裁决） |
+| C141 | pyproject.toml | AIxCoding guard: bundled rule pack lint profile | 1 | `[tool.ruff.per-file-target-version]` 与 `[tool.ruff.lint.per-file-ignores]` 的 guard 条目（门禁配置，静态声明） | 高（lint/type 门禁配置） | 〔上游机制替代〕payload 最低解释器提升到 3.14 且文案改为 ASCII 后摘除；或护栏整体退役时摘除 |
 
 批次锚注：guard_install 依赖 `foundation/platform::get_platform`（假设 2）、hooks 事件与
 配置契约（假设 3）、PyApp 数据目录名（假设 4）、hatch 包内资产打包（假设 5）——升级时
@@ -196,11 +196,11 @@ force-include、仓库根例外。`aixcoding/tests/**` 既有豁免仍仅 RUF001
 - **hook 层 fail-closed 与安装层 fail-open 是两层独立语义**（前者为旧设计刻意选择：规则
   引擎起不来时宁可拦下也不放行），迁移不改变该分层。
 - **上游 hooks 契约漂移**（升级 0.34+）：`hook validate` + selftest + 部署验证三道侦测；
-  登记点 C136/C137 anchor 提示核对。
-- **决策错了会怎样**：接线点选 bootstrap 若未来上游重构 bootstrap（拆分/更名），C136 冲突
-  面为 8 行一处标记，重挂成本低；C137 仅 lint/type 配置，上游若改 ruff/ty 配置结构，
+  登记点 C140/C141 anchor 提示核对。
+- **决策错了会怎样**：接线点选 bootstrap 若未来上游重构 bootstrap（拆分/更名），C140 冲突
+  面为 8 行一处标记，重挂成本低；C141 仅 lint/type 配置，上游若改 ruff/ty 配置结构，
   门禁测试立即暴露，回滚即删条目。
-- **回滚**：删 startup.py 接线 8 行 + 删 pyproject C137 条目 + 删
+- **回滚**：删 startup.py 接线 8 行 + 删 pyproject C141 条目 + 删
   `src/chrys/kernel/aixcoding/guard/` + 删 `aixcoding/tests/guard/` +
   `aixcoding/tools/guard_install_merge.py` + 本目录 `rule-pack/` + CI 摘除 guard 步骤；
   用户环境清理：删 `config_dir/hooks/guard/` 并从 `hooks.yaml` 移除两条目（或还原

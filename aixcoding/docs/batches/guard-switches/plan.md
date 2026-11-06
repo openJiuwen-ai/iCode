@@ -26,7 +26,7 @@
 | 10 | 安装器测试 +2 条 | `aixcoding/tests/guard/test_guard_install.py` | 完成（98b30006） |
 | 11 | 打包测试 +2 个文件名 | `aixcoding/tests/guard/test_packaging.py` | 完成（98b30006） |
 | 12 | 部署验证写限制态状态文件 | `aixcoding/tests/guard/verify_guard_deployed.py` | 完成（98b30006） |
-| 13 | `.gitattributes` +1 行（C138，R2）；CI guard job +`PYTHONUTF8` | 仓库根 / `.github/workflows/aixcoding-tests.yml` | 完成（98b30006） |
+| 13 | `.gitattributes` +1 行（C142，R2）；CI guard job +`PYTHONUTF8` | 仓库根 / `.github/workflows/aixcoding-tests.yml` | 完成（98b30006） |
 | 14 | 文档：`SWITCHES.md` 新增；`README`/`OPERATIONS`/`PORTING`/`MANUAL_TESTS` 增补 | `.../rule-pack/` | 完成（98b30006） |
 | 15 | 验证：自检 + 部署验证 + `chrys_test --smart` + ruff/format/ty + `check_docs` + `gen_customizations --strict` | — | 完成（self-review/verification 留痕） |
 | 16 | 双 AI 自审 → `self-review.md` → 责任人签认 | 本目录 | 完成（签认 2026-11-05） |
