@@ -16,6 +16,8 @@
 curl -fsSL http://82.187.34.98/aixcoding/file/aixcoding/install.sh | bash
 ```
 
+不要加 `sudo` 或在 root 账户下运行；安装只写入当前用户目录，无需管理员权限。
+
 ### Windows
 
 打开 PowerShell，复制并执行以下整行命令：

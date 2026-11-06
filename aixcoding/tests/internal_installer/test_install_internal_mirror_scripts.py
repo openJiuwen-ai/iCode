@@ -692,6 +692,10 @@ class _PsMachine:
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            # AIxCoding tests: pin UTF-8 (CLIXML stderr may carry non-ASCII user names) so
+            # the default locale encoding (GBK on Chinese Windows) cannot null out streams.
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             check=False,
         )

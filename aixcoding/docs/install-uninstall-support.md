@@ -304,6 +304,7 @@ Get-FileHash -Algorithm SHA256 .\<安装包文件名>
 | 包内缺 `aixcoding-cli` | 核对包平台、根目录结构和是否为历史包 |
 | Windows 缺根目录 exe / 自检或 install 非零 | 安装失败，临时目录由 finally 清理；保留完整错误 |
 | Rosetta 下载错架构 | 检查 `sysctl.proc_translated=1` 时应选择 `macos-aarch64` |
+| POSIX 脚本以 root / `sudo` 运行 | 安装目录与 rc 写入随 `$HOME` 落到 `/root`（如 `/root/.local/bin`、`/root/.bashrc`），实际用户不可见；脚本无 root 检测（按 internal-installer 评审 C4 裁决，仅文档提示）。处置＝`su` 到目标用户重装；ps1 走 `LOCALAPPDATA` 无此问题 |
 
 ## 7. 卸载与清理
 

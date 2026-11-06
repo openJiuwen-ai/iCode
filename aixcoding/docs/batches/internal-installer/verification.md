@@ -87,6 +87,53 @@ GLM-5.3 在完整工作区独立评审中复跑并确认：
 
 该复验是独立评审证据，不新增任何平台实测结论；下列五项缺口保持不变。
 
+## 2026-11-06：PR #97 CI 平台证据（第 3 轮外部评审触发追加）
+
+head `4c85018c` 的 PR CI（GitHub Actions check-runs API 查证，2026-11-06 02:04–02:18
+UTC）：23 个 check run 全绿，含 **Custom tests (ubuntu-latest) 与 Custom tests
+(windows-latest) 均 success**。
+
+- ubuntu-latest 的 Custom tests 实跑了本批契约测试文件的 POSIX 用例：**缺口 1 的
+  Linux 部分由 CI 关闭**（46 个 POSIX 用例在 Linux 实跑通过）。
+- macOS 无对应 Custom tests job（aixcoding-tests.yml 未定义），**缺口 1 的 macOS
+  部分维持**。
+- CI Windows runner 用户名与临时路径为纯 ASCII，未覆盖 C1 的中文 Windows 编码
+  场景；该场景证据见下节。
+
+## 2026-11-06：第 3 轮外部评审（peer review）核实与修复
+
+外部评审（head `4c85018c`）提出 C1–C4 四条候选，逐项只读核实后按责任人裁决
+（2026-11-06，"按照你的建议处理"）实施：
+
+- **C1（采纳，代码修复）**：契约测试在中文 Windows 默认编码下失败——
+  `_PsMachine._run` 的 `subprocess.run(..., text=True)` 未显式指定编码，GBK 默认
+  解码 CLIXML stderr 中的非 ASCII 字节抛 `UnicodeDecodeError`，使 `stderr=None`、
+  断言处 `TypeError`。本机复现（不设 `PYTHONUTF8=1`，`--basetemp` 指向纯 ASCII
+  路径）：修复前 **3 failed / 41 passed / 46 skipped**。修复＝`_run` 显式
+  `encoding="utf-8", errors="replace"`。此前本地全绿系 `PYTHONUTF8=1` 掩盖、
+  CI 系 ASCII 用户名掩盖；被测 ps1/sh 脚本自身无编码问题。修复后复验结果见下。
+- **C2（采纳，本节及上节即处置）**：verification 与 CI 事实不一致——Linux 侧
+  契约测试实际已由 PR #97 CI 覆盖，缺口 1 表述按活文档原则以上节追加更新。
+- **C3（采纳，文档一行修正）**：`design.md` §6 R12 表"幂等跳过"行未限定平台
+  （支持手册 §6.2 与 ps1 实现本就一致限定 POSIX）。修正＝该行补"（仅 POSIX sh；
+  ps1 维持重跑即装）"限定，无行为改动。
+- **C4（采纳，文档化）**：POSIX 脚本无 root/sudo 检测，root 下 `$HOME` 使安装与
+  rc 写入落到 `/root`，对实际用户不可见（ps1 走 `LOCALAPPDATA` 无此问题）。处置＝
+  INSTALL.md 与支持手册 §6.4 各加 root/sudo 提示，不加代码检测（按裁决）。
+
+修复后复验（2026-11-06，Windows 11 x64，**不设 `PYTHONUTF8`**，`--basetemp` 指向
+纯 ASCII 路径以排除路径编码干扰）：
+
+```bat
+uv run pytest aixcoding/tests/internal_installer/test_install_internal_mirror_scripts.py -n0
+```
+
+结果：**44 passed / 46 skipped，exit 0**（与修复前同条件的 3 failed 对照，C1 关闭）。
+治理门禁同步通过：ruff check / format（测试文件）All checks passed；
+`check_docs.py` OK（20 ADR / 28 design / 27 self-review）；
+`gen_customizations.py --strict` 98 登记行 / 135 marker / 0 warning，零新增登记、
+零漂移（C 类登记预期不变，四项处置均不触 marker）。
+
 ## 尚未执行的验收与覆盖缺口
 
 1. **Linux/macOS 真实契约测试未运行**：46 个 POSIX 用例的 Windows skip 不是通过证据；
