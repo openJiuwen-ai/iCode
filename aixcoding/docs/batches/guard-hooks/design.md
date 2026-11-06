@@ -133,9 +133,16 @@ force-include）。第二 AI 自审 F1 指出仓库根落点与 R4 冲突，责�
 | pytest/ruff per-file target `py39` | `pyproject.toml`（C137） | hook 子进程使用 PATH 上任意 Python（3.9+）；主仓 py314 format 会把带括号 except 改写为 PEP 758，py<3.14 语法错误导致 hook fail-closed | design 本文 + C137 |
 | RUF001/2/3 per-file ignores | `pyproject.toml`（C137） | 规则用户文案、运维输出与中文注释使用全角标点；改 ASCII 会改变用户可见文案 | design 本文 + C137 |
 | `# ty: ignore[unresolved-import]` ×2 | `pack/_prompt_guard.py`、`pack/_tool_guard.py` | 脚本复制到用户 hooks 目录后以同目录名导入 `_guard_core`，静态解析无法成立 | design 本文 |
+| RUF002/003 per-file ignores | `aixcoding/tests/guard/guard_pack_selftest.py`（C137） | 用例消息与中文 docstring 使用全角标点；`--isolated` 实测去掉豁免后单文件 127 处真实命中（peer review 2026-11-06 复核） | design 本文 + C137 |
+| RUF002/003 per-file ignores | `aixcoding/tests/guard/verify_guard_deployed.py`（C137） | 部署验证输出文案中文全角标点，同上必须 | design 本文 + C137 |
+| RUF001/2/3 per-file ignores | `aixcoding/tools/guard_install_merge.py`（C137） | 手工安装器的中文输出与注释；不在 `aixcoding/tests/**` 既有豁免池内，需自带 RUF001 | design 本文 + C137 |
 
 未新增：T201 豁免（手工工具改用 `sys.stdout.write`）、`# noqa`、ty 文件级 override、
-force-include、仓库根例外。`aixcoding/tests/**` 原有的 RUF001 复用，不扩大。
+force-include、仓库根例外。`aixcoding/tests/**` 既有豁免仍仅 RUF001，未扩大；
+`aixcoding/tests/guard/` 两文件新增的是 RUF002/003（中文 docstring/消息），见上表。
+
+> 登记修订：2026-11-06 补登上表第 4–6 行——三条豁免随 87934228 主体提交落地于
+> `pyproject.toml` 但本清单当时漏登（peer review F-R1 指出）；按 R10 正文修订后待责任人重签认。
 
 ## 对上游隐式行为的假设
 

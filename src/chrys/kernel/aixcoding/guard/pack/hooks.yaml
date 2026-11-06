@@ -3,7 +3,7 @@
 # iCode 安全拦截 Hook 配置。
 #
 # 安装（推荐合并脚本，不会覆盖已有的 hooks.yaml）：
-#   uv run python guard_hooks/_install_merge.py
+#   uv run python -m aixcoding.tools.guard_install_merge
 #
 # 解释器策略（为什么不用 type: script）：iCode 从 PATH 现选解释器的顺序是
 # uv → python3 → python，且不过滤 Microsoft 应用商店的转发存根——只要 python3

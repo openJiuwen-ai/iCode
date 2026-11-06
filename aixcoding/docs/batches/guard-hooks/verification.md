@@ -97,3 +97,22 @@
 - `Copy-Item` / `Move-Item` 优先 `-Destination`，否则检查第二个位置参数；
 - 范围判定前对 native 路径做 `resolve`，workspace 内 junction/symlink 指向外部时拦截；
 - 引号内的 `>` 不误判，workspace 内正常写入仍放行。
+
+## 2026-11-06 POSIX cwd 修复（commit b7de350b）
+
+环境：Windows 本机，`.venv` 直调。根因（CI 日志实锤）：selftest 的 `WORKSPACE` 有意
+使用 Windows 风格路径跨平台演练；POSIX 上 `Path("C:/ws")` 是相对路径，
+`_native_resolved` 把相对 raw 锚到进程 cwd 与词法 workspace 分叉 → 工作区内相对
+写入被误拦（guard job ubuntu/macos 的 `test_tfs01_write_scope`）。
+
+| # | 命令 | 结果 |
+|---|---|---|
+| 1 | CI 日志 `actions/jobs/{127735435402,127735435237}/logs` | guard 失败＝`assertEqual([], allowed)` 即 `[] != ['T-FS-01']`；custom 失败＝`test_anchors` 断言 `.chrys != chrys` |
+| 2 | POSIX 等效探针（`mock sys.platform="darwin"` 驱动真引擎走 POSIX 分支） | 5/5 通过：`src/app.py` 放行（CI 失败场景不再误拦）；盘符绝对路径、`../` 逃逸、POSIX 绝对路径、readonly_globs 命中均正确拦截 |
+| 3 | `python -m aixcoding.tests.guard.guard_pack_selftest` | `Ran 100 tests ... OK`（skipped=1，Windows 回归无影响） |
+| 4 | `pytest aixcoding/tests/guard -n0 -q` | `26 passed, 1 skipped`（含 test_anchors 兼容 `.chrys` 的新断言） |
+| 5 | 临时部署 + `verify_guard_deployed.py` | `共 64 条，失败 0 条：[]` |
+| 6 | `ruff check --no-fix` + `ruff format --check`（两改动文件） | `All checks passed!` / `2 files already formatted` |
+| 7 | `ty check --error-on-warning --python-platform {linux,darwin,win32} src/chrys` | 三平台均 `All checks passed!` |
+
+CI 侧待远端复跑确认：Guard hooks（ubuntu/macos）、Custom tests（ubuntu）、quality gate。
