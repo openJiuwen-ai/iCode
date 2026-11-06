@@ -1,0 +1,3 @@
+# 现场开关状态：由 guardctl 生成，属本机配置，不进版本库。
+# 正常落在 <config_dir>/hooks/guard/ 下；在仓库内直接跑 guardctl 时会落到这里。
+guard_state.json

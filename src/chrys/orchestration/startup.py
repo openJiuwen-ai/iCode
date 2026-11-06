@@ -179,6 +179,21 @@ def bootstrap_runtime(
     """
     set_process_title()
 
+    # AIxCoding guard: install bundled security guard hooks (src/chrys/kernel/aixcoding/guard)
+    # Under pytest the config dir is a per-test sandbox (tests/conftest.py), and
+    # the installed hooks.yaml would shadow each test's own hooks.json (the
+    # loader prefers yaml) or collide with fixtures that create <config>/hooks
+    # themselves; auto-install is a real-runtime concern only. Direct
+    # install_guard_hooks() callers — the guard's tests and the CI guard job —
+    # are not affected.
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        try:
+            from chrys.kernel.aixcoding.guard.guard_install import install_guard_hooks
+
+            install_guard_hooks()
+        except Exception:
+            logger.warning("Security guard hooks could not be installed; the guard is not active.", exc_info=True)
+
     if configure_stdio:
         configure_utf8_stdio()
 

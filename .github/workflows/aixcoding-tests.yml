@@ -68,6 +68,42 @@ jobs:
           PYTEST_ADDOPTS: "-rA"
         run: uv run pytest aixcoding/tests -m "not integration and not gc_calibration"
 
+  guard:
+    # Security guard rule pack validation (batches/guard-hooks): install into the
+    # platform config dir, run the pack's stdlib selftest, then replay the
+    # MANUAL_TESTS corpus against the deployed copy. The pack engine is pure
+    # stdlib; platform differences can only surface in path resolution and the
+    # config dir, so all three OSes run it (same rationale as the legacy branch).
+    name: Guard hooks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      # Windows 运行器控制台是 cp1252/cp936：自检会打印中文，不固定 UTF-8 会
+      # UnicodeEncodeError，用例全过也被判失败。
+      PYTHONUTF8: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.1"
+          prune-cache: true
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+          allow-prereleases: true
+      - run: uv sync
+      - name: Install guard hooks (platform config dir)
+        run: uv run python -c "from chrys.kernel.aixcoding.guard.guard_install import install_guard_hooks; install_guard_hooks()"
+      - name: Rule pack selftest
+        run: uv run python -m aixcoding.tests.guard.guard_pack_selftest
+      - name: Deployed-package verification (MANUAL_TESTS corpus)
+        run: uv run python aixcoding/tests/guard/verify_guard_deployed.py
+
   govern:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -117,7 +153,7 @@ jobs:
     # runs, not workflow names.) Always runs and fail-closed: both results
     # must be exactly "success" — failure, cancelled and skipped all fail.
     name: AIxCoding quality gate
-    needs: [test, govern]
+    needs: [test, govern, guard]
     if: always()
     runs-on: ubuntu-slim
     steps:
@@ -125,6 +161,8 @@ jobs:
         env:
           TEST_RESULT: ${{ needs.test.result }}
           GOVERN_RESULT: ${{ needs.govern.result }}
+          GUARD_RESULT: ${{ needs.guard.result }}
         run: |
           test "$TEST_RESULT" = "success"
           test "$GOVERN_RESULT" = "success"
+          test "$GUARD_RESULT" = "success"

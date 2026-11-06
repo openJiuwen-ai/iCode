@@ -38,3 +38,5 @@
 | [batches/upstream-merge-v0.33.0](batches/upstream-merge-v0.33.0/) | 升级批次 | 追上游 v0.33.0（基线 0.32.2 → 0.33.0，目标 ref 8d5a3208 已裁决） |
 | [batches/logging-routing-fixes](batches/logging-routing-fixes/) | 治理批次 | 日志治理①——现存埋点路由修复（子树外 logger 归位、死代码清理、crypto 降级与停用 env 警告补公共通道） |
 | [batches/internal-installer](batches/internal-installer/) | 功能批次 | 内网安装器与发布约定迁移（`aixcoding/release/` 分发物料：镜像安装器双脚本 + INSTALL.md + 发布约定） |
+| [batches/guard-hooks](batches/guard-hooks/) | 功能批次 | 安全护栏迁入（提示词层 + 工具层阻塞拦截规则包 + 启动自装，`src/chrys/kernel/aixcoding/guard`） |
+| [batches/guard-switches](batches/guard-switches/) | 功能批次 | 护栏开关（总开关 / 单规则 / 写入范围，`guardctl.py` + 免 uv 入口 `guardctl.cmd` / `guardctl.sh`） |

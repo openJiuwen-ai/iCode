@@ -1,0 +1,18 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+# 历史归档：0.28 分支仓库根规则包曾使用的 lint 配置。
+#
+# 规则包已迁入 src/chrys/kernel/aixcoding/guard/pack/，现行门禁由 pyproject.toml
+# 的 C141 最小条目承载；本文件仅保留迁移记录，不参与任何命令。
+
+line-length = 120
+target-version = "py39"
+
+[lint]
+extend-select = ["I", "UP", "B", "SIM", "PERF", "S", "C4", "RUF"]
+# RUF001/002/003 会把中文文案里的全角标点（：、（）、——）报成 "ambiguous unicode"。
+# 用户提示与注释就是中文，这些标点是正确写法。
+ignore = ["RUF001", "RUF002", "RUF003", "S603", "S101"]
+
+[lint.per-file-ignores]
+"selftest.py" = ["S", "T201", "N802"]
