@@ -336,6 +336,7 @@ async def build_agent(
             shows_answer_text=session.surface is not SessionSurface.CLI,
             # Only the TUI's chat cards show a sub-agent's answer text; `icode run` and ACP show none of it.
             sub_agent_shows_answer_text=session.surface not in (SessionSurface.CLI, SessionSurface.ACP),
+            pause_failed_sub_agents=session.pause_failed_sub_agents,
         )
         # The judge creates its client on first evaluation, never during the
         # build, so the build's own rollback has nothing of it to close.

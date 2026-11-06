@@ -617,6 +617,7 @@ class SubAgentTools:
                         max_attempts=info.max_attempts,
                         delay_seconds=int(info.delay_seconds),
                         session_id=self._session_id,
+                        facts=info.facts,
                     )
                 )
 
@@ -771,6 +772,7 @@ class SubAgentTools:
                             max_attempts=info.max_attempts,
                             delay_seconds=int(info.delay_seconds),
                             session_id=self._session_id,
+                            facts=info.facts,
                         )
                     )
 

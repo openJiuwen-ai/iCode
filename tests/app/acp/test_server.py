@@ -218,6 +218,11 @@ async def test_prompt_errored_outcome_carries_usage_in_request_error_data() -> N
         await server.prompt([text_block("run")], session_id="s1")
 
     assert exc_info.value.data["code"] == "model_failed"
+    # The cause is the message; an error nothing classified reports no verdict.
+    assert str(exc_info.value) == "provider stopped"
+    assert {key: exc_info.value.data[key] for key in ("kind", "retryable", "statusCode", "hint")} == dict.fromkeys(
+        ("kind", "retryable", "statusCode", "hint")
+    )
     # ``usage`` is this turn's spend, ``sessionUsage`` the session total it was
     # measured against.
     assert exc_info.value.data["usage"] == {

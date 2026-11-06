@@ -641,7 +641,7 @@
         ["awaitable", "await bus.publish(CompactionFinished(compaction_id=status.compaction_id, outcome=status.outcome, duration_ms=status.duration_ms, last_words=status.last_words, format_violation=status.format_violation, failure_reason=status.failure_reason, session_id=session_id))", "unresolved"]
       ],
       "build_agent._acquire._publish_last_words_retry": [
-        ["awaitable", "await emitter.publish(InvocationRetryAttempt(origin=emitter.origin, message=f'LAST_WORDS compaction: {info.reason}', attempt=info.attempt, max_attempts=info.max_attempts, delay_seconds=int(info.delay_seconds), scope='compaction', session_id=session_id, display_message=_RETRY_LAST_WORDS_COMPACTION.bind(reason=DisplayBlock(info.reason)), detail=info.reason))", "unresolved"]
+        ["awaitable", "await emitter.publish(InvocationRetryAttempt(origin=emitter.origin, message=f'LAST_WORDS compaction: {info.reason}', attempt=info.attempt, max_attempts=info.max_attempts, delay_seconds=int(info.delay_seconds), scope='compaction', session_id=session_id, display_message=_RETRY_LAST_WORDS_COMPACTION.bind(reason=DisplayBlock(info.reason)), detail=info.reason, facts=info.facts))", "unresolved"]
       ]
     },
     "chrys.orchestration.engine.build.construction": {
@@ -649,7 +649,7 @@
         ["thread_pool", "await asyncio.get_running_loop().run_in_executor(None, coordinator.close)", "unresolved"]
       ],
       "build_agent": [
-        ["awaitable", "await build_agent_fn(profile=profile, settings=staged.loaded.settings, model_registry=model_registry, workspace=staged.workspace, session_id=session.session_id, bus=bus, agent_registry=agent_registry, injection=injection, batch_counter=batch_counter, on_intermediate=_on_intermediate, on_usage=usage_publisher.publish_usage, on_sub_agent_usage=usage_publisher.accumulate_invocation_usage, on_side_call_usage=usage_publisher.accumulate_side_call_usage, drain_parent_usage_publishes=usage_publisher.drain, on_compaction=usage_publisher.publish_compaction, on_pre_compact=fire_pre_compact, on_compress=usage_publisher.publish_compress, on_load_progress=publish_load_progress, mutation_tracker=mutation_tracker, mutation_coordinator=staged.mutation_coordinator, todo_tracker=todo_tracker, file_change_provider=workspace_change_tracker.take_pending_notice, approval_mode=session.approval_mode, approval_judge=approval_judge, session_dir=session_dir, mcp_cache=mcp_cache, hook_manager=staged.hook_manager, spill_quota=session.spill_quota, background_tasks=session.background_tasks, persist_recovery_now=checkpoints.persist_now, turn_context=turn_context, allow_user_interaction=allow_user_interaction, shows_answer_text=session.surface is not SessionSurface.CLI, sub_agent_shows_answer_text=session.surface not in (SessionSurface.CLI, SessionSurface.ACP))", "unresolved"],
+        ["awaitable", "await build_agent_fn(profile=profile, settings=staged.loaded.settings, model_registry=model_registry, workspace=staged.workspace, session_id=session.session_id, bus=bus, agent_registry=agent_registry, injection=injection, batch_counter=batch_counter, on_intermediate=_on_intermediate, on_usage=usage_publisher.publish_usage, on_sub_agent_usage=usage_publisher.accumulate_invocation_usage, on_side_call_usage=usage_publisher.accumulate_side_call_usage, drain_parent_usage_publishes=usage_publisher.drain, on_compaction=usage_publisher.publish_compaction, on_pre_compact=fire_pre_compact, on_compress=usage_publisher.publish_compress, on_load_progress=publish_load_progress, mutation_tracker=mutation_tracker, mutation_coordinator=staged.mutation_coordinator, todo_tracker=todo_tracker, file_change_provider=workspace_change_tracker.take_pending_notice, approval_mode=session.approval_mode, approval_judge=approval_judge, session_dir=session_dir, mcp_cache=mcp_cache, hook_manager=staged.hook_manager, spill_quota=session.spill_quota, background_tasks=session.background_tasks, persist_recovery_now=checkpoints.persist_now, turn_context=turn_context, allow_user_interaction=allow_user_interaction, shows_answer_text=session.surface is not SessionSurface.CLI, sub_agent_shows_answer_text=session.surface not in (SessionSurface.CLI, SessionSurface.ACP), pause_failed_sub_agents=session.pause_failed_sub_agents)", "unresolved"],
         ["wrapper", "await _close_coordinator(staged.mutation_coordinator, reason='failed build')", "unresolved", "chrys.orchestration.engine.build.construction._close_coordinator"],
         ["wrapper", "await rollback_resources(result.prepared)", "unresolved", "chrys.orchestration.invoker.resources.rollback_resources"]
       ],
@@ -1073,7 +1073,7 @@
       ],
       "TurnBindings._publish_retry_notice": [
         ["awaitable", "await self._hosted_bridge.attempt_rejected(message)", "unresolved"],
-        ["awaitable", "await self._emitter.publish(InvocationRetryAttempt(origin=self._emitter.origin, message=message, attempt=attempt, scope=scope, max_attempts=max_attempts, delay_seconds=delay_seconds, session_id=self._session_id, display_message=display_message, display_hint=display_hint, wait_id=wait.wait_id if wait is not None else ''))", "unresolved"]
+        ["awaitable", "await self._emitter.publish(InvocationRetryAttempt(origin=self._emitter.origin, message=message, attempt=attempt, scope=scope, max_attempts=max_attempts, delay_seconds=delay_seconds, session_id=self._session_id, display_message=display_message, display_hint=display_hint, wait_id=wait.wait_id if wait is not None else '', facts=failure_facts(exc)))", "unresolved"]
       ],
       "TurnBindings._publish_wire_retry_attempt": [
         ["wrapper", "await self._publish_retry_notice(message, attempt, max_attempts, delay_seconds, exc, scope='wire')", "unresolved", "chrys.orchestration.engine.run.bindings.TurnBindings._publish_retry_notice"]
@@ -1092,7 +1092,7 @@
       "TurnBindings.failed": [
         ["wrapper", "await self._finish_content('failed')", "unresolved", "chrys.orchestration.engine.run.bindings.TurnBindings._finish_content"],
         ["awaitable", "await self._hosted_bridge.attempt_rejected(err_msg)", "unresolved"],
-        ["awaitable", "await self._emitter.publish(Error(code='executor_error', message=err_msg, recoverable=True, session_id=self._session_id, display_message=display_message, display_hint=display_hint))", "unresolved"]
+        ["awaitable", "await self._emitter.publish(Error(code='executor_error', message=err_msg, recoverable=True, session_id=self._session_id, display_message=display_message, display_hint=display_hint, facts=failure_facts(e)))", "unresolved"]
       ],
       "TurnBindings.finished": [
         ["wrapper", "await self._finish_content('interrupted' if interrupted else 'completed')", "unresolved", "chrys.orchestration.engine.run.bindings.TurnBindings._finish_content"],
@@ -2214,7 +2214,7 @@
         ["awaitable", "await hooks.fire(HookEvent.PRE_COMPACT, {'session_id': self.emitter().origin.session_id, 'profile': self.profile, 'cwd': self.workspace_cwd, 'trigger': info.trigger, 'usage_pct': info.usage_pct, 'tokens_before': info.tokens_before, 'sub_agent': {'name': self.name, 'tool_name': self.tool_name}}, target_operation_id=info.trajectory_operation_id)", "unresolved"]
       ],
       "ChildCompactionEvents.retry": [
-        ["awaitable", "await emitter.publish(InvocationRetryAttempt(scope='compaction', origin=emitter.origin, agent_name=self.name, message=f'LAST_WORDS compaction: {info.reason}', attempt=info.attempt, max_attempts=info.max_attempts, delay_seconds=int(info.delay_seconds), session_id=emitter.origin.session_id))", "unresolved"]
+        ["awaitable", "await emitter.publish(InvocationRetryAttempt(scope='compaction', origin=emitter.origin, agent_name=self.name, message=f'LAST_WORDS compaction: {info.reason}', attempt=info.attempt, max_attempts=info.max_attempts, delay_seconds=int(info.delay_seconds), session_id=emitter.origin.session_id, facts=info.facts))", "unresolved"]
       ],
       "ChildCompactionEvents.status": [
         ["awaitable", "await emitter.publish(InvocationCompactionStarted(origin=emitter.origin, agent_name=self.name, compaction_id=status.compaction_id, session_id=emitter.origin.session_id))", "unresolved"],
@@ -2485,7 +2485,7 @@
       ],
       "KernelSubAgentPolicy._publish_retry_attempt": [
         ["awaitable", "await self._tool_event_middleware.reject_hosted_attempt(message)", "unresolved"],
-        ["awaitable", "await self._emitter.publish(InvocationRetryAttempt(origin=self.origin, agent_name=self._agent_name, message=message, attempt=attempt, scope=scope, max_attempts=max_attempts, delay_seconds=delay_seconds, session_id=self._session_id, display_message=display_message, display_hint=display_hint))", "unresolved"]
+        ["awaitable", "await self._emitter.publish(InvocationRetryAttempt(origin=self.origin, agent_name=self._agent_name, message=message, attempt=attempt, scope=scope, max_attempts=max_attempts, delay_seconds=delay_seconds, session_id=self._session_id, display_message=display_message, display_hint=display_hint, facts=failure_facts(exc)))", "unresolved"]
       ],
       "KernelSubAgentPolicy._publish_service_retry_attempt": [
         ["wrapper", "await self._publish_retry_attempt(message, attempt, max_attempts, delay_seconds, exc)", "unresolved", "chrys.orchestration.sub_agents.kernel_policy.KernelSubAgentPolicy._publish_retry_attempt"],
@@ -2555,7 +2555,7 @@
     "chrys.orchestration.sub_agents.shell": {
       "SubAgentToolShell._end_after_failure": [
         ["awaitable", "await self.policy.abort_result(by_user=by_user)", "unresolved"],
-        ["awaitable", "await self._emitter.publish(InvocationAborted(origin=self.origin, agent_name=self._agent_name, last_error=self.policy.last_error, session_id=self.origin.session_id or None))", "unresolved"]
+        ["awaitable", "await self._emitter.publish(InvocationAborted(origin=self.origin, agent_name=self._agent_name, last_error=self.policy.last_error, last_error_display=self.policy.last_error_display, last_error_hint=self.policy.last_error_hint, last_error_facts=self.policy.last_error_facts, session_id=self.origin.session_id or None))", "unresolved"]
       ],
       "SubAgentToolShell.await_cascade_publish": [
         ["wrapper", "await self.publish_cascade_event()", "unresolved", "chrys.orchestration.sub_agents.shell.SubAgentToolShell.publish_cascade_event"],
@@ -2690,7 +2690,7 @@
         ["wrapper", "await self._publish_sub_agent_compaction_status(status, _tool_name, emitter)", "unresolved", "chrys.orchestration.sub_agents.tools.SubAgentTools._publish_sub_agent_compaction_status"]
       ],
       "SubAgentTools.register._acquire._make_invocation_runtime._publish_last_words_retry": [
-        ["awaitable", "await emitter.publish(InvocationRetryAttempt(scope='compaction', origin=emitter.origin, agent_name=self._display_names.get(_tool_name, _tool_name), message=f'LAST_WORDS compaction: {info.reason}', attempt=info.attempt, max_attempts=info.max_attempts, delay_seconds=int(info.delay_seconds), session_id=self._session_id))", "unresolved"]
+        ["awaitable", "await emitter.publish(InvocationRetryAttempt(scope='compaction', origin=emitter.origin, agent_name=self._display_names.get(_tool_name, _tool_name), message=f'LAST_WORDS compaction: {info.reason}', attempt=info.attempt, max_attempts=info.max_attempts, delay_seconds=int(info.delay_seconds), session_id=self._session_id, facts=info.facts))", "unresolved"]
       ],
       "SubAgentTools.register._acquire._on_pre_compact": [
         ["wrapper", "await self._fire_pre_compact_hook(tool_name, info, origin=None)", "unresolved", "chrys.orchestration.sub_agents.tools.SubAgentTools._fire_pre_compact_hook"]
@@ -2699,7 +2699,7 @@
         ["wrapper", "await self._publish_sub_agent_compaction_status(status, _tool_name, self._emitter_for(invocation_id))", "unresolved", "chrys.orchestration.sub_agents.tools.SubAgentTools._publish_sub_agent_compaction_status"]
       ],
       "SubAgentTools.register._acquire._publish_last_words_retry": [
-        ["awaitable", "await emitter.publish(InvocationRetryAttempt(scope='compaction', origin=emitter.origin, agent_name=self._display_names.get(_tool_name, _tool_name), message=f'LAST_WORDS compaction: {info.reason}', attempt=info.attempt, max_attempts=info.max_attempts, delay_seconds=int(info.delay_seconds), session_id=self._session_id))", "unresolved"]
+        ["awaitable", "await emitter.publish(InvocationRetryAttempt(scope='compaction', origin=emitter.origin, agent_name=self._display_names.get(_tool_name, _tool_name), message=f'LAST_WORDS compaction: {info.reason}', attempt=info.attempt, max_attempts=info.max_attempts, delay_seconds=int(info.delay_seconds), session_id=self._session_id, facts=info.facts))", "unresolved"]
       ],
       "_finish_cancellation_cleanup": [
         ["shield", "await asyncio.shield(task)", "unresolved"]
@@ -4104,7 +4104,7 @@
       ],
       "LastWordsGenerator._generate_via_completer": [
         ["awaitable", "await completer.complete_last_words(base_messages, instruction, max_output_tokens=wire_max_tokens, on_usage=self._report_side_call_usage)", "unresolved"],
-        ["wrapper", "await self._publish_retry_attempt(clean_error_message(exc), attempt + 1, _COMPLETER_MAX_RETRIES, delay)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"],
+        ["wrapper", "await self._publish_retry_attempt(clean_error_message(exc), attempt + 1, _COMPLETER_MAX_RETRIES, delay, facts=failure_facts(exc))", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"],
         ["wrapper", "await self._sleep_for_retry(delay, reason_code=RetryReason.TRANSIENT_ERROR)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"],
         ["wrapper", "await self._publish_retry_attempt(format_violation, attempt + 1, _COMPLETER_MAX_RETRIES, delay)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"],
         ["wrapper", "await self._sleep_for_retry(delay, reason_code=RetryReason.VALIDATION_REJECTED)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"],
@@ -4113,7 +4113,7 @@
       ],
       "LastWordsGenerator._generate_via_fallback": [
         ["wrapper", "await self._generate_once(list(candidate.messages), max_tokens=send_max_tokens)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_once"],
-        ["wrapper", "await self._publish_retry_attempt(clean_error_message(exc), transient_attempt + 1, max_transient_retries, delay)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"],
+        ["wrapper", "await self._publish_retry_attempt(clean_error_message(exc), transient_attempt + 1, max_transient_retries, delay, facts=failure_facts(exc))", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"],
         ["wrapper", "await self._sleep_for_retry(delay, reason_code=RetryReason.TRANSIENT_ERROR)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"],
         ["wrapper", "await self._publish_retry_attempt(format_violation, corrective_attempt + 1, max_corrective_retries, delay)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"],
         ["wrapper", "await self._sleep_for_retry(delay, reason_code=RetryReason.VALIDATION_REJECTED)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"],
@@ -4125,7 +4125,7 @@
         ["wrapper", "await create_client(self._profile, session_id=self._session_id, parent_session_id=self._parent_session_id, session_dir=self._session_dir)", "unresolved", "chrys.service.llm.clients.create_client"]
       ],
       "LastWordsGenerator._publish_retry_attempt": [
-        ["awaitable", "await self._publish_retry(RetryAttemptInfo(reason=reason, attempt=attempt, max_attempts=max_attempts, delay_seconds=delay_seconds))", "unresolved"]
+        ["awaitable", "await self._publish_retry(RetryAttemptInfo(reason=reason, attempt=attempt, max_attempts=max_attempts, delay_seconds=delay_seconds, facts=facts))", "unresolved"]
       ],
       "LastWordsGenerator._publish_status_cancellable": [
         ["awaitable", "await self._publish_status(status)", "unresolved"]

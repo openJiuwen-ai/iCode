@@ -29,6 +29,7 @@ from chrys.app.acp.bridge import (
     with_chrys_metadata,
 )
 from chrys.app.acp.content import AcpContentError, ContentBlock, convert_prompt_blocks
+from chrys.app.acp.errors import failure_fields, internal_error, invalid_params, turn_failed
 from chrys.app.acp.history import replay_session_history, session_history_payload
 from chrys.app.acp.hook_confirmations import AcpSessionHookConfirmations
 from chrys.app.acp.json_values import JsonValue, to_json_object
@@ -179,7 +180,9 @@ ACP_EXTENSION_NOTIFICATIONS: tuple[str, ...] = (
 # The version of the Chrys extension surface itself. It changes when the
 # meaning of a declared method or notification changes incompatibly, not when
 # one is added — a client gates on presence per name.
-ACP_EXTENSION_API_VERSION = 1
+# 2: a failed sub-agent pauses only for a client that declares
+#    ``subAgentPause`` in its handshake (see _declares_sub_agent_pause).
+ACP_EXTENSION_API_VERSION = 2
 
 
 # Sub-agent tool-result metadata keys whose values carry whole file contents.
@@ -285,6 +288,11 @@ class _TurnExecution:
         return meta
 
 
+def _turn_failed(turn: _TurnExecution, error: Error) -> RequestError:
+    """The error a prompt or retry answers when its turn failed, with the turn's own figures."""
+    return turn_failed(error, {"usage": turn.turn_usage, "sessionUsage": turn.usage_payload, **turn.response_meta()})
+
+
 def _refusal_meta(turn: _TurnExecution, error: Error) -> dict[str, Any]:
     """The ``chrys`` object of a ``refusal`` response: the turn's metadata, then why the input was refused."""
     return {**turn.response_meta(), "code": error.code, "message": error.message}
@@ -340,7 +348,10 @@ class ChrysAcpServer:
         **kwargs: Any,
     ) -> acp_schema.InitializeResponse:
         """Return Chrys ACP capabilities."""
-        _ = client_capabilities, client_info, kwargs
+        _ = client_info, kwargs
+        # Only a client that answers a paused sub-agent's sub_agent/retry or
+        # sub_agent/abort may be left waiting on one; any other would wait forever.
+        self._manager.pause_failed_sub_agents = _declares_sub_agent_pause(client_capabilities)
         return acp_schema.InitializeResponse(
             protocolVersion=min(protocol_version, PROTOCOL_VERSION),
             agentInfo=acp_schema.Implementation(name=APP_DISPLAY_NAME, version=__version__),
@@ -552,7 +563,7 @@ class ChrysAcpServer:
         """Run one ACP prompt turn."""
         _ = kwargs
         if self._client is None:
-            raise RequestError.internal_error({"details": "ACP client connection is not ready."})
+            raise internal_error({"details": "ACP client connection is not ready."})
         user_message_id = _validated_message_id(message_id)
 
         async def start(session: ManagedSession) -> AsyncIterator[Event]:
@@ -603,17 +614,8 @@ class ChrysAcpServer:
                 field_meta=with_chrys_metadata(None, turn.response_meta()),
             )
         if isinstance(turn.outcome, Errored):
-            error = turn.outcome.error
-            raise RequestError.internal_error(
-                {
-                    "code": error.code,
-                    "message": error.message,
-                    "usage": turn.turn_usage,
-                    "sessionUsage": turn.usage_payload,
-                    **turn.response_meta(),
-                }
-            )
-        raise RequestError.internal_error(
+            raise _turn_failed(turn, turn.outcome.error)
+        raise internal_error(
             {
                 "details": f"{APP_DISPLAY_NAME} turn ended without an outcome.",
                 "usage": turn.turn_usage,
@@ -637,7 +639,7 @@ class ChrysAcpServer:
         """
         _ = kwargs
         if self._client is None:
-            raise RequestError.internal_error({"details": "ACP client connection is not ready."})
+            raise internal_error({"details": "ACP client connection is not ready."})
 
         # A turn in flight owns the eligibility: refuse a retry that arrives
         # while one is running instead of queueing it behind the turn, where it
@@ -647,20 +649,18 @@ class ChrysAcpServer:
         except Exception as exc:
             raise _request_error(exc) from exc
         if session.turns_reserved:
-            raise RequestError.invalid_params(
-                {"details": f"Session {session_id} is running a turn; cancel it before retrying."}
-            )
+            raise invalid_params({"details": f"Session {session_id} is running a turn; cancel it before retrying."})
 
         def start(session: ManagedSession) -> AsyncIterator[Event]:
             if not session.host.engine.can_retry:
-                raise RequestError.invalid_params({"details": f"Session {session_id} has no turn that can be retried."})
+                raise invalid_params({"details": f"Session {session_id} has no turn that can be retried."})
             return session.host.iter_retry_events(text)
 
         turn = await self._run_turn(session_id, start)
         if turn.outcome is None:
             # Same rule as a prompt: a run that produced no outcome did not
             # complete, so it is not reported as a turn that ended normally.
-            raise RequestError.internal_error(
+            raise internal_error(
                 {
                     "details": f"{APP_DISPLAY_NAME} retry ended without an outcome.",
                     "usage": turn.turn_usage,
@@ -669,16 +669,7 @@ class ChrysAcpServer:
                 }
             )
         if isinstance(turn.outcome, Errored):
-            error = turn.outcome.error
-            raise RequestError.internal_error(
-                {
-                    "code": error.code,
-                    "message": error.message,
-                    "usage": turn.turn_usage,
-                    "sessionUsage": turn.usage_payload,
-                    **turn.response_meta(),
-                }
-            )
+            raise _turn_failed(turn, turn.outcome.error)
         if isinstance(turn.outcome, Refused):
             return {
                 "stopReason": "refusal",
@@ -781,10 +772,10 @@ class ChrysAcpServer:
             finally:
                 session.release_turn()
         except AcpContentError as exc:
-            raise RequestError.invalid_params({"details": str(exc)}) from exc
+            raise invalid_params({"details": str(exc)}) from exc
         except Exception as exc:
             if isinstance(exc, _TurnInFlight):
-                raise RequestError.invalid_params(exc.data) from exc
+                raise invalid_params(exc.data) from exc
             raise _request_error(
                 exc,
                 usage=_turn_usage(baseline_usage, usage_payload),
@@ -860,7 +851,7 @@ class ChrysAcpServer:
         """Set the session approval mode (standard ACP session mode)."""
         _ = kwargs
         if mode_id not in _APPROVAL_MODE_IDS:
-            raise RequestError.invalid_params({"details": "mode_id must be manual, auto, or bypass."})
+            raise invalid_params({"details": "mode_id must be manual, auto, or bypass."})
         try:
             result = await self._manager.set_approval_mode(session_id, mode_id)
         except Exception as exc:
@@ -920,7 +911,20 @@ class ChrysAcpServer:
         return {}
 
     async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Handle Chrys ACP extension requests from clients."""
+        """Handle Chrys ACP extension requests from clients.
+
+        One boundary for every extension: a failure no branch turned into a
+        ``RequestError`` (an unknown session, say) answers with its own text,
+        as the standard methods do, not with the SDK's bare "Internal error".
+        """
+        try:
+            return await self._dispatch_ext_method(method, params)
+        except RequestError:
+            raise
+        except Exception as exc:
+            raise _request_error(exc) from exc
+
+    async def _dispatch_ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "session/delete":
             session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
             cwd = _optional_string_param(params, "cwd")
@@ -938,7 +942,7 @@ class ChrysAcpServer:
             session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
             text = _string_param(params, "text")
             if not text:
-                raise RequestError.invalid_params({"details": "text is required."})
+                raise invalid_params({"details": "text is required."})
             try:
                 await self._manager.inject(session_id, text)
             except Exception as exc:
@@ -988,7 +992,7 @@ class ChrysAcpServer:
             session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
             invocation_id = _string_param(params, "invocationId") or _string_param(params, "invocation_id")
             if not invocation_id:
-                raise RequestError.invalid_params({"details": "invocationId is required."})
+                raise invalid_params({"details": "invocationId is required."})
             try:
                 await self._manager.retry_sub_agent(session_id, invocation_id)
             except Exception as exc:
@@ -998,7 +1002,7 @@ class ChrysAcpServer:
             session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
             invocation_id = _string_param(params, "invocationId") or _string_param(params, "invocation_id")
             if not invocation_id:
-                raise RequestError.invalid_params({"details": "invocationId is required."})
+                raise invalid_params({"details": "invocationId is required."})
             try:
                 await self._manager.abort_sub_agent(session_id, invocation_id)
             except Exception as exc:
@@ -1008,7 +1012,7 @@ class ChrysAcpServer:
             session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
             call_id = _string_param(params, "callId") or _string_param(params, "call_id")
             if not call_id:
-                raise RequestError.invalid_params({"details": "callId is required."})
+                raise invalid_params({"details": "callId is required."})
             try:
                 await self._manager.skip_sleep(session_id, call_id)
             except Exception as exc:
@@ -1018,7 +1022,7 @@ class ChrysAcpServer:
             session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
             profile_name = _string_param(params, "agentProfile") or _string_param(params, "profileName")
             if not profile_name:
-                raise RequestError.invalid_params({"details": "agentProfile is required."})
+                raise invalid_params({"details": "agentProfile is required."})
             try:
                 result = await self._manager.switch_agent(session_id, profile_name)
             except Exception as exc:
@@ -1028,7 +1032,7 @@ class ChrysAcpServer:
             session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
             scope = params.get("scope")
             if scope is not None and scope != "full":
-                raise RequestError.invalid_params({"details": "scope must be 'full' when given."})
+                raise invalid_params({"details": "scope must be 'full' when given."})
             # A reload happens outside any prompt turn, and ``_handle_event`` only
             # runs inside one — so the warnings saying which of the client's
             # values were dropped had nowhere to go and were simply lost.
@@ -1075,7 +1079,7 @@ class ChrysAcpServer:
             session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
             primary_cwd = _string_param(params, "primaryCwd") or _string_param(params, "primary_cwd")
             if not primary_cwd:
-                raise RequestError.invalid_params({"details": "primaryCwd is required."})
+                raise invalid_params({"details": "primaryCwd is required."})
             try:
                 result = await self._manager.set_workspace(session_id, primary_cwd)
             except Exception as exc:
@@ -1263,6 +1267,7 @@ class ChrysAcpServer:
                     "delaySeconds": event.delay_seconds,
                     "scope": event.scope,
                     "message": event.message,
+                    **failure_fields(event.facts, event.display_message, event.display_hint, with_retryable=False),
                 },
             )
         return False
@@ -1412,6 +1417,7 @@ class ChrysAcpServer:
                     "code": event.code,
                     "message": event.message,
                     "recoverable": event.recoverable,
+                    **failure_fields(event.facts, event.display_message, event.display_hint),
                 },
             )
             return True
@@ -1575,6 +1581,7 @@ class ChrysAcpServer:
                     "attempt": event.attempt,
                     "maxAttempts": event.max_attempts,
                     "delaySeconds": event.delay_seconds,
+                    **failure_fields(event.facts, event.display_message, event.display_hint, with_retryable=False),
                 },
             )
             return False
@@ -1630,6 +1637,7 @@ class ChrysAcpServer:
                     "reason": event.reason,
                     "lastError": event.last_error,
                     "retryAttempts": event.retry_attempts,
+                    **failure_fields(event.last_error_facts, event.last_error_display, event.last_error_hint),
                 },
             )
             return False
@@ -1651,6 +1659,7 @@ class ChrysAcpServer:
                     "agentName": event.agent_name,
                     "invocationId": event.origin.invocation_id,
                     "lastError": event.last_error,
+                    **failure_fields(event.last_error_facts, event.last_error_display, event.last_error_hint),
                 },
             )
             return False
@@ -1802,7 +1811,7 @@ class ChrysAcpServer:
             )
         payload = trace_payload_with_registry(trace, records, turn_id=turn_id)
         if payload is None:
-            raise RequestError.invalid_params({"details": f"No turn {turn_id!r} in session {canonical_id}."})
+            raise invalid_params({"details": f"No turn {turn_id!r} in session {canonical_id}."})
         payload["sessionId"] = canonical_id
         return payload
 
@@ -2066,7 +2075,7 @@ class ChrysAcpServer:
 
     def _client_or_error(self) -> Client:
         if self._client is None:
-            raise RequestError.internal_error({"details": "ACP client connection is not ready."})
+            raise internal_error({"details": "ACP client connection is not ready."})
         return self._client
 
     async def _interrupt_and_cancel_pending_waits(self, session_id: str) -> None:
@@ -2133,7 +2142,7 @@ class ChrysAcpServer:
     @staticmethod
     def _reject_additional_directories(additional_directories: list[str] | None) -> None:
         if additional_directories:
-            raise RequestError.invalid_params(
+            raise invalid_params(
                 {"details": f"additionalDirectories are not supported by {APP_DISPLAY_NAME} ACP phase 1."}
             )
 
@@ -2150,7 +2159,8 @@ def _request_error(
 
     ``usage`` is this turn's spend and ``session_usage`` the session total;
     both are omitted when the turn never started, so a caller can tell "no
-    turn ran" from "a turn ran and spent nothing".
+    turn ran" from "a turn ran and spent nothing". The message is the
+    exception's own text, as ``data["details"]`` holds it.
     """
     extra: dict[str, object] = {}
     if usage is not None:
@@ -2168,10 +2178,10 @@ def _request_error(
         data.update(extra)
         return RequestError(exc.code, str(exc), data)
     if isinstance(exc, AcpSessionError):
-        return RequestError.invalid_params({"details": str(exc), **extra})
+        return invalid_params({"details": str(exc), **extra})
     details = str(exc)
     details = f"{type(exc).__name__}: {details}" if details else type(exc).__name__
-    return RequestError.internal_error({"details": details, **extra})
+    return internal_error({"details": details, **extra})
 
 
 def _validated_message_id(message_id: str | None) -> str:
@@ -2187,7 +2197,7 @@ def _validated_message_id(message_id: str | None) -> str:
     try:
         uuid.UUID(message_id)
     except ValueError as exc:
-        raise RequestError.invalid_params({"details": "messageId must be a UUID."}) from exc
+        raise invalid_params({"details": "messageId must be a UUID."}) from exc
     # Clients correlate messages by the supplied string, including its case.
     return message_id
 
@@ -2351,6 +2361,13 @@ def _operation_from_hashes(before_hash: str | None, after_hash: str | None) -> s
     return "modify"
 
 
+def _declares_sub_agent_pause(capabilities: acp_schema.ClientCapabilities | None) -> bool:
+    """Whether the client's handshake says it answers paused sub-agents: ``_meta.chrys.subAgentPause: true``."""
+    meta = capabilities.field_meta if capabilities is not None else None
+    chrys = meta.get("chrys") if isinstance(meta, dict) else None
+    return isinstance(chrys, dict) and chrys.get("subAgentPause") is True
+
+
 def _event_session_id(event: Event, fallback: str) -> str:
     value = event.session_id
     return value if isinstance(value, str) and value else fallback
@@ -2371,14 +2388,14 @@ def _optional_string_param(params: dict[str, Any], key: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise RequestError.invalid_params({"details": f"{key} must be a string."})
+        raise invalid_params({"details": f"{key} must be a string."})
     return value
 
 
 def _int_param(params: dict[str, Any], key: str) -> int:
     value = params.get(key)
     if type(value) is not int:
-        raise RequestError.invalid_params({"details": f"{key} must be an integer."})
+        raise invalid_params({"details": f"{key} must be an integer."})
     return value
 
 
@@ -2387,14 +2404,14 @@ def _optional_int_param(params: dict[str, Any], key: str) -> int | None:
     if value is None:
         return None
     if type(value) is not int:
-        raise RequestError.invalid_params({"details": f"{key} must be an integer."})
+        raise invalid_params({"details": f"{key} must be an integer."})
     return value
 
 
 def _bool_param(params: dict[str, Any], key: str, *, default: bool) -> bool:
     value = params.get(key, default)
     if not isinstance(value, bool):
-        raise RequestError.invalid_params({"details": f"{key} must be a boolean."})
+        raise invalid_params({"details": f"{key} must be a boolean."})
     return value
 
 
@@ -2402,7 +2419,7 @@ def _dict_param(params: dict[str, Any], key: str) -> dict[str, Any]:
     value = params.get(key)
     if isinstance(value, dict):
         return value
-    raise RequestError.invalid_params({"details": f"{key} must be an object."})
+    raise invalid_params({"details": f"{key} must be an object."})
 
 
 def _string_list_param(params: dict[str, Any], key: str) -> list[str] | None:
@@ -2410,5 +2427,5 @@ def _string_list_param(params: dict[str, Any], key: str) -> list[str] | None:
     if value is None:
         return None
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise RequestError.invalid_params({"details": f"{key} must be a list of strings."})
+        raise invalid_params({"details": f"{key} must be a list of strings."})
     return value

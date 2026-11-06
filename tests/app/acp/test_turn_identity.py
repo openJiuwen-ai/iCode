@@ -10,12 +10,15 @@ import pytest
 from acp.helpers import text_block
 
 from chrys.app.acp.server import ChrysAcpServer
+from chrys.foundation.errors import ErrorKind
+from chrys.foundation.errors.display import DISPLAY_WITH_HINT
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     InvocationContentDelta,
     InvocationRetryAttempt,
     TurnStarted,
 )
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
 from chrys.orchestration.session_host import Cancelled
@@ -145,8 +148,42 @@ async def test_a_turn_retry_is_forwarded_with_the_turn_id() -> None:
             "delaySeconds": 3,
             "scope": "wire",
             "message": "retrying",
+            "kind": None,
+            "statusCode": None,
+            "hint": None,
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_a_turn_retry_says_what_is_being_retried() -> None:
+    """A classified failure's verdict rides the notice; it is being retried, so no ``retryable``."""
+    server, client = _server(
+        [
+            _turn_started(),
+            InvocationRetryAttempt(
+                origin=_origin(),
+                message="Error code: 429 - Rate limit reached",
+                attempt=1,
+                max_attempts=10,
+                delay_seconds=3,
+                scope="wire",
+                display_message=DISPLAY_WITH_HINT.bind(message="Rate limited.", hint="Waiting."),
+                facts=FailureFacts(kind=ErrorKind.RATE_LIMITED, retryable=True, status_code=429),
+            ),
+        ]
+    )
+
+    await server.prompt([text_block("go")], session_id="s1")
+
+    (retry,) = _retries(client)
+    assert {key: retry.get(key, "absent") for key in ("message", "kind", "retryable", "statusCode", "hint")} == {
+        "message": "Error code: 429 - Rate limit reached",
+        "kind": "rate_limited",
+        "retryable": "absent",
+        "statusCode": 429,
+        "hint": "Rate limited. Waiting.",
+    }
 
 
 @pytest.mark.anyio
