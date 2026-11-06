@@ -304,6 +304,11 @@ def http_server(tmp_path):
         process.wait()
 
 
+def port_written(port_file: Path) -> bool:
+    """Whether the probe server has written its port: ``write_text`` creates the file before it writes to it."""
+    return port_file.exists() and port_file.read_text(encoding="utf-8").isdigit()
+
+
 def http_config(port_file: Path, token: str) -> MCPServerConfig:
     return MCPServerConfig(
         name="first",
@@ -318,7 +323,7 @@ async def test_a_changed_token_never_falls_back_and_stays_out_of_the_report(
     agent_engine, tmp_path, monkeypatch, http_server
 ):
     state, port_file = http_server
-    await wait_for(port_file.exists, timeout=ENGINE_TURN_TIMEOUT, description="HTTP server listening")
+    await wait_for(lambda: port_written(port_file), timeout=ENGINE_TURN_TIMEOUT, description="HTTP server listening")
     second = state_dir(tmp_path, "second")
     other = stdio_server(second, "second", tool_name_prefix="second")
     config = http_config(port_file, "old-token-value")
