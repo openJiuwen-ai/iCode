@@ -321,18 +321,23 @@ class MainScreenViewAdapter:
     async def render_user_message(self, text: str, *, created_at: datetime, contents: list[Any] | None) -> None:
         await self._screen.query_one(ChatPanel).add_user_message(text, created_at=created_at, contents=contents)
 
-    async def render_user_retry_note(self, text: str, *, created_at: datetime) -> None:
-        await self._screen.query_one(ChatPanel).add_user_message(text, is_injection=True, created_at=created_at)
+    async def render_user_retry_note(self, text: str, *, created_at: datetime, client_message_id: str | None) -> None:
+        await self._screen.query_one(ChatPanel).add_user_message(
+            text, is_injection=True, created_at=created_at, client_message_id=client_message_id
+        )
 
-    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_followups: int) -> None:
+    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_item_ids: tuple[str, ...]) -> None:
         await self._screen.query_one(ChatPanel).apply_fresh_turn_cleanup(
-            retired_previous_turn=retired_previous_turn, removed_followups=removed_followups
+            retired_previous_turn=retired_previous_turn, removed_item_ids=removed_item_ids
         )
         self.update_toc(live=True)
 
-    def apply_turn_started(self, turn_number: int) -> None:
-        self._screen.query_one(ChatPanel).apply_turn_started(turn_number)
+    def apply_turn_started(self, turn_number: int, *, opening_item_id: str | None = None) -> None:
+        self._screen.query_one(ChatPanel).apply_turn_started(turn_number, opening_item_id=opening_item_id)
         self.update_toc(live=True)
+
+    def apply_retry_started(self, note_message_id: str | None, opening_item_id: str | None) -> None:
+        self._screen.query_one(ChatPanel).apply_retry_started(note_message_id, opening_item_id)
 
     def hide_trailing_status_action(self) -> None:
         self._screen.query_one(ChatPanel).hide_trailing_status_action()
@@ -900,8 +905,10 @@ class MainScreenViewAdapter:
             turn_started_at=turn_started_at,
         )
 
-    async def add_user_injection(self, text: str, *, created_at: datetime) -> None:
-        await self._screen.query_one(ChatPanel).add_user_message(text, is_injection=True, created_at=created_at)
+    async def add_user_injection(self, text: str, *, created_at: datetime, item_id: str | None = None) -> None:
+        await self._screen.query_one(ChatPanel).add_user_message(
+            text, is_injection=True, created_at=created_at, item_id=item_id
+        )
 
     def unlock_input_after_consumed_injection(self) -> None:
         self._screen.query_one(InputBar).unlock_and_clear()

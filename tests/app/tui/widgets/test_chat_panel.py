@@ -561,7 +561,7 @@ async def test_chat_panel_removes_failed_prompt_from_toc() -> None:
         await cp.add_error("failed before output")
 
         await cp.add_user_message("replacement prompt")
-        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_followups=0)
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=())
         cp.apply_turn_started(1)
         await pilot.pause()
 
@@ -598,7 +598,7 @@ async def test_fresh_submit_cleans_failed_turn_across_context_notices(status_typ
         tools = list(cp.query(ToolGroup))
 
         await cp.add_user_message("replacement prompt")
-        await cp.apply_fresh_turn_cleanup(retired_previous_turn=output == "none", removed_followups=0)
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=output == "none", removed_item_ids=())
         cp.apply_turn_started(2 if output == "none" else 3)
 
         assert not list(cp.query(status_type))
@@ -673,7 +673,7 @@ async def test_status_lookup_and_fresh_cleanup_use_chrome_infrastructure_predica
         assert button.parent is not None and not button.parent.display
 
         await cp.add_user_message("replacement prompt")
-        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_followups=0)
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=())
         cp.apply_turn_started(1)
 
         assert not list(cp.query(ErrorMessage))
@@ -688,7 +688,7 @@ async def test_chat_panel_marks_compressed_toc_by_backend_turn_index_after_faile
         cp.apply_turn_started(1)
         await cp.add_error("failed before output")
         await cp.add_user_message("first kept")
-        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_followups=0)
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=())
         cp.apply_turn_started(1)
         await cp.add_user_message("second kept")
         cp.apply_turn_started(2)
@@ -715,7 +715,7 @@ async def test_chat_panel_failed_turn_with_output_keeps_its_own_backend_turn_ind
         await cp.add_agent_message("partial output")
         await cp.add_error("failed after output")
         await cp.add_user_message("continuation")
-        await cp.apply_fresh_turn_cleanup(retired_previous_turn=False, removed_followups=0)
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=False, removed_item_ids=())
         cp.apply_turn_started(2)
         await cp.add_user_message("next fresh turn")
         cp.apply_turn_started(3)

@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 from weakref import WeakSet
 
-from chrys.foundation.events.types import Error, ExecutionChanged
+from chrys.foundation.events.types import Error, ExecutionChanged, UserRetry
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationTrace
 from chrys.service.trajectory.waits import WaitOutcome, WaitTrace
@@ -83,12 +83,36 @@ class PromptAdmissionRecord:
     preparation_trace: PreparationTrace | None = field(default=None, repr=False, compare=False)
 
 
+@dataclass(frozen=True)
+class RetryInput:
+    """What a retry pass sends: the user's guidance, if any, and when they gave it."""
+
+    text: str = ""
+    """The guidance note; empty for a bare retry."""
+    created_at: datetime | str | None = None
+    note_message_id: str | None = None
+    """The frontend's id for the note (``UserRetry.client_message_id``), echoed on the
+    pass's ``TurnStarted``; None for a bare retry, which has no note."""
+
+    @property
+    def guided(self) -> bool:
+        """Whether the retry carries a guidance note."""
+        return bool(self.text)
+
+    @classmethod
+    def of(cls, event: UserRetry) -> RetryInput:
+        return cls(event.text, event.timestamp, event.client_message_id if event.text else None)
+
+
+BARE_RETRY = RetryInput()
+"""A retry with no guidance."""
+
+
 @dataclass
 class PendingRetry:
     """Retry request queued to run after the current executor call returns."""
 
-    text: str = ""
-    created_at: datetime | str | None = None
+    retry: RetryInput = BARE_RETRY
     session_generation: int = 0
     run_generation: int = 0
     updated_by_admission_id: int | None = None
@@ -138,9 +162,9 @@ class PromptPromotionResult:
 
 @dataclass(frozen=True)
 class RetryPromotionResult:
-    """Result from promoting a retry admission into a task or pending retry."""
+    """Result from promoting a retry admission into a task."""
 
-    outcome: Literal["task", "pending_installed", "pending_updated", "stale", "invalid"]
+    outcome: Literal["task", "stale", "invalid"]
     task: asyncio.Task[None] | None = None
 
 
@@ -491,17 +515,10 @@ class ExecutionLease:
         *,
         reminder_scope: CurrentRunReminderScope,
         make_task: Callable[[CurrentRunScope, CurrentRunInjectionWindow], asyncio.Task[None]],
-        text: str,
-        created_at: datetime | str | None,
-        pending: bool = False,
     ) -> RetryPromotionResult:
-        """Promote an exact retry admission into a task or pending retry."""
+        """Promote an exact retry admission into a task."""
         if not self._admission_matches(admission, expected_kind="retry"):
             return RetryPromotionResult(outcome="stale")
-        if pending:
-            updated = self.upsert_pending_retry_from_admission(admission, text, created_at)
-            self.release_prompt_admission(admission)
-            return RetryPromotionResult(outcome="pending_updated" if updated else "pending_installed")
         if self.run_task is not None and not self.run_task.done():
             return RetryPromotionResult(outcome="invalid")
         scope = self._retry_scope_for_admission(admission, reminder_scope=reminder_scope)
@@ -584,12 +601,7 @@ class ExecutionLease:
             self.prompt_command_admissions.discard(admission.admission_id)
             self._notify_execution()
 
-    def upsert_pending_retry_from_admission(
-        self,
-        admission: PromptAdmissionScope,
-        text: str,
-        created_at: datetime | str | None,
-    ) -> bool:
+    def upsert_pending_retry_from_admission(self, admission: PromptAdmissionScope, retry: RetryInput) -> bool:
         """Install or update pending retry for the current run from *admission*."""
         run_generation = self.current_run_scope.run_generation if self.current_run_scope is not None else 0
         existing_same_run = (
@@ -610,8 +622,7 @@ class ExecutionLease:
         if admission.preparation_trace is not None:
             admission.preparation_trace.state_soon("requeued" if existing_same_run else "queued")
         self.pending_retry = PendingRetry(
-            text=text,
-            created_at=created_at,
+            retry=retry,
             session_generation=admission.session_generation,
             run_generation=run_generation,
             updated_by_admission_id=admission.admission_id,

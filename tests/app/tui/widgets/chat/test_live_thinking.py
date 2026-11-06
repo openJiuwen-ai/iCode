@@ -330,7 +330,7 @@ async def test_a_new_prompt_drops_a_failed_prompt_with_the_thinking_it_alone_got
         await cp.add_interrupted()
 
         await cp.add_user_message("replacement prompt")
-        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_followups=0)
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=())
         cp.apply_turn_started(1)
 
         assert _shape(cp) == [("user", "replacement prompt")]

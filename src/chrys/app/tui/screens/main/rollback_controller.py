@@ -85,6 +85,10 @@ _ROLLED_BACK_SINGLE_TURN = msg(
     "tui.rollback.result.single_turn",
     fallback="Discarded turn {turn}.",
 )
+_CONFIRM_LATEST_TURN = msg(
+    "tui.rollback.confirm.latest_turn",
+    fallback="Discard turn {turn}? It is the latest turn and has no files to restore. A discarded turn cannot be recovered.",
+)
 _FILES_RESTORED = msg(
     "tui.rollback.result.files_restored",
     fallback="{count} file restored",
@@ -262,7 +266,22 @@ class RollbackController:
                         finally:
                             _finish()
 
-                    self._view.open_rollback_progress_modal(_perform)
+                    # Both entries are one click from discarding a turn for good: even a turn
+                    # with no files to restore asks first. It names only what the plan holds:
+                    # a turn whose change detection was cut short may have changed files.
+                    def _confirmed(confirmed: bool) -> None:
+                        if confirmed:
+                            self._view.open_rollback_progress_modal(_perform)
+                        else:
+                            _finish()
+
+                    self._view.open_confirm_dialog(
+                        title=ROLLBACK_TITLE.bind(),
+                        message=_CONFIRM_LATEST_TURN.bind(turn=target + 1),
+                        confirm_label=ROLLBACK_TITLE.bind(),
+                        confirm_variant="error",
+                        on_result=_confirmed,
+                    )
                 else:
                     self._open_picker(
                         read_model,

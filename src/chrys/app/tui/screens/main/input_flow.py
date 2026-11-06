@@ -27,7 +27,6 @@ from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_RESUMING, STATUS_THINKING
 from chrys.foundation.events.types import (
     Error,
-    FreshTurnCleaned,
     InvocationContentAbandoned,
     InvocationContentDelta,
     InvocationContentFinished,
@@ -37,6 +36,7 @@ from chrys.foundation.events.types import (
     PromptShortcutRef,
     SessionOnlySwitch,
     TurnStarted,
+    UnansweredInputDropped,
     UserInjectCancel,
     UserInterrupt,
     UserMessage,
@@ -72,7 +72,7 @@ class InputFlowController:
             [InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned], Awaitable[None]
         ],
         handle_error: Callable[[Error], Awaitable[None]],
-        handle_turn_event: Callable[[FreshTurnCleaned | TurnStarted], Awaitable[None]],
+        handle_turn_event: Callable[[UnansweredInputDropped | TurnStarted], Awaitable[None]],
         set_agent_running: Callable[[bool], None],
         set_has_messages: Callable[[bool], None],
         clear_workspace_marker: Callable[[], None],
@@ -360,7 +360,7 @@ class InputFlowController:
             await self._handle_agent_content(event)
         elif isinstance(event, Error):
             await self._handle_error(event)
-        elif isinstance(event, (FreshTurnCleaned, TurnStarted)):
+        elif isinstance(event, (UnansweredInputDropped, TurnStarted)):
             await self._handle_turn_event(event)
 
     async def publish_interrupt(self) -> None:
@@ -398,7 +398,8 @@ class InputFlowController:
         if self._state.run.agent_running or self._state.submit.active:
             return None
 
-        event = UserRetry(text=text)
+        # Guidance shows as a note the retry's TurnStarted names by this id.
+        event = UserRetry(text=text, client_message_id=uuid4().hex[:12] if text else None)
         self._state.render_gate.begin()
         # A refusal gives back the whole draft, its unfilled fields included, as for Enter.
         self._begin_claim(text, kind="retry", draft=draft)
@@ -428,7 +429,9 @@ class InputFlowController:
             self._view.add_input_history(text, session_id=self._view.current_chat_session_id() or None)
             rendered = False
             try:
-                await self._view.render_user_retry_note(text, created_at=event.timestamp)
+                await self._view.render_user_retry_note(
+                    text, created_at=event.timestamp, client_message_id=event.client_message_id
+                )
                 rendered = True
             finally:
                 self._state.render_gate.finish(rendered=rendered)

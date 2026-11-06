@@ -38,6 +38,7 @@ from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.kernel import Content, Message
 from chrys.kernel.middleware import ChatContext
+from chrys.orchestration.engine.execution import RetryInput
 from chrys.orchestration.engine.run.attachments import (
     MAX_IMAGE_BYTES,
     AttachmentDiscoveryResult,
@@ -97,7 +98,6 @@ async def run_and_save(
     cleanup_required: bool = False,
 ) -> None:
     if cleanup_required:
-        host._history.close_unfinished_turn()
         host._history.prepare_fresh_turn()
     await make_turn_runner(
         current=host.current,
@@ -268,9 +268,6 @@ class _History:
     def remove_trailing_markers(self) -> None:
         raise AssertionError("history markers should not be removed")
 
-    def close_unfinished_turn(self) -> bool:
-        raise AssertionError("failed turn should not be closed")
-
     def prepare_fresh_turn(self, *, other_records_present: bool = False) -> FreshTurnCleanup:
         raise AssertionError("failed turn should not be cleaned")
 
@@ -342,11 +339,6 @@ class _MutableHistory(_History):
                 continue
             return chrys_kind in HistoryMarkerKind.STATUS_MARKERS
         return False
-
-    def close_unfinished_turn(self) -> bool:
-        manager = SessionHistoryManager()
-        manager.bind(self.state)
-        return manager.close_unfinished_turn()
 
     def prepare_fresh_turn(self, *, other_records_present: bool = False) -> FreshTurnCleanup:
         manager = SessionHistoryManager()
@@ -559,7 +551,7 @@ async def test_turn_preamble_closes_exactly_once_on_every_dispatch_exit(
                 persistence=host._persistence,
                 on_successful_turn=host._on_successful_turn,
                 retry_and_save=host.retry_and_save,
-            ).run_retry("retry note")  # type: ignore[arg-type]
+            ).run_retry(RetryInput("retry note"))  # type: ignore[arg-type]
         else:
             await run_and_save(host, "hello", contents=["hello"])
 
@@ -609,7 +601,7 @@ async def test_turn_preamble_start_ack_cancellation_leaves_no_open_interval(
                 persistence=host._persistence,
                 on_successful_turn=host._on_successful_turn,
                 retry_and_save=host.retry_and_save,
-            ).run_retry("retry note")  # type: ignore[arg-type]
+            ).run_retry(RetryInput("retry note"))  # type: ignore[arg-type]
         else:
             await run_and_save(host, "hello", contents=["hello"])
 

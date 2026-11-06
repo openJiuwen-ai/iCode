@@ -17,6 +17,7 @@ from chrys.foundation.events.types import (
     InvocationContentDelta,
     InvocationRetryAttempt,
     TurnStarted,
+    UnansweredInputDropped,
 )
 from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.models.invocations import InvocationOrigin
@@ -83,7 +84,7 @@ async def test_one_turn_id_reaches_the_response_live_and_history() -> None:
     """The client joins its own transcript on one id: the same value everywhere."""
     server, client = _server(
         [
-            _turn_started(user_message_id=_CLIENT_MESSAGE_ID),
+            _turn_started(user_message_id=_CLIENT_MESSAGE_ID, opening_item_id=_ITEM_ID),
             InvocationContentDelta(origin=_origin(), segment_id="seg-1", text="answer"),
         ],
         turns=[
@@ -103,6 +104,7 @@ async def test_one_turn_id_reaches_the_response_live_and_history() -> None:
                 "turnNumber": 1,
                 "isRetry": False,
                 "userMessageId": _CLIENT_MESSAGE_ID,
+                "openingItemId": _ITEM_ID,
             },
         )
     ]
@@ -222,3 +224,60 @@ async def test_a_compaction_retry_is_forwarded_with_its_scope() -> None:
     await server.prompt([text_block("go")], session_id="s1")
 
     assert [params["scope"] for params in _retries(client)] == ["compaction"]
+
+
+@pytest.mark.anyio
+async def test_a_retired_turn_is_announced_before_the_turn_that_reuses_its_number() -> None:
+    """The client drops the retired turn by id; the replacement then takes its number."""
+    server, client = _server(
+        [
+            UnansweredInputDropped(
+                session_id="s1", retired_previous_turn=True, removed_item_ids=("opener",), retired_turn_id="turn-a"
+            ),
+            _turn_started(turn_id="turn-b", user_message_id=_CLIENT_MESSAGE_ID),
+        ]
+    )
+
+    await server.prompt([text_block("go")], session_id="s1", message_id=_CLIENT_MESSAGE_ID)
+
+    assert client.ext_notifications[0] == (
+        "chrys/user_messages_dropped",
+        {"sessionId": "s1", "itemIds": ["opener"], "retiredTurnId": "turn-a"},
+    )
+    assert [method for method, _params in client.ext_notifications] == [
+        "chrys/user_messages_dropped",
+        "chrys/turn_started",
+    ]
+
+
+@pytest.mark.anyio
+async def test_cleanup_that_keeps_the_turn_names_the_user_messages_it_dropped() -> None:
+    """The failed turn stays, but the notes it never answered leave history: the client drops them by item."""
+    server, client = _server(
+        [
+            UnansweredInputDropped(session_id="s1", removed_item_ids=("note-1", "note-2")),
+            _turn_started(user_message_id=_CLIENT_MESSAGE_ID),
+        ]
+    )
+
+    await server.prompt([text_block("go")], session_id="s1", message_id=_CLIENT_MESSAGE_ID)
+
+    assert client.ext_notifications[0] == (
+        "chrys/user_messages_dropped",
+        {"sessionId": "s1", "itemIds": ["note-1", "note-2"], "retiredTurnId": None},
+    )
+    assert [method for method, _params in client.ext_notifications] == [
+        "chrys/user_messages_dropped",
+        "chrys/turn_started",
+    ]
+
+
+@pytest.mark.anyio
+async def test_cleanup_that_removes_nothing_sends_nothing() -> None:
+    server, client = _server(
+        [UnansweredInputDropped(session_id="s1"), _turn_started(user_message_id=_CLIENT_MESSAGE_ID)]
+    )
+
+    await server.prompt([text_block("go")], session_id="s1", message_id=_CLIENT_MESSAGE_ID)
+
+    assert [method for method, _params in client.ext_notifications] == ["chrys/turn_started"]

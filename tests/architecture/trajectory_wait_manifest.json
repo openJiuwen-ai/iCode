@@ -665,7 +665,7 @@
         ["awaitable", "await checkpoints.flush()", "unresolved"]
       ],
       "build_agent._on_injection_batch_consumed._publish_results": [
-        ["awaitable", "await bus.publish(UserInjectResult(text=consumed.text, consumed=True, created_at=consumed.created_at, injection_id=consumed.injection_id, session_id=session_id))", "unresolved"]
+        ["awaitable", "await bus.publish(UserInjectResult(text=consumed.text, consumed=True, created_at=consumed.created_at, injection_id=consumed.injection_id, item_id=consumed.analytics_item_id, session_id=session_id))", "unresolved"]
       ]
     },
     "chrys.orchestration.engine.build.loaded": {
@@ -1173,7 +1173,7 @@
       "TurnCoordinator._settle_fresh_cleanup": [
         ["awaitable", "await self._writer.save_current_session(raise_on_error=True)", "rollback-boundary-work"],
         ["awaitable", "await self._trajectory_recorder.retire_turn(retired_turn=cleanup.retired_turn, target_turns=turn_records(self._history.state))", "rollback-boundary-work"],
-        ["awaitable", "await self._bus.publish(FreshTurnCleaned(session_id=self._session.session_id, retired_previous_turn=cleanup.retired_previous_turn, removed_followups=cleanup.removed_followups))", "rollback-boundary-work"]
+        ["awaitable", "await self._bus.publish(UnansweredInputDropped(session_id=self._session.session_id, retired_previous_turn=cleanup.retired_previous_turn, removed_item_ids=cleanup.removed_item_ids, retired_turn_id=cleanup.retired_turn.turn_id if cleanup.retired_turn is not None else None))", "rollback-boundary-work"]
       ],
       "TurnCoordinator._start_pre_admission_preparation": [
         ["awaitable", "await preparation.started()", "unresolved"]
@@ -1231,7 +1231,7 @@
         ["awaitable", "await self._content.reject_text_only_prepared_contents(text, contents, event_session_id=event_session_id, should_publish=self._publication_guard_for_admission(admission))", "unresolved"]
       ],
       "TurnCoordinator.retry_and_save": [
-        ["wrapper", "await self.run_retry(additional_text, created_at=created_at, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.run_retry"]
+        ["wrapper", "await self.run_retry(retry, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.run_retry"]
       ],
       "TurnCoordinator.run_and_save": [
         ["wrapper", "await finish_close(asyncio.create_task(self._settle_fresh_cleanup(cleanup)))", "unresolved", "chrys.foundation.util.once_close.finish_close"],
@@ -1241,7 +1241,7 @@
         ["awaitable", "await self._runner().run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure, user_message_id=user_message_id, typed_text=typed_text, skip_rollback_snapshot=skip_rollback_snapshot)", "unresolved"]
       ],
       "TurnCoordinator.run_retry": [
-        ["awaitable", "await self._runner().run_retry(additional_text, created_at=created_at, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved"]
+        ["awaitable", "await self._runner().run_retry(retry, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved"]
       ],
       "TurnCoordinator.wait_for_run_task": [
         ["awaitable", "await self._turn_state.lease.observe_run_task_chain(propagate_inner_cancel=True)", "unresolved"],
@@ -1448,7 +1448,7 @@
       ],
       "TurnRunner.pre_run": [
         ["wrapper", "await self._record_trajectory_turn_started(is_retry=is_retry, has_opening_input=has_opening_input, user_message_id=user_message_id, preparation_scope_operation_id=preparation_scope_operation_id)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._record_trajectory_turn_started"],
-        ["awaitable", "await self._bus.publish(TurnStarted(session_id=self._session.session_id, turn_id=turn_id, turn_number=turn_number, is_retry=is_retry, user_message_id=event_user_message_id))", "unresolved"]
+        ["awaitable", "await self._bus.publish(TurnStarted(session_id=self._session.session_id, turn_id=turn_id, turn_number=turn_number, is_retry=is_retry, user_message_id=event_user_message_id, opening_item_id=self._opening_item_id, note_message_id=note_message_id))", "unresolved"]
       ],
       "TurnRunner.run_fresh": [
         ["wrapper", "await self._prepare_user_contents(text)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._prepare_user_contents"],
@@ -1468,7 +1468,7 @@
         ["wrapper", "await self.finalize_current_run()", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner.finalize_current_run"]
       ],
       "TurnRunner.run_retry": [
-        ["wrapper", "await self.pre_run(reset_batch_id=False, is_retry=True, has_opening_input=bool(additional_text), preparation_scope_operation_id=self._preparation_operation_id(admission_preparation))", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner.pre_run"],
+        ["wrapper", "await self.pre_run(reset_batch_id=False, is_retry=True, has_opening_input=retry.guided, note_message_id=retry.note_message_id, preparation_scope_operation_id=self._preparation_operation_id(admission_preparation))", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner.pre_run"],
         ["awaitable", "await admission_preparation.finished(outcome=PreparationOutcome.RETRY_TURN)", "unresolved"],
         ["awaitable", "await preamble.started()", "unresolved"],
         ["wrapper", "await self._fire_before_turn(additional_text, is_retry=True, target_operation_id=preamble.operation_id if preamble is not None and preamble.start_committed else None)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._fire_before_turn"],
@@ -3543,7 +3543,7 @@
       ],
       "AcpAgentClient._idle_watchdog": [
         ["sync_primitive", "await event.wait()", "unresolved"],
-        ["timeout", "async with asyncio.timeout(remaining)", "unresolved"],
+        ["timeout", "async with asyncio.timeout(slice_end - now)", "unresolved"],
         ["sync_primitive", "await event.wait()", "unresolved"]
       ],
       "AcpAgentClient.aclose": [

@@ -43,7 +43,7 @@ from chrys.foundation.models.history_markers import (
 from chrys.foundation.models.turns import opens_turn
 from chrys.foundation.text.images import is_image_media_type
 from chrys.foundation.tool_result_metadata import TOOL_INTERRUPTED_METADATA_KEY
-from chrys.foundation.trajectory.metadata import OPERATION_ID_KEY
+from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY, OPERATION_ID_KEY
 from chrys.foundation.trajectory_timing import trajectory_timing_from_metadata
 from chrys.foundation.util.time import parse_created_at
 from chrys.kernel import Content, Message
@@ -168,6 +168,7 @@ class ReplayUserMessage:
     is_injection: bool = False
     profile_switch_to: str = ""
     duration_ms: int | None = None
+    item_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -866,6 +867,7 @@ class HistoryReplayPlanner:
                         entries.append(ReplayProfileSwitch(profile_switch_to))
                     continue
                 is_injection = bool(extra.get(HistoryMarkerKind.INJECTED_KEY, False) or seen_user_in_turn)
+                item_id = extra.get(ANALYTICS_ITEM_ID_KEY)
                 entries.append(
                     ReplayUserMessage(
                         text=text,
@@ -874,6 +876,7 @@ class HistoryReplayPlanner:
                         is_injection=is_injection,
                         profile_switch_to=profile_switch_to,
                         duration_ms=_trajectory_duration_ms(extra),
+                        item_id=item_id if isinstance(item_id, str) else None,
                     )
                 )
                 if not is_injection:
@@ -1135,6 +1138,7 @@ class HistoryReplayRenderer:
                         timestamp=format_message_created_at(entry.created_at),
                         is_injection=True,
                         contents=entry.contents,
+                        history_item_id=entry.item_id,
                     )
                 else:
                     turn_id, _item = self._toc.begin_replayed_turn(entry.text)
@@ -1144,6 +1148,7 @@ class HistoryReplayRenderer:
                         contents=entry.contents,
                         turn_number=_item.turn_index,
                         rollback_available=UserMessage.undo_link_available(_item.turn_index, self._rollback_targets()),
+                        history_item_id=entry.item_id,
                     )
                     turn_user = widget
                     seen_user_in_turn = True
@@ -1270,6 +1275,7 @@ class HistoryReplayRenderer:
                         compressed=True,
                         is_injection=True,
                         contents=entry.contents,
+                        history_item_id=entry.item_id,
                     )
                 else:
                     turn_id, _item = self._toc.begin_replayed_turn(entry.text, compressed=True)
@@ -1280,6 +1286,7 @@ class HistoryReplayRenderer:
                         contents=entry.contents,
                         turn_number=_item.turn_index,
                         rollback_available=UserMessage.undo_link_available(_item.turn_index, self._rollback_targets()),
+                        history_item_id=entry.item_id,
                     )
                     turn_user = widget
                     seen_user_in_turn = True

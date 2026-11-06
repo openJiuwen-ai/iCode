@@ -160,7 +160,7 @@ async def test_inflight_target_read_survives_a_new_pass_revision(
             engine.conversation_revision += 1
             if transition == "empty-replacement":
                 await panel.add_user_message("Replacement")
-                await panel.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_followups=0)
+                await panel.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=())
                 panel.apply_turn_started(3)
             release.set()
             await refresh

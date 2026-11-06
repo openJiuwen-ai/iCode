@@ -226,6 +226,7 @@ async def build_agent(
                         consumed=True,
                         created_at=consumed.created_at,
                         injection_id=consumed.injection_id,
+                        item_id=consumed.analytics_item_id,
                         session_id=session_id,
                     )
                 )

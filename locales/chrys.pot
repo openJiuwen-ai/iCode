@@ -5305,8 +5305,8 @@ msgstr ""
 msgid "tui.chat.fold_row.folded_label"
 msgstr ""
 
-#. English: Discard
-#. chrys-meta={"fingerprint":"33905600ad4c923bc409677370cab1f223df19a44e49e594b447be0c1e744078","multiline":false,"placeholders":[]}
+#. English: Discard This Turn
+#. chrys-meta={"fingerprint":"00af528dab63a2db16529ae9ff025a4b9e52a55bb05efdb505cb63eab4fa1ea9","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.interrupted_rollback_button"
 msgstr ""
@@ -10018,6 +10018,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"1d700424b7ef1bad653f9215ec7cf0271502e0e3303be81b2d40bf540d4c81e5","multiline":false,"placeholders":["turn"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.button.discard_turn"
+msgstr ""
+
+#. English: Discard turn {turn}? It is the latest turn and has no files to
+#. restore. A discarded turn cannot be recovered.
+#. chrys-meta={"fingerprint":"08de28cb6aa973888ac26e2976536af11c26eff4fd7b98457287d90da21a9621","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.confirm.latest_turn"
 msgstr ""
 
 #. English: Session start

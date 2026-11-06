@@ -5362,11 +5362,11 @@ msgstr "复制你的原始消息"
 msgid "tui.chat.fold_row.folded_label"
 msgstr "{label}："
 
-#. English: Discard
-#. chrys-meta={"fingerprint":"33905600ad4c923bc409677370cab1f223df19a44e49e594b447be0c1e744078","multiline":false,"placeholders":[]}
+#. English: Discard This Turn
+#. chrys-meta={"fingerprint":"00af528dab63a2db16529ae9ff025a4b9e52a55bb05efdb505cb63eab4fa1ea9","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.interrupted_rollback_button"
-msgstr "丢弃"
+msgstr "撤回本轮"
 
 #. English: Activity
 #. chrys-meta={"fingerprint":"adc05a800b4e9d0dfccd9a893e52c89939fe10aab58b7d973b7b2897b27291b2","multiline":false,"placeholders":[]}
@@ -10243,6 +10243,13 @@ msgstr "撤回全部"
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.button.discard_turn"
 msgstr "撤回第 {turn} 轮"
+
+#. English: Discard turn {turn}? It is the latest turn and has no files to
+#. restore. A discarded turn cannot be recovered.
+#. chrys-meta={"fingerprint":"08de28cb6aa973888ac26e2976536af11c26eff4fd7b98457287d90da21a9621","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.confirm.latest_turn"
+msgstr "撤回第 {turn} 轮？这是最近一轮，没有要恢复的文件。撤回后无法找回。"
 
 #. English: Session start
 #. chrys-meta={"fingerprint":"0428764d7b8045e0c766dbc251372463fc0236918ee4c7be2cc20714aafe3606","multiline":false,"placeholders":[]}

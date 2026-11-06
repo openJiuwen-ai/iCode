@@ -82,6 +82,8 @@ _TURN = msg("tui.rollback.picker.turn", fallback="Turn {turn}")
 _TURN_PREVIEW = msg("tui.rollback.picker.turn_preview", fallback="Turn {turn} — ")
 _RANGE_RESTORE = msg("tui.rollback.range.restore", fallback="{range}; checked files go back to before turn {turn}")
 _RANGE_KEEP_FILES = msg("tui.rollback.range.keep_files", fallback="{range}; files stay as they are")
+_RANGE_NOTE_GLYPH = "└─"
+"""Hangs the range note from the turn picker, as settings hang a hint from its control."""
 _NOW = msg("tui.rollback.diff.now", fallback="Now")
 _AFTER_UNDO = msg("tui.rollback.diff.after", fallback="After discard")
 _LOAD_PREVIEW_ERROR = msg(
@@ -625,6 +627,24 @@ class _TurnOptionText(Text):
         )
 
 
+class _RangeNote(Static):
+    """The range note: the whole sentence when it fits, else only the turns it discards."""
+
+    def __init__(self) -> None:
+        super().__init__("", id="rollback-range-note", markup=False)
+        self._full = Text()
+        self._short = Text()
+
+    def show_note(self, full: str, short: str) -> None:
+        self._full = Text(full)
+        self._short = Text(short)
+        self.refresh()
+
+    def render(self) -> Text:
+        width = self.content_size.width
+        return self._full if width <= 0 or self._full.cell_len <= width else self._short
+
+
 class _RollbackContent(VerticalGroup):
     """Modal content composed with the shell.
 
@@ -655,7 +675,9 @@ class _RollbackContent(VerticalGroup):
             prompt=self._render_message(_ROLLBACK_TO.bind()),
         )
         yield select
-        yield Static("", id="rollback-range-note", markup=False)
+        with HorizontalGroup(id="rollback-range-line"):
+            yield Static(_RANGE_NOTE_GLYPH, id="rollback-range-glyph", markup=False)
+            yield _RangeNote()
 
         with VerticalGroup(id="rollback-diff-wrapper"):
             yield ChrysLoadingIndicator(id="rollback-loading")
@@ -924,13 +946,14 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
         label = self._render_message(
             _DISCARD_TURN.bind(turn=first) if first == last else _DISCARD_AFTER_TURN.bind(first=first, last=last)
         )
+        full = label
         if self._pane is not None:
             checkbox = self.query_one("#revert-checkbox", Checkbox)
             reference = (
                 _RANGE_RESTORE.bind(range=label, turn=first) if checkbox.value else _RANGE_KEEP_FILES.bind(range=label)
             )
-            label = self._render_message(reference)
-        self.query_one("#rollback-range-note", Static).update(Text(label))
+            full = self._render_message(reference)
+        self.query_one("#rollback-range-note", _RangeNote).show_note(full, short=label)
 
     def _clip_preview(self, raw: str) -> str:
         """Collapse whitespace + truncate to :attr:`_PROMPT_PREVIEW_MAX`."""

@@ -141,7 +141,7 @@ async def test_user_inject_result_is_exposed_as_extension_notification() -> None
 
     await server._handle_event(
         "s1",
-        UserInjectResult(text="extra context", consumed=True, created_at="now", session_id="s1"),
+        UserInjectResult(text="extra context", consumed=True, created_at="now", item_id="item-1", session_id="s1"),
         AcpEventBridge(),
         {},
     )
@@ -155,6 +155,7 @@ async def test_user_inject_result_is_exposed_as_extension_notification() -> None
                 "consumed": True,
                 "createdAt": "now",
                 "injectionId": None,
+                "itemId": "item-1",
             },
         )
     ]

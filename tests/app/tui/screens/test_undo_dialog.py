@@ -11,8 +11,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from rich.text import Text
 from textual.color import Color
 from textual.widgets import Button, Checkbox, Select, Static
+from textual.widgets._select import SelectCurrent
 
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.diff.rollback_modal import RollbackModal
@@ -23,7 +25,7 @@ from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, MutationSource
 from tests.app.tui.screens.test_rollback_modal import _ModalHostApp
-from tests.support.tui_helpers import rich_plain
+from tests.support.tui_helpers import resize_when_settled, rich_plain
 from tests.support.waiting import wait_for
 
 
@@ -89,6 +91,12 @@ async def test_dialog_turn_axis_notes_column_titles_and_actions(
         note = modal.query_one("#rollback-range-note", Static)
         await pilot.pause()
         assert note.region.y == select.region.bottom + 1
+        # The note hangs from the picker: its "└─" starts one column before the selected turn's text.
+        glyph = modal.query_one("#rollback-range-glyph", Static)
+        assert rich_plain(glyph.render()) == "└─"
+        assert glyph.region.y == note.region.y
+        assert glyph.content_region.x == select.query_one(SelectCurrent).query_one("#label").content_region.x - 1
+        assert note.content_region.x == glyph.content_region.x + 3
         assert note.styles.color == Color.parse(host.get_css_variables()["text-muted"])
         assert note.styles.text_style.dim
         if not has_files:
@@ -171,3 +179,33 @@ async def test_pruned_picker_has_only_retained_turns_and_keyboard_can_choose(
             description="keyboard chose next retained turn",
         )
         assert modal._selected_turn == 18
+
+
+@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
+async def test_range_note_too_long_for_its_line_shows_only_the_discarded_turns(tmp_path: Path, locale: str) -> None:
+    controller = LocaleController(Settings(locale=locale))
+    modal = RollbackModal(
+        tracker=_tracker(tmp_path, 17),
+        available_turns=[0, 16, 17, 18, 19],
+        current_turn=20,
+        initial_selection=16,
+        cwd=str(tmp_path),
+        turn_prompts={},
+        locale_controller=controller,
+    )
+    host = _ModalHostApp(modal)
+    host.locale_controller = controller
+    english = locale == "en"
+    short = "Discard turns 17–20" if english else "撤回第 17–20 轮"
+    full = short + ("; checked files go back to before turn 17" if english else "，勾选的文件改回第 17 轮之前的内容")
+    async with host.run_test(size=(60, 30)) as pilot:
+        await wait_for(lambda: modal._content_ready, pilot=pilot, description="undo dialog ready")
+        note = modal.query_one("#rollback-range-note", Static)
+        assert Text(full).cell_len > note.content_region.width
+        assert rich_plain(note.render()) == short
+        assert note.region.height == 1
+        await resize_when_settled(pilot, 120, 30)
+        await wait_for(lambda: rich_plain(note.render()) == full, pilot=pilot, description="whole note once it fits")
+        # The glyph keeps its column either way.
+        glyph = modal.query_one("#rollback-range-glyph", Static)
+        assert note.content_region.x == glyph.content_region.x + 3

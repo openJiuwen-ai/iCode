@@ -67,6 +67,7 @@ class _EntryView:
         self.notices: list[str] = []
         self.progress: list[Callable[[], Awaitable[None]]] = []
         self.pickers: list[tuple[int | None, Callable[[], Awaitable[RollbackReadState | None]], object]] = []
+        self.confirms: list[tuple[str, Callable[[bool], None]]] = []
         self.targets: set[int] = set()
 
     def notify(
@@ -81,6 +82,18 @@ class _EntryView:
 
     def open_rollback_progress_modal(self, operation: Callable[[], Awaitable[None]]) -> None:
         self.progress.append(operation)
+
+    def open_confirm_dialog(
+        self,
+        *,
+        title: MessageRef,
+        message: MessageRef,
+        confirm_label: MessageRef,
+        confirm_variant: str,
+        on_result: Callable[[bool], None],
+    ) -> None:
+        assert confirm_variant == "error"
+        self.confirms.append((format_message(message), on_result))
 
     def open_rollback_modal(
         self,
@@ -156,12 +169,14 @@ async def test_entry_confirms_exactly_when_files_or_multiple_turns_are_discarded
     complete: list[bool] = []
     controller = _controller(engine, view, bus)
     await controller.rollback_from_message(target, on_complete=lambda: complete.append(True))
-    requires_confirmation = has_file or target < current_turn - 1
-    assert len(view.pickers) == int(requires_confirmation)
-    assert len(view.progress) == int(not requires_confirmation)
+    requires_picker = has_file or target < current_turn - 1
+    # A header click always asks: the picker when there is something to choose, else a plain confirm.
+    assert len(view.pickers) == int(requires_picker)
+    assert len(view.confirms) == int(not requires_picker)
+    assert view.progress == []
     assert complete == []
     assert all(thread != threading.get_ident() for thread in engine.target_threads)
-    if requires_confirmation:
+    if requires_picker:
         initial, load, dismiss = view.pickers[0]
         assert initial == target
         state = await load()
@@ -170,10 +185,74 @@ async def test_entry_confirms_exactly_when_files_or_multiple_turns_are_discarded
         dismiss(None)
         assert published == []
     else:
+        message, confirm = view.confirms[0]
+        assert message.startswith(f"Discard turn {target + 1}? It is the latest turn")
+        confirm(True)
+        assert len(view.progress) == 1
+        assert complete == []
         await view.progress[0]()
         assert len(published) == 1
         assert published[0].target_turn == target
         assert published[0].expected_conversation_revision == 7
+    assert complete == [True]
+
+
+@pytest.mark.parametrize("clicked_turn", [2, None], ids=["message_header", "interrupt_card"])
+async def test_cancelled_confirm_discards_nothing_and_releases_the_entry(
+    tmp_path: Path, clicked_turn: int | None
+) -> None:
+    tracker = MutationTracker(SnapshotStore(tmp_path))
+    tracker.start_turn(3)
+    engine = _EntryEngine(tracker, str(tmp_path))
+    view = _EntryView()
+    bus = EventBus()
+    published: list[UserRollback] = []
+
+    async def record(event: UserRollback) -> None:
+        published.append(event)
+
+    await bus.subscribe(UserRollback, record)
+    controller = _controller(engine, view, bus)
+    complete: list[str] = []
+    await controller.rollback_from_message(clicked_turn, on_complete=lambda: complete.append("first"))
+    assert complete == []
+    [(_message, answer)] = view.confirms
+    answer(False)
+    assert complete == ["first"]
+    assert view.progress == []
+    assert published == []
+    # The cancelled click no longer holds the entry: the next click asks again.
+    await controller.rollback_from_message(clicked_turn, on_complete=lambda: complete.append("second"))
+    assert len(view.confirms) == 2
+    assert view.notices == []
+
+
+@pytest.mark.parametrize("detection_cut_short", [False, True], ids=["detected", "detection-cut-short"])
+async def test_interrupt_card_discard_asks_before_it_discards(tmp_path: Path, detection_cut_short: bool) -> None:
+    tracker = MutationTracker(SnapshotStore(tmp_path))
+    tracker.start_turn(3)
+    if detection_cut_short:
+        # A failed scan may have missed files the turn changed: the prompt claims only what it can restore.
+        tracker.mark_detection_truncated()
+    engine = _EntryEngine(tracker, str(tmp_path))
+    view = _EntryView()
+    bus = EventBus()
+    published: list[UserRollback] = []
+
+    async def record(event: UserRollback) -> None:
+        published.append(event)
+
+    await bus.subscribe(UserRollback, record)
+    complete: list[bool] = []
+    await _controller(engine, view, bus).rollback_from_message(None, on_complete=lambda: complete.append(True))
+    assert view.progress == []
+    [(message, answer)] = view.confirms
+    assert message == (
+        "Discard turn 3? It is the latest turn and has no files to restore. A discarded turn cannot be recovered."
+    )
+    answer(True)
+    await view.progress[0]()
+    assert [(event.relative_turns, event.expected_conversation_revision) for event in published] == [(1, 7)]
     assert complete == [True]
 
 
@@ -335,6 +414,7 @@ async def test_finalization_busy_guard_is_checked_after_the_last_save(tmp_path: 
         save_release.set()
         await operation
         if entry == "message":
+            view.confirms[0][1](True)
             await view.progress[0]()
         assert len(published) == 1
         assert published[0].expected_conversation_revision == 7

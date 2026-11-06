@@ -24,7 +24,8 @@ from chrys.app.tui.widgets.chat.replay import HistoryReplayPlanner, ReplayAgentM
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
 from chrys.foundation.models.history_markers import HistoryMarkerKind
-from chrys.foundation.trajectory.metadata import OPERATION_ID_KEY
+from chrys.foundation.patches.textual_precompose import precompose_tree
+from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY, OPERATION_ID_KEY
 from chrys.kernel import Content, Message
 from chrys.service.context.providers.history import CompressedBlock
 from tests.support.pilot_barrier import screen_is_settled
@@ -101,6 +102,19 @@ async def test_non_openers_and_unavailable_targets_have_no_link() -> None:
         assert all(not message.query_one(MessageRollbackButton).display for message in messages)
 
 
+@pytest.mark.parametrize("available", [True, False])
+async def test_link_change_before_a_composed_replay_entry_mounts_is_kept(available: bool) -> None:
+    """Replay composes a batch, then mounts it after an await; a target refresh may land in between."""
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        message = UserMessage("old turn", turn_number=3, rollback_available=not available)
+        precompose_tree([message])
+        message.set_rollback_available(available)
+        await panel.mount(message)
+        await wait_for(lambda: message.is_mounted, pilot=pilot, description="replayed opener mounted")
+        assert message.query_one(MessageRollbackButton).display is available
+
+
 async def test_archived_tool_group_uses_the_thinking_gray_guide_without_opacity() -> None:
     group = ToolGroup(live=False, is_compressed=True)
     thinking = ThinkingMessage("Archived thinking", is_compressed=True)
@@ -120,10 +134,12 @@ async def test_fresh_turn_after_unanswered_continuation_keeps_only_real_output(w
         panel.apply_turn_started(1)
         if with_output:
             await panel.add_agent_message("Partial answer")
-        await panel.add_user_message("Continue with this", is_injection=True)
+        await panel.add_user_message("Continue with this", is_injection=True, item_id="note")
         await panel.add_error("Failed without further output")
         await panel.add_user_message("New question")
-        await panel.apply_fresh_turn_cleanup(retired_previous_turn=not with_output, removed_followups=1)
+        await panel.apply_fresh_turn_cleanup(
+            retired_previous_turn=not with_output, removed_item_ids=("note",) if with_output else ("opener", "note")
+        )
         panel.apply_turn_started(2 if with_output else 1)
         assert [message.text for message in panel.query(UserMessage)] == (
             ["Original", "New question"] if with_output else ["New question"]
@@ -139,21 +155,58 @@ async def test_fresh_turn_removes_all_unanswered_continuations_and_their_thinkin
         await panel.add_agent_message("Partial answer")
         await panel.add_thinking_delta("kept", "reasoning", "Earlier thinking")
         panel.finish_thinking_segment("kept")
-        await panel.add_user_message("First continuation", is_injection=True)
+        await panel.add_user_message("First continuation", is_injection=True, item_id="first")
         await panel.add_thinking_delta("first", "reasoning", "First unlanded thought")
         panel.finish_thinking_segment("first")
-        await panel.add_user_message("Second continuation", is_injection=True)
+        await panel.add_user_message("Second continuation", is_injection=True, item_id="second")
         await panel.add_thinking_delta("second", "reasoning", "Second unlanded thought")
         panel.finish_thinking_segment("second")
         await panel.add_error("Failed without further output")
 
         await panel.add_user_message("New question")
-        await panel.apply_fresh_turn_cleanup(retired_previous_turn=False, removed_followups=2)
+        await panel.apply_fresh_turn_cleanup(retired_previous_turn=False, removed_item_ids=("first", "second"))
         panel.apply_turn_started(2)
 
         assert [message.text for message in panel.query(UserMessage)] == ["Original", "New question"]
         assert [message.text for message in panel.query(ThinkingMessage)] == ["Earlier thinking"]
         assert [item.turn_index for item in panel.toc_items] == [1, 2]
+
+
+def _saved_user(text: str, item_id: str, *, injected: bool = False) -> dict[str, object]:
+    properties: dict[str, object] = {ANALYTICS_ITEM_ID_KEY: item_id}
+    if injected:
+        properties[HistoryMarkerKind.INJECTED_KEY] = True
+    return Message("user", [text], additional_properties=properties).to_dict()
+
+
+async def test_restored_note_leaves_by_the_history_item_it_was_replayed_with() -> None:
+    """A restored session's notes carry their saved items, so the next prompt's cleanup finds them too."""
+    messages = [
+        _saved_user("Original", "opener"),
+        Message("assistant", ["Partial answer"]).to_dict(),
+        _saved_user("Answered note", "answered", injected=True),
+        Message("assistant", ["Answer to the note"]).to_dict(),
+        _saved_user("Unanswered note", "unanswered", injected=True),
+        Message(
+            "assistant", ["Stopped"], additional_properties={HistoryMarkerKind.KEY: HistoryMarkerKind.INTERRUPTED}
+        ).to_dict(),
+        _turn_marker(1).to_dict(),
+    ]
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.replay_history(messages)
+        await panel.wait_replay_complete()
+        assert [(message.text, message.history_item_id) for message in panel.query(UserMessage)] == [
+            ("Original", "opener"),
+            ("Answered note", "answered"),
+            ("Unanswered note", "unanswered"),
+        ]
+
+        await panel.add_user_message("New question")
+        await panel.apply_fresh_turn_cleanup(retired_previous_turn=False, removed_item_ids=("unanswered",))
+        panel.apply_turn_started(2)
+
+        assert [message.text for message in panel.query(UserMessage)] == ["Original", "Answered note", "New question"]
 
 
 def _turn_marker(number: int) -> Message:
@@ -324,7 +377,7 @@ async def test_pruning_one_target_repaints_only_its_header_on_populated_main_scr
 
 @pytest.mark.parametrize(
     ("locale", "label", "continue_label"),
-    [("en", "Discard", "Continue"), ("zh-Hans", "丢弃", "继续"), ("zh-Hans", "丢弃", "Resume now")],
+    [("en", "Discard This Turn", "Continue"), ("zh-Hans", "撤回本轮", "继续"), ("zh-Hans", "撤回本轮", "Resume now")],
 )
 async def test_rollback_entries_use_their_context_specific_localized_labels(
     locale: str, label: str, continue_label: str

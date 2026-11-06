@@ -79,7 +79,6 @@ from chrys.foundation.events.types import (
     CompactionStarted,
     ContextCompressed,
     Error,
-    FreshTurnCleaned,
     HookConfirmationRequest,
     HookConfirmationWithdrawn,
     HookExecutionsChanged,
@@ -114,6 +113,7 @@ from chrys.foundation.events.types import (
     TodoListUpdated,
     ToolCompacted,
     TurnStarted,
+    UnansweredInputDropped,
     UsageUpdate,
     UserInjectResult,
     Warning,
@@ -413,7 +413,7 @@ class BackendEventHandler:
         | InvocationContentFinished
         | InvocationContentAbandoned
         | Error
-        | FreshTurnCleaned
+        | UnansweredInputDropped
         | TurnStarted,
     ) -> bool:
         """Return whether *event* was sourced before the current UI run."""
@@ -1074,31 +1074,29 @@ class BackendEventHandler:
         )
         self._ui().set_tool_info(trail)
 
-    async def on_fresh_turn_cleaned(self, event: FreshTurnCleaned) -> None:
+    async def on_unanswered_input_dropped(self, event: UnansweredInputDropped) -> None:
         """Apply cleanup only after the accepted opener has mounted."""
         await self.apply_turn_event(event)
 
     async def on_turn_started(self, event: TurnStarted) -> None:
-        """Use the backend's index for a fresh opener; retries keep their existing opener."""
+        """Use the backend's index and item for a fresh opener; a retry keeps its opener and names its guidance."""
         await self.apply_turn_event(event)
 
-    async def apply_turn_event(self, event: FreshTurnCleaned | TurnStarted) -> None:
+    async def apply_turn_event(self, event: UnansweredInputDropped | TurnStarted) -> None:
         """Filter and apply a live or deferred turn fact through the same render gate."""
-        if (
-            self._predates_active_run(event)
-            or (event.session_id or "") != self._ui().chat_session_id()
-            or (isinstance(event, TurnStarted) and event.is_retry)
-        ):
+        if self._predates_active_run(event) or (event.session_id or "") != self._ui().chat_session_id():
             return
         if self._state.render_gate.defers(event):
             self._state.render_gate.defer(event)
             return
-        if isinstance(event, FreshTurnCleaned):
+        if isinstance(event, UnansweredInputDropped):
             await self._ui().apply_fresh_turn_cleanup(
-                retired_previous_turn=event.retired_previous_turn, removed_followups=event.removed_followups
+                retired_previous_turn=event.retired_previous_turn, removed_item_ids=event.removed_item_ids
             )
+        elif event.is_retry:
+            self._ui().apply_retry_started(event.note_message_id, event.opening_item_id)
         else:
-            self._ui().apply_turn_started(event.turn_number)
+            self._ui().apply_turn_started(event.turn_number, opening_item_id=event.opening_item_id)
 
     async def on_agent_thinking(self, _event: AgentThinking) -> None:
         s = self
@@ -1209,7 +1207,7 @@ class BackendEventHandler:
                 # a turn result that lands meanwhile.
                 if s.agent_running:
                     ui.set_terminal_title_for_user_message(event.text)
-                await ui.add_user_injection(event.text, created_at=event.created_at)
+                await ui.add_user_injection(event.text, created_at=event.created_at, item_id=event.item_id)
                 s.update_toc()
                 s.debug("UserInjectResult", "consumed" if owns_input else "consumed (stale id)")
             finally:

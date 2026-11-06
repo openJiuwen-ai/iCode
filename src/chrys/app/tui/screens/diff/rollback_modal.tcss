@@ -247,9 +247,23 @@ RollbackProgressModal {
     margin: 0 1;
 }
 
-#rollback-range-note {
+/* Indented past the Select's tall border and one cell of its padding (1 + 1
+   cells), so the "└─" starts one column before the selected turn's text. A
+   note too long for one line shows only the turns it discards. */
+#rollback-range-line {
+    margin: 1 1 0 3;
+}
+
+#rollback-range-glyph {
+    width: 3;
     height: 1;
-    margin: 1 1 0 1;
+    color: $text-muted;
+    text-style: dim;
+}
+
+#rollback-range-note {
+    width: 1fr;
+    height: 1;
     color: $text-muted;
     text-style: dim;
 }

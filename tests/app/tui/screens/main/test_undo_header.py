@@ -141,7 +141,9 @@ async def test_hover_marks_the_suffix_restores_gray_and_never_relayouts_main_scr
         arrange.assert_called()
 
 
-@pytest.mark.parametrize(("locale", "action", "discard"), [("en", "Continue", "Discard"), ("zh-Hans", "继续", "丢弃")])
+@pytest.mark.parametrize(
+    ("locale", "action", "discard"), [("en", "Continue", "Discard This Turn"), ("zh-Hans", "继续", "撤回本轮")]
+)
 async def test_interruption_uses_discard_beside_continue(locale: str, action: str, discard: str) -> None:
     from chrys.app.tui.i18n import LocaleController
 

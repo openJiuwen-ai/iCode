@@ -732,6 +732,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.rollback.button.close",
     "tui.rollback.button.discard_after_turn",
     "tui.rollback.button.discard_all",
+    "tui.rollback.confirm.latest_turn",
     "tui.rollback.exclusion.contested",
     "tui.rollback.exclusion.foreign",
     "tui.rollback.exclusion.move_poisoned",

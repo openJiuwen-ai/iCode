@@ -13,6 +13,7 @@ from textual.widget import Widget
 from textual.widgets import Button, TextArea
 
 from chrys.app.tui.i18n import LocaleController
+from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.widgets.chat.messages import (
     InterruptedMessage,
@@ -115,6 +116,10 @@ async def test_main_screen_mouse_rollback_needs_no_model_and_restores_first_prom
         else:
             button = panel.query_one(UserMessage).query_one(MessageRollbackButton)
         await click_when_settled(pilot, button)
+        # Both entries ask even for the latest turn without file changes.
+        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot)
+        assert requests == []
+        await click_when_settled(pilot, "#confirm-yes")
         await wait_for(
             lambda: (
                 len(requests) == 1 and screen.query_one(InputBar).value == "Edit this prompt" and app.screen is screen
@@ -232,7 +237,7 @@ async def test_restored_interruption_has_translated_actions_on_one_row_at_60_col
         status = panel.query_one(InterruptedMessage)
         rollback = status.query_one(".status-rollback-btn", Button)
         resume = status.query_one(".status-action-btn", Button)
-        assert str(rollback.label) == "丢弃"
+        assert str(rollback.label) == "撤回本轮"
         assert str(resume.label) == "继续"
         assert rich_plain(user.query_one(MessageRollbackButton).render()) == "↺ 撤回本轮及之后"
         assert rich_plain(user.query_one(MessageCopyButton).render()) == "复制"

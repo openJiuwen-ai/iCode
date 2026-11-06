@@ -159,7 +159,7 @@ on four surfaces, and all four report the same string:
 
 | Surface | Carries |
 |---|---|
-| `chrys/turn_started` notification | `turnId`, `turnNumber`, `isRetry`, `userMessageId` |
+| `chrys/turn_started` notification | `turnId`, `turnNumber`, `isRetry`, `userMessageId`, `openingItemId` |
 | `PromptResponse._meta.chrys` | `turnId`, `turnNumber`, `sessionUsage` |
 | every `session/update` of the turn | `_meta.chrys.{turnId, turnNumber}` |
 | `session/history` | `turns[]` and each labelled `messages[]` entry |
@@ -174,6 +174,12 @@ on four surfaces, and all four report the same string:
   and as the opener's `messageId` in replay. Every agent message and thought
   also carries a `messageId` of its own: one per streamed segment (see
   *Streamed text*).
+- `itemId` names one user message in history, the prompt or text sent inside
+  the turn, and is never reused. `chrys/turn_started` carries the one its pass
+  opened with as `openingItemId`: the prompt, or a retry's `text` (`null` for a
+  retry without text). `chrys/user_inject_result` carries a consumed
+  `session/inject` text's `itemId`, and replayed user text and images carry
+  `_meta.chrys.itemId` (absent for a message saved without one).
 - Usage: `usage` on `PromptResponse` (and in error data) is this turn's spend,
   `sessionUsage` under `_meta.chrys` is the session total. Both count only the
   interval this request was admitted in.
@@ -227,6 +233,19 @@ identities of the turns this rollback discarded, in the order they ran. The ids
 are never reused, so a client that labelled its transcript by `turnId` can join
 on them. A turn's own number can be reused after the rollback, which is why
 identity is the id.
+
+A prompt sent after a turn that failed or was cancelled drops what that turn
+left unanswered. `chrys/user_messages_dropped` (`sessionId`, `itemIds`,
+`retiredTurnId`) names it before the new turn's `chrys/turn_started`: drop the
+user messages with those `itemId`s; an id the client never received matches
+nothing. When the failed turn did some work, it stays and only the guidance it
+never answered goes: the `session/inject` and `session/retry` text sent after
+its last model output, and `retiredTurnId` is null. When it did no work, the
+whole turn goes: `retiredTurnId` names it, so drop it as a rollback would; the
+new turn reuses its `turnNumber` under a new `turnId`, and `session/turns` lists
+it in `supersededTurns`, unless a fork inherited it (see `session/turns`) or the
+session's log could not record the drop. `session/load` and `session/history`
+no longer return the dropped messages.
 
 ## Extension RPCs (client → backend)
 
@@ -609,7 +628,8 @@ One-way `ext_notification` pushes, bridged from `EventBus`:
   `chrys/context_pressure`, `chrys/tool_compacted`,
   `chrys/compaction_started`, `chrys/compaction_finished`.
 - Edits / turns: `chrys/rollback_result`, `chrys/user_inject_result`,
-  `chrys/turn_started`, `chrys/retry_attempt`, `chrys/messages_retracted`.
+  `chrys/turn_started`, `chrys/user_messages_dropped`, `chrys/retry_attempt`,
+  `chrys/messages_retracted`.
 - Sub-agent lifecycle: `chrys/sub_agent_invocation_start`,
   `chrys/sub_agent_tool_call_start`, `chrys/sub_agent_tool_call_result`,
   `chrys/sub_agent_progress`, `chrys/sub_agent_retry_attempt`,

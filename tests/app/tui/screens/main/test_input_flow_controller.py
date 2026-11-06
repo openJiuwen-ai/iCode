@@ -51,6 +51,7 @@ class _FakeInputFlowView:
         self.calls: list[object] = []
         self.user_contents: list[object] = []
         self.gc_messages: list[object] = []
+        self.retry_note_ids: list[str | None] = []
         self.session_id = "panel-session"
 
     def set_terminal_title_for_user_message(self, text: str) -> None:
@@ -75,8 +76,9 @@ class _FakeInputFlowView:
         self.calls.append(f"user:{text}")
         self.user_contents.append(contents)
 
-    async def render_user_retry_note(self, text: str, *, created_at: object) -> None:
+    async def render_user_retry_note(self, text: str, *, created_at: object, client_message_id: str | None) -> None:
         self.calls.append(f"retry-note:{text}")
+        self.retry_note_ids.append(client_message_id)
 
     def hide_trailing_status_action(self) -> None:
         self.calls.append("hide_status_action")
@@ -308,6 +310,30 @@ def test_a_message_whose_send_meets_a_load_started_since_the_keypress_comes_back
     assert published == []
     assert view.calls == [("restore", draft)]
     assert state.submit.active is False
+
+
+@pytest.mark.parametrize("text", ["Use the other file", ""], ids=["guided", "bare"])
+async def test_a_guided_retry_shows_its_note_under_the_id_it_publishes(text: str) -> None:
+    """The retry's TurnStarted echoes the published id, which is how the note shown here learns its history item."""
+    bus = EventBus()
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, _state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    published: list[UserRetry] = []
+
+    async def admit(event: UserRetry) -> None:
+        published.append(event)
+
+    await bus.subscribe(UserRetry, admit)
+    controller.request_retry(text)
+    await _run_started(scheduled)
+
+    (event,) = published
+    if text:
+        assert event.client_message_id
+        assert view.retry_note_ids == [event.client_message_id]
+    else:
+        assert event.client_message_id is None
+        assert view.retry_note_ids == []
 
 
 @pytest.mark.parametrize("outcome", ["accepted", "rejected", "cancelled"])

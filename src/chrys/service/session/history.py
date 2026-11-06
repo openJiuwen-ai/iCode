@@ -42,7 +42,11 @@ from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.text.images import LoadedImage, data_uri_payload_info
 from chrys.foundation.tool_invocation_order import read_tool_invocation_order
 from chrys.foundation.tool_kinds import KIND_SUB_AGENT
-from chrys.foundation.trajectory.metadata import ensure_analytics_item_id
+from chrys.foundation.trajectory.metadata import (
+    ANALYTICS_ITEM_ID_KEY,
+    ensure_analytics_item_id,
+    read_analytics_item_id,
+)
 from chrys.kernel import TOOL_CALL_CONTENT_TYPES, TOOL_RESULT_CONTENT_TYPES, Content, Message
 from chrys.kernel.exchanges import (
     PREVALIDATION_ERROR_KINDS,
@@ -346,11 +350,43 @@ def stamp_history_item_ids(state: dict[str, Any]) -> None:
 
 @dataclass(frozen=True)
 class FreshTurnCleanup:
-    """The history edits committed before admitting the next logical turn."""
+    """The history edits committed before admitting the next logical turn.
+
+    ``removed_item_ids`` are the ``_chrys_analytics_item_id``s of the user
+    messages the cleanup removed, in history order: the retired turn's opener
+    and notes, or only the unanswered notes of a turn that kept its work.
+    Frontends remove exactly those, never a count of them.
+    """
 
     retired_previous_turn: bool = False
-    removed_followups: int = 0
+    removed_item_ids: tuple[str, ...] = ()
     retained_other_records: bool = False
+
+
+def _user_item_ids(messages: Sequence[Message]) -> tuple[str, ...]:
+    """The occurrence ids of the user messages in *messages*, in order."""
+    item_ids: list[str] = []
+    for message in messages:
+        item_id = message.additional_properties.get(ANALYTICS_ITEM_ID_KEY)
+        if message.role == "user" and isinstance(item_id, str):
+            item_ids.append(item_id)
+    return tuple(item_ids)
+
+
+def _find_user_input(
+    region: Sequence[Message], text: str, *, kind: UserMessageKind, item_id: str | None
+) -> Message | None:
+    """The copy of a user input in *region*: by its item first, else by text and kind."""
+    if item_id is not None:
+        for message in region:
+            if message.role == "user" and read_analytics_item_id(message.additional_properties) == item_id:
+                return message
+    for message in region:
+        if user_text_matches(message, text, kind=kind) and (
+            item_id is None or read_analytics_item_id(message.additional_properties) is None
+        ):
+            return message
+    return None
 
 
 class SessionHistoryManager:
@@ -628,22 +664,21 @@ class SessionHistoryManager:
                 message.additional_properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN
                 for message in messages[end:]
             )
+            removed_item_ids = _user_item_ids(messages[start:])
             del messages[start:]
             state["turn_counter"] = max(0, state.get("turn_counter", 0) - removed_markers)
-            return FreshTurnCleanup(retired_previous_turn=True)
+            return FreshTurnCleanup(retired_previous_turn=True, removed_item_ids=removed_item_ids)
 
         # A retry's unanswered guidance belongs to this turn, but is not work
         # for the next prompt to inherit. Keep the opener even when malformed
         # old histories lack its marker.
         status_start = end
-        removed_followups = 0
         # Reasoning after an unanswered note belongs to that note. Scan it
         # with the notes, but keep earlier reasoning that followed real work.
         tail = end
         while tail > start:
             message = messages[tail - 1]
             if message.role == "user" and not opens_turn(message):
-                removed_followups += 1
                 tail -= 1
                 end = tail
             elif message.role == "assistant" and all(
@@ -652,13 +687,14 @@ class SessionHistoryManager:
                 tail -= 1
             else:
                 break
+        removed_item_ids = _user_item_ids(messages[end:status_start])
         state["messages"] = messages[:end] + [
             message
             for message in messages[status_start:]
             if message.additional_properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN
         ]
         return FreshTurnCleanup(
-            removed_followups=removed_followups,
+            removed_item_ids=removed_item_ids,
             retained_other_records=not has_work and other_records_present,
         )
 
@@ -815,31 +851,35 @@ class SessionHistoryManager:
         Recovery never synthesizes a ``"continuation"`` kind — bare-resume
         nudge branches clear the recovery input instead.
 
+        Dedup is **item-first** when *item_id* names the input: the region's
+        message stamped with that item is its copy. A message stamped with
+        another item is another occurrence (the same guidance sent by an
+        earlier retry) and never matches; text and kind still match an
+        unstamped message, which then takes the item.
+
         *reminder_source* is the properties of the copy the request sent: an
         appended message carries its reminder record, so later requests
         re-render the reminders it went out with.  A matched message keeps
-        its own record.
+        its own record.  Without *created_at* no time is made up: a prompt
+        saved without one is re-created without one.
         """
         state = self._state
         if state is None:
             return
         messages = state.setdefault("messages", [])
-        start = current_turn_start(messages)
-        for m in messages[start:]:
-            if user_text_matches(m, text, kind=kind):
+        m = _find_user_input(messages[current_turn_start(messages) :], text, kind=kind, item_id=item_id)
+        if m is not None:
+            if created_at is not None:
                 stamp_message_created_at(m, created_at)
-                ensure_analytics_item_id(m.additional_properties, item_id=item_id)
-                if (
-                    contents is not None
-                    and _contents_have_image_content(contents)
-                    and not _message_has_image_content(m)
-                ):
-                    m.contents = Message("user", contents).contents
-                return
+            ensure_analytics_item_id(m.additional_properties, item_id=item_id)
+            if contents is not None and _contents_have_image_content(contents) and not _message_has_image_content(m):
+                m.contents = Message("user", contents).contents
+            return
         msg = Message("user", contents if contents is not None else [text])
         if kind == "injected":
             msg.additional_properties[HistoryMarkerKind.INJECTED_KEY] = True
-        stamp_message_created_at(msg, created_at)
+        if created_at is not None:
+            stamp_message_created_at(msg, created_at)
         ensure_analytics_item_id(msg.additional_properties, item_id=item_id)
         copy_reminder_record(reminder_source, msg.additional_properties)
         messages.append(msg)

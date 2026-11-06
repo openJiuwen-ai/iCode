@@ -48,7 +48,7 @@ def visible_button_texts(widget):
     return [str(b.label) for b in widget.query(Button) if b.display and b.parent.display]
 
 
-@pytest.mark.parametrize("locale,label", [("en", "Discard"), ("zh-Hans", "丢弃")])
+@pytest.mark.parametrize("locale,label", [("en", "Discard This Turn"), ("zh-Hans", "撤回本轮")])
 @pytest.mark.parametrize("source", ["user", "session_close", "crash"])
 async def test_interruption_card_offers_rollback_but_error_card_does_not(locale, label, source):
     app = ChatPanelApp()
@@ -152,9 +152,21 @@ async def interrupt_session(session):
     await click_when_settled(session.pilot, "#confirm-yes")
 
 
+def bound_openers(session, text):
+    return {m.history_item_id for m in session.main.query(UserMessage) if m.text == text and m.history_item_id}
+
+
 async def submit(session, text):
+    earlier = bound_openers(session, text)
     session.chat.load_text(text)
     await session.pilot.press("enter")
+    # The run task exists only once the submission is admitted; draining before
+    # then finishes at once, with this turn not yet started.
+    await wait_for(
+        lambda: bool(bound_openers(session, text) - earlier),
+        pilot=session.pilot,
+        description=f"turn {text!r} started",
+    )
     await drain(session.engine)
     await wait_for(lambda: not session.bar.agent_running, pilot=session.pilot)
 
@@ -167,6 +179,13 @@ async def click_message_rollback(session, text):
     button = opening_message(session, text).query_one(MessageRollbackButton)
     button.scroll_visible(animate=False, immediate=True)
     await click_when_settled(session.pilot, button)
+
+
+async def confirm_message_rollback(session, text):
+    """A header link always asks first; the latest turn without file changes asks with a plain confirm."""
+    await click_message_rollback(session, text)
+    await wait_for(lambda: isinstance(session.app.screen, ConfirmDialog), pilot=session.pilot)
+    await click_when_settled(session.pilot, "#confirm-yes")
 
 
 @pytest.mark.parametrize("interrupted", [False, True], ids=["completed", "interrupted"])
@@ -185,12 +204,15 @@ async def test_last_turn_without_files_one_click_restores_text_and_focus(
             await drain(session.engine)
             await wait_for(lambda: bool(list(session.main.query(InterruptedMessage))), pilot=session.pilot)
             card = session.main.query_one(InterruptedMessage)
-            button = next(b for b in card.query(Button) if str(b.label) == "Discard")
+            button = next(b for b in card.query(Button) if str(b.label) == "Discard This Turn")
             button.scroll_visible(animate=False, immediate=True)
             await click_when_settled(session.pilot, button)
+            # The card's Discard asks first too, like the header link.
+            await wait_for(lambda: isinstance(session.app.screen, ConfirmDialog), pilot=session.pilot)
+            await click_when_settled(session.pilot, "#confirm-yes")
         else:
             await submit(session, "recover my second prompt")
-            await click_message_rollback(session, "recover my second prompt")
+            await confirm_message_rollback(session, "recover my second prompt")
         await wait_for(lambda: session.chat.text == "recover my second prompt", pilot=session.pilot)
         await wait_for(lambda: session.app.screen is session.main, pilot=session.pilot)
         assert session.chat.has_focus
@@ -203,13 +225,29 @@ async def test_first_turn_one_click_returns_welcome(agent_engine, tmp_path, monk
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         await submit(session, "mis-sent first message")
         directory = session.engine.session_dir
-        await click_message_rollback(session, "mis-sent first message")
+        await confirm_message_rollback(session, "mis-sent first message")
         await wait_for(lambda: session.chat.text == "mis-sent first message", pilot=session.pilot)
         await wait_for(lambda: session.app.screen is session.main, pilot=session.pilot)
         assert session.chat.has_focus
         assert list(session.main.query(WelcomeWidget))
         assert not list(session.main.query(UserMessage))
         assert not (directory / "session.json").exists()
+
+
+async def test_cancelled_header_confirm_keeps_the_turn(agent_engine, tmp_path, monkeypatch):
+    async with running_session(agent_engine, tmp_path, monkeypatch) as session:
+        await submit(session, "first")
+        await submit(session, "kept by cancel")
+        results = await capture_events(session.bus, ev.RollbackResult)
+        await click_message_rollback(session, "kept by cancel")
+        await wait_for(lambda: isinstance(session.app.screen, ConfirmDialog), pilot=session.pilot)
+        await session.pilot.press("escape")
+        await wait_for(lambda: session.app.screen is session.main, pilot=session.pilot)
+        button = opening_message(session, "kept by cancel").query_one(MessageRollbackButton)
+        await wait_for(lambda: not button.disabled, pilot=session.pilot)
+        assert not results
+        assert session.engine.current_turn_number == 2
+        assert [m.text for m in session.main.query(UserMessage)] == ["first", "kept by cancel"]
 
 
 @pytest.mark.parametrize("with_file", [False, True], ids=["multiple-turns", "last-turn-with-file"])
@@ -280,7 +318,8 @@ async def test_interrupted_final_save_wait_is_bounded_and_preserves_turn(agent_e
         await wait_for(save.entered.is_set, pilot=session.pilot)
         lifecycle = session.engine.turn_lifecycle_task
         await wait_for(lambda: bool(list(session.main.query(InterruptedMessage))), pilot=session.pilot)
-        button = next(b for b in session.main.query_one(InterruptedMessage).query(Button) if str(b.label) == "Discard")
+        card = session.main.query_one(InterruptedMessage)
+        button = next(b for b in card.query(Button) if str(b.label) == "Discard This Turn")
         button.scroll_visible(animate=False, immediate=True)
         results = await capture_events(session.bus, ev.RollbackResult)
         started = asyncio.get_running_loop().time()
@@ -289,6 +328,10 @@ async def test_interrupted_final_save_wait_is_bounded_and_preserves_turn(agent_e
         assert not results
         if settle:
             save.release()
+            # The click waits for the save, then asks before it discards.
+            await wait_for(lambda: isinstance(session.app.screen, ConfirmDialog), pilot=session.pilot)
+            assert not results
+            await click_when_settled(session.pilot, "#confirm-yes")
             await wait_for(lambda: bool(results), pilot=session.pilot)
             assert results[0].rolled_back_user_text == "interrupt me"
             assert session.engine.current_turn_number == 1
@@ -359,7 +402,7 @@ async def test_existing_input_is_preserved_on_one_click_rollback(agent_engine, t
         await submit(session, "second")
         session.chat.load_text("my existing draft")
         results = await capture_events(session.bus, ev.RollbackResult)
-        await click_message_rollback(session, "second")
+        await confirm_message_rollback(session, "second")
         await wait_for(lambda: bool(results) and session.app.screen is session.main, pilot=session.pilot)
         assert session.chat.text == "my existing draft"
         assert session.engine.current_turn_number == 1

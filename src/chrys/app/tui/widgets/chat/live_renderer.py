@@ -174,8 +174,16 @@ class LiveTranscriptRenderer:
         is_injection: bool = False,
         created_at: Any = None,
         contents: list[Any] | None = None,
+        item_id: str | None = None,
+        client_message_id: str | None = None,
     ) -> None:
-        """Display a live user or injection message."""
+        """Display a live user or injection message.
+
+        *item_id* is the message's history item when it is already known (a
+        consumed injection's); an opener learns it from its TurnStarted, and a
+        retry's guidance from the retry's, which names it by its
+        *client_message_id*.
+        """
         await self._ui.dismiss_welcome_for_content()
         if not is_injection:
             self._ui.on_live_user_turn_started()
@@ -210,6 +218,8 @@ class LiveTranscriptRenderer:
                 rollback_available=UserMessage.undo_link_available(turn_number, self._rollback_targets()),
             )
         widget.id = turn_id
+        widget.history_item_id = item_id
+        widget.client_message_id = client_message_id
         if not is_injection:
             self._pending_user_message = widget
         await self._mount.mount_transcript_widget(widget)
@@ -242,8 +252,11 @@ class LiveTranscriptRenderer:
             if unanswered_end:
                 await remove_all_shielded(tail[:unanswered_end])
 
-    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_followups: int) -> None:
-        """Project the backend's cleanup result onto the preceding turn, without judging its output."""
+    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_item_ids: tuple[str, ...]) -> None:
+        """Project the backend's cleanup result onto the preceding turn, without judging its output.
+
+        A retired turn goes whole; otherwise only the notes history removed go, matched by their history items.
+        """
         pending = self._pending_user_message
         children = self._query.transcript_content_children()
         if pending is None or pending not in children:
@@ -266,9 +279,13 @@ class LiveTranscriptRenderer:
                 for widget in preceding_turn
                 if isinstance(widget, (UserMessage, ThinkingMessage, ErrorMessage, InterruptedMessage, RetryMessage))
             ]
-        elif removed_followups:
-            notes = [widget for widget in preceding_turn if isinstance(widget, UserMessage) and widget.is_injection]
-            selected = notes[-removed_followups:]
+        elif removed_item_ids:
+            dropped = set(removed_item_ids)
+            selected = [
+                widget
+                for widget in preceding_turn
+                if isinstance(widget, UserMessage) and widget.is_injection and widget.history_item_id in dropped
+            ]
             if not selected:
                 return
             first = preceding_turn.index(selected[0])
@@ -282,16 +299,26 @@ class LiveTranscriptRenderer:
                 self._toc.remove_failed_prompt(widget.id)
         await remove_all_shielded(removed)
 
-    def apply_turn_started(self, turn_number: int) -> None:
-        """Bind the live opener and its TOC children to the backend's turn number."""
+    def apply_turn_started(self, turn_number: int, *, opening_item_id: str | None = None) -> None:
+        """Bind the live opener and its TOC children to the backend's turn number and history item."""
         message = self._pending_user_message
         if message is None:
             return
         self._pending_user_message = None
         self._toc.apply_turn_marker(turn_number)
         message.turn_number = turn_number
+        message.history_item_id = opening_item_id
         message.set_rollback_available(UserMessage.undo_link_available(turn_number, self._rollback_targets()))
         self._ui.scroll_user_message_to_top(message)
+
+    def apply_retry_started(self, note_message_id: str | None, opening_item_id: str | None) -> None:
+        """Bind the note the retry names by its client id to the history item the retry opened with."""
+        if note_message_id is None:
+            return
+        for message in reversed(self._query.mounted_user_messages()):
+            if message.client_message_id == note_message_id:
+                message.history_item_id = opening_item_id
+                return
 
     async def add_answer_delta(self, segment_id: str, text: str) -> None:
         """Stream new answer text into its segment's message, mounting it once the text is not blank."""

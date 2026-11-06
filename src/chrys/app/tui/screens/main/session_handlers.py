@@ -62,6 +62,7 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.todos import parse_todo_items
 from chrys.foundation.platform import safe_getcwd
+from chrys.foundation.trajectory.metadata import OPERATION_ID_KEY
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.service.session.persistence import has_real_messages
 
@@ -692,7 +693,7 @@ class SessionHandler:
                 return {}
 
             _file_tools = {"edit_file", "write_file"}
-            fw_call_ids: list[str] = []
+            fw_calls: list[tuple[str, str | None]] = []
             for message_item in messages:
                 if message_item.get("role") != "assistant":
                     continue
@@ -707,9 +708,11 @@ class SessionHandler:
                         name = c.get("name", "")
                         cid = c.get("call_id", "")
                         if name in _file_tools and cid:
-                            fw_call_ids.append(cid)
+                            extra = c.get("additional_properties")
+                            operation_id = extra.get(OPERATION_ID_KEY) if isinstance(extra, dict) else None
+                            fw_calls.append((cid, operation_id if isinstance(operation_id, str) else None))
 
-            # Positional pairing: fw_call_ids[i] ↔ edit_snapshots[i].  Bucket
+            # Positional pairing: fw_calls[i] ↔ edit_snapshots[i].  Bucket
             # into per-call_id lists so duplicate call_ids each keep their
             # own snapshot.  ``zip(..., strict=False)`` silently truncates if
             # the lists disagree in length — preserves existing fail-soft
@@ -720,10 +723,14 @@ class SessionHandler:
                     buckets.setdefault(("operation", snap_ref.tool_operation_id), []).append(
                         snapshot_payload_from_hashes(store.mutations_dir, snap_ref.before, snap_ref.after)
                     )
-            for cid, snap_ref in zip(fw_call_ids, edit_snapshot_refs, strict=False):
+            for (cid, call_operation_id), snap_ref in zip(fw_calls, edit_snapshot_refs, strict=False):
                 if snap_ref.tool_operation_id:
                     continue
-                buckets.setdefault(cid, []).append(
+                # Tool calls carried operation ids before mutations did, and
+                # replay looks a stamped call up by its operation: an unstamped
+                # record follows the call it pairs with.
+                key: FileSnapshotKey = ("operation", call_operation_id) if call_operation_id else cid
+                buckets.setdefault(key, []).append(
                     snapshot_payload_from_hashes(store.mutations_dir, snap_ref.before, snap_ref.after)
                 )
             return buckets

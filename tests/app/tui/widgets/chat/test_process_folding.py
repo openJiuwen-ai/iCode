@@ -560,7 +560,7 @@ async def test_failure_prompt_cleanup_has_no_precreated_header() -> None:
         await panel.add_user_message("failed prompt")
         await panel.add_error("failed")
         await panel.add_user_message("replacement")
-        await panel.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_followups=0)
+        await panel.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=())
         panel.apply_turn_started(1)
         assert [message.text for message in panel.query(UserMessage)] == ["replacement"]
         assert not panel.query(ProcessBlock)

@@ -1007,7 +1007,7 @@ async def test_retirement_mid_prepend_waits_and_removes_the_whole_failed_turn(
             await gate.wait_held(pilot)
             assert not any(message.text == "Retired opener" for message in cp.query(UserMessage))
             await cp.add_user_message("Replacement")
-            cleanup = asyncio.create_task(cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_followups=0))
+            cleanup = asyncio.create_task(cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=()))
             await asyncio.sleep(0)
             assert not cleanup.done()
             gate.release.set()

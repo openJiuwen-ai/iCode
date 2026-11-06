@@ -78,6 +78,7 @@ from chrys.foundation.events.types import (
     SessionTitleUpdated,
     ToolCompacted,
     TurnStarted,
+    UnansweredInputDropped,
     UsageUpdate,
     UserInjectResult,
     Warning,
@@ -152,6 +153,7 @@ ACP_EXTENSION_NOTIFICATIONS: tuple[str, ...] = (
     "chrys/profile_switched",
     "chrys/workspace_updated",
     "chrys/turn_started",
+    "chrys/user_messages_dropped",
     "chrys/retry_attempt",
     "chrys/messages_retracted",
     "chrys/user_inject_result",
@@ -1253,9 +1255,24 @@ class ChrysAcpServer:
                     "turnNumber": event.turn_number,
                     "isRetry": event.is_retry,
                     "userMessageId": event.user_message_id,
+                    "openingItemId": event.opening_item_id,
                 },
             )
             return False
+        if isinstance(event, UnansweredInputDropped):
+            if event.removed_item_ids or event.retired_turn_id is not None:
+                # History dropped these user messages: the notes a kept turn
+                # never answered, or a retired turn's, whose number the next
+                # turn reuses.
+                await self._client_or_error().ext_notification(
+                    "chrys/user_messages_dropped",
+                    {
+                        "sessionId": _event_session_id(event, session_id),
+                        "itemIds": list(event.removed_item_ids),
+                        "retiredTurnId": event.retired_turn_id,
+                    },
+                )
+            return True
         if isinstance(event, InvocationRetryAttempt) and event.origin.kind == "turn":
             await self._client_or_error().ext_notification(
                 "chrys/retry_attempt",
@@ -1507,6 +1524,7 @@ class ChrysAcpServer:
                     if isinstance(event.created_at, datetime)
                     else event.created_at,
                     "injectionId": event.injection_id,
+                    "itemId": event.item_id,
                 },
             )
             return True

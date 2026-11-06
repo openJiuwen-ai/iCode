@@ -107,7 +107,7 @@ _AGENT_RESPONSE_COPY_TOOLTIP = msg(
 )
 COPY_MESSAGE_BUTTON = msg("tui.chat.copy_message_button", fallback="Copy")
 ROLLBACK_MESSAGE_BUTTON = msg("tui.chat.rollback_message_button", fallback="↺ Discard this turn and later")
-INTERRUPTED_ROLLBACK_BUTTON = msg("tui.chat.interrupted_rollback_button", fallback="Discard")
+INTERRUPTED_ROLLBACK_BUTTON = msg("tui.chat.interrupted_rollback_button", fallback="Discard This Turn")
 _STREAMED_BODY_INTERVAL_SECONDS = 0.2
 """Shortest time between two markdown updates of a streaming message.
 
@@ -387,12 +387,17 @@ class UserMessage(Widget):
         contents: list[Any] | None = None,
         turn_number: int | None = None,
         rollback_available: bool = False,
+        history_item_id: str | None = None,
     ) -> None:
         self._text = text
         self._ts = timestamp
         self._compressed = compressed
         self._is_injection = is_injection
         self.turn_number = turn_number
+        self.history_item_id = history_item_id
+        """The ``_chrys_analytics_item_id`` of this message in history, once known: backend cleanup names it."""
+        self.client_message_id: str | None = None
+        """The frontend's own id for a live retry note, which the retry's ``TurnStarted`` echoes."""
         self._rollback_available = rollback_available and not is_injection and turn_number is not None
         self._rollback_disabled = False
         self._image_previews = extract_image_previews(contents)
@@ -474,6 +479,10 @@ class UserMessage(Widget):
             return
         self._rollback_available = available
         if not self.is_mounted:
+            # Replay composes a batch before mounting it: an already composed
+            # button keeps the new state, and compose reads the flag otherwise.
+            for button in self.query(MessageRollbackButton):
+                button.display = available
             return
         from chrys.app.tui.util.visibility import resync_compositor_regions
 

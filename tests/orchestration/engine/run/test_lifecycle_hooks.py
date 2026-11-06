@@ -33,7 +33,7 @@ from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.trajectory.context import TrajectoryContext
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.kernel import Content, Message
-from chrys.orchestration.engine.execution import PendingRetry
+from chrys.orchestration.engine.execution import PendingRetry, RetryInput
 from chrys.orchestration.engine.run.finalizer import _expire_current_run_scope
 from chrys.orchestration.engine.run.retry import RetryCoordinator
 from chrys.orchestration.engine.run.runtime_skills import RuntimeSkillRefresher
@@ -373,7 +373,7 @@ class _Host:
         self.permits.session_generation = 0
         self.permits.build_generation = 0
         self._turn_state.lease.pending_retry = PendingRetry(
-            text="stale", session_generation=self.permits.session_generation
+            retry=RetryInput("stale"), session_generation=self.permits.session_generation
         )
         self.session.hook_manager = _PromptHookManager(decision)
         self.session.agent_profile = None
@@ -391,8 +391,8 @@ class _Host:
         self.run_started.set()
         await self.finish_runs.wait()
 
-    async def retry_and_save(self, additional_text: str = "", **_kwargs: object) -> None:
-        self.retry_texts.append(additional_text)
+    async def retry_and_save(self, retry: RetryInput, **_kwargs: object) -> None:
+        self.retry_texts.append(retry.text)
 
 
 class _TrajectoryRecorder:
@@ -665,7 +665,7 @@ async def test_user_retry_text_blocked_by_user_prompt_submit_hook() -> None:
 
     await on_user_retry(host, UserRetry(text="continue with secret"))
 
-    assert host._turn_state.lease.pending_retry.text == ""
+    assert host._turn_state.lease.pending_retry.retry.text == ""
     assert host._fsm.transitions == []
     assert host.retry_texts == []
     assert errors[0].code == "hook_blocked"
@@ -699,7 +699,7 @@ async def test_user_retry_text_with_image_mention_is_rejected_after_prompt_hook(
     assert dict(warning.display_message.args) == {"files": DisplayBlock(f"- {image_path}")}
     assert warning.display_message.count == 1
     assert host.session.hook_manager.payloads[0]["text"] == "continue with @shot.png"
-    assert host._turn_state.lease.pending_retry.text == ""
+    assert host._turn_state.lease.pending_retry.retry.text == ""
     assert host._fsm.transitions == []
     assert host.retry_texts == []
     assert host.current.loaded.reminder_middleware.queued == []
@@ -726,7 +726,7 @@ async def test_user_retry_invalid_image_publishes_legacy_and_localized_warning(t
     assert warning.display_message.definition.key == "attachments.attachment_error"
     assert dict(warning.display_message.args) == {"items": items}
     assert warning.display_message.count == 1
-    assert host._turn_state.lease.pending_retry.text == ""
+    assert host._turn_state.lease.pending_retry.retry.text == ""
     assert host._fsm.transitions == []
     assert host.retry_texts == []
 
@@ -926,8 +926,8 @@ async def test_user_retry_text_aborts_when_ordinary_owner_changes_during_hook() 
         await task
 
         assert host._turn_state.lease.run_task is None
-        assert host._turn_state.lease.pending_retry.text == ""
-        assert host._turn_state.lease.pending_retry.created_at is None
+        assert host._turn_state.lease.pending_retry.retry.text == ""
+        assert host._turn_state.lease.pending_retry.retry.created_at is None
         assert host.retry_texts == []
         assert host._fsm.transitions == []
         assert host.current.loaded.reminder_middleware.queued == []
@@ -948,7 +948,7 @@ async def test_active_user_retry_text_uses_scoped_current_run_reminders() -> Non
     finally:
         await _cancel_active_run(host)
 
-    assert host._turn_state.lease.pending_retry.text == "continue with note"
+    assert host._turn_state.lease.pending_retry.retry.text == "continue with note"
     assert host._fsm.transitions == [Trigger.RETRY_REQUESTED]
     assert host.current.loaded.reminder_middleware.queued == [(["remember this"], False)]
     assert host.session.hook_manager.payloads[0]["injected"] is True
@@ -995,7 +995,7 @@ async def test_active_user_retry_text_refreshes_runtime_skills_without_hook_remi
     assert provider.commit_calls == 1
     assert list(host.current.manifest.skill_names) == ["unit-converter"]
     assert host.current.manifest.runtime_details.skill_details == [skill]
-    assert host._turn_state.lease.pending_retry.text == "continue with ordinary note"
+    assert host._turn_state.lease.pending_retry.retry.text == "continue with ordinary note"
 
 
 @pytest.mark.asyncio
@@ -1078,8 +1078,8 @@ async def test_user_retry_text_aborts_when_active_owner_changes_during_hook() ->
         host.session.hook_manager.release.set()
         await task
 
-        assert host._turn_state.lease.pending_retry.text == ""
-        assert host._turn_state.lease.pending_retry.created_at is None
+        assert host._turn_state.lease.pending_retry.retry.text == ""
+        assert host._turn_state.lease.pending_retry.retry.created_at is None
         assert host.retry_texts == []
         assert host._fsm.transitions == []
         assert host.current.loaded.reminder_middleware.queued == []
@@ -1661,15 +1661,15 @@ async def test_concurrent_user_retry_uses_latest_pending_retry_note_after_blocke
     await asyncio.wait_for(host.session.hook_manager.entered.wait(), timeout=5.0)
 
     await on_user_retry(host, UserRetry(text="second note", timestamp=second_timestamp))
-    assert host._turn_state.lease.pending_retry.text == "second note"
-    assert host._turn_state.lease.pending_retry.created_at == second_timestamp
+    assert host._turn_state.lease.pending_retry.retry.text == "second note"
+    assert host._turn_state.lease.pending_retry.retry.created_at == second_timestamp
 
     host.session.hook_manager.release.set()
     await first
 
     assert [payload["text"] for payload in host.session.hook_manager.payloads] == ["first note", "second note"]
-    assert host._turn_state.lease.pending_retry.text == "second note"
-    assert host._turn_state.lease.pending_retry.created_at == second_timestamp
+    assert host._turn_state.lease.pending_retry.retry.text == "second note"
+    assert host._turn_state.lease.pending_retry.retry.created_at == second_timestamp
     assert host._turn_state.lease.pending_retry.owner_admission_id == 2
     assert host._turn_state.lease.pending_retry.updated_by_admission_id == 2
 
@@ -1775,8 +1775,8 @@ async def test_active_retry_stale_shutdown_after_hook_does_not_queue_pending_ret
         host.session.hook_manager.release.set()
         await asyncio.wait_for(task, timeout=5.0)
 
-        assert host._turn_state.lease.pending_retry.text == ""
-        assert host._turn_state.lease.pending_retry.created_at is None
+        assert host._turn_state.lease.pending_retry.retry.text == ""
+        assert host._turn_state.lease.pending_retry.retry.created_at is None
         assert host._turn_state.lease.pending_retry == PendingRetry()
         assert host.current.loaded.reminder_middleware.queued == []
         assert host._fsm.transitions == []

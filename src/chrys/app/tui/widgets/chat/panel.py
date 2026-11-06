@@ -1271,6 +1271,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         is_injection: bool = False,
         created_at: Any = None,
         contents: list[Any] | None = None,
+        item_id: str | None = None,
+        client_message_id: str | None = None,
     ) -> None:
         """Display a user message."""
         await self._live_renderer.add_user_message(
@@ -1278,19 +1280,25 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             is_injection=is_injection,
             created_at=created_at,
             contents=contents,
+            item_id=item_id,
+            client_message_id=client_message_id,
         )
 
-    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_followups: int) -> None:
+    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_item_ids: tuple[str, ...]) -> None:
         """Apply backend cleanup after replay so queued entries cannot reappear."""
         if self.replay_in_progress:
             await self.wait_replay_complete()
         await self._live_renderer.apply_fresh_turn_cleanup(
-            retired_previous_turn=retired_previous_turn, removed_followups=removed_followups
+            retired_previous_turn=retired_previous_turn, removed_item_ids=removed_item_ids
         )
 
-    def apply_turn_started(self, turn_number: int) -> None:
-        """Set the live opener's authoritative turn number."""
-        self._live_renderer.apply_turn_started(turn_number)
+    def apply_turn_started(self, turn_number: int, *, opening_item_id: str | None = None) -> None:
+        """Set the live opener's authoritative turn number and history item."""
+        self._live_renderer.apply_turn_started(turn_number, opening_item_id=opening_item_id)
+
+    def apply_retry_started(self, note_message_id: str | None, opening_item_id: str | None) -> None:
+        """Bind a retry's guidance, named by its client id, to its history item."""
+        self._live_renderer.apply_retry_started(note_message_id, opening_item_id)
 
     async def add_answer_delta(self, segment_id: str, text: str) -> None:
         """Stream new answer text into its segment's message (one message per segment)."""

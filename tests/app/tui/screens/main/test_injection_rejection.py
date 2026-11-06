@@ -199,6 +199,8 @@ class _Harness:
                 is_injection: bool = False,
                 created_at: Any = None,
                 contents: list[Any] | None = None,
+                item_id: str | None = None,
+                client_message_id: str | None = None,
             ) -> None:
                 assert is_injection is True
                 harness.shown.append(("bubble", text))

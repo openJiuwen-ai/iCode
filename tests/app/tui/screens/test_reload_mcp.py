@@ -23,6 +23,7 @@ from chrys.service.profiles.agents.serializer import save_profile
 from chrys.service.profiles.models.env_bridge import activate_model_profile
 from tests.app.tui.screens.test_manual_reload import ask_after_reload, slash_reload
 from tests.app.tui.screens.test_prompt_shortcut_send import MAIN_MODEL, make_agent, running_session
+from tests.support.processes import still_running
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
@@ -111,7 +112,7 @@ async def call_tool(session, name: str, label: str) -> None:
 
 def running_children() -> set[int]:
     """Pids of this test's own live child processes; only a child can't have been recycled unseen."""
-    return {child.pid for child in psutil.Process().children(recursive=True) if child.status() != psutil.STATUS_ZOMBIE}
+    return {child.pid for child in psutil.Process().children(recursive=True) if still_running(child)}
 
 
 async def closed(process: psutil.Process, session) -> None:

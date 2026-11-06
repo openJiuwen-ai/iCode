@@ -15,7 +15,6 @@ from chrys.foundation.config.settings_store import SettingsHandle
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
-    FreshTurnCleaned,
     InvocationAborted,
     InvocationAbortRequested,
     InvocationCascadeAborted,
@@ -23,6 +22,7 @@ from chrys.foundation.events.types import (
     InvocationResumed,
     InvocationRetryRequested,
     RetryWaitSkip,
+    UnansweredInputDropped,
     UserInject,
     UserInjectCancel,
     UserInjectResult,
@@ -35,11 +35,13 @@ from chrys.foundation.i18n import msg
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine.execution import (
+    BARE_RETRY,
     CurrentRunInjectionWindow,
     CurrentRunScope,
     PreAdmissionPreparationEntry,
     PreAdmissionPreparationTracker,
     PromptAdmissionScope,
+    RetryInput,
 )
 from chrys.orchestration.engine.loader import AgentLoader
 from chrys.orchestration.engine.run import sub_agent_coordination
@@ -114,7 +116,7 @@ class _FreshTurnCleanup:
 
     retired_previous_turn: bool
     retired_turn: TurnRecord | None
-    removed_followups: int
+    removed_item_ids: tuple[str, ...]
 
 
 class TurnCoordinator:
@@ -327,8 +329,7 @@ class TurnCoordinator:
 
     async def run_retry(
         self,
-        additional_text: str = "",
-        created_at: datetime | str | None = None,
+        retry: RetryInput = BARE_RETRY,
         *,
         run_scope: CurrentRunScope | None = None,
         injection_window: CurrentRunInjectionWindow | None = None,
@@ -338,8 +339,7 @@ class TurnCoordinator:
         """Execute a retry/resume pass against the current engine state."""
 
         await self._runner().run_retry(
-            additional_text,
-            created_at=created_at,
+            retry,
             run_scope=run_scope,
             injection_window=injection_window,
             admission_preparation=admission_preparation,
@@ -1117,7 +1117,8 @@ class TurnCoordinator:
         def clean(_log: MutationLog | None = None) -> _FreshTurnCleanup:
             # Finalized tools may have recorded from executor threads. Keep
             # their ledger locked from the emptiness check through retirement.
-            self._history.close_unfinished_turn()
+            # The finalizer closed the previous turn with its marker; a turn
+            # restored in flight was closed when it was restored.
             result = self._history.prepare_fresh_turn(
                 other_records_present=tracker.has_turn_work(self._session.turn_number) if tracker is not None else False
             )
@@ -1140,7 +1141,7 @@ class TurnCoordinator:
             return _FreshTurnCleanup(
                 retired_previous_turn=result.retired_previous_turn,
                 retired_turn=retired,
-                removed_followups=result.removed_followups,
+                removed_item_ids=result.removed_item_ids,
             )
 
         return tracker.with_locked_log(clean) if tracker is not None else clean()
@@ -1163,17 +1164,17 @@ class TurnCoordinator:
             # A save failure leaves the in-memory cleanup committed. The next
             # turn still runs, and its frontend must follow those same edits.
             await self._bus.publish(
-                FreshTurnCleaned(
+                UnansweredInputDropped(
                     session_id=self._session.session_id,
                     retired_previous_turn=cleanup.retired_previous_turn,
-                    removed_followups=cleanup.removed_followups,
+                    removed_item_ids=cleanup.removed_item_ids,
+                    retired_turn_id=cleanup.retired_turn.turn_id if cleanup.retired_turn is not None else None,
                 )
             )
 
     async def retry_and_save(
         self,
-        additional_text: str = "",
-        created_at: datetime | str | None = None,
+        retry: RetryInput = BARE_RETRY,
         *,
         run_scope: CurrentRunScope | None = None,
         injection_window: CurrentRunInjectionWindow | None = None,
@@ -1181,9 +1182,9 @@ class TurnCoordinator:
     ) -> None:
         """Resume the agent from current state and auto-save afterward.
 
-        When *additional_text* is non-empty, the executor uses it as the
-        mid-turn continuation prompt (instead of the placeholder
-        ``"continue"``) and preserves it in history as a real user turn.
+        When *retry* carries guidance, the executor uses it as the mid-turn
+        continuation prompt (instead of the placeholder ``"continue"``) and
+        preserves it in history as a real user turn.
         """
         task = asyncio.current_task()
         unbind = None
@@ -1202,8 +1203,7 @@ class TurnCoordinator:
             binding_failure = exc
         try:
             await self.run_retry(
-                additional_text,
-                created_at=created_at,
+                retry,
                 run_scope=run_scope,
                 injection_window=injection_window,
                 admission_preparation=admission_preparation,

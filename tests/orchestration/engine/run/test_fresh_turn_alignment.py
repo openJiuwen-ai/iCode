@@ -20,10 +20,10 @@ from chrys.app.acp.server import ChrysAcpServer
 from chrys.app.acp.session_manager import ManagedSession
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
-    FreshTurnCleaned,
     RollbackResult,
     SessionRestore,
     TurnStarted,
+    UnansweredInputDropped,
     UserInterrupt,
     UserMessage,
     UserRetry,
@@ -33,6 +33,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.trajectory.event_types import EventType
+from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.kernel import ChatResponseUpdate, FinishReason, FinishReasonLiteral, Message
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.engine.execution import ExecutionLease, PromptPromotionResult
@@ -99,6 +100,29 @@ class _EndingClient(MockChatClient):
             if call == 2 and self.ending in {"answer", "thought", "guidance_failed"}:
                 self.held.set()
                 await self.release.wait()
+
+
+class _RepeatedNoteClient(MockChatClient):
+    """The first turn shows a partial answer and fails; the next *refused* calls fail before output."""
+
+    def __init__(self, refused: int) -> None:
+        super().__init__(
+            [MockResponse(text="partial answer", chunk_delay=0)]
+            + [MockResponse(text="unused") for _ in range(refused)]
+            + [MockResponse(text="next", chunk_delay=0)]
+        )
+        self.refused = refused
+
+    async def _stream_updates(
+        self, resp: MockResponse, model_id: str, finish_reason: FinishReasonLiteral | FinishReason
+    ) -> AsyncIterable[ChatResponseUpdate]:
+        call = self.call_count
+        if 1 < call <= 1 + self.refused:
+            raise _ProviderRefusal("the call carrying the note fails before output")
+        async for update in super()._stream_updates(resp, model_id, finish_reason):
+            yield update
+        if call == 1:
+            raise _ProviderRefusal("the first turn fails after its answer")
 
 
 @dataclass
@@ -216,6 +240,102 @@ async def test_fresh_prompt_and_rollback_share_one_turn_count(
             message.additional_properties.get(HistoryMarkerKind.KEY) in HistoryMarkerKind.STATUS_MARKERS
             for message in restored_state["messages"]
         ), "the previous interrupt/error card must not return from the snapshot"
+
+
+@pytest.mark.parametrize("stop", ["refused", "interrupted"])
+async def test_guidance_sent_twice_stays_two_items_the_next_prompt_removes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine, stop: str
+) -> None:
+    """Each guided retry announces its own note item, so history keeps both notes and the cleanup names both.
+
+    Refused at the provider or stopped before the executor, the notes come back through the runner's fallback,
+    and a bare retry re-sends the second.
+    """
+    refused = stop == "refused"
+    client = _RepeatedNoteClient(refused=3 if refused else 0)
+    settings, models = make_mock_settings_and_registry(stream=True)
+    settings = replace(settings, workspace_change_notice=False, max_transient_retries=0)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=client)
+    )
+    engine = agent_engine(
+        EventBus(),
+        settings=settings,
+        agent_registry=_make_registry(),
+        model_registry=models,
+        state_store=JsonFileStateStore(tmp_path),
+        initial_workspace=Workspace.from_cwd(str(tmp_path)),
+    )
+    await engine.start(_PROFILE)
+    await _ask(engine, "original")
+    announced: list[str] = []
+    cleanups: list[UnansweredInputDropped] = []
+
+    async def on_started(event: TurnStarted) -> None:
+        if not event.is_retry:
+            return
+        if event.opening_item_id is not None:
+            announced.append(event.opening_item_id)
+        if not refused:
+            await engine.event_bus.publish(UserInterrupt())
+
+    await engine.event_bus.subscribe(TurnStarted, on_started)
+    await engine.event_bus.subscribe(UnansweredInputDropped, lambda event: collect_events(cleanups, event))
+    for text in ("same note", "same note", ""):
+        await engine.event_bus.publish(UserRetry(text=text))
+        await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
+
+    assert len(set(announced)) == 2
+    history = engine.current.require_loaded().bindings.backend.history_state["messages"]
+    assert [read_analytics_item_id(m.additional_properties) for m in history if m.text == "same note"] == announced
+
+    await _ask(engine, "fresh input")
+
+    (cleanup,) = cleanups
+    assert cleanup.retired_previous_turn is False
+    assert cleanup.removed_item_ids == tuple(announced)
+    state = engine.current.require_loaded().bindings.backend.history_state
+    assert [m.text for m in state["messages"] if m.role == "user"] == ["original", "fresh input"]
+    assert client.call_count == (5 if refused else 2)
+
+
+async def test_a_refused_retry_keeps_guidance_worded_like_its_opener_as_a_note_of_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine
+) -> None:
+    """The runner keeps guidance the provider refused: flagged, under the item its pass announced, opener untouched."""
+    client = _RepeatedNoteClient(refused=1)
+    settings, models = make_mock_settings_and_registry(stream=True)
+    settings = replace(settings, workspace_change_notice=False, max_transient_retries=0)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=client)
+    )
+    engine = agent_engine(
+        EventBus(),
+        settings=settings,
+        agent_registry=_make_registry(),
+        model_registry=models,
+        state_store=JsonFileStateStore(tmp_path),
+        initial_workspace=Workspace.from_cwd(str(tmp_path)),
+    )
+    await engine.start(_PROFILE)
+    await _ask(engine, "original")
+    announced: list[str | None] = []
+
+    async def on_started(event: TurnStarted) -> None:
+        if event.is_retry:
+            announced.append(event.opening_item_id)
+
+    await engine.event_bus.subscribe(TurnStarted, on_started)
+    await engine.event_bus.publish(UserRetry(text="original"))
+    await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
+
+    assert client.call_count == 2
+    history = engine.current.require_loaded().bindings.backend.history_state["messages"]
+    opener, note = [m for m in history if m.role == "user"]
+    assert (opener.text, note.text) == ("original", "original")
+    assert HistoryMarkerKind.INJECTED_KEY not in opener.additional_properties
+    assert note.additional_properties[HistoryMarkerKind.INJECTED_KEY] is True
+    assert [read_analytics_item_id(note.additional_properties)] == announced
 
 
 @pytest.mark.parametrize("awaiting", [False, True], ids=["killed", "paused-child"])
@@ -576,9 +696,9 @@ async def test_compacted_completed_turn_is_not_retired_with_the_empty_interrupte
         for message in state["messages"]
     )
     await engine.writer.save_current_session()
-    cleaned: list[FreshTurnCleaned] = []
+    cleaned: list[UnansweredInputDropped] = []
     starts: list[TurnStarted] = []
-    await engine.event_bus.subscribe(FreshTurnCleaned, lambda event: collect_events(cleaned, event))
+    await engine.event_bus.subscribe(UnansweredInputDropped, lambda event: collect_events(cleaned, event))
     await engine.event_bus.subscribe(TurnStarted, lambda event: collect_events(starts, event))
 
     await engine.event_bus.publish(UserMessage(text="empty input"))
@@ -610,7 +730,11 @@ async def test_compacted_completed_turn_is_not_retired_with_the_empty_interrupte
     assert not any(message["role"] == "user" for message in boundary)
     assert rewritten != captured
     assert [event.turn_number for event in starts] == [2, 2]
-    assert [(event.retired_previous_turn, event.removed_followups) for event in cleaned] == [(True, 0)]
+    # History names the retired opener by the item its TurnStarted announced.
+    assert starts[0].opening_item_id is not None
+    assert [(event.retired_previous_turn, event.removed_item_ids, event.retired_turn_id) for event in cleaned] == [
+        (True, (starts[0].opening_item_id,), empty_turn_id)
+    ]
 
 
 async def test_failed_promotion_leaves_every_previous_turn_ledger_untouched(
@@ -671,46 +795,6 @@ async def test_failed_promotion_leaves_every_previous_turn_ledger_untouched(
         event for event in assert_trajectory_file_accounted(path).events if event.event_type in relevant
     ] == before_events
     assert client.call_count == 2
-
-
-@pytest.mark.parametrize("ending", ["empty", "answer"])
-async def test_fresh_cleanup_closes_a_missing_previous_turn_boundary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine, ending: str, engine_services
-) -> None:
-    settings, models = make_mock_settings_and_registry(stream=True)
-    settings = replace(settings, workspace_change_notice=False)
-    store = JsonFileStateStore(tmp_path)
-    client = _EndingClient(ending, tmp_path / "unused")
-    monkeypatch.setattr(
-        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=client)
-    )
-    engine = agent_engine(
-        EventBus(),
-        settings=settings,
-        agent_registry=_make_registry(),
-        model_registry=models,
-        state_store=store,
-        initial_workspace=Workspace.from_cwd(str(tmp_path)),
-    )
-    await engine.start(_PROFILE)
-    await _ask(engine, "Baseline")
-    await engine.event_bus.publish(UserMessage(text="Interrupted"))
-    await wait_for(client.held.is_set, timeout=ENGINE_TURN_TIMEOUT, description="previous turn in flight")
-    await engine.event_bus.publish(UserInterrupt())
-    await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
-    history = engine_services(engine).history
-    assert history.messages[-1].additional_properties[HistoryMarkerKind.KEY] == HistoryMarkerKind.TURN
-    # Model the missing final boundary: the running-session ordinal and registry
-    # already name this turn, but the history has not incremented its counter.
-    history.messages.pop()
-    history.state["turn_counter"] -= 1
-    await _ask(engine, "Replacement")
-    count = 2 if ending == "empty" else 3
-    assert history.state["turn_counter"] == engine.session.turn_number == count
-    assert [record.turn_number for record in engine.turn_records()] == list(range(1, count + 1))
-    assert [message.text for message in history.messages if message.role == "user"] == (
-        ["Baseline", "Replacement"] if ending == "empty" else ["Baseline", "Interrupted", "Replacement"]
-    )
 
 
 @pytest.mark.parametrize("ending", ["interrupted", "failed"])

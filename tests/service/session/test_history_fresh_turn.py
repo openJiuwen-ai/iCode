@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
 from chrys.kernel import Content, Message
 from chrys.service.session.history import SessionHistoryManager
 
@@ -21,23 +22,30 @@ def _history(contents: list[Message]) -> SessionHistoryManager:
     return manager
 
 
-def _guidance() -> Message:
-    note = Message("user", ["try differently"])
+def _guidance(item_id: str = "guidance") -> Message:
+    note = Message("user", ["try differently"], additional_properties={ANALYTICS_ITEM_ID_KEY: item_id})
     note.additional_properties[HistoryMarkerKind.INJECTED_KEY] = True
     return note
+
+
+def _opener(text: str, item_id: str = "opener") -> Message:
+    return Message("user", [text], additional_properties={ANALYTICS_ITEM_ID_KEY: item_id})
 
 
 @pytest.mark.parametrize("thought", [False, True])
 @pytest.mark.parametrize("guidance", [False, True])
 def test_no_work_retires_the_entire_turn_including_its_guidance(thought: bool, guidance: bool) -> None:
-    contents = [Message("user", ["failed opener"])]
+    contents = [_opener("failed opener")]
     if thought:
         contents.append(Message("assistant", [Content.from_text_reasoning(text="private thought")]))
     if guidance:
         contents.append(_guidance())
     manager = _history(contents)
 
-    assert manager.prepare_fresh_turn().retired_previous_turn is True
+    result = manager.prepare_fresh_turn()
+
+    assert result.retired_previous_turn is True
+    assert result.removed_item_ids == (("opener", "guidance") if guidance else ("opener",))
 
     assert manager.state["turn_counter"] == 1
     assert [message.text for message in manager.messages[:2]] == ["before", "done"]
@@ -47,10 +55,13 @@ def test_no_work_retires_the_entire_turn_including_its_guidance(thought: bool, g
 
 @pytest.mark.parametrize("work", [Message("assistant", ["partial answer"]), Message("tool", ["tool result"])])
 def test_retained_work_keeps_its_marker_and_drops_only_unanswered_guidance(work: Message) -> None:
-    manager = _history([Message("user", ["retained opener"]), work, _guidance()])
+    manager = _history([_opener("retained opener"), work, _guidance()])
     marker = manager.messages[-1]
 
-    assert manager.prepare_fresh_turn().retired_previous_turn is False
+    result = manager.prepare_fresh_turn()
+
+    assert result.retired_previous_turn is False
+    assert result.removed_item_ids == ("guidance",)
 
     assert manager.state["turn_counter"] == 2
     assert manager.messages[-1] is marker
@@ -114,9 +125,9 @@ def test_retained_turn_reports_all_unanswered_notes_and_removes_their_thinking()
             Message("user", ["opener"]),
             answer,
             earlier_thought,
-            _guidance(),
+            _guidance("first"),
             Message("assistant", [Content.from_text_reasoning(text="First unlanded thought")]),
-            _guidance(),
+            _guidance("second"),
             Message("assistant", [Content.from_text_reasoning(text="Second unlanded thought")]),
         ]
     )
@@ -124,9 +135,27 @@ def test_retained_turn_reports_all_unanswered_notes_and_removes_their_thinking()
     result = manager.prepare_fresh_turn()
 
     assert result.retired_previous_turn is False
-    assert result.removed_followups == 2
+    assert result.removed_item_ids == ("first", "second")
     assert manager.messages[-2] is earlier_thought
     assert manager.messages[-1].additional_properties[HistoryMarkerKind.KEY] == HistoryMarkerKind.TURN
+
+
+def test_retained_turn_names_a_legacy_nudge_but_never_an_answered_note() -> None:
+    """A hidden pre-v0.26 ``continue`` nudge is named by id, so no frontend counts it against a visible note."""
+    answered = _guidance("answered")
+    answer = Message("assistant", ["Answer to the note"])
+    nudge = Message(
+        "user",
+        ["continue"],
+        additional_properties={ANALYTICS_ITEM_ID_KEY: "nudge", HistoryMarkerKind.CONTINUATION_KEY: True},
+    )
+    manager = _history([_opener("opener"), answered, answer, _guidance("unanswered"), nudge])
+
+    result = manager.prepare_fresh_turn()
+
+    assert result.removed_item_ids == ("unanswered", "nudge")
+    assert manager.messages[-2] is answer
+    assert answered in manager.messages
 
 
 def test_restoring_summary_alone_does_not_create_an_unfinished_turn() -> None:
