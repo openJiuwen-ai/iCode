@@ -7,6 +7,7 @@
 
 | 目录 | 类型 | 一句话简介 |
 |---|---|---|
+| [install-uninstall-support.md](install-uninstall-support.md) | 支持手册 | 开发/技术支持用内网安装与卸载详解（协议、版本、全安装方式、清理与排障） |
 | [batches/mock](batches/mock/) | 功能批次 | mock 基建迁入（`aixcoding/mock`：auth/update/model_catalog 三服务 + 启动器） |
 | [batches/auth](batches/auth/) | 功能批次 | auth 迁入（`src/chrys/kernel/aixcoding/auth` + LLM token 接线） |
 | [batches/auth-logging](batches/auth-logging/) | 功能批次 | auth 登录状态埋点（session 落盘与 token 注入 wiring） |
@@ -36,3 +37,4 @@
 | [batches/agents-md-note](batches/agents-md-note/) | 注记 | AGENTS.md 定制规范入口段补登记（定制点 C001，管线外） |
 | [batches/upstream-merge-v0.33.0](batches/upstream-merge-v0.33.0/) | 升级批次 | 追上游 v0.33.0（基线 0.32.2 → 0.33.0，目标 ref 8d5a3208 已裁决） |
 | [batches/logging-routing-fixes](batches/logging-routing-fixes/) | 治理批次 | 日志治理①——现存埋点路由修复（子树外 logger 归位、死代码清理、crypto 降级与停用 env 警告补公共通道） |
+| [batches/internal-installer](batches/internal-installer/) | 功能批次 | 内网安装器与发布约定迁移（`aixcoding/release/` 分发物料：镜像安装器双脚本 + INSTALL.md + 发布约定） |
