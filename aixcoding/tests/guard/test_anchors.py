@@ -52,6 +52,11 @@ _BOOTSTRAP_SURVIVES_FAILURE_SCRIPT = textwrap.dedent(
 
 def _isolated_env(tmp_path: Path) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if not key.upper().startswith("CHRYS_")}
+    # The bootstrap subprocess simulates a real user runtime, and the C140
+    # wiring suppresses the auto-install while pytest is driving the process —
+    # PYTEST_CURRENT_TEST is inherited otherwise and would skip the install
+    # this anchor exists to prove.
+    env.pop("PYTEST_CURRENT_TEST", None)
     env["HOME"] = str(tmp_path)
     env["USERPROFILE"] = str(tmp_path)
     env["APPDATA"] = str(tmp_path / "AppData" / "Roaming")
