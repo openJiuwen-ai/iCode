@@ -42,6 +42,7 @@ class ErrorClassification:
 
     kind: ErrorKind
     retryable: bool
+    """Whether a retry lane may send this again now; the retry policies key on it."""
     signal: ProviderSignal | None = None
     timeout_phase: TimeoutPhase | None = None
     # The failed request's route snapshot, when its client stamped one.
@@ -57,6 +58,17 @@ class ErrorClassification:
     invalidates_continuation_token: bool = False
     # Log-only trace of the deciding evidence, e.g. ``"http 429"``.
     evidence: str = ""
+    transient: bool = False
+    """Whether the failure itself may pass when the work is tried again later, for a person deciding to retry.
+
+    ``retryable`` is lane policy as well: it is False for a failure its owner
+    already retried to the end (compaction's last words, a response rejected
+    after its resend) and for a stalled stream, which has a budget of its own,
+    so that no outer lane replays them. A user's later retry is a new attempt;
+    those failures count here as what lies beneath them. False when something
+    must change first (credit, key, request or configuration), or when nothing
+    shows the failure is transient.
+    """
 
 
 # Matched by class name anywhere in the MRO: the owning classes live in
@@ -158,26 +170,26 @@ def classify_error(exc: BaseException) -> ErrorClassification:
     kind, evidence = _explicit_kind(explicit, signal, network, overflow)
     # The full chain feeds only the frozen legacy layers.
     full = tuple(iter_full_chain(exc))
-    if _legacy.is_owner_terminal(full):
-        retryable = False
-    elif signal is not None and signal.explicit_retryable is not None:
-        retryable = signal.explicit_retryable
+    owner_terminal = _legacy.is_owner_terminal(full)
+    if signal is not None and signal.explicit_retryable is not None:
+        transient = signal.explicit_retryable
     elif signal is not None and signal.verdict is not None:
-        retryable = signal.verdict.retryable
+        transient = signal.verdict.retryable
     elif (
         (network is not None and network.deterministic)
         or kind in _NON_RETRYABLE_KINDS
         or _names_a_final_in_band_failure(signal)
     ):
-        retryable = False
+        transient = False
     elif signal is not None and is_2xx(signal.status_code):
-        retryable = stream_error_retryable(signal, kind)
+        transient = stream_error_retryable(signal, kind)
     else:
-        # The legacy owner and deterministic vetoes were both decided above.
-        retryable = _legacy.is_transient(full)
+        # The deterministic veto was decided above.
+        transient = _legacy.is_transient(full)
     return ErrorClassification(
         kind=kind,
-        retryable=retryable,
+        retryable=transient and not owner_terminal,
+        transient=transient or _concluded_by_its_own_budget(kind, explicit),
         signal=signal,
         timeout_phase=(network.timeout_phase if network is not None else None) or _first_timeout_phase(explicit),
         route=route,
@@ -185,6 +197,18 @@ def classify_error(exc: BaseException) -> ErrorClassification:
         from_model_service=_from_model_service(explicit, route),
         invalidates_continuation_token=_invalidates_continuation_token(explicit),
         evidence=evidence,
+    )
+
+
+def _concluded_by_its_own_budget(kind: ErrorKind, explicit: tuple[BaseException, ...]) -> bool:
+    """Whether iCode's own budget, not the model service, ended this: a later attempt samples again and may pass.
+
+    A stream that kept stalling, or a response that showed nothing and was
+    resent once. Any other invalid response (a page that isn't the model's
+    API) fails the same way again.
+    """
+    return kind is ErrorKind.STREAM_STALLED or any(
+        isinstance(node, ContinuationVerdictError) and node.blank_response for node in explicit
     )
 
 

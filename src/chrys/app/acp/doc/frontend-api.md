@@ -53,7 +53,7 @@ Param keys are camelCase; most request handlers also accept the legacy
 `initialize` declares the extension surface under `agentCapabilities._meta.chrys`:
 
 ```json
-{"apiVersion": 1, "methods": ["session/delete", "..."], "notifications": ["chrys/runtime_update", "..."]}
+{"apiVersion": 2, "methods": ["session/delete", "..."], "notifications": ["chrys/runtime_update", "..."]}
 ```
 
 The two lists are the server's own dispatch tables (`ACP_EXTENSION_METHODS`,
@@ -62,6 +62,21 @@ instead of on error codes; `chrys/request_input` is a callback the server sends,
 not a method it dispatches, so it is not listed. `apiVersion` changes only when a
 declared name's meaning changes incompatibly, not when one is added — a client
 gates on presence per name. The lists are pinned to the code by a test.
+Version 2: a failed sub-agent pauses only for a client that declares it (below).
+
+The client declares what it handles under `clientCapabilities._meta.chrys`:
+
+```json
+{"subAgentPause": true}
+```
+
+`subAgentPause: true` (exactly `true`) says the client shows a paused sub-agent
+and answers it with `sub_agent/retry` or `sub_agent/abort`. Without it a failed
+sub-agent ends at once, as in `icode run`: the client gets
+`chrys/sub_agent_aborted` and the parent model gets the error as the tool
+result, so no turn waits on a decision the client can't make. A session keeps
+what the `initialize` before it declared, for its whole life; a client
+initializes once per connection.
 
 ## Standard ACP
 
@@ -164,7 +179,8 @@ on four surfaces, and all four report the same string:
   interval this request was admitted in.
 - A turn's retries are reported as `chrys/retry_attempt` (scoped
   `wire | run | compaction | connection`, with `attempt`, `maxAttempts`,
-  `delaySeconds`, `message`), only for the main turn.
+  `delaySeconds`, `message`, and `kind`, `statusCode`, `hint` as in
+  *Failures*), only for the main turn.
 
 ### Streamed text
 
@@ -268,6 +284,9 @@ A provider client's automatic resend within a model call adds an entry to `model
 |---|---|---|
 | `sub_agent/retry` | `sessionId`, `invocationId` | Retry a paused sub-agent invocation. |
 | `sub_agent/abort` | `sessionId`, `invocationId` | Abort a paused sub-agent invocation. |
+
+A sub-agent pauses only for a client that declared `subAgentPause` (see
+*Capability discovery*); for any other, its failure ends it at once.
 
 ### Profiles / config / MCP
 
@@ -517,6 +536,66 @@ Admission is per session and explicit: a second `session/prompt` or a
 Late permission replies are ignored, and unrelated sessions remain
 independently promptable while one client callback is pending.
 
+## Failures
+
+Every JSON-RPC error's `message` is the cause, one line of at most 500
+characters (the first line of the text, cut with `…`), so a client that shows
+only `message` still says what went wrong; `data` keeps the whole text in
+`details` or `message`. The codes are unchanged: `-32602` for what iCode
+refuses about the request or the session's state (a missing or mistyped
+parameter, an unknown session, a turn already running, a rejected setting
+value, a session operation that was refused, failed or timed out), `-32603` for
+everything else (a failed turn, an agent or model profile that fails
+validation). The code says little; read `message` for the cause. Text in
+`message` and `data` is always valid JSON: an undecodable byte in a path reads
+as its `\udcXX` escape. The SDK's generic texts remain only where the SDK answers by
+itself: params that don't fit the ACP schema (`Invalid params`, the problems
+in `data.errors`) and an unknown method (`Method not found`).
+
+A `session/prompt` or `session/retry` whose turn failed answers `-32603` with
+`message` = the failure's own text (e.g. `Error code: 402 - Insufficient
+Balance`) and `data`:
+
+| Field | Meaning |
+|---|---|
+| `code` | iCode's failure code: `executor_error` for a failed model or tool run |
+| `message` | The whole failure text |
+| `kind` | What failed, from iCode's error classifier (below) |
+| `retryable` | `true` when trying again later may succeed without changing anything, including a failure iCode's own retries already gave up on (a rate limit that outlasted the backoff, a stalled stream, a response that showed nothing). `false` when something must change first (credit, key, request or configuration) or iCode cannot tell, so a client should not retry on its own |
+| `statusCode` | The HTTP error status the model service answered with, when it answered with one |
+| `hint` | iCode's own English wording of the failure, as its TUI shows it, with what to do when there is advice; for a client with no text of its own |
+| `usage`, `sessionUsage`, `turnId`, `turnNumber` | As on a `PromptResponse` |
+
+The four fields are always present. They are all `null` when the failure was
+not classified (one of iCode's own checks, whose `code` and `message` say it
+all); `statusCode` is also `null` when the model service never answered or
+reported the failure inside a stream it had already answered with `200`, and
+`hint` when iCode has no wording of its own. `kind` values are stable names; a client should
+treat one it doesn't know as `unknown`:
+
+- The model service's answer: `quota_exhausted` (out of credit or quota),
+  `auth_failed`, `rate_limited`, `overloaded`, `server_error`,
+  `context_overflow`, `payload_too_large`, `request_rejected`,
+  `content_filtered`.
+- The response stream: `stream_truncated`, `stream_stalled`, `invalid_response`.
+- The network, before any answer: `no_route`, `host_unreachable`, `dns_failed`,
+  `connection_refused`, `connect_timeout`, `connection_failed`,
+  `connection_lost`, `read_timeout`, `write_timeout`, `proxy_rejected`,
+  `proxy_auth_failed`, `tls_failed`, `invalid_endpoint`.
+- `unknown`: anything else.
+
+The same four fields ride every failure notification, so a client can act on a
+failure as it happens instead of waiting for the request to answer:
+`chrys/error` (sent when the turn fails, before it is saved), and
+`chrys/sub_agent_paused` and `chrys/sub_agent_aborted` (the sub-agent's last
+failure; `null` for an external ACP sub-agent, whose `lastError` tells it, and
+`reason` too on `chrys/sub_agent_paused`). `chrys/retry_attempt` and
+`chrys/sub_agent_retry_attempt` carry `kind`, `statusCode` and `hint` but no
+`retryable`: the failure is being retried whatever its verdict (a context
+overflow is resent once after compacting). They are `null` on a retry of one of
+iCode's own checks (a compaction note that broke its format) and on an external
+ACP sub-agent's.
+
 ## Extension notifications (backend → client)
 
 One-way `ext_notification` pushes, bridged from `EventBus`:
@@ -540,6 +619,8 @@ One-way `ext_notification` pushes, bridged from `EventBus`:
   `chrys/sub_agent_aborted`, `chrys/sub_agent_cascade_aborted`.
 
 Notes:
+- `chrys/error` is `{ sessionId, code, message, recoverable, kind, retryable,
+  statusCode, hint }`; see *Failures* for the last four.
 - `chrys/warning` is `{ sessionId, code, message }`, plus `reason` when the code has
   a machine-readable cause. `trajectory_activation_failed` always carries one, saying
   why the session records no trajectory: `lease_held` (another live writer has it),

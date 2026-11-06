@@ -246,6 +246,9 @@ class AcpSessionManager:
         self._agent_registry = agent_registry or AgentProfileRegistry()
         self._model_registry = model_registry or ModelProfileRegistry()
         self._on_successful_turn = on_successful_turn
+        # Whether the client answers a failed sub-agent's Retry/Abort, as its
+        # handshake declares; sessions created afterwards follow it.
+        self.pause_failed_sub_agents = False
         self._sessions: dict[str, ManagedSession] = {}
         # Guards process-wide session-map/lifecycle mutations only. Prompt
         # turns use ManagedSession.prompt_lock so unrelated sessions never
@@ -661,6 +664,7 @@ class AcpSessionManager:
             on_successful_turn=_on_successful_turn,
             on_turn_started=_on_turn_started,
             surface=SessionSurface.ACP,
+            pause_failed_sub_agents=self.pause_failed_sub_agents,
         )
         updater = SessionTitleUpdater(host.event_bus, self._state_store, engine_getter=lambda: host.engine)
         updater_slot.append(updater)

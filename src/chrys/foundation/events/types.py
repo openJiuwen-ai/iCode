@@ -14,6 +14,7 @@ from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoi
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.models.background_tasks import BackgroundTaskView
 from chrys.foundation.models.execution import ExecutionSnapshot
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.models.hook_confirmations import (
     HookArgumentChange,
     HookConfirmationAnswer,
@@ -781,6 +782,8 @@ class InvocationRetryAttempt(InvocationEvent):
     """Raw untranslated diagnostic component separated from a fixed wrapper."""
     wait_id: str = ""
     """Names the wait before this retry that :class:`RetryWaitSkip` can end early; empty when it can't be skipped."""
+    facts: FailureFacts | None = None
+    """What the failure being retried is; None when the retry wraps no classified exception."""
 
 
 @dataclass
@@ -801,6 +804,8 @@ class InvocationPaused(InvocationEvent):
     last_error_display: MessageRef | None = None
     """What ``last_error`` means to the user; the raw text still follows it."""
     last_error_hint: MessageRef | None = None
+    last_error_facts: FailureFacts | None = None
+    """What ``last_error`` is; None when no classified exception ended the pass."""
     retry_attempts: int = 0
     diagnostic_path: str | None = None
     """UI-only diagnostic file path; never interpolate into model-visible errors."""
@@ -859,6 +864,11 @@ class InvocationAborted(InvocationEvent):
 
     agent_name: str = ""
     last_error: str = ""
+    last_error_display: MessageRef | None = None
+    """What ``last_error`` means to the user, as on :class:`InvocationPaused`."""
+    last_error_hint: MessageRef | None = None
+    last_error_facts: FailureFacts | None = None
+    """What ``last_error`` is; None when no classified exception ended the pass."""
 
 
 @dataclass
@@ -1210,6 +1220,8 @@ class Error(Event):
     display_message: MessageRef | None = None
     display_hint: MessageRef | None = None
     """Shown after ``display_message``; never without it."""
+    facts: FailureFacts | None = None
+    """What a failure that raised is (a turn's model or runtime failure); None for Chrys's own refusals and checks."""
     refused_input: RefusedInput | None = None
     """Set when a gate refused a user input before it ran: which input.
 

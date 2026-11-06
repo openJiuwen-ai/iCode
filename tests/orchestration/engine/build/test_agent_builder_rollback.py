@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 import pytest
 
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.errors import ErrorKind
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AGENT_LOAD_STATUS_DONE,
@@ -36,6 +37,7 @@ from chrys.foundation.events.types import (
     Warning,
 )
 from chrys.foundation.i18n import DisplayBlock
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.retry import RetryAttemptInfo
 from chrys.foundation.util.env_templates import EnvVarResolutionError
@@ -63,6 +65,9 @@ from chrys.service.skills.model import SkillProviderWarning
 from chrys.service.tools import packs as tool_packs
 from tests.support.close_races import ReleaseGate, assert_cancel_during_rollback
 from tests.support.extensions import install_file_extension
+
+# A connection failure being retried, as the classifier judged it.
+_DROPPED = FailureFacts(kind=ErrorKind.CONNECTION_LOST, retryable=True)
 
 
 def _assert_warning_display_message(
@@ -893,7 +898,9 @@ async def test_build_agent_passes_session_id_to_last_words_generator() -> None:
     bindings_cls.call_args.kwargs["invocation_publishers"].bind(origin)
     token = invocation_routing_key.set(origin.invocation_id)
     try:
-        await publish_retry(RetryAttemptInfo(reason="connection dropped", attempt=1, max_attempts=5, delay_seconds=3))
+        await publish_retry(
+            RetryAttemptInfo(reason="connection dropped", attempt=1, max_attempts=5, delay_seconds=3, facts=_DROPPED)
+        )
     finally:
         invocation_routing_key.reset(token)
 
@@ -905,6 +912,7 @@ async def test_build_agent_passes_session_id_to_last_words_generator() -> None:
     assert retries[0].scope == "compaction"
     assert retries[0].session_id == "sess-phase4"
     assert retries[0].detail == "connection dropped"
+    assert retries[0].facts is _DROPPED
     assert retries[0].display_message is not None
     assert retries[0].display_message.definition.key == "retry.last_words_compaction"
     assert dict(retries[0].display_message.args) == {"reason": DisplayBlock("connection dropped")}

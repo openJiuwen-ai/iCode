@@ -105,6 +105,8 @@ async def test_session_retry_refuses_a_session_with_no_turn_to_resume() -> None:
         await _server(host).ext_method("session/retry", {"sessionId": "s1"})
 
     assert exc_info.value.data == {"details": "Session s1 has no turn that can be retried."}
+    # The message a client shows by itself says why, not just "Invalid params".
+    assert (exc_info.value.code, str(exc_info.value)) == (-32602, "Session s1 has no turn that can be retried.")
     assert host.retry_texts == []
 
 

@@ -93,6 +93,7 @@ class ChildCompactionEvents:
                 max_attempts=info.max_attempts,
                 delay_seconds=int(info.delay_seconds),
                 session_id=emitter.origin.session_id,
+                facts=info.facts,
             )
         )
 

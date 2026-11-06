@@ -266,6 +266,7 @@ async def build_agent(
     allow_user_interaction: bool = True,
     shows_answer_text: bool = True,
     sub_agent_shows_answer_text: bool = True,
+    pause_failed_sub_agents: bool = True,
 ) -> AgentBuildResult:
     """Build an ``Agent``, ``TurnBindings``, and all supporting infrastructure.
 
@@ -304,6 +305,9 @@ async def build_agent(
         joins the session totals.
     on_compaction:
         Callback for intra-turn tool compaction events.
+    pause_failed_sub_agents:
+        Whether a failed sub-agent waits for the user's Retry or Abort; only
+        where the user can be asked. Otherwise it ends with its error at once.
 
     Returns
     -------
@@ -578,8 +582,9 @@ async def build_agent(
                 max_transient_retries=transient_retries,
                 tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
                 allow_user_interaction=allow_user_interaction,
-                # A headless run shows no card to pause on, so a failed child ends with its error.
-                human_failure_decisions=allow_user_interaction,
+                # A headless run, or an ACP client that can't answer a paused child,
+                # shows no card to pause on, so a failed child ends with its error.
+                human_failure_decisions=allow_user_interaction and pause_failed_sub_agents,
                 shows_answer_text=sub_agent_shows_answer_text,
             )
             prepared.own(sub_agent_tools.cleanup)
@@ -839,6 +844,7 @@ async def build_agent(
                     session_id=session_id,
                     display_message=_RETRY_LAST_WORDS_COMPACTION.bind(reason=DisplayBlock(info.reason)),
                     detail=info.reason,
+                    facts=info.facts,
                 )
             )
 

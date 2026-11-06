@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from chrys.foundation.events.types import (
     InvocationPaused,
 )
+from chrys.foundation.i18n import MessageRef
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.platform.files import atomic_write_owner_only_text
 from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS
 from chrys.foundation.trajectory.context import TrajectoryContext
@@ -224,6 +226,19 @@ class AcpSubAgentPolicy:
     @property
     def last_error(self) -> str:
         return self.backend.last_error
+
+    # The transport's failure is told by its pause reason; the backend keeps only its text.
+    @property
+    def last_error_display(self) -> MessageRef | None:
+        return None
+
+    @property
+    def last_error_hint(self) -> MessageRef | None:
+        return None
+
+    @property
+    def last_error_facts(self) -> FailureFacts | None:
+        return None
 
     async def abort_result(self, *, by_user: bool) -> str:
         details = {"tool_name": self._tool_name, "invocation_id": self._invocation_id}

@@ -339,6 +339,7 @@ class ChrysSessionHost:
         on_successful_turn: Callable[[], None] | None = None,
         on_turn_started: Callable[[], None] | None = None,
         surface: SessionSurface | None = None,
+        pause_failed_sub_agents: bool = True,
     ) -> None:
         self._profile_name = profile_name.strip()
         self._restore_session_id = (session_id or "").strip() or None
@@ -373,6 +374,7 @@ class ChrysSessionHost:
             on_turn_started=on_turn_started,
             allow_user_interaction=allow_user_interaction,
             surface=surface,
+            pause_failed_sub_agents=pause_failed_sub_agents,
         )
         self._approval_mode = self._engine.session.approval_mode
 

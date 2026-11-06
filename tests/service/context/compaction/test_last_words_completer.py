@@ -9,7 +9,8 @@ from typing import ClassVar
 
 import pytest
 
-from chrys.foundation.errors import ProviderResponseError
+from chrys.foundation.errors import ErrorKind, ProviderResponseError
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.retry import RetryAttemptInfo
 from chrys.kernel import Content, LastWordsToolCallError, Message
 from chrys.service.context.compaction import last_words as last_words_mod
@@ -304,7 +305,15 @@ async def test_completer_transient_failure_retries_then_succeeds(tmp_path, monke
     assert out == structured_note()
     assert len(completer.calls) == 2
     assert gen._client is None
-    assert retry_events == [RetryAttemptInfo(reason="connection dropped", attempt=1, max_attempts=2, delay_seconds=0)]
+    assert retry_events == [
+        RetryAttemptInfo(
+            reason="connection dropped",
+            attempt=1,
+            max_attempts=2,
+            delay_seconds=0,
+            facts=FailureFacts(kind=ErrorKind.UNKNOWN, retryable=True),
+        )
+    ]
 
 
 @pytest.mark.parametrize(
@@ -384,7 +393,10 @@ async def test_last_words_backs_off_on_429_too_many_tokens(tmp_path, monkeypatch
     assert out == structured_note()
     assert len(completer.calls) == 2
     assert fallback.calls == 0
-    assert len(retry_events) == 1
+    # The notice says what is being retried, as the classifier judged it.
+    [retry] = retry_events
+    assert retry.facts is not None
+    assert (retry.facts.kind, retry.facts.retryable) == (ErrorKind.RATE_LIMITED, True)
 
 
 async def test_last_words_demotes_on_prompt_too_long(tmp_path, monkeypatch) -> None:

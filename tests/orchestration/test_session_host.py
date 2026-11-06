@@ -735,10 +735,24 @@ async def test_a_delegated_agents_tool_calls_reach_the_headless_stream(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "host_options",
+    [
+        # What ``icode run`` builds: the defaults, whose pause flag is on but has no one to ask.
+        pytest.param({}, id="headless"),
+        pytest.param(
+            {"allow_user_interaction": True, "pause_failed_sub_agents": False}, id="interactive-without-pause"
+        ),
+    ],
+)
 async def test_session_host_ends_a_failed_delegation_instead_of_pausing_it(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path, host_options: dict[str, bool]
 ) -> None:
-    """A headless run shows no card to pause on, so a child's failure becomes the parent's tool result."""
+    """A run with no card to pause on turns a child's failure into the parent's tool result.
+
+    A headless run has none; neither has an interactive one whose frontend can't
+    answer a paused child (an ACP client that didn't declare it), which would wait forever.
+    """
     parent_client = MockChatClient(
         responses=[
             MockResponse(tool_calls=[("Explore", "sub-1", {"prompt": "inspect the workspace"})]),
@@ -765,6 +779,7 @@ async def test_session_host_ends_a_failed_delegation_instead_of_pausing_it(
         agent_registry=_make_agent_registry_many(parent_profile, sub_agent_profile),
         model_registry=model_registry,
         state_store=JsonFileStateStore(tmp_path / "sessions"),
+        **host_options,
     )
 
     try:
