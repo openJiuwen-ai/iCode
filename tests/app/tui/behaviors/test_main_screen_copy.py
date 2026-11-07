@@ -22,6 +22,7 @@ from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     MessageCopyButton,
     MessageHeaderRow,
+    MessageRollbackButton,
     UserMessage,
     _UserImagePreview,
 )
@@ -904,6 +905,7 @@ async def test_screen_copy_formats_chat_speaker_labels() -> None:
         panel = app.main_screen.query_one(ChatPanel)
         panel.set_profile("Code Agent")
         await panel.add_user_message("hello")
+        panel.apply_turn_started(1)
         await panel.add_agent_message("hi there")
         await pilot.pause()
 
@@ -925,6 +927,7 @@ async def test_screen_copy_formats_chat_speaker_labels() -> None:
             agent_body: SELECT_ALL,
         }
 
+        assert user.query_one(MessageRollbackButton).display
         assert screen.get_selected_text() == "[You]\nhello\n[Code Agent]\nhi there"
 
 

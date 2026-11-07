@@ -15,9 +15,7 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind, copy_remi
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.turns import (
     UserMessageKind,
-    current_turn_start,
     is_continuation_message,
-    user_text_matches,
 )
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.metadata import ensure_analytics_item_id, read_analytics_item_id
@@ -208,29 +206,12 @@ class TurnResumePolicy:
             # as a mid-turn follow-up (flagged ``_injected``: user-authored
             # input that must not open a new turn).  The note needs a fresh
             # create to reach the model — retrieving a pending background
-            # response would silently ignore it.
+            # response would silently ignore it. A note history has not
+            # stored when the pass fails is kept by the runner.
             self.pending_continuation_token = None
-            opening_item_id = self._take_opening_item_id()
-            note = _make_injected_message([additional_text], created_at, item_id=opening_item_id)
+            note = _make_injected_message([additional_text], created_at, item_id=self._take_opening_item_id())
             self.input_properties = note.additional_properties
             yield self.continuation_request([note])
-
-            # Belt-and-suspenders: if the agent run errored before
-            # persisting the user input, ensure the note survives so the
-            # next retry can see it.  Scope dedup to the current turn
-            # region (messages after the last ``_chrys_kind='turn'``
-            # marker) — mirrors the fallback in the empty-text branch
-            # below and :meth:`SessionHistoryManager.ensure_user_message`.
-            # The dedup is kind-aware: guidance worded identically to the
-            # turn opener must still be appended (flagged), not skipped.
-            if self.state.run_failed or self.state.was_interrupted:
-                messages = state.get("messages", [])
-                start = current_turn_start(messages)
-                has_note = any(user_text_matches(m, additional_text, kind="injected") for m in messages[start:])
-                if not has_note:
-                    fallback_note = _make_injected_message([additional_text], created_at, item_id=opening_item_id)
-                    copy_reminder_record(note.additional_properties, fallback_note.additional_properties)
-                    messages.append(fallback_note)
             return
 
         history = SessionHistoryManager()
@@ -301,27 +282,18 @@ class TurnResumePolicy:
                 self.recovery_input_recorder(text, contents, original_created_at, kind=replay_kind)
             yield self.continuation_request([replay_msg])
 
-            # If the run failed, ensure the user message wasn't lost.
-            # Scope the dedup to the current turn region (messages after
-            # the last ``_chrys_kind='turn'`` marker) — mirrors the fix
-            # in :meth:`SessionHistoryManager.ensure_user_message`.  A
-            # global scan would be fooled by a same-text user message
-            # from an earlier turn (e.g. an injection that got anchored
-            # into turn 1 carries the same text the user later types
-            # as a fresh turn's prompt) and drop the re-append, losing
-            # this turn's prompt on interrupt-before-persist.
-            # The dedup and the fallback append are both keyed to the
-            # popped anchor's kind: a same-text flagged injection must not
-            # suppress a popped opener's re-append, and a popped injection
-            # dedups against its persisted flagged copy — and is re-created
-            # FLAGGED when missing, never laundered into an opener.
+            # If the run failed, ensure the user message wasn't lost. The
+            # lookup is scoped to the current turn and keyed to the popped
+            # anchor's item and kind: a same-text message from an earlier
+            # turn, or a same-text flagged injection, must not suppress a
+            # popped opener's re-append, and a popped injection is
+            # re-created FLAGGED, never laundered into an opener.
             if self.state.run_failed or self.state.was_interrupted:
-                messages = state.get("messages", [])
-                start = current_turn_start(messages)
-                has_user_msg = any(user_text_matches(m, text, kind=replay_kind) for m in messages[start:])
-                if not has_user_msg:
-                    fallback_msg = _replay_user_message(contents, original_created_at, item_id=popped_item_id)
-                    if replay_kind == "injected":
-                        fallback_msg.additional_properties[HistoryMarkerKind.INJECTED_KEY] = True
-                    copy_reminder_record(replay_msg.additional_properties, fallback_msg.additional_properties)
-                    messages.append(fallback_msg)
+                history.ensure_user_message(
+                    text,
+                    original_created_at,
+                    contents,
+                    kind=replay_kind,
+                    item_id=popped_item_id,
+                    reminder_source=replay_msg.additional_properties,
+                )

@@ -32,6 +32,7 @@ from chrys.foundation.events.types import (
     QuestionToUser,
     TodoListUpdated,
     TurnStarted,
+    UnansweredInputDropped,
     UserMessage,
 )
 from chrys.foundation.i18n import DisplayBlock, DisplaySequence, Localizer, MessageRef
@@ -394,6 +395,41 @@ async def test_session_host_streams_runtime_update_during_turn(monkeypatch: pyte
         await host.shutdown()
 
     assert any(isinstance(event, AgentRuntimeUpdated) and event.model_profile_id == "m1" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_session_host_streams_fresh_turn_cleanup_during_turn(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    # The ACP server turns UnansweredInputDropped into chrys/user_messages_dropped, so the
+    # headless run stream must forward it.
+    client = MockChatClient(responses=[MockResponse(text="done")])
+    _patch_runtime(monkeypatch, [client], [])
+    settings, model_registry = _make_settings_and_models()
+    host = ChrysSessionHost(
+        profile_name="Headless",
+        settings=settings,
+        agent_registry=_make_agent_registry(_make_profile(approval_default="skip")),
+        model_registry=model_registry,
+        state_store=JsonFileStateStore(tmp_path / "sessions"),
+    )
+    events: list[Any] = []
+
+    async def _collect() -> None:
+        published = False
+        async for event in host.iter_run_events("prompt"):
+            events.append(event)
+            if not published:
+                published = True
+                await host.event_bus.publish(
+                    UnansweredInputDropped(session_id=host.session_id, retired_previous_turn=True, retired_turn_id="t1")
+                )
+
+    try:
+        await host.start()
+        await asyncio.wait_for(_collect(), timeout=45)
+    finally:
+        await host.shutdown()
+
+    assert any(isinstance(event, UnansweredInputDropped) and event.retired_turn_id == "t1" for event in events)
 
 
 @pytest.mark.asyncio

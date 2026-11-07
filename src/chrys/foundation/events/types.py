@@ -212,6 +212,9 @@ class UserRetry(Event):
     """
 
     text: str = ""
+    client_message_id: str | None = None
+    """The frontend's own id for the guidance note in ``text``, echoed back as the
+    retry pass's ``TurnStarted.note_message_id``; ignored for a bare retry."""
 
 
 @dataclass
@@ -471,6 +474,30 @@ class AgentThinking(Event):
 
 
 @dataclass
+class RollbackSnapshotsChanged(Event):
+    """Snapshot capture and retention finished; frontends may refresh rollback targets."""
+
+
+@dataclass
+class UnansweredInputDropped(Event):
+    """History dropped the previous turn's unanswered input before a fresh turn starts.
+
+    The previous turn failed or was stopped. One that kept no work is retired
+    whole (``retired_previous_turn``): nothing answered its opener or notes.
+    One that kept its work stays; only the notes it never answered go.
+    ``removed_item_ids`` are the ``_chrys_analytics_item_id``s of the user
+    messages history removed, in order. A frontend removes
+    the messages it shows under those ids (a hidden legacy nudge matches
+    none). ``retired_turn_id`` names the retired turn when the registry held
+    it; the next turn reuses its number under a new id.
+    """
+
+    retired_previous_turn: bool = False
+    removed_item_ids: tuple[str, ...] = ()
+    retired_turn_id: str | None = None
+
+
+@dataclass
 class TurnStarted(Event):
     """A turn — a logical user question — began executing (backend → frontend).
 
@@ -487,6 +514,12 @@ class TurnStarted(Event):
     is_retry: bool = False
     user_message_id: str | None = None
     """Id of the user message that opened the turn, when it has one."""
+    opening_item_id: str | None = None
+    """``_chrys_analytics_item_id`` of the user message this pass opened with:
+    a fresh turn's prompt or a retry's guidance; ``None`` for a bare retry."""
+    note_message_id: str | None = None
+    """A guided retry pass's echo of ``UserRetry.client_message_id``, naming the
+    frontend's note that ``opening_item_id`` stores; ``None`` on every other pass."""
 
 
 @dataclass
@@ -1207,6 +1240,8 @@ class UserInjectResult(Event):
     injection_id: str | None = None
     """Id of the originating injection when it carried one; frontends use it
     to ignore results for injections they already cancelled or replaced."""
+    item_id: str | None = None
+    """``_chrys_analytics_item_id`` of the history copy of a consumed message."""
 
 
 @dataclass
@@ -1585,6 +1620,9 @@ class RollbackResult(Event):
     Includes turns a fork inherited and never ran here, which nothing in this
     session's log can describe — this event is the only place their loss is
     reported. The TUI ignores it."""
+
+    discarded_turn_count: int = 0
+    """Number of history turns removed, independent of trajectory registry availability."""
 
     files_reverted: int = 0
     """Count of files that were actually changed on disk by the revert

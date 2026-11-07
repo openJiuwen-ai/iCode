@@ -994,6 +994,10 @@ class TestRollbackSupersededTurns:
         }
         engine_services(engine).history.bind(state)
         engine.session.turn_number = 2
+        # Supply the usual boundary snapshot for this two-turn session.
+        snapshot_dir = tmp_path / "rb_test" / "snapshots"
+        snapshot_dir.mkdir(parents=True)
+        (snapshot_dir / "turn_2.json").write_text('{"state":{"turn_counter":1}}', encoding="utf-8")
         engine.lifecycle.reset_session_to_welcome = fake_reset(engine, engine_services=engine_services)  # type: ignore[assignment]
 
         results: list[RollbackResult] = []

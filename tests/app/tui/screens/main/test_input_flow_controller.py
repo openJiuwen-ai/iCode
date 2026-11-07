@@ -42,11 +42,16 @@ _PREPARED_IMAGE = {"type": "image", "media_type": "image/png"}
 """An image content the backend prepared: never text, so the user bubble shows only the message's text."""
 
 
+async def _unused_turn_event(event: object) -> None:
+    raise AssertionError(f"unexpected turn fact: {event!r}")
+
+
 class _FakeInputFlowView:
     def __init__(self) -> None:
         self.calls: list[object] = []
         self.user_contents: list[object] = []
         self.gc_messages: list[object] = []
+        self.retry_note_ids: list[str | None] = []
         self.session_id = "panel-session"
 
     def set_terminal_title_for_user_message(self, text: str) -> None:
@@ -71,8 +76,9 @@ class _FakeInputFlowView:
         self.calls.append(f"user:{text}")
         self.user_contents.append(contents)
 
-    async def render_user_retry_note(self, text: str, *, created_at: object) -> None:
+    async def render_user_retry_note(self, text: str, *, created_at: object, client_message_id: str | None) -> None:
         self.calls.append(f"retry-note:{text}")
+        self.retry_note_ids.append(client_message_id)
 
     def hide_trailing_status_action(self) -> None:
         self.calls.append("hide_status_action")
@@ -98,7 +104,7 @@ class _FakeInputFlowView:
     async def render_interrupted(self) -> None:
         self.calls.append("interrupted")
 
-    def update_toc(self) -> None:
+    def update_toc(self, *, live: bool = False) -> None:
         self.calls.append("toc")
 
     def restore_input_draft(self, draft: str | ChatDraft) -> bool:
@@ -160,6 +166,7 @@ def _make_input_flow_controller(
         handle_agent_message=handle_agent_message or _default_handle_agent_message,
         handle_agent_content=handle_agent_content or _default_handle_agent_content,
         handle_error=handle_error or _default_handle_error,
+        handle_turn_event=_unused_turn_event,
         set_agent_running=_set_agent_running,
         set_has_messages=_set_has_messages,
         clear_workspace_marker=lambda: setattr(state.workspace_marker, "original_cwd", None),
@@ -303,6 +310,30 @@ def test_a_message_whose_send_meets_a_load_started_since_the_keypress_comes_back
     assert published == []
     assert view.calls == [("restore", draft)]
     assert state.submit.active is False
+
+
+@pytest.mark.parametrize("text", ["Use the other file", ""], ids=["guided", "bare"])
+async def test_a_guided_retry_shows_its_note_under_the_id_it_publishes(text: str) -> None:
+    """The retry's TurnStarted echoes the published id, which is how the note shown here learns its history item."""
+    bus = EventBus()
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, _state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    published: list[UserRetry] = []
+
+    async def admit(event: UserRetry) -> None:
+        published.append(event)
+
+    await bus.subscribe(UserRetry, admit)
+    controller.request_retry(text)
+    await _run_started(scheduled)
+
+    (event,) = published
+    if text:
+        assert event.client_message_id
+        assert view.retry_note_ids == [event.client_message_id]
+    else:
+        assert event.client_message_id is None
+        assert view.retry_note_ids == []
 
 
 @pytest.mark.parametrize("outcome", ["accepted", "rejected", "cancelled"])

@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
+from typing import TYPE_CHECKING
 from unittest.mock import create_autospec
 
 import pytest
 from rich.cells import cell_len
+from rich.style import Style
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.content import Content
 from textual.geometry import Region
@@ -23,6 +26,13 @@ from chrys.service.mutations.types import MutationOp
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
+
+if TYPE_CHECKING:
+    from rich.console import RenderableType
+    from textual.pilot import Pilot
+    from textual.screen import Screen
+    from textual.strip import Strip
+    from textual.widget import Widget
 
 
 def entry(name: str) -> DiffFileEntry:
@@ -53,6 +63,65 @@ class PreviewApp(App):
 
     def on_diff_preview_opened(self, event: DiffPreview.Opened) -> None:
         self.opened.append(event.display_key)
+
+
+def drawn_rows(rows: Widget) -> list[Strip]:
+    """The file rows as drawn at the size they are laid out at, one strip per row."""
+    return rows.render_lines(Region(0, 0, *rows.size))
+
+
+def drawn_text(rows: Widget) -> str:
+    return "\n".join(strip.text for strip in drawn_rows(rows))
+
+
+def hovered_rows(preview: DiffPreview, rows: Widget) -> list[bool]:
+    """For each drawn row, whether it has the hover background."""
+    hover = preview.get_component_rich_style("diff-preview--hover").bgcolor
+    assert hover is not None
+    return [any(segment.style and segment.style.bgcolor == hover for segment in strip) for strip in drawn_rows(rows)]
+
+
+def dim_text(rows: Widget) -> list[str]:
+    """The text of each dim stretch of the rows, as built for the width they are drawn at.
+
+    Read from the content: Textual draws dim text in a fainter color, not with the dim attribute.
+    """
+    content = rows.render()
+    assert isinstance(content, Text)
+    return [content.plain[span.start : span.end] for span in content.spans if span.style == "dim"]
+
+
+async def wait_for_rows(pilot: Pilot, preview: DiffPreview, count: int, *, description: str) -> Widget:
+    """Wait for *count* file rows laid out; they are drawn for the width they are laid out at."""
+    rows = preview.query_one("#diff-preview-rows")
+    await wait_for(
+        lambda: preview.display and preview.rows == count and rows.size.height == count,
+        pilot=pilot,
+        description=description,
+    )
+    return rows
+
+
+def record_painted_rows(monkeypatch: pytest.MonkeyPatch, app: App, rows: Widget) -> list[tuple[int, list[str]]]:
+    """For each frame the App paints with the file rows on screen: their width and the text of each, as painted.
+
+    A frame is read from the render caches the screen composited it from, right after it was.
+    """
+    frames: list[tuple[int, list[str]]] = []
+    display = app._display
+
+    def record(screen: Screen[object], renderable: RenderableType | None) -> None:
+        display(screen, renderable)
+        if renderable is None or app._batch_count or screen is not app.screen:
+            return
+        placed = screen._compositor.visible_widgets.get(rows)
+        region = Region() if placed is None else placed[0].intersection(placed[1])
+        if region:
+            lines = screen._compositor.render_strips()
+            frames.append((region.width, [lines[y].crop(region.x, region.right).text for y in region.line_range]))
+
+    monkeypatch.setattr(app, "_display", record)
+    return frames
 
 
 @pytest.mark.parametrize(
@@ -88,15 +157,15 @@ async def test_rows_clicks_notes_and_resize() -> None:
         )
         sidebar_chat.set_entries(entries)
         preview = app.query_one(DiffPreview)
-        await wait_for(lambda: preview.display and preview.size.height == 8, pilot=pilot, description="five rows shown")
-        rows = preview.query_one("#diff-preview-rows", Static)
-        assert rows.size.height == 5
-        text = rows.content.plain
+        rows = await wait_for_rows(pilot, preview, 5, description="five rows shown")
+        assert preview.size.height == 8
+        lines = [strip.text for strip in drawn_rows(rows)]
+        text = "\n".join(lines)
         assert "(no backup)" in text and "file0.py" in text
         assert not any(marker in text for marker in "?~!")
         assert "+12 -3" in text and "file1.py" in text
         assert "[+]" not in text and "[+-]" not in text and "[-]" not in text
-        assert all(line.cell_len == rows.content_size.width for line in rows.content.split("\n"))
+        assert lines[1].endswith("+12 -3")  # A row fills its width, its counts at the right edge.
         assert "file5.py" not in text
         await click_when_settled(pilot, rows, offset=(2, 1))
         assert app.opened == [entries[1].rel_path]
@@ -120,15 +189,53 @@ async def test_rows_clicks_notes_and_resize() -> None:
         await resize_when_settled(pilot, 42, 7)
         await wait_for(lambda: not preview.display, pilot=pilot, description="short window hides preview")
         await resize_when_settled(pilot, 42, 40)
-        await wait_for(
-            lambda: preview.display and preview.rows == 10 and rows.size.height == 10,
-            pilot=pilot,
-            description="taller window shows ten file rows",
-        )
-        assert "file9.py" in rows.content.plain and "file10.py" not in rows.content.plain
+        await wait_for_rows(pilot, preview, 10, description="taller window shows ten file rows")
+        assert "file9.py" in drawn_text(rows) and "file10.py" not in drawn_text(rows)
         assert preview.size.height == 13
         sidebar_chat.set_entries(())
         assert not preview.display
+
+
+async def test_every_painted_frame_shows_the_file_rows_built_for_the_width_it_paints_them_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each row shows its file name, and its counts end at the right edge of the width it is painted at.
+
+    Rows built ahead of drawing took the width last laid out, and the frames before the preview's
+    Resize showed them so: each one only its counts when the preview appeared or reappeared (no
+    width at all while hidden), and sized for the old width when the sidebar's changed.
+    """
+    entries = tuple(replace(entry(f"file{i}.py"), line_count_result=(i + 1, i)) for i in range(3))
+
+    def expected(width: int) -> list[str]:
+        return [f"file{i}.py".ljust(width - len(f"+{i + 1} -{i}")) + f"+{i + 1} -{i}" for i in range(3)]
+
+    async with PreviewApp().run_test(size=(42, 16)) as pilot:
+        app = pilot.app
+        sidebar_chat = app.query_one(SidebarChatPanel)
+        preview = sidebar_chat.query_one(DiffPreview)
+        rows = preview.query_one("#diff-preview-rows")
+        frames = record_painted_rows(monkeypatch, app, rows)
+
+        async def painted_at(width: int, description: str) -> None:
+            await wait_for(
+                lambda: rows.size == (width, 3) and frames[-1:] == [(width, expected(width))],
+                pilot=pilot,
+                description=description,
+            )
+
+        sidebar_chat.set_entries(entries)
+        await painted_at(38, "the preview appears")
+        await resize_when_settled(pilot, 60, 16)
+        await painted_at(56, "the rows widen")
+        await resize_when_settled(pilot, 42, 16)
+        await painted_at(38, "the rows narrow")
+        sidebar_chat.set_entries(())
+        await wait_for(lambda: not preview.display, pilot=pilot, description="no changes hide the preview")
+        await resize_when_settled(pilot, 50, 16)
+        sidebar_chat.set_entries(entries)
+        await painted_at(46, "the preview reappears at a width it was not laid out at before")
+    assert [frame for frame in frames if frame[1] != expected(frame[0])] == []
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -175,8 +282,6 @@ async def test_missing_target_falls_back_to_the_first_file() -> None:
 
 
 async def test_preview_hover_shell_border_and_live_chinese_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    from rich.style import Style
-
     from chrys.app.tui import i18n as tui_i18n
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
@@ -195,28 +300,24 @@ async def test_preview_hover_shell_border_and_live_chinese_text(monkeypatch: pyt
             (replace(entry("one.py"), content_omitted="binary"), entry("two.py"))
         )
         preview = sidebar.query_one(DiffPreview)
-        rows = preview.query_one("#diff-preview-rows", Static)
+        rows = preview.query_one("#diff-preview-rows")
         await wait_for(
             lambda: preview.rows == 2 and rows.size.height == 2, pilot=pilot, description="preview rows laid out"
         )
         await pilot.hover(rows, offset=(5, 1))
         await wait_for(lambda: preview._hovered == 1, pilot=pilot, description="second row hovered")
-        text = rows.content
-        assert any(isinstance(span.style, Style) and span.style.bgcolor is not None for span in text.spans)
-        first_row_length = text.plain.index("\n")
-        assert all(
-            span.start > first_row_length
-            for span in text.spans
-            if isinstance(span.style, Style) and span.style.bgcolor is not None
-        )
+        assert hovered_rows(preview, rows) == [False, True]
         sidebar.display = False
         await wait_for(lambda: preview._hovered is None, pilot=pilot, description="hidden preview clears hover")
-        assert not any(isinstance(span.style, Style) and span.style.bgcolor is not None for span in rows.content.spans)
+        # Hidden, the rows are not drawn: what they would draw holds no highlight either.
+        rendered = rows.render()
+        assert isinstance(rendered, Text)
+        assert not any(isinstance(span.style, Style) and span.style.bgcolor is not None for span in rendered.spans)
         sidebar.display = True
         await wait_for(
             lambda: preview.display and rows.size.height == 2, pilot=pilot, description="preview visible again"
         )
-        assert not any(isinstance(span.style, Style) and span.style.bgcolor is not None for span in rows.content.spans)
+        assert hovered_rows(preview, rows) == [False, False]
         box = preview.query_one("#diff-preview-box")
         normal_border = box.styles.border_top
         sidebar.add_class("-shell-active")
@@ -228,7 +329,7 @@ async def test_preview_hover_shell_border_and_live_chinese_text(monkeypatch: pyt
         controller.switch_locale("zh-Hans")
         assert box.border_title == "文件变更（2）"  # noqa: RUF001
         assert preview.query_one("#diff-preview-all", Static).content.plain == "查看全部"
-        assert "无备份" in rows.content.plain
+        assert "无备份" in drawn_text(rows)
 
 
 async def test_focused_leaf_below_the_viewport_is_scrolled_into_view() -> None:
@@ -284,7 +385,7 @@ async def test_double_click_opens_one_diff_and_one_escape_returns_to_chat(target
         chat = app.screen
         app.query_one(SidebarChatPanel).set_entries(tuple(rows))
         await wait_for(
-            lambda: app.query_one(DiffPreview).display and app.query_one("#diff-preview-rows", Static).size.height == 1,
+            lambda: app.query_one(DiffPreview).display and app.query_one("#diff-preview-rows").size.height == 1,
             pilot=pilot,
             description="preview laid out",
         )
@@ -306,19 +407,12 @@ async def test_eleven_files_show_only_the_rows_that_fit_but_all_contribute_to_th
         rows = tuple(replace(entry(f"file{i:02}.py"), line_count_result=(i, i - 1)) for i in range(1, 12))
         app.query_one(SidebarChatPanel).set_entries(rows)
         preview = app.query_one(DiffPreview)
-        target = preview.query_one("#diff-preview-rows", Static)
-        await wait_for(
-            lambda: (
-                preview.rows == visible_rows
-                and target.size.height == visible_rows
-                and screen_is_settled(app, app.screen)
-            ),
-            pilot=pilot,
-            description="only file rows fitting the available height are shown",
+        target = await wait_for_rows(
+            pilot, preview, visible_rows, description="only file rows fitting the available height are shown"
         )
         title = Content.from_markup(preview.query_one("#diff-preview-box").border_title or "")
         assert title.plain == "File Changes (11) +66 -55"
-        text = target.content.plain
+        text = drawn_text(target)
         assert len(text.splitlines()) == visible_rows
         for i in range(1, 12):
             assert (f"file{i:02}.py" in text) is (i <= visible_rows)
@@ -347,10 +441,10 @@ async def test_finished_counts_include_a_lower_bound_for_each_unavailable_reason
             )
         )
         preview = app.query_one(DiffPreview)
-        await wait_for(lambda: preview.rows == 3, pilot=pilot, description="known and unavailable rows visible")
+        rows = await wait_for_rows(pilot, preview, 3, description="known and unavailable rows visible")
         title = Content.from_markup(preview.query_one("#diff-preview-box").border_title)
         assert title.plain == "File Changes (3) ≥+5 -5"
-        assert "+3 -1" in preview.query_one("#diff-preview-rows", Static).content.plain
+        assert "+3 -1" in drawn_text(rows)
 
 
 async def test_no_countable_files_shows_only_the_file_count() -> None:
@@ -425,18 +519,16 @@ async def test_pending_counts_are_dim_then_replaced_and_totals_wait_for_every_fi
         pending = tuple(replace(entry(f"file{i}.py"), line_count_result="pending") for i in range(11))
         sidebar.set_entries(pending)
         preview = sidebar.query_one(DiffPreview)
-        await wait_for(lambda: preview.rows == 10, pilot=pilot, description="pending files shown immediately")
-        target = preview.query_one("#diff-preview-rows", Static)
-        text = target.content
-        assert text.plain.count("…") == 10
-        assert any(span.style == "dim" and "…" in text.plain[span.start : span.end] for span in text.spans)
+        target = await wait_for_rows(pilot, preview, 10, description="pending files shown immediately")
+        assert drawn_text(target).count("…") == 10
+        assert dim_text(target) == ["…"] * 10
         box = preview.query_one("#diff-preview-box")
         assert box.border_title == "File Changes (11)"
 
         partial = tuple(replace(row, line_count_result=(2, 1)) for row in pending[:10]) + pending[10:]
         sidebar.set_entries(partial)
-        assert "…" not in target.content.plain
-        assert target.content.plain.count("+2 -1") == 10
+        assert "…" not in drawn_text(target)
+        assert drawn_text(target).count("+2 -1") == 10
         assert box.border_title == "File Changes (11)"  # The hidden eleventh file is still pending.
 
         finished = (*partial[:10], replace(partial[10], line_count_result="unavailable"))
@@ -472,11 +564,11 @@ async def test_large_file_note_and_lower_bound_total_are_localized(
             )
         )
         preview = sidebar.query_one(DiffPreview)
-        await wait_for(lambda: preview.rows == 2, pilot=pilot, description="large and small rows shown")
-        text = preview.query_one("#diff-preview-rows", Static).content
-        assert note in text.plain
-        assert "…" not in text.plain
-        assert any(span.style == "dim" and note in text.plain[span.start : span.end] for span in text.spans)
+        rows = await wait_for_rows(pilot, preview, 2, description="large and small rows shown")
+        text = drawn_text(rows)
+        assert note in text
+        assert "…" not in text
+        assert note in dim_text(rows)
         title = Content.from_markup(preview.query_one("#diff-preview-box").border_title)
         prefix = "File Changes (2)" if locale == "en" else "文件变更（2）"  # noqa: RUF001
         assert title.plain == f"{prefix} ≥+2 -1"
@@ -509,18 +601,14 @@ async def test_source_flags_leave_preview_text_and_available_path_width_unchange
         sidebar = pilot.app.query_one(SidebarChatPanel)
         sidebar.set_entries((plain,))
         preview = sidebar.query_one(DiffPreview)
-        rows = preview.query_one("#diff-preview-rows", Static)
-        await wait_for(
-            lambda: preview.rows == 1 and rows.size.height == 1 and screen_is_settled(pilot.app, pilot.app.screen),
-            pilot=pilot,
-            description="unmarked file has its full available width",
-        )
-        baseline = rows.content.plain
+        rows = await wait_for_rows(pilot, preview, 1, description="unmarked file has its full available width")
+        baseline = drawn_text(rows)
         assert os.path.normpath(name) in baseline  # The platform's separators, as in the full viewer.
         assert baseline.rstrip().endswith(tail)
         sidebar.set_entries((replace(plain, source=source, inferred=inferred, contested=contested),))
-        assert rows.content.plain == baseline
-        assert not any(marker in rows.content.plain for marker in "?~!")
+        flagged = drawn_text(rows)
+        assert flagged == baseline
+        assert not any(marker in flagged for marker in "?~!")
 
 
 @pytest.mark.parametrize(
@@ -559,18 +647,8 @@ async def test_narrow_render_keeps_filename_tail_and_counts_without_source_marke
         app = pilot.app
         app.query_one(SidebarChatPanel).set_entries((target,))
         preview = app.query_one(DiffPreview)
-        rows = preview.query_one("#diff-preview-rows", Static)
-        await wait_for(
-            lambda: (
-                preview.rows == 1
-                and rows.size.height == 1
-                and rows.content_size.width > 0
-                and screen_is_settled(app, app.screen)
-            ),
-            pilot=pilot,
-            description="narrow file row laid out",
-        )
-        rendered_lines = rows.render_lines(Region(0, 0, rows.content_size.width, 1))
+        rows = await wait_for_rows(pilot, preview, 1, description="narrow file row laid out")
+        rendered_lines = drawn_rows(rows)
         assert len(rendered_lines) == 1
         rendered = rendered_lines[0].text.rstrip()
         assert cell_len(rendered) <= rows.content_size.width

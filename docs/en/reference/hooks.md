@@ -102,7 +102,7 @@ All events provide the [base fields](#base-fields). Some events also provide add
 
 | Event | When it runs | Additional fields |
 | --- | --- | --- |
-| `session_start` | After the agent is ready. Triggered when iCode starts, a session is created, or the current session is rolled back to its beginning; not triggered by switching agents or models. | None |
+| `session_start` | After the agent is ready. Triggered when iCode starts, a session is created, or all turns in the current session are discarded; not triggered by switching agents or models. | None |
 | `session_restored` | After a saved session is restored. When a session is restored immediately after starting iCode, both `session_start` and `session_restored` may be triggered. | `restored_session_id`: ID of the saved session restored this time |
 | `session_end` | When the current session ends: exiting iCode, switching sessions, starting a new session, deleting or clearing the current session, or rolling it back to its beginning. | None |
 

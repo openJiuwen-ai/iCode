@@ -9,7 +9,7 @@ from typing import cast
 
 import pytest
 
-from chrys.orchestration.engine.execution import PendingRetry
+from chrys.orchestration.engine.execution import PendingRetry, RetryInput
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.engine.run.turn_state import ActiveInjectionTarget
 from chrys.orchestration.invoker.kernel import KernelConversation
@@ -57,15 +57,15 @@ def test_pending_retry_records_owner_and_dispatch_invalidation() -> None:
         reminder_scope=CurrentRunReminderScope(1),
     )
 
-    assert state.lease.upsert_pending_retry_from_admission(admission, "first", "t1") is False
-    assert state.lease.pending_retry.text == "first"
-    assert state.lease.pending_retry.created_at == "t1"
+    assert state.lease.upsert_pending_retry_from_admission(admission, RetryInput("first", "t1")) is False
+    assert state.lease.pending_retry.retry.text == "first"
+    assert state.lease.pending_retry.retry.created_at == "t1"
     assert state.lease.pending_retry.owner_admission_id == admission.admission_id
     assert state.lease.pending_retry.updated_by_admission_id == admission.admission_id
 
-    assert state.lease.upsert_pending_retry_from_admission(admission, "latest", "t2") is True
-    assert state.lease.pending_retry.text == "latest"
-    assert state.lease.pending_retry.created_at == "t2"
+    assert state.lease.upsert_pending_retry_from_admission(admission, RetryInput("latest", "t2")) is True
+    assert state.lease.pending_retry.retry.text == "latest"
+    assert state.lease.pending_retry.retry.created_at == "t2"
 
     state.lease.disable_pending_retry_dispatch_for_session_transition(4)
     assert state.lease.pending_retry.dispatch_disabled is True
@@ -112,8 +112,8 @@ async def test_pending_retry_requeue_settles_replaced_and_cleared_preparations()
     assert first is not None
     assert second is not None
 
-    assert state.lease.upsert_pending_retry_from_admission(first, "first", "t1") is False
-    assert state.lease.upsert_pending_retry_from_admission(second, "second", "t2") is True
+    assert state.lease.upsert_pending_retry_from_admission(first, RetryInput("first", "t1")) is False
+    assert state.lease.upsert_pending_retry_from_admission(second, RetryInput("second", "t2")) is True
     cleared = state.lease.clear_pending_retry(outcome=PreparationOutcome.DROPPED)
 
     assert cleared.preparation_trace is second_trace
@@ -294,7 +294,7 @@ async def test_cancelled_session_transition_begin_does_not_invalidate_current_se
     turn_state.lease.active_injection_commits_idle.clear()
     turn_state.lease.injection_admission_open = True
     turn_state.lease.pending_retry = PendingRetry(
-        text="retry note", created_at="created", session_generation=permits.session_generation
+        retry=RetryInput("retry note", "created"), session_generation=permits.session_generation
     )
 
     task = asyncio.create_task(permits.begin_session_transition("restore"))
@@ -323,7 +323,7 @@ def test_session_transition_disables_pending_retry_dispatch_for_current_generati
     permits.invalidate_for_session_transition_pre_shutdown()
 
     turn_state.lease.pending_retry = PendingRetry(
-        text="retry note", created_at="created", session_generation=permits.session_generation
+        retry=RetryInput("retry note", "created"), session_generation=permits.session_generation
     )
 
     permits.invalidate_for_session_transition_pre_shutdown()

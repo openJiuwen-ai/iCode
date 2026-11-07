@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ROLLBACK_REASON_USER = "user_rollback"
+ROLLBACK_REASON_FRESH_TURN_RETIRED = "fresh_turn_retired"
 
 
 def exchange_facts(
@@ -625,6 +626,31 @@ class TrajectoryRecorder:
         range is computed from ids rather than inferred from ordinals, which
         drift apart from the log after a failed or cancelled turn.
         """
+        await self._supersede_branch(
+            superseded_turns=superseded_turns,
+            target_turns=target_turns,
+            reason_code=ROLLBACK_REASON_USER,
+        )
+
+    async def retire_turn(self, *, retired_turn: TurnRecord, target_turns: list[TurnRecord]) -> None:
+        """Retire an empty turn without attributing the branch change to the user."""
+        if retired_turn.started_sequence is None:
+            # Inherited from a fork and never run here: this log holds nothing to supersede.
+            return
+        await self._supersede_branch(
+            superseded_turns=[retired_turn],
+            target_turns=target_turns,
+            reason_code=ROLLBACK_REASON_FRESH_TURN_RETIRED,
+        )
+
+    async def _supersede_branch(
+        self,
+        *,
+        superseded_turns: list[TurnRecord],
+        target_turns: list[TurnRecord],
+        reason_code: str,
+    ) -> None:
+        """Keep range and branch events paired for the trajectory projection."""
         trajectory = self._open()
         if trajectory is None:
             return
@@ -641,7 +667,7 @@ class TrajectoryRecorder:
         # is named in the result only — the log holds nothing to supersede.
         superseded_from_sequence = _earliest_sequence(superseded_turns)
         target = target_turns[-1] if target_turns else None
-        payload: dict[str, Any] = {"new_branch_id": new_branch, "reason_code": ROLLBACK_REASON_USER}
+        payload: dict[str, Any] = {"new_branch_id": new_branch, "reason_code": reason_code}
         if old_branch is not None:
             payload["old_branch_id"] = old_branch
         if superseded_from_sequence is not None:

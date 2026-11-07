@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 import sys
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -187,21 +186,13 @@ class ScriptedModel(MockChatClient):
                 raise failure
 
             return fail()
-        result = super()._inner_get_response(messages=messages, stream=stream, options=options, **kwargs)
+        return super()._inner_get_response(messages=messages, stream=stream, options=options, **kwargs)
+
+    async def _mock_response(self, resp, model_id, finish_reason, on_text):
         hold, self.hold = self.hold, None
-        if hold is None:
-            return result
-
-        async def held() -> Any:
-            try:
-                await hold.pass_through()
-            except BaseException:
-                if inspect.iscoroutine(result):
-                    result.close()
-                raise
-            return await result
-
-        return held()
+        if hold is not None:
+            await hold.pass_through()
+        return await super()._mock_response(resp, model_id, finish_reason, on_text)
 
     def last_user_text(self) -> str:
         """The text of the last user message the model was sent."""

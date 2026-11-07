@@ -188,6 +188,13 @@ class FileHashDiff:
 
 
 @dataclass(frozen=True)
+class FileEditSnapshotRef(FileHashDiff):
+    """One file-tool occurrence's blob endpoints and stable operation identity."""
+
+    tool_operation_id: str | None = None
+
+
+@dataclass(frozen=True)
 class FileMutationTextSnapshot:
     """Decoded before/after content plus metadata for one file mutation."""
 

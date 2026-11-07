@@ -28,6 +28,8 @@ if TYPE_CHECKING:
         InvocationContentDelta,
         InvocationContentFinished,
         InvocationMessage,
+        TurnStarted,
+        UnansweredInputDropped,
     )
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -35,7 +37,13 @@ if TYPE_CHECKING:
     from chrys.service.state.store import StateStore
 
     DeferredTurnEvent = (
-        InvocationMessage | InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned | Error
+        InvocationMessage
+        | InvocationContentDelta
+        | InvocationContentFinished
+        | InvocationContentAbandoned
+        | Error
+        | UnansweredInputDropped
+        | TurnStarted
     )
 
 

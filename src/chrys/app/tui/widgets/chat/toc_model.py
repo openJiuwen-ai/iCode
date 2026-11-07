@@ -24,7 +24,6 @@ class TurnTocModel:
     _turn_items: list[TocItem] = field(default_factory=list)
     _turn_counter: int = 0
     _backend_turn_counter: int = 0
-    _pending_failed_turn_index: int | None = None
     _injection_counter: int = 0
 
     def clear(self) -> None:
@@ -32,17 +31,17 @@ class TurnTocModel:
         self._turn_items.clear()
         self._turn_counter = 0
         self._backend_turn_counter = 0
-        self._pending_failed_turn_index = None
         self._injection_counter = 0
 
     def has_items(self) -> bool:
         """Return whether any top-level turn has been recorded."""
         return bool(self._turn_items)
 
-    def begin_user_turn(self, prompt: str, *, compressed: bool = False) -> tuple[str, TocItem]:
-        """Create a new top-level user-turn TOC item."""
+    def begin_user_turn(
+        self, prompt: str, *, compressed: bool = False, turn_index: int | None = None
+    ) -> tuple[str, TocItem]:
+        """Create an opener; live turns wait for the backend's authoritative index."""
         self._turn_counter += 1
-        turn_index = self._allocate_turn_index()
         turn_id = f"turn-{self._turn_counter}"
         item = TocItem(
             turn_id=turn_id,
@@ -52,6 +51,11 @@ class TurnTocModel:
         )
         self._turn_items.append(item)
         return turn_id, item
+
+    def begin_replayed_turn(self, prompt: str, *, compressed: bool = False) -> tuple[str, TocItem]:
+        """Keep the positional display fallback for legacy histories without markers."""
+        self._backend_turn_counter += 1
+        return self.begin_user_turn(prompt, compressed=compressed, turn_index=self._backend_turn_counter)
 
     def add_injection(self, prompt: str, *, compressed: bool = False) -> tuple[str, TocItem | None]:
         """Create an injected prompt child under the latest top-level turn."""
@@ -75,29 +79,12 @@ class TurnTocModel:
         for index in range(len(self._turn_items) - 1, -1, -1):
             item = self._turn_items[index]
             if item.turn_id == turn_id:
-                was_last = index == len(self._turn_items) - 1
-                removed_turn_index = item.turn_index
                 del self._turn_items[index]
-                if was_last and self._turn_counter > 0:
-                    self._turn_counter -= 1
-                if (
-                    removed_turn_index is not None
-                    and removed_turn_index == self._backend_turn_counter
-                    and not self._has_turn_index(removed_turn_index)
-                ):
-                    self._backend_turn_counter = max(0, self._backend_turn_counter - 1)
-                if self._pending_failed_turn_index == removed_turn_index:
-                    self._pending_failed_turn_index = None
                 return
             for child_index in range(len(item.children) - 1, -1, -1):
                 if item.children[child_index].turn_id == turn_id:
                     del item.children[child_index]
                     return
-
-    def remember_failed_turn_without_user_removal(self) -> None:
-        """Reuse the latest turn index when only a trailing status was removed."""
-        if self._turn_items:
-            self._pending_failed_turn_index = self._turn_items[-1].turn_index
 
     def apply_turn_marker(self, turn_index: int | None) -> None:
         """Attach a persisted end-of-turn backend index to the latest TOC item."""
@@ -123,14 +110,6 @@ class TurnTocModel:
         """Return a copy of the visible TOC entries."""
         return self._turn_items.copy()
 
-    def _allocate_turn_index(self) -> int:
-        if self._pending_failed_turn_index is not None:
-            turn_index = self._pending_failed_turn_index
-            self._pending_failed_turn_index = None
-            return turn_index
-        self._backend_turn_counter += 1
-        return self._backend_turn_counter
-
     @classmethod
     def _mark_item_compressed(cls, item: TocItem) -> bool:
         changed = not item.compressed
@@ -139,15 +118,6 @@ class TurnTocModel:
             if cls._mark_item_compressed(child):
                 changed = True
         return changed
-
-    @classmethod
-    def _item_has_turn_index(cls, item: TocItem, turn_index: int) -> bool:
-        return item.turn_index == turn_index or any(
-            cls._item_has_turn_index(child, turn_index) for child in item.children
-        )
-
-    def _has_turn_index(self, turn_index: int) -> bool:
-        return any(self._item_has_turn_index(item, turn_index) for item in self._turn_items)
 
     @classmethod
     def _set_item_turn_index(cls, item: TocItem, turn_index: int) -> None:

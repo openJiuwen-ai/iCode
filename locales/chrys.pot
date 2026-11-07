@@ -513,6 +513,13 @@ msgstr ""
 msgid "engine.fork_turn_active"
 msgstr ""
 
+#. English: Cannot discard while a workflow run is active. Cancel the workflow
+#. run first.
+#. chrys-meta={"fingerprint":"676c9f48c57e0cb82ec9e71323e4c6f7440295aea4ee65021b71790904e053cf","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/engine.py
+msgid "engine.rollback.workflow_active"
+msgstr ""
+
 #. English: The working directory no longer exists: {path}
 #. chrys-meta={"fingerprint":"2ec9b264988bd8d372b55afd83c92c0543296ebe3b67668a111cee2ef6171237","multiline":false,"placeholders":["path"]}
 #: src/chrys/orchestration/engine/run/working_dir.py
@@ -953,28 +960,28 @@ msgstr ""
 msgid "retry.sub_agent_paused"
 msgstr ""
 
-#. English: Rollback cancelled because the conversation advanced from turn
+#. English: Discard cancelled because the conversation advanced from turn
 #. {expected_turn} to turn {current_turn}.
-#. chrys-meta={"fingerprint":"519fb4eccdce76ffea9a206ca05f865e6a06ef1ecd028f3883444735fd3613c4","multiline":false,"placeholders":["current_turn","expected_turn"]}
+#. chrys-meta={"fingerprint":"89acd6451e6a38058e8a9c6484a8b33756051f94136c64cfe7fc54f779034e0e","multiline":false,"placeholders":["current_turn","expected_turn"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.conversation_advanced"
 msgstr ""
 
-#. English: Rollback cancelled because the conversation changed after the
-#. picker was loaded.
-#. chrys-meta={"fingerprint":"da2f593b6de3d8b5c9f7b22a5096432913cbedd0a0862dc24bbe763e48d1d132","multiline":false,"placeholders":[]}
+#. English: Discard cancelled because the conversation changed after the picker
+#. was loaded.
+#. chrys-meta={"fingerprint":"29f8b977a86999a74b990799dd80b42539609724a4e4f68aaa04d619bada967c","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.conversation_changed"
 msgstr ""
 
-#. English: No active session to roll back.
-#. chrys-meta={"fingerprint":"db217cdabdd45fc9b941251f024bf816fdbfd4d0f1e9801cc37f62056270c0ec","multiline":false,"placeholders":[]}
+#. English: No active session to discard turns from.
+#. chrys-meta={"fingerprint":"090b9592d82c0a0e393f5ed7a70d49de4fbe4daa2afc4b8a27263ccba6af0d7f","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.no_session"
 msgstr ""
 
-#. English: Rollback is not allowed in state {state}.
-#. chrys-meta={"fingerprint":"35b3d0667e6a311335aa4fcbf9b291a720d87578c93afbf24372b569fb3c1cf3","multiline":false,"placeholders":["state"]}
+#. English: Cannot discard turns in state {state}.
+#. chrys-meta={"fingerprint":"45e8218f08af8fe546cf61d242de941019f2d42d7d6f04cd8d02a4b0a36c2348","multiline":false,"placeholders":["state"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.refused"
 msgstr ""
@@ -985,22 +992,21 @@ msgstr ""
 msgid "rollback.relative_turns_invalid"
 msgstr ""
 
-#. English: Rollback to welcome could not reset the session because the session
-#. state is busy.
-#. chrys-meta={"fingerprint":"0b57a6e450cdef36048c85f90c738999661035069452b0bf5ffab52b3f742c7c","multiline":false,"placeholders":[]}
+#. English: Could not discard all turns because the session state is busy.
+#. chrys-meta={"fingerprint":"7ff146bb55c680c5232e0b719f2b45cec69d4119e08cf627dc76be7fc54f21ad","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.reset_failed"
 msgstr ""
 
-#. English: Rollback cancelled because the workspace or runtime changed after
+#. English: Discard cancelled because the workspace or runtime changed after
 #. the picker was loaded.
-#. chrys-meta={"fingerprint":"7be49511c61e57661b9ca46c60497ed9ddc8f6f06444bd63d9fc0dd2c39887d2","multiline":false,"placeholders":[]}
+#. chrys-meta={"fingerprint":"e88434a935680cef5e3e6dbb7c57be818bb8bff1440479d9cf19cbd5e5d0e584","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.runtime_changed"
 msgstr ""
 
-#. English: Rollback cancelled because the active session changed.
-#. chrys-meta={"fingerprint":"7ec29e015ec11115fb6dee0ad34efeccdbcb7d0dfe67bf57e39b4dbc2d081c42","multiline":false,"placeholders":[]}
+#. English: Discard cancelled because the active session changed.
+#. chrys-meta={"fingerprint":"177ecb0140d2638435a5bf28164b7105f41ef48e69a3319ba3f47bd29f0dfb6b","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.session_changed"
 msgstr ""
@@ -1029,16 +1035,16 @@ msgstr ""
 msgid "rollback.target_turn_invalid"
 msgstr ""
 
-#. English: Cannot roll back to turn {target_turn}; available turns:
+#. English: Cannot discard turns after turn {target_turn}; available targets:
 #. {available}
-#. chrys-meta={"fingerprint":"d4e1c6f393a4cf0c40880e90736d587941efa19bd472aa18f2350715323d1d03","multiline":false,"placeholders":["available","target_turn"]}
+#. chrys-meta={"fingerprint":"83bd51255fd5bb5b84c23e60af483564586d3dd991dec90499ad67af803db58e","multiline":false,"placeholders":["available","target_turn"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.turn_unavailable"
 msgstr ""
 
-#. English: Cannot roll back {requested_turns} turns; the session currently has
+#. English: Cannot discard {requested_turns} turns; the session currently has
 #. {current_turns}.
-#. chrys-meta={"fingerprint":"b50ffe94964127935b5a16ad2aef137bea2c4eaa7b5d8f653ac37553ffadc23f","multiline":false,"placeholders":["current_turns","requested_turns"]}
+#. chrys-meta={"fingerprint":"e5ec135beaff7d19bab16918082ab60ddc9ba4d9aeb386305138b056d504242c","multiline":false,"placeholders":["current_turns","requested_turns"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.turns_unavailable"
 msgstr ""
@@ -4728,8 +4734,9 @@ msgid_plural "tui.background_task.stop_all.message#plural"
 msgstr[0] ""
 msgstr[1] ""
 
-#. English: Rollback may not restore what they changed while in the background.
-#. chrys-meta={"fingerprint":"82a83ccc4ba8fceb3138a419730efcd97e7b6b66bde2179d2ff0c936f5f5f70f","multiline":false,"placeholders":[]}
+#. English: Discarding turns may not restore what they changed while in the
+#. background.
+#. chrys-meta={"fingerprint":"a2f727f7f0257b9096ab7f6ad0830c0152a98e4c98f6d1fd881c4c47deb1639e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/background_task.py
 msgid "tui.background_task.stop_all.rollback_note"
 msgstr ""
@@ -5288,8 +5295,8 @@ msgstr ""
 msgid "tui.chat.copy_agent_response_tooltip"
 msgstr ""
 
-#. English: copy
-#. chrys-meta={"fingerprint":"d8ed75600cd5a4fe4cf55a8d4be1b83db63d707a7e7797cc9513e395f47ac02f","multiline":false,"placeholders":[]}
+#. English: Copy
+#. chrys-meta={"fingerprint":"42d8d088a101ba7268818d7a5d06368633a4f49e7222714aa68d83c4da94cb1c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.copy_message_button"
 msgstr ""
@@ -5304,6 +5311,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"45b0fd64a2b1e4ce07a86a0fc833d395e495a6a0b495c55e927d109a12b0ba0a","multiline":false,"placeholders":["label"]}
 #: src/chrys/app/tui/widgets/chat/fold_rows.py
 msgid "tui.chat.fold_row.folded_label"
+msgstr ""
+
+#. English: Discard This Turn
+#. chrys-meta={"fingerprint":"00af528dab63a2db16529ae9ff025a4b9e52a55bb05efdb505cb63eab4fa1ea9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.interrupted_rollback_button"
 msgstr ""
 
 #. English: Activity
@@ -5344,6 +5357,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"8d0fadd9e4cd1e9648a527bec4a366eff113b393cf0c5bb7b2a22d85190e544f","multiline":false,"placeholders":["attempt","max_attempts"]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.retry_started"
+msgstr ""
+
+#. English: ↺ Discard this turn and later
+#. chrys-meta={"fingerprint":"ef548c83cd1631c0613801de26fc20eba6aecf4e75d90f6b65764753e2f18188","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.rollback_message_button"
 msgstr ""
 
 #. English: Scroll to bottom {glyph}
@@ -5676,8 +5695,8 @@ msgstr ""
 msgid "tui.commands.description.resume"
 msgstr ""
 
-#. English: Discard recent turns or return to a specific turn
-#. chrys-meta={"fingerprint":"b0d093c5206be3a113cb4065228d47cda65197455492a2a8f736f4ec538554b6","multiline":false,"placeholders":[]}
+#. English: Discard recent turns or discard starting from a turn
+#. chrys-meta={"fingerprint":"d12cb55acb615d464e02ff558424b5023f4acd815eeb5a10cc94a2e674c26b88","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.rollback"
 msgstr ""
@@ -8250,21 +8269,21 @@ msgstr ""
 msgid "tui.man.resume.body"
 msgstr ""
 
-#. English: Roll back recent conversation turns.  Without arguments, opens the
-#. rollback picker at the most recent available target. Use this picker when
-#. you want to discard conversation without restoring file changes.  A bare
-#. number is a relative count. "/rollback 1" discards the last turn; "/rollback
-#. 3" discards the last three turns. A valid explicit count executes
-#. immediately.  The "to" form is an absolute target. "/rollback to 1" keeps
-#. Turn 1 and discards Turns 2 through the current turn. Use "/rollback to 0"
-#. to return to the session start. A valid explicit target executes
-#. immediately.  Both explicit forms restore eligible file changes by default.
-#. The picker also selects file rollback by default; explicitly turn it off
-#. there to discard conversation only.  Explicit commands immediately show a
-#. non-dismissible loading modal. Picker actions show it after confirmation. It
-#. blocks interaction until rollback has completely finished.  Use with
-#. caution: this action cannot be undone.
-#. chrys-meta={"fingerprint":"21d96faba3950d2c6c5b91d3aacca2dba2efe0c6f3e5c1af343bb5037c654d88","multiline":true,"placeholders":[]}
+#. English: Discard recent conversation turns.  Without arguments, opens the
+#. discard picker at the most recent available target. Use this picker when you
+#. want to discard conversation without restoring file changes.  A bare number
+#. is a relative count. "/rollback 1" discards the last turn; "/rollback 3"
+#. discards the last three turns. A valid explicit count executes immediately.
+#. The "to" form is an absolute target. "/rollback to 1" keeps Turn 1 and
+#. discards Turns 2 through the current turn. Use "/rollback to 0" to return to
+#. the session start. A valid explicit target executes immediately.  Both
+#. explicit forms restore eligible file changes by default. The picker also
+#. selects file restoration by default; explicitly turn it off there to discard
+#. conversation only.  Explicit commands immediately show a non-dismissible
+#. loading modal. Picker actions show it after confirmation. It blocks
+#. interaction until discarding finishes.  In the Discard dialog, turn 17 means
+#. "/rollback to 16".  Use with caution: this action is permanent.
+#. chrys-meta={"fingerprint":"fe5d72324fca9d355c49507c0f63d3b76fbc5879049ff56095c01d2e06c59777","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.rollback.body"
 msgstr ""
@@ -9967,34 +9986,53 @@ msgstr ""
 msgid "tui.retry.not_started"
 msgstr ""
 
-#. English: Rollback cancelled because the active session changed.
-#. chrys-meta={"fingerprint":"7ec29e015ec11115fb6dee0ad34efeccdbcb7d0dfe67bf57e39b4dbc2d081c42","multiline":false,"placeholders":[]}
+#. English: Discard cancelled because the active session changed.
+#. chrys-meta={"fingerprint":"177ecb0140d2638435a5bf28164b7105f41ef48e69a3319ba3f47bd29f0dfb6b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.active_session_changed"
 msgstr ""
 
-#. English: Cannot roll back while the agent is running.
-#. chrys-meta={"fingerprint":"a554cfeb2fdb0631db14fdbb42e53fd45805ca4f245430a0220fcd3bae19cc8d","multiline":false,"placeholders":[]}
+#. English: Cannot discard while the agent is running.
+#. chrys-meta={"fingerprint":"1192124655bc3cf80b426129f68cf0dcdd857c9a3a5b883eecb21c1320e538ae","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.agent_running"
 msgstr ""
 
-#. English: Close
-#. chrys-meta={"fingerprint":"b539b71b98c3530fcd17b6257d0bcdd95ec41dbd6ba78a0b8ad40de8ddc5103e","multiline":false,"placeholders":[]}
+#. English: A discard is already in progress.
+#. chrys-meta={"fingerprint":"e161f02c8fe640013d7edfaa6d1eb615876bf810a852c8e7f3d284cbdc8da51e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.already_in_progress"
+msgstr ""
+
+#. English: Cancel
+#. chrys-meta={"fingerprint":"ee3eb6e02cd8772be8786b7d714f54bf90abe5d0f0523aebf9c292a1e48c7d3d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.button.close"
 msgstr ""
 
-#. English: Discard conversation after Turn {turn}
-#. chrys-meta={"fingerprint":"b27ae902702950270c818b03f3b2beac10eb23714e232f542322a9cd0a9d26d5","multiline":false,"placeholders":["turn"]}
+#. English: Discard turns {first}–{last}
+#. chrys-meta={"fingerprint":"ed35e3dd37b0af9f64a5b74842efa05ced25390fa470011031d9d0d93b0d7ed1","multiline":false,"placeholders":["first","last"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.button.discard_after_turn"
 msgstr ""
 
-#. English: Discard All
-#. chrys-meta={"fingerprint":"36c08b25f6b81dd7cb88d2c08eb8431a00f6bd647e90d805484076292484495c","multiline":false,"placeholders":[]}
+#. English: Discard all turns
+#. chrys-meta={"fingerprint":"a82b180139bb72a8e0c6ddfd07c1c8259ca354cfc3fb2f655b6f898019ec108d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.button.discard_all"
+msgstr ""
+
+#. English: Discard turn {turn}
+#. chrys-meta={"fingerprint":"1d700424b7ef1bad653f9215ec7cf0271502e0e3303be81b2d40bf540d4c81e5","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.button.discard_turn"
+msgstr ""
+
+#. English: Discard turn {turn}? It is the latest turn and has no files to
+#. restore. A discarded turn cannot be recovered.
+#. chrys-meta={"fingerprint":"08de28cb6aa973888ac26e2976536af11c26eff4fd7b98457287d90da21a9621","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.confirm.latest_turn"
 msgstr ""
 
 #. English: Session start
@@ -10007,6 +10045,18 @@ msgstr ""
 #. chrys-meta={"fingerprint":"11385e9dd3f32a82cce844426e3a1855f16e77d5767a065fdbe090a8aadfe70e","multiline":false,"placeholders":["turn"]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.debug_target.turn"
+msgstr ""
+
+#. English: After discard
+#. chrys-meta={"fingerprint":"93ff4c29d536ef7e62b9295d747a21190a24e06d9ccaca823b29dd751fc816e0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.diff.after"
+msgstr ""
+
+#. English: Now
+#. chrys-meta={"fingerprint":"6b05e61589d14f4ed3a95c079e10e33a424534d74f93b8d91ca7a580878595c6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.diff.now"
 msgstr ""
 
 #. English: modified internally and externally
@@ -10051,8 +10101,8 @@ msgstr ""
 msgid "tui.rollback.exclusions.more"
 msgstr ""
 
-#. English: Rollback failed: {error}
-#. chrys-meta={"fingerprint":"b1cb32a14df729fdc080257e91e1bab9eb0da2afc88c155746c36954aae281ec","multiline":false,"placeholders":["error"]}
+#. English: Discard failed: {error}
+#. chrys-meta={"fingerprint":"52f385759dfd0769908165d49abca408e682b9d92da6d8b11edaf4ec33d7c425","multiline":false,"placeholders":["error"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.failed"
 msgstr ""
@@ -10066,34 +10116,22 @@ msgid_plural "tui.rollback.files_excluded_note#plural"
 msgstr[0] ""
 msgstr[1] ""
 
-#. English: No file changes to revert.
-#. chrys-meta={"fingerprint":"391d17f110db8850519be6ff3709e73d78325de8a98334b53d4eee2e938a63e6","multiline":false,"placeholders":[]}
+#. English: No files to restore.
+#. chrys-meta={"fingerprint":"3f1c158faaa61962323492e471d1d8723aa5f4ec5acbb82c929fa2cb9de03c4c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.no_file_changes"
 msgstr ""
 
-#. English: No rollback snapshots are available yet.
-#. chrys-meta={"fingerprint":"a6c21b36cd3deab72cb7dc54973318571e90636bd36aef7e7e3ec64ec52014c2","multiline":false,"placeholders":[]}
+#. English: No saved turns are available to discard yet.
+#. chrys-meta={"fingerprint":"55b32450b589d828afddbbac2af831d7d21c844ebc69d2836f9059fba0458039","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.no_snapshots"
 msgstr ""
 
-#. English:   — discard all
-#. chrys-meta={"fingerprint":"7e07746311a63827ee6303c476963f94453515eeb2247a608031ed26408efe3c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.discard_all_suffix"
-msgstr ""
-
-#. English: Rollback to:
-#. chrys-meta={"fingerprint":"9a49bcdf29c84d4c02c6d490fb14d6e285b19dfb612060cd2297c9cb2360effc","multiline":false,"placeholders":[]}
+#. English: Discard starting from
+#. chrys-meta={"fingerprint":"4fd4e9b22947b74f478071419fbe9bb32f31570a18e0bd4d354dbe821d1b7dcb","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.picker.prompt"
-msgstr ""
-
-#. English: Session start
-#. chrys-meta={"fingerprint":"0428764d7b8045e0c766dbc251372463fc0236918ee4c7be2cc20714aafe3606","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.session_start"
 msgstr ""
 
 #. English: Turn {turn}
@@ -10102,46 +10140,46 @@ msgstr ""
 msgid "tui.rollback.picker.turn"
 msgstr ""
 
-#. English: Turn {turn} (Current)
-#. chrys-meta={"fingerprint":"0596f61dd13af616467ed0569618b138d75487135e029a28e8a606ebd7e1e8ac","multiline":false,"placeholders":["turn"]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.turn_current"
-msgstr ""
-
-#. English: Turn {turn} (Current) -
-#. chrys-meta={"fingerprint":"57718e52632b1cb0164170aa5d51bccf059c4570c5fdb1622e7e84d10e328bd7","multiline":false,"placeholders":["turn"]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.turn_current_preview"
-msgstr ""
-
-#. English: Turn {turn} -
-#. chrys-meta={"fingerprint":"10376eca4cc2f396fd11e4eaa334c23aa099e87d6ecc74d5b925dcae2371dfe5","multiline":false,"placeholders":["turn"]}
+#. English: Turn {turn} —
+#. chrys-meta={"fingerprint":"2072df224eb9cad2a4241ce0638b1c64cfdca217eef02ccfdfe8ccccdd2e7513","multiline":false,"placeholders":["turn"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.picker.turn_preview"
 msgstr ""
 
-#. English: Rollback picker cancelled because the conversation changed.
-#. chrys-meta={"fingerprint":"9ad0314290d5d31f05ac3fb0d383c40654da0533a1038e3444c8c95524d30cbf","multiline":false,"placeholders":[]}
+#. English: Discard picker cancelled because the conversation changed.
+#. chrys-meta={"fingerprint":"c309e7f966904a5d2faab5960b0feab0a0412775bbcbb797088f200e09631c90","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.picker_conversation_changed"
 msgstr ""
 
-#. English: Rollback picker cancelled because the workspace or runtime changed.
-#. chrys-meta={"fingerprint":"a096bfb0f09e1866acc851b4fd5009b4997e55933a0ea1d3ff33476d49727767","multiline":false,"placeholders":[]}
+#. English: Discard picker cancelled because the workspace or runtime changed.
+#. chrys-meta={"fingerprint":"497e178be36ee9320c9d9caa0d5dd3cfb7d6c11f40b5a156582ae72d46774348","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.picker_runtime_changed"
 msgstr ""
 
-#. English: Error: unable to load rollback preview — {detail}
-#. chrys-meta={"fingerprint":"84b2a3cdab57280e3ea0e3ea1e46d5c6aca71328aef98f81bc28775fe4f34d6c","multiline":true,"placeholders":["detail"]}
+#. English: Error: unable to load discard preview — {detail}
+#. chrys-meta={"fingerprint":"9184f94f19644090c8f7c690edda60f5aea4d3deb4fd744baefb32f41dbf5468","multiline":true,"placeholders":["detail"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.preview.load_error"
 msgstr ""
 
-#. English: Error: unable to load this rollback preview — {detail}
-#. chrys-meta={"fingerprint":"28a097151c6424b669d60b4aef6112b4dcb51d450169b5e869c5dabb43ff37a7","multiline":true,"placeholders":["detail"]}
+#. English: Error: unable to load this discard preview — {detail}
+#. chrys-meta={"fingerprint":"52298f33dc750cf4a2b228113235d091bdba0455f937efe5c903d6112d47ade9","multiline":true,"placeholders":["detail"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.preview.refresh_error"
+msgstr ""
+
+#. English: {range}; files stay as they are
+#. chrys-meta={"fingerprint":"9b5ec21916b8c63e8b43f6f3d9d4f9577bc0c33c590ec1b29f4eb08ffd2874fe","multiline":false,"placeholders":["range"]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.range.keep_files"
+msgstr ""
+
+#. English: {range}; checked files go back to before turn {turn}
+#. chrys-meta={"fingerprint":"c42dbd68e2a99aa3308650f1593163e8dfd488481e8ad506e4704b7f8db36ef5","multiline":false,"placeholders":["range","turn"]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.range.restore"
 msgstr ""
 
 #. English: {matched_count} already matched
@@ -10201,14 +10239,20 @@ msgstr[1] ""
 msgid "tui.rollback.result.more_suffix"
 msgstr ""
 
-#. English: Rolled back to Session start.
-#. chrys-meta={"fingerprint":"eee1c078f5335606bde587cbefa4f8393c6697c936e99db78ad357ffdda567fe","multiline":false,"placeholders":[]}
+#. English: Discarded all turns.
+#. chrys-meta={"fingerprint":"775aea7d30d4b742c1d07f591c63029a2bd51ead7cc74dca1e3fa4f266edb228","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.result.session_start"
 msgstr ""
 
-#. English: Rolled back to Turn {turn}.
-#. chrys-meta={"fingerprint":"e60488643c1e61b85dd2cca90e7eedbbcaa8d45ba8196f3ca8a39f4a8361da75","multiline":false,"placeholders":["turn"]}
+#. English: Discarded turn {turn}.
+#. chrys-meta={"fingerprint":"b8eb1feff980266c5fbfbf1ed32048b21291241aef97f44cacb645c147b8b56c","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.result.single_turn"
+msgstr ""
+
+#. English: Discarded turn {turn} and later turns.
+#. chrys-meta={"fingerprint":"71443fa909d6855e0dba3b9ca4845ec33299214de52ab8f3433a3be63e3b17f1","multiline":false,"placeholders":["turn"]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.result.turn"
 msgstr ""
@@ -10222,9 +10266,9 @@ msgid_plural "tui.rollback.result.warnings_count#plural"
 msgstr[0] ""
 msgstr[1] ""
 
-#. English: Revert {count} file change (WYSIWYG)
-#. English-plural: Revert {count} file changes (WYSIWYG)
-#. chrys-meta={"fingerprint":"5c55f84bd499dff81c1bbb1f46b3b74ed243fcf7e9c96d4859d363370deae2a4","multiline":false,"placeholders":[]}
+#. English: Also restore {count} checked file
+#. English-plural: Also restore {count} checked files
+#. chrys-meta={"fingerprint":"06a791ec9bdd52deefb4582e9d7cf95a83b6272c1daeb93162c90fa6a3225b4b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.revert_file_changes"
 msgid_plural "tui.rollback.revert_file_changes#plural"
@@ -10237,20 +10281,26 @@ msgstr[1] ""
 msgid "tui.rollback.target_nonnegative"
 msgstr ""
 
-#. English: Rollback
-#. chrys-meta={"fingerprint":"a6f676dbe1a7754d87fa0370c0d6c07595a08e6b1721f72fed7bfff7ac125348","multiline":false,"placeholders":[]}
+#. English: Discard
+#. chrys-meta={"fingerprint":"33905600ad4c923bc409677370cab1f223df19a44e49e594b447be0c1e744078","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.title"
 msgstr ""
 
-#. English: The number of turns to roll back must be positive.
-#. chrys-meta={"fingerprint":"c6c4dd8d4e5d42c50edb73d2dce89a32a5191a9662e3abcb9ec568ec476921fe","multiline":false,"placeholders":[]}
+#. English: The number of turns to discard must be positive.
+#. chrys-meta={"fingerprint":"938fc61d7bbccf784d9f71055ecb735db318322f45a8f588b9668a4baf735c01","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.turn_count_positive"
 msgstr ""
 
-#. English: Rollback is not available.
-#. chrys-meta={"fingerprint":"3f93c35e075aa5843008fb27775ffcbfdf69a3f7b0b847c900790563a25c91d8","multiline":false,"placeholders":[]}
+#. English: The last turn is still finishing; try again in a moment.
+#. chrys-meta={"fingerprint":"f5e741ec933cc55ad5aeabce431fa0751c25029f8ebde4df8396a67e90fcc242","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.turn_finishing"
+msgstr ""
+
+#. English: Discard is not available.
+#. chrys-meta={"fingerprint":"9f1153f45de616ad88aea2c05e3ce29c194450a0c2db347392e104989c1bb988","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.unavailable"
 msgstr ""

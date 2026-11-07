@@ -4,12 +4,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, NamedTuple
 
 from rich.style import Style
 from rich.text import Text
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
+from textual.widget import Widget
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str
@@ -43,6 +44,52 @@ def _counts_text(counts: tuple[int, int]) -> Text:
 def preview_rows(total: int, height: int) -> int:
     """Keep at least half of Chat for the conversation directory."""
     return max(0, min(total, MAX_PREVIEW_FILES, height // 2 - 3))
+
+
+class _Row(NamedTuple):
+    """What a file row shows, but for how much of its path fits."""
+
+    path: str
+    note: Text
+    counts: Text
+
+
+class _FileRows(Widget):
+    """The file rows, each cut to fit the width it is drawn at.
+
+    Textual renders a widget's content as it draws it, for the size it has then, so the rows are
+    built here rather than when they change. Built ahead, they took the width last laid out (none
+    while the preview was hidden), and the frames before the next Resize showed them so: without
+    their file names when the preview appeared, sized for the old width when the sidebar's changed.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(id="diff-preview-rows")
+        self._rows: tuple[_Row, ...] = ()
+        self._hovered: int | None = None
+        self._hover = Style()
+
+    def show(self, rows: tuple[_Row, ...], hovered: int | None, hover: Style) -> None:
+        self._rows = rows
+        self._hovered = hovered
+        self._hover = hover
+        self.refresh()
+
+    def render(self) -> Text:
+        # Called when the rows change or their size does; Textual draws every other frame from what it returned.
+        width = self.content_size.width
+        text = Text()
+        for index, (path, note, counts) in enumerate(self._rows):
+            if index:
+                text.append("\n")
+            room = max(0, width - note.cell_len - counts.cell_len - bool(counts))
+            row = Text.assemble(middle_cut_path(path, room), note)
+            row.append(" " * max(0, width - row.cell_len - counts.cell_len))
+            row.append_text(counts)
+            if index == self._hovered:
+                row.stylize(self._hover)
+            text.append_text(row)
+        return text
 
 
 class DiffPreview(Vertical, can_focus=False):
@@ -102,7 +149,7 @@ class DiffPreview(Vertical, can_focus=False):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="diff-preview-box"):
-            yield Static(id="diff-preview-rows")
+            yield _FileRows()
             with Horizontal(id="diff-preview-footer"):
                 yield Static(Text(self._text(_VIEW_ALL.bind())), id="diff-preview-all")
 
@@ -158,34 +205,28 @@ class DiffPreview(Vertical, can_focus=False):
         if self._shown_title != title.plain:
             box.border_title = title
             self._shown_title = title.plain
-        target = self.query_one("#diff-preview-rows", Static)
-        width = target.content_size.width
-        text = Text()
         hover = Style(bgcolor=self.get_component_rich_style("diff-preview--hover").bgcolor)
-        for index, entry in enumerate(self.entries[: self.rows]):
-            if index:
-                text.append("\n")
-            _, note = entry_label_parts(entry, self._text)
-            trailer = _counts_text(entry.line_counts) if entry.line_counts is not None else Text()
-            if entry.line_count_result == "pending":
-                trailer = Text("…", style="dim")
-            room = max(0, width - note.cell_len - trailer.cell_len - bool(trailer))
-            path = middle_cut_path(sanitize_legacy_scalar(entry_display_key(entry)), room)
-            row = Text.assemble(path, note)
-            row.append(" " * max(0, width - row.cell_len - trailer.cell_len))
-            row.append_text(trailer)
-            if index == self._hovered:
-                row.stylize(hover)
-            text.append_text(row)
-        target.update(text, layout=False)
+        rows = tuple(self._row(entry) for entry in self.entries[: self.rows])
+        self.query_one(_FileRows).show(rows, self._hovered, hover)
+
+    def _row(self, entry: DiffFileEntry) -> _Row:
+        _, note = entry_label_parts(entry, self._text)
+        counts = _counts_text(entry.line_counts) if entry.line_counts is not None else Text()
+        if entry.line_count_result == "pending":
+            counts = Text("…", style="dim")
+        return _Row(sanitize_legacy_scalar(entry_display_key(entry)), note, counts)
+
+    def _clear_hover(self) -> None:
+        if self._hovered is not None:
+            self._hovered = None
+            self._paint()
 
     def on_resize(self) -> None:
-        self._hovered = None
-        self._paint()
+        # The rows may have moved out from under the pointer.
+        self._clear_hover()
 
     def on_hide(self) -> None:
-        self._hovered = None
-        self._paint()
+        self._clear_hover()
 
     def on_click(self, event: Click) -> None:
         if event.chain != 1:
@@ -200,7 +241,7 @@ class DiffPreview(Vertical, can_focus=False):
             self.post_message(self.Opened(entry_display_key(self.entries[row])))
 
     def _row_at(self, event: MouseEvent) -> int | None:
-        target = self.query_one("#diff-preview-rows", Static)
+        target = self.query_one(_FileRows)
         offset = event.get_content_offset(target) if event.widget is target else None
         return offset.y if offset is not None and 0 <= offset.y < min(self.rows, len(self.entries)) else None
 
@@ -211,9 +252,7 @@ class DiffPreview(Vertical, can_focus=False):
             self._paint()
 
     def on_leave(self, _event: Leave) -> None:
-        if self._hovered is not None:
-            self._hovered = None
-            self._paint()
+        self._clear_hover()
 
 
 class SidebarChatPanel(Vertical, can_focus=False):

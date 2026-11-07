@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 
 from chrys.foundation.events.types import Error, UserRetry, Warning
@@ -15,11 +14,13 @@ from chrys.foundation.i18n import msg
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.turns import current_turn_start, is_continuation_message
 from chrys.orchestration.engine.execution import (
+    BARE_RETRY,
     CurrentRunInjectionWindow,
     CurrentRunScope,
     PreAdmissionPreparationEntry,
     PreAdmissionPreparationTracker,
     PromptAdmissionScope,
+    RetryInput,
 )
 from chrys.orchestration.engine.run.active_injection import ActiveTurnInjector
 from chrys.orchestration.engine.run.input_refs import format_skill_reference_reminder, parse_skill_reference
@@ -113,8 +114,7 @@ class RetryPassRunner(Protocol):
 
     async def __call__(
         self,
-        additional_text: str = "",
-        created_at: datetime | str | None = None,
+        retry: RetryInput = BARE_RETRY,
         *,
         run_scope: CurrentRunScope | None = None,
         injection_window: CurrentRunInjectionWindow | None = None,
@@ -333,7 +333,7 @@ class RetryCoordinator:
                     return
                 if not self._admission_owner_is_current(admission):
                     return
-                self._turn_state.lease.upsert_pending_retry_from_admission(admission, event.text, event.timestamp)
+                self._turn_state.lease.upsert_pending_retry_from_admission(admission, RetryInput.of(event))
                 self._preparation_handed_off = True
                 self._turn_state.lease.release_prompt_admission(admission)
                 admission_released = True
@@ -404,7 +404,7 @@ class RetryCoordinator:
                 return
             if self._current.loaded is not None and self._current.loaded.bindings.state.running:
                 if self._admission_owner_is_current(admission) and self._pending_retry_request_still_accepted():
-                    self._turn_state.lease.upsert_pending_retry_from_admission(admission, event.text, event.timestamp)
+                    self._turn_state.lease.upsert_pending_retry_from_admission(admission, RetryInput.of(event))
                     self._preparation_handed_off = True
                     self._turn_state.lease.release_prompt_admission(admission)
                     admission_released = True
@@ -447,11 +447,7 @@ class RetryCoordinator:
                 admission_released = True
                 self._history.remove_trailing_markers()
                 self._turn_state.lease.run_task = asyncio.create_task(
-                    self._retry_and_save(
-                        event.text,
-                        created_at=event.timestamp,
-                        admission_preparation=preparation,
-                    )
+                    self._retry_and_save(RetryInput.of(event), admission_preparation=preparation)
                 )
                 self._preparation_handed_off = True
                 return
@@ -462,15 +458,12 @@ class RetryCoordinator:
                 reminder_scope=self._retry_reminder_scope_for_admission(admission),
                 make_task=lambda scope, window: asyncio.create_task(
                     self._retry_and_save(
-                        event.text,
-                        created_at=event.timestamp,
+                        RetryInput.of(event),
                         run_scope=scope,
                         injection_window=window,
                         admission_preparation=preparation,
                     )
                 ),
-                text=event.text,
-                created_at=event.timestamp,
             )
             if promotion.outcome == "task":
                 admission_released = True
@@ -537,13 +530,9 @@ class RetryCoordinator:
             self._turn_state.lease.clear_pending_retry(outcome=PreparationOutcome.DROPPED)
             return missing
         self._history.remove_trailing_markers()
-        text = pending.text
-        created_at = pending.created_at
         dispatched = self._turn_state.lease.clear_pending_retry(outcome=PreparationOutcome.RETRY_TURN)
         self._turn_state.lease.run_task = self._create_retry_run_task(
-            text,
-            created_at=created_at,
-            admission_preparation=dispatched.preparation_trace,
+            dispatched.retry, admission_preparation=dispatched.preparation_trace
         )
         return None
 
@@ -580,30 +569,16 @@ class RetryCoordinator:
         return None
 
     def _create_retry_run_task(
-        self,
-        text: str,
-        *,
-        created_at: datetime | str | None,
-        admission_preparation: PreparationTrace | None = None,
+        self, retry: RetryInput, *, admission_preparation: PreparationTrace | None = None
     ) -> asyncio.Task[None]:
         """Create a retry task, preserving the validated current retry scope."""
         scope_window = self._reuse_or_create_retry_scope_and_window()
         if scope_window is None:
-            return asyncio.create_task(
-                self._retry_and_save(
-                    text,
-                    created_at=created_at,
-                    admission_preparation=admission_preparation,
-                )
-            )
+            return asyncio.create_task(self._retry_and_save(retry, admission_preparation=admission_preparation))
         scope, window = scope_window
         return asyncio.create_task(
             self._retry_and_save(
-                text,
-                created_at=created_at,
-                run_scope=scope,
-                injection_window=window,
-                admission_preparation=admission_preparation,
+                retry, run_scope=scope, injection_window=window, admission_preparation=admission_preparation
             )
         )
 

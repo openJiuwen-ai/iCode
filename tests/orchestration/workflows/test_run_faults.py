@@ -82,7 +82,7 @@ from tests.orchestration.workflows._hosting import (
     run,
     write_workflow,
 )
-from tests.support.event_capture import capture_event_sequence
+from tests.support.event_capture import assert_display_message, capture_event_sequence
 from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, ENGINE_TURN_TIMEOUT, wait_for, with_wait_deadline
 from tests.support.workflow_workers import python_workflow
 
@@ -492,6 +492,7 @@ async def test_the_session_is_frozen_while_a_run_is_active(tmp_path: Path, monke
                 WorkflowRunRequest(target=host.workflow_target("chain", new_session=True), request_id="r2")
             )
 
+            assert_display_message(of_type(events, Error)[2], "engine.rollback.workflow_active")
             errors = [(e.code, e.message) for e in of_type(events, Error)]
             assert errors == [
                 ("workflow_active", "A workflow run is active. Cancel the workflow run first."),
