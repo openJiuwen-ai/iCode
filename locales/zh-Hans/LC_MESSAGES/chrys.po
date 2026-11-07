@@ -1555,6 +1555,66 @@ msgstr "已忽略 {source}={raw}：应为文本。"
 msgid "settings.rejected.web_origin"
 msgstr "已忽略 {source}={raw}：每个地址都必须是 http(s) 来源，例如 https://example.com，不能包含路径或凭据。"
 
+#. English: Report agent configuration
+#. chrys-meta={"fingerprint":"d791aa82054cc9a366c37fd25783da40e5596e41793bcf167c047b357f2204d5","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.report.agent_config.label"
+msgstr "上报 Agent 配置"
+
+#. English: Report batch size limit (bytes)
+#. chrys-meta={"fingerprint":"537002cb631dba1df3bbcbd347d347263e3cfb5f95f77e4a49d02e5cd81942e5","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.report.batch_max_bytes.label"
+msgstr "上报批次大小上限（字节）"
+
+#. English: Show report diagnostics
+#. chrys-meta={"fingerprint":"6d79163a1036ab1f36e2ac3b075eb117cd7655358a15682d643a8341cf3e1b5e","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.report.diagnostics.label"
+msgstr "显示上报诊断信息"
+
+#. English: Report session facts
+#. chrys-meta={"fingerprint":"589cbc6292166c93da5f1ff63e1b357ffc801a843c5403ca81a85778131e9d7f","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.report.enabled.label"
+msgstr "上报会话事实"
+
+#. English: Report service address
+#. chrys-meta={"fingerprint":"485aebcc1b20e2c4bf9ac083671618da3faa2c2d39894d27cb7ef7d9c21a9698","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.report.endpoint.label"
+msgstr "上报服务地址"
+
+#. English: Report refresh interval (ms)
+#. chrys-meta={"fingerprint":"8c0201cec4700fa177bbede7482799501fd1e33fc8cff4cad1ece64eff4c836a","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.report.poll_interval_ms.label"
+msgstr "上报刷新间隔（毫秒）"
+
+#. English: Report queue size limit (bytes)
+#. chrys-meta={"fingerprint":"64543a25316274c5c8da61c82b3cf3c9386515c58ded318b76d5af99c96c4eb9","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.report.queue_bytes_max.label"
+msgstr "上报队列大小上限（字节）"
+
+#. English: Report service token
+#. chrys-meta={"fingerprint":"c1b31d9308597ebb51967a097b35e38d42cd83d4fe82f9ec93b0d151690de510","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.report.token.label"
+msgstr "上报服务令牌"
+
+#. English: Report upload timeout (ms)
+#. chrys-meta={"fingerprint":"c3fcaa98f67b0baaa5a56830dd4d54879ee6fc264b89d3ca473646c3d798ae8d","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.report.upload_timeout_ms.label"
+msgstr "上报上传超时（毫秒）"
+
+#. English: Report repository working tree
+#. chrys-meta={"fingerprint":"64878b803ed4ac911ab1385e40d3dceb9a71876ae83a44e90d220ab915551be6","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.report.workspace_capture.label"
+msgstr "上报仓库工作区"
+
 #. English: Rollback snapshots to keep
 #. chrys-meta={"fingerprint":"55a31d3a59a160b084b2c00427b9b4009b1c6974d00ce8a18793394ff3d1fb95","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py

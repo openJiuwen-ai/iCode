@@ -577,6 +577,18 @@ DEFERRED_KEYS: frozenset[str] = frozenset(
         "mutations.coordination.enabled",
         "mutations.parallel_implicit_tools",
         "workspace.change_notice.max_entries",
+        # Fact reporting is configured by file or environment variable only:
+        # it has no panel UX yet and its diagnostics surface is not built.
+        "report.enabled",
+        "report.endpoint",
+        "report.token",
+        "report.upload_timeout_ms",
+        "report.batch_max_bytes",
+        "report.poll_interval_ms",
+        "report.queue_bytes_max",
+        "report.workspace_capture",
+        "report.agent_config",
+        "report.diagnostics",
     }
 )
 

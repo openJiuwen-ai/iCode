@@ -437,6 +437,7 @@ class ChrysSessionHost:
         if self._started:
             return
         self._load_registries_if_needed()
+        await self._start_fact_reporting()
         if self._restore_session_id:
             await self.restore_session(self._restore_session_id)
         else:
@@ -448,6 +449,19 @@ class ChrysSessionHost:
             await self._engine.start(profile)
             self._started = True
 
+    async def _start_fact_reporting(self) -> None:
+        """Install the reporting runtime before the session's first lifecycle event.
+
+        Subscribing first is what makes ``SessionReady``/``SessionRestored``
+        observable at all. With reporting off this is one global read; with it
+        on, one bounded WAL open, before the session starts rather than inside
+        any turn. A failure here must never keep the session from starting.
+        """
+        from chrys.service.reporting.startup import start_armed_reporting
+
+        with contextlib.suppress(Exception):
+            await start_armed_reporting(self._bus, settings=self._settings)
+
     async def restore_session(self, session_id: str) -> None:
         """Restore a saved session into this host."""
         target_session_id = await self._resolve_restore_session_id(session_id)
@@ -457,6 +471,7 @@ class ChrysSessionHost:
         self._load_registries_if_needed()
         if self._profile_name:
             self._profile_name = self._resolve_profile(self._profile_name).name
+        await self._start_fact_reporting()
         await self._engine.prepare()
         # Promote a requested short id to the canonical id used by restore events and future idempotent starts.
         self._restore_session_id = target_session_id

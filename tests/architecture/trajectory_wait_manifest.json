@@ -2374,6 +2374,9 @@
       "ChrysSessionHost._resolve_restore_session_id": [
         ["awaitable", "await self._state_store.list_sessions()", "unresolved"]
       ],
+      "ChrysSessionHost._start_fact_reporting": [
+        ["wrapper", "await start_armed_reporting(self._bus, settings=self._settings)", "unresolved", "chrys.service.reporting.startup.start_armed_reporting"]
+      ],
       "ChrysSessionHost.cancel_current_turn": [
         ["awaitable", "await self._bus.publish(UserInterrupt(session_id=self.session_id))", "unresolved"]
       ],
@@ -2411,6 +2414,7 @@
       ],
       "ChrysSessionHost.restore_session": [
         ["wrapper", "await self._resolve_restore_session_id(session_id)", "unresolved", "chrys.orchestration.session_host.ChrysSessionHost._resolve_restore_session_id"],
+        ["wrapper", "await self._start_fact_reporting()", "unresolved", "chrys.orchestration.session_host.ChrysSessionHost._start_fact_reporting"],
         ["awaitable", "await self._engine.prepare()", "unresolved"],
         ["awaitable", "await self._bus.subscribe(SessionRestored, _on_restored)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(Error, _on_error)", "unresolved"],
@@ -2433,6 +2437,7 @@
         ["awaitable", "await self._engine.shutdown()", "unresolved"]
       ],
       "ChrysSessionHost.start": [
+        ["wrapper", "await self._start_fact_reporting()", "unresolved", "chrys.orchestration.session_host.ChrysSessionHost._start_fact_reporting"],
         ["wrapper", "await self.restore_session(self._restore_session_id)", "unresolved", "chrys.orchestration.session_host.ChrysSessionHost.restore_session"],
         ["awaitable", "await self._engine.start(profile)", "unresolved"]
       ]
@@ -4892,6 +4897,38 @@
       "run_shell_command": [
         ["async_context", "async with managed_subprocess(*shell_argv(command), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd, env=build_shell_subprocess_env())", "unresolved"],
         ["wrapper", "await wait_for_subprocess(drain_process_pipes(proc, stdout, stderr), timeout=SHELL_TIMEOUT_SECONDS, process_group_id=proc.pid if sys.platform != 'win32' else None)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"]
+      ]
+    },
+    "chrys.service.reporting.service": {
+      "ReportingService._close_once": [
+        ["future", "await task", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(pump.stop)", "unresolved"]
+      ],
+      "ReportingService._on_session_deleted": [
+        ["thread_pool", "await asyncio.to_thread(cursors.delete, session_id)", "unresolved"]
+      ],
+      "ReportingService._run": [
+        ["timeout", "await asyncio.wait_for(self._wake.wait(), timeout=self._config.poll_interval_seconds)", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(self._collect, requests)", "unresolved"]
+      ],
+      "ReportingService.close": [
+        ["awaitable", "await closer()", "unresolved"]
+      ],
+      "ReportingService.start": [
+        ["awaitable", "await self._bus.subscribe(SessionReady, self._on_session_ready)", "unresolved"],
+        ["awaitable", "await self._bus.subscribe(SessionRestored, self._on_session_restored)", "unresolved"],
+        ["awaitable", "await self._bus.subscribe(SessionSaved, self._on_session_saved)", "unresolved"],
+        ["awaitable", "await self._bus.subscribe(TurnStarted, self._on_turn_started)", "unresolved"],
+        ["awaitable", "await self._bus.subscribe(ExecutionChanged, self._on_execution_changed)", "unresolved"],
+        ["awaitable", "await self._bus.subscribe(SessionDeleted, self._on_session_deleted)", "unresolved"]
+      ]
+    },
+    "chrys.service.reporting.startup": {
+      "start_armed_reporting": [
+        ["awaitable", "await service.start()", "unresolved"]
+      ],
+      "stop_reporting": [
+        ["awaitable", "await service.close()", "unresolved"]
       ]
     },
     "chrys.service.session.persistence": {
