@@ -1085,7 +1085,9 @@ async def test_read_skill_resource_caps_file_and_names_original_path(tmp_path: P
 
     assert "truncated" in result
     assert str(resource_path) in result
-    assert "Use read_file or shell tools" in result
+    assert "read_skill_resource again with a higher max_tokens" in result
+    assert "read_file" not in result
+    assert "shell tools" not in result
     assert MixedLanguageTokenizer().count_tokens(result) <= 100
     assert not (tmp_path / "tool_results").exists()
 
