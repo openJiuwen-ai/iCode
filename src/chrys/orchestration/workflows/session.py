@@ -91,7 +91,8 @@ class WorkflowSessionOwner:
         )
         self.usage = SessionUsagePublisher(bus=bus, session=self.session)
         self.trajectory: SessionTrajectory | None = None
-        self._judge_model: Callable[[ModelProfile | None], ModelProfile] | None = None
+        self._judge_model: Callable[[ModelProfile | None], ModelProfile | None] | None = None
+        self._run_model: ModelProfile | None = None
         self._judges: dict[str, ApprovalJudge] = {}
         self._auto_review = "direct"
         self.state: WorkflowSessionState | None = None
@@ -244,13 +245,28 @@ class WorkflowSessionOwner:
 
     def _prepare_agents(self, settings: Settings, model_registry: ModelProfileRegistry | None) -> None:
         run_model = resolve_active_profile(model_registry, settings)
+        self._run_model = run_model
 
-        def judge_model(node_model: ModelProfile | None) -> ModelProfile:
+        def judge_model(node_model: ModelProfile | None) -> ModelProfile | None:
+            # None while a relay node model has no independent judge: the node
+            # runs without one and AUTO approval defers to the user.
             return resolve_judge_profile(model_registry, settings, run_model if node_model is None else node_model)
 
         self._judge_model = judge_model
         self._auto_review = settings.approval_auto_review
         self._judges = {}
+
+    def approval_relay_context(self, node_model: ModelProfile | None) -> tuple[bool, str]:
+        """Relay-enhancement flag and reviewed model id for a node's approval.
+
+        Enhanced when the node's own model is a relay or the run's model is:
+        a relay run cannot launder a protected call through a node on a
+        direct-connected model, and a relay node stays enhanced regardless.
+        """
+        model = self._run_model if node_model is None else node_model
+        run_relay = self._run_model is not None and self._run_model.is_relay
+        enhanced = run_relay or (model is not None and model.is_relay)
+        return enhanced, (model.model_id if model is not None else "")
 
     def judge_for(self, node_model: ModelProfile | None) -> ApprovalJudge | None:
         """The approval judge for a node that runs on ``node_model``; ``None`` before a run with agents.
@@ -267,6 +283,8 @@ class WorkflowSessionOwner:
         session = self.session
         session_id = self.require_session_id()
         profile = self._judge_model(node_model)
+        if profile is None:
+            return None
         judge = self._judges.get(profile.id)
         if judge is None:
             judge = ApprovalJudge(

@@ -34,6 +34,10 @@ MODE_BYPASS_DESCRIPTION = msg(
     "tui.approval_mode.description.bypass",
     fallback="All tool calls run without approval",
 )
+_MODE_BYPASS_RELAY_DESCRIPTION = msg(
+    "tui.approval_mode.description.bypass_relay",
+    fallback="All tool calls run without approval — relay-enhanced review is NOT active",
+)
 _APPROVAL_MODE_TITLE = msg("tui.approval_mode.title", fallback="Approval Mode")
 
 _MODE_DESCRIPTIONS: dict[ApprovalMode, MessageDef] = {
@@ -56,8 +60,12 @@ class ApprovalModeScreen(BaseDialog[ApprovalMode | None]):
         localized_binding("escape", "cancel", CLOSE_BINDING),
     ]
 
-    def __init__(self, current_mode: ApprovalMode) -> None:
+    def __init__(self, current_mode: ApprovalMode, *, relay_active: bool = False) -> None:
         self._current_mode = current_mode
+        # While the session's model is a relay, bypass would silence the
+        # enhanced review entirely — the option says so instead of implying
+        # the same protection as other modes.
+        self._relay_active = relay_active
         self._dismissed = False
         super().__init__()
 
@@ -75,7 +83,14 @@ class ApprovalModeScreen(BaseDialog[ApprovalMode | None]):
             [
                 MenuOption(
                     render_str(localizer, APPROVAL_MODE_MESSAGES[mode].bind()),
-                    render_str(localizer, _MODE_DESCRIPTIONS[mode].bind()),
+                    render_str(
+                        localizer,
+                        (
+                            _MODE_BYPASS_RELAY_DESCRIPTION
+                            if mode is ApprovalMode.BYPASS and self._relay_active
+                            else _MODE_DESCRIPTIONS[mode]
+                        ).bind(),
+                    ),
                     id=mode.value,
                     current=mode == self._current_mode,
                 )

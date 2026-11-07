@@ -740,6 +740,7 @@ class WorkflowCoordinator:
             settings=settings,
             approval_mode=lambda: self._session.approval_mode,
             approval_judge_for=owner.judge_for,
+            approval_relay_context=owner.approval_relay_context,
             hook_manager=session.hook_manager,
             mutation_tracker=session.mutation_tracker,
             mutation_coordinator=session.mutation_coordinator,

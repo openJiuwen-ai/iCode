@@ -49,6 +49,7 @@ async def test_middleware_usage_fields_reach_session_events_and_extra_args_do_no
             settings=Settings(),
             approval_mode=lambda: ApprovalMode.BYPASS,
             approval_judge_for=lambda _model: None,
+            approval_relay_context=lambda _model: (False, ""),
             hook_manager=None,
             mutation_tracker=None,
             mutation_coordinator=None,

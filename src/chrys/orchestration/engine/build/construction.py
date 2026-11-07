@@ -281,21 +281,43 @@ async def build_agent(
 
     # "Use the active model" means the model this agent runs on. A session override or the
     # agent profile's own model moves that away from ``settings.model_profile``, which may
-    # then name nothing usable at all.
+    # then name nothing usable at all.  A relay fallback with no independent judge
+    # resolves to None: no judge is built and AUTO approval defers to the user.
     judge_fallback = resolve_for_agent(model_registry, staged.loaded.settings, profile)
-    judge_profile = resolve_judge_profile(model_registry, staged.loaded.settings, judge_fallback)
-    judge_session_id = derive_llm_route_session_id(
-        session.session_id,
-        route_kind="approval-judge",
-        model_profile=judge_profile,
+    # Enhancement keys on the model whose traffic is actually relayed — the
+    # same profile the judge fallback came from — and propagates to sub-agents.
+    # The latch request keeps it on after a switch to a direct model: content
+    # the relay produced stays in the conversation, so it stays untrusted; the
+    # installing engine applies the latch (builds never write live state).
+    relay_risk_latch = judge_fallback.is_relay
+    relay_history_risk = session.runtime_meta.relay_risk_seen
+    # Historical relay risk takes part in judge qualification, not just in
+    # the enhancement flag: a restored session with a latched risk must not
+    # fall back to a relay/mock/unqualified judge just because the current
+    # model is direct (legacy or externally edited configurations).
+    judge_profile = resolve_judge_profile(
+        model_registry,
+        staged.loaded.settings,
+        judge_fallback,
+        relay_history_risk=relay_history_risk,
     )
-    approval_judge = ApprovalJudge(
-        judge_profile,
-        auto_review=staged.loaded.settings.approval_auto_review,
-        session_id=judge_session_id,
-        parent_session_id=session.session_id,
-        session_dir=session_dir,
-    )
+    relay_enhanced = relay_risk_latch or relay_history_risk
+    relay_reviewed_model = judge_fallback.model_id
+    if judge_profile is None:
+        approval_judge = None
+    else:
+        judge_session_id = derive_llm_route_session_id(
+            session.session_id,
+            route_kind="approval-judge",
+            model_profile=judge_profile,
+        )
+        approval_judge = ApprovalJudge(
+            judge_profile,
+            auto_review=staged.loaded.settings.approval_auto_review,
+            session_id=judge_session_id,
+            parent_session_id=session.session_id,
+            session_dir=session_dir,
+        )
 
     old_coordinator = session.mutation_coordinator
     result: AgentBuildResult | None = None
@@ -325,6 +347,8 @@ async def build_agent(
             file_change_provider=workspace_change_tracker.take_pending_notice,
             approval_mode=session.approval_mode,
             approval_judge=approval_judge,
+            relay_enhanced=relay_enhanced,
+            relay_reviewed_model=relay_reviewed_model,
             session_dir=session_dir,
             mcp_cache=mcp_cache,
             hook_manager=staged.hook_manager,
@@ -341,7 +365,8 @@ async def build_agent(
         )
         # The judge creates its client on first evaluation, never during the
         # build, so the build's own rollback has nothing of it to close.
-        result.prepared.own(approval_judge.aclose)
+        if approval_judge is not None:
+            result.prepared.own(approval_judge.aclose)
         settings = staged.prepared
         result.loop_recorder.on_pre_wire_barrier = checkpoints.persist_barrier
         result.loop_recorder.on_result_checkpoint = checkpoints.save_checkpoint
@@ -391,6 +416,7 @@ async def build_agent(
             mutation_tracker=mutation_tracker,
             todo_tracker=todo_tracker,
             compaction_strategy=result.compaction_strategy,
+            relay_risk_latch=relay_risk_latch,
         )
     except BaseException as error:
         cancelled: asyncio.CancelledError | None = None

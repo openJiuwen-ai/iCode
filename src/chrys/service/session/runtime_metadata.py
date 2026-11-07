@@ -15,6 +15,7 @@ TOTAL_SESSION_OUTPUT_TOKENS_KEY = "total_session_output_tokens"
 TOTAL_SESSION_CACHE_HIT_TOKENS_KEY = "total_session_cache_hit_tokens"
 CONTEXT_CALIBRATION_KEY = "context_calibration"
 CONTEXT_CALIBRATION_VERSION = 2
+RELAY_RISK_SEEN_KEY = "relay_risk_seen"
 
 
 class LastUsageDetails(TypedDict, total=False):
@@ -40,6 +41,13 @@ class SessionUsageMetadata:
     """Cumulative cache-read tokens across the session, or ``None`` when no
     LLM call has reported cache info yet. Transitions to ``int`` on the first
     cache-aware response (even a reported 0) and stays ``int`` thereafter."""
+    relay_risk_seen: bool = False
+    """Latched once this session runs on a relay model profile.
+
+    Relay-sourced content stays in the conversation after a model switch, so
+    the conservative marker keeps relay-enhanced approval review on for the
+    session's remaining life (and across restore) instead of silently
+    treating old content as trusted again."""
 
     @classmethod
     def from_state_dict(cls, state: Mapping[str, Any]) -> Self:
@@ -48,6 +56,7 @@ class SessionUsageMetadata:
             total_session_input_tokens=state.get(TOTAL_SESSION_INPUT_TOKENS_KEY, 0),
             total_session_output_tokens=state.get(TOTAL_SESSION_OUTPUT_TOKENS_KEY, 0),
             total_session_cache_hit_tokens=state.get(TOTAL_SESSION_CACHE_HIT_TOKENS_KEY),
+            relay_risk_seen=bool(state.get(RELAY_RISK_SEEN_KEY, False)),
         )
 
     def to_state_dict(self) -> dict[str, Any]:
@@ -56,6 +65,7 @@ class SessionUsageMetadata:
             TOTAL_SESSION_INPUT_TOKENS_KEY: self.total_session_input_tokens,
             TOTAL_SESSION_OUTPUT_TOKENS_KEY: self.total_session_output_tokens,
             TOTAL_SESSION_CACHE_HIT_TOKENS_KEY: self.total_session_cache_hit_tokens,
+            RELAY_RISK_SEEN_KEY: self.relay_risk_seen,
         }
 
     def accumulate_out_of_band_usage(

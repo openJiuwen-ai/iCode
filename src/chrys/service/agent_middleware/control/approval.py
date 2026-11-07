@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import os
 from collections.abc import Mapping
@@ -26,11 +27,18 @@ from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.platform.paths import resolve_workspace_path
 from chrys.foundation.tool_approval import declares_requires_approval
 from chrys.foundation.tool_kinds import (
+    KIND_DOC_CONVERTER,
     KIND_FILESYSTEM_READ,
     KIND_FILESYSTEM_WRITE,
+    KIND_MCP,
+    KIND_SEARCH,
     KIND_SHELL,
+    KIND_SKILL,
     KIND_SUB_AGENT,
+    KIND_WEB_FETCH,
+    KIND_WEB_SEARCH,
     get_tool_kind,
+    is_extension_kind,
 )
 from chrys.foundation.trajectory.context import side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
@@ -67,6 +75,43 @@ _REMEMBER_FAILED = msg(
     "approval.reuse.save_failed",
     fallback="Allowed once, but the approval could not be remembered. Check storage permissions or manage grants with icode approval.",
 )
+
+# Tool kinds whose calls may touch the filesystem, spawn processes, reach the
+# network, or run third-party code: everything relay-enhanced review protects.
+# ask_user/sleep/todo/context stay outside — they cannot execute, read
+# arbitrary files, or send data anywhere by themselves.
+_RELAY_PROTECTED_KINDS = frozenset(
+    {
+        KIND_SHELL,
+        KIND_FILESYSTEM_READ,
+        KIND_FILESYSTEM_WRITE,
+        KIND_SEARCH,
+        KIND_WEB_SEARCH,
+        KIND_WEB_FETCH,
+        KIND_MCP,
+        KIND_SKILL,
+        KIND_DOC_CONVERTER,
+        KIND_SUB_AGENT,
+    }
+)
+
+
+def _is_relay_protected_kind(kind: str) -> bool:
+    """Whether a tool kind's calls fall under relay-enhanced review."""
+    return kind in _RELAY_PROTECTED_KINDS or is_extension_kind(kind)
+
+
+def _write_target_fingerprint(file_path: str, base_cwd: str | None) -> tuple[int, int] | None:
+    """A cheap identity of the write target's current on-disk version, if it exists."""
+    if not file_path:
+        return None
+    path = file_path if os.path.isabs(file_path) else os.path.join(base_cwd or os.getcwd(), file_path)
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
 
 _GITDIR_POINTER_PREFIX = "gitdir:"
 
@@ -247,12 +292,20 @@ class ApprovalMiddleware(FunctionMiddleware):
         turn_context: TurnContextHolder | None = None,
         reuse: ApprovalReuseBinding | None = None,
         extension_hooks: ExtensionToolHooks | None = None,
+        relay_enhanced: bool = False,
+        relay_reviewed_model: str = "",
     ) -> None:
         from chrys.service.approval.turn_context import TurnContextHolder
 
         self._policy = approval_policy
         self._extension_hooks = extension_hooks
         self._reuse = reuse
+        # Relay enhancement: the model whose traffic this middleware gates is
+        # routed through a third-party relay.  Fixed at construction (never a
+        # runtime toggle) and inherited by sub-agents, so a relay parent
+        # cannot slip a protected call past review via a direct child.
+        self._relay_enhanced = relay_enhanced
+        self._relay_reviewed_model = relay_reviewed_model
         self._publisher: InvocationPublisher | None = None
         self._bus = event_bus
         self._session_id = session_id
@@ -356,8 +409,16 @@ class ApprovalMiddleware(FunctionMiddleware):
         policy_requires_approval = self._policy.should_require_approval(
             tool_name, tool_kind, tool_requires_approval=declares_requires_approval(context.function)
         )
+        # Relay-enhanced review: in AUTO mode, protected kinds may not skip
+        # review through the lenient heuristics below (policy auto/skip rules,
+        # read-only command or workspace shortcuts, remembered approvals).
+        # BYPASS keeps its explicit "no review at all" meaning.
+        relay_enhanced = (
+            self._relay_enhanced and self._approval_mode is ApprovalMode.AUTO and _is_relay_protected_kind(tool_kind)
+        )
         if (
             not policy_requires_approval
+            and not relay_enhanced
             and not dev_sub_agent_review
             and not sensitive_shell
             and not sensitive_filesystem_read
@@ -368,7 +429,7 @@ class ApprovalMiddleware(FunctionMiddleware):
 
         # Auto-approve safe read-only shell commands (e.g. ls, cat, grep)
         # without showing the approval dialog.
-        if tool_kind == KIND_SHELL:
+        if tool_kind == KIND_SHELL and not relay_enhanced:
             raw = context.arguments
             cmd = raw.get("command", "") if isinstance(raw, dict) else ""
             if cmd:
@@ -390,7 +451,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                     return
 
         # Auto-approve file writes inside workspace git repos.
-        if tool_kind == KIND_FILESYSTEM_WRITE and self._workspace_roots:
+        if tool_kind == KIND_FILESYSTEM_WRITE and self._workspace_roots and not relay_enhanced:
             raw = context.arguments
             file_path = raw.get("path", "") if isinstance(raw, dict) else ""
             if (
@@ -415,7 +476,7 @@ class ApprovalMiddleware(FunctionMiddleware):
         # back content chrys itself archived from the conversation, so the
         # dialog would gate nothing — even under a ``require`` rule or a
         # sensitive-looking archived tool name in the filename.
-        if tool_kind == KIND_FILESYSTEM_READ and self._session_archive_read_roots:
+        if tool_kind == KIND_FILESYSTEM_READ and self._session_archive_read_roots and not relay_enhanced:
             raw = context.arguments
             file_path = raw.get("path", "") if isinstance(raw, dict) else ""
             if (
@@ -470,7 +531,11 @@ class ApprovalMiddleware(FunctionMiddleware):
         # branches above without copying or coercing their result.
         parsed_args = cast("dict[str, Any]", parsed_args)
 
-        binding = self._reuse if self._reuse is not None and self._reuse.supports(context) else None
+        binding = (
+            None
+            if relay_enhanced
+            else (self._reuse if self._reuse is not None and self._reuse.supports(context) else None)
+        )
         reuse: PreparedReuse | None = None
         if binding is not None:
             sensitive = sensitive_shell or sensitive_filesystem_read or sensitive_filesystem_write
@@ -497,6 +562,16 @@ class ApprovalMiddleware(FunctionMiddleware):
             call_id=call_id,
             tool_order=tool_order,
         )
+        # What the judge (if any) will see; deep-copied so a later mutation of
+        # ``context.arguments`` cannot silently change what was reviewed.
+        reviewed_args_snapshot = copy.deepcopy(parsed_args) if relay_enhanced else None
+        write_target_path = parsed_args.get("path", "") if tool_kind == KIND_FILESYSTEM_WRITE and parsed_args else ""
+        if isinstance(write_target_path, str):
+            reviewed_target_fingerprint = (
+                _write_target_fingerprint(write_target_path, self._workspace_cwd) if relay_enhanced else None
+            )
+        else:
+            reviewed_target_fingerprint = None
         # Keep this dict in _decisions and mutate it after the approval
         # response so list order stays tied to invocation order, not response
         # arrival order.
@@ -552,6 +627,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                             workspace_roots=list(self._workspace_roots),
                             workspace_cwd=self._workspace_cwd or "",
                             judging=judging,
+                            relay_enhanced=relay_enhanced,
                             reuse_offer=reuse.candidate.offer() if reuse is not None and reuse.candidate else None,
                         )
                     )
@@ -584,6 +660,8 @@ class ApprovalMiddleware(FunctionMiddleware):
                                         tool_kind=tool_kind,
                                         args=parsed_args,
                                         workspace_roots=list(self._workspace_roots),
+                                        relay_enhanced=relay_enhanced,
+                                        reviewed_model=self._relay_reviewed_model,
                                     ),
                                     decision_future=future,
                                     approved_value=ApprovalResponse(
@@ -653,6 +731,31 @@ class ApprovalMiddleware(FunctionMiddleware):
             raise
 
         if approved:
+            if (
+                relay_enhanced
+                and not correlation.resolved_by_event
+                and self._review_is_stale(
+                    context_arguments=context.arguments,
+                    reviewed_args_snapshot=reviewed_args_snapshot,
+                    write_target_path=write_target_path if isinstance(write_target_path, str) else "",
+                    reviewed_target_fingerprint=reviewed_target_fingerprint,
+                )
+            ):
+                # The judge approved arguments that are no longer the ones
+                # about to run (a hook rewrote them, or the write target
+                # changed on disk mid-review).  The approval is void; the
+                # model sees an error and a retry re-enters review fresh.
+                decision["status"] = "judge_stale"
+                context.metadata[_APPROVAL_REJECTED_KEY] = True
+                context.metadata[_REJECTION_SOURCE_KEY] = "stale_review"
+                message = (
+                    "Error: Auto-approval withdrawn: the reviewed arguments or "
+                    "write target changed during review. Retry the tool call to "
+                    "have the current version reviewed."
+                )
+                context.metadata[_REJECTION_MESSAGE_KEY] = message
+                context.result = message
+                return
             targets = reuse.targets if reuse is not None else None
             if modified_args:
                 context.arguments = {**parsed_args, **modified_args}
@@ -724,6 +827,31 @@ class ApprovalMiddleware(FunctionMiddleware):
             context.result = "Error: Tool execution was rejected by user."
             if reason:
                 context.result = f"{context.result}\nUser reason: {reason}"
+
+    def _review_is_stale(
+        self,
+        *,
+        context_arguments: Any,
+        reviewed_args_snapshot: dict[str, Any] | None,
+        write_target_path: str,
+        reviewed_target_fingerprint: tuple[int, int] | None,
+    ) -> bool:
+        """Whether what a judge approved differs from what is about to run.
+
+        Hooks may rewrite arguments during the review window and another
+        writer may touch the write target on disk; either voids the verdict.
+        This narrows the gap between review and execution — it is not a
+        filesystem isolation guarantee.
+        """
+        if reviewed_args_snapshot is not None and (
+            not isinstance(context_arguments, dict) or context_arguments != reviewed_args_snapshot
+        ):
+            return True
+        if write_target_path:
+            current = _write_target_fingerprint(write_target_path, self._workspace_cwd)
+            if current != reviewed_target_fingerprint:
+                return True
+        return False
 
     async def _remember(self, binding: ApprovalReuseBinding, candidate: Candidate, choice: ReuseChoice) -> None:
         """Save the grant for the request the person saw; a failure still allows this call."""

@@ -984,6 +984,8 @@ async def test_model_config_sections_are_ordered_and_titled() -> None:
         skip_tls = screen.query_one("#mc-skip-tls", Checkbox)
         stream = screen.query_one("#mc-stream", Checkbox)
         vision = screen.query_one("#mc-vision", Checkbox)
+        relay = screen.query_one("#mc-relay", Checkbox)
+        relay_hint = screen.query_one("#mc-relay-hint", Label)
         provider_select = screen.query_one("#mc-provider", Select)
         model_input = screen.query_one("#mc-model", Input)
         api_key_input = screen.query_one("#mc-api-key", Input)
@@ -1004,7 +1006,7 @@ async def test_model_config_sections_are_ordered_and_titled() -> None:
         ]
         streaming_in_model_options = stream.parent is model_options
         vision_in_model_options = vision.parent is model_options
-        vision_is_last_in_model_options = model_children[-1] is vision
+        model_options_tail = model_children[-3:]
         provider_in_model_options = provider_select.parent is model_options
         model_id_in_model_options = model_input.parent is model_options
         api_key_in_model_options = api_key_input.parent is model_options
@@ -1027,7 +1029,8 @@ async def test_model_config_sections_are_ordered_and_titled() -> None:
     assert sections_in_order == sorted(sections_in_order)
     assert streaming_in_model_options is True
     assert vision_in_model_options is True
-    assert vision_is_last_in_model_options is True
+    # The relay checkbox (and its hint) close the Model Options section.
+    assert model_options_tail == [vision, relay, relay_hint]
 
 
 async def test_model_config_transport_checkboxes_default_secure_proxy_enabled_and_streaming() -> None:

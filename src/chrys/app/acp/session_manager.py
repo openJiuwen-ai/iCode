@@ -260,6 +260,10 @@ class AcpSessionManager:
         # ``asyncio.to_thread`` because they touch the settings file, so two
         # config requests genuinely execute them in parallel. Reentrant because
         # the refresh takes it for its own callers as well as inside a write.
+        # One lock spans settings writes AND model profile writes/deletions:
+        # relay-guard validation must be a transaction with its commit, so a
+        # judge selection changing mid-write cannot validate against a state
+        # its sibling is about to invalidate (and vice versa).
         self._global_settings_lock = threading.RLock()
 
     @property
@@ -497,18 +501,55 @@ class AcpSessionManager:
         profile_data["id"] = _safe_profile_file_stem(profile_data["id"], field_name="model profile id")
         profile = _model_profile_from_data(profile_data)
         profile.id = _safe_profile_file_stem(profile.id, field_name="model profile id")
-        path = save_model_profile(profile)
-        self._model_registry.register(profile)
+        with self._global_settings_lock:
+            self._reject_relay_guard_write(profile)
+            path = save_model_profile(profile)
+            self._model_registry.register(profile)
         return {"profile": _model_profile_info(profile), "path": str(path)}
 
     def delete_model_profile(self, profile_id: str) -> dict[str, object]:
         """Delete a model profile from disk and registry."""
         self.load_registries()
         profile_id = _safe_profile_file_stem(profile_id, field_name="model profile id")
-        deleted = delete_model_profile(profile_id)
-        if deleted:
-            self._model_registry.remove(profile_id)
+        with self._global_settings_lock:
+            self._reject_relay_guard_delete(profile_id)
+            deleted = delete_model_profile(profile_id)
+            if deleted:
+                self._model_registry.remove(profile_id)
         return {"id": profile_id, "deleted": deleted}
+
+    def _reject_relay_guard_write(self, profile: ModelProfile) -> None:
+        """Refuse writes that would leave relay profiles without an independent judge."""
+        from chrys.service.profiles.models.relay_guard import check_profile_write, issue_text
+
+        issues = check_profile_write(
+            self._model_registry.list_profiles(),
+            profile,
+            self._loaded_settings.settings.approval_judge_model_profile,
+        )
+        if issues:
+            raise AcpSessionError(issue_text(issues))
+
+    def _reject_relay_guard_delete(self, profile_id: str) -> None:
+        """Refuse deletions the remaining relay profiles still depend on."""
+        from chrys.service.profiles.models.relay_guard import check_profile_delete, issue_text
+
+        issues = check_profile_delete(
+            self._model_registry.list_profiles(),
+            profile_id,
+            self._loaded_settings.settings.approval_judge_model_profile,
+        )
+        if issues:
+            raise AcpSessionError(issue_text(issues))
+
+    def _reject_relay_guard_judge(self, selector: str) -> None:
+        """Refuse an approval-judge selection that leaves relay profiles unguarded."""
+        self.load_registries()
+        from chrys.service.profiles.models.relay_guard import issue_text, relay_guard_issues
+
+        issues = relay_guard_issues(self._model_registry.list_profiles(), selector)
+        if issues:
+            raise AcpSessionError(issue_text(issues))
 
     def set_config_option(self, key: str, value: object) -> dict[str, object]:
         """Persist a supported Chrys config option to the user settings document.
@@ -535,6 +576,8 @@ class AcpSessionManager:
         option = _config_option(key)
         text_value = "" if value is None else str(value)
         with self._global_settings_lock:
+            if option.setting_key == "model.role.approval_judge":
+                self._reject_relay_guard_judge(text_value)
             if text_value:
                 result = persist({option.setting_key: text_value})
                 if not result.ok:
@@ -2026,6 +2069,7 @@ def _model_profile_info(profile: ModelProfile) -> dict[str, object]:
         "maxContextTokens": profile.max_context_tokens,
         "stream": profile.stream,
         "vision": profile.vision,
+        "isRelay": profile.is_relay,
     }
 
 

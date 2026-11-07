@@ -132,6 +132,8 @@ class ApprovalInputs(TypedDict):
     session_archive_read_roots: NotRequired[list[Path] | None]
     turn_context: NotRequired[TurnContextHolder | None]
     extension_hooks: NotRequired[ExtensionToolHooks | None]
+    relay_enhanced: NotRequired[bool]
+    relay_reviewed_model: NotRequired[str]
 
 
 class AskUserInputs(TypedDict):

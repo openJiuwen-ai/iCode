@@ -124,12 +124,23 @@ class RuntimeConfigController:
     def on_approval_badge_clicked(self) -> None:
         """Open the approval mode picker modal."""
         from chrys.app.tui.screens.dialogs.approval.mode import ApprovalModeScreen
+        from chrys.service.profiles.models.resolver import resolve_active_profile
+
+        registry = self._services.model_registry
+        settings_handle = self._services.settings_handle
+        relay_active = (
+            registry is not None
+            and settings_handle is not None
+            and resolve_active_profile(registry, settings_handle.loaded.settings).is_relay
+        )
 
         def _on_result(result: ApprovalMode | None) -> None:
             if result is not None:
                 self.start_approval_mode_change(result.value)
 
-        self._view.push_screen(ApprovalModeScreen(self._state.runtime.approval_mode), _on_result)
+        self._view.push_screen(
+            ApprovalModeScreen(self._state.runtime.approval_mode, relay_active=relay_active), _on_result
+        )
 
     def on_profile_tag_clicked(self) -> None:
         """Open the agent picker modal."""
@@ -276,11 +287,14 @@ class RuntimeConfigController:
                 self._callbacks.start_worker(partial(self.on_model_config_result, result))
                 self._view.focus_input()
 
+            settings_handle = self._services.settings_handle
+            judge_selector = settings_handle.loaded.settings.approval_judge_model_profile if settings_handle else ""
             self._view.push_screen(
                 ModelConfigScreen(
                     registry,
                     _canonical_active_model_profile_id(registry, global_default_profile_id),
                     read_only=self._config_read_only(),
+                    approval_judge_selector=judge_selector,
                 ),
                 _on_result,
             )

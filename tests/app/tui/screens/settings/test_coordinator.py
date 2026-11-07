@@ -647,3 +647,60 @@ async def test_an_external_reload_prunes_desired_but_keeps_the_dirty_flag(monkey
     assert h.coordinator._desired == {}
     assert h.coordinator.reload_dirty() is True
     assert h.dialog.reprojections == 2
+
+
+def _relay_registry() -> ModelProfileRegistry:
+    registry = ModelProfileRegistry()
+    registry.register(
+        ModelProfile(
+            id="relay",
+            name="Relay",
+            model_id="m",
+            base_url="https://relay.example.com/v1",
+            api_key="k",
+            is_relay=True,
+        )
+    )
+    registry.register(
+        ModelProfile(
+            id="judge",
+            name="Judge",
+            model_id="m",
+            base_url="https://direct.example.com/v1",
+            api_key="k",
+        )
+    )
+    return registry
+
+
+async def test_schedule_persist_rejects_judge_selection_that_strands_relay_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h = _Harness(monkeypatch, model_registry=_relay_registry())
+
+    h.coordinator.schedule_persist({"model.role.approval_judge": ""})
+
+    assert h.view.notifications and h.view.notifications[0][1] == "error"
+    assert not any("model.role.approval_judge" in values for values, _remove in h.recorder.calls)
+    await h.close_and_settle()
+
+
+async def test_schedule_persist_rejects_relay_profile_as_judge(monkeypatch: pytest.MonkeyPatch) -> None:
+    h = _Harness(monkeypatch, model_registry=_relay_registry())
+
+    h.coordinator.schedule_persist({"model.role.approval_judge": "relay"})
+
+    assert h.view.notifications and h.view.notifications[0][1] == "error"
+    assert not any("model.role.approval_judge" in values for values, _remove in h.recorder.calls)
+    await h.close_and_settle()
+
+
+async def test_schedule_persist_allows_qualified_judge_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    h = _Harness(monkeypatch, model_registry=_relay_registry())
+
+    h.coordinator.schedule_persist({"model.role.approval_judge": "judge"})
+    h.coordinator.on_dialog_closed()
+    await h.close_and_settle()
+
+    assert any(values.get("model.role.approval_judge") == "judge" for values, _remove in h.recorder.calls)
+    assert not h.view.notifications

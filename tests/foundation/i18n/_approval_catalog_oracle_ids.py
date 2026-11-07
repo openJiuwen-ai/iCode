@@ -58,6 +58,7 @@ APPROVAL_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "tui.approval.risk.shared_mutation",
         "tui.approval.risk.untrusted_execution",
         "tui.approval_mode.description.bypass",
+        "tui.approval_mode.description.bypass_relay",
         "tui.approval_mode.description.manual",
         "tui.approval_mode.title",
         "tui.approval.judge.auto_approved",

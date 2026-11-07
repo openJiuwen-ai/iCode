@@ -256,6 +256,8 @@ async def build_agent(
     file_change_provider: Callable[[], str | None] | None = None,
     approval_mode: ApprovalMode = ApprovalMode.MANUAL,
     approval_judge: ApprovalJudge | None = None,
+    relay_enhanced: bool = False,
+    relay_reviewed_model: str = "",
     session_dir: Path | None = None,
     mcp_cache: MCPConnectionCache | None = None,
     hook_manager: HookManager | None = None,
@@ -569,6 +571,11 @@ async def build_agent(
                 mutation_coordinator=mutation_coordinator,
                 approval_mode=approval_mode,
                 approval_judge=approval_judge,
+                # Sub-agents inherit the parent's relay enhancement: a relay
+                # parent cannot slip a protected call past review via a
+                # direct-connected child model.
+                relay_enhanced=relay_enhanced,
+                relay_reviewed_model=relay_reviewed_model,
                 workspace_roots=workspace_roots,
                 approval_log_dir=approval_log_dir,
                 mcp_cache=mcp_cache,
@@ -944,6 +951,8 @@ async def build_agent(
                 approval_log_dir=approval_log_dir,
                 workspace_cwd=runtime.cwd,
                 dev_mode=settings.dev_mode,
+                relay_enhanced=relay_enhanced,
+                relay_reviewed_model=relay_reviewed_model,
                 hook_manager=hook_manager,
                 profile_name=profile.name,
                 session_archive_read_roots=(

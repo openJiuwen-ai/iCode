@@ -511,3 +511,75 @@ def test_invalid_assets_are_rejected(mutation):
         definitions[0]["examples"][0]["result"] = True
     with pytest.raises(PredicateAssetError):
         parse_asset(json.dumps(definitions))
+
+
+# ─── Relay-strict formal review ──────────────────────────────────────
+
+
+async def test_relay_enhanced_unknown_predicates_require_human_without_reasoning(monkeypatch):
+    """An inconclusive predicate set never falls back to the lenient prompt."""
+    async with _judge(monkeypatch, [json.dumps(_values("unknown"))]) as (judge, calls):
+        verdict = await judge.evaluate(
+            "Inspect",
+            "read_file",
+            "",
+            {"path": "main.py"},
+            ["/workspace"],
+            request_id="relay-unknown",
+            relay_enhanced=True,
+            reviewed_model="gpt-relay-x",
+        )
+        assert verdict.approved is False
+        assert verdict.audit["stages"] == ["predicate"]
+        assert verdict.audit["relay_enhanced"] is True
+        assert len(calls) == 1
+        # The strict prelude and the immutable security context reach the wire.
+        payload = calls[0].content.decode()
+        assert "third-party relay" in payload
+        assert "RELAY RISK" in payload
+        assert "relay-strict-v1" in payload
+        assert "gpt-relay-x" in payload
+
+
+async def test_relay_enhanced_all_false_predicates_still_approve(monkeypatch):
+    async with _judge(monkeypatch, [json.dumps(_values())]) as (judge, _calls):
+        verdict = await judge.evaluate(
+            "Inspect",
+            "read_file",
+            "",
+            {"path": "main.py"},
+            ["/workspace"],
+            request_id="relay-allow",
+            relay_enhanced=True,
+        )
+        assert verdict.approved is True
+        assert verdict.audit["relay_enhanced"] is True
+
+
+async def test_relay_enhanced_direct_review_uses_the_strict_system_prompt(monkeypatch):
+    async with _judge(monkeypatch, ['{"approved": false, "reason": "uncertain"}'], auto_review="direct") as (
+        judge,
+        calls,
+    ):
+        verdict = await judge.evaluate(
+            "Inspect",
+            "zsh",
+            "shell",
+            {"command": "make build"},
+            ["/workspace"],
+            request_id="relay-direct",
+            relay_enhanced=True,
+        )
+        assert verdict.approved is False
+        payload = calls[0].content.decode()
+        assert "third-party relay" in payload
+        assert "uncertainty is never a reason to" in payload
+        assert "lean heavily towards approving" not in payload
+        # The strict prompt keeps the baseline ALWAYS-FLAG deletion rules the
+        # direct policy has always promised (docs: both strategies confirm
+        # deletions with a human) — deletion never becomes auto-approvable.
+        assert "ALWAYS FLAG (no exceptions) any tool call that deletes files or folders" in payload
+        assert "`rm`" in payload
+        assert "`Remove-Item`" in payload
+        assert "truncate" in payload
+        assert "nothing that deletes or truncates files or folders" in payload

@@ -10,6 +10,7 @@ from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
 from chrys.app.tui.screens.dialogs.approval.mode import ApprovalModeScreen
+from chrys.app.tui.widgets.option_menu import MenuOptionList
 from chrys.service.approval.policy import ApprovalMode
 
 
@@ -33,6 +34,35 @@ def test_approval_mode_selection_dismisses_once(monkeypatch: pytest.MonkeyPatch)
     screen._dismiss_clicked_outside()
 
     assert results == [ApprovalMode.BYPASS]
+
+
+@pytest.mark.asyncio
+async def test_bypass_option_says_relay_enhanced_review_is_inactive_for_relay_models() -> None:
+    """With a relay model active, the bypass option must not imply protection."""
+
+    class _Harness(App):
+        def __init__(self, relay_active: bool) -> None:
+            super().__init__()
+            self._relay_active = relay_active
+
+        def compose(self) -> ComposeResult:
+            yield ApprovalModeScreen(ApprovalMode.AUTO, relay_active=self._relay_active)
+
+    # Undo the menu's soft wrapping: compare with all whitespace removed.
+    def _flat(text: str) -> str:
+        return "".join(text.split())
+
+    async with _Harness(True).run_test() as pilot:
+        await pilot.pause()
+        rendered = pilot.app.query_one(ApprovalModeScreen).query_one(MenuOptionList).options
+        by_id = {option.id: str(option.prompt) for option in rendered}
+    assert "relay-enhancedreviewisNOTactive" in _flat(by_id["bypass"])
+
+    async with _Harness(False).run_test() as pilot:
+        await pilot.pause()
+        rendered = pilot.app.query_one(ApprovalModeScreen).query_one(MenuOptionList).options
+        by_id = {option.id: str(option.prompt) for option in rendered}
+    assert "relay-enhancedreview" not in _flat(by_id["bypass"])
 
 
 @pytest.mark.asyncio

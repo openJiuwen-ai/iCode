@@ -818,6 +818,75 @@ msgstr ""
 msgid "i18n.catalog_load_failed"
 msgstr ""
 
+#. English: Cannot delete {name}: it is the approval judge required by relay
+#. model profiles. Select another independent approval judge first.
+#. chrys-meta={"fingerprint":"b627e7f4e6cc08f8ce144416a836c5f502016443ce0020358e8c568f18e9e84a","multiline":false,"placeholders":["name"]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.judge_delete_dependency"
+msgstr ""
+
+#. English: The approval judge {judge} is served by the same host as the relay
+#. profile {relay}; the judge must be an independent service.
+#. chrys-meta={"fingerprint":"bd2d4e5c300c34d1a1a273396087d1943c32cfd11cb3efbc757240eb01644bb8","multiline":false,"placeholders":["judge","relay"]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.judge_host_shared"
+msgstr ""
+
+#. English: The approval judge {judge} is itself marked as a relay; the judge
+#. must be an independent non-relay model.
+#. chrys-meta={"fingerprint":"546218b4b61991633106dfbdd90f72dce67959be5916f681c437ff90cae7781b","multiline":false,"placeholders":["judge"]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.judge_is_relay"
+msgstr ""
+
+#. English: The approval judge cannot use the mock provider.
+#. chrys-meta={"fingerprint":"10b1939b2422463d91b359d569b1d4238d5a188ec514b0223e93225ce8221f38","multiline":false,"placeholders":[]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.judge_mock"
+msgstr ""
+
+#. English: The approval judge {judge} has no credentials: set an API key or
+#. its provider environment variable.
+#. chrys-meta={"fingerprint":"4707b87e1b9271a43c36f6dde40138eb6f89f9b4a712b301fef23e5051080cca","multiline":false,"placeholders":["judge"]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.judge_no_credentials"
+msgstr ""
+
+#. English: The approval judge {judge} is incomplete: model, provider or token
+#. limits are not fully configured.
+#. chrys-meta={"fingerprint":"5fd7c5a3ab65d13ca2db9383abc4b129808e93392bc9dfa54b53a5d2c6ecb299","multiline":false,"placeholders":["judge"]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.judge_not_configured"
+msgstr ""
+
+#. English: The approval judge {judge} skips TLS certificate verification; the
+#. approval channel must verify certificates.
+#. chrys-meta={"fingerprint":"5e590e08a6f6f20686d546c9a6765d9a8b21bb7ead50f4f204124aa9bf8ac82e","multiline":false,"placeholders":["judge"]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.judge_tls_disabled"
+msgstr ""
+
+#. English: The approval judge {selector} does not match any configured model
+#. profile.
+#. chrys-meta={"fingerprint":"9248ecf73e1c2b14bb4fb31ce891e45035d7f02639b4f50c72ff69f51fa0bae4","multiline":false,"placeholders":["selector"]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.judge_unresolved"
+msgstr ""
+
+#. English: There are relay model profiles, but no approval judge model is set.
+#. Configure an independent non-relay model profile and select it as the
+#. approval judge first.
+#. chrys-meta={"fingerprint":"185d999df99aaac736d3b71fb52eb883261645d9db435fb2ef5c43d079f0a94e","multiline":false,"placeholders":[]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.judge_unset"
+msgstr ""
+
+#. English: The approval judge {judge} has no usable service address.
+#. chrys-meta={"fingerprint":"8ecce84fbc80e22180656dc8a9c86833be2d933c0cf2e7dc6fa93d2a088356eb","multiline":false,"placeholders":["judge"]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.judge_url_invalid"
+msgstr ""
+
 #. English: Reloaded agent and model profile definitions.
 #. chrys-meta={"fingerprint":"e4cbc2b8a17979fc36c60f27fa9f453e43f5437624a290c4cf75a334eabc4462","multiline":false,"placeholders":[]}
 #: src/chrys/service/profiles/reload.py
@@ -4472,6 +4541,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"00c673898ea5cda9e76dea1dbe24f82970e2563011fe037c0cf7c9a3f621fc70","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/mode.py
 msgid "tui.approval_mode.description.bypass"
+msgstr ""
+
+#. English: All tool calls run without approval — relay-enhanced review is NOT
+#. active
+#. chrys-meta={"fingerprint":"23dd2b5e82b43039d7903bbacd6d88cf8e9646bd5b3bf161b47ebb506c253bf4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/mode.py
+msgid "tui.approval_mode.description.bypass_relay"
 msgstr ""
 
 #. English: You approve each call that needs approval
@@ -9189,6 +9265,19 @@ msgstr ""
 #. chrys-meta={"fingerprint":"2c1d9c5ee6873b430118a5b327031a85ab31bd7977a7d912ebcffa6d633308bf","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/models/screen.py
 msgid "tui.model_config.read_only_notice"
+msgstr ""
+
+#. English: Relay endpoint
+#. chrys-meta={"fingerprint":"58f500447060f0565e466656da37daa992965c25b2082e267468fad34c9cfc57","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.relay"
+msgstr ""
+
+#. English: Marks this profile as a third-party relay. Saving requires an
+#. independent non-relay model selected as the approval judge.
+#. chrys-meta={"fingerprint":"e409b4359e41b623e88e06da5f345054aa7c0e6facb403caa0727d3beac756b9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.relay_hint"
 msgstr ""
 
 #. English: Model profile saved

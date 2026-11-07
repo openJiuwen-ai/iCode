@@ -934,6 +934,13 @@ class ApprovalRequest(Event):
     verdict flags it (the ACP server always does; the TUI does by default), or
     show it at once with an "Evaluating" spinner.
     """
+    relay_enhanced: bool = False
+    """True when this request is under relay-enhanced review.
+
+    The working model's traffic is routed through a third-party relay, so the
+    concurrent judge (if any) applies the strict relay policy and the lenient
+    auto-approve shortcuts do not apply. Frontends may surface this fact.
+    """
 
 
 @dataclass

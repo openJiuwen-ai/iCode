@@ -124,6 +124,7 @@ async def test_parallel_node_compactions_archive_reduce_context_and_publish_node
         settings=Settings(),
         approval_mode=lambda: ApprovalMode.BYPASS,
         approval_judge_for=lambda _model: None,
+        approval_relay_context=lambda _model: (False, ""),
         hook_manager=hooks,
         mutation_tracker=None,
         mutation_coordinator=None,

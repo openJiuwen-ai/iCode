@@ -42,8 +42,19 @@ def test_to_state_dict_writes_all_owned_keys_unconditionally() -> None:
         "total_session_input_tokens": 0,
         "total_session_output_tokens": 0,
         "total_session_cache_hit_tokens": None,
+        "relay_risk_seen": False,
     }
     assert "turn_counter" not in state
+
+
+def test_relay_risk_latch_survives_the_state_round_trip() -> None:
+    """Once a session has run on a relay, the latch persists across restore."""
+    meta = SessionRuntimeMetadata()
+    meta.relay_risk_seen = True
+
+    assert SessionRuntimeMetadata.from_state_dict(meta.to_state_dict()).relay_risk_seen is True
+    # Absent key (a legacy session, or the truthy save filter) means never relayed.
+    assert SessionRuntimeMetadata.from_state_dict({}).relay_risk_seen is False
 
 
 def test_record_usage_preserves_float_calibration_ratio_and_fallback_total() -> None:

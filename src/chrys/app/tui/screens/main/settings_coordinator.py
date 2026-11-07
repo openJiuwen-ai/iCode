@@ -56,6 +56,8 @@ SETTINGS_TITLE = msg("tui.settings.title", fallback="Settings")
 # hosts do apply them on reload); they just never mark this panel dirty.
 _STARTUP_ONLY_RELOAD_KEYS = frozenset({"agent.default_profile", "approval.default_mode"})
 
+_APPROVAL_JUDGE_KEY = "model.role.approval_judge"
+
 
 @dataclass(frozen=True, slots=True)
 class SettingsCoordinatorCallbacks:
@@ -210,7 +212,32 @@ class SettingsCoordinator:
         return []
 
     def schedule_persist(self, values: Mapping[str, Any]) -> None:
+        if self._relay_guard_rejects(values):
+            return
         self._queue.schedule(values)
+
+    def _relay_guard_rejects(self, values: Mapping[str, Any]) -> bool:
+        """Whether a batch would break the relay/approval-judge invariant.
+
+        Only the approval-judge selection can: a judge choice that leaves
+        relay profiles unguarded never reaches the file, and the rows snap
+        back to what is in force through the same reprojection a failed
+        write uses.
+        """
+        selector = values.get(_APPROVAL_JUDGE_KEY)
+        if not isinstance(selector, str):
+            return False
+        registry = self._services.model_registry
+        if registry is None:
+            return False
+        from chrys.service.profiles.models.relay_guard import relay_guard_issues
+
+        issues = relay_guard_issues(registry.list_profiles(), selector)
+        if not issues:
+            return False
+        self.notify_error(issues[0].message)
+        self._reproject_dialog()
+        return True
 
     def apply_live(self, key: str, value: Any) -> None:
         if key == "ui.theme":

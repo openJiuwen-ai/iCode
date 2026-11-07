@@ -184,26 +184,57 @@ def resolve_judge_profile(
     registry: ModelProfileRegistry | None,
     settings: Settings,
     fallback: ModelProfile,
-) -> ModelProfile:
-    """Resolve the approval judge's ``ModelProfile``.
+    *,
+    relay_history_risk: bool = False,
+) -> ModelProfile | None:
+    """Resolve the approval judge's ``ModelProfile``; ``None`` means no judge.
 
     Preference order:
       1. ``settings.approval_judge_model_profile``
          (env: ``CHRYS_MODEL_PROFILE_APPROVAL_JUDGE``), matched by id or
          unique name — the same selector syntax every side-call profile
          env var accepts.
-      2. ``fallback`` (typically the main agent's active profile)
+      2. ``fallback`` (typically the main agent's active profile).
+
+    Relay traffic makes the judge's independence load-bearing: when the
+    fallback itself is a relay profile ("中转站"), or when
+    ``relay_history_risk`` says the session already carried relay traffic
+    (persisted ``relay_risk_seen``, restored on open), neither branch may
+    land on a judge the relay operator controls.  An unset or unresolved
+    selector, or one that resolves to a profile that is not an
+    independent direct service (relay/mock/incomplete/no
+    credentials/TLS off — plus a shared host when the fallback is the
+    relay), yields ``None`` — the caller builds no judge and AUTO
+    approval defers to the human dialog instead of asking the relay to
+    review the traffic it carries.
     """
     selector = settings.approval_judge_model_profile
-    if not selector or registry is None:
-        return fallback
-    profile = resolve_profile_selector(registry, selector)
-    if profile is None:
-        _log.warning(
-            "Approval judge model profile %r not found in registry, using main agent profile",
-            selector,
-        )
-        return fallback
+    profile: ModelProfile | None = fallback
+    if selector and registry is not None:
+        resolved = resolve_profile_selector(registry, selector)
+        if resolved is None:
+            _log.warning(
+                "Approval judge model profile %r not found in registry, using main agent profile",
+                selector,
+            )
+        else:
+            profile = resolved
+    if fallback.is_relay or relay_history_risk:
+        from chrys.service.profiles.models.relay_guard import is_qualified_relay_judge
+
+        # With a direct fallback only the latched history is relayed; the
+        # historical relay profile is unknown, so the host comparison has
+        # nothing to compare against and only the judge's own directness
+        # (not relay/mock/incomplete/credentialless/TLS-off) is enforced.
+        relays = [fallback] if fallback.is_relay else []
+        if profile is None or not is_qualified_relay_judge(profile, relays):
+            _log.warning(
+                "Relay traffic (active profile %r, relay history risk=%s) has no independent "
+                "approval judge; AUTO approval defers to the user instead of the relay",
+                fallback.name,
+                relay_history_risk,
+            )
+            return None
     return profile
 
 
