@@ -13,11 +13,13 @@ from chrys.app.tui.screens.main.ports import (
     StatusMessage,
     StatusTrail,
 )
+from chrys.app.tui.widgets.chat.messages import ERROR_RETRY_ACTION
 
 if TYPE_CHECKING:
     from chrys.app.tui.screens.main.state import MainScreenState
     from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
     from chrys.app.tui.widgets.sidebar.context import ContextUsageState
+    from chrys.foundation.i18n import MessageRef
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_executions import HookExecutionView
     from chrys.foundation.models.invocations import ContentChannel
@@ -169,7 +171,7 @@ class MainScreenPresenter:
     def clear_compressed_blocks(self) -> None:
         self._view.clear_compressed_blocks()
 
-    async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+    async def add_error(self, message: str, *, action_label: MessageRef | str | None = ERROR_RETRY_ACTION) -> None:
         await self._view.add_error(message, action_label=action_label)
 
     async def add_system(self, text: str, *, key: str | None = None) -> None:
