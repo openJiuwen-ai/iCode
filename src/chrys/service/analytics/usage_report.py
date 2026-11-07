@@ -12,6 +12,9 @@ less cache reads, plus its output (reasoning included).
 
 A request counts under the model profile it went through, by the profile's id:
 the log never holds a profile's name, so the names are today's.
+
+A request counts once: a terminal repeated for the same exchange operation is
+the same spend, not a second request.
 """
 
 from __future__ import annotations
@@ -293,12 +296,24 @@ class _SessionUsage:
         self._add_call = add_call
         self._fingerprint_by_pass: dict[str, str] = {}
         self._latest_fingerprint = ""
+        # Operations whose request was already counted: a terminal repeated for
+        # one of them is the same spend, not a second request.
+        self._counted_operations: set[str] = set()
 
     def take(self, event: TrajectoryEvent) -> None:
         if event.event_type == EventType.MODEL_EXCHANGE_FINISHED:
+            operation_id = event.operation_id
+            if operation_id is not None and operation_id in self._counted_operations:
+                return
             call = self._call(event)
-            if call is not None:
-                self._add_call(call)
+            if call is None:
+                return
+            # Only a readable terminal claims the operation: one whose timestamp
+            # does not parse is no call at all, and must not keep a later copy
+            # of the same terminal from counting.
+            if operation_id is not None:
+                self._counted_operations.add(operation_id)
+            self._add_call(call)
         elif event.event_type == EventType.TURN_STARTED:
             self._note_fingerprint(event.payload.get("workspace_revision"), event.turn_id)
         else:
