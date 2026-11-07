@@ -1161,6 +1161,7 @@ _message_ids.update(
         ("tui.chat.thinking_speed", "tui.chat.thinking_speed#plural"),
         "tui.chat.thought_label",
         "tui.chat.fold_row.folded_label",
+        "tui.chat.message_timestamp",
         "tui.chat.process.activity",
         ("tui.chat.process.tool_calls", "tui.chat.process.tool_calls#plural"),
         "tui.chat.thinking_summary_label",
