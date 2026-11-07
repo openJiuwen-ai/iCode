@@ -124,3 +124,29 @@ def test_lines_are_split_into_payload_bounded_units(
     assert all(len(frame.payload) <= FRAME_PAYLOAD_MAX_BYTES for frame in frames)
     assert b"".join(frame.payload for frame in frames) == body
     assert cursor.trajectory_offset == len(body)
+
+
+def test_a_read_that_stops_at_the_budget_resumes_on_the_next_round(
+    tmp_path: Path, queue: DurableWAL, queued: Callable[[DurableWAL], list[Frame]]
+) -> None:
+    """A file larger than one round's budget is drained across rounds, not parked."""
+    from chrys.service.reporting.tailer import READ_BUDGET_BYTES
+
+    events = tmp_path / "events.jsonl"
+    body = b"".join(_line(sequence, text="x" * 2000) for sequence in range(1, 4_000))
+    assert len(body) > READ_BUDGET_BYTES
+    events.write_bytes(body)
+    cursor = SessionCursor()
+    tailer = TrajectoryTailer(queue)
+
+    tailer.collect("session-1", events, cursor)
+    first_offset = cursor.trajectory_offset
+    assert 0 < first_offset < len(body)
+
+    # Same size, same mtime: the remainder still has to be read.
+    assert tailer.collect("session-1", events, cursor) > 0
+
+    frames = queued(queue)
+    assert b"".join(frame.payload for frame in frames) == body
+    assert cursor.trajectory_offset == len(body)
+    assert tailer.collect("session-1", events, cursor) == 0

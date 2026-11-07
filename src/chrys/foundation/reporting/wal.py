@@ -2,11 +2,17 @@
 
 """The durable queue: an append-only frame log with a single acknowledged offset.
 
-``wal.log`` holds exactly the bytes a ``POST /v1/batch`` body carries, so the
-pump slices a continuous run of frames out of it and never re-encodes. Only the
-acknowledged offset lives outside the log (``wal.ack``), which is why a crash
-mid-send is safe: the request is idempotent and the frames are still there to
-resend.
+``wal-<pid>.log`` holds exactly the bytes a ``POST /v1/batch`` body carries, so
+the pump slices a continuous run of frames out of it and never re-encodes. Only
+the acknowledged offset lives outside the log (``wal-<pid>.ack``), which is why
+a crash mid-send is safe: the request is idempotent and the frames are still
+there to resend.
+
+Each process owns one segment, named by its pid — two live iCode processes
+never append to, acknowledge or compact the same file, because sharing one
+offset would let either destroy the other's queue. A segment whose owner is
+gone is adopted by the next process that opens the queue, oldest first, so a
+crash strands frames only until the next start.
 
 Three guarantees the rest of the subsystem relies on:
 
@@ -14,8 +20,8 @@ Three guarantees the rest of the subsystem relies on:
   anything else can read it);
 * a torn tail — a crash in the middle of an append — is truncated on open, so
   the next append never concatenates onto half a frame;
-* the file never exceeds ``queue_bytes_max``: the oldest unacknowledged frames
-  are dropped with per-frame evidence in ``dropped.log``.
+* one process's segment never exceeds ``queue_bytes_max``: the oldest
+  unacknowledged frames are dropped with per-frame evidence in ``dropped.log``.
 """
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Final
+from typing import TYPE_CHECKING, BinaryIO, Final
 
 from chrys.foundation.platform.files import atomic_write_text
 from chrys.foundation.reporting.diagnostics import ReportDiagnostics
@@ -41,13 +47,22 @@ from chrys.foundation.reporting.frames import (
 )
 from chrys.foundation.util.time import utc_iso
 
-WAL_LOG_NAME: Final = "wal.log"
-WAL_ACK_NAME: Final = "wal.ack"
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+WAL_FILE_PREFIX: Final = "wal-"
 DROPPED_LOG_NAME: Final = "dropped.log"
 CURSORS_DIR_NAME: Final = "cursors"
 
 COMPACT_THRESHOLD_BYTES: Final = 8 << 20
 """Acknowledged prefix size at which the log is rewritten to a fresh file."""
+
+DROPPED_LOG_MAX_BYTES: Final = 1 << 20
+"""Cap on the evidence log: past it the file starts over.
+
+Evidence is best-effort — the diagnostics counters already hold the same facts
+— so an unbounded ``dropped.log`` (a server that rejects everything, say) must
+not become a slow disk leak."""
 
 _COPY_BLOCK_BYTES: Final = 1 << 20
 
@@ -86,21 +101,87 @@ class WalBatch:
         return tuple(header.unit_id for header in self.headers)
 
 
+def segment_log_name(pid: int) -> str:
+    """The log file name of the segment owned by *pid*."""
+    return f"{WAL_FILE_PREFIX}{pid}.log"
+
+
+def segment_ack_name(pid: int) -> str:
+    """The acknowledged-offset file name of the segment owned by *pid*."""
+    return f"{WAL_FILE_PREFIX}{pid}.ack"
+
+
+def segment_pid(path: Path) -> int | None:
+    """The owning process id of a ``wal-<pid>.*`` file, or ``None`` when unparseable."""
+    stem = path.stem
+    if not stem.startswith(WAL_FILE_PREFIX):
+        return None
+    digits = stem[len(WAL_FILE_PREFIX) :]
+    return int(digits) if digits.isdigit() else None
+
+
+def _default_pid_alive(pid: int) -> bool:
+    """Whether *pid* names a live process; uncertainty counts as alive.
+
+    Assuming a live owner only ever delays adoption of an abandoned segment to
+    the next start, while assuming a dead one could fold a live process's
+    frames into two queues at once.
+    """
+    if pid <= 0:
+        return False
+    try:
+        import psutil
+    except Exception:
+        return True
+    try:
+        return psutil.pid_exists(pid)
+    except Exception:
+        return True
+
+
+def _read_ack_offset(path: Path) -> int:
+    """The acknowledged byte offset a segment's ack file names, or zero."""
+    try:
+        return max(0, int(path.read_text(encoding="ascii").strip()))
+    except OSError, ValueError:
+        return 0
+
+
+def _remove_quietly(path: Path) -> None:
+    with contextlib.suppress(OSError):
+        path.unlink()
+
+
+def _mtime_or_zero(path: Path) -> float:
+    with contextlib.suppress(OSError):
+        return path.stat().st_mtime
+    return 0.0
+
+
 class DurableWAL:
     """Append frames, hand the pump a batch, advance the acknowledged offset."""
 
-    def __init__(self, directory: Path, *, queue_bytes_max: int, diagnostics: ReportDiagnostics) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        queue_bytes_max: int,
+        diagnostics: ReportDiagnostics,
+        owner_pid: int | None = None,
+        pid_alive: Callable[[int], bool] | None = None,
+    ) -> None:
         self._directory = directory
         self._queue_bytes_max = max(1, queue_bytes_max)
         self._diagnostics = diagnostics
-        self._log_path = directory / WAL_LOG_NAME
-        self._ack_path = directory / WAL_ACK_NAME
+        self._owner_pid = os.getpid() if owner_pid is None else owner_pid
+        self._pid_alive = pid_alive or _default_pid_alive
+        self._log_path = directory / segment_log_name(self._owner_pid)
+        self._ack_path = directory / segment_ack_name(self._owner_pid)
         self._dropped_path = directory / DROPPED_LOG_NAME
         self._lock = threading.RLock()
         self._log: BinaryIO | None = None
         self._ack = 0
         self._end = 0
-        self._closed = False
 
     @property
     def directory(self) -> Path:
@@ -113,23 +194,22 @@ class DurableWAL:
         return self._directory / CURSORS_DIR_NAME
 
     def open(self) -> None:
-        """Open the log, recover the acknowledged offset and trim a torn tail."""
+        """Open this process's segment, adopt abandoned ones, trim a torn tail."""
         with self._lock:
             self._directory.mkdir(parents=True, exist_ok=True)
+            self._adopt_abandoned_segments()
             self._log = self._log_path.open("a+b")
             self._end = self._log_path.stat().st_size
-            self._ack = self._read_ack()
+            self._ack = _read_ack_offset(self._ack_path)
             if self._ack > self._end:
                 self._ack = 0
                 self._write_ack()
             self._end = self._truncate_torn_tail()
-            self._closed = False
             self._diagnostics.set_queued_bytes(self._end - self._ack)
 
     def close(self) -> None:
         """Flush and release the log handle."""
         with self._lock:
-            self._closed = True
             if self._log is not None:
                 with contextlib.suppress(OSError):
                     self._log.flush()
@@ -217,15 +297,46 @@ class DurableWAL:
             self._diagnostics.set_queued_bytes(self._end - self._ack)
             self._compact_if_due()
 
-    def _read_ack(self) -> int:
+    def _adopt_abandoned_segments(self) -> None:
+        """Fold the unacknowledged frames of dead owners' segments into ours.
+
+        Oldest first, and only from the owner's own acknowledged offset: frames
+        the dead process already sent are not re-queued. A false "dead" verdict
+        can at worst duplicate frames the server deduplicates; a file that
+        cannot be removed (its owner woke up) is simply left for the next open.
+        """
+        segments = [
+            path
+            for path in _list_segment_files(self._directory, ".log")
+            if segment_pid(path) not in (None, self._owner_pid)
+        ]
+        for path in sorted(segments, key=_mtime_or_zero):
+            pid = segment_pid(path)
+            if pid is None or self._pid_alive(pid):
+                continue
+            self._adopt_segment(path, pid)
+        for path in _list_segment_files(self._directory, ".compact"):
+            pid = segment_pid(path)
+            if pid is None or pid == self._owner_pid:
+                continue
+            if not self._pid_alive(pid):
+                _remove_quietly(path)
+        # A compaction interrupted by a crash of this same (reused) pid.
+        _remove_quietly(self._directory / f"{WAL_FILE_PREFIX}{self._owner_pid}.compact")
+
+    def _adopt_segment(self, log_path: Path, pid: int) -> None:
+        ack_path = self._directory / segment_ack_name(pid)
+        ack = _read_ack_offset(ack_path)
         try:
-            text = self._ack_path.read_text(encoding="ascii").strip()
-        except OSError, UnicodeDecodeError:
-            return 0
-        try:
-            return max(0, int(text))
-        except ValueError:
-            return 0
+            with log_path.open("rb") as source, self._log_path.open("ab") as sink:
+                source.seek(ack)
+                shutil.copyfileobj(source, sink, _COPY_BLOCK_BYTES)
+                sink.flush()
+        except OSError:
+            return
+        _remove_quietly(log_path)
+        _remove_quietly(ack_path)
+        _remove_quietly(self._directory / f"{WAL_FILE_PREFIX}{pid}.compact")
 
     def _write_ack(self) -> None:
         atomic_write_text(self._ack_path, f"{self._ack}\n", encoding="ascii")
@@ -296,11 +407,23 @@ class DurableWAL:
         self.record_evidence(record)
 
     def record_evidence(self, record: dict[str, object]) -> None:
-        """Append one explicit discard record to ``dropped.log``."""
+        """Append one explicit discard record to ``dropped.log``.
+
+        One write per line, so concurrent processes interleaving evidence never
+        lose a whole record to a partial one; past the byte cap the log starts
+        over, because the counters already hold the same facts.
+        """
+        line = json.dumps(record, ensure_ascii=True, sort_keys=True) + "\n"
+        try:
+            size = self._dropped_path.stat().st_size
+        except OSError:
+            size = 0
+        if size >= DROPPED_LOG_MAX_BYTES:
+            with contextlib.suppress(OSError):
+                self._dropped_path.write_text("", encoding="utf-8")
         try:
             with self._dropped_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, ensure_ascii=True, sort_keys=True))
-                handle.write("\n")
+                handle.write(line)
         except OSError:
             # Losing the evidence must not lose the queue: the counters already
             # hold the same fact.
@@ -321,7 +444,7 @@ class DurableWAL:
             if self._ack <= 0:
                 return
             handle = self._require_log()
-            temp_path = self._log_path.with_name(f"{WAL_LOG_NAME}.compact")
+            temp_path = self._directory / f"{WAL_FILE_PREFIX}{self._owner_pid}.compact"
             handle.flush()
             with self._log_path.open("rb") as source, temp_path.open("wb") as sink:
                 source.seek(self._ack)
@@ -334,3 +457,11 @@ class DurableWAL:
             self._ack = 0
             self._write_ack()
             self._diagnostics.set_queued_bytes(self._end - self._ack)
+
+
+def _list_segment_files(directory: Path, suffix: str) -> list[Path]:
+    """Every ``wal-*<suffix>`` file in *directory*, missing directories included."""
+    try:
+        return [path for path in directory.iterdir() if path.name.startswith(WAL_FILE_PREFIX) and path.suffix == suffix]
+    except OSError:
+        return []

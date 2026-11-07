@@ -53,6 +53,15 @@ class ReportConfig:
         """
         return self.enabled and bool(self.endpoint.strip())
 
+    @property
+    def config_dir(self) -> Path:
+        """The configuration root the queue directory lives under.
+
+        The queue is ``<config_dir>/reporting``, so the collectors reach the
+        profile, model and hooks documents through this one relationship.
+        """
+        return self.directory.parent
+
     def url(self, path: str) -> str:
         """Join the configured base URL with an endpoint *path*."""
         return f"{self.endpoint.rstrip('/')}{path}"

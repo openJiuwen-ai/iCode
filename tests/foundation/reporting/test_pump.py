@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import random
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+
+import pytest
 
 from chrys.foundation.reporting.config import ReportConfig
 from chrys.foundation.reporting.diagnostics import ReportDiagnostics
 from chrys.foundation.reporting.frames import KIND_SNAPSHOT_CHUNK, Frame, scope_snapshot_chunk, sha256_hex
 from chrys.foundation.reporting.pump import (
     INITIAL_BACKOFF_SECONDS,
+    MAX_DEFERRALS_PER_FRAME,
     MIN_BATCH_BYTES,
     ReportPump,
     TransportResult,
@@ -66,6 +70,10 @@ def _harness(config: ReportConfig, frames: list[Frame]) -> Iterator[_Harness]:
 
 def _frame(payload: bytes) -> Frame:
     return Frame.build(KIND_SNAPSHOT_CHUNK, "session-1", scope_snapshot_chunk(sha256_hex(payload), 0), payload)
+
+
+def _frame_of(session_id: str, payload: bytes) -> Frame:
+    return Frame.build(KIND_SNAPSHOT_CHUNK, session_id, scope_snapshot_chunk(sha256_hex(payload), 0), payload)
 
 
 def _dropped_records(config: ReportConfig) -> list[dict[str, object]]:
@@ -140,6 +148,56 @@ def test_a_deferred_unit_keeps_the_batch_queued(report_config: ReportConfig) -> 
         assert harness.wal.stats().pending_bytes == len(frames[0].encode())
         assert delay > 0
         assert harness.diagnostics.snapshot().deferred_units == 1
+
+
+def test_a_permanently_deferred_frame_does_not_block_another_session(report_config: ReportConfig) -> None:
+    stuck = _frame_of("session-1", b"stuck")
+    following = _frame_of("session-2", b"following")
+    with _harness(report_config, [stuck, following]) as harness:
+        for _ in range(MAX_DEFERRALS_PER_FRAME):
+            harness.transport.results.append(_reply((following.header.unit_id,), deferred=(stuck.header.unit_id,)))
+            harness.pump._cycle()
+
+        # The stuck frame is finally dropped, which lets the acknowledged
+        # offset move past it and over the other session's frame.
+        assert harness.wal.next_batch(max_bytes=8 << 20) is None
+        assert harness.wal.stats().pending_bytes == 0
+        assert [record["reason"] for record in _dropped_records(report_config)] == ["deferral_limit"]
+        assert harness.pump.take_deferred_sessions() == ("session-1",)
+
+
+def test_a_persistently_deferred_frame_is_dropped_once_with_evidence(
+    report_config: ReportConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    frames = [_frame(b"first")]
+    unit_id = frames[0].header.unit_id
+    with _harness(report_config, frames) as harness, caplog.at_level(logging.WARNING):
+        for _ in range(MAX_DEFERRALS_PER_FRAME - 1):
+            harness.transport.results.append(_reply(deferred=(unit_id,)))
+            harness.pump._cycle()
+        # Below the threshold the frame is still waited for.
+        assert harness.wal.stats().ack_offset == 0
+
+        harness.transport.results.append(_reply(deferred=(unit_id,)))
+        harness.pump._cycle()
+
+        assert harness.wal.stats().pending_bytes == 0
+        assert harness.pump._deferrals == {}
+        dropped = _dropped_records(report_config)
+        assert [(record["reason"], record["deferrals"], record["unit_id"]) for record in dropped] == [
+            ("deferral_limit", MAX_DEFERRALS_PER_FRAME, unit_id)
+        ]
+        events = [record.getMessage() for record in caplog.records]
+        assert len([event for event in events if event.startswith("report_frame_dropped")]) == 1
+        dropped_event = next(event for event in events if event.startswith("report_frame_dropped"))
+        assert unit_id in dropped_event
+        assert "kind=snapshot.chunk" in dropped_event
+        assert "session_id=session-1" in dropped_event
+        assert f"deferrals={MAX_DEFERRALS_PER_FRAME}" in dropped_event
+
+        # The frame left the queue, so it is never dropped a second time.
+        assert harness.pump._cycle() is None
+        assert len(_dropped_records(report_config)) == 1
 
 
 def test_a_server_rejection_is_recorded_before_the_batch_advances(report_config: ReportConfig) -> None:

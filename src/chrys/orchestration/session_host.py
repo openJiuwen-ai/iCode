@@ -460,7 +460,7 @@ class ChrysSessionHost:
         from chrys.service.reporting.startup import start_armed_reporting
 
         with contextlib.suppress(Exception):
-            await start_armed_reporting(self._bus, settings=self._settings)
+            await start_armed_reporting(self._bus)
 
     async def restore_session(self, session_id: str) -> None:
         """Restore a saved session into this host."""
@@ -946,6 +946,12 @@ class ChrysSessionHost:
     async def shutdown(self) -> None:
         """Shutdown the owned engine and release session resources."""
         await self._engine.shutdown()
+        # The bus goes away with this host; the process-wide reporting runtime
+        # must stop observing (and holding) it, and close with its last bus.
+        from chrys.service.reporting.startup import detach_reporting
+
+        with contextlib.suppress(Exception):
+            await detach_reporting(self._bus)
         self._started = False
 
     def _load_registries_if_needed(self) -> None:

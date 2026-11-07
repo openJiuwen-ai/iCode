@@ -6,7 +6,8 @@ The pump is a plain ``threading.Thread`` rather than an asyncio task so no
 network wait can ever land in the event loop. It owns one in-flight request at
 a time, backs off exponentially with jitter, and treats the acknowledged offset
 as the only progress marker — a batch advances it only once every frame in it
-was accepted, deduplicated or terminally rejected.
+was accepted, deduplicated, terminally rejected, or dropped after too many
+consecutive deferrals (see ``MAX_DEFERRALS_PER_FRAME``).
 """
 
 from __future__ import annotations
@@ -24,7 +25,9 @@ from chrys.foundation.reporting.config import BATCH_ENDPOINT_PATH, ReportConfig
 from chrys.foundation.reporting.diagnostics import ReportDiagnostics
 from chrys.foundation.reporting.frames import (
     CONTENT_TYPE,
+    MAX_BATCH_FRAMES,
     MAX_COMPRESSED_BATCH_BYTES,
+    FrameHeader,
     compress_body,
 )
 from chrys.foundation.reporting.wal import DurableWAL, WalBatch
@@ -46,6 +49,18 @@ IDLE_WAIT_SECONDS: Final = 1.0
 
 STOP_DRAIN_SECONDS: Final = 5.0
 """Shutdown budget: at most this long is spent waiting for an in-flight request."""
+
+MAX_DEFERRALS_PER_FRAME: Final = 8
+"""Consecutive deferrals of one unit after which the pump stops waiting for it.
+
+A unit the server never settles — ``session.meta`` whose snapshot it can never
+assemble, say — must not wedge every other session behind it in the queue: once
+this many answers in a row leave the frame unsettled, it is dropped with
+evidence and the acknowledged offset moves past it.
+"""
+
+_MAX_TRACKED_DEFERRALS: Final = MAX_BATCH_FRAMES * 2
+"""Bound on the per-unit deferral counters the pump keeps in memory."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +241,9 @@ class ReportPump:
         self._thread: threading.Thread | None = None
         self._max_batch_bytes = config.batch_max_bytes
         self._backoff = INITIAL_BACKOFF_SECONDS
+        self._deferrals: dict[str, int] = {}
+        self._deferred_sessions: set[str] = set()
+        self._deferral_lock = threading.Lock()
 
     @property
     def running(self) -> bool:
@@ -244,6 +262,17 @@ class ReportPump:
     def wake(self) -> None:
         """Ask the thread to look at the queue now."""
         self._wake.set()
+
+    def take_deferred_sessions(self) -> tuple[str, ...]:
+        """Sessions the server deferred, or the pump dropped, since the last call.
+
+        The collector answers each one with a manifest negotiation, so the
+        blocks the server is still missing are queued again.
+        """
+        with self._deferral_lock:
+            sessions = tuple(self._deferred_sessions)
+            self._deferred_sessions.clear()
+        return sessions
 
     def stop(self, *, timeout: float = STOP_DRAIN_SECONDS) -> bool:
         """Ask the thread to stop and wait up to *timeout*; unsent frames stay queued."""
@@ -342,9 +371,24 @@ class ReportPump:
         for unit_id, code in reply.rejected:
             self._wal.record_evidence({"unit_id": unit_id, "reason": "server_rejected", "code": code, "at": utc_iso()})
         settled = set(reply.accepted) | set(reply.duplicates) | {unit_id for unit_id, _code in reply.rejected}
+        dropped: set[str] = set()
+        frame_start = batch.start
+        for header, frame_end in zip(batch.headers, batch.ends, strict=True):
+            if header.unit_id in settled:
+                self._settle_deferral(header.unit_id)
+            else:
+                # Anything the server neither settled nor listed is treated as
+                # deferred: the frame has to be sent again anyway.
+                deferrals = self._count_deferral(header.unit_id)
+                if deferrals >= MAX_DEFERRALS_PER_FRAME:
+                    self._drop_deferred(header, deferrals, byte_count=frame_end - frame_start)
+                    dropped.add(header.unit_id)
+                else:
+                    self._remember_deferred(header.session_id)
+            frame_start = frame_end
         advance = batch.start
         for header, frame_end in zip(batch.headers, batch.ends, strict=True):
-            if header.unit_id not in settled:
+            if header.unit_id not in settled and header.unit_id not in dropped:
                 break
             advance = frame_end
         if advance > batch.start:
@@ -355,6 +399,52 @@ class ReportPump:
             # from the first unsettled frame.
             return max(reply.retry_after_seconds, self._next_backoff())
         return 0.0
+
+    def _count_deferral(self, unit_id: str) -> int:
+        """Count one more consecutive deferral of *unit_id*; return the total."""
+        with self._deferral_lock:
+            count = self._deferrals.get(unit_id, 0) + 1
+            if count == 1 and len(self._deferrals) >= _MAX_TRACKED_DEFERRALS:
+                # Bounded memory: the oldest unresolved unit leaves the books.
+                self._deferrals.pop(next(iter(self._deferrals)), None)
+            self._deferrals[unit_id] = count
+            return count
+
+    def _settle_deferral(self, unit_id: str) -> None:
+        """Forget the deferral history of a unit that is now settled."""
+        with self._deferral_lock:
+            self._deferrals.pop(unit_id, None)
+
+    def _remember_deferred(self, session_id: str) -> None:
+        """Note that a session's data is unsettled, so the collector can reconcile it."""
+        if not session_id:
+            return
+        with self._deferral_lock:
+            self._deferred_sessions.add(session_id)
+
+    def _drop_deferred(self, header: FrameHeader, deferrals: int, *, byte_count: int) -> None:
+        """Acknowledge past a frame the server never settled, with evidence."""
+        self._settle_deferral(header.unit_id)
+        self._wal.record_evidence(
+            {
+                "unit_id": header.unit_id,
+                "kind": header.kind,
+                "session_id": header.session_id,
+                "reason": "deferral_limit",
+                "deferrals": deferrals,
+                "bytes": byte_count,
+                "at": utc_iso(),
+            }
+        )
+        self._diagnostics.record_drop(1, byte_count)
+        logger.warning(
+            "report_frame_dropped unit_id=%s kind=%s session_id=%s deferrals=%d",
+            header.unit_id,
+            header.kind,
+            header.session_id,
+            deferrals,
+        )
+        self._remember_deferred(header.session_id)
 
     def _discard(self, batch: WalBatch, reason: str) -> None:
         for header in batch.headers:

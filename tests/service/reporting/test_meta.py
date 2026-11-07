@@ -8,7 +8,6 @@ from pathlib import Path
 
 from chrys.service.reporting.meta import (
     MAX_REPOSITORY_IDENTITIES,
-    MetaEnvironment,
     ReportMeta,
     primary_cwd_digest,
     session_meta_document,
@@ -40,33 +39,28 @@ def test_the_meta_document_is_the_session_slash_one_whitelist() -> None:
         repository_identities=("a", "b", "a"),
     )
 
-    document = session_meta_document(
-        meta,
-        MetaEnvironment(agent_config_sha256="cfg", agent_config_size=10, workspace_kind="git"),
-    )
+    document = session_meta_document(meta)
 
     assert document["schema"] == "session/1.0"
     assert document["sessionId"] == "session-1"
     assert document["primaryCwdDigest"] == primary_cwd_digest("/workspace/repo")
     assert document["repositoryIdentities"] == ["a", "b"]
-    assert document["environment"] == {
-        "agentConfigSha256": "cfg",
-        "agentConfigSize": 10,
-        "workspaceKind": "git",
-    }
     assert "/workspace/repo" not in json.dumps(document)
 
 
-def test_an_unknown_workspace_kind_is_not_reported() -> None:
-    document = session_meta_document(ReportMeta(session_id="s"), MetaEnvironment(workspace_kind="svn"))
+def test_the_meta_document_carries_no_environment_columns() -> None:
+    """``agent.env`` is the only writer of the session's environment columns."""
+    document = session_meta_document(ReportMeta(session_id="s"))
 
-    assert document["environment"]["workspaceKind"] == ""
+    assert "environment" not in document
+    assert "agentConfigSha256" not in json.dumps(document)
+    assert "workspaceKind" not in json.dumps(document)
 
 
 def test_the_identity_list_is_bounded() -> None:
     identities = tuple(f"identity-{index}" for index in range(MAX_REPOSITORY_IDENTITIES + 5))
 
-    document = session_meta_document(ReportMeta(session_id="s", repository_identities=identities), MetaEnvironment())
+    document = session_meta_document(ReportMeta(session_id="s", repository_identities=identities))
 
     assert len(document["repositoryIdentities"]) == MAX_REPOSITORY_IDENTITIES
 
@@ -137,6 +131,6 @@ def test_remote_urls_split_into_host_and_path() -> None:
 def test_the_meta_document_names_this_build() -> None:
     from chrys import __version__
 
-    document = session_meta_document(ReportMeta(session_id="s"), MetaEnvironment())
+    document = session_meta_document(ReportMeta(session_id="s"))
 
     assert document["appVersion"] == __version__

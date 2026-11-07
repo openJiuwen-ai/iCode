@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from chrys.foundation.reporting.diagnostics import ReportDiagnostics
@@ -13,15 +14,33 @@ from chrys.foundation.reporting.frames import (
     scope_snapshot_chunk,
     sha256_hex,
 )
-from chrys.foundation.reporting.wal import DROPPED_LOG_NAME, WAL_LOG_NAME, DurableWAL
+from chrys.foundation.reporting.wal import (
+    DROPPED_LOG_MAX_BYTES,
+    DROPPED_LOG_NAME,
+    DurableWAL,
+    segment_ack_name,
+    segment_log_name,
+)
 
 
 def _frame(payload: bytes) -> Frame:
     return Frame.build(KIND_SNAPSHOT_CHUNK, "session-1", scope_snapshot_chunk(sha256_hex(payload), 0), payload)
 
 
-def _open(directory: Path) -> DurableWAL:
-    queue = DurableWAL(directory, queue_bytes_max=4 << 20, diagnostics=ReportDiagnostics())
+def _open(
+    directory: Path,
+    *,
+    owner_pid: int | None = None,
+    pid_alive=None,
+    diagnostics: ReportDiagnostics | None = None,
+) -> DurableWAL:
+    queue = DurableWAL(
+        directory,
+        queue_bytes_max=4 << 20,
+        diagnostics=diagnostics or ReportDiagnostics(),
+        owner_pid=owner_pid,
+        pid_alive=pid_alive,
+    )
     queue.open()
     return queue
 
@@ -71,20 +90,22 @@ def test_a_batch_never_exceeds_the_byte_budget(tmp_path: Path) -> None:
 
         assert batch is not None
         assert len(batch.headers) == 1
+        assert batch.size <= 1024
     finally:
         queue.close()
 
 
 def test_unacknowledged_frames_survive_a_reopen(tmp_path: Path) -> None:
+    directory = tmp_path / "reporting"
     frames = [_frame(b"first"), _frame(b"second")]
-    first = _open(tmp_path / "reporting")
+    first = _open(directory)
     try:
         first.append(frames)
         first.flush()
     finally:
         first.close()
 
-    reopened = _open(tmp_path / "reporting")
+    reopened = _open(directory)
     try:
         batch = reopened.next_batch(max_bytes=8 << 20)
         assert batch is not None
@@ -102,7 +123,7 @@ def test_a_torn_tail_is_truncated_before_the_next_append(tmp_path: Path) -> None
         first.flush()
     finally:
         first.close()
-    log = directory / WAL_LOG_NAME
+    log = directory / segment_log_name(first._owner_pid)
     with log.open("ab") as handle:
         handle.write(frame.encode()[:12])
 
@@ -120,10 +141,10 @@ def test_a_torn_tail_is_truncated_before_the_next_append(tmp_path: Path) -> None
 def test_an_acknowledged_offset_past_the_log_restarts_from_zero(tmp_path: Path) -> None:
     directory = tmp_path / "reporting"
     directory.mkdir(parents=True)
-    (directory / WAL_LOG_NAME).write_bytes(b"")
-    (directory / "wal.ack").write_text("999\n", encoding="ascii")
+    (directory / segment_log_name(111)).write_bytes(b"")
+    (directory / segment_ack_name(111)).write_text("999\n", encoding="ascii")
 
-    queue = _open(directory)
+    queue = _open(directory, owner_pid=111)
     try:
         assert queue.stats().ack_offset == 0
     finally:
@@ -150,22 +171,77 @@ def test_capacity_drops_the_oldest_frame_with_evidence(tmp_path: Path, report_di
         queue.close()
 
 
-def test_compaction_rewrites_the_log_from_the_acknowledged_offset(tmp_path: Path) -> None:
+def test_the_evidence_log_starts_over_past_its_cap(wal: DurableWAL) -> None:
+    record = {"unit_id": "x" * 100_000, "reason": "server_rejected"}
+    line_len = len(json.dumps(record, ensure_ascii=True, sort_keys=True)) + 1
+    written = 0
+    while written < DROPPED_LOG_MAX_BYTES * 3:
+        wal.record_evidence(record)
+        written += line_len
+
+    size = wal.directory.joinpath(DROPPED_LOG_NAME).stat().st_size
+
+    # The log restarts at the cap, so it never grows past one record over it
+    # however much is discarded.
+    assert size < DROPPED_LOG_MAX_BYTES + line_len
+    assert size < written
+
+
+def test_the_frames_of_a_dead_owner_are_adopted_at_the_next_open(tmp_path: Path) -> None:
     directory = tmp_path / "reporting"
-    queue = _open(directory)
+    first, second = _frame(b"first"), _frame(b"second")
+    dead = _open(directory, owner_pid=111)
     try:
-        first, second = _frame(b"first"), _frame(b"second")
-        queue.append([first, second])
-        batch = queue.next_batch(max_bytes=8 << 20)
+        dead.append([first])
+        dead.flush()
+        batch = dead.next_batch(max_bytes=8 << 20)
         assert batch is not None
-        queue.advance(batch.ends[0])
-
-        queue.compact()
-
-        assert queue.stats().ack_offset == 0
-        remaining = queue.next_batch(max_bytes=8 << 20)
-        assert remaining is not None
-        assert remaining.unit_ids == (second.header.unit_id,)
-        assert (directory / WAL_LOG_NAME).stat().st_size == len(second.encode())
+        dead.advance(batch.ends[0])  # the first frame was sent before the crash
+        dead.append([second])
+        dead.flush()
     finally:
-        queue.close()
+        dead.close()
+
+    # Owner 111 is gone; owner 222 takes over its unacknowledged frames.
+    alive = _open(directory, owner_pid=222, pid_alive=lambda pid: pid != 111)
+    try:
+        batch = alive.next_batch(max_bytes=8 << 20)
+        assert batch is not None
+        assert batch.unit_ids == (second.header.unit_id,)
+        assert alive.read(batch) == second.encode()
+        assert not (directory / segment_log_name(111)).exists()
+        assert not (directory / segment_ack_name(111)).exists()
+    finally:
+        alive.close()
+
+
+def test_a_live_owner_is_never_adopted(tmp_path: Path) -> None:
+    directory = tmp_path / "reporting"
+    busy = _open(directory, owner_pid=111)
+    try:
+        busy.append([_frame(b"mine")])
+        busy.flush()
+    finally:
+        busy.close()
+
+    other = _open(directory, owner_pid=222, pid_alive=lambda pid: True)
+    try:
+        assert other.next_batch(max_bytes=8 << 20) is None
+        assert (directory / segment_log_name(111)).exists()
+    finally:
+        other.close()
+
+
+def test_a_leftover_compaction_of_a_dead_owner_is_removed(tmp_path: Path) -> None:
+    directory = tmp_path / "reporting"
+    directory.mkdir(parents=True)
+    leftover = directory / "wal-111.compact"
+    leftover.write_bytes(b"half a rewrite")
+
+    _open(directory, owner_pid=222, pid_alive=lambda pid: pid != 111).close()
+
+    assert not leftover.exists()
+
+
+def test_the_segment_is_named_after_this_process(wal: DurableWAL) -> None:
+    assert wal.directory.joinpath(segment_log_name(os.getpid())).exists()

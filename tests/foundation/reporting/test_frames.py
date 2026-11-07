@@ -10,6 +10,7 @@ import pytest
 
 from chrys.foundation.reporting.frames import (
     GZIP_THRESHOLD_BYTES,
+    KIND_AGENT_ENV,
     KIND_SNAPSHOT_CHUNK,
     KIND_TRAJECTORY_LINES,
     MAX_FRAME_PAYLOAD_BYTES,
@@ -64,6 +65,38 @@ def test_only_trajectory_frames_carry_the_reset_flag() -> None:
 
     assert document["reset"] is False
     assert "reset" not in json.loads(_frame().header.to_json())
+
+
+def test_agent_env_frames_carry_the_workspace_kind_and_capture_moment() -> None:
+    frame = Frame.build(
+        KIND_AGENT_ENV,
+        "session-1",
+        "agentenv:abc",
+        b"{}",
+        workspace_kind="git",
+        captured_at="2026-11-07T06:00:00Z",
+    )
+    document = json.loads(frame.header.to_json())
+
+    assert document["workspaceKind"] == "git"
+    assert document["capturedAt"] == "2026-11-07T06:00:00Z"
+    # The payload stays the content-addressed fact; the envelope does not
+    # change the unit id, so a re-send for a new classification is the
+    # server's duplicate to resolve.
+    assert frame.header.unit_id == Frame.build(KIND_AGENT_ENV, "session-1", "agentenv:abc", b"{}").header.unit_id
+
+    decoded = decode_frames(frame.encode())
+    assert decoded[0].header == frame.header
+
+
+def test_only_agent_env_frames_carry_the_environment_envelope() -> None:
+    chunk = _frame(b"payload")
+
+    document = json.loads(chunk.header.to_json())
+
+    assert "workspaceKind" not in document
+    assert "capturedAt" not in document
+    assert "reset" not in document
 
 
 def test_a_payload_over_the_frame_limit_is_refused() -> None:

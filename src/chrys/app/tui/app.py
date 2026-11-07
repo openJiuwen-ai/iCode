@@ -1214,7 +1214,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         from chrys.service.reporting.startup import start_armed_reporting
 
         try:
-            await start_armed_reporting(self._bus, settings=self._settings)
+            await start_armed_reporting(self._bus)
         except Exception:
             logger.warning("Could not start fact reporting", exc_info=True)
 

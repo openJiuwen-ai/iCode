@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import SessionReady, SessionSaved
 from chrys.foundation.reporting.config import ReportConfig
@@ -22,9 +21,10 @@ from chrys.foundation.reporting.frames import (
     Frame,
     decode_frames,
 )
+from chrys.foundation.reporting.pump import ReportPump
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.service.reporting.service import ReportingService
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 SESSION_ID = "12345678-1234-1234-1234-123456789abc"
 
@@ -83,10 +83,15 @@ def batch_server() -> Iterator[tuple[str, _Received]]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5.0)
+        assert not thread.is_alive(), "the loopback server thread must stop with its server"
 
 
 def _line(sequence: int) -> bytes:
     return json.dumps({"schema_version": 1, "sequence": sequence, "event_type": "event.turn"}).encode() + b"\n"
+
+
+def _sent_kinds(received: _Received) -> set[str]:
+    return {frame.header.kind for batch in received.batches for frame in batch}
 
 
 async def test_a_collection_round_reaches_a_loopback_endpoint_and_is_acknowledged(
@@ -120,24 +125,39 @@ async def test_a_collection_round_reaches_a_loopback_endpoint_and_is_acknowledge
         directory=tmp_path / "reporting",
     )
     bus = EventBus()
-    reporting = ReportingService(bus, config, settings=Settings())
+    reporting = ReportingService(bus, config)
+    pump: ReportPump | None = None
     await reporting.start()
     try:
         await bus.publish(SessionReady(session_id=SESSION_ID, primary_cwd=str(tmp_path)))
         await bus.publish(SessionSaved(session_id=SESSION_ID))
 
-        await wait_for(lambda: bool(received.batches), timeout=15.0, description="a batch reached the server")
+        # The wait is the assertion: every documented unit must be on the wire,
+        # whichever round the wake drained them in.
+        await wait_for(
+            lambda: {KIND_TRAJECTORY_LINES, KIND_SNAPSHOT_MANIFEST} <= _sent_kinds(received),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="trajectory and snapshot units reached the server",
+        )
 
         frames = [frame for batch in received.batches for frame in batch]
         assert received.paths[0] == "/v1/batch"
         assert received.authorizations[0] == "Bearer test-token"
-        assert KIND_TRAJECTORY_LINES in {frame.header.kind for frame in frames}
-        assert KIND_SNAPSHOT_MANIFEST in {frame.header.kind for frame in frames}
         trajectory = b"".join(frame.payload for frame in frames if frame.header.kind == KIND_TRAJECTORY_LINES)
         assert trajectory == events
 
         wal = reporting._wal
         assert wal is not None
-        await wait_for(lambda: wal.stats().pending_bytes == 0, timeout=15.0, description="the queue is acknowledged")
+        await wait_for(
+            lambda: wal.stats().pending_bytes == 0,
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="the queue is acknowledged",
+        )
+        pump = reporting._pump
     finally:
         await reporting.close()
+
+    # Nothing outlives the runtime: the sender thread reaps within its budget.
+    assert pump is not None
+    assert not pump.running
+    assert [item for item in threading.enumerate() if item.name == "chrys-report-pump"] == []

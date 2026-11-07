@@ -41,12 +41,22 @@ class TrajectoryTailer:
         self._wal = wal
 
     def collect(self, session_id: str, events_path: Path, cursor: SessionCursor) -> int:
-        """Queue every new complete line; return how many units were appended."""
+        """Queue every new complete line; return how many units were appended.
+
+        A read that stops at the budget leaves the remainder for the next
+        round: the skip gate only fires once the offset has caught up with the
+        file, so a large tail is drained 4 MiB at a time rather than waiting
+        for the file to grow again.
+        """
         try:
             stat = events_path.stat()
         except OSError:
             return 0
-        if stat.st_size == cursor.trajectory_size and stat.st_mtime_ns == cursor.trajectory_mtime_ns:
+        if (
+            stat.st_size == cursor.trajectory_size
+            and stat.st_mtime_ns == cursor.trajectory_mtime_ns
+            and cursor.trajectory_offset >= stat.st_size
+        ):
             return 0
         offset = cursor.trajectory_offset
         reset = False

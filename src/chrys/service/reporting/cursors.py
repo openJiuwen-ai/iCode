@@ -42,8 +42,6 @@ class SessionCursor:
     workspace_kind: str = ""
     repository_identities: list[str] = field(default_factory=list)
     agent_config_sha256: str = ""
-    agent_config_size: int = 0
-    environment_sent: bool = False
     repository_sent: bool = False
 
 
@@ -64,10 +62,9 @@ _INT_FIELDS = frozenset(
         "trajectory_mtime_ns",
         "snapshot_size",
         "snapshot_mtime_ns",
-        "agent_config_size",
     }
 )
-_BOOL_FIELDS = frozenset({"environment_sent", "repository_sent"})
+_BOOL_FIELDS = frozenset({"repository_sent"})
 _LIST_FIELDS = frozenset({"snapshot_chunk_hashes", "workspace_file_shas", "repository_identities"})
 
 

@@ -10,29 +10,38 @@ event loop's work at zero: a turn may not slow down because reporting is on.
 The lifecycle binding follows the design's table:
 
 * ``SessionReady`` / ``SessionRestored`` — bind the session and send
-  ``repo.identity`` and ``agent.env`` once (never the workspace);
+  ``repo.identity`` and ``agent.env`` (never the workspace);
+* ``AgentRuntimeUpdated`` — refresh the runtime facts and re-arm the
+  environment capture when they actually changed;
 * ``SessionSaved`` — read the trajectory, tap the snapshot and capture the
   post-turn workspace;
 * ``TurnStarted`` — the pre-turn workspace signature check;
 * ``ExecutionChanged`` on final release — the turn-end fallback read;
 * ``SessionDeleted`` — unbind; frames already queued are still sent.
+
+One process runs one service, but a process may host several buses (one
+``ChrysSessionHost`` per ACP session, say): :meth:`attach` subscribes the same
+handlers on each of them, and :meth:`detach` releases a bus whose host shut
+down — the service closes once the last bus is gone.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from chrys import __version__
-from chrys.foundation.config.settings import Settings, resolve_sessions_dir
+from chrys.foundation.config.settings import resolve_sessions_dir
 from chrys.foundation.events.types import (
+    AgentRuntimeDetails,
+    AgentRuntimeUpdated,
     ExecutionChanged,
     SessionDeleted,
     SessionReady,
@@ -57,13 +66,17 @@ from chrys.foundation.reporting.pump import HttpxTransport, ReportPump, ReportTr
 from chrys.foundation.reporting.wal import DurableWAL
 from chrys.foundation.util.once_close import OnceClose
 from chrys.foundation.util.session_ids import session_short_id
-from chrys.service.reporting.agent_config import AgentEnvironment, agent_environment_payload, profile_yaml_text
+from chrys.foundation.util.time import utc_iso
+from chrys.service.reporting.agent_config import (
+    SessionFacts,
+    agent_environment_payload,
+    collect_agent_environment,
+)
 from chrys.service.reporting.cursors import SessionCursor, SessionCursorStore
 from chrys.service.reporting.meta import (
     WORKSPACE_KIND_GIT,
     WORKSPACE_KIND_NO_REPO,
     WORKSPACE_KIND_NON_GIT,
-    MetaEnvironment,
     ReportMeta,
     session_meta_payload,
 )
@@ -75,7 +88,13 @@ from chrys.service.state._session_files import SESSION_FILE_NAME
 from chrys.service.trajectory.session import TRAJECTORY_DIR_NAME, TRAJECTORY_EVENTS_FILE_NAME
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.events.types import Event
+
+    LifecycleHandler = Callable[..., Awaitable[None]]
+    """One bound lifecycle handler; the dispatch table is heterogeneous."""
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +109,7 @@ class _Binding:
     session_id: str
     primary_cwd: str = ""
     profile_name: str = ""
-    display_name: str = ""
-    model_profile_id: str = ""
-    tool_names: tuple[str, ...] = ()
-    tool_kinds: dict[str, str] = field(default_factory=dict)
-    skill_names: tuple[str, ...] = ()
+    facts: SessionFacts | None = None
     environment_pending: bool = False
     repository_pending: bool = False
     trajectory_pending: bool = False
@@ -110,17 +125,35 @@ class _CollectRequest:
     session_id: str
     primary_cwd: str
     profile_name: str
-    display_name: str
-    model_profile_id: str
-    tool_names: tuple[str, ...]
-    tool_kinds: dict[str, str]
-    skill_names: tuple[str, ...]
+    facts: SessionFacts | None
     environment: bool
     repository: bool
     trajectory: bool
     snapshot: bool
     workspace: bool
     meta: ReportMeta | None
+
+
+def _facts_from_runtime(details: AgentRuntimeDetails) -> SessionFacts:
+    """The agent-config facts of one runtime snapshot, in primitives only."""
+    hooks_count = 0
+    hook_events: set[str] = set()
+    hook_sources: list[tuple[str, str]] = []
+    for source in details.hook_sources:
+        hook_sources.append((source.scope, source.source_path))
+        for hook in source.hooks:
+            hooks_count += 1
+            if hook.event:
+                hook_events.add(hook.event)
+    return SessionFacts(
+        model_profile_id=details.model.profile_id,
+        model_provider=details.model.provider,
+        model_id=details.model.model_id,
+        skills=tuple((skill.name, skill.source) for skill in details.skill_details),
+        hooks_count=hooks_count,
+        hook_events=tuple(sorted(hook_events)),
+        hook_sources=tuple(hook_sources),
+    )
 
 
 class ReportingService:
@@ -131,12 +164,10 @@ class ReportingService:
         bus: EventBus,
         config: ReportConfig,
         *,
-        settings: Settings | None = None,
         transport: ReportTransport | None = None,
     ) -> None:
         self._bus = bus
         self._config = config
-        self._settings = settings or Settings.from_env()
         self._diagnostics = ReportDiagnostics()
         self._bindings: OrderedDict[str, _Binding] = OrderedDict()
         self._metas: dict[str, ReportMeta] = {}
@@ -145,6 +176,7 @@ class ReportingService:
         self._task: asyncio.Task[None] | None = None
         self._closer: OnceClose | None = None
         self._started = False
+        self._closed = False
         self._transport = transport or HttpxTransport()
         self._wal: DurableWAL | None = None
         self._pump: ReportPump | None = None
@@ -153,6 +185,7 @@ class ReportingService:
         self._snapshot: SnapshotTap | None = None
         self._workspace: WorkspaceCapture | None = None
         self._reconciler: ManifestReconciler | None = None
+        self._subscriptions: list[tuple[EventBus, type[Event], LifecycleHandler]] = []
 
     @property
     def diagnostics(self) -> DiagnosticsSnapshot:
@@ -163,11 +196,15 @@ class ReportingService:
         """Open the queue, start the pump, subscribe and start the driver."""
         if self._started:
             return
-        self._started = True
         wal = DurableWAL(
             self._config.directory, queue_bytes_max=self._config.queue_bytes_max, diagnostics=self._diagnostics
         )
-        wal.open()
+        # Recovery walks every unacknowledged frame header in the log — after a
+        # crash with a full queue that is seconds of IO, so it never runs on
+        # the event loop (a frontend calls this between its first paint and
+        # its first turn).
+        await asyncio.to_thread(wal.open)
+        self._started = True
         self._wal = wal
         self._cursors = SessionCursorStore(wal.cursors_dir)
         self._tailer = TrajectoryTailer(wal)
@@ -175,16 +212,68 @@ class ReportingService:
         self._workspace = WorkspaceCapture(wal)
         self._reconciler = ManifestReconciler(self._config, self._transport)
         if self._config.deliverable:
-            self._pump = ReportPump(wal, self._config, self._diagnostics)
+            self._pump = ReportPump(wal, self._config, self._diagnostics, transport=self._transport)
             self._pump.start()
         self._closer = OnceClose(self._close_once)
-        await self._bus.subscribe(SessionReady, self._on_session_ready)
-        await self._bus.subscribe(SessionRestored, self._on_session_restored)
-        await self._bus.subscribe(SessionSaved, self._on_session_saved)
-        await self._bus.subscribe(TurnStarted, self._on_turn_started)
-        await self._bus.subscribe(ExecutionChanged, self._on_execution_changed)
-        await self._bus.subscribe(SessionDeleted, self._on_session_deleted)
+        await self._subscribe_all(self._bus)
         self._task = asyncio.create_task(self._run(), name="chrys-reporting")
+
+    async def attach(self, bus: EventBus) -> None:
+        """Observe another frontend's bus: a second session host in this process.
+
+        Without this, only the first host's sessions would ever be collected,
+        because every host owns its own bus.
+        """
+        if self._closed:
+            return
+        await self._subscribe_all(bus)
+
+    async def detach(self, bus: EventBus) -> bool:
+        """Stop observing *bus* — its host is shutting down.
+
+        The runtime closes once no bus is left, so its pump gets a bounded drain
+        instead of observing a dead bus forever. Returns whether any bus is
+        still observed.
+        """
+        remaining: list[tuple[EventBus, type[Event], LifecycleHandler]] = []
+        for record in self._subscriptions:
+            if record[0] is bus:
+                subscribed_bus, event_type, handler = record
+                with contextlib.suppress(Exception):
+                    await subscribed_bus.unsubscribe(event_type, handler)
+            else:
+                remaining.append(record)
+        self._subscriptions = remaining
+        if not remaining:
+            await self.close()
+            return False
+        return True
+
+    async def _subscribe_all(self, bus: EventBus) -> None:
+        """Subscribe every lifecycle handler on *bus*; idempotent per bus."""
+        if any(recorded is bus for recorded, _event_type, _handler in self._subscriptions):
+            return
+        # Recorded before subscribing: a failure part-way through leaves the
+        # records a superset of reality, and unsubscribing a handler that never
+        # landed is a safe no-op.
+        self._subscriptions.extend(
+            [
+                (bus, SessionReady, self._on_session_ready),
+                (bus, SessionRestored, self._on_session_restored),
+                (bus, AgentRuntimeUpdated, self._on_agent_runtime_updated),
+                (bus, SessionSaved, self._on_session_saved),
+                (bus, TurnStarted, self._on_turn_started),
+                (bus, ExecutionChanged, self._on_execution_changed),
+                (bus, SessionDeleted, self._on_session_deleted),
+            ]
+        )
+        await bus.subscribe(SessionReady, self._on_session_ready)
+        await bus.subscribe(SessionRestored, self._on_session_restored)
+        await bus.subscribe(AgentRuntimeUpdated, self._on_agent_runtime_updated)
+        await bus.subscribe(SessionSaved, self._on_session_saved)
+        await bus.subscribe(TurnStarted, self._on_turn_started)
+        await bus.subscribe(ExecutionChanged, self._on_execution_changed)
+        await bus.subscribe(SessionDeleted, self._on_session_deleted)
 
     async def close(self) -> None:
         """Stop collecting, drain the pump's budget and keep unsent frames queued."""
@@ -194,16 +283,21 @@ class ReportingService:
         await closer()
 
     def offer_meta(self, meta: ReportMeta) -> None:
-        """Accept the save hook's immutable row; never raises, never blocks."""
+        """Accept the save hook's immutable row; never raises, never blocks.
+
+        Only a bound session's row is kept: an unbound id would never be
+        drained and would only grow the dictionary.
+        """
         try:
+            binding = self._bindings.get(meta.session_id)
+            if binding is None:
+                return
             with self._lock:
                 self._metas[meta.session_id] = meta
-            binding = self._bindings.get(meta.session_id)
-            if binding is not None:
-                binding.meta_pending = True
-                binding.snapshot_pending = True
-                binding.trajectory_pending = True
-                binding.workspace_pending = True
+            binding.meta_pending = True
+            binding.snapshot_pending = True
+            binding.trajectory_pending = True
+            binding.workspace_pending = True
             self._wake.set()
         except Exception:  # the hook runs inside the save path
             logger.warning("Reporting could not accept the session meta", exc_info=True)
@@ -213,11 +307,7 @@ class ReportingService:
         if binding is None:
             return
         binding.profile_name = event.agent_profile
-        binding.display_name = event.display_name
-        binding.model_profile_id = event.model_profile_id
-        binding.tool_names = tuple(event.tool_names)
-        binding.tool_kinds = dict(event.tool_kinds)
-        binding.skill_names = tuple(event.skill_names)
+        binding.facts = _facts_from_runtime(event.runtime_details)
         binding.environment_pending = True
         binding.repository_pending = True
         self._wake.set()
@@ -227,11 +317,26 @@ class ReportingService:
         if binding is None:
             return
         binding.profile_name = event.agent_profile
-        binding.display_name = event.display_name
+        # A restore does not carry runtime facts; the first
+        # AgentRuntimeUpdated or rebuild fills them in and re-arms the capture.
         binding.environment_pending = True
         binding.repository_pending = True
         binding.trajectory_pending = True
         binding.snapshot_pending = True
+        self._wake.set()
+
+    async def _on_agent_runtime_updated(self, event: AgentRuntimeUpdated) -> None:
+        # Runtime facts changed without a rebuild (model switch, skill refresh):
+        # only a real change re-arms the environment capture, so a per-turn
+        # skill refresh costs a comparison and nothing else.
+        binding = self._bindings.get(event.session_id or "")
+        if binding is None:
+            return
+        facts = _facts_from_runtime(event.runtime_details)
+        if facts == binding.facts:
+            return
+        binding.facts = facts
+        binding.environment_pending = True
         self._wake.set()
 
     async def _on_session_saved(self, event: SessionSaved) -> None:
@@ -292,15 +397,20 @@ class ReportingService:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), timeout=self._config.poll_interval_seconds)
             self._wake.clear()
-            requests = self._drain()
-            if not requests:
-                continue
-            try:
-                await asyncio.to_thread(self._collect, requests)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("Reporting collection round failed", exc_info=True)
+            while True:
+                requests = self._drain()
+                deferred = self._take_deferred_sessions()
+                if not requests and not deferred:
+                    break
+                try:
+                    reopened = await asyncio.to_thread(self._collect, requests, deferred)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("Reporting collection round failed", exc_info=True)
+                    break
+                if not reopened:
+                    break
 
     def _drain(self) -> list[_CollectRequest]:
         requests: list[_CollectRequest] = []
@@ -321,11 +431,7 @@ class ReportingService:
                         session_id=binding.session_id,
                         primary_cwd=binding.primary_cwd,
                         profile_name=binding.profile_name,
-                        display_name=binding.display_name,
-                        model_profile_id=binding.model_profile_id,
-                        tool_names=binding.tool_names,
-                        tool_kinds=dict(binding.tool_kinds),
-                        skill_names=binding.skill_names,
+                        facts=binding.facts,
                         environment=binding.environment_pending,
                         repository=binding.repository_pending,
                         trajectory=binding.trajectory_pending,
@@ -342,15 +448,30 @@ class ReportingService:
                 binding.meta_pending = False
         return requests
 
+    def _take_deferred_sessions(self) -> tuple[str, ...]:
+        """Sessions the pump saw deferred or dropped since the last round."""
+        pump = self._pump
+        return () if pump is None else pump.take_deferred_sessions()
+
     # ── worker-thread side ────────────────────────────────────────────────
 
-    def _collect(self, requests: list[_CollectRequest]) -> None:
-        """Every read, hash, encode and enqueue of one round."""
+    def _collect(self, requests: list[_CollectRequest], deferred: Sequence[str] = ()) -> bool:
+        """Every read, hash, encode and enqueue of one round.
+
+        Returns whether a negotiation re-opened work, so the driver runs the
+        next round at once instead of waiting out the poll interval.
+        """
         wal = self._wal
         cursors = self._cursors
         if wal is None or cursors is None:
-            return
+            return False
         diagnostics = self._diagnostics
+        reopened = False
+        for session_id in deferred:
+            try:
+                reopened = self.reconcile(session_id) or reopened
+            except Exception:  # a failed negotiation never stops the queue
+                logger.warning("Reporting could not reconcile session %s", session_id, exc_info=True)
         for request in requests:
             try:
                 self._collect_one(request, cursors)
@@ -361,6 +482,7 @@ class ReportingService:
         pump = self._pump
         if pump is not None:
             pump.wake()
+        return reopened
 
     def _collect_one(self, request: _CollectRequest, cursors: SessionCursorStore) -> None:
         wal = self._wal
@@ -371,8 +493,11 @@ class ReportingService:
         probe = self._probe(request, cursor)
         if request.repository and not cursor.repository_sent:
             dirty |= self._send_repository(request.session_id, probe, cursor)
-        if request.environment and self._config.agent_config and not cursor.environment_sent:
-            dirty |= self._send_agent_environment(request, cursor)
+        if request.environment and self._config.agent_config:
+            # The classification rides the agent.env envelope, and a change of
+            # it re-sends even an unchanged payload.
+            workspace_kind = (probe.workspace_kind if probe is not None else "") or cursor.workspace_kind
+            dirty |= self._send_agent_environment(request, cursor, workspace_kind)
         session_dir = _session_dir(request.session_id)
         tailer = self._tailer
         if request.trajectory and tailer is not None:
@@ -388,12 +513,7 @@ class ReportingService:
         if request.workspace:
             dirty |= self._capture_workspace(request, probe, cursor)
         if request.meta is not None:
-            environment = MetaEnvironment(
-                agent_config_sha256=cursor.agent_config_sha256,
-                agent_config_size=cursor.agent_config_size,
-                workspace_kind=cursor.workspace_kind,
-            )
-            payload = session_meta_payload(request.meta, environment)
+            payload = session_meta_payload(request.meta)
             wal.append(
                 [
                     Frame.build(
@@ -439,34 +559,40 @@ class ReportingService:
             cursor.repository_identities = [*cursor.repository_identities, identity.identity][-16:]
         return True
 
-    def _send_agent_environment(self, request: _CollectRequest, cursor: SessionCursor) -> bool:
+    def _send_agent_environment(self, request: _CollectRequest, cursor: SessionCursor, workspace_kind: str) -> bool:
+        """Queue ``agent.env`` when its content or the classification changed.
+
+        The capture moment and the workspace classification ride the frame
+        envelope, not the payload, so the payload stays content-addressed and
+        one configuration is shared across sessions. An unchanged content hash
+        with an unchanged classification queues nothing.
+        """
         wal = self._wal
         if wal is None:
             return False
-        environment = AgentEnvironment(
+        environment = collect_agent_environment(
+            request.facts,
             profile_name=request.profile_name,
-            profile_yaml=profile_yaml_text(request.profile_name, Path(self._config.directory).parent),
-            display_name=request.display_name,
-            model_profile_id=request.model_profile_id,
-            model_provider="",
-            model_id="",
-            tool_names=request.tool_names,
-            tool_kinds=dict(request.tool_kinds),
-            skill_names=request.skill_names,
-            hook_events=(),
-            settings_digest=settings_digest(self._settings),
+            config_dir=self._config.config_dir,
         )
         payload, _redacted = agent_environment_payload(environment, app_version=__version__)
-        cursor.agent_config_sha256 = sha256_hex(payload)
-        cursor.agent_config_size = len(payload)
-        cursor.environment_sent = True
+        content_hash = sha256_hex(payload)
+        if content_hash == cursor.agent_config_sha256 and workspace_kind == cursor.workspace_kind:
+            return False
+        cursor.agent_config_sha256 = content_hash
+        # Remember the classification this frame carries, so a later round that
+        # probes (or does not) compares against the same fact.
+        if workspace_kind:
+            cursor.workspace_kind = workspace_kind
         wal.append(
             [
                 Frame.build(
                     KIND_AGENT_ENV,
                     request.session_id,
-                    scope_agent_env(cursor.agent_config_sha256),
+                    scope_agent_env(content_hash),
                     payload,
+                    workspace_kind=workspace_kind,
+                    captured_at=utc_iso(),
                 )
             ]
         )
@@ -505,15 +631,21 @@ class ReportingService:
         cursor.workspace_kind = WORKSPACE_KIND_GIT
         return True
 
-    def reconcile(self, session_id: str) -> None:
-        """Ask the server which blocks it is missing and forget them locally."""
+    def reconcile(self, session_id: str) -> bool:
+        """Ask the server which blocks it is missing and forget them locally.
+
+        Returns whether the cursor was re-opened, that is whether the next
+        collection round resends the blocks the server named. A failed
+        negotiation is not an error: the cursor and the blocks stay as they
+        were and the next deferral asks again.
+        """
         reconciler = self._reconciler
         cursors = self._cursors
         if reconciler is None or cursors is None or not self._config.deliverable:
-            return
+            return False
         cursor = cursors.load(session_id)
         if not cursor.snapshot_content_hash and not cursor.workspace_manifest_sha256:
-            return
+            return False
         answer = reconciler.reconcile(
             session_id,
             ManifestRequest(
@@ -524,25 +656,49 @@ class ReportingService:
             ),
         )
         if answer is None:
-            return
-        missing = set(answer.missing_chunk_hashes)
-        if missing:
-            cursor.snapshot_chunk_hashes = ["" if value in missing else value for value in cursor.snapshot_chunk_hashes]
+            return False
+        missing_chunks = set(answer.missing_chunk_hashes)
+        if missing_chunks:
+            # A blank hash can never match the file's block, so the next tap
+            # reads and queues that block again.
+            cursor.snapshot_chunk_hashes = [
+                "" if value in missing_chunks else value for value in cursor.snapshot_chunk_hashes
+            ]
             cursor.snapshot_size = 0
             cursor.snapshot_mtime_ns = 0
         missing_files = set(answer.missing_file_shas)
         if missing_files:
             cursor.workspace_file_shas = [value for value in cursor.workspace_file_shas if value not in missing_files]
             cursor.workspace_signature = ""
+        if answer.acked_last_sequence > cursor.trajectory_last_sequence:
+            cursor.trajectory_last_sequence = answer.acked_last_sequence
         cursors.save(session_id, cursor)
+        reopened = bool(missing_chunks or missing_files)
+        if reopened:
+            self._reopen_collection(session_id, snapshot=bool(missing_chunks), workspace=bool(missing_files))
+        return reopened
+
+    def _reopen_collection(self, session_id: str, *, snapshot: bool, workspace: bool) -> None:
+        """Ask the next round to collect the parts the server is still missing."""
+        with self._lock:
+            binding = self._bindings.get(session_id)
+            if binding is None:
+                return
+            binding.snapshot_pending = binding.snapshot_pending or snapshot
+            binding.workspace_pending = binding.workspace_pending or workspace
 
     async def _close_once(self) -> None:
+        self._closed = True
         task = self._task
         self._task = None
         if task is not None:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        subscriptions, self._subscriptions = self._subscriptions, []
+        for subscribed_bus, event_type, handler in subscriptions:
+            with contextlib.suppress(Exception):
+                await subscribed_bus.unsubscribe(event_type, handler)
         pump = self._pump
         self._pump = None
         if pump is not None:
@@ -562,6 +718,7 @@ class ReportingService:
         Used at interpreter exit, where no task can run: the pump gets its
         bounded drain and everything unsent stays in the log for the next start.
         """
+        self._closed = True
         pump = self._pump
         self._pump = None
         if pump is not None:
@@ -576,16 +733,3 @@ class ReportingService:
 
 def _session_dir(session_id: str) -> Path:
     return resolve_sessions_dir(create=False) / session_short_id(session_id)
-
-
-def settings_digest(settings: Settings) -> str:
-    """Digest of the agent-behaviour settings that shape a run."""
-    document = {
-        "agent": settings.default_agent,
-        "model": settings.model_profile,
-        "approval": settings.default_approval_mode,
-        "retry": settings.max_transient_retries,
-        "context": settings.warn_threshold_pct,
-    }
-    encoded = "|".join(f"{key}={value}" for key, value in sorted(document.items()))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

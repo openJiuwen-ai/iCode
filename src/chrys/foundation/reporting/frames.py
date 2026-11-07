@@ -136,7 +136,14 @@ def scope_repo_identity(repository_identity: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class FrameHeader:
-    """The JSON header of one frame; the payload rides beside it."""
+    """The JSON header of one frame; the payload rides beside it.
+
+    Two fields are envelope facts of one kind only, like ``reset``: a
+    ``trajectory.lines`` batch says whether it replays after a lost offset, and
+    an ``agent.env`` frame carries the workspace classification and the capture
+    moment that must not enter the content-addressed payload (a timestamp there
+    would break sharing one configuration blob across sessions).
+    """
 
     kind: str
     unit_id: str
@@ -146,6 +153,8 @@ class FrameHeader:
     session_id: str = ""
     created_at: str = ""
     reset: bool = False
+    workspace_kind: str = ""
+    captured_at: str = ""
     version: int = FRAME_VERSION
 
     @classmethod
@@ -158,6 +167,8 @@ class FrameHeader:
         *,
         created_at: str = "",
         reset: bool = False,
+        workspace_kind: str = "",
+        captured_at: str = "",
     ) -> FrameHeader:
         """Build the header for *payload*, deriving its hash and unit id."""
         if kind not in UNIT_KINDS:
@@ -176,10 +187,12 @@ class FrameHeader:
             session_id=session_id,
             created_at=created_at,
             reset=reset,
+            workspace_kind=workspace_kind,
+            captured_at=captured_at,
         )
 
     def to_json(self) -> bytes:
-        """Serialize the header; ``reset`` rides only on trajectory batches."""
+        """Serialize the header; kind-specific envelope fields ride only on their kind."""
         document: dict[str, object] = {
             "v": self.version,
             "kind": self.kind,
@@ -192,6 +205,9 @@ class FrameHeader:
         }
         if self.kind == KIND_TRAJECTORY_LINES:
             document["reset"] = self.reset
+        if self.kind == KIND_AGENT_ENV:
+            document["workspaceKind"] = self.workspace_kind
+            document["capturedAt"] = self.captured_at
         return canonical_json_bytes(document)
 
     @classmethod
@@ -226,6 +242,8 @@ class FrameHeader:
         session_id = document.get("session_id", "")
         created_at = document.get("created_at", "")
         reset = document.get("reset", False)
+        workspace_kind = document.get("workspaceKind", "")
+        captured_at = document.get("capturedAt", "")
         return cls(
             kind=kind,
             unit_id=unit_id,
@@ -235,6 +253,8 @@ class FrameHeader:
             session_id=session_id if isinstance(session_id, str) else "",
             created_at=created_at if isinstance(created_at, str) else "",
             reset=bool(reset),
+            workspace_kind=workspace_kind if isinstance(workspace_kind, str) else "",
+            captured_at=captured_at if isinstance(captured_at, str) else "",
             version=version,
         )
 
@@ -256,9 +276,20 @@ class Frame:
         *,
         created_at: str = "",
         reset: bool = False,
+        workspace_kind: str = "",
+        captured_at: str = "",
     ) -> Frame:
         """Build a frame for *payload*."""
-        header = FrameHeader.of(kind, session_id, scope, payload, created_at=created_at, reset=reset)
+        header = FrameHeader.of(
+            kind,
+            session_id,
+            scope,
+            payload,
+            created_at=created_at,
+            reset=reset,
+            workspace_kind=workspace_kind,
+            captured_at=captured_at,
+        )
         return cls(header=header, payload=payload)
 
     def encode(self) -> bytes:

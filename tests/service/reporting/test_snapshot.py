@@ -83,3 +83,41 @@ def test_an_unchanged_session_file_is_skipped_without_hashing(
 
 def test_a_missing_session_file_produces_nothing(tmp_path: Path, queue: DurableWAL) -> None:
     assert SnapshotTap(queue).collect("session-1", tmp_path / "absent.json", SessionCursor()) == 0
+
+
+class _StaleTap(SnapshotTap):
+    """A tap whose hash pass reports an older version than the file holds.
+
+    That is exactly the state a save landing between the two opens leaves, so
+    this is the red path for the per-block digest check.
+    """
+
+    def __init__(self, wal: DurableWAL, stale: tuple) -> None:
+        super().__init__(wal)
+        self._stale = stale
+
+    def _hash_chunks(self, path: Path) -> tuple[list, int, str | None]:
+        return self._stale
+
+
+def test_a_save_that_lands_between_the_two_opens_is_not_shipped(
+    tmp_path: Path, queue: DurableWAL, queued: Callable[[DurableWAL], list[Frame]]
+) -> None:
+    session = tmp_path / "session.json"
+    stale_file = tmp_path / "stale.json"
+    stale_file.write_bytes(b"A" * CHUNK_SIZE_BYTES)
+    # The hashed version of the file, captured before the save replaced it.
+    stale = SnapshotTap(queue)._hash_chunks(stale_file)
+    session.write_bytes(b"B" * CHUNK_SIZE_BYTES)
+    os.utime(session, ns=(1, 1))  # defeat the (size, mtime) fast path
+    tap = _StaleTap(queue, stale)
+    cursor = SessionCursor()
+
+    assert tap.collect("session-1", session, cursor) == 0
+    assert queued(queue) == []
+    assert cursor.snapshot_content_hash == ""
+
+    # The next tap hashes the current version and ships it whole.
+    assert SnapshotTap(queue).collect("session-1", session, cursor) == 2
+    frames = queued(queue)
+    assert frames[0].payload == b"B" * CHUNK_SIZE_BYTES
