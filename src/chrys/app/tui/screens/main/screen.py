@@ -131,7 +131,7 @@ from chrys.app.tui.widgets.chrome.input_bar import (
 from chrys.app.tui.widgets.chrome.prompt_card import PromptCard
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
-from chrys.app.tui.widgets.editor import MESSAGE_EDITOR_MAX_CHARACTERS, EditorBufferSnapshot, EditorMode
+from chrys.app.tui.widgets.editor import MESSAGE_EDITOR_MAX_CHARACTERS, EditorBufferSnapshot, EditorMode, MessageEditor
 from chrys.app.tui.widgets.sidebar.background_tasks import BackgroundTaskList
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
 from chrys.app.tui.widgets.sidebar.diff_preview import DiffPreview, SidebarChatPanel, preview_rows
@@ -182,6 +182,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.themes.picker import ThemesScreen
     from chrys.app.tui.theme_loader import UserThemeScan
     from chrys.app.tui.themes.store import ThemeFileRevision, UserThemeStore
+    from chrys.app.tui.widgets.chrome.draft_text_area import DraftTextArea
     from chrys.app.update_check import UpdateNotice
     from chrys.foundation.config.settings_store import PersistResult, SettingsHandle
     from chrys.foundation.events.bus import EventBus
@@ -212,6 +213,10 @@ _SHORTCUTS_LOADING_TAB = msg(
 _QUOTE_INPUT_UNAVAILABLE = msg(
     "tui.quote.input_unavailable",
     fallback="The message input cannot take a quote right now.",
+)
+_REFERENCE_STALE = msg(
+    "tui.reference_preview.stale",
+    fallback="The label is no longer in the draft; changes were not saved.",
 )
 _SESSIONS_BINDING = msg("tui.binding.sessions", fallback="Sessions")
 _AGENTS_BINDING = msg("tui.binding.agents", fallback="Agents")
@@ -1491,18 +1496,28 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _on_reference_opened(self, event: InputBar.ReferenceOpened) -> None:
         """Show what a clicked draft label stands for."""
         event.stop()
-        self._open_reference_preview(event.reference)
+        self._open_reference_preview(event.reference, event.area)
 
-    def _open_reference_preview(self, reference: DraftReference) -> None:
-        """Show what a draft label stands for, over whatever screen is on top (the editor too)."""
+    def _open_reference_preview(self, reference: DraftReference, area: DraftTextArea) -> None:
+        """Show or edit a label's content in the draft that opened it, over the editor too."""
         from chrys.app.tui.screens.dialogs.reference_preview import ReferencePreviewDialog
+
+        def saved(content: str | None) -> None:
+            if content is not None and not area.edit_reference(reference, content):
+                self.notify(
+                    render_str(self._language_localizer(), _REFERENCE_STALE.bind()),
+                    severity="warning",
+                    markup=False,
+                )
 
         self.app.push_screen(
             ReferencePreviewDialog(
                 reference,
                 cwd=Path(self._state.workspace.current_cwd),
                 locale_controller=self._locale_controller,
-            )
+                mode=area.mode if isinstance(area, MessageEditor) else self._editor_mode,
+            ),
+            saved,
         )
 
     def arrange(self, size: Size, _optimal: bool = False) -> DockArrangeResult:

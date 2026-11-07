@@ -45,10 +45,9 @@ type PromptField = tuple[int, int]
 def shift_prompt_fields(fields: Sequence[PromptField], start: int, end: int, inserted: int) -> tuple[PromptField, ...]:
     """Return *fields* after ``[start, end)`` is replaced by *inserted* characters.
 
-    A field the edit touches stops being a field: once the user types into,
-    over or across a placeholder it is their text. Text inserted exactly at a
-    field's edge leaves the field as it was, moving it when the text lands
-    before it.
+    The draft editor expands an edit that touches a field to take it whole;
+    the replaced field stops being a field. Text inserted exactly at a field's
+    edge leaves the field as it was, moving it when the text lands before it.
     """
     delta = inserted - (end - start)
     kept: list[PromptField] = []

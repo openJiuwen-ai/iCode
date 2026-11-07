@@ -636,10 +636,11 @@ class InputBar(Widget):
             super().__init__()
 
     class ReferenceOpened(Message):
-        """Posted when a live label in the draft is clicked: *reference* is what it stands for."""
+        """Posted when a live label in *area* is clicked: *reference* is what it stands for."""
 
-        def __init__(self, reference: DraftReference) -> None:
+        def __init__(self, reference: DraftReference, area: DraftTextArea) -> None:
             self.reference = reference
+            self.area = area
             super().__init__()
 
     class InterruptRequested(Message):
@@ -1334,7 +1335,7 @@ class InputBar(Widget):
 
     def on_draft_text_area_reference_clicked(self, event: DraftTextArea.ReferenceClicked) -> None:
         event.stop()
-        self.post_message(self.ReferenceOpened(event.reference))
+        self.post_message(self.ReferenceOpened(event.reference, event.area))
 
     def insert_reference(self, kind: ReferenceKind, content: str) -> bool:
         """Insert a new label for *content* at the cursor and focus the composer; False when it cannot."""

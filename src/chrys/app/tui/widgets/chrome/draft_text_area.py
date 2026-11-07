@@ -7,17 +7,20 @@ references, the unfilled prompt fields and the prompt shortcut it belongs to.
 :class:`DraftTextArea` is the one implementation of how that draft edits, so
 the message editor is the input box made bigger:
 
-- labels are one unit (:func:`label_boundary` for every cursor move,
-  :func:`label_safe_range` for every edit), styled, and open on a click;
-- prompt fields shift with edits, undo and redo, and any edit that touches
-  one makes it the user's text;
+- labels and prompt fields are whole units (:func:`label_boundary` for every
+  cursor move, :func:`label_safe_range` for every edit); clicking a label opens
+  it, and clicking inside a prompt field selects it;
+- prompt fields shift with edits, undo and redo; undo restores fields removed
+  whole by an edit, unless the draft was empty when the batch was undone;
+  writing the same text leaves fields unchanged and keeps its undo step;
 - an edit that empties the draft ends its fields and owner;
 - a draft that leaves (sent, or taken in by a running turn) is one undo
   step that brings it back whole, labels live (:meth:`leave_draft`);
-  otherwise a reference table that is replaced rather than grown drops the
-  undo steps that would bring back labels with nothing behind them;
+  replacing a reference table outside a reference edit drops the undo steps
+  that would bring back labels with nothing behind them;
 - a long paste folds into a label, and image paths or a clipboard image
-  become image labels.
+  become image labels; editing a folded paste replaces all its live labels
+  and that entry's content in one undo step, leaving other entries alone.
 
 It is a mixin for a ``TextArea`` host listed before the host class, which
 declares :data:`DRAFT_COMPONENT_CLASSES` and :func:`draft_text_area_css`
@@ -54,6 +57,8 @@ from chrys.foundation.text.draft_references import (
 )
 
 if TYPE_CHECKING:
+    from textual import events
+
     from chrys.app.tui.widgets import EnhancedTextArea
 
     _DraftTextAreaBase = EnhancedTextArea
@@ -132,10 +137,26 @@ class _DraftLeft(Edit):
     table_after: DraftReferences = field(default=EMPTY_REFERENCES, kw_only=True)
 
 
+@dataclass
+class _ReferenceEdited(Edit):
+    """One occurrence of a folded paste replaced with its entry; other entries keep their current versions."""
+
+    entry_before: DraftReference = field(kw_only=True)
+    entry_after: DraftReference = field(kw_only=True)
+
+
 def _left_draft(edits: Sequence[Edit]) -> _DraftLeft | None:
     # ``leave_draft`` checkpoints before and after its edit, so it is a batch of its own.
     if len(edits) == 1 and isinstance(edits[0], _DraftLeft):
         return edits[0]
+    return None
+
+
+def _edited_reference(edits: Sequence[Edit]) -> _ReferenceEdited | None:
+    # A paste save owns a batch composed only of its occurrence edits.
+    first = edits[0] if edits else None
+    if isinstance(first, _ReferenceEdited) and all(isinstance(edit, _ReferenceEdited) for edit in edits):
+        return first
     return None
 
 
@@ -151,6 +172,8 @@ class DraftTextArea(_DraftTextAreaBase):
         self._writing_draft = False
         self._prompt_field_columns_of: tuple[PromptField, ...] | None = None
         self._prompt_field_columns_cache: dict[int, list[tuple[int, int]]] = {}
+        self._field_mouse_down: Location | None = None
+        self._field_mouse_moved = False
         # Session restore/workspace updates replace this before normal use; this covers early paste during startup.
         self._paste_cwd: str = safe_getcwd()
         self._clipboard_image_dir: Path | None = None
@@ -162,10 +185,11 @@ class DraftTextArea(_DraftTextAreaBase):
         self._highlights_cursor_line = self.highlight_cursor_line
 
     class ReferenceClicked(Message):
-        """Posted when a live draft label is clicked: *reference* is what it stands for."""
+        """Posted when a live draft label in *area* is clicked: *reference* is what it stands for."""
 
-        def __init__(self, reference: DraftReference) -> None:
+        def __init__(self, reference: DraftReference, area: DraftTextArea) -> None:
             self.reference = reference
+            self.area = area
             super().__init__()
 
     class DraftOwnerChanged(Message):
@@ -187,9 +211,16 @@ class DraftTextArea(_DraftTextAreaBase):
         return self._prompt_fields
 
     def set_prompt_fields(self, fields: Sequence[PromptField], *, select: bool = True) -> None:
-        """Highlight *fields* of the current text and, with *select*, select the first one."""
-        length = len(self.text)
-        self._prompt_fields = tuple(sorted((start, end) for start, end in fields if 0 <= start < end <= length))
+        """Highlight valid single-line *fields* and, with *select*, select the first one."""
+        text = self.text
+        self._prompt_fields = tuple(
+            sorted(
+                (start, end)
+                for start, end in fields
+                if 0 <= start < end <= len(text) and "\n" not in text[start:end] and "\r" not in text[start:end]
+            )
+        )
+        self.selection = self.selection
         self._repaint_prompt_fields()
         if select and self._prompt_fields:
             self._select_prompt_field(self._prompt_fields[0])
@@ -336,14 +367,20 @@ class DraftTextArea(_DraftTextAreaBase):
         return True
 
     def edit(self, edit: Edit) -> EditResult:
-        self._keep_labels_whole(edit)
-        if not self._prompt_fields:
+        self._keep_units_whole(edit)
+        if isinstance(edit, _ReferenceEdited):
+            self._adopt_references(self._references.with_replaced(edit.entry_after))
+        if not self._prompt_fields or edit.text == self.document.get_text_range(edit.top, edit.bottom):
             result = super().edit(edit)
             self._end_owner_if_emptied()
             return result
         document = self.document
         start = document.get_index_from_location(edit.top)
         end = document.get_index_from_location(edit.bottom)
+        # Textual's recorded Edit owns the fields its replacement removes, relative to its start.
+        edit.__dict__["_removed_prompt_fields"] = tuple(
+            (low - start, high - start) for low, high in self._prompt_fields if start <= low < high <= end
+        )
         # Shift before the base edit posts Changed and repaints. ``len(edit.text)`` is the length
         # the document stores: text reaches the draft with LF line ends only (typing inserts
         # ``\n``, a paste or drop goes through ``_sanitize_paste_text``, an expansion through
@@ -368,14 +405,19 @@ class DraftTextArea(_DraftTextAreaBase):
 
     def _undo_batch(self, edits: Sequence[Edit]) -> None:
         left = _left_draft(edits)
+        reference = _edited_reference(edits)
+        if reference is not None:
+            self._adopt_references(self._references.with_replaced(reference.entry_before))
         if left is not None:
             left.table_after = self._references
-        elif self._prompt_fields and edits:
-            steps: list[tuple[Location, Location, str] | None] = []
+        elif edits and (self._prompt_fields or any(getattr(edit, "_removed_prompt_fields", ()) for edit in edits)):
+            restore_fields = bool(self.text)
+            steps: list[tuple[Location, Location, str, tuple[PromptField, ...]] | None] = []
             for recorded in reversed(edits):
                 # The span the edit wrote, and the text it replaced there.
                 done = recorded._edit_result
-                steps.append(None if done is None else (recorded.top, done.end_location, done.replaced_text))
+                removed = getattr(recorded, "_removed_prompt_fields", ()) if restore_fields else ()
+                steps.append(None if done is None else (recorded.top, done.end_location, done.replaced_text, removed))
             self._replay_prompt_fields(steps)
         super()._undo_batch(edits)
         if left is not None:
@@ -388,20 +430,26 @@ class DraftTextArea(_DraftTextAreaBase):
 
     def _redo_batch(self, edits: Sequence[Edit]) -> None:
         left = _left_draft(edits)
+        reference = _edited_reference(edits)
+        if reference is not None:
+            self._adopt_references(self._references.with_replaced(reference.entry_after))
         if left is None and self._prompt_fields and edits:
-            self._replay_prompt_fields([(recorded.top, recorded.bottom, recorded.text) for recorded in edits])
+            self._replay_prompt_fields([(recorded.top, recorded.bottom, recorded.text, ()) for recorded in edits])
         super()._redo_batch(edits)
         if left is not None:
             self._adopt_references(left.table_after)
         self._end_owner_if_emptied()
 
-    def _replay_prompt_fields(self, steps: Sequence[tuple[Location, Location, str] | None]) -> None:
-        """Move the fields across *steps*, replacements applied in order to the current text.
+    def _replay_prompt_fields(
+        self, steps: Sequence[tuple[Location, Location, str, tuple[PromptField, ...]] | None]
+    ) -> None:
+        """Move and restore fields across *steps*, replacements applied in order to the current text.
 
-        Each step is ``(top, bottom, text)`` against the text the step before
-        it left; a scratch copy of the document turns each into offsets, as
-        ``edit()`` does on the live one. A step that cannot be placed drops
-        every field: a field is only highlighted where it is known to be.
+        Each step is ``(top, bottom, text, removed_fields)`` against the text the
+        step before it left; removed fields are relative to its start. A scratch
+        document turns locations into offsets, as ``edit()`` does on the live
+        one. A step that cannot be placed drops every field: a field is only
+        highlighted where it is known to be.
         """
         scratch = Document(self.text)
         fields = self._prompt_fields
@@ -409,13 +457,17 @@ class DraftTextArea(_DraftTextAreaBase):
             if step is None:
                 fields = ()
                 break
-            top, bottom, text = step
+            top, bottom, text, removed = step
+            if not removed and text == scratch.get_text_range(top, bottom):
+                continue
             start = scratch.get_index_from_location(top)
             end = scratch.get_index_from_location(bottom)
             written = scratch.replace_range(top, bottom, text)
             fields = shift_prompt_fields(
                 fields, start, end, scratch.get_index_from_location(written.end_location) - start
             )
+            if removed:
+                fields = tuple(sorted((*fields, *((start + low, start + high) for low, high in removed))))
         self._prompt_fields = fields
         self._repaint_prompt_fields()
 
@@ -460,14 +512,9 @@ class DraftTextArea(_DraftTextAreaBase):
             line_starts = list(accumulate((len(text) + newline for text in lines), initial=0))
             columns: dict[int, list[tuple[int, int]]] = {}
             for start, end in fields:
-                first = bisect_right(line_starts, start) - 1
-                last = min(bisect_right(line_starts, end) - 1, len(lines) - 1)
-                for row in range(first, last + 1):
-                    line_start = line_starts[row]
-                    left = max(start, line_start) - line_start
-                    right = min(end, line_start + len(lines[row])) - line_start
-                    if left < right:
-                        columns.setdefault(row, []).append((left, right))
+                row = bisect_right(line_starts, start) - 1
+                line_start = line_starts[row]
+                columns.setdefault(row, []).append((start - line_start, end - line_start))
             self._prompt_field_columns_cache = columns
             self._prompt_field_columns_of = fields
         return self._prompt_field_columns_cache
@@ -524,6 +571,44 @@ class DraftTextArea(_DraftTextAreaBase):
             message = _LABEL_PASTE.bind(number=str(number))
         return f"[{render_str(widget_localizer(self), message)}]"
 
+    def edit_reference(self, reference: DraftReference, content: str) -> bool:
+        """Save a folded paste in one undo step; False if its entry or live labels no longer belong to this draft."""
+        if reference.kind != "paste" or self._references.get(reference.kind, reference.number) != reference:
+            return False
+        text = self.text
+        labels = [label for label in iter_reference_labels(text, self._references) if label.reference == reference]
+        if not labels:
+            return False
+        content = super()._sanitize_paste_text(content)
+        if content == reference.content:
+            return True
+        entry_after = reference
+        replacement = content
+        if content and paste_folds(content, screen_rows=self.app.size.height):
+            replacement = self._label("paste", reference.number, content)
+            entry_after = DraftReference("paste", reference.number, content, replacement)
+        document = self.document
+        history = self.history
+        edits: list[Edit] = []
+        for label in reversed(labels):
+            # Short replacements must not join an earlier draft edit while their records are collected.
+            history.checkpoint()
+            self.edit(
+                _ReferenceEdited(
+                    replacement,
+                    document.get_location_from_index(label.start),
+                    document.get_location_from_index(label.end),
+                    maintain_selection_offset=True,
+                    entry_before=reference,
+                    entry_after=entry_after,
+                )
+            )
+            if history._undo_stack:
+                edits.extend(history._undo_stack.pop())
+        history._undo_stack.append(edits)
+        history.checkpoint()
+        return True
+
     def _spaced_for_insert(self, text: str) -> str:
         """*text* with a space on each side where it would otherwise touch other text at the selection."""
         document = self.document
@@ -569,49 +654,72 @@ class DraftTextArea(_DraftTextAreaBase):
         return self._register("paste", [text])
 
     def _validate_selection(self, selection: Selection) -> Selection:
-        """Keep each selection end off the inside of a live label: a label is one unit.
+        """Keep each selection end off the inside of a live label or prompt field.
 
         Every cursor move passes here (keys, clicks, drags, programmatic moves);
-        an end landing inside a label goes to the label's edge in the direction
-        it moved. A label holds no newline, so only that end's line is read.
+        an end landing inside a unit goes to its edge in the direction it moved.
+        Units hold no newline, so only that end's line is read.
         """
         selection = super()._validate_selection(selection)
-        if not self._references:
+        if not self._references and not self._prompt_fields:
             return selection
         previous = self.selection
         return Selection(
-            self._label_edge(selection.start, forward=selection.start >= previous.start),
-            self._label_edge(selection.end, forward=selection.end >= previous.end),
+            self._unit_edge(selection.start, forward=selection.start >= previous.start),
+            self._unit_edge(selection.end, forward=selection.end >= previous.end),
         )
 
-    def _label_edge(self, location: Location, *, forward: bool) -> Location:
-        row, column = location
-        return row, label_boundary(self.document[row], self._references, column, forward=forward)
+    def _atomic_spans(self, row: int | None = None) -> list[tuple[int, int]]:
+        """The live labels and fields, ordered as absolute offsets or columns on *row*."""
+        text = self.text if row is None else self.document[row]
+        fields = self._prompt_fields if row is None else self._prompt_field_columns().get(row, ())
+        return sorted(
+            [(label.start, label.end) for label in iter_reference_labels(text, self._references)] + list(fields)
+        )
 
-    def _keep_labels_whole(self, edit: Edit) -> None:
-        """Make *edit* take any live label it reaches into whole, or insert beside one it falls in."""
-        if not self._references:
+    def _unit_edge(self, location: Location, *, forward: bool) -> Location:
+        row, column = location
+        return row, label_boundary(self._atomic_spans(row), column, forward=forward)
+
+    def _keep_units_whole(self, edit: Edit) -> None:
+        """Make *edit* take any unit it reaches into whole, or insert beside one it falls in."""
+        if not self._references and not self._prompt_fields:
             return
         document = self.document
         start = document.get_index_from_location(edit.top)
         end = document.get_index_from_location(edit.bottom)
-        safe_start, safe_end = label_safe_range(self.text, self._references, start, end)
+        safe_start, safe_end = label_safe_range(self._atomic_spans(), start, end)
         if (safe_start, safe_end) != (start, end):
             edit.from_location = document.get_location_from_index(safe_start)
             edit.to_location = document.get_location_from_index(safe_end)
 
+    async def _on_mouse_down(self, event: events.MouseDown) -> None:
+        # Textual dispatches each MRO class's handler once; the base owns the selection.
+        self._field_mouse_down = self.get_target_document_location(event)
+        self._field_mouse_moved = False
+
+    async def _on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._field_mouse_down is not None and self.get_target_document_location(event) != self._field_mouse_down:
+            self._field_mouse_moved = True
+
     async def _on_click(self, event) -> None:
-        """Open what a clicked live label stands for (a click, not the end of a drag)."""
-        if not self._references or not self.selection.is_empty:
-            return
+        """Select a field on a true click inside it, or open what a clicked live label stands for."""
         row, column = self.get_target_document_location(event)
         if row >= self.document.line_count or column >= len(self.document[row]):
             return
         index = self.document.get_index_from_location((row, column))
+        if self._field_mouse_down == (row, column) and not self._field_mouse_moved:
+            for start, end in self._prompt_fields:
+                if start <= index < end:
+                    event.stop()
+                    self._select_prompt_field((start, end))
+                    return
+        if not self._references or not self.selection.is_empty:
+            return
         for label in iter_reference_labels(self.text, self._references):
             if label.start <= index < label.end:
                 event.stop()
-                self.post_message(self.ReferenceClicked(label.reference))
+                self.post_message(self.ReferenceClicked(label.reference, area=self))
                 return
 
     def _image_paste_labels(self, text: str) -> str | None:

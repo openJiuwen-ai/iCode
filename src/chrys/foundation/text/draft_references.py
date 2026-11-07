@@ -2,7 +2,7 @@
 
 """``[Image #n]`` / ``[Quote #n]`` / ``[Pasted text #n +L lines]`` labels in a chat draft.
 
-Every label kind follows the same rules; only what a label sends differs.
+Every label kind follows the same draft-text rules; what a label sends differs.
 
 A label is plain draft text. Whether it means anything is decided only by
 the draft's :class:`DraftReferences`: a label is live when the draft
@@ -17,9 +17,10 @@ end never rests inside a label (:func:`label_boundary`), and an edit that
 reaches into a label takes all of it (:func:`label_safe_range`). Typing,
 pasting, deleting and inserting a new label follow from those two.
 
-A label's text is written once, when its entry is registered, in the
-composer's language (:data:`LabelMaker`), and kept with the entry: a label
-stays live when the language changes later.
+A label's text is written in the composer's language (:data:`LabelMaker`)
+and kept with the entry: a label stays live when the language changes later.
+Editing a folded paste replaces that entry's content and label text as one
+undo step; the other entries stay as they are.
 
 Text leaves the composer through one function, :func:`expand_references`,
 and each label becomes what it stands for in place: an image label its
@@ -39,7 +40,7 @@ Pasted text is the user's own words and acts like typed text.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -96,8 +97,8 @@ class DraftReference:
 class DraftReferences:
     """What a draft's labels stand for, numbered from 1 per kind.
 
-    Only ever grows while the draft lives, so undo and a paste back find what
-    a label stood for; the next message starts over, numbering from 1.
+    Entries grow while the draft lives, or an undoable paste edit replaces
+    one entry's content and label. The next message starts over, numbering from 1.
     """
 
     entries: tuple[DraftReference, ...] = ()
@@ -116,6 +117,15 @@ class DraftReferences:
         number = max((entry.number for entry in self.entries if entry.kind == kind), default=0) + 1
         entry = DraftReference(kind, number, content, label(kind, number, content))
         return DraftReferences((*self.entries, entry)), entry
+
+    def with_replaced(self, entry: DraftReference) -> DraftReferences:
+        """These references with *entry* replacing its kind and number, keeping every other entry and their order."""
+        return DraftReferences(
+            tuple(
+                entry if (current.kind, current.number) == (entry.kind, entry.number) else current
+                for current in self.entries
+            )
+        )
 
 
 EMPTY_REFERENCES = DraftReferences()
@@ -148,27 +158,33 @@ def iter_reference_labels(text: str, references: DraftReferences) -> list[Refere
     return labels
 
 
-def label_boundary(text: str, references: DraftReferences, index: int, *, forward: bool) -> int:
-    """*index*, or the edge of the live label it falls strictly inside: its end moving *forward*, else its start."""
-    for label in iter_reference_labels(text, references):
-        if label.start < index < label.end:
-            return label.end if forward else label.start
-    return index
+def label_boundary(spans: Sequence[tuple[int, int]], index: int, *, forward: bool) -> int:
+    """*index*, or the edge in its direction that falls inside none of the ordered unit *spans*."""
+    while True:
+        previous = index
+        for start, end in spans:
+            if start < index < end:
+                index = end if forward else start
+        if index == previous:
+            return index
 
 
-def label_safe_range(text: str, references: DraftReferences, start: int, end: int) -> tuple[int, int]:
-    """The ``[start, end)`` an edit of *text* applies to so that it cuts no live label.
+def label_safe_range(spans: Sequence[tuple[int, int]], start: int, end: int) -> tuple[int, int]:
+    """The ``[start, end)`` an edit applies to so that it cuts none of the ordered unit *spans*.
 
-    A range reaching into a label grows to take the whole label; an insertion
-    point inside one moves to its end.
+    A range reaching into a unit grows until it takes every intersecting unit
+    whole; an insertion point inside one moves to the next safe edge.
     """
-    for label in iter_reference_labels(text, references):
-        if start == end:
-            if label.start < start < label.end:
-                return label.end, label.end
-        elif label.start < end and start < label.end:
-            start, end = min(start, label.start), max(end, label.end)
-    return start, end
+    if start == end:
+        index = label_boundary(spans, start, forward=True)
+        return index, index
+    while True:
+        previous = start, end
+        for unit_start, unit_end in spans:
+            if unit_start < end and start < unit_end:
+                start, end = min(start, unit_start), max(end, unit_end)
+        if (start, end) == previous:
+            return start, end
 
 
 # Stands in for a space inside a label while text is split into words; a

@@ -4,12 +4,12 @@
 
 :class:`DraftEditor` is a :class:`MessageEditor` (keymaps, Markdown, the
 character ceiling) that edits a whole :class:`ChatDraft` by the input box's
-own rules (:class:`DraftTextArea`): labels stay one unit and open on a
-click, prompt fields follow edits and Tab, long pastes fold and images
+own rules (:class:`DraftTextArea`): labels and prompt fields stay whole,
+a click opens a label or selects a field, long pastes fold and images
 become labels. The editor's key handlers reach the document only through
 its range methods and ``edit()``, so the rules hold for Vim and Emacs too:
 a range read for a register is the range an edit takes, so a yank, a kill
-or a delete never holds half a label.
+or a delete never holds half a label or field.
 """
 
 from __future__ import annotations
@@ -64,14 +64,13 @@ class DraftEditor(DraftTextArea, MessageEditor):
         return super().read_editor_range(self._label_safe_range(source_range))
 
     def editor_atomic_spans(self, row: int) -> list[tuple[int, int]]:
-        return [(label.start, label.end) for label in iter_reference_labels(self.document[row], self._references)]
+        return self._atomic_spans(row)
 
     def _label_safe_range(self, source_range: EditorTextRange) -> EditorTextRange:
         document = self.document
         first, last = sorted((source_range.start, source_range.end))
         start, end = label_safe_range(
-            self.text,
-            self._references,
+            self._atomic_spans(),
             document.get_index_from_location(first),
             document.get_index_from_location(last),
         )
@@ -79,13 +78,13 @@ class DraftEditor(DraftTextArea, MessageEditor):
 
     def _validate_selection(self, selection: Selection) -> Selection:
         # Where text cannot be typed (Vim Normal), the cursor rests on a character,
-        # never past a line's last one: a label that ends the line is one character
+        # never past a line's last one: a unit that ends the line is one character
         # there, so a cursor it pushed to the line's end rests on its start. A
-        # selection (Vim Visual) keeps its exclusive end after the label, so the
-        # label shows selected when a yank or delete would take it.
+        # selection (Vim Visual) keeps its exclusive end after the unit, so the
+        # unit shows selected when a yank or delete would take it.
         validated = super()._validate_selection(selection)
         if (
-            not self._references
+            (not self._references and not self._prompt_fields)
             or not selection.is_empty
             or validated.end == selection.end
             or self._active_keymap().accepts_text()
@@ -94,9 +93,9 @@ class DraftEditor(DraftTextArea, MessageEditor):
         row, column = validated.end
         line = self.document[row]
         if column == len(line):
-            for label in iter_reference_labels(line, self._references):
-                if label.end == column:
-                    return Selection.cursor((row, label.start))
+            for start, end in self._atomic_spans(row):
+                if end == column:
+                    return Selection.cursor(self._unit_edge((row, start), forward=False))
         return validated
 
     def _limit_inserted_text(self, insert: str, start: EditorLocation, end: EditorLocation) -> str:

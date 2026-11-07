@@ -11,6 +11,16 @@ ReferencePreviewDialog {
     border: round $tui-border-primary $border-opacity;
     border-title-color: $primary;
     border-title-style: bold;
+    border-subtitle-align: right;
+}
+
+#reference-preview-editor {
+    width: 1fr;
+    height: auto;
+    max-height: 74vh;
+    border: none;
+    padding: 1 0 1 2;
+    scrollbar-size-vertical: 1;
 }
 
 #reference-preview-body {
