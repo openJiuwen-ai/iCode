@@ -129,7 +129,7 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
 | `session.meta` | JSON：`session/1.0` 白名单（§4.3） | `meta:<content_hash>` | `sessions` 行 |
 | `workspace.manifest` | JSON：IGWS manifest（`workspace-state/1.0`：三段条目含 `path/status/mode/content{offset,length,sha256}`、`omitted[]`、`ignored{count,truncated,entries[]}`、`capture`、`repository`） | `ws:<manifest_sha256>` | `workspace_states` 行；服务端据此拼装 IGWS 容器 |
 | `workspace.file` | 单文件内容切片（≤4 MiB/文件，1 MiB/块） | `wsfile:<sha256>:<index>` | 服务端按 manifest 顺序拼成 IGWS 容器；内容寻址天然去重 |
-| `agent.env` | JSON：`agent-config/1.0` 脱敏快照（§4.4） | `agentenv:<sha256>` | 环境复现（agent 有效配置） |
+| `agent.env` | JSON：`agent-config/1.0` 脱敏快照（§4.4） | `agentenv:<sha256>` | 环境复现（agent 有效配置）；帧信封额外携带 `workspaceKind` 与 `capturedAt`（§4.4） |
 | `repo.identity` | JSON：`repository/1.0`（§4.3） | `repo:<repository_identity>` | `repository_registry` 行 |
 
 说明：
@@ -143,7 +143,7 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
 
 ### 4.3 白名单载荷
 
-`session.meta`（`session/1.0`）：`title`、`agentProfile`、`modelProvider`、`modelId`、`appVersion`、`parentSessionId`、`primaryCwdDigest`（sha256 前 32 hex）、`createdAt`、`updatedAt`、`schemaVersion`、`turnCount`、`messageCount`、`totalTokens`、`repositoryIdentities`（≤16，单调累积）、`environment{agentConfigSha256, agentConfigSize, workspaceKind}`（`workspaceKind ∈ git | non_git | no_repo`）。
+`session.meta`（`session/1.0`）：`title`、`agentProfile`、`modelProvider`、`modelId`、`appVersion`、`parentSessionId`、`primaryCwdDigest`（sha256 前 32 hex）、`createdAt`、`updatedAt`、`schemaVersion`、`turnCount`、`messageCount`、`totalTokens`、`repositoryIdentities`（≤16，单调累积）。**不携带 `environment{...}`**：会话行的环境三列（agent 配置 sha、workspace 分类、采集时刻）只由 `agent.env` 帧写入，会话上报不依赖配置采集成功与否（同步契约见 [agent-config-sync.md](./agent-config-sync.md)）。
 
 `repo.identity`（`repository/1.0`）：`repositoryIdentity`、`remote{host,path,urlKind}`、`remoteDigest`、`observedAt`。
 
@@ -151,21 +151,12 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
 
 ### 4.4 `agent.env`（`agent-config/1.0`）
 
-采集范围决策：**只到"仓库脏树 + agent 配置"**；不采运行时（环境变量、依赖安装状态）。
+采集范围决策：**只到"仓库脏树 + agent 配置"**；不采运行时（环境变量、依赖安装状态）。字段表、脱敏规则与幂等语义的权威口径是 **[agent-config-sync.md](./agent-config-sync.md)**（三仓同步契约，映射自 iCode-teams 的 spec §4.6）；本节只补客户端侧的取数与发送规则：
 
-| 字段 | 内容 |
-|---|---|
-| `schema` / `appVersion` / `platform` | `agent-config/1.0`、iCode 版本、`<os>-<arch>`（只到平台串） |
-| `profile{name,yaml}` | 生效 profile 的正文（凭据类键剔除） |
-| `model{profileId,provider,modelId,params}` | 模型与影响生成结果的参数（temperature/topP/maxTokens 等） |
-| `tools{enabled[],kinds{}}` | 工具集与类型 |
-| `skills[{name,source,digest}]` | 技能清单（正文不入此单元） |
-| `mcp{servers[{name,transport,commandDigest}]}` | MCP 服务器清单（命令只留摘要） |
-| `hooks{count,events[]}` | hooks 事件集（命令正文与路径不入此单元） |
-| `settingsDigest` | 与 agent 行为相关设置的摘要 |
-| `redacted[]` | 被剔除的键名清单（审计用） |
-
-来源是**内存中已加载的配置**（profile、技能注册表、MCP 配置、模型选项、hooks），不重新读盘、不解析 `session.json`；脱敏在序列化时一次完成。上限 256 KiB，超限则截断到安全子集并标 `truncated=true`。
+- **取数**：模型标识、技能清单（含来源目录）、hooks 事件集来自会话的运行时事实（`SessionReady` / `AgentRuntimeUpdated` 的 `runtime_details`）；profile 正文、模型参数、hooks 文档 `settings` 段在采集线程按同一匹配规则读盘（`agents/*.yaml|yml` 按主干再按 `name:`，`models/*.yaml|yml` 按 `id` 再按主干）。读不到的来源在 `sections` 里记 `absent`，不猜。
+- **帧信封**：`workspaceKind`（`git | non_git | no_repo`）与 `capturedAt`（ISO-8601 采集时刻）随帧头走，**不进载荷**——载荷是内容寻址的，带时间戳会破坏同配置跨会话共享。
+- **变更检测**：`contentHash`（载荷 sha）或 `workspaceKind` 任一变化即重发；两者都没变就不入队。分类不参与内容寻址（unit_id 不含它），同一内容的新分类靠服务端对 envelope 列的覆写落地。
+- 上限 256 KiB，超限降级为安全子集并标 `truncated=true`（teams 侧恒 `false`，消费方必须容忍 `true`）。
 
 ## 5. 客户端模块
 
@@ -177,22 +168,24 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
 
 | 事件 | 动作 |
 |---|---|
-| `SessionReady` / `SessionRestored`（`types.py:1392/1480`） | 绑定会话目录；启动 manifest 对账；发送 `repo.identity` 与 `agent.env`（每会话一次）；**不采集工作区** |
+| `SessionReady` / `SessionRestored`（`types.py:1392/1480`） | 绑定会话目录；发送 `repo.identity` 与 `agent.env`；**不采集工作区** |
+| `AgentRuntimeUpdated`（`types.py:1412`） | 运行时事实变化（模型切换、技能刷新）：事实确实变化时重新武装 `agent.env` 采集（§4.4 的变更检测负责去重） |
 | `SessionSaved`（`types.py:1500`） | 唤醒 tailer、快照 tap、工作区结果采集（post） |
 | `TurnStarted`（`types.py:473`） | 工作区签名检查：未变则沿用上一个静止快照作为本轮 pre，变化才重采 |
 | `ExecutionChanged`（`types.py:76`）最终释放 | 唤醒 tailer（turn 收尾的兜底触发） |
 | `SessionDeleted`（`types.py:1601`） | 解绑；WAL 内已入队单元**不撤回**（删除 ≠ 撤回，与 teams 一致） |
 
-- 进程关闭：pump 走 `foundation/util/once_close.py` 的 `OnceClose` + `finish_close`，排空上限 5 s（含一次在途请求的超时）；超时后放弃未发送单元但**保留 WAL**，下次启动续传。
+- **一个进程一个 runtime、多个 bus**：`ChrysSessionHost`（ACP 每会话一个）各自持有独立 `EventBus`，启动时把新 bus **附加**到已运行的 reporting runtime 上（`attach`）；host 关闭时分离（`detach`），最后一个 bus 分离时 runtime 关闭（pump 走 `foundation/util/once_close.py` 的 `OnceClose` + `finish_close`，排空上限 5 s，含一次在途请求的超时；超时后放弃未发送单元但**保留 WAL**，下次启动续传）。没有它，ACP 第二个会话起的事件永远无人观察。
+- 进程关闭：同上；TUI 在 unmount 时整体 `stop_reporting`，headless/ACP 由 atexit 兜底（同样有界排空）。
 
 ### 5.2 TrajectoryTailer
 
 - 每会话持久偏移（`cursors/<session>.json`：`{offset,last_sequence,size}`）。客户端只读取行内的 `sequence` 字段（自己的信封契约，用于游标与重放定位），不解码任何业务字段。
 - 读完窗口：从 `offset` 读到最后一个 `\n`（torn tail 永不外发）；复用 `foundation/trajectory/reader.py::iter_complete_lines` 的行切分，不另写解析。
-- 空闲判定：先比对 `(st_size, st_mtime_ns)`，未变直接返回，不读文件。
+- 空闲判定：先比对 `(st_size, st_mtime_ns)` 且**偏移已追上文件末尾**，三者都成立才直接返回；读满预算停在半路的文件，下一轮必须继续读（否则大文件的尾部要等文件再次变化才上报）。
 - 截断/重建：`size < offset` → 偏移归零，本批置 `reset=true`；服务端据此区分"重读"与"文件重建"（服务端文档 §3.3）。
 - 单飞：同一会话同一时刻只允许一个读取任务（三路触发会重叠）。
-- 预算：单轮读取 ≤ 4 MiB、单个 `trajectory.lines` 帧载荷 ≤ 1 MiB、每会话每轮 ≤ 1 次读取；全部在 `asyncio.to_thread` 中执行。
+- 预算：单轮读取 ≤ 4 MiB（未读完的部分由后续轮次续读）、单个 `trajectory.lines` 帧载荷 ≤ 1 MiB、每会话每轮 ≤ 1 次读取；全部在 `asyncio.to_thread` 中执行。
 - 触发：`SessionSaved` + turn 活跃期 60 s 定时器 + `ExecutionChanged` 释放；定时器在会话不活跃时暂停（ACP 单进程多会话共用一个调度器，不按会话起线程）。
 
 ### 5.3 快照采集
@@ -201,7 +194,7 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
 
 - 触发：`SessionSaved`。
 - 流式读取：以 256 KiB 为单位读 `session.json`，逐块 `sha256`；与该会话上次的块哈希列表比对，**只把变化的块写入 WAL**（`snapshot.chunk`），最后写入 `snapshot.manifest`（完整清单）。
-- 稳定性：保存是 tmp+rename 的原子替换（`service/state/store.py`），读到的一定是一致版本；`session.recovery.json` 与 `.bak` 忽略。
+- 稳定性：保存是 tmp+rename 的原子替换（`service/state/store.py`），一次 open 读到的一定是一致版本。哈希与取块是两次 open：两次之间落盘的保存会改变字节，因此重读的块要**校验摘要**——不匹配即放弃本次（manifest 永不描述自己没有的字节），下一轮采集新版本；只重试一次，仍失败则留给下一轮。
 - 未变化即跳过：`(size, mtime_ns)` 相同则整轮跳过（不读、不哈希）。
 - 内存：单块 256 KiB；不把整个文件读入内存，不做全量 base64。
 - 在 worker 线程执行；单会话单飞。
@@ -245,17 +238,21 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
 
 ```
 reporting/
-  wal.log            # 追加帧流（与 /v1/batch 请求体同格式）
-  wal.ack            # 已确认的字节偏移（单行 ASCII）
+  wal-<pid>.log      # 本进程的追加帧流（与 /v1/batch 请求体同格式）
+  wal-<pid>.ack      # 本进程已确认的字节偏移（单行 ASCII）
+  wal-<pid>.compact  # 压缩重写的临时文件（仅在压缩进行中存在）
   cursors/<sid>.json # 轨迹偏移、快照块哈希、工作区签名
-  dropped.log        # 显式丢弃证据（溢出/被拒/多次失败）
+  dropped.log        # 显式丢弃证据（溢出/被拒/多次 deferral；有上限）
 ```
 
-- 写入：帧追加到 `wal.log`；每批（≤1 MiB 或 200 ms）一次 `flush` + `fsync`，不是每帧一次。
-- 确认：按 §5.7 的推进条件更新 `wal.ack`。
-- 恢复：启动时从 `wal.ack` 顺序解析帧；尾部不完整帧截断；`sending` 状态不需要单独目录（请求是幂等的，重发即可）。
-- 上限：`report.queue_bytes_max`（默认 256 MB）。超限时从**最旧未确认帧**开始丢弃，逐帧写入 `dropped.log`（`unit_id`、`kind`、`reason`、`bytes`），并计入诊断计数。
-- 压缩：`wal.ack` 之后的前缀在达到 8 MB 时被重写到新文件（两文件轮换），避免无限增长。
+- **按进程分段**：两个 iCode 进程绝不共享一个偏移——共享会让任一方的 compact/ack 摧毁另一方的队列。每个进程只读写自己的 `wal-<pid>.*`。
+- **遗孤收养**：open 时按 mtime 从旧到新收养**属主进程已不存在**的段（从该段的 ack 偏移续拷未确认帧到本进程段，然后删除原文件）；误判"已死"最坏造成服务端去重的重复帧。同一 pid 复用时旧段自然续用。残留的 `.compact` 一并清理。
+- 写入：帧追加到 `wal-<pid>.log`；每轮采集一次 `flush` + `fsync`，不是每帧一次。
+- 确认：按 §5.7 的推进条件更新 `wal-<pid>.ack`。
+- 恢复：启动时从 ack 顺序解析帧（在 worker 线程里——崩溃后满队列的逐帧校验是秒级 IO，不能压在事件循环上）；尾部不完整帧截断；`sending` 状态不需要单独目录（请求是幂等的，重发即可）。
+- 上限：`report.queue_bytes_max`（默认 256 MB，**每段**）。超限时从**最旧未确认帧**开始丢弃，逐帧写入 `dropped.log`（`unit_id`、`kind`、`reason`、`bytes`），并计入诊断计数。
+- **证据有界**：`dropped.log` 达到 1 MiB 即重新开始（计数器持有同样的事实），永不无限增长。
+- 压缩：ack 之后的前缀在达到 8 MB 时被重写到新文件（`.compact` → 原子替换），避免无限增长。
 
 ### 5.7 ReportPump
 
@@ -264,20 +261,22 @@ reporting/
 - 超时 10 s；失败退避 2 s 起、×2、封顶 300 s、带 0.8–1.2 抖动；连续失败 12 次不清空 WAL（只在字节上限溢出时按 §5.6 丢弃）。
 - 响应处理：
   - `200`：逐单元处理 `accepted` / `duplicates` / `rejected[{unit_id,code}]` / `deferred`；`code` 属于终态（如 `payload_too_large`、`unsupported_kind`）→ 记 `dropped.log`；`deferred` 的帧保留在 WAL、按退避重发；`retry_after_ms>0` → 退避。
+  - **deferred 预算（防队头阻塞）**：逐 `unit_id` 记连续 deferred 次数（仅内存计数）；达到 `MAX_DEFERRALS_PER_FRAME`（8）次后不再等该帧：写 `dropped.log`（`reason=deferral_limit`、`deferrals`、`bytes`）、打结构化日志事件 `report_frame_dropped`（`unit_id`/`kind`/`session_id`/连续次数），`wal.ack` 推过该帧，并在同一轮继续处理其后的帧——单个永久 deferred 的单元（例如前置快照永远拼不出的 `session.meta`）不得阻塞其它会话与后续帧。帧被结清（`accepted`/`duplicates`/终态 `rejected`）或丢弃时计数清零，保证同一帧只被丢弃一次。
   - `400`（整批格式错）→ 该批整体丢弃并留证（说明客户端有 bug，不重试）。
   - `401/403` → 暂停发送并进入退避（诊断面提示"凭据无效"），WAL 继续增长到上限。
   - `413`（批过大）→ 以更小的帧数上限重新切批（不是重发同一请求）。
   - `429` → 按 `Retry-After`。
   - `5xx` / 网络错误 → 退避重试。
-- **`wal.ack` 推进条件**：本批每一帧都得到 `accepted` / `duplicates` / 终态 `rejected` 才推进到本批末尾；只要有一帧处于 `deferred` 或未决（5xx、超时、限流），`wal.ack` 停在该帧之前，整段重发（重发幂等）。
+- **`wal.ack` 推进条件**：本批每一帧都得到 `accepted` / `duplicates` / 终态 `rejected`（或被上条的 deferral 预算丢弃）才推进到本批末尾；只要有一帧处于 `deferred` 或未决（5xx、超时、限流），`wal.ack` 停在该帧之前，整段重发（重发幂等）。
 - 关闭：见 §5.1。
 
 ### 5.8 ManifestReconciler
 
-- 时机：会话激活时；连续失败后恢复时（不轮询）。
+- 时机：会话激活时；连续失败后恢复时（不轮询）；**以及 pump 观察到某会话的帧被 `deferred` 或被丢弃之后**——由 pump 记下会话 id，采集循环（worker 线程）统一发起协商，不在 pump 线程里再发请求。
 - 请求体：本会话已知的 `snapshot{content_hash,chunk_hashes}`、`workspace{manifest_sha256,file_shas}`。
 - 响应：`missing_chunk_hashes`、`missing_file_shas`、`acked_last_sequence`、`known_snapshot`。
-- 动作：只把缺口重新入队（客户端块的哈希可从文件重算，客户端游标丢失也能恢复）；`acked_last_sequence` 与本地游标的 `last_sequence` 比较，落后则从本地偏移继续 tail，游标丢失则从 0 重读并置 `reset=true`（轨迹行体积远小于快照，按内容幂等重放是可接受的代价）。
+- 动作：只把缺口重新入队（客户端块的哈希可从文件重算，客户端游标丢失也能恢复）：把 `missing_chunk_hashes` 对应位置在 `snapshot_chunk_hashes` 里置空并把 `snapshot_size/mtime_ns` 归零、把 `missing_file_shas` 从 `workspace_file_shas` 移除并清空 `workspace_signature`，于是下一轮采集重新哈希该文件、只重发缺口块；`acked_last_sequence` 与本地游标的 `last_sequence` 比较，只单调前进（大于本地值才写入，绝不回退），游标丢失则从 0 重读并置 `reset=true`（轨迹行体积远小于快照，按内容幂等重放是可接受的代价）。
+- 失败非致命：网络错误、404、服务端不支持 manifest 端点时只记日志/计数，游标与已入队帧保持原样，pump 主循环与采集循环都不受影响；下一次 deferred 再问一次。
 - 这一机制取代原设计的 `control.retail`：换机/重装/游标丢失时，重放量从"全量"降为"缺口"。
 
 ## 6. 与服务端的职责边界

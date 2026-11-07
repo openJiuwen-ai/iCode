@@ -36,8 +36,10 @@ iCode 客户端（iCode 进程内，report/1.0）
 - 传输：HTTPS；`httpx` 之外的任何客户端均应可用（协议自包含）。
 - 认证：`Authorization: Bearer <token>`。缺失/无效 → `401`；tenant 与 `user_id` 由 token 决定，**客户端自报的任何身份字段一律忽略**。
 - 请求体：若干帧顺序拼接（见客户端设计 §4.1），`Content-Type: application/vnd.chrys.report.frames`；`Content-Encoding: gzip` 时必须解压。
-- 限额：请求体解压前 ≤ 16 MiB、解压后 ≤ 64 MiB；单帧载荷 ≤ 1 MiB；单批帧数 ≤ 4096；超限 → `413`（整批拒绝，客户端应重新切批而不是重试同一请求）。
-- 超时：服务端处理单批 ≤ 30 s；客户端 10 s 超时后重试是正常路径，服务端必须对同一批的重复到达幂等。
+- 限额：请求体解压前 ≤ 16 MiB、解压后 ≤ 16 MiB（客户端单批未压缩上限 8 MiB）；单帧载荷 ≤ 1 MiB；单批帧数 ≤ 4096；超限 → `413`（整批拒绝，客户端应重新切批而不是重试同一请求）。
+- 并发闸门：服务端**在读取请求体之前**限制同时处理的请求数（默认 64）；超限 → `503` + `Retry-After`，无任何副作用。
+- 超时：服务端处理单批 ≤ 8 s，短于客户端 10 s 超时（避免客户端先超时导致的重复处理）；超时 → `503` + `Retry-After`。
+- 幂等：同一批的重复到达（超时重发、并发到达）必须等价于一次成功。
 
 ### 2.2 `POST /v1/batch`
 
@@ -101,13 +103,13 @@ iCode 客户端（iCode 进程内，report/1.0）
 
 ### 3.2 字节块组装（`snapshot.chunk` / `workspace.file`）
 
-1. 按 `content_hash`（快照）或单文件 sha256（工作区）聚合，块序号取自 `scope` 的 `chunk:<content_hash>:<index>` / `wsfile:<sha256>:<index>`，按块序写入本地暂存（内存有界 + 落盘兜底）。
-2. 块齐 → 拼接 → `sha256 == content_hash` → 写 OBS 对象 `t/<tenant>/o/<sha256[0:2]>/<sha256>` → 在 `object_registry` 登记 `verified`。
-3. 校验失败 → 不登记；组装状态保留以便补发；`missing_reference` 的引用方（`session.meta` / `workspace.manifest`）**不得**提交为"完整"。
-4. 组装状态预算：单会话 ≤ 64 MiB、单租户 ≤ 2 GiB；超限时按最旧未完成组装淘汰并留 `assembly_evicted` 证据（客户端会后由 manifest 补发）。
-5. **缺块终态**：组装超过 `assembly_ttl`（默认 24 h）仍有缺口 → 置 `missing` 终态，写 `object_registry(state='missing', missing_hashes=...)`，并让引用它的 `sessions` 行标记 `body_state='missing'`。缺口治愈（后续补发）后状态可推进为 `verified`（状态单向，不允许回退）。
+1. **快照分块是内容寻址对象**：`snapshot.chunk` 的载荷本身即一块内容（`scope` = `chunk:<content_hash>:<index>`），按 `payload_sha256` 直接写 OBS 并登记 `object_registry`（channel `snapshot-chunk`）——不落本地暂存，也不要求"索引 0..max 全齐"。增量上报因此天然成立：客户端只发变化块，未变化的块沿用已登记对象。
+2. **清单驱动拼装**：`snapshot.manifest`（`scope` = `manifest:<content_hash>`）声明有序分块清单 `chunks[]` 与 `size` / `chunk_size`（条目数与 `size` 自洽）。分块全部 `verified` → 按序取回、拼接、`sha256 == content_hash` → 写整份快照对象（channel `session-snapshot`）并登记 `verified`；缺块时登记缺块行（`state='missing'` + `missing_hashes`），此后每到一个分块都重试拼装，缺口补齐即自动转正。
+3. 校验失败 → 不登记；拼装幂等，任何时刻（含进程重启后）只要分块对象在库即可重拼；`missing_reference` 的引用方（`session.meta` / `workspace.manifest`）**不得**提交为"完整"。
+4. **工作区分片走本地暂存**：`workspace.file` 的分片是整文件的字节区间（`wsfile:<sha256>:<index>`），不是独立对象 → 按块序落暂存目录（内存只留元数据），按序拼接校验后写 OBS。预算：单会话 ≤ 64 MiB、单租户 ≤ 4 GiB（200 并发会话 × 约 20 MiB 未完成组装）；暂存目录单独挂盘并按此额度监控。**超预算不淘汰**：该分片返回 `deferred`（无副作用），客户端按退避重发——淘汰已收下的分片等于静默丢数据。
+5. **缺块终态与恢复路径**：组装超过 `assembly_ttl`（默认 24 h）仍有缺口 → 置 `missing` 终态，写 `object_registry(state='missing', missing_hashes=...)` 并释放分片字节，引用它的 `sessions` 行标记 `body_state='missing'`；缺口治愈后状态可推进为 `verified`（状态单向，不允许回退）。恢复不依赖进程内存：快照由"分块对象 + 清单"重拼；工作区把已 `committed` 的分片/清单帧的重放视为幂等重新物化（响应仍是 `duplicates`），或由 manifest 端点会话级协商（`missing_chunk_hashes` / `missing_file_shas`）驱动客户端只补缺口；孤儿暂存目录按 mtime 回收。
 6. **工作区容器拼装（`workspace.manifest`）**：manifest 每个条目带 `content{offset,length,sha256}`（删除与 gitlink 条目为 `null`）。服务端按 manifest 顺序拼接已 `verified` 的单文件内容 → 得到 IGWS 容器字节（`"IGWS" | version u16 | flags u16 | manifestLength u32 | manifest JSON | 内容流`）→ 计算容器 sha256 → 写 OBS → `workspace_states` 行引用该 sha。拼装是**确定性纯函数**（同一 manifest + 同一内容集合 → 同一字节），与 teams 客户端产出的容器同构。任一条目缺块 → 该 manifest 返回 `deferred`。
-7. **`agent.env`**：单帧，载荷为脱敏 JSON（≤256 KiB）。`sha256(payload)` 即 OBS 键；写对象登记 `verified` 后，与 `session.meta` 同一事务写 `sessions.agent_config_sha256`；正文不入 PG。校验：JSON 可解析、`redacted[]` 存在、字段超长按 `schema_invalid` 拒绝（不截断）。
+7. **`agent.env`**：单帧，载荷为脱敏 JSON（≤256 KiB，`agent-config/1.0`）。`sha256(payload)` 即 OBS 键；登记对象 `verified` 后随锚点写会话行环境三列（`agent_config_sha256` / `workspace_kind` / `agent_config_captured_at`，本单元是唯一写入者）；正文不入 PG。信封：`workspaceKind` 三值枚举（`git|non_git|no_repo`）、`capturedAt` 必填 RFC3339——客户端**采集时刻**，消费方用它区分"会话前采集"与"后补"。载荷校验：JSON 可解析、`schema` 匹配、`redacted[]` 键名、`sections{profile,model,skills,mcp,hooks}` 各取 `captured|absent`、`truncated` 布尔——均必填，未知成员宽松忽略、缺失按显式失败；超长按 `schema_invalid` 拒绝（不截断）。同会话换新配置 → 三列推进，旧引用对象置 `superseded`（OBS 字节保留）。**分类变化不改变载荷**，客户端重发同一 `contentHash`、只换信封 → 仍是 `duplicates`，但信封的 `workspaceKind`/`capturedAt` 覆写进三列（不新建对象、不汰换）；仅当内容仍是当前锚点、且 `capturedAt` 不倒退时生效（旧 blob 的乱序重放不改任何事实）。
 
 ### 3.3 轨迹行缓冲（`trajectory.lines`）
 
@@ -153,7 +155,7 @@ iCode 客户端（iCode 进程内，report/1.0）
 - `session.meta` 载荷是 `session/1.0` 白名单（客户端产出），服务端不解析 `session.json`。
 - `sessions` 行（PK = tenant + session_id）就地更新：`meta` 列与 `snapshot_sha256` 锚点取"最新"快照 —— 以 `meta.updated_at` 判定，`observed_at` 平手裁决，**与到达顺序无关**；落后值不回退并记 `stale_report` 证据。
 - 锚点提交前置条件：引用的 `content_hash` 已在 `object_registry` 为 `verified`，否则该 `session.meta` 单元返回 `deferred`（无副作用），等块齐后由客户端重发。
-- `environment.agentConfigSha256` 同理必须已 `verified`（否则 `deferred`）；`workspaceKind` 只接受 `git | non_git | no_repo`，其他值按 `schema_invalid` 拒绝。
+- `session/1.0` 不携带环境引用：收到仍带 `environment` 的载荷按未知字段显式拒绝（不做兼容读取）。环境三列只由 `agent.env` 写——`agent.env` 先到时落 `session_anchors` 占位，`session.meta` 建行时从锚点 coalesce，之后**不写也不清除**；`session.meta` 不再因 agent-config 未转正而 `deferred`。
 
 #### 3.4.5 关联证据
 
@@ -170,14 +172,14 @@ iCode 客户端（iCode 进程内，report/1.0）
 ### 4.1 OBS
 
 - 键：`t/<tenant>/o/<sha256[0:2]>/<sha256>`；对象不可变、内容去重。
-- 在范围内对象：`session.json` 快照、事件窗口 payload、IGWS 工作区镜像。
+- 在范围内对象：`session.json` 快照、快照分块（内容寻址，跨快照与跨会话去重）、事件窗口 payload、IGWS 工作区镜像。
 - 生命周期：**必须**配置保留策略（见 §6.3），不得按"永不删除"部署生产环境。
 
 ### 4.2 PostgreSQL（teams schema v9 在范围内表 + v10 两列，列级一致）
 
 | 表 | 写入来源 |
 |---|---|
-| `sessions` | `session.meta`（含 snapshot 锚点、`body_state`、`agent_config_sha256`、`workspace_kind`）；`agent.env` |
+| `sessions` | `session.meta`（meta 列、snapshot 锚点、`body_state`）；`agent.env`（环境三列：`agent_config_sha256`、`workspace_kind`、`agent_config_captured_at`，唯一写入者） |
 | `session_turns` | 派生器：窗口内 turn 行 |
 | `event_batches` | 派生器：窗口 |
 | `trajectory_events` | 派生器：白名单行 |
@@ -188,7 +190,7 @@ iCode 客户端（iCode 进程内，report/1.0）
 
 范围外表（`adoption_evidence`、`commit_bindings`、`pull_request*`、`attribution_*`、`session_manifests`、`session_rollbacks`、`similarity_calibration`）：v1 不写入，schema 保留。
 
-本版在 teams schema v9 上新增两列（`sessions.agent_config_sha256`、`sessions.workspace_kind`）→ **v10**；沿用扩列纪律：客户端抽取（`session.meta.environment`）、服务端列、服务端校验必须同时改。
+本版在 teams schema v9 上新增环境复现三列（`sessions.agent_config_sha256`、`workspace_kind`、`agent_config_captured_at`）→ **v10**；沿用扩列纪律：客户端抽取（`agent.env` 载荷 + 信封）、服务端列、服务端校验必须同时改（三仓对齐口径见 `docs/agent-config-sync.md`）。本服务另为 `ingest_receipts.state` / `object_registry.state` 补 CHECK 约束（取值域与模型常量一致）——属服务端安全加固，teams 侧无对应约束，不影响列级一致。
 
 ### 4.3 事务与提交顺序
 
@@ -223,30 +225,38 @@ iCode 客户端（iCode 进程内，report/1.0）
 
 ### 6.1 规模假设
 
+首期容量目标按 **200 并发会话**设计（注册用户 2000）。500 并发是容灾上界，需要先满足 §6.5 的三项前置条件，本版不承诺。
+
 | 项 | 目标 |
 |---|---|
 | 注册用户 | 2000 |
-| 同时活跃上报 | 200 并发会话 |
+| 同时活跃上报 | **200 并发会话**（每会话单在途请求） |
 | 端到端新鲜度 | ≤ 2 min（p99） |
-| 单请求 | ≤ 8 MiB 未压缩（典型 100–500 KB） |
-| 请求速率 | 3–25 req/s（客户端 60 s 补报 + 每轮一次） |
+| 单请求 | ≤ 8 MiB 未压缩（典型 100–500 KB），gzip ≤ 2 MiB |
+| 请求速率 | 均值 ≤ 5 req/s，峰值 ≤ 20 req/s（200 会话 × 峰值 10 轮/h ≈ 0.6 轮/s，含重试与补传按 3× 计） |
+| 单位处理速率 | 均值 ≈ 6 单位/s，峰值 ≤ 40 单位/s（每轮约 10 个单位） |
+| 单节点 | 4 vCPU / 8 GiB，单进程（多副本见 §6.5） |
 
 ### 6.2 预算
 
 | 资源 | 预算 | 依据 |
 |---|---|---|
-| 入站带宽 | ≤ 10 MB/s | 200 并发 × ~1–3 KB/s 有效增量（chunk 增量生效后） |
-| OBS 新增 | ≤ 20 GB/天 | 快照增量 + 轨迹行 + 工作区脏文件 |
-| PG 写入 | ≤ 5k 行/s、≤ 500 万行/天 | `trajectory_events` + `ingest_receipts` 为主 |
-| 组装内存 | ≤ 2 GiB/租户 | §3.2-4 的预算 + 落盘兜底 |
-| 派生器 CPU | ≤ 2 核 | 行解析 ~5 µs/行 |
+| 入站带宽 | 均值 ≤ 5 MB/s，突发 ≤ 10 MB/s | 200 会话 × 1–3 KB/s 有效增量（快照按块）＋ 工作区脏文件的突发上传 |
+| OBS 新增 | ≤ 20 GB/天（启用 §6.3 保留后） | 每轮一个快照对象（约 1.5 MiB）＋ 事件窗口 ＋ 工作区容器，约 1.6 万轮/天；未启用保留时按 30–40 GB/天估算 |
+| PG 写入 | ≤ 1k 行/s、≤ 300 万行/天 | `ingest_receipts`（约 6 行/s）＋ `trajectory_events`（约 22 行/s 均值，峰值 3×）＋ 窗口/轮次行 |
+| 组装内存 | ≤ 512 MiB/租户 | 暂存落盘、内存只留元数据；单请求解压后 ≤ 16 MiB |
+| 暂存磁盘 | ≤ 4 GiB/租户，单独挂盘 | 200 会话 × 约 20 MiB 未完成组装（单会话上限 64 MiB） |
+| 派生器 CPU | ≤ 2 核 | 40 单位/s × 行解析 ~5 µs/行 |
+| 进程 RSS | ≤ 2 GiB | 含 64 个在途请求的帧缓冲 |
 
 **前置条件**（缺一不可，否则 §6.2 不成立）：
 
 1. **快照按块增量**：每轮只传变化的 256 KiB 块。若退化为全量快照，带宽与 OBS 增量会放大 20–100 倍（见设计评审的计算）。
 2. **缺块协商**：换机/重装只补缺口，不做全量重放。
 3. **保留与分区**：见 §6.3。
-4. **工作区按文件增量**：只传变化的文件（未变文件按 sha 去重）；`agent.env` 每会话只上报一次。若退化为"每次重传整树"，工作区流量会按脏树大小线性放大。
+4. **工作区按文件增量**：只传变化的文件（未变文件按 sha 去重）；`agent.env` 每会话至少上报一次（同会话多次上报以最新一次成功为准，旧引用按覆写汰换置 `superseded`）。若退化为"每次重传整树"，工作区流量会按脏树大小线性放大。
+5. **组装状态在进程重启后仍可恢复**：快照分块内容寻址、由清单重拼；工作区分片在重放（同帧再次到达 → `duplicates` 的重新物化）或 manifest 协商后重新落盘（§3.2-5）。已 `committed` 的收据不得造成"客户端无法重传、服务端又无中间态"的死角。未切窗轨迹行缓冲仍只在进程内存，重启后由客户端 `reset` 重放补齐。
+6. **单写者语义**：同一 `session_id` 的写入必须落在同一进程（会话亲和），或由跨进程锁串行化；进程内锁与内存态只在单进程内成立。
 
 ### 6.3 保留与分区（要求，不是建议）
 
@@ -254,12 +264,25 @@ iCode 客户端（iCode 进程内，report/1.0）
 - `trajectory_events`：按月分区，保留 12 个月，冷数据转 OBS 上的列式快照。
 - `event_batches` / `session_turns`：保留 24 个月。
 - OBS：快照对象保留 12 个月（`session.json` 的中间版本可降级为只保留每会话最近 N 份 + 被提交引用的版本）；事件窗口对象保留 24 个月。
+- 200 并发下 §6.2 的 20 GB/天**只有**在"快照只保留每会话最近 N 份 + 被引用的版本"同时生效时才成立；否则对象总量按轮次线性增长（约 30–40 GB/天）。
 
 ### 6.4 背压
 
-- 服务端过载 → `429` + `Retry-After`；客户端 WAL 吸收，超上限按字节丢弃并留证。
+三层，从外到内，任何一层都不得让客户端把"未提交"当成"已提交"：
+
+1. **请求闸门**（进程级，默认 64 并发）：在读取请求体之前拒绝，`503` + `Retry-After`（3 s）。用于抵御突发与慢客户端，保护进程内存。
+2. **令牌桶**（两级）：单用户 5 req/s（burst 10）＋ 租户总量 50 req/s（burst 100），超限 `429` + `Retry-After`（3 s）。单用户桶防止单个客户端拖垮整租户；租户桶是总闸。
+3. **在途批次**（单租户 64）：超限整批 `deferred` + `retry_after_ms`（2 s），无副作用。
+
+- 客户端 WAL 吸收以上三层；超上限按字节丢弃并留证。
 - 单租户配额（请求速率、并发组装、未完成组装字节）超限 → 只影响该租户。
 - 禁止"先 ACK 后处理"的任何形式异步化：ACK 必须覆盖持久提交。
+
+### 6.5 扩容到 500 并发的前置条件（本版不做）
+
+1. **会话亲和路由或跨进程锁**：会话锁、切窗缓冲、暂存索引都是进程内存态，多副本会破坏"同会话串行"与幂等（同一 `unit_id` 被两个进程处理）。
+2. **存储侧**：PG 连接池 ≥ 40；`trajectory_events` / `ingest_receipts` 完成月分区；OBS 生命周期上线。
+3. **暂存的压测验证**：分块对象化后快照不再占用暂存盘，剩余增长来自工作区分片；500 并发下需实测"超预算 `deferred` 背压 → 退避重发 → TTL 释放 → 协商补缺"的收敛时间与暂存盘峰值（§3.2-4/5）。
 
 ## 7. 验收测试用例
 
@@ -281,7 +304,7 @@ iCode 客户端（iCode 进程内，report/1.0）
 ### T4 快照增量（客户端 + 服务端）
 - **给定** 会话已上报一次完整快照，第二轮 `session.json` 只在尾部增长；
 - **当** 第二轮上报；
-- **则** 客户端只发送变化的块（载荷字节数 < 2 × 256 KiB + 元数据）；服务端 OBS 只新增一个新对象；`sessions` 锚点推进。
+- **则** 客户端只发送变化的块（载荷字节数 < 2 × 256 KiB + 元数据）；服务端 OBS 只新增变化的块与一份新快照对象（未变块内容寻址复用，不重写）；`sessions` 锚点推进。
 
 ### T5 manifest 补缺
 - **给定** 服务端已有快照与轨迹至 sequence N；客户端游标全丢（换机）；
@@ -347,16 +370,16 @@ iCode 客户端（iCode 进程内，report/1.0）
 - **则** false 时不导入上报模块、不起线程、启动增量 ≈ 0；true 时不推迟首帧，且不遍历会话目录。
 
 ### T20 容量基线
-- **给定** 200 并发客户端 × 30 min（每轮一次快照增量 + 60 s 轨迹批），4 CPU / 8 GiB 单节点；
-- **则** 入站 ≤ 10 MB/s、p99 端到端 ≤ 2 min、`5xx` 率 < 0.1%、内存峰值 ≤ 2 GiB；PG 写入 ≤ 5k 行/s 且无长事务。
+- **给定** 200 并发客户端 × 30 min（每轮一次快照增量 + 60 s 轨迹批）、4 vCPU / 8 GiB 单节点；
+- **则** 入站均值 ≤ 5 MB/s、峰值 ≤ 10 MB/s；p99 端到端 ≤ 2 min；`5xx` 率 < 0.1%；进程 RSS 峰值 ≤ 2 GiB；暂存目录峰值 ≤ 4 GiB/租户；PG 写入 ≤ 1k 行/s 且无长事务；过载时段只出现 `503 overloaded` / `429` / `deferred` 三类响应，且都不产生副作用。
 
 ### T21 删除与撤回口径
 - **给定** 客户端删除会话；
 - **则** 已入队单元照常入库（不撤回）；客户端诊断面可见"已上报但已删除"的计数；服务端审计可按 `user_id` 追查。
 
 ### T22 `agent.env`（环境复现）
-- **给定** 一份含 profile 正文、技能列表、MCP 服务器、模型参数、hooks 事件集的有效配置；
-- **则** `agent.env` 落 OBS，`sessions.agent_config_sha256` 指向它；正文不进 PG；`redacted[]` 列出被剔除的键名；凭据类字段（api_key、headers、命令明文路径）不出现在对象字节里（按字节断言）；同配置重发 → `duplicates`；超大配置按 `schema_invalid` 拒绝而非截断。
+- **给定** 一份含 profile 正文、技能列表、MCP 服务器、模型参数、hooks 事件集的有效配置（信封带 `workspaceKind` 与 `capturedAt`）；
+- **则** `agent.env` 落 OBS，`sessions.agent_config_sha256` 指向它；正文不进 PG；`redacted[]` 列出被剔除的键名；凭据类字段（api_key、headers、命令明文路径）不出现在对象字节里（按字节断言）；同配置重发 → `duplicates`；超大配置按 `schema_invalid` 拒绝而非截断；缺 `sections`/`truncated`/信封字段按 `schema_invalid` 拒绝；同会话换新配置 → 旧对象置 `superseded` 而字节保留。
 
 ### T23 任务前快照的可用性
 - **给定** 会话第 N-1 轮结束后无外部改动，第 N 轮开始；
@@ -365,7 +388,7 @@ iCode 客户端（iCode 进程内，report/1.0）
 
 ### T24 未采集清单与非 git 标记
 - **给定** 仓库含 `.gitignore` 忽略目录（如 `node_modules`）与非 git 工作目录；
-- **则** `ignored` 只含折叠后的路径且 ≤200 条（超出 `truncated=true`）、不含任何文件正文；非 git 目录不产生工作区单元，且 `sessions.workspace_kind='non_git'`（无仓库为 `no_repo`），可被下游过滤。
+- **则** `ignored` 只含折叠后的路径且 ≤200 条（单条 ≤512 字符，超出 `truncated=true`）、不含任何文件正文，且随镜像**首采冻结**（重采不改写清单）；非 git 目录不产生工作区单元，且 `sessions.workspace_kind='non_git'`（无仓库为 `no_repo`，由 `agent.env` 信封写入），可被下游过滤。
 
 ## 8. 非目标（v1）
 
@@ -381,4 +404,4 @@ iCode 客户端（iCode 进程内，report/1.0）
 2. 派生器写成**纯函数**：输入有序行 + 会话状态，输出窗口与索引行，便于用 T10/T11 直接表驱动测试。
 3. 组装缓存（chunk、行缓冲）以 `(tenant, session_id)` 分片，内存 + 本地盘两级，全部带 TTL 与字节预算。
 4. 所有"不确定"状态一律返回非 2xx 让客户端重发；不做服务端内部重试掩盖。
-5. 观测：接收端自身指标（批大小、组装命中率、缺块率、隔离率、派生延迟）接入自身 OTel；与 teams ingest 的对账报表用签入黄金语料做常驻回归。
+5. 观测：接收端自身指标（批大小、组装命中率、缺块率、隔离率、派生延迟、进程 RSS、暂存占用、请求闸门与在途批次占用、`429`/`503` 计数）接入自身 OTel；与 teams ingest 的对账报表用签入黄金语料做常驻回归。
