@@ -5376,6 +5376,12 @@ msgstr "{label}："
 msgid "tui.chat.interrupted_rollback_button"
 msgstr "撤回本轮"
 
+#. English: - {hour}:{minute}
+#. chrys-meta={"fingerprint":"5fd0cfff3be0c94710043cb0666108d69884d88cd47b7dfc4212b5a7101c3441","multiline":false,"placeholders":["hour","minute"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.message_timestamp"
+msgstr "- {hour}:{minute}"
+
 #. English: Activity
 #. chrys-meta={"fingerprint":"adc05a800b4e9d0dfccd9a893e52c89939fe10aab58b7d973b7b2897b27291b2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/process_block.py

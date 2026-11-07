@@ -202,7 +202,7 @@ class LiveTranscriptRenderer:
             self._group_to_fold = self._tools.current_tool_group
         self._tools.end_group()
         self._finalize_current_agent_message()
-        timestamp = format_message_created_at(created_at)
+        timestamp = format_message_created_at(created_at, self._resolve_message)
 
         if is_injection and self._toc.has_items():
             turn_id, _item = self._toc.add_injection(text)
@@ -464,7 +464,7 @@ class LiveTranscriptRenderer:
         False: a failure result). Its header tells how long the turn took to it
         from *turn_started_at*, when the pass began, as replay tells it.
         """
-        timestamp = format_message_created_at(created_at)
+        timestamp = format_message_created_at(created_at, self._resolve_message)
         duration_ms = turn_duration_ms(turn_started_at, created_at)
         streamed_answer, self._streamed_answer = self._streamed_answer, None
         await self._status.remove_trailing_status()
