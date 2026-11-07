@@ -818,6 +818,42 @@ async def test_chat_panel_live_interruption_uses_localized_frame() -> None:
         assert str(interruption.query_one(Button).label) == "重试"
 
 
+async def test_chat_panel_live_interruption_defaults_to_the_localized_shared_reason() -> None:
+    async with ChatPanelApp(Localizer("zh-Hans")).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_interrupted()
+        await pilot.pause()
+
+        interruption = panel.query_one(InterruptedMessage)
+        assert interruption._render_text().plain == "⚠ 已中断\n用户中断：执行已中断"  # noqa: RUF001
+        assert str(interruption.query_one(".status-action-btn", Button).label) == "继续"
+
+
+async def test_chat_panel_live_interruption_keeps_the_english_default_copy() -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_interrupted()
+        await pilot.pause()
+
+        interruption = panel.query_one(InterruptedMessage)
+        assert interruption._render_text().plain == "⚠ Interrupted\nExecution interrupted by user"
+
+
+async def test_chat_panel_live_error_card_localizes_its_default_action() -> None:
+    async with ChatPanelApp(Localizer("zh-Hans")).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_error("出错了")
+        await pilot.pause()
+
+        button = panel.query_one(ErrorMessage).query_one(Button)
+        assert str(button.label) == "重试"
+
+        await panel.add_error("出错了", action_label="自定义")
+        await pilot.pause()
+
+        assert str(panel.query_one(ErrorMessage).query_one(Button).label) == "自定义"
+
+
 async def test_chat_panel_removes_inline_status_action_with_status() -> None:
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)

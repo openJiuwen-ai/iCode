@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.widgets import PromptDraft
     from chrys.app.update_check import UpdateNotice
+    from chrys.foundation.i18n import MessageRef
     from chrys.foundation.models.ask_user import AskUserQuestion
     from chrys.foundation.models.invocations import ContentChannel
     from chrys.service.context.providers.history import CompressedBlock
@@ -60,6 +61,7 @@ from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapsh
 from chrys.app.tui.widgets.chat.fold_gap import show_fold_gaps
 from chrys.app.tui.widgets.chat.live_renderer import LiveTranscriptRenderer
 from chrys.app.tui.widgets.chat.messages import (
+    ERROR_RETRY_ACTION,
     AgentMessage,
     ErrorMessage,
     InterruptedMessage,
@@ -1782,11 +1784,11 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         await self._live_renderer.remove_system(key)
         self._sync_waiting_row()
 
-    async def add_interrupted(self, reason: str = "Execution interrupted", source: str = "user") -> None:
+    async def add_interrupted(self, reason: MessageRef | str | None = None, source: str = "user") -> None:
         """Display an interruption notice, replacing any trailing error/interrupted widget."""
         await self._live_renderer.add_interrupted(reason, source)
 
-    async def add_error(self, text: str, *, action_label: str | None = "Retry") -> None:
+    async def add_error(self, text: str, *, action_label: MessageRef | str | None = ERROR_RETRY_ACTION) -> None:
         """Display an error message, replacing any trailing error/interrupted widget."""
         await self._live_renderer.add_error(text, action_label=action_label)
 

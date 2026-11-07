@@ -13,6 +13,7 @@ from chrys.app.tui.util.removal import remove_all_shielded, remove_shielded
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard
 from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
 from chrys.app.tui.widgets.chat.messages import (
+    ERROR_RETRY_ACTION,
     AgentMessage,
     ErrorMessage,
     InterruptedMessage,
@@ -34,11 +35,13 @@ from chrys.app.tui.widgets.chat.ports import (
 from chrys.app.tui.widgets.chat.toc_model import TurnTocModel
 from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.history_markers import EXECUTION_INTERRUPTED_MESSAGE
 
 if TYPE_CHECKING:
     from textual.widget import Widget
 
     from chrys.app.tui.widgets.chat.tool_call import ToolGroup
+    from chrys.foundation.i18n import MessageRef
     from chrys.foundation.models.invocations import ContentChannel
 
 
@@ -613,9 +616,28 @@ class LiveTranscriptRenderer:
                 await remove_shielded(msg)
                 break
 
+    def _reason_text(self, reason: MessageRef | str | None) -> str:
+        """Resolve an interruption's reason in the transcript's own locale.
+
+        No reason names the shared interruption wording the replay path shows for the same marker.
+        """
+        if reason is None:
+            return self._resolve_message(EXECUTION_INTERRUPTED_MESSAGE.bind())
+        if isinstance(reason, str):
+            return reason
+        return self._resolve_message(reason)
+
+    def _action_label_text(self, action_label: MessageRef | str | None) -> str | None:
+        """Resolve an inline status action's label in the transcript's own locale, None keeping no action."""
+        if action_label is None:
+            return None
+        if isinstance(action_label, str):
+            return action_label
+        return self._resolve_message(action_label)
+
     async def add_interrupted(
         self,
-        reason: str = "Execution interrupted",
+        reason: MessageRef | str | None = None,
         source: str = "user",
         *,
         show_action: bool = True,
@@ -629,7 +651,7 @@ class LiveTranscriptRenderer:
         await self.cancel_running_tools(stopped_at=stopped_at)
         await self._status.remove_trailing_status()
 
-        copy = resolve_interrupted_message_copy(reason, source, self._resolve_message)
+        copy = resolve_interrupted_message_copy(self._reason_text(reason), source, self._resolve_message)
         label = copy.retry_action if source == "error" else copy.continue_action
         msg = InterruptedMessage(
             copy.reason,
@@ -642,7 +664,11 @@ class LiveTranscriptRenderer:
         self._ui.on_status_message_mounted()
 
     async def add_error(
-        self, text: str, *, action_label: str | None = "Retry", stopped_at: float | None = None
+        self,
+        text: str,
+        *,
+        action_label: MessageRef | str | None = ERROR_RETRY_ACTION,
+        stopped_at: float | None = None,
     ) -> None:
         """Display an error message, replacing any trailing status widget.
 
@@ -652,7 +678,7 @@ class LiveTranscriptRenderer:
         await self.cancel_running_tools(stopped_at=stopped_at)
         await self._status.remove_trailing_status()
 
-        msg = ErrorMessage(text, action_label=action_label)
+        msg = ErrorMessage(text, action_label=self._action_label_text(action_label))
         await self._mount.mount_transcript_widget(msg)
         self._ui.on_status_message_mounted()
 
