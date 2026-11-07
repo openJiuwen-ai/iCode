@@ -44,6 +44,8 @@ _NOON = "2026-10-15T12:00:00+00:00"
 _OTHER_PASS = "5" * 32
 _PROFILE_A = "a" * 32
 _PROFILE_B = "b" * 32
+_EXCHANGE_OPERATION = "c" * 32
+_OTHER_OPERATION = "d" * 32
 _WANTED = frozenset({EventType.MODEL_EXCHANGE_FINISHED})
 
 
@@ -53,6 +55,7 @@ def _exchange(
     occurred_at: str = _NOON,
     actor: Actor = _MAIN,
     turn_id: str | None = TURN_ID,
+    operation_id: str | None = None,
     model: str = "model-a",
     input_total: int | None = 100,
     cache_read: int | None = 40,
@@ -68,6 +71,7 @@ def _exchange(
         EventType.MODEL_EXCHANGE_FINISHED,
         log.next_sequence,
         turn_id=turn_id,
+        operation_id=operation_id,
         actor=actor,
         occurred_at=occurred_at,
         payload={
@@ -281,6 +285,53 @@ def test_a_call_reporting_either_total_counts_as_reported(tmp_path: Path) -> Non
     _write_session(tmp_path, "one", log)
 
     assert [call.reported for call in _scan(tmp_path).calls] == [True, True]
+
+
+def test_a_repeated_terminal_for_one_exchange_counts_the_call_once(tmp_path: Path) -> None:
+    """One exchange ends once: a repeated terminal is the same spend, not a second request."""
+    log = EventLog()
+    _exchange(log, operation_id=_EXCHANGE_OPERATION)
+    # A replay of the same terminal, with its own numbers: the first one stands.
+    _exchange(log, operation_id=_EXCHANGE_OPERATION, input_total=999, cache_read=None, output=999)
+    _exchange(log, operation_id=_OTHER_OPERATION, input_total=10, cache_read=None, output=1)
+    _write_session(tmp_path, "one", log)
+
+    calls = _scan(tmp_path).calls
+
+    assert [(call.new_input, call.output) for call in calls] == [(60, 10), (10, 1)]
+
+
+def test_a_duplicate_that_alone_is_readable_is_still_counted(tmp_path: Path) -> None:
+    """A terminal whose timestamp does not parse claims no operation, so its readable copy still counts."""
+    log = EventLog()
+    _exchange(log, occurred_at="not-a-time", operation_id=_EXCHANGE_OPERATION)
+    _exchange(log, operation_id=_EXCHANGE_OPERATION)
+    _write_session(tmp_path, "one", log)
+
+    calls = _scan(tmp_path).calls
+
+    assert [(call.new_input, call.output) for call in calls] == [(60, 10)]
+
+
+def test_terminals_without_an_operation_id_are_not_merged(tmp_path: Path) -> None:
+    log = EventLog()
+    _exchange(log)
+    _exchange(log)
+    _write_session(tmp_path, "one", log)
+
+    assert len(_scan(tmp_path).calls) == 2
+
+
+def test_the_same_operation_id_in_two_sessions_counts_in_both(tmp_path: Path) -> None:
+    """Each session's log holds its own spend; an operation id is unique only within one."""
+    first = EventLog()
+    _exchange(first, operation_id=_EXCHANGE_OPERATION)
+    _write_session(tmp_path, "one", first)
+    second = EventLog()
+    _exchange(second, operation_id=_EXCHANGE_OPERATION)
+    _write_session(tmp_path, "two", second)
+
+    assert len(_scan(tmp_path).calls) == 2
 
 
 def test_new_input_never_goes_below_zero_when_cache_reads_exceed_the_input(tmp_path: Path) -> None:
