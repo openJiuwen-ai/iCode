@@ -119,6 +119,19 @@ class TestTimeAgo:
     def test_days(self) -> None:
         assert time_ago(_BASE - timedelta(days=2), now=_BASE) == "2 days ago"
 
+    def test_twelve_months_read_as_one_year(self) -> None:
+        assert time_ago(_BASE - timedelta(days=359), now=_BASE) == "11 months ago"
+        assert time_ago(_BASE - timedelta(days=360), now=_BASE) == "1 year ago"
+        assert time_ago(_BASE - timedelta(days=364), now=_BASE) == "1 year ago"
+        assert time_ago(_BASE - timedelta(days=365), now=_BASE) == "1 year ago"
+        assert time_ago(_BASE - timedelta(days=719), now=_BASE) == "1 year ago"
+        assert time_ago(_BASE - timedelta(days=720), now=_BASE) == "2 years ago"
+        assert time_ago(_BASE - timedelta(days=730), now=_BASE) == "2 years ago"
+        assert time_ago(_BASE - timedelta(days=1079), now=_BASE) == "2 years ago"
+        assert time_ago(_BASE - timedelta(days=1080), now=_BASE) == "3 years ago"
+        assert time_ago(_BASE - timedelta(days=1094), now=_BASE) == "3 years ago"
+        assert time_ago(_BASE - timedelta(days=1095), now=_BASE) == "3 years ago"
+
 
 class TestSorting:
     def test_default_sort_is_last_active_descending(self) -> None:
