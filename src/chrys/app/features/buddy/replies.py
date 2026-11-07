@@ -10,6 +10,7 @@ import secrets
 import threading
 from typing import TYPE_CHECKING
 
+from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 
@@ -27,13 +28,30 @@ _HISTORY_MESSAGES = 6
 _HISTORY_MESSAGE_CHARS = 400
 _REPLY_MARK = "💛"
 
-STOCK_REPLIES = (
-    "{name} wriggles, then pretends nothing happened.",
-    "{name} hums a little and goes back to watching your cursor.",
-    "{name} does a small, pleased spin.",
-    "{name} blinks slowly. That means yes.",
-    "{name} scoots a little closer to the keyboard.",
+# Each stock line is its own message definition, so a translation can rewrite it whole. The mark
+# rides in the template: a reference cannot be prefixed by its caller the way a plain string can.
+_REPLY_WRIGGLES = msg(
+    "tui.buddy.reply.wriggles",
+    fallback="💛 {name} wriggles, then pretends nothing happened.",
 )
+_REPLY_HUMS = msg(
+    "tui.buddy.reply.hums",
+    fallback="💛 {name} hums a little and goes back to watching your cursor.",
+)
+_REPLY_SPINS = msg(
+    "tui.buddy.reply.spins",
+    fallback="💛 {name} does a small, pleased spin.",
+)
+_REPLY_BLINKS = msg(
+    "tui.buddy.reply.blinks",
+    fallback="💛 {name} blinks slowly. That means yes.",
+)
+_REPLY_SCOOTS = msg(
+    "tui.buddy.reply.scoots",
+    fallback="💛 {name} scoots a little closer to the keyboard.",
+)
+
+STOCK_REPLIES = (_REPLY_WRIGGLES, _REPLY_HUMS, _REPLY_SPINS, _REPLY_BLINKS, _REPLY_SCOOTS)
 
 _PROMPT = """You are {name}, a {species} who keeps a programmer company while they work. {persona}
 Whenever you are petted, say what {name} would say back: a single line no longer than a text message, in the \
@@ -46,8 +64,8 @@ them stuck or tired, be kind about it. Write that line and nothing else."""
 reply_gate = threading.Lock()
 
 
-async def pet_reply(buddy: Buddy) -> str:
-    """The buddy's answer to being petted. Falls back to a stock line; never raises."""
+async def pet_reply(buddy: Buddy) -> MessageRef | str:
+    """The buddy's answer to being petted. Falls back to a stock message; never raises."""
     try:
         text = await _ask_model(buddy)
     except Exception:
@@ -56,9 +74,9 @@ async def pet_reply(buddy: Buddy) -> str:
     return f"{_REPLY_MARK} {text}" if text else stock_reply(buddy)
 
 
-def stock_reply(buddy: Buddy) -> str:
+def stock_reply(buddy: Buddy) -> MessageRef:
     """An answer to being petted that needs no model."""
-    return f"{_REPLY_MARK} {secrets.choice(STOCK_REPLIES).format(name=buddy.name)}"
+    return secrets.choice(STOCK_REPLIES).bind(name=buddy.name)
 
 
 async def _ask_model(buddy: Buddy) -> str:

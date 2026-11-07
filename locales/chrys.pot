@@ -5209,6 +5209,36 @@ msgstr ""
 msgid "tui.buddy.persona.grit"
 msgstr ""
 
+#. English: 💛 {name} blinks slowly. That means yes.
+#. chrys-meta={"fingerprint":"ab604e8f13514405251fb3cd42e6d0a055db5b9c7d2b73707c5b3bf7899af62c","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.blinks"
+msgstr ""
+
+#. English: 💛 {name} hums a little and goes back to watching your cursor.
+#. chrys-meta={"fingerprint":"605c9a1ffe73e7c887e51bd2debfeca9437c2e375a2bac7d9ad8e48072cb629a","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.hums"
+msgstr ""
+
+#. English: 💛 {name} scoots a little closer to the keyboard.
+#. chrys-meta={"fingerprint":"4582d0ebb006791a3b77458bacd467b504fbeb7baa9a7a5a2573755eb2c68f30","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.scoots"
+msgstr ""
+
+#. English: 💛 {name} does a small, pleased spin.
+#. chrys-meta={"fingerprint":"d53edcd4d65e73d6f1992e9148b6a60d8cbd7d9a09e134f29e66f3b1a1035f7d","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.spins"
+msgstr ""
+
+#. English: 💛 {name} wriggles, then pretends nothing happened.
+#. chrys-meta={"fingerprint":"452df8bcf9c1adafe4bfca35359abffdaa8b371379f0a78d525fffb75c262d77","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.wriggles"
+msgstr ""
+
 #. English: The buddy save file could not be updated, so nothing has changed.
 #. Try again in a moment.
 #. chrys-meta={"fingerprint":"f78cf07df1e34dbfbbe3db4e2c222a5742183593fd6e2b5a24f538410058a9da","multiline":false,"placeholders":[]}

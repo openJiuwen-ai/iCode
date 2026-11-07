@@ -12,6 +12,7 @@ import pytest
 
 from chrys.app.features.buddy.replies import STOCK_REPLIES, pet_reply, stock_reply
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.kernel import Message
@@ -25,6 +26,16 @@ from tests.support.buddies import a_buddy
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+
+
+def _stock_lines(name: str) -> set[str]:
+    """The stock lines as their English fallback renders them, so no wording is pinned."""
+    return {format_message(line.bind(name=name)) for line in STOCK_REPLIES}
+
+
+def _reply_text(reply: MessageRef | str) -> str:
+    """A model answer already is text; a stock reply renders through its fallback."""
+    return reply if isinstance(reply, str) else format_message(reply)
 
 
 class _Response:
@@ -411,7 +422,7 @@ async def test_a_model_that_cannot_answer_is_covered_by_a_stock_line(
     _client_factory(monkeypatch, make)
     buddy = a_buddy()
 
-    assert await pet_reply(buddy) in {f"💛 {line.format(name=buddy.name)}" for line in STOCK_REPLIES}
+    assert _reply_text(await pet_reply(buddy)) in _stock_lines(buddy.name)
 
 
 @pytest.mark.asyncio
@@ -420,7 +431,7 @@ async def test_an_empty_answer_is_covered_by_a_stock_line(client: _Client, monke
     monkeypatch.setattr(_Response, "text", "   ")
     buddy = a_buddy()
 
-    assert await pet_reply(buddy) in {f"💛 {line.format(name=buddy.name)}" for line in STOCK_REPLIES}
+    assert _reply_text(await pet_reply(buddy)) in _stock_lines(buddy.name)
 
 
 class _FailingClient(_Client):
@@ -446,7 +457,26 @@ async def test_reply_closes_its_client(answers: bool, monkeypatch: pytest.Monkey
 
 def test_a_stock_reply_needs_no_model_and_names_the_buddy() -> None:
     buddy = a_buddy(name="Nori")
-    assert stock_reply(buddy) in {f"💛 {line.format(name='Nori')}" for line in STOCK_REPLIES}
+    assert _reply_text(stock_reply(buddy)) in _stock_lines("Nori")
+    # The reply mark rides in each template now, and nothing else in the module adds it to a
+    # stock line: this literal is what tells if a template loses it.
+    assert all(line.startswith("💛 ") for line in _stock_lines("Nori"))
+
+
+def test_every_stock_reply_renders_in_the_user_language() -> None:
+    buddy = a_buddy(name="Nori")
+    chinese = Localizer("zh-Hans")
+    translated = set()
+    for line in STOCK_REPLIES:
+        reference = line.bind(name=buddy.name)
+        chinese_line = chinese.render(reference)
+        assert chinese_line != format_message(reference)
+        assert buddy.name in chinese_line
+        translated.add(chinese_line)
+
+    # Five distinct translations, and the random pick lands on one of them.
+    assert len(translated) == len(STOCK_REPLIES)
+    assert chinese.render(stock_reply(buddy)) in translated
 
 
 def _registry_with(*profiles: ModelProfile) -> ModelProfileRegistry:

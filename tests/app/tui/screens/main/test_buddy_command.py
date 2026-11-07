@@ -9,9 +9,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from chrys.app.features.buddy import actions
+from chrys.app.features.buddy import actions, replies
 from chrys.app.features.buddy.replies import reply_gate
 from chrys.app.tui.screens.main.buddy_command import BuddyCommandController
+from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from tests.support.buddies import HeldPetReply, HeldSaveFile, wedge_the_save_file
 from tests.support.waiting import wait_for
@@ -20,7 +21,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from chrys.app.features.buddy.model import Buddy
-    from chrys.foundation.i18n import MessageRef
 
 
 class _BuddyView:
@@ -42,6 +42,24 @@ class _BuddyView:
 
     def call_after_refresh(self, callback: Callable[[], None]) -> None:
         callback()
+
+
+class _RawBuddyView(_BuddyView):
+    """Also keeps each message as it arrived, so a test can render it in another locale itself."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.raw: list[MessageRef | str] = []
+
+    def notify_buddy(
+        self,
+        message: MessageRef | str,
+        *,
+        severity: str = "information",
+        timeout: float = 10,
+    ) -> None:
+        self.raw.append(message)
+        super().notify_buddy(message, severity=severity, timeout=timeout)
 
 
 pytestmark = pytest.mark.usefixtures("buddy_reply_gate_left_open")
@@ -145,6 +163,30 @@ async def test_pet_counts_the_pet_shows_the_answer_and_refreshes_the_panel_in_pl
     # The answer showed itself too, and the tab stayed where it was.
     assert view.refreshes == [False, False]
     assert controller.pet_task is None
+
+
+@pytest.mark.asyncio
+async def test_a_stock_answer_reaches_the_toast_as_a_message_the_ui_can_localize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def offline(_buddy: Buddy) -> str:
+        raise ConnectionError("offline")
+
+    monkeypatch.setattr(replies, "_ask_model", offline)
+    view = _RawBuddyView()
+    controller = BuddyCommandController(view)
+    buddy = actions.hatch(Random(1))
+
+    controller.handle("pet")
+    await wait_for(lambda: len(view.raw) == 2, description="the thinking line, then the answer")
+    if controller.pet_task is not None:
+        await controller.pet_task
+
+    answer = view.raw[-1]
+    assert isinstance(answer, MessageRef)
+    chinese = Localizer("zh-Hans").render(answer)
+    assert buddy.name in chinese
+    assert chinese != format_message(answer)
 
 
 @pytest.mark.asyncio
