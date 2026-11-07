@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "dataset_id": "rsi-demo-script",
+  "cases": [
+    {
+      "case_id": "hello-file",
+      "prompt": "Write hello.txt containing hello world",
+      "evaluation": {
+        "method": "script_based",
+        "expect": {
+          "files_exist": ["hello.txt"],
+          "file_contains": {
+            "hello.txt": ["hello world"]
+          },
+          "response_contains": ["hello"]
+        }
+      },
+      "fixture": {
+        "response": "Created hello.txt with hello world",
+        "files": {
+          "hello.txt": "hello world\n"
+        }
+      }
+    },
+    {
+      "case_id": "response-only",
+      "prompt": "Say the word ready",
+      "evaluation": {
+        "method": "script_based",
+        "expect": {
+          "response_contains": ["ready"]
+        }
+      },
+      "fixture": {
+        "response": "ready"
+      }
+    }
+  ]
+}

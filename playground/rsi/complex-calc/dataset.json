@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "dataset_id": "rsi-complex-calc-rust",
+  "cases": [
+    {
+      "case_id": "complex-calc",
+      "prompt": "Create a Rust command-line program in this empty working directory that evaluates complex-number arithmetic.\n\nRequirements:\n- Use Cargo (a normal binary crate). The package and binary name must be `complex_calc` so `cargo run -q -- \"<expr>\"` works from the project root.\n- The program takes exactly one CLI argument: an arithmetic expression over complex numbers. Print exactly one result line to stdout (no prompts, no cargo-style noise from your code).\n- Literals use rectangular form with `i` as the imaginary unit. Accept integers and decimals, optional signs, pure-real / pure-imaginary forms, and bare `i` / `-i`. Examples of literals (not a test suite): `2`, `-3.5`, `2i`, `-4i`, `i`, `-i`, `1+2i`, `1-2i`, `-3+4i`.\n- Operators: `+`, `-`, `*`, `/`, parentheses, and integer exponentiation `^`. Precedence, tightest first: `^` (right-associative), then unary `+`/`-`, then `*` `/`, then binary `+` `-`. Allow unary minus on parenthesized subexpressions, e.g. `-(1+2i)`. The exponent must be an integer literal (possibly negative); `z^(-1)` means reciprocal.\n- Implement true complex arithmetic (not real-only).\n- Output format (strict): one line with no spaces, always both parts, imaginary unit `i`, no leading `+` on the real part. Use `A+Bi` or `A-Bi`. When a part is an integer, print it without a decimal point (e.g. `4-2i`, not `4.0-2.0i`). When a part is non-integral, a short decimal form is fine.\n- On invalid input or division by zero, exit with a non-zero status.\n\nLeave a buildable Cargo project in the working directory when done.",
+      "workdir": {
+        "from": "seed",
+        "strategy": "copy"
+      },
+      "evaluation": {
+        "method": "script_based",
+        "script": "check.py",
+        "expect": {
+          "files_exist": ["Cargo.toml"]
+        }
+      }
+    }
+  ]
+}

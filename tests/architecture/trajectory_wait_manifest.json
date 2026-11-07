@@ -4961,6 +4961,99 @@
         ["wrapper", "await wait_for_subprocess(drain_process_pipes(proc, stdout, stderr), timeout=SHELL_TIMEOUT_SECONDS, process_group_id=proc.pid if sys.platform != 'win32' else None)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"]
       ]
     },
+    "chrys.service.rsi.case_runner": {
+      "ProfileAwareStubRunner.run_case": [
+        ["awaitable", "await self._fallback.run_case(case, workdir)", "unresolved"]
+      ]
+    },
+    "chrys.service.rsi.context": {
+      "RsiServiceContext.evaluate_dataset": [
+        ["awaitable", "await evaluator.run_suite(dataset, output_dir=out, on_event=on_event if project_task else None, task_id=project_task)", "unresolved"]
+      ],
+      "RsiServiceContext.evaluate_task": [
+        ["wrapper", "await self.evaluate_dataset(dataset_path, runner=runner, output_dir=out, task_id=task_id)", "unresolved", "chrys.service.rsi.context.RsiServiceContext.evaluate_dataset"]
+      ],
+      "RsiServiceContext.optimize_task": [
+        ["awaitable", "await loop.run(task_id, base_profile=profile, evaluate=evaluate, max_epochs=epochs, instruction=task.optimization_instruction, events=events)", "unresolved"]
+      ],
+      "RsiServiceContext.optimize_task.evaluate": [
+        ["wrapper", "await self.evaluate_dataset(dataset_path, runner=runner, output_dir=out, task_id=task_id, project=False, case_ids=case_ids)", "unresolved", "chrys.service.rsi.context.RsiServiceContext.evaluate_dataset"]
+      ],
+      "RsiServiceContext.wait_idle": [
+        ["awaitable", "await self.worker.drain()", "unresolved"]
+      ]
+    },
+    "chrys.service.rsi.evaluator": {
+      "ScriptBasedEvaluator.run_suite": [
+        ["awaitable", "await emit('node', 'created', {'node': {'ref': 'root', 'parent_ref': None, 'type': 'ROOT', 'accepted': True, 'score': None, 'summary': f'dataset {dataset.dataset_id}'}})", "unresolved"],
+        ["awaitable", "await self.runner.run_case(case, workdir)", "unresolved"],
+        ["awaitable", "await emit('node', 'created', {'node': {'ref': node_ref, 'parent_ref': 'root', 'type': 'ADOPTED' if record.passed else 'REJECTED', 'accepted': record.passed, 'score': record.score, 'summary': case.case_id, 'failure_reason': record.error or (record.findings[0]['message'] if record.findings else None)}})", "unresolved"],
+        ["awaitable", "await emit('progress', 'metric', {'iteration': index, 'total_iterations': total, 'score': passed_so_far / total if total else 0.0, 'baseline': None})", "unresolved"]
+      ],
+      "ScriptBasedEvaluator.run_suite.emit": [
+        ["awaitable", "await on_event(EngineEvent(family=family, kind=kind, task_id=task_id, event_id=seq, ts=utcnow_iso(), payload=payload))", "unresolved"]
+      ]
+    },
+    "chrys.service.rsi.llm_optimizer": {
+      "LlmOptimizer.propose": [
+        ["awaitable", "await self._complete(surrogate_safe_text(prompt))", "unresolved"]
+      ],
+      "complete_with_model_profile": [
+        ["wrapper", "async with scoped_client(profile)", "unresolved", "chrys.service.llm.clients.scoped_client"],
+        ["wrapper", "await get_final_response(client, [Message('user', [prompt])], stream=False, options=effective_chat_options(profile))", "unresolved", "chrys.service.llm.one_shot.get_final_response"]
+      ]
+    },
+    "chrys.service.rsi.optimizer": {
+      "OptimizeLoop.run": [
+        ["awaitable", "await evaluate(baseline_snap.profile, baseline_id, None)", "unresolved"],
+        ["awaitable", "await self.optimizer.propose(working_profile, failed, instruction=instruction, epoch=epoch)", "unresolved"],
+        ["awaitable", "await evaluate(snap.profile, candidate_id, failed_ids)", "unresolved"],
+        ["awaitable", "await evaluate(snap.profile, candidate_id, None)", "unresolved"]
+      ]
+    },
+    "chrys.service.rsi.provider": {
+      "MockRsiProvider._emit": [
+        ["awaitable", "await emit('node', 'created', {'node': {'ref': 'root', 'parent_ref': None, 'type': 'ROOT', 'accepted': True, 'score': self.baseline, 'summary': 'baseline'}})", "unresolved"],
+        ["awaitable", "await emit('progress', 'metric', {'iteration': 0, 'total_iterations': total, 'score': self.baseline, 'baseline': self.baseline})", "unresolved"],
+        ["awaitable", "await emit('node', 'created', {'node': {'ref': candidate_ref, 'parent_ref': 'root' if epoch == 1 else f'candidate-{epoch - 1}', 'type': 'ADOPTED' if accepted else 'PROVISIONAL', 'accepted': accepted, 'score': score, 'summary': f'mock candidate epoch {epoch}'}})", "unresolved"],
+        ["awaitable", "await emit('node', 'stage', {'node_ref': candidate_ref, 'stage': 'evaluated', 'score': score})", "unresolved"],
+        ["awaitable", "await emit('progress', 'metric', {'iteration': epoch, 'total_iterations': total, 'score': score, 'baseline': self.baseline})", "unresolved"]
+      ],
+      "MockRsiProvider._emit.emit": [
+        ["awaitable", "await on_event(EngineEvent(family=family, kind=kind, task_id=request.task_id, event_id=seq, ts=utcnow_iso(), payload=payload))", "unresolved"]
+      ],
+      "MockRsiProvider.resume": [
+        ["wrapper", "await self._emit(request, on_event=on_event)", "unresolved", "chrys.service.rsi.provider.MockRsiProvider._emit"]
+      ],
+      "MockRsiProvider.run": [
+        ["wrapper", "await self._emit(request, on_event=on_event)", "unresolved", "chrys.service.rsi.provider.MockRsiProvider._emit"]
+      ]
+    },
+    "chrys.service.rsi.worker": {
+      "RsiWorker._consume_event": [
+        ["wrapper", "await self._push('rsi.training.tree.delta', task_id, {'node': node.to_dict()})", "unresolved", "chrys.service.rsi.worker.RsiWorker._push"],
+        ["wrapper", "await self._push('rsi.training.progress', task_id, progress)", "unresolved", "chrys.service.rsi.worker.RsiWorker._push"],
+        ["wrapper", "await self._push('rsi.training.tree.delta', task_id, {'stage': event.payload})", "unresolved", "chrys.service.rsi.worker.RsiWorker._push"]
+      ],
+      "RsiWorker._push": [
+        ["awaitable", "await result", "unresolved"]
+      ],
+      "RsiWorker._run_loop": [
+        ["queue", "await self._queue.get()", "unresolved"],
+        ["wrapper", "await self._run_one(task_id)", "unresolved", "chrys.service.rsi.worker.RsiWorker._run_one"]
+      ],
+      "RsiWorker._run_one": [
+        ["future", "await run_task", "unresolved"]
+      ],
+      "RsiWorker._run_one.on_event": [
+        ["wrapper", "await self._consume_event(event)", "unresolved", "chrys.service.rsi.worker.RsiWorker._consume_event"]
+      ],
+      "RsiWorker.drain": [
+        ["awaitable", "await self._queue.join()", "unresolved"],
+        ["sleep", "await asyncio.sleep(0)", "event-loop-yield"],
+        ["awaitable", "await runner", "unresolved"]
+      ]
+    },
     "chrys.service.session.persistence": {
       "SessionPersistence.delete_session": [
         ["awaitable", "await self._state_store.delete_session(session_id, allow_active=allow_active)", "unresolved"]

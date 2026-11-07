@@ -128,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  hook        List hooks and check hook configuration files\n"
             "  workflow    List, validate and run workflows headlessly\n"
             "  trajectory  Export recorded trajectory analytics (perfetto/json/csv)\n"
+            "  rsi         Experimental RSI eval and profile optimize\n"
             "  acp         Run an Agent Client Protocol stdio server\n"
             f"  serve       Host the {APP_DISPLAY_NAME} TUI in a browser\n"
             f"  install     Install {APP_DISPLAY_NAME} to PATH\n"
@@ -219,6 +220,10 @@ def main() -> int:
         from chrys.app.cli.workflow import main as workflow_main
 
         return workflow_main(argv[1:])
+    if argv and argv[0] == "rsi":
+        from chrys.app.cli.rsi import main as rsi_main
+
+        return rsi_main(argv[1:])
     return _run_tui(argv)
 
 
