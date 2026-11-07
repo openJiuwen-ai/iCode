@@ -9,7 +9,8 @@
 
 第一轮定制化（至旧分支 `main_aixcoding_cli_0.28.0_final`，上游 0.28.0 基线）在无规范状态下进行，
 团队各成员做法不一致，追版本维护成本高企。2026-10 重建路线：基于上游最新版本拉新分支
-`main_aixcoding_cli`（初始 0.31.0 基线；经 `upstream-merge-v0.32.2`、`upstream-merge-v0.33.0` 批次现 0.33.0），**不带任何
+`main_aixcoding_cli`（初始 0.31.0 基线；经 `upstream-merge-v0.32.2`、`upstream-merge-v0.33.0`、
+`upstream-merge-v0.34.0` 批次现 0.34.0），**不带任何
 旧功能代码**，仅带入规范体系，按"规范 → 基础工程 → 功能迁入"三阶段重建定制层。
 
 核心约束（与 DEVELOPMENT.md 一致）：对上游源码改动最少最集中，以降低追版本维护成本。
@@ -125,59 +126,73 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
 >   批次启动时必须基于当期基线重新做"上游现状 vs 旧定制"分析并呈报建议判定，**由责任人裁决**
 >   后方可实施（ADR-0012；上游/旧实现随时间漂移，本表结论会过时）。
 > - 盘点方法：`batches/devtools/archaeology-report-0.28.0.md`（57 资产文件 + 24 注释标记）↔
->   新分支现存 22 处 `AIxCoding` 标记求差集；C1–C5 另做上游 0.32.2 逐项对比（见各行依据），
->   C6/C7 仅登记待分析（本轮未覆盖）。**差集法仅为初筛且标记扫描存在盲区**：908 非注释命中
+>   新分支现存 22 处 `AIxCoding` 标记求差集；版本更新检测、模型目录同步、平台连接配置、
+>   品牌与命令切换、内网安装器与分发身份五组另做上游 0.32.2 逐项对比（见各行依据）；
+>   skills 自动加载与安全护栏当时仅登记待分析（本轮未覆盖）。**差集法仅为初筛且标记扫描存在盲区**：908 非注释命中
 >   并非纯品牌文案（skills 自动加载即命中之一）；安全护栏则**无任何标记命中**、由评审从功能面
 >   额外发现（2026-11-02，F-01）——完备性须以逐项甄别辅以功能面核查，本表覆盖不承诺穷尽。
+>
+> **分区字母口径（2026-11-07 重排起生效）**：A 已迁入 / B 待迁功能 / C 殿后已定 /
+> D 已裁决维持现状 / E 跟随处理 / F 将来重构候选。§5 早于本次重排的历史记录及已签认
+> 批次文档中的旧字母（B=殿后、C=待迁、D=跟随、E=重构）保留历史原义，不回改。
 
 ### A. 已迁入（对账记录，无需再裁决）
 
 | 特性 | 旧落点（0.28.0） | 判定 | 依据 / 备注 |
 |---|---|---|---|
-| mock 三服务 | `mock_server/`（auth / update / model_catalog） | 已完成 | mock 批次（M1-M3，2026-10-26）；telemetry-mock 除外（见 B） |
+| mock 三服务 | `mock_server/`（auth / update / model_catalog） | 已完成 | mock 批次（M1-M3，2026-10-26）；telemetry-mock 除外（见 C） |
 | auth 登录 + LLM token + ACP 接线 | `aixcoding/auth/` 9 py + `app.py:960` 等挂接点 | 已完成 | auth + tier-migration + auth-logging 批次；env 已更名 `AIXCODING_AUTH_*` |
-| tui 登录 UI（/login、徽章、静默校验） | `aixcoding/tui/` + screen / commands / app_header 挂接点 | 已完成 | tui 批次；`login_actions.py` 另埋 catalog 批次占位符×2（见 C2） |
+| tui 登录 UI（/login、徽章、静默校验） | `aixcoding/tui/` + screen / commands / app_header 挂接点 | 已完成 | tui 批次；`login_actions.py` 另埋 catalog 批次占位符×2（见 A 类"模型目录同步 + 档案集中管理"行） |
 | diagnostics | （阶段二新建，非迁入项） | 已完成 | diagnostics + launcher-retirement（ADR-0013） |
-| 模型目录同步 + 档案集中管理 | `catalog.py`（旧分支新增文件，847 行）+ `registry.py`（RLock 定制）+ `config_actions.py` 只读屏 + 测试×3 | 已完成 | catalog-sync 批次（PR #85，2026-11-03 合并：790b562e 主体 + 2164186e 双评审处置 + a4ea553a CI 修复）；服务端目录整替（两阶段发布）、15min 轮询、恒只读、登录联动启停；盘点 F-03/R-01 两处 API/并发漂移（`replace_profiles()` 同步语义 / `RLock` 线程安全）经 design 重审落地；ADR-0018（内网部署明文 HTTP）；批次文档 `batches/catalog-sync/` |
-| 功能品牌与命令切换 | `branding.py` 2 常量 + 运行时散点 + 用户命令与离线制品 / 安装别名 + i18n 文案 | 已完成 | branding-and-command 批次（PR #87，2026-11-03 合并：f9d62145 单提交，merge eb2e7a80，PR 腿双 CI 绿）；82 定制点 C050-C131 + kernel 档 `command_migration.py` 单源归属判断与安全清理；GLM 三轮评审收敛 + PR 评审两候选记档（批次 verification）；ADR-0019；批次文档 `batches/branding-and-command/`。边界：`iCode-TUI` 分发名/包身份归 C5，纯文档品牌归"用户指南文档定制化"工作项 |
+| 模型目录同步 + 档案集中管理 | `catalog.py`（旧分支新增文件，847 行）+ `registry.py`（RLock 定制）+ `config_actions.py` 只读屏 + 测试×3 | 已完成 | catalog-sync 批次（PR #85，2026-11-03 合并：790b562e 主体 + 2164186e 双评审处置 + a4ea553a CI 修复）；服务端目录整替（两阶段发布）、15min 轮询、恒只读、登录联动启停；盘点 F-03/R-01 两处 API/并发漂移（`replace_profiles()` 同步语义 / `RLock` 线程安全）经 design 重审落地；ADR-0018（内网部署明文 HTTP）；批次文档 `batches/catalog-sync/`。后续增强：catalog-auth-gating（PR #89，2026-11-04 合并：登录失效清理/轮询启停 UI 隔离/中文 detail，C132）与 catalog-readonly-coverage（PR #92，2026-11-05 合并：busy 四态恒只读与指示器 configure 入口正向覆盖，C134/C135） |
+| 功能品牌与命令切换 | `branding.py` 2 常量 + 运行时散点 + 用户命令与离线制品 / 安装别名 + i18n 文案 | 已完成 | branding-and-command 批次（PR #87，2026-11-03 合并：f9d62145 单提交，merge eb2e7a80，PR 腿双 CI 绿）；82 定制点 C050-C131 + kernel 档 `command_migration.py` 单源归属判断与安全清理；GLM 三轮评审收敛 + PR 评审两候选记档（批次 verification）；ADR-0019；批次文档 `batches/branding-and-command/`。边界：`iCode-TUI` 分发名/包身份归 D 类"分发身份 `iCode-TUI`"（ADR-0021），纯文档品牌归"用户指南文档定制化"工作项 |
+| 内网安装器与发布约定 | `scripts/install.sh`（433 行，内网制品镜像 + channels + offline 包体系 + `--from` 离线安装）+ `install.ps1`（51 行，仅在线单平台，无 `--from`/SHA-256/`icode-*` 回退——两平台功能不对称）+ `release/INSTALL.md` + channel 发布约定 | 已完成 | internal-installer 批次（PR #97，2026-11-06 合并：4c85018c 主体 + a85816fa 评审修复 C1-C4，merge 28b7d1c7）：并存新增 `aixcoding/release/`（install-internal-mirror.{sh,ps1} 双脚本 + INSTALL.md 一般用户版 + 支持手册 `docs/install-uninstall-support.md` + publishing.md 发布约定），上游 `scripts/install.*` 与其测试零触碰；统一镜像 IP + `AIXCODING_*`/`ICODE_*` 双读逃生门（显式参数 > 新 > 旧 > 默认）；旧 `create_launch_command` 与 `aixcoding` 旧命令不引入（0.33/品牌与命令切换契约适配）；ps1/sh 维持不对称（D2）；ADR-0020；契约测试 44+2（Linux POSIX 用例由 PR CI ubuntu 实跑关闭，macOS 缺口维持）；**真实制品端到端验收缺口 5 项在案**（批次 verification「尚未执行的验收与覆盖缺口」，不得称全部验收完成） |
+| 安全护栏（guard hooks） | `app/cli/app.py` 启动自动安装（`guard_install`，fail-open）+ 规则包 + wheel 打包 + 测试 + CI + MANUAL_TESTS；旧分支盘点后演进（2026-11-04 PR #90：hooks.yaml 超时×4 + guard_install settings 键同步 +126 行） | 已完成 | guard-hooks 批次（PR #98，2026-11-06 合并，merge c238ea05，分支 lhc/安全护栏_0.33.2）：规则包落 tier 内 `src/chrys/kernel/aixcoding/guard/pack/`（随包、无 force-include）+ 接线 `startup.py` bootstrap_runtime（C140，覆盖全部会话入口）+ pyproject lint profile（C141）；F7 写入范围增强（紧贴重定向/zip/Copy-Item·Move-Item/junction 指外拦截，2026-11-05 责任人裁决）；运维手册重建为批次 `rule-pack/` 四文档（MANUAL_TESTS 演进至 106 条）。姊妹批次 guard-switches（运行期开关：guardctl/guardctl.cmd + guard_state.json 现场状态 + `AIXCODING_GUARD_*` 环境变量，同事 v2 交付逐块合成、含 bool("false") 静默反向修正，ADR 0001 出厂 `allow_outside_workspace=true`，C142）。合入后修复：POSIX Windows 风格 cwd 锚定（b7de350b）、bootstrap 自动装护栏污染 pytest 沙箱（6e2dd9c4）；R13 目录级豁免（4ef0cdb7）；selftest 100 条 + 部署验证 64 例 0 失败 + 三平台 CI 绿 |
 
-### B. 殿后已定（引用 §2 阶段三既有决策，不重新裁决）
-
-| 特性 | 旧落点（0.28.0） | 判定 | 依据 / 备注 |
-|---|---|---|---|
-| telemetry 数据上报 | `telemetry/` 9 py + 根模块 http / context / git_info + 17 处产品源码挂接点 + 1 处测试标记 + 活文档 9 md | 殿后（路线待双调研） | §2 阶段三；调研启动时点（2026-11-05 责任人裁决）：**暂不启动，待基于 0.33.0 的定制化版本相对稳定后再开始**（原句"触发点（部分验收达成）已满足"与 DoD 字面不符而订正，见 §5 2026-11-05（三））；channelName 口径交叉：旧分支 PR #59（2026-10-26）已统一 CLI/TUI/Web channelName 为 `icode`（telemetry reporters + ACP 文档双语），新分支品牌为 `aixcoding-cli`（C4）——迁入/数据口径对齐时须裁决该字段口径 |
-| telemetry-mock | `aixcoding/telemetry-mock/` 4 文件 | 随 telemetry | plan.md M4 + 顺序调整注 |
-| telemetry 测试 | `aixcoding/tests/` 5 份 | 随 telemetry | plan.md T1 注 |
-
-### C. 待迁功能（判定为建议；批次启动时须重新分析、由人决策）
+### B. 待迁功能（判定为建议；批次启动时须重新分析、由人决策）
 
 | 特性 | 旧落点（0.28.0） | 建议判定 | 依据 / 备注（2026-11-02 对上游 0.32.2 分析） |
 |---|---|---|---|
-| 版本更新检测 | `update_detection.py`（内部 `/api/v2/releases/check` 契约）+ screen.py / app.py 挂接点（header 徽章） | **有改动的迁** | 上游 0.32.2 已有同目的的并行机制 `app/update_check.py`（PyPI/GitHub 公网源 + 每日缓存 + 聊天区通知 + settings 开关），内网静默失败；update mock（M2）模拟内部契约已就位。design 须定：① UI 形态（徽章 vs 通知）与上游 update_check 的并存/禁用策略；② **四段版本号 wire contract 为前置阻塞项**——versioning.md 已定稿 fork 第四段，而旧 `_SEMVER_RE` 与上游 `parse_version()` 均只接受三段，四段版本会在请求前静默跳过（update mock 同为三段校验）；2026-11-05 复核：0.33.0 下 update_check.py 零改动（含 parse_version 三段解析），本行上游对比结论无漂移 |
+| 版本更新检测 | `update_detection.py`（内部 `/api/v2/releases/check` 契约）+ screen.py / app.py 挂接点（header 徽章） | **有改动的迁** | 上游 0.32.2 已有同目的的并行机制 `app/update_check.py`（PyPI/GitHub 公网源 + 每日缓存 + 聊天区通知 + settings 开关），内网静默失败；update mock（M2）模拟内部契约已就位。design 须定：① UI 形态（徽章 vs 通知）与上游 update_check 的并存/禁用策略；② **四段版本号 wire contract 为前置阻塞项**——versioning.md 已定稿 fork 第四段，而旧 `_SEMVER_RE` 与上游 `parse_version()` 均只接受三段，四段版本会在请求前静默跳过（update mock 同为三段校验）；2026-11-05 复核：0.33.0 下 update_check.py 零改动（含 parse_version 三段解析）；2026-11-06 复核：0.34.0 下该文件仍零改动，本行上游对比结论无漂移；**范围边界（D 类分发身份/ADR-0021）**：版本更新检测批次只做更新链内部化，卸载提示与 `install` 误用提示中的 `iCode-TUI` 是真实包管理器命令，不随该批次做品牌性替换 |
 | 平台连接配置 | `config.py`（独立 `aixcoding.yaml` + `AIXCODING_EXTENSION_*`，telemetry 与更新检测共用） | **重新实现（拆解随批次）** | 独立 yaml 双轨制与现行配置范式不同构（现行范式：auth `environments.py` 模式 / settings 声明），不整体照迁——端点配置随消费批次（update / telemetry）按现行范式实现。**逐字段归属须 design 定、不得静默丢失**（外部评审 F-06）：`token`/`userId`（或已由 auth session 覆盖）、`toolParamMode`（工具参数上报 full/whitelist）、`telemetryEnabled`（reporter 装配开关）、`profile`/`customServerUrl` 优先级语义 |
-| 内网安装器与发布约定 | `scripts/install.sh`（433 行，内网制品镜像 + channels + offline 包体系 + `--from` 离线安装）+ `install.ps1`（51 行，仅在线单平台，无 `--from`/SHA-256/`icode-*` 回退——两平台功能不对称）+ `release/INSTALL.md` + channel 发布约定 | **有改动的迁（体系保留前提 2026-11-05 责任人已定）** | 与上游 install.sh 为平行替代品（无演进关系）；**"废弃"证据不足**（外部评审 F-04：已兼容 `icode-*` 制品与四段版本号，`release/INSTALL.md` 仍列为推荐渠道）。按 0.33/C4 契约**适配迁移、非原样平移**（2026-11-05 评审收敛）：①旧 `create_launch_command`（install.sh:342-355 创建 `aixcoding` 旧命令）须按 C4 契约改掉；②`ICODE_BASE_URL`/`ICODE_CHANNEL` 更名 `AIXCODING_*` 采双读兼容（显式参数 > 新 > 旧 > 默认；上游 `ICODE_VERSION`/`ICODE_SOURCE` 属上游契约不清零）；③ps1/sh parity 是否补齐单独裁决；④镜像 IP 与 INSTALL.md 域名差异收敛唯一推荐入口；⑤品牌清理：rc 注释 `# Added by iCode installer`、musl 报错文案、临时目录 `icode-install.*`（仅 shell 版）新脚本直接调，存量 rc 不回清；`icode-*` 兼容按镜像存量与 `--from` 历史包需求定 |
-| 分发身份 `iCode-TUI` | **无 0.28 定制落点**——0.28 包名 = `chrys`（与上游 v0.28.0 原版逐字一致、从未品牌化）；`iCode-TUI` 系上游 943142e4（2026-10-08，v0.29.1 首含）引入、新基线 0.31.0+ 继承的现状（2026-11-05 考古勘误） | **待裁决（需求侧确认；B1 沿用为当前建议方向）** | ①可见性核查（2026-11-05）：内网离线包用户正常交互路径不暴露包名（OFFLINE 卸载提示返回 None；四段版本被三段 parse 拦下不展示更新通知——OFFLINE 更新检查仍外呼 GitHub，内部化归 C1）；仅 pip/uv/pipx 场景可见：Python 运行时 3 处（update_check.py:77-81 升级命令 / install_flavor.py:90-94 卸载提示 / installer.py:585 误用提示）+ 安装脚本 ≥1 处（install.sh:159），均为真实可执行命令、禁品牌性字符串替换；`pyapp/icode-tui/` 仅 pip/uv flavor 场景存在，非离线用户可见。②`versioning.md` §2 已同向预定"分发名/wheel 名保持上游、四段版本即身份标识"，裁决时正式确认引用；不沿用则须同步修订该文档。③B1 前提：内网仅受控 PyApp 离线分发；将来启用内部 pip/uv 或对外发布时重开裁决，且先定义内部索引、公共源隔离与防同名跨源误升级（上游三段版本在比较上胜过内部四段）。④若更名：处理 wheel 前缀、uv/pipx 新旧包迁移、更新检查、PyApp/build/CD 引用，保留内网镜像、channels 与发布策略 |
 | skills 共享目录自动加载 | `service/skills/adapter.py` 定制（`~/.aixcoding/skills` + 工作区 `.aixcoding/skills` 自动加载、优先级、`auto_load_aixcoding_*` 开关）+ `agents/schema.py` + 测试 + 中英文文档 | **待分析（本轮未覆盖）** | 外部评审 F-01 发现（属上游 skills 机制的定制扩展，非注释命中之一，证明 908 非纯品牌文案）；新分支 `src/` 产品源码树无 `auto_load_aixcoding`（已核验，复审 R-04 收窄范围）。上游对比与判定随批次启动补做 |
-| 安全护栏（guard hooks） | `app/cli/app.py` 启动自动安装（`guard_install`，fail-open）+ 规则包 + wheel 打包 + 测试 + CI + MANUAL_TESTS | **待分析（本轮未覆盖）** | 外部评审 F-01 发现（属上游 hooks 机制的定制扩展）；**无任何标记命中**（复审 R-02：标记扫描盲区的实例，由功能面核查发现）；新分支 `src/` 产品源码树无 `guard_install`（已核验）。与 D 类历史文档第 9 份（安全护栏 MANUAL_TESTS）同族关联；上游对比与判定随批次启动补做。旧分支盘点后演进（2026-11-04 PR #90，考古基准 8476b962 之后）：hooks.yaml 超时调整×4 行 + guard_install.py 安装/升级时同步模板 settings 键（shutdown_grace_seconds 等随包更新，+126 行含测试）——旧落点描述以此为准；"待分析"判定不变 |
-| **用户指南文档定制化（docs/ 双语树）** | `docs/{en,zh-Hans}/` 整树定制（0.28 final 实测）：新增 start/login、start/what-is-aixcoding、faq、daily-use/build-info、running/aixcoding-serve 等定制指南；删除 external-acp-agents / extensions/shortcuts / reference/opentelemetry / configuration/chat-options / running/terminal-status；`icode-run` / `icode-serve` / `icode-acp` 重命名 `aixcoding-*`；各指南内容定制（如 configuration/models.md 集中管理版："不支持创建模型配置，仅支持切换；模型由管理员分配"） | **待批次启动（后续文档批次；语义参考 0.28 final，按 0.32.2 新结构重做）** | 0.32.2 上游文档结构大幅扩充（如 models.md 由 <1KB 扩为 16-17KB 完整指南），旧定制不可平移；与上游 0.28→0.32 文档自身演进混杂（0.28 final vs 上游现状 diff：75 文件 +2361/-6020，含演进噪音），批次启动时逐份甄别。**文档类定制零 marker 命中**（fork `docs/` 现状零 AIxCoding 标记，属标记扫描盲区、由功能面核查发现——同 F-01 性质）。**文档类待办统一并入本项**；首个并入：catalog-sync 批次 F-6（责任人裁决 2026-11-02）——models.md 双语改写不随 catalog-sync 批次，随本工作项处理。**第二个并入：品牌与命令文档切换（2026-11-03 重裁，不再设 C4b 子批次）**——功能品牌与命令由 C4 闭环，本独立文档项仅处理 docs/README/AGENTS 完整文案等纯说明材料（C4 已修复其中立即失效的最小开发命令）；除品牌词外还须同步 `aixcoding-cli` 命令示例、C5 最终确定的分发身份、离线包名和相关文件名。待目标上游版本及其他功能改动确定后集中实施，不再设独立品牌文档期限；双语同批成对改、半自动+不可替换清单先行，与结构定制（新增/删除/重命名/内容改写）合并规划，勿另起并行批次 |
+| **用户指南文档定制化（docs/ 双语树）** | `docs/{en,zh-Hans}/` 整树定制（0.28 final 实测）：新增 start/login、start/what-is-aixcoding、faq、daily-use/build-info、running/aixcoding-serve 等定制指南；删除 external-acp-agents / extensions/shortcuts / reference/opentelemetry / configuration/chat-options / running/terminal-status；`icode-run` / `icode-serve` / `icode-acp` 重命名 `aixcoding-*`；各指南内容定制（如 configuration/models.md 集中管理版："不支持创建模型配置，仅支持切换；模型由管理员分配"） | **待批次启动（后续文档批次；语义参考 0.28 final，按 0.32.2 新结构重做）** | 0.32.2 上游文档结构大幅扩充（如 models.md 由 <1KB 扩为 16-17KB 完整指南），旧定制不可平移；与上游 0.28→0.32 文档自身演进混杂（0.28 final vs 上游现状 diff：75 文件 +2361/-6020，含演进噪音），批次启动时逐份甄别。**文档类定制零 marker 命中**（fork `docs/` 现状零 AIxCoding 标记，属标记扫描盲区、由功能面核查发现——同 F-01 性质）。**文档类待办统一并入本项**；首个并入：catalog-sync 批次 F-6（责任人裁决 2026-11-02）——models.md 双语改写不随 catalog-sync 批次，随本工作项处理。**第二个并入：品牌与命令文档切换（2026-11-03 重裁，不再设独立子批次）**——功能品牌与命令由品牌与命令切换批次闭环，本独立文档项仅处理 docs/README/AGENTS 完整文案等纯说明材料（该批次已修复其中立即失效的最小开发命令）；除品牌词外还须同步 `aixcoding-cli` 命令示例、D 类已裁决的分发身份、离线包名和相关文件名。待目标上游版本及其他功能改动确定后集中实施，不再设独立品牌文档期限；双语同批成对改、半自动+不可替换清单先行，与结构定制（新增/删除/重命名/内容改写）合并规划，勿另起并行批次 |
 
-### D. 跟随处理
+### C. 殿后已定（引用 §2 阶段三既有决策，不重新裁决）
+
+| 特性 | 旧落点（0.28.0） | 判定 | 依据 / 备注 |
+|---|---|---|---|
+| telemetry 数据上报 | `telemetry/` 9 py + 根模块 http / context / git_info + 17 处产品源码挂接点 + 1 处测试标记 + 活文档 9 md | 殿后（路线待双调研） | §2 阶段三；调研启动时点（2026-11-05 责任人裁决）：**暂不启动，待基于 0.33.0 的定制化版本相对稳定后再开始**（原句"触发点（部分验收达成）已满足"与 DoD 字面不符而订正，见 §5 2026-11-05（三））；channelName 口径交叉：旧分支 PR #59（2026-10-26）已统一 CLI/TUI/Web channelName 为 `icode`（telemetry reporters + ACP 文档双语），新分支品牌为 `aixcoding-cli`（品牌与命令切换批次）——迁入/数据口径对齐时须裁决该字段口径 |
+| telemetry-mock | `aixcoding/telemetry-mock/` 4 文件 | 随 telemetry | plan.md M4 + 顺序调整注 |
+| telemetry 测试 | `aixcoding/tests/` 5 份 | 随 telemetry | plan.md T1 注 |
+
+### D. 已裁决维持现状（不迁；重开须新 ADR）
+
+> 定位：登记经责任人签认 ADR 裁决"不迁移/保持上游现状"的事项——与 B 类"待迁功能"分轴。
+> 此类事项不再是待迁清单；重开仅按对应 ADR 的触发条件执行，且须以新 ADR 取代原决策，
+> 不因批次启动自动重审。
+
+| 事项 | 处置对象 | 裁决 | 依据 / 重开条件 |
+|---|---|---|---|
+| 分发身份 `iCode-TUI` | **无 0.28 定制落点**——0.28 包名 = `chrys`（与上游 v0.28.0 原版逐字一致、从未品牌化）；`iCode-TUI` 系上游 943142e4（2026-10-08，v0.29.1 首含）引入、新基线 0.31.0+ 继承的现状（2026-11-05 考古勘误） | **已裁决：沿用上游（ADR-0021，2026-11-07 签认）** | ①可见性核查（2026-11-05）：内网离线包用户正常交互路径不暴露包名（OFFLINE 卸载提示返回 None；四段版本被三段 parse 拦下不展示更新通知——OFFLINE 更新检查仍外呼 GitHub，内部化归 B 类"版本更新检测"）；仅 pip/uv/pipx 场景可见：Python 运行时 3 处（update_check.py:77-81 升级命令 / install_flavor.py:90-94 卸载提示 / installer.py:585 误用提示）+ 安装脚本 ≥1 处（install.sh:159），均为真实可执行命令、禁品牌性字符串替换；`pyapp/icode-tui/` 仅 pip/uv flavor 场景存在，非离线用户可见。②`versioning.md` §2 已同向预定"分发名/wheel 名保持上游、四段版本即身份标识"；ADR-0021 已签认正式确认（2026-11-07），不沿用则须以新 ADR 取代并同步修订该文档。③沿用上游的前提与重开条件（ADR-0021）：内网仅受控 PyApp 离线分发（内网安装体系已于 internal-installer 批次迁移落地，见 A 类）；启用内部 pip/uv、对外发布、品牌合规覆盖分发层或出现实际同名跨源误升级风险时重开裁决，且先定义内部索引、公共源隔离与防同名跨源误升级（上游三段版本在比较上胜过内部四段）。④若更名（须新 ADR 取代 ADR-0021）：处理 wheel 前缀、uv/pipx 新旧包迁移、更新检查、PyApp/build/CD 引用，保留内网镜像、channels 与发布策略 |
+
+### E. 跟随处理
 
 | 项 | 旧落点 | 处理 | 依据 / 备注 |
 |---|---|---|---|
 | pyproject 全角标点豁免 | `pyproject.toml:201`（RUF001/2/3） | 随批次按需 | 不独立迁 pyproject 定制；新分支现做法为 pyproject 目录级 `per-file-ignores`（PR #71 ruff-test-exemptions 起，此前曾用文件头 `noqa`） |
-| 历史文档 9 份 | `aixcoding/doc/`（登录系列×5、发布指南、LLM 对接、项目索引、安全护栏 MANUAL_TESTS） | 责任人逐份定去向 | plan.md R1 已载"禁止删除"且枚举 8 份——**第 9 份（安全护栏 MANUAL_TESTS.md）超出 R1 枚举范围**（外部评审 F-08），去向单独定，或随 C7 安全护栏批次一并处理 |
+| 历史文档 9 份 | `aixcoding/doc/`（登录系列×5、发布指南、LLM 对接、项目索引、安全护栏 MANUAL_TESTS） | 责任人逐份定去向 | plan.md R1 已载"禁止删除"且枚举 8 份——**第 9 份（安全护栏 MANUAL_TESTS.md）超出 R1 枚举范围**（外部评审 F-08），去向单独定，或随安全护栏批次一并处理（2026-11-06 注：guard 批次已重建运维手册为批次 `rule-pack/` 四文档、MANUAL_TESTS 演进至 106 条，旧原件去向裁决仍待责任人） |
 | 杂项资产 4 项（对账闭合） | `aixcoding/__init__.py`、`src/chrys/aixcoding/__init__.py`、`aixcoding/tests/conftest.py`、`aixcoding/README.md` | 随主体处置 | 外部评审 F-02 对账补漏：两个 `__init__.py` 分别随 R2′（开发资产锚点）与 P1（telemetry 根模块）处置；conftest 随 T1 测试迁移；`README.md` 两边均无明确去向，**待责任人定** |
 
-### E. 将来重构候选（暂不实施；触发再评估）
+### F. 将来重构候选（暂不实施；触发再评估）
 
-> 定位：登记经责任人裁决"暂不做、将来再判断"的重构项——与 C 类"待迁功能"分轴（E 类无旧分支
+> 定位：登记经责任人裁决"暂不做、将来再判断"的重构项——与 B 类"待迁功能"分轴（F 类无旧分支
 > 对应资产，是对现状架构的重构评估）。触发条件满足时先做触发核实与必要性分析呈报，由责任人
 > 裁决后再立项（ADR-0012；触发条件命中不自动开工）。
 
 | 重构项 | 触发再评估条件（先到为准） | 2026-11-03 评估结论（暂不实施的依据） |
 |---|---|---|
-| 定制层公共基础层/服务层提取（tier 地址注册表、共享常量、网络访问封装、通用工具；形态参考 aixcoding-continue `core/aixcoding/{types,network,utils}` 公共层） | ①定制功能增多后出现 **≥2 个真实跨特性共享消费方**（lazy import 接口复用无法覆盖的共享形态）；②**第 3 个 tier 地址消费方**出现（最可能为 telemetry 或版本更新检测 C1 批次）。届时随消费批次 design 一并裁决模块归属与 tier 放置（ADR-0011 适配），或按需独立批次走 §6 管线（涉 ADR-0011 补充则加 ADR） | 新分支 4 特性（auth / diagnostics / catalog / tui）实测无提取对象：地址仅 2 定义点且已有 drift test 防漂移（`aixcoding/tests/catalog/test_catalog_sync.py`）；网络访问 3 调用点语义刻意不同（auth 请求-响应 + `trust_env=False` vs catalog 轮询拉取，错误类型为特性域各归各）；常量零跨特性重复；唯一真实共享点（当前用户身份）已用接口复用解决（catalog `_catalog_user_id()` lazy import auth `stored_user_id`，旧分支 telemetry `current_user_id()` 同模式）。考古证据：旧分支 `src/chrys/aixcoding/` 根模块 5 py 实证为 telemetry 支撑模块长在根上（http / context / git_info 消费方均仅 telemetry 家族），属伪公共层——tier 放置（ADR-0011）为纠偏而非丢失；对比侧 aixcoding-continue 公共层系多 feature 共享密度长出（5 URL × 3 profile × 多 feature），且集中止步于 core 层（vscode / IntelliJ 扩展各持独立地址表、无跨层一致性测试）——"集中"为层内相对集中，边界由跨语言/跨进程结构决定 |
+| 定制层公共基础层/服务层提取（tier 地址注册表、共享常量、网络访问封装、通用工具；形态参考 aixcoding-continue `core/aixcoding/{types,network,utils}` 公共层） | ①定制功能增多后出现 **≥2 个真实跨特性共享消费方**（lazy import 接口复用无法覆盖的共享形态）；②**第 3 个 tier 地址消费方**出现（最可能为 telemetry 或版本更新检测批次）。届时随消费批次 design 一并裁决模块归属与 tier 放置（ADR-0011 适配），或按需独立批次走 §6 管线（涉 ADR-0011 补充则加 ADR） | 新分支 4 特性（auth / diagnostics / catalog / tui）实测无提取对象：地址仅 2 定义点且已有 drift test 防漂移（`aixcoding/tests/catalog/test_catalog_sync.py`）；网络访问 3 调用点语义刻意不同（auth 请求-响应 + `trust_env=False` vs catalog 轮询拉取，错误类型为特性域各归各）；常量零跨特性重复；唯一真实共享点（当前用户身份）已用接口复用解决（catalog `_catalog_user_id()` lazy import auth `stored_user_id`，旧分支 telemetry `current_user_id()` 同模式）。考古证据：旧分支 `src/chrys/aixcoding/` 根模块 5 py 实证为 telemetry 支撑模块长在根上（http / context / git_info 消费方均仅 telemetry 家族），属伪公共层——tier 放置（ADR-0011）为纠偏而非丢失；对比侧 aixcoding-continue 公共层系多 feature 共享密度长出（5 URL × 3 profile × 多 feature），且集中止步于 core 层（vscode / IntelliJ 扩展各持独立地址表、无跨层一致性测试）——"集中"为层内相对集中，边界由跨语言/跨进程结构决定 |
 
 ## 5. 变更记录
 
@@ -285,3 +300,33 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
   离线"零可见"限定为包名不暴露（OFFLINE 更新检查外呼 GitHub 归 C1）；可见点修正为 Python
   运行时 3 处 + 安装脚本 ≥1 处（pip/uv 场景）；C1 只承担更新链内部化、不做包名替换；A1 迁移
   防原样平移（旧 `aixcoding` 命令不再引入、ps1/sh parity 单独裁决、`ICODE_*` 双读兼容）。
+- 2026-11-06：**追上游 v0.34.0**——upstream-merge-v0.34.0 批次（PR #99 合并：502cb8de 主体 +
+  553eceb0 评审留痕，merge 8f853df6），基线 0.33.0→0.34.0（§1 已更新）：冲突 5 处全解
+  （screen.py TYPE_CHECKING 融合 / chrys.mo 重生成 / registry.py C030/C031 融合入锁 /
+  catalog oracle 2628→2705 / rollback C102 融合）+ merge 后 4 处新测试适配 C136-C139
+  （3 函数级 skip + 1 品牌断言）；C030/C031 淘汰候选经对比分析由责任人裁决保留（上游
+  reload 协议无跨线程安全保证，不构成等价命中）；fork-full 34869+1247 全绿、TUI 冒烟
+  通过（责任人人工验证）、macOS CI flake re-run 后双绿；strict 98/135→102/139；
+  C1 复核 0.34.0 下 update_check.py 仍零改动（本日 git log 核实）。
+- 2026-11-06（二）：**internal-installer 对账迁移**——PR #97 合并（merge 28b7d1c7），
+  "内网安装器与发布约定"自 §4 C 类迁入 A 类"已迁入"；真实制品端到端验收缺口 5 项
+  留痕批次 verification（不得称全部验收完成）；"分发身份 `iCode-TUI`"行加注内网安装
+  体系已落地。顺带补记 catalog 域后续增强批次于 A 类 catalog 行（catalog-auth-gating
+  PR #89 / catalog-readonly-coverage PR #92）。
+- 2026-11-06（三）：**guard 对账迁移**——PR #98 合并（merge c238ea05，分支
+  lhc/安全护栏_0.33.2，含 guard-switches 姊妹批次同事交付合成），"安全护栏（guard
+  hooks）"自 §4 C 类迁入 A 类"已迁入"；D 类第 9 份文档行加注手册重建事实（rule-pack/
+  四文档、MANUAL_TESTS 106 条，旧原件去向仍待裁决）；登记终态 105 行/142 marker/
+  13 designs（guard 贡献 C140/C141/C142，含 0.34.0 撞号重编）。
+- 2026-11-07：**C5 分发身份决策（ADR-0021）**——按轻量纯文档路径落盘：B1 沿用
+  上游 `iCode-TUI`，接受 pip/uv/pipx 场景真实包名可见性，禁止品牌性替换命令；C1 仅
+  承担更新链内部化；重开条件=内部 pip/uv、对外发布、品牌合规覆盖分发层或实际同名
+  跨源误升级风险。ADR-0019 已签认，依其头部规则不改正文，由 ADR-0021 回指闭合其预留
+  子决策；`versioning.md` §2 补决策出处。ADR-0021 已于 2026-11-07 责任人签认，本表
+  C5 行已改"已裁决"。
+- 2026-11-07（二）：**§4 分区重排（责任人裁决）**——新增"已裁决维持现状"节并调整
+  顺序为 A 已迁入 / B 待迁功能 / C 殿后已定 / D 已裁决维持现状 / E 跟随处理 /
+  F 将来重构候选；分发身份 `iCode-TUI` 行自待迁节移入 D 类。早于本次重排的 §5
+  记录与已签认批次文档保留旧字母与旧规划编号历史原义；当前 ROADMAP/versioning 的
+  live 引用改为具体事项名或新分区（A 类 mock 行"见 C"、F 类与 B 类分轴表述、
+  `versioning.md` 分发身份出处）。纯结构重排，各条目决策内容不变。
