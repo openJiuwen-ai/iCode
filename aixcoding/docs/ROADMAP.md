@@ -193,6 +193,7 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
 | 重构项 | 触发再评估条件（先到为准） | 2026-11-03 评估结论（暂不实施的依据） |
 |---|---|---|
 | 定制层公共基础层/服务层提取（tier 地址注册表、共享常量、网络访问封装、通用工具；形态参考 aixcoding-continue `core/aixcoding/{types,network,utils}` 公共层） | ①定制功能增多后出现 **≥2 个真实跨特性共享消费方**（lazy import 接口复用无法覆盖的共享形态）；②**第 3 个 tier 地址消费方**出现（最可能为 telemetry 或版本更新检测批次）。届时随消费批次 design 一并裁决模块归属与 tier 放置（ADR-0011 适配），或按需独立批次走 §6 管线（涉 ADR-0011 补充则加 ADR） | 新分支 4 特性（auth / diagnostics / catalog / tui）实测无提取对象：地址仅 2 定义点且已有 drift test 防漂移（`aixcoding/tests/catalog/test_catalog_sync.py`）；网络访问 3 调用点语义刻意不同（auth 请求-响应 + `trust_env=False` vs catalog 轮询拉取，错误类型为特性域各归各）；常量零跨特性重复；唯一真实共享点（当前用户身份）已用接口复用解决（catalog `_catalog_user_id()` lazy import auth `stored_user_id`，旧分支 telemetry `current_user_id()` 同模式）。考古证据：旧分支 `src/chrys/aixcoding/` 根模块 5 py 实证为 telemetry 支撑模块长在根上（http / context / git_info 消费方均仅 telemetry 家族），属伪公共层——tier 放置（ADR-0011）为纠偏而非丢失；对比侧 aixcoding-continue 公共层系多 feature 共享密度长出（5 URL × 3 profile × 多 feature），且集中止步于 core 层（vscode / IntelliJ 扩展各持独立地址表、无跨层一致性测试）——"集中"为层内相对集中，边界由跨语言/跨进程结构决定 |
+| 安全护栏规则包外置分发（`rules.json` 等规则/数据文件与二进制产物解耦——现随 wheel/PyApp 打包于 `src/chrys/kernel/aixcoding/guard/pack/`，系快速实现的临时措施，责任人 2026-11-07 认定；重构方向：规则文件作为独立配置/数据文件分发，规则更新不依赖二进制重建发版） | ①出现不随版本发布的规则更新需求（如安全事件需即时下发新规则）；②规则维护方与二进制发布方职责分离需求明确（运维/安全侧直接维护规则文件）；③分发体系（ADR-0020 内网镜像/安装器）出现被复用的独立数据文件下发通道 | 2026-11-07 登记：现状可用——运行时读部署副本 + `AIXCODING_GUARD_RULES` env 覆盖逃生门在位；规则演进走仓库源文件随版本发布（批次 `rule-pack/SWITCHES.md` 已载双通道口径）。立项须裁决的开放问题：外置分发机理（挂 ADR-0020 体系或独立机制）、外置规则文件缺失/损坏时的 fail-closed 语义、`guard_state.json` 开关状态与外置规则的归属关系、规则 schema 与 `_guard_core.py` 引擎版本配对兼容 |
 
 ## 5. 变更记录
 
@@ -330,3 +331,4 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
   记录与已签认批次文档保留旧字母与旧规划编号历史原义；当前 ROADMAP/versioning 的
   live 引用改为具体事项名或新分区（A 类 mock 行"见 C"、F 类与 B 类分轴表述、
   `versioning.md` 分发身份出处）。纯结构重排，各条目决策内容不变。
+- 2026-11-07（三）：**§4 F 类新增"安全护栏规则包外置分发"重构候选**——责任人指示登记：guard 批次（PR #98）将规则包随 wheel/PyApp 打包系快速实现的临时措施，`rules.json` 作为配置/数据文件应独立分发（规则更新不依赖二进制重建发版）；现状逃生门在位（部署副本 + `AIXCODING_GUARD_RULES` env 覆盖），规则演进暂走源文件随版本发布（`rule-pack/SWITCHES.md` 已载双通道口径）；触发再评估条件与立项须裁决的开放问题（分发挂靠 ADR-0020 或独立机制、外置文件缺失/损坏的 fail-closed 语义、`guard_state.json` 归属、规则 schema 与引擎版本配对）见 F 类行。
