@@ -21,6 +21,7 @@ Two rules shape the whole module:
 
 from __future__ import annotations
 
+import json
 import logging
 import platform as host_platform
 import re
@@ -53,19 +54,37 @@ CREDENTIAL_KEY_SEGMENTS: Final = frozenset(
         "authorization",
         "bearer",
         "private",
+        "cookie",
     }
 )
 """Key segments whose values are credentials; a hit redacts the whole subtree."""
+
+CREDENTIAL_KEYS_EXPLICIT: Final = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "api-key",
+        "access_token",
+        "refresh_token",
+        "secret_key",
+        "private_key",
+    }
+)
+"""Compact spellings the segment rule cannot see (``apikey`` has no ``key`` segment)."""
 
 CONNECTION_KEY_SEGMENTS: Final = frozenset(
     {
         "address",
         "args",
+        "arguments",
+        "baseurl",
         "cmd",
         "command",
         "env",
         "endpoint",
+        "extraheaders",
         "headers",
+        "httpheaders",
         "proxy",
         "uri",
         "url",
@@ -73,12 +92,23 @@ CONNECTION_KEY_SEGMENTS: Final = frozenset(
 )
 """Key segments that name a connection: command lines, endpoints, environments.
 
-``base_url`` hits through its ``url`` segment; a key that is only ``base``
-names nothing and stays readable.
+``base_url`` and ``http_headers`` hit through their ``url``/``headers``
+segments; the compound single-token spellings (``baseurl``, ``httpheaders``,
+``extraheaders``, ``arguments``) are listed because they carry no boundary.
 """
 
 SENSITIVE_KEY_SEGMENTS: Final = CREDENTIAL_KEY_SEGMENTS | CONNECTION_KEY_SEGMENTS
 """Every segment that makes a key sensitive."""
+
+SENSITIVE_KEY_SUFFIXES: Final = CREDENTIAL_KEY_SEGMENTS | CREDENTIAL_KEYS_EXPLICIT
+"""Suffixes that make a hyphen/underscore spelling sensitive (``x-api-key``)."""
+
+JSON_STRING_KEYS: Final = frozenset({"chat_options", "chatoptions"})
+"""Keys whose string value holds nested JSON (the model file's ``chat_options``).
+
+The keys inside that string are not payload keys, so name matching cannot see
+them: the value is parsed, redacted by the same rules and re-serialized.
+"""
 
 _KEY_SEGMENT_RE: Final = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 """Splits a key at camelCase and separator boundaries: ``base_url`` → base, url."""
@@ -93,7 +123,8 @@ _ARCHITECTURES: Final = {
     "x86": "ia32",
 }
 
-_MODEL_IDENTITY_FIELDS: Final = frozenset({"name", "id", "provider", "model_id"})
+_MODEL_IDENTITY_FIELDS: Final = frozenset({"name", "id"})
+"""The two fields that name the model profile; everything else is a parameter."""
 
 _PROFILE_EXTENSIONS: Final = (".yaml", ".yml")
 
@@ -158,6 +189,7 @@ class AgentEnvironment:
     skills: tuple[SkillFact, ...] = ()
     skills_known: bool = False
     mcp_servers: tuple[dict[str, str], ...] = ()
+    mcp_declared: bool = False
     hooks_count: int = 0
     hook_events: tuple[str, ...] = ()
     hooks_known: bool = False
@@ -178,11 +210,19 @@ def _key_segments(key: str) -> set[str]:
 def is_sensitive_key(key: str) -> bool:
     """Whether *key* names a credential or a connection fact.
 
-    Segment-exact matching, so ``apiKey`` and ``api_key`` hit while
-    ``maxTokens`` — ``max`` plus ``tokens`` — keeps its value: modelling
-    parameters are configuration, not secrets.
+    Three rules, in this order, exactly as the authority spells them: a compact
+    spelling that has no usable boundary (``apikey``), a segment hit — so
+    ``apiKey`` and ``api_key`` hit while ``maxTokens`` — ``max`` plus
+    ``tokens`` — keeps its value, because modelling parameters are
+    configuration, not secrets — and a ``_``/``-`` suffix spelling
+    (``x-api-key``).
     """
-    return bool(_key_segments(key) & SENSITIVE_KEY_SEGMENTS)
+    normalized = key.lower()
+    if normalized in CREDENTIAL_KEYS_EXPLICIT:
+        return True
+    if _key_segments(key) & SENSITIVE_KEY_SEGMENTS:
+        return True
+    return any(normalized.endswith((f"_{suffix}", f"-{suffix}")) for suffix in SENSITIVE_KEY_SUFFIXES)
 
 
 def redact_value(value: object) -> tuple[object, list[str]]:
@@ -191,6 +231,8 @@ def redact_value(value: object) -> tuple[object, list[str]]:
     Returns the redacted copy and the key names it replaced. Mappings keep their
     keys (so "the key is redacted" stays distinguishable from "the key is
     absent"), lists are walked item by item, and anything else passes through.
+    A ``chat_options``-style string is parsed and redacted as the structure it
+    is; a value that does not parse becomes the placeholder itself.
     """
     redacted: list[str] = []
     return _redact(value, redacted), redacted
@@ -203,12 +245,30 @@ def _redact(value: object, redacted: list[str]) -> object:
             if isinstance(key, str) and is_sensitive_key(key):
                 redacted.append(key)
                 result[key] = REDACTED_PLACEHOLDER
+            elif isinstance(key, str) and isinstance(item, str) and key.lower() in JSON_STRING_KEYS:
+                result[key] = _redact_json_string(key, item, redacted)
             else:
                 result[key] = _redact(item, redacted)
         return result
     if isinstance(value, list):
         return [_redact(item, redacted) for item in value]
     return value
+
+
+def _redact_json_string(key: str, text: str, redacted: list[str]) -> str:
+    """Redact a nested JSON document carried as a string, then re-serialize it.
+
+    Shipping it unparsed would mean treating "there might be credentials in a
+    structure nobody looked at" as "there are none".
+    """
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if not isinstance(parsed, (dict, list)):
+        redacted.append(key)
+        return REDACTED_PLACEHOLDER
+    return canonical_json_bytes(_redact(parsed, redacted)).decode("utf-8")
 
 
 def _yaml_files(directory: Path) -> list[Path]:
@@ -283,50 +343,64 @@ def _builtin_profiles_dir() -> Path:
 
 
 def mcp_server_facts(profile_document: dict[str, object] | None) -> tuple[dict[str, str], ...]:
-    """``{name, transport, connectionDigest}`` per profile ``tools.mcp[]`` entry.
+    """``{name, transport?, connectionDigest?}`` per profile ``tools.mcp[]`` entry.
 
     The effective source is the profile document the runtime loaded. Digests are
     computed from the unredacted connection facts — stdio takes
     ``sha256(canonical JSON([command, ...args]))``, http takes
     ``sha256(canonical JSON([url]))`` — so the plaintext never enters the
-    payload, where redaction could only hide it.
+    payload, where redaction could only hide it. A field the entry does not
+    name is omitted rather than filled in, exactly as the reference producer
+    emits it.
     """
-    if not profile_document:
-        return ()
-    tools = profile_document.get("tools")
-    if not isinstance(tools, dict):
-        return ()
-    entries = tools.get("mcp")
-    if not isinstance(entries, list):
+    entries = profile_mcp_entries(profile_document)
+    if not entries:
         return ()
     servers: list[dict[str, str]] = []
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         name = entry.get("name")
-        transport = entry.get("transport")
-        if not isinstance(name, str) or not name or not isinstance(transport, str):
+        if not isinstance(name, str) or not name:
             continue
-        servers.append(
-            {
-                "name": name,
-                "transport": transport,
-                "connectionDigest": _mcp_connection_digest(entry, transport),
-            }
-        )
+        server = {"name": name}
+        transport = entry.get("transport")
+        if not isinstance(transport, str):
+            transport = entry.get("type")
+        if isinstance(transport, str) and transport:
+            server["transport"] = transport
+        digest = _mcp_connection_digest(entry)
+        if digest:
+            server["connectionDigest"] = digest
+        servers.append(server)
     return tuple(servers)
 
 
-def _mcp_connection_digest(entry: dict[str, object], transport: str) -> str:
-    if transport == "http":
-        url = entry.get("url")
-        return sha256_hex(canonical_json_bytes([url if isinstance(url, str) else ""]))
+def profile_mcp_entries(profile_document: dict[str, object] | None) -> list[object] | None:
+    """The profile's declared ``tools.mcp`` list, or ``None`` when it declares none.
+
+    ``None`` is the "nothing was declared" fact the ``sections.mcp`` state
+    reports as absent; an empty list is a profile that declares no server.
+    """
+    if not profile_document:
+        return None
+    tools = profile_document.get("tools")
+    if not isinstance(tools, dict):
+        return None
+    entries = tools.get("mcp")
+    return entries if isinstance(entries, list) else None
+
+
+def _mcp_connection_digest(entry: dict[str, object]) -> str:
     command = entry.get("command")
-    raw_args = entry.get("args")
-    args = [item for item in raw_args if isinstance(item, str)] if isinstance(raw_args, list) else []
-    return sha256_hex(
-        canonical_json_bytes([command if isinstance(command, str) else "", *args]),
-    )
+    if not isinstance(command, str) or not command:
+        command = entry.get("cmd")
+    if isinstance(command, str) and command:
+        raw_args = entry.get("args")
+        args = [item for item in raw_args if isinstance(item, str)] if isinstance(raw_args, list) else []
+        return sha256_hex(canonical_json_bytes([command, *args]))
+    url = entry.get("url") if isinstance(entry.get("url"), str) else entry.get("uri")
+    return sha256_hex(canonical_json_bytes([url])) if isinstance(url, str) and url else ""
 
 
 def model_profile_document(model_profile_id: str, config_dir: Path) -> dict[str, object] | None:
@@ -417,6 +491,8 @@ def hooks_settings_digest(sources: Sequence[tuple[str, str]]) -> str:
         explicit.update(
             {name: value for name, value in asdict(loaded.settings).items() if name in loaded.settings_overrides}
         )
+    if not explicit:
+        return ""
     redacted, _keys = redact_value(explicit)
     return sha256_hex(canonical_json_bytes(redacted))
 
@@ -435,8 +511,12 @@ def collect_agent_environment(
     """
     profile = load_profile(profile_name, config_dir)
     model_document = model_profile_document(facts.model_profile_id if facts is not None else "", config_dir)
+    declared_mcp = profile_mcp_entries(profile.document if profile is not None else None)
+    # The profile reports the name its document declares, so a profile file whose
+    # ``name:`` differs from its stem still labels the same way on both producers.
+    document_name = profile.document.get("name") if profile is not None else None
     return AgentEnvironment(
-        profile_name=profile_name,
+        profile_name=document_name if isinstance(document_name, str) and document_name else profile_name,
         profile_yaml=profile.body if profile is not None else "",
         profile_found=profile is not None,
         profile_redacted_keys=profile.redacted_keys if profile is not None else (),
@@ -448,6 +528,7 @@ def collect_agent_environment(
         skills=skill_facts(facts.skills, config_dir) if facts is not None else (),
         skills_known=facts is not None,
         mcp_servers=mcp_server_facts(profile.document if profile is not None else None),
+        mcp_declared=declared_mcp is not None,
         hooks_count=facts.hooks_count if facts is not None else 0,
         hook_events=tuple(facts.hook_events) if facts is not None else (),
         hooks_known=facts is not None,
@@ -481,17 +562,21 @@ def agent_environment_payload(environment: AgentEnvironment, *, app_version: str
         ],
         "mcp": {"servers": [dict(server) for server in environment.mcp_servers]},
         "hooks": {"count": environment.hooks_count, "events": sorted(set(environment.hook_events))},
-        "settingsDigest": environment.settings_digest,
         "sections": {
             "profile": "captured" if environment.profile_found else "absent",
             "model": "captured" if environment.model_found else "absent",
             "skills": "captured" if environment.skills_known else "absent",
-            "mcp": "captured" if environment.profile_found else "absent",
+            "mcp": "captured" if environment.mcp_declared else "absent",
             "hooks": "captured" if environment.hooks_known else "absent",
         },
         "redacted": redacted_keys,
         "truncated": False,
     }
+    # No explicit hook settings → no digest key at all: "the document sets nothing"
+    # and "the digest of an empty section" are different facts, and the reference
+    # producer omits the field rather than digesting ``{}``.
+    if environment.settings_digest:
+        document["settingsDigest"] = environment.settings_digest
     payload = canonical_json_bytes(document)
     if len(payload) <= MAX_PAYLOAD_BYTES:
         return payload, redacted_keys

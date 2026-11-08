@@ -21,6 +21,7 @@ from chrys.service.reporting.agent_config import (
     mcp_server_facts,
     model_profile_document,
     platform_string,
+    profile_mcp_entries,
     redact_value,
 )
 
@@ -104,6 +105,57 @@ def test_redaction_replaces_values_with_their_subtrees_and_names_the_keys() -> N
     }
     assert sorted(keys) == ["apiKey", "api_key", "headers", "url"]
     assert document["api_key"] == "sk-live"  # the source is never mutated
+
+
+def test_redaction_matches_the_shared_rule_set_for_compact_and_nested_spellings() -> None:
+    """The three rules the authority spells: compact names, segments, suffixes.
+
+    Same rule set as the reference producer, so the same configuration redacts
+    to the same shape on both: a compact ``apikey`` has no ``key`` segment, a
+    ``cookie`` header is a credential, and a nested JSON string is parsed
+    instead of being shipped unread.
+    """
+    document = {
+        "apikey": "sk-compact",
+        "x-api-key": "sk-suffix",
+        "cookie": "session=live",
+        "remote_address": "10.0.0.7",
+        "arguments": ["--token", "live"],
+        "chat_options": json.dumps(
+            {"temperature": 0.2, "extra_headers": {"Authorization": "Bearer live"}, "metadata": {"team": "a"}}
+        ),
+        "mirror": {"model": {"max_output_tokens": 4096}},
+        "unparsable": "not json",
+        "chatoptions": "{broken",
+    }
+
+    redacted, keys = redact_value(document)
+
+    assert redacted["apikey"] == "<redacted>"
+    assert redacted["x-api-key"] == "<redacted>"
+    assert redacted["cookie"] == "<redacted>"
+    assert redacted["remote_address"] == "<redacted>"
+    assert redacted["arguments"] == "<redacted>"
+    # The nested document keeps its modelling parameters and redacts the rest.
+    assert json.loads(redacted["chat_options"]) == {
+        "temperature": 0.2,
+        "extra_headers": "<redacted>",
+        "metadata": {"team": "a"},
+    }
+    assert redacted["mirror"] == {"model": {"max_output_tokens": 4096}}
+    assert redacted["unparsable"] == "not json"
+    # A declared nested document that does not parse is the placeholder itself:
+    # shipping unread text would claim there is nothing in it.
+    assert redacted["chatoptions"] == "<redacted>"
+    assert sorted(set(keys)) == [
+        "apikey",
+        "arguments",
+        "chatoptions",
+        "cookie",
+        "extra_headers",
+        "remote_address",
+        "x-api-key",
+    ]
 
 
 def test_the_same_profile_written_two_ways_yields_the_same_payload(tmp_path: Path) -> None:
@@ -224,7 +276,9 @@ def test_the_real_layout_reaches_the_payload_without_plaintext(tmp_path: Path) -
     assert document["mcp"]["servers"][0]["connectionDigest"] == stdio_digest
     assert document["mcp"]["servers"][1]["connectionDigest"] == http_digest
 
-    # The model section carries the identity and the non-identity parameters.
+    # The model section carries the identity and every non-identity field: only
+    # ``name``/``id`` are identity, so the provider/model identifiers the profile
+    # repeats stay in ``params`` — the same division the reference producer makes.
     assert document["model"]["profileId"] == "11111111-1111-1111-1111-111111111111"
     assert document["model"]["provider"] == "anthropic"
     assert document["model"]["modelId"] == "claude"
@@ -232,6 +286,8 @@ def test_the_real_layout_reaches_the_payload_without_plaintext(tmp_path: Path) -
         "api_key": "<redacted>",
         "base_url": "<redacted>",
         "max_output_tokens": 8192,
+        "model_id": "claude",
+        "provider": "anthropic",
         "thinking": "auto",
     }
 
@@ -326,6 +382,8 @@ def test_mcp_digests_cover_stdio_commands_and_http_urls() -> None:
                 {"name": "stdio", "transport": "stdio", "command": "npx", "args": ["-y", "server"]},
                 {"name": "http", "transport": "http", "url": "https://example.test/mcp"},
                 {"name": "no-transport", "command": "x"},
+                {"name": "alias", "type": "stdio", "cmd": "uvx", "args": ["srv"], "uri": "https://ignored"},
+                {"command": "nameless"},
                 "not-a-mapping",
             ]
         }
@@ -333,11 +391,23 @@ def test_mcp_digests_cover_stdio_commands_and_http_urls() -> None:
 
     servers = mcp_server_facts(document)
 
-    assert [server["name"] for server in servers] == ["stdio", "http"]
+    # A named server without a transport stays in the list: the field is omitted,
+    # not the server (the reference producer includes it the same way).
+    assert [server["name"] for server in servers] == ["stdio", "http", "no-transport", "alias"]
     assert servers[0]["connectionDigest"] == sha256_hex(canonical_json_bytes(["npx", "-y", "server"]))
     assert servers[1]["connectionDigest"] == sha256_hex(canonical_json_bytes(["https://example.test/mcp"]))
+    assert servers[2] == {"name": "no-transport", "connectionDigest": sha256_hex(canonical_json_bytes(["x"]))}
+    # ``cmd``/``type`` are the same facts under their aliases.
+    assert servers[3] == {
+        "name": "alias",
+        "transport": "stdio",
+        "connectionDigest": sha256_hex(canonical_json_bytes(["uvx", "srv"])),
+    }
     assert mcp_server_facts(None) == ()
     assert mcp_server_facts({}) == ()
+    # ``sections.mcp`` distinguishes "declares none" from "declares an empty list".
+    assert profile_mcp_entries({"tools": {"mcp": []}}) == []
+    assert profile_mcp_entries({"tools": {}}) is None
 
 
 def test_skill_sources_are_classified_and_digested_from_their_directories(
