@@ -111,6 +111,14 @@ class TestFormatTokens:
         assert format_tokens(2_500_000) == "2.5m"
         assert format_tokens(5_000_000_000) == "5b"
 
+    def test_unit_changes_before_a_count_reads_1000k(self) -> None:
+        assert format_tokens(999_949) == "999.9k"
+        assert format_tokens(999_950) == "1m"
+        assert format_tokens(999_999) == "1m"
+        assert format_tokens(999_949_999) == "999.9m"
+        assert format_tokens(999_950_000) == "1b"
+        assert format_tokens(999_999_999) == "1b"
+
 
 class TestTimeAgo:
     def test_just_now(self) -> None:
