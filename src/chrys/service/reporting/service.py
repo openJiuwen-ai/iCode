@@ -62,7 +62,12 @@ from chrys.foundation.reporting.frames import (
     sha256_hex,
 )
 from chrys.foundation.reporting.manifest import ManifestReconciler, ManifestRequest
-from chrys.foundation.reporting.pump import HttpxTransport, ReportPump, ReportTransport
+from chrys.foundation.reporting.pump import (
+    STOP_DRAIN_SECONDS,
+    HttpxTransport,
+    ReportPump,
+    ReportTransport,
+)
 from chrys.foundation.reporting.wal import DurableWAL
 from chrys.foundation.util.once_close import OnceClose
 from chrys.foundation.util.session_ids import session_short_id
@@ -177,6 +182,7 @@ class ReportingService:
         self._closer: OnceClose | None = None
         self._started = False
         self._closed = False
+        self._stopping = False
         self._transport = transport or HttpxTransport()
         self._wal: DurableWAL | None = None
         self._pump: ReportPump | None = None
@@ -393,11 +399,11 @@ class ReportingService:
 
     async def _run(self) -> None:
         """Wake on any lifecycle change, or once per poll interval, and collect."""
-        while True:
+        while not self._stopping:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), timeout=self._config.poll_interval_seconds)
             self._wake.clear()
-            while True:
+            while not self._stopping:
                 requests = self._drain()
                 deferred = self._take_deferred_sessions()
                 if not requests and not deferred:
@@ -714,12 +720,28 @@ class ReportingService:
 
     async def _close_once(self) -> None:
         self._closed = True
+        self._stopping = True
         task = self._task
         self._task = None
         if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+            # A round in flight runs in a worker thread, where a cancel cannot
+            # reach it: the driver is woken to finish that round and leave, so
+            # its frames are in the log before the last round below runs.
+            self._wake.set()
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError, Exception):
+                await asyncio.wait_for(task, timeout=STOP_DRAIN_SECONDS)
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+        # One last round for whatever the final save re-armed: the pump's drain
+        # below sends it, so closing the process does not leave it for the next
+        # start.
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            requests = self._drain()
+            deferred = self._take_deferred_sessions()
+            if requests or deferred:
+                await asyncio.to_thread(self._collect, requests, deferred)
         subscriptions, self._subscriptions = self._subscriptions, []
         for subscribed_bus, event_type, handler in subscriptions:
             with contextlib.suppress(Exception):

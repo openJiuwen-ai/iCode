@@ -344,6 +344,45 @@ def _meta_frames(reporting: ReportingService) -> list[Frame]:
     return [frame for frame in _queued(reporting) if frame.header.kind == KIND_SESSION_META]
 
 
+def _frames_after_close(directory: Path) -> list[Frame]:
+    """Read the queue a closed service left behind."""
+    wal = DurableWAL(directory, queue_bytes_max=8 << 20, diagnostics=ReportDiagnostics())
+    wal.open()
+    try:
+        batch = wal.next_batch(max_bytes=8 << 20)
+        return [] if batch is None else decode_frames(wal.read(batch))
+    finally:
+        wal.close()
+
+
+async def test_closing_collects_the_round_the_final_save_queued(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last save's frames are in the log, so the shutdown drain can send them."""
+    from chrys.service.reporting import service as service_module
+
+    sessions = tmp_path / "sessions"
+    monkeypatch.setattr(service_module, "resolve_sessions_dir", lambda **_kwargs: sessions)
+    folder = sessions / session_short_id(SESSION_ID)
+    (folder / "trajectory").mkdir(parents=True)
+    (folder / "trajectory" / "events.jsonl").write_bytes(_line(1))
+    (folder / "session.json").write_bytes(b'{"schema_version":1}')
+    config = _config(tmp_path)
+    bus = EventBus()
+    reporting = ReportingService(bus, config)
+    await reporting.start()
+    await bus.publish(SessionReady(session_id=SESSION_ID, primary_cwd=""))
+    reporting.offer_meta(ReportMeta(session_id=SESSION_ID, title="Final"))
+
+    # Save and close without letting the driver round run in between: this is
+    # the last turn of a `icode run` process.
+    await bus.publish(SessionSaved(session_id=SESSION_ID))
+    await reporting.close()
+
+    kinds = {frame.header.kind for frame in _frames_after_close(config.directory)}
+    assert {KIND_TRAJECTORY_LINES, KIND_SNAPSHOT_MANIFEST, KIND_SESSION_META} <= kinds
+
+
 def _snapshot_hash(reporting: ReportingService) -> str:
     """The content hash of the newest snapshot manifest this queue holds."""
     manifests = [frame for frame in _queued(reporting) if frame.header.kind == KIND_SNAPSHOT_MANIFEST]
