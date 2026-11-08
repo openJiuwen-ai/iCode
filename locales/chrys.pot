@@ -9280,10 +9280,12 @@ msgstr ""
 msgid "tui.model_config.relay"
 msgstr ""
 
-#. English: Marks this profile as a third-party relay. Before saving, select an
-#. independent non-relay model under Settings → Models & Agents → Model roles →
-#. Approval judge model.
-#. chrys-meta={"fingerprint":"fbc245c13b761f6221a256b0c310c80462d8157005142d974711edcefb3f08ae","multiline":false,"placeholders":[]}
+#. English: Marks this profile as a third-party relay and strengthens review in
+#. Auto (automatic) mode. Before saving, select an independent non-relay model
+#. under Settings → Models & Agents → Model roles → Approval judge model. When
+#. configuring the approval judge, prefer the model provider's official
+#. channel.
+#. chrys-meta={"fingerprint":"8113878c48b499e3ebd85b9f970a4d956202746e357a20ca87da3e2c1150e14f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/models/screen.py
 msgid "tui.model_config.relay_hint"
 msgstr ""

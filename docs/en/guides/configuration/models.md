@@ -121,6 +121,8 @@ To mark a profile as a relay endpoint, turn on **Relay endpoint** in the "Model 
 2. Press **F10** to open **Settings**, select the **Models & Agents** tab, and set **Approval judge model** in the **Model roles** section to that profile. "Use active model" is not enough while a relay profile exists.
 3. Save the relay profile. The judge must be served by a different host than the relay; two profiles on the same relay address do not count as independent, whatever their provider or model.
 
+When configuring the approval judge, prefer the model provider's official channel.
+
 The same rule guards cloning a relay profile, deleting the profile that serves as the approval judge, and changing the **Approval judge model** setting: iCode explains what is missing and keeps your unsaved changes.
 
 While a relay profile is in use, automatic approval works differently: shell commands, file reads and writes, web, skill, MCP, extension and sub-agent calls are always sent to the independent approval judge under a strict policy, no matter what the agent's approval rules say, whether a command looks read-only, or whether you approved a similar call before. If the approval judge is missing or not independent, or its call fails or times out, the call waits for you instead of running automatically. **Bypass** mode still runs everything without review, and the stricter review cannot take back anything a relay has already received. Once a session has used a relay profile, the stricter review stays on for the rest of that session, even after you switch to a direct model. A sub-agent whose own model profile is a relay gets the strict review for its tool calls too, even when the main model connects directly.
