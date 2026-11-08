@@ -176,7 +176,8 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
 | `SessionDeleted`（`types.py:1601`） | 解绑；WAL 内已入队单元**不撤回**（删除 ≠ 撤回，与 teams 一致） |
 
 - **一个进程一个 runtime、多个 bus**：`ChrysSessionHost`（ACP 每会话一个）各自持有独立 `EventBus`，启动时把新 bus **附加**到已运行的 reporting runtime 上（`attach`）；host 关闭时分离（`detach`），最后一个 bus 分离时 runtime 关闭（pump 走 `foundation/util/once_close.py` 的 `OnceClose` + `finish_close`，排空上限 5 s，含一次在途请求的超时；超时后放弃未发送单元但**保留 WAL**，下次启动续传）。没有它，ACP 第二个会话起的事件永远无人观察。
-- 进程关闭：同上；TUI 在 unmount 时整体 `stop_reporting`，headless/ACP 由 atexit 兜底（同样有界排空）。
+- 进程关闭：同上；TUI 在 unmount 时整体 `stop_reporting`，headless/ACP 由 atexit 兜底（同样有界排空）。关闭顺序固定：先让采集循环**观测到停止请求**（不 cancel 在途轮——采集跑在 worker 线程里，事件循环侧取消只会丢掉这一轮已采集的结果），再跑**最后一轮采集**（最后一次保存与收尾单元在 pump 停下之前进 WAL，而不是留到下次启动才发），最后才 `pump.stop()` 做有界排空（`STOP_DRAIN_SECONDS` = 5 s，含一次在途请求）；排空不掉的单元留在 WAL，下次启动续传。
+- 退出期写入的轨迹尾部（turn 收尾、hook、`trajectory.coverage.ended`、`trajectory.runtime.finished`）在最后一次采集之后才落盘，本进程**不发送**：游标停在最后一个已发序列，下次打开该会话时从游标继续上报。与"启动不遍历会话目录"（§5.1 首条）一致：数据不丢，只是延后。
 
 ### 5.2 TrajectoryTailer
 
@@ -207,6 +208,7 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
 
 - 该调用放在 `SessionSaved` 发布**之前**、且整体包在 `try/except Exception` 中，异常只计数不上抛；
 - 传入的是基元与不可变对象，不传引擎/存储/会话对象；
+- `unit_id` 用**该会话当前快照的 `content_hash`**（`meta:<content_hash>`），不是 meta 载荷自身的哈希：服务端用这个 scope 命中 `object_registry` 里的快照对象、写 `sessions.snapshot_sha256`，并据此判定"事件流衔接该归档"的关联证据（服务端文档 §3.4.4 / §3.4.5）。本轮还没有可用快照就不发，等下一次保存；
 - `report.enabled` 为假时该调用是空函数（内联 return），零成本。
 
 ### 5.4 WorkspaceCapture（v1，默认开）
@@ -220,7 +222,7 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
   - `git rev-parse HEAD`、`git status --porcelain=v2 -z`、`git diff --cached --raw -z`、`git diff --raw -z`、`git ls-files --others --exclude-standard -z`、`cat-file --batch`（仅脏文件）；
   - **逐文件读取**：`stat → read → stat` 比对，期间被改则重读一次，仍不稳定置 `raced=true`（沿用 teams 的 `raced` 语义），供下游判定该条目是否可信；
   - **忽略文件清单**：`git ls-files --others --ignored --exclude-standard --directory -z`，只取路径、目录折叠、≤200 条，超出置 `truncated`；正文永不采集；
-  - 产出 `workspace.manifest`（三段块 `staged{base}/worktree{base}/untracked`，每项 `path/status/mode/content{offset,length,sha256}`；offset 按 manifest 段序编号）+ 每个变化文件一个 `workspace.file` 流。**不产出整块容器**：服务端按 manifest 拼装（§4.2 说明）。
+  - 产出 `workspace.manifest`（`repository{identity, head{sha,treeSha,branch,detached}, remote{kind}}`、`staged{base,entries[]}` / `worktree{base,entries[]}` / `untracked{entries[]}`（每项 `path/status/mode/content{offset,length,sha256}`）、`omitted[]`、`ignored{count,truncated,entries[]}`、`capture{startedAt,completedAt,durationMs,complete}`；`content` 的 offset 按 staged → worktree → untracked 的段序编号）+ 每个变化文件一个 `workspace.file` 流。**不产出整块容器**：服务端按 manifest 拼装（§4.2 说明）。顶层字段名与段结构须与服务端 ingest 逐字一致——多一层包装（如把三段塞进 `sections`）或改名（如 `headSha`）会被判 `schema_invalid`。
 - 限额与降级（沿用 teams 常量 + 本设计新增墙钟）：
   - 单文件 ≤ 4 MiB（超限记 `omitted(size-cap)`）、单仓库 ≤ 32 MiB（`total-cap`，`complete=false`）、每段 ≤ 10000 条（`entry-cap`）；
   - 单次采集墙钟 ≤ 10 s，超时 → 放弃本次并记 `remoteKind=timeout`（`complete=false`）；

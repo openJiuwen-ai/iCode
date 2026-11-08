@@ -173,6 +173,7 @@ iCode 客户端（iCode 进程内，report/1.0）
 
 - 键：`t/<tenant>/o/<sha256[0:2]>/<sha256>`；对象不可变、内容去重。
 - 在范围内对象：`session.json` 快照、快照分块（内容寻址，跨快照与跨会话去重）、事件窗口 payload、IGWS 工作区镜像。
+- **ETag 落列**：每次写对象都把存储返回的 ETag 一并写进该单元的锚点列——`object_registry.etag`（快照分块、整份快照、工作区文件、工作区容器、事件窗口、`agent.env`）、`event_batches.payload_etag`、`workspace_states.body_etag`。本地存储实现给出内容摘要（md5 十六进制），OBS 取单段上传响应的 `ETag` 并去掉引号；存储没有返回 ETag 时该列留空，不伪造。用途：下游核对"库内锚点 ↔ 对象"是否一致，不必重新下载对象。
 - 生命周期：**必须**配置保留策略（见 §6.3），不得按"永不删除"部署生产环境。
 
 ### 4.2 PostgreSQL（teams schema v9 在范围内表 + v10 两列，列级一致）
