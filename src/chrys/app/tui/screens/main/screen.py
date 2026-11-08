@@ -588,6 +588,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             handle_agent_content=self._events.on_agent_content,
             handle_error=self._events.on_error,
             handle_turn_event=self._events.apply_turn_event,
+            handle_answer_withdrawn=self._events.on_answer_withdrawn,
             set_agent_running=self._set_agent_running,
             set_has_messages=self._set_has_messages,
             clear_workspace_marker=self._clear_workspace_marker_for_user_message,

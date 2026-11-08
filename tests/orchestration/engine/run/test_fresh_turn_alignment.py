@@ -103,11 +103,17 @@ class _EndingClient(MockChatClient):
 
 
 class _RepeatedNoteClient(MockChatClient):
-    """The first turn shows a partial answer and fails; the next *refused* calls fail before output."""
+    """The first turn answers a call, then shows a partial answer and fails; the next *refused* calls fail before output.
+
+    The answered call is the turn's work: the first note drops the partial answer, as a Continue does.
+    """
 
     def __init__(self, refused: int) -> None:
         super().__init__(
-            [MockResponse(text="partial answer", chunk_delay=0)]
+            [
+                MockResponse(tool_calls=[("missing_tool", "work", {})]),
+                MockResponse(text="partial answer", chunk_delay=0),
+            ]
             + [MockResponse(text="unused") for _ in range(refused)]
             + [MockResponse(text="next", chunk_delay=0)]
         )
@@ -117,11 +123,11 @@ class _RepeatedNoteClient(MockChatClient):
         self, resp: MockResponse, model_id: str, finish_reason: FinishReasonLiteral | FinishReason
     ) -> AsyncIterable[ChatResponseUpdate]:
         call = self.call_count
-        if 1 < call <= 1 + self.refused:
+        if 2 < call <= 2 + self.refused:
             raise _ProviderRefusal("the call carrying the note fails before output")
         async for update in super()._stream_updates(resp, model_id, finish_reason):
             yield update
-        if call == 1:
+        if call == 2:
             raise _ProviderRefusal("the first turn fails after its answer")
 
 
@@ -192,7 +198,8 @@ async def test_fresh_prompt_and_rollback_share_one_turn_count(
         await engine.on_session_restore(SessionRestore(session_id=sid))
     await _ask(engine, "fresh input")
 
-    retained = ending in {"answer", "guidance_failed", "file", "failed_answer"}
+    # The guidance drops the answer the stopped turn showed before its call fails: no work is left.
+    retained = ending in {"answer", "file", "failed_answer"}
     expected_count = 3 if retained else 2
     state = engine.current.require_loaded().bindings.backend.history_state
     assert state["turn_counter"] == engine.session.turn_number == expected_count
@@ -296,7 +303,7 @@ async def test_guidance_sent_twice_stays_two_items_the_next_prompt_removes(
     assert cleanup.removed_item_ids == tuple(announced)
     state = engine.current.require_loaded().bindings.backend.history_state
     assert [m.text for m in state["messages"] if m.role == "user"] == ["original", "fresh input"]
-    assert client.call_count == (5 if refused else 2)
+    assert client.call_count == (6 if refused else 3)
 
 
 async def test_a_refused_retry_keeps_guidance_worded_like_its_opener_as_a_note_of_its_own(
@@ -329,7 +336,7 @@ async def test_a_refused_retry_keeps_guidance_worded_like_its_opener_as_a_note_o
     await engine.event_bus.publish(UserRetry(text="original"))
     await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
 
-    assert client.call_count == 2
+    assert client.call_count == 3
     history = engine.current.require_loaded().bindings.backend.history_state["messages"]
     opener, note = [m for m in history if m.role == "user"]
     assert (opener.text, note.text) == ("original", "original")

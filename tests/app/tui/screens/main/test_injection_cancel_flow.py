@@ -61,6 +61,7 @@ def _make_controller(
         handle_agent_content=_noop_agent_message,
         handle_error=_noop_error,
         handle_turn_event=_unused_turn_event,
+        handle_answer_withdrawn=_unused_turn_event,
         set_agent_running=lambda _running: None,
         set_has_messages=lambda _has: None,
         clear_workspace_marker=lambda: None,

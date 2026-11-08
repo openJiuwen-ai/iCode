@@ -53,6 +53,8 @@ class TurnPassState:
     last_error: str = ""
     partial_answer: tuple[Content, ...] = ()
     """The answer contents of the response the ended pass left unrecorded."""
+    steered: bool = False
+    """The ended pass gave up what it produced for a steer: the turn runner settles it as steered."""
 
 
 def _make_user_message(
@@ -167,6 +169,16 @@ class TurnResumePolicy:
             ticket = None
         return RunRequest(messages, RunIntent.RETRY if ticket is not None else RunIntent.CONTINUE, self.origin, ticket)
 
+    def steer_request(self) -> RunRequest:
+        """The pass after a steer: it goes on from history, and its first model call delivers the queued message.
+
+        The steered pass's response is given up, a background one included:
+        the next pass creates a fresh one.
+        """
+        self.pending_continuation_token = None
+        self.input_properties = None
+        return self.continuation_request([])
+
     @asynccontextmanager
     async def retry_request(
         self,
@@ -177,13 +189,16 @@ class TurnResumePolicy:
     ) -> AsyncGenerator[RunRequest | None]:
         """Resume from current conversation state.
 
+        A trailing answer the failed pass showed is dropped first: the
+        resumed pass goes on from the last work that committed, never from
+        output that was cut off (*withdraw* hears the segments it was shown
+        in, before anything else runs).
+
         When *additional_text* is non-empty, it is used as the mid-turn
         continuation prompt. The text is sent as a real user message inside
         the current turn, so it appears as a proper user turn in history.
 
-        When *additional_text* is empty, a trailing answer the failed pass
-        showed is dropped first, so it is asked for again (*withdraw* hears
-        the segments it was shown in, before anything else runs), and then:
+        When *additional_text* is empty, the dropped answer is asked for again:
 
         * If there are completed tool calls after the last user message,
           continues from the transcript with empty input.
@@ -199,6 +214,11 @@ class TurnResumePolicy:
         state = self.backend.session.state.get("chrys_history", {})
         messages = state.get("messages", [])
 
+        history = SessionHistoryManager()
+        history.bind(state)
+        if (withdrawn := history.remove_trailing_answer()) and withdraw is not None:
+            await withdraw(withdrawn)
+
         if additional_text:
             # Mid-turn user note: send as the continuation prompt and
             # preserve it in history.  No pop of the orphan user message
@@ -213,11 +233,6 @@ class TurnResumePolicy:
             self.input_properties = note.additional_properties
             yield self.continuation_request([note])
             return
-
-        history = SessionHistoryManager()
-        history.bind(state)
-        if (withdrawn := history.remove_trailing_answer()) and withdraw is not None:
-            await withdraw(withdrawn)
 
         # Find the last real user input. Legacy synthetic nudges stay in
         # persisted history for read compatibility but cannot become anchors.

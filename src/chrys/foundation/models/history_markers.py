@@ -51,7 +51,7 @@ ANSWER_SEGMENT_KEY: Final[str] = "_chrys_answer_segment_id"
 
 The invocation's content projector stamps each answer text it publishes with
 the ``segment_id`` its frontends key that text by, so the history that keeps
-the text can name, when a bare Continue drops it, exactly what to withdraw.
+the text can name, when a Continue or steer drops it, exactly what to withdraw.
 Never sent on the wire.
 """
 

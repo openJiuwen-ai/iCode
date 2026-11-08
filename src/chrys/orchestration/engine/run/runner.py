@@ -25,7 +25,15 @@ from chrys.orchestration.engine.run.retry import RetryCoordinator
 from chrys.orchestration.engine.run.runtime_skills import RuntimeSkillRefresher
 from chrys.orchestration.engine.run.turn_hooks import TurnHookDispatcher
 from chrys.orchestration.engine.state.machine import EngineState, Trigger
-from chrys.orchestration.invoker.contracts import OverlappingRun, PreparedClosed, StaleContinuation, UnsupportedRequest
+from chrys.orchestration.invoker.contracts import (
+    AbortCause,
+    Aborted,
+    OverlappingRun,
+    PreparedClosed,
+    RunRequest,
+    StaleContinuation,
+    UnsupportedRequest,
+)
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationScope, PreparationTrace
 from chrys.service.trajectory.state import (
     TurnRecord,
@@ -229,11 +237,9 @@ class TurnRunner:
             elif self._turn_state.lease.consume_pre_executor_interrupt():
                 self._current.require_loaded().bindings.record_pre_run_interrupt()
             else:
-                self._current.require_loaded().bindings.record_outcome(
-                    await self._current.require_loaded().bindings.backend.run(
-                        self._current.require_loaded().bindings.inputs.fresh_request(
-                            contents, created_at=created_at, typed_text=typed_text
-                        )
+                await self._run_passes(
+                    self._current.require_loaded().bindings.inputs.fresh_request(
+                        contents, created_at=created_at, typed_text=typed_text
                     )
                 )
         except (StaleContinuation, OverlappingRun, PreparedClosed, UnsupportedRequest) as exc:
@@ -363,9 +369,7 @@ class TurnRunner:
                                 # Stopped while frontends heard the dropped answer's withdrawal.
                                 self._current.require_loaded().bindings.record_pre_run_interrupt()
                             else:
-                                self._current.require_loaded().bindings.record_outcome(
-                                    await self._current.require_loaded().bindings.backend.run(request)
-                                )
+                                await self._run_passes(request)
                         except (StaleContinuation, OverlappingRun, PreparedClosed, UnsupportedRequest) as exc:
                             # Exit normally so retry_request restores a bare
                             # retry's popped prompt after its yield.
@@ -392,6 +396,29 @@ class TurnRunner:
             )
         self._tag_consumed_profile_switch()
         await self.finalize_current_run()
+
+    async def _run_passes(self, request: RunRequest) -> None:
+        """Run the turn's pass and, after each steer, the next one, all in this run task.
+
+        A steer aborts the running pass: what it committed is settled into
+        history and the next pass goes on from there, delivering the steer
+        message at its first model call. Only the last pass's outcome ends
+        the turn.
+        """
+        while True:
+            bindings = self._current.require_loaded().bindings
+            outcome = await bindings.backend.run(request)
+            bindings.record_outcome(outcome)
+            # The pass gave its output up for the steer: settle it so, even when an owner closing took over its cause.
+            if not isinstance(outcome, Aborted) or not bindings.state.steered:
+                return
+            await self._finalizer.settle_steered_pass(request.messages, withdraw=self._withdraw_answer)
+            stopped = self._turn_state.lease.consume_pre_executor_interrupt()
+            if stopped or outcome.cause is not AbortCause.STEER or self._session.shutting_down:
+                # Stopped or closing since the steer: the turn ends interrupted, keeping what the steer settled.
+                self._current.require_loaded().bindings.record_pre_run_interrupt()
+                return
+            request = self._current.require_loaded().bindings.inputs.steer_request()
 
     def _record_admission_failure(self, error: Exception) -> None:
         """Reject once, then use the ordinary Turn finalizer/save/lease release."""

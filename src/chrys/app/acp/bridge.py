@@ -31,6 +31,7 @@ from chrys.foundation.events.types import (
     InvocationResumed,
     InvocationRetryAttempt,
     InvocationStarted,
+    InvocationSteered,
     InvocationToolCallArgsUpdated,
     InvocationToolCallProgress,
     InvocationToolCallResult,
@@ -229,6 +230,9 @@ class AcpEventBridge:
     def __init__(self) -> None:
         self._sub_agent_parents: dict[str, str] = {}
         self._tool_kinds_by_call_id: dict[str, str] = {}
+        # The main turn's tool calls not ended yet: a steer cancels them with
+        # no result to end their cards, so the bridge ends them itself.
+        self._open_tool_calls: dict[str, None] = {}
         # Structured blocks already pushed by hosted progress updates. An ACP
         # content field replaces the card's whole collection, so a later
         # status-only update must re-send these or they vanish.
@@ -247,7 +251,7 @@ class AcpEventBridge:
         # a tool call, a change of channel or a new response starts another.
         self._segment_message_ids: dict[str, str] = {}
         # The message id of every answer segment the main turn sent, kept
-        # after the segment ends: a bare retry may withdraw it.
+        # after the segment ends: a retry or steer may withdraw it.
         self._answer_message_ids: dict[str, str] = {}
 
     def begin_turn(self, turn_id: str, turn_number: int) -> None:
@@ -270,6 +274,10 @@ class AcpEventBridge:
     def answer_message_ids(self) -> dict[str, str]:
         """The ``messageId`` each answer segment of the main turn went out as, by segment id."""
         return dict(self._answer_message_ids)
+
+    def take_answer_message_ids(self, segment_ids: tuple[str, ...]) -> list[str]:
+        """The ``messageId``s withdrawn answer segments went out as, forgotten here so nothing names them again."""
+        return [message_id for segment in segment_ids if (message_id := self._answer_message_ids.pop(segment, None))]
 
     def _turn_meta(self) -> dict[str, Any]:
         if self._turn_id is None:
@@ -317,6 +325,17 @@ class AcpEventBridge:
         )
         return chunk
 
+    def _end_open_tool_calls(self) -> list[SessionUpdate]:
+        """End the tool calls a steer cancelled: no result follows them, and the prompt goes on.
+
+        They fail, as their interrupted results in history replay.
+        """
+        call_ids, self._open_tool_calls = list(self._open_tool_calls), {}
+        for call_id in call_ids:
+            self._tool_kinds_by_call_id.pop(call_id, None)
+            self._hosted_progress_images.pop(call_id, None)
+        return [update_tool_call(call_id, status="failed") for call_id in call_ids]
+
     def _project_event(self, event: Event) -> list[SessionUpdate]:
         if isinstance(event, InvocationEvent):
             if event.origin.root.kind in {"workflow_node", "side_question"}:
@@ -331,9 +350,12 @@ class AcpEventBridge:
             # Its text already streamed; a finished segment takes no more chunks.
             self._segment_message_ids.pop(event.segment_id, None)
             return []
+        if isinstance(event, InvocationSteered):
+            return self._end_open_tool_calls()
         if isinstance(event, InvocationToolCallStart):
             if event.call_id:
                 self._tool_kinds_by_call_id[event.call_id] = event.tool_kind
+                self._open_tool_calls[event.call_id] = None
             update = start_tool_call(
                 event.call_id,
                 tool_call_title(event.tool_name, event.tool_kind, event.args),
@@ -418,6 +440,8 @@ class AcpEventBridge:
                 else self._hosted_progress_images.get(event.call_id, [])
             )
             status_blocks = ([_text_tool_content(text)] if text else []) + preserved
+            if acp_status != "in_progress":
+                self._open_tool_calls.pop(event.call_id, None)
             provider_item_type = event.metadata.get("provider_item_type")
             provider_call_id = event.metadata.get("provider_call_id")
             update = update_tool_call(
@@ -439,6 +463,7 @@ class AcpEventBridge:
             ]
         if isinstance(event, InvocationToolCallResult):
             self._hosted_progress_images.pop(event.call_id, None)
+            self._open_tool_calls.pop(event.call_id, None)
             tool_kind = self._tool_kinds_by_call_id.pop(event.call_id, "") if event.call_id else ""
             provider_status = normalize_hosted_tool_status(event.provider_status)
             status = (

@@ -736,10 +736,10 @@ class SessionHistoryManager:
         """Append the answer a failed pass showed for a response history does not hold.
 
         The user saw it, so the saved turn keeps it, and the model reads it
-        when the user goes on with a message. A response that landed as the
-        pass ended may already be in history: contents it holds are skipped.
-        Each segment it was shown in stays one text content with its stamp,
-        so a later bare Continue can name what it drops.
+        when the user's next message opens a new turn. A response that landed
+        as the pass ended may already be in history: contents it holds are
+        skipped. Each segment it was shown in stays one text content with its
+        stamp, so a later Continue, which drops it, can name what it drops.
         """
         state = self._state
         if state is None:
@@ -766,6 +766,31 @@ class SessionHistoryManager:
         message = Message("assistant", kept)
         ensure_analytics_item_id(message.additional_properties)
         messages.append(message)
+
+    def restore_unsent_input(self, inputs: Sequence[Message]) -> None:
+        """Append the input messages of a pass that ended before history stored them.
+
+        A pass stores its input only once its run completes. A pass aborted
+        to go on in the same turn (a steer) leaves its input here first, so
+        the next pass reads it and its loop messages merge after it. Each is
+        the very message the request sent, keeping its flags and reminder
+        record; one the current turn already holds, as that occurrence or
+        that object, is skipped.
+        """
+        state = self._state
+        if state is None:
+            return
+        messages = state.setdefault("messages", [])
+        if not isinstance(messages, list):
+            return
+        region = messages[current_turn_start(messages) :]
+        held_ids = {item_id for message in region if (item_id := read_analytics_item_id(message.additional_properties))}
+        held = {id(message) for message in region}
+        for message in inputs:
+            item_id = read_analytics_item_id(message.additional_properties)
+            if id(message) in held or (item_id is not None and item_id in held_ids):
+                continue
+            messages.append(message)
 
     def remove_trailing_answer(self) -> tuple[str, ...]:
         """Drop the answer a failed or interrupted pass left at the end of history; name its segments.

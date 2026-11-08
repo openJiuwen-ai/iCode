@@ -1325,6 +1325,18 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         await self._live_renderer.abandon_thinking(segment_ids)
         self._sync_waiting_row()
 
+    async def end_steered_pass(self) -> None:
+        """End what a steer gave up while the turn goes on: the pass's running tool cards, and a retry wait it cut short.
+
+        The steer cancelled those calls, and no result follows for them. As
+        before a retry, the open tool group and answer close, so the next
+        pass's output starts new ones.
+        """
+        await self._live_renderer.prepare_retry()
+        if isinstance(status := self._find_trailing_status(), RetryMessage):
+            await remove_shielded(status)
+        self._sync_waiting_row()
+
     async def add_agent_message(
         self,
         text: str,
@@ -1847,7 +1859,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             last.hide_action()
 
     async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
-        """Remove the answer text a bare Continue or Retry dropped from history: the messages these segments showed.
+        """Remove the answer text a Continue, Retry or steer dropped from history: the messages these segments showed.
 
         Tool cards stay, as they do for a retried attempt. Entries a replay has
         yet to mount are mounted first, so none of them comes back.

@@ -449,6 +449,7 @@ class TurnCoordinator:
                     injection_id=event.injection_id,
                     preparation=preparation,
                     preparation_tracker=preparation_tracker,
+                    steer=event.steer,
                 )
 
             # If a previous run task is still cleaning up (e.g., interrupt teardown),
@@ -467,6 +468,7 @@ class TurnCoordinator:
                         injection_id=event.injection_id,
                         preparation=preparation,
                         preparation_tracker=preparation_tracker,
+                        steer=event.steer,
                     )
                 # TurnBindings finished but _post_run() is still running (session
                 # save, FSM transition). Wait for cleanup to complete so the
@@ -695,10 +697,10 @@ class TurnCoordinator:
         sub-agents resolve via the cascade-abort branch (otherwise their
         ``pending_decision`` future would keep their ``_invoke``
         coroutine pinned forever and the subsequent task cancel below
-        would leak). Then sets the interrupt flag / cancels the parent
-        task. It then either binds cancellation to the exact pre-executor
-        run task or interrupts the active executor; ``run_and_save``
-        detects ``was_interrupted`` and rolls back history.
+        would leak). The interrupt is bound to the exact run task before that
+        cascade, so no pass starts after it; the active executor's pass is
+        then aborted. ``run_and_save`` detects ``was_interrupted`` and rolls
+        back history.
 
         An input still being checked has no run task yet: the interrupt ends
         it, and any confirmation its hooks wait on, before anything else.
@@ -717,17 +719,20 @@ class TurnCoordinator:
         executor = self._current.loaded.bindings if self._current.loaded is not None else None
         interrupt_task = self._turn_state.lease.run_task
         self._trajectory_recorder.interrupt_requested_soon()
-        if executor is not None and not executor.state.running:
+        if executor is not None:
+            # Latched for the run task before any wait: a pass not yet running never starts, and
+            # one a steer gives up meanwhile (its cause stays STEER) ends the turn instead of going on.
             self._turn_state.lease.request_pre_executor_interrupt(interrupt_task)
         if self._current.loaded is not None and self._current.loaded.sub_agent_tools is not None:
             await self._current.loaded.sub_agent_tools.cascade_abort_all()
-        if executor is not None and interrupt_task is not None and self._turn_state.lease.run_task is interrupt_task:
-            if executor.state.running:
-                handle = executor.backend.active_handle
-                if handle is not None:
-                    await executor.backend.abort(handle, AbortCause.USER_CANCEL)
-            else:
-                self._turn_state.lease.request_pre_executor_interrupt(interrupt_task)
+        if (
+            executor is not None
+            and interrupt_task is not None
+            and self._turn_state.lease.run_task is interrupt_task
+            and executor.state.running
+            and (handle := executor.backend.active_handle) is not None
+        ):
+            await executor.backend.abort(handle, AbortCause.USER_CANCEL)
         self.schedule_user_interrupt_hook()
 
     async def on_user_retry(self, event: UserRetry) -> None:
@@ -735,7 +740,7 @@ class TurnCoordinator:
         await self._retry().handle_user_retry(event)
 
     async def on_user_inject(self, event: UserInject) -> None:
-        """Handle user injection (prompt inserted before next model call)."""
+        """Handle user injection: delivered before the next model call, or steering (``UserInject.steer``)."""
         self._turn_state.begin_inflight_injection(event.injection_id)
         preparation_tracker = PreAdmissionPreparationTracker()
         handed_off = False
@@ -755,6 +760,7 @@ class TurnCoordinator:
                 injection_id=event.injection_id,
                 preparation=preparation,
                 preparation_tracker=preparation_tracker,
+                steer=event.steer,
             )
         except asyncio.CancelledError:
             preparation = preparation_tracker.preparation

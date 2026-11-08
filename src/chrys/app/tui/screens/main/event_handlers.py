@@ -101,6 +101,7 @@ from chrys.foundation.events.types import (
     InvocationResumed,
     InvocationRetryAttempt,
     InvocationStarted,
+    InvocationSteered,
     InvocationToolCallArgsUpdated,
     InvocationToolCallProgress,
     InvocationToolCallResult,
@@ -1585,9 +1586,24 @@ class BackendEventHandler:
             ),
         )
 
+    async def on_steered(self, event: InvocationSteered) -> None:
+        """A steer gave up the running pass: its tool cards end as on Stop, and the turn goes on.
+
+        Never held by the render gate: tool cards are not, and text it holds
+        replays as the pass's text before the steer, as it streamed.
+        """
+        if event.origin.kind == "turn" and self.agent_running:
+            await self._ui().end_steered_pass()
+
     async def on_answer_withdrawn(self, event: InvocationAnswerWithdrawn) -> None:
-        """A bare Continue or Retry dropped this answer from history to ask for it again: it goes from view."""
+        """A Continue, Retry or steer dropped this answer from history: it goes from view."""
         if event.origin.kind == "turn":
+            # Text it names still waiting in the gate goes first; otherwise it applies at
+            # once, as the run that dropped the answer waits for it (behind a restore's replay too).
+            gate = self._state.render_gate
+            if gate.defers(event) and gate.holds_text_of(event.segment_ids):
+                gate.defer(event)
+                return
             await self._ui().withdraw_answer(event.segment_ids)
         elif _chat_sub_agent(event.origin):
             self._ui().sub_agent_answer_withdrawn(event.origin.invocation_id, event.segment_ids)

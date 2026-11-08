@@ -321,19 +321,23 @@ class InjectionMiddleware(ChatMiddleware):
         reminders: tuple[str, ...] = (),
         preparation: PreparationTrace | None = None,
         target_turn_id: str | None = None,
-    ) -> None:
-        """Queue text for injection before the next model call."""
-        self._pending.append(
-            QueuedInjection(
-                text=text,
-                created_at=created_at,
-                injection_id=injection_id,
-                reminders=reminders,
-                analytics_item_id=new_analytics_id(),
-                preparation=preparation,
-                target_turn_id=target_turn_id,
-            )
+    ) -> QueuedInjection:
+        """Queue text for injection before the next model call; the queued item is its handle."""
+        injection = QueuedInjection(
+            text=text,
+            created_at=created_at,
+            injection_id=injection_id,
+            reminders=reminders,
+            analytics_item_id=new_analytics_id(),
+            preparation=preparation,
+            target_turn_id=target_turn_id,
         )
+        self._pending.append(injection)
+        return injection
+
+    def is_pending(self, injection: QueuedInjection) -> bool:
+        """Whether *injection* still waits for a model call: no call drained it, and it was not cancelled or returned."""
+        return any(queued is injection for queued in self._pending)
 
     def drain_consumed_injection_messages(self) -> list[Message]:
         """Return clean injections consumed by the latest provider call."""

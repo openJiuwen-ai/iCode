@@ -436,18 +436,18 @@
         ["awaitable", "await self._trajectory.cycle_started(cycle_index, tools_offered=bool(self._options.get('tools')))", "unresolved"],
         ["awaitable", "await self._wire.blocking_response(self._prepped_messages, request_message_observer=self._wire_request_observer)", "unresolved"],
         ["wrapper", "await self._finish_cycle(response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
-        ["wrapper", "await self._response_ready(response)", "unresolved", "chrys.kernel.loop._LoopRun._response_ready"],
+        ["wrapper", "await self._response_ready(response, final=final)", "unresolved", "chrys.kernel.loop._LoopRun._response_ready"],
         ["wrapper", "await self._run_tool_batch(response, function_calls)", "unresolved", "chrys.kernel.loop._LoopRun._run_tool_batch"],
         ["awaitable", "await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get('tools')))", "unresolved"],
         ["awaitable", "await self._wire.blocking_response(self._prepped_messages, request_message_observer=self._wire_request_observer, exhaustion_tail=True)", "unresolved"],
         ["wrapper", "await self._finish_cycle(response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
-        ["wrapper", "await self._response_ready(response)", "unresolved", "chrys.kernel.loop._LoopRun._response_ready"]
+        ["wrapper", "await self._response_ready(response, final=True)", "unresolved", "chrys.kernel.loop._LoopRun._response_ready"]
       ],
       "_LoopRun._finish_cycle": [
         ["awaitable", "await self._trajectory.cycle_finished(response, function_calls)", "unresolved"]
       ],
       "_LoopRun._response_ready": [
-        ["awaitable", "await self._response_ready_observer(response)", "unresolved"]
+        ["awaitable", "await self._response_ready_observer(response, final)", "unresolved"]
       ],
       "_LoopRun._run_tool_batch": [
         ["wrapper", "await _execute_function_calls(function_calls=function_calls, result_commits=result_commits, tool_options=self._options, custom_args=self._additional_function_arguments, invocation_session=self._session, pipeline=self._pipeline, result_carrier_item_id=result_carrier_item_id, response_truncated=response_truncated, truncated_final_function_call_ids=_truncated_final_function_call_ids(response, function_calls) if response_truncated else None, tool_result_ceiling_tokens=self._tool_result_ceiling_tokens, dispatch_observer=self._trajectory.mark_tool_operations_dispatched)", "unresolved", "chrys.kernel._tool_execution._execute_function_calls"]
@@ -464,13 +464,13 @@
         ["async_iteration", "async for update in logical_stream", "unresolved"],
         ["awaitable", "await logical_stream.get_final_response()", "unresolved"],
         ["wrapper", "await self._finish_cycle(response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
-        ["wrapper", "await self._response_ready(response)", "unresolved", "chrys.kernel.loop._LoopRun._response_ready"],
+        ["wrapper", "await self._response_ready(response, final=final)", "unresolved", "chrys.kernel.loop._LoopRun._response_ready"],
         ["wrapper", "await self._run_tool_batch(response, function_calls)", "unresolved", "chrys.kernel.loop._LoopRun._run_tool_batch"],
         ["awaitable", "await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get('tools')))", "unresolved"],
         ["async_iteration", "async for update in final_logical_stream", "unresolved"],
         ["awaitable", "await final_logical_stream.get_final_response()", "unresolved"],
         ["wrapper", "await self._finish_cycle(final_response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
-        ["wrapper", "await self._response_ready(final_response)", "unresolved", "chrys.kernel.loop._LoopRun._response_ready"],
+        ["wrapper", "await self._response_ready(final_response, final=True)", "unresolved", "chrys.kernel.loop._LoopRun._response_ready"],
         ["awaitable", "await self._trajectory.settle_undispatched_tool_operations(queued=interrupted)", "unresolved"]
       ],
       "_LoopTrajectory._emit": [
@@ -1005,7 +1005,8 @@
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.REJECTED)", "unresolved"],
         ["wrapper", "await self._reject_injected_images(text, session_id=target.session_id)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._reject_injected_images"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.IMAGE_REJECTED)", "unresolved"],
-        ["wrapper", "await self._commit_side_effects(target, text, decision, operation=operation, created_at=created_at, publish_abandoned=True, injection_id=injection_id, ownership=ownership)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._commit_side_effects"],
+        ["wrapper", "await self._commit_side_effects(target, text, decision, operation=operation, created_at=created_at, publish_abandoned=True, injection_id=injection_id, ownership=ownership, steer=steer)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._commit_side_effects"],
+        ["wrapper", "await self._steer(target, queued)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._steer"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CANCELLED)", "unresolved"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.TARGET_STALE)", "unresolved"]
       ],
@@ -1027,7 +1028,7 @@
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.IMAGE_REJECTED)", "unresolved"],
         ["wrapper", "await self.publish_abandoned(target, text, created_at, injection_id=injection_id)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector.publish_abandoned"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.ABANDONED_NO_TARGET)", "unresolved"],
-        ["wrapper", "await self._admit_checked(target, operation, text, created_at=created_at, injection_id=injection_id, ownership=ownership)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._admit_checked"]
+        ["wrapper", "await self._admit_checked(target, operation, text, created_at=created_at, injection_id=injection_id, ownership=ownership, steer=steer)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._admit_checked"]
       ],
       "ActiveTurnInjector._publish_staged_runtime_skill_refresh": [
         ["awaitable", "await self._skills.publish_committed_refresh(committed, session_id=session_id)", "unresolved"]
@@ -1038,11 +1039,17 @@
       "ActiveTurnInjector._stage_runtime_skills": [
         ["awaitable", "await self._skills.stage_refresh()", "unresolved"]
       ],
+      "ActiveTurnInjector._steer": [
+        ["awaitable", "await target.conversation.steer(handle, before_abort=_cascade)", "unresolved"]
+      ],
+      "ActiveTurnInjector._steer._cascade": [
+        ["awaitable", "await sub_agent_tools.cascade_abort_all()", "unresolved"]
+      ],
       "ActiveTurnInjector.abandon_if_target_stale": [
         ["wrapper", "await self.publish_abandoned(target, text, created_at, injection_id=injection_id)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector.publish_abandoned"]
       ],
       "ActiveTurnInjector.inject": [
-        ["wrapper", "await self._inject(text, created_at=created_at, route=route, reject_images_without_target=reject_images_without_target, injection_id=injection_id, ownership=ownership)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._inject"]
+        ["wrapper", "await self._inject(text, created_at=created_at, route=route, reject_images_without_target=reject_images_without_target, injection_id=injection_id, ownership=ownership, steer=steer)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._inject"]
       ],
       "ActiveTurnInjector.publish_abandoned": [
         ["awaitable", "await self._bus.publish(UserInjectResult(text=text, consumed=False, created_at=created_at, injection_id=injection_id, session_id=target.session_id if target is not None else self._session.session_id))", "unresolved"]
@@ -1085,6 +1092,9 @@
       "TurnBindings._publish_wire_retry_attempt": [
         ["wrapper", "await self._publish_retry_notice(message, attempt, max_attempts, delay_seconds, exc, scope='wire')", "unresolved", "chrys.orchestration.engine.run.bindings.TurnBindings._publish_retry_notice"]
       ],
+      "TurnBindings._reject_hosted_cards": [
+        ["awaitable", "await self._hosted_bridge.attempt_rejected('Execution interrupted', status=HostedToolStatus.INTERRUPTED)", "unresolved"]
+      ],
       "TurnBindings._reject_stream": [
         ["awaitable", "await self._hosted_bridge.attempt_rejected(reason)", "unresolved"]
       ],
@@ -1102,8 +1112,11 @@
         ["awaitable", "await self._emitter.publish(Error(code='executor_error', message=err_msg, recoverable=True, session_id=self._session_id, display_message=display_message, display_hint=display_hint, facts=failure_facts(e)))", "unresolved"]
       ],
       "TurnBindings.finished": [
+        ["awaitable", "await self._projector.on_retry_boundary()", "unresolved"],
+        ["wrapper", "await self._reject_hosted_cards()", "unresolved", "chrys.orchestration.engine.run.bindings.TurnBindings._reject_hosted_cards"],
+        ["awaitable", "await self._emitter.publish(InvocationSteered(origin=self._emitter.origin, session_id=self._session_id))", "unresolved"],
         ["wrapper", "await self._finish_content('interrupted' if interrupted else 'completed')", "unresolved", "chrys.orchestration.engine.run.bindings.TurnBindings._finish_content"],
-        ["awaitable", "await self._hosted_bridge.attempt_rejected('Execution interrupted', status=HostedToolStatus.INTERRUPTED)", "unresolved"]
+        ["wrapper", "await self._reject_hosted_cards()", "unresolved", "chrys.orchestration.engine.run.bindings.TurnBindings._reject_hosted_cards"]
       ],
       "TurnBindings.interrupt": [
         ["awaitable", "await self._hosted_bridge.attempt_rejected('Execution interrupted', status=HostedToolStatus.INTERRUPTED)", "unresolved"],
@@ -1124,9 +1137,9 @@
         ["awaitable", "await self._bus.publish(Error(code='not_ready', message='Engine not started', display_message=_COORDINATOR_ENGINE_NOT_STARTED.bind(), session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.NOT_READY)", "unresolved"],
         ["wrapper", "await self._refuse_shortcut_injection(event, preparation)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._refuse_shortcut_injection"],
-        ["awaitable", "await self._injector.inject(event.text, created_at=event.timestamp, route='fsm_active', reject_images_without_target=True, injection_id=event.injection_id, preparation=preparation, preparation_tracker=preparation_tracker)", "unresolved"],
+        ["awaitable", "await self._injector.inject(event.text, created_at=event.timestamp, route='fsm_active', reject_images_without_target=True, injection_id=event.injection_id, preparation=preparation, preparation_tracker=preparation_tracker, steer=event.steer)", "unresolved"],
         ["wrapper", "await self._refuse_shortcut_injection(event, preparation)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._refuse_shortcut_injection"],
-        ["awaitable", "await self._injector.inject(event.text, created_at=event.timestamp, route='executor_fallback', reject_images_without_target=True, injection_id=event.injection_id, preparation=preparation, preparation_tracker=preparation_tracker)", "unresolved"],
+        ["awaitable", "await self._injector.inject(event.text, created_at=event.timestamp, route='executor_fallback', reject_images_without_target=True, injection_id=event.injection_id, preparation=preparation, preparation_tracker=preparation_tracker, steer=event.steer)", "unresolved"],
         ["wrapper", "await self._wait_for_pre_admission_gate(self._wait_for_existing_run_task, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
         ["wrapper", "await self._wait_for_pre_admission_gate(self._turn_state.lease.wait_for_prompt_admission_open, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
         ["wrapper", "await self._wait_for_pre_admission_gate(self._turn_state.lease.wait_for_active_admissions_idle, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
@@ -1204,7 +1217,7 @@
         ["wrapper", "await self._start_pre_admission_preparation(preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._start_pre_admission_preparation"],
         ["wrapper", "await self._wait_for_pre_admission_gate(self._permits.wait_for_agent_load_idle, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.NOT_READY)", "unresolved"],
-        ["awaitable", "await self._injector.inject(event.text, created_at=event.timestamp, route='fsm_active', reject_images_without_target=False, injection_id=event.injection_id, preparation=preparation, preparation_tracker=preparation_tracker)", "unresolved"],
+        ["awaitable", "await self._injector.inject(event.text, created_at=event.timestamp, route='fsm_active', reject_images_without_target=False, injection_id=event.injection_id, preparation=preparation, preparation_tracker=preparation_tracker, steer=event.steer)", "unresolved"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.PREPARATION_FAILED)", "unresolved"]
       ],
       "TurnCoordinator.on_user_inject_cancel": [
@@ -1277,6 +1290,10 @@
         ["wrapper", "await self._record_trajectory_after_save()", "unresolved", "chrys.orchestration.engine.run.finalizer.TurnFinalizer._record_trajectory_after_save"],
         ["wrapper", "await self._save_and_drain_hooks(failed=failed, drained_scopes=drained_scopes, waited_hook_operation_ids=waited_hook_operation_ids)", "unresolved", "chrys.orchestration.engine.run.finalizer.TurnFinalizer._save_and_drain_hooks"],
         ["awaitable", "await self._trajectory_recorder.turn_response_settled(outcome=response_outcome, drained_scopes=drained_scopes, waited_hook_operation_ids=waited_hook_operation_ids)", "unresolved"]
+      ],
+      "TurnFinalizer.settle_steered_pass": [
+        ["awaitable", "await withdraw(withdrawn)", "unresolved"],
+        ["awaitable", "await self._writer.persist_barrier()", "unresolved"]
       ]
     },
     "chrys.orchestration.engine.run.prompt_content": {
@@ -1439,6 +1456,10 @@
       "TurnRunner._refresh_runtime_skills": [
         ["awaitable", "await self._skills.refresh(update_active_turn=update_active_turn)", "unresolved"]
       ],
+      "TurnRunner._run_passes": [
+        ["awaitable", "await bindings.backend.run(request)", "unresolved"],
+        ["awaitable", "await self._finalizer.settle_steered_pass(request.messages, withdraw=self._withdraw_answer)", "unresolved"]
+      ],
       "TurnRunner._withdraw_answer": [
         ["wrapper", "await finish_close(asyncio.create_task(self._bus.publish(event)))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
       ],
@@ -1464,7 +1485,7 @@
         ["wrapper", "await self._refresh_runtime_skills(update_active_turn=False)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._refresh_runtime_skills"],
         ["wrapper", "await self._ask_extension_contexts(typed)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._ask_extension_contexts"],
         ["awaitable", "await preamble.finished(outcome=PreparationOutcome.HANDOFF)", "unresolved"],
-        ["awaitable", "await self._current.require_loaded().bindings.backend.run(self._current.require_loaded().bindings.inputs.fresh_request(contents, created_at=created_at, typed_text=typed_text))", "unresolved"],
+        ["wrapper", "await self._run_passes(self._current.require_loaded().bindings.inputs.fresh_request(contents, created_at=created_at, typed_text=typed_text))", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._run_passes"],
         ["wrapper", "await self.finalize_current_run()", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner.finalize_current_run"]
       ],
       "TurnRunner.run_retry": [
@@ -1477,7 +1498,7 @@
         ["wrapper", "await self._ask_extension_contexts(next(iter(self._current_turn_user_messages()), ''), keep=True)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._ask_extension_contexts"],
         ["awaitable", "await preamble.finished(outcome=PreparationOutcome.HANDOFF)", "unresolved"],
         ["async_context", "async with self._current.require_loaded().bindings.inputs.retry_request(additional_text=additional_text, created_at=created_at, withdraw=self._withdraw_answer)", "unresolved"],
-        ["awaitable", "await self._current.require_loaded().bindings.backend.run(request)", "unresolved"],
+        ["wrapper", "await self._run_passes(request)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._run_passes"],
         ["wrapper", "await self.finalize_current_run()", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner.finalize_current_run"]
       ]
     },
@@ -2279,8 +2300,11 @@
       ]
     },
     "chrys.orchestration.invoker.kernel": {
-      "KernelConversation.abort": [
+      "KernelConversation._interrupt": [
         ["awaitable", "await self._observer.interrupt()", "unresolved"]
+      ],
+      "KernelConversation.abort": [
+        ["wrapper", "await self._interrupt(active)", "unresolved", "chrys.orchestration.invoker.kernel.KernelConversation._interrupt"]
       ],
       "KernelConversation.run": [
         ["awaitable", "await self._observer.begin(request, active.resources)", "unresolved"],
@@ -2288,6 +2312,10 @@
         ["awaitable", "await self._observer.succeeded(response)", "unresolved"],
         ["awaitable", "await self._observer.failed(exc)", "unresolved"],
         ["awaitable", "await self._observer.finished()", "unresolved"]
+      ],
+      "KernelConversation.steer": [
+        ["awaitable", "await before_abort()", "unresolved"],
+        ["wrapper", "await self._interrupt(active)", "unresolved", "chrys.orchestration.invoker.kernel.KernelConversation._interrupt"]
       ],
       "_ActivePass._drain": [
         ["sync_primitive", "await self.done.wait()", "unresolved"]

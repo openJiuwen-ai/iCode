@@ -152,6 +152,12 @@ class UserMessage(Event):
     # shortcut, if it still loads it, once the prompt hooks have passed, and
     # sends their output in their place. Never joins a running turn.
     prompt_shortcut: PromptShortcutRef | None = None
+    # How a message that joins a running turn reaches the model: False (the
+    # default) delivers it before the turn's next model call; True steers,
+    # dropping what the turn has not finished (the reply being written, tool
+    # calls still running or waiting) and going on from its finished work
+    # with this message. Ignored for a message that opens a new turn.
+    steer: bool = False
 
 
 @dataclass
@@ -206,9 +212,10 @@ class UserInterrupt(Event):
 class UserRetry(Event):
     """User retries the last failed/interrupted run from current state.
 
-    When ``text`` is non-empty, it is used as a mid-turn continuation prompt
-    and persisted as real user input inside the current turn. An empty retry
-    continues from completed history or replays the prior user opener.
+    Either way an answer the run left cut off at the end of history is dropped
+    first. When ``text`` is non-empty, it is used as a mid-turn continuation
+    prompt and persisted as real user input inside the current turn. An empty
+    retry continues from completed history or replays the prior user opener.
     """
 
     text: str = ""
@@ -219,11 +226,13 @@ class UserRetry(Event):
 
 @dataclass
 class UserInject(Event):
-    """User injects a prompt while agent is executing (inserted before next model call)."""
+    """User injects a prompt while agent is executing (inserted before next model call, or steering)."""
 
     text: str = ""
     injection_id: str | None = None
     """Frontend-assigned id correlating this injection with cancel/result events."""
+    steer: bool = False
+    """Steer instead of waiting for the next model call: see ``UserMessage.steer``."""
 
 
 @dataclass
@@ -613,12 +622,24 @@ class InvocationContentAbandoned(InvocationEvent):
 
 
 @dataclass
+class InvocationSteered(InvocationEvent):
+    """A steer aborted the running pass; the turn goes on with a new pass that delivers the steer message.
+
+    Published as the pass ends, after ``InvocationContentAbandoned`` names
+    the response it gave up. Tool calls still running in the pass were
+    cancelled without an ``InvocationToolCallResult``: frontends end them
+    here, as they do on Stop. The answer the pass leaves dropped from
+    history follows as ``InvocationAnswerWithdrawn``.
+    """
+
+
+@dataclass
 class InvocationAnswerWithdrawn(InvocationEvent):
-    """A bare Continue or Retry dropped the answer text these segments showed from history, to ask for it again.
+    """A Continue, Retry or steer dropped the answer text these segments showed from history.
 
     Published when history drops it, before the request that asks again
-    runs; frontends withdraw exactly these segments. Text saved before
-    segments were stamped is dropped without being named here.
+    or goes on runs; frontends withdraw exactly these segments. Text saved
+    before segments were stamped is dropped without being named here.
     """
 
     agent_name: str = ""

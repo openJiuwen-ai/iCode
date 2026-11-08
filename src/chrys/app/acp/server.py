@@ -743,7 +743,7 @@ class ChrysAcpServer:
                                         session.answer_message_ids = {}
                                 await self._handle_event(session_id, event, bridge, pending_approvals)
                                 if isinstance(event, InvocationAnswerWithdrawn) and event.origin.kind == "turn":
-                                    await self._retract_answer(session_id, session, turn_id, event.segment_ids)
+                                    await self._retract_answer(session_id, session, bridge, turn_id, event.segment_ids)
                         except _CancelledBeforeTurn:
                             outcome = Cancelled(reason="Cancelled before the turn started.")
                         else:
@@ -1221,15 +1221,23 @@ class ChrysAcpServer:
             await self._client_or_error().session_update(session_id=session_id, update=update)
 
     async def _retract_answer(
-        self, session_id: str, session: ManagedSession, turn_id: str | None, segment_ids: tuple[str, ...]
+        self,
+        session_id: str,
+        session: ManagedSession,
+        bridge: AcpEventBridge,
+        turn_id: str | None,
+        segment_ids: tuple[str, ...],
     ) -> None:
-        """Withdraw the messages of the answer a bare retry dropped from history: it writes that answer again.
+        """Withdraw the messages of the answer a retry or steer dropped from history.
 
-        ACP has no retraction primitive, so this is the Chrys extension
-        notification a client acts on.
+        A retry drops what an earlier prompt sent (the session keeps those
+        ids), a steer what this prompt sent (still the bridge's). ACP has no
+        retraction primitive, so this is the Chrys extension notification a
+        client acts on.
         """
         message_ids = dict.fromkeys(
-            message_id for segment in segment_ids for message_id in session.answer_message_ids.pop(segment, ())
+            [message_id for segment in segment_ids for message_id in session.answer_message_ids.pop(segment, ())]
+            + bridge.take_answer_message_ids(segment_ids)
         )
         if not message_ids:
             return

@@ -15,7 +15,7 @@ from chrys.foundation.events.types import Warning
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, StreamStall
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
-from chrys.kernel import RESPONSE_READY_KWARG, LoopRecorder, StallExhaustedAction
+from chrys.kernel import RESPONSE_READY_KWARG, LoopRecorder, ResponseReadyObserver, StallExhaustedAction
 from chrys.orchestration.invoker.acp import AcpConversation, AcpInvocationCounters
 from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker, AcpUpdateTranslator
 from chrys.orchestration.invoker.acp_spec import resolve_acp_spec
@@ -87,7 +87,7 @@ if TYPE_CHECKING:
     from chrys.foundation.config.settings import Settings
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.workspace import Workspace
-    from chrys.kernel import ChatResponse, Message
+    from chrys.kernel import Message
     from chrys.orchestration.invoker.content_projection import ContentProjector
     from chrys.orchestration.session_usage import SessionUsagePublisher
     from chrys.orchestration.workflows.agent_archive import AgentNodeArchive
@@ -146,7 +146,7 @@ class AgentNodeCallbacks:
     observer: KernelPassObserver
     content: Callable[[], ContentProjector | None]
     """The projector of the pass in flight, which publishes its model text."""
-    response_ready: Callable[[ChatResponse], Awaitable[None]]
+    response_ready: ResponseReadyObserver
     checkpoint: Callable[[], Coroutine[Any, Any, None]]
     usage: Callable[..., None]
     side_call_usage: Callable[[Mapping[str, Any]], None]

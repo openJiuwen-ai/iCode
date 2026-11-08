@@ -69,6 +69,8 @@ class _ActivePass:
     task: asyncio.Task[Any]
     cause: AbortCause | None = None
     close_cancelled: bool = False
+    steerable: bool = False
+    """While the attempt runs until its final answer lands: not during the observer's begin, nor after."""
 
     def request_close(self, cause: AbortCause) -> None:
         self.cause = cause
@@ -131,6 +133,11 @@ class KernelConversation:
         return self._active.handle if self._active is not None else None
 
     @property
+    def active_abort_cause(self) -> AbortCause | None:
+        """Why the running pass was asked to stop: the last request, but a Stop leaves a steer's cause (:meth:`abort`)."""
+        return self._active.cause if self._active is not None else None
+
+    @property
     def state_generation(self) -> int:
         return self._generation
 
@@ -169,11 +176,55 @@ class KernelConversation:
         if self._active is not None:
             self._active.cause = cause
 
+    def can_steer(self, handle: PassHandle) -> bool:
+        """Whether *handle*'s pass is still producing and nothing asked it to stop.
+
+        Before its attempt starts, the next model call delivers what the
+        caller queued anyway; once its final answer landed (:meth:`answer_landed`)
+        the answer is complete and is never dropped, though the attempt may
+        still run its after-run work; a pass already aborting keeps its cause.
+        """
+        active = self._active
+        return active is not None and active.handle is handle and active.steerable and active.cause is None
+
+    def answer_landed(self) -> None:
+        """The running pass's final answer landed, with no tool call to run: no steer drops it from now on."""
+        if self._active is not None:
+            self._active.steerable = False
+
+    async def steer(self, handle: PassHandle, *, before_abort: Callable[[], Awaitable[None]]) -> AbortResult:
+        """Abort *handle*'s pass for a steer, accepted only while :meth:`can_steer` holds.
+
+        Accepting latches the cause at once, before *before_abort* (the
+        caller's sub-agent cascade, which can end the pass's attempt itself)
+        runs: from then on the pass ends ``Aborted(STEER)`` whatever its
+        attempt does, and :meth:`abort` keeps that cause.
+        """
+        active = self._active
+        if active is None or not self.can_steer(handle):
+            return AbortResult.ALREADY_CONVERGED
+        active.cause = AbortCause.STEER
+        await before_abort()
+        if self._active is not active:
+            return AbortResult.ALREADY_CONVERGED
+        return await self._interrupt(active)
+
     async def abort(self, handle: PassHandle, cause: AbortCause) -> AbortResult:
+        """Stop *handle*'s pass for *cause*.
+
+        A steered pass keeps its cause against a Stop: it already gave up what
+        it was producing, so the Stop ends the turn once the pass settled (the
+        caller's part) instead of turning it into an interrupted one. Any other
+        cause (an owner closing) takes over.
+        """
         active = self._active
         if active is None or active.handle is not handle:
             return AbortResult.ALREADY_CONVERGED
-        active.cause = cause
+        if active.cause is not AbortCause.STEER or cause is not AbortCause.USER_CANCEL:
+            active.cause = cause
+        return await self._interrupt(active)
+
+    async def _interrupt(self, active: _ActivePass) -> AbortResult:
         await self._observer.interrupt()
         # The await can converge this pass; never cancel a successor's L0 task.
         if self._active is active:
@@ -256,6 +307,7 @@ class KernelConversation:
                         # Keep the kwargs identity: continuation observers are
                         # bound to this dict and retry may replace its options.
                         run_kwargs["middleware"] = [*(middleware or ()), usage_probe]
+                        active.steerable = True
                         try:
                             response = await self._attempts.run(
                                 list(request.messages),
@@ -264,6 +316,7 @@ class KernelConversation:
                                 service_side=self._service_side(),
                             )
                         finally:
+                            active.steerable = False
                             if middleware is None:
                                 run_kwargs.pop("middleware", None)
                             else:

@@ -202,6 +202,9 @@ class MainScreenPresenter:
     async def abandon_thinking(self, segment_ids: tuple[str, ...]) -> None:
         await self._view.abandon_thinking(segment_ids)
 
+    async def end_steered_pass(self) -> None:
+        await self._view.end_steered_pass()
+
     async def add_agent_message(self, *args: Any, **kwargs: Any) -> None:
         await self._view.add_agent_message(*args, **kwargs)
 
