@@ -39,7 +39,7 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import SUB_AGENT_STATE_DISCARDED_MESSAGE, HistoryMarkerKind
 from chrys.foundation.models.workspace import WorkingDir, Workspace
 from chrys.foundation.platform import safe_getcwd
-from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.platform.files import surrogate_safe_text, unlink_with_retry
 from chrys.foundation.trajectory.event_types import RuntimeFinishReason as TrajectoryRuntimeFinishReason
 from chrys.foundation.util.lock import FileLock
 from chrys.foundation.util.session_ids import session_short_id
@@ -276,7 +276,11 @@ def _delete_reset_session_files(session_dir: Path) -> None:
     for filename in (SESSION_FILE_NAME, SESSION_BACKUP_FILE_NAME, SESSION_RECOVERY_FILE_NAME, BTW_FILE_NAME):
         path = session_dir / filename
         if path.exists():
-            path.unlink()
+            # A reader can hold the file for a moment (the sidebar's change
+            # preview rereads session.json in a worker thread), and Windows
+            # refuses to delete a file that is open: a plain unlink would fail
+            # the reset, and with it a rollback to the start.
+            unlink_with_retry(path)
 
 
 def _acquire_session_write_lock(lock_path: Path, session_id: str) -> FileLock | None:

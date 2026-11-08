@@ -48,6 +48,7 @@ from tests.orchestration.engine._recovery_helpers import (
 )
 from tests.support.event_capture import collect_events
 from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent
+from tests.support.windows_replace import briefly_held_unlink
 
 
 async def test_reset_session_to_welcome_deletes_state_and_reports_missing_profile(
@@ -240,6 +241,29 @@ async def test_reset_session_to_welcome_no_lock_path_deletes_backup_file(
     assert not session_dir.exists()
 
 
+async def test_reset_session_to_welcome_outlasts_a_reader_holding_session_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reader holding session.json a moment (the sidebar's change preview) must not fail the reset on Windows."""
+    store = JsonFileStateStore(tmp_path)
+    engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
+    engine.session.session_id = "reset_me"
+    engine.session.turn_number = 3
+    session_dir = store.session_dir("reset_me")
+    session_dir.mkdir(parents=True)
+    session_file = session_dir / "session.json"
+    session_file.write_text("{}", encoding="utf-8")
+    held = briefly_held_unlink(monkeypatch, session_file, failures=2)
+
+    reset_succeeded = await engine.lifecycle.reset_session_to_welcome("reset_me")
+
+    assert reset_succeeded is True
+    assert not session_file.exists()
+    assert held.sleeps == [0.01, 0.02]
+    assert engine.session.turn_number == 0
+
+
 async def test_reset_session_to_welcome_preserves_snapshots_when_state_delete_lock_times_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -350,15 +374,15 @@ async def test_failed_reset_recovery_unlink_does_not_refresh_created_at_on_next_
     recovery["meta"]["created_at"] = drifted
     recovery["meta"]["updated_at"] = drifted
     recovery_file.write_text(json.dumps(recovery), encoding="utf-8")
-    real_unlink = Path.unlink
+    real_unlink = session_lifecycle.unlink_with_retry
 
-    def fail_recovery_unlink(path: Path, *args: object, **kwargs: object) -> None:
-        if path == recovery_file:
+    def fail_recovery_unlink(path: str | os.PathLike[str]) -> None:
+        if os.fspath(path) == os.fspath(recovery_file):
             raise OSError("simulated recovery unlink failure")
-        real_unlink(path, *args, **kwargs)
+        real_unlink(path)
 
     with monkeypatch.context() as patcher:
-        patcher.setattr(Path, "unlink", fail_recovery_unlink)
+        patcher.setattr(session_lifecycle, "unlink_with_retry", fail_recovery_unlink)
         with pytest.raises(OSError, match="simulated recovery unlink failure"):
             session_lifecycle._delete_reset_session_files(session_dir)
 
