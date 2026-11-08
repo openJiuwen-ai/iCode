@@ -242,7 +242,11 @@ def check_profile_write(
     profile is the resolved judge it must stay qualified (address,
     credentials, TLS), and a selection that is already broken elsewhere
     never blocks the writes that repair it — most importantly creating
-    the future judge profile.
+    the future judge profile.  The one exception on the repair side: a
+    write that itself breaks a selection that resolved before the write
+    (renaming the judge away from its selector, or creating a duplicate
+    of its name) is refused — otherwise the registry would be saved into
+    the very ``judge_unresolved`` state the guard exists to prevent.
     """
     existed = any(existing.id == profile.id for existing in profiles)
     prospective = [profile if existing.id == profile.id else existing for existing in profiles]
@@ -250,13 +254,19 @@ def check_profile_write(
         prospective.append(profile)
     if profile.is_relay:
         return relay_guard_issues(prospective, judge_selector)
-    judge = _resolve_in_set(prospective, judge_selector) if judge_selector.strip() else None
-    if judge is None or judge.id != profile.id:
-        return []
     relays = [candidate for candidate in prospective if candidate.is_relay]
     if not relays:
         # With no relay profiles the invariant is vacuous; ordinary edits to
         # an existing judge (rename, mock provider, missing key) stay free.
+        return []
+    if judge_selector.strip():
+        resolved_before = _resolve_in_set(profiles, judge_selector)
+        judge = _resolve_in_set(prospective, judge_selector)
+        if resolved_before is not None and judge is None:
+            return [_issue("judge_unresolved", _JUDGE_UNRESOLVED, selector=judge_selector)]
+    else:
+        judge = None
+    if judge is None or judge.id != profile.id:
         return []
     return _judge_issues(profile, relays)
 

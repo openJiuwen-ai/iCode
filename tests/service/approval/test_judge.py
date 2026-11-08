@@ -698,6 +698,31 @@ def test_relay_enhanced_user_prompt_carries_the_security_context() -> None:
     assert "RELAY RISK" not in build_user_prompt(_request())
 
 
+def test_relay_enhanced_prompt_with_latched_history_names_no_relayed_working_model() -> None:
+    """History-latched risk describes the conversation, not a relayed current model."""
+    from chrys.service.approval.review_types import ApprovalJudgeInput, build_user_prompt
+
+    request = ApprovalJudgeInput(
+        tool_name="zsh",
+        tool_kind="shell",
+        args={"command": "make build"},
+        user_message="ship it",
+        user_messages=["ship it"],
+        workspace_roots=["/workspace"],
+        relay_enhanced=True,
+        reviewed_model="",
+    )
+
+    prompt = build_user_prompt(request)
+
+    assert "RELAY RISK" in prompt
+    assert "already carries content produced through a third-party relay" in prompt
+    assert "untrusted evidence" in prompt
+    # No claim that the working model's traffic is relayed, and no model named.
+    assert "working model's traffic is routed" not in prompt
+    assert "Working model under review" not in prompt
+
+
 def _relay_profile(**overrides: object) -> ModelProfile:
     fields: dict[str, object] = {
         "id": "relay-1",

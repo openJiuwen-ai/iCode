@@ -60,6 +60,7 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
 from chrys.service.approval.arbitration import ApprovalDecisionArbiter, ApprovalJudgeInput
 from chrys.service.approval.correlation import OneShotCorrelation
 from chrys.service.approval.policy import ApprovalMode
+from chrys.service.approval.relay_risk import RelayRiskLatch
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding, PreparedReuse
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
@@ -101,16 +102,30 @@ def _is_relay_protected_kind(kind: str) -> bool:
     return kind in _RELAY_PROTECTED_KINDS or is_extension_kind(kind)
 
 
-def _write_target_fingerprint(file_path: str, base_cwd: str | None) -> tuple[int, int] | None:
-    """A cheap identity of the write target's current on-disk version, if it exists."""
+_TargetFingerprint = tuple[str, int, int] | tuple[str]
+"""Write-target identity: ``("present", mtime_ns, size)``, ``("absent",)`` or ``("unknown",)``."""
+
+
+def _write_target_fingerprint(file_path: str, base_cwd: str | None) -> _TargetFingerprint:
+    """A cheap, three-state identity of the write target's on-disk version.
+
+    ``("present", mtime_ns, size)`` for an existing file, ``("absent",)``
+    when nothing is there, ``("unknown",)`` when the probe itself failed
+    (permissions, symlink loop, transient IO).  A failed probe is never the
+    same fact as a missing file: two ``("unknown",)`` readings compare as a
+    change, so a file that appeared while unreadable cannot slip past as
+    "unchanged".
+    """
     if not file_path:
-        return None
+        return ("absent",)
     path = file_path if os.path.isabs(file_path) else os.path.join(base_cwd or os.getcwd(), file_path)
     try:
         stat = os.stat(path)
+    except FileNotFoundError:
+        return ("absent",)
     except OSError:
-        return None
-    return (stat.st_mtime_ns, stat.st_size)
+        return ("unknown",)
+    return ("present", stat.st_mtime_ns, stat.st_size)
 
 
 _GITDIR_POINTER_PREFIX = "gitdir:"
@@ -294,6 +309,7 @@ class ApprovalMiddleware(FunctionMiddleware):
         extension_hooks: ExtensionToolHooks | None = None,
         relay_enhanced: bool = False,
         relay_reviewed_model: str = "",
+        relay_risk_latch: RelayRiskLatch | None = None,
     ) -> None:
         from chrys.service.approval.turn_context import TurnContextHolder
 
@@ -301,11 +317,14 @@ class ApprovalMiddleware(FunctionMiddleware):
         self._extension_hooks = extension_hooks
         self._reuse = reuse
         # Relay enhancement: the model whose traffic this middleware gates is
-        # routed through a third-party relay.  Fixed at construction (never a
-        # runtime toggle) and inherited by sub-agents, so a relay parent
-        # cannot slip a protected call past review via a direct child.
+        # routed through a third-party relay.  Set at construction and
+        # inherited by sub-agents, so a relay parent cannot slip a protected
+        # call past review via a direct child; the latch adds risk discovered
+        # at run time (a relay-routed sub-agent returned into this
+        # conversation) — one-way, so it never relaxes review mid-run.
         self._relay_enhanced = relay_enhanced
         self._relay_reviewed_model = relay_reviewed_model
+        self._relay_latch = relay_risk_latch
         self._publisher: InvocationPublisher | None = None
         self._bus = event_bus
         self._session_id = session_id
@@ -414,7 +433,9 @@ class ApprovalMiddleware(FunctionMiddleware):
         # read-only command or workspace shortcuts, remembered approvals).
         # BYPASS keeps its explicit "no review at all" meaning.
         relay_enhanced = (
-            self._relay_enhanced and self._approval_mode is ApprovalMode.AUTO and _is_relay_protected_kind(tool_kind)
+            (self._relay_enhanced or bool(self._relay_latch))
+            and self._approval_mode is ApprovalMode.AUTO
+            and _is_relay_protected_kind(tool_kind)
         )
         if (
             not policy_requires_approval
@@ -562,9 +583,11 @@ class ApprovalMiddleware(FunctionMiddleware):
             call_id=call_id,
             tool_order=tool_order,
         )
-        # What the judge (if any) will see; deep-copied so a later mutation of
-        # ``context.arguments`` cannot silently change what was reviewed.
-        reviewed_args_snapshot = copy.deepcopy(parsed_args) if relay_enhanced else None
+        # What the judge (if any) will see; a deep copy of the RAW arguments
+        # so a later mutation of ``context.arguments`` (in place or replaced)
+        # cannot silently change what was reviewed — the snapshot keeps the
+        # original shape even on the tolerant non-dict parsing branches.
+        reviewed_args_snapshot = copy.deepcopy(raw_args) if relay_enhanced else None
         write_target_path = parsed_args.get("path", "") if tool_kind == KIND_FILESYSTEM_WRITE and parsed_args else ""
         if isinstance(write_target_path, str):
             reviewed_target_fingerprint = (
@@ -704,7 +727,22 @@ class ApprovalMiddleware(FunctionMiddleware):
             remember_choice = response.remember_choice if approved and correlation.resolved_by_event else ""
             reason = response.reason.strip()
             modified_args = response.modified_args
-            status = "user_approved" if approved else "user_rejected"
+            # A judge approval covers exactly the arguments and write target it
+            # reviewed; anything that drifted in between voids it before it
+            # executes. Decided before the trace resolves so the trajectory,
+            # the decision ledger and the tool result tell one story.
+            judge_stale = (
+                approved
+                and relay_enhanced
+                and not correlation.resolved_by_event
+                and self._review_is_stale(
+                    context_arguments=context.arguments,
+                    reviewed_args_snapshot=reviewed_args_snapshot,
+                    write_target_path=write_target_path if isinstance(write_target_path, str) else "",
+                    reviewed_target_fingerprint=reviewed_target_fingerprint,
+                )
+            )
+            status = "judge_stale" if judge_stale else ("user_approved" if approved else "user_rejected")
             decision["status"] = status
             if reason:
                 decision["reason"] = reason
@@ -712,9 +750,9 @@ class ApprovalMiddleware(FunctionMiddleware):
                 decision.pop("reason", None)
             if approval_trace is not None:
                 await approval_trace.resolved(
-                    approved=approved,
+                    approved=approved and not judge_stale,
                     decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE,
-                    reason_code="user_reason" if reason else "",
+                    reason_code="judge_stale" if judge_stale else ("user_reason" if reason else ""),
                     arguments_modified=bool(modified_args),
                     judge_audit=judge_audit,
                 )
@@ -730,32 +768,23 @@ class ApprovalMiddleware(FunctionMiddleware):
                 await self._publish_abandoned(request_id, ended_by=exc)
             raise
 
+        if judge_stale:
+            # The judge approved arguments that are no longer the ones about to
+            # run (a hook rewrote them, or the write target changed on disk
+            # mid-review).  The approval is void; the model sees an error and a
+            # retry re-enters review fresh.
+            context.metadata[_APPROVAL_REJECTED_KEY] = True
+            context.metadata[_REJECTION_SOURCE_KEY] = "stale_review"
+            message = (
+                "Auto-approval withdrawn: the reviewed arguments or write target "
+                "changed during review. Retry the tool call to have the current "
+                "version reviewed."
+            )
+            context.metadata[_REJECTION_MESSAGE_KEY] = message
+            context.result = f"Error: {message}"
+            return
+
         if approved:
-            if (
-                relay_enhanced
-                and not correlation.resolved_by_event
-                and self._review_is_stale(
-                    context_arguments=context.arguments,
-                    reviewed_args_snapshot=reviewed_args_snapshot,
-                    write_target_path=write_target_path if isinstance(write_target_path, str) else "",
-                    reviewed_target_fingerprint=reviewed_target_fingerprint,
-                )
-            ):
-                # The judge approved arguments that are no longer the ones
-                # about to run (a hook rewrote them, or the write target
-                # changed on disk mid-review).  The approval is void; the
-                # model sees an error and a retry re-enters review fresh.
-                decision["status"] = "judge_stale"
-                context.metadata[_APPROVAL_REJECTED_KEY] = True
-                context.metadata[_REJECTION_SOURCE_KEY] = "stale_review"
-                message = (
-                    "Error: Auto-approval withdrawn: the reviewed arguments or "
-                    "write target changed during review. Retry the tool call to "
-                    "have the current version reviewed."
-                )
-                context.metadata[_REJECTION_MESSAGE_KEY] = message
-                context.result = message
-                return
             targets = reuse.targets if reuse is not None else None
             if modified_args:
                 context.arguments = {**parsed_args, **modified_args}
@@ -832,9 +861,9 @@ class ApprovalMiddleware(FunctionMiddleware):
         self,
         *,
         context_arguments: Any,
-        reviewed_args_snapshot: dict[str, Any] | None,
+        reviewed_args_snapshot: Any,
         write_target_path: str,
-        reviewed_target_fingerprint: tuple[int, int] | None,
+        reviewed_target_fingerprint: _TargetFingerprint | None,
     ) -> bool:
         """Whether what a judge approved differs from what is about to run.
 
@@ -843,9 +872,7 @@ class ApprovalMiddleware(FunctionMiddleware):
         This narrows the gap between review and execution — it is not a
         filesystem isolation guarantee.
         """
-        if reviewed_args_snapshot is not None and (
-            not isinstance(context_arguments, dict) or context_arguments != reviewed_args_snapshot
-        ):
+        if reviewed_args_snapshot is not None and context_arguments != reviewed_args_snapshot:
             return True
         if write_target_path:
             current = _write_target_fingerprint(write_target_path, self._workspace_cwd)

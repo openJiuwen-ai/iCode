@@ -276,6 +276,7 @@ async def build_agent(
         todo_tracker = TodoTracker()
 
     from chrys.service.approval.judge import ApprovalJudge
+    from chrys.service.approval.relay_risk import RelayRiskLatch
     from chrys.service.llm.route_sessions import derive_llm_route_session_id
     from chrys.service.profiles.models.resolver import resolve_for_agent, resolve_judge_profile
 
@@ -302,7 +303,13 @@ async def build_agent(
         relay_history_risk=relay_history_risk,
     )
     relay_enhanced = relay_risk_latch or relay_history_risk
-    relay_reviewed_model = judge_fallback.model_id
+    # Only a relay-routed working model is named to the judge; with latched
+    # history risk alone the review prompt describes the conversation's
+    # relay-sourced content instead of claiming the current model is relayed.
+    relay_reviewed_model = judge_fallback.model_id if relay_risk_latch else ""
+    # Run-time discoveries (a sub-agent whose own model is a relay) latch the
+    # same session fact here and escalate this build's middlewares at once.
+    relay_risk_flag = RelayRiskLatch(on_set=lambda: setattr(session.runtime_meta, "relay_risk_seen", True))
     if judge_profile is None:
         approval_judge = None
     else:
@@ -349,6 +356,7 @@ async def build_agent(
             approval_judge=approval_judge,
             relay_enhanced=relay_enhanced,
             relay_reviewed_model=relay_reviewed_model,
+            relay_risk_latch=relay_risk_flag,
             session_dir=session_dir,
             mcp_cache=mcp_cache,
             hook_manager=staged.hook_manager,

@@ -95,6 +95,7 @@ if TYPE_CHECKING:
     from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.policy import ApprovalMode
+    from chrys.service.approval.relay_risk import RelayRiskLatch
     from chrys.service.context.compaction.spill import SpillQuota
     from chrys.service.hooks.manager import HookManager
     from chrys.service.mcp.cache import MCPConnectionCache
@@ -139,6 +140,8 @@ class AgentNodeResources:
     """Resolves the sub-agent profiles a node's agent references; none registers no sub-agent tools."""
     model_registry: ModelProfileRegistry | None
     """Resolves a sub-agent's own model binding; the node's model is the fallback."""
+    relay_risk_latch: RelayRiskLatch | None = None
+    """The session's one-way relay-risk latch; a relay-routed node child sets it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +264,7 @@ async def build_kernel_node(
         workspace_roots=workspace_roots,
         relay_enhanced=relay_enhanced,
         relay_reviewed_model=relay_reviewed_model,
+        relay_risk_latch=res.relay_risk_latch,
         turn_context=turn_context,
     )
     if sub_agent_tools is not None:
@@ -437,6 +441,7 @@ async def build_kernel_node(
             approval_judge=res.approval_judge_for(model),
             relay_enhanced=relay_enhanced,
             relay_reviewed_model=relay_reviewed_model,
+            relay_risk_latch=res.relay_risk_latch,
             approval_log_dir=res.session_dir / "approvals",
             workspace_cwd=res.workspace.primary_cwd,
             dev_mode=False,
@@ -596,6 +601,7 @@ async def _register_sub_agents(
     turn_context: TurnContextHolder,
     relay_enhanced: bool,
     relay_reviewed_model: str,
+    relay_risk_latch: RelayRiskLatch | None = None,
 ) -> SubAgentTools | None:
     """Register the profile's sub-agents as tools of this node, as the chat builder does for its agent.
 
@@ -619,6 +625,7 @@ async def _register_sub_agents(
         approval_judge=res.approval_judge_for(model),
         relay_enhanced=relay_enhanced,
         relay_reviewed_model=relay_reviewed_model,
+        relay_risk_latch=relay_risk_latch,
         workspace_roots=workspace_roots,
         approval_log_dir=res.session_dir / "approvals",
         mcp_cache=res.mcp_cache,

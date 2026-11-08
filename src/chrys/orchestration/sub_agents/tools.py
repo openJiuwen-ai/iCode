@@ -132,6 +132,7 @@ if TYPE_CHECKING:
     from chrys.orchestration.sub_agents.acp_policy import AcpSubAgentPolicy
     from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
     from chrys.service.approval.judge import ApprovalJudge
+    from chrys.service.approval.relay_risk import RelayRiskLatch
     from chrys.service.context.compaction import PreCompactInfo
     from chrys.service.context.compaction.last_words import CompactionStatus
     from chrys.service.context.compaction.spill import SpillQuota
@@ -319,6 +320,7 @@ class SubAgentTools:
         approval_judge: ApprovalJudge | None = None,
         relay_enhanced: bool = False,
         relay_reviewed_model: str = "",
+        relay_risk_latch: RelayRiskLatch | None = None,
         workspace_roots: list[str] | None = None,
         approval_log_dir: Path | None = None,
         mcp_cache: MCPConnectionCache | None = None,
@@ -357,6 +359,10 @@ class SubAgentTools:
         # enhanced review by delegating to a direct-connected child model.
         self._relay_enhanced = relay_enhanced
         self._relay_reviewed_model = relay_reviewed_model
+        # The build's one-way latch: set when any child turns out to run on a
+        # relay model, so the parent's own approval middleware escalates for
+        # its later calls in the same turn.
+        self._relay_latch = relay_risk_latch
         self._workspace_roots = list(workspace_roots or [])
         self._approval_log_dir = approval_log_dir
         self._mcp_cache = mcp_cache
@@ -1116,7 +1122,7 @@ class SubAgentTools:
                     trajectory_boundary_operation_id=(
                         sub_agent_trace.operation_id if sub_agent_trace is not None else None
                     ),
-                    relay_enhanced=self._relay_enhanced,
+                    relay_enhanced=self._relay_enhanced or bool(self._relay_latch),
                     relay_reviewed_model=self._relay_reviewed_model,
                 )
 
@@ -1625,6 +1631,12 @@ class SubAgentTools:
                             ),
                         )
                     )
+                    if active_profile is not None and active_profile.is_relay and self._relay_latch is not None:
+                        # The child runs on a relay: its output will land in
+                        # this conversation, so latch the risk for the
+                        # parent's own later calls and the session state
+                        # before any of its content is produced.
+                        self._relay_latch.set()
                     # Approval middleware — gates sub-agent tool calls with
                     # user approval via the same EventBus flow as the main agent.
                     # Reads current approval_mode/judge off self so mid-session
@@ -1633,9 +1645,10 @@ class SubAgentTools:
                     approval_policy = self._approval_policies.get(tool_name)
                     if approval_policy is not None:
                         # The child's own resolved model decides its relay risk,
-                        # merged with the parent build's inherited flag here.
+                        # merged with the parent build's (possibly latched)
+                        # inherited flag here.
                         sub_relay_enhanced, sub_reviewed_model, sub_judge = _sub_agent_relay_review(
-                            self._relay_enhanced,
+                            self._relay_enhanced or bool(self._relay_latch),
                             self._relay_reviewed_model,
                             active_profile,
                             self._approval_judge,

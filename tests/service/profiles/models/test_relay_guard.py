@@ -240,6 +240,41 @@ def test_write_of_the_judge_without_any_relays_stays_free() -> None:
     assert check_profile_write([_judge()], renamed_mock, "judge") == []
 
 
+def test_write_renaming_the_judge_away_from_its_name_selector_is_rejected() -> None:
+    # The judge is selected by unique name; renaming it would leave the saved
+    # selector dangling, so the write itself is refused.
+    renamed = _judge(name="Renamed")
+
+    issues = check_profile_write([_relay(), _judge(name="Judge")], renamed, "Judge")
+
+    assert _codes(issues) == ["judge_unresolved"]
+
+
+def test_write_renaming_the_judge_selected_by_id_stays_free() -> None:
+    # An id selector survives a rename; the judge only re-qualifies itself.
+    renamed = _judge(name="Renamed")
+
+    assert check_profile_write([_relay(), _judge(name="Judge")], renamed, "judge") == []
+
+
+def test_write_creating_a_duplicate_of_the_judges_name_is_rejected() -> None:
+    # A second profile with the judge's name makes the unique-name selector
+    # ambiguous — the same dangling selection as a rename.
+    duplicate = _judge(id="other", name="Judge")
+
+    issues = check_profile_write([_relay(), _judge(name="Judge")], duplicate, "Judge")
+
+    assert _codes(issues) == ["judge_unresolved"]
+
+
+def test_write_repairing_an_already_unresolved_selection_stays_open() -> None:
+    # The selection was already broken before this write; the write must not
+    # be blocked, or the future judge could never be created.
+    third = _judge(id="third", name="Third")
+
+    assert check_profile_write([_relay()], third, "missing") == []
+
+
 def test_delete_of_the_judge_names_the_dependency() -> None:
     issues = check_profile_delete([_relay(), _judge()], "judge", "judge")
 

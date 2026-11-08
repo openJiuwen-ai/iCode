@@ -133,6 +133,7 @@ async def _make_ctx(
     sub_outcomes: list[MockResponse | BaseException],
     sub_stream: bool = False,
     sub_builtins: list[str] | None = None,
+    sub_is_relay: bool = False,
     search_respect_gitignore: bool = True,
     sub_skills: SkillsConfig | None = None,
     sub_extensions: list[str] | None = None,
@@ -197,6 +198,7 @@ async def _make_ctx(
         max_context_tokens=sub_max_context_tokens,
         max_output_tokens=sub_max_output_tokens,
         chat_options='{"store": true}' if sub_responses_store else "",
+        is_relay=sub_is_relay,
     )
     model_registry.register(main_profile)
     model_registry.register(sub_profile)

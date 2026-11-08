@@ -97,6 +97,7 @@ if TYPE_CHECKING:
     from chrys.foundation.models.workspace import Workspace
     from chrys.orchestration.sub_agents.tools import SubAgentTools
     from chrys.service.approval.judge import ApprovalJudge
+    from chrys.service.approval.relay_risk import RelayRiskLatch
     from chrys.service.approval.turn_context import TurnContextHolder
     from chrys.service.context.compaction import CompactionInfo, CompressInfo, PreCompactInfo
     from chrys.service.context.compaction.last_words import CompactionStatus
@@ -258,6 +259,7 @@ async def build_agent(
     approval_judge: ApprovalJudge | None = None,
     relay_enhanced: bool = False,
     relay_reviewed_model: str = "",
+    relay_risk_latch: RelayRiskLatch | None = None,
     session_dir: Path | None = None,
     mcp_cache: MCPConnectionCache | None = None,
     hook_manager: HookManager | None = None,
@@ -573,9 +575,12 @@ async def build_agent(
                 approval_judge=approval_judge,
                 # Sub-agents inherit the parent's relay enhancement: a relay
                 # parent cannot slip a protected call past review via a
-                # direct-connected child model.
+                # direct-connected child model. The latch flows both ways: a
+                # relay-routed child sets it, so the parent's later calls in
+                # the same turn review strictly too.
                 relay_enhanced=relay_enhanced,
                 relay_reviewed_model=relay_reviewed_model,
+                relay_risk_latch=relay_risk_latch,
                 workspace_roots=workspace_roots,
                 approval_log_dir=approval_log_dir,
                 mcp_cache=mcp_cache,
@@ -953,6 +958,7 @@ async def build_agent(
                 dev_mode=settings.dev_mode,
                 relay_enhanced=relay_enhanced,
                 relay_reviewed_model=relay_reviewed_model,
+                relay_risk_latch=relay_risk_latch,
                 hook_manager=hook_manager,
                 profile_name=profile.name,
                 session_archive_read_roots=(

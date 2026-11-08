@@ -12,7 +12,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Literal
 
 from chrys.app.tui.screens.main.model_indicator import model_lock_notice
-from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, running_model
 from chrys.foundation.config.errors import config_error_display
 from chrys.foundation.events.types import SetApprovalMode
 from chrys.foundation.i18n import msg
@@ -85,6 +85,28 @@ def resolve_approval_mode(arg: str, current: ApprovalMode) -> ApprovalMode:
     }[current]
 
 
+def _session_relay_risk(state: MainScreenState, services: MainScreenServices) -> bool:
+    """Whether the current session carries relay risk, like its build computes it.
+
+    Keys on the model the current build actually runs (an agent's bound model
+    or a session override can be a relay while the globally active profile is
+    direct, and the reverse), plus the chat session's latched
+    ``relay_risk_seen``, which stays set after a switch to a direct model
+    because relay-sourced content stays in the conversation. Only the real
+    chat engine carries that session; any other engine provider state
+    contributes no latch.
+    """
+    from chrys.orchestration.engine.engine import AgentEngine
+    from chrys.service.profiles.models.resolver import resolve_profile_selector
+
+    selector = running_model(state, services)
+    registry = services.model_registry
+    profile = resolve_profile_selector(registry, selector) if selector and registry is not None else None
+    engine = services.engine_provider() if services.engine_provider is not None else None
+    latched = engine.session.runtime_meta.relay_risk_seen if isinstance(engine, AgentEngine) else False
+    return latched or (profile is not None and profile.is_relay)
+
+
 def _canonical_active_model_profile_id(
     model_registry: ModelProfileRegistry | None,
     profile_selector: str = "",
@@ -124,15 +146,8 @@ class RuntimeConfigController:
     def on_approval_badge_clicked(self) -> None:
         """Open the approval mode picker modal."""
         from chrys.app.tui.screens.dialogs.approval.mode import ApprovalModeScreen
-        from chrys.service.profiles.models.resolver import resolve_active_profile
 
-        registry = self._services.model_registry
-        settings_handle = self._services.settings_handle
-        relay_active = (
-            registry is not None
-            and settings_handle is not None
-            and resolve_active_profile(registry, settings_handle.loaded.settings).is_relay
-        )
+        relay_active = _session_relay_risk(self._state, self._services)
 
         def _on_result(result: ApprovalMode | None) -> None:
             if result is not None:

@@ -4,9 +4,19 @@
 
 from __future__ import annotations
 
+import pytest
+
 from chrys.orchestration.sub_agents.tools import _sub_agent_relay_review
 from chrys.service.approval.judge import ApprovalJudge
 from chrys.service.profiles.models.schema import ModelProfile
+
+
+@pytest.fixture
+def fast_sub_agent_controller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make :class:`KernelSubAgentPolicy` use minimal retries + no backoff."""
+    from tests.orchestration.sub_agents._pipeline import use_fast_sub_agent_policy
+
+    use_fast_sub_agent_policy(monkeypatch)
 
 
 def _profile(**overrides: object) -> ModelProfile:
@@ -118,3 +128,32 @@ def test_relay_parent_and_relay_child_keep_an_independent_judge() -> None:
     assert enhanced is True
     assert reviewed_model == "relay-model"
     assert judge_out is judge
+
+
+async def test_relay_sub_agent_latches_the_parent_session(tmp_path, fast_sub_agent_controller, agent_engine) -> None:
+    """A relay-routed child latches relay risk into the parent session (engine-driven)."""
+    from chrys.foundation.events.types import UserMessage
+    from chrys.service.llm.mock import MockResponse
+    from tests.orchestration.sub_agents._pipeline import _make_ctx, _sub_tool_call
+
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[
+            _sub_tool_call("explore something"),
+            MockResponse(text="Final summary after sub-agent."),
+        ],
+        sub_outcomes=[MockResponse(text="sub-agent result")],
+        sub_is_relay=True,
+        agent_engine=agent_engine,
+    )
+    try:
+        assert ctx.engine.session.runtime_meta.relay_risk_seen is False
+
+        await ctx.bus.publish(UserMessage(text="go"))
+        await ctx.wait_for_idle()
+
+        # The parent itself runs direct; the relay child's run latched the
+        # session fact that survives saves and later rebuilds.
+        assert ctx.engine.session.runtime_meta.relay_risk_seen is True
+    finally:
+        await ctx.cleanup()

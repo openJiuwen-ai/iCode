@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from chrys.service.agent_middleware.injection import InjectionMiddleware
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
+    from chrys.service.approval.relay_risk import RelayRiskLatch
     from chrys.service.approval.reuse_binding import ApprovalReuseBinding
     from chrys.service.approval.turn_context import TurnContextHolder
     from chrys.service.context.compaction import CompactionInfo, CompressInfo, PreCompactInfo
@@ -134,6 +135,7 @@ class ApprovalInputs(TypedDict):
     extension_hooks: NotRequired[ExtensionToolHooks | None]
     relay_enhanced: NotRequired[bool]
     relay_reviewed_model: NotRequired[str]
+    relay_risk_latch: NotRequired[RelayRiskLatch | None]
 
 
 class AskUserInputs(TypedDict):

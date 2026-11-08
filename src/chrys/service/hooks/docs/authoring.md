@@ -142,9 +142,11 @@ status, so normal tool returns such as validation failures or rejected calls
 can report `failed: true` while keeping `error: false`.
 
 `result.approval_rejected` remains a compatibility flag for calls blocked
-before execution by either user rejection or a hook. Use
-`result.rejection_source` (`user` or `hook`) or `result.hook_denied` when
-you need to distinguish those cases.
+before execution by user rejection, a hook, or a withdrawn auto-approval.
+Use `result.rejection_source` (`user`, `hook`, or `stale_review` — the last
+means a judge approval was withdrawn because the reviewed arguments or write
+target changed during review) or `result.hook_denied` when you need to
+distinguish those cases.
 
 ### `approval_requested` / `approval_resolved`
 
