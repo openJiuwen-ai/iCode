@@ -269,7 +269,9 @@ async def test_destructive_selection_opens_picker_at_clicked_turn(agent_engine, 
         await click_message_rollback(session, selected)
         await wait_for(lambda: isinstance(session.app.screen, RollbackModal), pilot=session.pilot)
         modal = session.app.screen
-        await wait_for(lambda: bool(list(modal.query("#rollback-turn-select"))), pilot=session.pilot)
+        # The picker joins the DOM hidden, before its Mount applies the
+        # selection (Select.NULL until then): wait for the revealed content.
+        await wait_for(lambda: modal._content_ready, pilot=session.pilot, description="rollback picker ready")
         assert modal.query_one("#rollback-turn-select", Select).value == target
         assert session.engine.current_turn_number == 3
         await session.pilot.press("escape")
