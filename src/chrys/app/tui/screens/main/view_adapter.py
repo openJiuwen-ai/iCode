@@ -44,6 +44,7 @@ from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.widgets import PromptDraft
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
+from chrys.app.tui.widgets.chat.messages import ERROR_RETRY_ACTION
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
@@ -93,6 +94,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.main.state import MainScreenState
     from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffFocus, DiffLoadResult
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
+    from chrys.foundation.i18n import MessageRef
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_executions import HookExecutionView
     from chrys.foundation.models.invocations import ContentChannel
@@ -844,7 +846,7 @@ class MainScreenViewAdapter:
     # Chat transcript rendering
     # -------------------------------------------------------------- #
 
-    async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+    async def add_error(self, message: str, *, action_label: MessageRef | str | None = ERROR_RETRY_ACTION) -> None:
         await self._screen.query_one(ChatPanel).add_error(message, action_label=action_label)
 
     async def add_system(self, text: str, *, key: str | None = None) -> None:

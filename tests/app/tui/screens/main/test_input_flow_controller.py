@@ -18,6 +18,7 @@ from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
     GcAbsorbRequested,
 )
+from chrys.app.tui.widgets.chat.messages import ERROR_RETRY_ACTION
 from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
@@ -414,7 +415,7 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
 ) -> None:
     bus = EventBus()
     state = MainScreenState()
-    order: list[str] = []
+    order: list[object] = []
 
     class _FlowView(_FakeInputFlowView):
         def start_run_status(self, label: MessageRef | str) -> None:
@@ -449,8 +450,8 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
             order.append("unlock")
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
-            order.append(f"error:{message}:{action_label}")
+        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+            order.append(("error", message, action_label))
 
     def query_one(cls: object) -> object:
         if cls.__name__ == "StatusBar":
@@ -505,7 +506,7 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
         severity = "warning" if error_code == "sub_agent_paused" else "error"
         title = "Warning" if error_code == "sub_agent_paused" else "Retry not started"
         assert f"notify:{title}:retry failed:{severity}" in order
-        assert not any(item.startswith("error:") for item in order)
+        assert not any(isinstance(item, tuple) and item[0] == "error" for item in order)
         assert "hide_status_action" not in order
         assert "status:Resuming" not in order
         assert f"retry-note:{text}" not in view.calls
@@ -517,7 +518,7 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
         assert input_bar._retry_label == ("Continue" if initial_retry_mode else "")
     else:
         assert order.index("hide_status_action") < order.index("status:Resuming")
-        assert order.index("status:Resuming") < order.index("error:retry failed:Retry")
+        assert order.index("status:Resuming") < order.index(("error", "retry failed", ERROR_RETRY_ACTION))
         assert state.submit.blocked is False
         assert input_bar.retry_mode is True
         if text:
@@ -884,7 +885,7 @@ def test_text_arriving_while_deferred_text_replays_waits_behind_it() -> None:
 def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> None:
     bus = EventBus()
     state = MainScreenState()
-    order: list[str] = []
+    order: list[object] = []
 
     class _FlowView(_FakeInputFlowView):
         async def render_user_message(self, text: str, *, created_at: object, contents: object) -> None:
@@ -906,8 +907,8 @@ def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> 
             order.append("unlock")
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
-            order.append(f"error:{message}:{action_label}")
+        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+            order.append(("error", message, action_label))
 
     def query_one(cls: object) -> object:
         if cls.__name__ == "StatusBar":
@@ -949,7 +950,7 @@ def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> 
     asyncio.run(_run())
 
     user_index = order.index("user:hello")
-    error_index = order.index("error:failed:hello:Retry")
+    error_index = order.index(("error", "failed:hello", ERROR_RETRY_ACTION))
     assert user_index < error_index
     assert view.user_contents == [["hello", _PREPARED_IMAGE]]
     assert state.submit.blocked is False

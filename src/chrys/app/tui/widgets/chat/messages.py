@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, TypeGuard
+from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple, TypeGuard
 
 from rich.cells import cell_len
 from rich.text import Text
@@ -96,6 +96,8 @@ INTERRUPTED_RETRY_ACTION_MESSAGE = msg(
     "transcript.interrupted.retry_action",
     fallback="Retry",
 )
+ERROR_RETRY_ACTION: Final[MessageRef] = INTERRUPTED_RETRY_ACTION_MESSAGE.bind()
+"""The default inline action of an error card: the same wording the interrupted card's own retry uses."""
 INTERRUPTED_CONTINUE_ACTION_MESSAGE = msg(
     "transcript.interrupted.continue_action",
     fallback="Continue",
