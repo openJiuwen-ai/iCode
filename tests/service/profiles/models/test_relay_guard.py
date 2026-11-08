@@ -10,6 +10,7 @@ from chrys.service.profiles.models.relay_guard import (
     check_profile_delete,
     check_profile_write,
     effective_host,
+    is_qualified_relay_judge,
     issue_text,
     relay_guard_issues,
 )
@@ -170,6 +171,23 @@ def test_same_host_across_protocols_is_not_independent() -> None:
     assert "judge_host_shared" in _codes(relay_guard_issues([_relay(), anthropic_judge], "judge"))
 
 
+@pytest.mark.parametrize(
+    ("relay_url", "judge_url"),
+    [
+        pytest.param("http://127.0.0.1:4000/v1", "http://localhost:11434/v1", id="relay-ip-judge-localhost"),
+        pytest.param("http://localhost:4000/v1", "http://127.0.0.1:11434/v1", id="relay-localhost-judge-ip"),
+        pytest.param("http://[::1]:4000/v1", "http://localhost:11434/v1", id="relay-v6-judge-localhost"),
+    ],
+)
+def test_loopback_spellings_are_one_host(relay_url: str, judge_url: str) -> None:
+    # localhost, 127.0.0.1 and ::1 name the same machine: a relay and a judge
+    # split across two of the spellings are not independent.
+    relay = _relay(base_url=relay_url)
+    judge = _judge(base_url=judge_url, api_key="")
+
+    assert _codes(relay_guard_issues([relay, judge], "judge")) == ["judge_host_shared"]
+
+
 def test_default_base_urls_resolve_before_comparing_hosts() -> None:
     # Both rely on the openai default endpoint through different layers: the
     # relay pins the host explicitly, the judge falls back to the provider
@@ -184,6 +202,24 @@ def test_judge_with_unusable_address_is_rejected() -> None:
     malformed = _judge(base_url="not-a-url")
 
     assert "judge_url_invalid" in _codes(relay_guard_issues([_relay(), malformed], "judge"))
+
+
+def test_relay_with_unusable_address_is_rejected() -> None:
+    # Independence from a relay whose host cannot be determined is not a fact,
+    # so the check fails closed instead of skipping that relay.
+    relay = _relay(base_url="not-a-url")
+
+    assert _codes(relay_guard_issues([relay, _judge()], "judge")) == ["relay_url_unknown"]
+
+
+def test_write_of_relay_with_unusable_address_is_refused() -> None:
+    issues = check_profile_write([_judge()], _relay(base_url="not-a-url"), "judge")
+
+    assert _codes(issues) == ["relay_url_unknown"]
+
+
+def test_judge_not_qualified_while_relay_address_is_unknown() -> None:
+    assert not is_qualified_relay_judge(_judge(), [_relay(base_url="not-a-url")])
 
 
 def test_effective_host_ignores_scheme_and_port() -> None:

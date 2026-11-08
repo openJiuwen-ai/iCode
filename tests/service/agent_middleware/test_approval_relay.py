@@ -367,6 +367,35 @@ async def test_judge_approval_with_unreadable_target_change_is_void(tmp_path, mo
     assert mw.drain_decisions()[0]["status"] == "judge_stale"
 
 
+async def test_judge_approval_with_unreadable_target_throughout_is_void(tmp_path, monkeypatch) -> None:
+    """Two unknown readings are not the fact "unchanged": the probe failing at
+    review and again at execution still voids the approval instead of executing
+    against an unreadable target."""
+    import os
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    target = root / "deploy.sh"
+    real_stat = os.stat
+
+    def _stat(path, *args, **kwargs):
+        if os.fspath(path) == str(target):
+            raise PermissionError("probe denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", _stat)
+
+    bus = EventBus()
+    judge = _FakeJudge()
+    mw = _relay_mw(bus, _require_fs_write(), judge, tmp_path=tmp_path, workspace_root=root)
+    h = await _Harness.attach(bus)
+
+    await h.run(mw, _ctx("write_file", "filesystem.write", {"path": str(target), "content": "x"}))
+
+    assert not h.called
+    assert mw.drain_decisions()[0]["status"] == "judge_stale"
+
+
 async def test_judge_approval_with_string_arguments_executes_when_unchanged(tmp_path) -> None:
     """The staleness snapshot keeps the raw argument shape: unchanged string arguments
     do not void the approval the way a shape-mismatched snapshot would."""

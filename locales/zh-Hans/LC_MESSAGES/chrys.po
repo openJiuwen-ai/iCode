@@ -919,6 +919,13 @@ msgstr "存在中转站模型配置，但未设置审批模型。请先配置一
 msgid "profiles.relay_guard.judge_url_invalid"
 msgstr "审批模型 {judge} 没有可用的服务地址。"
 
+#. English: The relay profile {relay} has no usable service address, so the
+#. approval judge cannot be verified independent of it.
+#. chrys-meta={"fingerprint":"c63937878c94084c4a03961ccb605ff874ff80fbced4c2baf0af0f2ec2540a52","multiline":false,"placeholders":["relay"]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.relay_url_unknown"
+msgstr "中转站配置 {relay} 没有可用的服务地址，因此无法验证审批模型是否独立于它。"
+
 #. English: Reloaded agent and model profile definitions.
 #. chrys-meta={"fingerprint":"e4cbc2b8a17979fc36c60f27fa9f453e43f5437624a290c4cf75a334eabc4462","multiline":false,"placeholders":[]}
 #: src/chrys/service/profiles/reload.py

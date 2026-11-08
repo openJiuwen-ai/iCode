@@ -887,6 +887,13 @@ msgstr ""
 msgid "profiles.relay_guard.judge_url_invalid"
 msgstr ""
 
+#. English: The relay profile {relay} has no usable service address, so the
+#. approval judge cannot be verified independent of it.
+#. chrys-meta={"fingerprint":"c63937878c94084c4a03961ccb605ff874ff80fbced4c2baf0af0f2ec2540a52","multiline":false,"placeholders":["relay"]}
+#: src/chrys/service/profiles/models/relay_guard.py
+msgid "profiles.relay_guard.relay_url_unknown"
+msgstr ""
+
 #. English: Reloaded agent and model profile definitions.
 #. chrys-meta={"fingerprint":"e4cbc2b8a17979fc36c60f27fa9f453e43f5437624a290c4cf75a334eabc4462","multiline":false,"placeholders":[]}
 #: src/chrys/service/profiles/reload.py

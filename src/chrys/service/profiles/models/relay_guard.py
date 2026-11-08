@@ -19,10 +19,11 @@ credential command; a live connectivity check is a separate, explicit
 user action.
 
 Host independence is deliberately conservative: only a different
-effective hostname counts.  The same host under a different path, API
-protocol or model id is not another provider, and a different host is
-still the user's trust declaration (``is_relay == false``), not operator
-authentication.
+effective hostname counts, with the loopback spellings (``localhost``,
+``127.0.0.1``, ``::1``) counting as one host.  The same host under a
+different path, API protocol or model id is not another provider, and a
+different host is still the user's trust declaration
+(``is_relay == false``), not operator authentication.
 """
 
 from __future__ import annotations
@@ -90,6 +91,11 @@ _JUDGE_HOST_SHARED = msg(
 _JUDGE_URL_INVALID = msg(
     "profiles.relay_guard.judge_url_invalid",
     fallback="The approval judge {judge} has no usable service address.",
+)
+_RELAY_URL_UNKNOWN = msg(
+    "profiles.relay_guard.relay_url_unknown",
+    fallback="The relay profile {relay} has no usable service address, so the approval judge "
+    "cannot be verified independent of it.",
 )
 
 
@@ -173,6 +179,15 @@ def _resolve_in_set(profiles: Sequence[ModelProfile], selector: str) -> ModelPro
     return None
 
 
+def _canonical_host(host: str) -> str:
+    """Fold the loopback spellings into one identity.
+
+    ``localhost``, ``127.0.0.1`` and ``::1`` name the same machine, so a
+    relay and a judge split across two of them are not independent.
+    """
+    return "loopback" if host in _LOOPBACK_HOSTS else host
+
+
 def _judge_issues(judge: ModelProfile, relays: Sequence[ModelProfile]) -> list[RelayGuardIssue]:
     issues: list[RelayGuardIssue] = []
     name = _display_name(judge)
@@ -192,9 +207,14 @@ def _judge_issues(judge: ModelProfile, relays: Sequence[ModelProfile]) -> list[R
         return issues
     if not _has_call_credentials(judge, judge_host):
         issues.append(_issue("judge_no_credentials", _JUDGE_NO_CREDENTIALS, judge=name))
+    canonical_judge_host = _canonical_host(judge_host)
     for relay in relays:
         relay_host = effective_host(relay)
-        if relay_host is not None and relay_host == judge_host:
+        if relay_host is None:
+            # Independence from this relay cannot be established at all; that is
+            # a fact against the judge's qualification, not a check to skip.
+            issues.append(_issue("relay_url_unknown", _RELAY_URL_UNKNOWN, relay=_display_name(relay)))
+        elif _canonical_host(relay_host) == canonical_judge_host:
             issues.append(_issue("judge_host_shared", _JUDGE_HOST_SHARED, relay=_display_name(relay), judge=name))
     return issues
 

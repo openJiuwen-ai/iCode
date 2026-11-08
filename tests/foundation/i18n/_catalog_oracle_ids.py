@@ -123,6 +123,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "profiles.relay_guard.judge_unresolved",
     "profiles.relay_guard.judge_unset",
     "profiles.relay_guard.judge_url_invalid",
+    "profiles.relay_guard.relay_url_unknown",
     "controls.reload_applied",
     "controls.reload_drain_failed",
     "controls.reload_drain_cancelled",

@@ -876,7 +876,7 @@ class ApprovalMiddleware(FunctionMiddleware):
             return True
         if write_target_path:
             current = _write_target_fingerprint(write_target_path, self._workspace_cwd)
-            if current != reviewed_target_fingerprint:
+            if current != reviewed_target_fingerprint or current[0] == "unknown":
                 return True
         return False
 
