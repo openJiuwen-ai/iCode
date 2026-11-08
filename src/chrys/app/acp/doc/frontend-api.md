@@ -206,9 +206,10 @@ tool call, a change of channel or the next response starts a new one.
   completion.
 - A turn that fails or is cancelled keeps the answer text it streamed, and a
   model call that already streamed answer text is never retried
-  automatically: the turn fails, and the client can `session/retry`. With
-  text, the model goes on from the kept part. Without text, it asks for the
-  answer again: when the backend drops that answer from history (after
+  automatically: the turn fails, and the client can `session/retry`. The
+  retry drops the kept part first: with text, the model goes on from its last
+  completed tool call with that text; without text, it asks for the answer
+  again. When the backend drops that answer from history (after
   `chrys/turn_started` with `isRetry: true`, before the retry streams
   anything) it sends `chrys/messages_retracted` (`sessionId`, `turnId`,
   `messageIds`) with the `messageId`s that answer went out as, live or in the
@@ -261,7 +262,7 @@ All routed through `ext_method`.
 | `session/switch_agent` | `sessionId`, `agentProfile` | Switch active agent profile in-session. Unknown profile → immediate error; switching to the active profile is a no-op (no 60s wait) whose response still carries the live runtime (model/tools/skills), so it won't blank client state. |
 | `session/set_workspace` | `sessionId`, `primaryCwd` | Change primary workspace cwd. `primaryCwd` is validated strictly (must exist + be a directory, resolved absolutely) like `new`/`load`. Soft-restarts the agent, then pushes `chrys/runtime_update` (skills/MCP/memory/context may change). |
 | `session/skip_sleep` | `sessionId`, `callId` | Finish an active `sleep` tool call early. |
-| `session/retry` | `sessionId`, `text?` | Retry the session's last failed or interrupted turn. Resumes the **same** turn (the response `_meta.chrys.turnId` is the one the original prompt reported, and `chrys/turn_started` carries `isRetry: true`; without `text`, `chrys/messages_retracted` then withdraws the answer the retry drops to ask for it again — see *Streamed text*), opens no new user message, so the response carries no `userMessageId`. `text` is optional guidance persisted as user input inside the resumed turn, not metadata: it goes through the same approval gate and `user_prompt_submit` hooks as a prompt and can be rejected. Refused with `invalid_params` when the session has no retryable turn, and when a turn is running — cancel it first (`session/cancel`), the retry is never queued behind a live turn. |
+| `session/retry` | `sessionId`, `text?` | Retry the session's last failed or interrupted turn. Resumes the **same** turn (the response `_meta.chrys.turnId` is the one the original prompt reported, and `chrys/turn_started` carries `isRetry: true`; `chrys/messages_retracted` then withdraws the cut-off answer the retry drops — see *Streamed text*), opens no new user message, so the response carries no `userMessageId`. `text` is optional guidance persisted as user input inside the resumed turn, not metadata: it goes through the same approval gate and `user_prompt_submit` hooks as a prompt and can be rejected. Refused with `invalid_params` when the session has no retryable turn, and when a turn is running — cancel it first (`session/cancel`), the retry is never queued behind a live turn. |
 | `session/set_config_option` | `sessionId`, `key`, `value` | Persist a supported config key to the user settings document + awaited reload, then push `chrys/runtime_update` (global default; see below). `key` accepts the logical name or its legacy `CHRYS_*` spelling; the response carries all three names (`key` echoed, `envKey`, `settingKey`). The session must be active — it is validated *before* the document write, so a failed request never leaves persisted config mutated. |
 
 `session/set_config_option` accepts `key="approval_auto_review"` with `value="direct"` or `value="formal"`. It writes the user setting `approval.auto_review` (environment alias `CHRYS_APPROVAL_AUTO_REVIEW`), reloads settings, and applies only when the session uses `auto`. The default is `direct`. Individual risk checks use the configured approval model for both checks and any uncertain-action review. This is a global user setting, not a session-local mode; in-flight reviews keep their bound strategy.

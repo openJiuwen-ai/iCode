@@ -20,6 +20,7 @@ from chrys.foundation.events.types import (
     Error,
     InvocationMessage,
     InvocationRetryAttempt,
+    InvocationSteered,
     InvocationToolCallArgsUpdated,
     InvocationToolCallProgress,
     InvocationToolCallResult,
@@ -636,6 +637,7 @@ class TurnBindings:
         self.state.run_failed = False
         self.state.last_error = ""
         self.state.partial_answer = ()
+        self.state.steered = False
         self._interrupt.reset()
         self._retry_wait = None
         self._attempt_trace.reset()
@@ -655,7 +657,8 @@ class TurnBindings:
         await self._flush_carried_compressions()
 
     async def succeeded(self, result: AgentResponse[Any]) -> None:
-        if not self._interrupt.is_interrupted:
+        # An accepted steer drops this answer even when it landed first: never publish it as the outcome.
+        if not self._interrupt.is_interrupted and self.backend.active_abort_cause is not AbortCause.STEER:
             await self._finish_content("completed")
             await self._publish_response_text(result)
 
@@ -670,6 +673,11 @@ class TurnBindings:
     async def failed(self, e: Exception) -> None:
         if self._interrupt.is_interrupted:
             self.state.was_interrupted = True
+            return
+        if self.backend.active_abort_cause is AbortCause.STEER:
+            # An accepted steer gives the pass up however it ends (here while
+            # sub-agents stopped first): the turn goes on, so nothing says it failed.
+            logger.warning("Steered pass failed before the steer stopped it: %s", clean_error_message(e))
             return
         self.state.run_failed = True
         self.state.last_error = clean_error_message(e)
@@ -698,13 +706,27 @@ class TurnBindings:
         logger.debug("Turn traceback:\n%s", tb)
 
     async def finished(self) -> None:
+        # The answer the pass showed, taken before a steer's boundary drops it
+        # from the projector: the turn runner settles it either way.
+        partial_answer = self._projector.take_unlanded_answer() if self._projector is not None else ()
         try:
             # An interrupted or cancelled pass publishes no outcome: its open
-            # segment ends here, keeping the text it showed.
+            # segment ends here, keeping the text it showed. A steered pass
+            # gives up the response it was streaming instead, as a retry does.
             interrupted = self._interrupt.is_interrupted or self.state.was_interrupted
-            await self._finish_content("interrupted" if interrupted else "completed")
-            if self._interrupt.is_interrupted and self._hosted_bridge is not None:
-                await self._hosted_bridge.attempt_rejected("Execution interrupted", status=HostedToolStatus.INTERRUPTED)
+            # Decided once: what follows (a Stop, an owner closing) cannot take back what this gives up.
+            self.state.steered = self.backend.active_abort_cause is AbortCause.STEER
+            if self.state.steered:
+                if self._projector is not None:
+                    await self._projector.on_retry_boundary()
+                # Its hosted cards close first, even when the attempt ended before the interrupt:
+                # frontends end the pass on InvocationSteered.
+                await self._reject_hosted_cards()
+                await self._emitter.publish(InvocationSteered(origin=self._emitter.origin, session_id=self._session_id))
+            else:
+                await self._finish_content("interrupted" if interrupted else "completed")
+                if self._interrupt.is_interrupted:
+                    await self._reject_hosted_cards()
         finally:
             # Close can cancel the awaits above. The reset must not erase an
             # interrupt that arrived while they ran.
@@ -712,8 +734,7 @@ class TurnBindings:
                 self.state.was_interrupted = True
             if self._response_validation is not None:
                 self._response_validation.set_observation_hook(None)
-            if self._projector is not None:
-                self.state.partial_answer = self._projector.take_unlanded_answer()
+            self.state.partial_answer = partial_answer
             self._projector = None
             self._interrupt.reset()
             self._retry_wait = None
@@ -722,6 +743,11 @@ class TurnBindings:
                 self._invocation_publishers.unbind(self._bound_emitter.origin)
             self._bound_emitter = None
             self.approval.bind_publisher(None)
+
+    async def _reject_hosted_cards(self) -> None:
+        """End the hosted cards of a pass stopped before they finished."""
+        if self._hosted_bridge is not None:
+            await self._hosted_bridge.attempt_rejected("Execution interrupted", status=HostedToolStatus.INTERRUPTED)
 
     async def _flush_carried_compressions(self) -> None:
         """Commit a prior failed pass's queued folds before retry snapshots.
@@ -806,8 +832,15 @@ class TurnBindings:
             )
         )
 
-    async def _response_ready(self, response: ChatResponse) -> None:
-        """The kernel landed a response: the pass projector shows what it did not stream."""
+    async def _response_ready(self, response: ChatResponse, final: bool) -> None:
+        """The kernel landed a response: the pass projector shows what it did not stream.
+
+        A *final* one is the pass's complete answer: from here on a steer no
+        longer drops it (the attempt may still run its after-run work, such
+        as compaction).
+        """
+        if final:
+            self.backend.answer_landed()
         if self._projector is not None:
             shown = self._hosted_bridge.text_shown if self._hosted_bridge is not None else None
             await self._projector.response_ready(response, shown=shown)
@@ -936,9 +969,9 @@ class TurnBindings:
         reminders: tuple[str, ...] = (),
         preparation: PreparationTrace | None = None,
         target_turn_id: str | None = None,
-    ) -> None:
-        """Queue text for injection before the next model call."""
-        self._injection.queue(
+    ) -> QueuedInjection:
+        """Queue text for injection before the next model call; the queued item is its handle."""
+        return self._injection.queue(
             text,
             created_at=created_at,
             injection_id=injection_id,
@@ -946,6 +979,10 @@ class TurnBindings:
             preparation=preparation,
             target_turn_id=target_turn_id,
         )
+
+    def injection_pending(self, injection: QueuedInjection) -> bool:
+        """Whether *injection* still waits for the next model call."""
+        return self._injection.is_pending(injection)
 
     def cancel_injection(self, injection_id: str) -> QueuedInjection | None:
         """Remove a still-pending injection; returns it, or None when too late."""

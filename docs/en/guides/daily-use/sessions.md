@@ -39,7 +39,7 @@ The terminal tab shows your latest message, or the session title once iCode upda
 
 A task you stop shows no mark, and the mark clears when you start the next task. Some terminals do not show tab titles.
 
-When you stop a task or it fails, the part of the reply that already appeared stays in the conversation and in the saved session, and the agent reads it when you send your next message. If you click **Retry** or **Continue** without typing anything instead, the agent writes the reply again: when it starts, the text it writes again is removed, and tool calls stay.
+When you stop a task or it fails, the part of the reply that already appeared stays in the conversation and in the saved session. If you click **Retry** or **Continue**, that part is removed first and the agent picks up after its last completed tool call. If you typed a message before clicking, the agent reads it there and goes on from it; if not, the agent writes the reply again. Tool calls stay. If you press **Enter** instead, your message starts a new task: the part of the reply stays, and the agent reads it.
 
 ## Ask a side question
 

@@ -167,6 +167,7 @@ def _make_input_flow_controller(
         handle_agent_content=handle_agent_content or _default_handle_agent_content,
         handle_error=handle_error or _default_handle_error,
         handle_turn_event=_unused_turn_event,
+        handle_answer_withdrawn=_unused_turn_event,
         set_agent_running=_set_agent_running,
         set_has_messages=_set_has_messages,
         clear_workspace_marker=lambda: setattr(state.workspace_marker, "original_cwd", None),

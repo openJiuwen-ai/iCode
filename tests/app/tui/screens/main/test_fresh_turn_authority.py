@@ -345,25 +345,28 @@ class _UnansweredNoteClient(MockChatClient):
     """The first turn does work and fails; the call carrying the note fails before output; the next prompt answers."""
 
     def __init__(self, route: str, target: Path) -> None:
-        first = (
-            MockResponse(text="Partial answer", chunk_delay=0)
-            if route == "retry"
-            else MockResponse(
+        work = [
+            MockResponse(
                 tool_calls=[("write_file", "edit", {"path": str(target), "content": "after", "overwrite": True})]
             )
-        )
-        super().__init__([first, MockResponse(text="unused"), MockResponse(text="New answer", chunk_delay=0)])
+        ]
+        if route == "retry":
+            # The note drops this answer, as a Continue does: the edit stays the turn's work.
+            work.append(MockResponse(text="Partial answer", chunk_delay=0))
+        super().__init__([*work, MockResponse(text="unused"), MockResponse(text="New answer", chunk_delay=0)])
         self.route = route
+        self.note_call = len(work) + 1
+        """The call carrying the note."""
 
     async def _stream_updates(
         self, resp: MockResponse, model_id: str, finish_reason: FinishReasonLiteral | FinishReason
     ) -> AsyncIterable[ChatResponseUpdate]:
         call = self.call_count
-        if call == 2:
+        if call == self.note_call:
             raise _ProviderRefusal("the call carrying the note fails before output")
         async for update in super()._stream_updates(resp, model_id, finish_reason):
             yield update
-        if call == 1 and self.route == "retry":
+        if call == self.note_call - 1 and self.route == "retry":
             raise _ProviderRefusal("the first turn fails after its answer")
 
 
@@ -478,7 +481,10 @@ async def test_unanswered_note_leaves_the_transcript_by_its_history_item(
             await wait_for(lambda: not main._state.run.agent_running, pilot=pilot, description="first turn ended")
             main._input_flow.request_retry("Unanswered note")
             await wait_for(
-                lambda: client.call_count == 2, pilot=pilot, timeout=ENGINE_TURN_TIMEOUT, description="retry call"
+                lambda: client.call_count == client.note_call,
+                pilot=pilot,
+                timeout=ENGINE_TURN_TIMEOUT,
+                description="retry call",
             )
             await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
         history = engine.current.require_loaded().bindings.backend.history_state["messages"]
@@ -498,7 +504,10 @@ async def test_unanswered_note_leaves_the_transcript_by_its_history_item(
 
         main._submit_user_text("New question")
         await wait_for(
-            lambda: client.call_count == 3, pilot=pilot, timeout=ENGINE_TURN_TIMEOUT, description="new model call"
+            lambda: client.call_count == client.note_call + 1,
+            pilot=pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="new model call",
         )
         await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
         await wait_for(

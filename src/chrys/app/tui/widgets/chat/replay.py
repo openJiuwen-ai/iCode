@@ -1342,7 +1342,7 @@ class HistoryReplayRenderer:
         """Replay a single assistant message, preserving text/thinking/tool-call order."""
         replay_widgets = widgets if widgets is not None else []
         pending_text: list[tuple[str, str | None]] = []
-        # The segment the pending text was shown in: one bubble per segment, as a bare Continue may withdraw each.
+        # The segment the pending text was shown in: one bubble per segment, as a Continue or steer may withdraw each.
         pending_segment: str | None = None
         pending_tools: list[ReplayToolCall | dict[str, Any]] = []
         pending_thinking: list[str] = []

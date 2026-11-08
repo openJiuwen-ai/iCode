@@ -11,22 +11,20 @@ a failure or an interrupt after it ends the turn without sending the request
 again, and the saved history keeps the partial answer ahead of the turn's
 status marker. ``icode run`` shows none of it while it streams, so there the
 request is sent again and the text the retry gave up is neither shown nor kept.
-A bare Continue later drops the kept answer to ask for it again, and names its
-segments in an ``InvocationAnswerWithdrawn`` before it sends that request.
+A Continue later drops the kept answer, to ask for it again or to go on from
+the note it carries, and names its segments in an ``InvocationAnswerWithdrawn``
+before it sends that request.
 """
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from unittest.mock import create_autospec
 
 import pytest
 
-import chrys.orchestration.engine.build.builder as builder_module
 from chrys.foundation.errors import ProviderResponseError, is_retryable
-from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
     InvocationAnswerWithdrawn,
@@ -42,167 +40,27 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.session_surface import SessionSurface
-from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.retry import StreamStall
-from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, ContextProvider
+from chrys.kernel import ChatResponse, Content, ContextProvider
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.invoker.content_projection import ContentProjector
 from chrys.service.context.providers.history import CompressibleHistoryProvider
 from chrys.service.llm.mock import MockChatClient, MockResponse
-from chrys.service.profiles.models.registry import ModelProfileRegistry
-from chrys.service.profiles.models.schema import ModelProfile
-from chrys.service.state.store import JsonFileStateStore
-from tests.orchestration.engine.run._engine_run_helpers import _PROFILE, _make_registry
-from tests.support.event_capture import collect_events
-from tests.support.pipeline_helpers import echo_tool, make_mock_settings_and_registry
-from tests.support.tool_packs import install_tools
+from tests.orchestration.engine.run._streaming_helpers import (
+    _HeldStreamClient,
+    _marker,
+    _saved_assistant_messages,
+    _start,
+    _Started,
+    _texts,
+    _turn_events,
+    _wait_shown,
+)
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
-
-    from chrys.orchestration.engine.engine import AgentEngine
-
-_EVENT_TYPES: tuple[type, ...] = (
-    InvocationAnswerWithdrawn,
-    InvocationContentAbandoned,
-    InvocationContentDelta,
-    InvocationContentFinished,
-    InvocationMessage,
-    InvocationToolCallStart,
-    InvocationRetryAttempt,
-    Error,
-)
-
-
-class _HeldStreamClient(MockChatClient):
-    """Holds its first stream after the first text update until released, then continues or fails.
-
-    *then* streams right after that text, before the hold. *hold_after* names
-    the content type whose first update the stream holds after.
-    """
-
-    def __init__(
-        self,
-        responses: list[MockResponse],
-        *,
-        failure: BaseException | None = None,
-        then: tuple[Content, ...] = (),
-        hold_after: str = "text",
-    ) -> None:
-        super().__init__(responses=responses)
-        self.shown = asyncio.Event()
-        self.release = asyncio.Event()
-        self._failure = failure
-        self._then = then
-        self._hold_after = hold_after
-        self._held = False
-
-    async def _stream_updates(
-        self, resp: MockResponse, model_id: str, finish_reason: Any
-    ) -> AsyncIterator[ChatResponseUpdate]:
-        hold, self._held = not self._held, True
-        async for update in super()._stream_updates(resp, model_id, finish_reason):
-            yield update
-            if hold and any(content.type == self._hold_after for content in update.contents):
-                if self._then:
-                    yield ChatResponseUpdate(role="assistant", contents=list(self._then), model=model_id)
-                # Resumed only once the caller asks for the next update: the first one was handled.
-                hold = False
-                self.shown.set()
-                await self.release.wait()
-                if self._failure is not None:
-                    raise self._failure
-
-
-@dataclass(slots=True)
-class _Started:
-    engine: AgentEngine
-    bus: EventBus
-    events: list[object]
-    store: JsonFileStateStore
-
-
-async def _start(
-    agent_engine,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    client: MockChatClient,
-    *,
-    stream: bool = True,
-    surface: SessionSurface | None = None,
-    service_side: bool = False,
-) -> _Started:
-    events: list[object] = []
-    bus = EventBus()
-    for cls in _EVENT_TYPES:
-        await bus.subscribe(cls, lambda event, _events=events: collect_events(_events, event))
-    settings, model_registry = make_mock_settings_and_registry(stream=stream)
-    if service_side:
-        # Responses with `store: true`: the provider keeps the conversation, so a retry runs the whole pass again.
-        model_registry = ModelProfileRegistry()
-        model_registry.register(
-            ModelProfile(
-                id="mock-profile",
-                name="mock",
-                provider="openai",
-                api_style="responses",
-                model_id="gpt-mock",
-                stream=stream,
-                max_context_tokens=100_000,
-                chat_options='{"store": true}',
-            )
-        )
-
-    async def _create_client(_settings: object = None, **kwargs: Any) -> MockChatClient:
-        # A wire client numbers tool batches through the build's callbacks; the mock needs them handed over.
-        client._on_intermediate_text = kwargs.get("on_intermediate_text")
-        return client
-
-    monkeypatch.setattr(builder_module, "create_client", _create_client)
-    install_tools(monkeypatch, [echo_tool])
-    store = JsonFileStateStore(tmp_path)
-    engine = agent_engine(
-        bus,
-        settings=settings,
-        agent_registry=_make_registry(),
-        model_registry=model_registry,
-        state_store=store,
-        initial_workspace=Workspace.from_cwd(str(tmp_path)),
-        surface=surface,
-    )
-    await engine.start(_PROFILE)
-    return _Started(engine=engine, bus=bus, events=events, store=store)
-
-
-def _turn_events[E](events: list[object], cls: type[E]) -> list[E]:
-    return [event for event in events if isinstance(event, cls) and event.origin.kind == "turn"]
-
-
-async def _wait_shown(started: _Started, client: _HeldStreamClient) -> None:
-    """Wait until the held stream showed its first text, surfacing a run that ended first."""
-
-    def _shown_or_ended() -> bool:
-        task = started.engine.turns.turn_state.lease.run_task
-        return client.shown.is_set() or (task is not None and task.done())
-
-    await wait_for(_shown_or_ended, timeout=ENGINE_TURN_TIMEOUT, description="the stream's first text shown")
-    assert client.shown.is_set(), "the run ended before its stream showed any text"
-
-
-async def _saved_assistant_messages(started: _Started) -> list[dict[str, Any]]:
-    saved = await started.store.load_session_raw(started.engine.session.session_id)
-    assert saved is not None
-    return [message for message in saved if message["role"] == "assistant"]
-
-
-def _texts(message: dict[str, Any]) -> list[str]:
-    return [content["text"] for content in message["contents"] if content["type"] == "text"]
-
-
-def _marker(message: dict[str, Any]) -> object:
-    return message["additional_properties"].get(HistoryMarkerKind.KEY)
 
 
 async def test_answer_text_arrives_while_streaming_and_the_final_message_follows(
@@ -711,17 +569,38 @@ async def test_a_bare_continue_withdraws_every_segment_it_drops_before_asking_ag
     assert answers == [["Found Chrys."]]
 
 
-async def test_a_continue_with_a_note_goes_on_from_the_kept_answer_and_withdraws_nothing(
+async def test_a_continue_with_a_note_drops_the_cut_off_answer_and_goes_on_from_the_note(
     tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    started, _client, _segments = await _interrupt_after_narration_a_hosted_call_and_an_answer(
+    """Stop and send is a steer: the answer cut off goes, from history and from view, before the note is sent."""
+    started, client, segments = await _interrupt_after_narration_a_hosted_call_and_an_answer(
         agent_engine, tmp_path, monkeypatch, MockResponse(text="Going on.")
     )
+    requests_at_withdrawal: list[int] = []
+
+    async def count_requests(_event: InvocationAnswerWithdrawn) -> None:
+        requests_at_withdrawal.append(client.call_count)
+
+    await started.bus.subscribe(InvocationAnswerWithdrawn, count_requests)
 
     await started.bus.publish(UserRetry(text="go on"))
     await await_run_task_chain(started.engine, turn_state=started.engine.turns.turn_state)
 
-    assert _turn_events(started.events, InvocationAnswerWithdrawn) == []
+    (withdrawn,) = _turn_events(started.events, InvocationAnswerWithdrawn)
+    assert withdrawn.segment_ids == tuple(segments)
+    assert requests_at_withdrawal == [1]
+    sent, _options = client.call_history[-1]
+    assert [message.text for message in sent if message.role == "assistant"] == []
+    assert sent[-1].role == "user"
+    assert sent[-1].text == "go on"
+    saved = await started.store.load_session_raw(started.engine.session.session_id)
+    assert saved is not None
+    unmarked = [message for message in saved if _marker(message) is None]
+    assert [(message["role"], _texts(message)) for message in unmarked] == [
+        ("user", ["go"]),
+        ("user", ["go on"]),
+        ("assistant", ["Going on."]),
+    ]
 
 
 @pytest.mark.parametrize("stop", ["interrupt", "cancel"])

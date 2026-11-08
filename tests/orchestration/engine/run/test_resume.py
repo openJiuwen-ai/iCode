@@ -105,15 +105,15 @@ class TestResumeMode:
         assert list(executor.backend.run.call_args[0][0].messages) == []
         assert msgs[1:] == [call, result]
 
-    async def test_a_note_goes_on_from_the_kept_answer(self):
-        kept = Message("assistant", ["Partial"])
-        msgs = [Message("user", ["go"]), kept]
+    async def test_a_note_drops_the_kept_answer_and_goes_on_from_the_note(self):
+        opener = Message("user", ["go"])
+        msgs = [opener, Message("assistant", ["Partial"])]
         executor = make_resume_harness(msgs)
 
         await drive_retry_policy(executor, additional_text="go on")
 
         assert [m.text for m in executor.backend.run.call_args[0][0].messages] == ["go on"]
-        assert msgs[1] is kept
+        assert msgs == [opener]
 
     @pytest.mark.parametrize("contents", [[], [""], ["", ""]], ids=["no-content", "empty-text", "empty-texts"])
     @pytest.mark.parametrize("persisted", [False, True], ids=["not-stored", "stored"])

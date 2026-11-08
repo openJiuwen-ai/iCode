@@ -731,10 +731,10 @@ class AgentEngine:
         sub-agents resolve via the cascade-abort branch (otherwise their
         ``pending_decision`` future would keep their ``_invoke``
         coroutine pinned forever and the subsequent task cancel below
-        would leak).  Then sets the interrupt flag / cancels the parent
-        task. It then binds cancellation to the exact pre-executor run task
-        or interrupts the active executor; ``run_and_save`` detects
-        ``was_interrupted`` and rolls back history.
+        would leak). The interrupt is bound to the exact run task before that
+        cascade, so no pass starts after it; the active executor's pass is
+        then aborted. ``run_and_save`` detects ``was_interrupted`` and rolls
+        back history.
         """
         await self._turns.on_user_interrupt(_event)
 

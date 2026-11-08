@@ -324,8 +324,9 @@ class KernelSubAgentPolicy:
     def cancelled(self) -> None:
         self._pass_status = "interrupted"
 
-    async def response_ready(self, response: ChatResponse) -> None:
+    async def response_ready(self, response: ChatResponse, final: bool) -> None:
         """The kernel landed a response: the pass projector shows what it did not stream."""
+        del final
         if self._projector is not None:
             shown = self._tool_event_middleware.hosted_text_shown if self._tool_event_middleware is not None else None
             await self._projector.response_ready(response, shown=shown)

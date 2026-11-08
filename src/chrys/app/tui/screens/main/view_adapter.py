@@ -890,6 +890,9 @@ class MainScreenViewAdapter:
     async def abandon_thinking(self, segment_ids: tuple[str, ...]) -> None:
         await self._screen.query_one(ChatPanel).abandon_thinking(segment_ids)
 
+    async def end_steered_pass(self) -> None:
+        await self._screen.query_one(ChatPanel).end_steered_pass()
+
     async def add_agent_message(
         self,
         text: str,

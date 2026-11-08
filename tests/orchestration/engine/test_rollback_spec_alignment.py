@@ -114,7 +114,9 @@ async def test_fresh_turn_and_rollback_follow_one_numbering(
         holder["engine"] = engine
         await engine.event_bus.publish(SessionRestore(session_id=session_id), raise_handler_errors=True)
     await ask(engine, "prompt B")
-    kept_a = mode in {"answer", "retry-empty-failure", "file"}
+    # A note drops the answer A showed before its call goes out, as a Continue does: when that call
+    # fails, A holds no work, like a turn that showed nothing.
+    kept_a = mode in {"answer", "file"}
     expected = 3 if kept_a else 2
     assert_aligned(engine, expected)
     saved = await store.load_session(engine.session_id)

@@ -265,6 +265,7 @@ class _Harness:
             handle_agent_content=self.handler.on_agent_content,
             handle_error=self.handler.on_error,
             handle_turn_event=_unused_turn_event,
+            handle_answer_withdrawn=_unused_turn_event,
             set_agent_running=self.handler.set_agent_running,
             set_has_messages=lambda _has: None,
             clear_workspace_marker=lambda: None,

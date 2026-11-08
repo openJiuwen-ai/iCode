@@ -1142,7 +1142,7 @@ class AgentMessage(StreamedMarkdownMessage):
         self.is_status = is_status
         """Persisted lifecycle prose is not an agent's successful final answer."""
         self.segment_ids = frozenset(segment_ids)
-        """The content segments whose answer text this message shows, for a bare Continue to withdraw."""
+        """The content segments whose answer text this message shows, for a Continue or steer to withdraw."""
         self._profile_name = profile_name
         self._is_intermediate = is_intermediate
         self._is_compressed = is_compressed
