@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import shutil
+import subprocess
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -45,6 +47,39 @@ def queue(tmp_path: Path) -> Iterator[DurableWAL]:
         yield wal
     finally:
         wal.close()
+
+
+@pytest.fixture
+def git_run() -> Callable[..., None]:
+    """Run one git command inside a test repository.
+
+    The fixtures' repositories carry their committer identity repo-locally, so
+    nothing here reads the developer's own configuration.
+    """
+
+    def _run(repo: Path, *args: str) -> None:
+        _git(repo, *args)
+
+    return _run
+
+
+@pytest.fixture
+def network_repo(git_repo_factory: Callable[[Path], Path], tmp_path: Path, git_run: Callable[..., None]) -> Path:
+    """A git repository whose remote the registry row can be keyed on.
+
+    ``git_repo_factory``'s repositories have no remote at all, which is a
+    workspace the reporter deliberately says nothing about.
+    """
+    repo = git_repo_factory(tmp_path / "repo")
+    git_run(repo, "remote", "add", "origin", "https://example.com/owner/repo.git")
+    return repo
+
+
+def _git(repo: Path, *args: str) -> None:
+    executable = shutil.which("git")
+    if executable is None:  # the repository fixture this depends on needs it too
+        pytest.skip("git executable is not available")
+    subprocess.run([executable, *args], cwd=repo, check=True, capture_output=True)
 
 
 @pytest.fixture

@@ -90,17 +90,33 @@ def test_the_identity_payload_is_the_repository_slash_one_document() -> None:
     assert document["remoteDigest"] == "digest"
 
 
-def test_a_git_repository_is_probed_for_its_identity(tmp_path: Path, git_repo_factory: Callable[[Path], Path]) -> None:
+def test_a_git_repository_is_probed_for_its_identity(network_repo: Path) -> None:
+    probe = probe_repository(str(network_repo))
+
+    assert probe.workspace_kind == "git"
+    assert Path(probe.root) == network_repo
+    assert probe.head_sha
+    assert probe.head_tree_sha
+    assert probe.branch
+    assert probe.detached is False
+    assert probe.identity is not None
+    assert probe.identity.host == "example.com"
+    assert probe.identity.path == "/owner/repo.git"
+    assert len(probe.identity.identity) == 64
+    assert repository_reason(probe) == ""
+
+
+def test_a_repository_without_a_network_remote_is_not_identified(
+    tmp_path: Path, git_repo_factory: Callable[[Path], Path]
+) -> None:
+    """The registry row is keyed on host and path: a local remote names neither."""
     repo = git_repo_factory(tmp_path / "repo")
 
     probe = probe_repository(str(repo))
 
     assert probe.workspace_kind == "git"
-    assert Path(probe.root) == repo
-    assert probe.head_sha
-    assert probe.identity is not None
-    assert len(probe.identity.identity) == 64
-    assert repository_reason(probe) == ""
+    assert probe.identity is None
+    assert repository_reason(probe) == "no_remote"
 
 
 def test_a_directory_outside_git_is_classified_as_non_git(tmp_path: Path) -> None:

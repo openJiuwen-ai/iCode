@@ -126,8 +126,8 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
 | `trajectory.lines` | 原始事件行按 `\n` 连接（每行以 `\n` 结尾，与文件字节一致）；≤1 MiB | `lines:<first>-<last>` | 轨迹行原文，服务端切窗与重建的唯一素材 |
 | `snapshot.chunk` | `session.json` 原始字节切片（256 KiB/块） | `chunk:<content_hash>:<index>` | 快照字节 |
 | `snapshot.manifest` | JSON：`{content_hash,size,chunk_size,chunks:[sha...]}` | `manifest:<content_hash>` | 快照清单与完整性锚点 |
-| `session.meta` | JSON：`session/1.0` 白名单（§4.3） | `meta:<content_hash>` | `sessions` 行 |
-| `workspace.manifest` | JSON：IGWS manifest（`workspace-state/1.0`：三段条目含 `path/status/mode/content{offset,length,sha256}`、`omitted[]`、`ignored{count,truncated,entries[]}`、`capture`、`repository`） | `ws:<manifest_sha256>` | `workspace_states` 行；服务端据此拼装 IGWS 容器 |
+| `session.meta` | JSON：`session/1.0` 白名单（§4.3） | `meta:<该会话快照的 content_hash>`（无快照则本轮不发，等下一次保存） | `sessions` 行；服务端用这个 scope 去 `object_registry` 找快照并写 `sessions.snapshot_sha256` |
+| `workspace.manifest` | JSON：IGWS manifest（`workspace-state/1.0`）：`repository{identity, head{sha,treeSha,branch,detached}, remote{kind}}`、`staged{base:"head",entries[]}`、`worktree{base:"index",entries[]}`、`untracked{entries[]}`（条目 = `path/status/mode/content{offset,length,sha256}`，删除与 gitlink 为 `content:null`）、`omitted[]`、`ignored{count,truncated,entries[]}`、`capture{startedAt,completedAt,durationMs,complete}` | `ws:<manifest_sha256>` | `workspace_states` 行；服务端据此拼装 IGWS 容器（内容流按 staged → worktree → untracked 的 manifest 顺序编号 offset） |
 | `workspace.file` | 单文件内容切片（≤4 MiB/文件，1 MiB/块） | `wsfile:<sha256>:<index>` | 服务端按 manifest 顺序拼成 IGWS 容器；内容寻址天然去重 |
 | `agent.env` | JSON：`agent-config/1.0` 脱敏快照（§4.4） | `agentenv:<sha256>` | 环境复现（agent 有效配置）；帧信封额外携带 `workspaceKind` 与 `capturedAt`（§4.4） |
 | `repo.identity` | JSON：`repository/1.0`（§4.3） | `repo:<repository_identity>` | `repository_registry` 行 |
@@ -220,7 +220,7 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
   - `git rev-parse HEAD`、`git status --porcelain=v2 -z`、`git diff --cached --raw -z`、`git diff --raw -z`、`git ls-files --others --exclude-standard -z`、`cat-file --batch`（仅脏文件）；
   - **逐文件读取**：`stat → read → stat` 比对，期间被改则重读一次，仍不稳定置 `raced=true`（沿用 teams 的 `raced` 语义），供下游判定该条目是否可信；
   - **忽略文件清单**：`git ls-files --others --ignored --exclude-standard --directory -z`，只取路径、目录折叠、≤200 条，超出置 `truncated`；正文永不采集；
-  - 产出 `workspace.manifest`（三段条目、每项 `path/status/mode/size/sha256`）+ 每个变化文件一个 `workspace.file` 流。**不产出整块容器**：服务端按 manifest 拼装（§4.2 说明）。
+  - 产出 `workspace.manifest`（三段块 `staged{base}/worktree{base}/untracked`，每项 `path/status/mode/content{offset,length,sha256}`；offset 按 manifest 段序编号）+ 每个变化文件一个 `workspace.file` 流。**不产出整块容器**：服务端按 manifest 拼装（§4.2 说明）。
 - 限额与降级（沿用 teams 常量 + 本设计新增墙钟）：
   - 单文件 ≤ 4 MiB（超限记 `omitted(size-cap)`）、单仓库 ≤ 32 MiB（`total-cap`，`complete=false`）、每段 ≤ 10000 条（`entry-cap`）；
   - 单次采集墙钟 ≤ 10 s，超时 → 放弃本次并记 `remoteKind=timeout`（`complete=false`）；
@@ -230,7 +230,7 @@ frame := u32BE(header_len) | header_json(UTF-8) | payload(payload_len bytes)
 
 ### 5.5 RepositoryIdentity
 
-会话激活时一次：`git remote get-url origin`（无 origin 且恰有一个 remote 用该 remote；多 remote 无 origin → 不上报并记 `ambiguous_remotes`）+ `sha256(realpath(git common dir))` 作为身份。带超时，失败静默。
+会话激活时一次：`git remote get-url origin`（无 origin 且恰有一个 remote 用该 remote；多 remote 无 origin → 不上报并记 `ambiguous_remotes`）+ `sha256(realpath(git common dir))` 作为身份。带超时，失败静默。`repository_registry` 行以 `remote.host` + `remote.path` 为键，因此**没有可用网络 remote 的仓库（无 remote、或只有本地路径 remote）不上报任何仓库侧单元**（记 `no_remote`）：不发 `repo.identity`，也不发 `workspace.manifest` / `workspace.file`（manifest 的 `repository.identity` 是服务端建行的必填键）。`workspace.manifest` 的 `repository.remote` 只带 `kind`（`origin | single_remote`），不带 URL——URL 可能含凭据。
 
 ### 5.6 DurableWAL
 

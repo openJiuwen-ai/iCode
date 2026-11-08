@@ -33,7 +33,7 @@ import logging
 import threading
 from collections import OrderedDict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -513,20 +513,38 @@ class ReportingService:
         if request.workspace:
             dirty |= self._capture_workspace(request, probe, cursor)
         if request.meta is not None:
-            payload = session_meta_payload(request.meta)
-            wal.append(
-                [
-                    Frame.build(
-                        KIND_SESSION_META,
-                        request.session_id,
-                        scope_session_meta(sha256_hex(payload)),
-                        payload,
-                    )
-                ]
-            )
-            dirty = True
+            # The server joins this row to the session's snapshot by content
+            # hash: a meta whose scope names anything else can never land, so it
+            # waits for the next tap instead of pinning the queue.
+            if cursor.snapshot_content_hash:
+                meta = request.meta
+                if not meta.repository_identities and cursor.repository_identities:
+                    meta = replace(meta, repository_identities=tuple(cursor.repository_identities))
+                payload = session_meta_payload(meta)
+                wal.append(
+                    [
+                        Frame.build(
+                            KIND_SESSION_META,
+                            request.session_id,
+                            scope_session_meta(cursor.snapshot_content_hash),
+                            payload,
+                        )
+                    ]
+                )
+                dirty = True
+            else:
+                self._defer_meta(request.session_id, request.meta)
         if dirty:
             cursors.save(request.session_id, cursor)
+
+    def _defer_meta(self, session_id: str, meta: ReportMeta) -> None:
+        """Hold the meta until the session has a snapshot to attach it to."""
+        with self._lock:
+            binding = self._bindings.get(session_id)
+            if binding is None:
+                return
+            self._metas[session_id] = meta
+            binding.meta_pending = True
 
     def _probe(self, request: _CollectRequest, cursor: SessionCursor) -> RepositoryProbe | None:
         """The repository probe, reusing a classified non-git workspace."""
@@ -614,16 +632,23 @@ class ReportingService:
                 cursor.workspace_kind = probe.workspace_kind
                 return True
             return False
+        if probe.identity is None:
+            # A manifest is keyed by the repository identity: without one the
+            # server has nothing to attach the tree to, so nothing is read.
+            return False
         signature = workspace.signature(probe.root, head_sha=probe.head_sha)
         if signature and signature == cursor.workspace_signature:
             return False
-        identity = probe.identity.identity if probe.identity is not None else ""
         result = workspace.capture(
             request.session_id,
             probe.root,
             cursor,
-            repository_identity=identity,
+            repository_identity=probe.identity.identity,
             head_sha=probe.head_sha,
+            head_tree_sha=probe.head_tree_sha,
+            branch=probe.branch,
+            detached=probe.detached,
+            remote_kind=probe.identity.url_kind,
         )
         cursor.workspace_signature = result.signature or signature
         cursor.workspace_manifest_sha256 = result.manifest_sha256

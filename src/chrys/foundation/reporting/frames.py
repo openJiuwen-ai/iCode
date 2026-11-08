@@ -110,7 +110,11 @@ def scope_snapshot_manifest(content_hash: str) -> str:
 
 
 def scope_session_meta(content_hash: str) -> str:
-    """Scope of a ``session.meta`` unit."""
+    """Scope of a ``session.meta`` unit: the snapshot content hash it describes.
+
+    The server looks that hash up in ``object_registry`` and stamps it on the
+    session row, so a meta naming anything else can never land.
+    """
     return f"meta:{content_hash}"
 
 

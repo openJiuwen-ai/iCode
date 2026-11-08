@@ -6,7 +6,9 @@ The identity is the digest of the repository's *common* directory real path, so
 a clone and its worktrees, or two checkouts at different paths, stay apart while
 a moved working tree of the same repository keeps naming it. One ``origin``
 remote (or the only remote) supplies the human-readable host/path; a repository
-with several remotes and no ``origin`` is reported as ambiguous and not sent.
+with several remotes and no ``origin`` is reported as ambiguous and not sent,
+and neither is one whose remote carries no host (a local path): both registry
+fields are keys, never guesses.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ URL_KIND_ORIGIN: Final = "origin"
 URL_KIND_SINGLE_REMOTE: Final = "single_remote"
 
 AMBIGUOUS_REMOTES: Final = "ambiguous_remotes"
+NO_REMOTE: Final = "no_remote"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +65,9 @@ class RepositoryProbe:
     workspace_kind: str
     root: str = ""
     head_sha: str = ""
+    head_tree_sha: str = ""
+    branch: str = ""
+    detached: bool = False
     identity: RepositoryIdentity | None = None
     reason: str = ""
 
@@ -80,13 +86,32 @@ def probe_repository(cwd: str) -> RepositoryProbe:
         return RepositoryProbe(workspace_kind=WORKSPACE_KIND_NON_GIT, reason="not_a_repository")
     head = run_git(["rev-parse", "HEAD"], cwd)
     head_sha = head.text() if head is not None and head.ok else ""
+    tree = run_git(["rev-parse", "HEAD^{tree}"], cwd)
+    head_tree_sha = tree.text() if tree is not None and tree.ok else ""
+    branch, detached = _branch(cwd)
     common = run_git(["rev-parse", "--git-common-dir"], cwd)
     common_path = common.text() if common is not None and common.ok else ""
-    identity = _identity(cwd, common_path or root)
-    return RepositoryProbe(workspace_kind=WORKSPACE_KIND_GIT, root=root, head_sha=head_sha, identity=identity)
+    identity, reason = _identity(cwd, common_path or root)
+    return RepositoryProbe(
+        workspace_kind=WORKSPACE_KIND_GIT,
+        root=root,
+        head_sha=head_sha,
+        head_tree_sha=head_tree_sha,
+        branch=branch,
+        detached=detached,
+        identity=identity,
+        reason=reason,
+    )
 
 
-def _identity(cwd: str, common_dir: str) -> RepositoryIdentity | None:
+def _branch(cwd: str) -> tuple[str, bool]:
+    """The checked-out branch, or ``("", True)`` for a detached head."""
+    result = run_git(["symbolic-ref", "--short", "-q", "HEAD"], cwd)
+    name = result.text() if result is not None and result.ok else ""
+    return (name, False) if name else ("", True)
+
+
+def _identity(cwd: str, common_dir: str) -> tuple[RepositoryIdentity | None, str]:
     remotes = run_git(["remote"], cwd)
     names = remotes.text().splitlines() if remotes is not None and remotes.ok else []
     url_kind = ""
@@ -96,20 +121,25 @@ def _identity(cwd: str, common_dir: str) -> RepositoryIdentity | None:
     elif len(names) == 1:
         remote_name, url_kind = names[0], URL_KIND_SINGLE_REMOTE
     elif names:
-        return None
-    url = ""
-    if remote_name:
-        result = run_git(["remote", "get-url", remote_name], cwd)
-        url = result.text() if result is not None and result.ok else ""
+        return None, AMBIGUOUS_REMOTES
+    else:
+        return None, NO_REMOTE
+    result = run_git(["remote", "get-url", remote_name], cwd)
+    url = result.text() if result is not None and result.ok else ""
     host, path = parse_remote_url(url)
+    if not host or not path:
+        return None, NO_REMOTE
     digest_source = os.fsencode(str(real_path(Path(cwd) / common_dir)))
-    return RepositoryIdentity(
-        identity=hashlib.sha256(digest_source).hexdigest(),
-        host=host,
-        path=path,
-        url_kind=url_kind,
-        remote_digest=hashlib.sha256(url.encode("utf-8", "surrogateescape")).hexdigest() if url else "",
-        observed_at=utc_iso(),
+    return (
+        RepositoryIdentity(
+            identity=hashlib.sha256(digest_source).hexdigest(),
+            host=host,
+            path=path,
+            url_kind=url_kind,
+            remote_digest=hashlib.sha256(url.encode("utf-8", "surrogateescape")).hexdigest() if url else "",
+            observed_at=utc_iso(),
+        ),
+        "",
     )
 
 

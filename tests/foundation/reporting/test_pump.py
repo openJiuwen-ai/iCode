@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import random
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
@@ -32,11 +33,13 @@ class _Transport:
     bodies: list[bytes] = field(default_factory=list)
     compressed: list[bool] = field(default_factory=list)
     urls: list[str] = field(default_factory=list)
+    posted: threading.Event = field(default_factory=threading.Event)
 
     def post_batch(self, url: str, token: str, body: bytes, *, gzip_encoded: bool, timeout: float) -> TransportResult:
         self.urls.append(url)
         self.bodies.append(body)
         self.compressed.append(gzip_encoded)
+        self.posted.set()
         return self.results.pop(0)
 
     def post_manifest(self, url: str, token: str, body: bytes, *, timeout: float) -> TransportResult:
@@ -287,3 +290,25 @@ def test_an_empty_queue_sends_nothing(report_config: ReportConfig) -> None:
     with _harness(report_config, []) as harness:
         assert harness.pump._cycle() is None
         assert harness.transport.bodies == []
+
+
+def test_a_stop_request_sends_what_the_shutdown_round_queued(report_config: ReportConfig) -> None:
+    """The last round of a run leaves with the process, not on the next start."""
+    first = _frame(b"before")
+    second = _frame(b"shutdown round")
+    with _harness(report_config, [first]) as harness:
+        harness.transport.results.append(_reply(deferred=(first.header.unit_id,)))
+        harness.pump.start()
+        try:
+            assert harness.transport.posted.wait(5.0), "the sender thread never ran a cycle"
+            # The shutdown collector appends while the thread is parked in its
+            # backoff: only the stop request can wake it.
+            harness.wal.append([second])
+            harness.transport.results.append(_reply(accepted=(first.header.unit_id, second.header.unit_id)))
+
+            assert harness.pump.stop(timeout=5.0) is True
+        finally:
+            harness.pump.stop()
+
+        assert len(harness.transport.bodies) == 2
+        assert harness.wal.next_batch(max_bytes=1 << 20) is None

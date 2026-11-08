@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -41,6 +41,7 @@ from chrys.foundation.reporting.frames import (
     Frame,
     decode_frames,
     decompress_body,
+    scope_session_meta,
 )
 from chrys.foundation.reporting.manifest import ManifestReconciler
 from chrys.foundation.reporting.pump import TransportResult
@@ -116,13 +117,13 @@ def _runtime_details(*, model_id: str = "claude", skill: str = "") -> AgentRunti
 async def test_the_lifecycle_events_queue_the_documented_units(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    git_repo_factory: Callable[[Path], Path],
+    network_repo: Path,
 ) -> None:
     from chrys.service.reporting import service as service_module
 
     sessions = tmp_path / "sessions"
     monkeypatch.setattr(service_module, "resolve_sessions_dir", lambda **_kwargs: sessions)
-    repo = git_repo_factory(tmp_path / "repo")
+    repo = network_repo
     (repo / "notes.txt").write_text("dirty content", encoding="utf-8")
     folder = sessions / session_short_id(SESSION_ID)
     (folder / "trajectory").mkdir(parents=True)
@@ -269,12 +270,16 @@ async def test_a_restored_session_without_facts_reports_absent_sections(
         await reporting.close()
 
 
-async def test_the_meta_row_is_content_addressed_for_the_server_to_deduplicate(
+async def test_the_meta_row_is_scoped_by_the_snapshot_it_describes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from chrys.service.reporting import service as service_module
 
-    monkeypatch.setattr(service_module, "resolve_sessions_dir", lambda **_kwargs: tmp_path / "sessions")
+    sessions = tmp_path / "sessions"
+    monkeypatch.setattr(service_module, "resolve_sessions_dir", lambda **_kwargs: sessions)
+    folder = sessions / session_short_id(SESSION_ID)
+    folder.mkdir(parents=True)
+    (folder / "session.json").write_bytes(b'{"schema_version":1}')
     bus = EventBus()
     reporting = ReportingService(bus, _config(tmp_path))
     await reporting.start()
@@ -283,21 +288,66 @@ async def test_the_meta_row_is_content_addressed_for_the_server_to_deduplicate(
         meta = ReportMeta(session_id=SESSION_ID, title="One title")
         reporting.offer_meta(meta)
         await wait_for(lambda: KIND_SESSION_META in _kinds(reporting), description="first meta")
-        first = [frame for frame in _queued(reporting) if frame.header.kind == KIND_SESSION_META]
+        first = _meta_frames(reporting)
+        # The server joins the row to this snapshot by content hash: the scope
+        # names the snapshot, never the meta's own bytes.
+        first_snapshot = _snapshot_hash(reporting)
+        assert first_snapshot
+        assert first[0].header.scope == scope_session_meta(first_snapshot)
 
+        # Same content, same snapshot: the identical unit, so the server's
+        # receipt table answers the second send as a duplicate.
         reporting.offer_meta(meta)
-        await wait_for(
-            lambda: len([frame for frame in _queued(reporting) if frame.header.kind == KIND_SESSION_META]) == 2,
-            description="second meta",
-        )
+        await wait_for(lambda: len(_meta_frames(reporting)) == 2, description="second meta")
+        assert _meta_frames(reporting)[1].header.unit_id == first[0].header.unit_id
 
-        second = [frame for frame in _queued(reporting) if frame.header.kind == KIND_SESSION_META]
-        # Identical content names the identical unit: the server's receipt
-        # table turns the second send into a duplicate, not a second row.
-        assert second[0].header.unit_id == second[1].header.unit_id
-        assert first[0].header.unit_id == second[0].header.unit_id
+        # A save moves the snapshot, and the next meta names the new one.
+        (folder / "session.json").write_bytes(b'{"schema_version":1,"title":"One title"}')
+        await bus.publish(SessionSaved(session_id=SESSION_ID))
+        await wait_for(lambda: _snapshot_hash(reporting) not in {"", first_snapshot}, description="a newer snapshot")
+        reporting.offer_meta(meta)
+        await wait_for(lambda: len(_meta_frames(reporting)) == 3, description="third meta")
+        third = _meta_frames(reporting)[2]
+        assert third.header.scope == scope_session_meta(_snapshot_hash(reporting))
+        assert third.header.unit_id != first[0].header.unit_id
     finally:
         await reporting.close()
+
+
+async def test_a_meta_row_waits_for_the_snapshot_it_belongs_to(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A session with no saved file yet keeps its meta instead of sending it."""
+    from chrys.service.reporting import service as service_module
+
+    monkeypatch.setattr(service_module, "resolve_sessions_dir", lambda **_kwargs: tmp_path / "sessions")
+    bus = EventBus()
+    reporting = ReportingService(bus, _config(tmp_path))
+    await reporting.start()
+    try:
+        await bus.publish(SessionReady(session_id=SESSION_ID, primary_cwd=""))
+        reporting.offer_meta(ReportMeta(session_id=SESSION_ID, title="No file yet"))
+        await wait_for(lambda: KIND_AGENT_ENV in _kinds(reporting), description="the first round ran")
+        assert KIND_SESSION_META not in _kinds(reporting)
+        assert SESSION_ID in reporting._metas
+        assert reporting._bindings[SESSION_ID].meta_pending is True
+
+        # The file appears: the held row now has the snapshot it belongs to.
+        folder = tmp_path / "sessions" / session_short_id(SESSION_ID)
+        folder.mkdir(parents=True)
+        (folder / "session.json").write_bytes(b'{"schema_version":1}')
+        await bus.publish(SessionSaved(session_id=SESSION_ID))
+        await wait_for(lambda: KIND_SESSION_META in _kinds(reporting), description="the held meta lands")
+    finally:
+        await reporting.close()
+
+
+def _meta_frames(reporting: ReportingService) -> list[Frame]:
+    return [frame for frame in _queued(reporting) if frame.header.kind == KIND_SESSION_META]
+
+
+def _snapshot_hash(reporting: ReportingService) -> str:
+    """The content hash of the newest snapshot manifest this queue holds."""
+    manifests = [frame for frame in _queued(reporting) if frame.header.kind == KIND_SNAPSHOT_MANIFEST]
+    return manifests[-1].header.scope.removeprefix("manifest:") if manifests else ""
 
 
 async def test_a_meta_row_for_an_unbound_session_is_dropped(tmp_path: Path) -> None:

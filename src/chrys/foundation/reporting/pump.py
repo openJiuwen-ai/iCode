@@ -275,7 +275,7 @@ class ReportPump:
         return sessions
 
     def stop(self, *, timeout: float = STOP_DRAIN_SECONDS) -> bool:
-        """Ask the thread to stop and wait up to *timeout*; unsent frames stay queued."""
+        """Drain the queue once, then stop; unsent frames stay queued."""
         self._stop.set()
         self._wake.set()
         thread = self._thread
@@ -289,13 +289,23 @@ class ReportPump:
         return drained
 
     def _loop(self) -> None:
-        while not self._stop.is_set():
+        while True:
+            stopping = self._stop.is_set()
             try:
                 delay = self._cycle()
             except Exception as exc:  # never let the queue thread die
                 logger.warning("Report pump cycle failed", exc_info=True)
                 self._diagnostics.record_failure(f"{type(exc).__name__}: {exc}")
                 delay = self._next_backoff()
+            if self._stop.is_set():
+                if stopping:
+                    # The queue has now been looked at once after the stop
+                    # request: the round the shutdown collector ran last is
+                    # sent instead of waiting for the next process start.
+                    return
+                # A stop arrived while this cycle was in flight; that cycle ran
+                # before the request, so give the queue one more look.
+                continue
             self._wait(delay if delay is not None else IDLE_WAIT_SECONDS)
 
     def _wait(self, seconds: float) -> None:

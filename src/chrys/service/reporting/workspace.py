@@ -48,6 +48,7 @@ STAGED: Final = "staged"
 WORKTREE: Final = "worktree"
 UNTRACKED: Final = "untracked"
 SECTIONS: Final = (STAGED, WORKTREE, UNTRACKED)
+SECTION_BASE: Final = {STAGED: "head", WORKTREE: "index"}
 
 REMOTE_KIND_GIT: Final = "git"
 REMOTE_KIND_TIMEOUT: Final = "timeout"
@@ -61,6 +62,17 @@ class _Pending:
     path: str
     status: str
     section: str
+
+
+@dataclass(slots=True)
+class _Captured:
+    """One dirty entry whose content was read, before the stream offsets exist."""
+
+    path: str
+    status: str
+    mode: str
+    data: bytes | None
+    raced: bool = False
 
 
 @dataclass(slots=True)
@@ -99,6 +111,10 @@ class WorkspaceCapture:
         *,
         repository_identity: str = "",
         head_sha: str = "",
+        head_tree_sha: str = "",
+        branch: str = "",
+        detached: bool = False,
+        remote_kind: str = "",
     ) -> WorkspaceCaptureResult:
         """Queue the manifest and every changed file block; return what was sent."""
         started = time.monotonic()
@@ -113,11 +129,10 @@ class WorkspaceCapture:
         known_shas = set(cursor.workspace_file_shas)
         frames: list[Frame] = []
         omitted: list[dict[str, str]] = []
-        sections: dict[str, list[dict[str, object]]] = {section: [] for section in SECTIONS}
-        offset = 0
+        captured: dict[str, list[_Captured]] = {section: [] for section in SECTIONS}
         total_bytes = 0
         complete = True
-        remote_kind = REMOTE_KIND_GIT
+        remote_kind = remote_kind or REMOTE_KIND_GIT
         emitted_shas: list[str] = []
         for entry in pending:
             if time.monotonic() - started > CAPTURE_MAX_SECONDS:
@@ -125,7 +140,7 @@ class WorkspaceCapture:
                 remote_kind = REMOTE_KIND_TIMEOUT
                 omitted.append({"path": entry.path, "reason": "timeout"})
                 break
-            if len(sections[entry.section]) >= ENTRY_MAX_PER_SECTION:
+            if len(captured[entry.section]) >= ENTRY_MAX_PER_SECTION:
                 complete = False
                 omitted.append({"path": entry.path, "reason": "entry-cap"})
                 continue
@@ -136,9 +151,7 @@ class WorkspaceCapture:
                 continue
             content = self._read_entry(root, entry, omitted)
             if content is None:
-                sections[entry.section].append(
-                    {"path": entry.path, "status": entry.status, "mode": "0", "content": None}
-                )
+                captured[entry.section].append(_Captured(entry.path, entry.status, "0", None))
                 continue
             data, mode, raced = content
             if len(data) > FILE_MAX_BYTES:
@@ -148,23 +161,26 @@ class WorkspaceCapture:
                 continue
             digest = sha256_hex(data)
             total_bytes += len(data)
-            record: dict[str, object] = {
-                "path": entry.path,
-                "status": entry.status,
-                "mode": mode,
-                "content": {"offset": offset, "length": len(data), "sha256": digest},
-            }
-            if raced:
-                record["raced"] = True
-            sections[entry.section].append(record)
-            offset += len(data)
+            captured[entry.section].append(_Captured(entry.path, entry.status, mode, data, raced))
             if digest in known_shas or digest in emitted_shas:
                 continue
             emitted_shas.append(digest)
             frames.extend(self._file_frames(session_id, digest, data))
         manifest = {
             "schema": SCHEMA_NAME,
-            "sections": sections,
+            "repository": {
+                "identity": repository_identity,
+                "head": {
+                    "sha": head_sha,
+                    "treeSha": head_tree_sha,
+                    "branch": branch,
+                    "detached": detached,
+                },
+                # The remote's spelling only: a URL can carry a credential and
+                # the server keys the row on ``kind``.
+                "remote": {"kind": remote_kind},
+            },
+            **self._sections(captured),
             "omitted": omitted,
             "ignored": {
                 "count": len(ignored),
@@ -173,11 +189,10 @@ class WorkspaceCapture:
             },
             "capture": {
                 "startedAt": started_at,
+                "completedAt": utc_iso(),
                 "durationMs": int((time.monotonic() - started) * 1000),
                 "complete": complete,
-                "remoteKind": remote_kind,
             },
-            "repository": {"identity": repository_identity, "headSha": head_sha},
         }
         payload = canonical_json_bytes(manifest)
         manifest_sha = sha256_hex(payload)
@@ -198,6 +213,42 @@ class WorkspaceCapture:
             complete=complete,
             remote_kind=remote_kind,
         )
+
+    def _sections(self, captured: dict[str, list[_Captured]]) -> dict[str, object]:
+        """The three section blocks, their contents numbered along the stream.
+
+        The offsets follow the manifest's own order (staged, then worktree, then
+        untracked), because the server concatenates the container's contents in
+        that order and refuses a stream whose blocks do not line up.
+        """
+        blocks: dict[str, object] = {}
+        offset = 0
+        for section in SECTIONS:
+            entries: list[dict[str, object]] = []
+            for item in captured[section]:
+                reference = None
+                if item.data is not None:
+                    reference = {
+                        "offset": offset,
+                        "length": len(item.data),
+                        "sha256": sha256_hex(item.data),
+                    }
+                    offset += len(item.data)
+                record: dict[str, object] = {
+                    "path": item.path,
+                    "status": item.status,
+                    "mode": item.mode,
+                    "content": reference,
+                }
+                if item.raced:
+                    record["raced"] = True
+                entries.append(record)
+            block: dict[str, object] = {"entries": entries}
+            base = SECTION_BASE.get(section)
+            if base is not None:
+                block = {"base": base, "entries": entries}
+            blocks[section] = block
+        return blocks
 
     def _ignored(self, root: str) -> tuple[list[str], bool]:
         result = run_git(
