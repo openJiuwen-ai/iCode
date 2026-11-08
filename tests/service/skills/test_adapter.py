@@ -20,6 +20,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
+from chrys.service.profiles.agents.loader import load_profile_from_yaml
 from chrys.service.profiles.agents.schema import SkillConfig, SkillResourceConfig, SkillsConfig, SkillScriptConfig
 from chrys.service.skills import provider
 from chrys.service.skills.adapter import (
@@ -588,6 +589,23 @@ async def test_create_provider_with_paths(tmp_path: Path) -> None:
     config = SkillsConfig(paths=[str(tmp_path)])
     provider, _warnings = await create_skills_provider(config)
     assert provider is not None
+
+
+async def test_create_provider_accepts_a_profile_that_leaves_skills_fields_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A commented-out skills value parses as unset instead of reaching the provider as None."""
+    _isolate_auto_skill_dirs(tmp_path, monkeypatch)
+    profile_path = tmp_path / "null-skills.yaml"
+    profile_path.write_text(
+        "name: nully-skills\nskills:\n  paths:\n  inline:\n  script_timeout:\n"
+        "  script_extensions:\n  auto_load_user_agents_skills:\n  auto_load_cwd_agents_skills:\n",
+        encoding="utf-8",
+    )
+    profile = load_profile_from_yaml(profile_path)
+    provider, warnings = await create_skills_provider(profile.skills)
+    assert provider is not None
+    assert warnings == []
 
 
 async def test_file_skill_catalog_includes_absolute_skill_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
