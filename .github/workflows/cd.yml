@@ -33,7 +33,7 @@ env:
   # The binaries ship the CPython version .python-version pins (the one CI
   # tests on), built by this python-build-standalone release. Bump the two
   # together, and with scripts/build.sh and scripts/build.ps1.
-  PYTHON_BUILD_STANDALONE_RELEASE: "20261003"
+  PYTHON_BUILD_STANDALONE_RELEASE: "20261026"
 
 jobs:
   # ── Run CI checks first ─────────────────────────────────────────────
