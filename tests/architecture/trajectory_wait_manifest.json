@@ -4902,7 +4902,9 @@
     },
     "chrys.service.reporting.service": {
       "ReportingService._close_once": [
+        ["timeout", "await asyncio.wait_for(task, timeout=STOP_DRAIN_SECONDS)", "unresolved"],
         ["future", "await task", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(self._collect, requests, deferred)", "unresolved"],
         ["awaitable", "await subscribed_bus.unsubscribe(event_type, handler)", "unresolved"],
         ["thread_pool", "await asyncio.to_thread(pump.stop)", "unresolved"]
       ],
