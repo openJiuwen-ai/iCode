@@ -44,7 +44,7 @@ $PyAppVersion = if ($env:PYAPP_VERSION) { $env:PYAPP_VERSION } else { "0.29.0" }
 # The binary ships the CPython version .python-version pins (the one CI tests
 # on), built by this python-build-standalone release; bump it together with
 # PYTHON_BUILD_STANDALONE_RELEASE in .github/workflows/cd.yml.
-$PythonBuildStandaloneRelease = "20261003"
+$PythonBuildStandaloneRelease = "20261026"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $CPythonVersion = (Get-Content (Join-Path $ProjectRoot ".python-version") -Raw).Trim()

@@ -14,6 +14,7 @@ import secrets
 import stat
 import tempfile
 import time
+from collections.abc import Callable
 from ctypes import wintypes
 from dataclasses import dataclass
 from functools import cache
@@ -132,25 +133,42 @@ def fsync_directory(path: Path) -> None:
 _fsync_dir = fsync_directory
 """Backward-compatible alias for callers predating the public helper."""
 
-_WINDOWS_REPLACE_MAX_ATTEMPTS = 6
-_WINDOWS_REPLACE_RETRY_DELAY_SECONDS = 0.01
+_HELD_FILE_MAX_ATTEMPTS = 6
+_HELD_FILE_RETRY_DELAY_SECONDS = 0.01
+
+
+def _retries_held_files() -> bool:
+    """Whether a file another handle holds open is worth waiting for: only Windows refuses to replace or delete it."""
+    return _is_windows()
+
+
+def _retry_while_held(operation: Callable[[], None]) -> None:
+    """Run *operation*, trying again briefly on Windows while the file it replaces or deletes is held open.
+
+    Antivirus scanners, the search indexer, sync clients and readers in this
+    process open files for a moment without ``FILE_SHARE_DELETE`` (CPython's
+    ``open()`` among them), and Windows refuses the rename or delete with
+    ``PermissionError`` meanwhile. Up to six tries with about 0.3 s of sleeps
+    in all; elsewhere one try.
+    """
+    for attempt in range(_HELD_FILE_MAX_ATTEMPTS):
+        try:
+            operation()
+            return
+        except PermissionError:
+            if attempt == _HELD_FILE_MAX_ATTEMPTS - 1 or not _retries_held_files():
+                raise
+            time.sleep(_HELD_FILE_RETRY_DELAY_SECONDS * 2**attempt)
 
 
 def replace_with_retry(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
-    """``os.replace`` that tries again briefly on Windows while the target is held open.
+    """``os.replace`` that tries again briefly on Windows while the target is held open."""
+    _retry_while_held(lambda: os.replace(source, target))
 
-    Antivirus scanners, the search indexer and sync clients open files for a
-    moment, and Windows refuses the rename with ``PermissionError`` meanwhile.
-    Up to six tries with about 0.3 s of sleeps in all; elsewhere one try.
-    """
-    for attempt in range(_WINDOWS_REPLACE_MAX_ATTEMPTS):
-        try:
-            os.replace(source, target)
-            return
-        except PermissionError:
-            if attempt == _WINDOWS_REPLACE_MAX_ATTEMPTS - 1 or not _is_windows():
-                raise
-            time.sleep(_WINDOWS_REPLACE_RETRY_DELAY_SECONDS * 2**attempt)
+
+def unlink_with_retry(path: str | os.PathLike[str]) -> None:
+    """``os.unlink`` that tries again briefly on Windows while the file is held open."""
+    _retry_while_held(lambda: os.unlink(path))
 
 
 def publish_file_no_replace(source: Path, target: Path) -> None:
