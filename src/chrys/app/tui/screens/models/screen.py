@@ -119,8 +119,8 @@ _RELAY_ENDPOINT = msg("tui.model_config.relay", fallback="Relay endpoint")
 _RELAY_HINT = msg(
     "tui.model_config.relay_hint",
     fallback=(
-        "Marks this profile as a third-party relay. Saving requires an independent "
-        "non-relay model selected as the approval judge."
+        "Marks this profile as a third-party relay. Before saving, select an independent "
+        "non-relay model under Settings → Models & Agents → Model roles → Approval judge model."
     ),
 )
 _BYPASS_PROXY = msg("tui.model_config.bypass_proxy", fallback="Bypass proxy")

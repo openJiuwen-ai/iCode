@@ -9496,12 +9496,13 @@ msgstr "• 智能体正在运行。此页面为只读。"
 msgid "tui.model_config.relay"
 msgstr "中转站"
 
-#. English: Marks this profile as a third-party relay. Saving requires an
-#. independent non-relay model selected as the approval judge.
-#. chrys-meta={"fingerprint":"e409b4359e41b623e88e06da5f345054aa7c0e6facb403caa0727d3beac756b9","multiline":false,"placeholders":[]}
+#. English: Marks this profile as a third-party relay. Before saving, select an
+#. independent non-relay model under Settings → Models & Agents → Model roles →
+#. Approval judge model.
+#. chrys-meta={"fingerprint":"fbc245c13b761f6221a256b0c310c80462d8157005142d974711edcefb3f08ae","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/models/screen.py
 msgid "tui.model_config.relay_hint"
-msgstr "将此配置标记为第三方中转站。保存前需要先选择一个独立的非中转模型作为审批模型。"
+msgstr "将此配置标记为第三方中转站。保存前，请先在“设置 → 模型与智能体 → 模型角色 → 审批裁判模型”中选择一个独立的非中转模型。"
 
 #. English: Model profile saved
 #. chrys-meta={"fingerprint":"9477d2c9e38ba2b51d8d76039aef85b4d0be325ab302cc567a88fe0047153286","multiline":false,"placeholders":[]}
