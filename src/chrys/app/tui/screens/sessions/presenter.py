@@ -132,7 +132,9 @@ def time_ago(
         return render_message(_MONTHS_AGO.bind(count=1))
     if months < 12:
         return render_message(_MONTHS_AGO.bind(count=months))
-    years = days // 365
+    # Months are 30 days throughout this function, so twelve of them make a
+    # year: 360 days reads "1 year ago", never "0 years ago".
+    years = months // 12
     if years == 1:
         return render_message(_YEARS_AGO.bind(count=1))
     return render_message(_YEARS_AGO.bind(count=years))
