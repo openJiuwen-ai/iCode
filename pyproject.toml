@@ -69,6 +69,8 @@ dependencies = [
     "opentelemetry-sdk>=1.45.1,<2",
     "opentelemetry-exporter-otlp-proto-grpc>=1.45.1,<2",
     "opentelemetry-instrumentation-logging>=0.66b1,<1",
+    # Vendored sandbox engine. Installed from third_party/jiuwenbox.
+    "jiuwenbox==0.1.0",
 ]
 
 [project.urls]
@@ -83,6 +85,7 @@ icode = "chrys.app.cli.app:main"
 [tool.uv.sources]
 #rich = { path = "../rich", editable = true }
 #textual = { path = "../textual", editable = true }
+jiuwenbox = { path = "third_party/jiuwenbox", editable = true }
 
 [build-system]
 requires = ["hatchling"]

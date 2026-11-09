@@ -189,6 +189,7 @@ class ToolRegistry:
                 session_dir=session_dir,
                 background_tasks=background_tasks,
                 session_wide_background=session_wide_background,
+                settings=settings,
             )
             tools = shell.tools()
             # Register additional shells (e.g. Git Bash on Windows)
@@ -200,6 +201,7 @@ class ToolRegistry:
                     session_dir=session_dir,
                     background_tasks=background_tasks,
                     session_wide_background=session_wide_background,
+                    settings=settings,
                 )
                 tools.extend(extra.tools())
             return tools

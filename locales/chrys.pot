@@ -1225,6 +1225,24 @@ msgstr ""
 msgid "settings.rollback.snapshots_keep.label"
 msgstr ""
 
+#. English: Run shell in a sandbox
+#. chrys-meta={"fingerprint":"657cf33cf0779cc7ba4bdd5ac818e4bdcb3c9eb68e84f1656073ef2f4b2b6daa","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.enabled.label"
+msgstr ""
+
+#. English: Sandbox token
+#. chrys-meta={"fingerprint":"fb01cf744e7cbf30227f8366288b899adfcb9468b30eb2e6259a75818ba90ff3","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.token.label"
+msgstr ""
+
+#. English: Sandbox URL
+#. chrys-meta={"fingerprint":"82d115c91c602ac97d2fa33891aa432bcd5d66d09497312a25a92c6aaadb9e1d","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.url.label"
+msgstr ""
+
 #. English: Auto-generate session titles
 #. chrys-meta={"fingerprint":"cd2486f2b154cb5b2fd8d6f71b221150a4099c93a305280eb5e73b2ea8bae622","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
