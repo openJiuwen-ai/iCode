@@ -49,7 +49,7 @@ from chrys.service.state._session_meta import ChatSessionMeta, SessionMeta, Work
 
 logger = logging.getLogger(__name__)
 
-CATALOG_DERIVATION_VERSION = 1
+CATALOG_DERIVATION_VERSION = 2
 """Bump whenever the recorded metadata changes shape, meaning or derivation (turn counts, prompt excerpts, …),
 so older catalogs rebuild; ``tests/service/state/test_session_catalog.py`` pins all three."""
 
@@ -139,13 +139,27 @@ def _encode_value(value: object) -> object:
     return value
 
 
+def _decode_timestamp(value: str) -> datetime:
+    """A recorded stamp, whatever it times.
+
+    Fail closed rather than replay an offset-free one: the reader that derived
+    this value always records an aware UTC stamp, so this entry came from
+    another generation or from outside, and serving it would hand consumers a
+    value they cannot compare (the entry is skipped and re-derived).
+    """
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError(f"Catalog timestamp {value!r} has no timezone.")
+    return parsed
+
+
 def _decode_value(hint: object, value: object) -> object:
     if hint is str and isinstance(value, str):
         return value
     if hint is int and type(value) is int:
         return value
     if hint is datetime and isinstance(value, str):
-        return datetime.fromisoformat(value)
+        return _decode_timestamp(value)
     if hint == list[str] and isinstance(value, list) and all(isinstance(item, str) for item in value):
         return list(value)
     if hint == SessionSurface | None:
@@ -227,7 +241,7 @@ def decode_entry(record: object) -> CatalogEntry:
                 _decode_signature(raw_run.get("header"), optional=True),
                 _decode_signature(raw_run.get("events"), optional=True),
             ),
-            datetime.fromisoformat(listed_at) if listed_at is not None else None,
+            _decode_timestamp(listed_at) if listed_at is not None else None,
         )
     return CatalogEntry(signature, meta, run)
 

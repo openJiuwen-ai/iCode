@@ -22,14 +22,14 @@ import chrys.service.trajectory.tombstone as tombstone_module
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.util.lock import FileLock
 from chrys.kernel import Message
-from chrys.service.state.session_catalog import CATALOG_DERIVATION_VERSION
+from chrys.service.state.session_catalog import CATALOG_DERIVATION_VERSION, CatalogEntry, encode_entry
 from chrys.service.state.session_listing import SessionListing, SessionListingEntry, page_slice
 from chrys.service.state.store import ChatSessionMeta, JsonFileStateStore, SessionMeta
 from chrys.service.state.workflow import WorkflowSessionState
 from chrys.service.trajectory.tombstone import INTENT_SUFFIX, DeleteOutcome, DeleteResult, tombstones_dir
 from chrys.service.workflows import history as history_module
 from chrys.service.workflows.history import WorkflowRunMeta, WorkflowRunRead
-from tests.service.state._store_helpers import write_legacy_envelope
+from tests.service.state._store_helpers import browser_page, write_legacy_envelope
 from tests.support.secure_files import plant_owner_only_bytes
 from tests.support.workflow_history import record_workflow_run, workflow_state
 
@@ -612,6 +612,77 @@ async def test_a_corrupt_catalog_is_rebuilt_and_a_newer_one_left_alone(tmp_path:
 
     assert _ids(await other.open_session_listing(kind="chat")) == ["t", "s"]
     assert catalog.read_bytes() == newer
+
+
+async def test_naive_session_timestamps_are_read_as_utc(tmp_path: Path) -> None:
+    """An envelope written without an offset must never reach a consumer as a naive datetime."""
+    write_legacy_envelope(
+        tmp_path / "naive" / "session.json",
+        "naive",
+        created_at="2026-08-01T00:00:00",
+        updated_at="2026-09-02T09:30:00",
+    )
+    write_legacy_envelope(tmp_path / "aware" / "session.json", "aware", updated_at="2026-09-03T09:30:00+00:00")
+    store = JsonFileStateStore(tmp_path)
+
+    listing = await store.open_session_listing(kind="chat")
+    page = await store.load_session_page(listing, surfaces=ALL)
+    listed = {meta.session_id: meta for meta in await store.list_sessions()}
+
+    assert _ids(listing) == ["aware", "naive"]
+    assert [(meta.session_id, meta.created_at, meta.updated_at) for meta in page.metas] == [
+        ("aware", datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 9, 3, 9, 30, tzinfo=UTC)),
+        ("naive", datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 9, 2, 9, 30, tzinfo=UTC)),
+    ]
+    assert listed["naive"].created_at == datetime(2026, 8, 1, tzinfo=UTC)
+    assert listed["naive"].updated_at == datetime(2026, 9, 2, 9, 30, tzinfo=UTC)
+    assert all(meta.updated_at.tzinfo is UTC for meta in listed.values())
+
+
+@pytest.mark.parametrize("bad_meta", ["not-an-object", ["not", "an", "object"]], ids=["string", "list"])
+async def test_a_non_object_session_meta_costs_only_its_own_row(tmp_path: Path, bad_meta: object) -> None:
+    """A meta block of the wrong type is refused like any other bad record, never raised through."""
+    write_legacy_envelope(tmp_path / "good" / "session.json", "good", updated_at="2026-09-03T09:30:00+00:00")
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "session.json").write_text(
+        json.dumps({"meta": bad_meta, "state": {"messages": [], "compressed_msgs": []}}), encoding="utf-8"
+    )
+    store = JsonFileStateStore(tmp_path)
+
+    page = await store.load_session_page(await store.open_session_listing(kind="chat"), surfaces=ALL)
+
+    assert [meta.session_id for meta in page.metas] == ["good"]
+    assert await store.load_session_meta("bad") is None
+
+
+async def test_an_older_catalog_is_discarded_and_naive_stamps_rederived(tmp_path: Path) -> None:
+    """A catalog written before the UTC normalization must not replay its naive stamps."""
+    envelope = write_legacy_envelope(tmp_path / "s" / "session.json", "s", updated_at="2026-09-02T09:30:00")
+    naive = ChatSessionMeta(
+        session_id="s",
+        agent_profile="",
+        agent_display_name="",
+        created_at=datetime(2026, 9, 2, 9, 30),  # noqa: DTZ001 - naive on purpose
+        updated_at=datetime(2026, 9, 2, 9, 30),  # noqa: DTZ001 - naive on purpose
+        message_count=0,
+    )
+    catalog = tmp_path / ".cache" / "session_catalog.json"
+    catalog.parent.mkdir(parents=True)
+    # A catalog written by the generation that recorded naive stamps. Two
+    # independent guards drop it — the derivation-version bump, and the
+    # decoder refusing an offset-free stamp — so this exercises the upgrade
+    # path; the version pin itself lives in ``test_v2_records_are_pinned``.
+    planted = {
+        "version": 1,
+        "sessions": {"s": encode_entry(CatalogEntry(catalog_module.file_signature(envelope), naive))},
+    }
+    plant_owner_only_bytes(catalog, json.dumps(planted).encode("utf-8"))
+
+    metas = await browser_page(JsonFileStateStore(tmp_path))
+
+    assert [(meta.session_id, meta.updated_at) for meta in metas] == [("s", datetime(2026, 9, 2, 9, 30, tzinfo=UTC))]
+    assert json.loads(catalog.read_text(encoding="utf-8"))["version"] == CATALOG_DERIVATION_VERSION
 
 
 async def test_listing_the_legacy_way_still_reports_sizes_and_feeds_the_catalog(tmp_path: Path) -> None:

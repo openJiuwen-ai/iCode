@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""The persisted session-listing catalog: its v1 record format, versioning and locked merges."""
+"""The persisted session-listing catalog: its v2 record format, versioning and locked merges."""
 
 from __future__ import annotations
 
@@ -167,9 +167,9 @@ def _read_raw(catalog: SessionCatalogFile) -> dict:
     return json.loads(catalog.path.read_text(encoding="utf-8"))
 
 
-def test_v1_records_are_pinned() -> None:
-    """Golden v1 records: a change here must bump ``CATALOG_DERIVATION_VERSION``."""
-    assert CATALOG_DERIVATION_VERSION == 1
+def test_v2_records_are_pinned() -> None:
+    """Golden v2 records: a change here must bump ``CATALOG_DERIVATION_VERSION``."""
+    assert CATALOG_DERIVATION_VERSION == 2
     assert encode_entry(CatalogEntry((11, 22, 33), _CHAT)) == _CHAT_RECORD
     assert encode_entry(_WORKFLOW_ENTRY) == _WORKFLOW_RECORD
     # Size and run status are never recorded; everything else round-trips.
@@ -212,13 +212,13 @@ def _derivation_envelope() -> dict:
     return {"meta": {**meta, "message_count": 4}, "state": state}
 
 
-def test_v1_derivation_is_pinned() -> None:
-    """Golden v1 derived values: changing how any is computed must bump ``CATALOG_DERIVATION_VERSION``.
+def test_v2_derivation_is_pinned() -> None:
+    """Golden v2 derived values: changing how any is computed must bump ``CATALOG_DERIVATION_VERSION``.
 
     Recorded entries outlive processes, so a derivation change without a bump
     would serve the old values for every unchanged session indefinitely.
     """
-    assert CATALOG_DERIVATION_VERSION == 1
+    assert CATALOG_DERIVATION_VERSION == 2
     collapsed = " ".join(_LONG_PROMPT.split())
     record = encode_meta(JsonFileStateStore._session_meta_from_envelope(_derivation_envelope(), size_bytes=0))
 
@@ -279,14 +279,43 @@ def test_an_unknown_surface_decodes_as_unrecorded() -> None:
 def test_load_skips_malformed_entries_and_ignores_other_versions(tmp_path: Path) -> None:
     catalog = SessionCatalogFile(tmp_path)
     assert catalog.load() == {}
-    _write_raw(catalog, {"version": 1, "sessions": {"chat-1": _CHAT_RECORD, "broken": {"meta": {}}}})
+    _write_raw(
+        catalog, {"version": CATALOG_DERIVATION_VERSION, "sessions": {"chat-1": _CHAT_RECORD, "broken": {"meta": {}}}}
+    )
     assert set(catalog.load()) == {"chat-1"}
-    for version in (0, 2, "1"):
+    for version in (CATALOG_DERIVATION_VERSION - 1, CATALOG_DERIVATION_VERSION + 1, str(CATALOG_DERIVATION_VERSION)):
         _write_raw(catalog, {"version": version, "sessions": {"chat-1": _CHAT_RECORD}})
         assert catalog.load() == {}
-    _write_raw(catalog, {"version": 1, "sessions": ["chat-1"]})
+    _write_raw(catalog, {"version": CATALOG_DERIVATION_VERSION, "sessions": ["chat-1"]})
     assert catalog.load() == {}
     _plant(catalog, b"{not json")
+    assert catalog.load() == {}
+
+
+def test_an_offset_free_timestamp_is_never_decoded(tmp_path: Path) -> None:
+    """The catalog only replays aware stamps; an offset-free one is dropped, not served."""
+    record = {**_CHAT_RECORD, "meta": {**_CHAT_RECORD["meta"], "updated_at": "2026-09-02T09:30:00"}}
+
+    with pytest.raises(ValueError, match="timezone"):
+        decode_entry(record)
+
+    catalog = SessionCatalogFile(tmp_path)
+    _write_raw(catalog, {"version": CATALOG_DERIVATION_VERSION, "sessions": {"chat-1": record}})
+    assert catalog.load() == {}
+
+
+def test_an_offset_free_run_listing_time_is_never_decoded(tmp_path: Path) -> None:
+    """The cached run time follows the same rule as the session stamps."""
+    record = {
+        **_WORKFLOW_RECORD,
+        "run": {"run_id": "run-2", "header": [4, 5, 6], "events": None, "listed_at": "2026-09-03T10:45:00"},
+    }
+
+    with pytest.raises(ValueError, match="timezone"):
+        decode_entry(record)
+
+    catalog = SessionCatalogFile(tmp_path)
+    _write_raw(catalog, {"version": CATALOG_DERIVATION_VERSION, "sessions": {"flow-1": record}})
     assert catalog.load() == {}
 
 
@@ -306,7 +335,9 @@ def test_commit_writes_an_owner_only_catalog_and_round_trips_surrogates(tmp_path
 
 def test_commit_merges_with_peers_and_prunes_gone_sessions(tmp_path: Path) -> None:
     catalog = SessionCatalogFile(tmp_path)
-    _write_raw(catalog, {"version": 1, "sessions": {"peer": _CHAT_RECORD, "gone": _CHAT_RECORD}})
+    _write_raw(
+        catalog, {"version": CATALOG_DERIVATION_VERSION, "sessions": {"peer": _CHAT_RECORD, "gone": _CHAT_RECORD}}
+    )
     fresh = CatalogEntry((5, 5, 5), _WORKFLOW)
     stale = CatalogEntry((6, 6, 6), _WORKFLOW)
 
@@ -325,7 +356,7 @@ def test_commit_rebuilds_an_older_catalog_and_leaves_a_newer_one_alone(tmp_path:
     entry = CatalogEntry((5, 5, 5), _WORKFLOW)
     _write_raw(catalog, {"version": 0, "sessions": {"old": {"anything": True}}})
     assert catalog.commit({"new": entry}, still_valid=_always, is_live=_always).settled
-    assert _read_raw(catalog) == {"version": 1, "sessions": {"new": encode_entry(entry)}}
+    assert _read_raw(catalog) == {"version": CATALOG_DERIVATION_VERSION, "sessions": {"new": encode_entry(entry)}}
 
     newer = {"version": CATALOG_DERIVATION_VERSION + 1, "sessions": {"future": {"shape": "unknown"}}}
     _write_raw(catalog, newer)
@@ -343,7 +374,7 @@ def test_a_catalog_unreadable_right_now_is_never_overwritten(
 ) -> None:
     """A transient read failure (a peer's replace on Windows) must not read as empty and discard every entry."""
     catalog = SessionCatalogFile(tmp_path)
-    _write_raw(catalog, {"version": 1, "sessions": {"peer": _CHAT_RECORD}})
+    _write_raw(catalog, {"version": CATALOG_DERIVATION_VERSION, "sessions": {"peer": _CHAT_RECORD}})
     before = catalog.path.read_bytes()
 
     def unreadable(_path: Path, *, max_bytes: int) -> bytes:
@@ -394,7 +425,7 @@ def test_a_held_lock_defers_the_commit_and_fails_the_removal(tmp_path: Path, mon
     assert not outcome.settled
     assert not catalog.path.exists()
 
-    _write_raw(catalog, {"version": 1, "sessions": {"gone": _CHAT_RECORD}})
+    _write_raw(catalog, {"version": CATALOG_DERIVATION_VERSION, "sessions": {"gone": _CHAT_RECORD}})
     with FileLock(catalog.lock_path, timeout=1.0):
         assert catalog.remove({"gone"}) is False
     assert set(_read_raw(catalog)["sessions"]) == {"gone"}
@@ -402,7 +433,7 @@ def test_a_held_lock_defers_the_commit_and_fails_the_removal(tmp_path: Path, mon
 
 def test_remove_drops_only_the_named_entries(tmp_path: Path) -> None:
     catalog = SessionCatalogFile(tmp_path)
-    _write_raw(catalog, {"version": 1, "sessions": {"a": _CHAT_RECORD, "b": _CHAT_RECORD}})
+    _write_raw(catalog, {"version": CATALOG_DERIVATION_VERSION, "sessions": {"a": _CHAT_RECORD, "b": _CHAT_RECORD}})
     before = catalog.path.stat().st_mtime_ns
 
     assert catalog.remove({"missing"}) is True
