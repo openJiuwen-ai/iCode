@@ -183,29 +183,37 @@ async def on_disk(session: Session, path: Path, key: str, value: Any) -> None:
     assert file_values(path)[key] == value
 
 
-@pytest.mark.parametrize("live", LIVE_KEYS, ids=lambda live: live.key)
-async def test_a_saved_choice_gives_way_to_a_hand_edit(live: LiveKey, agent_engine, tmp_path, monkeypatch) -> None:
+async def test_a_saved_choice_gives_way_to_a_hand_edit(agent_engine, tmp_path, monkeypatch) -> None:
+    """Every live key in turn, in one session; each reload sees that one key's hand edit alone.
+
+    Each key starts at its default, as in a new session: an earlier round
+    leaves only its own key edited, and a notification save writes all eight
+    notification keys, the others at the defaults a new session's save writes.
+    """
     path = settings_path()
     activate_model_profile(MAIN_MODEL)
-    first, second = live.values()
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         handle = session.app.settings_handle
-        live.choose(session, first)
-        await on_disk(session, path, live.key, first)
-        assert live.shown(session) == first
-        assert handle.loaded.source_for(live.key).layer is Source.RUNTIME
+        for live in LIVE_KEYS:
+            key, field_name = live.key, FIELDS[live.key]
+            first, second = live.values()
+            assert getattr(handle.settings, field_name) == getattr(Settings(), field_name), key
+            live.choose(session, first)
+            await on_disk(session, path, key, first)
+            assert live.shown(session) == first, key
+            assert handle.loaded.source_for(key).layer is Source.RUNTIME, key
 
-        edited = edit_key(path, live.key, second)
-        lines = await reload_report(session)
+            edited = edit_key(path, key, second)
+            lines = await reload_report(session)
 
-        assert getattr(handle.settings, FIELDS[live.key]) == second
-        assert handle.loaded.source_for(live.key).layer is Source.USER
-        assert live.shown(session) == second
-        assert live.key in lines["controls.reload_applied"]
-        assert "controls.reload_shadowed" not in lines
-        await session.pilot.pause()
-        assert path.read_bytes() == edited
-        assert not session.main._settings_persistence()._pending_values
+            assert getattr(handle.settings, field_name) == second, key
+            assert handle.loaded.source_for(key).layer is Source.USER, key
+            assert live.shown(session) == second, key
+            assert key in lines["controls.reload_applied"], key
+            assert "controls.reload_shadowed" not in lines, key
+            await session.pilot.pause()
+            assert path.read_bytes() == edited, key
+            assert not session.main._settings_persistence()._pending_values, key
 
 
 async def test_a_project_file_that_may_not_set_the_key_does_not_hold_the_saved_choice(
