@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from bisect import bisect_left
+from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import cached_property
 from types import MappingProxyType
 from typing import Final
 
@@ -27,6 +29,7 @@ from chrys.app.tui.widgets.editor.types import (
     EditorTextRange,
 )
 from chrys.foundation.i18n import msg
+from chrys.foundation.text.lines import normalize_line_endings
 
 MAX_VIM_COUNT: Final = 9_999
 
@@ -177,17 +180,124 @@ def _lines(text: str) -> list[str]:
     return text.split("\n")
 
 
-def _after_character(host: EditorCommandHost, row: int, column: int, line_length: int) -> int:
-    """The column after the character under the cursor; an atomic span (a live label) is one character."""
-    after = next((high for low, high in host.editor_atomic_spans(row) if low == column), column + 1)
-    return min(after, line_length)
+_UNIT: Final = "\ufffc"
+"""One whole unit (a prompt field) in :class:`_UnitView` text."""
 
 
-def _normal_location(text: str, location: EditorLocation) -> EditorLocation:
-    lines = _lines(text)
-    row = min(max(location[0], 0), len(lines) - 1)
-    line = lines[row]
-    return row, min(max(location[1], 0), max(len(line) - 1, 0))
+@dataclass(frozen=True)
+class _UnitView:
+    """The editor text with each whole unit (a prompt field) as one character.
+
+    Every command that counts or scans characters runs on :attr:`text`, so a
+    unit is one character to h/l/x/X/r/~, a word of its own to w/b/e and
+    iw/aw (part of a WORD to iW/aW), and never a quote or bracket. :meth:`at` and
+    :meth:`location` map between the two texts; a position inside a unit is
+    the unit's character, and the position after that character is the
+    unit's end.
+    """
+
+    source: str
+    units: tuple[tuple[int, int], ...] = ()
+    """Each unit's ``[start, end)`` in :attr:`source`, ordered; overlapping units form one."""
+    _starts: tuple[int, ...] = field(default=(), repr=False)
+    _indices: tuple[int, ...] = field(default=(), repr=False)
+
+    @classmethod
+    def of(cls, host: EditorCommandHost) -> _UnitView:
+        source = host.editor_text
+        units: list[tuple[int, int]] = []
+        for low, high in sorted(host.editor_unit_spans()):
+            if units and low < units[-1][1]:
+                units[-1] = units[-1][0], max(units[-1][1], high)
+            else:
+                units.append((low, high))
+        indices: list[int] = []
+        removed = 0
+        for low, high in units:
+            indices.append(low - removed)
+            removed += high - low - 1
+        return cls(source, tuple(units), tuple(low for low, _ in units), tuple(indices))
+
+    @cached_property
+    def text(self) -> str:
+        """Build the scanning text only when a command needs it."""
+        if not self.units:
+            return self.source
+        pieces: list[str] = []
+        last = 0
+        for low, high in self.units:
+            pieces.extend((self.source[last:low], _UNIT))
+            last = high
+        pieces.append(self.source[last:])
+        return "".join(pieces)
+
+    @cached_property
+    def lines(self) -> list[str]:
+        return _lines(self.source)
+
+    def normal(self, location: EditorLocation) -> EditorLocation:
+        """Clamp to a Normal character, landing at a unit's start."""
+        row = min(max(location[0], 0), len(self.lines) - 1)
+        # Textual document columns exclude the carriage return in CRLF.
+        column = min(max(location[1], 0), max(len(self.lines[row].removesuffix("\r")) - 1, 0))
+        if self.units:
+            for low, high in self.columns(row):
+                if low < column < high:
+                    return row, low
+        return row, column
+
+    def index(self, offset: int) -> int:
+        """The view index of source *offset*."""
+        before = bisect_left(self._starts, offset)
+        if not before:
+            return offset
+        _, high = self.units[before - 1]
+        if offset < high:
+            return self._indices[before - 1]
+        return self._indices[before - 1] + 1 + offset - high
+
+    def offset(self, index: int) -> int:
+        """The source offset of view *index*: a unit's character is its start."""
+        before = bisect_left(self._indices, index)
+        if before < len(self._indices) and self._indices[before] == index:
+            return self.units[before][0]
+        if not before:
+            return index
+        return self.units[before - 1][1] + index - self._indices[before - 1] - 1
+
+    def at(self, location: EditorLocation) -> int:
+        row = min(max(location[0], 0), len(self.lines) - 1)
+        column = min(max(location[1], 0), len(self.lines[row]))
+        return self.index(sum(map(len, self.lines[:row])) + row + column)
+
+    def location(self, index: int) -> EditorLocation:
+        offset = min(max(self.offset(max(index, 0)), 0), len(self.source))
+        return self.source.count("\n", 0, offset), offset - self.source.rfind("\n", 0, offset) - 1
+
+    def row_bounds(self, row: int) -> tuple[int, int]:
+        """The view indices where *row* starts and ends (the end before its newline)."""
+        line = self.lines[row].removesuffix("\r")
+        return self.at((row, 0)), self.at((row, len(line)))
+
+    def columns(self, row: int) -> list[tuple[int, int]]:
+        """The ``[start, end)`` columns of the units on *row*."""
+        start = sum(map(len, self.lines[:row])) + row
+        end = start + len(self.lines[row])
+        return [(low - start, high - start) for low, high in self.units if start <= low and high <= end]
+
+    def rows(self) -> set[int]:
+        """The rows holding a unit."""
+        rows: set[int] = set()
+        row = previous = 0
+        for low, _ in self.units:
+            row += self.source.count("\n", previous, low)
+            rows.add(row)
+            previous = low
+        return rows
+
+    def after(self, location: EditorLocation) -> EditorLocation:
+        """The location after the character at *location* (a unit is one character)."""
+        return self.location(self.at(location) + 1)
 
 
 def _first_non_blank(line: str) -> int:
@@ -203,7 +313,14 @@ def _token_class(character: str, *, big: bool = False) -> int:
         return 0
     if big or _is_word(character):
         return 1
+    if character == _UNIT:
+        return 3
     return 2
+
+
+def _extends(character: str, token_class: int, *, big: bool = False) -> bool:
+    """Whether *character* continues a token of *token_class*; a unit is a word of its own (class 3)."""
+    return token_class in {1, 2} and _token_class(character, big=big) == token_class
 
 
 def _next_word_start(text: str, offset: int, count: int) -> int:
@@ -212,7 +329,9 @@ def _next_word_start(text: str, offset: int, count: int) -> int:
         if index >= len(text):
             break
         character_class = _token_class(text[index])
-        while index < len(text) and _token_class(text[index]) == character_class and character_class != 0:
+        if character_class:
+            index += 1
+        while index < len(text) and _extends(text[index], character_class):
             index += 1
         while index < len(text) and text[index].isspace():
             index += 1
@@ -228,7 +347,7 @@ def _previous_word_start(text: str, offset: int, count: int) -> int:
         while index > 0 and text[index].isspace():
             index -= 1
         character_class = _token_class(text[index]) if text else 0
-        while index > 0 and _token_class(text[index - 1]) == character_class and character_class != 0:
+        while index > 0 and _extends(text[index - 1], character_class):
             index -= 1
     return index
 
@@ -239,27 +358,16 @@ def _word_end(text: str, offset: int, count: int) -> int:
     index = min(max(offset, 0), len(text) - 1)
     for _ in range(count):
         character_class = _token_class(text[index])
-        has_later_character_in_token = (
-            character_class != 0 and index < len(text) - 1 and _token_class(text[index + 1]) == character_class
-        )
+        has_later_character_in_token = index < len(text) - 1 and _extends(text[index + 1], character_class)
         if not has_later_character_in_token:
             if index < len(text) - 1:
                 index += 1
             while index < len(text) - 1 and text[index].isspace():
                 index += 1
         character_class = _token_class(text[index])
-        while index < len(text) - 1 and _token_class(text[index + 1]) == character_class and character_class != 0:
+        while index < len(text) - 1 and _extends(text[index + 1], character_class):
             index += 1
     return index
-
-
-def _advance_location(text: str, location: EditorLocation, amount: int = 1) -> EditorLocation:
-    return offset_to_location(text, location_to_offset(text, location) + amount)
-
-
-def _range_from_offsets(text: str, start: int, end: int) -> EditorTextRange:
-    low, high = sorted((start, end))
-    return EditorTextRange(offset_to_location(text, low), offset_to_location(text, high))
 
 
 class VimKeymap:
@@ -276,6 +384,8 @@ class VimKeymap:
         self._register = EditorRegister("")
         self._visual_anchor: EditorLocation | None = None
         self._visual_active: EditorLocation | None = None
+        # Where the last j/k, Ctrl+D or Ctrl+U left the cursor and the column it aims for.
+        self._vertical_goal: tuple[EditorLocation, int] | None = None
 
     @property
     def mode(self) -> EditorMode:
@@ -318,6 +428,8 @@ class VimKeymap:
     def handle_key(self, stroke: EditorKeyStroke, host: EditorCommandHost) -> EditorKeyResult:
         if stroke.character is not None and len(stroke.character) == 1 and stroke.character.isprintable():
             stroke = EditorKeyStroke(stroke.character, stroke.character)
+        if not self._keeps_vertical_goal(stroke.key):
+            self._vertical_goal = None
         if stroke.key == "ctrl+q":
             return EditorKeyResult()
         if stroke.key == "ctrl+insert":
@@ -343,6 +455,14 @@ class VimKeymap:
             return self._handle_operator_pending(stroke, host)
         return self._handle_normal(stroke, host)
 
+    def _keeps_vertical_goal(self, key: str) -> bool:
+        """Whether *key* leaves a sticky column in place: a vertical move or a count digit before one."""
+        if self._state not in {VimState.NORMAL, VimState.VISUAL_CHAR, VimState.VISUAL_LINE}:
+            return False
+        if key in {"j", "k", "down", "up", "ctrl+d", "ctrl+u"}:
+            return True
+        return key.isdigit() and len(key) == 1 and (key != "0" or self._count > 0)
+
     def reset(self) -> None:
         self._state = VimState.NORMAL
         self._count = 0
@@ -354,6 +474,7 @@ class VimKeymap:
         self._register = EditorRegister("")
         self._visual_anchor = None
         self._visual_active = None
+        self._vertical_goal = None
 
     def normalize_cursor(self, host: EditorCommandHost) -> None:
         """Keep the visible cursor on a Vim Normal character position."""
@@ -449,10 +570,7 @@ class VimKeymap:
         prefix = self._prefix
         self._prefix = ""
         if prefix == "g" and key == "g":
-            count = self._take_count()
-            lines = _lines(host.editor_text)
-            target_row = min(count - 1, len(lines) - 1)
-            host.move_editor_cursor((target_row, 0))
+            self._move_to_line(self._take_count() - 1, host)
         elif prefix == "Z" and key == "Z":
             self._count = 0
             return self._result(EditorIntent.ACCEPT)
@@ -466,11 +584,10 @@ class VimKeymap:
     def _handle_insert(self, stroke: EditorKeyStroke, host: EditorCommandHost) -> EditorKeyResult:
         if stroke.key != "escape":
             return EditorKeyResult()
+        view = _UnitView.of(host)
         cursor = host.editor_cursor_location
-        line = _lines(host.editor_text)[cursor[0]]
-        if cursor[1] > 0 and line:
-            cursor = cursor[0], cursor[1] - 1
-        host.move_editor_cursor(_normal_location(host.editor_text, cursor))
+        index = max(view.at(cursor) - 1, view.row_bounds(cursor[0])[0])
+        host.move_editor_cursor(view.normal(view.location(index)))
         self._state = VimState.NORMAL
         return self._result()
 
@@ -479,14 +596,14 @@ class VimKeymap:
         if character is None or len(character) != 1 or character in {"\n", "\r"}:
             self._return_normal(host)
             return self._result()
-        text = host.editor_text
-        row, column = _normal_location(text, host.editor_cursor_location)
-        line = _lines(text)[row]
-        count = min(self._take_count(), max(len(line) - column, 0))
-        if count:
-            source_range = EditorTextRange((row, column), (row, column + count))
-            host.replace_editor_range(source_range, character * count)
-            host.move_editor_cursor((row, column + count - 1))
+        view = _UnitView.of(host)
+        row, column = view.normal(host.editor_cursor_location)
+        index = view.at((row, column))
+        end = min(index + self._take_count(), view.row_bounds(row)[1])
+        if end > index:
+            start = view.location(index)
+            host.replace_editor_range(EditorTextRange(start, view.location(end)), character * (end - index))
+            host.move_editor_cursor((row, start[1] + end - index - 1))
         else:
             host.notify_editor_activity()
         self._state = VimState.NORMAL
@@ -579,10 +696,8 @@ class VimKeymap:
             return self._result()
         if key in {"ctrl+d", "ctrl+u"}:
             count = self._take_count()
-            active = self._visual_active or _normal_location(host.editor_text, host.editor_cursor_location)
             distance = max(host.editor_page_height // 2, 1) * count
-            row = active[0] + (distance if key == "ctrl+d" else -distance)
-            self._move_to_visual_line(row, host)
+            self._move_visual(VimMotion.DOWN if key == "ctrl+d" else VimMotion.UP, distance, host)
             return self._result()
         if key == "o":
             self._visual_anchor, self._visual_active = self._visual_active, self._visual_anchor
@@ -635,27 +750,33 @@ class VimKeymap:
         return self._result()
 
     def _start_visual(self, linewise: bool, host: EditorCommandHost) -> None:
-        location = _normal_location(host.editor_text, host.editor_cursor_location)
+        view = _UnitView.of(host)
+        location = view.normal(host.editor_cursor_location)
         self._visual_anchor = location
         self._visual_active = location
         self._state = VimState.VISUAL_LINE if linewise else VimState.VISUAL_CHAR
         self._count = 0
-        self._render_visual_selection(host)
+        self._render_visual_selection(host, view)
 
     def _move_visual(self, motion: VimMotion, count: int, host: EditorCommandHost) -> None:
-        active = self._visual_active or _normal_location(host.editor_text, host.editor_cursor_location)
-        target = self._resolve_motion_target(motion, count, active, host.editor_text).location
-        self._visual_active = _normal_location(host.editor_text, target)
-        self._render_visual_selection(host)
+        view = _UnitView.of(host)
+        active = self._visual_active or view.normal(host.editor_cursor_location)
+        goal = self._vertical_goal
+        column = goal[1] if goal is not None and goal[0] == host.editor_cursor_location else active[1]
+        self._visual_active = view.normal(
+            self._resolve_motion_target(motion, count, active, view, vertical_column=column).location
+        )
+        self._render_visual_selection(host, view)
+        if motion in {VimMotion.DOWN, VimMotion.UP}:
+            self._vertical_goal = host.editor_cursor_location, column
 
     def _move_to_visual_line(self, row: int, host: EditorCommandHost) -> None:
-        active = self._visual_active or _normal_location(host.editor_text, host.editor_cursor_location)
-        lines = _lines(host.editor_text)
-        target_row = min(max(row, 0), len(lines) - 1)
-        self._visual_active = _normal_location(host.editor_text, (target_row, active[1]))
-        self._render_visual_selection(host)
+        view = _UnitView.of(host)
+        active = self._visual_active or view.normal(host.editor_cursor_location)
+        self._visual_active = view.normal((row, active[1]))
+        self._render_visual_selection(host, view)
 
-    def _render_visual_selection(self, host: EditorCommandHost) -> None:
+    def _render_visual_selection(self, host: EditorCommandHost, view: _UnitView | None = None) -> None:
         anchor = self._visual_anchor
         active = self._visual_active
         if anchor is None or active is None:
@@ -668,12 +789,13 @@ class VimKeymap:
             else:
                 host.set_editor_selection(source_range.end, source_range.start)
             return
-        anchor_offset = location_to_offset(host.editor_text, anchor)
-        active_offset = location_to_offset(host.editor_text, active)
+        view = view or _UnitView.of(host)
+        anchor_offset = view.at(anchor)
+        active_offset = view.at(active)
         if anchor_offset <= active_offset:
-            host.set_editor_selection(anchor, _advance_location(host.editor_text, active))
+            host.set_editor_selection(anchor, view.after(active))
         else:
-            host.set_editor_selection(_advance_location(host.editor_text, anchor), active)
+            host.set_editor_selection(view.after(anchor), active)
 
     def _visual_range(self, host: EditorCommandHost) -> EditorTextRange:
         text = host.editor_text
@@ -682,21 +804,20 @@ class VimKeymap:
         if self._state is VimState.VISUAL_LINE:
             start_row, end_row = sorted((anchor[0], active[0]))
             return self._line_edit_range(text, start_row, end_row - start_row + 1)
-        start = min(location_to_offset(text, anchor), location_to_offset(text, active))
-        end = min(max(location_to_offset(text, anchor), location_to_offset(text, active)) + 1, len(text))
-        return _range_from_offsets(text, start, end)
+        first, last = sorted((anchor, active))
+        return EditorTextRange(first, _UnitView.of(host).after(last))
 
     def _enter_insert(self, command: str, host: EditorCommandHost) -> None:
-        text = host.editor_text
-        lines = _lines(text)
-        row, column = _normal_location(text, host.editor_cursor_location)
+        view = _UnitView.of(host)
+        lines = view.lines
+        row, column = view.normal(host.editor_cursor_location)
         line = lines[row]
         if command == "i":
             location = row, column
         elif command == "I":
             location = row, _first_non_blank(line)
         elif command == "a":
-            location = row, _after_character(host, row, column, len(line))
+            location = view.location(min(view.at((row, column)) + 1, view.row_bounds(row)[1]))
         elif command == "A":
             location = row, len(line)
         elif command == "o":
@@ -711,60 +832,64 @@ class VimKeymap:
         self._state = VimState.INSERT
 
     def _move(self, motion: VimMotion, count: int, host: EditorCommandHost) -> None:
-        current = _normal_location(host.editor_text, host.editor_cursor_location)
-        target = self._resolve_motion_target(motion, count, current, host.editor_text)
-        host.move_editor_cursor(_normal_location(host.editor_text, target.location))
+        view = _UnitView.of(host)
+        current = view.normal(host.editor_cursor_location)
+        column = self._vertical_column(current)
+        target = self._resolve_motion_target(motion, count, current, view, vertical_column=column)
+        host.move_editor_cursor(view.normal(target.location))
+        if motion in {VimMotion.DOWN, VimMotion.UP}:
+            self._vertical_goal = host.editor_cursor_location, column
+
+    def _vertical_column(self, current: EditorLocation) -> int:
+        """The column j/k aim for: kept from the j/k that left the cursor here, else the cursor's (Vim's sticky column)."""
+        goal = self._vertical_goal
+        return goal[1] if goal is not None and goal[0] == current else current[1]
 
     def _move_to_line(self, row: int, host: EditorCommandHost) -> None:
-        lines = _lines(host.editor_text)
-        target_row = min(max(row, 0), len(lines) - 1)
-        host.move_editor_cursor(_normal_location(host.editor_text, (target_row, 0)))
+        host.move_editor_cursor(_UnitView.of(host).normal((row, 0)))
 
     def _move_half_page(self, down: bool, count: int, host: EditorCommandHost) -> None:
-        text = host.editor_text
-        lines = _lines(text)
-        row, column = _normal_location(text, host.editor_cursor_location)
         distance = max(host.editor_page_height // 2, 1) * count
-        row = min(row + distance, len(lines) - 1) if down else max(row - distance, 0)
-        host.move_editor_cursor(_normal_location(text, (row, column)))
+        self._move(VimMotion.DOWN if down else VimMotion.UP, distance, host)
 
     def _resolve_motion_target(
         self,
         motion: VimMotion,
         count: int,
         current: EditorLocation,
-        text: str,
+        view: _UnitView,
+        *,
+        vertical_column: int | None = None,
     ) -> _MotionTarget:
-        lines = _lines(text)
-        row, column = _normal_location(text, current)
+        lines = view.lines
+        row, column = view.normal(current)
+        index = view.at((row, column))
         if motion is VimMotion.LEFT:
-            return _MotionTarget((row, max(column - count, 0)))
+            return _MotionTarget(view.location(max(index - count, view.row_bounds(row)[0])))
         if motion is VimMotion.RIGHT:
-            return _MotionTarget((row, min(column + count, max(len(lines[row]) - 1, 0))))
+            first, end = view.row_bounds(row)
+            return _MotionTarget(view.location(max(min(index + count, end - 1), first)))
         if motion in {VimMotion.DOWN, VimMotion.UP}:
             row_delta = count if motion is VimMotion.DOWN else -count
             target_row = min(max(row + row_delta, 0), len(lines) - 1)
-            return _MotionTarget(_normal_location(text, (target_row, column)))
+            return _MotionTarget(view.normal((target_row, column if vertical_column is None else vertical_column)))
         if motion is VimMotion.LINE_START:
             return _MotionTarget((row, 0))
         if motion is VimMotion.FIRST_NON_BLANK:
             return _MotionTarget((row, _first_non_blank(lines[row])))
         if motion is VimMotion.LINE_END:
             target_row = min(row + count - 1, len(lines) - 1)
-            target_line = lines[target_row]
-            return _MotionTarget((target_row, max(len(target_line) - 1, 0)), inclusive=bool(target_line))
+            first, end = view.row_bounds(target_row)
+            return _MotionTarget(view.location(max(end - 1, first)), inclusive=end > first)
         if motion is VimMotion.WORD_NEXT:
-            offset = _next_word_start(text, location_to_offset(text, (row, column)), count)
-            return _MotionTarget(offset_to_location(text, offset))
+            return _MotionTarget(view.location(_next_word_start(view.text, index, count)))
         if motion is VimMotion.WORD_PREVIOUS:
-            offset = _previous_word_start(text, location_to_offset(text, (row, column)), count)
-            return _MotionTarget(offset_to_location(text, offset))
+            return _MotionTarget(view.location(_previous_word_start(view.text, index, count)))
         if motion is VimMotion.WORD_END:
-            offset = _word_end(text, location_to_offset(text, (row, column)), count)
-            return _MotionTarget(offset_to_location(text, offset), inclusive=True)
+            return _MotionTarget(view.location(_word_end(view.text, index, count)), inclusive=True)
         if motion is VimMotion.DOCUMENT_START:
             return _MotionTarget((0, 0), linewise=True)
-        return _MotionTarget((len(lines) - 1, max(len(lines[-1]) - 1, 0)), inclusive=True, linewise=True)
+        return _MotionTarget(view.normal((len(lines) - 1, len(lines[-1]))), inclusive=True, linewise=True)
 
     def _apply_precomposed_operator(
         self,
@@ -786,31 +911,32 @@ class VimKeymap:
         count: int,
         host: EditorCommandHost,
     ) -> None:
-        text = host.editor_text
-        current = _normal_location(text, host.editor_cursor_location)
-        if motion is VimMotion.RIGHT:
-            row, column = current
-            end = min(column + count, len(_lines(text)[row]))
-            self._apply_operator(operator, EditorTextRange(current, (row, end)), linewise=False, host=host)
-            return
-        if motion is VimMotion.LEFT:
-            row, column = current
-            start = max(column - count, 0)
-            self._apply_operator(operator, EditorTextRange((row, start), current), linewise=False, host=host)
+        view = _UnitView.of(host)
+        text = view.source
+        current = view.normal(host.editor_cursor_location)
+        if motion in {VimMotion.LEFT, VimMotion.RIGHT}:
+            self._apply_operator(
+                operator,
+                self._character_range(host, count, before=motion is VimMotion.LEFT, view=view),
+                linewise=False,
+                host=host,
+            )
             return
         if operator is VimOperator.CHANGE and motion is VimMotion.WORD_NEXT and count == 1:
-            current_offset = location_to_offset(text, current)
-            if current_offset < len(text) and not text[current_offset].isspace():
-                target = self._resolve_motion_target(VimMotion.WORD_END, 1, current, text)
-                end_offset = min(location_to_offset(text, target.location) + 1, len(text))
+            current_index = view.at(current)
+            if current_index < len(view.text) and not view.text[current_index].isspace():
+                end_index = current_index + 1
+                token_class = _token_class(view.text[current_index])
+                while end_index < len(view.text) and _extends(view.text[end_index], token_class):
+                    end_index += 1
                 self._apply_operator(
                     operator,
-                    _range_from_offsets(text, current_offset, end_offset),
+                    EditorTextRange(view.location(current_index), view.location(end_index)),
                     linewise=False,
                     host=host,
                 )
                 return
-        target = self._resolve_motion_target(motion, count, current, text)
+        target = self._resolve_motion_target(motion, count, current, view)
         if target.linewise:
             start_row, end_row = sorted((current[0], target.location[0]))
             range_factory = self._line_change_range if operator is VimOperator.CHANGE else self._line_edit_range
@@ -825,15 +951,17 @@ class VimKeymap:
             if operator is not VimOperator.YANK:
                 self._position_after_line_operator(start_row, host)
             return
-        start_offset = location_to_offset(text, current)
-        end_offset = location_to_offset(text, target.location)
+        start_index = view.at(current)
+        end_index = view.at(target.location)
         if target.inclusive:
-            if end_offset >= start_offset:
-                end_offset = min(end_offset + 1, len(text))
+            if end_index >= start_index:
+                end_index = min(end_index + 1, len(view.text))
             else:
-                start_offset = min(start_offset + 1, len(text))
-        source_range = _range_from_offsets(text, start_offset, end_offset)
-        self._apply_operator(operator, source_range, linewise=False, host=host)
+                start_index = min(start_index + 1, len(view.text))
+        low, high = sorted((start_index, end_index))
+        self._apply_operator(
+            operator, EditorTextRange(view.location(low), view.location(high)), linewise=False, host=host
+        )
 
     def _apply_operator_to_document_edge(
         self,
@@ -842,7 +970,7 @@ class VimKeymap:
         start: bool,
         host: EditorCommandHost,
     ) -> None:
-        row = _normal_location(host.editor_text, host.editor_cursor_location)[0]
+        row = _UnitView.of(host).normal(host.editor_cursor_location)[0]
         if start:
             start_row = 0
             count = row + 1
@@ -862,7 +990,7 @@ class VimKeymap:
             self._position_after_line_operator(start_row, host)
 
     def _apply_operator_to_line(self, operator: VimOperator, row: int, host: EditorCommandHost) -> None:
-        current_row = _normal_location(host.editor_text, host.editor_cursor_location)[0]
+        current_row = _UnitView.of(host).normal(host.editor_cursor_location)[0]
         lines = _lines(host.editor_text)
         target_row = min(max(row, 0), len(lines) - 1)
         start_row, end_row = sorted((current_row, target_row))
@@ -879,7 +1007,7 @@ class VimKeymap:
             self._position_after_line_operator(start_row, host)
 
     def _apply_line_operator(self, operator: VimOperator, count: int, host: EditorCommandHost) -> None:
-        row = _normal_location(host.editor_text, host.editor_cursor_location)[0]
+        row = _UnitView.of(host).normal(host.editor_cursor_location)[0]
         range_factory = self._line_change_range if operator is VimOperator.CHANGE else self._line_edit_range
         source_range = range_factory(host.editor_text, row, count)
         self._apply_operator(
@@ -912,7 +1040,7 @@ class VimKeymap:
         target_state = VimState.INSERT if operator is VimOperator.CHANGE else VimState.NORMAL
         if operator is VimOperator.YANK:
             cursor = (linewise_start_row, 0) if linewise_start_row is not None else source_range.start
-            host.move_editor_cursor(_normal_location(host.editor_text, cursor))
+            host.move_editor_cursor(_UnitView.of(host).normal(cursor))
         elif text:
             host.delete_editor_range(source_range)
             if target_state is VimState.NORMAL:
@@ -922,13 +1050,20 @@ class VimKeymap:
         self._state = target_state
         self._clear_pending()
 
+    def _character_range(
+        self, host: EditorCommandHost, count: int, *, before: bool, view: _UnitView | None = None
+    ) -> EditorTextRange:
+        """The *count* characters before or under the cursor, a unit counting as one (x/X, dl/dh)."""
+        view = view or _UnitView.of(host)
+        row, column = view.normal(host.editor_cursor_location)
+        index = view.at((row, column))
+        first, end = view.row_bounds(row)
+        if before:
+            return EditorTextRange(view.location(max(index - count, first)), view.location(index))
+        return EditorTextRange(view.location(index), view.location(min(index + count, end)))
+
     def _delete_characters(self, *, before: bool, count: int, host: EditorCommandHost) -> None:
-        text = host.editor_text
-        row, column = _normal_location(text, host.editor_cursor_location)
-        line = _lines(text)[row]
-        start = max(column - count, 0) if before else column
-        end = column if before else min(column + count, len(line))
-        source_range = EditorTextRange((row, start), (row, end))
+        source_range = self._character_range(host, count, before=before)
         deleted = host.read_editor_range(source_range)
         if deleted:
             self._register = EditorRegister(deleted)
@@ -939,57 +1074,95 @@ class VimKeymap:
 
     def _join_lines(self, count: int, host: EditorCommandHost) -> None:
         text = host.editor_text
-        lines = _lines(text)
-        row = _normal_location(text, host.editor_cursor_location)[0]
+        lines = _lines(normalize_line_endings(text) if "\r" in text else text)
+        row = min(max(host.editor_cursor_location[0], 0), len(lines) - 1)
         end_row = min(row + max(count, 2) - 1, len(lines) - 1)
         if end_row == row:
             host.notify_editor_activity()
             return
-        replacement = lines[row].rstrip()
-        for line in lines[row + 1 : end_row + 1]:
-            replacement += " " + line.strip()
-        source_range = EditorTextRange((row, 0), (end_row, len(lines[end_row])))
-        cursor_column = len(lines[row].rstrip())
-        host.replace_editor_range(source_range, replacement)
-        host.move_editor_cursor((row, min(cursor_column, max(len(replacement) - 1, 0))))
+        first_content = lines[row].rstrip()
+        cursor_column = len(first_content)
+        rows_with_units = _UnitView.of(host).rows()
+        if row in rows_with_units:
+            start = (row, cursor_column)
+            prefix = ""
+        else:
+            start = (row, 0)
+            prefix = first_content
+        unit_rows = [next_row for next_row in range(row + 1, end_row + 1) if next_row in rows_with_units]
+        replacements: list[tuple[EditorTextRange, str]] = []
+        segment_row = row
+        for unit_row in unit_rows:
+            line = lines[unit_row]
+            content_start = _first_non_blank(line)
+            # Ordinary lines can join their surrounding seams in one edit.
+            replacement = " ".join([prefix, *map(str.strip, lines[segment_row + 1 : unit_row]), ""])
+            replacements.append((EditorTextRange(start, (unit_row, content_start)), replacement))
+            start = (unit_row, max(len(line.rstrip()), content_start))
+            segment_row = unit_row
+            prefix = ""
+        end = (end_row, len(lines[end_row]))
+        if start < end:
+            replacement = " ".join([prefix, *map(str.strip, lines[segment_row + 1 : end_row + 1])])
+            replacements.append((EditorTextRange(start, end), replacement))
+        host.replace_editor_ranges(replacements)
+        # Joining leaves a seam space after the first line's content.
+        host.move_editor_cursor((row, cursor_column))
 
     def _toggle_case(self, count: int, host: EditorCommandHost) -> None:
-        text = host.editor_text
-        row, column = _normal_location(text, host.editor_cursor_location)
-        line = _lines(text)[row]
-        # An atomic span (a live label) counts as one character and keeps its text.
-        atomic = host.editor_atomic_spans(row)
-        start = next((low for low, high in atomic if low < column < high), column)
+        view = _UnitView.of(host)
+        text = view.source
+        row, column = view.normal(host.editor_cursor_location)
+        line = view.lines[row].removesuffix("\r")
+        units = view.columns(row)
+        start = next((low for low, high in units if low < column < high), column)
         end = start
+        span_index = 0
+        while span_index < len(units) and units[span_index][1] <= start:
+            span_index += 1
+        run_start = start
         pieces: list[str] = []
+        replacements: list[tuple[EditorTextRange, str]] = []
         for _ in range(count):
             if end >= len(line):
                 break
-            span = next(((low, high) for low, high in atomic if low == end), None)
-            if span is not None:
-                pieces.append(line[span[0] : span[1]])
-                end = span[1]
+            if span_index < len(units) and units[span_index][0] == end:
+                if pieces:
+                    replacements.append((EditorTextRange((row, run_start), (row, end)), "".join(pieces)))
+                    pieces = []
+                span_end = units[span_index][1]
+                end = span_end
+                run_start = end
+                span_index += 1
                 continue
             character = line[end]
-            pieces.append(character.lower() if character.isupper() else character.upper())
+            toggled = character.lower() if character.isupper() else character.upper()
+            pieces.append(toggled)
             end += 1
+        if pieces:
+            replacements.append((EditorTextRange((row, run_start), (row, end)), "".join(pieces)))
         if end == start:
             host.notify_editor_activity()
             return
-        host.replace_editor_range(EditorTextRange((row, start), (row, end)), "".join(pieces))
-        host.move_editor_cursor(_normal_location(host.editor_text, (row, end)))
+        if not replacements:
+            # Keep the no-change undo step when the counted range contains only units.
+            replacements.append((EditorTextRange((row, start), (row, end)), line[start:end]))
+        host.replace_editor_ranges(replacements)
+        new_end = end + len(host.editor_text) - len(text)
+        host.move_editor_cursor(_UnitView.of(host).normal((row, new_end)))
 
     def _paste(self, *, after: bool, count: int, host: EditorCommandHost) -> EditorStatus:
         register = self._register
         if not register.text:
             host.notify_editor_activity()
             return ""
-        text = host.editor_text
+        view = _UnitView.of(host)
+        text = view.source
         inserted_character_count = len(register.text) * count
         if inserted_character_count > MESSAGE_EDITOR_MAX_CHARACTERS - len(text):
             host.notify_editor_activity()
             return MESSAGE_EDITOR_CHARACTER_LIMIT_STATUS.bind()
-        row, column = _normal_location(text, host.editor_cursor_location)
+        row, column = view.normal(host.editor_cursor_location)
         payload = register.text * count
         if register.kind is EditorRegisterKind.LINEWISE:
             lines = _lines(text)
@@ -1007,11 +1180,11 @@ class VimKeymap:
             target_row = row + 1 if after else row
             host.move_editor_cursor((min(target_row, len(_lines(host.editor_text)) - 1), 0))
             return ""
-        location = (row, _after_character(host, row, column, len(_lines(text)[row]))) if after else (row, column)
+        location = view.location(min(view.at((row, column)) + 1, view.row_bounds(row)[1])) if after else (row, column)
         insertion_offset = location_to_offset(text, location)
         host.replace_editor_range(EditorTextRange(location, location), payload)
         target = offset_to_location(host.editor_text, insertion_offset + len(payload) - 1)
-        host.move_editor_cursor(_normal_location(host.editor_text, target))
+        host.move_editor_cursor(_UnitView.of(host).normal(target))
         return ""
 
     def _resolve_text_object(
@@ -1022,25 +1195,30 @@ class VimKeymap:
         count: int,
         host: EditorCommandHost,
     ) -> EditorTextRange | None:
-        text = host.editor_text
-        cursor_offset = location_to_offset(text, _normal_location(text, host.editor_cursor_location))
+        view = _UnitView.of(host)
+        text = view.text
+        cursor_offset = view.at(view.normal(host.editor_cursor_location))
         if text_object in {VimTextObject.WORD, VimTextObject.WORD_BIG}:
-            return self._word_object(
+            offsets = self._word_object(
                 text,
                 cursor_offset,
                 around=around,
                 big=text_object is VimTextObject.WORD_BIG,
                 count=count,
             )
-        if text_object in {VimTextObject.DOUBLE_QUOTE, VimTextObject.SINGLE_QUOTE, VimTextObject.BACKTICK}:
-            return self._quote_object(text, cursor_offset, text_object.value, around=around)
-        delimiters = {
-            VimTextObject.PAREN: ("(", ")"),
-            VimTextObject.BRACKET: ("[", "]"),
-            VimTextObject.BRACE: ("{", "}"),
-        }
-        opening, closing = delimiters[text_object]
-        return self._pair_object(text, cursor_offset, opening, closing, around=around, count=count)
+        elif text_object in {VimTextObject.DOUBLE_QUOTE, VimTextObject.SINGLE_QUOTE, VimTextObject.BACKTICK}:
+            offsets = self._quote_object(text, cursor_offset, text_object.value, around=around)
+        else:
+            delimiters = {
+                VimTextObject.PAREN: ("(", ")"),
+                VimTextObject.BRACKET: ("[", "]"),
+                VimTextObject.BRACE: ("{", "}"),
+            }
+            opening, closing = delimiters[text_object]
+            offsets = self._pair_object(text, cursor_offset, opening, closing, around=around, count=count)
+        if offsets is None:
+            return None
+        return EditorTextRange(view.location(offsets[0]), view.location(offsets[1]))
 
     def _word_object(
         self,
@@ -1050,7 +1228,7 @@ class VimKeymap:
         around: bool,
         big: bool,
         count: int,
-    ) -> EditorTextRange | None:
+    ) -> tuple[int, int] | None:
         if not text:
             return None
         index = min(cursor, len(text) - 1)
@@ -1062,9 +1240,9 @@ class VimKeymap:
         character_class = _token_class(text[index], big=big)
         start = index
         end = index + 1
-        while start > 0 and _token_class(text[start - 1], big=big) == character_class:
+        while start > 0 and _extends(text[start - 1], character_class, big=big):
             start -= 1
-        while end < len(text) and _token_class(text[end], big=big) == character_class:
+        while end < len(text) and _extends(text[end], character_class, big=big):
             end += 1
         for _ in range(count - 1):
             while end < len(text) and text[end].isspace():
@@ -1072,7 +1250,8 @@ class VimKeymap:
             if end >= len(text):
                 break
             character_class = _token_class(text[end], big=big)
-            while end < len(text) and _token_class(text[end], big=big) == character_class:
+            end += 1
+            while end < len(text) and _extends(text[end], character_class, big=big):
                 end += 1
         if around:
             if end < len(text) and text[end].isspace():
@@ -1081,9 +1260,9 @@ class VimKeymap:
             else:
                 while start > 0 and text[start - 1].isspace():
                     start -= 1
-        return _range_from_offsets(text, start, end)
+        return start, end
 
-    def _quote_object(self, text: str, cursor: int, quote: str, *, around: bool) -> EditorTextRange | None:
+    def _quote_object(self, text: str, cursor: int, quote: str, *, around: bool) -> tuple[int, int] | None:
         line_start = text.rfind("\n", 0, cursor) + 1
         line_end = text.find("\n", cursor)
         if line_end == -1:
@@ -1102,7 +1281,7 @@ class VimKeymap:
         opening, closing = pair
         start = opening if around else opening + 1
         end = closing + 1 if around else closing
-        return _range_from_offsets(text, start, end)
+        return start, end
 
     def _pair_object(
         self,
@@ -1113,7 +1292,7 @@ class VimKeymap:
         *,
         around: bool,
         count: int,
-    ) -> EditorTextRange | None:
+    ) -> tuple[int, int] | None:
         stack: list[int] = []
         candidates: list[tuple[int, int]] = []
         for index, character in enumerate(text):
@@ -1129,7 +1308,7 @@ class VimKeymap:
         selected = candidates[min(count - 1, len(candidates) - 1)]
         start = selected[0] if around else selected[0] + 1
         end = selected[1] + 1 if around else selected[1]
-        return _range_from_offsets(text, start, end)
+        return start, end
 
     def _line_edit_range(self, text: str, start_row: int, count: int) -> EditorTextRange:
         lines = _lines(text)
@@ -1164,7 +1343,7 @@ class VimKeymap:
         return selected_text + "\n"
 
     def _normalize_host_cursor(self, host: EditorCommandHost) -> None:
-        host.move_editor_cursor(_normal_location(host.editor_text, host.editor_cursor_location))
+        host.move_editor_cursor(_UnitView.of(host).normal(host.editor_cursor_location))
 
     def _position_after_line_operator(self, start_row: int, host: EditorCommandHost) -> None:
         lines = _lines(host.editor_text)
@@ -1177,7 +1356,7 @@ class VimKeymap:
         self._visual_anchor = None
         self._visual_active = None
         target = visual_active or host.editor_cursor_location
-        host.move_editor_cursor(_normal_location(host.editor_text, target))
+        host.move_editor_cursor(_UnitView.of(host).normal(target))
 
     def _clear_pending(self) -> None:
         self._count = 0

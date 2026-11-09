@@ -58,7 +58,7 @@ In the prompt you can use:
 
 1. Type `/` in the input field. Shortcuts are listed in the **Prompt Shortcuts** group.
 2. Choose one, or type its name, with or without arguments (`/review error handling`), and press **Tab** or **Enter**.
-3. The prompt fills the input field. Arguments you did not give are highlighted: press **Tab** to move between them and type to fill them in. If you press **Enter** while some are still empty, iCode asks once before sending. Stepping through your prompt history with **↑** and back with **↓** brings the prompt back as it was, highlights included; so does closing the full-screen editor without changing the text. If you change the text in the editor, the highlights go, but the prompt still belongs to its shortcut.
+3. The prompt fills the input field. Arguments you did not give are highlighted: press **Tab** to move between them and type to fill them in. Each unfilled argument is one unit: **Backspace** or **Delete** removes it in one go, and undo brings it back. If you press **Enter** while some are still empty, iCode asks once before sending. Stepping through your prompt history with **↑** and back with **↓** brings the prompt back as it was, highlights included. After confirming the full-screen editor, untouched arguments stay highlighted, and the prompt still belongs to its shortcut. In Vim mode, each unfilled argument counts as one character and as a word of its own for `w` / `b` / `e`.
 4. Edit the prompt if you like, then press **Enter** to send it.
 
 ### Commands in the prompt

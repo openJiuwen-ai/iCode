@@ -864,5 +864,5 @@ async def test_a_quote_label_among_shortcut_arguments_stays_one_argument(
             pilot=pilot,
             description="the quote filled the second argument whole",
         )
-        assert chat.chat_draft().sent_text() == "Use a formal tone for:\n“the meeting moved to noon”"
+        assert chat.chat_draft().sent_text() == "Use a formal tone for:\n> the meeting moved to noon"
         assert sent.texts == []

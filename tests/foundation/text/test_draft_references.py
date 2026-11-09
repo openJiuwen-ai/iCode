@@ -9,16 +9,17 @@ from chrys.foundation.text.draft_references import (
     DraftReference,
     DraftReferences,
     ReferenceKind,
+    english_label,
     expand_references,
     expand_with_quote_spans,
     image_labels_to_paths,
     inert_quote,
     iter_reference_labels,
-    label_boundary,
-    label_safe_range,
     labels_as_words,
     labels_from_words,
     paste_folds,
+    unit_boundary,
+    unit_safe_range,
 )
 from chrys.foundation.text.mentions import format_file_mention, iter_mention_tokens
 from chrys.service.prompt_shortcuts.shell import shell_commands
@@ -64,15 +65,22 @@ def test_every_kind_has_the_same_fields() -> None:
     )
 
 
-def test_a_paste_folds_past_800_characters_or_too_many_newlines_for_the_screen() -> None:
+def test_a_paste_folds_past_800_characters_or_five_visible_lines_for_the_screen() -> None:
     assert not paste_folds("x" * 800, screen_rows=40)
     assert paste_folds("x" * 801, screen_rows=40)
-    assert not paste_folds("1\n2\n3", screen_rows=40)
-    assert paste_folds("1\n2\n3\n4", screen_rows=40)
+    assert not paste_folds("1\n2\n3\n4\n5", screen_rows=40)
+    assert not paste_folds("1\n2\n3\n4\n5\n", screen_rows=40)
+    assert paste_folds("1\n2\n3\n4\n5\n6", screen_rows=40)
     assert not paste_folds("1\n2", screen_rows=11)
     assert paste_folds("1\n2\n3", screen_rows=11)
     assert paste_folds("1\n2", screen_rows=10)
     assert not paste_folds("one line", screen_rows=5)
+
+
+def test_paste_lines_are_counted_by_newlines_as_the_label_counts_them() -> None:
+    separated = "\u2028".join("123456") + "\x0b" + "\x0c" + "\u2029"
+    assert not paste_folds(separated, screen_rows=40)
+    assert english_label("paste", 1, separated) == "[Pasted text #1]"
 
 
 def test_each_label_sends_what_it_stands_for_in_its_place() -> None:
@@ -86,10 +94,10 @@ def test_each_label_sends_what_it_stands_for_in_its_place() -> None:
     assert [token.value for token in iter_mention_tokens(sent)] == ["/shots/a b.png"]
 
 
-def test_a_quote_of_one_line_stays_in_place_and_one_of_several_is_a_block_quote_of_its_own() -> None:
+def test_a_quote_of_one_line_or_several_is_a_block_quote_on_lines_of_its_own() -> None:
     references, _labels = _with(("quote", "one line"), ("quote", "a\n# not a heading\n\n- not a bullet\n```\n"))
 
-    assert expand_references("explain [Quote #1] please", references) == "explain “one line” please"
+    assert expand_references("explain [Quote #1] please", references) == "explain \n> one line\n\n please"
     sent = expand_references("explain [Quote #2] please", references)
     # On lines of its own, ended by a blank line: the quoted Markdown stays inside the quote.
     assert sent == "explain \n> a\n> # not a heading\n>\n> - not a bullet\n> ```\n\n please"
@@ -104,7 +112,7 @@ def test_a_label_named_twice_sends_its_content_twice() -> None:
     references, _labels = _with(("quote", "first"), ("quote", "second"), ("quote", "unused"))
 
     assert expand_references("[Quote #2] then [Quote #1] and [Quote #2]", references) == (
-        "“second” then “first” and “second”"
+        "> second\n\n then \n> first\n\n and \n> second"
     )
 
 
@@ -120,7 +128,7 @@ def test_an_image_mention_stands_apart_from_the_text_around_it() -> None:
 def test_what_a_label_stands_for_is_sent_as_text_and_never_read_as_labels() -> None:
     references, _labels = _with(("quote", "see [Image #1] there"), ("image", "/a.png"))
 
-    assert expand_references("[Quote #1]", references) == "“see [Image #1] there”"
+    assert expand_references("[Quote #1]", references) == "> see [Image #1] there"
 
 
 def test_nothing_in_a_quote_acts_when_it_is_sent() -> None:
@@ -128,7 +136,7 @@ def test_nothing_in_a_quote_acts_when_it_is_sent() -> None:
 
     sent = expand_references("mine @/tmp/typed.png [Quote #1]", references)
 
-    assert sent == "mine @/tmp/typed.png “\\@/tmp/first.png then see \\@src/a.py, run \\!`ls` and \\\\!`pwd`”"
+    assert sent == "mine @/tmp/typed.png \n> \\@/tmp/first.png then see \\@src/a.py, run \\!`ls` and \\\\!`pwd`"
     assert [token.value for token in iter_mention_tokens(sent)] == ["/tmp/typed.png"]
     assert shell_commands(sent) == []
 
@@ -153,8 +161,8 @@ def test_label_text_inside_a_paste_is_just_text() -> None:
 
     sent, quotes = expand_with_quote_spans("[Quote #1] and [Pasted text #1 +3 lines]", references)
 
-    assert sent == "“said” and see [Quote #1]\nline\nline\nline"
-    assert [sent[start:end] for start, end in quotes] == ["“said”"]
+    assert sent == "> said\n\n and see [Quote #1]\nline\nline\nline"
+    assert [sent[start:end] for start, end in quotes] == ["> said\n\n"]
 
 
 def test_a_label_keeps_the_text_it_was_written_with() -> None:
@@ -166,14 +174,14 @@ def test_a_label_keeps_the_text_it_was_written_with() -> None:
 
     assert quote.label == "[引用 #1]"
     assert _live("[引用 #1] [Quote #1] [Image #1]", references) == ["[引用 #1]", "[Image #1]"]
-    assert expand_references("[引用 #1]", references) == "“said”"
+    assert expand_references("[引用 #1]", references) == "> said"
 
 
 def test_label_shaped_text_with_a_huge_number_is_plain_text() -> None:
     references, _labels = _with(("quote", "q"))
     huge = f"[Quote #{'9' * 5000}] [Quote #1234567890] [Quote #1]"
 
-    assert expand_references(huge, references) == f"[Quote #{'9' * 5000}] [Quote #1234567890] “q”"
+    assert expand_references(huge, references) == f"[Quote #{'9' * 5000}] [Quote #1234567890] \n> q"
 
 
 def test_unregistered_labels_and_plain_text_send_unchanged() -> None:
@@ -193,24 +201,58 @@ def test_image_labels_become_paths_for_a_model_without_vision_and_other_labels_s
 def test_a_position_inside_a_label_goes_to_the_edge_it_moves_toward() -> None:
     references, _labels = _with(("quote", "q"))
     text = "a [Quote #1] b"
+    spans = [(label.start, label.end) for label in iter_reference_labels(text, references)]
 
-    assert label_boundary(text, references, 5, forward=True) == 12
-    assert label_boundary(text, references, 5, forward=False) == 2
-    assert label_boundary(text, references, 2, forward=True) == 2
-    assert label_boundary(text, references, 12, forward=False) == 12
-    assert label_boundary(text, EMPTY_REFERENCES, 5, forward=True) == 5
+    assert unit_boundary(spans, 5, forward=True) == 12
+    assert unit_boundary(spans, 5, forward=False) == 2
+    assert unit_boundary(spans, 2, forward=True) == 2
+    assert unit_boundary(spans, 12, forward=False) == 12
+    assert unit_boundary([], 5, forward=True) == 5
 
 
 def test_an_edit_takes_a_label_it_reaches_into_whole_and_inserts_beside_one() -> None:
     references, _labels = _with(("quote", "q"), ("paste", "p\nq"))
     text = "a [Quote #1][Pasted text #1 +1 lines] b"
+    spans = [(label.start, label.end) for label in iter_reference_labels(text, references)]
 
-    assert label_safe_range(text, references, 11, 12) == (2, 12)
-    assert label_safe_range(text, references, 12, 13) == (12, 37)
-    assert label_safe_range(text, references, 11, 13) == (2, 37)
-    assert label_safe_range(text, references, 5, 5) == (12, 12)
-    assert label_safe_range(text, references, 12, 12) == (12, 12)
-    assert label_safe_range(text, references, 0, 1) == (0, 1)
+    assert unit_safe_range(spans, 11, 12) == (2, 12)
+    assert unit_safe_range(spans, 12, 13) == (12, 37)
+    assert unit_safe_range(spans, 11, 13) == (2, 37)
+    assert unit_safe_range(spans, 5, 5) == (12, 12)
+    assert unit_safe_range(spans, 12, 12) == (12, 12)
+    assert unit_safe_range(spans, 0, 1) == (0, 1)
+
+
+def test_adjacent_units_keep_their_shared_edge_and_edit_independently() -> None:
+    spans = [(2, 5), (5, 9)]
+
+    assert unit_boundary(spans, 3, forward=True) == 5
+    assert unit_boundary(spans, 7, forward=False) == 5
+    assert unit_boundary(spans, 5, forward=True) == 5
+    assert unit_safe_range(spans, 3, 4) == (2, 5)
+    assert unit_safe_range(spans, 6, 7) == (5, 9)
+    assert unit_safe_range(spans, 4, 6) == (2, 9)
+    assert unit_safe_range(spans, 5, 5) == (5, 5)
+
+
+def test_overlapping_units_have_safe_cursor_edges_in_both_directions() -> None:
+    spans = [(2, 7), (5, 11), (9, 15)]
+
+    assert unit_boundary(spans, 3, forward=True) == 15
+    assert unit_boundary(spans, 13, forward=False) == 2
+    assert unit_boundary(spans, 2, forward=False) == 2
+    assert unit_boundary(spans, 15, forward=True) == 15
+
+
+def test_overlapping_units_expand_edits_until_no_unit_is_cut() -> None:
+    spans = [(2, 7), (5, 11), (9, 15), (15, 18)]
+
+    assert unit_safe_range(spans, 3, 4) == (2, 15)
+    assert unit_safe_range(spans, 12, 13) == (2, 15)
+    assert unit_safe_range(spans, 6, 6) == (15, 15)
+    assert unit_safe_range(spans, 15, 15) == (15, 15)
+    assert unit_safe_range(spans, 14, 16) == (2, 18)
+    assert unit_safe_range([], 3, 4) == (3, 4)
 
 
 def test_a_live_label_is_one_word_when_text_is_split_on_whitespace() -> None:

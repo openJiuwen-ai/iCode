@@ -34,6 +34,7 @@ handful of paper-cuts encountered when running inside real terminals:
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual import events
@@ -50,6 +51,7 @@ from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 
 if TYPE_CHECKING:
     from textual.css.styles import RenderStyles
+    from textual.widgets.text_area import Edit
 
 
 _PASTE_TOKENIZER: MixedLanguageTokenizer | None = None
@@ -177,6 +179,27 @@ class EnhancedTextArea(TextArea):
             super().action_undo()
         except ValueError, IndexError:
             self.move_cursor((0, 0))
+
+    def _edit_as_one_step(self, actions: Iterable[Callable[[], object]]) -> None:
+        """Run actions that each perform one edit, collecting one undo batch.
+
+        Textual 8.2.7 starts a batch after each checkpoint, including for
+        multi-character edits. Only take back a new top batch: an unrecorded
+        edit must never collect an earlier step. Recheck this private history
+        adapter when upgrading Textual.
+        """
+        history = self.history
+        stack = history._undo_stack
+        recorded: list[Edit] = []
+        for action in actions:
+            history.checkpoint()
+            previous = stack[-1] if stack else None
+            action()
+            if stack and stack[-1] is not previous:
+                recorded.extend(stack.pop())
+        if recorded:
+            stack.append(recorded)
+        history.checkpoint()
 
     def action_redo(self) -> None:
         try:

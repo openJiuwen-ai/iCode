@@ -4,20 +4,25 @@
 
 A draft is text plus what lives in it (:class:`ChatDraft`): the labels'
 references, the unfilled prompt fields and the prompt shortcut it belongs to.
-:class:`DraftTextArea` is the one implementation of how that draft edits, so
-the message editor is the input box made bigger:
+:class:`DraftTextArea` is the one implementation of how the input box and
+the expanded message editor edit their whole units:
 
-- labels are one unit (:func:`label_boundary` for every cursor move,
-  :func:`label_safe_range` for every edit), styled, and open on a click;
-- prompt fields shift with edits, undo and redo, and any edit that touches
-  one makes it the user's text;
+- labels and prompt fields are whole units (:func:`unit_boundary` for every
+  cursor move, :func:`unit_safe_range` for every edit); clicking a label opens
+  it, and clicking inside a prompt field selects it while text can be typed,
+  or rests on its start otherwise;
+- prompt fields shift with edits, undo and redo; an edit that covers a field
+  ends it, unless the entire replacement writes back exactly the same text;
+  writers leave unchanged units outside their ranges; undo restores fields removed
+  whole by an edit, unless the draft was empty when the batch was undone;
+  an edit after an undo starts a batch of its own;
 - an edit that empties the draft ends its fields and owner;
 - a draft that leaves (sent, or taken in by a running turn) is one undo
   step that brings it back whole, labels live (:meth:`leave_draft`);
   otherwise a reference table that is replaced rather than grown drops the
   undo steps that would bring back labels with nothing behind them;
-- a long paste folds into a label, and image paths or a clipboard image
-  become image labels.
+- the input box folds long pastes and registers image labels; the expanded
+  editor keeps pasted text and inserts images in their sending form.
 
 It is a mixin for a ``TextArea`` host listed before the host class, which
 declares :data:`DRAFT_COMPONENT_CLASSES` and :func:`draft_text_area_css`
@@ -31,7 +36,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, fields
 from itertools import accumulate
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from rich.text import Text
 from textual.message import Message
@@ -48,12 +53,15 @@ from chrys.foundation.text.draft_references import (
     DraftReferences,
     ReferenceKind,
     iter_reference_labels,
-    label_boundary,
-    label_safe_range,
     paste_folds,
+    unit_boundary,
+    unit_safe_range,
 )
+from chrys.foundation.text.lines import normalize_line_endings
 
 if TYPE_CHECKING:
+    from textual import events
+
     from chrys.app.tui.widgets import EnhancedTextArea
 
     _DraftTextAreaBase = EnhancedTextArea
@@ -132,6 +140,20 @@ class _DraftLeft(Edit):
     table_after: DraftReferences = field(default=EMPTY_REFERENCES, kw_only=True)
 
 
+@dataclass
+class _DraftReplaced(Edit):
+    """An editor save, with the labels and fields on each side of its single replacement.
+
+    The owner follows ordinary editing and is never replayed. The table kept
+    on undo includes labels registered by later edits, for their subsequent redo.
+    """
+
+    fields_before: tuple[PromptField, ...] = field(kw_only=True)
+    references_before: DraftReferences = field(kw_only=True)
+    fields_after: tuple[PromptField, ...] = field(kw_only=True)
+    table_after: DraftReferences = field(kw_only=True)
+
+
 def _left_draft(edits: Sequence[Edit]) -> _DraftLeft | None:
     # ``leave_draft`` checkpoints before and after its edit, so it is a batch of its own.
     if len(edits) == 1 and isinstance(edits[0], _DraftLeft):
@@ -139,8 +161,25 @@ def _left_draft(edits: Sequence[Edit]) -> _DraftLeft | None:
     return None
 
 
+def _fields_after_edit(
+    fields: Sequence[PromptField], start: int, replaced: str, text: str
+) -> tuple[tuple[PromptField, ...], tuple[PromptField, ...]]:
+    """The fields after *replaced* at *start* becomes *text*, and those it removed, relative to *start*.
+
+    Both strings are in document storage form. Only an entirely identical
+    replacement leaves the fields alone; writers exclude unchanged units.
+    """
+    if replaced == text:
+        return tuple(fields), ()
+    end = start + len(replaced)
+    removed = tuple((low - start, high - start) for low, high in fields if start <= low < high <= end)
+    return shift_prompt_fields(fields, start, end, len(text)), removed
+
+
 class DraftTextArea(_DraftTextAreaBase):
     """The draft-editing rules of a ``TextArea`` host (module docstring)."""
+
+    FOLD_PASTES: ClassVar[bool] = True
 
     def __init__(self, *args, **kwargs) -> None:
         # Before the host's init: it sets the selection and may load text, which read these.
@@ -151,6 +190,8 @@ class DraftTextArea(_DraftTextAreaBase):
         self._writing_draft = False
         self._prompt_field_columns_of: tuple[PromptField, ...] | None = None
         self._prompt_field_columns_cache: dict[int, list[tuple[int, int]]] = {}
+        self._field_mouse_down: Location | None = None
+        self._field_mouse_moved = False
         # Session restore/workspace updates replace this before normal use; this covers early paste during startup.
         self._paste_cwd: str = safe_getcwd()
         self._clipboard_image_dir: Path | None = None
@@ -164,8 +205,9 @@ class DraftTextArea(_DraftTextAreaBase):
     class ReferenceClicked(Message):
         """Posted when a live draft label is clicked: *reference* is what it stands for."""
 
-        def __init__(self, reference: DraftReference) -> None:
+        def __init__(self, reference: DraftReference, start: int) -> None:
             self.reference = reference
+            self.start = start
             super().__init__()
 
     class DraftOwnerChanged(Message):
@@ -187,9 +229,16 @@ class DraftTextArea(_DraftTextAreaBase):
         return self._prompt_fields
 
     def set_prompt_fields(self, fields: Sequence[PromptField], *, select: bool = True) -> None:
-        """Highlight *fields* of the current text and, with *select*, select the first one."""
-        length = len(self.text)
-        self._prompt_fields = tuple(sorted((start, end) for start, end in fields if 0 <= start < end <= length))
+        """Highlight valid single-line *fields* and, with *select*, select the first one."""
+        text = self.text
+        self._prompt_fields = tuple(
+            sorted(
+                (start, end)
+                for start, end in fields
+                if 0 <= start < end <= len(text) and "\n" not in text[start:end] and "\r" not in text[start:end]
+            )
+        )
+        self.selection = self.selection
         self._repaint_prompt_fields()
         if select and self._prompt_fields:
             self._select_prompt_field(self._prompt_fields[0])
@@ -232,6 +281,64 @@ class DraftTextArea(_DraftTextAreaBase):
         if not self._writing_draft and not self.text:
             self._drop_prompt_fields()
             self.set_draft_owner(None)
+
+    def replace_draft(self, draft: ChatDraft) -> None:
+        """Apply an editor result as one undo step, leaving ownership to ordinary editing.
+
+        Other whole-draft writers keep their existing semantics. This step
+        owns both reference tables, so switching them cannot discard history.
+        """
+        before = self.chat_draft()
+        self._drop_prompt_fields()
+        self._references = draft.references if draft.text else EMPTY_REFERENCES
+        self.history.checkpoint()
+        replacement = _DraftReplaced(
+            draft.text,
+            (0, 0),
+            self.document.end,
+            maintain_selection_offset=False,
+            fields_before=before.fields,
+            references_before=before.references,
+            fields_after=draft.fields,
+            table_after=self._references,
+        )
+        self.edit(replacement)
+        self._adopt_references(self._references)
+        self.set_prompt_fields(draft.fields, select=False)
+        self.set_draft_owner(draft.owner if self.text else None)
+        self.history.checkpoint()
+
+    def edit_paste(self, entry: DraftReference, content: str, *, start: int) -> None:
+        """Save edited *content* for the paste *entry* as one undo step.
+
+        The result is what pasting *content* now would give: still long, the
+        same numbered label (its line count updated); short, the text itself;
+        empty, nothing. Every place the label appears changes alike, and the
+        cursor ends after the one at *start* (else the first). Unchanged
+        content, or a draft that no longer shows the label, changes nothing.
+        """
+        draft = self.chat_draft()
+        same = [label for label in iter_reference_labels(draft.text, draft.references) if label.reference == entry]
+        if entry.kind != "paste" or not same:
+            return
+        if all(label.start != start for label in same):
+            start = same[0].start
+        content = normalize_line_endings(content)
+        if content == entry.content:
+            return
+        references = draft.references
+        replacement = content
+        if content and paste_folds(content, screen_rows=self.app.size.height):
+            replacement = self._label("paste", entry.number, content)
+            references = references.with_replaced(DraftReference("paste", entry.number, content, replacement))
+        text, fields = draft.text, draft.fields
+        for label in reversed(same):
+            text = text[: label.start] + replacement + text[label.end :]
+            fields = shift_prompt_fields(fields, label.start, label.end, len(replacement))
+        earlier = sum(1 for label in same if label.start < start)
+        cursor = start + earlier * (len(replacement) - len(entry.label)) + len(replacement)
+        self.replace_draft(ChatDraft(text, fields, draft.owner, references))
+        self.move_cursor(Document(text).get_location_from_index(cursor))
 
     def clear(self) -> EditResult:
         """Empty the composer and end what its labels stand for.
@@ -315,6 +422,7 @@ class DraftTextArea(_DraftTextAreaBase):
         self.refresh()
 
     def _select_prompt_field(self, span: PromptField) -> None:
+        self.history.checkpoint()
         document = self.document
         start, end = span
         self.selection = Selection(document.get_location_from_index(start), document.get_location_from_index(end))
@@ -336,19 +444,23 @@ class DraftTextArea(_DraftTextAreaBase):
         return True
 
     def edit(self, edit: Edit) -> EditResult:
-        self._keep_labels_whole(edit)
+        self._keep_units_whole(edit)
         if not self._prompt_fields:
             result = super().edit(edit)
             self._end_owner_if_emptied()
             return result
         document = self.document
-        start = document.get_index_from_location(edit.top)
-        end = document.get_index_from_location(edit.bottom)
-        # Shift before the base edit posts Changed and repaints. ``len(edit.text)`` is the length
-        # the document stores: text reaches the draft with LF line ends only (typing inserts
-        # ``\n``, a paste or drop goes through ``_sanitize_paste_text``, an expansion through
-        # ``sanitize_terminal_block``), so no CRLF collapses on the way in.
-        self._prompt_fields = shift_prompt_fields(self._prompt_fields, start, end, len(edit.text))
+        # Move the fields before the base edit validates the selection, posts Changed and
+        # repaints. Offsets count the document's own line breaks, so the new text is compared
+        # as the document will store it: its lines joined by the document's newline.
+        self._prompt_fields, removed = _fields_after_edit(
+            self._prompt_fields,
+            document.get_index_from_location(edit.top),
+            document.get_text_range(edit.top, edit.bottom),
+            document.newline.join(Document(edit.text).lines),
+        )
+        # Textual's recorded Edit owns the fields its replacement removes, relative to its start.
+        edit.__dict__["_removed_prompt_fields"] = removed
         if not self._prompt_fields:
             self.highlight_cursor_line = self._highlights_cursor_line
         result = super().edit(edit)
@@ -368,17 +480,33 @@ class DraftTextArea(_DraftTextAreaBase):
 
     def _undo_batch(self, edits: Sequence[Edit]) -> None:
         left = _left_draft(edits)
-        if left is not None:
+        replacement = edits[0] if len(edits) == 1 and isinstance(edits[0], _DraftReplaced) else None
+        if replacement is not None:
+            replacement.table_after = self._references
+            self._drop_prompt_fields()
+            self._references = EMPTY_REFERENCES
+            # Textual refreshes scrollbars before restoring the recorded cursor.
+            # Their watcher must see a location valid on either side of a whole replacement.
+            self.move_cursor((0, 0))
+        elif left is not None:
             left.table_after = self._references
-        elif self._prompt_fields and edits:
-            steps: list[tuple[Location, Location, str] | None] = []
+        elif edits and (self._prompt_fields or any(getattr(edit, "_removed_prompt_fields", ()) for edit in edits)):
+            steps: list[tuple[Location, Location, str, tuple[PromptField, ...]] | None] = []
             for recorded in reversed(edits):
                 # The span the edit wrote, and the text it replaced there.
                 done = recorded._edit_result
-                steps.append(None if done is None else (recorded.top, done.end_location, done.replaced_text))
+                removed = getattr(recorded, "_removed_prompt_fields", ())
+                steps.append(None if done is None else (recorded.top, done.end_location, done.replaced_text, removed))
             self._replay_prompt_fields(steps)
         super()._undo_batch(edits)
-        if left is not None:
+        # Textual checkpoints after a redo only: without this, the next short edit would join
+        # the batch this undo uncovers, and a sent draft would no longer be recognised
+        # as its own step.
+        self.history.checkpoint()
+        if replacement is not None:
+            self._adopt_references(replacement.references_before)
+            self.set_prompt_fields(replacement.fields_before, select=False)
+        elif left is not None:
             draft = left.draft
             self._adopt_references(draft.references)
             self.set_prompt_fields(draft.fields, select=False)
@@ -388,34 +516,49 @@ class DraftTextArea(_DraftTextAreaBase):
 
     def _redo_batch(self, edits: Sequence[Edit]) -> None:
         left = _left_draft(edits)
-        if left is None and self._prompt_fields and edits:
-            self._replay_prompt_fields([(recorded.top, recorded.bottom, recorded.text) for recorded in edits])
+        replacement = edits[0] if len(edits) == 1 and isinstance(edits[0], _DraftReplaced) else None
+        if replacement is not None:
+            self._drop_prompt_fields()
+            self._references = EMPTY_REFERENCES
+            self.move_cursor((0, 0))
+        elif left is None and self._prompt_fields and edits:
+            self._replay_prompt_fields([(recorded.top, recorded.bottom, recorded.text, ()) for recorded in edits])
         super()._redo_batch(edits)
-        if left is not None:
+        if replacement is not None:
+            self._adopt_references(replacement.table_after)
+            self.set_prompt_fields(replacement.fields_after, select=False)
+        elif left is not None:
             self._adopt_references(left.table_after)
         self._end_owner_if_emptied()
 
-    def _replay_prompt_fields(self, steps: Sequence[tuple[Location, Location, str] | None]) -> None:
-        """Move the fields across *steps*, replacements applied in order to the current text.
+    def _replay_prompt_fields(
+        self, steps: Sequence[tuple[Location, Location, str, tuple[PromptField, ...]] | None]
+    ) -> None:
+        """Move and restore fields across *steps*, replacements applied in order to the current text.
 
-        Each step is ``(top, bottom, text)`` against the text the step before
-        it left; a scratch copy of the document turns each into offsets, as
-        ``edit()`` does on the live one. A step that cannot be placed drops
-        every field: a field is only highlighted where it is known to be.
+        Each step is ``(top, bottom, text, removed_fields)`` against the text the
+        step before it left; removed fields are relative to its start. A scratch
+        document turns locations into offsets, as ``edit()`` does on the live
+        one. A step that cannot be placed drops every field: a field is only
+        highlighted where it is known to be.
         """
-        scratch = Document(self.text)
+        # Joining every line does not change the live document's newline.
+        # Seed that storage form before loading text that may now be one line.
+        scratch = Document(self.document.newline)
+        scratch.replace_range((0, 0), scratch.end, self.text)
         fields = self._prompt_fields
         for step in steps:
             if step is None:
                 fields = ()
                 break
-            top, bottom, text = step
+            top, bottom, text, removed = step
             start = scratch.get_index_from_location(top)
-            end = scratch.get_index_from_location(bottom)
             written = scratch.replace_range(top, bottom, text)
-            fields = shift_prompt_fields(
-                fields, start, end, scratch.get_index_from_location(written.end_location) - start
+            fields, _removed = _fields_after_edit(
+                fields, start, written.replaced_text, scratch.get_text_range(top, written.end_location)
             )
+            if removed:
+                fields = tuple(sorted((*fields, *((start + low, start + high) for low, high in removed))))
         self._prompt_fields = fields
         self._repaint_prompt_fields()
 
@@ -460,14 +603,9 @@ class DraftTextArea(_DraftTextAreaBase):
             line_starts = list(accumulate((len(text) + newline for text in lines), initial=0))
             columns: dict[int, list[tuple[int, int]]] = {}
             for start, end in fields:
-                first = bisect_right(line_starts, start) - 1
-                last = min(bisect_right(line_starts, end) - 1, len(lines) - 1)
-                for row in range(first, last + 1):
-                    line_start = line_starts[row]
-                    left = max(start, line_start) - line_start
-                    right = min(end, line_start + len(lines[row])) - line_start
-                    if left < right:
-                        columns.setdefault(row, []).append((left, right))
+                row = bisect_right(line_starts, start) - 1
+                line_start = line_starts[row]
+                columns.setdefault(row, []).append((start - line_start, end - line_start))
             self._prompt_field_columns_cache = columns
             self._prompt_field_columns_of = fields
         return self._prompt_field_columns_cache
@@ -507,6 +645,8 @@ class DraftTextArea(_DraftTextAreaBase):
         references = self._references
         labels: list[str] = []
         for content in contents:
+            # The composer and its labels share LF storage, so expansion only shifts offsets by length.
+            content = normalize_line_endings(content)
             references, entry = references.with_new(kind, content, label=self._label)
             labels.append(entry.label)
         self._set_references(references)
@@ -524,15 +664,15 @@ class DraftTextArea(_DraftTextAreaBase):
             message = _LABEL_PASTE.bind(number=str(number))
         return f"[{render_str(widget_localizer(self), message)}]"
 
-    def _spaced_for_insert(self, text: str) -> str:
-        """*text* with a space on each side where it would otherwise touch other text at the selection."""
+    def _spaced_for_insert(self, text: str, *, trailing_space: bool = True) -> str:
+        """Set *text* apart at the selection, optionally leaving a space at the draft's end for more input."""
         document = self.document
         first, last = sorted(self.selection)
         start = document.get_index_from_location(first)
         end = document.get_index_from_location(last)
         draft = self.text
         before = " " if start > 0 and not draft[start - 1].isspace() else ""
-        after = " " if end >= len(draft) or not draft[end].isspace() else ""
+        after = " " if (end >= len(draft) and trailing_space) or (end < len(draft) and not draft[end].isspace()) else ""
         return f"{before}{text}{after}"
 
     def insert_reference(self, kind: ReferenceKind, content: str) -> bool:
@@ -560,65 +700,104 @@ class DraftTextArea(_DraftTextAreaBase):
         no spaces added: sending it puts the text back as if it had been
         pasted. Text folds after the base normalizes and caps it.
         """
-        labels = self._image_paste_labels(text)
-        if labels is not None:
-            return labels
+        images = self._image_paste_text(text)
+        if images is not None:
+            return images
         text = super()._sanitize_paste_text(text)
-        if self.read_only or not paste_folds(text, screen_rows=self.app.size.height):
+        if self.read_only or not self.FOLD_PASTES or not paste_folds(text, screen_rows=self.app.size.height):
             return text
         return self._register("paste", [text])
 
     def _validate_selection(self, selection: Selection) -> Selection:
-        """Keep each selection end off the inside of a live label: a label is one unit.
+        """Keep each selection end off the inside of a live label or prompt field.
 
         Every cursor move passes here (keys, clicks, drags, programmatic moves);
-        an end landing inside a label goes to the label's edge in the direction
-        it moved. A label holds no newline, so only that end's line is read.
+        an end landing inside a unit goes to its edge in the direction it moved.
+        Units hold no newline, so only that end's line is read.
         """
         selection = super()._validate_selection(selection)
-        if not self._references:
+        if not self._references and not self._prompt_fields:
             return selection
         previous = self.selection
         return Selection(
-            self._label_edge(selection.start, forward=selection.start >= previous.start),
-            self._label_edge(selection.end, forward=selection.end >= previous.end),
+            self._unit_edge(selection.start, forward=selection.start >= previous.start),
+            self._unit_edge(selection.end, forward=selection.end >= previous.end),
         )
 
-    def _label_edge(self, location: Location, *, forward: bool) -> Location:
-        row, column = location
-        return row, label_boundary(self.document[row], self._references, column, forward=forward)
+    def _unit_spans(self, row: int | None = None) -> list[tuple[int, int]]:
+        """The live labels and fields, ordered as absolute offsets or columns on *row*."""
+        if not self._references and not self._prompt_fields:
+            return []
+        text = self.text if row is None else self.document[row]
+        fields = self._prompt_fields if row is None else self._prompt_field_columns().get(row, ())
+        return sorted(
+            [(label.start, label.end) for label in iter_reference_labels(text, self._references)] + list(fields)
+        )
 
-    def _keep_labels_whole(self, edit: Edit) -> None:
-        """Make *edit* take any live label it reaches into whole, or insert beside one it falls in."""
-        if not self._references:
+    def _unit_edge(self, location: Location, *, forward: bool) -> Location:
+        row, column = location
+        return row, unit_boundary(self._unit_spans(row), column, forward=forward)
+
+    def _keep_units_whole(self, edit: Edit) -> None:
+        """Make *edit* take any unit it reaches into whole, or insert beside one it falls in."""
+        if not self._references and not self._prompt_fields:
             return
         document = self.document
         start = document.get_index_from_location(edit.top)
         end = document.get_index_from_location(edit.bottom)
-        safe_start, safe_end = label_safe_range(self.text, self._references, start, end)
+        safe_start, safe_end = unit_safe_range(self._unit_spans(), start, end)
         if (safe_start, safe_end) != (start, end):
             edit.from_location = document.get_location_from_index(safe_start)
             edit.to_location = document.get_location_from_index(safe_end)
 
+    async def _on_mouse_down(self, event: events.MouseDown) -> None:
+        # Textual dispatches each MRO class's handler once; the base owns the selection.
+        self._field_mouse_down = self.get_target_document_location(event)
+        self._field_mouse_moved = False
+
+    async def _on_mouse_move(self, event: events.MouseMove) -> None:
+        # Only between a press and its click, and only until the mouse first leaves the pressed cell.
+        if (
+            self._field_mouse_down is not None
+            and not self._field_mouse_moved
+            and self.get_target_document_location(event) != self._field_mouse_down
+        ):
+            self._field_mouse_moved = True
+
+    def _accepts_text(self) -> bool:
+        """Whether typing writes into the draft now (the editor's Vim Normal and Visual modes do not)."""
+        return True
+
     async def _on_click(self, event) -> None:
-        """Open what a clicked live label stands for (a click, not the end of a drag)."""
-        if not self._references or not self.selection.is_empty:
-            return
+        """Select a clicked field while typing, rest on its start otherwise, or open a live label."""
+        pressed = self._field_mouse_down if not self._field_mouse_moved else None
+        self._field_mouse_down = None
         row, column = self.get_target_document_location(event)
         if row >= self.document.line_count or column >= len(self.document[row]):
             return
         index = self.document.get_index_from_location((row, column))
+        if pressed == (row, column):
+            for start, end in self._prompt_fields:
+                if start <= index < end:
+                    event.stop()
+                    if self._accepts_text():
+                        self._select_prompt_field((start, end))
+                    else:
+                        self.move_cursor(self.document.get_location_from_index(start))
+                    return
+        if not self._references or not self.selection.is_empty:
+            return
         for label in iter_reference_labels(self.text, self._references):
             if label.start <= index < label.end:
                 event.stop()
-                self.post_message(self.ReferenceClicked(label.reference))
+                self.post_message(self.ReferenceClicked(label.reference, label.start))
                 return
 
-    def _image_paste_labels(self, text: str) -> str | None:
-        """Image labels for pasted/dropped image paths, or a terminal's empty paste of a clipboard image; else ``None``.
+    def _image_paste_text(self, text: str) -> str | None:
+        """Text for pasted/dropped image paths, or a terminal's empty paste of a clipboard image; else ``None``.
 
         Every paste path reaches here once its host has accepted the paste (the
-        editor's Vim mode accepts only in Insert), so labels follow the same
+        editor's Vim mode accepts only in Insert), so images follow the same
         gate as text.
         """
         try:
@@ -629,13 +808,17 @@ class DraftTextArea(_DraftTextAreaBase):
             return None
 
     def _prepare_image_path_paste_text(self, text: str) -> str | None:
-        """Register a paste of image paths as the draft's images and return their labels; ``None`` otherwise."""
+        """Prepare pasted image paths in the host's insertion form; ``None`` otherwise."""
         if self.read_only:
             return None
         paths = pasted_image_paths(text, cwd=Path(self._paste_cwd))
         if not paths:
             return None
-        return self._spaced_for_insert(self._register("image", [str(path) for path in paths]))
+        return self._images_for_insert([str(path) for path in paths])
+
+    def _images_for_insert(self, paths: Sequence[str]) -> str:
+        """How every accepted image paste appears in this host's draft."""
+        return self._spaced_for_insert(self._register("image", paths))
 
     def set_paste_cwd(self, cwd: str) -> None:
         """Set the cwd used to resolve relative pasted/dropped image paths."""
@@ -655,7 +838,7 @@ class DraftTextArea(_DraftTextAreaBase):
         path = save_clipboard_image_to_file(self._clipboard_image_dir)
         if path is None:
             return None
-        return self._spaced_for_insert(self._register("image", [str(path)]))
+        return self._images_for_insert([str(path)])
 
     def _insert_paste_text(self, text: str) -> bool:
         text = self._sanitize_paste_text(text)
@@ -671,7 +854,7 @@ class DraftTextArea(_DraftTextAreaBase):
         return self._insert_paste_text(text)
 
     def action_paste(self) -> None:
-        """Paste a platform clipboard image as an image label, else the clipboard's text."""
+        """Paste a platform clipboard image in the host's insertion form, else the clipboard's text."""
         if self.read_only:
             return
         if not self._insert_clipboard_image_paste():

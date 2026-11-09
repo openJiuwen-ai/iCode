@@ -3,7 +3,7 @@
 """ReferencePreviewDialog — what a clicked draft label stands for.
 
 An image shows its path and the picture, read from disk after the dialog has
-painted; a quote and a folded paste show their whole text.
+painted; a quote shows its whole text.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ class ReferencePreviewDialog(BaseDialog[None]):
                     )
                     yield Static(Text(self._text_of(_PREVIEW_LOADING.bind())), id="reference-preview-status")
                 else:
-                    # The whole dialog is the quote or paste: plain text, no quote bar to break on wrapped lines.
+                    # The whole dialog is the quote: plain text, no quote bar to break on wrapped lines.
                     yield Static(Text(sanitize_legacy_block(reference.content)), id="reference-preview-text")
 
     def on_mount(self) -> None:

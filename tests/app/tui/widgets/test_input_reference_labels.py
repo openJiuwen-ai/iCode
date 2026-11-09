@@ -28,12 +28,16 @@ class _LabelApp(App):
         super().__init__()
         self.opened: list[InputBar.ReferenceOpened] = []
         self.submitted: list[InputBar.UserSubmitted] = []
+        self.editors: list[InputBar.EditorRequested] = []
 
     def compose(self) -> ComposeResult:
         yield InputBar()
 
     def on_input_bar_reference_opened(self, event: InputBar.ReferenceOpened) -> None:
         self.opened.append(event)
+
+    def on_input_bar_editor_requested(self, event: InputBar.EditorRequested) -> None:
+        self.editors.append(event)
 
     def on_input_bar_user_submitted(self, event: InputBar.UserSubmitted) -> None:
         self.submitted.append(event)
@@ -48,6 +52,18 @@ def _live(text_area: _ChatTextArea) -> list[str]:
     return [
         text_area.text[label.start : label.end] for label in iter_reference_labels(text_area.text, text_area.references)
     ]
+
+
+@pytest.mark.asyncio
+async def test_registering_a_quote_normalizes_its_line_endings_to_lf() -> None:
+    app = _LabelApp()
+    async with app.run_test():
+        input_bar, text_area = _parts(app)
+
+        assert input_bar.insert_reference("quote", "first\r\nsecond\rthird")
+
+        assert text_area.references.entries[0].content == "first\nsecond\nthird"
+        assert input_bar.draft().sent_text() == "> first\n> second\n> third"
 
 
 @pytest.mark.asyncio
@@ -184,14 +200,14 @@ async def test_undo_after_emptying_the_draft_brings_its_label_back_live() -> Non
     async with app.run_test(size=(100, 30)) as pilot:
         input_bar, text_area = _parts(app)
         text_area.focus()
-        await text_area._on_paste(Paste(_FOUR_LINES))
+        await text_area._on_paste(Paste(_SIX_LINES))
 
         await pilot.press("backspace")
         assert input_bar.value == ""
         text_area.action_undo()
 
-        assert _live(text_area) == ["[Pasted text #1 +3 lines]"]
-        assert input_bar.draft().sent_text() == _FOUR_LINES
+        assert _live(text_area) == ["[Pasted text #1 +5 lines]"]
+        assert input_bar.draft().sent_text() == _SIX_LINES
 
 
 @pytest.mark.asyncio
@@ -200,13 +216,13 @@ async def test_undo_and_redo_of_the_only_paste_keep_its_label_live() -> None:
     async with app.run_test(size=(100, 30)):
         input_bar, text_area = _parts(app)
         text_area.focus()
-        await text_area._on_paste(Paste(_FOUR_LINES))
+        await text_area._on_paste(Paste(_SIX_LINES))
 
         text_area.action_undo()
         assert input_bar.value == ""
         text_area.action_redo()
 
-        assert input_bar.draft().sent_text() == _FOUR_LINES
+        assert input_bar.draft().sent_text() == _SIX_LINES
 
 
 @pytest.mark.asyncio
@@ -215,14 +231,14 @@ async def test_cutting_a_whole_draft_and_pasting_it_back_keeps_its_label_live() 
     async with app.run_test(size=(100, 30)):
         input_bar, text_area = _parts(app)
         text_area.focus()
-        await text_area._on_paste(Paste(_FOUR_LINES))
+        await text_area._on_paste(Paste(_SIX_LINES))
 
         text_area.select_all()
         text_area.action_cut()
         assert input_bar.value == ""
         await text_area._on_paste(Paste(app.clipboard))
 
-        assert input_bar.draft().sent_text() == _FOUR_LINES
+        assert input_bar.draft().sent_text() == _SIX_LINES
 
 
 @pytest.mark.asyncio
@@ -237,7 +253,7 @@ async def test_history_keeps_the_text_that_was_sent_and_no_labels(
         input_bar, text_area = _parts(app)
         text_area.focus()
         text_area.insert("note ")
-        await text_area._on_paste(Paste("a secret\nnever\nsent\nat all"))
+        await text_area._on_paste(Paste("a secret\nnever\nsent\nat all\nnot\nhere"))
         await pilot.press("backspace")
         assert input_bar.value == "note "
         assert text_area.insert_reference("quote", "kept")
@@ -246,7 +262,7 @@ async def test_history_keeps_the_text_that_was_sent_and_no_labels(
         input_bar.add_to_history(app.submitted[0].text)
         await input_bar.load_prompt_history(max_entries=10)
 
-    assert prompt_history.load_history() == ["note “kept”"]
+    assert prompt_history.load_history() == ["note \n> kept"]
     assert "secret" not in (tmp_path / "prompt_history.jsonl").read_text(encoding="utf-8")
 
 
@@ -295,7 +311,7 @@ async def test_a_send_expands_labels_and_keeps_the_draft_for_hand_back(tmp_path:
         sent = app.submitted[0]
         entry = sent.draft.references.get("image", 1)
         assert entry is not None
-        assert sent.text == f"why {format_file_mention(entry.content)} “it failed”"
+        assert sent.text == f"why {format_file_mention(entry.content)} \n> it failed"
         assert sent.draft.text == "why [Image #1] [Quote #1] "
 
 
@@ -335,11 +351,11 @@ async def test_history_brings_a_sent_message_back_as_the_text_it_sent() -> None:
 
         await pilot.press("up")
 
-        assert input_bar.value == "“said”"
+        assert input_bar.value == "> said"
         assert not text_area.references
 
 
-_FOUR_LINES = "def f():\n    return 1\n\nprint(f())"
+_SIX_LINES = "def f():\n    return 1\n\nprint(f())\n# fifth\n# sixth"
 
 
 @pytest.mark.asyncio
@@ -352,12 +368,12 @@ async def test_a_long_paste_folds_into_a_label_that_sends_the_text_where_it_stoo
         text_area.move_cursor((0, 1))
         await pilot.pause()
 
-        await text_area._on_paste(Paste(_FOUR_LINES))
+        await text_area._on_paste(Paste(_SIX_LINES))
         await text_area._on_paste(Paste("x" * 801))
 
-        assert input_bar.value == "a[Pasted text #1 +3 lines][Pasted text #2]b"
-        assert _live(text_area) == ["[Pasted text #1 +3 lines]", "[Pasted text #2]"]
-        assert input_bar.draft().sent_text() == f"a{_FOUR_LINES}{'x' * 801}b"
+        assert input_bar.value == "a[Pasted text #1 +5 lines][Pasted text #2]b"
+        assert _live(text_area) == ["[Pasted text #1 +5 lines]", "[Pasted text #2]"]
+        assert input_bar.draft().sent_text() == f"a{_SIX_LINES}{'x' * 801}b"
 
 
 @pytest.mark.asyncio
@@ -375,19 +391,20 @@ async def test_a_short_paste_stays_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_pasted_text_label_is_one_unit_and_opens_its_text() -> None:
+async def test_a_pasted_text_label_is_one_unit_and_requests_the_editor() -> None:
     app = _LabelApp()
     async with app.run_test(size=(100, 30)) as pilot:
         input_bar, text_area = _parts(app)
         text_area.focus()
-        await text_area._on_paste(Paste(_FOUR_LINES))
+        await text_area._on_paste(Paste(_SIX_LINES))
         await pilot.pause()
         content = text_area.content_region
         offset = (content.x - text_area.region.x + 3, content.y - text_area.region.y)
 
         await click_when_settled(pilot, text_area, offset=offset)
-        await wait_for(lambda: bool(app.opened), pilot=pilot, description="label click reported")
-        assert app.opened[0].reference.content == _FOUR_LINES
+        await wait_for(lambda: bool(app.editors), pilot=pilot, description="paste label requested editor")
+        assert app.editors[0].reference_start == 0
+        assert app.opened == []
 
         text_area.move_cursor((0, len(input_bar.value)))
         await pilot.press("backspace")
@@ -400,7 +417,7 @@ async def test_a_draft_handed_back_whole_keeps_its_labels_and_sent_text_comes_ba
     async with app.run_test(size=(100, 30)) as pilot:
         input_bar, text_area = _parts(app)
         text_area.focus()
-        await text_area._on_paste(Paste(_FOUR_LINES))
+        await text_area._on_paste(Paste(_SIX_LINES))
         assert text_area.insert_reference("quote", "said")
         await pilot.pause()
         input_bar.submit_input()
@@ -409,14 +426,14 @@ async def test_a_draft_handed_back_whole_keeps_its_labels_and_sent_text_comes_ba
 
         # A send that is refused hands its draft back whole.
         assert input_bar.restore_draft(submitted.draft)
-        assert input_bar.value == "[Pasted text #1 +3 lines] [Quote #1] "
-        assert _live(text_area) == ["[Pasted text #1 +3 lines]", "[Quote #1]"]
+        assert input_bar.value == "[Pasted text #1 +5 lines] [Quote #1] "
+        assert _live(text_area) == ["[Pasted text #1 +5 lines]", "[Quote #1]"]
         assert input_bar.draft().sent_text() == submitted.text
 
         # Text that was sent (a rollback, a returned injection) comes back as that text.
         input_bar.replace_draft("")
         assert input_bar.restore_draft(submitted.text)
-        assert input_bar.value == f"{_FOUR_LINES} “said”"
+        assert input_bar.value == f"{_SIX_LINES} \n> said"
         assert not text_area.references
 
 
@@ -436,7 +453,7 @@ async def test_undo_never_brings_back_a_label_a_whole_draft_replacement_ended() 
         input_bar, text_area = _parts(app)
         input_bar.add_to_history("recalled prompt")
         text_area.focus()
-        await text_area._on_paste(Paste(_FOUR_LINES))
+        await text_area._on_paste(Paste(_SIX_LINES))
         await pilot.pause()
 
         await pilot.press("up")
@@ -447,7 +464,7 @@ async def test_undo_never_brings_back_a_label_a_whole_draft_replacement_ended() 
 
         assert _dead(text_area) == []
         # A later paste numbered #1 again cannot take over the old label either.
-        await text_area._on_paste(Paste("w\nx\ny\nz"))
+        await text_area._on_paste(Paste("w\nx\ny\nz\nend\nlast"))
         text_area.action_undo()
         text_area.action_undo()
         assert _dead(text_area) == []
@@ -465,9 +482,9 @@ async def test_label_text_inside_a_long_paste_is_sent_as_text() -> None:
         copied = text_area.text
 
         text_area.move_cursor((0, len(copied)))
-        await text_area._on_paste(Paste(f"{copied}\n.\n.\n."))
+        await text_area._on_paste(Paste(f"{copied}\n.\n.\n.\n.\n."))
 
-        assert input_bar.draft().sent_text() == f"“said” {copied}\n.\n.\n.".strip()
+        assert input_bar.draft().sent_text() == f"> said\n\n {copied}\n.\n.\n.\n.\n.".strip()
 
 
 @pytest.mark.parametrize(
@@ -510,7 +527,7 @@ async def test_a_quote_inside_a_command_a_paste_opens_is_not_sent() -> None:
     async with app.run_test(size=(100, 30)) as pilot:
         input_bar, text_area = _parts(app)
         text_area.focus()
-        await text_area._on_paste(Paste("one\ntwo\nthree\nrun !`echo "))
+        await text_area._on_paste(Paste("one\ntwo\nthree\nfour\nfive\nrun !`echo "))
         assert text_area.insert_reference("quote", "$(id)")
         text_area.insert("`")
         text_area.set_draft_owner(ShortcutIntent("deploy", "", ""))
@@ -567,12 +584,12 @@ async def test_labels_read_in_the_composers_language() -> None:
         text_area = input_bar.query_one("#chat-input", _ChatTextArea)
         text_area.focus()
         assert text_area.insert_reference("quote", "said")
-        await text_area._on_paste(Paste(_FOUR_LINES))
+        await text_area._on_paste(Paste(_SIX_LINES))
         await pilot.pause()
 
-        assert input_bar.value == "[引用 #1] [粘贴文本 #1 +3 行]"
-        assert _live(text_area) == ["[引用 #1]", "[粘贴文本 #1 +3 行]"]
-        assert input_bar.draft().sent_text() == f"“said” {_FOUR_LINES}"
+        assert input_bar.value == "[引用 #1] [粘贴文本 #1 +5 行]"
+        assert _live(text_area) == ["[引用 #1]", "[粘贴文本 #1 +5 行]"]
+        assert input_bar.draft().sent_text() == f"> said\n\n {_SIX_LINES}"
 
 
 def _label_colors(text_area: _ChatTextArea, row: int, label: str) -> set[object]:

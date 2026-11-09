@@ -51,7 +51,7 @@ async def test_a_recalled_image_mention_previews_from_the_workspace_or_home(
 async def test_the_preview_has_no_buttons_and_closes_by_key(tmp_path: Path, key: str) -> None:
     app = App()
     async with app.run_test() as pilot:
-        dialog = ReferencePreviewDialog(DraftReference("paste", 1, "line one\nline two"), cwd=tmp_path)
+        dialog = ReferencePreviewDialog(DraftReference("quote", 1, "line one\nline two"), cwd=tmp_path)
         await app.push_screen(dialog)
         await wait_for(lambda: app.screen is dialog and dialog.is_mounted, pilot=pilot, description="preview shown")
         assert not dialog.query(Button)

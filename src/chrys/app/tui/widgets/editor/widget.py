@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from textual.message import Message
@@ -315,9 +317,14 @@ class MessageEditor(MarkdownHighlightedTextArea):
         return self.get_text_range(source_range.start, source_range.end)
 
     def replace_editor_range(self, source_range: EditorTextRange, text: str) -> None:
-        self.history.checkpoint()
-        self.replace(text, source_range.start, source_range.end, maintain_selection_offset=False)
-        self.history.checkpoint()
+        self.replace_editor_ranges([(source_range, text)])
+
+    def replace_editor_ranges(self, replacements: Sequence[tuple[EditorTextRange, str]]) -> None:
+        """Apply document-ordered, non-overlapping replacements as one undo step."""
+        self._edit_as_one_step(
+            partial(self.replace, text, source_range.start, source_range.end, maintain_selection_offset=False)
+            for source_range, text in reversed(replacements)
+        )
         self.notify_editor_activity()
 
     def delete_editor_range(self, source_range: EditorTextRange) -> None:
@@ -326,8 +333,7 @@ class MessageEditor(MarkdownHighlightedTextArea):
         self.history.checkpoint()
         self.notify_editor_activity()
 
-    def editor_atomic_spans(self, row: int) -> list[tuple[int, int]]:
-        del row
+    def editor_unit_spans(self) -> list[tuple[int, int]]:
         return []
 
     def editor_undo(self) -> None:

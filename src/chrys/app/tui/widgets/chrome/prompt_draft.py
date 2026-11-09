@@ -13,7 +13,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from chrys.app.tui.widgets.chrome.commands import parse_slash_draft
-from chrys.foundation.text.draft_references import EMPTY_REFERENCES, DraftReferences, expand_references
+from chrys.foundation.text.draft_references import (
+    EMPTY_REFERENCES,
+    DraftReferences,
+    expand_references,
+    iter_reference_labels,
+    reference_replacement,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,10 +51,9 @@ type PromptField = tuple[int, int]
 def shift_prompt_fields(fields: Sequence[PromptField], start: int, end: int, inserted: int) -> tuple[PromptField, ...]:
     """Return *fields* after ``[start, end)`` is replaced by *inserted* characters.
 
-    A field the edit touches stops being a field: once the user types into,
-    over or across a placeholder it is their text. Text inserted exactly at a
-    field's edge leaves the field as it was, moving it when the text lands
-    before it.
+    The draft editor expands an edit that touches a field to take it whole;
+    the replaced field stops being a field. Text inserted exactly at a field's
+    edge leaves the field as it was, moving it when the text lands before it.
     """
     delta = inserted - (end - start)
     kept: list[PromptField] = []
@@ -96,4 +101,86 @@ class ChatDraft:
         return self.sent_text()
 
 
-__all__ = ["ChatDraft", "PromptField", "ShortcutIntent", "shift_prompt_fields"]
+@dataclass(frozen=True, slots=True)
+class ExpandedReference:
+    """One label's original and expanded ``[start, end)`` positions, including spacing it sends."""
+
+    original_start: int
+    original_end: int
+    start: int
+    end: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExpandedDraft:
+    """The editor's label-free draft, cursor and the map back to the untouched input draft."""
+
+    draft: ChatDraft
+    cursor: int
+    references: tuple[ExpandedReference, ...]
+
+    @property
+    def text(self) -> str:
+        return self.draft.text
+
+    def original_position(self, position: int) -> int:
+        """Map an editor position back; positions strictly inside an expansion rest after its original label."""
+        delta = 0
+        for reference in self.references:
+            if position <= reference.start:
+                break
+            if position < reference.end:
+                return reference.original_end
+            delta = reference.end - reference.original_end
+        return position - delta
+
+
+def _expanded_position(position: int, references: Sequence[ExpandedReference]) -> int:
+    delta = 0
+    for reference in references:
+        if position <= reference.original_start:
+            break
+        if position < reference.original_end:
+            return reference.end
+        delta = reference.end - reference.original_end
+    return position + delta
+
+
+def expand_draft(draft: ChatDraft, position: int) -> ExpandedDraft:
+    """Open the whole send text without stripping it, keeping fields, owner and cursor in place.
+
+    Sending and this view use the same per-label replacement. Only the editor
+    loses its references; the original draft stays intact until a changed
+    editor result replaces it.
+    """
+    pieces: list[str] = []
+    references: list[ExpandedReference] = []
+    last = length = 0
+    for label in iter_reference_labels(draft.text, draft.references):
+        pieces.append(draft.text[last : label.start])
+        length += label.start - last
+        replacement = reference_replacement(draft.text, label)
+        pieces.append(replacement)
+        references.append(ExpandedReference(label.start, label.end, length, length + len(replacement)))
+        length += len(replacement)
+        last = label.end
+    pieces.append(draft.text[last:])
+    fields = tuple(
+        (_expanded_position(start, references), _expanded_position(end, references)) for start, end in draft.fields
+    )
+    return ExpandedDraft(
+        ChatDraft("".join(pieces), fields=fields, owner=draft.owner),
+        _expanded_position(position, references),
+        tuple(references),
+    )
+
+
+__all__ = [
+    "ChatDraft",
+    "ExpandedDraft",
+    "ExpandedReference",
+    "PromptField",
+    "ShortcutIntent",
+    "expand_draft",
+    "shift_prompt_fields",
+]

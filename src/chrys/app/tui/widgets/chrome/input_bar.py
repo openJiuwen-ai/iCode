@@ -664,7 +664,11 @@ class InputBar(Widget):
         """Posted when the user requests shell mode from the input."""
 
     class EditorRequested(Message):
-        """Posted when the user requests the full-screen message editor."""
+        """Request the message editor: the whole draft, or with *reference_start* only the paste label clicked there."""
+
+        def __init__(self, reference_start: int | None = None) -> None:
+            self.reference_start = reference_start
+            super().__init__()
 
     class SlashQueryChanged(Message):
         """Posted when the draft becomes a bare slash token (``/``, ``/name``) while no suggestion list is open.
@@ -984,7 +988,7 @@ class InputBar(Widget):
             self._spin_timer = None
         self.query_one("#editor-btn", Button).label = Text(">")
 
-    def _request_editor(self) -> None:
+    def _request_editor(self, reference_start: int | None = None) -> None:
         """Request the prompt editor through the shared keyboard/button path."""
         if self.locked or self.shell_mode:
             return
@@ -994,7 +998,7 @@ class InputBar(Widget):
         self.focus_input()
         if self._suggestions_active:
             self.post_message(self.SuggestionDismiss())
-        self.post_message(self.EditorRequested())
+        self.post_message(self.EditorRequested(reference_start))
 
     def _refresh_interaction_state(self) -> None:
         """Derive the complete input/button state from the current mode flags."""
@@ -1334,7 +1338,10 @@ class InputBar(Widget):
 
     def on_draft_text_area_reference_clicked(self, event: DraftTextArea.ReferenceClicked) -> None:
         event.stop()
-        self.post_message(self.ReferenceOpened(event.reference))
+        if event.reference.kind == "paste":
+            self._request_editor(event.start)
+        else:
+            self.post_message(self.ReferenceOpened(event.reference))
 
     def insert_reference(self, kind: ReferenceKind, content: str) -> bool:
         """Insert a new label for *content* at the cursor and focus the composer; False when it cannot."""
@@ -1477,6 +1484,29 @@ class InputBar(Widget):
         if cursor_location is not None:
             text_area.move_cursor(cursor_location)
         self._refresh_interaction_state()
+
+    def replace_editor_draft(self, draft: ChatDraft, *, cursor_location: tuple[int, int]) -> None:
+        """Commit an editor draft as one undo step."""
+        self._draft_revision += 1
+        text_area = self.query_one("#chat-input", _ChatTextArea)
+        text_area._reset_history_browsing()
+        text_area.replace_draft(draft)
+        text_area.move_cursor(cursor_location)
+        self._refresh_interaction_state()
+
+    def edit_paste(self, entry: DraftReference, content: str, *, start: int) -> None:
+        """Save an edited paste as one undo step (``DraftTextArea.edit_paste``)."""
+        text_area = self.query_one("#chat-input", _ChatTextArea)
+        before = text_area.chat_draft()
+        text_area.edit_paste(entry, content, start=start)
+        if text_area.chat_draft() != before:
+            self._draft_revision += 1
+            text_area._reset_history_browsing()
+            self._refresh_interaction_state()
+
+    def move_draft_cursor(self, location: tuple[int, int]) -> None:
+        """Move the composer cursor without changing its draft or undo history."""
+        self.query_one("#chat-input", _ChatTextArea).move_cursor(location)
 
     def can_commit_editor_draft(self) -> bool:
         """Return whether an open editor may currently replace this draft."""
