@@ -84,7 +84,8 @@ test_command_suggestions_i18n.py、trajectory_wait_manifest.json 等）。
    （仍是生成/登记产物）。gen_customizations --strict 复跑收敛。
 3. **oracle 去计数化**：上游删计数行、保留 id 集合并拆分区域文件（agent/model/MCP/ACP
    编辑器与 trajectory 的 id 移入独立区域文件）。我方 4 借壳 key 的 id 集合登记
-   （C027，`_catalog_oracle_ids.py` 行尾 marker ×2）auto-merge 通过，merge 后核对
+   （C027，`_catalog_oracle_ids.py` 行尾 marker ×1——login/logout 两组 4 key 共 1 个
+   行尾 marker）auto-merge 通过，merge 后核对
    4 key 仍在 id 集合且 oracle 实测绿（新机制下 id set 一致即固定 size，无需计数适配）。
 4. **C028 处置（提请裁决）**：C028 = 计数行 marker，其 removal_condition 为
    "〔机制退役〕随 C027 一并裁决（oracle 计数）"。本次是**上游侧删除计数机制**、

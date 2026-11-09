@@ -4,13 +4,15 @@
 
 ## 状态
 
-本地收尾中（2026-11-09）：merge 已解冲突（未提交中间态，符合逐条授权纪律）；
-4 冲突 + 2 处 R2 增补品牌适配（C143/C144）全部完成并验证；strict 101 行/138 marker/6 退役
-0 error 0 warning；check_docs / R2（base 7c423b06）/ ruff / format / ty 三平台全绿；
-i18n 三轮幂等；fork-full 复跑 upstream 35820 passed（剩余 32 = 31 环境性 WinError 448 +
-1 mo UD 中间态，add 后消失）；design 与 tui/design 均已重签；headless 冒烟 --version=0.35.1。
-**下一步 = verification/self-review 落盘 → git add → commit → push（逐条授权）→ 责任人建 PR
-→ 双 CI 绿后合并。**
+已提交待推送（2026-11-09）：merge commit **edec1539** 已落（父 a7efff2e + 7c423b06，
+工作树干净）；4 冲突 + 2 处 R2 增补品牌适配（C143/C144）全部完成并验证；
+strict 101 行/138 marker/6 退役 0/0；check_docs / R2（82/90 终态）/ R3（82/79/3）/
+ruff / format / ty 三平台全绿；i18n 三轮幂等；fork-full 复跑 upstream 35820 passed
+（剩余 32 = 31 环境性 WinError 448 + 1 mo 中间态已收敛）；headless 冒烟 --version=0.35.1；
+收尾独立评审（CodeBuddy/BM:GLM-5.3）**blocker 0**，nit×5 已处置（F1/F2/F3 修订、F4 留痕、
+F5 记录）。
+**下一步 = design 措辞修订重签 + self-review 签认 → 补充 add → push（逐条授权）→
+责任人建 PR → 双 CI 绿后合并。**
 
 ## 待办
 

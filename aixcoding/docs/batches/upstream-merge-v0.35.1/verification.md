@@ -9,7 +9,7 @@
 | `gen_customizations.py --strict`（merge+C028 退役后） | 99 行/136 marker，0 error 0 warning | 登记迁移后实测 |
 | `gen_customizations.py --strict`（C143/C144 增补+重签后） | **101 行/138 marker/6 退役，0 error 0 warning**（与预告精确一致） | 终态实测 |
 | 行为锚定 `test_panel_anchor.py` | 4 passed（含于工具/锚定 38 passed 复跑） | 机检 |
-| R2 `check_r2_diff.py --base 7c423b06` | OK（upstream_changed=81 全落 approved_pool=88） | 新 merge-base |
+| R2 `check_r2_diff.py --base 7c423b06` | OK（commit 终态 upstream_changed=82 全落 approved_pool=90；81/88 为 C143/C144 登记前时点，评审 F1 订正） | 新 merge-base |
 | R3 `check_r3_markers.py --base 7c423b06` | **OK**（upstream_changed=82 / marker_checked=79 / exempt=3；mo UD 中间态经 `git rm --cached` 后收敛） | 新 merge-base |
 | ruff check（--no-fix）+ format（全目录含 aixcoding/） | 全绿（3046 files already formatted） | CI 同口径 |
 | ty 三平台（linux/darwin/win32） | 全绿 | — |
