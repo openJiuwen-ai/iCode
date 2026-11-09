@@ -520,6 +520,130 @@ def test_load_tools_accepts_legacy_yaml_boolean_web_modes(tmp_path: Path) -> Non
     assert profile.tools.web_fetch is not None and profile.tools.web_fetch.mode == "on"
 
 
+def _write_shell_filter_profile(tmp_path: Path, shell_filter: dict[str, object]) -> Path:
+    p = tmp_path / "shell-filter.yaml"
+    p.write_text(
+        yaml.safe_dump({"name": "shell-filter", "tools": {"shell_filter": shell_filter}}),
+        encoding="utf-8",
+    )
+    return p
+
+
+@pytest.mark.parametrize("mode", ["Whitelist", "white_list", "WHITELIST", "deny", 1, True])
+def test_shell_filter_rejects_unrecognized_mode(tmp_path: Path, mode: object) -> None:
+    """A misspelled mode must fail the load, never leave both command lists unset."""
+    p = _write_shell_filter_profile(tmp_path, {"mode": mode, "commands": ["rg"]})
+    with pytest.raises(AgentProfileLoadError) as excinfo:
+        load_profile_from_yaml(p)
+    assert excinfo.value.field == "tools.shell_filter.mode"
+    assert "whitelist" in str(excinfo.value)
+    assert "blacklist" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("mode", [None, ""])
+def test_shell_filter_mode_unspecified_defaults_to_whitelist(tmp_path: Path, mode: object) -> None:
+    p = _write_shell_filter_profile(tmp_path, {"mode": mode, "commands": ["rg"]})
+    profile = load_profile_from_yaml(p)
+    assert profile.tools.shell_filter is not None
+    assert profile.tools.shell_filter.mode == "whitelist"
+
+
+@pytest.mark.parametrize("mode", ["whitelist", "blacklist"])
+def test_shell_filter_accepts_exact_modes(tmp_path: Path, mode: str) -> None:
+    p = _write_shell_filter_profile(tmp_path, {"mode": mode, "commands": ["rg"]})
+    profile = load_profile_from_yaml(p)
+    assert profile.tools.shell_filter is not None
+    assert profile.tools.shell_filter.mode == mode
+    assert profile.tools.shell_filter.commands == ["rg"]
+    assert profile.tools.shell_filter.allow_redirections is True
+    assert profile.tools.shell_filter.allow_subshells is True
+
+
+@pytest.mark.parametrize("shell_filter", ["read_only", {"preset": "read_only"}])
+def test_shell_filter_accepts_recognized_preset(tmp_path: Path, shell_filter: object) -> None:
+    """Both the scalar shorthand and the object form keep the preset name as written."""
+    p = tmp_path / "shell-filter.yaml"
+    p.write_text(
+        yaml.safe_dump({"name": "shell-filter", "tools": {"shell_filter": shell_filter}}),
+        encoding="utf-8",
+    )
+    profile = load_profile_from_yaml(p)
+    assert profile.tools.shell_filter is not None
+    assert profile.tools.shell_filter.preset == "read_only"
+
+
+def test_shell_filter_validates_mode_even_when_a_preset_wins(tmp_path: Path) -> None:
+    """A recognized preset hides the custom fields, but a misspelled mode is still a broken profile."""
+    p = _write_shell_filter_profile(tmp_path, {"preset": "read_only", "mode": "Whitelist", "commands": ["rg"]})
+    with pytest.raises(AgentProfileLoadError) as excinfo:
+        load_profile_from_yaml(p)
+    assert excinfo.value.field == "tools.shell_filter.mode"
+
+
+_MISSING = object()
+"""Stands for a field the profile YAML leaves out."""
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("false", False),
+        ("False", False),
+        ("off", False),
+        ("0", False),
+        ("true", True),
+        ("yes", True),
+        # Only the false words are false; any other non-empty spelling leaves the request allowed.
+        ("flase", True),
+        (False, False),
+        # Blank text and empty containers are false: off the text path the value follows Python truthiness.
+        ("", False),
+        ("   ", False),
+        ([], False),
+        ({}, False),
+        (0.0, False),
+        # An absent field keeps the documented default.
+        pytest.param(_MISSING, True, id="absent"),
+    ],
+)
+def test_shell_filter_redirect_literals_are_parsed(tmp_path: Path, raw: object, expected: bool) -> None:
+    # A quoted "false" used to reach the filter as a truthy string, silently allowing redirections.
+    shell_filter: dict[str, object] = {"commands": ["rg"]}
+    if raw is not _MISSING:
+        shell_filter["allow_redirections"] = raw
+    p = _write_shell_filter_profile(tmp_path, shell_filter)
+    profile = load_profile_from_yaml(p)
+    assert profile.tools.shell_filter is not None
+    assert profile.tools.shell_filter.allow_redirections is expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("false", False), ("no", False), ("off", False), ("1", True), ("TRUE", True), (False, False)],
+)
+def test_shell_filter_subshell_literals_are_parsed(tmp_path: Path, raw: object, expected: bool) -> None:
+    p = _write_shell_filter_profile(tmp_path, {"commands": ["rg"], "allow_subshells": raw})
+    profile = load_profile_from_yaml(p)
+    assert profile.tools.shell_filter is not None
+    assert profile.tools.shell_filter.allow_subshells is expected
+
+
+@pytest.mark.parametrize("commands", ["rg", ["rg", 1]])
+def test_shell_filter_rejects_non_string_commands(tmp_path: Path, commands: object) -> None:
+    """A scalar would be read as a set of characters, silently changing the policy."""
+    p = _write_shell_filter_profile(tmp_path, {"commands": commands})
+    with pytest.raises(AgentProfileLoadError) as excinfo:
+        load_profile_from_yaml(p)
+    assert excinfo.value.field == "tools.shell_filter.commands"
+
+
+def test_shell_filter_rejects_non_string_preset(tmp_path: Path) -> None:
+    p = _write_shell_filter_profile(tmp_path, {"preset": ["read_only"]})
+    with pytest.raises(AgentProfileLoadError) as excinfo:
+        load_profile_from_yaml(p)
+    assert excinfo.value.field == "tools.shell_filter.preset"
+
+
 def test_invalid_user_profile_skip_logs_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """A dropped user file silently falls back to a builtin; the skip must be loud."""
     import logging

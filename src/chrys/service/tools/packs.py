@@ -418,7 +418,13 @@ def _assemble_web(build: ToolBuild, pack_ids: list[str]) -> WebTools:
 
 
 def _build_shell_filter(config: ShellFilterConfig | None) -> Any:
-    """Build a :class:`ShellCommandFilter` from profile config, or ``None``."""
+    """Build a :class:`ShellCommandFilter` from profile config, or ``None``.
+
+    A custom command set always becomes one of the two lists: a mode other than
+    ``blacklist`` reads as ``whitelist``, never as "neither", which would allow
+    every command. The profile loader validates the mode, so an unrecognized one
+    only reaches here from a config built in code.
+    """
     if config is None:
         return None
 
@@ -435,9 +441,10 @@ def _build_shell_filter(config: ShellFilterConfig | None) -> Any:
         return None
 
     cmd_set = frozenset(config.commands)
+    blacklist_mode = config.mode == "blacklist"
     return ShellCommandFilter(
-        whitelist=cmd_set if config.mode == "whitelist" else None,
-        blacklist=cmd_set if config.mode == "blacklist" else None,
+        whitelist=None if blacklist_mode else cmd_set,
+        blacklist=cmd_set if blacklist_mode else None,
         allow_redirections=config.allow_redirections,
         allow_subshells=config.allow_subshells,
     )

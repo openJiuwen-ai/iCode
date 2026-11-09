@@ -239,6 +239,10 @@ tools:
 | `allow_redirections` | 布尔值 | `true` | 是否允许未被引号包围的 `>`、`>>` 和 `<`。 |
 | `allow_subshells` | 布尔值 | `true` | 是否允许未被引号包围的 `$()` 和反引号命令替换。 |
 
+`mode` 只接受上表中的两个名称，拼写必须与之一致；留空则使用默认值 `whitelist`。写成其他值（例如 `Whitelist`）时，iCode 会把整个 profile 文件当作无效配置跳过，而不是在关闭过滤的情况下加载；`/reload` 会报出需要修改的字段。
+
+`allow_redirections` 和 `allow_subshells` 表示命令中是否允许对应的语法：`true` 允许，`false` 禁止。`allow_redirections: false` 时 `echo hi > out` 会被拒绝并提示 `Redirection (>) not allowed`；`allow_subshells: false` 时 `echo $(date)` 同样会被拒绝。取值按通用的布尔写法读取：`false`、`no`、`off`、`0` 表示假（不区分大小写，带不带引号都可以），空白值、空列表、空映射、`0.0` 也表示假；其他值都表示真。省略该字段或写 `null` 时取默认值 `true`。
+
 在自定义规则中，`commands` 填写可执行文件名，例如 `[git, rg]`。名称区分大小写；使用绝对路径时需要填写完整路径。对于由 `|`、`&&`、`||` 或 `;` 等连接的多个命令，iCode 会分别检查每一段，所有命令名都符合规则后才会执行。以上示例允许 `rg foo .`；`rg foo . | less` 会被阻止，因为管道右侧的 `less` 不在允许名单中。
 
 ### tools.web_search

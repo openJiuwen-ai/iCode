@@ -239,6 +239,10 @@ The object form supports these fields:
 | `allow_redirections` | Boolean | `true` | Whether to allow unquoted `>`, `>>`, and `<`. |
 | `allow_subshells` | Boolean | `true` | Whether to allow unquoted `$()` and backtick command substitution. |
 
+`mode` accepts only the two names above, spelled exactly that way; leaving it blank keeps the default `whitelist`. Any other value, such as `Whitelist`, makes iCode treat the whole profile file as invalid: it is skipped instead of loading with the filtering switched off, and `/reload` names the field to fix.
+
+`allow_redirections` and `allow_subshells` say whether the command may contain that syntax: `true` allows it and `false` forbids it. With `allow_redirections: false`, `echo hi > out` is rejected with `Redirection (>) not allowed`; with `allow_subshells: false`, `echo $(date)` is rejected the same way. The value is read like every other profile boolean: `false`, `no`, `off`, and `0` mean false in any letter case, quoted or not, and a blank value, an empty list, an empty mapping or `0.0` mean false too; any other value counts as true. Leaving the field out, or writing `null`, keeps the default `true`.
+
 In custom rules, use executable names in `commands`, such as `[git, rg]`. Names are case-sensitive; when using an absolute path, specify the full path. For commands joined by `|`, `&&`, `||`, `;`, or similar operators, iCode checks each segment separately. Execution is allowed only if every command name satisfies the rules. The example above allows `rg foo .`; it blocks `rg foo . | less` because `less`, on the right side of the pipe, is not in the allowlist.
 
 ### tools.web_search
