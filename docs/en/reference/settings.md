@@ -180,6 +180,25 @@ To send a notification, the master switch, the corresponding event switch, and a
 
 For data storage locations, collector connections, authentication, and metric queries, see the [OpenTelemetry reference](./opentelemetry.md).
 
+### Fact reporting
+
+Fact reporting sends session facts to a collection service that someone else operates: the session's saved files and trajectory lines, the state of the repository's working tree, and the agent's effective configuration. It runs on its own, never blocks a turn, and retries from a local queue until the service confirms receipt, so a restarted or reinstalled iCode resumes where it left off instead of sending the same facts twice. It is independent of the `otel.*` keys above. These keys have no settings-panel entries; set them in the user `settings.yaml` or in the environment, and restart iCode to apply changes.
+
+**Working-tree capture reads your source code, and agent-config capture uploads your agent, model, skills, MCP and hooks configuration.** Both are on by default once reporting is enabled. Enable reporting only after confirming where the data will go and who can access it.
+
+| YAML key | Environment variable | Default | Type, values, and effect |
+| --- | --- | --- | --- |
+| `report.enabled` | `CHRYS_REPORT` | `false` | Boolean; enable fact reporting. Without `report.endpoint`, facts are still collected into the local queue, but nothing is sent |
+| `report.endpoint` | `CHRYS_REPORT_ENDPOINT` | Unset | String; base URL of the collection service. Uploads go to `<endpoint>/v1/batch`; a missing-block query goes to `<endpoint>/v1/session/<session id>/manifest`. Reporting stays local until an endpoint is set |
+| `report.token` | `CHRYS_REPORT_TOKEN` | Unset | String; credential sent to the service as `Authorization: Bearer …`. Prefer the environment variable over writing a credential into `settings.yaml` |
+| `report.upload_timeout_ms` | `CHRYS_REPORT_TIMEOUT_MS` | `10000` | Integer; timeout for one upload, in milliseconds. Values are clamped to `1000`–`120000` |
+| `report.batch_max_bytes` | None | `8388608` | Integer; largest single upload request, in bytes. Values are clamped to `65536`–`8388608` |
+| `report.poll_interval_ms` | `CHRYS_REPORT_POLL_INTERVAL_MS` | `60000` | Integer; while a turn is active, wait at most this long, in milliseconds, before checking for newly saved facts. Values are clamped to `5000`–`3600000` |
+| `report.queue_bytes_max` | `CHRYS_REPORT_QUEUE_BYTES_MAX` | `268435456` | Integer; disk space the local queue may use in the configuration directory's `reporting` folder. When it is full, the oldest not-yet-delivered facts are dropped and counted. Minimum `1048576` |
+| `report.workspace_capture` | `CHRYS_REPORT_WORKSPACE_CAPTURE` | `true` | Boolean; also send the repository's staged, modified and untracked files (each file up to 4 MiB, in 1 MiB blocks; past 32 MiB the capture reports itself incomplete) and the ignore lists, so the working tree can be rebuilt from what was sent |
+| `report.agent_config` | `CHRYS_REPORT_AGENT_CONFIG` | `true` | Boolean; also send the agent's effective configuration: the agent profile, model parameters, skills, MCP servers and hooks. Credential-looking fields are replaced with a placeholder |
+| `report.diagnostics` | None | `true` | Boolean; keep counters for what reporting queued, sent and dropped. The surface that would show them is not built yet, so this currently has no visible effect |
+
 ## Source precedence
 
 Each key is resolved independently in the following order, using the first valid value. Project settings must also meet the restrictions under [Project-level settings](#project-level-settings).
@@ -202,7 +221,7 @@ These are the general rules for values in settings files and environment variabl
 - Write integers as numbers. For keys with stated limits, out-of-range values are adjusted to the boundary; keys that explicitly prohibit negative values reject them. Special meanings of `0` or negative values, such as disabling a feature or removing a limit, follow the relevant row.
 - Omitted keys and empty strings generally do not provide an override. To remove a setting from a file, delete the key. A value from another source may still apply afterward (see [Source precedence](#source-precedence)).
 - Keys whose type is “Integer or `null`” accept `null`, with the meaning described in the relevant row. User settings and project files handle `null` differently; see [Project-level settings](#project-level-settings).
-- Unknown keys are reported and do not take effect. Most invalid values are ignored and reported, and resolution continues with lower-priority sources. For example, if an environment variable is invalid but user settings contain a valid value, the user setting is used. Six keys behave differently: `approval.default_mode`, `approval.auto_review`, `tools.result.ceiling_tokens`, `log.raw_http_capture`, `otel.sensitive_data`, and `mutations.trace.fsatrace_path`. Once resolution encounters an invalid value for one of these keys, it immediately uses the built-in default and stops, without falling back to lower-priority sources. For example, an unrecognized approval mode uses the default `manual`.
+- Unknown keys are reported and do not take effect. Most invalid values are ignored and reported, and resolution continues with lower-priority sources. For example, if an environment variable is invalid but user settings contain a valid value, the user setting is used. Seven keys behave differently: `approval.default_mode`, `approval.auto_review`, `tools.result.ceiling_tokens`, `log.raw_http_capture`, `otel.sensitive_data`, `mutations.trace.fsatrace_path`, and `report.enabled`. Once resolution encounters an invalid value for one of these keys, it immediately uses the built-in default and stops, without falling back to lower-priority sources. For example, an unrecognized approval mode uses the default `manual`.
 
 ## Project-level settings
 

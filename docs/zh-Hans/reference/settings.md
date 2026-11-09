@@ -180,6 +180,25 @@ llm:
 
 数据保存位置、收集器连接、认证和指标查询见 [OpenTelemetry 参考](./opentelemetry.md)。
 
+### 事实数据上报
+
+事实数据上报把会话事实发送到由他人运营的收集服务：会话保存的文件与轨迹行、仓库工作区的状态、agent 的生效配置。它独立运行，绝不阻塞 turn，并从本地队列重试直到服务确认收到，因此重启或重装的 iCode 会接着上次的进度继续，而不会把同一批事实发送两遍。它与上面的 `otel.*` 键无关。这些键不出现在设置面板中；请在用户 `settings.yaml` 或环境变量中设置，并重启 iCode 生效。
+
+**工作区采集会读取你的源代码，agent 配置采集会上传你的 agent、模型、技能、MCP 和钩子配置。** 启用上报后这两项默认开启。仅在明确数据去向和访问权限后启用上报。
+
+| YAML 键 | 环境变量 | 默认值 | 类型、取值与效果 |
+| --- | --- | --- | --- |
+| `report.enabled` | `CHRYS_REPORT` | `false` | 布尔值；启用事实数据上报。未设置 `report.endpoint` 时仍会采集进本地队列，但不会发送 |
+| `report.endpoint` | `CHRYS_REPORT_ENDPOINT` | 未指定 | 字符串；收集服务的基础 URL。上传发往 `<endpoint>/v1/batch`，缺失块查询发往 `<endpoint>/v1/session/<会话 id>/manifest`。设置端点之前上报保持本地 |
+| `report.token` | `CHRYS_REPORT_TOKEN` | 未指定 | 字符串；以 `Authorization: Bearer …` 凭据形式发送给服务。优先使用环境变量，而不是把凭据写进 `settings.yaml` |
+| `report.upload_timeout_ms` | `CHRYS_REPORT_TIMEOUT_MS` | `10000` | 整数；单次上传的超时时间，毫秒。取值调整到 `1000`–`120000` |
+| `report.batch_max_bytes` | 无 | `8388608` | 整数；单次上传请求的最大字节数。取值调整到 `65536`–`8388608` |
+| `report.poll_interval_ms` | `CHRYS_REPORT_POLL_INTERVAL_MS` | `60000` | 整数；turn 进行中最多每隔该毫秒数检查一次新保存的事实。取值调整到 `5000`–`3600000` |
+| `report.queue_bytes_max` | `CHRYS_REPORT_QUEUE_BYTES_MAX` | `268435456` | 整数；本地队列在配置目录 `reporting` 文件夹下可占用的磁盘空间。占满后丢弃最旧的未送达事实并计数。最小 `1048576` |
+| `report.workspace_capture` | `CHRYS_REPORT_WORKSPACE_CAPTURE` | `true` | 布尔值；同时发送仓库已暂存、已修改和未跟踪的文件（每个文件最多 4 MiB，按 1 MiB 分块；超过 32 MiB 后采集自报不完整）与忽略清单，使工作区状态可从已发送内容重建 |
+| `report.agent_config` | `CHRYS_REPORT_AGENT_CONFIG` | `true` | 布尔值；同时发送 agent 的生效配置：agent 配置、模型参数、技能、MCP 服务器和钩子。凭据类字段替换为占位符 |
+| `report.diagnostics` | 无 | `true` | 布尔值；保留上报的入队、发送与丢弃计数。展示这些计数的功能尚未构建，因此当前没有可见效果 |
+
 ## 来源优先级
 
 每个键独立按以下优先级取值，使用靠前的有效值。项目设置还必须符合[项目级设置](#项目级设置)的限制。
@@ -202,7 +221,7 @@ iCode 不读取或迁移工作目录和用户配置目录中的 `.env` 文件。
 - 整数直接写数字。标明上下限的键，超界值会被调整到边界；明确禁止负数的键会拒绝负值。`0` 或负数的特殊含义（禁用、取消限制等）以各键行说明为准。
 - 未填写的键和空字符串通常不提供覆盖。要撤销某个文件中的设置，删除该键；删除后仍可能使用其他来源的值（见[来源优先级](#来源优先级)）。
 - 类型列为“整数或 `null`”的键可写 `null`，其含义已在对应键行说明；用户设置与项目文件对 `null` 的处理不同，见[项目级设置](#项目级设置)。
-- 未知键会被报告且不生效。多数无效值会被忽略并报告，取值继续向较低优先级查找——例如，环境变量中的值无效而用户设置中已有有效值时，使用用户设置的值。`approval.default_mode`、`approval.auto_review`、`tools.result.ceiling_tokens`、`log.raw_http_capture`、`otel.sensitive_data`、`mutations.trace.fsatrace_path` 六个键不同：一旦在查找中遇到无效值，就直接采用内置默认值并停止查找，不回退到较低优先级。例如，无法识别的审批模式会采用默认值 `manual`。
+- 未知键会被报告且不生效。多数无效值会被忽略并报告，取值继续向较低优先级查找——例如，环境变量中的值无效而用户设置中已有有效值时，使用用户设置的值。`approval.default_mode`、`approval.auto_review`、`tools.result.ceiling_tokens`、`log.raw_http_capture`、`otel.sensitive_data`、`mutations.trace.fsatrace_path`、`report.enabled` 七个键不同：一旦在查找中遇到无效值，就直接采用内置默认值并停止查找，不回退到较低优先级。例如，无法识别的审批模式会采用默认值 `manual`。
 
 ## 项目级设置
 
