@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import subprocess
@@ -504,11 +505,15 @@ async def test_windows_managed_job_terminates_surviving_descendant(tmp_path) -> 
 
 
 def _refuse_the_job_attribute(
-    attempts: list[tuple[int, ...]], *, error: int, refused_jobs: list[int] | None = None
+    attempts: list[tuple[int, ...]],
+    *,
+    error: int,
+    refused_jobs: list[int] | None = None,
+    denials: int = 1,
 ) -> Any:
-    """A ``_windows_create_process`` that fails its first call with *error*, then creates for real.
+    """A ``_windows_create_process`` that fails its first *denials* calls with *error*, then creates for real.
 
-    *refused_jobs* collects the job the refused call named.
+    *refused_jobs* collects the job each refused call named.
     """
     real_create = process_mod._windows_create_process
 
@@ -525,7 +530,7 @@ def _refuse_the_job_attribute(
         process_info: Any,
     ) -> int | None:
         attempts.append(tuple(attribute for attribute, _value, _failure in attributes))
-        if len(attempts) == 1:
+        if len(attempts) <= denials:
             if refused_jobs is not None:
                 refused_jobs.extend(
                     int(value[0])
@@ -606,6 +611,94 @@ async def test_windows_spawn_access_denied_fallback_preserves_retry_failure(
         assert [handle for handle in closed if handle is not None] == [101, 102, 11, 12, 21, 22, 31, 32]
     else:
         assert [handle for handle in closed if handle is not None] == [101, 11, 12, 21, 22, 31, 32]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process creation only")
+async def test_windows_spawn_denial_that_outlives_the_fallback_is_retried(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    kernel32 = _test_kernel32()
+    attempts: list[tuple[int, ...]] = []
+    monkeypatch.setattr(
+        process_mod,
+        "_windows_create_process",
+        # A transient denial (an antivirus holding the executable for a first-run scan) refuses
+        # the whole first sequence, then lifts before the retry's first create.
+        _refuse_the_job_attribute(attempts, error=process_mod._ERROR_ACCESS_DENIED, denials=2),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="chrys.foundation.platform.process"):
+        process = await spawn_managed_stdio_process(
+            sys.executable,
+            "-c",
+            _PARENT_OF_A_SLEEPER,
+            cwd=str(tmp_path),
+            env=dict(os.environ),
+            limit=64 * 1024,
+        )
+    # The retry is logged with its error code, attempt and wait, so real denials can tune the waits.
+    assert "with error 0x5; retry 1 of 2 after 0.25 s" in caplog.text
+
+    assert attempts == [
+        _JOB_AND_HANDLES,
+        (process_mod._PROC_THREAD_ATTRIBUTE_HANDLE_LIST,),
+        _JOB_AND_HANDLES,
+    ]
+    await _assert_job_ends_the_sleeper(process, kernel32)
+
+
+async def test_windows_spawn_denial_retries_run_out_with_every_handle_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = SimpleNamespace(kernel32=SimpleNamespace(SetHandleInformation=lambda handle, mask, flags: 1))
+    sequences = 1 + len(process_mod._WINDOWS_SPAWN_DENIAL_BACKOFF_SECONDS)
+    create = create_autospec(
+        process_mod._windows_create_process, side_effect=[process_mod._ERROR_ACCESS_DENIED] * (2 * sequences)
+    )
+    create_job = create_autospec(process_mod._windows_create_job, side_effect=[101, 102, 103, 104])
+    sleeps: list[float] = []
+    shadow = ModuleType("asyncio")
+    shadow.__dict__.update(vars(asyncio))
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    shadow.sleep = sleep
+    closed: list[int | None] = []
+    monkeypatch.setattr(process_mod, "asyncio", shadow)
+    monkeypatch.setattr(process_mod, "_windows_process_api", lambda: api)
+    monkeypatch.setattr(process_mod, "_windows_create_job", create_job)
+    monkeypatch.setattr(process_mod, "_make_windows_pipe_pairs", lambda: ((11, 12), (21, 22), (31, 32)))
+    monkeypatch.setattr(process_mod, "_windows_create_process", create)
+    monkeypatch.setattr(process_mod, "_close_windows_handle", closed.append)
+
+    with pytest.raises(OSError) as raised:
+        await process_mod._spawn_windows_managed_stdio_process(
+            r"C:\Program Files\WindowsApps\Microsoft.PowerShell\pwsh.exe",
+            ("-NoProfile", "-Command", "Write-Output ok"),
+            cwd="C:\\",
+            env={},
+            limit=64 * 1024,
+            parent_env=None,
+        )
+
+    assert sleeps == list(process_mod._WINDOWS_SPAWN_DENIAL_BACKOFF_SECONDS)
+    assert raised.value.strerror == "Unable to create the Windows subprocess even without the Job Object attribute."
+    reported_error = raised.value.winerror if sys.platform == "win32" else raised.value.errno
+    assert reported_error == process_mod._ERROR_ACCESS_DENIED
+    # Every sequence redid the full dance: job and handles, then handles only and suspended.
+    for sequence in range(sequences):
+        first = create.call_args_list[2 * sequence].kwargs
+        second = create.call_args_list[2 * sequence + 1].kwargs
+        assert tuple(attribute for attribute, _value, _failure in first["attributes"]) == _JOB_AND_HANDLES
+        assert not first["flags"] & process_mod._CREATE_SUSPENDED
+        # Each sequence's first create attaches the fresh empty job the previous denial left behind:
+        # building the attribute inside the loop is what keeps a reused refused job from being pinned.
+        assert int(first["attributes"][0][1][0]) == 101 + sequence
+        assert second["flags"] == first["flags"] | process_mod._CREATE_SUSPENDED
+        assert second["attributes"] == (first["attributes"][1],)
+    # Each fallback's refused job closed when it was replaced; the last job the failure cleanup took.
+    assert [handle for handle in closed if handle is not None] == [101, 102, 103, 104, 11, 12, 21, 22, 31, 32]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Objects only")
