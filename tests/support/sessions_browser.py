@@ -19,6 +19,7 @@ from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.sessions.screen import SessionsScreen
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.models.session_surface import SessionSurface
+from chrys.service.state._session_meta import copy_session_meta
 from chrys.service.state.session_listing import (
     SESSION_PAGE_SIZE,
     SessionListing,
@@ -40,9 +41,10 @@ class SessionsHostApp(App):
 class FakeSessionStore:
     """Chat sessions ``session-0`` (newest) … ``session-<count-1>``, listed and paged like the real store.
 
-    The listing is a snapshot of :attr:`sessions` when opened; each page
-    load returns the current meta objects of the snapshot's rows, dropping
-    those deleted since. *surfaces* gives each session's recorded surface
+    The listing is a snapshot of :attr:`sessions` when opened, each entry with
+    its own copy of the meta (editing :attr:`sessions` afterwards makes the
+    snapshot stale, as another process would); each page load returns the
+    current meta objects of the snapshot's rows, dropping those deleted since. *surfaces* gives each session's recorded surface
     (``None``: saved before surfaces were recorded); the rest are TUI.
     """
 
@@ -84,6 +86,7 @@ class FakeSessionStore:
                     meta.updated_at,
                     meta.last_surface or SessionSurface.TUI,
                     Path(meta.session_id),
+                    meta=copy_session_meta(meta),
                 )
                 for meta in listed
             ),
