@@ -12,14 +12,14 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
 
 from chrys.foundation.platform import files
-from tests.support.windows_replace import briefly_locked_rename
+from tests.support.windows_replace import briefly_held_unlink, briefly_locked_rename
 
 
 def test_is_utf8_encodable_rejects_only_surrogate_bearing_text() -> None:
@@ -72,6 +72,67 @@ def test_replace_with_retry_tries_once_off_windows(tmp_path, monkeypatch) -> Non
 
     assert len(rename.attempts) == 1
     assert rename.sleeps == []
+
+
+def test_unlink_with_retry_deletes_a_briefly_held_file_on_windows(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "session.json"
+    target.write_text("{}", encoding="utf-8")
+    held = briefly_held_unlink(monkeypatch, target, failures=2)
+
+    files.unlink_with_retry(target)
+
+    assert not target.exists()
+    assert len(held.attempts) == 3
+    assert held.sleeps == [0.01, 0.02]
+
+
+def test_unlink_with_retry_gives_up_after_six_tries_on_windows(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "session.json"
+    target.write_text("{}", encoding="utf-8")
+    held = briefly_held_unlink(monkeypatch, target, failures=6)
+
+    with pytest.raises(PermissionError):
+        files.unlink_with_retry(target)
+
+    assert target.exists()
+    assert len(held.attempts) == 6
+    assert held.sleeps == [0.01, 0.02, 0.04, 0.08, 0.16]
+
+
+def test_unlink_with_retry_tries_once_off_windows(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "session.json"
+    target.write_text("{}", encoding="utf-8")
+    held = briefly_held_unlink(monkeypatch, target, failures=1, windows=False)
+
+    with pytest.raises(PermissionError):
+        files.unlink_with_retry(target)
+
+    assert len(held.attempts) == 1
+    assert held.sleeps == []
+
+
+def test_unlink_with_retry_outlasts_a_reader_that_holds_the_file(tmp_path, monkeypatch) -> None:
+    """On Windows the first delete meets the open reader for real; the reader lets go during the first wait."""
+    target = tmp_path / "session.json"
+    target.write_text("{}", encoding="utf-8")
+    reader = target.open(encoding="utf-8")
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        reader.close()
+
+    fake_time = ModuleType("time")
+    fake_time.sleep = sleep  # type: ignore[attr-defined]
+    monkeypatch.setattr(files, "time", fake_time)
+    try:
+        files.unlink_with_retry(target)
+    finally:
+        reader.close()
+
+    assert not target.exists()
+    # POSIX deletes an open file at once.
+    assert sleeps == ([0.01] if sys.platform == "win32" else [])
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the owner-only Windows writer needs the Windows security APIs")

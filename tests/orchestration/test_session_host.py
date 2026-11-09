@@ -32,6 +32,7 @@ from chrys.foundation.events.types import (
     QuestionToUser,
     TodoListUpdated,
     TurnStarted,
+    UnansweredInputDropped,
     UserMessage,
 )
 from chrys.foundation.i18n import DisplayBlock, DisplaySequence, Localizer, MessageRef
@@ -397,6 +398,41 @@ async def test_session_host_streams_runtime_update_during_turn(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+async def test_session_host_streams_fresh_turn_cleanup_during_turn(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    # The ACP server turns UnansweredInputDropped into chrys/user_messages_dropped, so the
+    # headless run stream must forward it.
+    client = MockChatClient(responses=[MockResponse(text="done")])
+    _patch_runtime(monkeypatch, [client], [])
+    settings, model_registry = _make_settings_and_models()
+    host = ChrysSessionHost(
+        profile_name="Headless",
+        settings=settings,
+        agent_registry=_make_agent_registry(_make_profile(approval_default="skip")),
+        model_registry=model_registry,
+        state_store=JsonFileStateStore(tmp_path / "sessions"),
+    )
+    events: list[Any] = []
+
+    async def _collect() -> None:
+        published = False
+        async for event in host.iter_run_events("prompt"):
+            events.append(event)
+            if not published:
+                published = True
+                await host.event_bus.publish(
+                    UnansweredInputDropped(session_id=host.session_id, retired_previous_turn=True, retired_turn_id="t1")
+                )
+
+    try:
+        await host.start()
+        await asyncio.wait_for(_collect(), timeout=45)
+    finally:
+        await host.shutdown()
+
+    assert any(isinstance(event, UnansweredInputDropped) and event.retired_turn_id == "t1" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_session_host_streams_todo_list_updated_during_turn(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     # Both public stream entry points delegate to _iter_turn_events; this happy path covers both by construction.
     # todo_write publishes TodoListUpdated mid-turn with session_id stamped.
@@ -735,10 +771,24 @@ async def test_a_delegated_agents_tool_calls_reach_the_headless_stream(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "host_options",
+    [
+        # What ``icode run`` builds: the defaults, whose pause flag is on but has no one to ask.
+        pytest.param({}, id="headless"),
+        pytest.param(
+            {"allow_user_interaction": True, "pause_failed_sub_agents": False}, id="interactive-without-pause"
+        ),
+    ],
+)
 async def test_session_host_ends_a_failed_delegation_instead_of_pausing_it(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path, host_options: dict[str, bool]
 ) -> None:
-    """A headless run shows no card to pause on, so a child's failure becomes the parent's tool result."""
+    """A run with no card to pause on turns a child's failure into the parent's tool result.
+
+    A headless run has none; neither has an interactive one whose frontend can't
+    answer a paused child (an ACP client that didn't declare it), which would wait forever.
+    """
     parent_client = MockChatClient(
         responses=[
             MockResponse(tool_calls=[("Explore", "sub-1", {"prompt": "inspect the workspace"})]),
@@ -765,6 +815,7 @@ async def test_session_host_ends_a_failed_delegation_instead_of_pausing_it(
         agent_registry=_make_agent_registry_many(parent_profile, sub_agent_profile),
         model_registry=model_registry,
         state_store=JsonFileStateStore(tmp_path / "sessions"),
+        **host_options,
     )
 
     try:

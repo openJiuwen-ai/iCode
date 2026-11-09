@@ -111,6 +111,14 @@ class TestFormatTokens:
         assert format_tokens(2_500_000) == "2.5m"
         assert format_tokens(5_000_000_000) == "5b"
 
+    def test_unit_changes_before_a_count_reads_1000k(self) -> None:
+        assert format_tokens(999_949) == "999.9k"
+        assert format_tokens(999_950) == "1m"
+        assert format_tokens(999_999) == "1m"
+        assert format_tokens(999_949_999) == "999.9m"
+        assert format_tokens(999_950_000) == "1b"
+        assert format_tokens(999_999_999) == "1b"
+
 
 class TestTimeAgo:
     def test_just_now(self) -> None:
@@ -118,6 +126,19 @@ class TestTimeAgo:
 
     def test_days(self) -> None:
         assert time_ago(_BASE - timedelta(days=2), now=_BASE) == "2 days ago"
+
+    def test_twelve_months_read_as_one_year(self) -> None:
+        assert time_ago(_BASE - timedelta(days=359), now=_BASE) == "11 months ago"
+        assert time_ago(_BASE - timedelta(days=360), now=_BASE) == "1 year ago"
+        assert time_ago(_BASE - timedelta(days=364), now=_BASE) == "1 year ago"
+        assert time_ago(_BASE - timedelta(days=365), now=_BASE) == "1 year ago"
+        assert time_ago(_BASE - timedelta(days=719), now=_BASE) == "1 year ago"
+        assert time_ago(_BASE - timedelta(days=720), now=_BASE) == "2 years ago"
+        assert time_ago(_BASE - timedelta(days=730), now=_BASE) == "2 years ago"
+        assert time_ago(_BASE - timedelta(days=1079), now=_BASE) == "2 years ago"
+        assert time_ago(_BASE - timedelta(days=1080), now=_BASE) == "3 years ago"
+        assert time_ago(_BASE - timedelta(days=1094), now=_BASE) == "3 years ago"
+        assert time_ago(_BASE - timedelta(days=1095), now=_BASE) == "3 years ago"
 
 
 class TestSorting:

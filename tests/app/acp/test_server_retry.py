@@ -23,6 +23,7 @@ from chrys.foundation.events.types import (
     InvocationAnswerWithdrawn,
     InvocationContentDelta,
     InvocationMessage,
+    InvocationSteered,
     InvocationToolCallStart,
     TurnStarted,
 )
@@ -105,6 +106,8 @@ async def test_session_retry_refuses_a_session_with_no_turn_to_resume() -> None:
         await _server(host).ext_method("session/retry", {"sessionId": "s1"})
 
     assert exc_info.value.data == {"details": "Session s1 has no turn that can be retried."}
+    # The message a client shows by itself says why, not just "Invalid params".
+    assert (exc_info.value.code, str(exc_info.value)) == (-32602, "Session s1 has no turn that can be retried.")
     assert host.retry_texts == []
 
 
@@ -295,7 +298,7 @@ async def test_a_bare_retry_withdraws_the_answer_its_turn_ended_with_before_writ
 
 @pytest.mark.anyio
 async def test_a_retry_the_backend_withdraws_nothing_from_retracts_nothing() -> None:
-    """A retry with text goes on from the answer: the server retracts only what the backend withdraws."""
+    """The server retracts only what the backend withdraws, never what a retry merely sent along."""
     client = _FakeClient()
     server = _server(_cut_off_turn_host(), client=client)
     await server.prompt([text_block("go")], session_id="s1")
@@ -369,3 +372,25 @@ async def test_a_new_turn_keeps_only_its_own_answer_messages_for_a_retry_to_with
     await server.prompt([text_block("next")], session_id="s1")
 
     assert set(manager.get("s1").answer_message_ids) == {"next"}
+
+
+@pytest.mark.anyio
+async def test_a_steer_retracts_the_answer_this_prompt_streamed_once_and_never_again() -> None:
+    """A steer withdraws what the running prompt sent: its ids are still the bridge's, not yet the session's."""
+    host = _cut_off_turn_host()
+    host.events.extend([InvocationSteered(origin=_origin(), session_id="s1"), _withdrawn("answer"), _delta("b", "42.")])
+    client = _FakeClient()
+    server = _server(host, client=client)
+
+    await server.prompt([text_block("go")], session_id="s1")
+
+    intro_id, answer_id, steered_id = _answer_ids(client)
+    assert _answer_ids(client)[steered_id] == "42."
+    assert _retractions(client) == [{"sessionId": "s1", "turnId": _TURN_ID, "messageIds": [answer_id]}]
+    # The withdrawn answer is no longer the turn's: a retry withdrawing the same segment retracts nothing more.
+    host.retry_events = [
+        TurnStarted(turn_id=_TURN_ID, turn_number=3, is_retry=True, session_id="s1"),
+        _withdrawn("answer", "intro"),
+    ]
+    await server.ext_method("session/retry", {"sessionId": "s1"})
+    assert [params["messageIds"] for params in _retractions(client)] == [[answer_id], [intro_id]]

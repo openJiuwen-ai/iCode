@@ -567,6 +567,7 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
             TurnTocModel(),
             self._tools,
             localization=localization,
+            cleanup_failed_input=True,
         )
         self._live.set_profile(profile_name)
         self._replay = HistoryReplayRenderer(

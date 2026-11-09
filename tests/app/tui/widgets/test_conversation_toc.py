@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
 from rich.text import Text
 from textual.geometry import Region
@@ -102,3 +104,63 @@ async def test_conversation_toc_expands_tabs_before_tree_render() -> None:
         rendered = "".join(segment.text for segment in tree.render_line(0)._segments).rstrip()
         assert "\t" not in rendered
         assert rendered == f"1. {summary}".expandtabs(8)
+
+
+async def test_live_cleanup_removes_only_retired_nodes_and_keeps_expansion_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kept = TocItem(
+        turn_id="turn-kept",
+        summary="Earlier prompt",
+        turn_index=4,
+        children=[TocItem(turn_id="inj-kept", summary="Earlier note", turn_index=4)],
+    )
+    retired = TocItem(turn_id="turn-retired", summary="Empty interrupted prompt", turn_index=5)
+    pending = TocItem(turn_id="turn-new", summary="New prompt")
+    async with WidgetApp(ConversationToc).run_test() as pilot:
+        toc = pilot.app.query_one(ConversationToc)
+        toc.update_live_items([kept, retired, pending])
+        tree = toc.query_one("#toc-tree", Tree)
+        first, removed, newest = tree.root.children
+        child = first.children[0]
+        first.collapse()
+        tree.select_node(first)
+        await pilot.pause()
+        clear = Mock(side_effect=AssertionError("live changes must preserve the tree"))
+        unchanged_label = Mock(wraps=first.set_label)
+        monkeypatch.setattr(tree, "clear", clear)
+        monkeypatch.setattr(first, "set_label", unchanged_label)
+
+        pending.turn_index = 5
+        toc.update_live_items([kept, pending])
+
+        assert list(tree.root.children) == [first, newest]
+        assert removed not in tree.root.children
+        assert first.children[0] is child
+        assert first.is_expanded is False
+        assert tree.cursor_node is first
+        assert newest.label == Text("5. New prompt")
+        clear.assert_not_called()
+        unchanged_label.assert_not_called()
+
+
+async def test_live_toc_waits_for_authoritative_index_and_updates_only_its_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = TocItem(turn_id="turn-pending", summary="Pending opener")
+    async with WidgetApp(ConversationToc).run_test() as pilot:
+        toc = pilot.app.query_one(ConversationToc)
+        toc.update_live_items([item])
+        tree = toc.query_one("#toc-tree", Tree)
+        node = tree.root.children[0]
+        assert node.label == Text("Pending opener")
+        update_label = Mock(wraps=node.set_label)
+        monkeypatch.setattr(node, "set_label", update_label)
+
+        item.turn_index = 42
+        toc.update_live_items([item])
+        toc.update_live_items([item])
+
+        assert tree.root.children[0] is node
+        assert node.label == Text("42. Pending opener")
+        update_label.assert_called_once_with(Text("42. Pending opener"))

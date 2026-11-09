@@ -21,13 +21,12 @@ from chrys.app.features.buddy.commands import (
 )
 from chrys.app.features.buddy.model import Rarity, Trait
 from chrys.app.features.buddy.replies import STOCK_REPLIES
+from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from tests.support.buddies import a_buddy, a_record, turns_to_finish
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from chrys.foundation.i18n import MessageRef
 
 
 # The card shows the hatch day on the user's own calendar.
@@ -132,8 +131,19 @@ def test_pet_asked_here_is_counted_and_answered_with_a_stock_line() -> None:
     answer = handle_buddy_command(" Pet ")
 
     assert answer == (answer[0], "information")
-    assert _text(answer) in {f"💛 {line.format(name=buddy.name)}" for line in STOCK_REPLIES}
+    assert _text(answer) in {format_message(line.bind(name=buddy.name)) for line in STOCK_REPLIES}
     assert actions.current_buddy().record.pets == 1
+
+
+def test_pet_asked_here_answers_in_the_user_language() -> None:
+    buddy = actions.hatch(Random(5))
+    message, severity = handle_buddy_command(" Pet ")
+
+    assert severity == "information"
+    assert isinstance(message, MessageRef)
+    chinese = Localizer("zh-Hans").render(message)
+    assert buddy.name in chinese
+    assert chinese != format_message(message)
 
 
 def test_a_muted_buddy_is_not_petted_through_the_command() -> None:

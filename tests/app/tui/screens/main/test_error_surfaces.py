@@ -25,6 +25,7 @@ from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
     GcAbsorbRequested,
 )
+from chrys.app.tui.widgets.chat.messages import ERROR_RETRY_ACTION
 from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
 from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 from chrys.foundation.branding import APP_DISPLAY_NAME
@@ -424,10 +425,10 @@ def test_pending_turn_error_leaves_the_draft_for_the_sender_without_inline_retry
             assert error is True
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
             chat_errors.append((message, action_label))
 
-    chat_errors: list[tuple[str, str | None]] = []
+    chat_errors: list[tuple[str, MessageRef | str | None]] = []
     running: list[bool] = []
 
     def query_one(cls: object) -> object:
@@ -470,12 +471,12 @@ def test_pending_submit_error_display_localizes_chat_but_debug_keeps_protocol_en
             flashes.append(message)
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
             chat_errors.append((message, action_label))
 
     input_bar = _FakeInputBar()
     flashes: list[MessageRef | str] = []
-    chat_errors: list[tuple[str, str | None]] = []
+    chat_errors: list[tuple[str, MessageRef | str | None]] = []
     debug_calls: list[tuple[str, str]] = []
 
     def query_one(cls: object) -> object:
@@ -593,8 +594,8 @@ def test_live_turn_error_requests_terminal_absorb_after_render() -> None:
             order.append("unlock")
 
     class _FakeChatPanel:
-        async def add_error(self, _message: str, *, action_label: str | None = "Retry") -> None:
-            assert action_label == "Retry"
+        async def add_error(self, _message: str, *, action_label: MessageRef | str | None = None) -> None:
+            assert action_label is ERROR_RETRY_ACTION
             assert handler._state.run.agent_running is True
             assert input_bar.locked is True
             order.append("render")
@@ -646,8 +647,8 @@ def test_live_turn_error_render_failure_releases_input_without_absorb() -> None:
             self.locked = False
 
     class _FailingChatPanel:
-        async def add_error(self, _message: str, *, action_label: str | None = "Retry") -> None:
-            assert action_label == "Retry"
+        async def add_error(self, _message: str, *, action_label: MessageRef | str | None = None) -> None:
+            assert action_label is ERROR_RETRY_ACTION
             assert handler._state.run.agent_running is True
             raise RuntimeError("render failed")
 
@@ -799,8 +800,8 @@ def test_error_event_empty_message_uses_code_fallback() -> None:
             self.locked = False
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
-            assert action_label == "Retry"
+        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+            assert action_label is ERROR_RETRY_ACTION
             chat_errors.append(message)
 
     status = _FakeStatusBar()
@@ -868,7 +869,7 @@ def test_error_display_message_localizes_ui_surfaces_and_keeps_raw_debug() -> No
             self.locked = False
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
             chat_errors.append(message)
 
     status = _FakeStatusBar()
@@ -959,8 +960,8 @@ def _make_agent_load_error_handler(dialog: object) -> tuple[BackendEventHandler,
         retry_mode = False
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
-            assert action_label == "Retry"
+        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+            assert action_label is ERROR_RETRY_ACTION
             probe.chat_errors.append(message)
 
     def query_one(cls: type):

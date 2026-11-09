@@ -40,7 +40,7 @@ class ProcessHost(Protocol):
 def process_entry(widget: Widget) -> ProcessEntry:
     """Explicit membership whitelist; all notices retain their own visibility."""
     if isinstance(widget, UserMessage):
-        return ProcessEntry("injection" if widget.is_injection else "user", compressed=widget.is_compressed)
+        return ProcessEntry("injection" if widget.is_injection else "user")
     if isinstance(widget, ThinkingMessage):
         return ProcessEntry("thinking")
     if isinstance(widget, AgentMessage):
@@ -116,7 +116,6 @@ class ProcessController:
                 typed_members,
                 segment_index=segment.index,
                 tally=process_tally(typed_members),
-                is_compressed=segment.compressed,
             )
             insertions[segment.anchor] = block
         return insertions

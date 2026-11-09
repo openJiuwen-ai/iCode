@@ -134,13 +134,16 @@ async def _http_probe_server(tmp_path: Path) -> AsyncIterator[tuple[MCPServerCon
         stderr=asyncio.subprocess.DEVNULL,
     )
     try:
+        # The probe server creates the file before it writes the port.
         await wait_for(
-            lambda: port_file.exists() or proc.returncode is not None,
+            lambda: (
+                (port_file.exists() and port_file.read_text(encoding="utf-8").isdigit()) or proc.returncode is not None
+            ),
             timeout=10,
             interval=0.02,
             description="MCP HTTP probe server assigned port",
         )
-        if not port_file.exists():
+        if proc.returncode is not None:
             raise RuntimeError(f"MCP HTTP probe server exited with {proc.returncode} before reporting its port")
         port = int(port_file.read_text(encoding="utf-8"))
         await _wait_for_port(port)

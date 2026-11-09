@@ -21,7 +21,7 @@ from chrys.service.agent_middleware.response_validation import TerminalResponseV
 from chrys.service.agent_middleware.validators import OUTPUT_TRUNCATED_REASON
 from tests.support.provider_errors import anthropic_thinking_binding_rejection, openai_status, raised_while_handling
 
-# Provider phrasings, after pi-mono's overflow patterns.
+# Provider phrasings, after pi-mono's and opencode's overflow patterns.
 _OVERFLOW_MESSAGES = [
     "prompt is too long: 213462 tokens > 200000 maximum",
     "input is too long for requested model",
@@ -34,6 +34,17 @@ _OVERFLOW_MESSAGES = [
     "The number of tokens to keep from the initial prompt is greater than the context length",
     "invalid params, context window exceeds limit",
     "Your request exceeded model token limit: 262144 (requested: 291351)",
+    "Prompt too long",
+    "Prompt exceeds max length",
+    "prompt too long; exceeded max context length by 100 tokens",
+    "model_context_window_exceeded",
+    "Input length 140000 exceeds the maximum allowed input length of 131072 tokens.",
+    "The input (9000 tokens) is longer than the model's context length (8192 tokens).",
+    "This model's context length is only 8192 tokens, but 9534 tokens were requested.",
+    "prompt token count of 135211 exceeds the limit of 128000",
+    "Prompt has 5,958,968 tokens, but the configured context size is 256,000 tokens",
+    "<400> InternalError.Algo.InvalidParameter: Range of input length should be [1, 129024]",
+    "tokens in request more than max tokens allowed",
 ]
 
 _NOT_OVERFLOW = [
@@ -45,6 +56,9 @@ _NOT_OVERFLOW = [
     (503, "maximum context length is temporarily reduced"),
     (429, "Too many tokens per minute. Retry shortly."),
     (400, "Too many tokens: this key's daily quota is used up."),
+    # Only the token count of a prompt exceeding a limit names the window.
+    (400, "The number of images exceeds the limit of 20."),
+    (400, "Token limit exceeded for the output."),
 ]
 # Text a plain exception carries with no provider signal: the text alone must veto overflow.
 _NOT_OVERFLOW_TEXT = [
@@ -93,6 +107,19 @@ _NAMED_LIMITS = [
     ("request (5000 tokens) exceeds the available context size (4096 tokens), try increasing it", 4096),
     ("the number of tokens to keep from the initial prompt is greater than the context length (n_ctx: 4096)", 4096),
     ("Your request exceeded model token limit: 262144 (requested: 291351)", 262144),
+    ("Requested token count exceeds the model's maximum context length of 131072 tokens", 131072),
+    ("Input length (265330) exceeds model's maximum context length (262144).", 262144),
+    (
+        "Prompt contains 140000 tokens and 0 draft tokens, too large for model with 131072 maximum context length",
+        131072,
+    ),
+    ("Input length 140000 exceeds the maximum allowed input length of 131,072 tokens.", 131072),
+    ("The input (9000 tokens) is longer than the model's context length (8192 tokens).", 8192),
+    ("This model's context length is only 8192 tokens, but 9534 tokens were requested.", 8192),
+    ("prompt token count of 135211 exceeds the limit of 128000", 128000),
+    ("Prompt has 5,958,968 tokens, but the configured context size is 256,000 tokens", 256000),
+    ("<400> InternalError.Algo.InvalidParameter: Range of input length should be [1, 129024]", 129024),
+    ("prompt too long; exceeded max context length by 100 tokens", None),
     ("This model's maximum context length is 128,000 tokens.", 128000),
     ("This model's maximum context length is 128k tokens.", None),
     ("This model's maximum context length is 0 tokens.", None),
@@ -144,8 +171,9 @@ async def test_only_a_caller_that_shrinks_reads_a_server_error_naming_the_contex
     assert may_be_context_overflow(exc) is may_be
 
 
-async def test_overflow_code_counts_without_a_known_phrase() -> None:
-    exc = await openai_status(400, _error_body("Request rejected.", code="context_length_exceeded"))
+@pytest.mark.parametrize("code", ["context_length_exceeded", "model_max_prompt_tokens_exceeded"])
+async def test_overflow_code_counts_without_a_known_phrase(code: str) -> None:
+    exc = await openai_status(400, _error_body("Request rejected.", code=code))
 
     assert is_context_overflow(exc) is True
 

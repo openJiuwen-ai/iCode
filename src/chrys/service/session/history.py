@@ -27,6 +27,7 @@ from chrys.foundation.models.history_markers import (
     ANSWER_SEGMENT_KEY,
     AWAITING_SUB_AGENTS_MESSAGE,
     EXECUTION_INTERRUPTED_MESSAGE,
+    SESSION_CLOSED_MESSAGE,
     HistoryMarkerKind,
     copy_reminder_record,
 )
@@ -34,13 +35,18 @@ from chrys.foundation.models.turns import (
     UserMessageKind,
     current_turn_start,
     is_continuation_message,
+    opens_turn,
     user_text_matches,
 )
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.text.images import LoadedImage, data_uri_payload_info
 from chrys.foundation.tool_invocation_order import read_tool_invocation_order
 from chrys.foundation.tool_kinds import KIND_SUB_AGENT
-from chrys.foundation.trajectory.metadata import ensure_analytics_item_id
+from chrys.foundation.trajectory.metadata import (
+    ANALYTICS_ITEM_ID_KEY,
+    ensure_analytics_item_id,
+    read_analytics_item_id,
+)
 from chrys.kernel import TOOL_CALL_CONTENT_TYPES, TOOL_RESULT_CONTENT_TYPES, Content, Message
 from chrys.kernel.exchanges import (
     PREVALIDATION_ERROR_KINDS,
@@ -342,6 +348,47 @@ def stamp_history_item_ids(state: dict[str, Any]) -> None:
         ensure_history_item_ids(messages)
 
 
+@dataclass(frozen=True)
+class FreshTurnCleanup:
+    """The history edits committed before admitting the next logical turn.
+
+    ``removed_item_ids`` are the ``_chrys_analytics_item_id``s of the user
+    messages the cleanup removed, in history order: the retired turn's opener
+    and notes, or only the unanswered notes of a turn that kept its work.
+    Frontends remove exactly those, never a count of them.
+    """
+
+    retired_previous_turn: bool = False
+    removed_item_ids: tuple[str, ...] = ()
+    retained_other_records: bool = False
+
+
+def _user_item_ids(messages: Sequence[Message]) -> tuple[str, ...]:
+    """The occurrence ids of the user messages in *messages*, in order."""
+    item_ids: list[str] = []
+    for message in messages:
+        item_id = message.additional_properties.get(ANALYTICS_ITEM_ID_KEY)
+        if message.role == "user" and isinstance(item_id, str):
+            item_ids.append(item_id)
+    return tuple(item_ids)
+
+
+def _find_user_input(
+    region: Sequence[Message], text: str, *, kind: UserMessageKind, item_id: str | None
+) -> Message | None:
+    """The copy of a user input in *region*: by its item first, else by text and kind."""
+    if item_id is not None:
+        for message in region:
+            if message.role == "user" and read_analytics_item_id(message.additional_properties) == item_id:
+                return message
+    for message in region:
+        if user_text_matches(message, text, kind=kind) and (
+            item_id is None or read_analytics_item_id(message.additional_properties) is None
+        ):
+            return message
+    return None
+
+
 class SessionHistoryManager:
     """Owns all mutations to the ``chrys_history`` session state dict.
 
@@ -578,28 +625,94 @@ class SessionHistoryManager:
             if m.additional_properties.get(HistoryMarkerKind.KEY) != HistoryMarkerKind.AWAITING_SUB_AGENTS
         ]
 
-    def remove_orphaned_user_message(self) -> None:
-        """Remove a trailing user message that received no model response.
+    def prepare_fresh_turn(self, *, other_records_present: bool = False) -> FreshTurnCleanup:
+        """Clean the failed turn without merging it into the next one.
 
-        After ``remove_trailing_markers()`` strips error/turn markers, the
-        last message may be a user message with zero assistant or tool
-        responses after it.  This means the model produced nothing before
-        failing (e.g. 401 auth error).  Removing it keeps the persisted
-        history consistent with what the user saw during the live session
-        — the failed message disappeared when they typed a new one.
-
-        If the model DID produce output (tool calls, partial response)
-        before failing, the user message and model output are preserved.
+        Return the edits the frontend must apply. User input and reasoning
+        alone leave no work to preserve; a completed answer or a tool call
+        keeps this turn's structural marker and its ordinal. Mutation records
+        also retain the boundary even when history contains no model output.
+        Retry keeps using
+        ``remove_trailing_markers`` because it resumes the same turn.
         """
         state = self._state
         if state is None:
-            return
+            return FreshTurnCleanup()
         messages = state.get("messages")
         if not isinstance(messages, list) or not messages:
-            return
-        if messages[-1].role == "user":
-            logger.debug("remove_orphaned_user_message: removing '%s'", (messages[-1].text or "")[:60])
-            messages.pop()
+            return FreshTurnCleanup()
+        end = len(messages)
+        while (
+            end
+            and messages[end - 1].additional_properties.get(HistoryMarkerKind.KEY)
+            in HistoryMarkerKind.SESSION_COUNT_EXCLUDED
+        ):
+            end -= 1
+        start = current_turn_start(messages[:end])
+        region = messages[start:end]
+        has_work = any(
+            message.role != "user"
+            and any(
+                content.type not in {"text_reasoning", "usage"}
+                and (content.type != "text" or bool((content.text or "").strip()))
+                for content in message.contents
+            )
+            for message in region
+        )
+        if not has_work and not other_records_present and any(opens_turn(message) for message in region):
+            removed_markers = sum(
+                message.additional_properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN
+                for message in messages[end:]
+            )
+            removed_item_ids = _user_item_ids(messages[start:])
+            del messages[start:]
+            state["turn_counter"] = max(0, state.get("turn_counter", 0) - removed_markers)
+            return FreshTurnCleanup(retired_previous_turn=True, removed_item_ids=removed_item_ids)
+
+        # A retry's unanswered guidance belongs to this turn, but is not work
+        # for the next prompt to inherit. Keep the opener even when malformed
+        # old histories lack its marker.
+        status_start = end
+        # Reasoning after an unanswered note belongs to that note. Scan it
+        # with the notes, but keep earlier reasoning that followed real work.
+        tail = end
+        while tail > start:
+            message = messages[tail - 1]
+            if message.role == "user" and not opens_turn(message):
+                tail -= 1
+                end = tail
+            elif message.role == "assistant" and all(
+                content.type in {"text_reasoning", "usage"} for content in message.contents
+            ):
+                tail -= 1
+            else:
+                break
+        removed_item_ids = _user_item_ids(messages[end:status_start])
+        state["messages"] = messages[:end] + [
+            message
+            for message in messages[status_start:]
+            if message.additional_properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN
+        ]
+        return FreshTurnCleanup(
+            removed_item_ids=removed_item_ids,
+            retained_other_records=not has_work and other_records_present,
+        )
+
+    def close_unfinished_turn(self) -> bool:
+        """Give a restored in-flight turn the same boundary as a crash checkpoint."""
+        messages = self.messages
+        if not messages or messages[-1].additional_properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN:
+            return False
+        if not any(opens_turn(message) for message in messages[current_turn_start(messages) :]):
+            return False
+        if self.trailing_status_marker() is None:
+            self.insert_interrupted_marker(
+                reason=format_message(SESSION_CLOSED_MESSAGE.bind()),
+                source="",
+                status_code=HistoryMarkerKind.STATUS_SESSION_CLOSED,
+            )
+        self.insert_turn_marker()
+        return True
 
     def remove_all_status_markers(self) -> None:
         """Remove ALL interrupted/error/awaiting-sub-agents markers from history.
@@ -623,10 +736,10 @@ class SessionHistoryManager:
         """Append the answer a failed pass showed for a response history does not hold.
 
         The user saw it, so the saved turn keeps it, and the model reads it
-        when the user goes on with a message. A response that landed as the
-        pass ended may already be in history: contents it holds are skipped.
-        Each segment it was shown in stays one text content with its stamp,
-        so a later bare Continue can name what it drops.
+        when the user's next message opens a new turn. A response that landed
+        as the pass ended may already be in history: contents it holds are
+        skipped. Each segment it was shown in stays one text content with its
+        stamp, so a later Continue, which drops it, can name what it drops.
         """
         state = self._state
         if state is None:
@@ -653,6 +766,31 @@ class SessionHistoryManager:
         message = Message("assistant", kept)
         ensure_analytics_item_id(message.additional_properties)
         messages.append(message)
+
+    def restore_unsent_input(self, inputs: Sequence[Message]) -> None:
+        """Append the input messages of a pass that ended before history stored them.
+
+        A pass stores its input only once its run completes. A pass aborted
+        to go on in the same turn (a steer) leaves its input here first, so
+        the next pass reads it and its loop messages merge after it. Each is
+        the very message the request sent, keeping its flags and reminder
+        record; one the current turn already holds, as that occurrence or
+        that object, is skipped.
+        """
+        state = self._state
+        if state is None:
+            return
+        messages = state.setdefault("messages", [])
+        if not isinstance(messages, list):
+            return
+        region = messages[current_turn_start(messages) :]
+        held_ids = {item_id for message in region if (item_id := read_analytics_item_id(message.additional_properties))}
+        held = {id(message) for message in region}
+        for message in inputs:
+            item_id = read_analytics_item_id(message.additional_properties)
+            if id(message) in held or (item_id is not None and item_id in held_ids):
+                continue
+            messages.append(message)
 
     def remove_trailing_answer(self) -> tuple[str, ...]:
         """Drop the answer a failed or interrupted pass left at the end of history; name its segments.
@@ -738,31 +876,35 @@ class SessionHistoryManager:
         Recovery never synthesizes a ``"continuation"`` kind — bare-resume
         nudge branches clear the recovery input instead.
 
+        Dedup is **item-first** when *item_id* names the input: the region's
+        message stamped with that item is its copy. A message stamped with
+        another item is another occurrence (the same guidance sent by an
+        earlier retry) and never matches; text and kind still match an
+        unstamped message, which then takes the item.
+
         *reminder_source* is the properties of the copy the request sent: an
         appended message carries its reminder record, so later requests
         re-render the reminders it went out with.  A matched message keeps
-        its own record.
+        its own record.  Without *created_at* no time is made up: a prompt
+        saved without one is re-created without one.
         """
         state = self._state
         if state is None:
             return
         messages = state.setdefault("messages", [])
-        start = current_turn_start(messages)
-        for m in messages[start:]:
-            if user_text_matches(m, text, kind=kind):
+        m = _find_user_input(messages[current_turn_start(messages) :], text, kind=kind, item_id=item_id)
+        if m is not None:
+            if created_at is not None:
                 stamp_message_created_at(m, created_at)
-                ensure_analytics_item_id(m.additional_properties, item_id=item_id)
-                if (
-                    contents is not None
-                    and _contents_have_image_content(contents)
-                    and not _message_has_image_content(m)
-                ):
-                    m.contents = Message("user", contents).contents
-                return
+            ensure_analytics_item_id(m.additional_properties, item_id=item_id)
+            if contents is not None and _contents_have_image_content(contents) and not _message_has_image_content(m):
+                m.contents = Message("user", contents).contents
+            return
         msg = Message("user", contents if contents is not None else [text])
         if kind == "injected":
             msg.additional_properties[HistoryMarkerKind.INJECTED_KEY] = True
-        stamp_message_created_at(msg, created_at)
+        if created_at is not None:
+            stamp_message_created_at(msg, created_at)
         ensure_analytics_item_id(msg.additional_properties, item_id=item_id)
         copy_reminder_record(reminder_source, msg.additional_properties)
         messages.append(msg)

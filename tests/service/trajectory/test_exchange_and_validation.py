@@ -137,6 +137,24 @@ def test_an_exchange_that_never_started_records_nothing_when_it_closes() -> None
     assert sink.event_types == []
 
 
+def test_both_markers_name_the_clients_profile_over_the_scopes_own_facts() -> None:
+    """The client knows which profile served the request, also when the loop closes the exchange itself."""
+    sink = FakeSink()
+    trace = ExchangeTrace(
+        _exchange_context(sink, model_profile_id="scope", provider="openai", agent_profile_id="Writer")
+    )
+    trace.started(
+        payload={"continuation_mode": "none"}, connection={"model_profile_id": "client", "provider": "anthropic"}
+    )
+    trace.mark_outcome(ExchangeOutcome.STALLED)
+    trace.finished(outcome=ExchangeOutcome.ERROR)
+
+    for marker in (sink.only(EventType.MODEL_EXCHANGE_STARTED), sink.only(EventType.MODEL_EXCHANGE_FINISHED)):
+        assert marker.payload["model_profile_id"] == "client"
+        assert marker.payload["provider"] == "anthropic"
+        assert marker.payload["agent_profile_id"] == "Writer"
+
+
 def test_exchange_mark_outcome_overrides_the_client_outcome() -> None:
     sink = FakeSink()
     trace = ExchangeTrace(_exchange_context(sink))

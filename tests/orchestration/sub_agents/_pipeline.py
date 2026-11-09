@@ -135,6 +135,7 @@ async def _make_ctx(
     sub_builtins: list[str] | None = None,
     search_respect_gitignore: bool = True,
     sub_skills: SkillsConfig | None = None,
+    sub_extensions: list[str] | None = None,
     sub_responses_store: bool = False,
     sub_compaction: CompactionConfig | None = None,
     sub_max_context_tokens: int = 100_000,
@@ -226,6 +227,7 @@ async def _make_ctx(
         skills=sub_skills or SkillsConfig(auto_load_user_agents_skills=False, auto_load_cwd_agents_skills=False),
         approval=ApprovalConfig(default="auto"),
         compaction=sub_compaction or CompactionConfig(enabled=False),
+        extensions=sub_extensions or [],
         # Pin sub-agent to its own model profile so create_client routes correctly.
         model=ModelConfig(profile_id="sub-mock-profile"),
     )

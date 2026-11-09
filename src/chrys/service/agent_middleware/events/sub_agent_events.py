@@ -35,6 +35,7 @@ from chrys.foundation.trajectory.context import bind_tool_operation, reset_tool_
 from chrys.foundation.trajectory.event_types import ToolOutcome
 from chrys.foundation.trajectory_timing import build_trajectory_timing, stamp_trajectory_timing
 from chrys.foundation.util.sub_agent_context import (
+    SUB_AGENT_PROGRESS_METADATA_KEY,
     SUB_AGENT_RESULT_COMMIT_CALLBACK_KEY,
     SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY,
     SubAgentParentResultMetadata,
@@ -42,6 +43,7 @@ from chrys.foundation.util.sub_agent_context import (
     sub_agent_parent_result_metadata,
 )
 from chrys.kernel._result_ceiling import preview_result_ceiling
+from chrys.kernel.exceptions import tool_error_result_text
 from chrys.kernel.middleware import FunctionMiddleware
 from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_REJECTED_KEY,
@@ -51,6 +53,7 @@ from chrys.service.agent_middleware._metadata_keys import (
 )
 from chrys.service.agent_middleware.events.hook_dispatch import (
     append_extra_context_to_result,
+    apply_after_tool_extensions,
     apply_before_tool_hooks,
     final_tool_args,
     fire_after_tool_hooks,
@@ -109,6 +112,7 @@ if TYPE_CHECKING:
     from chrys.foundation.models.invocations import ContentStatus, InvocationOrigin
     from chrys.kernel import Content, Message
     from chrys.kernel.middleware import FunctionInvocationContext
+    from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
     from chrys.service.hooks.manager import HookManager
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.tracker import MutationTracker
@@ -168,9 +172,11 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         tool_result_ceiling_tokens: int | None = None,
         *,
         origin: InvocationOrigin,
+        extension_hooks: ExtensionToolHooks | None = None,
     ) -> None:
         self._bus = event_bus
         self._origin = origin
+        self._extension_hooks = extension_hooks
         self._agent_name = agent_name
         self._invocation_id = invocation_id
         self._mutation_tracker = mutation_tracker
@@ -289,6 +295,9 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     provider_status=view.provider_status,
                 )
             )
+            # A hosted call never passes this middleware's ``process``, which counts the local ones.
+            self._count_tool_call()
+            await self._publish_progress()
         elif isinstance(operation, HostedToolArgsOp):
             await self._bus.publish(
                 InvocationToolCallArgsUpdated(
@@ -345,6 +354,16 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     provider_status=view.provider_status,
                 )
             )
+
+    def _count_tool_call(self) -> None:
+        """Count one tool call, local or hosted, alike in the live progress and the totals the run keeps.
+
+        A frontend shows the live count while the run lasts and the kept one
+        once it is reopened, so the two must count the same calls.
+        """
+        if self._stats is not None:
+            self._stats.record_tool_call()
+        self._tool_call_count += 1
 
     def record_usage(self, total_tokens: int, total_usage_tokens: int) -> None:
         """Record sub-agent usage and publish progress from the usage callback."""
@@ -513,6 +532,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
             workspace_cwd=self._workspace_cwd,
             target_operation_id=trajectory.operation_id if trajectory is not None else None,
             origin=origin,
+            extension_hooks=self._extension_hooks,
         )
         args = context.arguments if is_mutable_tool_args(context.arguments) else {}
 
@@ -623,6 +643,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         start = time.monotonic()
         error_text = ""
         errored = False
+        raised_text: str | None = None
         raised_error_kind: str | None = None
         cancelled = False
         shell_metadata_token = None
@@ -667,6 +688,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
             errored = True
             raised_error_kind = type(exc).__name__
             error_text = tool_card_error_text(exc)
+            raised_text = tool_error_result_text(exc)
             raise
         except BaseException:
             cancelled = True
@@ -736,9 +758,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                         abort_mutation_tracking(
                             mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
                         )
-                    if self._stats is not None:
-                        self._stats.record_tool_call()
-                    self._tool_call_count += 1
+                    self._count_tool_call()
 
                     # Post-execution mutation tracking (skip for rejected tools)
                     metadata: dict[str, Any] = {}
@@ -802,6 +822,10 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                             metadata[SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY] = (
                                 sub_agent_metadata.transcript_final_text
                             )
+                        if sub_agent_metadata.progress is not None and (
+                            progress := sub_agent_metadata.progress.to_metadata()
+                        ):
+                            metadata[SUB_AGENT_PROGRESS_METADATA_KEY] = progress
                     if errored:
                         metadata[TOOL_ERRORED_METADATA_KEY] = True
                     structured_failed = tool_result_metadata_failure_state(metadata) is True
@@ -812,6 +836,19 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     tool_context = resolve_tool_call_context(context.function, args)
                     write_result_carriage(context, metadata=metadata, tool_context=tool_context or None)
 
+                    result_text = await apply_after_tool_extensions(
+                        self._extension_hooks,
+                        context,
+                        tool_name=tool_name,
+                        kind=tool_kind,
+                        call_id=call_id,
+                        args=args,
+                        result_text=result_text,
+                        raised_text=raised_text,
+                        failed=errored or structured_failed or rejected,
+                        rejected=rejected,
+                        duration_ms=duration_ms,
+                    )
                     hook_decision = await fire_after_tool_hooks(
                         manager=self._hook_manager,
                         session_id=self._session_id,

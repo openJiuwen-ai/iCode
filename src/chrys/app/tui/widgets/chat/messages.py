@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, TypeGuard
+from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple, TypeGuard
 
 from rich.cells import cell_len
 from rich.text import Text
@@ -96,6 +96,8 @@ INTERRUPTED_RETRY_ACTION_MESSAGE = msg(
     "transcript.interrupted.retry_action",
     fallback="Retry",
 )
+ERROR_RETRY_ACTION: Final[MessageRef] = INTERRUPTED_RETRY_ACTION_MESSAGE.bind()
+"""The default inline action of an error card: the same wording the interrupted card's own retry uses."""
 INTERRUPTED_CONTINUE_ACTION_MESSAGE = msg(
     "transcript.interrupted.continue_action",
     fallback="Continue",
@@ -105,7 +107,9 @@ _AGENT_RESPONSE_COPY_TOOLTIP = msg(
     "tui.chat.copy_agent_response_tooltip",
     fallback="Copy raw agent response",
 )
-COPY_MESSAGE_BUTTON = msg("tui.chat.copy_message_button", fallback="copy")
+COPY_MESSAGE_BUTTON = msg("tui.chat.copy_message_button", fallback="Copy")
+ROLLBACK_MESSAGE_BUTTON = msg("tui.chat.rollback_message_button", fallback="↺ Discard this turn and later")
+INTERRUPTED_ROLLBACK_BUTTON = msg("tui.chat.interrupted_rollback_button", fallback="Discard This Turn")
 _STREAMED_BODY_INTERVAL_SECONDS = 0.2
 """Shortest time between two markdown updates of a streaming message.
 
@@ -253,7 +257,7 @@ class MessageHeaderRow(Horizontal):
     MessageHeaderRow > .fold-row-header {
         width: 1fr;
     }
-    MessageHeaderRow > MessageCopyButton {
+    MessageHeaderRow > .message-action-btn {
         display: none;
         width: auto;
         height: 1;
@@ -262,7 +266,12 @@ class MessageHeaderRow(Horizontal):
         text-style: dim not bold;
         pointer: pointer;
     }
-    MessageHeaderRow > MessageCopyButton:hover {
+    MessageHeaderRow > MessageRollbackButton.message-action-btn {
+        dock: right;
+        margin: 0 1 0 2;
+        padding: 0;
+    }
+    MessageHeaderRow > .message-action-btn:hover {
         color: $accent;
         text-style: underline;
     }
@@ -284,8 +293,40 @@ class MessageCopyButton(ClickAffordance):
     CLICK_MESSAGE = Clicked
 
     def __init__(self, *, tooltip: str, text: str | None = None) -> None:
-        super().__init__(Text(text or format_message(COPY_MESSAGE_BUTTON.bind())))
+        super().__init__(Text(text or format_message(COPY_MESSAGE_BUTTON.bind())), classes="message-action-btn")
         self.tooltip = tooltip
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        _ = selection
+        return None
+
+
+class MessageRollbackButton(ClickAffordance):
+    """Inline rollback action; its owning message supplies the turn boundary."""
+
+    ALLOW_SELECT = False
+
+    class Clicked(Message):
+        """The rollback action was pressed."""
+
+    CLICK_MESSAGE = Clicked
+
+    def __init__(self, text: str) -> None:
+        super().__init__(Text(text), classes="message-action-btn")
+
+    class PreviewChanged(Message):
+        """The pointer entered or left the discard link."""
+
+        def __init__(self, button: MessageRollbackButton, active: bool) -> None:
+            super().__init__()
+            self.button = button
+            self.active = active
+
+    def on_enter(self) -> None:
+        self.post_message(self.PreviewChanged(self, True))
+
+    def on_leave(self) -> None:
+        self.post_message(self.PreviewChanged(self, False))
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         _ = selection
@@ -346,11 +387,21 @@ class UserMessage(Widget):
         compressed: bool = False,
         is_injection: bool = False,
         contents: list[Any] | None = None,
+        turn_number: int | None = None,
+        rollback_available: bool = False,
+        history_item_id: str | None = None,
     ) -> None:
         self._text = text
         self._ts = timestamp
         self._compressed = compressed
         self._is_injection = is_injection
+        self.turn_number = turn_number
+        self.history_item_id = history_item_id
+        """The ``_chrys_analytics_item_id`` of this message in history, once known: backend cleanup names it."""
+        self.client_message_id: str | None = None
+        """The frontend's own id for a live retry note, which the retry's ``TurnStarted`` echoes."""
+        self._rollback_available = rollback_available and not is_injection and turn_number is not None
+        self._rollback_disabled = False
         self._image_previews = extract_image_previews(contents)
         super().__init__()
         if compressed:
@@ -367,6 +418,9 @@ class UserMessage(Widget):
             )
             copy_button.display = self._should_show_copy_button()
             yield copy_button
+            rollback = MessageRollbackButton(self._render_message(ROLLBACK_MESSAGE_BUTTON.bind()))
+            rollback.display = self._rollback_available
+            yield rollback
         yield VirtualizedMarkdown(
             sanitize_source_text(self._text),
             parser_factory=create_user_text_markdown_parser,
@@ -398,8 +452,61 @@ class UserMessage(Widget):
         return render_str(widget_localizer(self), reference)
 
     def _should_show_copy_button(self) -> bool:
-        """Offer copy for text outside compressed history, as agent responses do."""
-        return not self._compressed and bool(self._text.strip())
+        """Offer the original text even when the model's history was compressed."""
+        return bool(self._text.strip())
+
+    @dataclass
+    class RollbackRequested(Message):
+        """Roll back to the boundary before this opening user message."""
+
+        message: UserMessage
+        target_turn: int
+
+    @staticmethod
+    def undo_link_available(turn_number: int | None, targets: set[int]) -> bool:
+        """Whether turn *turn_number*'s header offers the undo link, given the retained rollback *targets*.
+
+        Turn 1's target (the session start) needs no snapshot and stays available to
+        ``/rollback to 0`` and the dialog; once pruning has removed the oldest
+        snapshots, its header hides the link like the other pruned turns.
+        """
+        if turn_number is None or turn_number - 1 not in targets:
+            return False
+        return turn_number != 1 or 1 in targets or targets == {0}
+
+    def set_rollback_available(self, available: bool) -> None:
+        """Repaint only this fixed-height header when its snapshot is pruned."""
+        available = available and not self._is_injection and self.turn_number is not None
+        if available == self._rollback_available:
+            return
+        self._rollback_available = available
+        if not self.is_mounted:
+            # Replay composes a batch before mounting it: an already composed
+            # button keeps the new state, and compose reads the flag otherwise.
+            for button in self.query(MessageRollbackButton):
+                button.display = available
+            return
+        from chrys.app.tui.util.visibility import resync_compositor_regions
+
+        button = self.query_one(MessageRollbackButton)
+        button.styles.set_rule("display", "block" if available else "none")
+        for node in button.ancestors_with_self:
+            if isinstance(node, Widget):
+                node._clear_arrangement_cache()
+        resync_compositor_regions(button)
+
+    def set_rollback_disabled(self, disabled: bool) -> None:
+        """Prevent a second request until this one completes or is declined."""
+        self._rollback_disabled = disabled
+        for button in self.query(MessageRollbackButton):
+            button.disabled = disabled
+
+    def on_message_rollback_button_clicked(self, event: MessageRollbackButton.Clicked) -> None:
+        event.stop()
+        if not self._rollback_available or self._rollback_disabled or self.turn_number is None:
+            return
+        self.set_rollback_disabled(True)
+        self.post_message(self.RollbackRequested(self, self.turn_number - 1))
 
     def copy_user_message(self) -> None:
         """Copy the message as the user wrote it to the available clipboards."""
@@ -1037,7 +1144,7 @@ class AgentMessage(StreamedMarkdownMessage):
         self.is_status = is_status
         """Persisted lifecycle prose is not an agent's successful final answer."""
         self.segment_ids = frozenset(segment_ids)
-        """The content segments whose answer text this message shows, for a bare Continue to withdraw."""
+        """The content segments whose answer text this message shows, for a Continue or steer to withdraw."""
         self._profile_name = profile_name
         self._is_intermediate = is_intermediate
         self._is_compressed = is_compressed
@@ -1147,7 +1254,6 @@ class AgentMessage(StreamedMarkdownMessage):
         return (
             self._is_final
             and not self._is_intermediate
-            and not self._is_compressed
             and not self._is_structured_completion
             and bool(self.format_agent_response_copy().strip())
         )
@@ -1751,6 +1857,9 @@ class InterruptedMessage(ProcessMember):
         color: $button-color-foreground;
         text-style: bold;
     }
+    InterruptedMessage > .status-action-row > .status-rollback-btn {
+        margin-left: 1;
+    }
     InterruptedMessage > .status-action-row > Button:hover,
     InterruptedMessage > .status-action-row > Button:focus,
     InterruptedMessage > .status-action-row > Button.-active {
@@ -1767,6 +1876,7 @@ class InterruptedMessage(ProcessMember):
         *,
         action_label: str | None = None,
         header: str | None = None,
+        offers_discard: bool = False,
     ) -> None:
         if header is None:
             copy = resolve_interrupted_message_copy(reason, source)
@@ -1774,8 +1884,8 @@ class InterruptedMessage(ProcessMember):
             reason = copy.reason
         self._header = header
         self._reason = reason
-        self._source = source
         self._action_label = action_label
+        self._offers_discard = offers_discard
         super().__init__()
         if source == "error":
             self.add_class("-error")
@@ -1792,6 +1902,9 @@ class InterruptedMessage(ProcessMember):
         if self._action_label is not None:
             with Horizontal(classes="status-action-row"):
                 yield Button(self._action_label, compact=True, classes="status-action-btn")
+                if self._offers_discard:
+                    label = render_str(widget_localizer(self), INTERRUPTED_ROLLBACK_BUTTON.bind())
+                    yield Button(label, compact=True, classes="status-rollback-btn")
 
     def on_mount(self) -> None:
         self._size_action_button()
@@ -1803,6 +1916,21 @@ class InterruptedMessage(ProcessMember):
         width = Text(self._action_label).cell_len + 4
         button.styles.width = width
         button.styles.min_width = width
+        for rollback in self.query(".status-rollback-btn").results(Button):
+            rollback_width = cell_len(str(rollback.label)) + 4
+            rollback.styles.width = rollback_width
+            rollback.styles.min_width = rollback_width
+
+    @dataclass
+    class RollbackRequested(Message):
+        """The interrupted turn should be rolled back through the usual path."""
+
+        message: InterruptedMessage
+
+    def set_rollback_disabled(self, disabled: bool) -> None:
+        """Disable the rollback action while its request is pending."""
+        for button in self.query(".status-rollback-btn").results(Button):
+            button.disabled = disabled
 
     def hide_action(self) -> None:
         """Hide the inline retry/continue action after it has been used."""
@@ -1815,6 +1943,12 @@ class InterruptedMessage(ProcessMember):
             button.disabled = disabled
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.has_class("status-rollback-btn"):
+            event.stop()
+            if not event.button.disabled:
+                self.set_rollback_disabled(True)
+                self.post_message(self.RollbackRequested(self))
+            return
         if not event.button.has_class("status-action-btn"):
             return
         event.stop()

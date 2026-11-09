@@ -133,7 +133,7 @@ def test_row_classes_follow_the_spec_kind_and_layout_variant() -> None:
         else:
             assert cls is InputRow
     assert classes["agent.default_profile"] is SelectRow
-    assert classes["model.role.buddy_model_id"] is SelectRow
+    assert classes["model.role.buddy"] is SelectRow
     assert classes["ui.theme"] is SelectRow
     assert classes["rollback.snapshots_keep"] is InputRow
     assert notification_keys <= {key for key, cls in classes.items() if cls is BoolRow}

@@ -100,7 +100,12 @@ from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.util.placement import pin_fixed_placement
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.btw import BtwPanel, ChatColumn
-from chrys.app.tui.widgets.chat.messages import ConversationStatusAction, RetryNowClicked
+from chrys.app.tui.widgets.chat.messages import (
+    ConversationStatusAction,
+    InterruptedMessage,
+    RetryNowClicked,
+    UserMessage,
+)
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.quote_popup import QuoteSelectionPopup
@@ -509,6 +514,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 debug=self._debug,
                 refresh_model_indicator=self._refresh_model_indicator,
                 refresh_diff_preview=self._refresh_diff_preview,
+                refresh_rollback_targets=lambda: self._start_worker(self._rollback_controller.refresh_rollback_targets),
                 refresh_notification_settings=self._refresh_notification_settings,
                 refresh_trajectory_verify_commands=self._refresh_trajectory_verify_commands,
                 settings_reloaded=self._on_settings_reloaded_for_panel,
@@ -538,6 +544,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 debug=self._debug,
                 refresh_model_indicator=self._refresh_model_indicator,
                 refresh_diff_preview=self._refresh_diff_preview,
+                reset_rollback_request=self._rollback_controller.reset_pending,
                 choose_missing_working_dir=partial(self._workspace_actions.choose_replacement_dir, reason="restore"),
                 confirm_stopping_background_tasks=self._confirm_stopping_background_tasks,
             ),
@@ -580,6 +587,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             handle_agent_message=self._events.on_agent_message,
             handle_agent_content=self._events.on_agent_content,
             handle_error=self._events.on_error,
+            handle_turn_event=self._events.apply_turn_event,
+            handle_answer_withdrawn=self._events.on_answer_withdrawn,
             set_agent_running=self._set_agent_running,
             set_has_messages=self._set_has_messages,
             clear_workspace_marker=self._clear_workspace_marker_for_user_message,
@@ -1001,6 +1010,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             is_agent_busy=lambda: (
                 self._state.run.agent_running or self._state.run.agent_loading or self._services.execution_busy()
             ),
+            is_agent_running=lambda: self._state.run.agent_running or self._state.run.agent_loading,
             current_session_id=self._view_adapter.current_chat_session_id,
             session_generation=self._services.session_generation,
             turn_lifecycle_task=self._services.turn_lifecycle_task,
@@ -2163,6 +2173,29 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             self._show_model_unconfigured_dialog()
             return
         self._input_flow.request_retry("")
+
+    @on(InterruptedMessage.RollbackRequested)
+    def _on_interrupted_rollback(self, event: InterruptedMessage.RollbackRequested) -> None:
+        event.stop()
+        self._rollback_from_message(event.message, None)
+
+    @on(UserMessage.RollbackRequested)
+    def _on_user_message_rollback(self, event: UserMessage.RollbackRequested) -> None:
+        event.stop()
+        self._rollback_from_message(event.message, event.target_turn)
+
+    def _rollback_from_message(self, message: UserMessage | InterruptedMessage, target_turn: int | None) -> None:
+        if self._workflow.workflow_mode:
+            message.set_rollback_disabled(False)
+            return
+        self.run_worker(
+            self._rollback_controller.rollback_from_message(
+                target_turn,
+                on_complete=lambda: message.set_rollback_disabled(False),
+            ),
+            exclusive=False,
+            group="rollback-entry",
+        )
 
     @on(ToolViewRequested)
     def _on_tool_view_requested(self, event: ToolViewRequested) -> None:

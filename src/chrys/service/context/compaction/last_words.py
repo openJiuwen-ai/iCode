@@ -47,7 +47,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 from uuid import uuid4
 
-from chrys.foundation.errors import ProviderResponseError, clean_error_message, is_retryable, may_be_context_overflow
+from chrys.foundation.errors import (
+    ProviderResponseError,
+    clean_error_message,
+    failure_facts,
+    is_retryable,
+    may_be_context_overflow,
+)
 from chrys.foundation.models.turns import is_continuation_message
 from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, RetryAttemptInfo
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
@@ -83,6 +89,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from typing import Any
 
+    from chrys.foundation.models.failures import FailureFacts
     from chrys.kernel import LastWordsCompleter
     from chrys.service.profiles.models.schema import ModelProfile
 
@@ -1149,6 +1156,7 @@ class LastWordsGenerator:
                     transient_attempt + 1,
                     max_transient_retries,
                     delay,
+                    facts=failure_facts(exc),
                 )
                 transient_attempt += 1
                 await self._sleep_for_retry(delay, reason_code=RetryReason.TRANSIENT_ERROR)
@@ -1433,6 +1441,7 @@ class LastWordsGenerator:
                     attempt + 1,
                     _COMPLETER_MAX_RETRIES,
                     delay,
+                    facts=failure_facts(exc),
                 )
                 await self._sleep_for_retry(delay, reason_code=RetryReason.TRANSIENT_ERROR)
                 continue
@@ -1566,7 +1575,15 @@ class LastWordsGenerator:
         )
         return note
 
-    async def _publish_retry_attempt(self, reason: str, attempt: int, max_attempts: int, delay_seconds: float) -> None:
+    async def _publish_retry_attempt(
+        self,
+        reason: str,
+        attempt: int,
+        max_attempts: int,
+        delay_seconds: float,
+        *,
+        facts: FailureFacts | None = None,
+    ) -> None:
         if self._publish_retry is None:
             return
         try:
@@ -1576,6 +1593,7 @@ class LastWordsGenerator:
                     attempt=attempt,
                     max_attempts=max_attempts,
                     delay_seconds=delay_seconds,
+                    facts=facts,
                 )
             )
         except Exception:

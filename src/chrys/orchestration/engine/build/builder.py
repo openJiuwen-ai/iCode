@@ -266,6 +266,7 @@ async def build_agent(
     allow_user_interaction: bool = True,
     shows_answer_text: bool = True,
     sub_agent_shows_answer_text: bool = True,
+    pause_failed_sub_agents: bool = True,
 ) -> AgentBuildResult:
     """Build an ``Agent``, ``TurnBindings``, and all supporting infrastructure.
 
@@ -304,6 +305,9 @@ async def build_agent(
         joins the session totals.
     on_compaction:
         Callback for intra-turn tool compaction events.
+    pause_failed_sub_agents:
+        Whether a failed sub-agent waits for the user's Retry or Abort; only
+        where the user can be asked. Otherwise it ends with its error at once.
 
     Returns
     -------
@@ -578,8 +582,9 @@ async def build_agent(
                 max_transient_retries=transient_retries,
                 tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
                 allow_user_interaction=allow_user_interaction,
-                # A headless run shows no card to pause on, so a failed child ends with its error.
-                human_failure_decisions=allow_user_interaction,
+                # A headless run, or an ACP client that can't answer a paused child,
+                # shows no card to pause on, so a failed child ends with its error.
+                human_failure_decisions=allow_user_interaction and pause_failed_sub_agents,
                 shows_answer_text=sub_agent_shows_answer_text,
             )
             prepared.own(sub_agent_tools.cleanup)
@@ -703,7 +708,7 @@ async def build_agent(
             warn_if_tool_loading_unbinds_thinking(profile, active_profile, chat_options, mcp_tools_by_server)
 
         # Extensions come last: their tools yield every name the agent's other tools take.
-        extension_tools = await tool_packs.assemble_extension_tools(
+        extensions = await tool_packs.assemble_extensions(
             tool_build,
             profile.extensions,
             taken=[
@@ -712,9 +717,9 @@ async def build_agent(
                 *(mcp_adapter.tool_namespace if mcp_adapter is not None else ()),
             ],
         )
-        for warning in extension_tools.warnings:
+        for warning in extensions.warnings:
             await bus.publish(warning)
-        tools.extend(extension_tools.tools)
+        tools.extend(extensions.tools)
 
         # Build skills provider (if configured)
         await _progress(AGENT_LOAD_PHASE_SKILLS, "Loading skills", status=AGENT_LOAD_STATUS_RUNNING)
@@ -771,8 +776,8 @@ async def build_agent(
                 selection_source=model_selection.source,
             ),
             builtin_tools=builtin_tools,
-            extension_tools=extension_tools.by_extension,
-            extension_failures=extension_tools.unavailable,
+            extensions=extensions.details,
+            extension_failures=extensions.unavailable,
             web_search_providers=web_tools.provider_origins(),
             context_tools=context_tool_names,
             sub_agent_tools=sub_agent_tool_names,
@@ -817,6 +822,7 @@ async def build_agent(
             ),
             mcp_instructions_provider=mcp_adapter.render_instructions_reminder if mcp_adapter is not None else None,
             file_change_provider=file_change_provider,
+            extension_contexts=extensions.contexts,
         )
 
         # Wire up Phase 4 LAST_WORDS generator for the main agent.  Sub-agents
@@ -838,6 +844,7 @@ async def build_agent(
                     session_id=session_id,
                     display_message=_RETRY_LAST_WORDS_COMPACTION.bind(reason=DisplayBlock(info.reason)),
                     detail=info.reason,
+                    facts=info.facts,
                 )
             )
 
@@ -943,6 +950,7 @@ async def build_agent(
                     [effective_session_dir / COMPACTIONS_DIR_NAME] if effective_session_dir else None
                 ),
                 turn_context=turn_context,
+                extension_hooks=extensions.tool_hooks,
             ),
         )
         ask_user_middleware = create_ask_user(
@@ -984,6 +992,7 @@ async def build_agent(
             tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
             background_tasks=background_tasks,
             shows_answer_text=shows_answer_text,
+            extension_hooks=extensions.tool_hooks,
         )
 
         return AgentBuildResult(

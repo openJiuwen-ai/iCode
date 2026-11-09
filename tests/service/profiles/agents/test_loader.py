@@ -408,6 +408,39 @@ def test_load_tools_null_sections_mean_absent(tmp_path: Path) -> None:
     assert profile.tools.web_fetch is None
 
 
+def test_load_skills_null_fields_mean_absent(tmp_path: Path) -> None:
+    """YAML comment leftovers like `paths:`/`script_extensions:` null must not reach the provider."""
+    p = tmp_path / "null-skills.yaml"
+    p.write_text(
+        "name: nully-skills\nskills:\n  paths:\n  inline:\n  script_timeout:\n"
+        "  script_extensions:\n  auto_load_user_agents_skills:\n  auto_load_cwd_agents_skills:\n",
+        encoding="utf-8",
+    )
+    skills = load_profile_from_yaml(p).skills
+    assert skills.paths == []
+    assert skills.inline == []
+    assert skills.script_timeout == 300
+    assert skills.script_extensions == [".py", ".sh", ".ps1"]
+    assert skills.auto_load_user_agents_skills is True
+    assert skills.auto_load_cwd_agents_skills is True
+
+
+def test_load_skills_explicit_empty_extension_list_stays_empty(tmp_path: Path) -> None:
+    """An explicit empty list is a choice; only null falls back to the defaults."""
+    p = tmp_path / "empty-extensions.yaml"
+    p.write_text("name: no-extensions\nskills:\n  script_extensions: []\n", encoding="utf-8")
+    assert load_profile_from_yaml(p).skills.script_extensions == []
+
+
+@pytest.mark.parametrize(("field_name", "value"), [("paths", "./team-skills"), ("script_extensions", ".py")])
+def test_load_skills_rejects_scalar_list_fields(tmp_path: Path, field_name: str, value: str) -> None:
+    """A scalar would otherwise be read as an iterable and turned into one path per character."""
+    p = tmp_path / f"scalar-{field_name}.yaml"
+    p.write_text(f"name: scalar-{field_name}\nskills:\n  {field_name}: {value}\n", encoding="utf-8")
+    with pytest.raises(AgentProfileLoadError, match=rf"skills\.{field_name}' must be a list of strings"):
+        load_profile_from_yaml(p)
+
+
 def test_load_tools_ignores_unknown_keys_and_keeps_unknown_categories(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

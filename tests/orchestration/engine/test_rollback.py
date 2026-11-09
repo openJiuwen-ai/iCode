@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+import chrys.service.mutations.snapshot_files as snapshot_files_module
+from chrys.foundation.config.settings import DEFAULT_ROLLBACK_SNAPSHOTS_KEEP, Settings
 from chrys.foundation.events.types import UserRollback, Warning
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.kernel import Message
@@ -24,6 +26,7 @@ from tests.orchestration.engine._rollback_helpers import (
     _state_after_turns,
     _turn_marker,
     _write_session_json,
+    seed_turns,
 )
 from tests.support.loaded_agents import install_loaded_agent
 
@@ -693,3 +696,65 @@ class TestAttributionRefreshPersistence:
         install_loaded_agent(engine, bindings=SimpleNamespace(state=SimpleNamespace(running=False)))  # type: ignore[assignment]
         assert await engine.refresh_mutation_attribution() is True
         assert saves == [True]
+
+
+async def test_retention_window_keeps_session_start_reachable(tmp_path: Path, *, engine_services) -> None:
+    """Pruning hides older turns, but the session start needs no snapshot and stays a target."""
+    engine = _make_engine(tmp_path, keep_last=5, engine_services=engine_services)
+    store = await seed_turns(engine, 6, engine_services=engine_services)
+    assert engine.available_rollback_turns() == [0, 1, 2, 3, 4, 5]
+    engine.session.turn_number = 7
+    await asyncio.to_thread(engine.rollback.write_snapshot)
+    assert engine.available_rollback_turns() == [0, 2, 3, 4, 5, 6]
+    warnings: list[Warning] = []
+    await _collect_events(engine.event_bus, Warning, warnings)
+
+    await engine._on_user_rollback(UserRollback(target_turn=0, revert_changes=False))
+
+    assert "rollback_unavailable" not in [event.code for event in warnings]
+    assert not (store.session_dir("rb_test") / "session.json").exists()
+
+
+def test_empty_session_has_no_targets_even_with_snapshot_files(tmp_path: Path, *, engine_services) -> None:
+    engine = _make_engine(tmp_path, engine_services=engine_services)
+    directory = tmp_path / "rb_test" / "snapshots"
+    directory.mkdir(parents=True)
+    (directory / "turn_2.json").write_text('{"state":{"turn_counter":1}}', encoding="utf-8")
+    engine_services(engine).history.bind({"messages": [], "turn_counter": 0})
+
+    assert engine.available_rollback_turns() == []
+
+
+async def test_repeated_target_refresh_decodes_each_snapshot_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, engine_services
+) -> None:
+    engine = _make_engine(tmp_path, engine_services=engine_services)
+    store = await seed_turns(engine, 3, engine_services=engine_services)
+    snapshots = sorted((store.session_dir("rb_test") / "snapshots").glob("*.json"))
+    originals = {path.read_text(encoding="utf-8") for path in snapshots}
+    parsed: list[str] = []
+
+    def decode(value: str | bytes | bytearray) -> Any:
+        if isinstance(value, str) and value in originals:
+            parsed.append(value)
+        return json.loads(value)
+
+    monkeypatch.setattr(
+        snapshot_files_module, "json", SimpleNamespace(loads=decode, JSONDecodeError=json.JSONDecodeError)
+    )
+
+    assert engine.available_rollback_turns() == [0, 1, 2]
+    assert engine.available_rollback_turns() == [0, 1, 2]
+    assert len(parsed) == len(snapshots)
+    assert set(parsed) == originals
+
+    changed = json.loads(snapshots[-1].read_bytes())
+    changed["state"]["turn_counter"] = 1
+    changed["meta"]["cache_invalidation"] = "changed size and content"
+    snapshots[-1].write_text(json.dumps(changed), encoding="utf-8")
+    assert engine.available_rollback_turns() == [0, 1]
+
+
+def test_default_snapshot_retention_is_twenty() -> None:
+    assert DEFAULT_ROLLBACK_SNAPSHOTS_KEEP == 20
+    assert Settings().rollback_snapshots_keep == 20

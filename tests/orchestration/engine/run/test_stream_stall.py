@@ -797,7 +797,7 @@ class TestStreamStallPerChunk:
 
         async def _blocking() -> AgentResponse:
             response = ChatResponse(messages=[Message("assistant", [Content.from_text("final answer")])])
-            await executor._response_ready(response)
+            await executor._response_ready(response, True)
             return AgentResponse(messages=response.messages)
 
         class _Agent:

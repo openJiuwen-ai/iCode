@@ -19,6 +19,7 @@ from chrys.foundation.trajectory.fingerprint import DOMAIN_WORKSPACE, fingerprin
 from chrys.service.analytics.reader import TrajectoryScanCancelled, scan_event_types
 from chrys.service.analytics.usage_report import (
     UsageCall,
+    UsageModelKey,
     UsageReport,
     UsageTotals,
     load_usage_report,
@@ -41,6 +42,10 @@ _SUB_AGENT = Actor(kind="agent", role="sub_agent")
 _TITLE = Actor(kind="side_call", role="title_gen")
 _NOON = "2026-10-15T12:00:00+00:00"
 _OTHER_PASS = "5" * 32
+_PROFILE_A = "a" * 32
+_PROFILE_B = "b" * 32
+_EXCHANGE_OPERATION = "c" * 32
+_OTHER_OPERATION = "d" * 32
 _WANTED = frozenset({EventType.MODEL_EXCHANGE_FINISHED})
 
 
@@ -50,6 +55,7 @@ def _exchange(
     occurred_at: str = _NOON,
     actor: Actor = _MAIN,
     turn_id: str | None = TURN_ID,
+    operation_id: str | None = None,
     model: str = "model-a",
     input_total: int | None = 100,
     cache_read: int | None = 40,
@@ -65,6 +71,7 @@ def _exchange(
         EventType.MODEL_EXCHANGE_FINISHED,
         log.next_sequence,
         turn_id=turn_id,
+        operation_id=operation_id,
         actor=actor,
         occurred_at=occurred_at,
         payload={
@@ -85,6 +92,7 @@ def _write_session(root: Path, name: str, log: EventLog) -> Path:
 
 def _scan(root: Path, **kwargs: Any) -> UsageReport:
     kwargs.setdefault("session_cwds", {})
+    kwargs.setdefault("profile_names", {})
     kwargs.setdefault("fingerprint_key", _KEY)
     return scan_usage(root, **kwargs)
 
@@ -100,6 +108,7 @@ def _call(**overrides: Any) -> UsageCall:
         "day": date(2026, 10, 15),
         "hour": 12,
         "model": "model-a",
+        "profile": "",
         "source": "main",
         "project": "/w/a",
         "new_input": 0,
@@ -278,6 +287,53 @@ def test_a_call_reporting_either_total_counts_as_reported(tmp_path: Path) -> Non
     assert [call.reported for call in _scan(tmp_path).calls] == [True, True]
 
 
+def test_a_repeated_terminal_for_one_exchange_counts_the_call_once(tmp_path: Path) -> None:
+    """One exchange ends once: a repeated terminal is the same spend, not a second request."""
+    log = EventLog()
+    _exchange(log, operation_id=_EXCHANGE_OPERATION)
+    # A replay of the same terminal, with its own numbers: the first one stands.
+    _exchange(log, operation_id=_EXCHANGE_OPERATION, input_total=999, cache_read=None, output=999)
+    _exchange(log, operation_id=_OTHER_OPERATION, input_total=10, cache_read=None, output=1)
+    _write_session(tmp_path, "one", log)
+
+    calls = _scan(tmp_path).calls
+
+    assert [(call.new_input, call.output) for call in calls] == [(60, 10), (10, 1)]
+
+
+def test_a_duplicate_that_alone_is_readable_is_still_counted(tmp_path: Path) -> None:
+    """A terminal whose timestamp does not parse claims no operation, so its readable copy still counts."""
+    log = EventLog()
+    _exchange(log, occurred_at="not-a-time", operation_id=_EXCHANGE_OPERATION)
+    _exchange(log, operation_id=_EXCHANGE_OPERATION)
+    _write_session(tmp_path, "one", log)
+
+    calls = _scan(tmp_path).calls
+
+    assert [(call.new_input, call.output) for call in calls] == [(60, 10)]
+
+
+def test_terminals_without_an_operation_id_are_not_merged(tmp_path: Path) -> None:
+    log = EventLog()
+    _exchange(log)
+    _exchange(log)
+    _write_session(tmp_path, "one", log)
+
+    assert len(_scan(tmp_path).calls) == 2
+
+
+def test_the_same_operation_id_in_two_sessions_counts_in_both(tmp_path: Path) -> None:
+    """Each session's log holds its own spend; an operation id is unique only within one."""
+    first = EventLog()
+    _exchange(first, operation_id=_EXCHANGE_OPERATION)
+    _write_session(tmp_path, "one", first)
+    second = EventLog()
+    _exchange(second, operation_id=_EXCHANGE_OPERATION)
+    _write_session(tmp_path, "two", second)
+
+    assert len(_scan(tmp_path).calls) == 2
+
+
 def test_new_input_never_goes_below_zero_when_cache_reads_exceed_the_input(tmp_path: Path) -> None:
     log = EventLog()
     _exchange(log, input_total=10, cache_read=50)
@@ -305,6 +361,20 @@ def test_the_request_model_names_a_call_with_no_answer(tmp_path: Path) -> None:
     _write_session(tmp_path, "one", log)
 
     assert [call.model for call in _scan(tmp_path).calls] == ["asked", ""]
+
+
+def test_a_call_counts_under_the_profile_it_went_through_while_that_profile_exists(tmp_path: Path) -> None:
+    log = EventLog()
+    _exchange(log, actor=_SUB_AGENT, model_profile_id=_PROFILE_A)
+    _exchange(log, actor=_TITLE, model_profile_id=_PROFILE_B)
+    _exchange(log)
+    _write_session(tmp_path, "one", log)
+
+    report = _scan(tmp_path, profile_names={_PROFILE_A: "Main subscription"})
+
+    # One since deleted counts with one the log does not name.
+    assert [call.profile for call in report.calls] == [_PROFILE_A, "", ""]
+    assert report.profile_names == {_PROFILE_A: "Main subscription"}
 
 
 @pytest.fixture
@@ -441,12 +511,13 @@ def test_load_usage_report_reads_the_stores_sessions_and_their_folders(tmp_path:
     _write_session(tmp_path, "one", log)
 
     before = datetime.now().astimezone().date()
-    report = load_usage_report(store)
+    report = load_usage_report(store, profile_names={_PROFILE_A: "Main subscription"})
     after = datetime.now().astimezone().date()
 
     assert [call.model for call in report.calls] == ["model-a"]
     assert before <= report.today <= after
     assert store.sessions_root == tmp_path
+    assert report.profile_names == {_PROFILE_A: "Main subscription"}
 
 
 async def test_session_folder_cwds_names_each_saved_session(tmp_path: Path) -> None:
@@ -457,7 +528,10 @@ async def test_session_folder_cwds_names_each_saved_session(tmp_path: Path) -> N
 
 
 def test_load_usage_report_without_a_store_is_empty() -> None:
-    assert load_usage_report(None).calls == ()
+    report = load_usage_report(None, profile_names={_PROFILE_A: "Main subscription"})
+
+    assert report.calls == ()
+    assert report.profile_names == {_PROFILE_A: "Main subscription"}
 
 
 # ---------------------------------------------------------------------- totals
@@ -510,9 +584,47 @@ def test_a_report_summarizes_only_the_days_in_range() -> None:
     summary = report.summarize(date(2026, 10, 2), date(2026, 10, 3))
 
     assert summary.total.new_input == 6
-    assert {key: totals.new_input for key, totals in summary.models.items()} == {"model-a": 4, "model-b": 2}
+    assert {key: totals.new_input for key, totals in summary.models.items()} == {
+        UsageModelKey("model-a"): 4,
+        UsageModelKey("model-b"): 2,
+    }
+    assert {key: totals.new_input for key, totals in summary.profiles.items()} == {"": 6}
     assert {key: totals.new_input for key, totals in summary.sources.items()} == {"main": 4, "sub_agent": 2}
     assert {key: totals.new_input for key, totals in summary.projects.items()} == {"/w/a": 4, "/w/b": 2}
+
+
+def test_a_model_is_split_by_profile_only_where_more_than_one_served_it() -> None:
+    report = UsageReport(
+        calls=(
+            _call(day=date(2026, 10, 1), new_input=1, profile=_PROFILE_A),
+            _call(day=date(2026, 10, 2), new_input=2, profile=_PROFILE_A),
+            _call(day=date(2026, 10, 2), new_input=4, profile=_PROFILE_B),
+            _call(day=date(2026, 10, 2), new_input=8),
+            _call(day=date(2026, 10, 2), new_input=16, model="model-b", profile=_PROFILE_A),
+            _call(day=date(2026, 10, 2), new_input=32, model="model-b"),
+        ),
+        today=date(2026, 10, 2),
+    )
+
+    one_day = report.summarize(date(2026, 10, 1), date(2026, 10, 1))
+    both_days = report.summarize(date(2026, 10, 1), date(2026, 10, 2))
+
+    # A model one profile served in the range is one row, whatever the other ranges hold.
+    assert {key: totals.new_input for key, totals in one_day.models.items()} == {UsageModelKey("model-a"): 1}
+    # One that two served is a row per profile, and one for the calls of no known profile;
+    # a model that one profile and unnamed calls served stays whole.
+    assert {key: totals.new_input for key, totals in both_days.models.items()} == {
+        UsageModelKey("model-a", _PROFILE_A): 3,
+        UsageModelKey("model-a", _PROFILE_B): 4,
+        UsageModelKey("model-a", ""): 8,
+        UsageModelKey("model-b"): 48,
+    }
+    assert {key: totals.new_input for key, totals in both_days.profiles.items()} == {
+        _PROFILE_A: 19,
+        _PROFILE_B: 4,
+        "": 40,
+    }
+    assert both_days.total.new_input == 63
 
 
 def test_week_start_is_monday() -> None:

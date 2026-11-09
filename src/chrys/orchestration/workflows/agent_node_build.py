@@ -15,7 +15,7 @@ from chrys.foundation.events.types import Warning
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, StreamStall
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
-from chrys.kernel import RESPONSE_READY_KWARG, LoopRecorder, StallExhaustedAction
+from chrys.kernel import RESPONSE_READY_KWARG, LoopRecorder, ResponseReadyObserver, StallExhaustedAction
 from chrys.orchestration.invoker.acp import AcpConversation, AcpInvocationCounters
 from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker, AcpUpdateTranslator
 from chrys.orchestration.invoker.acp_spec import resolve_acp_spec
@@ -87,11 +87,12 @@ if TYPE_CHECKING:
     from chrys.foundation.config.settings import Settings
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.workspace import Workspace
-    from chrys.kernel import ChatResponse, Message
+    from chrys.kernel import Message
     from chrys.orchestration.invoker.content_projection import ContentProjector
     from chrys.orchestration.session_usage import SessionUsagePublisher
     from chrys.orchestration.workflows.agent_archive import AgentNodeArchive
     from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
+    from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.policy import ApprovalMode
     from chrys.service.context.compaction.spill import SpillQuota
@@ -145,7 +146,7 @@ class AgentNodeCallbacks:
     observer: KernelPassObserver
     content: Callable[[], ContentProjector | None]
     """The projector of the pass in flight, which publishes its model text."""
-    response_ready: Callable[[ChatResponse], Awaitable[None]]
+    response_ready: ResponseReadyObserver
     checkpoint: Callable[[], Coroutine[Any, Any, None]]
     usage: Callable[..., None]
     side_call_usage: Callable[[Mapping[str, Any]], None]
@@ -173,6 +174,8 @@ class KernelNodeParts:
     hosted_unkept: Callable[[Sequence[Message]], tuple[str, ...]]
     """Provider-hosted tool calls the newest model request executed that the given resumed history does not
     keep with that request's landed response: a resumed pass would send that request again."""
+    reminder: SystemReminderMiddleware
+    """The node's reminders; each attempt asks its extension contexts through it before its pass starts."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,7 +275,7 @@ async def build_kernel_node(
         tools.extend(await mcp_adapter.connect_all(profile.tools.mcp))
         warn_if_tool_loading_unbinds_thinking(profile, model, chat_options, mcp_adapter.tool_names_by_server)
     # Extensions come last: their tools yield every name the agent's other tools take.
-    extension_tools = await tool_packs.assemble_extension_tools(
+    extensions = await tool_packs.assemble_extensions(
         tool_build,
         profile.extensions,
         taken=[
@@ -281,9 +284,9 @@ async def build_kernel_node(
             *(mcp_adapter.tool_namespace if mcp_adapter is not None else ()),
         ],
     )
-    for warning in extension_tools.warnings:
+    for warning in extensions.warnings:
         await res.bus.publish(warning)
-    tools.extend(extension_tools.tools)
+    tools.extend(extensions.tools)
     web_tools.check_names(tools)
     skills_provider, skill_warnings = await create_skills_provider(
         profile.skills,
@@ -337,6 +340,7 @@ async def build_kernel_node(
         catalog_pointer_enabled=False,
         skill_catalog_provider=skills_provider.render_catalog_reminder if skills_provider is not None else None,
         mcp_instructions_provider=mcp_adapter.render_instructions_reminder if mcp_adapter is not None else None,
+        extension_contexts=extensions.contexts,
     )
     last_words_inputs = LastWordsInputs(
         profile=model,
@@ -398,6 +402,7 @@ async def build_kernel_node(
         tool_result_ceiling_tokens=res.settings.tool_result_ceiling_tokens,
         stats=stats,
         origin=callbacks.emitter().origin,
+        extension_hooks=extensions.tool_hooks,
     )
     middleware: list[Any] = [sub_event_mw]
     if res.allow_user_interaction:
@@ -430,6 +435,7 @@ async def build_kernel_node(
             profile_name=profile.name,
             session_archive_read_roots=[res.session_dir / COMPACTIONS_DIR_NAME],
             turn_context=turn_context,
+            extension_hooks=extensions.tool_hooks,
         ),
     )
     approval.bind_publisher(callbacks.emitter())
@@ -566,6 +572,7 @@ async def build_kernel_node(
         attempt_trace,
         sub_agent_tools,
         lambda kept: validation.hosted_commits_in_flight_unkept(kept, loop_recorder.landed_response),
+        runtime.reminder,
     )
 
 

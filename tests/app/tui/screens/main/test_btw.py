@@ -1085,7 +1085,9 @@ async def test_side_question_spanning_rebuild_answers_and_records_usage(
             assert panel.query_one(VirtualizedMarkdown).source == "Recorded answer."
             assert not panel.running
             await session.engine._trajectory_recorder.checkpoint()
-            report = await asyncio.to_thread(load_usage_report, JsonFileStateStore(tmp_path / "sessions"))
+            report = await asyncio.to_thread(
+                load_usage_report, JsonFileStateStore(tmp_path / "sessions"), profile_names={}
+            )
             calls = [call for call in report.calls if call.source == ActorRole.SIDE_QUESTION]
             assert len(calls) == 1
             assert calls[0].reported and not calls[0].failed

@@ -40,6 +40,7 @@ from chrys.service.tools.spill import TOOL_RESULTS_DIR_NAME
 from chrys.service.tools.workspace_paths import WORKING_DIR_MISSING_KIND, working_dir_missing_error
 from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.processes import ExitedProcess
+from tests.support.stopped_child import STOPS_ITSELF
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 if TYPE_CHECKING:
@@ -435,7 +436,7 @@ async def test_stopped_script_returns_promptly(tmp_path: Path, monkeypatch: pyte
     skill, script = _make_skill(
         tmp_path,
         "stopped.py",
-        "import os, signal, time\nos.kill(os.getpid(), signal.SIGSTOP)\ntime.sleep(30)\n",
+        STOPS_ITSELF + "\n",
     )
 
     with earlier_tests_heap_frozen():

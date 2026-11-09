@@ -43,7 +43,7 @@ PYAPP_VERSION="${PYAPP_VERSION:-0.29.0}"
 # The binary ships the CPython version .python-version pins (the one CI tests
 # on), built by this python-build-standalone release; bump it together with
 # PYTHON_BUILD_STANDALONE_RELEASE in .github/workflows/cd.yml.
-PYTHON_BUILD_STANDALONE_RELEASE=20261003
+PYTHON_BUILD_STANDALONE_RELEASE=20261026
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 CPYTHON_VERSION="$(tr -d '[:space:]' < "$PROJECT_ROOT/.python-version")"

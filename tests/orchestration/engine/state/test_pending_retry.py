@@ -27,7 +27,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import UserMessage, UserRetry
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
-from chrys.orchestration.engine.execution import PendingRetry
+from chrys.orchestration.engine.execution import PendingRetry, RetryInput
 from chrys.orchestration.engine.state.machine import EngineState, Trigger
 from chrys.service.llm.mock import MockResponse
 from tests.support.pipeline_helpers import (
@@ -321,13 +321,13 @@ async def test_pending_retry_dispatch_disabled_prevents_auto_retry(
     engine_services(engine).fsm.transition(Trigger.START)
     engine_services(engine).fsm.transition(Trigger.USER_MESSAGE)
     engine.turns.turn_state.lease.pending_retry = PendingRetry(
-        text="old retry", created_at="created", session_generation=engine.session_generation
+        retry=RetryInput("old retry", "created"), session_generation=engine.session_generation
     )
     engine.turns.turn_state.lease.disable_pending_retry_dispatch_for_session_transition(engine.session_generation)
     calls: list[str] = []
 
-    async def fake_retry(additional_text: str = "", **_kwargs: object) -> None:
-        calls.append(additional_text)
+    async def fake_retry(retry: RetryInput, **_kwargs: object) -> None:
+        calls.append(retry.text)
 
     monkeypatch.setattr(engine.turns, "retry_and_save", fake_retry)
 
@@ -336,7 +336,7 @@ async def test_pending_retry_dispatch_disabled_prevents_auto_retry(
 
     assert engine.turns.turn_state.lease.run_task is None
     assert calls == []
-    assert engine.turns.turn_state.lease.pending_retry.text == ""
+    assert engine.turns.turn_state.lease.pending_retry.retry.text == ""
 
 
 @pytest.mark.asyncio
@@ -345,13 +345,13 @@ async def test_pending_retry_shutdown_prevents_auto_retry(monkeypatch: pytest.Mo
     engine_services(engine).fsm.transition(Trigger.START)
     engine_services(engine).fsm.transition(Trigger.USER_MESSAGE)
     engine.turns.turn_state.lease.pending_retry = PendingRetry(
-        text="old retry", created_at="created", session_generation=engine.session_generation
+        retry=RetryInput("old retry", "created"), session_generation=engine.session_generation
     )
     engine.session.shutting_down = True
     calls: list[str] = []
 
-    async def fake_retry(additional_text: str = "", **_kwargs: object) -> None:
-        calls.append(additional_text)
+    async def fake_retry(retry: RetryInput, **_kwargs: object) -> None:
+        calls.append(retry.text)
 
     monkeypatch.setattr(engine.turns, "retry_and_save", fake_retry)
 
@@ -360,7 +360,7 @@ async def test_pending_retry_shutdown_prevents_auto_retry(monkeypatch: pytest.Mo
 
     assert engine.turns.turn_state.lease.run_task is None
     assert calls == []
-    assert engine.turns.turn_state.lease.pending_retry.text == ""
+    assert engine.turns.turn_state.lease.pending_retry.retry.text == ""
 
 
 class TestPendingRetry:
@@ -530,7 +530,7 @@ class TestPendingRetry:
             await _wait_pending_done(ctx)
 
             assert ctx.engine.state is EngineState.FAILED
-            assert ctx.engine.turns.turn_state.lease.pending_retry.text == ""
+            assert ctx.engine.turns.turn_state.lease.pending_retry.retry.text == ""
             assert ctx.engine.turns.turn_state.lease.pending_retry == PendingRetry()
             assert ctx.mock_client.call_count == 1
         finally:

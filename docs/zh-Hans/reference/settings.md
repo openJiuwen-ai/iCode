@@ -53,7 +53,7 @@ llm:
 
 ### 智能体、模型与请求
 
-模型用途键填写已有模型配置的 ID 或唯一名称；Buddy 伙伴不选择模型配置，其键填写模型服务端的模型名称（`model_id`）。
+模型用途键填写已有模型配置的 ID 或唯一名称。`model.role.buddy` 取代早期版本中填写模型名称的 `model.role.buddy_model_id`：iCode 启动时，会把已保存的模型名称替换为使用该模型的模型配置；若没有模型配置使用该模型，或有多个模型配置使用，则删除旧值，Buddy 伙伴使用当前模型。iCode 不再读取 `CHRYS_PET_MODEL`，请改用 `CHRYS_MODEL_PROFILE_BUDDY`，填写模型配置的 ID 或名称。
 
 | YAML 键 | 环境变量 | 默认值 | 类型、取值与效果 |
 | --- | --- | --- | --- |
@@ -61,7 +61,7 @@ llm:
 | `model.profile.active` | `CHRYS_MODEL_PROFILE` | 未指定 | 字符串；选择已有模型配置，作为智能体未指定有效 `model.profile_id` 时的后备模型。显式 `--model` 优先于此键，但仍作为后备模型；ACP 会话中显式切换模型则优先于智能体指定的模型 |
 | `model.role.approval_judge` | `CHRYS_MODEL_PROFILE_APPROVAL_JUDGE` | 未指定 | 字符串；自动审批使用的模型配置，未指定时使用当前模型 |
 | `model.role.session_title` | `CHRYS_MODEL_PROFILE_SESSION_TITLE` | 未指定 | 字符串；自动生成会话标题使用的模型配置，未指定时使用当前模型 |
-| `model.role.buddy_model_id` | `CHRYS_PET_MODEL` | 未指定 | 字符串；Buddy 伙伴使用的模型，沿用当前模型配置的连接；未指定时使用当前模型 |
+| `model.role.buddy` | `CHRYS_MODEL_PROFILE_BUDDY` | 未指定 | 字符串；Buddy 伙伴使用的模型配置，使用该配置自己的提供商、地址和模型；未指定时使用当前模型 |
 | `llm.retry.max_transient` | `CHRYS_MAX_TRANSIENT_RETRIES` | `null` | 整数或 `null`；`null` 使用当前启动入口的默认次数：TUI（含 `icode serve`）和 `icode acp` 为 `10` 次，`icode run` 和 `icode workflow run` 为 `18` 次。每次重试前的等待逐次变长，最长 10 分钟。`0` 禁用瞬时错误自动重试，负数无效，上限 `50` |
 | `llm.credential_command.ttl_seconds` | `CHRYS_CREDENTIAL_COMMAND_TTL_SECONDS` | `3600` | 整数；`{{!command}}` 占位符得到的值可以使用多少秒，之后下一次请求前重新运行命令。最小 `60`。服务拒绝该值时会立即更换。重启后生效。参阅[通过命令获取 API 密钥](../guides/configuration/models.md#通过命令获取-api-密钥) |
 

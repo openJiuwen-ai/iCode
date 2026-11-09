@@ -33,6 +33,7 @@ from chrys.foundation.platform.key_files import publish_owner_only_key, read_own
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.foundation.util.filenames import bounded_safe_stem, safe_fs_name
 from chrys.foundation.util.lock import FileLock
+from chrys.foundation.util.sub_agent_context import SubAgentProgressTotals
 from chrys.service.session.message_metadata import TOOL_RESULT_METADATA_KEY
 from chrys.service.state.serializers import serialize_state
 
@@ -104,6 +105,16 @@ class SubAgentLogStats:
     def record_usage(self, total_tokens: int, total_usage_tokens: int) -> None:
         self.total_tokens = total_tokens
         self.total_usage_tokens = total_usage_tokens
+
+    def totals(self, *, compactions: int = 0) -> SubAgentProgressTotals:
+        """The counters as the parent result keeps them, with the run's committed *compactions*."""
+        return SubAgentProgressTotals(
+            tool_calls=self.tool_call_count,
+            context_tokens=self.total_tokens,
+            usage_tokens=self.total_usage_tokens,
+            unreported_attempts=self.usage_unreported_attempts,
+            compactions=compactions,
+        )
 
 
 @dataclass(frozen=True, slots=True)

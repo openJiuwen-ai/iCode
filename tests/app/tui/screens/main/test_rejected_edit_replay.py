@@ -99,12 +99,18 @@ async def test_rejected_then_approved_snapshots_survive_restore_without_a_reject
         assert isinstance(approved, EditFileToolCall)
         await denied.mount_diff_if_pending()
         await approved.mount_diff_if_pending()
+        # Expanding the group already started the approved diff's mount, which
+        # highlights off-thread: the call above then returns at once.
+        await wait_for(
+            lambda: len(approved.query(InlineUnifiedDiffLines)) == 1,
+            pilot=pilot,
+            description="the approved edit's diff mounted",
+        )
 
         assert denied._before_content == denied._after_content == "before\n"
         assert denied.status == "rejected"
         assert not denied.query(InlineUnifiedDiffLines)
         assert (approved._before_content, approved._after_content) == ("before\n", "after\n")
-        assert len(approved.query(InlineUnifiedDiffLines)) == 1
 
         live = EditFileToolCall("live", "edit_file", args={"path": str(target)})
         await panel.mount(live)

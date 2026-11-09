@@ -19,6 +19,7 @@ from weakref import WeakKeyDictionary, WeakSet
 from rich.text import Text
 from textual import events as textual_events
 from textual._arrange import DockArrangeResult
+from textual.color import Color
 from textual.containers import VerticalScroll
 from textual.dom import NoScreen
 from textual.geometry import Offset, Region, Size
@@ -36,12 +37,15 @@ from chrys.app.tui.widgets import ASK_USER_INTERACTIVE_CLASS
 from chrys.foundation.patches.textual_precompose import precompose_tree
 
 if TYPE_CHECKING:
+    from asyncio import Task
+
     from textual.events import Click
     from textual.layout import Layout
 
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.widgets import PromptDraft
     from chrys.app.update_check import UpdateNotice
+    from chrys.foundation.i18n import MessageRef
     from chrys.foundation.models.ask_user import AskUserQuestion
     from chrys.foundation.models.invocations import ContentChannel
     from chrys.service.context.providers.history import CompressedBlock
@@ -53,13 +57,15 @@ from chrys.app.tui.widgets.chat.chrome import (
     ScrollToBottomButton,
     ScrollToBottomRequested,
 )
-from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
+from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
 from chrys.app.tui.widgets.chat.fold_gap import show_fold_gaps
 from chrys.app.tui.widgets.chat.live_renderer import LiveTranscriptRenderer
 from chrys.app.tui.widgets.chat.messages import (
+    ERROR_RETRY_ACTION,
     AgentMessage,
     ErrorMessage,
     InterruptedMessage,
+    MessageRollbackButton,
     RetryMessage,
     StreamedMarkdownMessage,
     SystemMessage,
@@ -161,6 +167,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._chrome = ChatPanelChrome(self, locale_controller=locale_controller)
         self._scroll_controller = ChatScrollController(self)
         self._toc = TurnTocModel()
+        self._rollback_targets: set[int] = {0}
+        self._rollback_preview_borders: dict[Widget, tuple[object, Callable[[Task[None]], None]]] = {}
+        self._rollback_preview_start: UserMessage | None = None
         self._tool_registry = ToolGroupRegistry(
             self,
             self,
@@ -180,6 +189,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             localization=localization,
             thinking_expanded=thinking_expanded,
             fold_passed_text=True,
+            rollback_targets=lambda: self._rollback_targets,
         )
         self._replay_renderer = HistoryReplayRenderer(
             self,
@@ -192,6 +202,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             workspace_cwd=self._current_workspace_cwd,
             show_reasoning=thinking_expanded is not None,
             fold_passed_text=True,
+            rollback_targets=lambda: self._rollback_targets,
         )
         self._transcript_reader = TranscriptReader(self)
         self._replay_mount = ReplayMountController(self)
@@ -470,6 +481,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             if isinstance(widget, Widget) and widget not in self._transcript_seqs:
                 self._transcript_seqs[widget] = Fraction(next(_transcript_seq_counter))
         mounted = super().mount(*widgets, **kwargs)
+        if transcript and self._rollback_preview_start is not None:
+            self.call_after_refresh(self._extend_rollback_preview, widgets)
         if transcript and any(widget.display for widget in widgets):
             # Registered as children already: new output hides the row before it paints. A tool group mounts hidden
             # until its first call, and hides the row as it starts (_settle_answer_before_tools).
@@ -584,6 +597,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             self._scroll_controller.on_scrollbar_release()
 
     def on_unmount(self) -> None:
+        self._clear_rollback_preview()
         if self._locale_controller is not None:
             self._locale_controller.unregister_surface(self)
         self._replay_mount.abandon()
@@ -1154,6 +1168,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         await finish_shielded(self._clear_and_rebuild())
 
     async def _clear_and_rebuild(self) -> None:
+        self._clear_rollback_preview()
         # A prepend ends at a batch boundary first: never remove children
         # around a mount that is still registering.
         await self._replay_mount.stop()
@@ -1175,6 +1190,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._live_renderer.reset_for_clear()
         self._tool_registry.reset_for_clear()
         self._toc.clear()
+        self._rollback_targets = {0}
 
         welcome, waiting_row, bottom_spacer, scroll_button = self._chrome.rebuild_widgets()
         await self.mount(welcome)
@@ -1257,6 +1273,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         is_injection: bool = False,
         created_at: Any = None,
         contents: list[Any] | None = None,
+        item_id: str | None = None,
+        client_message_id: str | None = None,
     ) -> None:
         """Display a user message."""
         await self._live_renderer.add_user_message(
@@ -1264,11 +1282,25 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             is_injection=is_injection,
             created_at=created_at,
             contents=contents,
+            item_id=item_id,
+            client_message_id=client_message_id,
         )
 
-    async def _remove_failed_turn(self) -> None:
-        """Remove a trailing failed turn (Error/Interrupted + its preceding UserMessage)."""
-        await self._live_renderer._remove_failed_turn()
+    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_item_ids: tuple[str, ...]) -> None:
+        """Apply backend cleanup after replay so queued entries cannot reappear."""
+        if self.replay_in_progress:
+            await self.wait_replay_complete()
+        await self._live_renderer.apply_fresh_turn_cleanup(
+            retired_previous_turn=retired_previous_turn, removed_item_ids=removed_item_ids
+        )
+
+    def apply_turn_started(self, turn_number: int, *, opening_item_id: str | None = None) -> None:
+        """Set the live opener's authoritative turn number and history item."""
+        self._live_renderer.apply_turn_started(turn_number, opening_item_id=opening_item_id)
+
+    def apply_retry_started(self, note_message_id: str | None, opening_item_id: str | None) -> None:
+        """Bind a retry's guidance, named by its client id, to its history item."""
+        self._live_renderer.apply_retry_started(note_message_id, opening_item_id)
 
     async def add_answer_delta(self, segment_id: str, text: str) -> None:
         """Stream new answer text into its segment's message (one message per segment)."""
@@ -1293,6 +1325,18 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     async def abandon_thinking(self, segment_ids: tuple[str, ...]) -> None:
         """Remove the thinking a retry gave up with its response."""
         await self._live_renderer.abandon_thinking(segment_ids)
+        self._sync_waiting_row()
+
+    async def end_steered_pass(self) -> None:
+        """End what a steer gave up while the turn goes on: the pass's running tool cards, and a retry wait it cut short.
+
+        The steer cancelled those calls, and no result follows for them. As
+        before a retry, the open tool group and answer close, so the next
+        pass's output starts new ones.
+        """
+        await self._live_renderer.prepare_retry()
+        if isinstance(status := self._find_trailing_status(), RetryMessage):
+            await remove_shielded(status)
         self._sync_waiting_row()
 
     async def add_agent_message(
@@ -1752,11 +1796,11 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         await self._live_renderer.remove_system(key)
         self._sync_waiting_row()
 
-    async def add_interrupted(self, reason: str = "Execution interrupted", source: str = "user") -> None:
+    async def add_interrupted(self, reason: MessageRef | str | None = None, source: str = "user") -> None:
         """Display an interruption notice, replacing any trailing error/interrupted widget."""
         await self._live_renderer.add_interrupted(reason, source)
 
-    async def add_error(self, text: str, *, action_label: str | None = "Retry") -> None:
+    async def add_error(self, text: str, *, action_label: MessageRef | str | None = ERROR_RETRY_ACTION) -> None:
         """Display an error message, replacing any trailing error/interrupted widget."""
         await self._live_renderer.add_error(text, action_label=action_label)
 
@@ -1817,7 +1861,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             last.hide_action()
 
     async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
-        """Remove the answer text a bare Continue or Retry dropped from history: the messages these segments showed.
+        """Remove the answer text a Continue, Retry or steer dropped from history: the messages these segments showed.
 
         Tool cards stay, as they do for a retried attempt. Entries a replay has
         yet to mount are mounted first, so none of them comes back.
@@ -1870,9 +1914,10 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self,
         messages: list[dict[str, Any]],
         initial_profile: str = "",
-        file_snapshots: dict[str, list[FileSnapshotPayload]] | None = None,
+        file_snapshots: dict[FileSnapshotKey, list[FileSnapshotPayload]] | None = None,
         compressed_blocks: dict[str, CompressedBlock] | None = None,
         recovered_from_sidecar: bool = False,
+        rollback_targets: set[int] | None = None,
     ) -> None:
         """Replay saved session messages into the chat panel.
 
@@ -1886,6 +1931,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             messages: Deserialized session messages.
         """
         self._replay_process_protect_last = recovered_from_sidecar
+        if rollback_targets is not None:
+            self._rollback_targets = rollback_targets
         try:
             await self._replay_renderer.replay_history(
                 messages,
@@ -1895,6 +1942,77 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             )
         finally:
             self._replay_process_protect_last = False
+
+    def _clear_rollback_preview(self) -> None:
+        self._rollback_preview_start = None
+        for widget, (original, on_removed) in self._rollback_preview_borders.items():
+            if widget._task is not None:
+                widget._task.remove_done_callback(on_removed)
+            widget.styles.set_rule("border_left", original)
+            widget.refresh(layout=False)
+        self._rollback_preview_borders.clear()
+
+    def _forget_rollback_preview_widget(self, widget: Widget, _task: Task[None]) -> None:
+        """Release a border record when Textual finishes unmounting its widget."""
+        if widget is self._rollback_preview_start:
+            self._clear_rollback_preview()
+        elif (record := self._rollback_preview_borders.pop(widget, None)) is not None:
+            widget.styles.set_rule("border_left", record[0])
+
+    def on_message_rollback_button_preview_changed(self, event: MessageRollbackButton.PreviewChanged) -> None:
+        event.stop()
+        self._clear_rollback_preview()
+        if not event.active or event.button.disabled:
+            return
+        message = next((node for node in event.button.ancestors if isinstance(node, UserMessage)), None)
+        children = self.transcript_content_children()
+        if message is None or message not in children or message.turn_number is None:
+            return
+        self._rollback_preview_start = message
+        self._extend_rollback_preview(children[children.index(message) :])
+
+    def _extend_rollback_preview(self, mounted: Sequence[Widget]) -> None:
+        """Paint newly mounted entries in the active suffix after their styles are ready."""
+        message = self._rollback_preview_start
+        if message is None:
+            return
+        children = self.transcript_content_children()
+        if message not in children:
+            self._clear_rollback_preview()
+            return
+        affected = set(children[children.index(message) :])
+        error = Color.parse(self.app.get_css_variables()["error"])
+        for child in mounted:
+            if child not in affected:
+                continue
+            for widget in child.walk_children(Widget, with_self=True):
+                if widget in self._rollback_preview_borders:
+                    continue
+                border, _color = widget.styles.border_left
+                if border in {"", "none", "hidden"}:
+                    continue
+                task = widget._task
+                if task is None:
+                    continue
+                # Keep border geometry and the prior inline override unchanged;
+                # a pointer preview repaints only and never asks for layout/style propagation.
+                on_removed = partial(self._forget_rollback_preview_widget, widget)
+                self._rollback_preview_borders[widget] = (
+                    widget.styles._inline_styles.get_rule("border_left", None),
+                    on_removed,
+                )
+                task.add_done_callback(on_removed)
+                widget.styles.set_rule("border_left", (border, error))
+                widget.refresh(layout=False)
+
+    def set_rollback_targets(self, targets: set[int]) -> None:
+        """Update only message headers whose retained snapshot availability changed."""
+        if targets == self._rollback_targets:
+            return
+        self._rollback_targets = targets
+        for widget in [*self.mounted_user_messages(), *self.pending_transcript_widgets()]:
+            if isinstance(widget, UserMessage) and widget.turn_number is not None:
+                widget.set_rollback_available(UserMessage.undo_link_available(widget.turn_number, targets))
 
     async def _replay_compressed_block(self, block: CompressedBlock, replay_profile: str) -> str:
         """Compatibility delegate for compressed-block replay rendering."""
