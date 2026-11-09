@@ -96,11 +96,20 @@ def format_size(size_bytes: int) -> str:
     return format_byte_size(size_bytes)
 
 
+_TOKEN_UNITS = (
+    # The unit changes where one decimal would otherwise round up into the
+    # next unit's name: 999,950 tokens reads "1m", never "1000k".
+    (999_950_000, 1_000_000_000, "b"),
+    (999_950, 1_000_000, "m"),
+    (1_000, 1_000, "k"),
+)
+
+
 def format_tokens(count: int) -> str:
     """Compact token count (500, 3k, 1.5m, 5b)."""
-    for threshold, suffix in ((1_000_000_000, "b"), (1_000_000, "m"), (1_000, "k")):
-        if count >= threshold:
-            scaled = f"{count / threshold:.1f}".removesuffix(".0")
+    for smallest, scale, suffix in _TOKEN_UNITS:
+        if count >= smallest:
+            scaled = f"{count / scale:.1f}".removesuffix(".0")
             return f"{scaled}{suffix}"
     return str(count)
 
@@ -132,7 +141,9 @@ def time_ago(
         return render_message(_MONTHS_AGO.bind(count=1))
     if months < 12:
         return render_message(_MONTHS_AGO.bind(count=months))
-    years = days // 365
+    # Months are 30 days throughout this function, so twelve of them make a
+    # year: 360 days reads "1 year ago", never "0 years ago".
+    years = months // 12
     if years == 1:
         return render_message(_YEARS_AGO.bind(count=1))
     return render_message(_YEARS_AGO.bind(count=years))

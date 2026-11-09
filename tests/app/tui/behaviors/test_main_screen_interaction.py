@@ -404,6 +404,6 @@ async def test_shell_mode_transitions_never_paint_half_applied_layout(tmp_path: 
 
     assert frames
     for index, frame in enumerate(frames):
-        tab_columns = [row.find("Messages") for row in frame if "Messages" in row]
+        tab_columns = [row.find("Tasks") for row in frame if "Tasks" in row]
         assert tab_columns, f"sidebar tabs missing from painted frame {index}"
         assert min(tab_columns) > 60, f"frame {index} painted the sidebar in the left half (x={min(tab_columns)})"

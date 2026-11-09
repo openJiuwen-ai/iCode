@@ -90,10 +90,14 @@ async def test_a_cancelled_new_prompt_still_removes_the_failed_prompt_and_its_co
         await panel.add_error("boom")
         busy = await _busy_inside(prompt)
 
-        await _cancel_while_removing(busy, lambda: panel.add_user_message("second"))
+        await panel.add_user_message("second")
+        await _cancel_while_removing(
+            busy,
+            lambda: panel.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=()),
+        )
 
         assert not prompt.is_attached and not panel.query(ErrorMessage)
-        assert [item.summary for item in panel.toc_items] == []
+        assert [item.summary for item in panel.toc_items] == ["second"]
         await assert_app_handles_messages(app)
 
 

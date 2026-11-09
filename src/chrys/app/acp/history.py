@@ -311,13 +311,17 @@ async def replay_session_history(
             # the update schema has no injection concept.
             if isinstance(additional, dict) and additional.get(HistoryMarkerKind.CONTINUATION_KEY):
                 continue
+            # Every user message, a note included, names its history item: the
+            # id a later chrys/user_messages_dropped removes it by.
+            item_id = additional.get(ANALYTICS_ITEM_ID_KEY) if isinstance(additional, dict) else None
+            user_meta = {**turn_meta, "itemId": item_id} if isinstance(item_id, str) else turn_meta
             for update in _user_message_chunks(message, text):
                 # Only the message that OPENED the turn carries the id the
                 # client submitted; an injection or a retry note inside the
                 # turn is a different message and has no client-side id.
                 update.message_id = opening_user_message.get(message_index)
-                if turn_meta:
-                    update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
+                if user_meta:
+                    update.field_meta = with_chrys_metadata(update.field_meta, user_meta)
                 await client.session_update(session_id=session_id, update=update)
             continue
         if role not in ("assistant", "tool"):

@@ -23,6 +23,7 @@ from chrys.service.profiles.agents.serializer import save_profile
 from chrys.service.profiles.models.env_bridge import activate_model_profile
 from tests.app.tui.screens.test_manual_reload import ask_after_reload, slash_reload
 from tests.app.tui.screens.test_prompt_shortcut_send import MAIN_MODEL, make_agent, running_session
+from tests.support.processes import still_running
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
@@ -111,7 +112,7 @@ async def call_tool(session, name: str, label: str) -> None:
 
 def running_children() -> set[int]:
     """Pids of this test's own live child processes; only a child can't have been recycled unseen."""
-    return {child.pid for child in psutil.Process().children(recursive=True) if child.status() != psutil.STATUS_ZOMBIE}
+    return {child.pid for child in psutil.Process().children(recursive=True) if still_running(child)}
 
 
 async def closed(process: psutil.Process, session) -> None:
@@ -304,6 +305,11 @@ def http_server(tmp_path):
         process.wait()
 
 
+def port_written(port_file: Path) -> bool:
+    """Whether the probe server has written its port: ``write_text`` creates the file before it writes to it."""
+    return port_file.exists() and port_file.read_text(encoding="utf-8").isdigit()
+
+
 def http_config(port_file: Path, token: str) -> MCPServerConfig:
     return MCPServerConfig(
         name="first",
@@ -318,7 +324,7 @@ async def test_a_changed_token_never_falls_back_and_stays_out_of_the_report(
     agent_engine, tmp_path, monkeypatch, http_server
 ):
     state, port_file = http_server
-    await wait_for(port_file.exists, timeout=ENGINE_TURN_TIMEOUT, description="HTTP server listening")
+    await wait_for(lambda: port_written(port_file), timeout=ENGINE_TURN_TIMEOUT, description="HTTP server listening")
     second = state_dir(tmp_path, "second")
     other = stdio_server(second, "second", tool_name_prefix="second")
     config = http_config(port_file, "old-token-value")

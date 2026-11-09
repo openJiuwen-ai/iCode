@@ -7,7 +7,7 @@
 
 - 责任人：周彬
 - 状态：已确认
-- 确认日期：2026-10-31
+- 确认日期：2026-11-09
 - 确认意见：双 AI 评审多轮收敛后最终确认
 
 ## 方案概述
@@ -202,8 +202,12 @@ msg-fallback 形态的说明）。
 | C025 | tests/app/tui/i18n/test_toast_notifications.py | AIxCoding tui: /login /logout stubs | | （批次锚注） | （批次锚注） | 〔随组〕同 C023 |
 | C026 | tests/app/tui/screens/main/test_screen_lifecycle.py | AIxCoding tui: startup check | | （批次锚注） | （批次锚注） | 〔随组〕同 C023（生命周期句柄） |
 | C027 | tests/foundation/i18n/_catalog_oracle_ids.py | AIxCoding tui: /login /logout keys | | （批次锚注） | （批次锚注） | 〔机制退役〕借壳 key 机制退役（登录文案改上游 msg() 体系承载，或登录功能下线） |
-| C028 | tests/foundation/i18n/test_catalog_oracle.py | AIxCoding tui: +4 borrow-shell | | （批次锚注） | （批次锚注） | 〔机制退役〕随 C027 一并裁决（oracle 计数） |
 | C029 | tests/support/tui_helpers.py | AIxCoding tui: /login /logout stubs for | | （批次锚注） | （批次锚注） | 〔随组〕同 C023（screen double 桩） |
+
+> 退役登记（2026-11-09，upstream-merge-v0.35.1 实施）：C028 已随上游 v0.35.1 oracle
+> 去计数化（b787c974，计数行载体消失）迁入
+> `aixcoding/docs/batches/upstream-merge-v0.35.1/design.md` 的退役记录，本节现役行同步删除；
+> 借壳机制本身存续（C027 及 4 key 保留在 id 集合）；本文由责任人按 R10 重签后闭环。
 
 ## 风险与最坏情况
 

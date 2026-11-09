@@ -250,7 +250,7 @@ def test_profile_switch_registers_sub_agent_exact_tool_names() -> None:
                 set_workspace_cwd=lambda value: setattr(state.workspace_marker, "current_cwd", value),
                 update_subtitle=lambda: None,
                 update_toc=lambda: None,
-                clear_suggestion_file_cache=lambda: None,
+                discard_suggestion_file_index=lambda: None,
                 start_worker=discard_worker,
                 post_gc_message=lambda _message: None,
                 debug=lambda _key, _message="": None,

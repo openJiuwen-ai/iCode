@@ -4,6 +4,8 @@ Hooks automatically run local scripts or commands when specified events occur. F
 
 This guide uses a simple example to introduce writing and configuring hooks, followed by several common examples you can adapt. For the full list of events, configuration fields, defaults, and script input and output formats, see the [Hooks configuration reference](../../reference/hooks.md).
 
+To check or change tool calls with Python functions that run inside iCode, a Python extension can declare tool hooks instead; they run before the hooks configured here. See [Check or change tool calls](./python-extensions.md#check-or-change-tool-calls).
+
 > **Security notice**
 >
 > Hooks run directly with the current user's permissions, without tool approval or sandbox restrictions. Before enabling hooks included in a project, inspect their configuration files and the scripts and commands they run.

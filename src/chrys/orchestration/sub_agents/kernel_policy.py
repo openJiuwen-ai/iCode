@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, cast
 
-from chrys.foundation.errors import clean_error_message
+from chrys.foundation.errors import clean_error_message, failure_facts
 from chrys.foundation.errors.display import display_fields
 from chrys.foundation.events.types import (
     InvocationPaused,
@@ -19,6 +19,7 @@ from chrys.foundation.events.types import (
     InvocationToolCallResult,
 )
 from chrys.foundation.hosted_tools import HostedToolStatus
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.platform.files import atomic_write_owner_only_text
 from chrys.foundation.retry import (
     TRANSIENT_RETRY_BACKOFF_SECONDS,
@@ -225,6 +226,7 @@ class KernelSubAgentPolicy:
         self._last_error: str = ""
         self._last_error_display: MessageRef | None = None
         self._last_error_hint: MessageRef | None = None
+        self._last_error_facts: FailureFacts | None = None
         self._failure_reason: SubAgentFailureReason | None = None
         self._retry_attempts_total: int = 0
         # The answer of the pass that completed the invocation, if any.
@@ -322,8 +324,9 @@ class KernelSubAgentPolicy:
     def cancelled(self) -> None:
         self._pass_status = "interrupted"
 
-    async def response_ready(self, response: ChatResponse) -> None:
+    async def response_ready(self, response: ChatResponse, final: bool) -> None:
         """The kernel landed a response: the pass projector shows what it did not stream."""
+        del final
         if self._projector is not None:
             shown = self._tool_event_middleware.hosted_text_shown if self._tool_event_middleware is not None else None
             await self._projector.response_ready(response, shown=shown)
@@ -340,6 +343,7 @@ class KernelSubAgentPolicy:
         self._last_error_display, self._last_error_hint = display_fields(
             exc, max_context_tokens=strategy.max_context_tokens if strategy is not None else None
         )
+        self._last_error_facts = failure_facts(exc)
         if isinstance(exc, StreamStallExhausted):
             # Keep the original stall message (chained via __cause__)
             # so the pause banner shows the underlying reason instead
@@ -388,6 +392,18 @@ class KernelSubAgentPolicy:
     @property
     def last_error(self) -> str:
         return self._last_error
+
+    @property
+    def last_error_display(self) -> MessageRef | None:
+        return self._last_error_display
+
+    @property
+    def last_error_hint(self) -> MessageRef | None:
+        return self._last_error_hint
+
+    @property
+    def last_error_facts(self) -> FailureFacts | None:
+        return self._last_error_facts
 
     @property
     def failure_reason(self) -> SubAgentFailureReason | None:
@@ -467,6 +483,7 @@ class KernelSubAgentPolicy:
                 session_id=self._session_id,
                 display_message=display_message,
                 display_hint=display_hint,
+                facts=failure_facts(exc),
             )
         )
 
@@ -782,6 +799,7 @@ class KernelSubAgentPolicy:
             last_error=self._last_error,
             last_error_display=self._last_error_display,
             last_error_hint=self._last_error_hint,
+            last_error_facts=self._last_error_facts,
             retry_attempts=self._retry_attempts_total,
             session_id=self._session_id,
         )

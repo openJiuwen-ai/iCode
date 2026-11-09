@@ -403,6 +403,8 @@ Skill 脚本是例外：`run_skill_script` 默认需要审批。如需修改该�
 
 ## skills
 
+下表中的字段留空（例如把列表项注释掉后只剩键名）等同于省略该字段，使用默认值。列表字段必须写成列表；写成单个值（如 `paths: ./team-skills`）会导致整个配置被跳过。
+
 ```yaml
 skills:
   paths:

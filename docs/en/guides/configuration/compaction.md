@@ -19,7 +19,7 @@ These three steps serve different purposes: trimming older tool calls and result
 In the TUI, you can observe the following changes:
 
 - "Compacting conversation..." appears during compaction.
-- After compaction, compacted turns appear in gray in the sidebar message list. The conversation area shows a gray "Compressed" marker and a compaction summary at the corresponding position.
+- After compaction, compacted turns appear in gray in the sidebar's **Chat** tab. The conversation area shows a gray "Compressed" marker and a compaction summary at the corresponding position.
 - If Last Words were generated, you can expand the completed compaction card to view them.
 
 Compacted historical turns remain in the session. The agent can look up specific information from them when needed, without adding the entire conversation back to the current context.

@@ -109,9 +109,7 @@ _CONFIRM_MESSAGES: dict[str, MessageDef] = {
     "log.raw_http_capture": _CONFIRM_RAW_HTTP_CAPTURE,
     "otel.sensitive_data": _CONFIRM_OTEL_SENSITIVE,
 }
-_ACTIVE_PLACEHOLDER_KEYS = frozenset(
-    {"model.role.session_title", "model.role.approval_judge", "model.role.buddy_model_id"}
-)
+_ACTIVE_PLACEHOLDER_KEYS = frozenset({"model.role.session_title", "model.role.approval_judge", "model.role.buddy"})
 _APPROVAL_MODE_KEY = "approval.default_mode"
 _LOCALE_KEY = "ui.locale"
 _LOCALE_LABELS: dict[str, MessageDef] = dict(LANGUAGE_OPTIONS)

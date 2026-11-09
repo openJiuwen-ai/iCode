@@ -15,20 +15,21 @@ from chrys.app.tui.i18n import render_content
 from chrys.app.tui.widgets.sidebar.buddy import BuddyPanel
 from chrys.app.tui.widgets.sidebar.context import ContextPanel, ContextUsageState
 from chrys.app.tui.widgets.sidebar.debug import DebugPanel
+from chrys.app.tui.widgets.sidebar.diff_preview import DiffPreview, SidebarChatPanel
 from chrys.app.tui.widgets.sidebar.hooks import HookRunList
 from chrys.app.tui.widgets.sidebar.tasks import TasksPanel, TodoListState
 from chrys.app.tui.widgets.sidebar.toc import ConversationToc
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 
-_SIDEBAR_MESSAGES = msg("tui.sidebar.tab.messages", fallback="Messages")
+_SIDEBAR_CHAT = msg("tui.sidebar.tab.chat", fallback="Chat")
 _SIDEBAR_TASKS = msg("tui.sidebar.tab.tasks", fallback="Tasks")
 _SIDEBAR_HOOKS = msg("tui.sidebar.tab.hooks", fallback="Hooks")
 _SIDEBAR_CONTEXT = msg("tui.sidebar.tab.context", fallback="Context")
 _SIDEBAR_DEBUG = msg("tui.sidebar.tab.debug", fallback="Debug")
 _SIDEBAR_BUDDY = msg("tui.sidebar.tab.buddy", fallback="Buddy")
-_SIDEBAR_TAB_MESSAGES: tuple[MessageDef, ...] = (
-    _SIDEBAR_MESSAGES,
+_SIDEBAR_TAB_LABELS: tuple[MessageDef, ...] = (
+    _SIDEBAR_CHAT,
     _SIDEBAR_TASKS,
     _SIDEBAR_CONTEXT,
     _SIDEBAR_HOOKS,
@@ -67,6 +68,13 @@ class SidebarPanel(Widget, can_focus=False):
     SidebarPanel.-shell-active {
         border: round $tui-border-warning $border-opacity;
     }
+    /* Here, not in the boxes' own CSS: Textual scopes a widget's rule to under the widget. */
+    SidebarPanel.-shell-active DiffPreview > #diff-preview-box,
+    SidebarPanel.-shell-active ConversationToc > #toc-box,
+    SidebarPanel.-shell-active TasksPanel > #tasks-todos,
+    SidebarPanel.-shell-active BackgroundTaskList {
+        border: round $tui-border-warning-darken-1 $inner-border-opacity;
+    }
     SidebarPanel > TabbedContent {
         height: 100%;
     }
@@ -87,8 +95,8 @@ class SidebarPanel(Widget, can_focus=False):
 
     def compose(self) -> ComposeResult:
         with TabbedContent(initial="tab-toc"):
-            with TabPane(self._localized_content(_SIDEBAR_MESSAGES.bind()), id="tab-toc"):
-                yield ConversationToc(locale_controller=self._locale_controller)
+            with TabPane(self._localized_content(_SIDEBAR_CHAT.bind()), id="tab-toc"):
+                yield SidebarChatPanel(locale_controller=self._locale_controller)
             with TabPane(self._localized_content(_SIDEBAR_TASKS.bind()), id="tab-tasks"):
                 yield TasksPanel(locale_controller=self._locale_controller).data_bind(
                     todo_state=SidebarPanel.todo_state,
@@ -131,12 +139,13 @@ class SidebarPanel(Widget, can_focus=False):
         if not self.is_mounted:
             return
         tabs = self.query_one(TabbedContent).query_one(Tabs)
-        for tab, definition in zip(tabs.query(Tab).results(Tab), _SIDEBAR_TAB_MESSAGES, strict=True):
+        for tab, definition in zip(tabs.query(Tab).results(Tab), _SIDEBAR_TAB_LABELS, strict=True):
             tab.label = self._localized_content(definition.bind())
         self.context_panel.refresh_localization()
         self.tasks_panel.refresh_localization()
         self.hooks_panel.refresh_localization()
         self.toc_panel.refresh_localization()
+        self.query_one(DiffPreview).refresh_localization()
         self.buddy_panel.refresh_localization()
         self.debug_panel.refresh_localization()
 

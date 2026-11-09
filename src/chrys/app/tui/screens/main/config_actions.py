@@ -357,8 +357,10 @@ class RuntimeConfigController:
         self._view.open_runtime_details(self._state.runtime.details, initial_tab=initial_tab)
 
     def open_usage(self) -> None:
-        """Open the token usage modal."""
-        self._view.open_usage()
+        """Open the token usage modal, naming each model profile as it is called now."""
+        registry = self._services.model_registry
+        profiles = registry.list_profiles() if registry is not None else []
+        self._view.open_usage({profile.id: profile.name for profile in profiles if profile.id})
 
     def open_settings(self, initial_tab: str) -> None:
         """Open the Settings dialog on *initial_tab*."""

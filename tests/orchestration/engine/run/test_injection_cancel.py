@@ -39,6 +39,7 @@ from chrys.service.agent_middleware.injection import InjectionMiddleware
 from chrys.service.agent_middleware.system_reminder import CurrentRunReminderScope, CurrentRunReminderTarget
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.schema import HookDecision
+from chrys.service.session.history import FreshTurnCleanup
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationTrace
 from tests.service.trajectory._fakes import FakeSink, make_context
 from tests.support.components import make_current, make_turn_state
@@ -156,8 +157,8 @@ class _History:
     def remove_trailing_markers(self) -> None:
         return None
 
-    def remove_orphaned_user_message(self) -> None:
-        return None
+    def prepare_fresh_turn(self, *, other_records_present: bool = False) -> FreshTurnCleanup:
+        return FreshTurnCleanup()
 
 
 class _Reminder:

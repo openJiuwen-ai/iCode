@@ -2,11 +2,9 @@
 #
 """Turn identity across a save, a restart and a restore.
 
-The saved counter only moves when a turn completes, while the running ordinal
-advances on admission, so a failed turn leaves the two out of step. Everything
-that identifies a turn has to survive that: the registry keeps every turn with
-its own id and opening identity, and a retry after the restart resumes the turn
-its registry last names rather than whichever entry the ordinal would point at.
+Fresh prompts retire no-work failed turns and keep retained turns' boundaries.
+Older sessions can still have drifted ordinals: their retries keep resolving
+the turn by its recorded identity instead of whichever entry the ordinal names.
 
 The second half drives a real reopen: the first runtime is shut down, a second
 one is built over the same store, and the session comes back through the
@@ -33,8 +31,9 @@ from chrys.foundation.events.types import (
     UserRetry,
     Warning,
 )
+from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace
-from chrys.kernel import ChatResponseUpdate
+from chrys.kernel import ChatResponseUpdate, Message
 from chrys.orchestration.engine.state.machine import EngineState
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.state.store import JsonFileStateStore
@@ -159,10 +158,10 @@ async def _ask(session: _Session, text: str, *, client_message_id: str | None = 
 
 
 @pytest.mark.asyncio
-async def test_a_reload_keeps_every_turn_with_its_opening_identity(
+async def test_a_reload_keeps_only_retained_turns_with_their_opening_identity(
     tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed first turn leaves the saved counter behind; both turns survive it."""
+    """A no-work failed opener is retired before the next prompt reuses its slot."""
     store = JsonFileStateStore(tmp_path)
     first = await _run_engine(agent_engine, tmp_path, monkeypatch, store, _RefusingClient(responses=[]))
 
@@ -174,9 +173,9 @@ async def test_a_reload_keeps_every_turn_with_its_opening_identity(
 
     await _ask(first, "B", client_message_id="msg-b")
     recorded = first.engine.turn_records()
-    assert [record.turn_number for record in recorded] == [1, 2]
-    assert len({record.turn_id for record in recorded}) == 2
-    assert [record.user_message_id for record in recorded] == ["msg-a", "msg-b"]
+    assert [record.turn_number for record in recorded] == [1]
+    assert recorded[0].turn_id != failed[0].turn_id
+    assert [record.user_message_id for record in recorded] == ["msg-b"]
 
     # What the session file holds is what a restart will read back.
     saved = await store.load_session_transcript(_SESSION_ID)
@@ -191,21 +190,27 @@ async def test_a_reload_keeps_every_turn_with_its_opening_identity(
 async def test_a_retry_after_a_real_restore_resolves_the_turn_by_id_not_by_ordinal(
     tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A reopened session retries the turn its registry names last, not the ordinal's entry.
-
-    Both turns fail, so the save keeps a counter of zero while the registry
-    holds two turns from the ordinals the runtime admitted. The reopen rebuilds
-    the runtime from disk through ``SessionRestore``, which is where the
-    running ordinal falls behind the registry; the retry has to land on the
-    second turn all the same.
-    """
+    """Restore a legacy missing boundary and retry by registry identity despite ordinal drift."""
     store = JsonFileStateStore(tmp_path)
     first = await _run_engine(agent_engine, tmp_path, monkeypatch, store, _RefusingClient(responses=[]))
     await _ask(first, "B", client_message_id="msg-b")
+    # Keep B through the next fresh prompt; new sessions repair boundaries.
+    history = first.engine.current.require_loaded().bindings.backend.history_state
+    history["messages"].insert(1, Message("assistant", ["legacy retained work"]))
     await _ask(first, "X", client_message_id="msg-x")
     recorded = first.engine.turn_records()
     assert len(recorded) == 2
     x_id = recorded[-1].turn_id
+    # Seed the legacy file after admission: fresh cleanup now repairs a missing
+    # boundary before executing X, so it can no longer generate this old layout.
+    first_marker = next(
+        index
+        for index, message in enumerate(history["messages"])
+        if message.additional_properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN
+    )
+    del history["messages"][first_marker]
+    history["turn_counter"] = 1
+    await first.engine.writer.save_current_session()
     saved = await store.load_session_transcript(_SESSION_ID)
     assert saved is not None
     assert [r.turn_id for r in saved.turns] == [r.turn_id for r in recorded]

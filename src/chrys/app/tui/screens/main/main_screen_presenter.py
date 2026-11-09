@@ -13,11 +13,13 @@ from chrys.app.tui.screens.main.ports import (
     StatusMessage,
     StatusTrail,
 )
+from chrys.app.tui.widgets.chat.messages import ERROR_RETRY_ACTION
 
 if TYPE_CHECKING:
     from chrys.app.tui.screens.main.state import MainScreenState
     from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
     from chrys.app.tui.widgets.sidebar.context import ContextUsageState
+    from chrys.foundation.i18n import MessageRef
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_executions import HookExecutionView
     from chrys.foundation.models.invocations import ContentChannel
@@ -35,6 +37,17 @@ class MainScreenPresenter:
 
     def chat_session_id(self) -> str:
         return self._view.chat_session_id()
+
+    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_item_ids: tuple[str, ...]) -> None:
+        await self._view.apply_fresh_turn_cleanup(
+            retired_previous_turn=retired_previous_turn, removed_item_ids=removed_item_ids
+        )
+
+    def apply_turn_started(self, turn_number: int, *, opening_item_id: str | None = None) -> None:
+        self._view.apply_turn_started(turn_number, opening_item_id=opening_item_id)
+
+    def apply_retry_started(self, note_message_id: str | None, opening_item_id: str | None) -> None:
+        self._view.apply_retry_started(note_message_id, opening_item_id)
 
     def set_tool_info(self, trail: StatusTrail) -> None:
         self._view.set_tool_info(trail)
@@ -158,7 +171,7 @@ class MainScreenPresenter:
     def clear_compressed_blocks(self) -> None:
         self._view.clear_compressed_blocks()
 
-    async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+    async def add_error(self, message: str, *, action_label: MessageRef | str | None = ERROR_RETRY_ACTION) -> None:
         await self._view.add_error(message, action_label=action_label)
 
     async def add_system(self, text: str, *, key: str | None = None) -> None:
@@ -190,6 +203,9 @@ class MainScreenPresenter:
 
     async def abandon_thinking(self, segment_ids: tuple[str, ...]) -> None:
         await self._view.abandon_thinking(segment_ids)
+
+    async def end_steered_pass(self) -> None:
+        await self._view.end_steered_pass()
 
     async def add_agent_message(self, *args: Any, **kwargs: Any) -> None:
         await self._view.add_agent_message(*args, **kwargs)

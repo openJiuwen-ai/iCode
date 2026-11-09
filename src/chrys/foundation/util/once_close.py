@@ -13,7 +13,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 
-async def finish_close(task: asyncio.Task[None]) -> None:
+async def finish_close[T](task: asyncio.Task[T]) -> T:
     """Drain an owned cleanup task even after repeated waiter cancellation."""
     cancelled: asyncio.CancelledError | None = None
     while not task.done():
@@ -21,9 +21,10 @@ async def finish_close(task: asyncio.Task[None]) -> None:
             await asyncio.shield(task)
         except asyncio.CancelledError as exc:
             cancelled = exc
-    task.result()
+    result = task.result()
     if cancelled is not None:
         raise cancelled
+    return result
 
 
 class OnceClose:

@@ -1,28 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Rollback modal — compact diff viewer with turn picker + rollback actions.
+"""Discard dialog with a first-removed-turn picker and current → restored file preview.
 
-Dismisses with one of:
-
-- ``None`` — user cancelled (Esc / Close).
-- ``(target_turn, revert_changes, selected_paths | None)`` — user chose
-  a rollback action.  ``target_turn`` follows the engine's "keep N
-  turns" convention (``0`` = session start / welcome; ``N >= 1`` =
-  keep turns ``1..N``).  The caller publishes a :class:`UserRollback`
-  event.
-
-Layout::
-
-    ┌────────────────────────── 80% x 80% ──────────────────────────┐
-    │ Title: "Rollback — pick a turn to restore"                    │
-    │ ┌─ Select ─────────────────────────────────────────────────┐  │
-    │ │ [▼] Turn N (Current) │ Turn N-1 │ … │ Session start       │  │
-    │ └──────────────────────────────────────────────────────────┘  │
-    │ ┌──────────────────────── DiffPeriodPane ──────────────────────┐│
-    │ │  Change list │  DiffView for the selected turn's delta     ││
-    │ └────────────────────────────────────────────────────────────┘│
-    │ [ Discard conversation after Turn N ]  [*] Revert …  [Close] │
-    └───────────────────────────────────────────────────────────────┘
+Select values remain engine targets: a displayed turn N has target N-1.
 """
 
 from __future__ import annotations
@@ -44,8 +24,10 @@ from textual.widgets import Button, Static, Tree
 from chrys.app.tui.binding_display import CLOSE_BINDING, TOGGLE_VIEW_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str
 from chrys.app.tui.screens.dialogs.base import BaseDialog
-from chrys.app.tui.screens.diff.screen import DiffPeriodPane, _merge_source, filter_and_dedupe_entries
+from chrys.app.tui.screens.diff.screen import DiffPeriodPane
 from chrys.app.tui.util.diff_entries import DiffFileEntry
+from chrys.app.tui.util.diff_labels import filter_and_dedupe_entries
+from chrys.app.tui.util.mutation_sources import merge_mutation_source as _merge_source
 from chrys.app.tui.util.removal import remove_children_shielded, remove_shielded
 from chrys.app.tui.widgets import Checkbox, ChrysLoadingIndicator, Select
 from chrys.foundation.i18n import DisplayBlock, DisplayPath, MessageDef, MessageRef, msg
@@ -73,12 +55,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ROLLBACK_TITLE = msg("tui.rollback.title", fallback="Rollback")
+ROLLBACK_TITLE = msg("tui.rollback.title", fallback="Discard")
 _CHECK_BINDING = msg("tui.binding.toggle_check", fallback="Check")
-_ROLLBACK_FAILED = msg("tui.rollback.failed", fallback="Rollback failed: {error}")
+_ROLLBACK_FAILED = msg("tui.rollback.failed", fallback="Discard failed: {error}")
 _NO_ROLLBACK_SNAPSHOTS = msg(
     "tui.rollback.no_snapshots",
-    fallback="No rollback snapshots are available yet.",
+    fallback="No saved turns are available to discard yet.",
 )
 _FILES_EXCLUDED_NOTE = msg(
     "tui.rollback.files_excluded_note",
@@ -87,34 +69,31 @@ _FILES_EXCLUDED_NOTE = msg(
 )
 _REVERT_FILE_CHANGES = msg(
     "tui.rollback.revert_file_changes",
-    fallback="Revert {count} file change (WYSIWYG)",
-    plural_fallback="Revert {count} file changes (WYSIWYG)",
+    fallback="Also restore {count} checked file",
+    plural_fallback="Also restore {count} checked files",
 )
-_ROLLBACK_TO = msg("tui.rollback.picker.prompt", fallback="Rollback to:")
-_ROLLBACK_CLOSE = msg("tui.rollback.button.close", fallback="Close")
-_NO_FILE_CHANGES = msg("tui.rollback.no_file_changes", fallback="No file changes to revert.")
-_DISCARD_ALL = msg("tui.rollback.button.discard_all", fallback="Discard All")
-_DISCARD_AFTER_TURN = msg(
-    "tui.rollback.button.discard_after_turn",
-    fallback="Discard conversation after Turn {turn}",
-)
-_TURN_CURRENT = msg("tui.rollback.picker.turn_current", fallback="Turn {turn} (Current)")
-_TURN_CURRENT_PREVIEW = msg(
-    "tui.rollback.picker.turn_current_preview",
-    fallback="Turn {turn} (Current) - ",
-)
+_ROLLBACK_TO = msg("tui.rollback.picker.prompt", fallback="Discard starting from")
+_ROLLBACK_CLOSE = msg("tui.rollback.button.close", fallback="Cancel")
+_NO_FILE_CHANGES = msg("tui.rollback.no_file_changes", fallback="No files to restore.")
+_DISCARD_ALL = msg("tui.rollback.button.discard_all", fallback="Discard all turns")
+_DISCARD_AFTER_TURN = msg("tui.rollback.button.discard_after_turn", fallback="Discard turns {first}–{last}")  # noqa: RUF001
+_DISCARD_TURN = msg("tui.rollback.button.discard_turn", fallback="Discard turn {turn}")
 _TURN = msg("tui.rollback.picker.turn", fallback="Turn {turn}")
-_TURN_PREVIEW = msg("tui.rollback.picker.turn_preview", fallback="Turn {turn} - ")
-_SESSION_START = msg("tui.rollback.picker.session_start", fallback="Session start")
-_DISCARD_ALL_SUFFIX = msg("tui.rollback.picker.discard_all_suffix", fallback="  — discard all")
+_TURN_PREVIEW = msg("tui.rollback.picker.turn_preview", fallback="Turn {turn} — ")
+_RANGE_RESTORE = msg("tui.rollback.range.restore", fallback="{range}; checked files go back to before turn {turn}")
+_RANGE_KEEP_FILES = msg("tui.rollback.range.keep_files", fallback="{range}; files stay as they are")
+_RANGE_NOTE_GLYPH = "└─"
+"""Hangs the range note from the turn picker, as settings hang a hint from its control."""
+_NOW = msg("tui.rollback.diff.now", fallback="Now")
+_AFTER_UNDO = msg("tui.rollback.diff.after", fallback="After discard")
 _LOAD_PREVIEW_ERROR = msg(
     "tui.rollback.preview.load_error",
-    fallback="Error: unable to load rollback preview — {detail}",
+    fallback="Error: unable to load discard preview — {detail}",
     multiline=True,
 )
 _REFRESH_PREVIEW_ERROR = msg(
     "tui.rollback.preview.refresh_error",
-    fallback="Error: unable to load this rollback preview — {detail}",
+    fallback="Error: unable to load this discard preview — {detail}",
     multiline=True,
 )
 _WARNING_NOTE = msg("tui.rollback.warning_note", fallback="⚠ {message}")
@@ -166,16 +145,6 @@ class RollbackModalState(Protocol):
     attribution_refresh: Callable[[], Awaitable[bool]] | None
     projection_acquire: Callable[[], Awaitable[str]] | None
     projection_release: Callable[[str], None] | None
-
-
-# Sentinel ``Select`` value used for the "you-are-here" entry at the top
-# of the turn picker.  Under the "keep N turns" convention the engine
-# accepts ``target_turn >= 0`` (``0`` is the welcome target), so we use
-# ``-1`` to guarantee no collision with a real rollback target — the
-# entry stays visually present (and dimmed) but semantically inert:
-# selecting it in ``_on_turn_changed`` snaps the Select back to the
-# previous value.
-_LATEST_SENTINEL = -1
 
 
 class RollbackLoadCancelled(Exception):
@@ -426,7 +395,7 @@ def exclusion_reason_label(reason: RollbackExclusionReason | str) -> MessageRef 
     return reason.value if definition is None else definition.bind()
 
 
-def _plan_for_target(tracker: MutationTracker, target_turn: int) -> RollbackPlan | None:
+def plan_for_target(tracker: MutationTracker, target_turn: int) -> RollbackPlan | None:
     """Build the rollback plan for the same turn window ``_entries_for_target`` shows."""
     all_turns = tracker.get_all_turns()
     if target_turn < 0 or not all_turns:
@@ -585,7 +554,7 @@ def _build_preview_state(
 ) -> tuple[list[DiffFileEntry], RollbackPlan | None]:
     """Build the expensive rollback entry and plan projection off-loop."""
     entries = filter_and_dedupe_entries(_entries_for_target(tracker, target_turn, cwd))
-    return entries, _plan_for_target(tracker, target_turn)
+    return entries, plan_for_target(tracker, target_turn)
 
 
 class _HangingIndentVisual(Visual):
@@ -658,6 +627,24 @@ class _TurnOptionText(Text):
         )
 
 
+class _RangeNote(Static):
+    """The range note: the whole sentence when it fits, else only the turns it discards."""
+
+    def __init__(self) -> None:
+        super().__init__("", id="rollback-range-note", markup=False)
+        self._full = Text()
+        self._short = Text()
+
+    def show_note(self, full: str, short: str) -> None:
+        self._full = Text(full)
+        self._short = Text(short)
+        self.refresh()
+
+    def render(self) -> Text:
+        width = self.content_size.width
+        return self._full if width <= 0 or self._full.cell_len <= width else self._short
+
+
 class _RollbackContent(VerticalGroup):
     """Modal content composed with the shell.
 
@@ -688,6 +675,9 @@ class _RollbackContent(VerticalGroup):
             prompt=self._render_message(_ROLLBACK_TO.bind()),
         )
         yield select
+        with HorizontalGroup(id="rollback-range-line"):
+            yield Static(_RANGE_NOTE_GLYPH, id="rollback-range-glyph", markup=False)
+            yield _RangeNote()
 
         with VerticalGroup(id="rollback-diff-wrapper"):
             yield ChrysLoadingIndicator(id="rollback-loading")
@@ -740,6 +730,7 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
         attribution_refresh: Callable[[], Awaitable[bool]] | None = None,
         load_state: Callable[[], Awaitable[RollbackModalState | None]] | None = None,
         locale_controller: LocaleController | None = None,
+        initial_selection: int | None = None,
     ) -> None:
         """
         Args:
@@ -753,13 +744,8 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
                 by history turn index (``1``-based).  Used to show a
                 dimmed preview of each turn's user message in the
                 picker.  Missing turns render without a preview.
-            current_turn: Engine's current turn counter — the index
-                of the most-recently-started turn.  Drives the
-                "Turn N (Current)" sentinel row in the picker.
-                When ``None`` (back-compat for tests), falls back to
-                ``max(available_turns) + 1`` which matches the prior
-                behaviour but can mislabel the sentinel when snapshots
-                have been pruned/deleted.
+            current_turn: Authoritative last turn, used for range labels.
+                When omitted, falls back to max(available_turns) + 1.
             plan_augment: Optional cross-session peer check applied to
                 the preview plan (``(plan, cwd) -> plan``), mirroring
                 the engine's rollback-time augmentation so the modal
@@ -789,10 +775,9 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
         self._current_turn = current_turn
         self._load_state = load_state
         self._locale_controller = locale_controller
-        # Default: preview rolling back the most-recent completable turn
-        # (largest ``target_turn`` — under "keep N turns" this is the
-        # state right after the last completed turn's predecessor).
-        self._selected_turn: int = self._available_turns[-1] if self._available_turns else 0
+        # An explicit entry keeps its target; otherwise discard only the latest turn.
+        self._initial_selection = initial_selection
+        self._selected_turn: int = initial_selection if initial_selection is not None else self._default_selection()
         self._pane: DiffPeriodPane | None = None
         self._content_loading = True
         self._content_ready = False
@@ -885,10 +870,17 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
         self._attribution_refresh = state.attribution_refresh
         self._projection_acquire = state.projection_acquire
         self._projection_release = state.projection_release
-        if self._available_turns:
-            self._selected_turn = self._available_turns[-1]
+        if self._initial_selection is not None:
+            if self._initial_selection not in self._available_turns:
+                raise RollbackLoadCancelled
+            self._selected_turn = self._initial_selection
         else:
-            self._selected_turn = 0
+            self._selected_turn = self._default_selection()
+
+    def _default_selection(self) -> int:
+        if not self._available_turns:
+            return 0
+        return self._available_turns[-1]
 
     async def _reveal_deferred_content(self, content: _RollbackContent) -> None:
         """Swap fully prepared content for the initial indicator in one event-loop turn."""
@@ -935,69 +927,33 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
     _PROMPT_PREVIEW_MAX = 160
 
     def _build_turn_options(self) -> list[tuple[Text, int]]:
-        """Return ``(label, value)`` pairs for the turn-picker ``Select``.
-
-        Under the "keep N turns" convention, each ``target_turn = N``
-        directly labels itself "Turn N" (= last kept turn).  Layout,
-        top → bottom:
-
-        1. ``Turn {current}  (Current)`` — disabled sentinel
-           communicating "you are here".  ``current`` is the engine's
-           :attr:`AgentEngine.current_turn_number` when provided, else
-           ``max(available_turns) + 1`` as a fallback.  Using the
-           engine counter keeps the sentinel correct even when every
-           snapshot on disk has been pruned/deleted (in which case
-           ``available_turns`` collapses to ``[0]``).  Value is
-           :data:`_LATEST_SENTINEL` so :meth:`_on_turn_changed` can
-           detect accidental selection and snap back.
-        2. For each rollback target ``t >= 1`` in ``available_turns``
-           (reverse sorted): ``Turn {t}  <user prompt preview>``
-           (value = ``t``).  Preview pulled from
-           ``self._turn_prompts[t]`` (history turn index = target).
-        3. ``Session start  — discard all`` (value = ``0``), iff ``0``
-           is in ``available_turns``.
-        """
-        if not self._available_turns:
-            return []
-        options: list[tuple[Text, int]] = []
-        # Prefer the engine-supplied current turn number — it's
-        # authoritative even when snapshots have been deleted (in
-        # which case ``available_turns`` may collapse to just ``[0]``
-        # and ``max + 1`` would under-report the true current turn).
-        current_turn = self._current_turn if self._current_turn is not None else self._available_turns[-1] + 1
-        options.append((self._format_latest_entry(current_turn), _LATEST_SENTINEL))
-        for t in sorted(self._available_turns, reverse=True):
-            if t == 0:
-                continue
-            options.append((self._format_keep_entry(t), t))
-        if 0 in self._available_turns:
-            options.append((self._format_session_start_entry(), 0))
-        return options
-
-    def _format_latest_entry(self, latest: int) -> Text:
-        """``Turn N (Current) - <preview>`` — fully dimmed."""
-        preview = self._clip_preview(self._turn_prompts.get(latest, ""))
-        if preview:
-            return _TurnOptionText(
-                self._render_message(_TURN_CURRENT_PREVIEW.bind(turn=latest)),
-                preview,
-                prefix_style="dim",
-                message_style="dim italic",
-            )
-        return Text(self._render_message(_TURN_CURRENT.bind(turn=latest)), style="dim")
+        """Label the first removed turn; keep the engine's last-kept-turn values."""
+        return [(self._format_keep_entry(target), target) for target in sorted(self._available_turns, reverse=True)]
 
     def _format_keep_entry(self, kept: int) -> Text:
-        """``Turn N - <dim user prompt preview>`` for a selectable target."""
-        preview = self._clip_preview(self._turn_prompts.get(kept, ""))
+        turn = kept + 1
+        preview = self._clip_preview(self._turn_prompts.get(turn, ""))
         if preview:
-            return _TurnOptionText(self._render_message(_TURN_PREVIEW.bind(turn=kept)), preview)
-        return Text(self._render_message(_TURN.bind(turn=kept)))
+            return _TurnOptionText(self._render_message(_TURN_PREVIEW.bind(turn=turn)), preview)
+        return Text(self._render_message(_TURN.bind(turn=turn)))
 
-    def _format_session_start_entry(self) -> Text:
-        """``Session start  — discard all`` bottom row."""
-        label = Text(self._render_message(_SESSION_START.bind()))
-        label.append(self._render_message(_DISCARD_ALL_SUFFIX.bind()), style="dim")
-        return label
+    def _undo_range(self) -> tuple[int, int]:
+        latest = self._current_turn if self._current_turn is not None else max(self._available_turns, default=0) + 1
+        return self._selected_turn + 1, latest
+
+    def _refresh_range_note(self) -> None:
+        first, last = self._undo_range()
+        label = self._render_message(
+            _DISCARD_TURN.bind(turn=first) if first == last else _DISCARD_AFTER_TURN.bind(first=first, last=last)
+        )
+        full = label
+        if self._pane is not None:
+            checkbox = self.query_one("#revert-checkbox", Checkbox)
+            reference = (
+                _RANGE_RESTORE.bind(range=label, turn=first) if checkbox.value else _RANGE_KEEP_FILES.bind(range=label)
+            )
+            full = self._render_message(reference)
+        self.query_one("#rollback-range-note", _RangeNote).show_note(full, short=label)
 
     def _clip_preview(self, raw: str) -> str:
         """Collapse whitespace + truncate to :attr:`_PROMPT_PREVIEW_MAX`."""
@@ -1133,7 +1089,7 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
         warnings = plan.warnings if plan is not None else []
         # The revert checkbox has nothing to gate when there are no
         # file changes at all.  Hide it (rather than disable it) so
-        # the footer collapses to a clean "Rollback / Close" pair.
+        # the footer collapses to a "Discard / Cancel" pair.
         self._set_revert_checkbox_visible(has_changes)
         # Collapse the modal to content height when there is no diff
         # to show — the big 90% overlay feels empty otherwise.  A CSS
@@ -1168,7 +1124,12 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
         # entry.  Defaults to all-checked; rebuilding the pane on turn
         # change (this method re-runs for every Select change) resets
         # the selection — satisfies "change turn → re-check everything".
-        pane = DiffPeriodPane(entries, checkable=True, lazy=True)
+        pane = DiffPeriodPane(
+            entries,
+            checkable=True,
+            lazy=True,
+            column_titles=(self._render_message(_NOW.bind()), self._render_message(_AFTER_UNDO.bind())),
+        )
         widgets_with_pane: list[Static | DiffPeriodPane] = [pane]
         if warnings:
             # The destructive confirm must not be the first place the
@@ -1227,7 +1188,7 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
         """Update the revert checkbox's label to reflect the current count.
 
         Also auto-flips ``value`` at the edges so the visible state
-        matches what the Rollback button will actually do:
+        matches what the confirmation button will actually do:
 
         - ``selected == 0`` → uncheck (nothing to revert, revert=False).
         - ``selected == total`` → check (every file included).
@@ -1249,19 +1210,18 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
             # Heuristic: a new turn always starts with selected == total.
             if selected == total and total > 0 and not cb.value:
                 cb.value = True
+        self._refresh_range_note()
 
     def _refresh_button_labels(self) -> None:
-        # Under the "keep N turns" convention the selected value *is*
-        # the last kept turn, so the label is a direct substitution
-        # — no gap-aware lookup needed.  ``target = 0`` is the welcome
-        # case and collapses to "Discard All".
-        target = self._selected_turn
-        label_plain = (
-            self._render_message(_DISCARD_ALL.bind())
-            if target <= 0
-            else self._render_message(_DISCARD_AFTER_TURN.bind(turn=target))
+        first, last = self._undo_range()
+        reference = (
+            _DISCARD_ALL.bind()
+            if self._selected_turn == 0
+            else _DISCARD_TURN.bind(turn=first)
+            if first == last
+            else _DISCARD_AFTER_TURN.bind(first=first, last=last)
         )
-        self.query_one("#btn-rollback", Button).label = label_plain
+        self.query_one("#btn-rollback", Button).label = self._render_message(reference)
 
     @on(Select.Changed, "#rollback-turn-select")
     async def _on_turn_changed(self, event: Select.Changed) -> None:
@@ -1270,9 +1230,8 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
         new_turn = int(event.value)
         if new_turn == self._selected_turn:
             return
-        if new_turn == _LATEST_SENTINEL or not self._content_ready or self._preview_refreshing:
-            # The "you-are-here" sentinel entry is purely informational,
-            # and a change landing before content is ready (or while a
+        if new_turn not in self._available_turns or not self._content_ready or self._preview_refreshing:
+            # A change landing before content is ready (or while a
             # refresh is in flight) cannot be honored.  Either way the
             # Select must not be left displaying a turn that
             # ``_selected_turn`` doesn't hold — a silent drop here

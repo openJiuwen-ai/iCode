@@ -1396,10 +1396,13 @@ class InputBar(Widget):
         self.focus_input()
         self._refresh_interaction_state()
 
-    def focus_input(self) -> None:
+    def focus_input(self, *, cursor_at_end: bool = False) -> None:
         """Focus the visible composer without activating a hidden Chat draft."""
         if self.display:
-            self.query_one("#chat-input", _ChatTextArea).focus()
+            text_area = self.query_one("#chat-input", _ChatTextArea)
+            if cursor_at_end:
+                text_area.move_cursor(text_area.document.end)
+            text_area.focus()
 
     def snapshot_draft(self) -> InputDraftSnapshot:
         """Capture the current chat draft and cursor without mutating them."""

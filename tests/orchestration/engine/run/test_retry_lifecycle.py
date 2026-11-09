@@ -28,7 +28,9 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.turns import UserMessageKind
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.text.images import LoadedImage
+from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.kernel import Content, Message
+from chrys.orchestration.engine.execution import RetryInput
 from chrys.orchestration.engine.state.machine import EngineState, EngineStateMachine, Trigger
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
@@ -51,6 +53,10 @@ async def retry_and_save(
     created_at: object = None,
     **kwargs: object,
 ) -> None:
+    await run_retry(host, RetryInput(additional_text, created_at), **kwargs)  # type: ignore[arg-type]
+
+
+async def run_retry(host: object, retry: RetryInput, **kwargs: object) -> None:
     await make_turn_runner(
         current=host.current,
         session=host.session,
@@ -67,7 +73,7 @@ async def retry_and_save(
         on_successful_turn=host._on_successful_turn,
         retry_and_save=host.retry_and_save,
         settings_handle=SimpleNamespace(settings=host.settings),
-    ).run_retry(additional_text, created_at=created_at, **kwargs)  # type: ignore[arg-type]
+    ).run_retry(retry, **kwargs)  # type: ignore[arg-type]
 
 
 async def post_run(host: object) -> None:
@@ -278,6 +284,9 @@ class _Reminder:
         self.prepare_calls.append(kwargs)
         self.sources.profile_switch.consumed_switch_to = None
 
+    async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+        return ()
+
     def take_undelivered_file_change(self) -> str | None:
         return None
 
@@ -359,15 +368,10 @@ class _Host:
     def _on_successful_turn(self) -> None:
         return None
 
-    async def retry_and_save(
-        self,
-        additional_text: str = "",
-        created_at: object = None,
-        **kwargs: object,
-    ) -> None:
+    async def retry_and_save(self, retry: RetryInput, **kwargs: object) -> None:
         if not self._dispatch_retries:
             return
-        await retry_and_save(self, additional_text, created_at, **kwargs)
+        await run_retry(self, retry, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +412,29 @@ class TestRetryLifecycleApprovalContext:
         assert host.current.loaded.reminder_middleware.prepare_calls == [
             {"usage": {"input_token_count": 7}, "preserve_last_words": True, "preserve_turn_reminders": True}
         ]
+
+    @pytest.mark.parametrize("sent", [True, False], ids=["sent", "stopped-before-sending"])
+    async def test_a_failed_guided_retry_keeps_its_note_as_it_went_out(self, sent: bool) -> None:
+        """Guidance history has not stored is kept flagged, under its pass's item, with the reminders it carried."""
+        host = _Host([Message("user", ["original request"]), Message("assistant", ["work"])])
+        executor = host.current.loaded.bindings
+        reminders = [{"kind": "event", "text": "Hook: tests are red"}]
+
+        def fail_after_sending() -> None:
+            if sent:
+                # What retry_request binds once the note goes out; the reminders landed on it.
+                executor.input_properties = {HistoryMarkerKind.SYSTEM_REMINDERS_KEY: reminders}
+            executor.run_failed = True
+
+        executor.on_resume = fail_after_sending
+
+        await retry_and_save(host, additional_text="original request")
+
+        opener, note = [m for m in host._history.messages if m.role == "user"]
+        assert HistoryMarkerKind.INJECTED_KEY not in opener.additional_properties
+        assert (note.text, note.additional_properties[HistoryMarkerKind.INJECTED_KEY]) == ("original request", True)
+        assert read_analytics_item_id(note.additional_properties) == executor.opening_item_ids[-1] is not None
+        assert note.additional_properties.get(HistoryMarkerKind.SYSTEM_REMINDERS_KEY) == (reminders if sent else None)
 
     @pytest.mark.parametrize(
         ("is_retry", "agent_turn", "overlap_turn"),
@@ -725,6 +752,50 @@ async def test_pending_retry_reports_only_the_missing_cwd_drop(
         assert task is None
         assert order == []
         assert host._turn_state.lease.pending_retry == PendingRetry()
+
+
+async def test_a_queued_retry_dispatches_with_the_id_of_its_note() -> None:
+    """A retry queued behind the pass still running hands its note's frontend id to the pass it starts."""
+    from chrys.orchestration.engine.execution import PromptAdmissionScope
+
+    fsm = EngineStateMachine()
+    fsm.try_transition(Trigger.START)
+    fsm.try_transition(Trigger.USER_MESSAGE)  # RUNNING
+    host = SimpleNamespace(
+        current=make_current(loaded=SimpleNamespace(), manifest=make_manifest()),
+        session=SimpleNamespace(mark_surface=lambda: None, workspace=None, shutting_down=False),
+        _turn_state=make_turn_state(),
+        permits=SimpleNamespace(session_generation=0, build_generation=0),
+    )
+    install_loaded_agent(host, reminder_middleware=SystemReminderMiddleware())
+    admission = PromptAdmissionScope(admission_id=1, kind="retry", session_generation=0, build_generation=0)
+    queued = RetryInput("use the other file", "created", "note-1")
+    host._turn_state.lease.upsert_pending_retry_from_admission(admission, queued)
+    dispatched: list[RetryInput] = []
+
+    async def _retry_and_save(
+        retry: RetryInput,
+        *,
+        run_scope: object = None,
+        injection_window: object = None,
+        admission_preparation: object = None,
+    ) -> None:
+        dispatched.append(retry)
+
+    make_turn_retry(
+        current=host.current,
+        session=host.session,
+        turn_state=host._turn_state,
+        permits=host.permits,
+        fsm=fsm,
+        history=SimpleNamespace(remove_trailing_markers=lambda: None),
+        retry_and_save=_retry_and_save,
+    ).start_pending_retry_if_due()
+
+    task = host._turn_state.lease.run_task
+    assert task is not None
+    await task
+    assert dispatched == [queued]
 
 
 async def test_later_retry_after_interrupted_finalization_preserves_last_words_and_turn_reminders() -> None:

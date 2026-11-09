@@ -224,6 +224,46 @@ async def test_a_retry_keeps_the_turn_identity_and_marks_the_pass(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("guidance", ["Use the other file", ""], ids=["guided", "bare"])
+async def test_a_retry_pass_names_its_guidance_by_the_frontend_id(
+    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch, guidance: str
+) -> None:
+    """A guided retry's TurnStarted echoes its note's client id beside the note's history item; a bare one names none."""
+    client = _InterruptibleClient([MockResponse(text="working", chunk_size=1), MockResponse(text="Done.")])
+    started = await _start_engine(agent_engine, tmp_path, monkeypatch, client)
+
+    await started.bus.publish(UserMessage(text="Please do it", client_message_id=_CLIENT_MESSAGE_ID))
+    await wait_for(client.stream_held.is_set, timeout=ENGINE_TURN_TIMEOUT, description="first pass streaming")
+    await started.bus.publish(UserInterrupt())
+    await wait_for(client.stream_cancelled.is_set, timeout=ENGINE_TURN_TIMEOUT, description="stream cancelled")
+    await await_run_task_chain(started.engine, turn_state=started.engine.turns.turn_state)
+
+    await started.bus.publish(UserRetry(text=guidance, client_message_id="note-1"))
+    await wait_for(
+        lambda: any(event.is_retry for event in started.turns),
+        timeout=ENGINE_TURN_TIMEOUT,
+        description="the retry pass starting",
+    )
+    await await_run_task_chain(started.engine, turn_state=started.engine.turns.turn_state)
+
+    first, retry = started.turns
+    assert first.note_message_id is None
+    assert retry.is_retry is True
+    # The opener's id stays the opener's: the note has an id of its own.
+    assert retry.user_message_id == _CLIENT_MESSAGE_ID
+    if guidance:
+        history = started.engine.current.require_loaded().bindings.backend.history_state["messages"]
+        (note_item,) = [
+            message.additional_properties[ANALYTICS_ITEM_ID_KEY]
+            for message in history
+            if message.role == "user" and message.text == guidance
+        ]
+        assert (retry.note_message_id, retry.opening_item_id) == ("note-1", note_item)
+    else:
+        assert (retry.note_message_id, retry.opening_item_id) == (None, None)
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_turn_does_not_hand_its_ordinal_to_the_next_one(
     tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

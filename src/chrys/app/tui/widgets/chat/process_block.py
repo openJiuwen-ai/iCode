@@ -68,15 +68,12 @@ class ProcessBlock(FoldGap, Static, can_focus=False):
     }
     """
 
-    def __init__(
-        self, members: list[ProcessMember], *, segment_index: int, tally: ToolTally, is_compressed: bool = False
-    ) -> None:
+    def __init__(self, members: list[ProcessMember], *, segment_index: int, tally: ToolTally) -> None:
         super().__init__()
         self.members = members
         self.segment_index = segment_index
         self.tally = tally
         """What its tool groups' calls were, kept current as they change."""
-        self.is_compressed = is_compressed
         self.collapsed = False
         self.requested_collapsed = True
 
@@ -103,12 +100,12 @@ class ProcessBlock(FoldGap, Static, can_focus=False):
     def render(self) -> Text:
         """``▸ 12 tool calls: 8 reads · 4 commands · 1 failed``, cut to the width with the outcomes kept in view.
 
-        A turn in compressed history, or one that made no calls, reads ``▸ Activity``.
+        A turn that made no calls reads ``▸ Activity``.
         """
         localizer = widget_localizer(self)
         arrow = FOLDED_ARROW if self.collapsed else OPEN_ARROW
         tally = self.tally
-        if tally.total and not self.is_compressed:
+        if tally.total:
             calls = render_str(localizer, _CALLS.bind(count=tally.total))
             failed, interrupted = tally.outcomes(localizer)
             row = FoldRow(f"{arrow} {calls}", tally.count_words(localizer), failed, interrupted)

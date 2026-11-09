@@ -8,7 +8,7 @@ import contextlib
 import inspect
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -43,7 +43,8 @@ from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.widgets import PromptDraft
-from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
+from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
+from chrys.app.tui.widgets.chat.messages import ERROR_RETRY_ACTION
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
@@ -91,8 +92,9 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.main.engine_read_model import RollbackReadState
     from chrys.app.tui.screens.main.screen import MainScreen
     from chrys.app.tui.screens.main.state import MainScreenState
-    from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
+    from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffFocus, DiffLoadResult
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
+    from chrys.foundation.i18n import MessageRef
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_executions import HookExecutionView
     from chrys.foundation.models.invocations import ContentChannel
@@ -248,11 +250,13 @@ class MainScreenViewAdapter:
             )
         )
 
-    def open_usage(self) -> None:
+    def open_usage(self, profile_names: Mapping[str, str]) -> None:
         from chrys.app.tui.screens.dialogs.usage import UsageDialog
         from chrys.service.analytics.usage_report import load_usage_report
 
-        self._screen.app.push_screen(UsageDialog(partial(load_usage_report, self._state_store)))
+        self._screen.app.push_screen(
+            UsageDialog(partial(load_usage_report, self._state_store, profile_names=profile_names))
+        )
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None:
         self._screen.run_worker(awaitable, exclusive=False, group=group)
@@ -319,8 +323,23 @@ class MainScreenViewAdapter:
     async def render_user_message(self, text: str, *, created_at: datetime, contents: list[Any] | None) -> None:
         await self._screen.query_one(ChatPanel).add_user_message(text, created_at=created_at, contents=contents)
 
-    async def render_user_retry_note(self, text: str, *, created_at: datetime) -> None:
-        await self._screen.query_one(ChatPanel).add_user_message(text, is_injection=True, created_at=created_at)
+    async def render_user_retry_note(self, text: str, *, created_at: datetime, client_message_id: str | None) -> None:
+        await self._screen.query_one(ChatPanel).add_user_message(
+            text, is_injection=True, created_at=created_at, client_message_id=client_message_id
+        )
+
+    async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_item_ids: tuple[str, ...]) -> None:
+        await self._screen.query_one(ChatPanel).apply_fresh_turn_cleanup(
+            retired_previous_turn=retired_previous_turn, removed_item_ids=removed_item_ids
+        )
+        self.update_toc(live=True)
+
+    def apply_turn_started(self, turn_number: int, *, opening_item_id: str | None = None) -> None:
+        self._screen.query_one(ChatPanel).apply_turn_started(turn_number, opening_item_id=opening_item_id)
+        self.update_toc(live=True)
+
+    def apply_retry_started(self, note_message_id: str | None, opening_item_id: str | None) -> None:
+        self._screen.query_one(ChatPanel).apply_retry_started(note_message_id, opening_item_id)
 
     def hide_trailing_status_action(self) -> None:
         self._screen.query_one(ChatPanel).hide_trailing_status_action()
@@ -352,11 +371,14 @@ class MainScreenViewAdapter:
     async def render_interrupted(self) -> None:
         await self._screen.query_one(ChatPanel).add_interrupted()
 
-    def update_toc(self) -> None:
+    def update_toc(self, *, live: bool = False) -> None:
         with contextlib.suppress(Exception):
             chat = self._screen.query_one(ChatPanel)
             toc = self._screen.query_one(ConversationToc)
-            toc.update_items(chat.toc_items)
+            if live:
+                toc.update_live_items(chat.toc_items)
+            else:
+                toc.update_items(chat.toc_items)
 
     # -------------------------------------------------------------- #
     # Status/header/chat presentation
@@ -729,6 +751,7 @@ class MainScreenViewAdapter:
         session_id: str,
         all_entries: list[DiffFileEntry],
         load_data: Callable[[], Awaitable[DiffLoadResult]] | None = None,
+        focus: DiffFocus | None = None,
     ) -> None:
         from chrys.app.tui.screens.diff import DiffScreen
 
@@ -740,6 +763,7 @@ class MainScreenViewAdapter:
                 session_id=session_id,
                 all_entries=all_entries,
                 load_data=load_data,
+                focus=focus,
                 locale_controller=self._locale_controller,
             )
         )
@@ -750,6 +774,7 @@ class MainScreenViewAdapter:
         cwd: str,
         load_state: Callable[[], Awaitable[RollbackReadState | None]],
         on_result: object,
+        initial_selection: int | None = None,
     ) -> None:
         from chrys.app.tui.screens.diff import RollbackModal
 
@@ -761,8 +786,12 @@ class MainScreenViewAdapter:
             cwd=cwd,
             load_state=modal_load_state,
             locale_controller=self._locale_controller,
+            initial_selection=initial_selection,
         )
         _push_screen_untyped(self._screen.app, modal, on_result)
+
+    def set_rollback_targets(self, targets: set[int]) -> None:
+        self._screen.query_one(ChatPanel).set_rollback_targets(targets)
 
     def open_rollback_progress_modal(self, operation: Callable[[], Awaitable[None]]) -> None:
         from chrys.app.tui.screens.diff import RollbackProgressModal
@@ -817,7 +846,7 @@ class MainScreenViewAdapter:
     # Chat transcript rendering
     # -------------------------------------------------------------- #
 
-    async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+    async def add_error(self, message: str, *, action_label: MessageRef | str | None = ERROR_RETRY_ACTION) -> None:
         await self._screen.query_one(ChatPanel).add_error(message, action_label=action_label)
 
     async def add_system(self, text: str, *, key: str | None = None) -> None:
@@ -834,9 +863,10 @@ class MainScreenViewAdapter:
         messages: list[dict[str, Any]],
         *,
         initial_profile: str,
-        file_snapshots: dict[str, list[FileSnapshotPayload]] | None,
+        file_snapshots: dict[FileSnapshotKey, list[FileSnapshotPayload]] | None,
         compressed_blocks: dict[str, CompressedBlock] | None,
         recovered_from_sidecar: bool = False,
+        rollback_targets: set[int] | None = None,
     ) -> None:
         await self._screen.query_one(ChatPanel).replay_history(
             messages,
@@ -844,6 +874,7 @@ class MainScreenViewAdapter:
             file_snapshots=file_snapshots,
             compressed_blocks=compressed_blocks,
             recovered_from_sidecar=recovered_from_sidecar,
+            rollback_targets=rollback_targets,
         )
 
     async def add_answer_delta(self, segment_id: str, text: str) -> None:
@@ -861,6 +892,9 @@ class MainScreenViewAdapter:
     async def abandon_thinking(self, segment_ids: tuple[str, ...]) -> None:
         await self._screen.query_one(ChatPanel).abandon_thinking(segment_ids)
 
+    async def end_steered_pass(self) -> None:
+        await self._screen.query_one(ChatPanel).end_steered_pass()
+
     async def add_agent_message(
         self,
         text: str,
@@ -876,8 +910,10 @@ class MainScreenViewAdapter:
             turn_started_at=turn_started_at,
         )
 
-    async def add_user_injection(self, text: str, *, created_at: datetime) -> None:
-        await self._screen.query_one(ChatPanel).add_user_message(text, is_injection=True, created_at=created_at)
+    async def add_user_injection(self, text: str, *, created_at: datetime, item_id: str | None = None) -> None:
+        await self._screen.query_one(ChatPanel).add_user_message(
+            text, is_injection=True, created_at=created_at, item_id=item_id
+        )
 
     def unlock_input_after_consumed_injection(self) -> None:
         self._screen.query_one(InputBar).unlock_and_clear()
@@ -1427,9 +1463,13 @@ class MainScreenViewAdapter:
     def notify_ask_user(self) -> None:
         self.notify_event(NotificationEvent.ASK_USER)
 
-    def focus_input(self) -> None:
+    def focus_input(self, *, cursor_at_end: bool = False) -> None:
         with contextlib.suppress(Exception):
-            self._screen.query_one(InputBar).focus_input()
+            input_bar = self._screen.query_one(InputBar)
+            if cursor_at_end:
+                input_bar.focus_input(cursor_at_end=True)
+            else:
+                input_bar.focus_input()
 
     # -------------------------------------------------------------- #
     # Suggestions
@@ -1537,6 +1577,14 @@ class MainScreenViewAdapter:
         from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 
         return bool(self._screen.query_one(SuggestionList).select_highlighted(execute=execute))
+
+    def chosen_suggestion(self) -> str | None:
+        from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
+
+        try:
+            return self._screen.query_one(SuggestionList).chosen_value
+        except NoMatches:
+            return None
 
     def show_subcommand_suggestions(
         self,

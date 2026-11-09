@@ -1,8 +1,12 @@
 # Python 扩展
 
-扩展是为智能体提供更多工具的 Python 模块。每个工具都是一个 `async def` 函数：模型能看到它的名称、说明和参数；模型调用该工具时，iCode 会运行你的函数，并把返回值交给模型。
+扩展是扩充智能体能力的 Python 模块。它的每个部分都是一个 `async def` 函数：
 
-扩展在 iCode 内部以你的权限运行：你能读取和修改的内容，它都能读取和修改；智能体传给其工具的内容，它也都能看到。请只安装你信任的扩展，就像对待任何 Python 包一样。
+- **工具**：供模型调用。模型能看到它的名称、说明和参数；模型调用该工具时，iCode 会运行你的函数，并把返回值交给模型。
+- **上下文**：iCode 在每轮开始时向它询问智能体应当知道的文本，例如当前分支对应的工单。参阅[每轮为智能体提供上下文](#每轮为智能体提供上下文)。
+- **工具钩子**：它能看到智能体发起的每个工具调用，可以在调用运行前拒绝或修改它，也可以在调用结束后修改模型读到的结果。参阅[检查或修改工具调用](#检查或修改工具调用)。
+
+扩展在 iCode 内部以你的权限运行：你能读取和修改的内容，它都能读取和修改；智能体传给其工具的内容，它也都能看到。带有工具钩子的扩展能看到智能体发起的每个工具调用及其结果。请只安装你信任的扩展，就像对待任何 Python 包一样。
 
 ## 扩展、MCP 服务器和 Skills
 
@@ -75,7 +79,7 @@ iCode 只在这两处查找扩展，不会从项目文件夹中加载。
 
 iCode 会在首次启动使用某扩展的智能体时读取该扩展的代码；在“工具”标签页中列出扩展不会运行其中任何代码。修改或更新扩展后，请重启 iCode。
 
-如果扩展无法加载，智能体会在不包含它的情况下启动，iCode 会显示一条警告说明原因。要查看实际加载了哪些工具，输入 `/runtime` 并打开“工具”标签页：每个扩展的工具列在该扩展的 ID 下，未能加载的扩展列在“不可用的扩展”下。参阅[排查问题](#排查问题)。
+如果扩展无法加载，智能体会在不包含它的情况下启动，iCode 会显示一条警告说明原因。要查看实际加载了哪些内容，输入 `/runtime` 并打开“工具”标签页：每个扩展的工具、上下文和工具钩子列在该扩展的 ID 下，未能加载的扩展列在“不可用的扩展”下。参阅[排查问题](#排查问题)。
 
 ## 审批扩展中的工具
 
@@ -199,6 +203,87 @@ async def tracker_search(
     return [{"id": i["id"], "title": i["title"], "status": i["status"]} for i in data["issues"]]
 ```
 
+### 每轮为智能体提供上下文
+
+用 `@extension.context` 添加一个 `async def` 函数，就能在每轮开始时告诉智能体一些信息，例如当前分支对应的工单，或团队正在值守的服务。它接收一个 `TurnContext`，返回文本；没有要说的内容时返回 `None`：
+
+```python
+"""Tell the agent which ticket the current branch is for."""
+
+import asyncio
+import re
+import subprocess
+
+from chrys.extensions import Extension, TurnContext
+
+extension = Extension()
+
+
+def _current_branch(cwd) -> str:
+    result = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,  # never read iCode's own input
+    )
+    return result.stdout.strip()
+
+
+@extension.context
+async def ticket(ctx: TurnContext) -> str | None:
+    """Name the ticket in a branch such as ABC-123-fix-login."""
+    branch = await asyncio.to_thread(_current_branch, ctx.cwd)
+    match = re.match(r"[A-Z]+-\d+", branch)
+    if match is None:
+        return None
+    return f"The current branch {branch} is for ticket {match[0]}. Mention the ticket in commit messages."
+```
+
+- **何时询问**：每轮开始时，即你发送消息、子智能体收到任务，或工作流步骤运行智能体时。智能体的所有上下文会同时被询问，这一轮会等待它们完成，因此请让它们尽快返回，并用 `await asyncio.to_thread(...)` 运行会阻塞的操作。重试某一轮，或工作流步骤重试其智能体时，沿用上下文第一次给出的文本；工作流步骤每次重新运行都会重新询问。工作流步骤的 `timeout` 从上下文全部返回后才开始计时。
+- **能读取什么**：`ctx.prompt` 是这一轮要做的事：你的消息、子智能体的任务或步骤的提示词。其他字段与 [`ToolContext`](#工具可以从上下文中读取的内容) 相同。
+- **智能体看到什么**：随这一轮的消息一起看到这段文本。只有当文本发生变化，或对话经过压缩、智能体已看不到它时，iCode 才会再次发送。返回 `None` 或空白文本会告诉智能体之前的文本不再适用，关闭该扩展也是如此。超过 4,000 个 token 的文本会被截短。
+- **名称**：函数名，或 `@extension.context(name="...")`。名称可以使用字母、数字、`_` 和 `-`，最多 64 个字符，且在扩展内唯一。已保存的会话会记录这个名称，因此重命名上下文相当于新建一个上下文。
+- **失败**：抛出异常、运行时间超过超时时间（默认 10 秒，可用 `@extension.context(timeout=...)` 设置）或返回的不是文本的上下文，在这一轮不提供任何内容，效果与返回 `None` 相同。它第一次失败时，iCode 会显示一条警告，说明是哪个上下文以及出了什么错。
+
+### 检查或修改工具调用
+
+工具钩子能看到智能体发起的每个工具调用，iCode 自身的工具、MCP 工具、子智能体和扩展工具都包括在内。子智能体自己发起的工具调用，只会经过它自己的配置启用的扩展中的钩子。用 `@extension.before_tool` 添加一个 `async def` 函数，可以在调用运行前检查它；用 `@extension.after_tool` 添加，可以在调用结束后修改模型读到的结果。这个扩展保存为 `icode_guard.py`：
+
+```python
+"""Keep .env files unchanged and tokens out of tool results."""
+
+import re
+from pathlib import PurePath
+
+from chrys.extensions import Extension, ToolCall, ToolError, ToolResult
+
+extension = Extension()
+
+TOKEN = re.compile(r"ghp_[A-Za-z0-9]{36}")
+
+
+@extension.before_tool
+async def protect_env(call: ToolCall) -> None:
+    if call.kind == "filesystem.write" and PurePath(call.arguments.get("path", "")).name == ".env":
+        raise ToolError("Changing .env files is not allowed; ask the user to change them.")
+
+
+@extension.after_tool
+async def hide_tokens(call: ToolCall, result: ToolResult) -> str | None:
+    if TOKEN.search(result.text):
+        return TOKEN.sub("[token removed]", result.text)
+    return None
+```
+
+- **调用前**：钩子接收一个 `ToolCall`：工具的 `name`、它的 [`kind`](../../reference/tool-kinds-and-names.md)、以 JSON 值表示的调用参数 `arguments`、调用的 `call_id`，以及与工具的 `ToolContext` 一样带有你的扩展文件夹的 `context`。抛出 `ToolError` 即拒绝该调用：模型读到 `Error: <消息>`。返回一个 dict，调用就会改用这些参数运行；请返回全部参数，而不只是你修改的那些。返回 `None` 则按原样运行。你配置的[钩子](./hooks.md)和审批看到的是你的钩子留下的参数。如果你在审批时修改了调用的参数，调用前钩子会针对你修改后的参数再运行一次。
+- **调用后**：钩子接收该 `ToolCall` 和一个 `ToolResult`：`text` 是模型读到的内容；`failed` 表示调用是否未成功；`rejected` 表示调用是否被你、某个钩子或某个扩展拒绝；`duration_ms` 是耗时。返回文本即替换模型读到的内容，结果中的图片和其他附件会保留；返回 `None` 则保持不变。如果工具抛出了异常，无论钩子返回什么，模型读到的都是该错误。
+- **顺序**：钩子依次运行，先按智能体启用扩展的顺序，再按各扩展中声明的顺序，每个钩子看到的都是前一个钩子留下的内容。它们在你于 `hooks.yaml` 中配置的钩子之前运行。
+- **失败**：调用前钩子如果抛出 `ToolError` 以外的异常、运行时间超过超时时间（默认 10 秒，可用 `@extension.before_tool(timeout=...)` 设置），或返回的不是 dict，就会拒绝该调用。调用后钩子如果抛出异常、运行超时或返回的不是文本，结果会被替换为一条说明 iCode 已隐去该结果的提示。这两种消息都会说明是哪个扩展的哪个钩子；错误本身不会展示给模型，在 TUI 中 iCode 会把它记录在配置目录的 `logs/debug.log` 中。
+- **钩子看不到的调用**：由模型服务商自行运行的工具（例如服务商自带的网页搜索）、参数与工具不符的调用，以及[外部 ACP 智能体](./external-acp-agents.md)的工具调用。如果你在调用后钩子运行期间中断了调用，该调用保留工具返回的结果。
+
+同一个模型回复中的多个调用会同时运行，因此针对不同调用的钩子也可能同时运行。
+
 ### 将扩展拆分为多个文件
 
 以文件夹 `<扩展 ID>/` 的方式安装扩展。其中的 `__init__.py` 定义 `extension` 和工具，其文档字符串的第一行是“工具”标签页中显示的说明。用相对导入引用文件夹中的其他模块：
@@ -251,6 +336,29 @@ def test_reads_the_version(tmp_path):
 
 `ToolContext.for_testing(cwd, data_dir=..., session_data_dir=..., agent_name=..., session_id=...)` 只为工具提供你传入的文件夹：未传入 `data_dir` 时访问 `ctx.data_dir` 会报错；未传入 `session_data_dir` 时 `ctx.session_data_dir` 为 `None`。
 
+上下文和工具钩子同样是普通的异步函数。用 `TurnContext.for_testing(tmp_path, prompt="...")` 调用上下文；用你构造的 `ToolCall` 和 `ToolResult` 调用钩子：
+
+```python
+import asyncio
+
+import pytest
+from chrys.extensions import ToolCall, ToolContext, ToolError
+
+from icode_guard import protect_env
+
+
+def test_refuses_to_change_env_files(tmp_path):
+    call = ToolCall(
+        name="write_file",
+        kind="filesystem.write",
+        call_id="call-1",
+        arguments={"path": ".env", "content": "KEY=1"},
+        context=ToolContext.for_testing(tmp_path),
+    )
+    with pytest.raises(ToolError):
+        asyncio.run(protect_env(call))
+```
+
 ### 将扩展发布为包
 
 在包的 `pyproject.toml` 中，于 `chrys.extensions` 入口点组下声明扩展。入口的名称即扩展 ID，其值指明模块及其中的 `extension`。这个包把扩展的代码放在 `pyproject.toml` 旁边的 `icode_pyproject/__init__.py` 中：
@@ -284,4 +392,7 @@ dev = ["iCode-TUI", "pytest"]
 | “扩展”下显示“已跳过 …” | ID 不符合上面的 ID 规则，或与某个内置工具类别重名。请重命名文件或文件夹。 |
 | 警告说智能体启动时未包含该扩展 | 警告会说明原因：扩展未安装、安装了两份、导入失败（消息中会给出错误），或其中某个工具的名称已被其他工具使用。 |
 | 调用结果为“Error: Function failed.” | 工具抛出了 `ToolError` 以外的异常。在 TUI 中，iCode 会把它记录在配置目录的 `logs/debug.log` 中。对于需要让模型知道的失败，请抛出 `ToolError`。 |
+| 警告说智能体缺少某个上下文 | 该上下文抛出了异常、运行超时，或返回的不是文本。警告会说明原因；这一轮智能体没有该上下文。 |
+| 调用结果为“Extension … before_tool hook … failed …, so the call did not run.” | 该钩子抛出了 `ToolError` 以外的异常、运行超时，或返回的不是参数 dict。消息会说明原因；在 TUI 中，配置目录的 `logs/debug.log` 中有具体错误。 |
+| 结果显示为“[Extension … after_tool hook … failed …, so iCode withheld this result.]” | 该钩子抛出了异常、运行超时，或返回的不是文本。在 TUI 中，配置目录的 `logs/debug.log` 中有具体错误。 |
 | 修改扩展后没有效果 | 重启 iCode：iCode 运行期间，每个扩展只导入一次。 |

@@ -9,6 +9,7 @@ import asyncio
 import pytest
 
 from chrys.foundation.util.async_tasks import await_task_quiescence
+from chrys.foundation.util.once_close import finish_close
 
 
 @pytest.mark.asyncio
@@ -32,3 +33,13 @@ async def test_await_task_quiescence_propagates_waiter_cancellation() -> None:
     assert captured.done() is False
     captured.cancel()
     await asyncio.gather(captured, return_exceptions=True)
+
+
+@pytest.mark.parametrize("saved", [False, True])
+async def test_finish_close_returns_the_owned_tasks_result(saved: bool) -> None:
+    async def save() -> bool:
+        return saved
+
+    task = asyncio.create_task(save())
+    assert await finish_close(task) is saved
+    assert task.done()

@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import create_autospec
 
@@ -21,11 +23,13 @@ from chrys.app.tui.screens.main.diff_controller import (
 from chrys.app.tui.screens.main.live_diff import LiveFileMutation
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
-from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
+from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffFocus, DiffLoadResult
 from chrys.foundation.events.bus import EventBus
+from chrys.foundation.events.types import InvocationToolCallResult
 from chrys.foundation.models.mutation_scope import ChatTurnScope
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, TurnMutations
+from tests.support.invocation_events import ORIGINS
 from tests.support.tui_helpers import make_live_mutation
 
 
@@ -35,6 +39,25 @@ def _tracker_with_two_turns() -> MutationTracker:
     tracker.get_all_turns.return_value = [TurnMutations(turn_id=11), period]
     tracker.current_period = period
     return tracker
+
+
+def test_file_result_uses_recorded_change_time_instead_of_result_delivery_time(tmp_path: Path) -> None:
+    workspace = tmp_path.resolve()
+    live = LiveDiffTracker()
+    live.record_tool_start("edit", "edit_file", {"path": "file.py"}, workspace_cwd=str(workspace))
+    written_at = 123.25
+    event = InvocationToolCallResult(
+        origin=ORIGINS[0],
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        call_id="edit",
+        tool_name="edit_file",
+        metadata={"file_snapshot": ("before", "after"), "file_changed_at": written_at},
+    )
+
+    assert live.record_tool_result(event)
+    mutation = live.snapshot_file_mutations()[str(workspace / "file.py")]
+    assert mutation.last_changed_at == written_at
+    assert mutation.last_changed_at != event.timestamp.timestamp()
 
 
 def _entry(
@@ -77,6 +100,7 @@ class _DiffView:
         session_id: str,
         all_entries: list[object],
         load_data: Callable[[], Awaitable[DiffLoadResult]] | None = None,
+        focus: DiffFocus | None = None,
     ) -> None:
         assert cwd == "/repo"
         assert session_id == "session-1"
@@ -964,3 +988,33 @@ def test_show_diff_opens_loading_screen_before_attribution_refresh(
     assert refreshed == expected_refreshes
     assert result == DiffLoadResult.empty()
     assert notified == []
+
+
+async def test_already_saved_turn_reads_once_and_cached_refresh_stays_in_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def complete() -> None:
+        return
+
+    lifecycle = asyncio.create_task(complete())
+    await lifecycle
+    live = LiveDiffTracker(owner=LiveDiffOwner("session-1", 1, 7))
+    live.accumulate_live_mutation("/repo/async.py", "before\n", "after\n")
+    controller = DiffController(
+        services=MainScreenServices(bus=EventBus()),
+        live_diff=live,
+        view=_DiffView(),
+        workspace_cwd=lambda: "/repo",
+        is_agent_running=lambda: False,
+        run_generation=lambda: 7,
+        session_generation=lambda: 1,
+        turn_lifecycle_task=lambda: lifecycle,
+        turn_lifecycle_saved=lambda task: task is lifecycle,
+    )
+    disk = DiffLoadResult([_entry()], {1: [_entry()]}, 1)
+    read = create_autospec(controller._load_persisted_diff, return_value=disk)
+    monkeypatch.setattr(controller, "_load_persisted_diff", read)
+    assert (await controller.load_current()).merged == disk
+    assert read.call_count == 1
+    assert (await controller.load_current(persisted=disk)).merged == disk
+    assert read.call_count == 1

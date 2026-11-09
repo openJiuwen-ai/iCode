@@ -22,6 +22,7 @@ from chrys.service.hooks import runner as runner_mod
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.runner import HookRunner
 from chrys.service.hooks.schema import HookConfig, HookExecution, HookMatch, HookRun
+from tests.support.stopped_child import STOPS_ITSELF
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
@@ -84,6 +85,7 @@ async def test_a_timed_out_run_keeps_what_it_printed_before_the_timeout(runner: 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups and SIGSTOP only")
 async def test_a_run_whose_process_stopped_keeps_what_it_printed(runner: HookRunner, tmp_path: Path) -> None:
     pid_file = tmp_path / "child.pid"
+    child = f"import os, pathlib; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); {STOPS_ITSELF}"
     script = textwrap.dedent(
         f"""
         import subprocess, sys
@@ -91,12 +93,7 @@ async def test_a_run_whose_process_stopped_keeps_what_it_printed(runner: HookRun
         sys.stdout.flush()
         sys.stderr.write("warned before the stop\\n")
         sys.stderr.flush()
-        subprocess.Popen([
-            sys.executable,
-            "-c",
-            "import os, pathlib, signal, time; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
-            "os.kill(os.getpid(), signal.SIGSTOP); time.sleep(30)",
-        ])
+        subprocess.Popen([sys.executable, "-c", {child!r}])
         """
     )
     result = await runner.run_and_wait(_hook(script, timeout=10), {})

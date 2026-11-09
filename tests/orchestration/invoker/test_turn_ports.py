@@ -50,7 +50,7 @@ async def test_same_turn_bindings_cannot_retarget_a_captured_conversation(route:
         assert original.injected == original.approval_context == []
         assert host.current.loaded.reminder_middleware.queued == []
         assert host.run_texts == host.retry_texts == []
-        assert host._turn_state.lease.pending_retry.text == ""
+        assert host._turn_state.lease.pending_retry.retry.text == ""
     finally:
         hook.release.set()
         await asyncio.gather(task, return_exceptions=True)

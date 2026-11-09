@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +22,7 @@ from chrys.foundation.events.types import (
     InvocationResumed,
     InvocationRetryRequested,
     RetryWaitSkip,
+    UnansweredInputDropped,
     UserInject,
     UserInjectCancel,
     UserInjectResult,
@@ -30,12 +33,15 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import msg
 from chrys.foundation.models.execution import ExecutionSnapshot
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine.execution import (
+    BARE_RETRY,
     CurrentRunInjectionWindow,
     CurrentRunScope,
     PreAdmissionPreparationEntry,
     PreAdmissionPreparationTracker,
     PromptAdmissionScope,
+    RetryInput,
 )
 from chrys.orchestration.engine.loader import AgentLoader
 from chrys.orchestration.engine.run import sub_agent_coordination
@@ -71,6 +77,7 @@ from chrys.service.trajectory.preparation import (
     PreparationTrace,
     input_admission_wait,
 )
+from chrys.service.trajectory.state import TurnRecord, discard_last_turn, turn_records
 
 if TYPE_CHECKING:
     from chrys.foundation.trajectory.context import TrajectoryContext
@@ -78,9 +85,12 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.state.current_agent import CurrentAgent
     from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
     from chrys.service.hooks.operation import HookOperation
+    from chrys.service.mutations.types import MutationLog
 
 
 _IMAGE_COMPRESSION_TIMEOUT_SECONDS = 30.0
+
+logger = logging.getLogger(__name__)
 
 _COORDINATOR_ENGINE_NOT_STARTED = msg(
     "coordinator.engine_not_started",
@@ -98,6 +108,15 @@ _COORDINATOR_PROMPT_ADMISSION_CONFLICT = msg(
     "coordinator.prompt_admission_conflict",
     fallback="Prompt could not be admitted because another turn started.",
 )
+
+
+@dataclass(frozen=True)
+class _FreshTurnCleanup:
+    """Committed ledger edits to settle before the next turn is registered."""
+
+    retired_previous_turn: bool
+    retired_turn: TurnRecord | None
+    removed_item_ids: tuple[str, ...]
 
 
 class TurnCoordinator:
@@ -291,6 +310,7 @@ class TurnCoordinator:
         binding_failure: Exception | None = None,
         user_message_id: str | None = None,
         typed_text: str | None = None,
+        skip_rollback_snapshot: bool = False,
     ) -> None:
         """Execute a fresh agent pass against the current engine state."""
 
@@ -304,12 +324,12 @@ class TurnCoordinator:
             binding_failure=binding_failure,
             user_message_id=user_message_id,
             typed_text=typed_text,
+            skip_rollback_snapshot=skip_rollback_snapshot,
         )
 
     async def run_retry(
         self,
-        additional_text: str = "",
-        created_at: datetime | str | None = None,
+        retry: RetryInput = BARE_RETRY,
         *,
         run_scope: CurrentRunScope | None = None,
         injection_window: CurrentRunInjectionWindow | None = None,
@@ -319,8 +339,7 @@ class TurnCoordinator:
         """Execute a retry/resume pass against the current engine state."""
 
         await self._runner().run_retry(
-            additional_text,
-            created_at=created_at,
+            retry,
             run_scope=run_scope,
             injection_window=injection_window,
             admission_preparation=admission_preparation,
@@ -430,6 +449,7 @@ class TurnCoordinator:
                     injection_id=event.injection_id,
                     preparation=preparation,
                     preparation_tracker=preparation_tracker,
+                    steer=event.steer,
                 )
 
             # If a previous run task is still cleaning up (e.g., interrupt teardown),
@@ -448,6 +468,7 @@ class TurnCoordinator:
                         injection_id=event.injection_id,
                         preparation=preparation,
                         preparation_tracker=preparation_tracker,
+                        steer=event.steer,
                     )
                 # TurnBindings finished but _post_run() is still running (session
                 # save, FSM transition). Wait for cleanup to complete so the
@@ -595,22 +616,12 @@ class TurnCoordinator:
                 return False
             _expire_current_run_scope(self._turn_state, self._current, self._turn_state.lease.current_run_scope)
 
-            # After a failed/interrupted run, remove status markers (interrupted,
-            # error, turn_marker) so the new message appends cleanly. Then remove
-            # any orphaned user message that got no model response (e.g. immediate
-            # 401 error) — this matches the live UX where the failed message
-            # disappeared when the user typed a new one. If the model DID produce
-            # output (tool calls, partial text) the user message is preserved.
-            #
-            # Also check the history itself for trailing error markers — after a
-            # session restore the FSM is reset to IDLE, but the saved history
-            # still carries the error state from the previous run.
-            if (
+            # Promotion may still refuse this prompt. Remember only the old
+            # terminal state; the admitted run owns every ledger edit.
+            cleanup_required = (
                 self._fsm.state in (EngineState.INTERRUPTED, EngineState.FAILED)
                 or self._history.has_trailing_error_markers()
-            ):
-                self._history.remove_trailing_markers()
-                self._history.remove_orphaned_user_message()
+            )
 
             reminder_middleware = self._current.loaded.reminder_middleware if self._current.loaded is not None else None
             if reminder_middleware is None:
@@ -625,6 +636,7 @@ class TurnCoordinator:
                         admission_preparation=preparation,
                         user_message_id=event.client_message_id,
                         typed_text=event.text,
+                        cleanup_required=cleanup_required,
                     )
                 )
                 # Record the opener synchronously with its task: a Stop followed by
@@ -648,6 +660,7 @@ class TurnCoordinator:
                         admission_preparation=preparation,
                         user_message_id=event.client_message_id,
                         typed_text=event.text,
+                        cleanup_required=cleanup_required,
                     )
                 ),
             )
@@ -684,10 +697,10 @@ class TurnCoordinator:
         sub-agents resolve via the cascade-abort branch (otherwise their
         ``pending_decision`` future would keep their ``_invoke``
         coroutine pinned forever and the subsequent task cancel below
-        would leak). Then sets the interrupt flag / cancels the parent
-        task. It then either binds cancellation to the exact pre-executor
-        run task or interrupts the active executor; ``run_and_save``
-        detects ``was_interrupted`` and rolls back history.
+        would leak). The interrupt is bound to the exact run task before that
+        cascade, so no pass starts after it; the active executor's pass is
+        then aborted. ``run_and_save`` detects ``was_interrupted`` and rolls
+        back history.
 
         An input still being checked has no run task yet: the interrupt ends
         it, and any confirmation its hooks wait on, before anything else.
@@ -706,17 +719,20 @@ class TurnCoordinator:
         executor = self._current.loaded.bindings if self._current.loaded is not None else None
         interrupt_task = self._turn_state.lease.run_task
         self._trajectory_recorder.interrupt_requested_soon()
-        if executor is not None and not executor.state.running:
+        if executor is not None:
+            # Latched for the run task before any wait: a pass not yet running never starts, and
+            # one a steer gives up meanwhile (its cause stays STEER) ends the turn instead of going on.
             self._turn_state.lease.request_pre_executor_interrupt(interrupt_task)
         if self._current.loaded is not None and self._current.loaded.sub_agent_tools is not None:
             await self._current.loaded.sub_agent_tools.cascade_abort_all()
-        if executor is not None and interrupt_task is not None and self._turn_state.lease.run_task is interrupt_task:
-            if executor.state.running:
-                handle = executor.backend.active_handle
-                if handle is not None:
-                    await executor.backend.abort(handle, AbortCause.USER_CANCEL)
-            else:
-                self._turn_state.lease.request_pre_executor_interrupt(interrupt_task)
+        if (
+            executor is not None
+            and interrupt_task is not None
+            and self._turn_state.lease.run_task is interrupt_task
+            and executor.state.running
+            and (handle := executor.backend.active_handle) is not None
+        ):
+            await executor.backend.abort(handle, AbortCause.USER_CANCEL)
         self.schedule_user_interrupt_hook()
 
     async def on_user_retry(self, event: UserRetry) -> None:
@@ -724,7 +740,7 @@ class TurnCoordinator:
         await self._retry().handle_user_retry(event)
 
     async def on_user_inject(self, event: UserInject) -> None:
-        """Handle user injection (prompt inserted before next model call)."""
+        """Handle user injection: delivered before the next model call, or steering (``UserInject.steer``)."""
         self._turn_state.begin_inflight_injection(event.injection_id)
         preparation_tracker = PreAdmissionPreparationTracker()
         handed_off = False
@@ -744,6 +760,7 @@ class TurnCoordinator:
                 injection_id=event.injection_id,
                 preparation=preparation,
                 preparation_tracker=preparation_tracker,
+                steer=event.steer,
             )
         except asyncio.CancelledError:
             preparation = preparation_tracker.preparation
@@ -1044,6 +1061,7 @@ class TurnCoordinator:
         admission_preparation: PreparationTrace | None = None,
         user_message_id: str | None = None,
         typed_text: str | None = None,
+        cleanup_required: bool = False,
     ) -> None:
         """Execute the agent and auto-save the session afterward."""
         task = asyncio.current_task()
@@ -1062,6 +1080,26 @@ class TurnCoordinator:
             # failure path preserve input, finalize, save, and release it.
             binding_failure = exc
         try:
+            skip_snapshot = False
+            if cleanup_required:
+                cleanup = self._prepare_fresh_turn()
+                skip_snapshot = True
+                try:
+                    skip_snapshot = not await finish_close(asyncio.create_task(self._settle_fresh_cleanup(cleanup)))
+                    if skip_snapshot:
+                        logger.warning("Skipping rollback snapshot because fresh-turn cleanup was not saved")
+                except asyncio.CancelledError:
+                    # Admission already owns this prompt. Finish its interrupted
+                    # lifecycle even when shutdown cancelled the cleanup waiter.
+                    self._turn_state.lease.request_pre_executor_interrupt(task)
+                    if task is not None:
+                        task.uncancel()
+                except Exception:
+                    # Never snapshot stale disk after the cleanup save failed.
+                    skip_snapshot = True
+                    logger.warning(
+                        "Skipping rollback snapshot because fresh-turn cleanup could not be saved", exc_info=True
+                    )
             await self.run_fresh(
                 text,
                 created_at=created_at,
@@ -1072,15 +1110,77 @@ class TurnCoordinator:
                 binding_failure=binding_failure,
                 user_message_id=user_message_id,
                 typed_text=typed_text,
+                skip_rollback_snapshot=skip_snapshot,
             )
         finally:
             if unbind is not None:
                 unbind()
 
+    def _prepare_fresh_turn(self) -> _FreshTurnCleanup:
+        """Decide from both ledgers before retiring a no-work turn."""
+        tracker = self._session.mutation_tracker
+
+        def clean(_log: MutationLog | None = None) -> _FreshTurnCleanup:
+            # Finalized tools may have recorded from executor threads. Keep
+            # their ledger locked from the emptiness check through retirement.
+            # The finalizer closed the previous turn with its marker; a turn
+            # restored in flight was closed when it was restored.
+            result = self._history.prepare_fresh_turn(
+                other_records_present=tracker.has_turn_work(self._session.turn_number) if tracker is not None else False
+            )
+            if result.retained_other_records:
+                logger.warning(
+                    "Retaining turn %s because its mutation tracker contains work (history counter %s)",
+                    self._session.turn_number,
+                    self._history.state.get("turn_counter", 0),
+                )
+            retired = None
+            if result.retired_previous_turn:
+                retired = discard_last_turn(self._history.state, turn_number=self._session.turn_number)
+                if retired is None:
+                    logger.warning(
+                        "Retiring empty turn %s without a matching trajectory record", self._session.turn_number
+                    )
+                if tracker is not None:
+                    tracker.discard_empty_turn(self._session.turn_number)
+                self._session.turn_number = max(0, self._session.turn_number - 1)
+            return _FreshTurnCleanup(
+                retired_previous_turn=result.retired_previous_turn,
+                retired_turn=retired,
+                removed_item_ids=result.removed_item_ids,
+            )
+
+        return tracker.with_locked_log(clean) if tracker is not None else clean()
+
+    async def _settle_fresh_cleanup(self, cleanup: _FreshTurnCleanup) -> bool:
+        """Drain the owned cleanup's trajectory, save, and frontend result together."""
+        try:
+            # Snapshot capture reads disk, so commit the cleaned boundary first.
+            saved = await self._writer.save_current_session(raise_on_error=True)
+            if cleanup.retired_turn is not None:
+                try:
+                    await self._trajectory_recorder.retire_turn(
+                        retired_turn=cleanup.retired_turn,
+                        target_turns=turn_records(self._history.state),
+                    )
+                except Exception:
+                    logger.warning("Failed to record fresh-turn retirement", exc_info=True)
+            return saved
+        finally:
+            # A save failure leaves the in-memory cleanup committed. The next
+            # turn still runs, and its frontend must follow those same edits.
+            await self._bus.publish(
+                UnansweredInputDropped(
+                    session_id=self._session.session_id,
+                    retired_previous_turn=cleanup.retired_previous_turn,
+                    removed_item_ids=cleanup.removed_item_ids,
+                    retired_turn_id=cleanup.retired_turn.turn_id if cleanup.retired_turn is not None else None,
+                )
+            )
+
     async def retry_and_save(
         self,
-        additional_text: str = "",
-        created_at: datetime | str | None = None,
+        retry: RetryInput = BARE_RETRY,
         *,
         run_scope: CurrentRunScope | None = None,
         injection_window: CurrentRunInjectionWindow | None = None,
@@ -1088,9 +1188,9 @@ class TurnCoordinator:
     ) -> None:
         """Resume the agent from current state and auto-save afterward.
 
-        When *additional_text* is non-empty, the executor uses it as the
-        mid-turn continuation prompt (instead of the placeholder
-        ``"continue"``) and preserves it in history as a real user turn.
+        When *retry* carries guidance, the executor uses it as the mid-turn
+        continuation prompt (instead of the placeholder ``"continue"``) and
+        preserves it in history as a real user turn.
         """
         task = asyncio.current_task()
         unbind = None
@@ -1109,8 +1209,7 @@ class TurnCoordinator:
             binding_failure = exc
         try:
             await self.run_retry(
-                additional_text,
-                created_at=created_at,
+                retry,
                 run_scope=run_scope,
                 injection_window=injection_window,
                 admission_preparation=admission_preparation,

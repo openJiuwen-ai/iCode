@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import create_autospec
@@ -21,6 +23,8 @@ from chrys.foundation.events.types import (
     InvocationToolCallResult,
     InvocationToolCallStart,
     SetApprovalMode,
+    WorkflowNodeRetryRequest,
+    WorkflowNodeStateChanged,
 )
 from chrys.foundation.tool_result_metadata import TOOL_RESULT_METADATA_KEY
 from chrys.kernel import ChatResponseUpdate, Content
@@ -51,8 +55,12 @@ from tests.orchestration.workflows._hosting import (
     run,
     write_workflow,
 )
+from tests.orchestration.workflows._transcript_support import ArchiveClient
+from tests.orchestration.workflows._transcript_support import source as archive_source
 from tests.support.event_capture import capture_events
+from tests.support.extensions import install_file_extension
 from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -197,6 +205,98 @@ async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeyp
     assert "Remember: the build is green." in options["instructions"]
     assert "<name>review</name>" in (messages[-1].text or "")
     assert {"load_skill", "read_skill_resource", "run_skill_script"} <= {tool.name for tool in options["tools"]}
+
+
+async def test_a_node_asks_its_extension_contexts_once_and_its_retry_keeps_their_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The user's Retry runs the next attempt from another task: it continues the read the failed attempt kept
+    after the opener, which renders as the first attempt sent it, though the context would answer differently."""
+    install_file_extension(
+        monkeypatch,
+        "acme_task",
+        "from chrys.extensions import Extension\nextension = Extension()\nASKED = []\n\n"
+        "@extension.context\nasync def task(ctx):\n    ASKED.append(ctx.prompt)\n"
+        "    return f'Asked {len(ASKED)} time(s) to: {ctx.prompt}'\n",
+    )
+    project = make_project(tmp_path)
+    target = project / "input.txt"
+    target.write_text("Retained work", encoding="utf-8")
+    client = ArchiveClient(target, "failed")
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), client], builtin_tools=True)
+    write_workflow(project, "archive", archive_source())
+    profile = make_profile(builtins=["filesystem.read"])
+    profile.extensions = ["acme_task"]
+    host = make_host(tmp_path, project=project, profiles=[profile], allow_user_interaction=True)
+    paused = await capture_events(host.event_bus, WorkflowNodeStateChanged)
+    task = None
+    try:
+        await confirm(host, "archive")
+        task = asyncio.create_task(run(host, "archive", input_text="Read twice"))
+        await wait_for(
+            lambda: any(event.state == "awaiting_retry" for event in paused) or task.done(),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="the failed attempt waiting for the user",
+        )
+        if task.done():
+            await task
+        (failed,) = [event for event in paused if event.state == "awaiting_retry"]
+        client.outcome = "completed"
+        await host.event_bus.publish(
+            WorkflowNodeRetryRequest(
+                run_id=failed.run_id,
+                node_id=failed.node_id,
+                activation_id=failed.activation_id,
+                expected_failed_attempt=1,
+                request_id="retry",
+            )
+        )
+        result, _events = await task
+    finally:
+        await host.shutdown()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert result.outcome.value == "completed"
+    assert sys.modules["_chrys_extension_acme_task"].ASKED == ["Read twice"]
+    first, retried = client.call_history[0][0], client.call_history[-1][0]
+    opener = first[-1]
+    assert "Asked 1 time(s) to: Read twice" in (opener.text or "")
+    roles = [message.role for message in retried]
+    assert roles[:3] == ["user", "assistant", "tool"]
+    assert roles.count("user") == 1
+    assert retried[0].text == opener.text
+
+
+async def test_a_node_runs_its_extension_tool_hooks_around_its_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_file_extension(
+        monkeypatch,
+        "acme_sign",
+        "from chrys.extensions import Extension\nextension = Extension()\n\n"
+        "@extension.before_tool\nasync def relative(call):\n    return {**call.arguments, 'path': 'input.txt'}\n\n"
+        "@extension.after_tool\nasync def sign(call, result):\n    return f'{result.text} [acme read {call.arguments[\"path\"]}]'\n",
+    )
+    project = make_project(tmp_path)
+    (project / "input.txt").write_text("Retained work", encoding="utf-8")
+    client = ArchiveClient(project / "elsewhere.txt", "completed")
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), client], builtin_tools=True)
+    write_workflow(project, "archive", archive_source())
+    profile = make_profile(builtins=["filesystem.read"])
+    profile.extensions = ["acme_sign"]
+    host = make_host(tmp_path, project=project, profiles=[profile], allow_user_interaction=True)
+    try:
+        await confirm(host, "archive")
+        result, _events = await run(host, "archive", input_text="Read twice")
+    finally:
+        await host.shutdown()
+
+    assert result.outcome.value == "completed"
+    sent = [c.result for m in client.call_history[1][0] for c in m.contents if c.type == "function_result"]
+    assert len(sent) == 1
+    assert "Retained work" in sent[0]
+    assert sent[0].endswith("[acme read input.txt]")
 
 
 @pytest.mark.parametrize("enabled", [True, False], ids=["on", "off"])

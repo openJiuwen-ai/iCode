@@ -246,6 +246,7 @@ async def _rollback_message(count: int, locale: str | None) -> str:
         set_has_messages=lambda _value: None,
         post_gc_message=lambda _message: None,
         debug=lambda *_args: None,
+        invalidate_file_index=lambda: None,
         locale_controller=controller,
     )
     results = [RestoreResult(path=f"/workspace/{index}.txt", outcome=RestoreOutcome.APPLIED) for index in range(count)]

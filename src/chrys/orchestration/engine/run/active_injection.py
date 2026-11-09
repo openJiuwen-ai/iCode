@@ -30,8 +30,19 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.state.current_agent import CurrentAgent
     from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
     from chrys.orchestration.engine.state.machine import EngineStateMachine
+    from chrys.orchestration.invoker.contracts import PassHandle
+    from chrys.service.agent_middleware.injection import QueuedInjection
     from chrys.service.hooks.operation import HookOperation
     from chrys.service.hooks.schema import HookDecision
+
+
+@dataclass(frozen=True, slots=True)
+class _Queued:
+    """A message queued for the running turn, and the pass that ran when it was queued."""
+
+    injection: QueuedInjection
+    pass_handle: PassHandle | None
+    """The pass a steer aborts; None for a message that does not steer, or when no pass ran."""
 
 
 @dataclass(slots=True)
@@ -87,8 +98,13 @@ class ActiveTurnInjector:
         injection_id: str | None = None,
         preparation: PreparationTrace | None = None,
         preparation_tracker: PreAdmissionPreparationTracker | None = None,
+        steer: bool = False,
     ) -> bool:
         """Inject *text* into the current run when the captured target remains valid.
+
+        The text waits for the run's next model call; with *steer*, the pass
+        still producing is aborted once the text is queued, so the next pass
+        delivers it at once (``UserMessage.steer``).
 
         Return whether the preparation trace moved to the middleware queue.
         Cancel marks observed (or missed) before that handoff are dropped by
@@ -103,6 +119,7 @@ class ActiveTurnInjector:
                 reject_images_without_target=reject_images_without_target,
                 injection_id=injection_id,
                 ownership=ownership,
+                steer=steer,
             )
         except asyncio.CancelledError:
             if preparation is not None and not ownership.handed_off:
@@ -122,6 +139,7 @@ class ActiveTurnInjector:
         reject_images_without_target: bool,
         injection_id: str | None,
         ownership: _PreparationOwnership,
+        steer: bool,
     ) -> bool:
         preparation = ownership.trace
         target = self.capture_target(route=route)
@@ -146,7 +164,13 @@ class ActiveTurnInjector:
         target.run_task.add_done_callback(_target_ended)
         try:
             return await self._admit_checked(
-                target, operation, text, created_at=created_at, injection_id=injection_id, ownership=ownership
+                target,
+                operation,
+                text,
+                created_at=created_at,
+                injection_id=injection_id,
+                ownership=ownership,
+                steer=steer,
             )
         finally:
             target.run_task.remove_done_callback(_target_ended)
@@ -161,6 +185,7 @@ class ActiveTurnInjector:
         created_at: datetime | str | None,
         injection_id: str | None,
         ownership: _PreparationOwnership,
+        steer: bool,
     ) -> bool:
         """Check *operation*'s text with the prompt hooks and inject it into *target* if it may still go."""
         preparation = ownership.trace
@@ -198,7 +223,7 @@ class ActiveTurnInjector:
             if preparation is not None:
                 await preparation.finished(outcome=PreparationOutcome.IMAGE_REJECTED)
             return False
-        committed = await self._commit_side_effects(
+        queued = await self._commit_side_effects(
             target,
             text,
             decision,
@@ -207,7 +232,11 @@ class ActiveTurnInjector:
             publish_abandoned=True,
             injection_id=injection_id,
             ownership=ownership,
+            steer=steer,
         )
+        committed = queued is not None
+        if queued is not None and steer:
+            await self._steer(target, queued)
         if preparation is not None:
             if committed:
                 return ownership.handed_off
@@ -216,6 +245,33 @@ class ActiveTurnInjector:
             else:
                 await preparation.finished(outcome=PreparationOutcome.TARGET_STALE)
         return False
+
+    async def _steer(self, target: ActiveInjectionTarget, queued: _Queued) -> None:
+        """Abort the pass *queued* was bound to while its message still waits, as Stop does.
+
+        Nothing is aborted once the message no longer waits (a model call took
+        it, or it was cancelled), once that pass can no longer be steered (it
+        has not started producing, its answer is complete, or it is already
+        stopping) or once another pass runs: the message then reaches the next
+        model call, or misses the run. The check and the backend's acceptance
+        run with no ``await`` between; once accepted, the steer stands, and
+        running sub-agents are aborted first, as for Stop, so none is left
+        paused on a decision. A message cancelled after that is just not sent:
+        the next pass goes on without it.
+        """
+        handle = queued.pass_handle
+        if handle is None:
+            return
+        if not (self.target_is_current(target) and target.bindings.injection_pending(queued.injection)):
+            return
+        loaded = self._current.loaded
+        sub_agent_tools = loaded.sub_agent_tools if loaded is not None else None
+
+        async def _cascade() -> None:
+            if sub_agent_tools is not None:
+                await sub_agent_tools.cascade_abort_all()
+
+        await target.conversation.steer(handle, before_abort=_cascade)
 
     def _is_cancelled(self, injection_id: str | None) -> bool:
         """Return whether the user cancelled this injection during admission."""
@@ -350,13 +406,13 @@ class ActiveTurnInjector:
         publish_abandoned: bool,
         injection_id: str | None = None,
         ownership: _PreparationOwnership,
-    ) -> bool:
-        """Commit scoped active-turn side effects and inject only for the captured owner."""
+        steer: bool = False,
+    ) -> _Queued | None:
+        """Commit scoped active-turn side effects and inject only for the captured owner; None when abandoned."""
 
-        async def _abandon() -> bool:
+        async def _abandon() -> None:
             if publish_abandoned:
                 await self.publish_abandoned(target, text, created_at, injection_id=injection_id)
-            return False
 
         if not self.target_is_current(target) or self._is_cancelled(injection_id):
             return await _abandon()
@@ -393,7 +449,7 @@ class ActiveTurnInjector:
             # The reminders travel with the injection and join the turn's
             # reminders only when a model call drains it, so they land on the
             # injected message and a cancelled injection leaves none behind.
-            target.bindings.inject(
+            injection = target.bindings.inject(
                 text,
                 created_at=created_at,
                 injection_id=injection_id,
@@ -401,6 +457,9 @@ class ActiveTurnInjector:
                 preparation=ownership.trace,
                 target_turn_id=target.trajectory_turn_id,
             )
+            # Bound in the same synchronous stretch: a steer aborts the pass
+            # its message joined, never one that started after it.
+            queued = _Queued(injection, target.conversation.active_handle if steer else None)
             ownership.hand_off(self._turn_state)
             target.bindings.approval.append_user_message(text)
             await self._publish_staged_runtime_skill_refresh(
@@ -409,7 +468,7 @@ class ActiveTurnInjector:
             )
         finally:
             self._turn_state.lease.finish_active_injection_commit()
-        return True
+        return queued
 
     def _is_stale_session(self, target: ActiveInjectionTarget | None) -> bool:
         """Return True when a stale target belongs to an abandoned session owner."""

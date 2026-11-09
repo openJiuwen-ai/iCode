@@ -113,13 +113,17 @@ def turn_slices(messages: Sequence[SupportsTurnMessage]) -> list[tuple[int, int]
 
 
 def current_turn_start(messages: Sequence[SupportsTurnMessage]) -> int:
-    """Return the index just after the last ``_chrys_kind='turn'`` marker.
+    """Return the index after the last completed-turn marker or summary.
 
-    ``0`` when no turn marker exists — the whole history is the current
-    (first) turn region.  This is the marker-region scan shared by history
-    dedup, continuation cleanup, and current-run metadata logic.
+    A summary replaces completed turns, including their markers, so it is
+    the same boundary. ``0`` when neither exists: the whole history is the
+    current (first) turn region. Shared by dedup, continuation cleanup, and
+    current-run metadata logic.
     """
     for i in range(len(messages) - 1, -1, -1):
-        if messages[i].additional_properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN:
+        if messages[i].additional_properties.get(HistoryMarkerKind.KEY) in (
+            HistoryMarkerKind.TURN,
+            HistoryMarkerKind.SUMMARY,
+        ):
             return i + 1
     return 0

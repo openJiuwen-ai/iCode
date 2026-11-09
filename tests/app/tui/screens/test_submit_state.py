@@ -96,6 +96,8 @@ def test_a_draft_going_back_elsewhere_is_no_longer_its_shortcuts(generation: int
     draft = ChatDraft("Review !`git diff`", owner=ShortcutIntent("review", "", "", path="/s/review.md"))
     state.begin(draft.text, draft=draft, session_generation=3, cwd="/repo")
 
-    back = state.take_draft_for(lambda: (generation, cwd), drop_owner=drop_owner)
+    if drop_owner:
+        state.discard_shortcut_owner()
+    back = state.take_draft_for(lambda: (generation, cwd))
 
     assert back == ChatDraft(draft.text)

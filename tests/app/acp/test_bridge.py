@@ -23,6 +23,7 @@ from chrys.foundation.events.types import (
     InvocationProgress,
     InvocationRetryAttempt,
     InvocationStarted,
+    InvocationSteered,
     InvocationToolCallArgsUpdated,
     InvocationToolCallProgress,
     InvocationToolCallResult,
@@ -809,6 +810,29 @@ def test_bridge_marks_error_tool_results_failed() -> None:
     )[0]
 
     assert result.status == "failed"
+
+
+def test_a_steer_fails_the_turns_tool_calls_still_open_and_only_those() -> None:
+    """A steer cancels the running calls with no result to follow, and the prompt goes on: the bridge ends their cards."""
+    bridge = AcpEventBridge()
+    for call_id in ("done", "hosted", "running", "cancelled"):
+        bridge.updates_for_event(InvocationToolCallStart(tool_name="bash", call_id=call_id, args={}, origin=_TURN))
+    bridge.updates_for_event(InvocationToolCallResult(tool_name="bash", call_id="done", result="ok", origin=_TURN))
+    bridge.updates_for_event(
+        InvocationToolCallStatusUpdated(call_id="hosted", status="completed", provider_hosted=True, origin=_TURN)
+    )
+    child = InvocationOrigin("sub_agent", "", "child", _TURN)
+    bridge.updates_for_event(InvocationToolCallStart(tool_name="bash", call_id="child-call", args={}, origin=child))
+
+    ended = bridge.updates_for_event(InvocationSteered(origin=_TURN))
+
+    assert [(update.tool_call_id, update.status) for update in ended] == [
+        ("running", "failed"),
+        ("cancelled", "failed"),
+    ]
+    # The next pass's calls are its own: a later steer ends only those.
+    bridge.updates_for_event(InvocationToolCallStart(tool_name="bash", call_id="next", args={}, origin=_TURN))
+    assert [update.tool_call_id for update in bridge.updates_for_event(InvocationSteered(origin=_TURN))] == ["next"]
 
 
 def test_bridge_marks_structured_tool_failures_failed() -> None:

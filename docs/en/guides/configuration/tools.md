@@ -23,7 +23,7 @@ Each option corresponds to a kind of built-in tool. Enable the kinds the agent n
 | Web fetch | Read the text of a page by URL | Enable when the agent needs to read pages it finds or that you point it to |
 | Shell | Execute terminal commands in a subprocess | Enable when the agent needs to run builds, tests, or other commands |
 | Ask User | Request additional information or ask the user to make a choice during a task | Suitable for TUI and ACP sessions; headless CLI mode (`icode run`) does not provide this tool to the agent |
-| Document Converter (PDF, Office) | Convert PDF, DOCX, PPTX, XLSX, and XLS files to Markdown; if the current model supports image input and the agent has "Filesystem Read" enabled, images can also be extracted from PDF, DOCX, and PPTX files for the agent to view; XLSX and XLS conversion includes only text and tables | Enable when the agent needs to read these document formats |
+| Document Converter (PDF, Office) | Convert PDF, DOCX, PPTX, XLSX, and XLS files to Markdown; if the current model supports image input and the agent has "Filesystem Read" enabled, images can also be extracted from PDF, DOCX, and PPTX files for the agent to view; XLSX and XLS conversion includes only text and tables, and text struck through in an XLSX file is kept and marked as struck through (`~~text~~`) | Enable when the agent needs to read these document formats |
 | Todo List | Track tasks with multiple steps using a live checklist | Suitable for tasks with many steps that need visible progress tracking |
 
 Every agent also has the `sleep` tool, so it has no option in this list. The agent uses it to pause a task for up to 3600 seconds, and the TUI shows a countdown you can skip.
@@ -86,7 +86,7 @@ If iCode ends before it can stop its background commands, for example when it cr
 
 While the main agent waits on a shell command, the command's card shows "ctrl+t moves it to the background". Press **Ctrl+T** to move the main agent's running shell commands to the background right away. If the session already has 32 commands running in the background, iCode tells you, and the command keeps running as before.
 
-The **Tasks** tab of the sidebar shows the todos at the top and the main agent's background commands under **Background Tasks** below them, with each command's elapsed background time and exit code or status; the status bar shows how many are running. Click a command to see what it runs, why it moved to the background, and its output as it grows. There you can **Stop** it, or copy its output or the path of its log file. **Clear ended** removes the commands that have ended from the list.
+The **Tasks** tab of the sidebar shows the todos at the top and the main agent's background commands under **Background Tasks** below them, with each command's elapsed background time and exit code or status; the status bar shows how many are running. Click a command to see what it runs, why it moved to the background, and its output as it grows. There you can **Stop** it, or copy its output or the path of its log file. Once a command has ended, **Clear ended** at the bottom right of the box removes the ended commands from the list.
 
 Before you start a new session (also with `/clear`), switch to another session, quit iCode, or roll back turns that started background commands, iCode lists the commands that would stop and asks first. Choose **Stop and continue** (**Stop and exit** when quitting) to go ahead. If you quit again while iCode is asking, it quits at once. Closing the terminal window stops them without asking.
 

@@ -23,7 +23,7 @@ from tests.app.tui.screens.test_prompt_shortcut_send import (
     running_session,
 )
 from tests.support.tui_helpers import click_when_settled
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 pytestmark = pytest.mark.usefixtures("clear_model_profile_env")
 
@@ -32,9 +32,11 @@ async def reload_success(session):
     before = len(session.seen.of(ev.SettingsReloaded))
     session.bar.focus_input()
     await slash_reload(session)
+    # The reload rebuilds the agent: a process's first build on an SDK-backed model imports the SDK.
     await wait_for(
         lambda: len(session.seen.of(ev.SettingsReloaded)) > before and session.app.screen is session.main,
         pilot=session.pilot,
+        timeout=ENGINE_TURN_TIMEOUT,
         description="manual reload completed",
     )
 
@@ -97,6 +99,7 @@ async def test_build_failure_before_normalization_leaves_active_runtime_and_file
         await wait_for(
             lambda: isinstance(session.app.screen, AgentLoadDialog) and session.app.screen.has_class("-error"),
             pilot=session.pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
             description="build failed",
         )
         await click_when_settled(session.pilot, "#agent-load-ok")
@@ -182,6 +185,7 @@ async def test_later_model_editor_save_rebuilds_children_from_the_shared_registr
         await wait_for(
             lambda: len(session.seen.of(ev.SettingsReloaded)) > before,
             pilot=session.pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
             description="models page closed and applied",
         )
         assert await invoke() == "after-editor"

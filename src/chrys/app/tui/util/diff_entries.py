@@ -5,9 +5,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from chrys.foundation.models.mutation_scope import MutationScope
 from chrys.service.mutations.types import MutationOp
+
+MAX_PREVIEW_FILES = 10
+MAX_COUNTED_LINES = 20000
+
+
+@dataclass(frozen=True)
+class DiffFocus:
+    """Open the session-wide changes and optionally select a display key."""
+
+    display_key: str | None = None
 
 
 @dataclass
@@ -36,6 +47,15 @@ class DiffFileEntry:
     # inference.
     contested: bool = False
     inferred: bool = False
+    last_changed_at: float = 0.0
+    # A numeric pair is known; every other outcome has no numeric payload.
+    # Large files are unavailable only to the preview, not the full diff.
+    line_count_result: tuple[int, int] | Literal["pending", "unavailable", "large"] = "unavailable"
+
+    @property
+    def line_counts(self) -> tuple[int, int] | None:
+        """Expose counts only when the preview has a known result."""
+        return self.line_count_result if isinstance(self.line_count_result, tuple) else None
 
 
 @dataclass

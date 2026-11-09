@@ -40,6 +40,11 @@ while True:
 """
 
 
+def _holds_pid(pid_file: Path) -> bool:
+    """Whether the command has written its pid: ``write_text`` creates the file before it writes to it."""
+    return pid_file.exists() and pid_file.read_text(encoding="utf-8").isdigit()
+
+
 def _shell_call(call_id: str, script: Path, pid_file: Path, timeout: int) -> MockResponse:
     # PowerShell runs a quoted program path only through its call operator.
     prefix = "& " if sys.platform == "win32" else ""
@@ -96,12 +101,12 @@ async def test_background_command_outlives_an_interrupted_turn_and_stops_with_th
         tasks = host.engine.session.background_tasks
         assert tasks is not None
         [task] = tasks.running
-        await wait_for(server_pid.exists, timeout=ENGINE_TURN_TIMEOUT, description="the server started")
+        await wait_for(lambda: _holds_pid(server_pid), timeout=ENGINE_TURN_TIMEOUT, description="the server started")
         server = psutil.Process(int(server_pid.read_text(encoding="utf-8")))
 
         # An interrupted turn kills its own command but leaves the background alone.
         turn = asyncio.create_task(host.run_until_final("hold"))
-        await wait_for(lambda: held_pid.exists() or turn.done(), timeout=ENGINE_TURN_TIMEOUT, description="held")
+        await wait_for(lambda: _holds_pid(held_pid) or turn.done(), timeout=ENGINE_TURN_TIMEOUT, description="held")
         assert not turn.done()
         held = psutil.Process(int(held_pid.read_text(encoding="utf-8")))
         await host.cancel_current_turn()
@@ -134,7 +139,7 @@ async def test_the_user_moves_a_command_to_the_background_watches_it_and_stops_i
     await host.event_bus.subscribe(BackgroundTasksChanged, on_change)
     try:
         turn = asyncio.create_task(host.run_until_final("serve"))
-        await wait_for(lambda: server_pid.exists() or turn.done(), timeout=ENGINE_TURN_TIMEOUT, description="served")
+        await wait_for(lambda: _holds_pid(server_pid) or turn.done(), timeout=ENGINE_TURN_TIMEOUT, description="served")
         assert not turn.done()
         server = psutil.Process(int(server_pid.read_text(encoding="utf-8")))
         session_id = host.engine.session.session_id

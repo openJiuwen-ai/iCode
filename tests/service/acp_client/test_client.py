@@ -26,6 +26,7 @@ from chrys.service.acp_client import (
 from chrys.service.acp_client import _transport as transport_mod
 from chrys.service.acp_client import client as client_mod
 from tests.support.acp_stub_agent import WIDE_PATCH_FILES
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 from .helpers import CallbackRecorder, connected_client, make_spec, residual_client_tasks
@@ -213,6 +214,153 @@ async def test_idle_timeout_is_suspended_only_while_human_callback_waits(
             await prompt_task
     finally:
         callbacks.permission_gate.set()
+        if not prompt_task.done():
+            prompt_task.cancel()
+        await asyncio.gather(prompt_task, return_exceptions=True)
+        await client.force_close()
+
+
+async def test_stalls_that_keep_coming_never_keep_a_silent_agent_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each stall near the deadline is forgiven, but the loop time between stalls still adds up to the budget."""
+    client, _callbacks = await connected_client(tmp_path, scenario="idle_stall", idle_timeout_seconds=0.1)
+    clock = IdleWatchdogClock(client, monkeypatch)
+    prompt_task = asyncio.create_task(client.prompt("stall"))
+    try:
+        await wait_for(lambda: clock.armed or prompt_task.done(), description="idle watchdog armed")
+        if prompt_task.done():
+            await prompt_task
+        await clock.advance(0.09)
+        watchdog = clock.watchdog
+        assert watchdog is not None
+        stalls = 0
+        while not watchdog.done() and stalls < 8:
+            await clock.stall(0.04)
+            await clock.advance(0.005)
+            stalls += 1
+        # Silent for 0.09 s of loop time, a budget of 0.1 s and one slice (0.0125 s) of grace.
+        assert watchdog.done() and stalls <= 3
+        await wait_for(prompt_task.done, description="idle timeout despite the stalls")
+        with pytest.raises(AcpIdleTimeoutError):
+            await prompt_task
+    finally:
+        if not prompt_task.done():
+            prompt_task.cancel()
+        await asyncio.gather(prompt_task, return_exceptions=True)
+        await client.force_close()
+
+
+async def test_every_silence_gets_its_own_grace_slice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A frame read after a deadline stall starts a new silence, whose deadline stall again leaves the reader a slice."""
+    client, _callbacks = await connected_client(tmp_path, scenario="idle_stall", idle_timeout_seconds=0.1)
+    clock = IdleWatchdogClock(client, monkeypatch)
+    prompt_task = asyncio.create_task(client.prompt("stall"))
+    try:
+        await wait_for(lambda: clock.armed or prompt_task.done(), description="idle watchdog armed")
+        if prompt_task.done():
+            await prompt_task
+        watchdog = clock.watchdog
+        assert watchdog is not None
+        for silence in (1, 2):
+            await clock.advance(0.09)
+            await clock.stall(1.0)
+            await clock.advance(0.005)
+            assert not watchdog.done(), f"silence {silence} left the reader no slice after its deadline stall"
+            # What the agent wrote during the stall reaches the frame observer.
+            client._touch_activity()
+        await clock.advance(0.1)
+        await wait_for(prompt_task.done, description="idle timeout once the agent stays silent")
+        with pytest.raises(AcpIdleTimeoutError):
+            await prompt_task
+    finally:
+        if not prompt_task.done():
+            prompt_task.cancel()
+        await asyncio.gather(prompt_task, return_exceptions=True)
+        await client.force_close()
+
+
+@pytest.mark.parametrize("silent_before", [0.0, 0.09], ids=["first-slice", "last-slice"])
+async def test_a_stall_of_the_clients_own_loop_is_not_billed_to_the_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, silent_before: float
+) -> None:
+    """A stop-the-world pause (a gen2 GC) wakes the watchdog late, before it can read what the agent sent meanwhile.
+
+    That lateness is the client's: the agent is billed only for time the loop could read in, so a silent agent
+    still runs out of its budget once the loop runs again — also when the stall begins just before the deadline.
+    """
+    client, _callbacks = await connected_client(tmp_path, scenario="idle_stall", idle_timeout_seconds=0.1)
+    clock = IdleWatchdogClock(client, monkeypatch)
+    prompt_task = asyncio.create_task(client.prompt("stall"))
+    try:
+        await wait_for(lambda: clock.armed or prompt_task.done(), description="idle watchdog armed")
+        if prompt_task.done():
+            await prompt_task
+        if silent_before:
+            await clock.advance(silent_before)
+            assert clock.watchdog is not None and not clock.watchdog.done()
+
+        await clock.stall(1.0)
+        # The loop runs again: a moment later its reader could deliver what queued up.
+        await clock.advance(0.005)
+        assert clock.watchdog is not None and not clock.watchdog.done()
+        assert not prompt_task.done()
+
+        await clock.advance(0.1)
+        await wait_for(prompt_task.done, description="idle timeout once the loop runs again")
+        with pytest.raises(AcpIdleTimeoutError):
+            await prompt_task
+    finally:
+        if not prompt_task.done():
+            prompt_task.cancel()
+        await asyncio.gather(prompt_task, return_exceptions=True)
+        await client.force_close()
+
+
+@pytest.mark.parametrize("wake", ["slice-timer", "activity"])
+async def test_a_stall_right_after_a_watchdog_wake_is_not_billed_to_the_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wake: str
+) -> None:
+    """A pause between the watchdog's wake and its next slice is the client's too, wherever in that step it lands."""
+    client, _callbacks = await connected_client(tmp_path, scenario="idle_stall", idle_timeout_seconds=0.1)
+    clock = IdleWatchdogClock(client, monkeypatch)
+    activity = client._activity_event
+    assert activity is not None
+    clear = activity.clear
+    stall_on_clear = False
+
+    def clear_after_a_stall() -> None:
+        # The watchdog clears the event first thing after each wake.
+        nonlocal stall_on_clear
+        if stall_on_clear:
+            stall_on_clear = False
+            clock.stall_in_step(1.0)
+        clear()
+
+    monkeypatch.setattr(activity, "clear", clear_after_a_stall)
+    prompt_task = asyncio.create_task(client.prompt("stall"))
+    try:
+        await wait_for(lambda: clock.armed or prompt_task.done(), description="idle watchdog armed")
+        if prompt_task.done():
+            await prompt_task
+        watchdog = clock.watchdog
+        assert watchdog is not None
+        stall_on_clear = True
+        if wake == "activity":
+            client._touch_activity()
+            await clock.advance(0.0)
+        else:
+            await clock.advance(0.0125)
+        assert not stall_on_clear
+        await clock.advance(0.005)
+        assert not watchdog.done()
+        assert not prompt_task.done()
+
+        await clock.advance(0.1)
+        await wait_for(prompt_task.done, description="idle timeout once the loop runs again")
+        with pytest.raises(AcpIdleTimeoutError):
+            await prompt_task
+    finally:
         if not prompt_task.done():
             prompt_task.cancel()
         await asyncio.gather(prompt_task, return_exceptions=True)
@@ -787,12 +935,15 @@ async def test_permission_flood_beyond_cap_is_auto_rejected_without_callbacks(tm
     client, _callbacks = await connected_client(tmp_path, scenario="permission_flood", callbacks=callbacks)
     prompt_task = asyncio.create_task(client.prompt("flood"))
     try:
-        await wait_for(
-            lambda: (
-                client._pump is not None and client._pump._request_frames == 12 and len(callbacks.permission_calls) == 8
-            ),
-            description="permission flood arrival",
-        )
+        with earlier_tests_heap_frozen():
+            await wait_for(
+                lambda: (
+                    client._pump is not None
+                    and client._pump._request_frames == 12
+                    and len(callbacks.permission_calls) == 8
+                ),
+                description="permission flood arrival",
+            )
         callbacks.permission_gate.set()
         await prompt_task
     finally:

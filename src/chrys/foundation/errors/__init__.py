@@ -25,6 +25,7 @@ from .classify import (
     is_thinking_binding_rejection,
     may_be_context_overflow,
 )
+from .facts import failure_facts
 from .formatting import EMPTY_EXCEPTION_MESSAGES, clean_error_message
 from .kinds import ErrorKind, TimeoutPhase
 from .network import RETRYABLE_PHRASES, is_deterministic_connection_error
@@ -55,6 +56,7 @@ __all__ = [
     "classify_error",
     "clean_error_message",
     "context_overflow_limit",
+    "failure_facts",
     "in_band_failure_retryable",
     "invalidates_continuation_token",
     "is_blank_response",

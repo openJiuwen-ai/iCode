@@ -6,13 +6,19 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from chrys.foundation.config.settings import DEFAULT_WORKSPACE_MRU_MAX_ENTRIES
-from chrys.foundation.events.types import AgentRuntimeDetails, Error
+from chrys.foundation.events.types import (
+    AgentRuntimeDetails,
+    Error,
+    InvocationAnswerWithdrawn,
+    InvocationContentDelta,
+    InvocationContentFinished,
+)
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.platform import safe_getcwd
 from chrys.service.approval.policy import ApprovalMode
@@ -25,9 +31,9 @@ if TYPE_CHECKING:
         BackgroundTasksChanged,
         HookExecutionsChanged,
         InvocationContentAbandoned,
-        InvocationContentDelta,
-        InvocationContentFinished,
         InvocationMessage,
+        TurnStarted,
+        UnansweredInputDropped,
     )
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -35,7 +41,14 @@ if TYPE_CHECKING:
     from chrys.service.state.store import StateStore
 
     DeferredTurnEvent = (
-        InvocationMessage | InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned | Error
+        InvocationMessage
+        | InvocationContentDelta
+        | InvocationContentFinished
+        | InvocationContentAbandoned
+        | InvocationAnswerWithdrawn
+        | Error
+        | UnansweredInputDropped
+        | TurnStarted
     )
 
 
@@ -249,16 +262,18 @@ class SubmitCoordinator:
         self.session_generation = session_generation
         self.cwd = cwd
 
-    def take_draft_for(
-        self, place: Callable[[], tuple[int, str]], *, drop_owner: bool = False
-    ) -> ChatDraft | str | None:
+    def discard_shortcut_owner(self) -> None:
+        """The shortcut vanished. Keep the whole draft to return as plain text when admission ends."""
+        if self.draft is not None and self.draft.owner is not None:
+            self.draft = replace(self.draft, owner=None)
+
+    def take_draft_for(self, place: Callable[[], tuple[int, str]]) -> ChatDraft | str | None:
         """What to hand back to the composer now — the draft, or the text of a plain submit — once.
 
         A second taker (a refusal handler, then the sender) gets None. A draft
         goes back without its prompt-shortcut owner to another session or
         working folder than it was taken in (*place*: the session generation
-        and folder now, read only for such a draft), or when *drop_owner* (its
-        shortcut is no longer one there): it is no longer that shortcut's.
+        and folder now, read only for such a draft).
         """
         if self.returned:
             return None
@@ -268,7 +283,7 @@ class SubmitCoordinator:
             return self.text
         if draft.owner is None:
             return draft
-        if drop_owner or place() != (self.session_generation, self.cwd):
+        if place() != (self.session_generation, self.cwd):
             return replace(draft, owner=None)
         return draft
 
@@ -352,19 +367,30 @@ class TurnRenderGate:
         """Record an event to flush after user rendering completes."""
         self._deferred.append(event)
 
-    def finish(self, *, rendered: bool) -> tuple[Error, ...]:
-        """End the user render: a failed one stops deferring and returns the errors it deferred.
+    def holds_text_of(self, segment_ids: Collection[str]) -> bool:
+        """Whether text of these segments waits in the gate or is being replayed."""
+        if not self.active:
+            return False
+        held = (*self._deferred, self._replaying)
+        return any(
+            isinstance(event, InvocationContentDelta | InvocationContentFinished) and event.segment_id in segment_ids
+            for event in held
+        )
+
+    def finish(self, *, rendered: bool) -> tuple[Error | InvocationAnswerWithdrawn, ...]:
+        """End the user render: a failed one stops deferring and returns what it deferred that is still news.
 
         A failed render opened no turn, so the content events it deferred belong
         to none and are dropped; an error is still news (something else failed
         while the message was being admitted), and its caller shows it — not as
-        a failed turn. A rendered one keeps deferring until :meth:`drain` has
-        replayed the backlog.
+        a failed turn. So is a withdrawal: history dropped that answer (a run
+        still finishing settled a steer), and its caller takes it from view. A
+        rendered one keeps deferring until :meth:`drain` has replayed the backlog.
         """
         if rendered:
             return ()
         self.active = False
-        kept = tuple(event for event in self._deferred if isinstance(event, Error))
+        kept = tuple(event for event in self._deferred if isinstance(event, Error | InvocationAnswerWithdrawn))
         self._deferred.clear()
         return kept
 

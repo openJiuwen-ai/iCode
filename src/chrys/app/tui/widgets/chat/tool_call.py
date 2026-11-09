@@ -1678,6 +1678,10 @@ class ToolGroup(ToolCopyExcludedMixin, FoldGap, ProcessMember):
     ToolGroup > #tg-content > * {
         padding-left: 1;
     }
+    ToolGroup.--compressed, ToolGroup.--compressed > #tg-content {
+        border-left: solid $tui-border-neutral-100 $border-opacity;
+        color: $text-muted;
+    }
     """
 
     collapsed: reactive[bool] = reactive(False)
@@ -1694,12 +1698,15 @@ class ToolGroup(ToolCopyExcludedMixin, FoldGap, ProcessMember):
         live: bool = True,
         tool_widget_configurator: Callable[[Widget], None] | None = None,
         workspace_cwd: Callable[[], str] | None = None,
+        is_compressed: bool = False,
     ) -> None:
         """*workspace_cwd* gives the folder the chat works in, which a path inside it reads relative to; None keeps
         paths as the calls gave them, as a transcript that may run elsewhere does."""
         self._collapse_lock_call_ids: set[str] = set()
         self._process_status: tuple[ToolTally, bool, bool] | None = None
         super().__init__()
+        if is_compressed:
+            self.add_class("--compressed")
         self._live = live
         self._tool_widget_configurator = tool_widget_configurator
         self._workspace_cwd = workspace_cwd

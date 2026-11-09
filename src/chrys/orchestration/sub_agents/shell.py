@@ -22,6 +22,8 @@ from chrys.foundation.events.types import (
     InvocationPaused,
     InvocationResumed,
 )
+from chrys.foundation.i18n import MessageRef
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.invoker.contracts import (
@@ -69,6 +71,18 @@ class SubAgentPolicy(Protocol):
     async def abort_result(self, *, by_user: bool) -> str: ...
     @property
     def last_error(self) -> str: ...
+    @property
+    def last_error_display(self) -> MessageRef | None:
+        """What ``last_error`` means to the user, when the classifier can say more than its text."""
+        ...
+
+    @property
+    def last_error_hint(self) -> MessageRef | None: ...
+    @property
+    def last_error_facts(self) -> FailureFacts | None:
+        """What ``last_error`` is, when a classified exception ended the pass."""
+        ...
+
     def latch_abort(self, cause: AbortCause) -> None: ...
     async def cancel_active(self) -> None: ...
     async def finalize_cancellation(self) -> None: ...
@@ -308,6 +322,9 @@ class SubAgentToolShell:
                     origin=self.origin,
                     agent_name=self._agent_name,
                     last_error=self.policy.last_error,
+                    last_error_display=self.policy.last_error_display,
+                    last_error_hint=self.policy.last_error_hint,
+                    last_error_facts=self.policy.last_error_facts,
                     session_id=self.origin.session_id or None,
                 )
             )

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -61,6 +62,7 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.todos import parse_todo_items
 from chrys.foundation.platform import safe_getcwd
+from chrys.foundation.trajectory.metadata import OPERATION_ID_KEY
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.service.session.persistence import has_real_messages
 
@@ -68,10 +70,13 @@ if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.screens.dialogs.fork_session import ForkSessionDialog
     from chrys.app.tui.screens.main.ports import StartWorker
-    from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
+    from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
     from chrys.foundation.events.bus import EventBus
     from chrys.service.context.providers.history import CompressedBlock
     from chrys.service.state.store import StateStore
+
+
+logger = logging.getLogger(__name__)
 
 
 _FINISH_SESSION_RESTORED = msg(
@@ -151,7 +156,7 @@ class SessionCallbacks:
     set_workspace_cwd: Callable[[str], None]
     update_subtitle: Callable[[], None]
     update_toc: Callable[[], None]
-    clear_suggestion_file_cache: Callable[[], None]
+    discard_suggestion_file_index: Callable[[], None]
     start_worker: StartWorker
     post_gc_message: Callable[[GcAbsorbRequested | GcReclaimRequested], object]
     debug: Callable[[str, str], None]
@@ -159,6 +164,9 @@ class SessionCallbacks:
     choose_missing_working_dir: Callable[[str], Awaitable[str | None]] = _decline_missing_working_dir
     confirm_stopping_background_tasks: Callable[[], Awaitable[bool]] = _stop_background_tasks_unasked
     """Whether the user lets the running background commands stop as the session ends."""
+
+    refresh_diff_preview: Callable[[bool], None] = lambda _reread: None
+    reset_rollback_request: Callable[[], None] = lambda: None
 
 
 def _samepath(a: str, b: str) -> bool:
@@ -394,8 +402,8 @@ class SessionHandler:
     def update_toc(self) -> None:
         self._callbacks.update_toc()
 
-    def clear_suggestion_file_cache(self) -> None:
-        self._callbacks.clear_suggestion_file_cache()
+    def discard_suggestion_file_index(self) -> None:
+        self._callbacks.discard_suggestion_file_index()
 
     def debug(self, key: str, message: str = "") -> None:
         self._callbacks.debug(key, message)
@@ -423,6 +431,7 @@ class SessionHandler:
         # ``agent_loading`` is set.
         if s.agent_loading or s.agent_running or self._state.submit.active or self._services.execution_busy():
             return
+        self._callbacks.reset_rollback_request()
         s.set_agent_loading(True)
         s.creating_new_session = True
         from chrys.foundation.events.types import SessionClear, SessionDeleted
@@ -454,6 +463,7 @@ class SessionHandler:
             return
         from chrys.foundation.events.types import SessionNew
 
+        self._callbacks.reset_rollback_request()
         s.creating_new_session = True
         await s.bus.publish(SessionNew())
 
@@ -586,6 +596,7 @@ class SessionHandler:
         if s.agent_running or self._services.execution_busy() or (s.agent_loading and not allow_while_loading):
             return RestoreRequest.SKIPPED
         if isinstance(session_id, WorkflowSessionPick):
+            self._callbacks.reset_rollback_request()
             await self._restore_workflow_session(session_id)
             return RestoreRequest.REQUESTED
         from chrys.foundation.events.types import SessionRestore
@@ -610,6 +621,7 @@ class SessionHandler:
             s.restoring_session = False
             return RestoreRequest.DECLINED
 
+        self._callbacks.reset_rollback_request()
         s.restoring_session = True
         try:
             await self._agent_load.begin_session_restore_load(session_id)
@@ -656,14 +668,8 @@ class SessionHandler:
         session_id: str,
         messages: list[dict],
         state: dict[str, Any] | None,
-    ) -> dict[str, list[FileSnapshotPayload]]:
-        """Build ``{fw_call_id: [snapshot_payload, ...]}`` from MutationTracker data.
-
-        Returns a list per ``call_id`` so duplicate call_ids (observed when
-        some LLMs reuse ids across retries after approval rejection) keep
-        distinct snapshots.  ``replay_history`` consumes these as available
-        file-tool snapshot cursors independent of tool-result pairing.
-        """
+    ) -> dict[FileSnapshotKey, list[FileSnapshotPayload]]:
+        """Pair file diffs by operation identity, retaining positional replay for legacy records."""
         s = self
         if s.state_store is None:
             return {}
@@ -687,7 +693,7 @@ class SessionHandler:
                 return {}
 
             _file_tools = {"edit_file", "write_file"}
-            fw_call_ids: list[str] = []
+            fw_calls: list[tuple[str, str | None]] = []
             for message_item in messages:
                 if message_item.get("role") != "assistant":
                     continue
@@ -702,16 +708,29 @@ class SessionHandler:
                         name = c.get("name", "")
                         cid = c.get("call_id", "")
                         if name in _file_tools and cid:
-                            fw_call_ids.append(cid)
+                            extra = c.get("additional_properties")
+                            operation_id = extra.get(OPERATION_ID_KEY) if isinstance(extra, dict) else None
+                            fw_calls.append((cid, operation_id if isinstance(operation_id, str) else None))
 
-            # Positional pairing: fw_call_ids[i] ↔ edit_snapshots[i].  Bucket
+            # Positional pairing: fw_calls[i] ↔ edit_snapshots[i].  Bucket
             # into per-call_id lists so duplicate call_ids each keep their
             # own snapshot.  ``zip(..., strict=False)`` silently truncates if
             # the lists disagree in length — preserves existing fail-soft
             # semantics when history and tracker data are out of sync.
-            buckets: dict[str, list[FileSnapshotPayload]] = {}
-            for cid, snap_ref in zip(fw_call_ids, edit_snapshot_refs, strict=False):
-                buckets.setdefault(cid, []).append(
+            buckets: dict[FileSnapshotKey, list[FileSnapshotPayload]] = {}
+            for snap_ref in edit_snapshot_refs:
+                if snap_ref.tool_operation_id:
+                    buckets.setdefault(("operation", snap_ref.tool_operation_id), []).append(
+                        snapshot_payload_from_hashes(store.mutations_dir, snap_ref.before, snap_ref.after)
+                    )
+            for (cid, call_operation_id), snap_ref in zip(fw_calls, edit_snapshot_refs, strict=False):
+                if snap_ref.tool_operation_id:
+                    continue
+                # Tool calls carried operation ids before mutations did, and
+                # replay looks a stamped call up by its operation: an unstamped
+                # record follows the call it pairs with.
+                key: FileSnapshotKey = ("operation", call_operation_id) if call_operation_id else cid
+                buckets.setdefault(key, []).append(
                     snapshot_payload_from_hashes(store.mutations_dir, snap_ref.before, snap_ref.after)
                 )
             return buckets
@@ -727,6 +746,7 @@ class SessionHandler:
             raise ValueError("This session event requires a session ID.")
         s = self
         ui = self._ui()
+        self._callbacks.reset_rollback_request()
 
         self._state.workspace.roots = [event.primary_cwd, *event.working_dirs]
         s.restoring_session = False
@@ -795,6 +815,14 @@ class SessionHandler:
             messages = await s.state_store.load_session_raw(event.session_id, prefer_recovery=prefer_recovery)
             if messages:
                 file_snapshots = self.load_file_edit_snapshots(event.session_id, messages, loaded_state)
+                rollback_targets: set[int] = set()
+                try:
+                    provider = self._services.engine_provider
+                    engine = provider() if provider is not None else None
+                    if engine is not None:
+                        rollback_targets = set(await asyncio.to_thread(engine.available_rollback_turns))
+                except Exception:
+                    logger.warning("Unable to load restored rollback targets", exc_info=True)
 
                 await ui.replay_history(
                     messages,
@@ -802,6 +830,7 @@ class SessionHandler:
                     file_snapshots=file_snapshots or None,
                     compressed_blocks=compressed_blocks_map or None,
                     recovered_from_sidecar=event.recovered_from_sidecar,
+                    rollback_targets=rollback_targets,
                 )
                 s.update_toc()
 
@@ -828,11 +857,14 @@ class SessionHandler:
         info = STATUS_SESSION_RESTORED.bind(session_id=short_id)
         ui.flash_status(info)
         self._agent_load.finish_agent_load(_FINISH_SESSION_RESTORED.bind(session_id=short_id))
+        self._callbacks.refresh_diff_preview(True)
         s.debug("SessionRestored", short_id)
         self._callbacks.post_gc_message(GcReclaimRequested(GcReclaimReason.SESSION_RESTORED, prompt=True))
 
     async def on_session_saved(self, event: SessionSaved) -> None:
         self.debug("SessionSaved", session_short_id(event.session_id or ""))
+        if event.session_id == self._ui().chat_session_id():
+            self._callbacks.refresh_diff_preview(True)
 
     async def _restore_session_title_state(self, session_id: str, *, prefer_recovery: bool = False) -> None:
         """Reload title overlays from the session meta into the UI.
@@ -1109,7 +1141,7 @@ class SessionHandler:
         ui = self._ui()
 
         self._state.workspace.roots = [event.primary_cwd, *event.working_dirs]
-        s.clear_suggestion_file_cache()
+        s.discard_suggestion_file_index()
         ui.set_input_paste_cwd(event.primary_cwd)
         ui.set_chat_workspace_cwd(event.primary_cwd)
         if os.path.isdir(event.primary_cwd):
@@ -1118,6 +1150,7 @@ class SessionHandler:
         # can see the live workspace, even before the first message.
         previous_cwd = s.chdir_current_cwd
         s.chdir_current_cwd = event.primary_cwd
+        self._callbacks.refresh_diff_preview(True)
         ui.set_terminal_title_for_cwd(event.primary_cwd)
 
         panel_key = "chdir"

@@ -87,6 +87,7 @@ async def test_rollback_exclusion_label_reaches_localized_toast_preview() -> Non
         set_has_messages=lambda _value: None,
         post_gc_message=lambda _message: None,
         debug=lambda *_args: None,
+        invalidate_file_index=lambda: None,
         locale_controller=controller,
     )
 

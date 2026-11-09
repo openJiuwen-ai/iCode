@@ -32,14 +32,14 @@ def _server_class_def() -> ast.ClassDef:
 
 
 def _dispatched_methods() -> set[str]:
-    """Every ``method == "<literal>"`` compared inside ``ChrysAcpServer.ext_method``.
+    """Every ``method == "<literal>"`` compared inside ``ChrysAcpServer._dispatch_ext_method``.
 
     Calls to the *client's* ``ext_method`` are skipped: those name requests the
     server sends (``chrys/request_input``), not methods it answers.
     """
     methods: set[str] = set()
     for node in ast.walk(_server_class_def()):
-        if not isinstance(node, ast.AsyncFunctionDef) or node.name != "ext_method":
+        if not isinstance(node, ast.AsyncFunctionDef) or node.name != "_dispatch_ext_method":
             continue
         for compare in ast.walk(node):
             if not isinstance(compare, ast.Compare) or len(compare.ops) != 1:

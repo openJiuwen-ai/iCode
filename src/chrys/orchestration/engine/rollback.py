@@ -57,19 +57,19 @@ logger = logging.getLogger(__name__)
 
 _ROLLBACK_NO_SESSION = msg(
     "rollback.no_session",
-    fallback="No active session to roll back.",
+    fallback="No active session to discard turns from.",
 )
 _ROLLBACK_CONVERSATION_CHANGED = msg(
     "rollback.conversation_changed",
-    fallback="Rollback cancelled because the conversation changed after the picker was loaded.",
+    fallback="Discard cancelled because the conversation changed after the picker was loaded.",
 )
 _ROLLBACK_CONVERSATION_ADVANCED = msg(
     "rollback.conversation_advanced",
-    fallback="Rollback cancelled because the conversation advanced from turn {expected_turn} to turn {current_turn}.",
+    fallback="Discard cancelled because the conversation advanced from turn {expected_turn} to turn {current_turn}.",
 )
 _ROLLBACK_RUNTIME_CHANGED = msg(
     "rollback.runtime_changed",
-    fallback="Rollback cancelled because the workspace or runtime changed after the picker was loaded.",
+    fallback="Discard cancelled because the workspace or runtime changed after the picker was loaded.",
 )
 _ROLLBACK_RELATIVE_TURNS_INVALID = msg(
     "rollback.relative_turns_invalid",
@@ -77,7 +77,7 @@ _ROLLBACK_RELATIVE_TURNS_INVALID = msg(
 )
 _ROLLBACK_TURNS_UNAVAILABLE = msg(
     "rollback.turns_unavailable",
-    fallback="Cannot roll back {requested_turns} turns; the session currently has {current_turns}.",
+    fallback="Cannot discard {requested_turns} turns; the session currently has {current_turns}.",
 )
 _ROLLBACK_TARGET_TURN_INVALID = msg(
     "rollback.target_turn_invalid",
@@ -85,11 +85,11 @@ _ROLLBACK_TARGET_TURN_INVALID = msg(
 )
 _ROLLBACK_TURN_UNAVAILABLE = msg(
     "rollback.turn_unavailable",
-    fallback="Cannot roll back to turn {target_turn}; available turns: {available}",
+    fallback="Cannot discard turns after turn {target_turn}; available targets: {available}",
 )
 _ROLLBACK_RESET_FAILED = msg(
     "rollback.reset_failed",
-    fallback="Rollback to welcome could not reset the session because the session state is busy.",
+    fallback="Could not discard all turns because the session state is busy.",
 )
 _ROLLBACK_SNAPSHOT_MISSING = msg(
     "rollback.snapshot_missing",
@@ -107,11 +107,11 @@ _ROLLBACK_SWAP_FAILED = msg(
 )
 _ROLLBACK_SESSION_CHANGED = msg(
     "rollback.session_changed",
-    fallback="Rollback cancelled because the active session changed.",
+    fallback="Discard cancelled because the active session changed.",
 )
 _ROLLBACK_REFUSED = msg(
     "rollback.refused",
-    fallback="Rollback is not allowed in state {state}.",
+    fallback="Cannot discard turns in state {state}.",
 )
 
 
@@ -287,14 +287,14 @@ class RollbackController:
         current_turn = self._session.turn_number
         if current_turn > 0:
             turns = {turn for turn in turns if turn < current_turn}
-        if (self._session.mutation_tracker is not None and self._session.mutation_tracker.get_all_turns()) or (
-            self._history.is_bound and self._history.messages
-        ):
-            turns.add(0)
-        if 0 not in turns:
-            # No welcome anchor means every remaining snapshot target would be
-            # orphaned in the picker.
+        has_history = bool(
+            (self._session.mutation_tracker is not None and self._session.mutation_tracker.get_all_turns())
+            or (self._history.is_bound and self._history.messages)
+        )
+        if not has_history:
             return []
+        # Back to the session start needs no snapshot: it stays reachable after pruning.
+        turns.add(0)
         return sorted(turns)
 
     async def on_user_rollback(
@@ -540,6 +540,8 @@ class RollbackController:
     ) -> None:
         """Build the rollback plan and mutate only after secured preflight resources."""
 
+        discarded_turn_count = self._session.turn_number - target_turn
+
         tracker = self._session.mutation_tracker
         tracker_turn_ids: list[int] = sorted(t.turn_id for t in tracker.get_all_turns()) if tracker is not None else []
         retained_notice = (
@@ -708,6 +710,7 @@ class RollbackController:
                     exclusions=plan_exclusions,
                     warnings=plan_warnings,
                     superseded_turn_ids=superseded_turn_ids,
+                    discarded_turn_count=discarded_turn_count,
                 ),
             )
             return
@@ -870,6 +873,7 @@ class RollbackController:
                 exclusions=plan_exclusions,
                 warnings=plan_warnings,
                 superseded_turn_ids=superseded_turn_ids,
+                discarded_turn_count=discarded_turn_count,
             ),
         )
 

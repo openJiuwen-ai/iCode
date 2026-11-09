@@ -67,6 +67,7 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         workspace: Workspace | None,
         approval_mode: ApprovalMode | None,
         surface: SessionSurface | None = None,
+        pause_failed_sub_agents: bool = True,
     ) -> None:
         super().__init__(
             persistence=persistence,
@@ -79,6 +80,10 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         # records it; a turn does, through ``mark_surface``.
         self.surface = surface
         self._surface_mark: tuple[str, SessionSurface] | None = None
+        # Launch policy: whether this launch's frontend can answer a failed
+        # sub-agent's Retry/Abort. An ACP client says so in its handshake; a
+        # frontend that can't would leave the paused child waiting forever.
+        self.pause_failed_sub_agents = pause_failed_sub_agents
         self.agent_profile: AgentProfile | None = None
         # The agent a new session starts on: the launch profile, then the user's
         # own pick (``#``). Survives /new and restore, like the approval mode; a

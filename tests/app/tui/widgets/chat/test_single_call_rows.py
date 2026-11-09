@@ -13,7 +13,8 @@ from rich.style import Style
 from rich.text import Text
 from textual.message import Message
 
-from chrys.app.tui.widgets.chat.fold_rows import FoldRow, FoldRowStyles, fit_fold_row, middle_cut_path
+from chrys.app.tui.util.paths import middle_cut_path
+from chrys.app.tui.widgets.chat.fold_rows import FoldRow, FoldRowStyles, fit_fold_row
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.single_call_row import SingleCallRow, single_call_row
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup, ToolGroupTitle

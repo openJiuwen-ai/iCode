@@ -98,11 +98,6 @@ MARKER_EXEMPTIONS: tuple[tuple[str, str, str], ...] = (
         "登记产物：po 中文条目（msgstr=fallback 复制，ADR-0010 细则 2，R2 表 8 号）",
         "aixcoding/docs/batches/tui/design.md",
     ),
-    (
-        "src/chrys/foundation/i18n/_catalogs/zh-Hans/LC_MESSAGES/chrys.mo",
-        "编译产物：随 po 重编（i18n compile，R2 表 9 号）",
-        "aixcoding/docs/batches/tui/design.md",
-    ),
 )
 
 MODULE_PAREN_RE = re.compile(r"\(([^)]*\baixcoding[^)]*)\)")

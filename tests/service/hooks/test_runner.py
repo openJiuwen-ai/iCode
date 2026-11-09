@@ -31,6 +31,7 @@ from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.loader import load_hooks_project
 from chrys.service.hooks.runner import HookResult, HookRunner
 from chrys.service.hooks.schema import HookConfig, HookExecution, HookMatch, HookRun
+from tests.support.stopped_child import STOPS_ITSELF
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
 
 
@@ -282,18 +283,16 @@ async def test_timeout_kills_process(runner: HookRunner) -> None:
 @pytest.mark.asyncio
 async def test_stopped_grandchild_hook_returns_and_cleans_group(runner: HookRunner, tmp_path: Path) -> None:
     pid_file = tmp_path / "child.pid"
+    child = (
+        f"import os, pathlib; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='ascii'); "
+        + STOPS_ITSELF
+    )
     script = textwrap.dedent(
         f"""
-        import os
-        import signal
         import subprocess
         import sys
 
-        subprocess.Popen([
-            sys.executable,
-            "-c",
-            "import os, pathlib, signal, time; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='ascii'); os.kill(os.getpid(), signal.SIGSTOP); time.sleep(30)",
-        ])
+        subprocess.Popen([sys.executable, "-c", {child!r}])
         """
     )
     hook = _command_hook(argv=[sys.executable, "-c", script], timeout=10)
