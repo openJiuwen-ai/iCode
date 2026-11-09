@@ -61,15 +61,36 @@ def with_count_hint(label: Text, raw: str) -> Text:
     return hinted
 
 
+def format_compact_count(n: int) -> str:
+    """Format a count as k or m, dropping a trailing ``.0`` (``200k``, ``1.0m``).
+
+    The unit is chosen after rounding, so a count never reads ``1000.0k``
+    (``999_950`` → ``1.0m``). ``format_token_count`` always keeps one decimal;
+    this is the form the context-size labels show.
+    """
+    if n < 1_000:
+        return str(n)
+    if n >= 999_950:
+        count, unit = n / 1_000_000, "m"
+    else:
+        count, unit = n / 1_000, "k"
+    text = f"{count:.0f}" if count == int(count) else f"{count:.1f}"
+    return f"{text}{unit}"
+
+
 def format_byte_size(size_bytes: int) -> str:
-    """Format bytes as a human-readable string (e.g. '1.2 MB')."""
+    """Format bytes as a human-readable string (e.g. '1.2 MB').
+
+    A unit is used only while its rounded value fits inside it, so a size never
+    reads ``1024.0 KB`` (1,048,575 bytes is ``1.0 MB``).
+    """
     if size_bytes < 1024:
         return f"{size_bytes} B"
     kib = size_bytes / 1024
-    if kib < 1024:
+    if round(kib, 1) < 1024:
         return f"{kib:.1f} KB"
     mib = kib / 1024
-    if mib < 1024:
+    if round(mib, 1) < 1024:
         return f"{mib:.1f} MB"
     gib = mib / 1024
     return f"{gib:.1f} GB"

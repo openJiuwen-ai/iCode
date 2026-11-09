@@ -108,7 +108,7 @@ class TestFormatSize:
         assert format_size(1536) == "1.5 KB"
 
     def test_one_byte_below_mb(self) -> None:
-        assert format_size(1024 * 1024 - 1) == "1024.0 KB"
+        assert format_size(1024 * 1024 - 1) == "1.0 MB"
 
     def test_exactly_one_mb(self) -> None:
         assert format_size(1024 * 1024) == "1.0 MB"

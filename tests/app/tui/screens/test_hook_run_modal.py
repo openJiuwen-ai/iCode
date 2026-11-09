@@ -304,6 +304,14 @@ async def test_a_cut_payload_says_so() -> None:
         assert "Payload cut at 64 KB of" in _pane_text(modal, "hook-run-input")
 
 
+async def test_a_cut_payload_at_a_megabyte_names_a_megabyte() -> None:
+    io = _io(payload=_PAYLOAD[:40], payload_size=1_048_575)
+    app = _ModalApp(_detail(io=io))
+    async with app.run_test(size=(140, 50)) as pilot:
+        modal = await _open(pilot, app)
+        assert "Payload cut at 64 KB of 1.0 MB" in _pane_text(modal, "hook-run-input")
+
+
 # --- Output ---------------------------------------------------------------------
 
 

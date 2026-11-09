@@ -27,7 +27,11 @@ from chrys.app.tui.widgets.trajectory.chartkit import (
     unresolved_bar,
     waterfall_lanes,
 )
-from chrys.app.tui.widgets.trajectory.insights import _input_share_metric, has_diagnostic_content
+from chrys.app.tui.widgets.trajectory.insights import (
+    _format_metric_bytes,
+    _input_share_metric,
+    has_diagnostic_content,
+)
 from chrys.app.tui.widgets.trajectory.overview import _fit_path_middle
 from chrys.app.tui.widgets.trajectory.presentation import (
     RenderContext,
@@ -153,6 +157,28 @@ def test_time_ruler_tick_units_follow_the_axis_magnitude() -> None:
 )
 def test_trajectory_durations_include_days(seconds: int, expected: str) -> None:
     assert format_duration(seconds * _NS) == expected
+
+
+@pytest.mark.parametrize(
+    ("nanoseconds", "expected"),
+    [
+        (999_400_000, "999 ms"),
+        (999_500_000, "1.00 s"),
+        (59_994_000_000, "59.99 s"),
+        (59_996_000_000, "1m 00s"),
+        (3_600_000_000_000, "1h 00m"),
+    ],
+)
+def test_trajectory_durations_switch_units_before_rounding_overflows(nanoseconds: int, expected: str) -> None:
+    assert format_duration(nanoseconds) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(1_023, "1023 B ✓"), (1_048_575, "1.0 MiB ✓"), (2_097_152, "2.0 MiB ✓")],
+)
+def test_metric_bytes_gain_a_mebibyte_unit_before_kibibytes_read_1024(value: int, expected: str) -> None:
+    assert _format_metric_bytes(Metric(value, Precision.EXACT)) == expected
 
 
 def test_derived_token_ratios_preserve_missing_and_inconsistent_evidence() -> None:

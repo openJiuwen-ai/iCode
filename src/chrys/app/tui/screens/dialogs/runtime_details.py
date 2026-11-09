@@ -16,6 +16,7 @@ from textual.widgets import Static, TabbedContent, TabPane
 from chrys.app.tui.binding_display import CLOSE_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
+from chrys.app.tui.util.formatting import format_compact_count
 from chrys.app.tui.util.removal import remove_children_shielded
 from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeModelDetails
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
@@ -128,16 +129,7 @@ def _context_label(
 ) -> str:
     if tokens <= 0:
         return "-"
-    if tokens >= 1_000_000:
-        count = tokens / 1_000_000
-        unit = "m"
-    elif tokens >= 1_000:
-        count = tokens / 1_000
-        unit = "k"
-    else:
-        return render_message(_TOKEN_COUNT.bind(count_text=str(tokens)))
-    formatted = f"{count:.0f}" if count == int(count) else f"{count:.1f}"
-    return render_message(_TOKEN_COUNT.bind(count_text=f"{formatted}{unit}"))
+    return render_message(_TOKEN_COUNT.bind(count_text=format_compact_count(tokens)))
 
 
 def _bool_label(

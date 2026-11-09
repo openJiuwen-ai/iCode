@@ -136,6 +136,9 @@ def test_runtime_details_dialog_shows_deepseek_responses_api_style() -> None:
     [
         (500, "500 tokens"),
         (200_000, "200k tokens"),
+        (999_949, "999.9k tokens"),
+        (999_950, "1.0m tokens"),
+        (999_999, "1.0m tokens"),
         (1_000_000, "1m tokens"),
     ],
 )

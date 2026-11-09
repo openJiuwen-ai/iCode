@@ -207,6 +207,9 @@ def test_locked_reason_renders_through_injected_localizer() -> None:
 def test_fmt_context_size_uses_compact_lowercase_units() -> None:
     assert fmt_context_size(500) == "500"
     assert fmt_context_size(200_000) == "200k"
+    assert fmt_context_size(999_949) == "999.9k"
+    assert fmt_context_size(999_950) == "1.0m"
+    assert fmt_context_size(999_999) == "1.0m"
     assert fmt_context_size(1_000_000) == "1m"
 
 
