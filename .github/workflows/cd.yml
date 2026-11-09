@@ -60,7 +60,16 @@ jobs:
         with:
           python-version-file: .python-version
           allow-prereleases: true
+      - name: Cache the vendored ripgrep binaries
+        # Same key discipline as CI: a version bump edits the fetch scripts, which
+        # rotates the key; the --all entry holds every platform, so no runner identity.
+        id: rg
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src/chrys/foundation/vendor/ripgrep
+          key: ripgrep-all-${{ hashFiles('scripts/fetch_rg.sh', 'scripts/fetch_rg.ps1') }}
       - name: Fetch ripgrep binaries (all platforms)
+        if: steps.rg.outputs.cache-hit != 'true'
         run: ./scripts/fetch_rg.sh --all
       - run: uv build --wheel
       - name: Check the release tag names the wheel's version
