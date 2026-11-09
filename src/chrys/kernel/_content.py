@@ -36,11 +36,16 @@ def _parse_content_list(contents_data: Sequence[Any]) -> list[Content]:
     """Parse a list of content data into appropriate Content objects.
 
     Args:
-        contents_data: List of content data (strings, dicts, or already constructed objects)
+        contents_data: List of content data (strings, dicts, or already constructed objects).
+            A single string is one text item.
 
     Returns:
         List of Content objects with unknown types logged and ignored
     """
+    if isinstance(contents_data, str):
+        # A string is itself a sequence of strings: iterating it would make
+        # one text content per character.
+        contents_data = [contents_data]
     contents: list[Content] = []
     for content_data in contents_data:
         if content_data is None:

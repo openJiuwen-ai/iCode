@@ -16,8 +16,8 @@ from collections.abc import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Collection,
     Generator,
-    Iterable,
     Mapping,
     MutableMapping,
     Sequence,
@@ -2515,6 +2515,17 @@ def validate_tool_mode(
     return tool_choice
 
 
+def _tool_option_items(value: Any) -> list[Any]:
+    """A ``tools`` option as a list of tools: a single tool, a mapping included, is one item.
+
+    Only a collection is unpacked. Any other iterable, such as a generator, stays
+    one item, so this merge never consumes a one-shot iterator the run still needs.
+    """
+    if isinstance(value, (str, bytes, bytearray, Mapping)) or not isinstance(value, Collection):
+        return [value]
+    return list(cast(Collection[Any], value))
+
+
 def merge_chat_options(
     base: dict[str, Any] | None,
     override: dict[str, Any] | None,
@@ -2575,13 +2586,13 @@ def merge_chat_options(
             base_tools = result.get("tools")
             if base_tools and value:
                 # Add tools that aren't already present
-                merged_tools = list(base_tools)
-                for tool in value if isinstance(value, Iterable) else [value]:  # type: ignore[reportUnknownVariableType]
+                merged_tools = _tool_option_items(base_tools)
+                for tool in _tool_option_items(value):
                     if tool not in merged_tools:
                         merged_tools.append(tool)
                 result["tools"] = merged_tools
             elif value:
-                result["tools"] = value if isinstance(value, list) else [value]
+                result["tools"] = _tool_option_items(value)
         elif key in ("logit_bias", "metadata", "additional_properties"):
             # Merge dicts
             base_dict = result.get(key)
