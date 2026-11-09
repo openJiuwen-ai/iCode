@@ -3,7 +3,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.34.0\n"
+"Project-Id-Version: Chrys 0.35.0\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
