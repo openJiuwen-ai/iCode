@@ -169,7 +169,7 @@ iCode 只会将以下扩展名的文本文件识别为 Skill 资源：`.md`、`.
 文本资源与 `SKILL.md` 使用相同的自动编码检测，建议使用 UTF-8。此外：
 
 * 脚本扩展名必须列入智能体配置的“允许的脚本扩展名”。
-* iCode 只读取 Skill 目录根层和直接子目录中的文件。例如，`guide.md` 和 `references/guide.md` 会被发现，`references/api/guide.md` 则会被忽略。
+* iCode 会读取 Skill 目录根层及其下两级子目录中的文件。例如，`guide.md`、`references/guide.md` 和 `references/api/guide.md` 会被发现，`references/api/v1/guide.md` 则会被忽略。
 * iCode 会跳过 Skill 目录内部通过符号链接或 Windows 目录联接访问的文件和目录。这两类链接都指向磁盘中的其他位置；如需使用其中的内容，请将实际文件放入 Skill 目录。
 
 不符合扩展名、目录层级或链接规则的文件不会出现在 Skill 的资源或脚本清单中；资源不存在、无法访问或无法解码时，会在读取时失败。这些情况不影响符合要求的 `SKILL.md` 加载。
