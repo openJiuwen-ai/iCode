@@ -50,7 +50,7 @@ from chrys.service.mcp.errors import (
     MCPToolNameCollisionError,
     MCPToolNameValidationError,
 )
-from chrys.service.mcp.owned import _MCP_REMOTE_NAME_KEY, _mcp_config_names_for
+from chrys.service.mcp.owned import _MCP_REMOTE_NAME_KEY, _is_mcp_prompt_function, _mcp_config_names_for
 from chrys.service.mcp.result_limits import (
     DEFAULT_MCP_TOOL_RESULT_MAX_TOKENS as DEFAULT_MCP_TOOL_RESULT_MAX_TOKENS,
 )
@@ -778,17 +778,11 @@ class MCPAdapter:
     ) -> MCPTestReport:
         """Snapshot server-advertised state before the test connection closes."""
         server_info = getattr(mcp_tool, "_server_info", None)
-        prompt_remote_names = getattr(mcp_tool, "_loaded_prompt_remote_names", None) or set()
         tools: list[tuple[str, str]] = []
         prompts: list[tuple[str, str]] = []
         for tool in catalog:
-            additional = tool.additional_properties or {}
-            remote_name = additional.get(_MCP_REMOTE_NAME_KEY)
             entry = (tool.name, tool.description or "")
-            if isinstance(remote_name, str) and remote_name in prompt_remote_names:
-                prompts.append(entry)
-            else:
-                tools.append(entry)
+            (prompts if _is_mcp_prompt_function(tool) else tools).append(entry)
         return MCPTestReport(
             server_name=getattr(server_info, "name", None),
             server_title=getattr(server_info, "title", None),

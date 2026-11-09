@@ -4829,7 +4829,7 @@
       ],
       "MCPTool._call_tool_with_retries": [
         ["awaitable", "await session.call_tool(tool_name, arguments=filtered_kwargs, meta=meta)", "unresolved"],
-        ["wrapper", "await self.connect(reset=True)", "unresolved", "chrys.service.mcp.owned.MCPTool.connect"]
+        ["wrapper", "await self.connect(reset=True, failed_session=session)", "unresolved", "chrys.service.mcp.owned.MCPTool.connect"]
       ],
       "MCPTool._close_and_check_cancelled": [
         ["wrapper", "await self._safe_close_exit_stack()", "unresolved", "chrys.service.mcp.owned.MCPTool._safe_close_exit_stack"]
@@ -4844,7 +4844,7 @@
         ["awaitable", "await self._exit_stack.enter_async_context(self.get_mcp_client())", "unresolved"],
         ["wrapper", "await self._close_and_check_cancelled(ex)", "unresolved", "chrys.service.mcp.owned.MCPTool._close_and_check_cancelled"],
         ["wrapper", "await self._safe_close_exit_stack()", "unresolved", "chrys.service.mcp.owned.MCPTool._safe_close_exit_stack"],
-        ["awaitable", "await self._exit_stack.enter_async_context(ClientSession(read_stream=transport[0], write_stream=transport[1], read_timeout_seconds=timedelta(seconds=self.request_timeout) if self.request_timeout else None, message_handler=self.message_handler, logging_callback=self.logging_callback))", "unresolved"],
+        ["awaitable", "await self._exit_stack.enter_async_context(ClientSession(read_stream=transport[0], write_stream=transport[1], read_timeout_seconds=timedelta(seconds=self.request_timeout) if self.request_timeout is not None else None, message_handler=self.message_handler, logging_callback=self.logging_callback))", "unresolved"],
         ["wrapper", "await self._close_and_check_cancelled(ex)", "unresolved", "chrys.service.mcp.owned.MCPTool._close_and_check_cancelled"],
         ["awaitable", "await session.initialize()", "unresolved"],
         ["wrapper", "await self._close_and_check_cancelled(ex)", "unresolved", "chrys.service.mcp.owned.MCPTool._close_and_check_cancelled"],
@@ -4854,48 +4854,49 @@
         ["awaitable", "await self.session.set_logging_level(level_name)", "unresolved"]
       ],
       "MCPTool._connect_unrecorded": [
-        ["wrapper", "await self._connect_on_owner(reset=reset)", "unresolved", "chrys.service.mcp.owned.MCPTool._connect_on_owner"],
+        ["wrapper", "await self._connect_on_owner(reset=reset, failed_session=failed_session)", "unresolved", "chrys.service.mcp.owned.MCPTool._connect_on_owner"],
         ["sync_primitive", "async with self._lifecycle_request_lock", "unresolved"],
-        ["wrapper", "await self._run_on_lifecycle_owner('connect', reset=reset)", "unresolved", "chrys.service.mcp.owned.MCPTool._run_on_lifecycle_owner"]
+        ["wrapper", "await self._run_on_lifecycle_owner('connect', reset=reset, failed_session=failed_session)", "unresolved", "chrys.service.mcp.owned.MCPTool._run_on_lifecycle_owner"]
       ],
       "MCPTool._ensure_connected": [
         ["awaitable", "await session.send_ping()", "unresolved"],
-        ["wrapper", "await self._reconnect_or_raise(mcp_exc)", "unresolved", "chrys.service.mcp.owned.MCPTool._reconnect_or_raise"],
-        ["wrapper", "await self._reconnect_or_raise(ex)", "unresolved", "chrys.service.mcp.owned.MCPTool._reconnect_or_raise"]
+        ["wrapper", "await self._reconnect_or_raise(mcp_exc, session)", "unresolved", "chrys.service.mcp.owned.MCPTool._reconnect_or_raise"],
+        ["wrapper", "await self._reconnect_or_raise(ex, session)", "unresolved", "chrys.service.mcp.owned.MCPTool._reconnect_or_raise"]
       ],
       "MCPTool._ensure_lifecycle_owner": [
         ["sync_primitive", "async with self._lifecycle_lock", "unresolved"]
       ],
-      "MCPTool._load_prompts_locked": [
+      "MCPTool._list_catalog": [
         ["wrapper", "await self._ensure_connected()", "unresolved", "chrys.service.mcp.owned.MCPTool._ensure_connected"],
-        ["awaitable", "await session.list_prompts(params=params)", "unresolved"],
-        ["wrapper", "await self._reconnect_without_loading()", "unresolved", "chrys.service.mcp.owned.MCPTool._reconnect_without_loading"]
+        ["awaitable", "await list_page(session, params)", "unresolved"],
+        ["wrapper", "await self._reconnect_without_loading(session)", "unresolved", "chrys.service.mcp.owned.MCPTool._reconnect_without_loading"]
+      ],
+      "MCPTool._load_prompts_locked": [
+        ["wrapper", "await self._list_catalog('prompts', lambda session, params: session.list_prompts(params=params), lambda: self._supports_prompts)", "unresolved", "chrys.service.mcp.owned.MCPTool._list_catalog"]
       ],
       "MCPTool._load_tools_locked": [
-        ["wrapper", "await self._ensure_connected()", "unresolved", "chrys.service.mcp.owned.MCPTool._ensure_connected"],
-        ["awaitable", "await session.list_tools(params=params)", "unresolved"],
-        ["wrapper", "await self._reconnect_without_loading()", "unresolved", "chrys.service.mcp.owned.MCPTool._reconnect_without_loading"]
+        ["wrapper", "await self._list_catalog('tools', lambda session, params: session.list_tools(params=params), lambda: self._supports_tools)", "unresolved", "chrys.service.mcp.owned.MCPTool._list_catalog"]
       ],
       "MCPTool._make_remote_tool_call._call_tool_with_runtime_kwargs": [
         ["wrapper", "await self.call_tool(remote_tool_name, **call_kwargs)", "unresolved", "chrys.service.mcp.owned.MCPTool.call_tool"]
       ],
       "MCPTool._reconnect_or_raise": [
-        ["wrapper", "await self._reconnect_without_loading()", "unresolved", "chrys.service.mcp.owned.MCPTool._reconnect_without_loading"]
+        ["wrapper", "await self._reconnect_without_loading(failed_session)", "unresolved", "chrys.service.mcp.owned.MCPTool._reconnect_without_loading"]
       ],
       "MCPTool._reconnect_without_loading": [
-        ["wrapper", "await self._connect_on_owner(reset=True, load_configured=False)", "unresolved", "chrys.service.mcp.owned.MCPTool._connect_on_owner"],
-        ["wrapper", "await self._run_on_lifecycle_owner('connect', reset=True, load_configured=False)", "unresolved", "chrys.service.mcp.owned.MCPTool._run_on_lifecycle_owner"]
+        ["wrapper", "await self._connect_on_owner(reset=True, load_configured=False, failed_session=failed_session)", "unresolved", "chrys.service.mcp.owned.MCPTool._connect_on_owner"],
+        ["wrapper", "await self._run_on_lifecycle_owner('connect', reset=True, load_configured=False, failed_session=failed_session)", "unresolved", "chrys.service.mcp.owned.MCPTool._run_on_lifecycle_owner"]
       ],
       "MCPTool._run_lifecycle_owner": [
         ["queue", "await queue.get()", "unresolved"],
-        ["wrapper", "await self._connect_on_owner(reset=reset, load_configured=load_configured)", "unresolved", "chrys.service.mcp.owned.MCPTool._connect_on_owner"],
+        ["wrapper", "await self._connect_on_owner(reset=reset, load_configured=load_configured, failed_session=failed_session)", "unresolved", "chrys.service.mcp.owned.MCPTool._connect_on_owner"],
         ["wrapper", "await self._close_on_owner()", "unresolved", "chrys.service.mcp.owned.MCPTool._close_on_owner"]
       ],
       "MCPTool._run_on_lifecycle_owner": [
         ["wrapper", "await self._ensure_lifecycle_owner()", "unresolved", "chrys.service.mcp.owned.MCPTool._ensure_lifecycle_owner"],
-        ["wrapper", "await self._connect_on_owner(reset=reset, load_configured=load_configured)", "unresolved", "chrys.service.mcp.owned.MCPTool._connect_on_owner"],
+        ["wrapper", "await self._connect_on_owner(reset=reset, load_configured=load_configured, failed_session=failed_session)", "unresolved", "chrys.service.mcp.owned.MCPTool._connect_on_owner"],
         ["wrapper", "await self._close_on_owner()", "unresolved", "chrys.service.mcp.owned.MCPTool._close_on_owner"],
-        ["queue", "await queue.put((action, reset, load_configured, future))", "unresolved"],
+        ["queue", "await queue.put((action, reset, load_configured, failed_session, future))", "unresolved"],
         ["future", "await future", "unresolved"]
       ],
       "MCPTool._safe_close_exit_stack": [
@@ -4914,13 +4915,13 @@
       ],
       "MCPTool.connect": [
         ["awaitable", "await wait.started()", "unresolved"],
-        ["wrapper", "await self._connect_unrecorded(reset=reset)", "unresolved", "chrys.service.mcp.owned.MCPTool._connect_unrecorded"],
+        ["wrapper", "await self._connect_unrecorded(reset=reset, failed_session=failed_session)", "unresolved", "chrys.service.mcp.owned.MCPTool._connect_unrecorded"],
         ["awaitable", "await wait.finished(outcome=WaitOutcome.FAILED)", "unresolved"],
         ["awaitable", "await wait.finished()", "unresolved"]
       ],
       "MCPTool.get_prompt": [
         ["awaitable", "await session.get_prompt(prompt_name, arguments=kwargs)", "unresolved"],
-        ["wrapper", "await self.connect(reset=True)", "unresolved", "chrys.service.mcp.owned.MCPTool.connect"]
+        ["wrapper", "await self.connect(reset=True, failed_session=session)", "unresolved", "chrys.service.mcp.owned.MCPTool.connect"]
       ],
       "MCPTool.load_prompts": [
         ["sync_primitive", "async with self._function_load_lock", "unresolved"],
