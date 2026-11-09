@@ -333,6 +333,20 @@ class TestRecallContext:
         ):
             assert fragment in formatted
 
+    def test_recall_formatter_renders_non_text_function_result(self) -> None:
+        messages = [
+            Message("assistant", [Content.from_function_call("call", "view_image", arguments={"path": "shot.png"})]),
+            Message(
+                "tool",
+                [Content.from_function_result("call", result=[Content.from_data(b"\x89PNG", "image/png")])],
+            ),
+        ]
+
+        formatted = _format_messages_as_text(messages)
+
+        assert "[Tool result: [image/png image]]" in formatted
+        assert "completed" not in formatted
+
     @pytest.mark.asyncio
     async def test_recall_invalid_id(self) -> None:
         provider = _make_provider()
