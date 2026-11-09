@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import contextlib
+from typing import TYPE_CHECKING
+
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
@@ -23,6 +26,9 @@ from chrys.foundation.text.draft_references import DraftReferences, expand_refer
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 pytestmark = pytest.mark.asyncio
 
@@ -90,41 +96,76 @@ async def _open(
     return bar, area, app.screen.query_one(DraftEditor)
 
 
+def _empty_composer(app: _App) -> None:
+    """Leave the composer as a new app has it: no draft, and no step to undo or redo.
+
+    Several cases share one app run (a MainScreen costs more to build than a case costs to run);
+    each starts from here, so no draft or undo step of an earlier case reaches it.
+    """
+    bar = app.main.query_one(InputBar)
+    area = bar.query_one("#chat-input", TextArea)
+    bar.set_draft(ChatDraft(""))
+    area.history.clear()
+    assert bar.draft() == ChatDraft("")
+    assert not area.history.undo_stack and not area.history.redo_stack
+
+
+@contextlib.contextmanager
+def _case(**values: object) -> Iterator[None]:
+    """Name the case of a shared app run that failed."""
+    try:
+        yield
+    except BaseException as error:
+        error.add_note("case: " + ", ".join(f"{name}={value!r}" for name, value in values.items()))
+        raise
+
+
+_DRAFT_SHAPES = [(False, False), (True, False), (False, True), (True, True)]
+
+
 @pytest.mark.parametrize("entry", ["keyboard", "button"])
 @pytest.mark.parametrize("kind", ["none", "paste", "mixed"])
-@pytest.mark.parametrize("fields,owner", [(False, False), (True, False), (False, True), (True, True)])
-async def test_open_editor_expands_sending_forms_and_shifts_fields(
-    entry: str, kind: str, fields: bool, owner: bool
-) -> None:
+async def test_open_editor_expands_sending_forms_and_shifts_fields(entry: str, kind: str) -> None:
     app = _App()
-    draft = _draft(fields=fields, owner=owner, kind=kind)
     async with app.run_test(size=(120, 36)) as pilot:
-        _bar, _area, editor = await _open(app, pilot, draft, entry=entry, cursor=len(draft.text))
-        expected = expand_references(draft.text, draft.references)
-        assert editor.text == expected
-        assert not editor.references
-        expected_start = expected.index("FIELD")
-        assert editor.chat_draft().fields == (((expected_start, expected_start + 5),) if fields else ())
-        assert editor.chat_draft().owner == draft.owner
-        assert editor.cursor_location == Document(expected).end
+        # Every (fields, owner) shape, each written whole into the composer and opened in a new editor.
+        for fields, owner in _DRAFT_SHAPES:
+            with _case(fields=fields, owner=owner):
+                draft = _draft(fields=fields, owner=owner, kind=kind)
+                _empty_composer(app)
+                _bar, _area, editor = await _open(app, pilot, draft, entry=entry, cursor=len(draft.text))
+                expected = expand_references(draft.text, draft.references)
+                assert editor.text == expected
+                assert not editor.references
+                expected_start = expected.index("FIELD")
+                assert editor.chat_draft().fields == (((expected_start, expected_start + 5),) if fields else ())
+                assert editor.chat_draft().owner == draft.owner
+                assert editor.cursor_location == Document(expected).end
+                # Unchanged, so Escape closes it at once.
+                await pilot.press("escape")
+                await wait_for(lambda: app.screen is app.main, pilot=pilot, description="clean editor closed")
 
 
 @pytest.mark.parametrize("entry", ["keyboard", "button"])
-@pytest.mark.parametrize("edge", ["before", "after"])
-async def test_editor_cursor_maps_both_label_edges(entry: str, edge: str) -> None:
+async def test_editor_cursor_maps_both_label_edges(entry: str) -> None:
     app = _App()
     references, reference = DraftReferences().with_new("paste", "first\nlast")
     draft = ChatDraft(f"a{reference.label}z", references=references)
-    cursor = 1 if edge == "before" else 1 + len(reference.label)
     async with app.run_test(size=(120, 36)) as pilot:
-        _bar, _area, editor = await _open(app, pilot, draft, entry=entry, cursor=cursor)
-        assert editor.text == "afirst\nlastz"
-        assert editor.cursor_location == ((0, 1) if edge == "before" else (1, 4))
+        for edge in ("before", "after"):
+            with _case(edge=edge):
+                cursor = 1 if edge == "before" else 1 + len(reference.label)
+                _empty_composer(app)
+                _bar, _area, editor = await _open(app, pilot, draft, entry=entry, cursor=cursor)
+                assert editor.text == "afirst\nlastz"
+                assert editor.cursor_location == ((0, 1) if edge == "before" else (1, 4))
+                # Unchanged, so Escape closes it at once.
+                await pilot.press("escape")
+                await wait_for(lambda: app.screen is app.main, pilot=pilot, description="clean editor closed")
 
 
 @pytest.mark.parametrize("mode", list(EditorMode))
-@pytest.mark.parametrize("edge", ["before", "between", "after"])
-async def test_clean_editor_round_trip_preserves_cursor_at_adjacent_label_edges(mode: EditorMode, edge: str) -> None:
+async def test_clean_editor_round_trip_preserves_cursor_at_adjacent_label_edges(mode: EditorMode) -> None:
     app = _App()
     app.main._editor_mode = mode
     references, first = DraftReferences().with_new(
@@ -132,25 +173,30 @@ async def test_clean_editor_round_trip_preserves_cursor_at_adjacent_label_edges(
     )
     references, second = references.with_new("paste", "x\ny\nz\nq\nr\ns")
     draft = ChatDraft(f"{first.label}{second.label} tail", references=references)
-    cursor = {"before": 0, "between": len(first.label), "after": len(first.label) + len(second.label)}[edge]
-    expected_cursor = Document(draft.text).get_location_from_index(cursor)
     async with app.run_test(size=(120, 36)) as pilot:
-        bar, area, editor = await _open(app, pilot, draft, cursor=cursor)
-        assert editor.text == first.content + second.content + " tail"
-        assert not editor.editor_is_dirty
-        undo_before = len(area.history.undo_stack)
+        bar = app.main.query_one(InputBar)
+        area = bar.query_one("#chat-input", TextArea)
+        for edge in ("before", "between", "after"):
+            with _case(edge=edge):
+                cursor = {"before": 0, "between": len(first.label), "after": len(first.label) + len(second.label)}[edge]
+                expected_cursor = Document(draft.text).get_location_from_index(cursor)
+                _empty_composer(app)
+                _bar, _area, editor = await _open(app, pilot, draft, cursor=cursor)
+                assert editor.text == first.content + second.content + " tail"
+                assert not editor.editor_is_dirty
+                undo_before = len(area.history.undo_stack)
 
-        await pilot.press("ctrl+o")
+                await pilot.press("ctrl+o")
 
-        await wait_for(
-            lambda: app.screen is app.main and area.has_focus, pilot=pilot, description="clean save returned"
-        )
-        assert bar.draft() == draft
-        assert area.cursor_location == expected_cursor
-        assert len(area.history.undo_stack) == undo_before
-        if edge == "before":
-            await pilot.press("backspace")
-            assert bar.draft() == draft
+                await wait_for(
+                    lambda: app.screen is app.main and area.has_focus, pilot=pilot, description="clean save returned"
+                )
+                assert bar.draft() == draft
+                assert area.cursor_location == expected_cursor
+                assert len(area.history.undo_stack) == undo_before
+                if edge == "before":
+                    await pilot.press("backspace")
+                    assert bar.draft() == draft
 
 
 @pytest.mark.parametrize("mode", list(EditorMode))
@@ -204,25 +250,30 @@ async def test_quote_and_image_click_keep_read_only_preview(kind: str) -> None:
 
 
 @pytest.mark.parametrize("state", ["locked", "shell_mode"])
-@pytest.mark.parametrize("entry", ["keyboard", "button", "paste"])
-async def test_all_editor_entries_respect_input_state(state: str, entry: str) -> None:
+async def test_all_editor_entries_respect_input_state(state: str) -> None:
     app = _App()
     async with app.run_test(size=(120, 36)) as pilot:
         bar = app.main.query_one(InputBar)
         bar.set_draft(_draft(kind="paste"))
         area = bar.query_one("#chat-input", TextArea)
-        area.focus()
-        setattr(bar, state, True)
-        await pilot.pause()
-        if entry == "keyboard":
-            await pilot.press("ctrl+o")
-        elif entry == "button":
-            await click_when_settled(pilot, "#editor-btn")
-        else:
-            reference = bar.draft().references.entries[0]
-            bar.on_draft_text_area_reference_clicked(area.ReferenceClicked(reference, area.text.index(reference.label)))
-            await pilot.pause()
-        assert app.screen is app.main
+        # A refused entry leaves the app as it found it, so the entries take turns in one run. The
+        # keyboard goes first: only it relies on the composer's focus, taken before the state is set.
+        for entry in ("keyboard", "button", "paste"):
+            with _case(entry=entry):
+                area.focus()
+                setattr(bar, state, True)
+                await pilot.pause()
+                if entry == "keyboard":
+                    await pilot.press("ctrl+o")
+                elif entry == "button":
+                    await click_when_settled(pilot, "#editor-btn")
+                else:
+                    reference = bar.draft().references.entries[0]
+                    bar.on_draft_text_area_reference_clicked(
+                        area.ReferenceClicked(reference, area.text.index(reference.label))
+                    )
+                    await pilot.pause()
+                assert app.screen is app.main
 
 
 _SAVE_PATHS = [
@@ -250,121 +301,123 @@ async def _save(pilot, path: str) -> None:
 
 
 @pytest.mark.parametrize("mode,path", _SAVE_PATHS)
-@pytest.mark.parametrize("change", ["unchanged", "restored", "text", "fields"])
-async def test_every_save_path_preserves_clean_labels_or_commits_once(mode: EditorMode, path: str, change: str) -> None:
+async def test_every_save_path_preserves_clean_labels_or_commits_once(mode: EditorMode, path: str) -> None:
     app = _App()
     app.main._editor_mode = mode
     draft = _draft()
     async with app.run_test(size=(120, 36)) as pilot:
-        bar, area, editor = await _open(app, pilot, draft)
-        expected = expand_references(draft.text, draft.references)
-        assert editor.text == expected
-        undo_before = len(area.history.undo_stack)
-        if change in ("restored", "text"):
-            editor.insert("!", editor.document.end)
-            if change == "restored":
-                editor.undo()
-        elif change == "fields":
-            editor.set_prompt_fields(())
-        edited = editor.chat_draft()
-        # Exercise the inverse cursor conversion inside an expanded paste.
-        if change in ("unchanged", "restored"):
-            editor.move_cursor((0, 10))
-        await _save(pilot, path)
-        await wait_for(lambda: app.screen is app.main and area.has_focus, pilot=pilot, description="save returned")
-        if change in ("unchanged", "restored"):
-            assert bar.draft() == draft
-            assert len(area.history.undo_stack) == undo_before
-            assert area.cursor_location == (0, 7 + len(draft.references.entries[0].label))
-            await pilot.press("ctrl+z")
-            assert bar.value == ""
-        else:
-            assert bar.draft() == edited
-            await pilot.press("ctrl+z")
-            assert bar.draft() == draft
-            await pilot.press("ctrl+y")
-            assert bar.draft() == edited
+        bar = app.main.query_one(InputBar)
+        area = bar.query_one("#chat-input", TextArea)
+        for change in ("unchanged", "restored", "text", "fields"):
+            with _case(change=change):
+                _empty_composer(app)
+                _bar, _area, editor = await _open(app, pilot, draft)
+                expected = expand_references(draft.text, draft.references)
+                assert editor.text == expected
+                undo_before = len(area.history.undo_stack)
+                if change in ("restored", "text"):
+                    editor.insert("!", editor.document.end)
+                    if change == "restored":
+                        editor.undo()
+                elif change == "fields":
+                    editor.set_prompt_fields(())
+                edited = editor.chat_draft()
+                # Exercise the inverse cursor conversion inside an expanded paste.
+                if change in ("unchanged", "restored"):
+                    editor.move_cursor((0, 10))
+                await _save(pilot, path)
+                await wait_for(
+                    lambda: app.screen is app.main and area.has_focus, pilot=pilot, description="save returned"
+                )
+                if change in ("unchanged", "restored"):
+                    assert bar.draft() == draft
+                    assert len(area.history.undo_stack) == undo_before
+                    assert area.cursor_location == (0, 7 + len(draft.references.entries[0].label))
+                    await pilot.press("ctrl+z")
+                    assert bar.value == ""
+                else:
+                    assert bar.draft() == edited
+                    await pilot.press("ctrl+z")
+                    assert bar.draft() == draft
+                    await pilot.press("ctrl+y")
+                    assert bar.draft() == edited
 
 
 @pytest.mark.parametrize("mode,path", _SAVE_PATHS)
-@pytest.mark.parametrize("editor_changed", [False, True])
-async def test_confirmed_overwrite_is_one_step_even_for_clean_editor(
-    mode: EditorMode, path: str, editor_changed: bool
-) -> None:
+async def test_confirmed_overwrite_is_one_step_even_for_clean_editor(mode: EditorMode, path: str) -> None:
     app = _App()
     app.main._editor_mode = mode
     draft = _draft()
     async with app.run_test(size=(120, 36)) as pilot:
-        bar, _area, editor = await _open(app, pilot, draft)
-        assert not editor.references
-        if editor_changed:
-            editor.insert("!", editor.document.end)
-        edited = editor.chat_draft()
-        overwritten = ChatDraft("external FIELD", ((9, 14),), draft.owner)
-        bar.set_draft(overwritten)
-        await _save(pilot, path)
-        assert isinstance(app.screen, EditorDialog)
-        if path in (":wq", ":x"):
-            # A refused Vim command remains on its command line; Enter submits it again.
-            await pilot.press("enter")
-        else:
-            if path == "button":
-                button = app.screen.query_one("#editor-commit", Button)
-                await wait_for(
-                    lambda: not button.has_class("-active"), pilot=pilot, description="Commit button ready again"
-                )
-            await _save(pilot, path)
-        await wait_for(lambda: app.screen is app.main, pilot=pilot, description="confirmed overwrite")
-        wanted = edited if editor_changed else draft
-        assert bar.draft() == wanted
-        await pilot.press("ctrl+z")
-        assert bar.draft() == overwritten
-        await pilot.press("ctrl+y")
-        assert bar.draft() == wanted
+        for editor_changed in (False, True):
+            with _case(editor_changed=editor_changed):
+                _empty_composer(app)
+                bar, _area, editor = await _open(app, pilot, draft)
+                assert not editor.references
+                if editor_changed:
+                    editor.insert("!", editor.document.end)
+                edited = editor.chat_draft()
+                overwritten = ChatDraft("external FIELD", ((9, 14),), draft.owner)
+                bar.set_draft(overwritten)
+                if path == "button":
+                    # A pressed Button ignores clicks until its press effect ends, and the second
+                    # click (``click_when_settled``) waits that out; the effect's length (0.2 s) is not
+                    # what this tests.
+                    app.screen.query_one("#editor-commit", Button).active_effect_duration = 0.02
+                await _save(pilot, path)
+                assert isinstance(app.screen, EditorDialog)
+                if path in (":wq", ":x"):
+                    # A refused Vim command remains on its command line; Enter submits it again.
+                    await pilot.press("enter")
+                else:
+                    await _save(pilot, path)
+                await wait_for(lambda: app.screen is app.main, pilot=pilot, description="confirmed overwrite")
+                wanted = edited if editor_changed else draft
+                assert bar.draft() == wanted
+                await pilot.press("ctrl+z")
+                assert bar.draft() == overwritten
+                await pilot.press("ctrl+y")
+                assert bar.draft() == wanted
 
 
 @pytest.mark.parametrize(
-    "mode,path,dirty",
+    "mode,path,dirty_cases",
     [
-        (EditorMode.STANDARD, "escape", False),
-        (EditorMode.STANDARD, "escape", True),
-        (EditorMode.EMACS, "escape", False),
-        (EditorMode.EMACS, "escape", True),
-        (EditorMode.STANDARD, "button", False),
-        (EditorMode.STANDARD, "button", True),
-        (EditorMode.EMACS, "button", False),
-        (EditorMode.EMACS, "button", True),
-        (EditorMode.VIM, "ZQ", False),
-        (EditorMode.VIM, "ZQ", True),
-        (EditorMode.VIM, ":q!", False),
-        (EditorMode.VIM, ":q!", True),
-        (EditorMode.VIM, ":q", False),
-        (EditorMode.VIM, "button", False),
-        (EditorMode.VIM, "button", True),
+        (EditorMode.STANDARD, "escape", (False, True)),
+        (EditorMode.EMACS, "escape", (False, True)),
+        (EditorMode.STANDARD, "button", (False, True)),
+        (EditorMode.EMACS, "button", (False, True)),
+        (EditorMode.VIM, "ZQ", (False, True)),
+        (EditorMode.VIM, ":q!", (False, True)),
+        (EditorMode.VIM, ":q", (False,)),
+        (EditorMode.VIM, "button", (False, True)),
     ],
 )
-async def test_discard_paths_preserve_folded_draft(mode: EditorMode, path: str, dirty: bool) -> None:
+async def test_discard_paths_preserve_folded_draft(mode: EditorMode, path: str, dirty_cases: tuple[bool, ...]) -> None:
     app = _App()
     app.main._editor_mode = mode
     draft = _draft()
     async with app.run_test(size=(120, 36)) as pilot:
-        bar, _area, editor = await _open(app, pilot, draft)
-        assert not editor.references
-        if dirty:
-            editor.insert("!", editor.document.end)
-        if path == "button":
-            await click_when_settled(pilot, "#editor-cancel")
-            await click_when_settled(pilot, "#confirm-yes")
-        elif path == "escape":
-            await pilot.press("escape")
-            if dirty:
-                assert isinstance(app.screen, EditorDialog)
-                assert app.screen.discard_armed
-                await pilot.press("escape")
-        else:
-            await pilot.press(*path, *(("enter",) if path.startswith(":") else ()))
-        await wait_for(lambda: app.screen is app.main, pilot=pilot, description="discard returned")
-        assert bar.draft() == draft
+        for dirty in dirty_cases:
+            with _case(dirty=dirty):
+                _empty_composer(app)
+                bar, _area, editor = await _open(app, pilot, draft)
+                assert not editor.references
+                if dirty:
+                    editor.insert("!", editor.document.end)
+                if path == "button":
+                    await click_when_settled(pilot, "#editor-cancel")
+                    await click_when_settled(pilot, "#confirm-yes")
+                elif path == "escape":
+                    await pilot.press("escape")
+                    if dirty:
+                        assert isinstance(app.screen, EditorDialog)
+                        assert app.screen.discard_armed
+                        await pilot.press("escape")
+                else:
+                    await pilot.press(*path, *(("enter",) if path.startswith(":") else ()))
+                await wait_for(lambda: app.screen is app.main, pilot=pilot, description="discard returned")
+                assert bar.draft() == draft
 
 
 async def test_plain_editor_save_undo_never_shows_intermediate_empty_draft() -> None:
