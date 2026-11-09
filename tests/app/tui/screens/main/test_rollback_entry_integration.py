@@ -38,6 +38,8 @@ from tests.support.tui_app_harness import ShutdownOnlyEngine, make_chrys_app
 from tests.support.tui_helpers import ChatPanelApp, click_when_settled, rich_plain
 from tests.support.waiting import wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.fixture(autouse=True)
 def no_native_branch_observer(monkeypatch: pytest.MonkeyPatch) -> None:

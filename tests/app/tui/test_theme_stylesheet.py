@@ -34,6 +34,9 @@ from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import EmptyAgentRegistry, ShutdownOnlyEngine, make_chrys_app
 from tests.support.waiting import wait_for
 
+# These tests count what Textual tokenizes through ThemeStylesheet's own rule cache.
+pytestmark = pytest.mark.real_css_parse
+
 
 class ThemeScreen(Screen):
     def compose(self) -> ComposeResult:

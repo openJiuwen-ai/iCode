@@ -157,9 +157,8 @@ async def test_agent_loading_hides_f12_and_its_end_restores_the_footer_key(
         assert "f12" in main.active_bindings
 
 
-@pytest.mark.parametrize("view", ["graph", "code", "output"])
 async def test_workflow_hides_f12_and_switching_back_to_chat_restores_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, view: Literal["graph", "code", "output"]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(make_project(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
@@ -179,20 +178,24 @@ async def test_workflow_hides_f12_and_switching_back_to_chat_restores_it(
         diagram = graph.diagram
         composer = main.query_one(InputBar)
         composer.replace_draft("Keep this workflow draft")
-        await select_workflow_view(main, pilot, view)
-        badge = str(main.query_one("#mode-badge", Static).content)
-        await pilot.press("f12")
-        main.action_toggle_trajectory_dashboard()
-        assert not dashboard.foreground and not dashboard.display
-        assert main._workflow.workflow_mode
-        assert str(main.query_one("#mode-badge", Static).content) == badge
-        assert panel.display and not main.query_one(ChatPanel).display
-        assert not main.query_one(SidebarPanel).query_one(TabbedContent).get_tab("tab-context").display
-        assert tabs.active == f"workflow-{view}-tab"
-        assert panel.preview is not None and panel.preview.spec_digest == preview.spec_digest
-        assert graph.diagram is diagram
-        assert composer.value == "Keep this workflow draft"
-        assert "f12" not in main.active_bindings
+        # F12 leaves Workflow mode exactly as it was (asserted each time), so every view is tried on one
+        # screen; the code view, whose Escape is its own, goes last and stays selected through the switches below.
+        views: tuple[Literal["graph", "output", "code"], ...] = ("graph", "output", "code")
+        for view in views:
+            await select_workflow_view(main, pilot, view)
+            badge = str(main.query_one("#mode-badge", Static).content)
+            await pilot.press("f12")
+            main.action_toggle_trajectory_dashboard()
+            assert not dashboard.foreground and not dashboard.display
+            assert main._workflow.workflow_mode
+            assert str(main.query_one("#mode-badge", Static).content) == badge
+            assert panel.display and not main.query_one(ChatPanel).display
+            assert not main.query_one(SidebarPanel).query_one(TabbedContent).get_tab("tab-context").display
+            assert tabs.active == f"workflow-{view}-tab"
+            assert panel.preview is not None and panel.preview.spec_digest == preview.spec_digest
+            assert graph.diagram is diagram
+            assert composer.value == "Keep this workflow draft"
+            assert "f12" not in main.active_bindings
 
         await switch_mode(main, pilot)
         assert not main._workflow.workflow_mode

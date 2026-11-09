@@ -40,6 +40,8 @@ from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain, wai
 if TYPE_CHECKING:
     from collections.abc import AsyncIterable
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("retired", [False, True])
 async def test_live_opener_waits_for_backend_cleanup_and_authoritative_index(retired: bool) -> None:

@@ -31,12 +31,25 @@ from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 pytestmark = pytest.mark.usefixtures("clear_model_profile_env")
 
 
-async def slash_reload(session: Session) -> None:
-    await type_text(session.pilot, "/reload")
+async def slash_reload(session: Session, *, typed: bool = False) -> None:
+    """``/reload`` and Enter in the composer.
+
+    Put in whole unless *typed*: key by key, every key re-filters the ``/``
+    list, which costs a tenth of a second and is not what these tests are
+    about. The command still goes out through Enter and the composer's submit.
+    """
+    if typed:
+        await type_text(session.pilot, "/reload")
+    else:
+        session.chat.insert("/reload")
     await session.pilot.press("enter")
 
 
 async def ask_after_reload(session: Session, prompt: str) -> None:
+    """The chat still sends: *prompt* goes out with Enter and its turn runs to its end.
+
+    The prompt is put in whole, not typed: it only labels the turn.
+    """
     await wait_for(
         lambda: session.app.screen is session.main and not session.bar.agent_loading,
         pilot=session.pilot,
@@ -46,7 +59,7 @@ async def ask_after_reload(session: Session, prompt: str) -> None:
     assert not error_cards(session.main)
     session.bar.focus_input()
     await wait_for(lambda: session.chat.has_focus, pilot=session.pilot, description="chat input focused")
-    await send_plain(session, prompt)
+    await send_plain(session, prompt, typed=False)
     await turn_finished(session)
     assert prompt in session.model.last_user_text()
     assert not session.seen.of(ev.UserRetry)
@@ -85,7 +98,8 @@ async def test_broken_settings_and_subsequent_repair_leave_chat_usable(agent_eng
     activate_model_profile(MAIN_MODEL)
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         path.write_text("ui: [broken", encoding="utf-8")
-        await slash_reload(session)
+        # Typed as a user would, through the ``/`` list; the other reloads put the command in whole.
+        await slash_reload(session, typed=True)
         await wait_for(
             lambda: any(str(path) in m for _, m in notices(session.app)),
             pilot=session.pilot,

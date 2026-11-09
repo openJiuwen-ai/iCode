@@ -97,8 +97,14 @@ async def test_workflow_shares_the_launch_approval_badge_and_its_errors_stay_sco
         assert main.header_approval_mode is ApprovalMode.BYPASS
 
 
-@pytest.mark.parametrize("selected", [False, True], ids=["welcome", "preview"])
-@pytest.mark.parametrize("mode", [ApprovalMode.MANUAL, ApprovalMode.BYPASS])
+# The chosen mode is only a value carried through either path. Manual is the saved default, so only
+# Bypass can tell a reset to it apart, and only the welcome path opens the workflow after the choice:
+# that pairing is kept; with the preview open beforehand, the Auto check already catches a reset.
+@pytest.mark.parametrize(
+    ("selected", "mode"),
+    [(False, ApprovalMode.BYPASS), (True, ApprovalMode.MANUAL)],
+    ids=["welcome-bypass", "preview-manual"],
+)
 async def test_the_badge_keeps_the_launch_mode_while_workflow_drafts_carry_only_the_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: bool, mode: ApprovalMode
 ) -> None:

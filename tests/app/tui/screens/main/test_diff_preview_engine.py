@@ -40,6 +40,8 @@ from tests.support.pipeline_helpers import make_mock_settings_and_registry
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 def _display_keys(rows: Sequence[DiffFileEntry]) -> tuple[str, ...]:
     return tuple(entry_display_key(row) for row in rows)

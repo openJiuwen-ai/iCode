@@ -62,8 +62,34 @@ def _reports(driver: _ForwardingDriver) -> list[str]:
     return [value for value in driver.writes if value.startswith("\x1b]7501;")]
 
 
-@pytest.mark.parametrize("outcome", ["completed", "failed"])
-@pytest.mark.parametrize("action", ["new", "restore", "switch-mode", "failed-restore"])
+_ERROR = _seq("state=error:app=iCode")
+
+
+@pytest.mark.parametrize(("outcome", "result"), [("completed", _DONE), ("failed", _ERROR)])
+async def test_acknowledging_the_context_clears_a_done_or_an_error_result_alike(
+    monkeypatch: pytest.MonkeyPatch, outcome: str, result: str
+) -> None:
+    monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
+    bus, app = EventBus(), _App()
+    reporter = ProgramStatusReporter(bus, app_provider=lambda: app)
+    await reporter.subscribe()
+    try:
+        await bus.publish(ExecutionChanged(snapshot=ExecutionSnapshot("workflow", run_id="run")))
+        await bus.publish(WorkflowRunFinished(run_id="run", outcome=outcome))
+        await bus.publish(ExecutionChanged(snapshot=ExecutionSnapshot("idle")))
+        assert app.writes[-1] == result
+        reporter.reset_context()
+        assert app.writes[-1] == _IDLE
+    finally:
+        await reporter.close()
+
+
+# The reporter clears either result kind the same way (pinned above), so each context change
+# runs once here, wired through the real app, and each outcome still reaches the driver.
+@pytest.mark.parametrize(
+    ("action", "outcome"),
+    [("new", "completed"), ("restore", "failed"), ("switch-mode", "completed"), ("failed-restore", "failed")],
+)
 async def test_workflow_context_changes_clear_only_acknowledged_results(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str, outcome: str
 ) -> None:
@@ -80,7 +106,7 @@ async def test_workflow_context_changes_clear_only_acknowledged_results(
         run_id = await _accept_live_run(pilot, engine, bus, requests)
         await bus.publish(WorkflowRunFinished(run_id=run_id, outcome=outcome))
         await engine.set_execution(ExecutionSnapshot("idle"), bus)
-        result = _DONE if outcome == "completed" else _seq("state=error:app=iCode")
+        result = _DONE if outcome == "completed" else _ERROR
         assert _reports(driver)[-1] == result
 
         if action == "new":

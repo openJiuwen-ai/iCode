@@ -345,13 +345,18 @@ async def running_session(
     startup_agent: str = ALPHA,
     hold_startup_load: bool = False,
     size: tuple[int, int] = (120, 40),
+    load_holds: bool = False,
 ) -> AsyncIterator[Session]:
     """Run the app on a real engine until the session is ready, with the chat input focused.
 
     With *hold_startup_load* the startup's ``AgentLoadStarted`` is held before
     the screen sees it (the first hold in ``holds``): the agent is loading and
-    nothing is waited for.
+    nothing is waited for. A load's dialog goes through its finished steps and
+    closes without pausing on them unless *load_holds* keeps its real pauses.
     """
+    if not load_holds:
+        monkeypatch.setattr(AgentLoadDialog, "COMPLETE_STEP_HOLD_SECONDS", 0.0)
+        monkeypatch.setattr(AgentLoadDialog, "FINISH_HOLD_SECONDS", 0.0)
     bus = EventBus()
     seen = Seen()
     for kind in recorded_event_types():
@@ -618,10 +623,16 @@ async def await_error(session: Session, code: str) -> ev.Error:
     return error
 
 
-async def send_plain(session: Session, text: str) -> ev.UserMessage:
-    """Type *text* and press Enter; return the message once its turn has started."""
+async def send_plain(session: Session, text: str, *, typed: bool = True) -> ev.UserMessage:
+    """Type *text* and press Enter; return the message once its turn has started.
+
+    Unless *typed*, the text is put in whole: where it only labels the turn, typing it is not what is tested.
+    """
     before = len(session.seen.of(ev.UserMessage))
-    await type_text(session.pilot, text)
+    if typed:
+        await type_text(session.pilot, text)
+    else:
+        session.chat.insert(text)
     await session.pilot.press("enter")
     await wait_for(
         lambda: len(session.seen.of(ev.UserMessage)) > before and session.seen.of(ev.UserMessage)[-1].started_turn,
@@ -678,7 +689,8 @@ async def test_enter_sends_the_draft_with_its_shortcut_and_shows_its_commands_ru
 ) -> None:
     command = held_command("go", "clean")
     write_shortcut("zzstatus", f"Status: {command}")
-    async with running_session(agent_engine, tmp_path, monkeypatch) as session:
+    # The startup load's dialog keeps its real pauses before the session counts as ready.
+    async with running_session(agent_engine, tmp_path, monkeypatch, load_holds=True) as session:
         main, pilot, chat = session.main, session.pilot, session.chat
         draft = await expand_shortcut(session, "zzstatus")
         assert draft.text == f"Status: {command}"

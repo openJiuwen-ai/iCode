@@ -49,6 +49,8 @@ from tests.support.tui_helpers import (
 )
 from tests.support.waiting import wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 def test_chat_panel_agent_running_reactive_resets_final_response_gate() -> None:
     panel = ChatPanel()

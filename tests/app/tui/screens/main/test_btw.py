@@ -55,8 +55,12 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
+    from textual.pilot import Pilot
+
     from chrys.service.profiles.models.schema import ModelProfile
     from tests.support.engines import AgentEngineFactory
+
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 _CLOSE_GLYPH = "✕"
 _SAVE_WARNING = ("warning", "This side answer could not be saved. It stays available until you leave this session.")
@@ -325,6 +329,12 @@ async def test_final_answer_stays_in_card_and_scrolls_without_shortening_sidebar
             pilot=session.pilot,
             description="final side answer shown",
         )
+        # Shown is not laid out: the regions below are read once the answer's layout landed.
+        await wait_for(
+            lambda: screen_is_settled(session.app, session.main),
+            pilot=session.pilot,
+            description="final side answer laid out",
+        )
         assert markdown.source == side.answer
         assert panel.gc_freeze_block_reason() is None
         assert panel.query_one(BtwQuestion).question == "Explain retry.\nUse an example."
@@ -437,14 +447,50 @@ async def test_failure_and_session_change_do_not_keep_a_side_request_alive(
         assert not panel.display
 
 
-@pytest.mark.parametrize("theme", ["chrys", "monokai", "textual-light", "ansi-dark", "ansi-light"])
+_BTW_THEMES = ("chrys", "monokai", "textual-light", "ansi-dark", "ansi-light")
+
+
+async def _assert_card_paints_in_theme(pilot: Pilot, panel: BtwPanel, theme: str) -> None:
+    """What the theme decides on the card: the close button's look, the underline the toolbar
+    continues, and the question page drawn on the card's own background."""
+    app = pilot.app
+    tabs = panel.query_one(Tabs)
+    close = panel.query_one("#btw-close", Button)
+    switcher = panel.query_one(ContentSwitcher)
+    assert switcher.current == "btw-output-page"
+    assert close.rich_style.bold
+    assert close.styles.background.a > 0
+    assert close.rich_style.bgcolor != panel.rich_style.bgcolor
+    underline = app.screen._compositor.render_strips()[close.region.bottom]
+    assert underline.crop(close.region.x, close.region.right).text == "━" * close.region.width
+    if not theme.startswith("ansi"):
+        # The native tab underline continues through the gap and under every toolbar control.
+        assert underline.crop(tabs.region.right - 1, close.region.right).text == "━" * (
+            close.region.right - tabs.region.right + 1
+        )
+        tab_style = next(iter(underline.crop(tabs.region.right - 1, tabs.region.right))).style
+        control_style = next(iter(underline.crop(close.region.x, close.region.right))).style
+        assert tab_style is not None and control_style is not None
+        assert tab_style.color == control_style.color
+    # The question page shown, as its tab shows it; only the pages switch, so the tab
+    # underline's highlight does not move under the strips read above for the next theme.
+    question_page = panel.query_one(VerticalScroll)
+    switcher.current = "btw-question-page"
+    await wait_for(lambda: question_page.visible, pilot=pilot, description="question page shown")
+    assert question_page.styles.background.a == 0
+    assert question_page.rich_style.bgcolor == panel.rich_style.bgcolor
+    switcher.current = "btw-output-page"
+    await wait_for(lambda: not question_page.visible, pilot=pilot, description="output page shown again")
+
+
 @pytest.mark.parametrize("size", [(60, 24), (120, 36)])
 async def test_tabs_separate_full_question_from_output_and_keep_close_visible(
-    tmp_path: Path, theme: str, size: tuple[int, int]
+    tmp_path: Path, size: tuple[int, int]
 ) -> None:
+    """Each theme only colors the card: its paints are checked under every theme in one app per size, and
+    the story the layout and the localized text decide runs once, under the last theme."""
     app = make_chrys_app(tmp_path, settings=Settings(locale="zh-Hans"))
     async with app.run_test(size=size) as pilot:
-        app.theme = theme
         panel = app.screen.query_one(BtwPanel)
         question = "这个仓库的 list[int] 是什么?\n" + "请结合 Python 类型声明解释。\n" * 20
         panel.begin("question", question)
@@ -456,6 +502,14 @@ async def test_tabs_separate_full_question_from_output_and_keep_close_visible(
             pilot=pilot,
             description="side question close button has a visible text row",
         )
+        for theme in _BTW_THEMES:
+            app.theme = theme
+            await wait_for(
+                lambda theme=theme: app.current_theme.name == theme and screen_is_settled(app, app.screen),
+                pilot=pilot,
+                description=f"the card restyled for {theme}",
+            )
+            await _assert_card_paints_in_theme(pilot, panel, theme)
         assert switcher.current == "btw-output-page"
         assert _CLOSE_GLYPH in app.screen._compositor.render_strips()[close.region.y].text
         assert panel.border_title == "顺便问"
@@ -463,24 +517,10 @@ async def test_tabs_separate_full_question_from_output_and_keep_close_visible(
         assert str(close.tooltip) == "关闭（Esc）"  # noqa: RUF001 - localized punctuation
         assert close.region.width == 3
         assert tabs.region.width >= 12
-        assert close.rich_style.bold
-        assert close.styles.background.a > 0
-        assert close.rich_style.bgcolor != panel.rich_style.bgcolor
         counter = panel.query_one("#btw-position", Static)
         assert counter.content_region.x == panel.query_one("#btw-previous").region.right + 1
         assert panel.query_one("#btw-next").region.x == counter.content_region.right + 1
         assert str(panel.query_one("#btw-output-tab", Tab).label) == "回答"
-        underline = app.screen._compositor.render_strips()[close.region.bottom]
-        assert underline.crop(close.region.x, close.region.right).text == "━" * close.region.width
-        if not theme.startswith("ansi"):
-            # The native tab underline continues through the gap and under every toolbar control.
-            assert underline.crop(tabs.region.right - 1, close.region.right).text == "━" * (
-                close.region.right - tabs.region.right + 1
-            )
-            tab_style = next(iter(underline.crop(tabs.region.right - 1, tabs.region.right))).style
-            control_style = next(iter(underline.crop(close.region.x, close.region.right))).style
-            assert tab_style is not None and control_style is not None
-            assert tab_style.color == control_style.color
         assert "list[int]" not in "\n".join(strip.text for strip in app.screen._compositor.render_strips())
         card_region = panel.region
         close_region = close.region
@@ -489,8 +529,6 @@ async def test_tabs_separate_full_question_from_output_and_keep_close_visible(
         await wait_for(lambda: switcher.current == "btw-question-page", pilot=pilot)
         question_page = panel.query_one(VerticalScroll)
         assert panel.query_one(BtwQuestion).question == question
-        assert question_page.styles.background.a == 0
-        assert question_page.rich_style.bgcolor == panel.rich_style.bgcolor
         assert question_page.max_scroll_y > 0
         assert question_page.region == switcher.content_region
         assert question_page.vertical_scrollbar.region.right == panel.region.right - 1
@@ -1441,6 +1479,9 @@ async def test_side_prompt_hooks_block_provider_and_keep_reminders_local(
             assert "side rejected line 30" in "\n".join(
                 strip.text for strip in session.main._compositor.render_strips()
             )
+            # The keys reach the output's scroll actions; Textual's scroll animation (50 rows a
+            # second, a second per key here) is not what is tested: with animations off they jump.
+            session.app.animation_level = "none"
             output.focus()
             await session.pilot.press("home")
             await wait_for(lambda: output.scroll_y == 0, pilot=session.pilot)

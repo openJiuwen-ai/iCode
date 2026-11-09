@@ -1620,6 +1620,16 @@ async def test_populated_main_screen_editor_overlay_does_not_restyle_recompose_o
         assert await pilot.hover("#editor-cancel") is True
         assert app.mouse_over is not None
         await click_when_settled(pilot, "#editor-cancel")
+        # The confirmation's suspend of the editor drops the hover, and a Pilot click moves no
+        # pointer: the pointer moves onto Yes, as a real one does before it clicks, so the hover
+        # the closing dialogs hand back is this one, not a stale check's on the covered editor.
+        await _wait_for_condition(
+            lambda: isinstance(app.screen, ConfirmDialog) and screen_is_settled(app, app.screen),
+            pilot,
+            description="confirmation laid out",
+        )
+        assert await pilot.hover("#confirm-yes") is True
+        assert app.mouse_over is app.screen.query_one("#confirm-yes")
         await click_when_settled(pilot, "#confirm-yes")
         await _wait_for_condition(
             lambda: app.screen is main_screen,

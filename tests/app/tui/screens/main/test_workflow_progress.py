@@ -33,8 +33,10 @@ from tests.support.waiting import wait_for
 from ._workflow_support import WorkflowEngine, open_workflow
 
 
-@pytest.mark.parametrize("detail_open", [True, False])
-@pytest.mark.parametrize("state", ["failed", "retrying", "awaiting_retry"])
+# Every failure state records the same error in the node's journal, which the open details render
+# live and a later open replays; the state only decides whether a retry follows. So each state runs
+# once, and each way of opening the details meets a state that retries.
+@pytest.mark.parametrize(("state", "detail_open"), [("failed", True), ("retrying", False), ("awaiting_retry", True)])
 async def test_agent_failure_uses_chat_error_and_retry_recovers_the_surface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, detail_open: bool, state: str
 ) -> None:

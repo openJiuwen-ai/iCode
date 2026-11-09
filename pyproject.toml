@@ -140,7 +140,13 @@ artifacts = ["src/chrys/foundation/vendor/ripgrep/*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-n 8 --strict-markers"
+# ``worksteal``, as CI runs: xdist's default ``load`` scheduler hands each worker
+# its share of the queue up front once tests take ~0.1 s, so the slow TUI files
+# left on one worker finish minutes after the others went idle.
+# ``gc_calibration`` probes belong to the scheduled gc-freeze-calibration
+# workflow. A command-line ``-m`` replaces this one, so ``-m gc_calibration``
+# runs them, and an ``-m`` that drops ``integration`` must exclude both.
+addopts = "-n 8 --dist=worksteal --strict-markers -m 'not gc_calibration'"
 # ``build`` is intentionally omitted from pytest's default ``norecursedirs`` so
 # tests/orchestration/engine/build/ (mirroring src/chrys/orchestration/engine/build/) is collected.
 norecursedirs = [".*", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}", "*.egg"]
@@ -160,6 +166,7 @@ markers = [
     "gc_calibration: slow real-App GC-freeze calibration probes; excluded from PR CI, run by the scheduled gc-freeze-calibration workflow",
     "quarantine(reason, expires): known-flaky, non-blocking pending a fix; requires reason= and expires='YYYY-MM-DD'",
     "real_config_dir: opts out of the autouse config-dir isolation; the test reads the developer's real config directory on purpose",
+    "real_css_parse: opts out of the test-only CSS parse sharing (tests/support/css_parse_cache.py); the test observes Textual's or ThemeStylesheet's own parse caching",
 ]
 
 [tool.ruff]
