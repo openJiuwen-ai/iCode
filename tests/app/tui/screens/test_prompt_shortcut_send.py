@@ -345,13 +345,17 @@ async def running_session(
     startup_agent: str = ALPHA,
     hold_startup_load: bool = False,
     size: tuple[int, int] = (120, 40),
+    finish_hold: bool = False,
 ) -> AsyncIterator[Session]:
     """Run the app on a real engine until the session is ready, with the chat input focused.
 
     With *hold_startup_load* the startup's ``AgentLoadStarted`` is held before
     the screen sees it (the first hold in ``holds``): the agent is loading and
-    nothing is waited for.
+    nothing is waited for. A load's dialog closes as soon as it succeeds unless
+    *finish_hold* keeps its real pause on the finished state.
     """
+    if not finish_hold:
+        monkeypatch.setattr(AgentLoadDialog, "FINISH_HOLD_SECONDS", 0.0)
     bus = EventBus()
     seen = Seen()
     for kind in recorded_event_types():
@@ -678,7 +682,8 @@ async def test_enter_sends_the_draft_with_its_shortcut_and_shows_its_commands_ru
 ) -> None:
     command = held_command("go", "clean")
     write_shortcut("zzstatus", f"Status: {command}")
-    async with running_session(agent_engine, tmp_path, monkeypatch) as session:
+    # The startup load's dialog keeps its real pause before the session counts as ready.
+    async with running_session(agent_engine, tmp_path, monkeypatch, finish_hold=True) as session:
         main, pilot, chat = session.main, session.pilot, session.chat
         draft = await expand_shortcut(session, "zzstatus")
         assert draft.text == f"Status: {command}"

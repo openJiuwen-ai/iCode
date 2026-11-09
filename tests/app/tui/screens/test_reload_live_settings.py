@@ -352,7 +352,10 @@ def reload_held_before_its_read(monkeypatch: pytest.MonkeyPatch) -> Iterator[thr
     real_scan = theme_loader.scan_user_themes
 
     def held_scan(*args: Any, **kwargs: Any) -> Any:
-        release.wait(timeout=ENGINE_TURN_TIMEOUT)
+        # The reload scans off the event loop's thread; the app scans on it when it is built,
+        # and holding that scan would stall the whole test until the hold times out.
+        if threading.current_thread() is not threading.main_thread():
+            release.wait(timeout=ENGINE_TURN_TIMEOUT)
         return real_scan(*args, **kwargs)
 
     monkeypatch.setattr(theme_loader, "scan_user_themes", held_scan)
