@@ -17,7 +17,7 @@ uv run ruff format --check src/ tests/ scripts/chrys_test.py scripts/check_wheel
 uv run ty check --error-on-warning --python-platform linux src/chrys   # repeat for darwin and win32; the src/chrys argument is required
 ```
 - Run every project tool through `uv run`; global installs are other versions than the pins.
-- Direct pytest also collects `integration` and `gc_calibration` tests (add `-m "not integration and not gc_calibration"` for directory runs), and under the default `-n 8` a mistyped path exits 5 "no tests ran" instead of erroring: `ls` it first.
+- Direct pytest collects `integration` tests and deselects only `gc_calibration` (addopts `-m`); a command-line `-m` replaces that one, so directory runs pass `-m "not integration and not gc_calibration"` and `-m gc_calibration` runs the probes. Under the default `-n 8` a mistyped path exits 5 "no tests ran" instead of erroring: `ls` it first.
 
 ## Verification, gates & commits
 - Smart Test `--paths` = only the files this task changed, including deleted paths and both sides of a rename (without `--paths` it takes every branch and dirty-tree change); don't hand-compute the affected scope. Read its closing `Summary:` block (exit code, each suite's counts), not a `tail`: in `a && gate | tail` the exit status is tail's.

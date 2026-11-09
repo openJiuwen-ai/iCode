@@ -50,29 +50,36 @@ jobs:
             os: linux
             workers: 4
             pytest_args: tests --ignore=tests/architecture --ignore=tests/app/tui
-          # The TUI suite fills two runners, cut the same on every platform at
-          # a measured, roughly even point: the main screen's, behaviors',
-          # themes', settings' and terminal tests weigh as much as the rest.
-          # The second shard takes everything the first does not name. Move
-          # the cut by the shards' JUnit times when one nears the step limit.
+          # The TUI suite fills three runners, cut the same on every platform
+          # by directory at measured, roughly even points: the main screen's
+          # and terminal tests; widgets', behaviors', themes' and settings';
+          # and the rest, mostly the files directly under screens/, where new
+          # tests land. The third shard takes everything the first two do not
+          # name. Move a cut by the shards' JUnit times when one nears the
+          # step limit.
           - label: linux/1/tui
             artifact: linux-tui-1
             os: linux
             workers: 4
-            pytest_args: >-
-              tests/app/tui/screens/main tests/app/tui/behaviors
-              tests/app/tui/screens/themes tests/app/tui/screens/settings
-              tests/app/tui/terminal
+            pytest_args: tests/app/tui/screens/main tests/app/tui/terminal
           - label: linux/2/tui
             artifact: linux-tui-2
             os: linux
             workers: 4
             pytest_args: >-
+              tests/app/tui/widgets tests/app/tui/behaviors
+              tests/app/tui/screens/themes tests/app/tui/screens/settings
+          - label: linux/3/tui
+            artifact: linux-tui-3
+            os: linux
+            workers: 4
+            pytest_args: >-
               tests/app/tui --ignore=tests/app/tui/screens/main
+              --ignore=tests/app/tui/terminal
+              --ignore=tests/app/tui/widgets
               --ignore=tests/app/tui/behaviors
               --ignore=tests/app/tui/screens/themes
               --ignore=tests/app/tui/screens/settings
-              --ignore=tests/app/tui/terminal
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -149,20 +156,25 @@ jobs:
             artifact: macos-tui-1
             os: macos
             workers: 6
-            pytest_args: >-
-              tests/app/tui/screens/main tests/app/tui/behaviors
-              tests/app/tui/screens/themes tests/app/tui/screens/settings
-              tests/app/tui/terminal
+            pytest_args: tests/app/tui/screens/main tests/app/tui/terminal
           - label: macos/2/tui
             artifact: macos-tui-2
             os: macos
             workers: 6
             pytest_args: >-
+              tests/app/tui/widgets tests/app/tui/behaviors
+              tests/app/tui/screens/themes tests/app/tui/screens/settings
+          - label: macos/3/tui
+            artifact: macos-tui-3
+            os: macos
+            workers: 6
+            pytest_args: >-
               tests/app/tui --ignore=tests/app/tui/screens/main
+              --ignore=tests/app/tui/terminal
+              --ignore=tests/app/tui/widgets
               --ignore=tests/app/tui/behaviors
               --ignore=tests/app/tui/screens/themes
               --ignore=tests/app/tui/screens/settings
-              --ignore=tests/app/tui/terminal
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -233,20 +245,25 @@ jobs:
             artifact: windows-tui-1
             workers: 4
             py39: false
-            pytest_args: >-
-              tests/app/tui/screens/main tests/app/tui/behaviors
-              tests/app/tui/screens/themes tests/app/tui/screens/settings
-              tests/app/tui/terminal
+            pytest_args: tests/app/tui/screens/main tests/app/tui/terminal
           - label: windows/2/tui
             artifact: windows-tui-2
             workers: 4
             py39: false
             pytest_args: >-
+              tests/app/tui/widgets tests/app/tui/behaviors
+              tests/app/tui/screens/themes tests/app/tui/screens/settings
+          - label: windows/3/tui
+            artifact: windows-tui-3
+            workers: 4
+            py39: false
+            pytest_args: >-
               tests/app/tui --ignore=tests/app/tui/screens/main
+              --ignore=tests/app/tui/terminal
+              --ignore=tests/app/tui/widgets
               --ignore=tests/app/tui/behaviors
               --ignore=tests/app/tui/screens/themes
               --ignore=tests/app/tui/screens/settings
-              --ignore=tests/app/tui/terminal
     steps:
       # Hosted Windows images already disable real-time Defender scanning, so
       # changing Defender settings here is a measured no-op.
