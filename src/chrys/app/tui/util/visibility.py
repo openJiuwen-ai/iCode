@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from textual import events
+from textual.app import ScreenStackError
 from textual.css.scalar import Scalar
 from textual.dom import NoScreen
 from textual.widget import Widget
@@ -229,8 +230,14 @@ def _is_widget_shown(widget: Widget, *, active_screen_only: bool) -> bool:
         screen = widget.screen
     except NoScreen:
         return False
-    if active_screen_only and screen is not screen.app.screen:
-        return False
+    if active_screen_only:
+        try:
+            active = screen.app.screen
+        except ScreenStackError:
+            # Shutdown empties the stack before it cancels the workers and timers that ask.
+            return False
+        if screen is not active:
+            return False
     compositor = getattr(screen, "_compositor", None)
     if compositor is None:
         return False
