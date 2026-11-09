@@ -35,6 +35,8 @@ from tests.support.rollback_spec import drain
 from tests.support.tui_helpers import ChatPanelApp, click_when_settled
 from tests.support.waiting import wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.fixture(autouse=True)
 def no_native_git_watcher(monkeypatch):

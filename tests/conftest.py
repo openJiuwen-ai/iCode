@@ -193,11 +193,21 @@ def _settled_pilot_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     """A Pilot wait also drains what its handlers posted, and a timeout names the widgets holding it.
 
     See ``tests/support/pilot_barrier.py``: Textual's own wait covers only the messages
-    queued when it starts, and a starved runner's idle probe does not cover the rest.
+    queued when it starts, and a starved runner's idle probe does not cover the rest. Its
+    idle probe also sleeps shorter rounds off Windows, and a key press waits for animations
+    only when one is pending.
     """
     from tests.support.pilot_barrier import install_settled_wait_for_screen
 
     install_settled_wait_for_screen(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _shared_css_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apps a worker builds share their parsed CSS (``tests/support/css_parse_cache.py``)."""
+    from tests.support.css_parse_cache import install_shared_css_parse
+
+    install_shared_css_parse(monkeypatch)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

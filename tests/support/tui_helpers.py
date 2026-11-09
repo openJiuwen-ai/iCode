@@ -23,7 +23,7 @@ from textual.events import Click, MouseScrollDown, MouseScrollUp
 from textual.message import Message
 from textual.messages import Prune
 from textual.widget import Widget
-from textual.widgets import Static
+from textual.widgets import Button, Static
 
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.main.commands import SlashCommandActions
@@ -827,6 +827,9 @@ async def click_when_settled(
     screen that owns it, requested once every widget has handed its layout request to that
     screen, and it is looked at again after another refresh while the target cannot be hit.
 
+    A Button still showing its last press ignores clicks until that effect ends, so it cannot
+    take one before then either.
+
     What the click sets off (a ``Pressed`` message, a dismissal) is only drained when the Pilot
     wait is the settled one from ``tests/support/pilot_barrier.py``; wait for the state it produces.
     """
@@ -841,7 +844,8 @@ async def click_when_settled(
             if not refresh[1].is_set():
                 return False
             widget = target if isinstance(target, Widget) else next(iter(screen.query(target)), None)
-            if widget is not None and widget.region.area:
+            pressed = isinstance(widget, Button) and widget.has_class("-active")
+            if widget is not None and widget.region.area and not pressed:
                 x, y = widget.region.offset + offset
                 with contextlib.suppress(NoWidget):
                     if screen.region.contains(x, y) and app.get_widget_at(x, y)[0] is widget:

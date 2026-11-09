@@ -58,6 +58,8 @@ if TYPE_CHECKING:
     from chrys.service.profiles.models.schema import ModelProfile
     from tests.support.engines import AgentEngineFactory
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 _CLOSE_GLYPH = "✕"
 _SAVE_WARNING = ("warning", "This side answer could not be saved. It stays available until you leave this session.")
 _READ_WARNING = ("warning", "Side question history could not be read. Your saved file was kept.")
@@ -324,6 +326,12 @@ async def test_final_answer_stays_in_card_and_scrolls_without_shortening_sidebar
             lambda: panel.display and not panel.running and markdown.display,
             pilot=session.pilot,
             description="final side answer shown",
+        )
+        # Shown is not laid out: the regions below are read once the answer's layout landed.
+        await wait_for(
+            lambda: screen_is_settled(session.app, session.main),
+            pilot=session.pilot,
+            description="final side answer laid out",
         )
         assert markdown.source == side.answer
         assert panel.gc_freeze_block_reason() is None

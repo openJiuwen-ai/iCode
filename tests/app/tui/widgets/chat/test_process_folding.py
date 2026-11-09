@@ -30,6 +30,8 @@ from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import ChatPanelApp, click_when_settled, rich_plain
 from tests.support.waiting import wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 _READ_KIND = {TOOL_CALL_KIND_METADATA_KEY: KIND_FILESYSTEM_READ}
 """As a saved session records a call's kind, for replay to count it as live does."""
 

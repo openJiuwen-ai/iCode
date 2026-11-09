@@ -5,9 +5,8 @@
 from __future__ import annotations
 
 import asyncio
-import gc
 import inspect
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
@@ -33,6 +32,8 @@ from tests.support.tui_helpers import (
     title_text,
 )
 from tests.support.waiting import DEFAULT_WAIT_TIMEOUT, wait_for, wait_until, wait_until_quiet
+
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 # At _SIZE either history replays as a tail batch and two prepend batches,
 # so the first and the last prepended batch differ.
@@ -132,21 +133,6 @@ def _hold_refresh_callbacks(
 
     monkeypatch.setattr(controller, "_after_batch_mounted", hold_refresh_callbacks)
     return queued
-
-
-@pytest.fixture(autouse=True)
-def freeze_earlier_tests_heap() -> Iterator[None]:
-    """Keep what earlier tests in this worker left alive out of the replay's closing collection.
-
-    A prepend ends its GC pause with one full ``gc.collect()``, inside the
-    budget of :func:`_wait_complete`. That pass walks every tracked object in
-    the process, so its cost grows with the worker's whole history, not with
-    this replay: seconds on a loaded runner. Frozen, that heap is skipped and
-    the pass walks only what this test allocated.
-    """
-    gc.freeze()
-    yield
-    gc.unfreeze()
 
 
 async def _wait_complete(panel: ChatPanel) -> None:

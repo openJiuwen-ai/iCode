@@ -81,6 +81,24 @@ def isolate_gc_freeze_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.fixture
+def frozen_earlier_heap() -> Iterator[None]:
+    """Keep what earlier tests in this worker left alive out of this test's full collections.
+
+    A transcript replay ends its GC pause with one full ``gc.collect()``. That pass walks every
+    tracked object in the process, so its cost grows with the worker's whole history, not with
+    the replay: a quarter second in a long-lived worker, seconds on a loaded runner. Frozen,
+    that heap is skipped and the pass walks only what this test allocated.
+
+    Opt in with ``pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")`` in modules that
+    replay transcripts; never in one that exercises the GC freeze or the scroll GC pause, which
+    count frozen objects and collections themselves.
+    """
+    gc.freeze()
+    yield
+    gc.unfreeze()
+
+
+@pytest.fixture
 def buddy_reply_gate_left_open() -> Iterator[None]:
     """Fail the test that leaves the process-wide buddy reply gate held, instead of the ones that run after it."""
     from tests.support.buddies import assert_reply_gate_open
