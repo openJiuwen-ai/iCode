@@ -159,6 +159,7 @@
         ["timeout", "await asyncio.wait_for(killer.wait(), timeout=_WINDOWS_TREE_KILL_TIMEOUT)", "unresolved"]
       ],
       "_spawn_windows_managed_stdio_process": [
+        ["sleep", "await asyncio.sleep(backoff)", "unresolved"],
         ["wrapper", "await _wrap_windows_parent_pipes(stdin_parent, stdout_parent, stderr_parent, limit=limit)", "unresolved", "chrys.foundation.platform.process._wrap_windows_parent_pipes"]
       ],
       "_windows_process_exit": [
