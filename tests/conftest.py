@@ -203,8 +203,14 @@ def _settled_pilot_waits(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _shared_css_parse(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Apps a worker builds share their parsed CSS (``tests/support/css_parse_cache.py``)."""
+def _shared_css_parse(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apps a worker builds share their parsed CSS (``tests/support/css_parse_cache.py``).
+
+    A test that observes the product's own parse caching (what is tokenized, and when) marks
+    itself ``real_css_parse``: the shared parses would stand in for a cache the product lost.
+    """
+    if request.node.get_closest_marker("real_css_parse") is not None:
+        return
     from tests.support.css_parse_cache import install_shared_css_parse
 
     install_shared_css_parse(monkeypatch)

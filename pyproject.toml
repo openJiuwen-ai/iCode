@@ -166,6 +166,7 @@ markers = [
     "gc_calibration: slow real-App GC-freeze calibration probes; excluded from PR CI, run by the scheduled gc-freeze-calibration workflow",
     "quarantine(reason, expires): known-flaky, non-blocking pending a fix; requires reason= and expires='YYYY-MM-DD'",
     "real_config_dir: opts out of the autouse config-dir isolation; the test reads the developer's real config directory on purpose",
+    "real_css_parse: opts out of the test-only CSS parse sharing (tests/support/css_parse_cache.py); the test observes Textual's or ThemeStylesheet's own parse caching",
 ]
 
 [tool.ruff]
