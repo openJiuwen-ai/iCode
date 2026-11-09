@@ -49,8 +49,8 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
    origin/main_iCode；多次运行全绿；实施副产修复 git core.quotepath 中文路径 bug）；
 4. ✅ **上游升级 runbook**：`standards/UPGRADE-RUNBOOK.md`（§8 操作展开：镜像纪律、冲突高发区
    对照、工具命令序列、已知坑速查、双轨期注意）；
-5. ✅ **版本与发布策略**（`versioning.md`，2026-10-25 定稿：上游三段 + fork 第四段、
-   基线升级重置第四位、分发名保持上游、CHANGELOG 约定）。
+5. ✅ **版本与发布策略**（`versioning.md`，2026-10-25 初定四段方案；2026-11-09 暂改为
+   保持上游三段，四段/系列方案待最终裁决、暂不出 ADR；分发名保持上游、CHANGELOG 约定不变）。
 
 - DoD 核验（2026-10-25）：四工具与诊断包挂入 CI 跑绿（AIxCoding Tests 多次 success，含
   诊断包 29 用例与 R2/R3 分叉点门禁）✓；runbook 成文 ✓；诊断包 R2 获负责人签认
@@ -153,7 +153,7 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
 
 | 特性 | 旧落点（0.28.0） | 建议判定 | 依据 / 备注（2026-11-02 对上游 0.32.2 分析） |
 |---|---|---|---|
-| 版本更新检测 | `update_detection.py`（内部 `/api/v2/releases/check` 契约）+ screen.py / app.py 挂接点（header 徽章） | **有改动的迁** | 上游 0.32.2 已有同目的的并行机制 `app/update_check.py`（PyPI/GitHub 公网源 + 每日缓存 + 聊天区通知 + settings 开关），内网静默失败；update mock（M2）模拟内部契约已就位。design 须定：① UI 形态（徽章 vs 通知）与上游 update_check 的并存/禁用策略；② **四段版本号 wire contract 为前置阻塞项**——versioning.md 已定稿 fork 第四段，而旧 `_SEMVER_RE` 与上游 `parse_version()` 均只接受三段，四段版本会在请求前静默跳过（update mock 同为三段校验）；2026-11-05 复核：0.33.0 下 update_check.py 零改动（含 parse_version 三段解析）；2026-11-06 复核：0.34.0 下该文件仍零改动，本行上游对比结论无漂移；**范围边界（D 类分发身份/ADR-0021）**：版本更新检测批次只做更新链内部化，卸载提示与 `install` 误用提示中的 `iCode-TUI` 是真实包管理器命令，不随该批次做品牌性替换 |
+| 版本更新检测 | `update_detection.py`（内部 `/api/v2/releases/check` 契约）+ screen.py / app.py 挂接点（header 徽章） | **有改动的迁** | 上游 0.32.2 已有同目的的并行机制 `app/update_check.py`（PyPI/GitHub 公网源 + 每日缓存 + 聊天区通知 + settings 开关），内网静默失败；update mock（M2）模拟内部契约已就位。design 须定：① UI 形态（徽章 vs 通知）与上游 update_check 的并存/禁用策略；② **四段版本号 wire contract**（2026-11-09 起版本号暂保持三段、此项暂不构成阻塞；未来启用四段/系列时仍为前置项）——旧 `_SEMVER_RE` 与上游 `parse_version()` 均只接受三段，四段版本会在请求前静默跳过（update mock 同为三段校验）；2026-11-05 复核：0.33.0 下 update_check.py 零改动（含 parse_version 三段解析）；2026-11-06 复核：0.34.0 下该文件仍零改动，本行上游对比结论无漂移；**范围边界（D 类分发身份/ADR-0021）**：版本更新检测批次只做更新链内部化，卸载提示与 `install` 误用提示中的 `iCode-TUI` 是真实包管理器命令，不随该批次做品牌性替换 |
 | 平台连接配置 | `config.py`（独立 `aixcoding.yaml` + `AIXCODING_EXTENSION_*`，telemetry 与更新检测共用） | **重新实现（拆解随批次）** | 独立 yaml 双轨制与现行配置范式不同构（现行范式：auth `environments.py` 模式 / settings 声明），不整体照迁——端点配置随消费批次（update / telemetry）按现行范式实现。**逐字段归属须 design 定、不得静默丢失**（外部评审 F-06）：`token`/`userId`（或已由 auth session 覆盖）、`toolParamMode`（工具参数上报 full/whitelist）、`telemetryEnabled`（reporter 装配开关）、`profile`/`customServerUrl` 优先级语义 |
 | skills 共享目录自动加载 | `service/skills/adapter.py` 定制（`~/.aixcoding/skills` + 工作区 `.aixcoding/skills` 自动加载、优先级、`auto_load_aixcoding_*` 开关）+ `agents/schema.py` + 测试 + 中英文文档 | **待分析（本轮未覆盖）** | 外部评审 F-01 发现（属上游 skills 机制的定制扩展，非注释命中之一，证明 908 非纯品牌文案）；新分支 `src/` 产品源码树无 `auto_load_aixcoding`（已核验，复审 R-04 收窄范围）。上游对比与判定随批次启动补做 |
 | **用户指南文档定制化（docs/ 双语树）** | `docs/{en,zh-Hans}/` 整树定制（0.28 final 实测）：新增 start/login、start/what-is-aixcoding、faq、daily-use/build-info、running/aixcoding-serve 等定制指南；删除 external-acp-agents / extensions/shortcuts / reference/opentelemetry / configuration/chat-options / running/terminal-status；`icode-run` / `icode-serve` / `icode-acp` 重命名 `aixcoding-*`；各指南内容定制（如 configuration/models.md 集中管理版："不支持创建模型配置，仅支持切换；模型由管理员分配"） | **待批次启动（后续文档批次；语义参考 0.28 final，按 0.32.2 新结构重做）** | 0.32.2 上游文档结构大幅扩充（如 models.md 由 <1KB 扩为 16-17KB 完整指南），旧定制不可平移；与上游 0.28→0.32 文档自身演进混杂（0.28 final vs 上游现状 diff：75 文件 +2361/-6020，含演进噪音），批次启动时逐份甄别。**文档类定制零 marker 命中**（fork `docs/` 现状零 AIxCoding 标记，属标记扫描盲区、由功能面核查发现——同 F-01 性质）。**文档类待办统一并入本项**；首个并入：catalog-sync 批次 F-6（责任人裁决 2026-11-02）——models.md 双语改写不随 catalog-sync 批次，随本工作项处理。**第二个并入：品牌与命令文档切换（2026-11-03 重裁，不再设独立子批次）**——功能品牌与命令由品牌与命令切换批次闭环，本独立文档项仅处理 docs/README/AGENTS 完整文案等纯说明材料（该批次已修复其中立即失效的最小开发命令）；除品牌词外还须同步 `aixcoding-cli` 命令示例、D 类已裁决的分发身份、离线包名和相关文件名。待目标上游版本及其他功能改动确定后集中实施，不再设独立品牌文档期限；双语同批成对改、半自动+不可替换清单先行，与结构定制（新增/删除/重命名/内容改写）合并规划，勿另起并行批次 |
@@ -174,7 +174,7 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
 
 | 事项 | 处置对象 | 裁决 | 依据 / 重开条件 |
 |---|---|---|---|
-| 分发身份 `iCode-TUI` | **无 0.28 定制落点**——0.28 包名 = `chrys`（与上游 v0.28.0 原版逐字一致、从未品牌化）；`iCode-TUI` 系上游 943142e4（2026-10-08，v0.29.1 首含）引入、新基线 0.31.0+ 继承的现状（2026-11-05 考古勘误） | **已裁决：沿用上游（ADR-0021，2026-11-07 签认）** | ①可见性核查（2026-11-05）：内网离线包用户正常交互路径不暴露包名（OFFLINE 卸载提示返回 None；四段版本被三段 parse 拦下不展示更新通知——OFFLINE 更新检查仍外呼 GitHub，内部化归 B 类"版本更新检测"）；仅 pip/uv/pipx 场景可见：Python 运行时 3 处（update_check.py:77-81 升级命令 / install_flavor.py:90-94 卸载提示 / installer.py:585 误用提示）+ 安装脚本 ≥1 处（install.sh:159），均为真实可执行命令、禁品牌性字符串替换；`pyapp/icode-tui/` 仅 pip/uv flavor 场景存在，非离线用户可见。②`versioning.md` §2 已同向预定"分发名/wheel 名保持上游、四段版本即身份标识"；ADR-0021 已签认正式确认（2026-11-07），不沿用则须以新 ADR 取代并同步修订该文档。③沿用上游的前提与重开条件（ADR-0021）：内网仅受控 PyApp 离线分发（内网安装体系已于 internal-installer 批次迁移落地，见 A 类）；启用内部 pip/uv、对外发布、品牌合规覆盖分发层或出现实际同名跨源误升级风险时重开裁决，且先定义内部索引、公共源隔离与防同名跨源误升级（上游三段版本在比较上胜过内部四段）。④若更名（须新 ADR 取代 ADR-0021）：处理 wheel 前缀、uv/pipx 新旧包迁移、更新检查、PyApp/build/CD 引用，保留内网镜像、channels 与发布策略 |
+| 分发身份 `iCode-TUI` | **无 0.28 定制落点**——0.28 包名 = `chrys`（与上游 v0.28.0 原版逐字一致、从未品牌化）；`iCode-TUI` 系上游 943142e4（2026-10-08，v0.29.1 首含）引入、新基线 0.31.0+ 继承的现状（2026-11-05 考古勘误） | **已裁决：沿用上游（ADR-0021，2026-11-07 签认）** | ①可见性核查（2026-11-05）：内网离线包用户正常交互路径不暴露包名（OFFLINE 卸载提示返回 None；若启用四段则四段版本会被三段 parse 拦下不展示更新通知——OFFLINE 更新检查仍外呼 GitHub，内部化归 B 类"版本更新检测"）；仅 pip/uv/pipx 场景可见：Python 运行时 3 处（update_check.py:77-81 升级命令 / install_flavor.py:90-94 卸载提示 / installer.py:585 误用提示）+ 安装脚本 ≥1 处（install.sh:159），均为真实可执行命令、禁品牌性字符串替换；`pyapp/icode-tui/` 仅 pip/uv flavor 场景存在，非离线用户可见。②裁决时点 `versioning.md` §2 曾同向预定"分发名/wheel 名保持上游、四段版本即身份标识"（该论据随 2026-11-09 版本策略临时调整暂不成立，待最终裁决后同步）；ADR-0021 已签认正式确认（2026-11-07），不沿用则须以新 ADR 取代并同步修订该文档。③沿用上游的前提与重开条件（ADR-0021）：内网仅受控 PyApp 离线分发（内网安装体系已于 internal-installer 批次迁移落地，见 A 类）；启用内部 pip/uv、对外发布、品牌合规覆盖分发层或出现实际同名跨源误升级风险时重开裁决，且先定义内部索引、公共源隔离与防同名跨源误升级（上游三段版本在比较上胜过内部四段）。④若更名（须新 ADR 取代 ADR-0021）：处理 wheel 前缀、uv/pipx 新旧包迁移、更新检查、PyApp/build/CD 引用，保留内网镜像、channels 与发布策略 |
 
 ### E. 跟随处理
 
@@ -275,6 +275,11 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
   切换"自 §4 C 类迁入 A 类"已迁入"；PR #87 评审两候选（C1 外部 icode 进程名误伤面 /
   C2 verification 数字口径）经裁决记档于批次 verification.md，不单独提交。INDEX.md
   零状态导航无需联动。
+- 2026-11-09：**版本策略临时调整**——版本号暂保持上游三段、与基线一致（四段/系列方案为
+  候选、未最终裁决，暂不出 ADR）。同步修订 `versioning.md`、`standards/UPGRADE-RUNBOOK.md`
+  §6 第 4 步、本文 §2 第 5 项、§4 B 类"版本更新检测"的四段 wire contract 表述与 D 类
+  "分发身份"行的引用时态；ADR-0021（"四段版本号即身份标识"论据）暂不修订、待版本号方案
+  最终裁决后同步。
 - 2026-11-05：**D 类"pyproject 全角标点豁免"备注订正**——做法口径由"文件头 noqa"更新为
   现状"pyproject 目录级 per-file-ignores"（PR #71 ruff-test-exemptions 起，此前曾用文件头
   noqa）；处理列"随批次按需"核心结论不变。
