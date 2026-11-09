@@ -126,10 +126,10 @@ uv run ty check --error-on-warning --python-platform linux src/chrys   # darwin/
 2. 本文件头部「当前基线」节更新：上游版本 → 新版本；升级完成日期；
 3. 各定制点 `anchor`/`risk` 重评（§8 第 6 步；上游基线由本文件头部「当前基线」节全局承载，
    无逐点 `upstream_base`——customization-registry 批次起，ADR-0015）；
-4. 版本号按 `aixcoding/docs/versioning.md`：上游三段 + fork 第四段，**基线升级重置第四位**——
-   四段机制**启用前**（versioning.md 实施后置；2026-10-31 裁决与日构建递增机制一并独立设计），
-   基线升级**只随上游同步三段**（version 行变化为上游自身变更，不算我方改动）；
-   启用后改 `pyproject.toml` version 属 R2 项，随升级 PR 一并报批；
+4. 版本号按 `aixcoding/docs/versioning.md`：**当前暂保持上游三段**（四段/系列方案未最终裁决、
+   暂不出 ADR，2026-11-09），基线升级**只随上游同步三段**（version 行变化为上游自身变更，
+   不算我方改动）；未来启用 fork 版本号（四段/系列）后改 `pyproject.toml` version 属 R2 项，
+   随升级 PR 一并报批；
 5. 升级报告 = PR 描述（§7 交付报告格式）：diff 区间、冲突处置逐点、anchor 核对结论、验证输出；
 6. push 后两套 CI（上游 ci.yml + aixcoding-tests.yml）全绿方可合并。
 
