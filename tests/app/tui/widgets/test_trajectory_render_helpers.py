@@ -165,6 +165,9 @@ def test_trajectory_durations_include_days(seconds: int, expected: str) -> None:
         (999_400_000, "999 ms"),
         (999_500_000, "1.00 s"),
         (59_994_000_000, "59.99 s"),
+        # Its double sits just below 59.995, so the two-decimal form still reads
+        # 59.99 s; the unit changes one nanosecond later.
+        (59_995_000_000, "59.99 s"),
         (59_996_000_000, "1m 00s"),
         (3_600_000_000_000, "1h 00m"),
     ],
@@ -175,10 +178,23 @@ def test_trajectory_durations_switch_units_before_rounding_overflows(nanoseconds
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(1_023, "1023 B ✓"), (1_048_575, "1.0 MiB ✓"), (2_097_152, "2.0 MiB ✓")],
+    [
+        (1_023, "1023 B ✓"),
+        (1_048_524, "1023.9 KiB ✓"),
+        (1_048_525, "1.0 MiB ✓"),
+        (1_048_575, "1.0 MiB ✓"),
+        (2_097_152, "2.0 MiB ✓"),
+    ],
 )
 def test_metric_bytes_gain_a_mebibyte_unit_before_kibibytes_read_1024(value: int, expected: str) -> None:
     assert _format_metric_bytes(Metric(value, Precision.EXACT)) == expected
+
+
+def test_a_time_ruler_just_under_a_second_ends_at_one_second() -> None:
+    ruler = time_ruler(999_600_000, width=60).plain
+
+    assert ruler.startswith("0ms")
+    assert ruler.rstrip().endswith("1.0s"), ruler
 
 
 def test_derived_token_ratios_preserve_missing_and_inconsistent_evidence() -> None:
