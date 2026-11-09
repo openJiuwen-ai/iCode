@@ -24,6 +24,7 @@ from chrys.kernel import Message
 from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.profiles.models.options import effective_chat_options, parse_http_headers
 from chrys.service.profiles.models.schema import API_STYLE_CHAT_COMPLETIONS, API_STYLE_RESPONSES
+from chrys.service.session.runtime_metadata import TOTAL_SESSION_TOKENS_KEY
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
@@ -113,6 +114,33 @@ def _is_real_message(message: Any) -> bool:
             return HistoryMarkerKind.KEY not in properties
         return True
     return False
+
+
+def _report_count(value: Any) -> int:
+    """A non-negative count from an in-memory state value, never a guess."""
+    return value if isinstance(value, int) and value > 0 else 0
+
+
+def _report_message_count(state: dict[str, Any]) -> int:
+    messages = state.get("messages")
+    return len(messages) if isinstance(messages, list) else 0
+
+
+def _report_title(state: dict[str, Any]) -> str:
+    """The first user-authored prompt, bounded exactly like the session title."""
+    from chrys.foundation.models.turns import is_continuation_message
+    from chrys.service.state._session_meta import title_from_text
+
+    messages = state.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    for message in messages:
+        if not isinstance(message, Message) or is_continuation_message(message):
+            continue
+        for content in message.contents:
+            if content.type == "text" and content.text:
+                return title_from_text(content.text)
+    return ""
 
 
 def _effective_api_key_for_fingerprint(model_profile: ModelProfile) -> str:
@@ -290,6 +318,14 @@ class SessionPersistence:
                 last_surface=last_surface,
             )
             self._last_checkpoint = (session_id, checkpoint) if checkpoint is not None else None
+            self._publish_report_meta(
+                session_id,
+                history_state,
+                agent_profile_name=agent_profile_name,
+                agent_display_name=agent_display_name,
+                workspace=workspace,
+                model_profile=model_profile,
+            )
             await self._bus.publish(SessionSaved(session_id=session_id))
             return True
         except Exception:
@@ -298,6 +334,49 @@ class SessionPersistence:
             if raise_on_error:
                 raise
             return False
+
+    def _publish_report_meta(
+        self,
+        session_id: str,
+        history_state: dict[str, Any],
+        *,
+        agent_profile_name: str,
+        agent_display_name: str,
+        workspace: Workspace | None,
+        model_profile: ModelProfile | None,
+    ) -> None:
+        """Hand fact reporting this save's index row (client-design §5.3.2).
+
+        Called between the successful write and ``SessionSaved``, and never
+        raises: the save is a user-visible path and reporting must not be able
+        to break it. Everything handed over is a primitive read from memory —
+        no re-read of ``session.json``, no JSON parsing, no ``await``. With
+        reporting off the whole call is one global read.
+        """
+        from chrys.service.reporting import active_reporting
+
+        if active_reporting() is None:
+            return
+        from chrys.foundation.trajectory.envelope import utc_now_rfc3339
+        from chrys.service.reporting import ReportMeta, publish_session_meta
+
+        try:
+            publish_session_meta(
+                ReportMeta(
+                    session_id=session_id,
+                    title=_report_title(history_state),
+                    agent_profile=agent_profile_name or agent_display_name,
+                    model_provider=model_profile.provider if model_profile is not None else "",
+                    model_id=model_profile.model_id if model_profile is not None else "",
+                    primary_cwd=workspace.primary_cwd if workspace is not None else "",
+                    updated_at=utc_now_rfc3339(),
+                    turn_count=_report_count(history_state.get("turn_counter")),
+                    message_count=_report_message_count(history_state),
+                    total_tokens=_report_count(history_state.get(TOTAL_SESSION_TOKENS_KEY)),
+                )
+            )
+        except Exception:
+            logger.debug("Could not hand session meta to fact reporting", exc_info=True)
 
     async def save_recovery_session(
         self,

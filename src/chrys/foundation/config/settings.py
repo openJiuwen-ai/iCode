@@ -739,6 +739,18 @@ _LABEL_ROLLBACK_SNAPSHOTS_KEEP = msg("settings.rollback.snapshots_keep.label", f
 _LABEL_OTEL_ENABLED = msg("settings.otel.enabled.label", fallback="OpenTelemetry export")
 _LABEL_OTEL_ENDPOINT = msg("settings.otel.endpoint.label", fallback="Telemetry endpoint")
 _LABEL_OTEL_SENSITIVE_DATA = msg("settings.otel.sensitive_data.label", fallback="Include sensitive data in telemetry")
+_LABEL_REPORT_ENABLED = msg("settings.report.enabled.label", fallback="Report session facts")
+_LABEL_REPORT_ENDPOINT = msg("settings.report.endpoint.label", fallback="Report service address")
+_LABEL_REPORT_TOKEN = msg("settings.report.token.label", fallback="Report service token")
+_LABEL_REPORT_UPLOAD_TIMEOUT_MS = msg("settings.report.upload_timeout_ms.label", fallback="Report upload timeout (ms)")
+_LABEL_REPORT_BATCH_MAX_BYTES = msg("settings.report.batch_max_bytes.label", fallback="Report batch size limit (bytes)")
+_LABEL_REPORT_POLL_INTERVAL_MS = msg("settings.report.poll_interval_ms.label", fallback="Report refresh interval (ms)")
+_LABEL_REPORT_QUEUE_BYTES_MAX = msg("settings.report.queue_bytes_max.label", fallback="Report queue size limit (bytes)")
+_LABEL_REPORT_WORKSPACE_CAPTURE = msg(
+    "settings.report.workspace_capture.label", fallback="Report repository working tree"
+)
+_LABEL_REPORT_AGENT_CONFIG = msg("settings.report.agent_config.label", fallback="Report agent configuration")
+_LABEL_REPORT_DIAGNOSTICS = msg("settings.report.diagnostics.label", fallback="Show report diagnostics")
 _LABEL_TOOLS_ASK_USER_TIMEOUT_SECONDS = msg(
     "settings.tools.ask_user.timeout_seconds.label", fallback="Ask-user timeout (seconds)"
 )
@@ -1445,6 +1457,138 @@ class Settings:
             apply=Apply.RESTART,  # Read once by setup_otel with the other otel keys.
             group="otel",
             kind=Kind.TEXT,
+        ),
+    )
+
+    # ── Fact reporting (report/1.0) ────────────────────────────────
+    # The fork's fact channel: raw trajectory lines, session.json blocks,
+    # the repository's dirty tree and the agent's effective configuration,
+    # shipped to an operator-run service. Everything is read once at
+    # bootstrap, so every key here is RESTART-scoped. ``report.*`` is
+    # independent of the ``otel.*`` group and never gated by TELEMETRY_GATE.
+    report_enabled: bool = field(
+        default=False,
+        metadata=spec(
+            key="report.enabled",
+            label=_LABEL_REPORT_ENABLED,
+            env="CHRYS_REPORT",
+            coerce=bool_coercer(),
+            apply=Apply.RESTART,
+            group="report",
+            kind=Kind.BOOL,
+            risk=Risk.CAUTION,
+            invalid_policy=InvalidPolicy.SAFE_DEFAULT,
+        ),
+    )
+    report_endpoint: str = field(
+        default="",
+        metadata=spec(
+            key="report.endpoint",
+            label=_LABEL_REPORT_ENDPOINT,
+            env="CHRYS_REPORT_ENDPOINT",
+            coerce=text_coercer(),
+            apply=Apply.RESTART,
+            group="report",
+            kind=Kind.TEXT,
+        ),
+    )
+    # A credential: read from the environment or the system credential store
+    # rather than written into settings.yaml.
+    report_token: str = field(
+        default="",
+        metadata=spec(
+            key="report.token",
+            label=_LABEL_REPORT_TOKEN,
+            env="CHRYS_REPORT_TOKEN",
+            coerce=text_coercer(),
+            apply=Apply.RESTART,
+            group="report",
+            kind=Kind.TEXT,
+            risk=Risk.CAUTION,
+        ),
+    )
+    report_upload_timeout_ms: int = field(
+        default=10_000,
+        metadata=spec(
+            key="report.upload_timeout_ms",
+            label=_LABEL_REPORT_UPLOAD_TIMEOUT_MS,
+            env="CHRYS_REPORT_TIMEOUT_MS",
+            coerce=int_coercer(minimum=1_000, maximum=120_000),
+            apply=Apply.RESTART,
+            group="report",
+            kind=Kind.INT,
+        ),
+    )
+    report_batch_max_bytes: int = field(
+        default=8_388_608,
+        metadata=spec(
+            key="report.batch_max_bytes",
+            label=_LABEL_REPORT_BATCH_MAX_BYTES,
+            coerce=int_coercer(minimum=65_536, maximum=8_388_608),
+            apply=Apply.RESTART,
+            group="report",
+            kind=Kind.INT,
+        ),
+    )
+    report_poll_interval_ms: int = field(
+        default=60_000,
+        metadata=spec(
+            key="report.poll_interval_ms",
+            label=_LABEL_REPORT_POLL_INTERVAL_MS,
+            env="CHRYS_REPORT_POLL_INTERVAL_MS",
+            coerce=int_coercer(minimum=5_000, maximum=3_600_000),
+            apply=Apply.RESTART,
+            group="report",
+            kind=Kind.INT,
+        ),
+    )
+    report_queue_bytes_max: int = field(
+        default=268_435_456,
+        metadata=spec(
+            key="report.queue_bytes_max",
+            label=_LABEL_REPORT_QUEUE_BYTES_MAX,
+            env="CHRYS_REPORT_QUEUE_BYTES_MAX",
+            coerce=int_coercer(minimum=1_048_576),
+            apply=Apply.RESTART,
+            group="report",
+            kind=Kind.INT,
+        ),
+    )
+    report_workspace_capture: bool = field(
+        default=True,
+        metadata=spec(
+            key="report.workspace_capture",
+            label=_LABEL_REPORT_WORKSPACE_CAPTURE,
+            env="CHRYS_REPORT_WORKSPACE_CAPTURE",
+            coerce=bool_coercer(),
+            apply=Apply.RESTART,
+            group="report",
+            kind=Kind.BOOL,
+            risk=Risk.CAUTION,
+        ),
+    )
+    report_agent_config: bool = field(
+        default=True,
+        metadata=spec(
+            key="report.agent_config",
+            label=_LABEL_REPORT_AGENT_CONFIG,
+            env="CHRYS_REPORT_AGENT_CONFIG",
+            coerce=bool_coercer(),
+            apply=Apply.RESTART,
+            group="report",
+            kind=Kind.BOOL,
+            risk=Risk.CAUTION,
+        ),
+    )
+    report_diagnostics: bool = field(
+        default=True,
+        metadata=spec(
+            key="report.diagnostics",
+            label=_LABEL_REPORT_DIAGNOSTICS,
+            coerce=bool_coercer(),
+            apply=Apply.RESTART,
+            group="report",
+            kind=Kind.BOOL,
         ),
     )
 

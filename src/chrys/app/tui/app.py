@@ -1185,6 +1185,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 # Session restore builds the saved profile/runtime itself. Preparing
                 # subscriptions first avoids building the default agent only to tear
                 # it down immediately in the restore path.
+                await self._start_fact_reporting()
                 await self._engine.prepare(profile)
                 if await self._restore_startup_session(screen):
                     # The restore republished the warnings of its own settings
@@ -1193,6 +1194,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                     return
                 await self._engine.reset_after_failed_startup_restore()
                 await self._flush_deferred_settings_warnings()
+            await self._start_fact_reporting()
             await self._engine.start(profile)
         except asyncio.CancelledError:
             raise
@@ -1201,6 +1203,20 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 screen.set_startup_agent_loading(False)
                 self._show_startup_failure(screen, exc)
             logger.exception("Engine startup failed")
+
+    async def _start_fact_reporting(self) -> None:
+        """Install the reporting runtime before the first lifecycle event.
+
+        Cost when reporting is off is one global read; when it is on, this is
+        the single bounded WAL open and subscription, before any turn runs and
+        after the first paint — never inside a user-visible step.
+        """
+        from chrys.service.reporting.startup import start_armed_reporting
+
+        try:
+            await start_armed_reporting(self._bus)
+        except Exception:
+            logger.warning("Could not start fact reporting", exc_info=True)
 
     async def _restore_startup_session(self, screen: MainScreen) -> bool:
         """Restore the requested startup session, returning whether it succeeded."""
@@ -1327,6 +1343,12 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._left_behind_task
         self._left_behind_task = None
+        # Bounded drain: the pump gets its deadline and unsent frames stay in
+        # the WAL for the next start.
+        from chrys.service.reporting.startup import stop_reporting
+
+        with contextlib.suppress(Exception):
+            await stop_reporting()
         await self._engine.shutdown()
         # Only now: a second SIGHUP or SIGTERM while the engine stops its
         # background commands must not end the process before it has.

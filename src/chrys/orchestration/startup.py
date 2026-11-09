@@ -205,6 +205,14 @@ def bootstrap_runtime(
     loaded = settle_session_root(load_settings(project_root=project_root, eval_context=eval_context))
     install_process_settings(loaded)
     remember_file_model(loaded.file_model)
+    # Register the fact-reporting loader only: with ``report.enabled`` off this
+    # is one settings read, and even when on nothing is imported, opened or
+    # started here — the queue and sender belong to a background task the
+    # frontend schedules after its first activity.
+    from chrys.service.reporting.startup import arm_reporting
+
+    with contextlib.suppress(Exception):
+        arm_reporting(loaded.settings)
     # Seed the live model pointer with the layered verdict, origin intact —
     # never an unconditional overwrite: when the shell exported a value, that
     # value IS the verdict, so the write is a no-op and the origin stays ENV.

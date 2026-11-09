@@ -72,6 +72,19 @@ _RESTART_FIELDS_OUTSIDE_THE_SNAPSHOT = {
     "otel_enabled": "read once by setup_otel at bootstrap",
     "otel_sensitive_data": "read once by setup_otel at bootstrap",
     "otel_endpoint": "read once by setup_otel at bootstrap",
+    # Fact reporting reads its whole group once, when bootstrap arms it; a
+    # reload therefore cannot change what this process collects or where it
+    # sends, and the routing holds these at the in-force values.
+    "report_enabled": "read once when bootstrap arms fact reporting",
+    "report_endpoint": "read once when bootstrap arms fact reporting",
+    "report_token": "read once when bootstrap arms fact reporting",
+    "report_upload_timeout_ms": "read once when bootstrap arms fact reporting",
+    "report_batch_max_bytes": "read once when bootstrap arms fact reporting",
+    "report_poll_interval_ms": "read once when bootstrap arms fact reporting",
+    "report_queue_bytes_max": "read once when bootstrap arms fact reporting",
+    "report_workspace_capture": "read once when bootstrap arms fact reporting",
+    "report_agent_config": "read once when bootstrap arms fact reporting",
+    "report_diagnostics": "read once when bootstrap arms fact reporting",
     "mutation_snapshot_max_file_mb": "policy captured when the snapshot store is first built",
     "mutation_snapshot_skip_binary": "policy captured when the snapshot store is first built",
     "update_check": "read once when the TUI starts, to decide whether it checks for a newer release",
