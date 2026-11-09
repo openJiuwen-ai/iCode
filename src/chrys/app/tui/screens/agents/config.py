@@ -892,6 +892,7 @@ class AgentsConfigScreen(BaseDialog[str]):
             "mem-add-folder",
             "sk-add-btn",
             "mcp-add-btn",
+            "mcp-import-btn",
             "acp-add-arg",
             "acp-add-env",
             "acp-add-option",
@@ -1124,7 +1125,7 @@ class AgentsConfigScreen(BaseDialog[str]):
 
     @staticmethod
     def _is_config_mutation_button(button_id: str) -> bool:
-        # MCP add/delete presses may only open a dialog; CardListChanged marks
+        # MCP add/delete/import presses may only open a dialog; CardListChanged marks
         # the draft dirty once an actual insertion or confirmed deletion lands.
         if button_id in {
             "sa-add-btn",

@@ -1,0 +1,183 @@
+ImportMcpServersDialog {
+    align: center middle;
+}
+
+/* Sized like the agent config window it opens over, a little smaller so that window still frames it. */
+#mcp-import-container {
+    width: 90%;
+    min-width: 60;
+    max-width: 110;
+    height: 80%;
+    max-height: 56;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+    background: $surface;
+    padding: 0;
+}
+
+#mcp-import-body {
+    height: 1fr;
+}
+
+#mcp-import-sidebar {
+    width: 20;
+    height: 1fr;
+    border-right: solid $tui-border-foreground 15%;
+}
+
+#mcp-import-sources {
+    height: 1fr;
+    border: none;
+    padding: 0 0 0 1;
+    scrollbar-size: 1 1;
+    scrollbar-gutter: stable;
+}
+
+#mcp-import-sources:focus {
+    background-tint: transparent;
+}
+
+#mcp-import-right {
+    width: 1fr;
+    height: 1fr;
+}
+
+#mcp-import-servers {
+    height: 1fr;
+    padding: 1 1 0 2;
+    scrollbar-size-vertical: 1;
+}
+
+#mcp-import-buttons {
+    align: right top;
+}
+
+/* Cards keep their own margin below, so they sit one line apart as on the MCP tab. */
+#mcp-import-servers .mcp-import-item {
+    height: auto;
+    margin: 0 1 0 0;
+}
+
+/* The tick sits level with the card's title line, inside its top border. */
+#mcp-import-servers .mcp-import-tick {
+    width: 3;
+    height: 1;
+    margin: 1 1 0 0;
+    border: none;
+    background: transparent;
+    background-tint: transparent;
+    padding: 0;
+    /* Only the [ ] marker: the empty label's padding is cut off, not elided. */
+    text-wrap: nowrap;
+    text-overflow: clip;
+}
+
+/* An open card's title sits a line lower, under the card's top padding. */
+#mcp-import-servers .mcp-import-item.-open > .mcp-import-tick {
+    margin: 2 1 0 0;
+}
+
+#mcp-import-servers .mcp-import-tick:focus {
+    background: $foreground 8%;
+}
+
+#mcp-import-servers .mcp-import-tick > .toggle--button {
+    color: $foreground 35%;
+    background: transparent;
+}
+
+#mcp-import-servers .mcp-import-tick.-on > .toggle--button {
+    color: $success;
+    background: transparent;
+}
+
+#mcp-import-servers .mcp-import-item > CollapsibleConfigCard {
+    width: 1fr;
+}
+
+/* A name too long for its line is cut short with "…", not wrapped onto a hidden second line;
+   an opened card shows it whole in its Server Name field. */
+#mcp-import-servers .config-card-title {
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* A server that can't be ticked: the tick keeps its column so names stay aligned, and the name is muted
+   except under the pointer or cursor, which keep the card title's colors. */
+#mcp-import-servers .mcp-import-item.-unavailable > .mcp-import-tick {
+    visibility: hidden;
+}
+
+#mcp-import-servers .mcp-import-item.-unavailable .config-card-title {
+    color: $text-muted;
+}
+
+#mcp-import-servers .mcp-import-item.-unavailable .config-card-title:hover {
+    color: $foreground;
+}
+
+#mcp-import-servers .mcp-import-item.-unavailable .config-card-title:focus {
+    color: $block-cursor-foreground;
+}
+
+/* The agent config window strips the frame of its cards' checkboxes (#ac-tabs Checkbox); this window must too,
+   or the frame fills their one row and hides the label. */
+#mcp-import-servers .mcp-import-item > CollapsibleConfigCard Checkbox {
+    height: 1;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+
+#mcp-import-servers .mcp-import-badge {
+    width: auto;
+    height: 1;
+    margin: 0 0 0 2;
+    text-style: bold;
+}
+
+#mcp-import-servers .mcp-import-badge.-warning {
+    color: $warning;
+}
+
+/* "Can't import" explains why there is no tick, as the other statuses do; the reason inside the card stays red. */
+#mcp-import-servers .mcp-import-badge.-status {
+    color: $text-muted;
+}
+
+#mcp-import-servers .mcp-import-notes {
+    height: auto;
+    border: round $tui-border-foreground 30%;
+    border-title-color: $text-muted;
+    padding: 0 1;
+    /* One line under the title, as before a card's first field; the next field's label adds the line below. */
+    margin: 1 0 0 0;
+}
+
+#mcp-import-servers .mcp-import-problem {
+    color: $error;
+}
+
+#mcp-import-servers .mcp-import-status,
+#mcp-import-servers .mcp-import-source {
+    color: $text-muted;
+}
+
+#mcp-import-servers .mcp-import-source {
+    margin: 1 0 0 0;
+}
+
+/* The setting a refusal names, under the sentence that explains it. */
+#mcp-import-servers .mcp-import-detail {
+    padding: 0 0 0 2;
+}
+
+#mcp-import-servers .mcp-import-error {
+    color: $error;
+    margin: 0 0 1 0;
+}
+
+#mcp-import-servers .mcp-import-message {
+    color: $text-muted;
+}

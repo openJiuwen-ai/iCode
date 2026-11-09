@@ -57,6 +57,48 @@ HTTP redirects must keep the request method and stay on the same origin (scheme,
 
 An STDIO connection starts the specified program on the local machine. If the startup command downloads or runs third-party packages or scripts, confirm that their sources are trustworthy and review the relevant content first.
 
+## Import servers from other applications
+
+You can copy MCP servers you already use in Claude Code into the current agent. This is a one-time copy: later changes in the other application do not update iCode.
+
+1. In `/agents mcp`, click "Import from Other Apps" next to "+ Add".
+2. Select an application on the left. Each server is shown as the card it will become; click its name to expand it.
+3. Tick the servers you want, then click "Import". You can tick servers from several applications before importing; each application on the left shows how many of its servers are ticked. Before adding them, iCode lists the ticked servers by application: click "Import" to confirm, or "Back" to change your ticks.
+4. Review the new cards, do what their warnings ask, click "Test", then "Save". Importing alone does not connect to a server or save anything.
+
+The mark after a server's name tells you what to check. "⚠" with a number counts its warnings. A server you cannot tick follows the same rules as "+ Add": "Already added" when the current agent has the same server, or "Name in use" or "Connection in use" when it has a conflicting one (point at the mark for details); "Duplicate" when it conflicts with a server you ticked (point at the mark to see which); or "Can't import", with the reason in the card. Servers you cannot tick have no tick box and a gray name.
+
+### Check before use
+
+- **Warnings (⚠)**: Each one says what to do before the server works: settings that were not copied, sign-in to redo, environment variables to set, or tools to choose. They are shown in the card's Description and kept there after import, so you can come back to them; delete them once handled.
+- **Enabled**: A server turned off in the other application, including a project server you rejected in Claude Code, is imported with "Enabled" unchecked. Check it in the card if you want to use the server.
+- **Scope**: Imported servers work in every project that uses this agent, even if the other application used them in one project only. STDIO servers start in iCode's working folder.
+- **Credentials**: Tokens written directly in the other application's configuration are copied into the agent's file. Sign-in done in the other application, such as OAuth, is not copied. If the server needs authentication, add the headers it expects, or [get a value from a command](../configuration/models.md#get-an-api-key-from-a-command).
+- **Approval**: Approval rules from the other application do not carry over. See [approval modes](../configuration/approval.md).
+
+### Where servers are found
+
+| Application | Files read |
+| --- | --- |
+| Claude Code | `~/.claude.json` (or the one in `CLAUDE_CONFIG_DIR`), for your servers and those added for the current project; `.mcp.json` in the current folder and at the top of its Git repository |
+
+When several files define a server with the same name, the one that applies to the current project is listed. Servers added only by cloud services, plugins or extensions are not listed; add them manually.
+
+### When a server cannot be imported
+
+"Can't import" names the setting in the other application's file that iCode cannot use as written. Common causes:
+
+| Cause | What to do |
+| --- | --- |
+| The server uses SSE or WebSocket | If it also offers Streamable HTTP or a STDIO command, add it manually that way. |
+| An environment variable in a URL, command or argument | Add the server manually with the full URL or the actual value. |
+| An empty value, or one with spaces at either end | Add the server manually and enter the value it needs. |
+| An invalid header name, or a header value with non-ASCII text or control characters | Add the server manually and enter the header the server accepts. |
+
+If a file cannot be read, the error appears above the list, and servers from the other files are still listed. Correct the file, then open import again.
+
+If import still says it couldn't search for or load MCP configurations after you reopen it, the cause is recorded in `logs/debug.log` in iCode's configuration folder: `~/.chrys/` on macOS and Linux, or `%APPDATA%\chrys\` on Windows.
+
 ## Configure instructions, tools, and request options
 
 The following settings apply to both HTTP and STDIO servers.

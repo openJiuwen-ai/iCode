@@ -101,6 +101,15 @@ _WAIT_BEFORE_ADDING = msg(
     "tui.mcp.wait_before_adding",
     fallback="Wait for MCP connection tests to finish before adding servers.",
 )
+_WAIT_BEFORE_IMPORTING = msg(
+    "tui.mcp.wait_before_importing",
+    fallback="Wait for MCP connection tests to finish before importing servers.",
+)
+_IMPORTED = msg(
+    "tui.mcp.imported",
+    fallback="Imported {count} MCP server. Review it, then click Save.",
+    plural_fallback="Imported {count} MCP servers. Review them, then click Save.",
+)
 _WAIT_BEFORE_REMOVING = msg(
     "tui.mcp.wait_before_removing",
     fallback="Wait for MCP connection tests to finish before removing servers.",
@@ -226,6 +235,7 @@ _COMMAND_PLACEHOLDER = msg(
 _HTTP_OPTIONS = msg("tui.mcp.http_options", fallback="HTTP Options")
 _STDIO_OPTIONS = msg("tui.mcp.stdio_options", fallback="STDIO Options")
 _ADD = msg("tui.mcp.add", fallback="+ Add")
+_IMPORT = msg("tui.mcp.import", fallback="Import from Other Apps")
 _SERVERS = msg("tui.mcp.servers", fallback="MCP Servers")
 _SERVERS_DESCRIPTION = msg(
     "tui.mcp.servers_description",
@@ -1708,10 +1718,16 @@ class MCPConfigPanel(VerticalScroll):
         height: auto;
         margin: 0 1 0 0;
     }
-    MCPConfigPanel #mcp-add-btn {
+    MCPConfigPanel #mcp-add-btn, MCPConfigPanel #mcp-import-btn {
         min-width: 10;
         height: 1;
         margin: 0;
+    }
+    MCPConfigPanel #mcp-import-btn {
+        margin: 0 0 0 2;
+    }
+    MCPConfigPanel .mcp-header-actions {
+        height: auto;
     }
     MCPConfigPanel .mcp-header-bar {
         height: auto;
@@ -1743,6 +1759,7 @@ class MCPConfigPanel(VerticalScroll):
             for index, server in enumerate(servers)
         ]
         self._read_only = read_only
+        self._workspace_cwd = workspace_cwd or None
         self._additional_reserved_tool_names = additional_reserved_tool_names
         self._reuse_choices = reuse_choices
         self._testing: set[int] = set()
@@ -1771,10 +1788,14 @@ class MCPConfigPanel(VerticalScroll):
         with Vertical(classes="mcp-header-bar"), Vertical(classes="mcp-field"):
             yield Label(render_str(localizer, _SERVERS.bind()), classes="mcp-section-title")
             yield Label(render_str(localizer, _SERVERS_DESCRIPTION.bind()), classes="mcp-section-desc")
-            add_button = ConfigAddButton(render_str(localizer, _ADD.bind()), id="mcp-add-btn")
-            add_button.disabled = self._read_only
-            add_button.display = not self._read_only
-            yield add_button
+            with Horizontal(classes="mcp-header-actions"):
+                for button in (
+                    ConfigAddButton(render_str(localizer, _ADD.bind()), id="mcp-add-btn"),
+                    ConfigAddButton(render_str(localizer, _IMPORT.bind()), id="mcp-import-btn"),
+                ):
+                    button.disabled = self._read_only
+                    button.display = not self._read_only
+                    yield button
         yield Vertical(id="mcp-cards")
 
     async def on_mount(self) -> None:
@@ -1856,6 +1877,45 @@ class MCPConfigPanel(VerticalScroll):
         await self._rebuild_cards()
         self.scroll_home(animate=False)
         self.post_message(CardListChanged())
+
+    @on(Button.Pressed, "#mcp-import-btn")
+    def _on_import(self, _event: Button.Pressed) -> None:
+        if self._read_only or self._refuse_while_testing(_WAIT_BEFORE_IMPORTING):
+            return
+        # A second press queued behind the first would open a second dialog over it.
+        if self.screen is not self.app.screen:
+            return
+        from chrys.app.tui.screens.agents.import_mcp_dialog import ImportMcpServersDialog
+
+        existing = [row.config for row in self._snapshot_rows(preserve_blank_names=True)]
+        dialog = ImportMcpServersDialog(
+            workspace_cwd=self._workspace_cwd,
+            existing=existing,
+            locale_controller=widget_locale_controller(self),
+        )
+        self.app.push_screen(dialog, callback=self._import_selected)
+
+    async def _import_selected(self, configs: list[MCPServerConfig] | None) -> None:
+        if not configs or self._read_only:
+            return
+        if not self.is_attached or self._pruning or self._closing:
+            return
+        if not composed_live(self.screen) or self.screen is not self.app.screen:
+            return
+        if self._refuse_while_testing(_WAIT_BEFORE_IMPORTING):
+            return
+        self._rows = self._snapshot_rows(preserve_blank_names=True)
+        self._rows[0:0] = [_MCPServerRow(config, collapsed=False) for config in configs]
+        await self._rebuild_cards()
+        self.scroll_home(animate=False)
+        self.post_message(CardListChanged())
+        # Closing the window discards unsaved servers, imported ones included.
+        localizer = widget_localizer(self)
+        self.notify(
+            render_str(localizer, _IMPORTED.bind(count=len(configs))),
+            title=render_str(localizer, _MCP_TITLE.bind()),
+            markup=False,
+        )
 
     def _refuse_while_testing(self, reason: MessageDef) -> bool:
         """Tell the user why the card list can't change yet; tests hold card indexes until they finish."""

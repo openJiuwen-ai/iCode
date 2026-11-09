@@ -748,6 +748,7 @@ async def test_agent_config_read_only_applies_to_lazy_tabs(tmp_path: Path) -> No
         assert mcp_test.disabled is True
         assert screen.query_one("#mcp-name-0", Input).disabled is True
         assert screen.query_one("#mcp-add-btn", Button).display is False
+        assert screen.query_one("#mcp-import-btn", Button).display is False
 
         screen.query_one("#ac-tabs", TabbedContent).active = "skills"
         await pilot.pause()
