@@ -69,8 +69,9 @@ async def _choose_directory(main: MainScreen, pilot: Pilot, path: Path, entry: s
     return dialog
 
 
-@pytest.mark.parametrize("change", ["source", "environment"])
-@pytest.mark.parametrize("cancel", [False, True])
+# Either change asks for Trust before the load, and completing the load must not ask again: both run to
+# completion. Once trusted, cancelling the load does not depend on why Trust was asked: one change cancels.
+@pytest.mark.parametrize(("cancel", "change"), [(False, "source"), (False, "environment"), (True, "environment")])
 async def test_workspace_preview_shows_loading_after_trust_and_keeps_cancel_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str, cancel: bool
 ) -> None:
@@ -144,43 +145,48 @@ async def test_workspace_preview_shows_loading_after_trust_and_keeps_cancel_avai
             release.set()
 
 
-@pytest.mark.parametrize("backend", ["python", "acp", "kernel", "mixed"])
-async def test_default_model_only_for_kernel_nodes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
-) -> None:
+def _backend_source(backend: str) -> bytes:
+    if backend == "python":
+        return python_workflow("def echo(value):\n    return value\n", "echo")
+    profile = "Kernel" if backend == "kernel" else "External"
+    nodes = f"a = wf.agent('first', profile={profile!r})\n"
+    nodes += "b = wf.agent('second', profile='Kernel')\nwf.edge(a, b)\n" if backend == "mixed" else "b = a\n"
+    return (
+        "from chrys.workflows import WorkflowBuilder\nwf = WorkflowBuilder('backend')\n"
+        + nodes
+        + "wf.start(a)\nwf.output(b)\nworkflow = wf.build()\n"
+    ).encode()
+
+
+async def test_default_model_only_for_kernel_nodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project = make_project(tmp_path)
     monkeypatch.chdir(project)
     agents = AgentProfileRegistry()
     agents.register(make_profile("Kernel"))
     agents.register(replace(make_profile("External"), acp=AcpAgentConfig(command="external")))
-    if backend == "python":
-        source = python_workflow("def echo(value):\n    return value\n", "echo")
-    else:
-        profile = "Kernel" if backend == "kernel" else "External"
-        nodes = f"a = wf.agent('first', profile={profile!r})\n"
-        nodes += "b = wf.agent('second', profile='Kernel')\nwf.edge(a, b)\n" if backend == "mixed" else "b = a\n"
-        source = (
-            "from chrys.workflows import WorkflowBuilder\nwf = WorkflowBuilder('backend')\n"
-            + nodes
-            + "wf.start(a)\nwf.output(b)\nworkflow = wf.build()\n"
-        ).encode()
-    write_workflow(project, "backend", source)
+    backends = ("python", "kernel", "acp", "mixed")  # the model row alternates hidden and shown
+    for backend in backends:
+        write_workflow(project, f"backend_{backend}", _backend_source(backend))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:
         main = app._main_screen
         assert main is not None
         main._services.agent_registry = agents
-        await open_workflow(main, pilot, "backend")
-        await click_when_settled(pilot, "#workflow-start")
-        await wait_for(lambda: isinstance(app.screen, WorkflowInputDialog) and app.screen.is_mounted, pilot=pilot)
-        dialog = app.screen
-        model = dialog.query_one("#workflow-input-model-row")
-        assert model.display == (backend in {"kernel", "mixed"})
-        assert str(model.query_one(Static).content) == "Default Model"
-        assert str(dialog.query_one("#workflow-input-directory", Static).content) == str(project)
-        assert not dialog.query_one("#workflow-input-change-directory").display
-        assert dialog.query_one(MessageEditor).region.height > 0
-        await click_when_settled(pilot, "#workflow-input-cancel")
+        # Each backend opens in the same unbound draft; cancelling its Run input leaves the draft as it was.
+        for backend in backends:
+            await open_workflow(main, pilot, f"backend_{backend}")
+            await click_when_settled(pilot, "#workflow-start")
+            await wait_for(lambda: isinstance(app.screen, WorkflowInputDialog) and app.screen.is_mounted, pilot=pilot)
+            dialog = app.screen
+            model = dialog.query_one("#workflow-input-model-row")
+            assert model.display == (backend in {"kernel", "mixed"}), backend
+            assert str(model.query_one(Static).content) == "Default Model"
+            assert str(dialog.query_one("#workflow-input-directory", Static).content) == str(project)
+            assert not dialog.query_one("#workflow-input-change-directory").display
+            assert dialog.query_one(MessageEditor).region.height > 0
+            await click_when_settled(pilot, "#workflow-input-cancel")
+            await wait_for(lambda: app.screen is main, pilot=pilot)
+            assert not main._workflow.session_id
         main._workspace_actions.open_working_dir_picker()
         await wait_for(
             lambda: isinstance(app.screen, NoticeDialog) and bool(app.screen.query("#confirm-message")), pilot=pilot
@@ -372,8 +378,9 @@ async def test_cancel_during_directory_preview_keeps_original_target(
         assert str(main._workflow_panel.border_subtitle) == str(project)
 
 
-@pytest.mark.parametrize("accept", [False, True])
-@pytest.mark.parametrize("entry", ["input", "footer"])
+# The Run input shows the directory it ends on, so it runs both answers; the footer adds only where the
+# change starts, and its commit runs once (a decline undoes nothing the input's decline does not).
+@pytest.mark.parametrize(("entry", "accept"), [("input", False), ("input", True), ("footer", True)])
 async def test_directory_dependent_manifest_is_confirmed_before_committing_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, accept: bool, entry: str
 ) -> None:

@@ -421,8 +421,17 @@ async def test_pending_run_admission_is_independent_of_browsing_an_older_definit
         assert controller.run_control._cancel_confirmation is not None
 
 
-@pytest.mark.parametrize("chosen", ["demo-workflow", "alternate"])
-@pytest.mark.parametrize("outcome", ["running", "completed", "cancelled", "node_failed"])
+# The outcome decides only the refusals before New (any run binds the session); New's picker opens
+# for a new session whatever the run ended as, so each outcome runs once and each choice twice.
+@pytest.mark.parametrize(
+    ("outcome", "chosen"),
+    [
+        ("running", "demo-workflow"),
+        ("completed", "alternate"),
+        ("cancelled", "demo-workflow"),
+        ("node_failed", "alternate"),
+    ],
+)
 async def test_workflow_selection_requires_new_after_any_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str, chosen: str
 ) -> None:
