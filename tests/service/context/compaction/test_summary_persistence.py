@@ -12,7 +12,7 @@ import pytest
 
 from chrys.foundation.retry import restore_message_properties, snapshot_message_properties
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
-from chrys.kernel import EXCLUDED_KEY, Agent, AgentSession, Message
+from chrys.kernel import EXCLUDED_KEY, Agent, AgentSession, Content, Message
 from chrys.service.context.compaction import _group_messages_by_id
 from chrys.service.context.providers.history import CompressibleHistoryProvider
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -129,7 +129,9 @@ async def test_new_turn_summary_cannot_bind_an_old_reused_positional_group_id() 
     second_messages = _build_multi_turn(1, groups_per_turn=3, result_size=50000)[1:]
     for message in second_messages:
         if message.role == "tool":
-            message.contents[0].result = "NEW " + message.contents[0].result
+            content = message.contents[0]
+            content.result = "NEW " + content.result
+            content.items = [Content.from_text(content.result)]
     state["messages"].extend([*second_messages, Message("user", ["third turn"])])
     wire = await compact_view()
 
