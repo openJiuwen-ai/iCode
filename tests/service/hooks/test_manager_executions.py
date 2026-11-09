@@ -289,9 +289,15 @@ async def test_a_second_blocking_hook_queues_while_the_only_slot_is_busy(hooks_d
         by_id = {view.hook_id: view for view in manager.executions()}
         assert by_id["hook-a"].queued is False
         assert by_id["hook-b"].queued is True
+        queued_at = by_id["hook-b"].started_at
+        # The clock moves on before B takes its slot, so a stamp taken then would differ.
+        await wait_for(lambda: time.monotonic() > queued_at, description="the clock moved past B's queueing")
 
         release_a.touch()
-        await _running(manager, "hook-b")
+        running_b = await _running(manager, "hook-b")
+        # The time B spent queued counts toward its age: the indicator shows a waited-on run once it
+        # has lasted a second, queueing included, so a run already showing stays shown as it starts.
+        assert running_b.started_at == queued_at
         assert [view.hook_id for view in manager.executions()] == ["hook-b"]
         release_b.touch()
         await asyncio.gather(fire_a, fire_b)
