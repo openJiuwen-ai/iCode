@@ -26,6 +26,7 @@ import pytest
 import chrys.orchestration.sub_agents.tools as sub_agent_module
 import chrys.service.skills.adapter as skills_adapter
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.errors import ErrorKind
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     ApprovalAutoFulfillBlocked,
@@ -35,6 +36,7 @@ from chrys.foundation.events.types import (
     InvocationRetryAttempt,
     InvocationStarted,
 )
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform import get_platform
 from chrys.foundation.retry import RetryAttemptInfo
@@ -336,6 +338,9 @@ async def test_sub_agent_concurrency_limit_rejects_excess_and_releases_slot(
         def prepare_turn(self) -> None:
             return None
 
+        async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+            return ()
+
     class _Agent:
         client = MockChatClient()
 
@@ -372,6 +377,9 @@ async def test_local_sub_agent_missing_limit_uses_shared_default() -> None:
     class _Reminder:
         def prepare_turn(self) -> None:
             return None
+
+        async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+            return ()
 
     class _Agent:
         client = MockChatClient()
@@ -448,6 +456,9 @@ async def test_sub_agent_invocation_closes_approval_middleware(monkeypatch: pyte
         def prepare_turn(self) -> None:
             pass
 
+        async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+            return ()
+
     class _Agent:
         client = MockChatClient()
 
@@ -503,6 +514,9 @@ async def test_sub_agent_cleanup_continues_when_usage_drain_is_cancelled(
     class _Reminder:
         def prepare_turn(self) -> None:
             return None
+
+        async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+            return ()
 
     class _Agent:
         client = MockChatClient()
@@ -575,6 +589,9 @@ async def test_pre_controller_hook_cancellation_keeps_terminal_audit_discoverabl
             def prepare_turn(self) -> None:
                 return None
 
+            async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+                return ()
+
         class _Agent:
             client = MockChatClient()
 
@@ -638,6 +655,9 @@ async def test_sub_agent_cleanup_handles_failure_before_event_middleware_assignm
         def prepare_turn(self) -> None:
             return None
 
+        async def refresh_extension_context(self, prompt: str, *, keep: bool = False) -> tuple[()]:
+            return ()
+
     class _Agent:
         client = MockChatClient()
 
@@ -672,6 +692,7 @@ async def test_sub_agent_last_words_retry_callback_publishes_current_invocation(
     starts: list[InvocationStarted] = []
     retries: list[InvocationRetryAttempt] = []
     captured_publish_retry = None
+    dropped = FailureFacts(kind=ErrorKind.CONNECTION_LOST, retryable=True)
 
     async def _capture_start(event: InvocationStarted) -> None:
         starts.append(event)
@@ -716,7 +737,7 @@ async def test_sub_agent_last_words_retry_callback_publishes_current_invocation(
         async def execute(self) -> str:
             assert captured_publish_retry is not None
             await captured_publish_retry(
-                RetryAttemptInfo(reason="connection dropped", attempt=1, max_attempts=5, delay_seconds=3)
+                RetryAttemptInfo(reason="connection dropped", attempt=1, max_attempts=5, delay_seconds=3, facts=dropped)
             )
             return "done"
 
@@ -753,6 +774,7 @@ async def test_sub_agent_last_words_retry_callback_publishes_current_invocation(
     assert retries[0].max_attempts == 5
     assert retries[0].delay_seconds == 3
     assert retries[0].session_id == "s-1"
+    assert retries[0].facts is dropped
 
 
 @pytest.mark.asyncio

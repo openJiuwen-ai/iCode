@@ -719,7 +719,7 @@ def _confirmation_session_handler(state: MainScreenState, services: MainScreenSe
             set_workspace_cwd=_noop,
             update_subtitle=_noop,
             update_toc=_noop,
-            clear_suggestion_file_cache=_noop,
+            discard_suggestion_file_index=_noop,
             start_worker=discard_worker,
             post_gc_message=_noop,
             debug=_noop,

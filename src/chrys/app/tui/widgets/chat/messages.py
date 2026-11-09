@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, TypeGuard
+from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple, TypeGuard
 
 from rich.cells import cell_len
 from rich.text import Text
@@ -37,10 +37,11 @@ from chrys.app.tui.support.gc_freeze import (
     GcRemovedContent,
     current_gc_freeze_epoch,
 )
+from chrys.app.tui.util.formatting import format_token_count
 from chrys.app.tui.util.removal import remove_all_shielded, remove_shielded
-from chrys.app.tui.util.shimmer import FRAME_SECONDS
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.util.static_update import update_static_in_place
+from chrys.app.tui.util.stream_tokens import StreamTokens
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.fold_gap import FOLD_GAP_ROWS, FoldGap
 from chrys.app.tui.widgets.chat.fold_rows import (
@@ -51,14 +52,13 @@ from chrys.app.tui.widgets.chat.fold_rows import (
     THINKING_LABEL,
     THOUGHT_LABEL,
     text_preview,
-    text_tail,
 )
 from chrys.app.tui.widgets.chat.image_preview import extract_image_previews
 from chrys.app.tui.widgets.chat.image_view import TerminalImages
 from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
 from chrys.app.tui.widgets.chat.transcript_panel import note_fold
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
-from chrys.app.tui.widgets.loading import GatedAnimation
+from chrys.app.tui.widgets.loading import component_text_style
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.markdown.parser import create_user_text_markdown_parser
 from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
@@ -96,6 +96,8 @@ INTERRUPTED_RETRY_ACTION_MESSAGE = msg(
     "transcript.interrupted.retry_action",
     fallback="Retry",
 )
+ERROR_RETRY_ACTION: Final[MessageRef] = INTERRUPTED_RETRY_ACTION_MESSAGE.bind()
+"""The default inline action of an error card: the same wording the interrupted card's own retry uses."""
 INTERRUPTED_CONTINUE_ACTION_MESSAGE = msg(
     "transcript.interrupted.continue_action",
     fallback="Continue",
@@ -105,7 +107,9 @@ _AGENT_RESPONSE_COPY_TOOLTIP = msg(
     "tui.chat.copy_agent_response_tooltip",
     fallback="Copy raw agent response",
 )
-COPY_MESSAGE_BUTTON = msg("tui.chat.copy_message_button", fallback="copy")
+COPY_MESSAGE_BUTTON = msg("tui.chat.copy_message_button", fallback="Copy")
+ROLLBACK_MESSAGE_BUTTON = msg("tui.chat.rollback_message_button", fallback="↺ Discard this turn and later")
+INTERRUPTED_ROLLBACK_BUTTON = msg("tui.chat.interrupted_rollback_button", fallback="Discard This Turn")
 _STREAMED_BODY_INTERVAL_SECONDS = 0.2
 """Shortest time between two markdown updates of a streaming message.
 
@@ -116,6 +120,12 @@ busy and the garbage collector behind it.
 _USER_MESSAGE_COPIED = msg("tui.copy.user_message", fallback="Copied your message")
 _USER_MESSAGE_COPY_TOOLTIP = msg("tui.chat.copy_user_message_tooltip", fallback="Copy your raw message")
 _THINKING_SUMMARY_LABEL = msg("tui.chat.thinking_summary_label", fallback="Thinking summary")
+_THINKING_TOKENS = msg("tui.chat.thinking_tokens", fallback=" ({tokens} token)", plural_fallback=" ({tokens} tokens)")
+_THINKING_SPEED = msg(
+    "tui.chat.thinking_speed",
+    fallback=" ({tokens} token · {speed} tok/s)",
+    plural_fallback=" ({tokens} tokens · {speed} tok/s)",
+)
 _RETRY_MESSAGE = msg(
     "tui.chat.retry_message",
     fallback="{message} Retrying in {delay_seconds}s ({attempt}/{max_attempts})...",
@@ -247,7 +257,7 @@ class MessageHeaderRow(Horizontal):
     MessageHeaderRow > .fold-row-header {
         width: 1fr;
     }
-    MessageHeaderRow > MessageCopyButton {
+    MessageHeaderRow > .message-action-btn {
         display: none;
         width: auto;
         height: 1;
@@ -256,7 +266,12 @@ class MessageHeaderRow(Horizontal):
         text-style: dim not bold;
         pointer: pointer;
     }
-    MessageHeaderRow > MessageCopyButton:hover {
+    MessageHeaderRow > MessageRollbackButton.message-action-btn {
+        dock: right;
+        margin: 0 1 0 2;
+        padding: 0;
+    }
+    MessageHeaderRow > .message-action-btn:hover {
         color: $accent;
         text-style: underline;
     }
@@ -278,8 +293,40 @@ class MessageCopyButton(ClickAffordance):
     CLICK_MESSAGE = Clicked
 
     def __init__(self, *, tooltip: str, text: str | None = None) -> None:
-        super().__init__(Text(text or format_message(COPY_MESSAGE_BUTTON.bind())))
+        super().__init__(Text(text or format_message(COPY_MESSAGE_BUTTON.bind())), classes="message-action-btn")
         self.tooltip = tooltip
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        _ = selection
+        return None
+
+
+class MessageRollbackButton(ClickAffordance):
+    """Inline rollback action; its owning message supplies the turn boundary."""
+
+    ALLOW_SELECT = False
+
+    class Clicked(Message):
+        """The rollback action was pressed."""
+
+    CLICK_MESSAGE = Clicked
+
+    def __init__(self, text: str) -> None:
+        super().__init__(Text(text), classes="message-action-btn")
+
+    class PreviewChanged(Message):
+        """The pointer entered or left the discard link."""
+
+        def __init__(self, button: MessageRollbackButton, active: bool) -> None:
+            super().__init__()
+            self.button = button
+            self.active = active
+
+    def on_enter(self) -> None:
+        self.post_message(self.PreviewChanged(self, True))
+
+    def on_leave(self) -> None:
+        self.post_message(self.PreviewChanged(self, False))
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         _ = selection
@@ -340,11 +387,21 @@ class UserMessage(Widget):
         compressed: bool = False,
         is_injection: bool = False,
         contents: list[Any] | None = None,
+        turn_number: int | None = None,
+        rollback_available: bool = False,
+        history_item_id: str | None = None,
     ) -> None:
         self._text = text
         self._ts = timestamp
         self._compressed = compressed
         self._is_injection = is_injection
+        self.turn_number = turn_number
+        self.history_item_id = history_item_id
+        """The ``_chrys_analytics_item_id`` of this message in history, once known: backend cleanup names it."""
+        self.client_message_id: str | None = None
+        """The frontend's own id for a live retry note, which the retry's ``TurnStarted`` echoes."""
+        self._rollback_available = rollback_available and not is_injection and turn_number is not None
+        self._rollback_disabled = False
         self._image_previews = extract_image_previews(contents)
         super().__init__()
         if compressed:
@@ -361,6 +418,9 @@ class UserMessage(Widget):
             )
             copy_button.display = self._should_show_copy_button()
             yield copy_button
+            rollback = MessageRollbackButton(self._render_message(ROLLBACK_MESSAGE_BUTTON.bind()))
+            rollback.display = self._rollback_available
+            yield rollback
         yield VirtualizedMarkdown(
             sanitize_source_text(self._text),
             parser_factory=create_user_text_markdown_parser,
@@ -392,8 +452,61 @@ class UserMessage(Widget):
         return render_str(widget_localizer(self), reference)
 
     def _should_show_copy_button(self) -> bool:
-        """Offer copy for text outside compressed history, as agent responses do."""
-        return not self._compressed and bool(self._text.strip())
+        """Offer the original text even when the model's history was compressed."""
+        return bool(self._text.strip())
+
+    @dataclass
+    class RollbackRequested(Message):
+        """Roll back to the boundary before this opening user message."""
+
+        message: UserMessage
+        target_turn: int
+
+    @staticmethod
+    def undo_link_available(turn_number: int | None, targets: set[int]) -> bool:
+        """Whether turn *turn_number*'s header offers the undo link, given the retained rollback *targets*.
+
+        Turn 1's target (the session start) needs no snapshot and stays available to
+        ``/rollback to 0`` and the dialog; once pruning has removed the oldest
+        snapshots, its header hides the link like the other pruned turns.
+        """
+        if turn_number is None or turn_number - 1 not in targets:
+            return False
+        return turn_number != 1 or 1 in targets or targets == {0}
+
+    def set_rollback_available(self, available: bool) -> None:
+        """Repaint only this fixed-height header when its snapshot is pruned."""
+        available = available and not self._is_injection and self.turn_number is not None
+        if available == self._rollback_available:
+            return
+        self._rollback_available = available
+        if not self.is_mounted:
+            # Replay composes a batch before mounting it: an already composed
+            # button keeps the new state, and compose reads the flag otherwise.
+            for button in self.query(MessageRollbackButton):
+                button.display = available
+            return
+        from chrys.app.tui.util.visibility import resync_compositor_regions
+
+        button = self.query_one(MessageRollbackButton)
+        button.styles.set_rule("display", "block" if available else "none")
+        for node in button.ancestors_with_self:
+            if isinstance(node, Widget):
+                node._clear_arrangement_cache()
+        resync_compositor_regions(button)
+
+    def set_rollback_disabled(self, disabled: bool) -> None:
+        """Prevent a second request until this one completes or is declined."""
+        self._rollback_disabled = disabled
+        for button in self.query(MessageRollbackButton):
+            button.disabled = disabled
+
+    def on_message_rollback_button_clicked(self, event: MessageRollbackButton.Clicked) -> None:
+        event.stop()
+        if not self._rollback_available or self._rollback_disabled or self.turn_number is None:
+            return
+        self.set_rollback_disabled(True)
+        self.post_message(self.RollbackRequested(self, self.turn_number - 1))
 
     def copy_user_message(self) -> None:
         """Copy the message as the user wrote it to the available clipboards."""
@@ -449,15 +562,9 @@ class _ShownRow(NamedTuple):
 
 
 _ROW_LABEL_START = len(OPEN_ARROW) + 1
-_MARQUEE_CATCH_UP_SECONDS = 0.5
-"""How far a running row trails the streamed text: the text that arrived in about this long."""
-_MARQUEE_MIN_CHARS_PER_SECOND = 24.0
-"""The slowest a running row moves while it trails the text, so the last words arrive soon."""
-_MARQUEE_MAX_STEP_SECONDS = 0.25
-"""The longest pause a running row makes up for at once, after a stall in painting."""
 
 
-class _FoldRowHeader(GatedAnimation, _AgentHeader):
+class _FoldRowHeader(_AgentHeader):
     """The header of thinking or text between tool calls: open, its label; folded, a sentence of the opening of its text.
 
     Folded, the text follows the label and a colon (``Thought: …``), or stands alone where the row is the agent's
@@ -468,31 +575,17 @@ class _FoldRowHeader(GatedAnimation, _AgentHeader):
     resize only cuts it again, and a language switch reaches it at its next fold, as it reaches other transcript
     text, so what a selection's offsets index is always the row on screen. A thinking block folded inside a
     hidden activity section never reads its preview.
-
-    Folded while its text streams, the row runs the newest of the text along it instead, coming in from the right
-    at the pace the text arrives, smoothed between the bursts it arrives in. Its refresh timer starts the first
-    time it runs, so a row that never does keeps none.
     """
 
     COMPONENT_CLASSES: ClassVar[set[str]] = {"fold-row-header--label", "fold-row-header--preview"}
-    _animating = False
 
-    def __init__(
-        self, label: MessageRef, *, collapsed: bool, text: str, folded_label: bool = True, streaming: bool = False
-    ) -> None:
+    def __init__(self, label: MessageRef, *, collapsed: bool, text: str, folded_label: bool = True) -> None:
         self._label = label
+        self._detail: MessageRef | None = None
         self._folded_label = folded_label
         """Whether the folded row names its label before the text."""
         self._collapsed = collapsed
         self._text = text
-        self._streaming = streaming
-        """Whether the text still streams; never ``_running``, which is MessagePump's own state."""
-        self._marquee_end = 0.0
-        """How far into the text a running row has got, in characters: a row folded as it streamed starts at 0."""
-        self._marquee_at: float | None = None
-        """When the running row last moved (``time.monotonic()``); None until it first paints."""
-        self._marquee_shown = ""
-        """The text a running row last painted after its label, as a selection copies it."""
         self._preview_source: str | None = None
         self._preview = ""
         self._row: _ShownRow | None = None
@@ -508,8 +601,6 @@ class _FoldRowHeader(GatedAnimation, _AgentHeader):
         past where the row cuts it.
         """
         label, head, _, preview = self._shown_row()
-        if self._runs:
-            preview = self._marquee_shown
         if not preview:
             return f"[{label}]", "\n"
         start = 0 if selection.start is None else selection.start.x
@@ -518,69 +609,33 @@ class _FoldRowHeader(GatedAnimation, _AgentHeader):
         copied = " ".join(part for part in (f"[{label}]" if start < len(head) else "", covered) if part)
         return copied, "\n"
 
-    def show(self, *, collapsed: bool, text: str, label: MessageRef | None = None, streaming: bool = False) -> None:
-        """Show the folded row for *text*, or the open header, under *label* when given; one row, so no layout.
-
-        Folded while *streaming*, the row runs the newest of the text.
-        """
+    def show(
+        self, *, collapsed: bool, text: str, label: MessageRef | None = None, detail: MessageRef | None = None
+    ) -> None:
+        """Show the folded row for *text* or the open header. Both are one row high."""
         relabelled = label is not None and label != self._label
-        reshaped = relabelled or collapsed != self._collapsed or streaming != self._streaming
-        if not (reshaped or (collapsed and text is not self._text)):
+        if not (
+            relabelled
+            or collapsed != self._collapsed
+            or detail != self._detail
+            or (collapsed and text is not self._text)
+        ):
             return
-        if collapsed and streaming and not self._runs:
-            # Folded as it streams: the row goes on from the newest text, not from its start.
-            self._marquee_end, self._marquee_at = float(len(text)), None
         if label is not None:
             self._label = label
-        self._collapsed, self._text, self._streaming = collapsed, text, streaming
-        if reshaped or not self._runs:
-            # A running row reads the newest text as it paints.
-            self._row = None
-        self._sync_marquee()
+        self._detail = detail
+        self._collapsed, self._text = collapsed, text
+        self._row = None
         self.refresh(layout=False)
-
-    @property
-    def _runs(self) -> bool:
-        """Whether the row runs the streamed text along it."""
-        return self._collapsed and self._streaming and self._folded_label
-
-    def on_mount(self) -> None:
-        if self._runs:
-            # Mounted folded as its text streams; ``is_mounted`` reads True only once the mount handlers return.
-            self.auto_refresh = FRAME_SECONDS
-        self._sync_marquee()
-
-    def _sync_marquee(self) -> None:
-        if not self._runs:
-            self.pause_animation()
-            return
-        if self._auto_refresh_timer is None and self.is_mounted:
-            self.auto_refresh = FRAME_SECONDS
-        self.resume_animation()
-
-    def _advance_marquee(self) -> int:
-        """How far into the text the running row reaches as it paints now, in characters."""
-        end = len(self._text)
-        now = time.monotonic()
-        if self.app.animation_level == "none":
-            self._marquee_end = float(end)
-        elif self._marquee_end < end and self._marquee_at is not None:
-            behind = end - self._marquee_end
-            speed = max(behind / _MARQUEE_CATCH_UP_SECONDS, _MARQUEE_MIN_CHARS_PER_SECOND)
-            step = speed * min(now - self._marquee_at, _MARQUEE_MAX_STEP_SECONDS)
-            self._marquee_end = min(self._marquee_end + step, float(end))
-        self._marquee_at = now
-        return int(self._marquee_end)
 
     def _shown_row(self) -> _ShownRow:
         if self._row is not None:
             return self._row
         localizer = widget_localizer(self)
         label = render_str(localizer, self._label)
-        if self._runs:
-            # The text after the label is the newest of it as the row paints.
-            shown = render_str(localizer, FOLDED_LABEL.bind(label=label))
-            self._row = _ShownRow(label, f"{FOLDED_ARROW} {shown}", _ROW_LABEL_START + len(shown.rstrip()), "")
+        if self._detail is not None:
+            shown = label + render_str(localizer, self._detail)
+            self._row = _ShownRow(shown, f"{FOLDED_ARROW} {shown}", _ROW_LABEL_START + len(label), "")
             return self._row
         if self._collapsed and self._preview_source is not self._text:
             self._preview_source = self._text
@@ -599,14 +654,10 @@ class _FoldRowHeader(GatedAnimation, _AgentHeader):
     def render(self) -> Text:
         row = self._shown_row()
         width = self.content_size.width
-        preview = row.preview
-        if self._runs:
-            preview = text_tail(self._text, self._advance_marquee(), max(width - cell_len(row.head), 0))
-            self._marquee_shown = preview
-        text = Text(row.head + preview)
-        text.stylize(self.text_style_of("fold-row-header--label"), _ROW_LABEL_START, row.label_end)
-        if preview:
-            text.stylize(self.text_style_of("fold-row-header--preview"), len(row.head))
+        text = Text(row.head + row.preview)
+        text.stylize(component_text_style(self, "fold-row-header--label"), _ROW_LABEL_START, row.label_end)
+        if row.label_end < len(text):
+            text.stylize(component_text_style(self, "fold-row-header--preview"), row.label_end)
         if width:
             text.truncate(width, overflow="ellipsis")
         return text
@@ -630,7 +681,9 @@ class _AgentReplyHeader(_FoldRowHeader):
         self._reply = reply
         self.refresh(layout=False)
 
-    def show(self, *, collapsed: bool, text: str, label: MessageRef | None = None, streaming: bool = False) -> None:
+    def show(
+        self, *, collapsed: bool, text: str, label: MessageRef | None = None, detail: MessageRef | None = None
+    ) -> None:
         if self._reply is not None:
             # The text turned out to sit between tool calls: the row takes the header's width, cut to it.
             self._reply = None
@@ -640,7 +693,7 @@ class _AgentReplyHeader(_FoldRowHeader):
             self.add_class("fold-row-header")
             self.refresh()
             return
-        super().show(collapsed=collapsed, text=text, label=label, streaming=streaming)
+        super().show(collapsed=collapsed, text=text, label=label, detail=detail)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         if self._reply is not None:
@@ -1091,7 +1144,7 @@ class AgentMessage(StreamedMarkdownMessage):
         self.is_status = is_status
         """Persisted lifecycle prose is not an agent's successful final answer."""
         self.segment_ids = frozenset(segment_ids)
-        """The content segments whose answer text this message shows, for a bare Continue to withdraw."""
+        """The content segments whose answer text this message shows, for a Continue or steer to withdraw."""
         self._profile_name = profile_name
         self._is_intermediate = is_intermediate
         self._is_compressed = is_compressed
@@ -1201,7 +1254,6 @@ class AgentMessage(StreamedMarkdownMessage):
         return (
             self._is_final
             and not self._is_intermediate
-            and not self._is_compressed
             and not self._is_structured_completion
             and bool(self.format_agent_response_copy().strip())
         )
@@ -1262,8 +1314,8 @@ class ThinkingMessage(StreamedMarkdownMessage):
 
     It streams like an answer, open or folded to its row as it started, and
     keeps that once complete; its header opens or folds it at any time. Folded
-    as it streams, its row runs the newest of the text. A replayed one starts
-    folded, and a folded one builds its body the first time it opens. It is
+    as it streams, its row shows the estimated token count and speed. A replayed
+    one starts folded, and a folded one builds its body the first time it opens. It is
     not part of the answer: it has no copy button, and copying the agent's
     responses leaves it out.
     """
@@ -1312,6 +1364,11 @@ class ThinkingMessage(StreamedMarkdownMessage):
         """The content segment this message shows, for a retry that gives up its response to remove."""
         self._channel = channel
         self._header: _FoldRowHeader | None = None
+        self._progress = None if is_final else StreamTokens()
+        if self._progress is not None:
+            self._progress.note(text, time.monotonic())
+        self._progress_timer: Timer | None = None
+        self._composited = False
         super().__init__(text, is_final=is_final, classes="--compressed" if is_compressed else "")
         if collapsed:
             # Before mount, and without the watcher: the body is built when it first opens.
@@ -1336,7 +1393,7 @@ class ThinkingMessage(StreamedMarkdownMessage):
     def compose(self) -> ComposeResult:
         with MessageHeaderRow():
             self._header = _FoldRowHeader(
-                self._label_ref(), collapsed=self.collapsed, text=self._source_text, streaming=not self._is_final
+                self._label_ref(), collapsed=self.collapsed, text=self._source_text if self._is_final else ""
             )
             yield self._header
         if not self.collapsed:
@@ -1348,23 +1405,72 @@ class ThinkingMessage(StreamedMarkdownMessage):
     def _releases_body_on_folding(self) -> bool:
         return True
 
+    def append_text(self, text: str) -> None:
+        updated = self._source_text + text
+        if self._progress is None:
+            self.stream_update(updated)
+        else:
+            self._progress.note(text, time.monotonic())
+            super().stream_update(updated)
+
     def stream_update(self, text: str, is_final: bool = False) -> None:
-        super().stream_update(text, is_final)
-        if self.collapsed and not is_final:
-            # Its row runs the newest text; a final update shows the row's opening (_on_final).
+        if is_final:
+            super().stream_update(text, is_final=True)
+            return
+        if self._progress is not None and text.startswith(self._source_text):
+            self._progress.note(text[len(self._source_text) :], time.monotonic())
+            super().stream_update(text)
+            return
+        # Replacing the text starts a fresh estimate. The live renderer appends deltas directly.
+        self._progress = StreamTokens()
+        self._progress.note(text, time.monotonic())
+        super().stream_update(text)
+        self._refresh_header()
+
+    def on_show(self) -> None:
+        self._composited = True
+        if self.collapsed and self._progress is not None:
             self._refresh_header()
 
+    def on_hide(self) -> None:
+        self._composited = False
+        self._sync_progress_timer()
+
+    def _tick_progress(self) -> None:
+        if self._header is not None and is_widget_shown_on_active_screen(self._header):
+            self._refresh_header()
+
+    def _progress_detail(self) -> MessageRef | None:
+        progress = self._progress
+        if progress is None or not self._composited or not self.collapsed or not progress.tokens:
+            return None
+        tokens = format_token_count(progress.tokens)
+        speed = progress.speed(time.monotonic())
+        if speed is None:
+            return _THINKING_TOKENS.bind(count=progress.tokens, tokens=tokens)
+        return _THINKING_SPEED.bind(count=progress.tokens, tokens=tokens, speed=speed)
+
+    def _sync_progress_timer(self) -> None:
+        if self._composited and self.collapsed and self._progress is not None:
+            if self._progress_timer is None:
+                self._progress_timer = self.set_interval(1.0, self._tick_progress)
+        elif self._progress_timer is not None:
+            self._progress_timer.stop()
+            self._progress_timer = None
+
     def _refresh_header(self) -> None:
-        if self._header is not None:
-            self._header.show(
-                collapsed=self.collapsed,
-                text=self._source_text,
-                label=self._label_ref(),
-                streaming=not self._is_final,
-            )
+        if self._header is None:
+            return
+        self._sync_progress_timer()
+        self._header.show(
+            collapsed=self.collapsed,
+            text=self._source_text if self._is_final else "",
+            label=self._label_ref(),
+            detail=self._progress_detail(),
+        )
 
     def _on_final(self) -> None:
-        # Thinking that streamed is now thought.
+        self._progress = None
         self._refresh_header()
 
     def on__agent_header_clicked(self) -> None:
@@ -1751,6 +1857,9 @@ class InterruptedMessage(ProcessMember):
         color: $button-color-foreground;
         text-style: bold;
     }
+    InterruptedMessage > .status-action-row > .status-rollback-btn {
+        margin-left: 1;
+    }
     InterruptedMessage > .status-action-row > Button:hover,
     InterruptedMessage > .status-action-row > Button:focus,
     InterruptedMessage > .status-action-row > Button.-active {
@@ -1767,6 +1876,7 @@ class InterruptedMessage(ProcessMember):
         *,
         action_label: str | None = None,
         header: str | None = None,
+        offers_discard: bool = False,
     ) -> None:
         if header is None:
             copy = resolve_interrupted_message_copy(reason, source)
@@ -1774,8 +1884,8 @@ class InterruptedMessage(ProcessMember):
             reason = copy.reason
         self._header = header
         self._reason = reason
-        self._source = source
         self._action_label = action_label
+        self._offers_discard = offers_discard
         super().__init__()
         if source == "error":
             self.add_class("-error")
@@ -1792,6 +1902,9 @@ class InterruptedMessage(ProcessMember):
         if self._action_label is not None:
             with Horizontal(classes="status-action-row"):
                 yield Button(self._action_label, compact=True, classes="status-action-btn")
+                if self._offers_discard:
+                    label = render_str(widget_localizer(self), INTERRUPTED_ROLLBACK_BUTTON.bind())
+                    yield Button(label, compact=True, classes="status-rollback-btn")
 
     def on_mount(self) -> None:
         self._size_action_button()
@@ -1803,6 +1916,21 @@ class InterruptedMessage(ProcessMember):
         width = Text(self._action_label).cell_len + 4
         button.styles.width = width
         button.styles.min_width = width
+        for rollback in self.query(".status-rollback-btn").results(Button):
+            rollback_width = cell_len(str(rollback.label)) + 4
+            rollback.styles.width = rollback_width
+            rollback.styles.min_width = rollback_width
+
+    @dataclass
+    class RollbackRequested(Message):
+        """The interrupted turn should be rolled back through the usual path."""
+
+        message: InterruptedMessage
+
+    def set_rollback_disabled(self, disabled: bool) -> None:
+        """Disable the rollback action while its request is pending."""
+        for button in self.query(".status-rollback-btn").results(Button):
+            button.disabled = disabled
 
     def hide_action(self) -> None:
         """Hide the inline retry/continue action after it has been used."""
@@ -1815,6 +1943,12 @@ class InterruptedMessage(ProcessMember):
             button.disabled = disabled
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.has_class("status-rollback-btn"):
+            event.stop()
+            if not event.button.disabled:
+                self.set_rollback_disabled(True)
+                self.post_message(self.RollbackRequested(self))
+            return
         if not event.button.has_class("status-action-btn"):
             return
         event.stop()

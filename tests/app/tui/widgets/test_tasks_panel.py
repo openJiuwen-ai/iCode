@@ -59,8 +59,9 @@ def _segment_styles(app: App, line: int) -> list[tuple[str, Style]]:
     return [(segment.text.rstrip(), segment.style) for segment in lines[line] if segment.text.strip()]
 
 
-def _label(panel: TasksPanel) -> str:
-    return str(panel.query_one(".tasks-label", Static).render())
+def _label(panel: TasksPanel) -> str | None:
+    """The todo box's border title."""
+    return panel.query_one("#tasks-todos").border_title
 
 
 @pytest.mark.asyncio

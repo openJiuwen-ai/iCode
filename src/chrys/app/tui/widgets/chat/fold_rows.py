@@ -10,11 +10,12 @@ from dataclasses import dataclass, field
 from operator import add
 from typing import TYPE_CHECKING, Final, Literal
 
-from rich.cells import cell_len, get_character_cell_size
+from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
 
 from chrys.app.tui.i18n import render_str
+from chrys.app.tui.util.paths import middle_cut_path
 from chrys.app.tui.widgets.loading import component_text_style
 from chrys.foundation.hosted_tools import HostedToolFamily
 from chrys.foundation.i18n import Localizer, MessageDef, msg
@@ -63,27 +64,6 @@ def text_preview(text: str) -> str:
     Only the start of the text is read, enough to fill any row; the row cuts it to its width.
     """
     return sanitize_legacy_scalar(" ".join(text[:_PREVIEW_SOURCE_CHARS].split()))
-
-
-def text_tail(text: str, end: int, cells: int) -> str:
-    """*text* up to *end* on one line, as :func:`text_preview` reads its opening: the last of it that fits *cells*.
-
-    Once the start no longer fits, ``…`` stands for what is cut off before it.
-    """
-    return _tail_fit(sanitize_legacy_scalar(" ".join(text[max(end - _PREVIEW_SOURCE_CHARS, 0) : end].split())), cells)
-
-
-def _tail_fit(shown: str, cells: int) -> str:
-    """The last of *shown* that fits *cells*, as written, ``…`` standing for what is cut off before it."""
-    if cell_len(shown) <= cells:
-        return shown
-    if cells <= 0:
-        return ""
-    start, width = len(shown), 1
-    while start and width + (cell := get_character_cell_size(shown[start - 1])) <= cells:
-        start -= 1
-        width += cell
-    return f"…{shown[start:]}"
 
 
 ToolOutcome = Literal["", "failed", "interrupted"]
@@ -412,33 +392,3 @@ def fit_fold_row(row: FoldRow, width: int, styles: FoldRowStyles) -> Text:
         text.append_text(tail)
     text.truncate(width, overflow="ellipsis")
     return text
-
-
-def middle_cut_path(path: str, cells: int) -> str:
-    """*path* in at most *cells* cells: its file name, and as many of its folders from either end as fit, ``…``
-    standing for those cut from the middle (``src/chrys/…/tui/app.py``).
-
-    Where the file name alone does not fit, the end of it shows after ``…``, its spaces kept: they tell names apart.
-    Empty where not even ``…`` fits.
-    """
-    if cell_len(path) <= cells:
-        return path
-    separator = "\\" if "\\" in path and "/" not in path else "/"
-    *folders, name = path.split(separator)
-
-    def shown(start: int, end: int) -> str:
-        return separator.join([*folders[:start], "…", *folders[len(folders) - end :], name])
-
-    if not folders or cell_len(shown(0, 0)) > cells:
-        # ``…`` still tells of the folders cut off: a bare file name would read as one in the working folder.
-        return _tail_fit(shown(0, 0) if folders else name, cells)
-    start = end = 0
-    while start + end < len(folders):
-        # Folders join from either end in turn: the root it hangs from, and those nearest the file. Once one end's next
-        # folder no longer fits, the other end's still may.
-        turns = ((start + 1, end), (start, end + 1)) if start <= end else ((start, end + 1), (start + 1, end))
-        grown = next((size for size in turns if cell_len(shown(*size)) <= cells), None)
-        if grown is None:
-            break
-        start, end = grown
-    return shown(start, end)

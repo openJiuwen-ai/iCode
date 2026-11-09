@@ -44,6 +44,10 @@ _BLOCK_REASON = "hook 'guard' blocked: denied"
 _TEXT = "also check the logs"
 
 
+async def _unused_turn_event(event: object) -> None:
+    raise AssertionError(f"unexpected turn fact: {event!r}")
+
+
 class _InputBar:
     """The composer: an injection keeps its text while the bar is locked."""
 
@@ -114,7 +118,7 @@ class _InputFlowView:
         await asyncio.sleep(0)
         self._shown.append(("turn opener", text))
 
-    def update_toc(self) -> None:
+    def update_toc(self, *, live: bool = False) -> None:
         return None
 
     def restore_input_draft(self, text: str) -> bool:
@@ -195,6 +199,8 @@ class _Harness:
                 is_injection: bool = False,
                 created_at: Any = None,
                 contents: list[Any] | None = None,
+                item_id: str | None = None,
+                client_message_id: str | None = None,
             ) -> None:
                 assert is_injection is True
                 harness.shown.append(("bubble", text))
@@ -258,6 +264,8 @@ class _Harness:
             handle_agent_message=self.handler.on_agent_message,
             handle_agent_content=self.handler.on_agent_content,
             handle_error=self.handler.on_error,
+            handle_turn_event=_unused_turn_event,
+            handle_answer_withdrawn=_unused_turn_event,
             set_agent_running=self.handler.set_agent_running,
             set_has_messages=lambda _has: None,
             clear_workspace_marker=lambda: None,

@@ -95,7 +95,7 @@ _DESCRIPTION_DIFF = msg(
 )
 _DESCRIPTION_ROLLBACK = msg(
     "tui.commands.description.rollback",
-    fallback="Discard recent turns or return to a specific turn",
+    fallback="Discard recent turns or discard starting from a turn",
 )
 _DESCRIPTION_APPROVAL = msg(
     "tui.commands.description.approval",
@@ -356,8 +356,8 @@ _MAN_DIFF_BODY = msg(
 _MAN_ROLLBACK_BODY = msg(
     "tui.man.rollback.body",
     fallback=(
-        "Roll back recent conversation turns.\n\n"
-        "Without arguments, opens the rollback picker at the most\n"
+        "Discard recent conversation turns.\n\n"
+        "Without arguments, opens the discard picker at the most\n"
         "recent available target. Use this picker when you want to\n"
         "discard conversation without restoring file changes.\n\n"
         'A bare number is a relative count. "/rollback 1" discards\n'
@@ -368,12 +368,13 @@ _MAN_ROLLBACK_BODY = msg(
         'Use "/rollback to 0" to return to the session start. A valid\n'
         "explicit target executes immediately.\n\n"
         "Both explicit forms restore eligible file changes by\n"
-        "default. The picker also selects file rollback by default;\n"
+        "default. The picker also selects file restoration by default;\n"
         "explicitly turn it off there to discard conversation only.\n\n"
         "Explicit commands immediately show a non-dismissible loading\n"
         "modal. Picker actions show it after confirmation. It blocks\n"
-        "interaction until rollback has completely finished.\n\n"
-        "Use with caution: this action cannot be undone."
+        "interaction until discarding finishes.\n\n"
+        'In the Discard dialog, turn 17 means "/rollback to 16".\n\n'
+        "Use with caution: this action is permanent."
     ),
     multiline=True,
 )
@@ -448,7 +449,9 @@ _MAN_USAGE_BODY = msg(
     fallback=(
         "Open the token usage dialog, read from every saved session.\n\n"
         "    Overview: new tokens by date range, their trend over time,\n"
-        "    and totals by model, source or project, with each model's speed.\n"
+        "    and totals by model, source, project or model profile, with each\n"
+        "    model's speed. A model used through several of your profiles is\n"
+        "    shown once for each.\n"
         "    Calendar: new tokens day by day, and one day's details.\n\n"
         "    New tokens are the input not served from the provider's cache,\n"
         "    plus the output, thinking included. Deleted sessions and external\n"

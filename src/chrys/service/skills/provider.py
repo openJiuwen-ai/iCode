@@ -568,7 +568,7 @@ class ChrysSkillsProvider(ContextProvider):
             suffix = (
                 f"[Full resource available at: {path}\n"
                 f"{text.count(chr(10)) + 1} lines, ~{_tokenizer.count_tokens(text)} tokens. "
-                "Use read_file or shell tools to inspect it.]"
+                "Call read_skill_resource again with a higher max_tokens to read more.]"
             )
         return truncate_output(text, budget, head_ratio=2 / 3, truncation_suffix=suffix)
 

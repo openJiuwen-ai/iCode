@@ -45,7 +45,15 @@ from chrys.service.profiles.models.serializer import save_profile as save_model
 from tests.app.acp._server_fakes import _FakeClient
 from tests.app.tui.screens.test_prompt_shortcut_send import Builds, Hold, ScriptedModel, make_agent, mock_model
 from tests.app.tui.screens.test_reload_live_settings import edit_key
-from tests.app.tui.screens.test_reload_mcp import PROBE_SERVER, calls, flag, starts, state_dir, stdio_server
+from tests.app.tui.screens.test_reload_mcp import (
+    PROBE_SERVER,
+    calls,
+    flag,
+    port_written,
+    starts,
+    state_dir,
+    stdio_server,
+)
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
 
 AGENT = "Probe"
@@ -336,7 +344,7 @@ async def test_what_belongs_to_the_session_outlasts_a_full_reload_with_the_serve
 ) -> None:
     monkeypatch.setenv("NO_PROXY", "*")
     served, port_file = client_server
-    await wait_for(port_file.exists, timeout=ENGINE_TURN_TIMEOUT, description="the server is listening")
+    await wait_for(lambda: port_written(port_file), timeout=ENGINE_TURN_TIMEOUT, description="the server is listening")
     project = tmp_path / "project"
     project.mkdir()
     response = await acp.server.new_session(

@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
+    from chrys.foundation.models.failures import FailureFacts
+
 logger = logging.getLogger(__name__)
 
 TRANSIENT_RETRY_BACKOFF_SECONDS: tuple[int, ...] = (3, 7, 15, 30, 60, 120, 240, 600)
@@ -44,6 +46,8 @@ class RetryAttemptInfo:
     attempt: int
     max_attempts: int
     delay_seconds: float
+    facts: FailureFacts | None = None
+    """The classifier's verdict when a provider failure is being retried; None for a retry on iCode's own check."""
 
 
 class StreamStall(Exception):

@@ -39,7 +39,7 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import SUB_AGENT_STATE_DISCARDED_MESSAGE, HistoryMarkerKind
 from chrys.foundation.models.workspace import WorkingDir, Workspace
 from chrys.foundation.platform import safe_getcwd
-from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.platform.files import surrogate_safe_text, unlink_with_retry
 from chrys.foundation.trajectory.event_types import RuntimeFinishReason as TrajectoryRuntimeFinishReason
 from chrys.foundation.util.lock import FileLock
 from chrys.foundation.util.session_ids import session_short_id
@@ -276,7 +276,11 @@ def _delete_reset_session_files(session_dir: Path) -> None:
     for filename in (SESSION_FILE_NAME, SESSION_BACKUP_FILE_NAME, SESSION_RECOVERY_FILE_NAME, BTW_FILE_NAME):
         path = session_dir / filename
         if path.exists():
-            path.unlink()
+            # A reader can hold the file for a moment (the sidebar's change
+            # preview rereads session.json in a worker thread), and Windows
+            # refuses to delete a file that is open: a plain unlink would fail
+            # the reset, and with it a rollback to the start.
+            unlink_with_retry(path)
 
 
 def _acquire_session_write_lock(lock_path: Path, session_id: str) -> FileLock | None:
@@ -1825,8 +1829,6 @@ class SessionLifecycle:
         for warning in restore_warnings:
             await self._bus.publish(replace(warning, session_id=self._session.session_id))
 
-        self._session.turn_number = state.get("turn_counter", 0) if state else 0
-
         if self._current.loaded is not None and state:
             self._current.loaded.bindings.backend.history_state = state
             if self._current.loaded is not None:
@@ -1949,7 +1951,12 @@ class SessionLifecycle:
                 if orphaned:
                     logger.info("Session restore: marked %d sub-agent audit log(s) orphaned", orphaned)
 
+            restored_history_changed = self._history.close_unfinished_turn() or restored_history_changed
             self._restore_terminal_fsm_from_history()
+
+        # Interrupted recovery can append the missing final boundary above.
+        restored_state = self._history.state if self._history.is_bound else state or {}
+        self._session.turn_number = restored_state.get("turn_counter", 0)
 
         if restored_history_changed:
             saved = False

@@ -68,6 +68,7 @@ def test_assembled_stack_keeps_the_wire_client_class_callbacks_and_headers() -> 
         parent_session_id="parent-1",
         use_route_session_context=False,
         on_intermediate_text=_callback,
+        connection={"provider": "deepseek-openai", "model_profile_id": "a" * 32},
         max_iterations=7777,
         max_consecutive_errors=10,
         tool_result_ceiling_tokens=None,
@@ -82,6 +83,7 @@ def test_assembled_stack_keeps_the_wire_client_class_callbacks_and_headers() -> 
     assert raw.sdk_client is sdk_client
     assert raw.model == "deepseek-test"
     assert raw._observer._on_intermediate_text is _callback
+    assert raw._observer._connection == {"provider": "deepseek-openai", "model_profile_id": "a" * 32}
     assert prepared["extra_headers"][SESSION_ID_HEADER] == "session-1"
     assert prepared["extra_headers"][PARENT_SESSION_ID_HEADER] == "parent-1"
     assert calls == []

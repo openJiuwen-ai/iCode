@@ -121,13 +121,13 @@ class DebugPanel(Widget, can_focus=False):
     }
     DebugPanel > _ClickableLog {
         height: 1fr;
-        border: round $tui-border-primary-darken-3 $border-opacity;
+        border: round $tui-border-primary-darken-3 $inner-border-opacity;
         scrollbar-size: 1 1;
         overflow-x: auto;
         scrollbar-size-horizontal: 0;
     }
     SidebarPanel.-shell-active DebugPanel > _ClickableLog {
-        border: round $tui-border-warning-darken-1 $border-opacity;
+        border: round $tui-border-warning-darken-1 $inner-border-opacity;
     }
     """
 

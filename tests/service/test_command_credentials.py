@@ -25,6 +25,7 @@ from chrys.service.command_credentials import (
     refresh,
     substitute,
 )
+from tests.support.processes import still_running
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 _URL = "https://provider.example/v1"
@@ -153,7 +154,7 @@ async def test_a_command_that_outlives_its_time_is_ended_with_its_children(
     with pytest.raises(EnvVarResolutionError, match="timed out"):
         await ensure_fresh([_handle(_python_command(tmp_path, code))])
 
-    await wait_for(lambda: not children[0].is_running() or children[0].status() == psutil.STATUS_ZOMBIE)
+    await wait_for(lambda: not still_running(children[0]))
 
 
 # ── When a command runs ──────────────────────────────────────────────

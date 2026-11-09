@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.34.0\n"
+"Project-Id-Version: Chrys 0.35.1\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -144,6 +144,13 @@ msgstr[0] ""
 "\n"
 "未附加的图像：\n"
 "{files}"
+
+#. English: Agent {agent} goes without context {context} from extension
+#. {extension}: {reason}
+#. chrys-meta={"fingerprint":"78a560aa18e054326a363d9d3bf1def7eadd319d2b31570dcfcfa8b52526f063","multiline":false,"placeholders":["agent","context","extension","reason"]}
+#: src/chrys/service/extensions.py
+msgid "builder.extension_context_failed"
+msgstr "智能体 {agent} 本轮缺少扩展 {extension} 的上下文 {context}：{reason}"
 
 #. English: Agent {agent} starts without extension {extension}: {reason}
 #. chrys-meta={"fingerprint":"535af465201f2170e30c3e7abab778107dbc0d7bd230f78578ae48ab4f8ae190","multiline":false,"placeholders":["agent","extension","reason"]}
@@ -574,6 +581,13 @@ msgstr "未配置状态存储。"
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "engine.fork_turn_active"
 msgstr "轮次进行中无法派生会话。"
+
+#. English: Cannot discard while a workflow run is active. Cancel the workflow
+#. run first.
+#. chrys-meta={"fingerprint":"676c9f48c57e0cb82ec9e71323e4c6f7440295aea4ee65021b71790904e053cf","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/engine.py
+msgid "engine.rollback.workflow_active"
+msgstr "工作流运行时无法撤回。请先取消工作流。"
 
 #. English: The working directory no longer exists: {path}
 #. chrys-meta={"fingerprint":"2ec9b264988bd8d372b55afd83c92c0543296ebe3b67668a111cee2ef6171237","multiline":false,"placeholders":["path"]}
@@ -1017,31 +1031,31 @@ msgstr "响应流中断"
 msgid "retry.sub_agent_paused"
 msgstr "请先处理已暂停的子智能体（在卡片上选择 Retry/Abort），然后再重试主运行。"
 
-#. English: Rollback cancelled because the conversation advanced from turn
+#. English: Discard cancelled because the conversation advanced from turn
 #. {expected_turn} to turn {current_turn}.
-#. chrys-meta={"fingerprint":"519fb4eccdce76ffea9a206ca05f865e6a06ef1ecd028f3883444735fd3613c4","multiline":false,"placeholders":["current_turn","expected_turn"]}
+#. chrys-meta={"fingerprint":"89acd6451e6a38058e8a9c6484a8b33756051f94136c64cfe7fc54f779034e0e","multiline":false,"placeholders":["current_turn","expected_turn"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.conversation_advanced"
-msgstr "对话已从第 {expected_turn} 轮推进到第 {current_turn} 轮，回滚已取消。"
+msgstr "对话已从第 {expected_turn} 轮推进到第 {current_turn} 轮，撤回已取消。"
 
-#. English: Rollback cancelled because the conversation changed after the
-#. picker was loaded.
-#. chrys-meta={"fingerprint":"da2f593b6de3d8b5c9f7b22a5096432913cbedd0a0862dc24bbe763e48d1d132","multiline":false,"placeholders":[]}
+#. English: Discard cancelled because the conversation changed after the picker
+#. was loaded.
+#. chrys-meta={"fingerprint":"29f8b977a86999a74b990799dd80b42539609724a4e4f68aaa04d619bada967c","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.conversation_changed"
-msgstr "选择器加载后对话已更改，回滚已取消。"
+msgstr "选择器加载后对话已更改，撤回已取消。"
 
-#. English: No active session to roll back.
-#. chrys-meta={"fingerprint":"db217cdabdd45fc9b941251f024bf816fdbfd4d0f1e9801cc37f62056270c0ec","multiline":false,"placeholders":[]}
+#. English: No active session to discard turns from.
+#. chrys-meta={"fingerprint":"090b9592d82c0a0e393f5ed7a70d49de4fbe4daa2afc4b8a27263ccba6af0d7f","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.no_session"
-msgstr "没有可回滚的活动会话。"
+msgstr "没有可撤回的活动会话。"
 
-#. English: Rollback is not allowed in state {state}.
-#. chrys-meta={"fingerprint":"35b3d0667e6a311335aa4fcbf9b291a720d87578c93afbf24372b569fb3c1cf3","multiline":false,"placeholders":["state"]}
+#. English: Cannot discard turns in state {state}.
+#. chrys-meta={"fingerprint":"45e8218f08af8fe546cf61d242de941019f2d42d7d6f04cd8d02a4b0a36c2348","multiline":false,"placeholders":["state"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.refused"
-msgstr "状态为 {state} 时不允许回滚。"
+msgstr "状态为 {state} 时不允许撤回。"
 
 #. English: relative_turns must be positive.
 #. chrys-meta={"fingerprint":"022d55efe24877b1c366ab078d4d2dbd41f148cb944e816e4f08ff1dbe111124","multiline":false,"placeholders":[]}
@@ -1049,25 +1063,24 @@ msgstr "状态为 {state} 时不允许回滚。"
 msgid "rollback.relative_turns_invalid"
 msgstr "relative_turns 必须为正数。"
 
-#. English: Rollback to welcome could not reset the session because the session
-#. state is busy.
-#. chrys-meta={"fingerprint":"0b57a6e450cdef36048c85f90c738999661035069452b0bf5ffab52b3f742c7c","multiline":false,"placeholders":[]}
+#. English: Could not discard all turns because the session state is busy.
+#. chrys-meta={"fingerprint":"7ff146bb55c680c5232e0b719f2b45cec69d4119e08cf627dc76be7fc54f21ad","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.reset_failed"
-msgstr "回滚到欢迎页时无法重置会话，因为会话状态忙碌。"
+msgstr "撤回到欢迎页时无法重置会话，因为会话状态忙碌。"
 
-#. English: Rollback cancelled because the workspace or runtime changed after
+#. English: Discard cancelled because the workspace or runtime changed after
 #. the picker was loaded.
-#. chrys-meta={"fingerprint":"7be49511c61e57661b9ca46c60497ed9ddc8f6f06444bd63d9fc0dd2c39887d2","multiline":false,"placeholders":[]}
+#. chrys-meta={"fingerprint":"e88434a935680cef5e3e6dbb7c57be818bb8bff1440479d9cf19cbd5e5d0e584","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.runtime_changed"
-msgstr "选择器加载后工作区或运行时已更改，回滚已取消。"
+msgstr "选择器加载后工作区或运行时已更改，撤回已取消。"
 
-#. English: Rollback cancelled because the active session changed.
-#. chrys-meta={"fingerprint":"7ec29e015ec11115fb6dee0ad34efeccdbcb7d0dfe67bf57e39b4dbc2d081c42","multiline":false,"placeholders":[]}
+#. English: Discard cancelled because the active session changed.
+#. chrys-meta={"fingerprint":"177ecb0140d2638435a5bf28164b7105f41ef48e69a3319ba3f47bd29f0dfb6b","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.session_changed"
-msgstr "活动会话已更改，回滚已取消。"
+msgstr "活动会话已更改，撤回已取消。"
 
 #. English: Snapshot for turn {target_turn} is missing.
 #. chrys-meta={"fingerprint":"a71c645f47fa18f4da338ac9f56a82e3997d0b24f7d47538a43e5adbdd861fa5","multiline":false,"placeholders":["target_turn"]}
@@ -1093,19 +1106,19 @@ msgstr "等待会话锁超时：{detail}"
 msgid "rollback.target_turn_invalid"
 msgstr "target_turn 必须大于等于 0。"
 
-#. English: Cannot roll back to turn {target_turn}; available turns:
+#. English: Cannot discard turns after turn {target_turn}; available targets:
 #. {available}
-#. chrys-meta={"fingerprint":"d4e1c6f393a4cf0c40880e90736d587941efa19bd472aa18f2350715323d1d03","multiline":false,"placeholders":["available","target_turn"]}
+#. chrys-meta={"fingerprint":"83bd51255fd5bb5b84c23e60af483564586d3dd991dec90499ad67af803db58e","multiline":false,"placeholders":["available","target_turn"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.turn_unavailable"
-msgstr "无法回滚到第 {target_turn} 轮；可用轮次：{available}"
+msgstr "无法撤回到第 {target_turn} 轮；可用轮次：{available}"
 
-#. English: Cannot roll back {requested_turns} turns; the session currently has
+#. English: Cannot discard {requested_turns} turns; the session currently has
 #. {current_turns}.
-#. chrys-meta={"fingerprint":"b50ffe94964127935b5a16ad2aef137bea2c4eaa7b5d8f653ac37553ffadc23f","multiline":false,"placeholders":["current_turns","requested_turns"]}
+#. chrys-meta={"fingerprint":"e5ec135beaff7d19bab16918082ab60ddc9ba4d9aeb386305138b056d504242c","multiline":false,"placeholders":["current_turns","requested_turns"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.turns_unavailable"
-msgstr "无法回滚 {requested_turns} 轮；会话当前有 {current_turns} 轮。"
+msgstr "无法撤回 {requested_turns} 轮；会话当前有 {current_turns} 轮。"
 
 #. English: Stopping {count} background command the run left running.
 #. English-plural: Stopping {count} background commands the run left running.
@@ -1344,7 +1357,7 @@ msgstr "审批裁判模型"
 #. English: Buddy model
 #. chrys-meta={"fingerprint":"639cbc46db6fb15f9747fa24936f4a22222b7f6d2b7e07dd066f3a4214049066","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
-msgid "settings.model.role.buddy_model_id.label"
+msgid "settings.model.role.buddy.label"
 msgstr "Buddy 模型"
 
 #. English: Session title model
@@ -1819,6 +1832,14 @@ msgstr "保留的最近工作区数"
 #: src/chrys/orchestration/startup.py
 msgid "startup.invalid_no_proxy_env"
 msgstr "环境变量 {var} 的值对 httpx 无效，已忽略（{value}）。请移除或修正该环境变量。"
+
+#. English: {var} is not a proxy address {app} can use and was ignored
+#. ({value}). Use an http://, https://, socks5:// or socks5h:// address, or
+#. remove this environment value.
+#. chrys-meta={"fingerprint":"3ded826f128c71a6acf506c8a238ae02cbd0209f09b21ae43e542308b889b8e6","multiline":false,"placeholders":["app","value","var"]}
+#: src/chrys/orchestration/startup.py
+msgid "startup.invalid_proxy_env"
+msgstr "环境变量 {var} 不是 {app} 可用的代理地址，已忽略（{value}）。请改用 http://、https://、socks5:// 或 socks5h:// 地址，或移除该环境变量。"
 
 #. English: Notification migration into {path} failed ({error}). It will retry
 #. on the next start. Until then, your previous notification preferences may
@@ -4790,11 +4811,12 @@ msgid "tui.background_task.stop_all.message"
 msgid_plural "tui.background_task.stop_all.message#plural"
 msgstr[0] "这会停止 {count} 个后台任务："
 
-#. English: Rollback may not restore what they changed while in the background.
-#. chrys-meta={"fingerprint":"82a83ccc4ba8fceb3138a419730efcd97e7b6b66bde2179d2ff0c936f5f5f70f","multiline":false,"placeholders":[]}
+#. English: Discarding turns may not restore what they changed while in the
+#. background.
+#. chrys-meta={"fingerprint":"a2f727f7f0257b9096ab7f6ad0830c0152a98e4c98f6d1fd881c4c47deb1639e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/background_task.py
 msgid "tui.background_task.stop_all.rollback_note"
-msgstr "它们在后台期间所做的改动，回滚可能无法恢复。"
+msgstr "它们在后台期间所做的改动，撤回可能无法恢复。"
 
 #. English: Stop background tasks?
 #. chrys-meta={"fingerprint":"54c5bb51b3823d38f647f27f3188527f60bfc379c5aefeb3468bbbc48269fe48","multiline":false,"placeholders":[]}
@@ -5277,6 +5299,36 @@ msgstr "默默盯着你敲下的每一个键，最讨厌被打断。"
 msgid "tui.buddy.persona.grit"
 msgstr "面对失败的测试从不放弃，再晚也要盯着它。"
 
+#. English: 💛 {name} blinks slowly. That means yes.
+#. chrys-meta={"fingerprint":"ab604e8f13514405251fb3cd42e6d0a055db5b9c7d2b73707c5b3bf7899af62c","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.blinks"
+msgstr "💛 {name} 慢慢眨了眨眼。这就是答应的意思。"
+
+#. English: 💛 {name} hums a little and goes back to watching your cursor.
+#. chrys-meta={"fingerprint":"605c9a1ffe73e7c887e51bd2debfeca9437c2e375a2bac7d9ad8e48072cb629a","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.hums"
+msgstr "💛 {name} 轻轻哼了两声，又继续盯着你的光标。"
+
+#. English: 💛 {name} scoots a little closer to the keyboard.
+#. chrys-meta={"fingerprint":"4582d0ebb006791a3b77458bacd467b504fbeb7baa9a7a5a2573755eb2c68f30","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.scoots"
+msgstr "💛 {name} 悄悄往键盘那边挪近了一点。"
+
+#. English: 💛 {name} does a small, pleased spin.
+#. chrys-meta={"fingerprint":"d53edcd4d65e73d6f1992e9148b6a60d8cbd7d9a09e134f29e66f3b1a1035f7d","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.spins"
+msgstr "💛 {name} 原地开心地转了一小圈。"
+
+#. English: 💛 {name} wriggles, then pretends nothing happened.
+#. chrys-meta={"fingerprint":"452df8bcf9c1adafe4bfca35359abffdaa8b371379f0a78d525fffb75c262d77","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.wriggles"
+msgstr "💛 {name} 扭了扭身子，然后装作什么都没发生。"
+
 #. English: The buddy save file could not be updated, so nothing has changed.
 #. Try again in a moment.
 #. chrys-meta={"fingerprint":"f78cf07df1e34dbfbbe3db4e2c222a5742183593fd6e2b5a24f538410058a9da","multiline":false,"placeholders":[]}
@@ -5366,8 +5418,8 @@ msgstr "智能体"
 msgid "tui.chat.copy_agent_response_tooltip"
 msgstr "复制原始智能体回复"
 
-#. English: copy
-#. chrys-meta={"fingerprint":"d8ed75600cd5a4fe4cf55a8d4be1b83db63d707a7e7797cc9513e395f47ac02f","multiline":false,"placeholders":[]}
+#. English: Copy
+#. chrys-meta={"fingerprint":"42d8d088a101ba7268818d7a5d06368633a4f49e7222714aa68d83c4da94cb1c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.copy_message_button"
 msgstr "复制"
@@ -5383,6 +5435,12 @@ msgstr "复制你的原始消息"
 #: src/chrys/app/tui/widgets/chat/fold_rows.py
 msgid "tui.chat.fold_row.folded_label"
 msgstr "{label}："
+
+#. English: Discard This Turn
+#. chrys-meta={"fingerprint":"00af528dab63a2db16529ae9ff025a4b9e52a55bb05efdb505cb63eab4fa1ea9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.interrupted_rollback_button"
+msgstr "撤回本轮"
 
 #. English: Activity
 #. chrys-meta={"fingerprint":"adc05a800b4e9d0dfccd9a893e52c89939fe10aab58b7d973b7b2897b27291b2","multiline":false,"placeholders":[]}
@@ -5422,6 +5480,12 @@ msgstr "立刻重试"
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.retry_started"
 msgstr "正在重试（{attempt}/{max_attempts}）..."
+
+#. English: ↺ Discard this turn and later
+#. chrys-meta={"fingerprint":"ef548c83cd1631c0613801de26fc20eba6aecf4e75d90f6b65764753e2f18188","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.rollback_message_button"
+msgstr "↺ 撤回本轮及之后"
 
 #. English: Scroll to bottom {glyph}
 #. chrys-meta={"fingerprint":"1c1e350450ef0e2c953ccaf0f580650e998976b93fddf268032c8aea8cfbe4ef","multiline":false,"placeholders":["glyph"]}
@@ -5481,13 +5545,29 @@ msgstr "会话：{session_id}"
 #. chrys-meta={"fingerprint":"035935186d9026b49ead3077c1b3018b71e54f9bbee3e2a1276b907b14516ca3","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/fold_rows.py
 msgid "tui.chat.thinking_label"
-msgstr "思考"
+msgstr "思考中"
+
+#. English:  ({tokens} token · {speed} tok/s)
+#. English-plural:  ({tokens} tokens · {speed} tok/s)
+#. chrys-meta={"fingerprint":"beb34e94058e0823652f0e44482b27c3fed830b6b422f7876fbe941b6dd4e7d7","multiline":false,"placeholders":["speed","tokens"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_speed"
+msgid_plural "tui.chat.thinking_speed#plural"
+msgstr[0] "（{tokens} token · {speed} tok/s）"
 
 #. English: Thinking summary
 #. chrys-meta={"fingerprint":"3320160e453e56c223cebb0e8aff29fd57844ebf3f13b67b4213cfc28bbdec55","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.thinking_summary_label"
 msgstr "思考摘要"
+
+#. English:  ({tokens} token)
+#. English-plural:  ({tokens} tokens)
+#. chrys-meta={"fingerprint":"2044bc779c79d04e4ddc5b643152407b841ee35d95b9257b61a39174f0337ecd","multiline":false,"placeholders":["tokens"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_tokens"
+msgid_plural "tui.chat.thinking_tokens#plural"
+msgstr[0] "（{tokens} token）"
 
 #. English: Thought
 #. chrys-meta={"fingerprint":"d2f59611e2915dccd579c93088ade4ba918f4fb8dcdb61ff640e518552520a47","multiline":false,"placeholders":[]}
@@ -5737,11 +5817,11 @@ msgstr "设置或清除自定义会话标题"
 msgid "tui.commands.description.resume"
 msgstr "恢复当前模式下最近的会话"
 
-#. English: Discard recent turns or return to a specific turn
-#. chrys-meta={"fingerprint":"b0d093c5206be3a113cb4065228d47cda65197455492a2a8f736f4ec538554b6","multiline":false,"placeholders":[]}
+#. English: Discard recent turns or discard starting from a turn
+#. chrys-meta={"fingerprint":"d12cb55acb615d464e02ff558424b5023f4acd815eeb5a10cc94a2e674c26b88","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.rollback"
-msgstr "丢弃最近的轮次或返回指定轮次"
+msgstr "撤回最近几轮，或从指定轮次开始撤回"
 
 #. English: Show active model, tools, skills, and files
 #. chrys-meta={"fingerprint":"8bf5798e4ac5d1e32a94579209df800125b177587df2c8756ff118dee784447e","multiline":false,"placeholders":[]}
@@ -6368,6 +6448,12 @@ msgstr "外部"
 msgid "tui.diff.file_moved"
 msgstr "文件已移动：{old_path} → {new_path}"
 
+#. English:  (large file)
+#. chrys-meta={"fingerprint":"db15536aed17034399eacb5203fa5bac5018441ca63757d5cb466a772a95912e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/util/diff_labels.py
+msgid "tui.diff.large_file"
+msgstr "（大文件）"
+
 #. English: Error: unable to load diff viewer — {error}
 #. chrys-meta={"fingerprint":"34e9895b0bb1e75576ce7cfc03e63c85787fa3e2287ebcb619cc6f576b751d3a","multiline":false,"placeholders":["error"]}
 #: src/chrys/app/tui/screens/diff/screen.py
@@ -6376,7 +6462,7 @@ msgstr "错误：无法加载文件变更查看器 — {error}"
 
 #. English:  (no backup)
 #. chrys-meta={"fingerprint":"c37228ae1ef3f92d3724df3c1ed746a863de3a9db910f93316a299eca5f4c134","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/screen.py
+#: src/chrys/app/tui/util/diff_labels.py
 msgid "tui.diff.no_backup"
 msgstr " （无备份）"
 
@@ -8056,7 +8142,7 @@ msgstr ""
 "问题标签页保留完整问题，长内容在各标签页内滚动。\n"
 "前后按钮用于浏览已保存的答案，翻页时保留当前标签，生成期间不可翻页。\n"
 "\n"
-"完整答案随会话保存。清空、删除会话或回滚到起始画面时会一并移除。\n"
+"完整答案随会话保存。清空、删除会话或撤回到起始画面时会一并移除。\n"
 "提交提示的 hook 也会检查顺便问。\n"
 "失败或取消的顺便问不保存。按 Esc 或点击关闭图标可取消正在进行的顺便问，\n"
 "或隐藏卡片并保留已保存的答案。同一时间只能运行一个顺便问。"
@@ -8354,13 +8440,13 @@ msgstr "复制用户轮次。"
 #. chrys-meta={"fingerprint":"7c58c6c8cda6bbf485cee3201186bef7e3724827376ea79ac5c145b8ad414b86","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.option.rollback_count"
-msgstr "要丢弃的最近轮次数，必须为正数。"
+msgstr "要撤回的最近轮数，必须为正整数。"
 
 #. English: Keep turns 1 through N and discard every later turn. N may be 0.
 #. chrys-meta={"fingerprint":"133dff90fe795ee2d87a88a6b1a1cadfad5f4f33c2f138c70718c1e15a17f6ff","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.option.rollback_target"
-msgstr "保留第 1 至第 N 轮，并丢弃之后的所有轮次。N 可以为 0。"
+msgstr "保留第 1 轮至第 N 轮并撤回之后的轮次。N 可以为 0。"
 
 #. English: This command does not take additional options.
 #. chrys-meta={"fingerprint":"dcabecbb61b813204aed5a5ff4517505bdb41c013211f28cb529dd089d6772ca","multiline":false,"placeholders":[]}
@@ -8407,27 +8493,27 @@ msgstr ""
 msgid "tui.man.resume.body"
 msgstr "恢复最近的 {app} 聊天对话。"
 
-#. English: Roll back recent conversation turns.  Without arguments, opens the
-#. rollback picker at the most recent available target. Use this picker when
-#. you want to discard conversation without restoring file changes.  A bare
-#. number is a relative count. "/rollback 1" discards the last turn; "/rollback
-#. 3" discards the last three turns. A valid explicit count executes
-#. immediately.  The "to" form is an absolute target. "/rollback to 1" keeps
-#. Turn 1 and discards Turns 2 through the current turn. Use "/rollback to 0"
-#. to return to the session start. A valid explicit target executes
-#. immediately.  Both explicit forms restore eligible file changes by default.
-#. The picker also selects file rollback by default; explicitly turn it off
-#. there to discard conversation only.  Explicit commands immediately show a
-#. non-dismissible loading modal. Picker actions show it after confirmation. It
-#. blocks interaction until rollback has completely finished.  Use with
-#. caution: this action cannot be undone.
-#. chrys-meta={"fingerprint":"21d96faba3950d2c6c5b91d3aacca2dba2efe0c6f3e5c1af343bb5037c654d88","multiline":true,"placeholders":[]}
+#. English: Discard recent conversation turns.  Without arguments, opens the
+#. discard picker at the most recent available target. Use this picker when you
+#. want to discard conversation without restoring file changes.  A bare number
+#. is a relative count. "/rollback 1" discards the last turn; "/rollback 3"
+#. discards the last three turns. A valid explicit count executes immediately.
+#. The "to" form is an absolute target. "/rollback to 1" keeps Turn 1 and
+#. discards Turns 2 through the current turn. Use "/rollback to 0" to return to
+#. the session start. A valid explicit target executes immediately.  Both
+#. explicit forms restore eligible file changes by default. The picker also
+#. selects file restoration by default; explicitly turn it off there to discard
+#. conversation only.  Explicit commands immediately show a non-dismissible
+#. loading modal. Picker actions show it after confirmation. It blocks
+#. interaction until discarding finishes.  In the Discard dialog, turn 17 means
+#. "/rollback to 16".  Use with caution: this action is permanent.
+#. chrys-meta={"fingerprint":"fe5d72324fca9d355c49507c0f63d3b76fbc5879049ff56095c01d2e06c59777","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.rollback.body"
 msgstr ""
-"回滚最近的对话轮次。\n"
+"撤回最近的对话轮次。\n"
 "\n"
-"不带参数时，在最近可用目标处打开回滚选择器。若要丢弃对话\n"
+"不带参数时，在最近可用目标处打开撤回选择器。若要丢弃对话\n"
 "但不恢复文件更改，请使用此选择器。\n"
 "\n"
 "单独的数字表示相对数量。\"/rollback 1\" 会丢弃最后一轮；\n"
@@ -8438,12 +8524,14 @@ msgstr ""
 "起点。有效的显式目标会立即执行。\n"
 "\n"
 "两种显式形式默认都会恢复符合条件的文件更改。选择器也默认\n"
-"选择文件回滚；可在其中明确关闭此选项，仅丢弃对话。\n"
+"选择文件撤回；可在其中明确关闭此选项，仅丢弃对话。\n"
 "\n"
 "显式命令会立即显示无法关闭的加载对话框。选择器操作会在确认后\n"
-"显示该对话框，并阻止交互，直到回滚完全结束。\n"
+"显示该对话框，并阻止交互，直到撤回完全结束。\n"
 "\n"
-"请谨慎使用：此操作无法撤销。"
+"请谨慎使用：此操作无法撤销。\n"
+"\n"
+"撤回弹窗中的第 17 轮等于 /rollback to 16。"
 
 #. English: Open the active runtime details dialog.      Shows:         - The
 #. active model profile and model ID         - Built-in tools grouped by
@@ -8508,18 +8596,21 @@ msgstr ""
 
 #. English: Open the token usage dialog, read from every saved session.
 #. Overview: new tokens by date range, their trend over time,     and totals by
-#. model, source or project, with each model's speed.     Calendar: new tokens
-#. day by day, and one day's details.      New tokens are the input not served
-#. from the provider's cache,     plus the output, thinking included. Deleted
-#. sessions and external     ACP agents are not counted.
-#. chrys-meta={"fingerprint":"d3b60b05e938038df9d11299b1c3fba744067836a2467c91b19245632b1bb892","multiline":true,"placeholders":[]}
+#. model, source, project or model profile, with each     model's speed. A
+#. model used through several of your profiles is     shown once for each.
+#. Calendar: new tokens day by day, and one day's details.      New tokens are
+#. the input not served from the provider's cache,     plus the output,
+#. thinking included. Deleted sessions and external     ACP agents are not
+#. counted.
+#. chrys-meta={"fingerprint":"a87aa08d2639c51b43157a086c097d76e872dbba2633ac4b416249d6d2bb8e62","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.usage.body"
 msgstr ""
 "打开 token 用量对话框，数据来自所有已保存的会话。\n"
 "\n"
 "    总览：按日期范围查看新增 token 及其趋势，\n"
-"    并按模型、来源或项目查看合计，以及每个模型的速度。\n"
+"    并按模型、来源、项目或模型配置查看合计，以及每个模型的速度。\n"
+"    同一模型经多个现有的模型配置使用时，按模型配置分行显示。\n"
 "    日历：逐日查看新增 token，以及某一天的详情。\n"
 "\n"
 "    新增 token 指未命中服务商缓存的输入，加上输出（含思考）。\n"
@@ -10186,35 +10277,54 @@ msgstr "无法显示这张图片。"
 msgid "tui.retry.not_started"
 msgstr "未开始重试"
 
-#. English: Rollback cancelled because the active session changed.
-#. chrys-meta={"fingerprint":"7ec29e015ec11115fb6dee0ad34efeccdbcb7d0dfe67bf57e39b4dbc2d081c42","multiline":false,"placeholders":[]}
+#. English: Discard cancelled because the active session changed.
+#. chrys-meta={"fingerprint":"177ecb0140d2638435a5bf28164b7105f41ef48e69a3319ba3f47bd29f0dfb6b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.active_session_changed"
-msgstr "活动会话已更改，回滚已取消。"
+msgstr "活动会话已更改，撤回已取消。"
 
-#. English: Cannot roll back while the agent is running.
-#. chrys-meta={"fingerprint":"a554cfeb2fdb0631db14fdbb42e53fd45805ca4f245430a0220fcd3bae19cc8d","multiline":false,"placeholders":[]}
+#. English: Cannot discard while the agent is running.
+#. chrys-meta={"fingerprint":"1192124655bc3cf80b426129f68cf0dcdd857c9a3a5b883eecb21c1320e538ae","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.agent_running"
-msgstr "智能体运行时无法回滚。"
+msgstr "智能体运行时无法撤回。"
 
-#. English: Close
-#. chrys-meta={"fingerprint":"b539b71b98c3530fcd17b6257d0bcdd95ec41dbd6ba78a0b8ad40de8ddc5103e","multiline":false,"placeholders":[]}
+#. English: A discard is already in progress.
+#. chrys-meta={"fingerprint":"e161f02c8fe640013d7edfaa6d1eb615876bf810a852c8e7f3d284cbdc8da51e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.already_in_progress"
+msgstr "正在撤回，请稍候。"
+
+#. English: Cancel
+#. chrys-meta={"fingerprint":"ee3eb6e02cd8772be8786b7d714f54bf90abe5d0f0523aebf9c292a1e48c7d3d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.button.close"
-msgstr "关闭"
+msgstr "取消"
 
-#. English: Discard conversation after Turn {turn}
-#. chrys-meta={"fingerprint":"b27ae902702950270c818b03f3b2beac10eb23714e232f542322a9cd0a9d26d5","multiline":false,"placeholders":["turn"]}
+#. English: Discard turns {first}–{last}
+#. chrys-meta={"fingerprint":"ed35e3dd37b0af9f64a5b74842efa05ced25390fa470011031d9d0d93b0d7ed1","multiline":false,"placeholders":["first","last"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.button.discard_after_turn"
-msgstr "丢弃第 {turn} 轮之后的对话"
+msgstr "撤回第 {first}–{last} 轮"
 
-#. English: Discard All
-#. chrys-meta={"fingerprint":"36c08b25f6b81dd7cb88d2c08eb8431a00f6bd647e90d805484076292484495c","multiline":false,"placeholders":[]}
+#. English: Discard all turns
+#. chrys-meta={"fingerprint":"a82b180139bb72a8e0c6ddfd07c1c8259ca354cfc3fb2f655b6f898019ec108d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.button.discard_all"
-msgstr "全部丢弃"
+msgstr "撤回全部"
+
+#. English: Discard turn {turn}
+#. chrys-meta={"fingerprint":"1d700424b7ef1bad653f9215ec7cf0271502e0e3303be81b2d40bf540d4c81e5","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.button.discard_turn"
+msgstr "撤回第 {turn} 轮"
+
+#. English: Discard turn {turn}? It is the latest turn and has no files to
+#. restore. A discarded turn cannot be recovered.
+#. chrys-meta={"fingerprint":"08de28cb6aa973888ac26e2976536af11c26eff4fd7b98457287d90da21a9621","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.confirm.latest_turn"
+msgstr "撤回第 {turn} 轮？这是最近一轮，没有要恢复的文件。撤回后无法找回。"
 
 #. English: Session start
 #. chrys-meta={"fingerprint":"0428764d7b8045e0c766dbc251372463fc0236918ee4c7be2cc20714aafe3606","multiline":false,"placeholders":[]}
@@ -10227,6 +10337,18 @@ msgstr "会话开始"
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.debug_target.turn"
 msgstr "第 {turn} 轮"
+
+#. English: After discard
+#. chrys-meta={"fingerprint":"93ff4c29d536ef7e62b9295d747a21190a24e06d9ccaca823b29dd751fc816e0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.diff.after"
+msgstr "撤回后"
+
+#. English: Now
+#. chrys-meta={"fingerprint":"6b05e61589d14f4ed3a95c079e10e33a424534d74f93b8d91ca7a580878595c6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.diff.now"
+msgstr "现在"
 
 #. English: modified internally and externally
 #. chrys-meta={"fingerprint":"d5a1840fc9dccd439bbfc13c50e30c4a5336d3364ff3b9261ca3a2ff410397f4","multiline":false,"placeholders":[]}
@@ -10270,11 +10392,11 @@ msgstr "无可恢复的备份"
 msgid "tui.rollback.exclusions.more"
 msgstr "另有 {extra_count} 个"
 
-#. English: Rollback failed: {error}
-#. chrys-meta={"fingerprint":"b1cb32a14df729fdc080257e91e1bab9eb0da2afc88c155746c36954aae281ec","multiline":false,"placeholders":["error"]}
+#. English: Discard failed: {error}
+#. chrys-meta={"fingerprint":"52f385759dfd0769908165d49abca408e682b9d92da6d8b11edaf4ec33d7c425","multiline":false,"placeholders":["error"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.failed"
-msgstr "回滚失败：{error}"
+msgstr "撤回失败：{error}"
 
 #. English: {count} file excluded from revert: {preview}
 #. English-plural: {count} files excluded from revert: {preview}
@@ -10284,35 +10406,23 @@ msgid "tui.rollback.files_excluded_note"
 msgid_plural "tui.rollback.files_excluded_note#plural"
 msgstr[0] "{count} 个文件已从还原中排除：{preview}"
 
-#. English: No file changes to revert.
-#. chrys-meta={"fingerprint":"391d17f110db8850519be6ff3709e73d78325de8a98334b53d4eee2e938a63e6","multiline":false,"placeholders":[]}
+#. English: No files to restore.
+#. chrys-meta={"fingerprint":"3f1c158faaa61962323492e471d1d8723aa5f4ec5acbb82c929fa2cb9de03c4c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.no_file_changes"
-msgstr "没有要还原的文件更改。"
+msgstr "没有要恢复的文件。"
 
-#. English: No rollback snapshots are available yet.
-#. chrys-meta={"fingerprint":"a6c21b36cd3deab72cb7dc54973318571e90636bd36aef7e7e3ec64ec52014c2","multiline":false,"placeholders":[]}
+#. English: No saved turns are available to discard yet.
+#. chrys-meta={"fingerprint":"55b32450b589d828afddbbac2af831d7d21c844ebc69d2836f9059fba0458039","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.no_snapshots"
-msgstr "尚无可用的回滚快照。"
+msgstr "尚无可用的撤回快照。"
 
-#. English:   — discard all
-#. chrys-meta={"fingerprint":"7e07746311a63827ee6303c476963f94453515eeb2247a608031ed26408efe3c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.discard_all_suffix"
-msgstr "  — 全部丢弃"
-
-#. English: Rollback to:
-#. chrys-meta={"fingerprint":"9a49bcdf29c84d4c02c6d490fb14d6e285b19dfb612060cd2297c9cb2360effc","multiline":false,"placeholders":[]}
+#. English: Discard starting from
+#. chrys-meta={"fingerprint":"4fd4e9b22947b74f478071419fbe9bb32f31570a18e0bd4d354dbe821d1b7dcb","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.picker.prompt"
-msgstr "回滚到："
-
-#. English: Session start
-#. chrys-meta={"fingerprint":"0428764d7b8045e0c766dbc251372463fc0236918ee4c7be2cc20714aafe3606","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.session_start"
-msgstr "会话开始"
+msgstr "从这一轮开始撤回"
 
 #. English: Turn {turn}
 #. chrys-meta={"fingerprint":"11385e9dd3f32a82cce844426e3a1855f16e77d5767a065fdbe090a8aadfe70e","multiline":false,"placeholders":["turn"]}
@@ -10320,47 +10430,47 @@ msgstr "会话开始"
 msgid "tui.rollback.picker.turn"
 msgstr "第 {turn} 轮"
 
-#. English: Turn {turn} (Current)
-#. chrys-meta={"fingerprint":"0596f61dd13af616467ed0569618b138d75487135e029a28e8a606ebd7e1e8ac","multiline":false,"placeholders":["turn"]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.turn_current"
-msgstr "第 {turn} 轮（当前）"
-
-#. English: Turn {turn} (Current) -
-#. chrys-meta={"fingerprint":"57718e52632b1cb0164170aa5d51bccf059c4570c5fdb1622e7e84d10e328bd7","multiline":false,"placeholders":["turn"]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.turn_current_preview"
-msgstr "第 {turn} 轮（当前） - "
-
-#. English: Turn {turn} -
-#. chrys-meta={"fingerprint":"10376eca4cc2f396fd11e4eaa334c23aa099e87d6ecc74d5b925dcae2371dfe5","multiline":false,"placeholders":["turn"]}
+#. English: Turn {turn} —
+#. chrys-meta={"fingerprint":"2072df224eb9cad2a4241ce0638b1c64cfdca217eef02ccfdfe8ccccdd2e7513","multiline":false,"placeholders":["turn"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.picker.turn_preview"
-msgstr "第 {turn} 轮 - "
+msgstr "第 {turn} 轮 — "
 
-#. English: Rollback picker cancelled because the conversation changed.
-#. chrys-meta={"fingerprint":"9ad0314290d5d31f05ac3fb0d383c40654da0533a1038e3444c8c95524d30cbf","multiline":false,"placeholders":[]}
+#. English: Discard picker cancelled because the conversation changed.
+#. chrys-meta={"fingerprint":"c309e7f966904a5d2faab5960b0feab0a0412775bbcbb797088f200e09631c90","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.picker_conversation_changed"
-msgstr "对话已更改，回滚选择器已取消。"
+msgstr "对话已更改，撤回选择器已取消。"
 
-#. English: Rollback picker cancelled because the workspace or runtime changed.
-#. chrys-meta={"fingerprint":"a096bfb0f09e1866acc851b4fd5009b4997e55933a0ea1d3ff33476d49727767","multiline":false,"placeholders":[]}
+#. English: Discard picker cancelled because the workspace or runtime changed.
+#. chrys-meta={"fingerprint":"497e178be36ee9320c9d9caa0d5dd3cfb7d6c11f40b5a156582ae72d46774348","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.picker_runtime_changed"
-msgstr "工作区或运行时已更改，回滚选择器已取消。"
+msgstr "工作区或运行时已更改，撤回选择器已取消。"
 
-#. English: Error: unable to load rollback preview — {detail}
-#. chrys-meta={"fingerprint":"84b2a3cdab57280e3ea0e3ea1e46d5c6aca71328aef98f81bc28775fe4f34d6c","multiline":true,"placeholders":["detail"]}
+#. English: Error: unable to load discard preview — {detail}
+#. chrys-meta={"fingerprint":"9184f94f19644090c8f7c690edda60f5aea4d3deb4fd744baefb32f41dbf5468","multiline":true,"placeholders":["detail"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.preview.load_error"
-msgstr "错误：无法加载回滚预览 — {detail}"
+msgstr "错误：无法加载撤回预览 — {detail}"
 
-#. English: Error: unable to load this rollback preview — {detail}
-#. chrys-meta={"fingerprint":"28a097151c6424b669d60b4aef6112b4dcb51d450169b5e869c5dabb43ff37a7","multiline":true,"placeholders":["detail"]}
+#. English: Error: unable to load this discard preview — {detail}
+#. chrys-meta={"fingerprint":"52298f33dc750cf4a2b228113235d091bdba0455f937efe5c903d6112d47ade9","multiline":true,"placeholders":["detail"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.preview.refresh_error"
-msgstr "错误：无法加载此回滚预览 — {detail}"
+msgstr "错误：无法加载此撤回预览 — {detail}"
+
+#. English: {range}; files stay as they are
+#. chrys-meta={"fingerprint":"9b5ec21916b8c63e8b43f6f3d9d4f9577bc0c33c590ec1b29f4eb08ffd2874fe","multiline":false,"placeholders":["range"]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.range.keep_files"
+msgstr "{range}，文件保持不变"
+
+#. English: {range}; checked files go back to before turn {turn}
+#. chrys-meta={"fingerprint":"c42dbd68e2a99aa3308650f1593163e8dfd488481e8ad506e4704b7f8db36ef5","multiline":false,"placeholders":["range","turn"]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.range.restore"
+msgstr "{range}，勾选的文件改回第 {turn} 轮之前的内容"
 
 #. English: {matched_count} already matched
 #. chrys-meta={"fingerprint":"5d38d9719a84b82b2a4741e4a4b3dd7c0ae9492fe81bdd583a5d259802bf9168","multiline":false,"placeholders":["matched_count"]}
@@ -10416,17 +10526,23 @@ msgstr[0] "已还原 {count} 个文件更改"
 msgid "tui.rollback.result.more_suffix"
 msgstr "（另有 {extra_count} 个）"
 
-#. English: Rolled back to Session start.
-#. chrys-meta={"fingerprint":"eee1c078f5335606bde587cbefa4f8393c6697c936e99db78ad357ffdda567fe","multiline":false,"placeholders":[]}
+#. English: Discarded all turns.
+#. chrys-meta={"fingerprint":"775aea7d30d4b742c1d07f591c63029a2bd51ead7cc74dca1e3fa4f266edb228","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.result.session_start"
-msgstr "已回滚到会话开始位置。"
+msgstr "已撤回全部轮次。"
 
-#. English: Rolled back to Turn {turn}.
-#. chrys-meta={"fingerprint":"e60488643c1e61b85dd2cca90e7eedbbcaa8d45ba8196f3ca8a39f4a8361da75","multiline":false,"placeholders":["turn"]}
+#. English: Discarded turn {turn}.
+#. chrys-meta={"fingerprint":"b8eb1feff980266c5fbfbf1ed32048b21291241aef97f44cacb645c147b8b56c","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.result.single_turn"
+msgstr "已撤回第 {turn} 轮。"
+
+#. English: Discarded turn {turn} and later turns.
+#. chrys-meta={"fingerprint":"71443fa909d6855e0dba3b9ca4845ec33299214de52ab8f3433a3be63e3b17f1","multiline":false,"placeholders":["turn"]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.result.turn"
-msgstr "已回滚到第 {turn} 轮。"
+msgstr "已撤回第 {turn} 轮及之后。"
 
 #. English: {count} warning
 #. English-plural: {count} warnings
@@ -10436,13 +10552,13 @@ msgid "tui.rollback.result.warnings_count"
 msgid_plural "tui.rollback.result.warnings_count#plural"
 msgstr[0] "{count} 条警告"
 
-#. English: Revert {count} file change (WYSIWYG)
-#. English-plural: Revert {count} file changes (WYSIWYG)
-#. chrys-meta={"fingerprint":"5c55f84bd499dff81c1bbb1f46b3b74ed243fcf7e9c96d4859d363370deae2a4","multiline":false,"placeholders":[]}
+#. English: Also restore {count} checked file
+#. English-plural: Also restore {count} checked files
+#. chrys-meta={"fingerprint":"06a791ec9bdd52deefb4582e9d7cf95a83b6272c1daeb93162c90fa6a3225b4b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.revert_file_changes"
 msgid_plural "tui.rollback.revert_file_changes#plural"
-msgstr[0] "还原 {count} 个文件更改（所见即所得）"
+msgstr[0] "同时恢复勾选的 {count} 个文件"
 
 #. English: The target turn must be zero or greater.
 #. chrys-meta={"fingerprint":"98174cb547c8245eb5eeff19f20d1ae6d5f3db9a2d1aae1f3157c85d724095f4","multiline":false,"placeholders":[]}
@@ -10450,23 +10566,29 @@ msgstr[0] "还原 {count} 个文件更改（所见即所得）"
 msgid "tui.rollback.target_nonnegative"
 msgstr "目标轮次必须大于或等于零。"
 
-#. English: Rollback
-#. chrys-meta={"fingerprint":"a6f676dbe1a7754d87fa0370c0d6c07595a08e6b1721f72fed7bfff7ac125348","multiline":false,"placeholders":[]}
+#. English: Discard
+#. chrys-meta={"fingerprint":"33905600ad4c923bc409677370cab1f223df19a44e49e594b447be0c1e744078","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.title"
-msgstr "回滚"
+msgstr "撤回"
 
-#. English: The number of turns to roll back must be positive.
-#. chrys-meta={"fingerprint":"c6c4dd8d4e5d42c50edb73d2dce89a32a5191a9662e3abcb9ec568ec476921fe","multiline":false,"placeholders":[]}
+#. English: The number of turns to discard must be positive.
+#. chrys-meta={"fingerprint":"938fc61d7bbccf784d9f71055ecb735db318322f45a8f588b9668a4baf735c01","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.turn_count_positive"
-msgstr "要回滚的轮数必须为正数。"
+msgstr "要撤回的轮数必须为正数。"
 
-#. English: Rollback is not available.
-#. chrys-meta={"fingerprint":"3f93c35e075aa5843008fb27775ffcbfdf69a3f7b0b847c900790563a25c91d8","multiline":false,"placeholders":[]}
+#. English: The last turn is still finishing; try again in a moment.
+#. chrys-meta={"fingerprint":"f5e741ec933cc55ad5aeabce431fa0751c25029f8ebde4df8396a67e90fcc242","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.turn_finishing"
+msgstr "上一轮还在收尾，请稍后再试。"
+
+#. English: Discard is not available.
+#. chrys-meta={"fingerprint":"9f1153f45de616ad88aea2c05e3ce29c194450a0c2db347392e104989c1bb988","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.unavailable"
-msgstr "回滚不可用。"
+msgstr "撤回不可用。"
 
 #. English: Usage: /rollback, /rollback N, or /rollback to N.
 #. chrys-meta={"fingerprint":"008c856d921c09dc14bee662fffd4525089838ee322172a4db1d87c2c11fc183","multiline":false,"placeholders":[]}
@@ -10563,6 +10685,24 @@ msgstr "未加载 Skills。"
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
 msgid "tui.runtime_details.empty.tools"
 msgstr "未加载内置工具或子智能体工具。"
+
+#. English: After tool calls: {name}
+#. chrys-meta={"fingerprint":"fe334eb1710d7d83e369e946d87290f2d950d555acfc11a79c456a9a4c63c318","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.extension.after_tool"
+msgstr "工具调用后：{name}"
+
+#. English: Before tool calls: {name}
+#. chrys-meta={"fingerprint":"f4dcc991135d891da4ba94ddd2366fdeae9829466f77f184f2e2a8cf70cab353","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.extension.before_tool"
+msgstr "工具调用前：{name}"
+
+#. English: Context each turn: {name}
+#. chrys-meta={"fingerprint":"ac01b90dc082ae43b76af98a7fbc52e3295c09078d586a7696a215f6c270c70c","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.extension.context"
+msgstr "每轮上下文：{name}"
 
 #. English: Files
 #. chrys-meta={"fingerprint":"4b7adbbf83c89f58eee633676f53c80b5817f1051bde68a510ee8db1553136bc","multiline":false,"placeholders":[]}
@@ -11486,7 +11626,7 @@ msgstr "自动模式下裁定工具审批的模型。"
 #. English: Model that writes what the buddy says when petted.
 #. chrys-meta={"fingerprint":"931f45640e05798485642104d8c820c06b0e793fa6e8fa9bdf98fa2f2466cc65","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.model.role.buddy_model_id"
+msgid "tui.settings.hint.model.role.buddy"
 msgstr "撰写伙伴被抚摸时所说的话的模型。"
 
 #. English: Model that writes session titles.
@@ -11668,13 +11808,13 @@ msgstr "成功回复后折叠执行过程。适用于之后完成的轮次和之
 msgid "tui.settings.hint.ui.chat.image_graphics"
 msgstr "在 Ghostty、kitty、iTerm2 3.7.5 及以上版本、WezTerm、开启了终端图片的 VS Code 和 Windows Terminal 1.22 及以上版本中以全彩显示图片，为此启动时会询问终端类型。关闭此项或在其他终端中，图片以彩色色块绘制。"
 
-#. English: Show new thinking expanded while the model writes it. When off, it
-#. stays on one line, its newest words running along it. Either way it folds to
-#. one line once the turn moves on; click it at any time to read it in full.
-#. chrys-meta={"fingerprint":"fe88fd32f261c70edfb174380743699800ee033edff5218b58c029896eceed0a","multiline":false,"placeholders":[]}
+#. English: Expand new thinking while the model writes it. When off, the folded
+#. row shows the estimated token count and speed. Click it at any time to read
+#. the full text.
+#. chrys-meta={"fingerprint":"b0fb777fbe8cd96c7286ab6c22895ed223bf50a353552011d1d8270d6e366695","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.show_thinking"
-msgstr "开启后，模型写出思考时完整展开显示；关闭后只显示一行，滚动显示最新内容。无论开关，轮次继续后思考都会折叠为一行，可随时点击展开查看完整思考。"
+msgstr "开启后，模型写出思考时完整展开显示。关闭时，折叠行显示估算的 token 数和速度。随时点击都可查看完整思考。"
 
 #. English: Expand new tool groups by default. When off, click the tool status
 #. at any time to view details.
@@ -12205,6 +12345,20 @@ msgstr "✨ 金光熠熠！"
 msgid "tui.sidebar.buddy.species"
 msgstr "物种：{species}"
 
+#. English: File Changes ({count})
+#. English-plural: File Changes ({count})
+#. chrys-meta={"fingerprint":"9f424008012391b9035f4fece187527576bd2f0e2e4f37a4c314b3f2f4e6332c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/diff_preview.py
+msgid "tui.sidebar.changes.title"
+msgid_plural "tui.sidebar.changes.title#plural"
+msgstr[0] "文件变更（{count}）"
+
+#. English: View all
+#. chrys-meta={"fingerprint":"cf92a75eb64004823d84791e2d49939519b39905a2f41df384f018ab06465f40","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/diff_preview.py
+msgid "tui.sidebar.changes.view_all"
+msgstr "查看全部"
+
 #. English: {formatted} message
 #. English-plural: {formatted} messages
 #. chrys-meta={"fingerprint":"1694c49b2685d87eddcb6b7fec72854db3edb06e6dc110a88db4d961ee17e6a8","multiline":false,"placeholders":["formatted"]}
@@ -12437,6 +12591,12 @@ msgstr[0] "钩子（{count} 个进行中）"
 msgid "tui.sidebar.tab.buddy"
 msgstr "伙伴"
 
+#. English: Chat
+#. chrys-meta={"fingerprint":"6f3d1883841694bc43cd5e19295cc29be33ce21fe16df5c5ebc23e4a823d0b32","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/panel.py
+msgid "tui.sidebar.tab.chat"
+msgstr "对话"
+
 #. English: Context
 #. chrys-meta={"fingerprint":"568799b368ac02572fc839679f574112d64515edf6186c890b307cc520a65063","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/panel.py
@@ -12454,12 +12614,6 @@ msgstr "调试"
 #: src/chrys/app/tui/widgets/sidebar/panel.py
 msgid "tui.sidebar.tab.hooks"
 msgstr "钩子"
-
-#. English: Messages
-#. chrys-meta={"fingerprint":"dc539a1862021f7a116d2443dde9458f890e3f149671bfc0021d3b6300e6147f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/sidebar/panel.py
-msgid "tui.sidebar.tab.messages"
-msgstr "消息"
 
 #. English: Tasks
 #. chrys-meta={"fingerprint":"cc8ff8e348305c333fe5b910bcf774101b1a3e7439d96b96462599d8a6e3e29a","multiline":false,"placeholders":[]}
@@ -12490,6 +12644,12 @@ msgstr "待办"
 #: src/chrys/app/tui/widgets/sidebar/toc.py
 msgid "tui.sidebar.toc.empty"
 msgstr "你的对话将显示在这里"
+
+#. English: Messages
+#. chrys-meta={"fingerprint":"dc539a1862021f7a116d2443dde9458f890e3f149671bfc0021d3b6300e6147f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/toc.py
+msgid "tui.sidebar.toc.title"
+msgstr "消息"
 
 #. English: Reload settings, profiles, memory, skills, hooks, MCP servers,
 #. themes and prompt shortcuts
@@ -15904,6 +16064,12 @@ msgstr "分组"
 msgid "tui.usage.group.model"
 msgstr "模型"
 
+#. English: Profile
+#. chrys-meta={"fingerprint":"1f32e5bec5d54398a6c913fbd43a7560087c02343db62f7787dcff3926ae39c4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.profile"
+msgstr "模型配置"
+
 #. English: Project
 #. chrys-meta={"fingerprint":"bb494880de8a82165303fb5db8a2bd69147f6fff4874591b25d51ec1569bafb1","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
@@ -16027,6 +16193,12 @@ msgstr[0] "{count} 个日志无法读取"
 msgid "tui.usage.note.unreported"
 msgid_plural "tui.usage.note.unreported#plural"
 msgstr[0] "{count} 次调用未报告用量"
+
+#. English: Other profiles
+#. chrys-meta={"fingerprint":"fa4919283bfc36cffdd2cb8d70c78fc0e0870bf186fad1652a8c9fd73dd291a0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.profile.other"
+msgstr "其他模型配置"
 
 #. English: Other workspaces
 #. chrys-meta={"fingerprint":"6d7805200d84a36fdff69306ab89e5d5baf0d2008448aa2166941869367ba36c","multiline":false,"placeholders":[]}
@@ -17267,6 +17439,9 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "settings.model.catalog.base_url.label"
 #~ msgstr "模型目录服务地址"
 
+#~ msgid "settings.model.role.buddy_model_id.label"
+#~ msgstr "Buddy 模型"
+
 #~ msgid "settings.prompt_shortcuts.load_user_folder.label"
 #~ msgstr "从用户目录加载快捷指令（如果存在）"
 
@@ -17366,6 +17541,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.chat.copy_agent_response_button"
 #~ msgstr "复制"
+
+#~ msgid "tui.chat.interrupted_rollback_button"
+#~ msgstr "回滚"
 
 #~ msgid "tui.chat.think_prefix"
 #~ msgstr "思考：{body}"
@@ -17472,6 +17650,24 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "tui.prompt_card.switch_failed"
 #~ msgstr "未发送：无法切换到 {target}"
 
+#~ msgid "tui.rollback.picker.discard_all_suffix"
+#~ msgstr "  — 全部丢弃"
+
+#~ msgid "tui.rollback.picker.session_start"
+#~ msgstr "会话开始"
+
+#~ msgid "tui.rollback.picker.turn_current"
+#~ msgstr "第 {turn} 轮（当前）"
+
+#~ msgid "tui.rollback.picker.turn_current_preview"
+#~ msgstr "第 {turn} 轮（当前） - "
+
+#~ msgid "tui.rollback.range.turn"
+#~ msgstr "撤回第 {turn} 轮"
+
+#~ msgid "tui.rollback.range.turns"
+#~ msgstr "撤回第 {first}–{last} 轮"
+
 #~ msgid "tui.runtime_details.label.source"
 #~ msgstr "来源"
 
@@ -17492,6 +17688,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.settings.badge.dotenv"
 #~ msgstr ".env"
+
+#~ msgid "tui.settings.hint.model.role.buddy_model_id"
+#~ msgstr "撰写伙伴被抚摸时所说的话的模型。"
 
 #~ msgid "tui.settings.hint.trajectory.verify_commands"
 #~ msgstr "以逗号分隔、视为测试、构建或代码检查验证的命令词或短语。"

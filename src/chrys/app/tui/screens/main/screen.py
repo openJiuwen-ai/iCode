@@ -43,7 +43,12 @@ from chrys.app.tui.screens.main.config_actions import (
     RuntimeConfigController,
 )
 from chrys.app.tui.screens.main.copy_actions import CopyActionController
-from chrys.app.tui.screens.main.diff_controller import DiffController, LiveDiffOwner, LiveDiffTracker
+from chrys.app.tui.screens.main.diff_controller import (
+    DiffController,
+    DiffPreviewController,
+    LiveDiffOwner,
+    LiveDiffTracker,
+)
 from chrys.app.tui.screens.main.engine_read_model import EngineReadModel
 from chrys.app.tui.screens.main.event_handlers import BackendEventCallbacks, BackendEventHandler
 from chrys.app.tui.screens.main.input_flow import InputFlowController
@@ -90,10 +95,17 @@ from chrys.app.tui.support.gc_freeze import (
 )
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
+from chrys.app.tui.util.diff_entries import DiffFocus
 from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.util.placement import pin_fixed_placement
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.btw import BtwPanel, ChatColumn
-from chrys.app.tui.widgets.chat.messages import ConversationStatusAction, RetryNowClicked
+from chrys.app.tui.widgets.chat.messages import (
+    ConversationStatusAction,
+    InterruptedMessage,
+    RetryNowClicked,
+    UserMessage,
+)
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.quote_popup import QuoteSelectionPopup
@@ -122,6 +134,7 @@ from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 from chrys.app.tui.widgets.editor import MESSAGE_EDITOR_MAX_CHARACTERS, EditorBufferSnapshot, EditorMode
 from chrys.app.tui.widgets.sidebar.background_tasks import BackgroundTaskList
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
+from chrys.app.tui.widgets.sidebar.diff_preview import DiffPreview, SidebarChatPanel, preview_rows
 from chrys.app.tui.widgets.sidebar.hooks import HookRunList
 from chrys.app.tui.widgets.sidebar.panel import SIDEBAR_HOOKS_TAB, SidebarPanel
 from chrys.app.tui.widgets.sidebar.tasks import TodoListState
@@ -457,6 +470,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         # The pill itself: ``arrange`` reads it every frame, so no query.
         self._quote_pill: QuoteSelectionPopup | None = None
         self._diff_controller = self._new_diff_controller()
+        self._diff_preview = DiffPreviewController(
+            diff=self._diff_controller,
+            owner=lambda: (self.chat_session_id, self._services.session_generation(), self._workspace_cwd()),
+            visible=self._diff_preview_visible,
+            show=lambda entries: self.query_one(SidebarChatPanel).set_entries(entries),
+            start_worker=self._start_worker,
+        )
         self._rollback_controller = self._new_rollback_controller()
         self._navigation = self._new_navigation_controller()
         self._tool_actions = ToolActionBridge(publisher=self._services.bus, debug=self._debug)
@@ -497,6 +517,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 post_gc_message=self.post_message,
                 debug=self._debug,
                 refresh_model_indicator=self._refresh_model_indicator,
+                refresh_diff_preview=self._refresh_diff_preview,
+                refresh_rollback_targets=lambda: self._start_worker(self._rollback_controller.refresh_rollback_targets),
                 refresh_notification_settings=self._refresh_notification_settings,
                 refresh_trajectory_verify_commands=self._refresh_trajectory_verify_commands,
                 settings_reloaded=self._on_settings_reloaded_for_panel,
@@ -520,11 +542,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 set_workspace_cwd=self._set_workspace_cwd,
                 update_subtitle=self._update_subtitle,
                 update_toc=self._update_toc,
-                clear_suggestion_file_cache=self._clear_suggestion_file_cache,
+                discard_suggestion_file_index=self._discard_suggestion_file_index,
                 start_worker=self._start_worker,
                 post_gc_message=self.post_message,
                 debug=self._debug,
                 refresh_model_indicator=self._refresh_model_indicator,
+                refresh_diff_preview=self._refresh_diff_preview,
+                reset_rollback_request=self._rollback_controller.reset_pending,
                 choose_missing_working_dir=partial(self._workspace_actions.choose_replacement_dir, reason="restore"),
                 confirm_stopping_background_tasks=self._confirm_stopping_background_tasks,
             ),
@@ -568,6 +592,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             handle_agent_message=self._events.on_agent_message,
             handle_agent_content=self._events.on_agent_content,
             handle_error=self._events.on_error,
+            handle_turn_event=self._events.apply_turn_event,
+            handle_answer_withdrawn=self._events.on_answer_withdrawn,
             set_agent_running=self._set_agent_running,
             set_has_messages=self._set_has_messages,
             clear_workspace_marker=self._clear_workspace_marker_for_user_message,
@@ -808,8 +834,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         if restoring:
             self._session_title.clear_terminal_title_result()
 
-    def _clear_suggestion_file_cache(self) -> None:
-        self._suggestions.file_cache = None
+    def _mark_suggestion_file_index_stale(self) -> None:
+        self._suggestions.mark_file_index_stale()
+
+    def _discard_suggestion_file_index(self) -> None:
+        self._suggestions.discard_file_index()
 
     def _warn_slash_command(
         self,
@@ -960,6 +989,29 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         event.stop()
         await self._btw.navigate(event.delta)
 
+    def _diff_preview_visible(self) -> bool:
+        if not self.is_mounted:
+            return False
+        panel = self.query_one(SidebarChatPanel)
+        return is_widget_shown_on_active_screen(panel) and preview_rows(1, panel.content_size.height) > 0
+
+    def _refresh_diff_preview(self, reread: bool = True) -> None:
+        if self.is_mounted:
+            self._diff_preview.request_refresh(reread=reread)
+
+    def watch_chat_session_id(self) -> None:
+        self._refresh_diff_preview()
+
+    @on(DiffPreview.RefreshRequested)
+    def _on_diff_preview_refresh(self, event: DiffPreview.RefreshRequested) -> None:
+        event.stop()
+        self._diff_preview.screen_resumed()
+
+    @on(DiffPreview.Opened)
+    def _on_diff_preview_opened(self, event: DiffPreview.Opened) -> None:
+        event.stop()
+        self._diff_controller.show_diff(focus=DiffFocus(event.display_key))
+
     def _new_diff_controller(self) -> DiffController:
         return DiffController(
             services=self._services,
@@ -985,14 +1037,17 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             is_agent_busy=lambda: (
                 self._state.run.agent_running or self._state.run.agent_loading or self._services.execution_busy()
             ),
+            is_agent_running=lambda: self._state.run.agent_running or self._state.run.agent_loading,
             current_session_id=self._view_adapter.current_chat_session_id,
             session_generation=self._services.session_generation,
             turn_lifecycle_task=self._services.turn_lifecycle_task,
             profile_name=lambda: self._state.runtime.profile,
             reset_welcome_workspace_marker=_reset_welcome_workspace_marker,
+            refresh_diff_preview=self._refresh_diff_preview,
             set_has_messages=self._set_has_messages,
             post_gc_message=self.post_message,
             debug=self._debug,
+            invalidate_file_index=self._mark_suggestion_file_index_stale,
             locale_controller=self._locale_controller,
             confirm_stopping_background_tasks=lambda turn: self._confirm_stopping_background_tasks(after_turn=turn),
         )
@@ -1276,6 +1331,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self.sync_footer_bindings()
         self.query_one(HookIndicator).screen_resumed()
         self.query_one(HookRunList).screen_resumed()
+        self._diff_preview.screen_resumed()
         self.query_one(SuggestionList).resume_marquee()
         if self.theme_editor is not None:
             self.theme_editor.resume()
@@ -2157,6 +2213,29 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return
         self._input_flow.request_retry("")
 
+    @on(InterruptedMessage.RollbackRequested)
+    def _on_interrupted_rollback(self, event: InterruptedMessage.RollbackRequested) -> None:
+        event.stop()
+        self._rollback_from_message(event.message, None)
+
+    @on(UserMessage.RollbackRequested)
+    def _on_user_message_rollback(self, event: UserMessage.RollbackRequested) -> None:
+        event.stop()
+        self._rollback_from_message(event.message, event.target_turn)
+
+    def _rollback_from_message(self, message: UserMessage | InterruptedMessage, target_turn: int | None) -> None:
+        if self._workflow.workflow_mode:
+            message.set_rollback_disabled(False)
+            return
+        self.run_worker(
+            self._rollback_controller.rollback_from_message(
+                target_turn,
+                on_complete=lambda: message.set_rollback_disabled(False),
+            ),
+            exclusive=False,
+            group="rollback-entry",
+        )
+
     @on(ToolViewRequested)
     def _on_tool_view_requested(self, event: ToolViewRequested) -> None:
         """Open a detailed tool-view modal requested by a tool widget."""
@@ -2519,12 +2598,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 )
         else:
             # Agent tool calls (write_file / edit_file / shell) may have
-            # created or deleted files during the turn; drop the cached
-            # ``@`` suggestion list so the next trigger re-scans.  The
-            # scan is lazy — invalidation is cheap; the real work only
-            # runs when the user next types ``@``.  Mirrors the
-            # invalidation in ``on_workspace_updated``.
-            self._suggestions.file_cache = None
+            # created or deleted files during the turn, so the resident ``@``
+            # snapshot may be stale.  It keeps answering the next trigger,
+            # which rescans in the background and swaps the result in.  A
+            # workspace switch discards the snapshot instead (see
+            # ``on_workspace_updated``).
+            self._suggestions.mark_file_index_stale()
             if self._state.run.turn_end_check_pending:
                 self._state.run.turn_end_check_pending = False
                 self._workspace_actions.check_after_turn()

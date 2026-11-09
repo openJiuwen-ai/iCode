@@ -2,7 +2,7 @@
 # The PyPI distribution name; the import package, the commands' code name and
 # ~/.chrys keep "chrys" (src/chrys/__init__.py::DISTRIBUTION_NAME).
 name = "iCode-TUI"
-version = "0.34.0"
+version = "0.35.1"
 description = "A general-purpose extensible agent platform for rapidly building and evolving custom agents."
 readme = "README.pypi.md"
 requires-python = ">=3.14"
@@ -81,12 +81,29 @@ Releases = "https://github.com/openJiuwen-ai/iCode/releases"
 [project.scripts]
 aixcoding-cli = "chrys.app.cli.app:main"
 
+[tool.uv]
+# uv rebuilds the editable install, whose build hook (hatch_build.py) compiles
+# the gitignored zh-Hans MO, when a file key's mtime changes (a fresh checkout,
+# a pull or merge that changes the PO) or the dir key's folder appears or
+# disappears relative to what uv recorded before its last build: leaving an
+# older branch where the MO was tracked removes the folder. uv records before
+# building, so a folder deleted right after a build that began without one
+# (`git clean -fdx` twice) goes unnoticed; scripts/i18n.py compile restores it.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "hatch_build.py" },
+    { file = "scripts/i18n_mo.py" },
+    { file = "locales/zh-Hans/LC_MESSAGES/chrys.po" },
+    { dir = "src/chrys/foundation/i18n/_catalogs" },
+]
+
 [tool.uv.sources]
 #rich = { path = "../rich", editable = true }
 #textual = { path = "../textual", editable = true }
 
 [build-system]
-requires = ["hatchling"]
+# Babel compiles the zh-Hans MO in hatch_build.py; bump it with the dev group's pin.
+requires = ["hatchling", "babel==2.18.0"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
@@ -112,6 +129,10 @@ packages = ["src/chrys"]
 # The /help user guide and agent runtime read docs/; installed builds carry it here
 # (src/chrys/foundation/documentation.py::resolve_docs_root).
 "docs" = "chrys/app/tui/screens/guides/_docs"
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+# hatch_build.py compiles locales/zh-Hans/LC_MESSAGES/chrys.po into the wheel's
+# chrys/foundation/i18n/_catalogs/zh-Hans/LC_MESSAGES/chrys.mo.
 
 [tool.hatch.build]
 # Include vendored assets that are gitignored (downloaded at build time)

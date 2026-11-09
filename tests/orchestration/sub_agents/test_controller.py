@@ -20,8 +20,11 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import openai
 import pytest
 
+from chrys.foundation.errors import ROUTE_EXTENSION_KEY, ErrorKind, RouteFacts, failure_facts, origin_of
+from chrys.foundation.errors.display import display_fields
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     InvocationAborted,
@@ -31,6 +34,7 @@ from chrys.foundation.events.types import (
     InvocationRetryAttempt,
     InvocationToolCallResult,
 )
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.retry import StreamStall
@@ -83,6 +87,8 @@ from tests.orchestration.sub_agents._controller_fixtures import (
     kernel_shell,
 )
 from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.provider_errors import API_HOST, openai_status
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 # --- Stub agent so tests can script the run outcome ----------------------
 
@@ -343,6 +349,55 @@ async def test_interrupted_service_retry_sleep_keeps_retry_scheduled() -> None:
         assert await controller.policy._sleep_for_service_retry(7) is True
 
     assert sink.event_types == [EventType.RETRY_SCHEDULED]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decides", [True, False], ids=["pauses", "ends"])
+async def test_a_failed_child_reports_the_verdict_on_its_retry_pause_and_end(tmp_path: Path, *, decides: bool):
+    """A provider's failure carries the classifier's verdict on every event a frontend reports it by."""
+    bus = EventBus()
+    retries = await _collect(bus, InvocationRetryAttempt)
+    paused = await _collect(bus, InvocationPaused)
+    aborted = await _collect(bus, InvocationAborted)
+    limited = await openai_status(429, {"error": {"message": "Rate limit reached", "type": "rate_limit_error"}})
+    assert isinstance(limited, openai.APIStatusError)
+    # Every model request carries its route, so the model service answered.
+    route = RouteFacts(origin_of(f"https://{API_HOST}"), None, first_hop_reached=True)
+    limited.response.request.extensions[ROUTE_EXTENSION_KEY] = route
+    ctrl = kernel_shell(
+        conversation=Conversation(),
+        parent_origin=None,
+        invocation_id="inv-1",
+        tool_name="Explore",
+        agent_name="Explore",
+        agent=_ScriptedAgent(outcomes=[limited, limited]),
+        **_controller_runtime(),
+        prompt="do the thing",
+        # Service-side storage: the policy's whole-run lane retries the 429 itself.
+        run_kwargs={"options": {"store": True}},
+        event_bus=bus,
+        session_id="s-1",
+        max_retries=1,
+        backoff_schedule=(0,),
+        persist_dir=tmp_path,
+        human_failure_decisions=decides,
+    )
+
+    run = asyncio.create_task(ctrl.run())
+    if decides:
+        await wait_for(lambda: paused or run.done(), description="the child paused")
+        assert ctrl.request_abort() is True
+    await asyncio.wait_for(run, ENGINE_TURN_TIMEOUT)
+
+    facts = failure_facts(limited)
+    display, hint = display_fields(limited)
+    assert facts == FailureFacts(ErrorKind.RATE_LIMITED, retryable=True, status_code=429)
+    assert display is not None
+    assert [event.facts for event in retries] == [facts]
+    assert [event.last_error_facts for event in paused] == ([facts] if decides else [])
+    assert [(event.last_error_facts, event.last_error_display, event.last_error_hint) for event in aborted] == [
+        (facts, display, hint)
+    ]
 
 
 @pytest.mark.asyncio

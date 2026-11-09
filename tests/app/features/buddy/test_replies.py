@@ -10,8 +10,9 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from chrys.app.features.buddy.replies import STOCK_REPLIES, _call_options, pet_reply, stock_reply
+from chrys.app.features.buddy.replies import STOCK_REPLIES, pet_reply, stock_reply
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.kernel import Message
@@ -25,6 +26,16 @@ from tests.support.buddies import a_buddy
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+
+
+def _stock_lines(name: str) -> set[str]:
+    """The stock lines as their English fallback renders them, so no wording is pinned."""
+    return {format_message(line.bind(name=name)) for line in STOCK_REPLIES}
+
+
+def _reply_text(reply: MessageRef | str) -> str:
+    """A model answer already is text; a stock reply renders through its fallback."""
+    return reply if isinstance(reply, str) else format_message(reply)
 
 
 class _Response:
@@ -149,19 +160,6 @@ async def test_the_reply_follows_the_profile_stream_setting(
     assert [call["stream"] for call in client.calls] == [stream]
 
 
-@pytest.mark.asyncio
-async def test_the_buddy_model_setting_is_honoured_before_any_session_exists(
-    client: _Client, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The setting is configuration, not session state, and a pet can come before the first session."""
-    monkeypatch.setenv("CHRYS_PET_MODEL", "pet-mini")
-    _no_engine(monkeypatch, default_profile())
-
-    await pet_reply(a_buddy())
-
-    assert client.calls[0]["options"]["model"] == "pet-mini"
-
-
 def _profiles_loaded_on(monkeypatch: pytest.MonkeyPatch, *profiles: ModelProfile) -> list[threading.Thread]:
     """Stand in for the profiles on disk: *profiles*, and a note of the thread each load ran on."""
     threads: list[threading.Thread] = []
@@ -177,26 +175,10 @@ def _profiles_loaded_on(monkeypatch: pytest.MonkeyPatch, *profiles: ModelProfile
 
 
 @pytest.mark.asyncio
-async def test_before_any_session_a_swapped_in_model_finds_its_cap_on_disk_off_the_loop_thread(
+async def test_before_any_session_the_profiles_on_disk_are_read_only_when_a_buddy_model_is_set(
     client: _Client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("CHRYS_PET_MODEL", "pet-mini")
-    _no_engine(monkeypatch, default_profile())
-    loads = _profiles_loaded_on(
-        monkeypatch, ModelProfile(id="pet", name="Pet", model_id="pet-mini", max_output_tokens=8000)
-    )
-
-    await pet_reply(a_buddy())
-
-    assert client.calls[0]["options"]["max_tokens"] == 8000
-    assert len(loads) == 1 and loads[0] is not threading.current_thread()
-
-
-@pytest.mark.asyncio
-async def test_before_any_session_the_profiles_on_disk_are_read_only_for_a_swapped_in_model(
-    client: _Client, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("CHRYS_PET_MODEL", raising=False)
+    monkeypatch.delenv("CHRYS_MODEL_PROFILE_BUDDY", raising=False)
     _no_engine(monkeypatch, default_profile())
     loads = _profiles_loaded_on(monkeypatch)
 
@@ -253,6 +235,126 @@ async def test_an_engine_that_has_built_no_agent_yet_asks_the_active_model(
 
     assert await pet_reply(a_buddy()) == "💛 hoot hoot"
     assert asked == [active]
+    assert client.calls[0]["options"]["model"] == "gpt-active"
+
+
+_ACTIVE = ModelProfile(id="active-model", name="Active", model_id="gpt-active", base_url="https://active.example/v1")
+_PET = ModelProfile(
+    id="pet-profile",
+    name="Pet Profile",
+    provider="anthropic",
+    model_id="claude-pet",
+    base_url="https://pet.example",
+    stream=False,
+    max_output_tokens=300,
+)
+
+
+def _asked(monkeypatch: pytest.MonkeyPatch) -> tuple[list[ModelProfile], _Client]:
+    """The profile each client was built for, and the client every call goes to."""
+    asked: list[ModelProfile] = []
+    client = _Client()
+
+    def make(profile: ModelProfile) -> _Client:
+        asked.append(profile)
+        return client
+
+    _client_factory(monkeypatch, make)
+    return asked, client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "selector", [_PET.id, _PET.name, _PET.name.upper()], ids=["by-id", "by-name", "by-folded-name"]
+)
+async def test_a_chosen_buddy_profile_answers_over_its_own_connection(
+    selector: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Like the other model roles, the buddy setting picks a whole profile: its provider, endpoint and model."""
+    registry = _registry_with(_ACTIVE, _PET)
+    asked: list[ModelProfile] = []
+    client = _Client()
+    context: dict[str, object] = {}
+
+    async def create_client(
+        profile: ModelProfile,
+        *,
+        session_id: str | None = None,
+        parent_session_id: str | None = None,
+        session_dir: Path | None = None,
+    ) -> _Client:
+        asked.append(profile)
+        context.update(session_id=session_id, parent_session_id=parent_session_id, session_dir=session_dir)
+        return client
+
+    _engine(
+        monkeypatch,
+        _Engine(tmp_path, profile=_ACTIVE, registry=registry, settings=Settings(buddy_model_profile=selector)),
+    )
+    monkeypatch.setattr("chrys.service.llm.clients.create_client", create_client)
+
+    assert await pet_reply(a_buddy()) == "💛 hoot hoot"
+    assert asked == [_PET]
+    [call] = client.calls
+    assert call["stream"] is False
+    assert call["options"]["model"] == "claude-pet"
+    assert call["options"]["max_tokens"] == 300
+    assert context == {
+        "session_id": derive_llm_route_session_id("sess-buddy", route_kind="buddy-reply", model_profile=_PET),
+        "parent_session_id": "sess-buddy",
+        "session_dir": tmp_path,
+    }
+
+
+@pytest.mark.asyncio
+async def test_before_any_session_a_chosen_buddy_profile_is_found_on_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The setting is configuration, not session state, and a pet can come before the first session."""
+    asked, client = _asked(monkeypatch)
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE_BUDDY", _PET.id)
+    _no_engine(monkeypatch, _ACTIVE)
+    loads = _profiles_loaded_on(monkeypatch, _ACTIVE, _PET)
+
+    await pet_reply(a_buddy())
+
+    assert asked == [_PET]
+    assert client.calls[0]["options"]["model"] == "claude-pet"
+    assert len(loads) == 1 and loads[0] is not threading.current_thread()
+
+
+@pytest.mark.asyncio
+async def test_a_buddy_profile_that_is_gone_leaves_the_active_model_answering(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A profile deleted since it was chosen names no connection, and is never sent as a model name."""
+    asked, client = _asked(monkeypatch)
+    registry = _registry_with(_ACTIVE, _PET)
+    _engine(
+        monkeypatch,
+        _Engine(tmp_path, profile=_ACTIVE, registry=registry, settings=Settings(buddy_model_profile="gpt-mini")),
+    )
+
+    await pet_reply(a_buddy())
+
+    assert asked == [_ACTIVE]
+    assert client.calls[0]["options"]["model"] == "gpt-active"
+
+
+@pytest.mark.asyncio
+async def test_a_chosen_buddy_profile_not_filled_in_yet_leaves_the_active_model_answering(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    unfinished = ModelProfile(id="unfinished", name="Unfinished")
+    asked, client = _asked(monkeypatch)
+    registry = _registry_with(_ACTIVE, unfinished)
+    _engine(
+        monkeypatch,
+        _Engine(tmp_path, profile=_ACTIVE, registry=registry, settings=Settings(buddy_model_profile=unfinished.id)),
+    )
+
+    await pet_reply(a_buddy())
+
+    # Never the profile's id sent as a model name.
+    assert asked == [_ACTIVE]
     assert client.calls[0]["options"]["model"] == "gpt-active"
 
 
@@ -320,7 +422,7 @@ async def test_a_model_that_cannot_answer_is_covered_by_a_stock_line(
     _client_factory(monkeypatch, make)
     buddy = a_buddy()
 
-    assert await pet_reply(buddy) in {f"💛 {line.format(name=buddy.name)}" for line in STOCK_REPLIES}
+    assert _reply_text(await pet_reply(buddy)) in _stock_lines(buddy.name)
 
 
 @pytest.mark.asyncio
@@ -329,7 +431,7 @@ async def test_an_empty_answer_is_covered_by_a_stock_line(client: _Client, monke
     monkeypatch.setattr(_Response, "text", "   ")
     buddy = a_buddy()
 
-    assert await pet_reply(buddy) in {f"💛 {line.format(name=buddy.name)}" for line in STOCK_REPLIES}
+    assert _reply_text(await pet_reply(buddy)) in _stock_lines(buddy.name)
 
 
 class _FailingClient(_Client):
@@ -355,7 +457,26 @@ async def test_reply_closes_its_client(answers: bool, monkeypatch: pytest.Monkey
 
 def test_a_stock_reply_needs_no_model_and_names_the_buddy() -> None:
     buddy = a_buddy(name="Nori")
-    assert stock_reply(buddy) in {f"💛 {line.format(name='Nori')}" for line in STOCK_REPLIES}
+    assert _reply_text(stock_reply(buddy)) in _stock_lines("Nori")
+    # The reply mark rides in each template now, and nothing else in the module adds it to a
+    # stock line: this literal is what tells if a template loses it.
+    assert all(line.startswith("💛 ") for line in _stock_lines("Nori"))
+
+
+def test_every_stock_reply_renders_in_the_user_language() -> None:
+    buddy = a_buddy(name="Nori")
+    chinese = Localizer("zh-Hans")
+    translated = set()
+    for line in STOCK_REPLIES:
+        reference = line.bind(name=buddy.name)
+        chinese_line = chinese.render(reference)
+        assert chinese_line != format_message(reference)
+        assert buddy.name in chinese_line
+        translated.add(chinese_line)
+
+    # Five distinct translations, and the random pick lands on one of them.
+    assert len(translated) == len(STOCK_REPLIES)
+    assert chinese.render(stock_reply(buddy)) in translated
 
 
 def _registry_with(*profiles: ModelProfile) -> ModelProfileRegistry:
@@ -363,45 +484,3 @@ def _registry_with(*profiles: ModelProfile) -> ModelProfileRegistry:
     for profile in profiles:
         registry.register(profile)
     return registry
-
-
-def _main_profile(**overrides: Any) -> ModelProfile:
-    return ModelProfile(
-        **{"id": "main", "name": "Main", "model_id": "big-model", "max_output_tokens": 64000, **overrides}
-    )
-
-
-def test_the_session_model_keeps_its_own_output_cap() -> None:
-    assert _call_options(_main_profile(), "big-model", _registry_with()) == {"model": "big-model", "max_tokens": 64000}
-
-
-def test_a_swapped_in_model_gets_the_cap_of_its_own_profile() -> None:
-    registry = _registry_with(ModelProfile(id="pet", name="Pet", model_id="small-model", max_output_tokens=8000))
-
-    assert _call_options(_main_profile(), "small-model", registry) == {"model": "small-model", "max_tokens": 8000}
-
-
-def test_a_swapped_in_model_without_a_profile_gets_no_cap() -> None:
-    assert _call_options(_main_profile(), "small-model", _registry_with()) == {"model": "small-model"}
-    assert _call_options(_main_profile(), "small-model", None) == {"model": "small-model"}
-
-
-def test_a_swapped_in_model_whose_profiles_disagree_gets_no_cap() -> None:
-    registry = _registry_with(
-        ModelProfile(id="pet-a", name="Pet A", model_id="small-model", max_output_tokens=8000),
-        ModelProfile(id="pet-b", name="Pet B", model_id="small-model", max_output_tokens=16000),
-    )
-
-    assert _call_options(_main_profile(), "small-model", registry) == {"model": "small-model"}
-
-
-def test_a_swapped_in_model_drops_every_spelling_of_the_session_cap_and_keeps_the_rest() -> None:
-    profile = _main_profile(chat_options='{"max_output_tokens": 32000, "temperature": 0.5}')
-    registry = _registry_with(ModelProfile(id="pet", name="Pet", model_id="small-model", max_output_tokens=8000))
-
-    assert _call_options(profile, "small-model", _registry_with()) == {"model": "small-model", "temperature": 0.5}
-    assert _call_options(profile, "small-model", registry) == {
-        "model": "small-model",
-        "temperature": 0.5,
-        "max_tokens": 8000,
-    }

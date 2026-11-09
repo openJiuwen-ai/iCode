@@ -26,7 +26,7 @@ from tests.app.tui.screens.test_prompt_shortcut_send import (
     turn_finished,
     type_text,
 )
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 pytestmark = pytest.mark.usefixtures("clear_model_profile_env")
 
@@ -185,7 +185,12 @@ async def test_manual_model_continues_through_chdir_and_model_dialog(agent_engin
     async with running_session(agent_engine, tmp_path, monkeypatch, models=_models_on_disk()) as session:
         path.write_text(f"model.profile.active: {FAST_MODEL}\n", encoding="utf-8")
         await slash_reload(session)
-        await wait_for(lambda: session.seen.of(ev.SettingsReloaded), pilot=session.pilot, description="model reloaded")
+        await wait_for(
+            lambda: session.seen.of(ev.SettingsReloaded),
+            pilot=session.pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="model reloaded",
+        )
         other = tmp_path / "second-workspace"
         other.mkdir()
         await session.bus.publish(ev.WorkspaceChange(primary_cwd=str(other)), raise_handler_errors=True)
@@ -224,7 +229,10 @@ async def test_deleted_default_with_unwritable_settings_still_chooses_a_model_an
         path.write_text("ui: [broken", encoding="utf-8")
         await _delete_in_the_models_dialog(session, MAIN_MODEL)
         await wait_for(
-            lambda: session.seen.of(ev.SettingsReloaded), pilot=session.pilot, description="deletion rebuilt"
+            lambda: session.seen.of(ev.SettingsReloaded),
+            pilot=session.pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="deletion rebuilt",
         )
         assert models.get(MAIN_MODEL) is None
         active = get_model_pointer()[0]

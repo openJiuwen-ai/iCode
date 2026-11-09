@@ -101,16 +101,20 @@ from chrys.foundation.events.types import (
     InvocationResumed,
     InvocationRetryAttempt,
     InvocationStarted,
+    InvocationSteered,
     InvocationToolCallArgsUpdated,
     InvocationToolCallProgress,
     InvocationToolCallResult,
     InvocationToolCallStart,
     InvocationToolCallStatusUpdated,
     QuestionToUser,
+    RollbackSnapshotsChanged,
     SessionReady,
     SettingsReloaded,
     TodoListUpdated,
     ToolCompacted,
+    TurnStarted,
+    UnansweredInputDropped,
     UsageUpdate,
     UserInjectResult,
     Warning,
@@ -246,6 +250,9 @@ class BackendEventCallbacks:
     accept_approval_update: Callable[[ApprovalModeUpdated], bool] = lambda _event: True
     route_session_error: Callable[[Error], bool] = lambda _event: False
     prompt_missing_working_dir: Callable[[MissingDirReason], None] = lambda _reason: None
+
+    refresh_diff_preview: Callable[[bool], None] = lambda _reread: None
+    refresh_rollback_targets: Callable[[], object] = lambda: None
 
 
 def _usage_source_debug_suffix(source_id: str, *, main_source_id: str) -> str:
@@ -406,7 +413,9 @@ class BackendEventHandler:
         | InvocationContentDelta
         | InvocationContentFinished
         | InvocationContentAbandoned
-        | Error,
+        | Error
+        | UnansweredInputDropped
+        | TurnStarted,
     ) -> bool:
         """Return whether *event* was sourced before the current UI run."""
         started_at = self._state.run.started_at
@@ -1020,6 +1029,7 @@ class BackendEventHandler:
             session_id=event.session_id or "",
             used_at=event.timestamp,
         )
+        self._callbacks.refresh_diff_preview(True)
         s.debug("SessionReady", f"{event.agent_profile} [{session_short_id(event.session_id or '')}]")
         if not s.restoring_session:
             self.finish_agent_load(_FINISH_SESSION_READY.bind(profile=s.profile))
@@ -1065,6 +1075,30 @@ class BackendEventHandler:
         )
         self._ui().set_tool_info(trail)
 
+    async def on_unanswered_input_dropped(self, event: UnansweredInputDropped) -> None:
+        """Apply cleanup only after the accepted opener has mounted."""
+        await self.apply_turn_event(event)
+
+    async def on_turn_started(self, event: TurnStarted) -> None:
+        """Use the backend's index and item for a fresh opener; a retry keeps its opener and names its guidance."""
+        await self.apply_turn_event(event)
+
+    async def apply_turn_event(self, event: UnansweredInputDropped | TurnStarted) -> None:
+        """Filter and apply a live or deferred turn fact through the same render gate."""
+        if self._predates_active_run(event) or (event.session_id or "") != self._ui().chat_session_id():
+            return
+        if self._state.render_gate.defers(event):
+            self._state.render_gate.defer(event)
+            return
+        if isinstance(event, UnansweredInputDropped):
+            await self._ui().apply_fresh_turn_cleanup(
+                retired_previous_turn=event.retired_previous_turn, removed_item_ids=event.removed_item_ids
+            )
+        elif event.is_retry:
+            self._ui().apply_retry_started(event.note_message_id, event.opening_item_id)
+        else:
+            self._ui().apply_turn_started(event.turn_number, opening_item_id=event.opening_item_id)
+
     async def on_agent_thinking(self, _event: AgentThinking) -> None:
         s = self
         if not s.agent_running:
@@ -1072,6 +1106,12 @@ class BackendEventHandler:
 
         self._ui().show_status(STATUS_THINKING.bind())
         s.debug("AgentThinking")
+
+    async def on_rollback_snapshots_changed(self, event: RollbackSnapshotsChanged) -> None:
+        """Refresh only the current session's retained rollback targets."""
+        if (event.session_id or "") != self._ui().chat_session_id():
+            return
+        self._callbacks.refresh_rollback_targets()
 
     def _admits_turn_render(
         self,
@@ -1168,7 +1208,7 @@ class BackendEventHandler:
                 # a turn result that lands meanwhile.
                 if s.agent_running:
                     ui.set_terminal_title_for_user_message(event.text)
-                await ui.add_user_injection(event.text, created_at=event.created_at)
+                await ui.add_user_injection(event.text, created_at=event.created_at, item_id=event.item_id)
                 s.update_toc()
                 s.debug("UserInjectResult", "consumed" if owns_input else "consumed (stale id)")
             finally:
@@ -1294,7 +1334,8 @@ class BackendEventHandler:
             canonical_status=canonical_status,
         )
         self._questions().finish_inline_for_tool_result(event.call_id)
-        self._live_diff.record_tool_result(event)
+        if self._live_diff.record_tool_result(event):
+            self._callbacks.refresh_diff_preview(False)
         s.refresh_git_branch()
         ui.show_status(STATUS_THINKING.bind())
         from chrys.app.tui.widgets.chat.tool_call import fmt_duration
@@ -1381,7 +1422,8 @@ class BackendEventHandler:
             provider_status=event.provider_status,
             canonical_status=canonical_status,
         )
-        self._live_diff.record_tool_result(event)
+        if self._live_diff.record_tool_result(event):
+            self._callbacks.refresh_diff_preview(False)
         s.refresh_git_branch()
 
     async def on_sub_agent_tool_args_updated(self, event: InvocationToolCallArgsUpdated) -> None:
@@ -1544,9 +1586,24 @@ class BackendEventHandler:
             ),
         )
 
+    async def on_steered(self, event: InvocationSteered) -> None:
+        """A steer gave up the running pass: its tool cards end as on Stop, and the turn goes on.
+
+        Never held by the render gate: tool cards are not, and text it holds
+        replays as the pass's text before the steer, as it streamed.
+        """
+        if event.origin.kind == "turn" and self.agent_running:
+            await self._ui().end_steered_pass()
+
     async def on_answer_withdrawn(self, event: InvocationAnswerWithdrawn) -> None:
-        """A bare Continue or Retry dropped this answer from history to ask for it again: it goes from view."""
+        """A Continue, Retry or steer dropped this answer from history: it goes from view."""
         if event.origin.kind == "turn":
+            # Text it names still waiting in the gate goes first; otherwise it applies at
+            # once, as the run that dropped the answer waits for it (behind a restore's replay too).
+            gate = self._state.render_gate
+            if gate.defers(event) and gate.holds_text_of(event.segment_ids):
+                gate.defer(event)
+                return
             await self._ui().withdraw_answer(event.segment_ids)
         elif _chat_sub_agent(event.origin):
             self._ui().sub_agent_answer_withdrawn(event.origin.invocation_id, event.segment_ids)
@@ -1931,7 +1988,7 @@ class BackendEventHandler:
                 self._show_image_rejection_dialog(event.code, display)
                 s.debug("ImageAttachmentBlocked", event.message.splitlines()[0][:80])
                 return
-            self._restore_pending_submit_text()
+            self._restore_inline_refusal_draft()
         key = _WarningDedupeKey(
             # Capability ownership is a model configuration fact. Its message
             # already includes the model profile, so /new must not reopen the
@@ -2057,13 +2114,7 @@ class BackendEventHandler:
                 self._callbacks.prompt_missing_working_dir("submit" if restored else "turn_end")
                 s.debug("Error", f"[{event.code}] {full_msg[:60]}")
                 return
-            await self._show_pending_submit_error(
-                event.code,
-                display_full,
-                raw_message=full_msg,
-                # Gone from this working folder: the draft comes back as plain text, sent as typed next time.
-                drop_owner=event.code == _SHORTCUT_UNAVAILABLE_CODE,
-            )
+            await self._show_pending_submit_error(event.code, display_full, raw_message=full_msg)
             return
         if s.defers_turn_event(event):
             s.defer_error(event)
@@ -2107,19 +2158,24 @@ class BackendEventHandler:
             self._notify(NotificationEvent.TURN_ERROR)
         s.debug("Error", f"[{event.code}] {full_msg[:60]}")
 
-    def _restore_pending_submit_text(self, *, drop_owner: bool = False) -> InputRestore | None:
+    def _restore_pending_submit_text(self) -> InputRestore | None:
         """Restore the draft the input widget cleared on submit, whole (fields, prompt-shortcut owner), once.
 
         None when nothing was written: the composer holds the user's own draft,
-        or the submit's draft went back already. *drop_owner* hands it back as
-        plain text (its shortcut is no longer one here).
+        or the submit's draft went back already.
         """
         draft = self._state.submit.take_draft_for(
-            lambda: (self._services.session_generation(), self._state.workspace.current_cwd), drop_owner=drop_owner
+            lambda: (self._services.session_generation(), self._state.workspace.current_cwd)
         )
         if draft is None:
             return None
         return self._ui().restore_input_text(draft)
+
+    def _restore_inline_refusal_draft(self) -> None:
+        # A normal send returns the draft as it releases its claim, so Enter can send it again.
+        # Injection and retry only release the claim and rely on the handler to restore the draft.
+        if self._state.submit.kind != "turn":
+            self._restore_pending_submit_text()
 
     def _show_image_rejection_dialog(self, code: str, message: str) -> None:
         """Show the image rejection modal for a backend-validated prompt."""
@@ -2154,9 +2210,7 @@ class BackendEventHandler:
 
         self.push_screen(dialog, callback=on_dismiss)
 
-    async def _show_pending_submit_error(
-        self, code: str, message: str, *, raw_message: str | None = None, drop_owner: bool = False
-    ) -> None:
+    async def _show_pending_submit_error(self, code: str, message: str, *, raw_message: str | None = None) -> None:
         """Surface a synchronous submit rejection without switching into retry mode.
 
         ``message`` may be localized display text; the debug stream keeps
@@ -2165,7 +2219,9 @@ class BackendEventHandler:
         s = self
         ui = self._ui()
 
-        self._restore_pending_submit_text(drop_owner=drop_owner)
+        if code == _SHORTCUT_UNAVAILABLE_CODE:
+            self._state.submit.discard_shortcut_owner()
+        self._restore_inline_refusal_draft()
         short_msg = message
         if "- {" in short_msg:
             short_msg = short_msg[: short_msg.index("- {")].strip()

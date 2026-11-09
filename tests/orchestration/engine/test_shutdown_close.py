@@ -23,7 +23,7 @@ from chrys.kernel import FunctionTool, Message
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.build.construction import StagedBuild
 from chrys.orchestration.engine.build.loaded import CompletedBuild
-from chrys.orchestration.engine.execution import PendingRetry
+from chrys.orchestration.engine.execution import PendingRetry, RetryInput
 from chrys.orchestration.engine.state.machine import Trigger
 from chrys.orchestration.invoker import runtime as runtime_factory_module
 from chrys.orchestration.invoker.contracts import AbortCause, AbortResult
@@ -310,7 +310,7 @@ async def test_engine_shutdown_settles_pending_retry_before_trajectory_close(
     monkeypatch.setattr("chrys.orchestration.engine.assembly.trajectory_recorder.TrajectoryRecorder", lambda: recorder)
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.turns.turn_state.lease.pending_retry = PendingRetry(
-        text="retry",
+        retry=RetryInput("retry"),
         session_generation=engine.session_generation,
         preparation_trace=trace,
     )

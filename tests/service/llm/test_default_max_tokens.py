@@ -157,6 +157,7 @@ def test_assembled_stack_preserves_provider_token_limit_param() -> None:
         parent_session_id=None,
         use_route_session_context=False,
         on_intermediate_text=None,
+        connection={},
         max_iterations=7777,
         max_consecutive_errors=10,
         tool_result_ceiling_tokens=None,

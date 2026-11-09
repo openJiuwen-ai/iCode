@@ -13,6 +13,7 @@ import pytest
 
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
+    InvocationProgress,
     InvocationToolCallArgsUpdated,
     InvocationToolCallProgress,
     InvocationToolCallResult,
@@ -51,6 +52,7 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     get_hosted_adapter,
 )
 from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware
+from chrys.service.session.sub_agent_logs import SubAgentLogStats
 from tests.support.waiting import wait_for
 
 HOSTED_OPERATION_TYPES = (
@@ -1406,6 +1408,27 @@ class TestSubAgentHostedPresentation:
             assert event.provider == "openai"
         assert events[0].provider_call_id == "search_1"
         assert events[-1].result == "found"
+
+    async def test_a_sub_agent_hosted_call_counts_alike_live_and_in_the_totals_a_reopened_run_shows(self) -> None:
+        """A sub-agent card or workflow node shows the live count while it runs, and the kept totals once reopened."""
+        bus = EventBus()
+        progress: list[InvocationProgress] = []
+
+        async def capture(event: InvocationProgress) -> None:
+            progress.append(event)
+
+        await bus.subscribe(InvocationProgress, capture)
+        stats = SubAgentLogStats()
+        middleware = SubAgentEventMiddleware(
+            bus, "Explore", "inv-1", stats=stats, origin=InvocationOrigin("sub_agent", "", "inv-1", None)
+        )
+        bridge = middleware.begin_hosted_pass()
+
+        await _present_blocking(bridge, [_assistant([_search_call(), _search_result()])])
+
+        # Start, arguments, status and result: one call, shown live as soon as it starts.
+        assert [event.tool_call_count for event in progress] == [1]
+        assert stats.totals().tool_calls == 1
 
     async def test_sub_agent_hosted_passes_never_share_a_generation(self) -> None:
         # Each sub-agent call builds a fresh middleware; its cards must not reuse an earlier call's ids.

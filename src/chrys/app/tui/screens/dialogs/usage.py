@@ -33,7 +33,14 @@ from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.trajectory.envelope import ActorRole
 from chrys.service.analytics.reader import TrajectoryScanCancelled
-from chrys.service.analytics.usage_report import UsageReport, UsageSummary, UsageTotals, percentile, week_start
+from chrys.service.analytics.usage_report import (
+    UsageModelKey,
+    UsageReport,
+    UsageSummary,
+    UsageTotals,
+    percentile,
+    week_start,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -66,6 +73,7 @@ _GROUP = msg("tui.usage.group", fallback="Group")
 _GROUP_MODEL = msg("tui.usage.group.model", fallback="Model")
 _GROUP_SOURCE = msg("tui.usage.group.source", fallback="Source")
 _GROUP_PROJECT = msg("tui.usage.group.project", fallback="Project")
+_GROUP_PROFILE = msg("tui.usage.group.profile", fallback="Profile")
 _COLUMN_NEW = msg("tui.usage.column.new", fallback="New")
 _COLUMN_HIT = msg("tui.usage.column.hit", fallback="Hit")
 _COLUMN_SPEED = msg("tui.usage.column.speed", fallback="TPS")
@@ -83,6 +91,7 @@ _NOTE_UNREADABLE = msg(
 )
 _UNKNOWN_MODEL = msg("tui.usage.model.unknown", fallback="Unknown model")
 _OTHER_WORKSPACES = msg("tui.usage.project.other", fallback="Other workspaces")
+_OTHER_PROFILES = msg("tui.usage.profile.other", fallback="Other profiles")
 _SOURCE_MAIN = msg("tui.usage.source.main", fallback="Main agent")
 _SOURCE_SUB_AGENT = msg("tui.usage.source.sub_agent", fallback="Sub-agent")
 _SOURCE_WORKFLOW_NODE = msg("tui.usage.source.workflow_node", fallback="Workflow node")
@@ -124,10 +133,11 @@ _RANGE_TODAY_INDEX: Final = 0
 _RANGE_WEEK_INDEX: Final = 1
 _RANGE_MONTH_INDEX: Final = 2
 _RANGE_ALL_INDEX: Final = 4
-_GROUPS: Final = (_GROUP_MODEL, _GROUP_SOURCE, _GROUP_PROJECT)
-_GROUP_BUTTON_IDS: Final = ("usage-group-model", "usage-group-source", "usage-group-project")
+_GROUPS: Final = (_GROUP_MODEL, _GROUP_SOURCE, _GROUP_PROJECT, _GROUP_PROFILE)
+_GROUP_BUTTON_IDS: Final = ("usage-group-model", "usage-group-source", "usage-group-project", "usage-group-profile")
 _GROUP_MODEL_INDEX: Final = 0
 _GROUP_SOURCE_INDEX: Final = 1
+_GROUP_PROJECT_INDEX: Final = 2
 _TREND_BUTTON_IDS: Final = ("usage-trend-daily", "usage-trend-weekly")
 _KPI_IDS: Final = ("new", "input", "output", "cached", "hit", "speed", "time", "calls")
 _BAR_GLYPHS: Final = " ▁▂▃▄▅▆▇█"
@@ -357,7 +367,7 @@ def _share_bar(share: float, cells: int) -> str:
     return "█" * full + (_SHARE_GLYPHS[rest] if rest else "")
 
 
-def _ranked(groups: dict[str, UsageTotals]) -> list[tuple[str, UsageTotals]]:
+def _ranked[K: (str, UsageModelKey)](groups: Mapping[K, UsageTotals]) -> list[tuple[K, UsageTotals]]:
     """Groups that spent tokens, the largest first."""
     rows = [(key, totals) for key, totals in groups.items() if totals.new_tokens or totals.cache_read]
     rows.sort(key=lambda row: (-row[1].new_tokens, -row[1].cache_read, row[0]))
@@ -1075,13 +1085,30 @@ class UsageDialog(BaseDialog[None]):
         # A clipped number reads as a smaller one, so only a whole one is shown.
         self._set("usage-peak", next((choice for choice in (peak_text, value) if cell_len(choice) <= width), ""))
 
-    def _group_label(self, key: str) -> str:
+    def _group_rows(self, summary: UsageSummary) -> list[tuple[str, UsageTotals]]:
+        """The chosen group's rows, the largest first, each by its label."""
         if self._group == _GROUP_MODEL_INDEX:
-            return sanitize_legacy_scalar(key) or self._render_message(_UNKNOWN_MODEL.bind())
+            return [(self._model_label(key), totals) for key, totals in _ranked(summary.models)]
         if self._group == _GROUP_SOURCE_INDEX:
-            label = _SOURCE_LABELS.get(key)
-            return self._render_message(label.bind()) if label is not None else sanitize_legacy_scalar(key)
-        name = self._project_names.get(key, "")
+            return [(self._source_label(key), totals) for key, totals in _ranked(summary.sources)]
+        if self._group == _GROUP_PROJECT_INDEX:
+            return [(self._project_label(key), totals) for key, totals in _ranked(summary.projects)]
+        return [(self._profile_label(key), totals) for key, totals in _ranked(summary.profiles)]
+
+    def _model_label(self, key: UsageModelKey) -> str:
+        model = sanitize_legacy_scalar(key.model) or self._render_message(_UNKNOWN_MODEL.bind())
+        return model if key.profile is None else f"{model} · {self._profile_label(key.profile)}"
+
+    def _profile_label(self, profile: str) -> str:
+        name = self._report.profile_names.get(profile, "") if self._report is not None else ""
+        return sanitize_legacy_scalar(name) or self._render_message(_OTHER_PROFILES.bind())
+
+    def _source_label(self, source: str) -> str:
+        label = _SOURCE_LABELS.get(source)
+        return self._render_message(label.bind()) if label is not None else sanitize_legacy_scalar(source)
+
+    def _project_label(self, project: str) -> str:
+        name = self._project_names.get(project, "")
         return sanitize_legacy_scalar(surrogate_safe_text(name)) or self._render_message(_OTHER_WORKSPACES.bind())
 
     def _render_groups(self, summary: UsageSummary) -> None:
@@ -1103,10 +1130,9 @@ class UsageDialog(BaseDialog[None]):
             table.add_column(Text(""), width=share_cells)
         for column in columns:
             table.add_column(Text(render(column.label.bind()), justify="right"), width=column.cells)
-        groups = (summary.models, summary.sources, summary.projects)[self._group]
         share_style = table.share_style
-        for key, totals in _ranked(groups):
-            cells = [Text(_clip(self._group_label(key), name_cells - 1))]
+        for label, totals in self._group_rows(summary):
+            cells = [Text(_clip(label, name_cells - 1))]
             if share_cells:
                 share = totals.new_tokens / summary.total.new_tokens if summary.total.new_tokens else 0.0
                 cells.append(Text(_share_bar(share, share_cells - 1), style=share_style))
@@ -1188,7 +1214,7 @@ class UsageDialog(BaseDialog[None]):
             lines += [Text(), _spread(Text(render(_TOP_MODELS.bind()), style="bold"), numbers, width)]
             name_cells = max(1, width - _MODEL_NEW_CELLS - _MODEL_SPEED_CELLS)
             for key, totals in models[:room]:
-                name = _clip(sanitize_legacy_scalar(key) or render(_UNKNOWN_MODEL.bind()), name_cells - 1)
+                name = _clip(self._model_label(key), name_cells - 1)
                 lines.append(
                     _spread(
                         Text(name),

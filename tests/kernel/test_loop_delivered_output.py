@@ -15,7 +15,14 @@ from typing import Any
 import pytest
 
 from chrys.foundation.retry import StreamStall
-from chrys.kernel import RESPONSE_READY_KWARG, ChatResponse, ChatResponseUpdate, Content, is_retry_boundary_update
+from chrys.kernel import (
+    RESPONSE_READY_KWARG,
+    ChatResponse,
+    ChatResponseUpdate,
+    Content,
+    Message,
+    is_retry_boundary_update,
+)
 from chrys.service.agent_middleware.response_validation import TerminalResponseValidationError
 from tests.kernel._fakes import (
     _call_response,
@@ -48,8 +55,8 @@ def _shown(response: ChatResponse) -> str:
 async def test_each_landed_response_is_ready_before_its_tools_run_and_the_run_ends(stream: bool) -> None:
     events: list[str] = []
 
-    async def ready(response: ChatResponse) -> None:
-        events.append(f"ready:{_shown(response)}")
+    async def ready(response: ChatResponse, final: bool) -> None:
+        events.append(f"ready:{_shown(response)}:{'final' if final else 'more'}")
 
     turns: list[Any] = (
         [[_call_update("c1", "echo", {"text": "a"})], [_text_update("done")]]
@@ -66,15 +73,15 @@ async def test_each_landed_response_is_ready_before_its_tools_run_and_the_run_en
         client_kwargs={RESPONSE_READY_KWARG: ready},
     )
 
-    assert events == ["ready:c1", "tool:echo:a", "ready:done"]
+    assert events == ["ready:c1:more", "tool:echo:a", "ready:done:final"]
     assert response.text == "done"
 
 
 async def test_a_streamed_response_is_ready_after_all_of_its_updates() -> None:
     events: list[str] = []
 
-    async def ready(response: ChatResponse) -> None:
-        events.append(f"ready:{response.text}")
+    async def ready(response: ChatResponse, final: bool) -> None:
+        events.append(f"ready:{response.text}:{final}")
 
     layer, _wire = _stack([[_text_update("one "), _text_update("two")]])
     stream = layer.get_response([_user()], stream=True, client_kwargs={RESPONSE_READY_KWARG: ready})
@@ -82,15 +89,15 @@ async def test_a_streamed_response_is_ready_after_all_of_its_updates() -> None:
         events.append(f"update:{update.text}")
     await stream.get_final_response()
 
-    assert events == ["update:one ", "update:two", "ready:one two"]
+    assert events == ["update:one ", "update:two", "ready:one two:True"]
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
 async def test_the_final_response_without_tools_is_ready_as_the_run_returns_it(stream: bool) -> None:
-    ready_texts: list[str] = []
+    ready_texts: list[tuple[str, bool]] = []
 
-    async def ready(response: ChatResponse) -> None:
-        ready_texts.append(response.text)
+    async def ready(response: ChatResponse, final: bool) -> None:
+        ready_texts.append((response.text, final))
 
     call = ("c1", "echo", {"text": "a"})
     turns: list[Any] = (
@@ -109,15 +116,16 @@ async def test_the_final_response_without_tools_is_ready_as_the_run_returns_it(s
     )
 
     # The tail's ignored call is stripped and its fallback text added before it is announced.
-    assert ready_texts[0] == ""
-    assert ready_texts[1] == response.messages[-1].text != ""
+    assert ready_texts[0] == ("", False)
+    assert ready_texts[1] == (response.messages[-1].text, True)
+    assert response.messages[-1].text != ""
 
 
 async def test_the_blocking_fallback_of_a_stalled_stream_is_ready_before_its_tools_run() -> None:
     events: list[str] = []
 
-    async def ready(response: ChatResponse) -> None:
-        events.append(f"ready:{_shown(response)}")
+    async def ready(response: ChatResponse, final: bool) -> None:
+        events.append(f"ready:{_shown(response)}:{'final' if final else 'more'}")
 
     layer, _wire = _stack(
         [[StreamStall("stalled")], _call_response(("c1", "echo", {"text": "a"})), [_text_update("done")]]
@@ -130,7 +138,38 @@ async def test_the_blocking_fallback_of_a_stalled_stream_is_ready_before_its_too
         client_kwargs={RESPONSE_READY_KWARG: ready, "wire_retry_policy": _WireRetryPolicy()},
     )
 
-    assert events == ["ready:c1", "tool:echo:a", "ready:done"]
+    assert events == ["ready:c1:more", "tool:echo:a", "ready:done:final"]
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+async def test_a_response_whose_only_call_is_informational_is_ready_as_the_final_one(stream: bool) -> None:
+    """The loop runs no call it only reports: the response ends the run, and says so as it lands."""
+    events: list[str] = []
+
+    async def ready(response: ChatResponse, final: bool) -> None:
+        events.append(f"ready:{response.text}:{'final' if final else 'more'}")
+
+    contents = [
+        Content.from_function_call("c1", "echo", arguments={"text": "a"}, informational_only=True),
+        Content.from_text("done"),
+    ]
+    turns: list[Any] = (
+        [[ChatResponseUpdate(contents=contents, role="assistant")]]
+        if stream
+        else [ChatResponse(messages=[Message(role="assistant", contents=contents)])]
+    )
+    layer, _wire = _stack(turns)
+
+    response = await _final_response(
+        layer,
+        [_user()],
+        stream=stream,
+        options={"tools": [_make_tool(events)]},
+        client_kwargs={RESPONSE_READY_KWARG: ready},
+    )
+
+    assert events == ["ready:done:final"]
+    assert response.text == "done"
 
 
 @pytest.mark.parametrize("lane", ["transient", "stall_retry", "stall_fallback", "overflow_resend", "blank_resend"])

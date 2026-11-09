@@ -21,6 +21,7 @@ from chrys.foundation.models.history_markers import (
     SUB_AGENT_STATE_DISCARDED_MESSAGE,
     HistoryMarkerKind,
 )
+from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY, read_analytics_item_id
 from chrys.kernel import Content, Message
 from chrys.service.session.history import SessionHistoryManager
 
@@ -325,6 +326,43 @@ def test_ensure_user_message_dedups_within_current_turn() -> None:
     messages = h.messages
     assert len(messages) == 3, "should not double-append when current turn already has the message"
     assert [m.text for m in messages if m.role == "user"] == ["old", "hi"]
+
+
+def test_ensure_user_message_keeps_guidance_sent_twice_as_two_items() -> None:
+    """Each retry announced its own item for its note, and frontends remove notes by that item."""
+    first, second = "a" * 32, "b" * 32
+    h = _new_history(Message("user", ["original"]), Message("assistant", ["partial answer"]))
+
+    h.ensure_user_message("same note", kind="injected", item_id=first)
+    h.ensure_user_message("same note", kind="injected", item_id=second)
+    h.ensure_user_message("same note", kind="injected", item_id=second)
+
+    notes = [m for m in h.messages if m.text == "same note"]
+    assert [read_analytics_item_id(m.additional_properties) for m in notes] == [first, second]
+
+
+def test_ensure_user_message_names_an_unstamped_match_with_the_given_item() -> None:
+    h = _new_history(Message("user", ["original"]))
+
+    h.ensure_user_message("original", item_id="a" * 32)
+
+    assert len(h.messages) == 1
+    assert read_analytics_item_id(h.messages[0].additional_properties) == "a" * 32
+
+
+def test_ensure_user_message_finds_the_named_item_before_an_unstamped_same_text_message() -> None:
+    """An unstamped look-alike earlier in the turn is not this input: it must not take the input's item."""
+    item = "a" * 32
+    legacy = Message("user", ["same note"], additional_properties={HistoryMarkerKind.INJECTED_KEY: True})
+    stored = Message(
+        "user", ["same note"], additional_properties={HistoryMarkerKind.INJECTED_KEY: True, ANALYTICS_ITEM_ID_KEY: item}
+    )
+    h = _new_history(Message("user", ["original"]), legacy, stored)
+
+    h.ensure_user_message("same note", kind="injected", item_id=item)
+
+    assert len(h.messages) == 3 and h.messages[1] is legacy and h.messages[2] is stored
+    assert read_analytics_item_id(legacy.additional_properties) is None
 
 
 def test_ensure_user_message_preserves_multimodal_contents_on_append() -> None:

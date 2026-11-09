@@ -127,6 +127,10 @@ class SkillConfig:
     scripts: list[SkillScriptConfig] = field(default_factory=list)
 
 
+DEFAULT_SKILL_SCRIPT_TIMEOUT = 300
+DEFAULT_SKILL_SCRIPT_EXTENSIONS: tuple[str, ...] = (".py", ".sh", ".ps1")
+
+
 @dataclass
 class SkillsConfig:
     """Skills configuration for an agent profile.
@@ -138,8 +142,8 @@ class SkillsConfig:
 
     paths: list[str] = field(default_factory=list)
     inline: list[SkillConfig] = field(default_factory=list)
-    script_timeout: int = 300  # seconds
-    script_extensions: list[str] = field(default_factory=lambda: [".py", ".sh", ".ps1"])
+    script_timeout: int = DEFAULT_SKILL_SCRIPT_TIMEOUT  # seconds
+    script_extensions: list[str] = field(default_factory=lambda: list(DEFAULT_SKILL_SCRIPT_EXTENSIONS))
     auto_load_user_agents_skills: bool = True
     """When True, also auto-load skills from ``~/.agents/skills`` (the shared
     user agents skills directory) in addition to the always-on

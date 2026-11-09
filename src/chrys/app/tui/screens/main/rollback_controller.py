@@ -17,6 +17,7 @@ from chrys.app.tui.screens.diff.rollback_modal import (
     ROLLBACK_TITLE,
     RollbackLoadCancelled,
     exclusion_reason_label,
+    plan_for_target,
 )
 from chrys.app.tui.screens.main.engine_read_model import EngineReadModel, EngineSnapshotSource, RollbackReadState
 from chrys.app.tui.screens.main.state import MainScreenServices
@@ -26,25 +27,35 @@ from chrys.foundation.i18n import DisplayPath, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.util.async_tasks import await_task_quiescence
+from chrys.service.mutations.types import RollbackPlan
 
 if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.screens.main.ports import RollbackView
 
 logger = logging.getLogger(__name__)
+ROLLBACK_WAIT_SECONDS = 10.0
 
 _AGENT_RUNNING = msg(
     "tui.rollback.agent_running",
-    fallback="Cannot roll back while the agent is running.",
+    fallback="Cannot discard while the agent is running.",
 )
-_UNAVAILABLE = msg("tui.rollback.unavailable", fallback="Rollback is not available.")
+_TURN_FINISHING = msg(
+    "tui.rollback.turn_finishing",
+    fallback="The last turn is still finishing; try again in a moment.",
+)
+_ALREADY_IN_PROGRESS = msg(
+    "tui.rollback.already_in_progress",
+    fallback="A discard is already in progress.",
+)
+_UNAVAILABLE = msg("tui.rollback.unavailable", fallback="Discard is not available.")
 _TARGET_NONNEGATIVE = msg(
     "tui.rollback.target_nonnegative",
     fallback="The target turn must be zero or greater.",
 )
 _TURN_COUNT_POSITIVE = msg(
     "tui.rollback.turn_count_positive",
-    fallback="The number of turns to roll back must be positive.",
+    fallback="The number of turns to discard must be positive.",
 )
 _USAGE = msg(
     "tui.rollback.usage",
@@ -52,23 +63,31 @@ _USAGE = msg(
 )
 _PICKER_CONVERSATION_CHANGED = msg(
     "tui.rollback.picker_conversation_changed",
-    fallback="Rollback picker cancelled because the conversation changed.",
+    fallback="Discard picker cancelled because the conversation changed.",
 )
 _PICKER_RUNTIME_CHANGED = msg(
     "tui.rollback.picker_runtime_changed",
-    fallback="Rollback picker cancelled because the workspace or runtime changed.",
+    fallback="Discard picker cancelled because the workspace or runtime changed.",
 )
 _ACTIVE_SESSION_CHANGED = msg(
     "tui.rollback.active_session_changed",
-    fallback="Rollback cancelled because the active session changed.",
+    fallback="Discard cancelled because the active session changed.",
 )
 _ROLLED_BACK_SESSION_START = msg(
     "tui.rollback.result.session_start",
-    fallback="Rolled back to Session start.",
+    fallback="Discarded all turns.",
 )
 _ROLLED_BACK_TURN = msg(
     "tui.rollback.result.turn",
-    fallback="Rolled back to Turn {turn}.",
+    fallback="Discarded turn {turn} and later turns.",
+)
+_ROLLED_BACK_SINGLE_TURN = msg(
+    "tui.rollback.result.single_turn",
+    fallback="Discarded turn {turn}.",
+)
+_CONFIRM_LATEST_TURN = msg(
+    "tui.rollback.confirm.latest_turn",
+    fallback="Discard turn {turn}? It is the latest turn and has no files to restore. A discarded turn cannot be recovered.",
 )
 _FILES_RESTORED = msg(
     "tui.rollback.result.files_restored",
@@ -133,13 +152,20 @@ class RollbackController:
         set_has_messages: Callable[[bool], None],
         post_gc_message: Callable[[GcReclaimRequested], object],
         debug: Callable[[str, str], None],
+        invalidate_file_index: Callable[[], None],
+        refresh_diff_preview: Callable[[], None] = lambda: None,
         locale_controller: LocaleController | None = None,
         confirm_stopping_background_tasks: Callable[[int], Awaitable[bool]] | None = None,
+        is_agent_running: Callable[[], bool] | None = None,
     ) -> None:
+        self._refresh_diff_preview = refresh_diff_preview
         self._services = services
         self._view = view
         self._workspace_cwd = workspace_cwd
         self._is_agent_busy = is_agent_busy
+        self._is_agent_running = is_agent_running or is_agent_busy
+        self._entry_pending: object | None = None
+        self._target_refresh_sequence = 0
         self._current_session_id = current_session_id
         self._session_generation = session_generation
         self._turn_lifecycle_task = turn_lifecycle_task
@@ -148,6 +174,7 @@ class RollbackController:
         self._set_has_messages = set_has_messages
         self._post_gc_message = post_gc_message
         self._debug = debug
+        self._invalidate_file_index = invalidate_file_index
         self._locale_controller = locale_controller
         self._confirm_stopping_background_tasks = confirm_stopping_background_tasks
         """Whether the user lets the background commands that the turns after a turn started stop."""
@@ -158,7 +185,7 @@ class RollbackController:
 
     def show_rollback(self, arg: str = "") -> None:
         """Open the rollback modal or dispatch a direct rollback shortcut."""
-        if self._is_agent_busy():
+        if self._is_agent_running():
             self._view.notify(
                 _AGENT_RUNNING.bind(),
                 title=ROLLBACK_TITLE.bind(),
@@ -177,12 +204,180 @@ class RollbackController:
         # refresh and preview construction after its first painted frame.
         self._open_rollback_ui(engine, arg)
 
+    def rollback_from_message(
+        self,
+        target_turn: int | None,
+        *,
+        on_complete: Callable[[], None],
+    ) -> Awaitable[None]:
+        """Capture one click before yielding, then choose its normal rollback path."""
+        provider = self._services.engine_provider
+        engine = provider() if provider is not None else None
+        owner = self._request_owner()
+        lifecycle_task = self._turn_lifecycle_task()
+        read_model = EngineReadModel(engine) if engine is not None else None
+        revision = read_model.conversation_revision if read_model is not None else None
+        target = target_turn if target_turn is not None else (read_model.current_turn_number - 1 if read_model else 0)
+        already_pending = self._entry_pending is not None
+        request = object()
+        if not already_pending:
+            self._entry_pending = request
+        completed = False
+
+        def _finish() -> None:
+            nonlocal completed
+            if completed:
+                return
+            completed = True
+            if self._entry_pending is request:
+                self._entry_pending = None
+            on_complete()
+
+        async def _prepare() -> None:
+            handed_off = False
+            try:
+                if already_pending:
+                    self._view.notify(
+                        _ALREADY_IN_PROGRESS.bind(), title=ROLLBACK_TITLE.bind(), severity="warning", timeout=3
+                    )
+                    return
+                if engine is None or read_model is None or revision is None:
+                    self._view.notify(_UNAVAILABLE.bind(), title=ROLLBACK_TITLE.bind(), severity="warning", timeout=3)
+                    return
+                if self._is_agent_running():
+                    self._cancel_if_agent_busy()
+                    return
+                state = await self._load_picker_state(read_model, owner, lifecycle_task, revision)
+                if state is None or target not in state.available_turns:
+                    self._view.notify(_UNAVAILABLE.bind(), title=ROLLBACK_TITLE.bind(), severity="warning", timeout=3)
+                    return
+                plan = await self._load_entry_plan(read_model, owner, revision, state, target)
+                # Files the turn changed but cannot restore still need the preview.
+                if target == state.current_turn - 1 and not plan.entries and not plan.exclusions:
+                    command = _RollbackCommand(
+                        target_turn=target_turn, relative_turns=1 if target_turn is None else None
+                    )
+
+                    async def _perform() -> None:
+                        try:
+                            await self._publish_direct_rollback(
+                                command, owner, target, read_model, lifecycle_task, revision
+                            )
+                        finally:
+                            _finish()
+
+                    # Both entries are one click from discarding a turn for good: even a turn
+                    # with no files to restore asks first. It names only what the plan holds:
+                    # a turn whose change detection was cut short may have changed files.
+                    def _confirmed(confirmed: bool) -> None:
+                        if confirmed:
+                            self._view.open_rollback_progress_modal(_perform)
+                        else:
+                            _finish()
+
+                    self._view.open_confirm_dialog(
+                        title=ROLLBACK_TITLE.bind(),
+                        message=_CONFIRM_LATEST_TURN.bind(turn=target + 1),
+                        confirm_label=ROLLBACK_TITLE.bind(),
+                        confirm_variant="error",
+                        on_result=_confirmed,
+                    )
+                else:
+                    self._open_picker(
+                        read_model,
+                        owner,
+                        lifecycle_task,
+                        revision,
+                        initial_selection=target,
+                        on_complete=_finish,
+                        preloaded_state=state,
+                    )
+                handed_off = True
+            except RollbackLoadCancelled:
+                pass
+            except Exception:
+                logger.exception("Unable to prepare rollback entry")
+                self._view.notify(_UNAVAILABLE.bind(), title=ROLLBACK_TITLE.bind(), severity="warning", timeout=3)
+            finally:
+                if not handed_off:
+                    _finish()
+
+        return _prepare()
+
+    async def _load_entry_plan(
+        self,
+        read_model: EngineReadModel,
+        request_owner: _RollbackRequestOwner,
+        revision: int,
+        state: RollbackReadState,
+        target: int,
+    ) -> RollbackPlan:
+        projection_owner = await self._acquire_picker_projection(
+            read_model,
+            request_owner,
+            expected_revision=revision,
+        )
+        release_deferred = False
+        try:
+            if state.attribution_refresh is not None:
+                await state.attribution_refresh()
+
+            def _build_plan() -> RollbackPlan:
+                plan = plan_for_target(state.tracker, target) or RollbackPlan(entries=[])
+                return state.plan_augment(plan, state.workspace_cwd) if state.plan_augment is not None else plan
+
+            task = asyncio.create_task(asyncio.to_thread(_build_plan))
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                release_deferred = True
+
+                def _finish_projection(finished: asyncio.Task[RollbackPlan]) -> None:
+                    try:
+                        finished.result()
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.debug("Cancelled rollback plan projection failed", exc_info=True)
+                    finally:
+                        read_model.finish_rollback_projection(projection_owner)
+
+                task.add_done_callback(_finish_projection)
+                raise
+        finally:
+            if not release_deferred:
+                read_model.finish_rollback_projection(projection_owner)
+
+    def reset_pending(self) -> None:
+        """Release a request whose session is being cleared or replaced."""
+        self._entry_pending = None
+
+    async def refresh_rollback_targets(self) -> None:
+        """Refresh retained links off-loop and discard stale session projections."""
+        self._target_refresh_sequence += 1
+        sequence = self._target_refresh_sequence
+        try:
+            provider = self._services.engine_provider
+            engine = provider() if provider is not None else None
+            if engine is None:
+                return
+            read_model = EngineReadModel(engine)
+            owner = self._request_owner()
+            targets = await read_model.load_available_rollback_turns()
+            if self._request_owner() == owner and self._target_refresh_sequence == sequence:
+                self._view.set_rollback_targets(set(targets))
+        except Exception:
+            logger.warning("Unable to refresh rollback targets", exc_info=True)
+
     def _open_rollback_ui(self, engine: EngineSnapshotSource, arg: str) -> None:
         """Push the modal before resolving session-sized rollback state."""
         command = self._parse_command(arg)
         if command is None:
             return
         request_owner = self._request_owner()
+        read_model = EngineReadModel(engine)
+        captured_lifecycle_task = self._turn_lifecycle_task()
+        expected_revision = read_model.conversation_revision
         if command.target_turn is not None or command.relative_turns is not None:
             target_turn = (
                 command.target_turn
@@ -194,12 +389,27 @@ class RollbackController:
                     command,
                     request_owner,
                     target_turn,
+                    read_model,
+                    captured_lifecycle_task,
+                    expected_revision,
                 )
             )
             return
 
-        read_model = EngineReadModel(engine)
-        captured_lifecycle_task = self._turn_lifecycle_task()
+        self._open_picker(read_model, request_owner, captured_lifecycle_task, expected_revision)
+
+    def _open_picker(
+        self,
+        read_model: EngineReadModel,
+        request_owner: _RollbackRequestOwner,
+        captured_lifecycle_task: asyncio.Task[None] | None,
+        expected_revision: int,
+        *,
+        initial_selection: int | None = None,
+        on_complete: Callable[[], None] = lambda: None,
+        preloaded_state: RollbackReadState | None = None,
+    ) -> None:
+        """Open the existing picker with the revision captured at the gesture."""
         cwd = self._workspace_cwd()
         projected_current_turn: int | None = None
         projected_conversation_revision: int | None = None
@@ -209,11 +419,21 @@ class RollbackController:
         async def _load_state() -> RollbackReadState | None:
             nonlocal projected_build_generation, projected_conversation_revision
             nonlocal projected_current_turn, projected_workspace_cwd
-            state = await self._load_picker_state(
+            state = preloaded_state
+            if state is None:
+                state = await self._load_picker_state(
+                    read_model,
+                    request_owner,
+                    captured_lifecycle_task,
+                    expected_revision,
+                )
+            elif not await self._wait_for_lifecycle(
                 read_model,
                 request_owner,
                 captured_lifecycle_task,
-            )
+                expected_revision,
+            ):
+                raise RollbackLoadCancelled
             projected_current_turn = state.current_turn if state is not None else None
             projected_conversation_revision = state.conversation_revision if state is not None else None
             projected_build_generation = state.build_generation if state is not None else None
@@ -222,6 +442,7 @@ class RollbackController:
 
         def _on_dismiss(choice: tuple[int, bool, list[str] | None] | None) -> None:
             if choice is None:
+                on_complete()
                 return
             if (
                 projected_current_turn is None
@@ -230,6 +451,7 @@ class RollbackController:
                 or projected_workspace_cwd is None
             ):
                 self._notify_picker_conversation_changed()
+                on_complete()
                 return
             target_turn, revert_changes, selected_paths = choice
             event = UserRollback(
@@ -244,12 +466,19 @@ class RollbackController:
             )
 
             async def _publish_confirmed_rollback() -> None:
-                if not await self._may_stop_background_tasks(target_turn):
-                    return
-                await await_task_quiescence(captured_lifecycle_task)
-                if self._cancel_if_session_changed(request_owner) or self._cancel_if_agent_busy():
-                    return
-                await self._services.bus.publish(event, raise_handler_errors=True)
+                try:
+                    if not await self._may_stop_background_tasks(target_turn):
+                        return
+                    if not await self._wait_for_lifecycle(
+                        read_model,
+                        request_owner,
+                        captured_lifecycle_task,
+                        expected_revision,
+                    ):
+                        return
+                    await self._services.bus.publish(event, raise_handler_errors=True)
+                finally:
+                    on_complete()
 
             self._view.open_rollback_progress_modal(_publish_confirmed_rollback)
 
@@ -257,6 +486,7 @@ class RollbackController:
             cwd=cwd,
             load_state=_load_state,
             on_result=_on_dismiss,
+            initial_selection=initial_selection,
         )
 
     def _parse_command(self, arg: str) -> _RollbackCommand | None:
@@ -310,16 +540,20 @@ class RollbackController:
         command: _RollbackCommand,
         request_owner: _RollbackRequestOwner,
         target_turn: int,
+        read_model: EngineReadModel,
+        captured_lifecycle_task: asyncio.Task[None] | None,
+        expected_revision: int,
     ) -> None:
         """Dispatch a direct selector so the backend can fence and validate it."""
         if not await self._may_stop_background_tasks(target_turn):
             return
-        if self._cancel_if_session_changed(request_owner) or self._cancel_if_agent_busy():
+        if not await self._wait_for_lifecycle(read_model, request_owner, captured_lifecycle_task, expected_revision):
             return
         await self._services.bus.publish(
             UserRollback(
                 target_turn=command.target_turn or 0,
                 relative_turns=command.relative_turns,
+                expected_conversation_revision=expected_revision,
                 revert_changes=True,
                 session_id=request_owner.session_id,
             ),
@@ -330,22 +564,45 @@ class RollbackController:
         confirm = self._confirm_stopping_background_tasks
         return confirm is None or await confirm(target_turn)
 
+    async def _wait_for_lifecycle(
+        self,
+        read_model: EngineReadModel,
+        request_owner: _RollbackRequestOwner,
+        task: asyncio.Task[None] | None,
+        expected_revision: int,
+    ) -> bool:
+        """Bound preflight only; timing out never cancels the turn's final save."""
+        try:
+            async with asyncio.timeout(ROLLBACK_WAIT_SECONDS):
+                await await_task_quiescence(task)
+                if self._cancel_if_session_changed(request_owner):
+                    return False
+                if read_model.conversation_revision != expected_revision:
+                    self._notify_picker_conversation_changed()
+                    return False
+                return not self._cancel_if_agent_busy()
+        except TimeoutError:
+            self._view.notify(_TURN_FINISHING.bind(), title=ROLLBACK_TITLE.bind(), severity="warning", timeout=3)
+            return False
+
     async def _load_picker_state(
         self,
         read_model: EngineReadModel,
         request_owner: _RollbackRequestOwner,
         captured_lifecycle_task: asyncio.Task[None] | None,
+        expected_revision: int,
     ) -> RollbackReadState | None:
         """Project picker state only after the opening turn is durably quiescent."""
-        await await_task_quiescence(captured_lifecycle_task)
+        if not await self._wait_for_lifecycle(read_model, request_owner, captured_lifecycle_task, expected_revision):
+            raise RollbackLoadCancelled
         projection_owner = await self._acquire_picker_projection(
             read_model,
             request_owner,
+            expected_revision=expected_revision,
         )
         release_deferred = False
         try:
             expected_turn = read_model.current_turn_number
-            expected_revision = read_model.conversation_revision
             expected_build_generation = read_model.build_generation
             expected_workspace_cwd = read_model.workspace_cwd
             projection_lifecycle_task = self._turn_lifecycle_task()
@@ -510,6 +767,10 @@ class RollbackController:
 
     async def on_result(self, event: RollbackResult) -> None:
         """Surface rollback outcomes, refresh welcome state, and restore rolled-back input."""
+        # A rollback restores files outside any turn, so no turn end marks the
+        # resident ``@`` snapshot stale for it.
+        self._invalidate_file_index()
+        self._refresh_diff_preview()
         is_welcome = event.target_turn == 0
         if is_welcome:
             cwd = self._workspace_cwd() or safe_getcwd()
@@ -522,12 +783,19 @@ class RollbackController:
             )
             self._post_gc_message(GcReclaimRequested(GcReclaimReason.ROLLBACK_WELCOME, prompt=True))
         if event.rolled_back_user_text:
-            self._view.restore_input_text(event.rolled_back_user_text)
+            restored = self._view.restore_input_text(event.rolled_back_user_text)
+            self._view.focus_input(cursor_at_end=restored is not None)
 
         target_desc = self._render_message(
             _TARGET_SESSION_START.bind() if is_welcome else _TARGET_TURN.bind(turn=event.target_turn)
         )
-        headline = _ROLLED_BACK_SESSION_START.bind() if is_welcome else _ROLLED_BACK_TURN.bind(turn=event.target_turn)
+        headline = (
+            _ROLLED_BACK_SESSION_START.bind()
+            if is_welcome
+            else (_ROLLED_BACK_SINGLE_TURN if event.discarded_turn_count == 1 else _ROLLED_BACK_TURN).bind(
+                turn=event.target_turn + 1
+            )
+        )
         lines = [self._render_message(headline)]
         severity = "information"
         failed_count = 0

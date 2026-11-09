@@ -29,6 +29,7 @@ from chrys.service.tools.builtins.shell import (
 )
 from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.pty_masters import linux_style_master
+from tests.support.stopped_child import STOPS_ITSELF
 from tests.support.waiting import wait_for
 
 IS_UNIX = sys.platform != "win32"
@@ -144,8 +145,7 @@ async def test_execute_timeout(shell: ShellTools) -> None:
 
 @pytest.mark.skipif(not IS_UNIX, reason="POSIX stopped state only")
 async def test_execute_stopped_process_returns_promptly(shell: ShellTools) -> None:
-    script = "import os, signal, time; os.kill(os.getpid(), signal.SIGSTOP); time.sleep(30)"
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)} | tail -n 20"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(STOPS_ITSELF)} | tail -n 20"
 
     with earlier_tests_heap_frozen():
         started = time.monotonic()

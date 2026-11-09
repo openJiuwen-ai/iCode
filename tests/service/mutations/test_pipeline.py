@@ -8,6 +8,8 @@ import asyncio
 import shlex
 from types import SimpleNamespace
 
+import pytest
+
 from chrys.service.mutations.pipeline import (
     MutationContext,
     _read_file_snapshot,
@@ -103,6 +105,28 @@ async def test_finalize_mutation_tracking_reports_file_operation(tmp_path) -> No
     assert result.file_operation == "modify"
     assert result.file_bytes_changed is True
     assert result.file_hashes == FileHashDiff(before=mutation.before_hash, after=mutation.after_hash)
+    assert result.file_changed_at == mutation.t_end
+    assert result.file_changed_at >= mutation.timestamp
+
+
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"], ids=["lf", "crlf"])
+async def test_finalize_unmodified_file_does_not_publish_a_change_time(tmp_path, line_ending: str) -> None:
+    file_path = tmp_path / "unchanged.txt"
+    content = f"before{line_ending}"
+    file_path.write_bytes(content.encode("utf-8"))
+    tracker = MutationTracker(SnapshotStore(tmp_path))
+    tracker.start_turn(1)
+    mutation = tracker.record(str(file_path), MutationOp.MODIFY, MutationSource.EDIT_FILE, "failed-edit")
+    assert mutation is not None
+
+    result = await finalize_mutation_tracking(
+        tracker, MutationContext(file_mutation=mutation), "failed-edit", tool_errored=True
+    )
+
+    assert result.file_snapshot == (content, content)
+    assert result.file_bytes_changed is False
+    assert mutation.t_end is not None
+    assert result.file_changed_at is None
 
 
 # ──────────────── _read_shell_snapshots ───────────────────────────────
@@ -202,6 +226,33 @@ def test_read_shell_snapshots_empty_list() -> None:
     tracker = _make_tracker({})
     result = _read_shell_snapshots(tracker, [])
     assert result == {}
+
+
+def test_shell_snapshots_keep_latest_change_time_and_legacy_timestamp() -> None:
+    tracker = _make_tracker({"h1": b"original", "h2": b"middle", "h3": b"final"})
+    first = _make_mutation(path="/tmp/x.py", before_hash="h1", after_hash="h2")
+    first.timestamp = 10
+    second = _make_mutation(path="/tmp/x.py", before_hash="h2", after_hash="h3")
+    second.timestamp = 11
+    second.t_end = 20
+
+    assert _read_shell_snapshots(tracker, [first])[first.path].last_changed_at == 10
+    snapshot = _read_shell_snapshots(tracker, [first, second])[first.path]
+    assert snapshot.last_changed_at == 20
+    assert (snapshot.before_text, snapshot.after_text) == ("original", "final")
+
+
+def test_shell_noop_does_not_make_an_earlier_change_more_recent() -> None:
+    tracker = _make_tracker({"before": b"before", "after": b"after"})
+    changed = _make_mutation(before_hash="before", after_hash="after")
+    changed.t_end = 20.0
+    unchanged = _make_mutation(before_hash="after", after_hash="after")
+    unchanged.t_end = 30.0
+
+    snapshot = _read_shell_snapshots(tracker, [changed, unchanged])[changed.path]
+    assert snapshot.last_changed_at == 20.0
+    assert (snapshot.before_text, snapshot.after_text) == ("before", "after")
+    assert _read_shell_snapshots(tracker, [unchanged])[unchanged.path].last_changed_at == 0.0
 
 
 # ──────────────── File lock serialization ───────────────────────────────

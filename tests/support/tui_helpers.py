@@ -41,6 +41,7 @@ from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
 from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
+from chrys.app.tui.widgets.chrome import input_bar as input_bar_module
 from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
 from chrys.app.tui.widgets.chrome.status_bar import StatusTrail, TrailCount
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
@@ -412,10 +413,11 @@ def make_session_handler(
     state, services, _live_diff = main_screen_parts(screen)
     setters = ScreenSetters(screen, state, services)
 
-    def clear_suggestion_file_cache() -> None:
+    def discard_suggestion_file_index() -> None:
         suggestions = getattr(screen, "_suggestions", None)
-        if suggestions is not None:
-            suggestions.file_cache = None
+        discard = getattr(suggestions, "discard_file_index", None)
+        if callable(discard):
+            discard()
 
     def post_gc_message(message: object) -> None:
         messages = getattr(screen, "_gc_messages", None)
@@ -457,7 +459,7 @@ def make_session_handler(
             set_workspace_cwd=setters.set_workspace_cwd,
             update_subtitle=lambda: _call_screen_hook(screen, "_update_subtitle"),
             update_toc=lambda: _call_screen_hook(screen, "_update_toc"),
-            clear_suggestion_file_cache=clear_suggestion_file_cache,
+            discard_suggestion_file_index=discard_suggestion_file_index,
             start_worker=lambda work: start_fake_worker(screen, work),
             post_gc_message=post_gc_message,
             debug=lambda key, message="": _call_screen_hook(screen, "_debug", key, message),
@@ -478,11 +480,6 @@ def status_trail(value: StatusTrail) -> str:
     if isinstance(value, tuple):
         return " · ".join(status_text(part.message if isinstance(part, TrailCount) else part) for part in value)
     return status_text(value)
-
-
-def stale_file_cache(*paths: str) -> list[ProjectPathSuggestion]:
-    """Build a suggestion file cache standing in for a prior ``@`` scan."""
-    return [ProjectPathSuggestion(path=path, kind="file") for path in paths]
 
 
 def make_live_mutation(
@@ -805,6 +802,19 @@ def click_copy_button(header: ToolCardHeader) -> None:
     header_zone_click(header, "copy")
 
 
+def hold_prompt_fields_confirm_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep open the window in which a second submit sends a draft whose prompt fields are unfilled.
+
+    The input bar sends such a draft on a second submit only within
+    ``_PROMPT_FIELDS_CONFIRM_SECONDS`` of its warning, by the wall clock. What a
+    test does between its two submits (a wait for the warning, a press effect,
+    a full collection on a loaded runner) can take longer, and the second
+    submit then only warns again. The input bar reads this clock for that
+    window alone.
+    """
+    monkeypatch.setattr(input_bar_module, "monotonic", lambda: 0.0)
+
+
 async def click_when_settled(
     pilot: Pilot, target: Widget | str, *, offset: tuple[int, int] = (0, 0), **modifiers: bool
 ) -> None:
@@ -970,6 +980,7 @@ class SuggestionListStub:
         self.last_title: str | None = None
         self.last_empty_text: str | None = None
         self.last_keep_selection = False
+        self.chosen_value: str | None = None
         self.is_visible = False
         self.is_loading = False
         self.select_result = False

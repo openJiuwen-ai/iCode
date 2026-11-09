@@ -484,7 +484,7 @@ def test_report_renders_full_view(file_tree, capsys):
     assert "〔常驻〕demo" in out  # removal_condition semantics from the row
     assert "aixcoding/docs/batches/demo/design.md" in out
     assert "标记豁免" in out  # exemption table from _common.MARKER_EXEMPTIONS
-    assert "chrys.mo" in out
+    assert "chrys.po" in out
     assert "勿编辑" in out  # derived-view banner
 
 

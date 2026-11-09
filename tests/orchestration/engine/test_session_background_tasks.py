@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -14,7 +15,8 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import UserRollback
 from chrys.orchestration.engine.assembly import assemble_agent_engine
-from chrys.service.state.store import JsonFileStateStore
+from chrys.service.mutations.snapshot_files import write_rollback_snapshot
+from chrys.service.state.store import JsonFileStateStore, session_write_lock_path
 from chrys.service.tools.background import BackgroundTask, BackgroundTasks
 from tests.orchestration.engine._rollback_helpers import (
     _make_engine,
@@ -57,6 +59,17 @@ async def test_rolling_back_every_turn_stops_every_command_before_the_session_re
     tmp_path: Path, *, engine_services
 ) -> None:
     engine = _make_engine(tmp_path, engine_services=engine_services)
+    store = engine_services(engine).persistence.state_store
+    assert isinstance(store, JsonFileStateStore)
+    await store.save_session("rb_test", _state_after_turns(1))
+    await asyncio.to_thread(
+        write_rollback_snapshot,
+        session_dir=store.session_dir("rb_test"),
+        session_id="rb_test",
+        turn_number=2,
+        keep=10,
+        lock_path=session_write_lock_path(tmp_path, "rb_test"),
+    )
     engine_services(engine).history.bind(_state_after_turns(2))
     tasks = BackgroundTasks(tmp_path / "bg", turn=lambda: engine.session.turn_number)
     engine.session.background_tasks = tasks

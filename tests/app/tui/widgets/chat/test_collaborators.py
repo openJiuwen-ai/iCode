@@ -1161,7 +1161,7 @@ def test_tool_registry_inline_ask_user_scrolls_only_after_success(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_live_renderer_uses_status_port_for_failed_turn_cleanup() -> None:
+async def test_live_renderer_only_removes_status_until_backend_cleanup() -> None:
     calls: list[str] = []
     status = _FakeStatus(calls)
     error = ErrorMessage("failed")
@@ -1190,10 +1190,11 @@ async def test_live_renderer_uses_status_port_for_failed_turn_cleanup() -> None:
 
     await renderer.add_user_message("new prompt")
 
-    assert calls[:5] == ["dismiss_welcome", "live_user_started", "failed_status", "preceding_content", "remove_error"]
-    assert "remove_user" in calls
-    assert len(toc.items()) == 1
-    assert toc.items()[0].summary == "new prompt"
+    assert calls[:4] == ["dismiss_welcome", "live_user_started", "failed_status", "remove_error"]
+    assert "preceding_content" not in calls
+    assert "remove_user" not in calls
+    assert [item.summary for item in toc.items()] == ["prompt", "new prompt"]
+    assert toc.items()[-1].turn_index is None
 
 
 @pytest.mark.asyncio
@@ -1572,7 +1573,7 @@ async def test_replay_compressed_block_preserves_hosted_images_and_artifacts() -
 
 
 @pytest.mark.asyncio
-async def test_replay_compressed_block_keeps_local_tools_hidden() -> None:
+async def test_replay_compressed_block_keeps_local_tool_and_result_in_a_dimmed_group() -> None:
     calls: list[str] = []
     mount = _FakeMount(calls)
     renderer = HistoryReplayRenderer(
@@ -1598,7 +1599,12 @@ async def test_replay_compressed_block_keeps_local_tools_hidden() -> None:
         compressed_blocks={"ctx-local-tool": block},
     )
 
-    assert not any(isinstance(widget, ToolGroup) for widget in mount.widgets)
+    groups = [widget for widget in mount.widgets if isinstance(widget, ToolGroup)]
+    assert len(groups) == 1
+    assert groups[0].has_class("--compressed")
+    assert [(record.tool_name, record.result) for record in groups[0]._tool_records.values()] == [
+        ("read_file", "contents")
+    ]
 
 
 @pytest.mark.asyncio
@@ -1608,7 +1614,7 @@ async def test_replay_compressed_block_skips_tool_summary_but_keeps_archived_ori
 
     Unlike the session transcript, which loads without excluded messages,
     the block renders those originals by its own rules: their narration
-    shows and local tool cards stay hidden. Only the summary is skipped; a
+    and local tool cards both show. Only the summary is skipped; a
     real answer that reads exactly like it still renders.
     """
     calls: list[str] = []
@@ -1665,7 +1671,12 @@ async def test_replay_compressed_block_skips_tool_summary_but_keeps_archived_ori
         "Reading a.py first.",
         summary_text,
     ]
-    assert not any(isinstance(widget, ToolGroup) for widget in mount.widgets)
+    groups = [widget for widget in mount.widgets if isinstance(widget, ToolGroup)]
+    assert len(groups) == 1
+    assert groups[0].has_class("--compressed")
+    assert [(record.tool_name, record.result) for record in groups[0]._tool_records.values()] == [
+        ("read_file", "contents")
+    ]
 
 
 @pytest.mark.asyncio

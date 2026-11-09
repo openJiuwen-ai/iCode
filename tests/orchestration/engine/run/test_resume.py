@@ -27,6 +27,7 @@ from chrys.service.context.providers.history import (
     PRE_OUTPUT_HISTORY_LEN_STATE_KEY,
     CompressibleHistoryProvider,
 )
+from chrys.service.session.message_metadata import MESSAGE_CREATED_AT_KEY
 from tests.orchestration.invoker._resume_policy import drive_fresh_policy, drive_retry_policy, make_resume_harness
 from tests.support.components import make_turn_state
 
@@ -104,15 +105,15 @@ class TestResumeMode:
         assert list(executor.backend.run.call_args[0][0].messages) == []
         assert msgs[1:] == [call, result]
 
-    async def test_a_note_goes_on_from_the_kept_answer(self):
-        kept = Message("assistant", ["Partial"])
-        msgs = [Message("user", ["go"]), kept]
+    async def test_a_note_drops_the_kept_answer_and_goes_on_from_the_note(self):
+        opener = Message("user", ["go"])
+        msgs = [opener, Message("assistant", ["Partial"])]
         executor = make_resume_harness(msgs)
 
         await drive_retry_policy(executor, additional_text="go on")
 
         assert [m.text for m in executor.backend.run.call_args[0][0].messages] == ["go on"]
-        assert msgs[1] is kept
+        assert msgs == [opener]
 
     @pytest.mark.parametrize("contents", [[], [""], ["", ""]], ids=["no-content", "empty-text", "empty-texts"])
     @pytest.mark.parametrize("persisted", [False, True], ids=["not-stored", "stored"])
@@ -182,25 +183,26 @@ class TestResumeMode:
         assert len(msgs) == 1
         assert msgs[0].text == "original prompt"
 
-    async def test_resume_with_additional_text_preserves_on_failure(self):
-        """If the LLM call fails, the note is appended to history as a fallback."""
-        msgs = [
-            Message("user", ["original prompt"]),
-            Message("assistant", ["tool calls"]),
-            Message("tool", ["results"]),
-        ]
-        executor = make_resume_harness(msgs)
 
-        # Simulate a failed backend.run that did not persist the retry note.
-        async def _fake_execute(_input):
-            executor.state.run_failed = True
+@pytest.mark.parametrize("saved_at", [None, "2026-01-02T03:04:05.000000+00:00"], ids=["legacy", "stamped"])
+async def test_a_failed_bare_retry_restores_its_prompt_with_the_time_it_was_saved_with(saved_at: str | None) -> None:
+    """The fallback re-creates the popped prompt as saved: one saved without a time gets no made-up one."""
+    prompt = Message("user", ["original prompt"])
+    if saved_at is not None:
+        prompt.additional_properties[MESSAGE_CREATED_AT_KEY] = saved_at
+    msgs = [prompt]
+    executor = make_resume_harness(msgs)
 
-        executor.backend.run.side_effect = _fake_execute
+    async def _fail_before_history_stores_it(_input):
+        executor.state.run_failed = True
 
-        await drive_retry_policy(executor, additional_text="my note")
+    executor.backend.run.side_effect = _fail_before_history_stores_it
 
-        # Fallback appended the note so a subsequent retry can see it.
-        assert any(m.role == "user" and (m.text or "") == "my note" for m in msgs)
+    await drive_retry_policy(executor)
+
+    (restored,) = msgs
+    assert restored.text == "original prompt"
+    assert restored.additional_properties.get(MESSAGE_CREATED_AT_KEY) == saved_at
 
 
 class TestResumeMidTurnStamps:
@@ -290,24 +292,6 @@ class TestResumeMidTurnStamps:
         assert sent.text == "also check env vars"
         assert sent.additional_properties[HistoryMarkerKind.INJECTED_KEY] is True
         assert HistoryMarkerKind.CONTINUATION_KEY not in sent.additional_properties
-
-    async def test_failed_guidance_fallback_appends_flagged_even_when_opener_text_matches(self):
-        """Kind-aware dedup: guidance worded identically to the opener still lands, flagged."""
-
-        msgs = [Message("user", ["do the thing"]), Message("assistant", ["work"])]
-        executor = make_resume_harness(msgs)
-
-        async def _fake_execute(_input):
-            executor.state.run_failed = True
-
-        executor.backend.run.side_effect = _fake_execute
-
-        await drive_retry_policy(executor, additional_text="do the thing")
-
-        flagged = [m for m in msgs if m.additional_properties.get(HistoryMarkerKind.INJECTED_KEY)]
-        assert [m.text for m in flagged] == ["do the thing"]
-        # The opener stays unflagged — never backfilled.
-        assert HistoryMarkerKind.INJECTED_KEY not in msgs[0].additional_properties
 
     async def test_opener_replay_unflagged_and_registered_as_opener_kind(self):
 

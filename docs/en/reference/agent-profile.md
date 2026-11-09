@@ -403,6 +403,8 @@ Tools from [Python extensions](../guides/extensions/python-extensions.md) follow
 
 ## skills
 
+The fields in the table below treat a key left without a value — for example after commenting out its items — as omitted, so the field keeps its default. A list field must be written as a list; a single value such as `paths: ./team-skills` makes iCode skip the whole profile.
+
 ```yaml
 skills:
   paths:

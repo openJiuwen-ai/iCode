@@ -71,6 +71,7 @@ from chrys.service.analytics._metric_ops import (
 from chrys.service.analytics._session_projection import _lazy_session_projection, _SessionProjectionCache
 from chrys.service.analytics._timeline import (
     _exclusively_inactive,
+    _infrastructure_branch_reaches,
     _merge_projection_memberships,
     _node_owner_membership,
     _timeline_diagnostics,
@@ -372,7 +373,7 @@ class TrajectoryAnalyzer:
         intermediate = self._intermediate
         if intermediate is None:
             return SessionCounterSamples(usage_by_turn={}, context_by_turn={})
-        inactive_ranges = _closed_sequence_union(intermediate.rollback_ranges)
+        inactive_ranges = _inactive_ranges(intermediate)
         return SessionCounterSamples(
             usage_by_turn=_turns._usage_samples_by_turn(intermediate, inactive_ranges),
             context_by_turn=_turns._context_samples_by_turn(intermediate, inactive_ranges),
@@ -426,7 +427,7 @@ def _resolve(
     verify_commands: str = DEFAULT_TRAJECTORY_VERIFY_COMMANDS,
 ) -> TrajectoryAnalysis:
     _check_cancelled(cancel_event)
-    active_ranges = _closed_sequence_union(intermediate.rollback_ranges)
+    active_ranges = _inactive_ranges(intermediate)
     rollback_projection_unresolved = _rollback_projection_unresolved(intermediate, active_ranges)
     session_integrity_reason = _session_integrity_reason(
         intermediate,
@@ -688,6 +689,54 @@ def _session_integrity_reason(
     if not problems:
         return None
     return f"session trajectory integrity is unresolved: {', '.join(problems)}"
+
+
+def _inactive_ranges(intermediate: _Intermediate) -> tuple[SequenceRange, ...]:
+    """Rollback ranges, except the preparation of a prompt whose turn they left active.
+
+    A rollback supersedes everything logged before it, but a prompt can be
+    submitted first and become its turn after it (the next prompt retires an
+    empty turn): that preparation, its waits and hooks belong to the live turn.
+    """
+    ranges = _closed_sequence_union(intermediate.rollback_ranges)
+    if not ranges:
+        return ranges
+    preparations = intermediate.nodes.get("preparation", {})
+    roots = [
+        node
+        for turn in intermediate.turns.values()
+        for start in turn.starts
+        if _active(start.sequence, ranges)
+        and (scope_id := _payload_str(start.payload, "preparation_scope_operation_id")) is not None
+        and (node := preparations.get(scope_id)) is not None
+        and not all(_active(endpoint.sequence, ranges) for endpoint in node.starts)
+    ]
+    if not roots:
+        return ranges
+    children: dict[str, list[_Node]] = defaultdict(list)
+    for nodes in intermediate.nodes.values():
+        for node in nodes.values():
+            for endpoint in (*node.starts, *node.finishes):
+                if endpoint.parent_operation_id is not None:
+                    children[endpoint.parent_operation_id].append(node)
+    kept: set[int] = set()
+    seen: set[str] = set()
+    while roots:
+        node = roots.pop()
+        if node.operation_id in seen:
+            continue
+        seen.add(node.operation_id)
+        kept.update(endpoint.sequence for endpoint in (*node.starts, *node.finishes))
+        roots.extend(children.get(node.operation_id, ()))
+    pieces: list[SequenceRange] = []
+    for first, last in ranges:
+        for sequence in sorted(sequence for sequence in kept if first <= sequence <= last):
+            if first < sequence:
+                pieces.append(SequenceRange(first, sequence - 1))
+            first = sequence + 1
+        if first <= last:
+            pieces.append(SequenceRange(first, last))
+    return tuple(pieces)
 
 
 def _rollback_projection_unresolved(
@@ -1365,6 +1414,19 @@ def _submission_latency(
         else:
             end = finish
             turn_id = _payload_str(finish.payload, "target_turn_id") if finish is not None else None
+        # A prompt submitted before a rollback becomes its turn on the new
+        # branch: it may cross only through that active rollback.
+        finish_in_scope = (
+            start is not None
+            and finish is not None
+            and replace(finish.scope, branch_id=start.branch_id) == start.scope
+            and _infrastructure_branch_reaches(intermediate, start, finish, inactive_ranges)
+        )
+        end_on_branch = (
+            start is not None
+            and end is not None
+            and _infrastructure_branch_reaches(intermediate, start, end, inactive_ranges)
+        )
         exact = (
             start is not None
             and finish is not None
@@ -1372,11 +1434,11 @@ def _submission_latency(
             and outcome in _RECOGNIZED_PREPARATION_OUTCOMES
             and not start.side_call
             and finish.monotonic_measurement
-            and finish.scope == start.scope
+            and finish_in_scope
             and finish.sequence > start.sequence
             and finish.monotonic_ns >= start.monotonic_ns
             and end.runtime_id == start.runtime_id
-            and end.branch_id == start.branch_id
+            and end_on_branch
             and end.coverage_id == start.coverage_id
             and end.actor_id == start.actor_id
             and not end.side_call
@@ -1398,7 +1460,7 @@ def _submission_latency(
             reason = "preparation scope belongs to a side-call actor"
         elif finish is not None and not finish.monotonic_measurement:
             reason = "preparation duration lacks monotonic provenance"
-        elif start is not None and finish is not None and finish.scope != start.scope:
+        elif start is not None and finish is not None and not finish_in_scope:
             reason = "preparation endpoints cross scope"
         elif (
             start is not None
@@ -1411,7 +1473,7 @@ def _submission_latency(
             and end is not None
             and (
                 end.runtime_id != start.runtime_id
-                or end.branch_id != start.branch_id
+                or not end_on_branch
                 or end.coverage_id != start.coverage_id
                 or end.actor_id != start.actor_id
                 or end.side_call

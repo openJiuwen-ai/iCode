@@ -207,12 +207,6 @@ class SettingsCoordinator:
             if registry is None:
                 return []
             return [(profile.id, profile.name or profile.id) for profile in registry.list_profiles()]
-        if source is Suggestions.MODEL_IDS:
-            registry = self._services.model_registry
-            if registry is None:
-                return []
-            model_ids = dict.fromkeys(profile.model_id for profile in registry.list_profiles() if profile.model_id)
-            return [(model_id, model_id) for model_id in model_ids]
         return []
 
     def schedule_persist(self, values: Mapping[str, Any]) -> None:

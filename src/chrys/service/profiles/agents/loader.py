@@ -23,6 +23,8 @@ from chrys.service.mcp.validation import (
 )
 from chrys.service.profiles.agents.schema import (
     ALWAYS_LOADED_TOOL_CATEGORIES,
+    DEFAULT_SKILL_SCRIPT_EXTENSIONS,
+    DEFAULT_SKILL_SCRIPT_TIMEOUT,
     DEFAULT_SUB_AGENT_CONCURRENCY,
     AcpAgentConfig,
     AgentProfile,
@@ -424,13 +426,20 @@ def _parse_skills(raw: object) -> SkillsConfig:
                 scripts=_parse_skill_scripts(entry.get("scripts", []), "skills.inline.scripts"),
             )
         )
+    raw_extensions = raw_map.get("script_extensions")
+    script_extensions = (
+        list(DEFAULT_SKILL_SCRIPT_EXTENSIONS)
+        if raw_extensions is None
+        else _string_list_field(raw_extensions, "skills.script_extensions")
+    )
+    raw_timeout = raw_map.get("script_timeout")
     return SkillsConfig(
-        paths=raw_map.get("paths", []),
+        paths=_string_list_field(raw_map.get("paths"), "skills.paths"),
         inline=inline,
-        script_timeout=raw_map.get("script_timeout", 300),
-        script_extensions=raw_map.get("script_extensions", [".py", ".sh", ".ps1"]),
-        auto_load_user_agents_skills=raw_map.get("auto_load_user_agents_skills", True),
-        auto_load_cwd_agents_skills=raw_map.get("auto_load_cwd_agents_skills", True),
+        script_timeout=DEFAULT_SKILL_SCRIPT_TIMEOUT if raw_timeout is None else raw_timeout,
+        script_extensions=script_extensions,
+        auto_load_user_agents_skills=coerce_bool(raw_map.get("auto_load_user_agents_skills"), default=True),
+        auto_load_cwd_agents_skills=coerce_bool(raw_map.get("auto_load_cwd_agents_skills"), default=True),
     )
 
 

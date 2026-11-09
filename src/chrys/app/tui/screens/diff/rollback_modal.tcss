@@ -9,11 +9,11 @@ RollbackProgressModal {
 }
 
 /* An explicit command, or confirmation from the interactive picker, uses
-   this blocking shell. Its 13-row content plus two border rows exactly
+   this blocking shell. Its 15-row content plus two border rows exactly
    matches the completed no-diff rollback modal, avoiding a height jump. */
 #rollback-progress-container {
     width: 80%;
-    height: 15;
+    height: 17;
     border: round $tui-border-primary $border-opacity;
     border-title-color: $primary;
     border-title-style: bold;
@@ -22,7 +22,7 @@ RollbackProgressModal {
 
 #rollback-progress-state {
     width: 100%;
-    height: 13;
+    height: 15;
     align: center middle;
 }
 
@@ -48,9 +48,9 @@ RollbackProgressModal {
 #rollback-initial-loading-state {
     width: 100%;
     /* Match the completed empty shell exactly: Select slot (4 rows),
-       empty-preview slot (6 rows), and footer buttons (3 rows). The
-       container's two border rows bring both states to 15 rows total. */
-    height: 13;
+       range note and top gap (2 rows), empty-preview slot (6 rows), and footer
+       buttons (3 rows). Two border rows bring both states to 17 rows total. */
+    height: 15;
     align: center middle;
 }
 
@@ -245,4 +245,25 @@ RollbackProgressModal {
 
 #rollback-buttons > Button {
     margin: 0 1;
+}
+
+/* Indented past the Select's tall border and one cell of its padding (1 + 1
+   cells), so the "└─" starts one column before the selected turn's text. A
+   note too long for one line shows only the turns it discards. */
+#rollback-range-line {
+    margin: 1 1 0 3;
+}
+
+#rollback-range-glyph {
+    width: 3;
+    height: 1;
+    color: $text-muted;
+    text-style: dim;
+}
+
+#rollback-range-note {
+    width: 1fr;
+    height: 1;
+    color: $text-muted;
+    text-style: dim;
 }

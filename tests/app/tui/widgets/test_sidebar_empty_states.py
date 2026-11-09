@@ -83,6 +83,7 @@ async def test_sidebar_static_chrome_treats_translation_markup_as_literal() -> N
         tasks_module._TASKS_EMPTY,
         background_module._EMPTY,
         toc_module._TOC_EMPTY,
+        toc_module._TOC_TITLE,
         context_module._CONTEXT_USAGE,
     )
 
@@ -111,6 +112,8 @@ async def test_sidebar_static_chrome_treats_translation_markup_as_literal() -> N
             rendered = pilot.app.query_one(selector, Static).render()
             assert str(rendered) == "[red]x[/red]", selector
             assert not getattr(rendered, "spans", []), selector
+        title = pilot.app.query_one("#toc-box").border_title
+        assert Content.from_markup(title).plain == "[red]x[/red]"
 
 
 @pytest.mark.asyncio

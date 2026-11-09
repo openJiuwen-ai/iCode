@@ -14,6 +14,7 @@ from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoi
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.models.background_tasks import BackgroundTaskView
 from chrys.foundation.models.execution import ExecutionSnapshot
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.models.hook_confirmations import (
     HookArgumentChange,
     HookConfirmationAnswer,
@@ -151,6 +152,12 @@ class UserMessage(Event):
     # shortcut, if it still loads it, once the prompt hooks have passed, and
     # sends their output in their place. Never joins a running turn.
     prompt_shortcut: PromptShortcutRef | None = None
+    # How a message that joins a running turn reaches the model: False (the
+    # default) delivers it before the turn's next model call; True steers,
+    # dropping what the turn has not finished (the reply being written, tool
+    # calls still running or waiting) and going on from its finished work
+    # with this message. Ignored for a message that opens a new turn.
+    steer: bool = False
 
 
 @dataclass
@@ -205,21 +212,27 @@ class UserInterrupt(Event):
 class UserRetry(Event):
     """User retries the last failed/interrupted run from current state.
 
-    When ``text`` is non-empty, it is used as a mid-turn continuation prompt
-    and persisted as real user input inside the current turn. An empty retry
-    continues from completed history or replays the prior user opener.
+    Either way an answer the run left cut off at the end of history is dropped
+    first. When ``text`` is non-empty, it is used as a mid-turn continuation
+    prompt and persisted as real user input inside the current turn. An empty
+    retry continues from completed history or replays the prior user opener.
     """
 
     text: str = ""
+    client_message_id: str | None = None
+    """The frontend's own id for the guidance note in ``text``, echoed back as the
+    retry pass's ``TurnStarted.note_message_id``; ignored for a bare retry."""
 
 
 @dataclass
 class UserInject(Event):
-    """User injects a prompt while agent is executing (inserted before next model call)."""
+    """User injects a prompt while agent is executing (inserted before next model call, or steering)."""
 
     text: str = ""
     injection_id: str | None = None
     """Frontend-assigned id correlating this injection with cancel/result events."""
+    steer: bool = False
+    """Steer instead of waiting for the next model call: see ``UserMessage.steer``."""
 
 
 @dataclass
@@ -470,6 +483,30 @@ class AgentThinking(Event):
 
 
 @dataclass
+class RollbackSnapshotsChanged(Event):
+    """Snapshot capture and retention finished; frontends may refresh rollback targets."""
+
+
+@dataclass
+class UnansweredInputDropped(Event):
+    """History dropped the previous turn's unanswered input before a fresh turn starts.
+
+    The previous turn failed or was stopped. One that kept no work is retired
+    whole (``retired_previous_turn``): nothing answered its opener or notes.
+    One that kept its work stays; only the notes it never answered go.
+    ``removed_item_ids`` are the ``_chrys_analytics_item_id``s of the user
+    messages history removed, in order. A frontend removes
+    the messages it shows under those ids (a hidden legacy nudge matches
+    none). ``retired_turn_id`` names the retired turn when the registry held
+    it; the next turn reuses its number under a new id.
+    """
+
+    retired_previous_turn: bool = False
+    removed_item_ids: tuple[str, ...] = ()
+    retired_turn_id: str | None = None
+
+
+@dataclass
 class TurnStarted(Event):
     """A turn — a logical user question — began executing (backend → frontend).
 
@@ -486,6 +523,12 @@ class TurnStarted(Event):
     is_retry: bool = False
     user_message_id: str | None = None
     """Id of the user message that opened the turn, when it has one."""
+    opening_item_id: str | None = None
+    """``_chrys_analytics_item_id`` of the user message this pass opened with:
+    a fresh turn's prompt or a retry's guidance; ``None`` for a bare retry."""
+    note_message_id: str | None = None
+    """A guided retry pass's echo of ``UserRetry.client_message_id``, naming the
+    frontend's note that ``opening_item_id`` stores; ``None`` on every other pass."""
 
 
 @dataclass
@@ -579,12 +622,24 @@ class InvocationContentAbandoned(InvocationEvent):
 
 
 @dataclass
+class InvocationSteered(InvocationEvent):
+    """A steer aborted the running pass; the turn goes on with a new pass that delivers the steer message.
+
+    Published as the pass ends, after ``InvocationContentAbandoned`` names
+    the response it gave up. Tool calls still running in the pass were
+    cancelled without an ``InvocationToolCallResult``: frontends end them
+    here, as they do on Stop. The answer the pass leaves dropped from
+    history follows as ``InvocationAnswerWithdrawn``.
+    """
+
+
+@dataclass
 class InvocationAnswerWithdrawn(InvocationEvent):
-    """A bare Continue or Retry dropped the answer text these segments showed from history, to ask for it again.
+    """A Continue, Retry or steer dropped the answer text these segments showed from history.
 
     Published when history drops it, before the request that asks again
-    runs; frontends withdraw exactly these segments. Text saved before
-    segments were stamped is dropped without being named here.
+    or goes on runs; frontends withdraw exactly these segments. Text saved
+    before segments were stamped is dropped without being named here.
     """
 
     agent_name: str = ""
@@ -781,6 +836,8 @@ class InvocationRetryAttempt(InvocationEvent):
     """Raw untranslated diagnostic component separated from a fixed wrapper."""
     wait_id: str = ""
     """Names the wait before this retry that :class:`RetryWaitSkip` can end early; empty when it can't be skipped."""
+    facts: FailureFacts | None = None
+    """What the failure being retried is; None when the retry wraps no classified exception."""
 
 
 @dataclass
@@ -801,6 +858,8 @@ class InvocationPaused(InvocationEvent):
     last_error_display: MessageRef | None = None
     """What ``last_error`` means to the user; the raw text still follows it."""
     last_error_hint: MessageRef | None = None
+    last_error_facts: FailureFacts | None = None
+    """What ``last_error`` is; None when no classified exception ended the pass."""
     retry_attempts: int = 0
     diagnostic_path: str | None = None
     """UI-only diagnostic file path; never interpolate into model-visible errors."""
@@ -859,6 +918,11 @@ class InvocationAborted(InvocationEvent):
 
     agent_name: str = ""
     last_error: str = ""
+    last_error_display: MessageRef | None = None
+    """What ``last_error`` means to the user, as on :class:`InvocationPaused`."""
+    last_error_hint: MessageRef | None = None
+    last_error_facts: FailureFacts | None = None
+    """What ``last_error`` is; None when no classified exception ended the pass."""
 
 
 @dataclass
@@ -1197,6 +1261,8 @@ class UserInjectResult(Event):
     injection_id: str | None = None
     """Id of the originating injection when it carried one; frontends use it
     to ignore results for injections they already cancelled or replaced."""
+    item_id: str | None = None
+    """``_chrys_analytics_item_id`` of the history copy of a consumed message."""
 
 
 @dataclass
@@ -1210,6 +1276,8 @@ class Error(Event):
     display_message: MessageRef | None = None
     display_hint: MessageRef | None = None
     """Shown after ``display_message``; never without it."""
+    facts: FailureFacts | None = None
+    """What a failure that raised is (a turn's model or runtime failure); None for Chrys's own refusals and checks."""
     refused_input: RefusedInput | None = None
     """Set when a gate refused a user input before it ran: which input.
 
@@ -1280,13 +1348,23 @@ class RuntimeHookSourceDetails:
 
 
 @dataclass
+class RuntimeExtensionDetails:
+    """What one Python extension gives the agent, each list in declaration order."""
+
+    tools: list[str] = field(default_factory=list)
+    contexts: list[str] = field(default_factory=list)
+    before_tool_hooks: list[str] = field(default_factory=list)
+    after_tool_hooks: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AgentRuntimeDetails:
     """Grouped runtime metadata for the TUI details dialog."""
 
     model: RuntimeModelDetails = field(default_factory=RuntimeModelDetails)
     builtin_tools: dict[str, list[str]] = field(default_factory=dict)
-    extension_tools: dict[str, list[str]] = field(default_factory=dict)
-    """Each extension's tools, by extension id."""
+    extensions: dict[str, RuntimeExtensionDetails] = field(default_factory=dict)
+    """What each extension the agent loaded gives it, by extension id, in the profile's order."""
     extension_failures: dict[str, str] = field(default_factory=dict)
     """Why each extension the profile enables was left out, by extension id."""
     web_search_providers: dict[str, str] = field(default_factory=dict)
@@ -1563,6 +1641,9 @@ class RollbackResult(Event):
     Includes turns a fork inherited and never ran here, which nothing in this
     session's log can describe — this event is the only place their loss is
     reported. The TUI ignores it."""
+
+    discarded_turn_count: int = 0
+    """Number of history turns removed, independent of trajectory registry availability."""
 
     files_reverted: int = 0
     """Count of files that were actually changed on disk by the revert

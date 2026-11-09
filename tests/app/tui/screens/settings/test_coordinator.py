@@ -592,7 +592,7 @@ async def test_choices_and_notification_ports_come_from_the_callbacks(monkeypatc
     assert h.view.notifications == [("Nope", "error")]
 
 
-async def test_model_choices_come_from_the_registry_by_profile_id_and_by_model_id(
+async def test_model_choices_come_from_the_registry_by_profile_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = ModelProfileRegistry()
@@ -606,11 +606,6 @@ async def test_model_choices_come_from_the_registry_by_profile_id_and_by_model_i
         ("p2", "Two"),
         ("p3", "Two again"),
         ("p4", "Unfinished"),
-    ]
-    # Bare model ids: deduplicated, blank ones skipped, first-seen order.
-    assert h.coordinator.resolve_choices(Suggestions.MODEL_IDS) == [
-        ("vendor/one", "vendor/one"),
-        ("vendor/two", "vendor/two"),
     ]
     assert h.coordinator.resolve_choices(Suggestions.AGENT_PROFILES) == []
 

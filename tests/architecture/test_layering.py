@@ -1795,6 +1795,10 @@ def test_background_tasks_have_declared_owners() -> None:
         ),
         ("loader", "AgentLoader", "start_outbox_recovery"): (1, "session outbox recovery task"),
         ("run/coordinator", "TurnCoordinator", "_admit_user_message"): (2, "execution lease run task"),
+        ("run/coordinator", "TurnCoordinator", "run_and_save"): (
+            1,
+            "the execution lease run task owns one fresh cleanup; finish_close drains its trajectory, save and result before pre_run, cancellation finalization or replacement",
+        ),
         ("run/retry", "RetryCoordinator", "_handle_user_retry"): (2, "execution lease run task"),
         ("run/retry", "RetryCoordinator", "_create_retry_run_task"): (2, "execution lease run task"),
         ("run/shortcut_commands", "ShortcutCommands", "_run"): (

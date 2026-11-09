@@ -154,6 +154,52 @@ async def test_documented_account_errors_are_quota_exhaustion(code: str, status:
 
 
 @pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        # OpenAI's credit, spend and usage limits, as the Codex CLI reads them:
+        # a 429 that waiting out a rate window cannot clear.
+        *(
+            (429, {"code": code, "message": "Usage limit reached."})
+            for code in (
+                "credit_balance_exhausted",
+                "organization_spend_limit_exceeded",
+                "project_spend_limit_exceeded",
+                "organization_usage_limit_exceeded",
+                "subscription_sharing_usage_limit_exceeded",
+            )
+        ),
+        (429, {"type": "usage_limit_reached", "message": "The usage limit has been reached"}),
+        # LiteLLM proxy: a spent key budget.
+        (400, {"type": "budget_exceeded", "code": "400", "message": "Key is out of budget. Spend=10.02, Budget=10.0"}),
+    ],
+)
+async def test_spent_credit_and_usage_limits_are_quota_exhaustion(status: int, error: dict[str, str]) -> None:
+    result = classify_error(await openai_status(status, {"error": error}))
+    assert (result.kind, result.retryable) == (ErrorKind.QUOTA_EXHAUSTED, False)
+
+
+@pytest.mark.parametrize(
+    ("message", "kind"),
+    [
+        (
+            (
+                "Your credit balance is too low to access the Anthropic API. "
+                "Please go to Plans & Billing to upgrade or purchase credits."
+            ),
+            ErrorKind.QUOTA_EXHAUSTED,
+        ),
+        ("messages: text content blocks must be non-empty", ErrorKind.REQUEST_REJECTED),
+    ],
+)
+async def test_anthropic_spent_credit_is_told_apart_from_a_bad_request_by_its_text(
+    message: str, kind: ErrorKind
+) -> None:
+    body = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+    result = classify_error(await anthropic_status(400, body))
+    assert (result.kind, result.retryable) == (kind, False)
+
+
+@pytest.mark.parametrize(
     ("metadata", "kind"),
     [
         ({"reasons": ["policy"], "flagged_input": "example", "provider_name": "test"}, ErrorKind.CONTENT_FILTERED),

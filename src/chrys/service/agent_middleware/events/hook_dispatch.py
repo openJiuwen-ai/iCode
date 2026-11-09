@@ -15,6 +15,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, TypeGuard
 
+from chrys.extensions import ToolResult
+from chrys.foundation.io.result_content import extract_result_text
 from chrys.foundation.tool_invocation_order import read_tool_invocation_order
 from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_MODIFIED_ARGS_KEY,
@@ -36,12 +38,24 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from chrys.foundation.models.invocations import InvocationOrigin
     from chrys.kernel.middleware import FunctionInvocationContext
+    from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
     from chrys.service.hooks.manager import HookManager
 
 
 def is_mutable_tool_args(value: object) -> TypeGuard[dict[str, Any]]:
     """Narrow validated tool argument dictionaries."""
     return isinstance(value, dict)
+
+
+def tool_may_have_run(context: FunctionInvocationContext) -> bool:
+    """Whether the call's tool body may have started: the commit step took its operation, or it has none.
+
+    The commit step is the last one before the tool runs, so an operation that
+    is still pending or was invalidated proves the tool never started.
+    """
+    metadata = context.metadata if isinstance(context.metadata, dict) else None
+    operation = metadata.get(_HOOK_OPERATION_KEY) if metadata is not None else None
+    return not isinstance(operation, HookOperation) or operation.state == "committed"
 
 
 async def apply_before_tool_hooks(
@@ -57,6 +71,7 @@ async def apply_before_tool_hooks(
     workspace_cwd: str,
     target_operation_id: str | None = None,
     origin: InvocationOrigin | None = None,
+    extension_hooks: ExtensionToolHooks | None = None,
 ) -> bool:
     """Check the call's current arguments with ``before_tool_call`` hooks; True when it must not run.
 
@@ -69,6 +84,8 @@ async def apply_before_tool_hooks(
     still publish the normal tool start/result events with the current
     arguments so the UI and persisted history reflect the denied call.
     *origin* names the sub-agent that calls the tool; None for the main agent.
+    The extensions' before hooks (*extension_hooks*) check each version
+    first, so the external hooks check what they leave.
     """
     metadata = context.metadata if isinstance(context.metadata, dict) else None
     existing = metadata.get(_HOOK_OPERATION_KEY) if metadata is not None else None
@@ -87,6 +104,12 @@ async def apply_before_tool_hooks(
         )
         if metadata is not None:
             metadata[_HOOK_OPERATION_KEY] = operation
+
+    if extension_hooks is not None and extension_hooks.before:
+        denial = await extension_hooks.check_call(operation, name=tool_name, kind=kind, call_id=call_id)
+        if denial is not None:
+            reject_tool_call(context, denial)
+            return True
 
     decision = await check_operation(
         manager,
@@ -197,6 +220,60 @@ async def fire_after_tool_hooks(
             await manager.fire(HookEvent.TOOL_ERROR, payload, target_operation_id=target_operation_id, origin=origin),
         )
     return decision
+
+
+async def apply_after_tool_extensions(
+    extension_hooks: ExtensionToolHooks | None,
+    context: FunctionInvocationContext,
+    *,
+    tool_name: str,
+    kind: str,
+    call_id: str,
+    args: dict[str, Any],
+    result_text: str,
+    raised_text: str | None,
+    failed: bool,
+    rejected: bool,
+    duration_ms: int,
+) -> str:
+    """Show the extensions' after hooks how the call ended; the result text from here on.
+
+    *raised_text* is what the model reads for a tool that raised (the kernel
+    answers it after this middleware); the hooks see that, and what they
+    return then changes nothing. Otherwise they see the result's text without
+    its attachments (images, audio, files), and their text replaces it,
+    keeping the attachments.
+    """
+    if extension_hooks is None or not extension_hooks.after:
+        return result_text
+    attachments = _attachments(context.result) if raised_text is None else []
+    if raised_text is not None:
+        shown = raised_text
+    elif attachments and isinstance(context.result, list):
+        # Not the placeholders the tool card shows for them: the model reads the attachments themselves.
+        shown = extract_result_text([item for item in context.result if all(item is not a for a in attachments)])
+    else:
+        shown = result_text
+    seen = ToolResult(text=shown, failed=failed, rejected=rejected, duration_ms=duration_ms)
+    text = await extension_hooks.review_result(name=tool_name, kind=kind, call_id=call_id, arguments=args, result=seen)
+    if text is None or raised_text is not None:
+        return result_text
+    if attachments:
+        from chrys.kernel import Content
+
+        context.result = [Content.from_text(text), *attachments]
+    else:
+        context.result = text
+    return extract_result_text(context.result)
+
+
+def _attachments(result: Any) -> list[Any]:
+    """The media items of a tool's result list, which an extension's text replacement keeps."""
+    if not isinstance(result, list):
+        return []
+    from chrys.kernel import Content
+
+    return [item for item in result if isinstance(item, Content) and item.type in ("data", "uri")]
 
 
 def append_extra_context_to_result(result: Any, result_text: str, extra_context: list[str]) -> tuple[Any, str]:
