@@ -7,7 +7,8 @@ pages of at most 100, filtered by where each was last used (TUI, CLI, ACP;
 TUI only by default).  The store snapshots the listing once, so paging never
 reshuffles, and each page loads fresh.  Within the page shown: click a column
 header to sort (click again to flip direction), type in the bottom search box
-to filter across every column plus each session's user prompts (rows found
+to filter across every column but Last Active and Size, plus each session's
+user prompts (rows found
 only through prompt text render in italics, list after the column matches,
 and carry the matched context in their tooltip), and forked sessions nest
 under their parent as a tree.  Resume to load, Delete to remove.
@@ -103,7 +104,7 @@ _NO_FILTERED_SESSIONS = msg("tui.sessions.empty.filtered", fallback="No sessions
 _NO_SEARCH_MATCHES = msg("tui.sessions.empty.search", fallback="No sessions on this page match your search.")
 _SEARCH_PLACEHOLDER = msg(
     "tui.sessions.search_placeholder",
-    fallback="Search this page… (matches any column & your prompts)",
+    fallback="Search this page… (IDs, titles, directories & your prompts)",
 )
 _RESUME = msg("tui.sessions.button.resume", fallback="Resume")
 _DELETE = msg("tui.sessions.button.delete", fallback="Delete")
@@ -438,7 +439,8 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
             cell = sanitize_legacy_scalar(surrogate_safe_text(row.cells[column.key]))
             value = Text(cell, justify="right" if column.numeric else "left")
             if highlight:
-                value.highlight_words([highlight], match_style, case_sensitive=False)
+                if column.searched:
+                    value.highlight_words([highlight], match_style, case_sensitive=False)
                 if not row.matched:
                     # Ancestor kept only to anchor a matching fork subtree.
                     value.stylize("dim")

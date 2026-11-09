@@ -631,6 +631,31 @@ async def test_search_filters_rows_and_highlights_matches(theme: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_search_highlights_the_query_only_where_it_searches() -> None:
+    from textual.widgets import Input
+
+    store = FakeSessionStore(3)
+    store.sessions[1] = replace(store.sessions[1], title="mb converter", size_bytes=3 * 1024 * 1024)
+    screen = SessionsScreen(store)
+
+    app = SessionsHostApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.push_screen(screen)
+        table = screen.query_one("#sessions", _SessionTable)
+        await wait_for_row_count(table, pilot, 3)
+
+        screen.query_one("#search", Input).value = "mb"
+        await wait_for_row_count(table, pilot, 1)
+
+        cells = dict(zip((column.key for column in screen._columns), table.get_row_at(0), strict=True))
+        match_style = rich_style_from_textual_color(app.theme_variables["warning"], reverse=True)
+        assert (cells["title"].plain, cells["size"].plain) == ("mb converter", "3.0 MB")
+        assert [span for span in cells["title"].spans if span.style == match_style]
+        # Size is not searched, so its "MB" is no match.
+        assert not [span for span in cells["size"].spans if span.style == match_style]
+
+
+@pytest.mark.asyncio
 async def test_search_escape_clears_then_returns_focus_to_table() -> None:
     from textual.widgets import Input
 

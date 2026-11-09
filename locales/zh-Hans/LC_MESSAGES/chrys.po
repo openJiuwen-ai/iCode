@@ -11136,11 +11136,11 @@ msgstr "本页没有匹配搜索的会话。"
 msgid "tui.sessions.loading"
 msgstr "正在加载会话"
 
-#. English: Search this page… (matches any column & your prompts)
-#. chrys-meta={"fingerprint":"f87aabb0dc1f39e3d61082c7eaf08c620cb7d84c86b982237d5797b7f2383d3d","multiline":false,"placeholders":[]}
+#. English: Search this page… (IDs, titles, directories & your prompts)
+#. chrys-meta={"fingerprint":"c8236316f626be5b76eee19ff493ddc06cf15453d733618a4467a1b5b31e0f63","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.search_placeholder"
-msgstr "搜索本页…（匹配任意列和你的提示词）"
+msgstr "搜索本页…（匹配 ID、标题、目录和你的提示词）"
 
 #. English: Cancelled
 #. chrys-meta={"fingerprint":"f0ea7e7ae2fa270015fa78e6b5fcff27cc4ffa6d30271bc6d150455cbf1c252f","multiline":false,"placeholders":[]}
