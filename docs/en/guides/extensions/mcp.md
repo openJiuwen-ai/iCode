@@ -59,7 +59,7 @@ An STDIO connection starts the specified program on the local machine. If the st
 
 ## Import servers from other applications
 
-You can copy MCP servers you already use in Claude Code into the current agent. This is a one-time copy: later changes in the other application do not update iCode.
+You can copy MCP servers you already use in Claude Code or Codex into the current agent. This is a one-time copy: later changes in the other application do not update iCode.
 
 1. In `/agents mcp`, click "Import from Other Apps" next to "+ Add".
 2. Select an application on the left. Each server is shown as the card it will become; click its name to expand it.
@@ -81,6 +81,7 @@ The mark after a server's name tells you what to check. "⚠" with a number coun
 | Application | Files read |
 | --- | --- |
 | Claude Code | `~/.claude.json` (or the one in `CLAUDE_CONFIG_DIR`), for your servers and those added for the current project; `.mcp.json` in the current folder and at the top of its Git repository |
+| Codex | `~/.codex/config.toml` (or the one in `CODEX_HOME`); `.codex/config.toml` in the current folder and at the top of its Git repository |
 
 When several files define a server with the same name, the one that applies to the current project is listed. Servers added only by cloud services, plugins or extensions are not listed; add them manually.
 
@@ -90,10 +91,10 @@ When several files define a server with the same name, the one that applies to t
 
 | Cause | What to do |
 | --- | --- |
-| The server uses SSE or WebSocket | If it also offers Streamable HTTP or a STDIO command, add it manually that way. |
+| The server uses SSE or WebSocket, or runs in a remote Codex environment | If it also offers Streamable HTTP or a STDIO command on this computer, add it manually that way. |
 | An environment variable in a URL, command or argument | Add the server manually with the full URL or the actual value. |
 | An empty value, or one with spaces at either end | Add the server manually and enter the value it needs. |
-| An invalid header name, or a header value with non-ASCII text or control characters | Add the server manually and enter the header the server accepts. |
+| An invalid header name, a header value with non-ASCII text or control characters, or two header names that differ only in case | Add the server manually and enter the header the server accepts. |
 
 If a file cannot be read, the error appears above the list, and servers from the other files are still listed. Correct the file, then open import again.
 
