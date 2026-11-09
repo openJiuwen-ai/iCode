@@ -7,7 +7,7 @@
 
 - 责任人：周彬
 - 状态：已确认
-- 确认日期：2026-11-02
+- 确认日期：2026-11-09
 - 确认意见：无特别意见
 
 > 修订记录：2026-11-02（二）外部 AI 评审（证据核验 + 责任人裁决）后重写——UI 形态
@@ -68,6 +68,11 @@
 > 不触达 PEP 758；verification §3 实录化与 §5 manifest 逐行结论；state 窗口表述
 > 精确化）；其余候选映射排除或维持签认边界。全部零上游改动，明细见 verification
 > 第二份评审处置节。
+> 2026-11-09（十三）environment-config 批次登记预告插入（ADR-0022 草案）：
+> C032/C033/C039/C042/C043 现役行保留以维持严格对账；本次为草案联动，正文变更待责任人
+> 随 environment-config 批次签认实施按 R10 一并重签。
+> 2026-11-09（十四）environment-config 实施登记迁移：上述五个 id 的现役行删除，
+> 退役记录由 environment-config design 持有；C034 等其余现役点不变，本文按 R10 待责任人重签。
 
 ## 方案概述
 
@@ -371,24 +376,23 @@ R1 自查（必答）：
 |---|---|---|---|---|---|---|
 | C030 | src/chrys/service/profiles/models/registry.py | AIxCoding catalog: background sync thread | 1 | `ModelProfileRegistry._profiles` 状态一致性（RLock 包覆） | 高（核心数据结构加锁） | 〔上游等价〕上游自带跨线程安全且整替语义有官方通道，经对比分析确认可迁移（提请裁决） |
 | C031 | src/chrys/service/profiles/models/registry.py | AIxCoding catalog: install a same-version snapshot | 1 | `install_profiles` 只增不删语义（C030 孪生前提） | 高（删除语义核心） | 〔随组〕随 C030 一并裁决 |
-| C032 | src/chrys/foundation/config/settings.py | AIxCoding catalog: server-side model catalog base | 1 | `spec()`/`Apply.RESTART`/`ProjectMerge.DENY` 声明体系 | 中（foundation 配置契约） | 〔上游等价〕上游声明体系原生支持第三方目录源配置，或部署形态改纯 env 直读 |
-| C033 | src/chrys/foundation/config/process_settings.py | AIxCoding catalog: base url projection | 1 | `ProcessSettings.from_settings` 投影机制 | 中 | 〔随组〕随 C032 一并裁决 |
 | C034 | src/chrys/app/tui/app.py | AIxCoding catalog: startup sync + poll wiring | 1 | TUI `main()` 启动序列（假设 6）；catalog 单例 | 中（入口文件） | 〔上游等价〕上游提供启动期目录同步挂点，或部署形态取消本地目录同步 |
 | C035 | src/chrys/app/tui/screens/main/config_actions.py | AIxCoding catalog: centrally managed, always read-only | 1 | `ModelConfigScreen(read_only=...)` 参数（假设 1） | 低 | 〔政策变更〕档案集中管理政策取消 |
 | C036 | src/chrys/app/tui/screens/main/screen.py | AIxCoding catalog: F4 model-management entry disabled | 1 | `BINDINGS` 表 `localized_binding` | 低 | 〔政策变更〕随 C035 一并裁决 |
 | C037 | src/chrys/app/tui/screens/main/screen.py | AIxCoding catalog: live label via registry | 1 | `compute_model_indicator_state` 调用链（C041 配套） | 低 | 〔随组〕随同步特性整体裁决 |
 | C038 | src/chrys/app/tui/screens/models/picker.py | AIxCoding catalog: "Manage models…" entry disabled | 1 | `on_mount` 渲染段；`ModelPickerAction.MANAGE` 协议面（假设 9） | 低 | 〔政策变更〕随 C035 一并裁决 |
-| C039 | src/chrys/app/tui/screens/settings/layout.py | AIxCoding catalog: keep base_url out of the panel | 1 | `DEFERRED_KEYS` 排除集（假设 10） | 低 | 〔随组〕随 C032 一并裁决 |
 | C040 | src/chrys/app/tui/screens/models/screen.py | AIxCoding catalog: read-only notice wording | 1 | `_READ_ONLY_NOTICE` msg 定义（fallback + po msgstr） | 低 | 〔政策变更〕随 C035 一并裁决 |
 | C041 | src/chrys/app/tui/screens/main/model_indicator.py | AIxCoding catalog: label tracks the live registry | 1 | `compute_model_indicator_state` 签名（`model_registry` 参数） | 低 | 〔随组〕随同步特性整体裁决 |
-| C042 | tests/foundation/i18n/_catalog_oracle_ids.py | AIxCoding catalog: settings label key | 1 | oracle `EXPECTED_MESSAGE_IDS` 集合 | 低 | 〔机制退役〕借壳 key 机制退役（同 C027 判据） |
-| C043 | tests/foundation/i18n/test_catalog_oracle.py | AIxCoding catalog: +1 borrow-shell key | 1 | oracle size 断言 | 低 | 〔机制退役〕随 C042（同 C028 判据） |
 | C044 | tests/app/tui/screens/test_model_picker.py | AIxCoding catalog: manage entry disabled | 1 | manage 反断言（`OptionDoesNotExist`） | 低 | 〔政策变更〕随 C038（manage 入口恢复时反断言随之撤除） |
 | C045 | tests/app/tui/screens/test_model_picker.py | AIxCoding catalog: manage routing via synthesized event | 1 | manage 参数化用例合成 `OptionSelected` 驱动（不依赖渲染选项） | 低 | 〔随组〕随 C038/C044；manage 入口恢复时还原为真实选项驱动，协议分支整体删除的清理批次再退役 |
 | C046 | tests/app/tui/screens/test_model_indicator_wiring.py | AIxCoding catalog: registry is the live name source | 1 | wiring 测试 registry 名对齐构造（5 处）+ 语义注释 | 低 | 〔随组〕随 C037/C041；live label 语义恢复快照时回改 |
 | C047 | tests/app/tui/screens/test_model_config.py | AIxCoding catalog: centrally managed notice assertion | 1 | notice 断言期望串（集中管理文案） | 低 | 〔随组〕随 C040；notice 文案恢复时回改 |
 | C048 | tests/app/tui/behaviors/test_chrys_footer.py | AIxCoding catalog: F4 footer key removed | 1 | footer 渲染/本地化/调和断言（4 处过期期望删除） | 低 | 〔随组〕随 C036；F4 入口恢复时期望随之回补 |
 | C049 | tests/app/tui/i18n/test_bindings.py | AIxCoding catalog: f4 binding retired | 1 | provenance id 集合 + keymap 契约表（2 处过期期望删除） | 低 | 〔随组〕随 C036/C048；F4 声明恢复时条目回补 |
+
+> 退役登记（2026-11-09，environment-config 实施）：C032/C033/C039/C042/C043 已随模型目录
+> base URL 退出上游 Settings 迁入 `aixcoding/docs/batches/environment-config/design.md` 的退役记录，
+> 本节现役行同步删除；本文由责任人按 R10 重签后闭环。
 
 （定制包 `src/chrys/service/aixcoding/` 与测试 `aixcoding/tests/catalog/` 为独立定制
 模块/开发资产，无上游落点，不入登记表——ADR-0015 射程为上游文件定制点。）

@@ -8,7 +8,7 @@
 
 * ``model_catalog`` on :7777 with the device-code auth mock mounted on the
   same port — login + catalog + LLM chat from one origin, zero extra config
-  under ``AIXCODING_AUTH_ENVIRONMENT=local``;
+  under ``AIXCODING_ENVIRONMENT=local``;
 * ``update`` on :7778.
 
 Each mock keeps its own server instance and port; this module only
@@ -166,11 +166,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print("Point the TUI at the mocks, e.g.:")
-    print("  AIXCODING_AUTH_ENVIRONMENT=local uv run aixcoding-cli")
+    print("  AIXCODING_ENVIRONMENT=local uv run aixcoding-cli")
     if "update" in names:
-        print(
-            f"  AIXCODING_EXTENSION_BASE_URL=http://127.0.0.1:{UPDATE_PORT}/csas   # only if exercising update detection"
-        )
+        print("  update: contract mock only; product wiring lands with the update batch")
     print("Ctrl+C stops everything.")
     try:
         threading.Event().wait()

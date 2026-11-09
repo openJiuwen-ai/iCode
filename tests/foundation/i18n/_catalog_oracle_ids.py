@@ -196,7 +196,6 @@ _message_ids: set[str | tuple[str, str]] = {
     "session_host.session_id_ambiguous",
     "session_host.session_not_found",
     "session_host.session_not_found_with_recent",
-    "settings.model.catalog.base_url.label",  # AIxCoding catalog: settings label key
     "startup.invalid_no_proxy_env",
     "startup.notifications_migration_failed",
     "startup.notifications_migration_retry",

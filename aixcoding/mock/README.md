@@ -8,9 +8,9 @@
 
 | 子包 | 模拟目标 | 默认端口 | 产品端指向（默认） |
 |---|---|---|---|
-| `auth/` | 设备码登录认证服务 | 7777 | `AIXCODING_AUTH_ENVIRONMENT=local`（零配置） |
-| `model_catalog/` | 服务端下发模型目录（**默认同端口内嵌 auth 路由** + LLM chat `/v1`） | 7777 | 同上（一站式）；目录端点经 `model.catalog.base_url` |
-| `update/` | TUI 版本更新检测（`--port` 可覆盖） | 7778 | `AIXCODING_EXTENSION_BASE_URL=http://127.0.0.1:7778/csas` |
+| `auth/` | 设备码登录认证服务 | 7777 | `AIXCODING_ENVIRONMENT=local`（零配置） |
+| `model_catalog/` | 服务端下发模型目录（**默认同端口内嵌 auth 路由** + LLM chat `/v1`） | 7777 | 同上（一站式）；目录基址可经 `aixcoding.toml` 的 `[model_catalog].base_url` 覆盖 |
+| `update/` | TUI 版本更新检测（`--port` 可覆盖） | 7778 | 当前产品端未接入；仅用于契约测试，待 update 批次接线 |
 | `telemetry/` | 遥测接收后端（**殿后**，随 telemetry 迁入） | 4321（占位） | config.py LOCAL 档默认 |
 
 **合用端口说明**：catalog 与 auth 合用 :7777 并非技术上必须（auth 有
@@ -44,8 +44,9 @@ netstat -ano | findstr :7777        # 查占用 PID（Windows）
 tasklist /fi "PID eq <pid>"         # 看进程名，杀掉残留 mock 后重试
 ```
 
-逃生门（人工作出端口时）：mock 侧 `--port` + 产品端 env 同步覆盖
-（`AIXCODING_AUTH_SERVER_URL` / `CHRYS_MODEL_CATALOG_BASE_URL` / `AIXCODING_EXTENSION_BASE_URL`）。
+逃生门（人工作出端口时）：auth 使用 mock 侧 `--port` + 产品端 `AIXCODING_AUTH_SERVER_URL`；
+模型目录使用 mock 侧 `--port` + `aixcoding.toml` 的 `[model_catalog].base_url`。update 当前无产品端
+消费方，仅通过契约测试或独立接口请求验证。
 
 ## 目录结构
 

@@ -3961,14 +3961,14 @@
         ["awaitable", "await call_next()", "unresolved"]
       ]
     },
-    "chrys.service.aixcoding.catalog": {
+    "chrys.service.aixcoding.models.catalog": {
       "fetch_catalog": [
         ["awaitable", "await get_login_session().verify_live_credential()", "unresolved"],
         ["async_context", "async with httpx.AsyncClient(timeout=timeout)", "unresolved"],
         ["queue", "await client.get(endpoint, headers=headers)", "unresolved"]
       ],
       "sync_catalog": [
-        ["wrapper", "await fetch_catalog(url, timeout=timeout)", "unresolved", "chrys.service.aixcoding.catalog.fetch_catalog"]
+        ["wrapper", "await fetch_catalog(url, timeout=timeout)", "unresolved", "chrys.service.aixcoding.models.catalog.fetch_catalog"]
       ]
     },
     "chrys.service.approval.arbitration": {

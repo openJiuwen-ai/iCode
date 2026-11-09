@@ -674,9 +674,6 @@ def probe_session_root(raw: str) -> Path | None:
 # field without one.
 
 _LABEL_MODEL_PROFILE_ACTIVE = msg("settings.model.profile.active.label", fallback="Active model profile")
-# AIxCoding catalog: server-side model catalog base (borrow-shell label —
-# see aixcoding/docs/batches/catalog-sync/design.md).
-_LABEL_MODEL_CATALOG_BASE_URL = msg("settings.model.catalog.base_url.label", fallback="Model catalog base URL")
 _LABEL_AGENT_DEFAULT_PROFILE = msg("settings.agent.default_profile.label", fallback="Default agent")
 _LABEL_MODEL_ROLE_APPROVAL_JUDGE = msg("settings.model.role.approval_judge.label", fallback="Approval judge model")
 _LABEL_MODEL_ROLE_SESSION_TITLE = msg("settings.model.role.session_title.label", fallback="Session title model")
@@ -876,24 +873,6 @@ class Settings:
             group="model",
             kind=Kind.BOOL,
             persist=False,
-        ),
-    )
-
-    # The deployment's catalog service; the sync appends its fixed request
-    # path and the tier table provides the default.
-    model_catalog_base_url: str = field(
-        default="",
-        metadata=spec(
-            key="model.catalog.base_url",
-            label=_LABEL_MODEL_CATALOG_BASE_URL,
-            env="CHRYS_MODEL_CATALOG_BASE_URL",
-            coerce=text_coercer(),
-            apply=Apply.RESTART,
-            group="model",
-            kind=Kind.TEXT,
-            # Which server owns the model list is a deployment decision; a
-            # cloned repository must not point the catalog elsewhere.
-            project_merge=ProjectMerge.DENY,
         ),
     )
 

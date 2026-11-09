@@ -41,6 +41,20 @@
 其中包括配置、API keys、模型配置、agents、skills 和会话等。普通安装、升级和普通卸载
 均保留这些数据。下载的脚本、压缩包、解压目录与 PyApp 运行缓存不属于该数据目录。
 
+### 2.3 运行环境与服务配置
+
+AIxCoding 的共享配置文件为上述数据目录下的 `aixcoding.toml`：
+
+- 顶层 `environment = "local" / "dev" / "prod"` 选择 auth 与模型目录的部署环境；
+  `AIXCODING_ENVIRONMENT` 的优先级高于 TOML，均未设置时为 `prod`。
+- `[model_catalog].base_url` 可选，覆盖当前 tier 的模型目录服务基址；完整请求路径仍由产品拼接。
+- `[logging]` 支持 `level` 与 `panel`，分别控制文件日志级别和 F6 面板摘要冒泡。
+
+本地 mock 验证使用 `AIXCODING_ENVIRONMENT=local`，详细配方见
+[../mock/README.md](../mock/README.md)。旧 `AIXCODING_AUTH_ENVIRONMENT`、
+`CHRYS_AUTH_ENVIRONMENT` 与旧 Settings 键 `model.catalog.base_url` 均不生效，也不提供检测、
+别名或迁移警告；排障时不得继续建议这些旧配置。
+
 ## 3. 平台支持矩阵
 
 | 系统 | 支持范围 |

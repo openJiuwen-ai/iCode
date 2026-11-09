@@ -21,7 +21,7 @@ uv run python aixcoding/mock/auth/server.py --slow-down 3    # 前 3 次轮询�
 客户端指向它：
 
 ```bash
-AIXCODING_AUTH_ENVIRONMENT=local uv run aixcoding-cli
+AIXCODING_ENVIRONMENT=local uv run aixcoding-cli
 ```
 
 作为 Python 模块（测试桩）：

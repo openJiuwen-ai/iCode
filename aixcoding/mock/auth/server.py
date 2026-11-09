@@ -40,7 +40,7 @@ Run it from the repository root::
 
 Then point iCode at it::
 
-    AIXCODING_AUTH_ENVIRONMENT=local uv run aixcoding-cli
+    AIXCODING_ENVIRONMENT=local uv run aixcoding-cli
 
 The module is also importable: ``MockAuthConfig`` / ``MockAuthState`` /
 ``create_server`` let tests start a loopback instance as an integration stub

@@ -15,8 +15,8 @@ Public API lives in :mod:`aixcoding.mock.update.server`; the canonical
 entry points are :func:`aixcoding.mock.update.server.create_server`
 (tests, ephemeral port) and ``python aixcoding/mock/update/server.py``
 (defaults: loopback :7778; ``--port`` overrides it, every other knob is
-steered at runtime via ``POST /debug/config``). Point the TUI at it with
-``AIXCODING_EXTENSION_BASE_URL=http://127.0.0.1:7778/csas``.
+steered at runtime via ``POST /debug/config``). The current product has no
+internal update consumer; product wiring belongs to the future update batch.
 
 Layout::
 
@@ -29,10 +29,8 @@ Layout::
     aixcoding/tests/mock/
         test_update_server.py   # contract tests (stdlib urllib, no fixtures needed)
 
-The TUI client (``src/chrys/aixcoding/update_detection.py``) ships alongside
-this mock: its end-to-end tests live in ``tests/app/aixcoding/`` (migrating
-with the update feature), while the contract tests in
-``aixcoding/tests/mock/`` keep guarding the mock itself.
+The TUI client and its end-to-end tests migrate with the update feature;
+until then, the contract tests in ``aixcoding/tests/mock/`` guard this mock.
 """
 
 from __future__ import annotations

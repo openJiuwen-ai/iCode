@@ -61,6 +61,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import httpx
 
 from chrys.foundation.text.yaml_io import dump_yaml
+from chrys.service.aixcoding.config import load_config
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import (
     API_STYLE_CHAT_COMPLETIONS,
@@ -72,10 +73,8 @@ from chrys.service.profiles.models.schema import (
 # AIxCoding 方案六 (2026-11-04; revised 2026-11-05 logging-routing-fixes):
 # catalog records are technical events on the file-only "aixcoding.detail.catalog"
 # logger (ADR-0017) — the main volume and the F6 panel carry user-facing events
-# only (DEVELOPMENT.md §9). User-actionable configuration errors (retired env
-# names) are the one exception: they carry a public WARNING double-write.
-# The detail subtree never propagates to the panel or the upstream log.
-_log = logging.getLogger("aixcoding.catalog")
+# only (DEVELOPMENT.md §9). The detail subtree never propagates to the panel or
+# the upstream log.
 _detail_log = logging.getLogger("aixcoding.detail.catalog")
 
 #: AIxCoding detail logging: level of the file-only channel; mirrors
@@ -91,42 +90,16 @@ CATALOG_TOKEN_ENV = "AIXCODING_MODEL_CATALOG_TOKEN"
 #: server-side change is watched without waiting the default quarter of an hour.
 SYNC_INTERVAL_ENV = "AIXCODING_MODEL_CATALOG_SYNC_INTERVAL"
 
-#: Retired names from the 0.28-era deployment.  They are no longer read and
-#: there is no compatibility period: an internal deployment must move to the
-#: ``AIXCODING_`` names.  Their presence is warned about — names only, never
-#: values — so a stale deployment is observable instead of silently falling
-#: back to the tier base, the login token or the default interval.
-RETIRED_ENV_NAMES: tuple[str, ...] = (
-    "CHRYS_MODEL_CATALOG_URL",
-    "CHRYS_MODEL_CATALOG_TOKEN",
-    "CHRYS_MODEL_CATALOG_SYNC_INTERVAL",
-    "CHRYS_REMOTE_MODEL_CONFIG_URL",
-)
-_warned_retired_env: set[str] = set()
-
 #: Appended to a base URL the way the reference client builds the endpoint, so
 #: a deployment configures only the host part.
 CATALOG_PATH = "/llm/api/v1/continue-config/dispatch"
 
-#: The base comes from configuration first: ``model.catalog.base_url`` in
-#: ``~/.chrys/settings.yaml``, or ``CHRYS_MODEL_CATALOG_BASE_URL`` — both
-#: declared on the setting in :mod:`chrys.foundation.config.settings`, which is
-#: the one place the name lives (the settings-system exception in DIRECTORY.md
-#: §9: the contract belongs to the upstream settings machinery). With none
-#: configured, every tier has a base in :data:`_CATALOG_BASES` below — local
-#: the loopback mock, dev and prod their own hosts, unset or unknown resolved
-#: to prod — so a catalog source is always named. Whether a sync actually
-#: runs is the credential's to decide (:func:`has_catalog_credential` gates
-#: the poll; the startup path swallows the no-credential failure with a log).
-#:
-#: The tier is read from auth's own variable, not a catalog-specific one: the
-#: catalog, the login flow and the user-data service are one deployment, and
-#: two variables for one deployment is how a session ends up logged into DEV
-#: while pulling its model list from PROD. The accepted values are auth's
-#: (``chrys.kernel.aixcoding.auth.types.Environment``), and so is the PROD
-#: fallback — see ``aixcoding/tests/catalog/test_catalog_sync.py``, which fails
-#: if the two ever drift apart.
-ENVIRONMENT_ENV = "AIXCODING_AUTH_ENVIRONMENT"
+#: The shared ``aixcoding.toml`` base wins when configured; otherwise every tier
+#: has a base in :data:`_CATALOG_BASES` below — local the loopback mock, dev and
+#: prod their own hosts. The same shared environment drives auth and the model
+#: catalog, so a session cannot log into one tier while pulling models from another.
+#: Whether a sync runs is the credential's to decide (:func:`has_catalog_credential`
+#: gates the poll; the startup path swallows the no-credential failure with a log).
 
 #: Catalog base per deployment tier, keyed by the very values auth defines
 #: (``chrys.kernel.aixcoding.auth.types.Environment``) — see the drift test in
@@ -225,25 +198,6 @@ class CatalogSyncResult:
         return tuple(pid for pid in self.previous_profile_ids if pid not in self.profile_ids)
 
 
-def _warn_retired_env() -> None:
-    """Warn once per retired name that is still set — names only, never values."""
-    for name in RETIRED_ENV_NAMES:
-        if name in _warned_retired_env:
-            continue
-        if os.environ.get(name):
-            _warned_retired_env.add(name)
-            # AIxCoding logging (batches/logging-routing-fixes, D): a retired env
-            # name still set is a user-actionable configuration error — the one
-            # public-channel exception to 方案六's detail-only catalog routing;
-            # double-write per DEVELOPMENT.md §9 (user-facing events hit both).
-            _log.warning("环境变量 %s 已停用且不生效；请改用 AIXCODING_MODEL_CATALOG_* 系列变量。", name)
-            _detail_log.log(
-                _DETAIL_LEVEL,
-                "环境变量 %s 已停用且不生效；请改用 AIXCODING_MODEL_CATALOG_* 系列变量。",
-                name,
-            )
-
-
 def catalog_directory() -> Path:
     """Return the directory a catalog replaces: ``~/.chrys/models``."""
     from chrys.foundation.platform import get_platform
@@ -255,23 +209,17 @@ def catalog_state_path() -> Path:
     return catalog_directory() / STATE_FILENAME
 
 
+def catalog_tier() -> str:
+    """Return the shared deployment tier for auth and the model catalog."""
+    return load_config().environment
+
+
 def catalog_base_url() -> str:
-    """Return the catalog base for the current environment.
-
-    A configured base wins: ``model.catalog.base_url`` in
-    ``~/.chrys/settings.yaml`` or ``CHRYS_MODEL_CATALOG_BASE_URL``. With none
-    configured the base comes from the deployment tier
-    (:data:`_CATALOG_BASES`), so ``local`` reaches the loopback mock while
-    ``dev`` and ``prod`` reach their own host — an unset or unknown tier
-    resolves to prod, so the base is never empty.
-    """
-    from chrys.foundation.config.process_settings import process_settings
-
-    configured = process_settings().model_catalog_base_url.strip()
+    """Return the shared TOML base, falling back to the deployment tier."""
+    configured = load_config().model_catalog.base_url
     if configured:
         return configured
-    tier = os.environ.get(ENVIRONMENT_ENV, "").strip().lower()
-    return _CATALOG_BASES.get(tier, _CATALOG_BASES[DEFAULT_ENVIRONMENT])
+    return _CATALOG_BASES.get(catalog_tier(), _CATALOG_BASES[DEFAULT_ENVIRONMENT])
 
 
 def catalog_url() -> str:
@@ -284,7 +232,6 @@ def catalog_url() -> str:
     :func:`catalog_base_url` and :data:`CATALOG_PATH` is appended to it, which
     is how the reference client builds the endpoint from a base.
     """
-    _warn_retired_env()
     value = os.environ.get(CATALOG_URL_ENV, "").strip()
     if value:
         return value
@@ -570,7 +517,6 @@ def _resolve_catalog_credential() -> tuple[str, str]:
     verified live first. Token and origin are read here exactly once, so the
     two can never drift apart.
     """
-    _warn_retired_env()
     env_token = os.environ.get(CATALOG_TOKEN_ENV, "").strip()
     if env_token:
         return env_token, "env"
@@ -901,7 +847,6 @@ def sync_interval_seconds() -> float:
     default and is logged: a typo must neither stop the poll (zero) nor turn
     it into a hot loop (negative, NaN) or kill the wait (infinity).
     """
-    _warn_retired_env()
     raw = os.environ.get(SYNC_INTERVAL_ENV, "").strip()
     if not raw:
         return float(SYNC_INTERVAL_SECONDS)

@@ -143,6 +143,7 @@ aixcoding/mock/<name>/            # 命名：无前缀服务名（auth / update 
 |---|---|
 | 定制目录/包名 | 全小写 `aixcoding`（上游标记注释用 `AIxCoding`，见 R3） |
 | fork 新增环境变量 | 统一 `AIXCODING_` 前缀；例外：配置契约归属上游的沿用 `CHRYS_` 并在特性 design 登记——判据=**配置契约归属**（变量的语义/解析/校验/默认值/生命周期由谁拥有；由上游 settings `spec()` 声明并纳入其加载/合并/投影体系即归属上游），"模块内定义并直读"是 fork 私有契约的机械代理判据，用户可见性/调试用途不影响分类（首次决策 2026-10-25：`CHRYS_AUTH_*` 随 auth 迁入更名 `AIXCODING_AUTH_*`，详见 `docs/batches/mock/design.md` 决策记录；判据澄清与 `SYNC_INTERVAL` 归类更正 2026-11-02，catalog-sync 批次 design 对比五） |
+| 统一部署环境 | `AIXCODING_ENVIRONMENT=local/dev/prod`；共享配置文件为数据目录下 `aixcoding.toml`，优先级 env > TOML > prod；旧变量零兼容（ADR-0022） |
 | mock 子包 | 无前缀服务名：`auth`、`update`、`model_catalog`、`telemetry` |
 | 测试文件 | `test_*.py`；契约测试随被测 mock 命名（`test_<name>_server.py`） |
 | mock 公开 API | `create_server(...)`（factory）/ `main()`（CLI）；配置状态类 `Mock*Config` / `Mock*State` |

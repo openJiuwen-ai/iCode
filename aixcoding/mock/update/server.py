@@ -20,11 +20,10 @@ The manifest is built per request from the query — ``kind`` mirrors
 version and download URL, so any caller gets a coherent answer.
 
 The only CLI flag is ``--port`` (default loopback :7778; ``0`` picks a free
-port — the product side then needs ``AIXCODING_EXTENSION_BASE_URL`` pointing
-at it). Otherwise the process starts with defaults (update mode, candidate
-``999.0.0``) and every response-shaping knob is steered at runtime via
-``POST /debug/config``; ``POST /debug/reset`` restores all defaults and drops
-the request log in one call.
+port and reports it through the returned server's ``base_url``). Otherwise the
+process starts with defaults (update mode, candidate ``999.0.0``) and every
+response-shaping knob is steered at runtime via ``POST /debug/config``;
+``POST /debug/reset`` restores all defaults and drops the request log in one call.
 
 Four modes (runtime ``POST /debug/config``):
 
@@ -57,10 +56,9 @@ Run it from the repository root::
 
     uv run python aixcoding/mock/update/server.py    # loopback :7778, update mode
 
-Then steer it at runtime and point the TUI at it::
+Then steer it at runtime::
 
     curl -X POST http://127.0.0.1:7778/debug/config -d '{"mode": "no_update"}'
-    AIXCODING_EXTENSION_BASE_URL=http://127.0.0.1:7778/csas uv run aixcoding-cli
 
 Importable for tests: ``MockUpdateConfig`` / ``MockUpdateState`` /
 ``create_server`` start a loopback instance on an ephemeral port.
@@ -551,10 +549,9 @@ def create_server(
 def main(argv: list[str] | None = None) -> int:
     """Run the mock server (loopback, default :7778, update mode) until interrupted.
 
-    ``--port`` overrides the bind port (the product side then needs
-    ``AIXCODING_EXTENSION_BASE_URL`` pointing at it); steer every other knob —
-    mode, candidate version, delay, dirty-data flags, malformed-response
-    drills — at runtime via ``POST /debug/config``. Returns a process exit code.
+    ``--port`` overrides the bind port; steer every other knob — mode,
+    candidate version, delay, dirty-data flags, malformed-response drills —
+    at runtime via ``POST /debug/config``. Returns a process exit code.
     """
     parser = argparse.ArgumentParser(
         prog="mock_update_server",

@@ -29,11 +29,8 @@ curl -X POST http://127.0.0.1:7778/debug/reset  # 一键恢复默认配置并清
 curl http://127.0.0.1:7778/debug/requests  # 查看每次检测请求的参数与状态码
 ```
 
-客户端指向它：
-
-```bash
-AIXCODING_EXTENSION_BASE_URL=http://127.0.0.1:7778/csas uv run aixcoding-cli
-```
+产品端接线状态：当前版本尚未迁入内部 update 消费方，本 mock 仅用于契约测试与独立接口演练；
+不得继续使用 0.28 的全局扩展地址环境变量。产品端配置由后续 update 批次按 ADR-0022 接线。
 
 作为 Python 模块（测试桩）：
 
