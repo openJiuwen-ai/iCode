@@ -268,11 +268,14 @@ def callsite(operation_id: str) -> str:
 
 def format_duration(value_ns: int | float) -> str:
     seconds = float(value_ns) / 1_000_000_000
-    if seconds < 1:
+    if round(seconds * 1000) < 1000:
         return f"{seconds * 1000:.0f} ms"
-    if seconds < 60:
+    if round(seconds, 2) < 60:
         return f"{seconds:.2f} s"
-    minutes, remainder = divmod(int(seconds), 60)
+    # Minutes and up still truncate, so an elapsed time only reaches the next
+    # unit once it is whole seconds long; a duration the seconds branch just
+    # declined (≥59.995 s) carries into the first whole minute instead.
+    minutes, remainder = divmod(max(int(seconds), 60), 60)
     if minutes < 60:
         return f"{minutes}m {remainder:02d}s"
     hours, minutes = divmod(minutes, 60)
