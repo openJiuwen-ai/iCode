@@ -104,6 +104,12 @@ def test_invalid_toml_preserves_environment_variable(
     assert "cannot parse" in capsys.readouterr().err
 
 
+def test_bad_level_name_falls_back(tmp_path: Path):
+    write_toml(tmp_path, '[logging]\nlevel = "NOISY"\n')
+    cfg = load_config(tmp_path)
+    assert cfg.diagnostics.logging.level == logging.INFO
+
+
 def test_bad_types_fall_back_safely(tmp_path: Path, capsys):
     write_toml(tmp_path, 'environment = 1\n[logging]\npanel = "yes"\n[model_catalog]\nbase_url = 42\n')
     cfg = load_config(tmp_path)

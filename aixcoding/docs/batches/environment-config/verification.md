@@ -159,3 +159,23 @@ git diff --check
 **2860 waits / 0 reopened**；strict **100 行 / 137 marker / retired=5 / 0 warning**；check_docs OK；
 diff check 通过（仅既有 autocrlf 提示）。`aixcoding/mock/` 与 `src/` 的旧部署变量、旧模型目录变量、
 旧 Settings 键和旧 catalog 模块路径检索均为 0。上述新增改动待 GLM-5.3 增量复审。
+
+## 2026-11-09 PR #103 peer review C1 补测
+
+PR peer review（head `f4dbf024`，26 checks 全绿）确认唯一缺陷候选 C1：旧
+`test_bad_level_name_falls_back` 在 diagnostics 旧文件删除时未迁入新 config 套件，非法 level 名
+回退失去测试锚定。责任人裁决本批补测，不登记技术债。
+
+命令：
+
+```text
+uv run python -m pytest aixcoding/tests/config aixcoding/tests/diagnostics aixcoding/tests/auth/test_auth_environments.py aixcoding/tests/catalog/test_catalog_sync.py aixcoding/tests/mock -n0
+uv run ruff check --no-fix aixcoding/tests/config/test_config.py
+uv run ruff format --check aixcoding/tests/config/test_config.py
+uv run python aixcoding/tools/check_docs.py
+uv run python aixcoding/tools/gen_customizations.py --strict
+git diff --check
+```
+
+结果：**218 passed, 2 skipped**；ruff All checks passed，1 file already formatted；check_docs OK；
+strict **100 行 / 137 marker / retired=5 / 0 warning**；diff check 通过（仅既有 autocrlf 提示）。

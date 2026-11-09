@@ -4,7 +4,7 @@
 
 ## 状态
 
-实现、验证与三轮外部评审完成，待按逐条授权流程提交；未提交、未推送。
+PR #103 已创建并推送（head `f4dbf024`，CI 26 checks 全绿）；peer review C1 补测已完成，待授权提交补测提交。
 
 ## 待办
 
@@ -22,7 +22,10 @@
 - [x] 提交前深度复核：补齐 mock 现行配方、env/TOML 非法值覆盖与三方 drift 断言。
 - [x] 补强后聚焦测试、ruff/format、i18n、wait manifest、strict、check_docs 与 diff check。
 - [x] GLM-5.3 第三轮增量复审通过；F-R3-1 拼写勘误完成，F-R3-2/F-R3-3 留档。
-- [ ] 按逐条授权流程提交 PR。
+- [x] PR #103 提交、推送并创建；head `f4dbf024` CI 26 checks 全绿。
+- [x] PR peer review C1 本批补测：迁回非法 level 名回退用例并登记处置。
+- [ ] 授权提交补测 commit 并推送原 PR #103。
+- [ ] 新 head CI 与增量 peer review 通过后合并。
 
 ## 挂起与备忘
 

@@ -36,7 +36,7 @@
 | 4. TOML 模型目录 base 替代旧键，完整 URL 最高优先 | `test_catalog_sync.py::test_full_url_env_has_highest_priority`、`test_toml_base_url_appends_catalog_path` | 单元 |
 | 5. 旧 Settings 键不再生效，无定制检测 | `test_config.py::test_settings_yaml_is_not_read`；`test_catalog_sync.py::test_old_settings_base_url_is_ignored`；上游 Settings 回归 | 单元 + 行为锚定 |
 | 6. 退役变量机制全部移除 | `test_catalog_sync.py::test_retired_environment_names_have_no_effect_or_warning`；删除 `test_retired_env_names_warn_and_do_not_apply` 与新旧双读用例 | 单元 |
-| 7. logging 行为保持，坏配置 fail-safe | `test_config.py` 缺文件/坏 TOML/坏类型用例；`test_logging_support.py` 既有 level/panel、主卷/detail 卷、幂等与容错用例 | 单元 + 组件 |
+| 7. logging 行为保持，坏配置 fail-safe | `test_config.py` 缺文件/坏 TOML/坏类型/坏 level 名用例；`test_logging_support.py` 既有 level/panel、主卷/detail 卷、幂等与容错用例 | 单元 + 组件 |
 | 8. 启动注入早于默认 LoginSession，覆盖 main 全入口 | `test_entry_wiring.py::test_environment_injection_precedes_default_session_construction`、`test_main_calls_aixcoding_startup`、`test_startup_task_order_and_single_snapshot` | 接线 + 行为锚定 |
 | 9. tier 依赖方向合法，无新增豁免 | `tests/architecture` 全量；`test_wait_manifest_matches_source`；`test_entry_wiring.py::test_startup_placement_and_task_registration` | 架构 |
 | 10. 五个 id 退役，C004/C034 保留，strict 全绿 | `gen_customizations.py --strict` 最终对账；`test_main_calls_aixcoding_startup` 与模型目录 TUI 接线锚 | 门禁 + 接线 |
@@ -53,6 +53,7 @@
 | `test_environment_precedence_env_toml_prod` | 分别构造仅缺省、仅 TOML、env+TOML | prod → TOML → env 的优先顺序正确，值经 strip/lower |
 | `test_invalid_environment_warns_and_falls_back` | env/TOML 分别写空值、非法值 | 回退 prod，stderr 含 `aixcoding.config` WARNING；非法 env 不再回落 TOML |
 | `test_invalid_toml_preserves_environment_variable` | 坏 TOML + 合法 env | logging/model_catalog 默认，env 仍生效，不抛异常 |
+| `test_bad_level_name_falls_back` | `[logging] level = "NOISY"` | level 静默回退 `INFO`，不阻断启动 |
 | `test_bad_types_fall_back_safely` | logging/model_catalog/environment 使用错误类型 | 对应字段回退并提示，CLI 组合不接收异常 |
 | `test_cache_returns_one_snapshot` | 首次读取后改文件，再以相同参数调用 | 返回同一快照；`cache_clear()` 后才读取新文件 |
 | `test_public_reexport_and_cache_clear` | 从包入口导入并清缓存 | 与 loader 中函数为同一对象，无第二缓存 |

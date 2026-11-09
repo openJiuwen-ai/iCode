@@ -80,3 +80,11 @@
 - F-R3-2（可留档）：mock README telemetry 行的 0.28 `config.py` 描述非现行操作指引，留待 telemetry 批次处理。
 - F-R3-3（观察）：verification 前节原始结论与后续纠正节并存符合不删改历史纪律，无需改动。
 - 第三轮增量补强评审收敛，可进入责任人逐条授权的 add/commit/push 与 PR 流程。
+
+## 2026-11-09 PR #103 peer review：C1 处置
+
+- peer review 确认 R2/R11 清单内、零幻觉 API、CI 26 checks 全绿；唯一缺陷候选 C1 为旧
+  `test_bad_level_name_falls_back` 迁移遗漏，非法 level 名回退失去测试锚定。
+- 责任人裁决本批补测；已在 `aixcoding/tests/config/test_config.py` 补回该用例，行为本体未改。
+- 补测后聚焦 218 passed / 2 skipped；ruff、format、check_docs、strict（100 行 / 137 marker /
+  retired=5 / 0 warning）、git diff --check 通过。
