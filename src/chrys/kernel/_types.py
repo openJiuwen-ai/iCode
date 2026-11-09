@@ -16,8 +16,8 @@ from collections.abc import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Collection,
     Generator,
-    Iterable,
     Mapping,
     MutableMapping,
     Sequence,
@@ -47,6 +47,7 @@ from ._content import (
     UsageDetails,
     _combine_annotations,
     _combine_raw_representations,
+    _ContentRun,
     _parse_content_list,
     _restore_compaction_annotation_in_additional_properties,
     _text_for_join,
@@ -532,33 +533,31 @@ def _process_update(
 
 
 def _coalesce_text_content(contents: list[Content], type_str: Literal["text", "text_reasoning"]) -> None:
-    """Take any subsequence Text or TextReasoningContent items and coalesce them into a single item."""
+    """Coalesce each run of adjacent ``type_str`` chunks that ``+`` would join into one content.
+
+    A run is folded once (``_ContentRun``), so a stream of ``n`` chunks costs
+    O(n) rather than the O(n²) of adding them one by one.
+    """
     if not contents:
         return
     coalesced_contents: list[Content] = []
-    first_new_content: Any | None = None
+    run: _ContentRun | None = None
     for content in contents:
-        if content.type == type_str:
-            if first_new_content is None:
-                first_new_content = deepcopy(content)
-            else:
-                try:
-                    first_new_content += content
-                except AdditionItemMismatch:
-                    # Different IDs means a new logical segment; flush the current one
-                    coalesced_contents.append(first_new_content)
-                    first_new_content = deepcopy(content)
-        else:
-            # skip this content, it is not of the right type
-            # so write the existing one to the list and start a new one,
-            # once the right type is found again
-            if first_new_content:
-                coalesced_contents.append(first_new_content)
-            first_new_content = None
-            # but keep the other content in the new list
+        if content.type != type_str:
+            if run is not None:
+                coalesced_contents.append(run.fold())
+                run = None
             coalesced_contents.append(content)
-    if first_new_content:
-        coalesced_contents.append(first_new_content)
+        elif run is None:
+            run = _ContentRun(content)
+        elif run.accepts(content):
+            run.add(content)
+        else:
+            # A new logical segment (another id, output message or format).
+            coalesced_contents.append(run.fold())
+            run = _ContentRun(content)
+    if run is not None:
+        coalesced_contents.append(run.fold())
     contents.clear()
     contents.extend(coalesced_contents)
 
@@ -2515,6 +2514,17 @@ def validate_tool_mode(
     return tool_choice
 
 
+def _tool_option_items(value: Any) -> list[Any]:
+    """A ``tools`` option as a list of tools: a single tool, a mapping included, is one item.
+
+    Only a collection is unpacked. Any other iterable, such as a generator, stays
+    one item, so this merge never consumes a one-shot iterator the run still needs.
+    """
+    if isinstance(value, (str, bytes, bytearray, Mapping)) or not isinstance(value, Collection):
+        return [value]
+    return list(cast(Collection[Any], value))
+
+
 def merge_chat_options(
     base: dict[str, Any] | None,
     override: dict[str, Any] | None,
@@ -2575,13 +2585,13 @@ def merge_chat_options(
             base_tools = result.get("tools")
             if base_tools and value:
                 # Add tools that aren't already present
-                merged_tools = list(base_tools)
-                for tool in value if isinstance(value, Iterable) else [value]:  # type: ignore[reportUnknownVariableType]
+                merged_tools = _tool_option_items(base_tools)
+                for tool in _tool_option_items(value):
                     if tool not in merged_tools:
                         merged_tools.append(tool)
                 result["tools"] = merged_tools
             elif value:
-                result["tools"] = value if isinstance(value, list) else [value]
+                result["tools"] = _tool_option_items(value)
         elif key in ("logit_bias", "metadata", "additional_properties"):
             # Merge dicts
             base_dict = result.get(key)

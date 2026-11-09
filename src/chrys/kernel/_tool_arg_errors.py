@@ -870,7 +870,10 @@ def _matches_json_type(value: Any, schema_type: str) -> bool:
         case "string":
             return isinstance(value, str)
         case "integer":
-            return isinstance(value, int) and not isinstance(value, bool)
+            # As ``tools._matches_json_schema_type``: ``3.0`` is an integer.
+            return (isinstance(value, int) and not isinstance(value, bool)) or (
+                isinstance(value, float) and value.is_integer()
+            )
         case "number":
             return isinstance(value, int | float) and not isinstance(value, bool)
         case "boolean":

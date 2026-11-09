@@ -353,6 +353,66 @@ class TestNonStreamingLoop:
         assert results[1].exception is None
 
     @pytest.mark.asyncio
+    async def test_schema_supplied_integer_takes_a_whole_float_from_the_model(self) -> None:
+        received: list[Any] = []
+
+        async def count(**call_kwargs: Any) -> str:
+            received.append(call_kwargs["count"])
+            return "counted"
+
+        counter = FunctionTool(
+            name="count",
+            description="Count.",
+            func=count,
+            input_model={
+                "type": "object",
+                "properties": {"count": {"type": "integer"}},
+                "required": ["count"],
+                "additionalProperties": False,
+            },
+        )
+        seen_by_middleware: list[type] = []
+
+        class _Record(FunctionMiddleware):
+            async def process(
+                self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]
+            ) -> None:
+                # Read on entry: ``invoke`` later rebinds the context's arguments.
+                seen_by_middleware.append(type(context.arguments["count"]))
+                await call_next()
+
+        layer, _wire = _stack([_call_response(("c1", "count", {"count": 3.0})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [counter]}, middleware=[_Record()])
+
+        assert received == [3]
+        assert type(received[0]) is int
+        assert _result_contents(response)[0].exception is None
+        # Middleware sees the value the callable gets.
+        assert seen_by_middleware == [int]
+
+    @pytest.mark.asyncio
+    async def test_schema_supplied_argument_error_does_not_blame_a_whole_float_integer(self) -> None:
+        async def count(**call_kwargs: Any) -> str:
+            return "counted"
+
+        counter = FunctionTool(
+            name="count",
+            description="Count.",
+            func=count,
+            input_model={
+                "type": "object",
+                "properties": {"count": {"type": "integer"}, "label": {"type": "string"}},
+                "required": ["count", "label"],
+                "additionalProperties": False,
+            },
+        )
+        layer, _wire = _stack([_call_response(("c1", "count", {"count": 3.0, "label": 5})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [counter]})
+
+        result_text = _assert_actionable_argument_error(_result_contents(response)[0], "count", "label")
+        assert "count: expected" not in result_text
+
+    @pytest.mark.asyncio
     async def test_explicit_null_for_required_nullable_argument_reaches_tool(self) -> None:
         received: list[str | None] = []
 

@@ -769,8 +769,9 @@ async def _invoke_function_call(
             )
             pipeline_args = transformed_args
         else:
-            _validate_arguments_against_schema(arguments=parsed_args, schema=argument_schema, tool_name=tool.name)
-            pipeline_args = parsed_args
+            pipeline_args = _validate_arguments_against_schema(
+                arguments=parsed_args, schema=argument_schema, tool_name=tool.name
+            )
     except (TypeError, ValidationError) as exc:
         # ``response_truncated`` (finish_reason == "length") is a response-wide
         # signal, so it alone doesn't prove THIS call's arguments were cut off —

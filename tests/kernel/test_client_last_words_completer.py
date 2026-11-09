@@ -325,6 +325,22 @@ def test_request_overhead_estimates_response_format_class_via_json_schema() -> N
     assert 0 < overhead < 1_000
 
 
+def test_tool_definition_estimate_counts_the_schema_of_a_schema_supplied_tool() -> None:
+    """MCP and skill tools carry a JSON schema, not a model class; the estimate still counts it."""
+    from chrys.kernel import FunctionTool
+
+    schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string", "description": "What to look for. " * 100}},
+        "required": ["query"],
+    }
+    schema_tool = FunctionTool(name="search", description="Search.", func=lambda **_: "", input_model=schema)
+
+    estimate = kernel_client._estimate_tool_definition_tokens({"tools": [schema_tool]}, _LenTokenizer())
+
+    assert estimate >= len(json.dumps(schema, separators=(",", ":")))
+
+
 def test_tool_definition_estimate_keeps_cjk_literal() -> None:
     tokenizer = MixedLanguageTokenizer()
     tools = [{"name": "翻译", "description": "中文说明" * 100}]

@@ -36,11 +36,16 @@ def _parse_content_list(contents_data: Sequence[Any]) -> list[Content]:
     """Parse a list of content data into appropriate Content objects.
 
     Args:
-        contents_data: List of content data (strings, dicts, or already constructed objects)
+        contents_data: List of content data (strings, dicts, or already constructed objects).
+            A single string is one text item.
 
     Returns:
         List of Content objects with unknown types logged and ignored
     """
+    if isinstance(contents_data, str):
+        # A string is itself a sequence of strings: iterating it would make
+        # one text content per character.
+        contents_data = [contents_data]
     contents: list[Content] = []
     for content_data in contents_data:
         if content_data is None:
@@ -1614,7 +1619,11 @@ class Content:
         raise ContentError(f"Addition not supported for content type: {self.type}")
 
     def _add_text_content(self, other: Content) -> Content:
-        """Add two TextContent instances."""
+        """Add two TextContent instances.
+
+        ``_ContentRun`` folds a streamed run without calling this: keep its
+        ``accepts`` and ``fold`` in step with the rules here.
+        """
         if self.text is None or other.text is None:
             raise ContentError("Cannot add text content when either text value is None")
         if self.additional_properties.get(OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY) != other.additional_properties.get(
@@ -1630,7 +1639,11 @@ class Content:
         )
 
     def _add_text_reasoning_content(self, other: Content) -> Content:
-        """Add two TextReasoningContent instances."""
+        """Add two TextReasoningContent instances.
+
+        ``_ContentRun`` folds a streamed run without calling this: keep its
+        ``accepts`` and ``fold`` in step with the rules here.
+        """
         # Ensure we do not silently merge contents with conflicting ids
         if self.id and other.id and self.id != other.id:
             raise AdditionItemMismatch(
@@ -1843,6 +1856,147 @@ def _combine_annotations(
     if other_annotations is None:
         return self_annotations
     return [*self_annotations, *other_annotations]
+
+
+# Keys whose value, as the earliest chunk carrying the key holds it, decides
+# whether the next chunk may join a folded run (see ``_add_text_content`` and
+# ``_add_text_reasoning_content``).
+_TEXT_RUN_SPLIT_KEYS: Final = (OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY,)
+_REASONING_RUN_SPLIT_KEYS: Final = (
+    "openai_reasoning_format",
+    _ANTHROPIC_REDACTED_THINKING_KEY,
+    REASONING_ORIGIN_KEY,
+)
+
+
+class _ContentRun:
+    """A run of streamed ``text`` or ``text_reasoning`` chunks, folded in one pass.
+
+    Folding a stream with repeated ``+`` rebuilds the text, the property dict,
+    the annotation list and the raw-representation list at every step, so
+    ``n`` chunks cost O(n²). A run instead keeps only what each ``+`` checks
+    (the earliest value of each split key, the id, whether any text or
+    reasoning-text marker was seen, the latest protected payload) and builds
+    the folded content once. The result is the repeated-``+`` fold's, from a
+    deep copy of the head: ``accepts`` mirrors where ``+`` raises and ``fold``
+    what it builds, so change them together with ``_add_text_content`` and
+    ``_add_text_reasoning_content`` (a fuzz test pins the two folds equal).
+    """
+
+    __slots__ = (
+        "_chunks",
+        "_has_reasoning_text_key",
+        "_has_text",
+        "_id",
+        "_protected_data",
+        "_split_keys",
+        "_split_values",
+    )
+
+    def __init__(self, head: Content) -> None:
+        if head.type not in ("text", "text_reasoning"):
+            raise ContentError(f"Cannot fold a run of {head.type} content")
+        self._split_keys = _TEXT_RUN_SPLIT_KEYS if head.type == "text" else _REASONING_RUN_SPLIT_KEYS
+        self._chunks = [head]
+        self._split_values: dict[str, Any] = {}
+        self._id = head.id
+        self._has_text = bool(head.text)
+        self._has_reasoning_text_key = False
+        self._protected_data = head.protected_data
+        self._note(head)
+
+    def accepts(self, other: Content) -> bool:
+        """Whether ``+`` would add ``other`` to the folded run (False where it raises a mismatch)."""
+        head = self._chunks[0]
+        other_props = other.additional_properties
+        if head.type == "text":
+            if head.text is None or other.text is None:
+                raise ContentError("Cannot add text content when either text value is None")
+            return self._split_values.get(OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY) == other_props.get(
+                OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY
+            )
+        if self._id and other.id and self._id != other.id:
+            return False
+        if any(self._split_values.get(key) != other_props.get(key) for key in self._split_keys):
+            return False
+        if self._has_text and other.text and self._has_reasoning_text_key != ("reasoning_text" in other_props):
+            return False
+        return not (
+            self._protected_data is not None
+            and other.protected_data is not None
+            and self._protected_data != other.protected_data
+            and not (self._id and other.id)
+        )
+
+    def add(self, other: Content) -> None:
+        """Append a chunk ``accepts`` let in."""
+        self._chunks.append(other)
+        self._id = self._id or other.id
+        self._has_text = self._has_text or bool(other.text)
+        if other.protected_data is not None:
+            self._protected_data = other.protected_data
+        self._note(other)
+
+    def _note(self, chunk: Content) -> None:
+        props = chunk.additional_properties
+        for key in self._split_keys:
+            if key in props and key not in self._split_values:
+                self._split_values[key] = props[key]
+        if "reasoning_text" in props:
+            self._has_reasoning_text_key = True
+
+    def fold(self) -> Content:
+        """The run as one content: what folding it with repeated ``+`` from a copy of its head gives."""
+        head = deepcopy(self._chunks[0])
+        if len(self._chunks) == 1:
+            return head
+        rest = self._chunks[1:]
+        # ``+`` keeps the left side's value for a key both sides carry, so the
+        # earliest chunk wins; updating latest-first also keeps ``+``'s key order.
+        additional_properties: dict[str, Any] = {}
+        for chunk in reversed(rest):
+            additional_properties.update(chunk.additional_properties)
+        additional_properties.update(head.additional_properties)
+        annotation_runs = [
+            annotations
+            for annotations in (head.annotations, *(chunk.annotations for chunk in rest))
+            if annotations is not None
+        ]
+        annotations: Sequence[Annotation] | None
+        if len(annotation_runs) <= 1:
+            annotations = annotation_runs[0] if annotation_runs else None
+        else:
+            annotations = [annotation for run in annotation_runs for annotation in run]
+        raws = [
+            raw for raw in (head.raw_representation, *(chunk.raw_representation for chunk in rest)) if raw is not None
+        ]
+        raw_representation: Any
+        if len(raws) <= 1:
+            raw_representation = raws[0] if raws else None
+        else:
+            raw_representation = []
+            for raw in raws:
+                if isinstance(raw, list):
+                    raw_representation.extend(cast(list[Any], raw))
+                else:
+                    raw_representation.append(raw)
+        if head.type == "text":
+            return Content(
+                "text",
+                text="".join(cast(str, chunk.text) for chunk in (head, *rest)),
+                annotations=annotations,
+                additional_properties=additional_properties,
+                raw_representation=raw_representation,
+            )
+        return Content(
+            "text_reasoning",
+            id=self._id,
+            text="".join(chunk.text or "" for chunk in (head, *rest)) if self._has_text else None,
+            protected_data=self._protected_data,
+            annotations=annotations,
+            additional_properties=additional_properties,
+            raw_representation=raw_representation,
+        )
 
 
 def _text_for_join(content: Content) -> Any:

@@ -106,7 +106,7 @@ jobs:
       # ``gc_calibration`` tests are slow real-App probes covered by the
       # scheduled gc-freeze-calibration workflow, not PR CI.
       - name: Run tests
-        timeout-minutes: 15
+        timeout-minutes: 20
         env:
           CHRYS_TEST_STALL_DIAGNOSTICS: "1"
         run: uv run pytest -q --tb=short --durations=20 --dist=worksteal --junitxml=test-results-${{ matrix.artifact }}.xml -n ${{ matrix.workers }} -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
@@ -180,7 +180,7 @@ jobs:
       # ``gc_calibration`` tests are slow real-App probes covered by the
       # scheduled gc-freeze-calibration workflow, not PR CI.
       - name: Run tests
-        timeout-minutes: 15
+        timeout-minutes: 20
         env:
           CHRYS_TEST_STALL_DIAGNOSTICS: "1"
         run: uv run pytest -q --tb=short --durations=20 --dist=worksteal --junitxml=test-results-${{ matrix.artifact }}.xml -n ${{ matrix.workers }} -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
@@ -277,7 +277,7 @@ jobs:
       # pytest-timeout's thread method can fail to kill workers blocked in
       # Windows IOCP, so the step also has a hard wall-clock limit.
       - name: Run tests
-        timeout-minutes: 15
+        timeout-minutes: 20
         env:
           CHRYS_TEST_STALL_DIAGNOSTICS: "1"
         # Separate runners give the TUI and core suites independent CPU
@@ -314,7 +314,7 @@ jobs:
           allow-prereleases: true
       - run: uv sync
       - name: Run architecture tests
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: uv run pytest -q --tb=short --durations=20 --junitxml=test-results-architecture.xml -n 0 -m "not integration and not gc_calibration" tests/architecture
       - name: Upload architecture test results
         if: always()

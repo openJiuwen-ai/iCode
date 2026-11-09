@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import math
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.util.env_templates import resolve_env_template_mapping
@@ -56,6 +57,12 @@ def _validate_config(config: MCPServerConfig) -> None:
         raise ValueError(f"MCP server {config.name!r}: 'use_progressive_disclosure' must be a boolean")
     if not isinstance(config.expose_instructions, bool):
         raise ValueError(f"MCP server {config.name!r}: 'expose_instructions' must be a boolean")
+    timeout = config.request_timeout
+    # 0 would read as "no timeout" to the SDK and as an instant timeout to httpx.
+    if timeout is not None and (
+        isinstance(timeout, bool) or not isinstance(timeout, int | float) or not math.isfinite(timeout) or timeout <= 0
+    ):
+        raise ValueError(f"MCP server {config.name!r}: 'timeout' must be a positive number of seconds or null")
     cap = config.max_tool_result_tokens
     if not (cap is None or (type(cap) is int and (cap == 0 or cap >= 100))):
         raise ValueError(
