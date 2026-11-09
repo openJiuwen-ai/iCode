@@ -134,6 +134,39 @@ def test_the_base_class_takes_no_sdk_client() -> None:
         _ScriptedWireClient.from_sdk_client(object(), model="m")
 
 
+def test_every_protocol_spells_a_lone_surrogate_so_the_body_still_encodes() -> None:
+    import json
+
+    from anthropic import AsyncAnthropic
+    from openai import AsyncOpenAI
+
+    from chrys.service.llm.anthropic_messages import AnthropicMessagesClient
+    from chrys.service.llm.chat_completions import ChatCompletionsClient
+    from chrys.service.llm.openai_responses import ResponsesApiClient
+
+    openai_sdk = AsyncOpenAI(api_key="sk-fake")
+    anthropic_sdk = AsyncAnthropic(api_key="sk-fake")
+    messages = [Message("user", ["bad \udcff byte"])]
+
+    cases: list[tuple[type[Any], Any, Callable[[Any], dict[str, Any]]]] = [
+        (ChatCompletionsClient, openai_sdk, lambda client: client._build_request(messages, {})),
+        (ResponsesApiClient, openai_sdk, lambda client: client._build_request(messages, {})),
+        (AnthropicMessagesClient, anthropic_sdk, lambda client: client._build_request(messages, {}, {})),
+    ]
+
+    for client_cls, sdk, build in cases:
+        client = client_cls.from_sdk_client(sdk, model="m")
+        body = build(client)
+        # Only the wire copy is repaired: the conversation keeps the raw byte.
+        assert messages[0].contents[0].text == "bad \udcff byte", client_cls.__name__
+        serialized = json.dumps(body, ensure_ascii=False)
+        # No raw surrogate survived, and the escape is plain text the model reads as such.
+        assert "bad \udcff byte" not in serialized, client_cls.__name__
+        assert "bad \\\\udcff byte" in serialized, client_cls.__name__
+        # What the provider SDK does before a byte leaves: strict UTF-8, then read back.
+        assert json.loads(serialized.encode("utf-8")) == body, client_cls.__name__
+
+
 class _FailingWireClient(WireClient):
     """A wire client whose response or stream fails with *exc* once consumed."""
 
@@ -675,7 +708,7 @@ async def test_a_request_the_protocol_rejects_fails_its_started_exchange(stream:
 def test_a_client_without_request_headers_leaves_the_request_unstamped() -> None:
     request: dict[str, Any] = {"model": "m", "extra_headers": {"X-Caller": "kept"}}
 
-    _ScriptedWireClient()._stamp_request_headers(request)
+    _ScriptedWireClient()._finalize_request(request)
 
     assert request == {"model": "m", "extra_headers": {"X-Caller": "kept"}}
 
@@ -683,6 +716,31 @@ def test_a_client_without_request_headers_leaves_the_request_unstamped() -> None
 def test_a_client_with_request_headers_stamps_them() -> None:
     request: dict[str, Any] = {"model": "m"}
 
-    _ScriptedWireClient(request_headers=RequestHeaders(session_id="s"))._stamp_request_headers(request)
+    _ScriptedWireClient(request_headers=RequestHeaders(session_id="s"))._finalize_request(request)
 
     assert request["extra_headers"][SESSION_ID_HEADER] == "s"
+
+
+def test_the_header_charset_gate_judges_a_model_id_before_the_body_is_repaired() -> None:
+    request: dict[str, Any] = {"model": "m\udcff", "messages": [{"content": "bad \udcff byte"}]}
+
+    # A model id is a choice, not display text: rewriting it would hide the local error and 404 later.
+    with pytest.raises(ValueError, match="Model ID contains"):
+        _ScriptedWireClient(request_headers=RequestHeaders(session_id="s"))._finalize_request(request)
+
+
+def test_the_header_charset_gate_judges_a_caller_header_before_the_body_is_repaired() -> None:
+    request: dict[str, Any] = {"model": "m", "extra_headers": {"X-Env": "v\udcff"}}
+
+    with pytest.raises(ValueError, match="value contains a non-ASCII or control character"):
+        _ScriptedWireClient(request_headers=RequestHeaders(session_id="s"))._finalize_request(request)
+
+
+def test_a_finalized_request_keeps_its_identity_when_a_text_needs_repair() -> None:
+    request: dict[str, Any] = {"model": "m", "messages": [{"content": "bad \udcff byte"}]}
+    shared = request
+
+    _ScriptedWireClient()._finalize_request(request)
+
+    assert request is shared
+    assert request["messages"][0]["content"] == "bad \\udcff byte"
