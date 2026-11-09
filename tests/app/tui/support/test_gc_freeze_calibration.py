@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib
 import tracemalloc
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 from scripts.gc_freeze_calibration_math import (
@@ -22,6 +23,7 @@ from textual.widgets import Static
 from chrys.app.tui.support import gc_freeze
 from chrys.app.tui.support.gc_freeze import GcFreezeBlockReason
 from tests.support.paths import REPO_ROOT
+from tests.support.tui_helpers import make_suggestion_handler, make_suggestion_screen
 from tests.support.waiting import wait_until
 
 
@@ -56,6 +58,19 @@ def traced_heap() -> Iterator[None]:
 )
 def test_minimum_deferred_diff_surfaces_tolerates_worker_tail(turns: int, expected: int) -> None:
     assert minimum_deferred_diff_surfaces(turns) == expected
+
+
+def test_the_calibration_file_cache_is_the_resident_at_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole-App run measures the cache the ``@`` popup really keeps, so it must install there."""
+    calibration = _calibration_module(monkeypatch)
+    screen = make_suggestion_screen()
+    screen._set_workspace_cwd("/calibration")
+    handler = make_suggestion_handler(screen)
+
+    index = calibration._install_file_cache(SimpleNamespace(_suggestions=handler), 3)
+
+    assert handler._file_snapshot() is index
+    assert index.file_count == 3
 
 
 def test_absorb_points_must_not_exceed_soft_reclaim_threshold() -> None:

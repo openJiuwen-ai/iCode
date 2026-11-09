@@ -557,14 +557,17 @@ async def test_chat_panel_removes_failed_prompt_from_toc() -> None:
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("bad prompt")
+        cp.apply_turn_started(1)
         await cp.add_error("failed before output")
 
         await cp.add_user_message("replacement prompt")
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=())
+        cp.apply_turn_started(1)
         await pilot.pause()
 
         items = cp.toc_items
         assert [(item.turn_id, item.summary, item.turn_index) for item in items] == [
-            ("turn-1", "replacement prompt", 1)
+            ("turn-2", "replacement prompt", 1)
         ]
         assert [message._text for message in cp.query(UserMessage)] == ["replacement prompt"]
 
@@ -575,8 +578,10 @@ async def test_fresh_submit_cleans_failed_turn_across_context_notices(status_typ
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("older prompt")
+        cp.apply_turn_started(1)
         await cp.add_agent_message("older response")
         await cp.add_user_message("failed prompt")
+        cp.apply_turn_started(2)
         if output == "assistant":
             await cp.add_answer_delta("seg-partial", "partial response")
         elif output == "tool":
@@ -593,12 +598,14 @@ async def test_fresh_submit_cleans_failed_turn_across_context_notices(status_typ
         tools = list(cp.query(ToolGroup))
 
         await cp.add_user_message("replacement prompt")
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=output == "none", removed_item_ids=())
+        cp.apply_turn_started(2 if output == "none" else 3)
 
         assert not list(cp.query(status_type))
         expected_users = ["older prompt", *(["failed prompt"] if output != "none" else []), "replacement prompt"]
         assert [message._text for message in cp.query(UserMessage)] == expected_users
         assert [item.summary for item in cp.toc_items] == expected_users
-        assert [item.turn_index for item in cp.toc_items] == ([1, 2] if output == "none" else [1, 2, 2])
+        assert [item.turn_index for item in cp.toc_items] == ([1, 2] if output == "none" else [1, 2, 3])
         assert list(cp.query(SystemMessage)) == notices
         assert list(cp.query(AgentMessage)) == responses
         assert list(cp.query(ToolGroup)) == tools
@@ -656,6 +663,7 @@ async def test_status_lookup_and_fresh_cleanup_use_chrome_infrastructure_predica
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("failed prompt")
+        cp.apply_turn_started(1)
         await cp.add_error("failed")
         await cp.mount(infrastructure)
         button = cp.query_one(ErrorMessage).query_one(Button)
@@ -665,6 +673,8 @@ async def test_status_lookup_and_fresh_cleanup_use_chrome_infrastructure_predica
         assert button.parent is not None and not button.parent.display
 
         await cp.add_user_message("replacement prompt")
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=())
+        cp.apply_turn_started(1)
 
         assert not list(cp.query(ErrorMessage))
         assert [message._text for message in cp.query(UserMessage)] == ["replacement prompt"]
@@ -675,11 +685,16 @@ async def test_chat_panel_marks_compressed_toc_by_backend_turn_index_after_faile
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("bad prompt")
+        cp.apply_turn_started(1)
         await cp.add_error("failed before output")
         await cp.add_user_message("first kept")
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=())
+        cp.apply_turn_started(1)
         await cp.add_user_message("second kept")
+        cp.apply_turn_started(2)
         await cp.add_user_message("second kept detail", is_injection=True)
         await cp.add_user_message("third kept")
+        cp.apply_turn_started(3)
 
         changed = cp.mark_turn_range_compressed((2, 2))
         await pilot.pause()
@@ -692,22 +707,26 @@ async def test_chat_panel_marks_compressed_toc_by_backend_turn_index_after_faile
         assert items[1].children[0].compressed is True
 
 
-async def test_chat_panel_failed_turn_with_output_reuses_backend_turn_index_for_continuation() -> None:
+async def test_chat_panel_failed_turn_with_output_keeps_its_own_backend_turn_index() -> None:
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("failed with partial output")
+        cp.apply_turn_started(1)
         await cp.add_agent_message("partial output")
         await cp.add_error("failed after output")
         await cp.add_user_message("continuation")
+        await cp.apply_fresh_turn_cleanup(retired_previous_turn=False, removed_item_ids=())
+        cp.apply_turn_started(2)
         await cp.add_user_message("next fresh turn")
+        cp.apply_turn_started(3)
 
         changed = cp.mark_turn_range_compressed((1, 1))
         await pilot.pause()
 
         items = cp.toc_items
         assert changed is True
-        assert [item.turn_index for item in items] == [1, 1, 2]
-        assert [item.compressed for item in items] == [True, True, False]
+        assert [item.turn_index for item in items] == [1, 2, 3]
+        assert [item.compressed for item in items] == [True, False, False]
 
 
 async def test_chat_panel_replay_assigns_turn_index_from_trailing_markers() -> None:
@@ -797,6 +816,42 @@ async def test_chat_panel_live_interruption_uses_localized_frame() -> None:
         interruption = panel.query_one(InterruptedMessage)
         assert interruption._render_text().plain == "✗ 错误\n失败详情"
         assert str(interruption.query_one(Button).label) == "重试"
+
+
+async def test_chat_panel_live_interruption_defaults_to_the_localized_shared_reason() -> None:
+    async with ChatPanelApp(Localizer("zh-Hans")).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_interrupted()
+        await pilot.pause()
+
+        interruption = panel.query_one(InterruptedMessage)
+        assert interruption._render_text().plain == "⚠ 已中断\n用户中断：执行已中断"  # noqa: RUF001
+        assert str(interruption.query_one(".status-action-btn", Button).label) == "继续"
+
+
+async def test_chat_panel_live_interruption_keeps_the_english_default_copy() -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_interrupted()
+        await pilot.pause()
+
+        interruption = panel.query_one(InterruptedMessage)
+        assert interruption._render_text().plain == "⚠ Interrupted\nExecution interrupted by user"
+
+
+async def test_chat_panel_live_error_card_localizes_its_default_action() -> None:
+    async with ChatPanelApp(Localizer("zh-Hans")).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_error("出错了")
+        await pilot.pause()
+
+        button = panel.query_one(ErrorMessage).query_one(Button)
+        assert str(button.label) == "重试"
+
+        await panel.add_error("出错了", action_label="自定义")
+        await pilot.pause()
+
+        assert str(panel.query_one(ErrorMessage).query_one(Button).label) == "自定义"
 
 
 async def test_chat_panel_removes_inline_status_action_with_status() -> None:

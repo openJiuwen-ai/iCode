@@ -18,8 +18,7 @@ from chrys.service.tools.builtins.web.credentials import resolve_search_credenti
 from chrys.service.tools.builtins.web.fetch.tool import WebFetchTools
 from chrys.service.tools.builtins.web.hosted import declared_web_tool_names
 from chrys.service.tools.builtins.web.http import DestinationPolicy, WebEgressRuntime
-from chrys.service.tools.registry import ToolRegistry
-from tests.service.tools.web._support import assemble
+from tests.service.tools.web._support import assemble, assemble_agent_tools
 
 
 @pytest.mark.parametrize(
@@ -71,14 +70,13 @@ def test_every_value_the_settings_layer_keeps_builds(field, coercer, value):
         ),
     ],
 )
-def test_a_web_configuration_problem_costs_only_the_web_tools(config, reason, caplog):
+async def test_a_web_configuration_problem_costs_only_the_web_tools(config, reason, caplog):
     with caplog.at_level(logging.WARNING):
-        web = assemble(["search", "web_search", "web_fetch"], parse_search(config))
-    registry = ToolRegistry()
-    tools = registry.load_builtins(["search", "web_search", "web_fetch"], settings=Settings(), web=web)
-    assert {tool.name for tool in tools} >= {"grep", "glob"}
-    assert registry.get("web_search") is None
-    assert registry.get("web_fetch") is None
+        assembled = await assemble_agent_tools(["search", "web_search", "web_fetch"], parse_search(config))
+    web = assembled.web
+    names = {tool.name for tool in assembled.tools}
+    assert names >= {"grep", "glob"}
+    assert not names & {"web_search", "web_fetch"}
     assert web.provider_origins() == {}
     [warning] = web.warnings
     assert warning.code == "web_tools_unavailable"
@@ -172,12 +170,12 @@ def test_options_without_declarations_host_nothing(options):
     assert declared_web_tool_names(options) == ()
 
 
-def test_a_hosted_tool_yields_its_local_category_and_says_so():
-    web = assemble(["web_search", "web_fetch"], chat_options={"tools": [{"type": "web_search"}]})
-    registry = ToolRegistry()
-    tools = registry.load_builtins(["web_search", "web_fetch"], settings=Settings(), web=web)
-    assert [tool.name for tool in tools] == ["web_fetch", "sleep"]
-    assert registry.get("web_search") is None
+async def test_a_hosted_tool_yields_its_local_category_and_says_so():
+    assembled = await assemble_agent_tools(
+        ["web_search", "web_fetch"], chat_options={"tools": [{"type": "web_search"}]}
+    )
+    web = assembled.web
+    assert [tool.name for tool in assembled.tools] == ["web_fetch", "sleep"]
     assert web.provider_origins() == {}
     [warning] = web.warnings
     assert warning.code == "hosted_web_tools_preferred"
@@ -210,10 +208,9 @@ def test_hosted_names_stay_unique_across_every_assembled_tool():
     assemble([], chat_options={"tools": [{"type": "web_search"}]}).check_names([tool])
 
 
-def test_a_repeated_web_category_loads_once():
-    web = assemble(["web_search", "web_search"])
-    registry = ToolRegistry()
-    loaded = registry.load_builtins(["web_search", "web_search"], settings=Settings(), web=web)
-    assert [tool.name for tool in loaded] == ["web_search", "sleep"]
+async def test_a_repeated_web_category_loads_once():
+    assembled = await assemble_agent_tools(["web_search", "web_search"])
+    web = assembled.web
+    assert [tool.name for tool in assembled.tools] == ["web_search", "sleep"]
     assert web.warnings == ()
     assert web.provider_origins() == {"exa": "https://mcp.exa.ai"}

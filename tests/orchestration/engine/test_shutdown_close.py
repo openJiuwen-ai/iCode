@@ -23,7 +23,7 @@ from chrys.kernel import FunctionTool, Message
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.build.construction import StagedBuild
 from chrys.orchestration.engine.build.loaded import CompletedBuild
-from chrys.orchestration.engine.execution import PendingRetry
+from chrys.orchestration.engine.execution import PendingRetry, RetryInput
 from chrys.orchestration.engine.state.machine import Trigger
 from chrys.orchestration.invoker import runtime as runtime_factory_module
 from chrys.orchestration.invoker.contracts import AbortCause, AbortResult
@@ -310,7 +310,7 @@ async def test_engine_shutdown_settles_pending_retry_before_trajectory_close(
     monkeypatch.setattr("chrys.orchestration.engine.assembly.trajectory_recorder.TrajectoryRecorder", lambda: recorder)
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.turns.turn_state.lease.pending_retry = PendingRetry(
-        text="retry",
+        retry=RetryInput("retry"),
         session_generation=engine.session_generation,
         preparation_trace=trace,
     )
@@ -780,9 +780,6 @@ async def test_new_session_reuses_mcp_cache_and_final_shutdown_closes_it(tmp_pat
             self.exit_count += 1
 
     fake_mcp = _FakeMCPTool()
-    fake_tool_registry = MagicMock()
-    fake_tool_registry.get_all.return_value = []
-    fake_tool_registry.load_builtins = MagicMock()
     fake_ctx = MagicMock()
     fake_ctx.providers = []
     fake_ctx.middleware = []
@@ -813,7 +810,7 @@ async def test_new_session_reuses_mcp_cache_and_final_shutdown_closes_it(tmp_pat
         patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(agent_builder_module, "ApprovalPolicy", return_value=MagicMock()),
-        patch("chrys.service.tools.registry.ToolRegistry", return_value=fake_tool_registry),
+        patch("chrys.service.tools.packs.create_packs", return_value=[]),
         patch("chrys.service.skills.adapter.create_skills_provider", new=AsyncMock(return_value=(None, []))),
         patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake_mcp) as factory,
     ):

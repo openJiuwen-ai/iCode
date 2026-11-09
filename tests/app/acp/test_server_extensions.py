@@ -14,6 +14,8 @@ from acp import schema as acp_schema
 
 from chrys.app.acp.bridge import AcpEventBridge
 from chrys.app.acp.server import ChrysAcpServer
+from chrys.foundation.errors import ErrorKind
+from chrys.foundation.errors.display import DISPLAY_WITH_HINT
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AgentLoadProgress,
@@ -21,6 +23,7 @@ from chrys.foundation.events.types import (
     CompactionFinished,
     CompactionStarted,
     Error,
+    InvocationAborted,
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
     InvocationCompactionStarted,
@@ -37,6 +40,7 @@ from chrys.foundation.events.types import (
     Warning,
     WorkspaceUpdated,
 )
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mutations.types import (
@@ -91,6 +95,10 @@ async def test_error_and_warning_events_are_exposed_as_chrys_extension_notificat
                 "code": "boom",
                 "message": "Something failed",
                 "recoverable": False,
+                "kind": None,
+                "retryable": None,
+                "statusCode": None,
+                "hint": None,
             },
         ),
         (
@@ -133,7 +141,7 @@ async def test_user_inject_result_is_exposed_as_extension_notification() -> None
 
     await server._handle_event(
         "s1",
-        UserInjectResult(text="extra context", consumed=True, created_at="now", session_id="s1"),
+        UserInjectResult(text="extra context", consumed=True, created_at="now", item_id="item-1", session_id="s1"),
         AcpEventBridge(),
         {},
     )
@@ -147,6 +155,7 @@ async def test_user_inject_result_is_exposed_as_extension_notification() -> None
                 "consumed": True,
                 "createdAt": "now",
                 "injectionId": None,
+                "itemId": "item-1",
             },
         )
     ]
@@ -184,6 +193,59 @@ async def test_extension_rollback_request_returns_result_and_notifies_client() -
     assert result["restoreResults"][0]["outcome"] == "applied"
     assert client.ext_notifications[0][0] == "chrys/rollback_result"
     assert client.ext_notifications[0][1]["rolledBackUserText"] == "discarded prompt"
+
+
+_QUOTA = FailureFacts(kind=ErrorKind.QUOTA_EXHAUSTED, retryable=False, status_code=402)
+_QUOTA_DISPLAY = DISPLAY_WITH_HINT.bind(message="Out of credit.", hint="Top it up.")
+_QUOTA_FIELDS = {"kind": "quota_exhausted", "retryable": False, "statusCode": 402, "hint": "Out of credit. Top it up."}
+
+
+@pytest.mark.anyio
+async def test_classified_failures_carry_the_verdict_on_every_notification() -> None:
+    """The turn's error, a paused child and an ended child report the same four fields."""
+    host = _FakeHost(event_bus=EventBus())
+    client = _FakeClient()
+    server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(client)
+    origin = InvocationOrigin("sub_agent", "s1", "inv1", None)
+    message = "Error code: 402 - Insufficient Balance"
+
+    for event in (
+        Error(code="executor_error", message=message, session_id="s1", display_message=_QUOTA_DISPLAY, facts=_QUOTA),
+        InvocationPaused(
+            agent_name="Explore",
+            tool_name="explore",
+            reason="framework_exc",
+            last_error=message,
+            last_error_display=_QUOTA_DISPLAY,
+            last_error_facts=_QUOTA,
+            session_id="s1",
+            origin=origin,
+        ),
+        InvocationAborted(
+            agent_name="Explore",
+            last_error=message,
+            last_error_display=_QUOTA_DISPLAY,
+            last_error_facts=_QUOTA,
+            session_id="s1",
+            origin=origin,
+        ),
+    ):
+        await server._handle_event("s1", event, AcpEventBridge(), {})
+
+    reports = {method: params for method, params in client.ext_notifications if method.startswith("chrys/")}
+    assert reports["chrys/error"] == {
+        "sessionId": "s1",
+        "code": "executor_error",
+        "message": message,
+        "recoverable": True,
+        **_QUOTA_FIELDS,
+    }
+    for method in ("chrys/sub_agent_paused", "chrys/sub_agent_aborted"):
+        assert {key: reports[method][key] for key in ("lastError", *_QUOTA_FIELDS)} == {
+            "lastError": message,
+            **_QUOTA_FIELDS,
+        }
 
 
 @pytest.mark.anyio
@@ -243,6 +305,10 @@ async def test_sub_agent_events_are_exposed_as_extension_notifications() -> None
                 "reason": "stream_stall",
                 "lastError": "stalled",
                 "retryAttempts": 3,
+                "kind": None,
+                "retryable": None,
+                "statusCode": None,
+                "hint": None,
             },
         ),
     ]

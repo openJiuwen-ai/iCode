@@ -37,12 +37,28 @@ NON_RETRYABLE_PROVIDER_ERROR_CODES = frozenset(
         "billing_hard_limit_reached",
         "exceeded_current_quota_error",
         "usage_not_included",
+        # OpenAI: prepaid credits spent, or a spend or usage limit an
+        # organization or project set; ChatGPT plan usage windows.
+        "credit_balance_exhausted",
+        "organization_spend_limit_exceeded",
+        "project_spend_limit_exceeded",
+        "organization_usage_limit_exceeded",
+        "usage_limit_reached",
+        "subscription_sharing_usage_limit_exceeded",
+        # LiteLLM proxy: the key's, user's or team's budget is spent.
+        "budget_exceeded",
         *GATEWAY_QUOTA_CODES,
     }
 )
+# Types some services also send as the error's code: under an error status
+# such a code ranks as the type does, below the status.
+_BROAD_TYPE_CODES = frozenset({"invalid_request_error"})
 # Zhipu GLM's balance-exhausted code; it means quota only on a 429.
 _GLM_QUOTA_CODE = "1113"
 _PAYMENT_REQUIRED = 402
+# Anthropic answers spent prepaid credit with a plain 400
+# ``invalid_request_error``: only its text tells it apart.
+_CREDIT_EXHAUSTED_PHRASE = "credit balance is too low"
 
 _PROVIDER_CODE_KINDS: Mapping[str, ErrorKind] = {
     "rate_limit_exceeded": ErrorKind.RATE_LIMITED,
@@ -75,6 +91,7 @@ _IN_BAND_CODE_KINDS: Mapping[str, ErrorKind] = {
     # A gateway's error body under HTTP 200 may name a bad key by its code alone.
     "invalid_api_key": ErrorKind.AUTH_FAILED,
     "cyber_policy": ErrorKind.CONTENT_FILTERED,
+    "bio_policy": ErrorKind.CONTENT_FILTERED,
     "misalignment_policy_violation": ErrorKind.CONTENT_FILTERED,
     "image_content_policy_violation": ErrorKind.CONTENT_FILTERED,
     **dict.fromkeys(
@@ -109,7 +126,13 @@ _FINAL_IN_BAND_KINDS = frozenset(
     }
 )
 
-_CONTEXT_OVERFLOW_CODES = frozenset({"context_length_exceeded", "model_context_window_exceeded"})
+_CONTEXT_OVERFLOW_CODES = frozenset(
+    {
+        "context_length_exceeded",
+        "model_context_window_exceeded",
+        "model_max_prompt_tokens_exceeded",  # GitHub Copilot
+    }
+)
 # Only phrasings that name the context window or the model's token limit.
 _CONTEXT_OVERFLOW_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
@@ -117,7 +140,8 @@ _CONTEXT_OVERFLOW_PATTERNS = tuple(
         r"context_length_exceeded",
         r"context window",  # OpenAI "exceeds the context window", MiniMax
         r"maximum context length",  # OpenAI, DeepSeek, OpenRouter
-        r"prompt is too long",  # Anthropic
+        r"prompt (?:is )?too long",  # Anthropic, z.ai (code 1261), Ollama
+        r"prompt exceeds max length",  # z.ai China endpoint (code 1261)
         r"input is too long",  # Amazon Bedrock
         r"too many tokens",
         r"input token count.*exceeds the maximum",  # Google Gemini
@@ -126,6 +150,14 @@ _CONTEXT_OVERFLOW_PATTERNS = tuple(
         r"exceeds the available context size",  # llama.cpp
         r"greater than the context length",  # LM Studio
         r"exceeded model token limit",  # Kimi
+        r"context_window_exceeded",  # z.ai's finish reason, relayed as error text
+        r"maximum allowed input length",  # OpenRouter (Poolside)
+        r"longer than the model'?s context length",  # Together AI
+        r"context length is only \d+ tokens",  # vLLM
+        r"prompt token count of [\d,]+ exceeds the limit of \d+",  # GitHub Copilot
+        r"configured context size is [\d,]+ tokens",  # DS4 server
+        r"range of input length should be",  # Alibaba DashScope (Qwen)
+        r"tokens in request more than max tokens allowed",  # from opencode's list; service unnamed
     )
 )
 # The window limit, in tokens, that an overflow phrasing above names: a
@@ -135,6 +167,15 @@ _CONTEXT_LIMIT_PATTERNS = tuple(
     re.compile(pattern.replace("{limit}", _LIMIT), re.IGNORECASE)
     for pattern in (
         r"maximum context length is {limit} tokens",  # OpenAI, vLLM, DeepSeek, OpenRouter
+        r"maximum context length of {limit} tokens",  # LiteLLM
+        r"maximum context length \({limit}\)",  # OpenAI-compatible servers
+        r"too large for model with {limit} maximum context length",  # Mistral
+        r"maximum allowed input length of {limit} tokens",  # OpenRouter (Poolside)
+        r"model'?s context length \({limit} tokens\)",  # Together AI
+        r"context length is only {limit} tokens",  # vLLM
+        r"prompt token count of [\d,]+ exceeds the limit of {limit}",  # GitHub Copilot
+        r"configured context size is {limit} tokens",  # DS4 server
+        r"range of input length should be \[\d+, ?{limit}\]",  # Alibaba DashScope (Qwen)
         r"prompt is too long: [\d,]+ tokens > {limit} maximum",  # Anthropic
         r"maximum number of tokens allowed \({limit}\)",  # Google Gemini
         r"maximum prompt length is {limit}",  # xAI
@@ -407,6 +448,8 @@ def _is_quota(signal: ProviderSignal) -> bool:
         return True
     if signal.code == _GLM_QUOTA_CODE and signal.status_code == 429:
         return True
+    if _CREDIT_EXHAUSTED_PHRASE in (signal.message or "").casefold():
+        return True
     return signal.status_code == _PAYMENT_REQUIRED
 
 
@@ -425,15 +468,20 @@ def signal_kind(signal: ProviderSignal) -> tuple[ErrorKind, str]:
     # reports name it too.
     in_band = signal.status_code is None or is_2xx(signal.status_code)
     codes = _IN_BAND_CODE_KINDS if in_band else _PROVIDER_CODE_KINDS
-    if signal.code is not None and (kind := codes.get(signal.code)) is not None:
-        return kind, f"{evidence} {signal.code}"
+    # A code that only repeats a broad type says no more than the type does
+    # (DeepSeek answers every error status with code ``invalid_request_error``,
+    # a bad key's 401 included), so it ranks as the type below.
+    code = signal.code if in_band or signal.code not in _BROAD_TYPE_CODES else None
+    if code is not None and (kind := codes.get(code)) is not None:
+        return kind, f"{evidence} {code}"
     # An error status outranks the error type, which can be broad
     # (OpenAI answers a bad key with 401 ``invalid_request_error``); the type
     # decides only for errors reported without one, e.g. inside a 2xx stream.
     if signal.status_code is not None and (kind := status_kind(signal.status_code)) is not ErrorKind.UNKNOWN:
         return kind, evidence
-    if signal.error_type is not None and (kind := codes.get(signal.error_type)) is not None:
-        return kind, f"{evidence} {signal.error_type}"
+    for name in (signal.error_type, signal.code):
+        if name is not None and (kind := codes.get(name)) is not None:
+            return kind, f"{evidence} {name}"
     return ErrorKind.UNKNOWN, evidence
 
 

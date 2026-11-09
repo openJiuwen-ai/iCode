@@ -36,7 +36,7 @@ from chrys.app.tui.widgets.value_box import VALUE_DISPLAY_MAX_CHARS, LongValueVi
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.approval_reuse import ApprovalReuseOffer
-from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE, KIND_MCP, KIND_SUB_AGENT
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE, KIND_MCP, KIND_SHELL, KIND_SUB_AGENT
 from chrys.service.approval.judge import JudgeVerdict
 from tests.support.paths import SRC_ROOT
 from tests.support.tui_helpers import click_when_settled
@@ -75,6 +75,19 @@ class _AnsiDialogHost(App):
 
     def compose(self) -> ComposeResult:
         yield Static("placeholder")
+
+
+def test_only_the_builtin_shell_hides_its_output_budget() -> None:
+    """The shell's output budget is noise; an MCP or remote tool's same-named limit can cost money."""
+    args = {"command": "make", "max_output_tokens": 32000}
+
+    shell = ApprovalDialog(caller_name="", tool_name="zsh", tool_kind=KIND_SHELL, args=args)
+    mcp = ApprovalDialog(caller_name="", tool_name="generate", tool_kind=KIND_MCP, args=args)
+    remote = ApprovalDialog(caller_name="", tool_name="acp:make", args=args, presentation_kind=KIND_SHELL)
+
+    assert shell._arg_lines == [("command", "make")]
+    assert ("max_output_tokens", "32000") in mcp._arg_lines
+    assert ("max_output_tokens", "32000") in remote._arg_lines
 
 
 @pytest.mark.asyncio

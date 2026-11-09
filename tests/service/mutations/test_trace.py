@@ -305,7 +305,7 @@ class TestPipelineTraceLifecycle:
         tracker.start_turn(1)
 
         ctx = await prepare_mutation_tracking(
-            tracker, "shell", {"command": "true", "working_dir": str(root)}, "c1", is_shell=True
+            tracker, "shell", {"command": "true", "workdir": str(root)}, "c1", is_shell=True
         )
         assert ctx.trace_file == str(trace_file)
         prefix = shell_trace_argv.get()
@@ -358,7 +358,7 @@ class TestPipelineTraceLifecycle:
         ctx = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": f"echo x > {f}", "working_dir": str(root)},
+            {"command": f"echo x > {f}", "workdir": str(root)},
             "c1",
             is_shell=True,
             workspace_cwd=str(root),
@@ -395,7 +395,7 @@ class TestPipelineTraceLifecycle:
         ctx = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": f"echo x > {f}", "working_dir": str(root)},
+            {"command": f"echo x > {f}", "workdir": str(root)},
             "c1",
             is_shell=True,
             workspace_cwd=str(root),
@@ -429,7 +429,7 @@ class TestPipelineTraceLifecycle:
         ctx = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": f"echo x > {f}", "working_dir": str(root)},
+            {"command": f"echo x > {f}", "workdir": str(root)},
             "c1",
             is_shell=True,
             workspace_cwd=str(root),
@@ -518,7 +518,7 @@ class TestAbortReleasesTrace:
         ctx = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": "true", "working_dir": str(root)},
+            {"command": "true", "workdir": str(root)},
             "c1",
             is_shell=True,
             workspace_cwd=str(root),
@@ -589,6 +589,7 @@ class TestAbortReleasesTrace:
 
         from chrys.foundation.events.bus import EventBus
         from chrys.foundation.tool_kinds import KIND_SHELL
+        from chrys.service.agent_middleware.control.hook_commit import HookCommitMiddleware
         from chrys.service.agent_middleware.events.tool_events import ToolEventMiddleware
 
         trace_file = _arm_fake_allocation(monkeypatch, tmp_path)
@@ -609,9 +610,13 @@ class TestAbortReleasesTrace:
             metadata={},
         )
 
-        async def cancelled_next() -> None:
+        async def cancelled_command() -> None:
             trace_file.write_text("")
             raise asyncio.CancelledError
+
+        async def cancelled_next() -> None:
+            # The commit step precedes every tool body; past it, the command may have run.
+            await HookCommitMiddleware().process(ctx, cancelled_command)
 
         with pytest.raises(asyncio.CancelledError):
             await mw.process(ctx, cancelled_next)
@@ -700,7 +705,7 @@ class TestAbortReleasesTrace:
             await prepare_mutation_tracking(
                 tracker,
                 "shell",
-                {"command": "true", "working_dir": str(root)},
+                {"command": "true", "workdir": str(root)},
                 "c1",
                 is_shell=True,
                 workspace_cwd=str(root),
@@ -745,7 +750,7 @@ class TestAbortReleasesTrace:
         ctx = await prepare_mutation_tracking(
             tracker,
             "shell",
-            {"command": "true", "working_dir": str(root)},
+            {"command": "true", "workdir": str(root)},
             "c1",
             is_shell=True,
             workspace_cwd=str(root),
@@ -826,7 +831,7 @@ class TestWindowOpenCancellation:
             prepare_mutation_tracking(
                 tracker,
                 "shell",
-                {"command": "true", "working_dir": str(root)},
+                {"command": "true", "workdir": str(root)},
                 "c1",
                 is_shell=True,
                 workspace_cwd=str(root),

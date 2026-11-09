@@ -88,6 +88,7 @@ async def test_retry_during_first_turn_preparation_preserves_admitted_input(
         is_retry: bool = False,
         has_opening_input: bool = True,
         user_message_id: str | None = None,
+        note_message_id: str | None = None,
         preparation_scope_operation_id: str | None = None,
     ) -> None:
         if pause_before_turn and not is_retry:
@@ -99,6 +100,7 @@ async def test_retry_during_first_turn_preparation_preserves_admitted_input(
             is_retry=is_retry,
             has_opening_input=has_opening_input,
             user_message_id=user_message_id,
+            note_message_id=note_message_id,
             preparation_scope_operation_id=preparation_scope_operation_id,
         )
 

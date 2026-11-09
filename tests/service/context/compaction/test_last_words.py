@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
+from chrys.foundation.errors import ErrorKind
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.retry import RetryAttemptInfo
 from chrys.foundation.trajectory.context import trajectory_scope
 from chrys.foundation.trajectory.event_types import EventType, RetryMode
@@ -236,7 +238,15 @@ async def test_last_words_generator_retries_transient_failure_and_succeeds(tmp_p
 
     assert out == structured_note()
     assert client.calls == 2
-    assert retry_events == [RetryAttemptInfo(reason="connection dropped", attempt=1, max_attempts=2, delay_seconds=0)]
+    assert retry_events == [
+        RetryAttemptInfo(
+            reason="connection dropped",
+            attempt=1,
+            max_attempts=2,
+            delay_seconds=0,
+            facts=FailureFacts(kind=ErrorKind.UNKNOWN, retryable=True),
+        )
+    ]
     scheduled = sink.only(EventType.RETRY_SCHEDULED)
     started = sink.only(EventType.RETRY_STARTED)
     assert scheduled.payload["retry_mode"] == started.payload["retry_mode"] == RetryMode.COMPACTION

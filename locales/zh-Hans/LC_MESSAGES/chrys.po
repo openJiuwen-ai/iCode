@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.33.0\n"
+"Project-Id-Version: Chrys 0.35.1\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -109,6 +109,19 @@ msgstr[0] ""
 "未附加的图像：\n"
 "{files}"
 
+#. English: Agent {agent} goes without context {context} from extension
+#. {extension}: {reason}
+#. chrys-meta={"fingerprint":"78a560aa18e054326a363d9d3bf1def7eadd319d2b31570dcfcfa8b52526f063","multiline":false,"placeholders":["agent","context","extension","reason"]}
+#: src/chrys/service/extensions.py
+msgid "builder.extension_context_failed"
+msgstr "智能体 {agent} 本轮缺少扩展 {extension} 的上下文 {context}：{reason}"
+
+#. English: Agent {agent} starts without extension {extension}: {reason}
+#. chrys-meta={"fingerprint":"535af465201f2170e30c3e7abab778107dbc0d7bd230f78578ae48ab4f8ae190","multiline":false,"placeholders":["agent","extension","reason"]}
+#: src/chrys/service/tools/packs.py
+msgid "builder.extension_unavailable"
+msgstr "智能体 {agent} 启动时未包含扩展 {extension}：{reason}"
+
 #. English: This model's provider runs web search, so the local {tools} tool(s)
 #. were disabled for this run. Provider-run search is not covered by iCode
 #. approval rules or network grants. Remove the hosted web tool declaration
@@ -201,11 +214,201 @@ msgstr "未配置智能体配置注册表，无法切换智能体配置"
 msgid "controls.profile_not_found"
 msgstr "未找到智能体配置“{profile_name}”"
 
-#. English: Saved; takes effect after restart: {keys}.
-#. chrys-meta={"fingerprint":"787d958260109fe1e8ed49b815a95e7e1d03aef008f14ab439ab505e6b88d078","multiline":false,"placeholders":["keys"]}
+#. English: Agent '{old}' is no longer available. Using '{new}'.
+#. chrys-meta={"fingerprint":"a130868598167662423f644ba7b154ce2f800a5048303c0d47a11589bd574f05","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_agent_fallback"
+msgstr "智能体“{old}”已不可用，已切换到“{new}”。"
+
+#. English: Agent '{old}' is now named '{new}'.
+#. chrys-meta={"fingerprint":"fab19454999f6de87bb54112c942a01b746a9499b1d193d05a1bcb06b1df1e03","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_agent_renamed"
+msgstr "智能体“{old}”已更名为“{new}”。"
+
+#. English: Applied: {keys}
+#. chrys-meta={"fingerprint":"00c0e6d433265c03461a938cccfa6c4ab5fb758f544edf9bd2f516d22cc244c3","multiline":false,"placeholders":["keys"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_applied"
+msgstr "已应用：{keys}"
+
+#. English: Reload when the current turn or workflow finishes.
+#. chrys-meta={"fingerprint":"b5cde9be8c1a377eff6259057789e5621309d24c8ca027f708a5318e8c45fb59","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_busy"
+msgstr "请等当前回合或工作流结束后再执行 /reload。"
+
+#. English: Reloaded settings, profiles, memory, skills, hooks, MCP servers,
+#. themes and prompt shortcuts.
+#. chrys-meta={"fingerprint":"399d57d2a45da329d41a50b2cca0f2bec9bf37be1aab7506e21831c953446ace","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_done"
+msgstr "已重新加载设置、智能体与模型配置、记忆、Skills、钩子、MCP 服务器、主题和快捷指令。"
+
+#. English: The previous turn was cancelled while settings were waiting to
+#. reload.
+#. chrys-meta={"fingerprint":"fa4ad16859f5cdf84af8d86c3c511cd79716871cb44ed134ae1e50378b30174d","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/lifecycle_permits.py
+msgid "controls.reload_drain_cancelled"
+msgstr "等待刷新设置时，上一回合已被取消。"
+
+#. English: Could not finish the previous turn before reloading: {detail}
+#. chrys-meta={"fingerprint":"18b388747f97de465eaa25b5b4e8dc263187c866e49437e4f5fa522477ce1d1e","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/state/lifecycle_permits.py
+msgid "controls.reload_drain_failed"
+msgstr "刷新设置前无法完成上一回合的收尾：{detail}"
+
+#. English: Reload stopped: the hooks the new project trust setting needs can't
+#. be used. {detail} Settings and hooks stay as they were, with project hooks
+#. still loaded.
+#. chrys-meta={"fingerprint":"6c046aaeb3be103e7340a9bf62d5ad06359c3a76b0a21d842348b24fe608fc35","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hook_trust_failed_loaded"
+msgstr ""
+"刷新已停止：新的项目信任设置所需的钩子无法使用。\n"
+"{detail}\n"
+"设置和钩子保持原样，项目钩子仍然加载。"
+
+#. English: Reload stopped: the hooks the new project trust setting needs can't
+#. be used. {detail} Settings and hooks stay as they were, with project hooks
+#. still not loaded.
+#. chrys-meta={"fingerprint":"43d62042627309f1d98fc56b9f0b0547c2b98cd1d05cf09a73bde3b73c1fc8ba","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hook_trust_failed_not_loaded"
+msgstr ""
+"刷新已停止：新的项目信任设置所需的钩子无法使用。\n"
+"{detail}\n"
+"设置和钩子保持原样，项目钩子仍未加载。"
+
+#. English: Hooks were not updated; the previous rules stay in effect. {detail}
+#. chrys-meta={"fingerprint":"aabb75f0f22eb539222b8d19f7751517d251f21e6dcb061bdb59e498af8eadf1","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hooks_kept"
+msgstr ""
+"钩子未更新，原有规则继续生效。\n"
+"{detail}"
+
+#. English: Some hooks could not be loaded; the rest are in effect. {detail}
+#. chrys-meta={"fingerprint":"64bc23e763bd56e147207a897fef68f65cb588294a216e9dc24bd6a84a8f1b09","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_hooks_partly_loaded"
+msgstr ""
+"部分钩子无法加载，其余钩子已生效。\n"
+"{detail}"
+
+#. English: Kept the current model: '{model}' is unavailable. Check the model
+#. profile file and run /reload again.
+#. chrys-meta={"fingerprint":"ec978a9242efbf79d6a2e1329e25a1dee86930387f1237978292c020550c66d1","multiline":false,"placeholders":["model"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_kept_model"
+msgstr "已保留当前模型。“{model}”不可用，请检查模型配置文件后再次执行 /reload。"
+
+#. English: Wait for the agent to finish loading, then run /reload again.
+#. chrys-meta={"fingerprint":"941008e0342e2bec5449cd2d2abb28d6c598f5d7f813ab8918179cd5a24befd0","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_loading"
+msgstr "请等智能体加载完成后再执行 /reload。"
+
+#. English: MCP server '{server}': reconnect failed, using the existing
+#. connection. {detail}
+#. chrys-meta={"fingerprint":"71163ce56e31c2b24dbcdd0815bf854839b5ba1427839d6f3fde1acb33453f93","multiline":false,"placeholders":["detail","server"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_mcp_kept"
+msgstr "MCP 服务器“{server}”：重连失败，沿用旧连接。{detail}"
+
+#. English: MCP server '{server}' is unavailable: {detail}
+#. chrys-meta={"fingerprint":"ffb865a515a9b4e1930c2352e5faa55f1fa833f1db7fec067949a8d17db6fb38","multiline":false,"placeholders":["detail","server"]}
+#: src/chrys/orchestration/engine/reload_resources.py
+msgid "controls.reload_mcp_unavailable"
+msgstr "MCP 服务器“{server}”不可用：{detail}"
+
+#. English: Agent '{agent}' references missing model '{missing}'. Using
+#. '{actual}'.
+#. chrys-meta={"fingerprint":"e1bfcff98768c2dda7ef80df1b1fb10e6032f17c3b1f06d1029ff4aeb1d828e5","multiline":false,"placeholders":["actual","agent","missing"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_missing_bound_model"
+msgstr "智能体“{agent}”绑定的模型“{missing}”不存在，当前使用“{actual}”。"
+
+#. English: Model '{old}' is no longer selectable. Using '{new}' as the
+#. default.
+#. chrys-meta={"fingerprint":"701eb361512b92594fbb1ec144c26e55a20013264b957af94654983cd174690b","multiline":false,"placeholders":["new","old"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_model_fallback"
+msgstr "模型“{old}”已不可选，现使用“{new}”作为默认模型。"
+
+#. English: Applies next launch: {keys}
+#. chrys-meta={"fingerprint":"a6db90ffb672d9b69a9ad8335ba7a41453e9f22f520ea58ba0e3a8a5a42d72bc","multiline":false,"placeholders":["keys"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_next_launch"
+msgstr "下次启动生效：{keys}"
+
+#. English: No main agent is available. Kept the previous runtime.
+#. chrys-meta={"fingerprint":"c63552c6063925d9c518314ea12ede288120bd69228d04c8fa5ba44e8d89d547","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_no_agent"
+msgstr "没有可用的主智能体，已保留原会话配置。"
+
+#. English: The session changed before settings could reload.
+#. chrys-meta={"fingerprint":"0b3ed5e40f5ffb4cc2c04b791192bae29cb1408caf7136e80cff6bc310a77125","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/errors.py
+msgid "controls.reload_session_changed"
+msgstr "当前会话已切换，设置未刷新。"
+
+#. English: Session model '{model}' is no longer selectable. The session now
+#. uses its default model.
+#. chrys-meta={"fingerprint":"6f97a6d3b117226b0cb118a4092b77f5787fd78ff6b6846839e9bfe3343b4aa4","multiline":false,"placeholders":["model"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_session_model_removed"
+msgstr "会话模型“{model}”已不可选，当前会话改用默认模型。"
+
+#. English: Reloaded settings. No agent is active.
+#. chrys-meta={"fingerprint":"afd39507e1b644a357ce3bcd7b37db1792eba0725f68b442a3ffe1550bc5d52d","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_settings_only"
+msgstr "已重新加载设置。当前没有活动智能体。"
+
+#. English: Overridden by a higher-priority choice: {keys}
+#. chrys-meta={"fingerprint":"010d595a87bd72ab674477dbe3faf2590465f0fed7ee4c3c012c76256b2cecbf","multiline":false,"placeholders":["keys"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_shadowed"
+msgstr "被更高优先级的选择覆盖：{keys}"
+
+#. English: Settings cannot reload during shutdown.
+#. chrys-meta={"fingerprint":"501f900608f15c1d563663e5d6e7ece3b8e35051da461e072a7962f6e8aa9dc6","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_shutdown"
+msgstr "正在退出，无法刷新设置。"
+
+#. English: A newer agent load took precedence. Run /reload again.
+#. chrys-meta={"fingerprint":"7040f85acfcd2b955c4e48ea673c126992861e14f83be8310b14a60dd4610acf","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_superseded"
+msgstr "已有更新的智能体加载操作，请重新执行 /reload。"
+
+#. English: Agent '{parent}' references '{child}'. Its tool '{tool}' is
+#. unavailable.
+#. chrys-meta={"fingerprint":"626b21d01e2470451feb473f9a1e4c6e2b12ea03b21f6d73810e34dc93ece503","multiline":false,"placeholders":["child","parent","tool"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_unavailable_child"
+msgstr "智能体“{parent}”引用的子智能体“{child}”不可用，工具“{tool}”未加载。"
+
+#. English: Model profile is unavailable: {model}
+#. chrys-meta={"fingerprint":"309636cd0cc28606573698ecf2fb04f9a7c79b3457858e76c87ed475e04ec8c1","multiline":false,"placeholders":["model"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_unavailable_model"
+msgstr "模型配置不可用：{model}。"
+
+#. English: Theme '{theme}' is unavailable in this session.
+#. chrys-meta={"fingerprint":"2da05e094b4a84ac331419a2365c674a94e7bc7e55a3c94a9b0af4ff552c398a","multiline":false,"placeholders":["theme"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.reload_unknown_theme"
+msgstr "此会话中没有可用的主题“{theme}”。"
+
+#. English: Restart to apply these settings: {keys}.
+#. chrys-meta={"fingerprint":"58a78efc37d84e54f532e99c0df0973b9fbbff5223608eb47574448dbc8fc04a","multiline":false,"placeholders":["keys"]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.settings_restart_required"
-msgstr "已保存；重启后生效：{keys}。"
+msgstr "以下设置需重启后生效：{keys}。"
 
 #. English: Cannot change the working directory: {path} does not exist.
 #. chrys-meta={"fingerprint":"a65947fbb2a1685469d4e7b418c5bd3b11d44b21ae07cfec374c9afcd4b5e9c8","multiline":false,"placeholders":["path"]}
@@ -342,6 +545,13 @@ msgstr "未配置状态存储。"
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "engine.fork_turn_active"
 msgstr "轮次进行中无法派生会话。"
+
+#. English: Cannot discard while a workflow run is active. Cancel the workflow
+#. run first.
+#. chrys-meta={"fingerprint":"676c9f48c57e0cb82ec9e71323e4c6f7440295aea4ee65021b71790904e053cf","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/engine.py
+msgid "engine.rollback.workflow_active"
+msgstr "工作流运行时无法撤回。请先取消工作流。"
 
 #. English: The working directory no longer exists: {path}
 #. chrys-meta={"fingerprint":"2ec9b264988bd8d372b55afd83c92c0543296ebe3b67668a111cee2ef6171237","multiline":false,"placeholders":["path"]}
@@ -640,6 +850,61 @@ msgstr "Hosted Tool Discovery"
 msgid "i18n.catalog_load_failed"
 msgstr "无法加载语言设置 {locale} 的翻译资源，改用英文。"
 
+#. English: Reloaded agent and model profile definitions.
+#. chrys-meta={"fingerprint":"e4cbc2b8a17979fc36c60f27fa9f453e43f5437624a290c4cf75a334eabc4462","multiline":false,"placeholders":[]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_changed"
+msgstr "已更新智能体和模型配置。"
+
+#. English: Cannot list {path}. The profile directories were not reloaded.
+#. chrys-meta={"fingerprint":"80df279c6cc31a695cde05f5013ea6ef19535804fabcdb3f3242151204beee1c","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_directory_failed"
+msgstr "无法列出 {path} 中的文件。智能体和模型配置均未重新加载。"
+
+#. English: Profile files already changed: {changes}
+#. chrys-meta={"fingerprint":"3a2f58e1358588eff3a1f8f5405f8318308b76854915c28ee09ff561f6640c03","multiline":false,"placeholders":["changes"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_disk_changes"
+msgstr "已改动的配置文件：{changes}"
+
+#. English: The profile file changed before it could be normalized: {path}
+#. chrys-meta={"fingerprint":"da22e1c5660a410005be3c74343f16398ea993bcc1415eaebdbddc664a350137","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_file_changed"
+msgstr "整理文件前检测到内容发生了变化：{path}"
+
+#. English: Could not register {path} under its profile name. Check for a
+#. conflicting filename.
+#. chrys-meta={"fingerprint":"b935617d374b4625150dbd57eddc085e07f248fde500d30e6440a46f8c8e5b82","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_file_conflict"
+msgstr "无法按智能体名称注册 {path}，请检查文件名是否冲突。"
+
+#. English: Skipped invalid or unreadable profile files: {paths}
+#. chrys-meta={"fingerprint":"7fb9500ed342974da5b9e7ef5726c2290f2ba7283a90e8af849b055217e88ef3","multiline":false,"placeholders":["paths"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_invalid"
+msgstr "已跳过无效或无法读取的配置文件：{paths}"
+
+#. English: Kept the last loaded version of these profile files: {paths}
+#. chrys-meta={"fingerprint":"99bc4cd5c9a2cfa476a18c3b3dcb229c876ee198cb13de749eb8edb36cbdb163","multiline":false,"placeholders":["paths"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_kept"
+msgstr "以下配置文件继续使用上次成功加载的版本：{paths}"
+
+#. English: Could not normalize {path}: {reason}
+#. chrys-meta={"fingerprint":"d6f93c1cce42a4b1beda38b793de8a31078a6ac3220f4c8dd3bfcc79de255fc3","multiline":false,"placeholders":["path","reason"]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_normalize_failed"
+msgstr "无法整理 {path}：{reason}"
+
+#. English: Profiles changed while reloading. Run /reload again.
+#. chrys-meta={"fingerprint":"9b3edeceec8b2a992b02606c80921b2b0857ea5899816286d2b9497550917f87","multiline":false,"placeholders":[]}
+#: src/chrys/service/profiles/reload.py
+msgid "profiles.reload_stale"
+msgstr "刷新期间配置发生了变化，请再次执行 /reload。"
+
 #. English: Images cannot be added while the agent is responding.  Wait for the
 #. current response to finish, then send the image in a new message.
 #. chrys-meta={"fingerprint":"19fea43b9400b956c1585d69dd8a2dced2973043a74b02ffcb5751a5677e9458","multiline":true,"placeholders":[]}
@@ -730,31 +995,31 @@ msgstr "响应流中断"
 msgid "retry.sub_agent_paused"
 msgstr "请先处理已暂停的子智能体（在卡片上选择 Retry/Abort），然后再重试主运行。"
 
-#. English: Rollback cancelled because the conversation advanced from turn
+#. English: Discard cancelled because the conversation advanced from turn
 #. {expected_turn} to turn {current_turn}.
-#. chrys-meta={"fingerprint":"519fb4eccdce76ffea9a206ca05f865e6a06ef1ecd028f3883444735fd3613c4","multiline":false,"placeholders":["current_turn","expected_turn"]}
+#. chrys-meta={"fingerprint":"89acd6451e6a38058e8a9c6484a8b33756051f94136c64cfe7fc54f779034e0e","multiline":false,"placeholders":["current_turn","expected_turn"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.conversation_advanced"
-msgstr "对话已从第 {expected_turn} 轮推进到第 {current_turn} 轮，回滚已取消。"
+msgstr "对话已从第 {expected_turn} 轮推进到第 {current_turn} 轮，撤回已取消。"
 
-#. English: Rollback cancelled because the conversation changed after the
-#. picker was loaded.
-#. chrys-meta={"fingerprint":"da2f593b6de3d8b5c9f7b22a5096432913cbedd0a0862dc24bbe763e48d1d132","multiline":false,"placeholders":[]}
+#. English: Discard cancelled because the conversation changed after the picker
+#. was loaded.
+#. chrys-meta={"fingerprint":"29f8b977a86999a74b990799dd80b42539609724a4e4f68aaa04d619bada967c","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.conversation_changed"
-msgstr "选择器加载后对话已更改，回滚已取消。"
+msgstr "选择器加载后对话已更改，撤回已取消。"
 
-#. English: No active session to roll back.
-#. chrys-meta={"fingerprint":"db217cdabdd45fc9b941251f024bf816fdbfd4d0f1e9801cc37f62056270c0ec","multiline":false,"placeholders":[]}
+#. English: No active session to discard turns from.
+#. chrys-meta={"fingerprint":"090b9592d82c0a0e393f5ed7a70d49de4fbe4daa2afc4b8a27263ccba6af0d7f","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.no_session"
-msgstr "没有可回滚的活动会话。"
+msgstr "没有可撤回的活动会话。"
 
-#. English: Rollback is not allowed in state {state}.
-#. chrys-meta={"fingerprint":"35b3d0667e6a311335aa4fcbf9b291a720d87578c93afbf24372b569fb3c1cf3","multiline":false,"placeholders":["state"]}
+#. English: Cannot discard turns in state {state}.
+#. chrys-meta={"fingerprint":"45e8218f08af8fe546cf61d242de941019f2d42d7d6f04cd8d02a4b0a36c2348","multiline":false,"placeholders":["state"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.refused"
-msgstr "状态为 {state} 时不允许回滚。"
+msgstr "状态为 {state} 时不允许撤回。"
 
 #. English: relative_turns must be positive.
 #. chrys-meta={"fingerprint":"022d55efe24877b1c366ab078d4d2dbd41f148cb944e816e4f08ff1dbe111124","multiline":false,"placeholders":[]}
@@ -762,25 +1027,24 @@ msgstr "状态为 {state} 时不允许回滚。"
 msgid "rollback.relative_turns_invalid"
 msgstr "relative_turns 必须为正数。"
 
-#. English: Rollback to welcome could not reset the session because the session
-#. state is busy.
-#. chrys-meta={"fingerprint":"0b57a6e450cdef36048c85f90c738999661035069452b0bf5ffab52b3f742c7c","multiline":false,"placeholders":[]}
+#. English: Could not discard all turns because the session state is busy.
+#. chrys-meta={"fingerprint":"7ff146bb55c680c5232e0b719f2b45cec69d4119e08cf627dc76be7fc54f21ad","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.reset_failed"
-msgstr "回滚到欢迎页时无法重置会话，因为会话状态忙碌。"
+msgstr "撤回到欢迎页时无法重置会话，因为会话状态忙碌。"
 
-#. English: Rollback cancelled because the workspace or runtime changed after
+#. English: Discard cancelled because the workspace or runtime changed after
 #. the picker was loaded.
-#. chrys-meta={"fingerprint":"7be49511c61e57661b9ca46c60497ed9ddc8f6f06444bd63d9fc0dd2c39887d2","multiline":false,"placeholders":[]}
+#. chrys-meta={"fingerprint":"e88434a935680cef5e3e6dbb7c57be818bb8bff1440479d9cf19cbd5e5d0e584","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.runtime_changed"
-msgstr "选择器加载后工作区或运行时已更改，回滚已取消。"
+msgstr "选择器加载后工作区或运行时已更改，撤回已取消。"
 
-#. English: Rollback cancelled because the active session changed.
-#. chrys-meta={"fingerprint":"7ec29e015ec11115fb6dee0ad34efeccdbcb7d0dfe67bf57e39b4dbc2d081c42","multiline":false,"placeholders":[]}
+#. English: Discard cancelled because the active session changed.
+#. chrys-meta={"fingerprint":"177ecb0140d2638435a5bf28164b7105f41ef48e69a3319ba3f47bd29f0dfb6b","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.session_changed"
-msgstr "活动会话已更改，回滚已取消。"
+msgstr "活动会话已更改，撤回已取消。"
 
 #. English: Snapshot for turn {target_turn} is missing.
 #. chrys-meta={"fingerprint":"a71c645f47fa18f4da338ac9f56a82e3997d0b24f7d47538a43e5adbdd861fa5","multiline":false,"placeholders":["target_turn"]}
@@ -806,19 +1070,19 @@ msgstr "等待会话锁超时：{detail}"
 msgid "rollback.target_turn_invalid"
 msgstr "target_turn 必须大于等于 0。"
 
-#. English: Cannot roll back to turn {target_turn}; available turns:
+#. English: Cannot discard turns after turn {target_turn}; available targets:
 #. {available}
-#. chrys-meta={"fingerprint":"d4e1c6f393a4cf0c40880e90736d587941efa19bd472aa18f2350715323d1d03","multiline":false,"placeholders":["available","target_turn"]}
+#. chrys-meta={"fingerprint":"83bd51255fd5bb5b84c23e60af483564586d3dd991dec90499ad67af803db58e","multiline":false,"placeholders":["available","target_turn"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.turn_unavailable"
-msgstr "无法回滚到第 {target_turn} 轮；可用轮次：{available}"
+msgstr "无法撤回到第 {target_turn} 轮；可用轮次：{available}"
 
-#. English: Cannot roll back {requested_turns} turns; the session currently has
+#. English: Cannot discard {requested_turns} turns; the session currently has
 #. {current_turns}.
-#. chrys-meta={"fingerprint":"b50ffe94964127935b5a16ad2aef137bea2c4eaa7b5d8f653ac37553ffadc23f","multiline":false,"placeholders":["current_turns","requested_turns"]}
+#. chrys-meta={"fingerprint":"e5ec135beaff7d19bab16918082ab60ddc9ba4d9aeb386305138b056d504242c","multiline":false,"placeholders":["current_turns","requested_turns"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.turns_unavailable"
-msgstr "无法回滚 {requested_turns} 轮；会话当前有 {current_turns} 轮。"
+msgstr "无法撤回 {requested_turns} 轮；会话当前有 {current_turns} 轮。"
 
 #. English: Stopping {count} background command the run left running.
 #. English-plural: Stopping {count} background commands the run left running.
@@ -955,11 +1219,60 @@ msgstr "{source}={raw} 低于下限，已改用 {limit}。"
 msgid "settings.context.warn_threshold_pct.label"
 msgstr "上下文警告阈值"
 
+#. English: {path}: expected a YAML mapping within the configuration size
+#. limits.
+#. chrys-meta={"fingerprint":"6becb58c44cc338ddc6d110b98ea5c919b88f3d348c888de4302a5e211cf4ca5","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_invalid_mapping"
+msgstr "{path}：需要符合配置大小限制的 YAML 映射。"
+
+#. English: {path}: unreadable or invalid project YAML document.
+#. chrys-meta={"fingerprint":"15a37c04d7af60e8771c143eea5df927b6a5194b6337a16ca1ec0f59b69a4a36","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_invalid_project"
+msgstr "{path}：项目 YAML 文件不可读或格式无效。"
+
+#. English: {path}: invalid YAML or text encoding.
+#. chrys-meta={"fingerprint":"3985e4208171c02cddda226d697dcdc8006c5ee3993618bfcc1d3ac9a84ca027","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_invalid_yaml"
+msgstr "{path}：YAML 格式或文本编码无效。"
+
+#. English: {path}: invalid YAML at line {line}, column {column}.
+#. chrys-meta={"fingerprint":"ea5aa4cd925a5b76fb2f316ce21aad1a057886ea4fdc51b90af80979a4d1b2a7","multiline":false,"placeholders":["column","line","path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_invalid_yaml_at"
+msgstr "{path}：第 {line} 行第 {column} 列的 YAML 语法有误。"
+
+#. English: Timed out waiting for the lock on {path}.
+#. chrys-meta={"fingerprint":"bbbbdb1b67a4f4c24fba1142471d35707cfea8a1d1f3bf4e80f8e73dd55baba9","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_lock_timeout"
+msgstr "等待 {path} 的文件锁超时。"
+
+#. English: Settings could not be read. Using the last available configuration.
+#. chrys-meta={"fingerprint":"b9656ce5ab8045d947ae3e1b786c4edc6f7c21f84688aeb98930a60506015c3a","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.document_read_failed"
+msgstr "无法读取设置，已使用最近可用的配置。"
+
+#. English: Cannot read {path}: {detail}
+#. chrys-meta={"fingerprint":"b0f94e8fe21c798d9e636b77b2ad61d13c8a455d4955260cc72a1c4aeb5f7582","multiline":false,"placeholders":["detail","path"]}
+#: src/chrys/foundation/config/yaml_store.py
+msgid "settings.document_unreadable"
+msgstr "无法读取 {path}：{detail}"
+
 #. English: Save prompt history
 #. chrys-meta={"fingerprint":"13ccf737d1cfc849550262751b32576f593ac1e0b4a99192437ab3c519048ff8","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
 msgid "settings.history.prompt.enabled.label"
 msgstr "保存提示词历史"
+
+#. English: Invalid value for {key}.
+#. chrys-meta={"fingerprint":"a1007d478e6c5329cbd6fc4394ab6c10442000150231a91f7807df96fbc2c587","multiline":false,"placeholders":["key"]}
+#: src/chrys/foundation/config/errors.py
+msgid "settings.invalid_value_for_key"
+msgstr "{key} 的值无效。"
 
 #. English: Credential command refresh interval (seconds)
 #. chrys-meta={"fingerprint":"881e643e078c60d678dbf44dab477bf459f1be252a6c92313a23bf6339c0267e","multiline":false,"placeholders":[]}
@@ -1008,7 +1321,7 @@ msgstr "审批裁判模型"
 #. English: Buddy model
 #. chrys-meta={"fingerprint":"639cbc46db6fb15f9747fa24936f4a22222b7f6d2b7e07dd066f3a4214049066","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
-msgid "settings.model.role.buddy_model_id.label"
+msgid "settings.model.role.buddy.label"
 msgstr "Buddy 模型"
 
 #. English: Session title model
@@ -1016,6 +1329,18 @@ msgstr "Buddy 模型"
 #: src/chrys/foundation/config/settings.py
 msgid "settings.model.role.session_title.label"
 msgstr "会话标题模型"
+
+#. English: {path}: model.profile.active must be a model profile name or ID.
+#. chrys-meta={"fingerprint":"5641b48ce33b7e491456d288b315090ebfe068682e246f326e83407ee21d46f3","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/errors.py
+msgid "settings.model_id_expected"
+msgstr "{path}：model.profile.active 必须是模型配置的名称或 ID。"
+
+#. English: Model selection changed during reload. Run /reload again.
+#. chrys-meta={"fingerprint":"34e930b26ef79652a605e959360680a2467f5193c83e1ccbaee67bc56b122809","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/runtime_pointer.py
+msgid "settings.model_selection_changed"
+msgstr "刷新期间模型选择已更改，请重新执行 /reload。"
 
 #. English: Mutation coordination
 #. chrys-meta={"fingerprint":"dbbb25f61a0d70961427295b459688511b4cf822c30611bd831abc0c625e51c4","multiline":false,"placeholders":[]}
@@ -1490,6 +1815,14 @@ msgstr "保留的最近工作区数"
 msgid "startup.invalid_no_proxy_env"
 msgstr "环境变量 {var} 的值对 httpx 无效，已忽略（{value}）。请移除或修正该环境变量。"
 
+#. English: {var} is not a proxy address {app} can use and was ignored
+#. ({value}). Use an http://, https://, socks5:// or socks5h:// address, or
+#. remove this environment value.
+#. chrys-meta={"fingerprint":"3ded826f128c71a6acf506c8a238ae02cbd0209f09b21ae43e542308b889b8e6","multiline":false,"placeholders":["app","value","var"]}
+#: src/chrys/orchestration/startup.py
+msgid "startup.invalid_proxy_env"
+msgstr "环境变量 {var} 不是 {app} 可用的代理地址，已忽略（{value}）。请改用 http://、https://、socks5:// 或 socks5h:// 地址，或移除该环境变量。"
+
 #. English: Notification migration into {path} failed ({error}). It will retry
 #. on the next start. Until then, your previous notification preferences may
 #. not apply.
@@ -1497,6 +1830,13 @@ msgstr "环境变量 {var} 的值对 httpx 无效，已忽略（{value}）。请
 #: src/chrys/orchestration/startup.py
 msgid "startup.notifications_migration_failed"
 msgstr "将通知偏好迁移到 {path} 时出错（{error}）。下次启动时会重试。在此之前，原有的通知偏好可能不会生效。"
+
+#. English: Could not import previous notification preferences. The migration
+#. will retry on the next start.
+#. chrys-meta={"fingerprint":"bc0fe9d6acdac94d2216b0b6836d36e36f94a69fdcfb16095d267e6d698fb920","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/startup.py
+msgid "startup.notifications_migration_retry"
+msgstr "无法导入以往的通知偏好，下次启动时将重试。"
 
 #. English: Raw HTTP capture is on ({source}): request and response logs record
 #. API keys, prompts and model output unredacted. Turn it off when you are
@@ -2058,15 +2398,16 @@ msgid "tui.agent_config.confirm.delete.title"
 msgstr "删除智能体"
 
 #. English: Reset built-in agent "{display}" to system defaults?  Skills, MCP,
-#. and Memory settings will be preserved. All other changes will be discarded.
-#. chrys-meta={"fingerprint":"991add1024ebc3743242d0a6705b0328e8cbc548c8cff1808de41fee4d373b6b","multiline":true,"placeholders":["display"]}
+#. Memory, and Extensions settings will be preserved. All other changes will be
+#. discarded.
+#. chrys-meta={"fingerprint":"6cc6ce611c7dd4302f9fdf6eb7d3ae9b3aee218f348cd01e54f3bef411282546","multiline":true,"placeholders":["display"]}
 #: src/chrys/app/tui/screens/agents/config.py
 msgid "tui.agent_config.confirm.reset.message"
 msgstr ""
 "将内置智能体\n"
 "“{display}”重置为系统默认设置？\n"
 "\n"
-"Skills、MCP 和 Memory 设置将被保留，其他所有更改都将丢弃。"
+"Skills、MCP、Memory 和扩展设置将被保留，其他所有更改都将丢弃。"
 
 #. English: Reset Agent
 #. chrys-meta={"fingerprint":"d5d9572588e468a399375b67f2252810ea1e8a6aee0a70ba8db9f0a268341ad2","multiline":false,"placeholders":[]}
@@ -2707,14 +3048,14 @@ msgstr "验证错误"
 
 #. English: Ask User
 #. chrys-meta={"fingerprint":"4ba2eb2280d7d5bf7b10a85a98fcfcb2a2a534fd0445feb8a3c35d72d147beff","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.ask_user"
 msgstr "询问用户"
 
 #. English: Prompt the user with one or more questions for input or
 #. clarification
 #. chrys-meta={"fingerprint":"5de19be1cf87af37a87361bad1227fcb8b9fa2835cbac6c11e85312f89219d85","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.ask_user_description"
 msgstr "向用户提出一个或多个问题以获取输入或澄清信息"
 
@@ -2732,91 +3073,141 @@ msgstr "切换类别以启用或禁用"
 
 #. English: Document Converter (PDF, Office)
 #. chrys-meta={"fingerprint":"62cee70c4d6c2d823f4af3fccd88c95961f838db337e01832477ba609c60bd79","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.document_converter"
 msgstr "文档转换器（PDF、Office）"
 
 #. English: Convert PDF, DOCX, PPTX, XLSX, XLS to Markdown
 #. chrys-meta={"fingerprint":"dbdceeef3283c316ca290d9e26bcb67a34ee1bedf415dc976ae064b76aec4595","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.document_converter_description"
 msgstr "将 PDF、DOCX、PPTX、XLSX、XLS 转换为 Markdown"
 
+#. English: Installed more than once, so neither copy loads:
+#. chrys-meta={"fingerprint":"66a2f18dc8d049af42e4e2b536b82ce55655194dfc5c094c91c543bed2f01e83","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extension_conflict"
+msgstr "安装了不止一份，因此都不会加载："
+
+#. English: Not installed: agents start without it
+#. chrys-meta={"fingerprint":"e014ac40e7fda78471806018541fdc4958d49731d88f6a33c8e3bc06d0efcdaf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extension_not_installed"
+msgstr "未安装：智能体启动时不会包含它"
+
+#. English: Skipped {problem}
+#. chrys-meta={"fingerprint":"c3884802052e7c05ab9d2af02cc1cfb0633eff41b707652269a845ab8c7bc0a7","multiline":false,"placeholders":["problem"]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extension_skipped"
+msgstr "已跳过 {problem}"
+
+#. English: Extensions
+#. chrys-meta={"fingerprint":"0370d6fd45a81ff08705c04c324d7bab6b5c8cac84703cb57f52b74c81db3dbc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extensions"
+msgstr "扩展"
+
+#. English: Python extensions installed for {app}. They run inside {app} with
+#. your permissions: install only extensions you trust
+#. chrys-meta={"fingerprint":"5f3c7d99acb98c8d34937b36efe3bbb668375df6f499d3781a122dd1717aa464","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extensions_description"
+msgstr "为 {app} 安装的 Python 扩展。它们在 {app} 内以你的权限运行：只安装你信任的扩展"
+
+#. English: Installed extensions cannot be listed
+#. chrys-meta={"fingerprint":"b010db5a13ac51eb01c1fd075f3e4bf9abbb42d9b28247bf88d79e7bc4742417","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.extensions_unreadable"
+msgstr "无法列出已安装的扩展"
+
 #. English: Filesystem Read
 #. chrys-meta={"fingerprint":"62281ba302842e23735f930c9baac021139d9cfbd2cf640d0b50872c1d27777c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_read"
 msgstr "读取文件系统"
 
 #. English: Read files from the filesystem
 #. chrys-meta={"fingerprint":"15cb63b8f3e0cf04816c0f24457556f468e472a6d10399c4b6fe2840378814e3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_read_description"
 msgstr "从文件系统读取文件"
 
 #. English: Filesystem Write
 #. chrys-meta={"fingerprint":"b1ee74a8744dd8c5182552fab47f19de7da0cd25e4d18a624a39f07f521e6e7b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_write"
 msgstr "写入文件系统"
 
 #. English: Create and edit files on the filesystem
 #. chrys-meta={"fingerprint":"df6847fb6e6264cc0e17684d54f05559eae56c369daa7e8660af9cf3002384a9","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.filesystem_write_description"
 msgstr "在文件系统中创建和编辑文件"
 
+#. English: Looking for installed extensions…
+#. chrys-meta={"fingerprint":"2107859e04f76fd75d6116f838a1bff55926b7104bb26d5b447e47c30c995e46","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.finding_extensions"
+msgstr "正在查找已安装的扩展…"
+
+#. English: No extensions installed. The Python extensions guide (F8) shows how
+#. to write or install one
+#. chrys-meta={"fingerprint":"688ff08e10c5ad4ce99f7ae61c5a49a121dd818531eca8dea9a57c2e3f718e7f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/tools.py
+msgid "tui.agent_config.tools.no_extensions"
+msgstr "尚未安装扩展。Python 扩展指南（F8）介绍如何编写或安装扩展"
+
 #. English: File search
 #. chrys-meta={"fingerprint":"0679fe2ae5bf35ce2a964e8ecb0990ff3acef5402722eae73cf86c98fb32cc8e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.search"
 msgstr "文件搜索"
 
 #. English: Search file contents and find files by pattern
 #. chrys-meta={"fingerprint":"10c97edeb712ad26c4597b8c9db95fb8d7f8a12ed51a4ab5e5ac9b83f8149979","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.search_description"
 msgstr "搜索文件内容并按模式查找文件"
 
 #. English: Shell
 #. chrys-meta={"fingerprint":"c88366863f55792de9cb53be96c7a9a4981bd9a8b27525585019202f8f4c9158","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.shell"
 msgstr "Shell"
 
 #. English: Execute shell commands in a subprocess
 #. chrys-meta={"fingerprint":"6b66f1fa51d3eff2c80bf48e291e1d66e250e01a71c468150862d555a47dafc8","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.shell_description"
 msgstr "在子进程中执行 Shell 命令"
 
 #. English: Todo List
 #. chrys-meta={"fingerprint":"542ce0ea3c6fcce0e77bc1f4279341d6d851b6f629309054b6aeb873cdc55a84","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.todo_list"
 msgstr "待办事项"
 
 #. English: Track multi-step work as a live task checklist
 #. chrys-meta={"fingerprint":"2155386149f0a03a0665a30d3413e5e556411a54c413d60bdd3d73821130b9e3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.todo_list_description"
 msgstr "以实时任务清单跟踪多步骤工作"
 
 #. English: Web fetch
 #. chrys-meta={"fingerprint":"f510d73aab1875c2580ca3559de19155f59ab9bc022acf52dfcb9a4e03c163af","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_fetch"
 msgstr "网页读取"
 
 #. English: Read a page's text by URL
 #. chrys-meta={"fingerprint":"043893ad4830c1ebfee425f78e0b0b01e8f6d4da2ade694c186a118f9abccdfa","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_fetch_description"
 msgstr "按 URL 读取页面文本"
 
 #. English: Web search
 #. chrys-meta={"fingerprint":"f986ea0da9e92ca438eededc408c5cfbc8f9d79120703eddd46a4874b6bdd8fa","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_search"
 msgstr "网络搜索"
 
@@ -2824,7 +3215,7 @@ msgstr "网络搜索"
 #. agent profile names other providers; queries are sent to that service and
 #. may carry details from your conversation, so mind your data and privacy
 #. chrys-meta={"fingerprint":"a3d539dd9c0cc494e68431323f28a245ea989791bd9a16477a1195c47d2bcea1","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
+#: src/chrys/service/tools/packs.py
 msgid "tui.agent_config.tools.web_search_description"
 msgstr "在网上搜索链接和摘要。除非智能体配置文件指定了其他提供方，否则使用 Exa（exa.ai）；搜索词会发送给该服务，并可能带有对话中的内容，请注意数据与隐私安全"
 
@@ -3010,11 +3401,11 @@ msgstr "模型 ID"
 msgid "tui.agent_config.validation.acp.no_builtin_tools"
 msgstr "ACP 配置文件不能配置内置工具。"
 
-#. English: ACP profiles cannot configure custom tools.
-#. chrys-meta={"fingerprint":"32e36a9174f906ee23e944c7e649995973a2d70d4200ad9310a0614b029cf4a9","multiline":false,"placeholders":[]}
+#. English: ACP profiles cannot use extensions.
+#. chrys-meta={"fingerprint":"a8b0475610f3b1db610ca569b8bd7cb36066685004b74cb3c98e3d3ca9e5abb4","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/validation_messages.py
-msgid "tui.agent_config.validation.acp.no_custom_tools"
-msgstr "ACP 配置文件不能配置自定义工具。"
+msgid "tui.agent_config.validation.acp.no_extensions"
+msgstr "ACP 配置文件不能使用扩展。"
 
 #. English: ACP profiles cannot configure MCP servers.
 #. chrys-meta={"fingerprint":"f2c70b8f64a2e2b5346762e8d17c2ee4f38d803913d2e08913c6ddf413e98420","multiline":false,"placeholders":[]}
@@ -4402,11 +4793,12 @@ msgid "tui.background_task.stop_all.message"
 msgid_plural "tui.background_task.stop_all.message#plural"
 msgstr[0] "这会停止 {count} 个后台任务："
 
-#. English: Rollback may not restore what they changed while in the background.
-#. chrys-meta={"fingerprint":"82a83ccc4ba8fceb3138a419730efcd97e7b6b66bde2179d2ff0c936f5f5f70f","multiline":false,"placeholders":[]}
+#. English: Discarding turns may not restore what they changed while in the
+#. background.
+#. chrys-meta={"fingerprint":"a2f727f7f0257b9096ab7f6ad0830c0152a98e4c98f6d1fd881c4c47deb1639e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/background_task.py
 msgid "tui.background_task.stop_all.rollback_note"
-msgstr "它们在后台期间所做的改动，回滚可能无法恢复。"
+msgstr "它们在后台期间所做的改动，撤回可能无法恢复。"
 
 #. English: Stop background tasks?
 #. chrys-meta={"fingerprint":"54c5bb51b3823d38f647f27f3188527f60bfc379c5aefeb3468bbbc48269fe48","multiline":false,"placeholders":[]}
@@ -4889,6 +5281,36 @@ msgstr "默默盯着你敲下的每一个键，最讨厌被打断。"
 msgid "tui.buddy.persona.grit"
 msgstr "面对失败的测试从不放弃，再晚也要盯着它。"
 
+#. English: 💛 {name} blinks slowly. That means yes.
+#. chrys-meta={"fingerprint":"ab604e8f13514405251fb3cd42e6d0a055db5b9c7d2b73707c5b3bf7899af62c","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.blinks"
+msgstr "💛 {name} 慢慢眨了眨眼。这就是答应的意思。"
+
+#. English: 💛 {name} hums a little and goes back to watching your cursor.
+#. chrys-meta={"fingerprint":"605c9a1ffe73e7c887e51bd2debfeca9437c2e375a2bac7d9ad8e48072cb629a","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.hums"
+msgstr "💛 {name} 轻轻哼了两声，又继续盯着你的光标。"
+
+#. English: 💛 {name} scoots a little closer to the keyboard.
+#. chrys-meta={"fingerprint":"4582d0ebb006791a3b77458bacd467b504fbeb7baa9a7a5a2573755eb2c68f30","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.scoots"
+msgstr "💛 {name} 悄悄往键盘那边挪近了一点。"
+
+#. English: 💛 {name} does a small, pleased spin.
+#. chrys-meta={"fingerprint":"d53edcd4d65e73d6f1992e9148b6a60d8cbd7d9a09e134f29e66f3b1a1035f7d","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.spins"
+msgstr "💛 {name} 原地开心地转了一小圈。"
+
+#. English: 💛 {name} wriggles, then pretends nothing happened.
+#. chrys-meta={"fingerprint":"452df8bcf9c1adafe4bfca35359abffdaa8b371379f0a78d525fffb75c262d77","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/features/buddy/replies.py
+msgid "tui.buddy.reply.wriggles"
+msgstr "💛 {name} 扭了扭身子，然后装作什么都没发生。"
+
 #. English: The buddy save file could not be updated, so nothing has changed.
 #. Try again in a moment.
 #. chrys-meta={"fingerprint":"f78cf07df1e34dbfbbe3db4e2c222a5742183593fd6e2b5a24f538410058a9da","multiline":false,"placeholders":[]}
@@ -4978,8 +5400,8 @@ msgstr "智能体"
 msgid "tui.chat.copy_agent_response_tooltip"
 msgstr "复制原始智能体回复"
 
-#. English: copy
-#. chrys-meta={"fingerprint":"d8ed75600cd5a4fe4cf55a8d4be1b83db63d707a7e7797cc9513e395f47ac02f","multiline":false,"placeholders":[]}
+#. English: Copy
+#. chrys-meta={"fingerprint":"42d8d088a101ba7268818d7a5d06368633a4f49e7222714aa68d83c4da94cb1c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.copy_message_button"
 msgstr "复制"
@@ -4996,6 +5418,12 @@ msgstr "复制你的原始消息"
 msgid "tui.chat.fold_row.folded_label"
 msgstr "{label}："
 
+#. English: Discard This Turn
+#. chrys-meta={"fingerprint":"00af528dab63a2db16529ae9ff025a4b9e52a55bb05efdb505cb63eab4fa1ea9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.interrupted_rollback_button"
+msgstr "撤回本轮"
+
 #. English: Activity
 #. chrys-meta={"fingerprint":"adc05a800b4e9d0dfccd9a893e52c89939fe10aab58b7d973b7b2897b27291b2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/process_block.py
@@ -5010,12 +5438,36 @@ msgid "tui.chat.process.tool_calls"
 msgid_plural "tui.chat.process.tool_calls#plural"
 msgstr[0] "{count} 次工具调用："
 
+#. English: Retrying in {seconds}s ({attempt}/{max_attempts})
+#. chrys-meta={"fingerprint":"4f437e9b65b0047a997ca67f72183c057aa5255abd72b935f248bcee165085dd","multiline":false,"placeholders":["attempt","max_attempts","seconds"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.retry_countdown"
+msgstr "{seconds} 秒后重试（{attempt}/{max_attempts}）"
+
 #. English: {message} Retrying in {delay_seconds}s
 #. ({attempt}/{max_attempts})...
 #. chrys-meta={"fingerprint":"2a539b6b7df6647ca02c8adcddd628c1096c2c87869f07ce542cec434098d512","multiline":true,"placeholders":["attempt","delay_seconds","max_attempts","message"]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.retry_message"
 msgstr "{message} 正在重试，等待 {delay_seconds} 秒（{attempt}/{max_attempts}）..."
+
+#. English: Retry Now
+#. chrys-meta={"fingerprint":"4582af9e8d91cbe3d2fcc01807a59a4556726b4825b47d9962f05148e4ab1fc1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.retry_now"
+msgstr "立刻重试"
+
+#. English: Retrying ({attempt}/{max_attempts})...
+#. chrys-meta={"fingerprint":"8d0fadd9e4cd1e9648a527bec4a366eff113b393cf0c5bb7b2a22d85190e544f","multiline":false,"placeholders":["attempt","max_attempts"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.retry_started"
+msgstr "正在重试（{attempt}/{max_attempts}）..."
+
+#. English: ↺ Discard this turn and later
+#. chrys-meta={"fingerprint":"ef548c83cd1631c0613801de26fc20eba6aecf4e75d90f6b65764753e2f18188","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.rollback_message_button"
+msgstr "↺ 撤回本轮及之后"
 
 #. English: Scroll to bottom {glyph}
 #. chrys-meta={"fingerprint":"1c1e350450ef0e2c953ccaf0f580650e998976b93fddf268032c8aea8cfbe4ef","multiline":false,"placeholders":["glyph"]}
@@ -5075,13 +5527,29 @@ msgstr "会话：{session_id}"
 #. chrys-meta={"fingerprint":"035935186d9026b49ead3077c1b3018b71e54f9bbee3e2a1276b907b14516ca3","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/fold_rows.py
 msgid "tui.chat.thinking_label"
-msgstr "思考"
+msgstr "思考中"
+
+#. English:  ({tokens} token · {speed} tok/s)
+#. English-plural:  ({tokens} tokens · {speed} tok/s)
+#. chrys-meta={"fingerprint":"beb34e94058e0823652f0e44482b27c3fed830b6b422f7876fbe941b6dd4e7d7","multiline":false,"placeholders":["speed","tokens"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_speed"
+msgid_plural "tui.chat.thinking_speed#plural"
+msgstr[0] "（{tokens} token · {speed} tok/s）"
 
 #. English: Thinking summary
 #. chrys-meta={"fingerprint":"3320160e453e56c223cebb0e8aff29fd57844ebf3f13b67b4213cfc28bbdec55","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.thinking_summary_label"
 msgstr "思考摘要"
+
+#. English:  ({tokens} token)
+#. English-plural:  ({tokens} tokens)
+#. chrys-meta={"fingerprint":"2044bc779c79d04e4ddc5b643152407b841ee35d95b9257b61a39174f0337ecd","multiline":false,"placeholders":["tokens"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_tokens"
+msgid_plural "tui.chat.thinking_tokens#plural"
+msgstr[0] "（{tokens} token）"
 
 #. English: Thought
 #. chrys-meta={"fingerprint":"d2f59611e2915dccd579c93088ade4ba918f4fb8dcdb61ff640e518552520a47","multiline":false,"placeholders":[]}
@@ -5331,11 +5799,11 @@ msgstr "设置或清除自定义会话标题"
 msgid "tui.commands.description.resume"
 msgstr "恢复当前模式下最近的会话"
 
-#. English: Discard recent turns or return to a specific turn
-#. chrys-meta={"fingerprint":"b0d093c5206be3a113cb4065228d47cda65197455492a2a8f736f4ec538554b6","multiline":false,"placeholders":[]}
+#. English: Discard recent turns or discard starting from a turn
+#. chrys-meta={"fingerprint":"d12cb55acb615d464e02ff558424b5023f4acd815eeb5a10cc94a2e674c26b88","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.rollback"
-msgstr "丢弃最近的轮次或返回指定轮次"
+msgstr "撤回最近几轮，或从指定轮次开始撤回"
 
 #. English: Show active model, tools, skills, and files
 #. chrys-meta={"fingerprint":"8bf5798e4ac5d1e32a94579209df800125b177587df2c8756ff118dee784447e","multiline":false,"placeholders":[]}
@@ -5962,6 +6430,12 @@ msgstr "外部"
 msgid "tui.diff.file_moved"
 msgstr "文件已移动：{old_path} → {new_path}"
 
+#. English:  (large file)
+#. chrys-meta={"fingerprint":"db15536aed17034399eacb5203fa5bac5018441ca63757d5cb466a772a95912e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/util/diff_labels.py
+msgid "tui.diff.large_file"
+msgstr "（大文件）"
+
 #. English: Error: unable to load diff viewer — {error}
 #. chrys-meta={"fingerprint":"34e9895b0bb1e75576ce7cfc03e63c85787fa3e2287ebcb619cc6f576b751d3a","multiline":false,"placeholders":["error"]}
 #: src/chrys/app/tui/screens/diff/screen.py
@@ -5970,7 +6444,7 @@ msgstr "错误：无法加载文件变更查看器 — {error}"
 
 #. English:  (no backup)
 #. chrys-meta={"fingerprint":"c37228ae1ef3f92d3724df3c1ed746a863de3a9db910f93316a299eca5f4c134","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/screen.py
+#: src/chrys/app/tui/util/diff_labels.py
 msgid "tui.diff.no_backup"
 msgstr " （无备份）"
 
@@ -6046,6 +6520,43 @@ msgstr "第 {turn_id} 轮"
 #: src/chrys/app/tui/screens/diff/screen.py
 msgid "tui.diff.title"
 msgstr "文件变更查看器"
+
+#. English: Image #{number}
+#. chrys-meta={"fingerprint":"3ccbb7b3b7d5a3d2972da8c90ec05727248326e41d0ee0adaccd7b067e9a725a","multiline":false,"placeholders":["number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.image"
+msgstr "图片 #{number}"
+
+#. English: Pasted text #{number}
+#. chrys-meta={"fingerprint":"a09065ee1a830889339c0b27110c0a8ecce8b44f5e8e258037287f065479fc18","multiline":false,"placeholders":["number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.paste"
+msgstr "粘贴文本 #{number}"
+
+#. English: Pasted text #{number} +{lines} lines
+#. chrys-meta={"fingerprint":"d913d6337a0b43e6e727300b8e1702b9aac018c9f51bf6dc609cdf26201683a5","multiline":false,"placeholders":["lines","number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.paste_lines"
+msgstr "粘贴文本 #{number} +{lines} 行"
+
+#. English: Quote #{number}
+#. chrys-meta={"fingerprint":"8131243910b631f03cc2962d1fc0f2234209e5b1b1752e072a2e635f6d1d2a01","multiline":false,"placeholders":["number"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.label.quote"
+msgstr "引用 #{number}"
+
+#. English: Quote truncated: {original_tokens} tokens exceeds the {limit}-token
+#. limit.
+#. chrys-meta={"fingerprint":"0179da74259526111826747f4a471481d2a47fe5fc8c5f51bf533100cb4d936a","multiline":false,"placeholders":["limit","original_tokens"]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.quote_truncated"
+msgstr "引用内容已截断：{original_tokens} 个词元超出 {limit} 个词元的限制。"
+
+#. English: Quote truncated
+#. chrys-meta={"fingerprint":"9adcd7f5619aa9dc45e7b13ecb488579a469299c4ab4f9008fb94fdfb7c0e103","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/draft_text_area.py
+msgid "tui.draft.title.quote_truncated"
+msgstr "引用内容已截断"
 
 #. English: Commit
 #. chrys-meta={"fingerprint":"a9ea9bc02cd01a400ac2e05c80ee665281710d028f24c44469b3f8bf2ea73c00","multiline":false,"placeholders":[]}
@@ -7319,6 +7830,13 @@ msgstr[0] "还有 {count} 处高亮的待填位置未填写。再按一次回车
 msgid "tui.input.queued"
 msgstr "已排队"
 
+#. English: A quote inside a !`command` would run as part of it. Move the quote
+#. out of the command to send.
+#. chrys-meta={"fingerprint":"01b58ef98922fc3e499f33c9443bb0251b357c47fe98f02a9f8ddfbc63f9524d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.quote_in_command"
+msgstr "!`命令` 里的引用会被当作命令的一部分执行。请把引用移到命令外面再发送。"
+
 #. English: Retry
 #. chrys-meta={"fingerprint":"8d1f1fcb3503341e5c6f3f3a1b3299129d2fb1258f711734492a20316c6158af","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
@@ -7343,6 +7861,12 @@ msgstr "发送"
 #. chrys-meta={"fingerprint":"5e6e692b341d8fec43f56581cd87beba2cb80e7f08ced823d0efb4c5f932f569","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
 msgid "tui.input.title.prompt_fields_pending"
+msgstr "未发送"
+
+#. English: Not sent
+#. chrys-meta={"fingerprint":"5e6e692b341d8fec43f56581cd87beba2cb80e7f08ced823d0efb4c5f932f569","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.title.quote_in_command"
 msgstr "未发送"
 
 #. English: Unknown /language locale: {locale}
@@ -7600,7 +8124,7 @@ msgstr ""
 "问题标签页保留完整问题，长内容在各标签页内滚动。\n"
 "前后按钮用于浏览已保存的答案，翻页时保留当前标签，生成期间不可翻页。\n"
 "\n"
-"完整答案随会话保存。清空、删除会话或回滚到起始画面时会一并移除。\n"
+"完整答案随会话保存。清空、删除会话或撤回到起始画面时会一并移除。\n"
 "提交提示的 hook 也会检查顺便问。\n"
 "失败或取消的顺便问不保存。按 Esc 或点击关闭图标可取消正在进行的顺便问，\n"
 "或隐藏卡片并保留已保存的答案。同一时间只能运行一个顺便问。"
@@ -7898,13 +8422,13 @@ msgstr "复制用户轮次。"
 #. chrys-meta={"fingerprint":"7c58c6c8cda6bbf485cee3201186bef7e3724827376ea79ac5c145b8ad414b86","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.option.rollback_count"
-msgstr "要丢弃的最近轮次数，必须为正数。"
+msgstr "要撤回的最近轮数，必须为正整数。"
 
 #. English: Keep turns 1 through N and discard every later turn. N may be 0.
 #. chrys-meta={"fingerprint":"133dff90fe795ee2d87a88a6b1a1cadfad5f4f33c2f138c70718c1e15a17f6ff","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.option.rollback_target"
-msgstr "保留第 1 至第 N 轮，并丢弃之后的所有轮次。N 可以为 0。"
+msgstr "保留第 1 轮至第 N 轮并撤回之后的轮次。N 可以为 0。"
 
 #. English: This command does not take additional options.
 #. chrys-meta={"fingerprint":"dcabecbb61b813204aed5a5ff4517505bdb41c013211f28cb529dd089d6772ca","multiline":false,"placeholders":[]}
@@ -7917,6 +8441,15 @@ msgstr "此命令不接受其他选项。"
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.options.supports_subcommands"
 msgstr "此命令支持子命令。"
+
+#. English: Read settings, agent profiles, model profiles, hooks, themes and
+#. prompt shortcuts from disk, reconnect MCP servers, then rebuild the current
+#. agent with its memory and skills. Run this command when the current turn or
+#. workflow has finished.
+#. chrys-meta={"fingerprint":"a0dfe8bbc2ba1ade5d6f707e924f0b4a006621d7b8717cbb6e5a9c37bf901a58","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.man.reload.body"
+msgstr "从磁盘读取设置、智能体和模型配置、钩子、主题以及快捷指令，重新连接 MCP 服务器，然后重新加载当前智能体的记忆和 Skills。请在当前回合或工作流结束后执行。"
 
 #. English: With a title argument, apply it directly as the custom session
 #. title. Without one (or with only whitespace), open the session title editor
@@ -7942,27 +8475,27 @@ msgstr ""
 msgid "tui.man.resume.body"
 msgstr "恢复最近的 {app} 聊天对话。"
 
-#. English: Roll back recent conversation turns.  Without arguments, opens the
-#. rollback picker at the most recent available target. Use this picker when
-#. you want to discard conversation without restoring file changes.  A bare
-#. number is a relative count. "/rollback 1" discards the last turn; "/rollback
-#. 3" discards the last three turns. A valid explicit count executes
-#. immediately.  The "to" form is an absolute target. "/rollback to 1" keeps
-#. Turn 1 and discards Turns 2 through the current turn. Use "/rollback to 0"
-#. to return to the session start. A valid explicit target executes
-#. immediately.  Both explicit forms restore eligible file changes by default.
-#. The picker also selects file rollback by default; explicitly turn it off
-#. there to discard conversation only.  Explicit commands immediately show a
-#. non-dismissible loading modal. Picker actions show it after confirmation. It
-#. blocks interaction until rollback has completely finished.  Use with
-#. caution: this action cannot be undone.
-#. chrys-meta={"fingerprint":"21d96faba3950d2c6c5b91d3aacca2dba2efe0c6f3e5c1af343bb5037c654d88","multiline":true,"placeholders":[]}
+#. English: Discard recent conversation turns.  Without arguments, opens the
+#. discard picker at the most recent available target. Use this picker when you
+#. want to discard conversation without restoring file changes.  A bare number
+#. is a relative count. "/rollback 1" discards the last turn; "/rollback 3"
+#. discards the last three turns. A valid explicit count executes immediately.
+#. The "to" form is an absolute target. "/rollback to 1" keeps Turn 1 and
+#. discards Turns 2 through the current turn. Use "/rollback to 0" to return to
+#. the session start. A valid explicit target executes immediately.  Both
+#. explicit forms restore eligible file changes by default. The picker also
+#. selects file restoration by default; explicitly turn it off there to discard
+#. conversation only.  Explicit commands immediately show a non-dismissible
+#. loading modal. Picker actions show it after confirmation. It blocks
+#. interaction until discarding finishes.  In the Discard dialog, turn 17 means
+#. "/rollback to 16".  Use with caution: this action is permanent.
+#. chrys-meta={"fingerprint":"fe5d72324fca9d355c49507c0f63d3b76fbc5879049ff56095c01d2e06c59777","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.rollback.body"
 msgstr ""
-"回滚最近的对话轮次。\n"
+"撤回最近的对话轮次。\n"
 "\n"
-"不带参数时，在最近可用目标处打开回滚选择器。若要丢弃对话\n"
+"不带参数时，在最近可用目标处打开撤回选择器。若要丢弃对话\n"
 "但不恢复文件更改，请使用此选择器。\n"
 "\n"
 "单独的数字表示相对数量。\"/rollback 1\" 会丢弃最后一轮；\n"
@@ -7973,12 +8506,14 @@ msgstr ""
 "起点。有效的显式目标会立即执行。\n"
 "\n"
 "两种显式形式默认都会恢复符合条件的文件更改。选择器也默认\n"
-"选择文件回滚；可在其中明确关闭此选项，仅丢弃对话。\n"
+"选择文件撤回；可在其中明确关闭此选项，仅丢弃对话。\n"
 "\n"
 "显式命令会立即显示无法关闭的加载对话框。选择器操作会在确认后\n"
-"显示该对话框，并阻止交互，直到回滚完全结束。\n"
+"显示该对话框，并阻止交互，直到撤回完全结束。\n"
 "\n"
-"请谨慎使用：此操作无法撤销。"
+"请谨慎使用：此操作无法撤销。\n"
+"\n"
+"撤回弹窗中的第 17 轮等于 /rollback to 16。"
 
 #. English: Open the active runtime details dialog.      Shows:         - The
 #. active model profile and model ID         - Built-in tools grouped by
@@ -8043,18 +8578,21 @@ msgstr ""
 
 #. English: Open the token usage dialog, read from every saved session.
 #. Overview: new tokens by date range, their trend over time,     and totals by
-#. model, source or project, with each model's speed.     Calendar: new tokens
-#. day by day, and one day's details.      New tokens are the input not served
-#. from the provider's cache,     plus the output, thinking included. Deleted
-#. sessions and external     ACP agents are not counted.
-#. chrys-meta={"fingerprint":"d3b60b05e938038df9d11299b1c3fba744067836a2467c91b19245632b1bb892","multiline":true,"placeholders":[]}
+#. model, source, project or model profile, with each     model's speed. A
+#. model used through several of your profiles is     shown once for each.
+#. Calendar: new tokens day by day, and one day's details.      New tokens are
+#. the input not served from the provider's cache,     plus the output,
+#. thinking included. Deleted sessions and external     ACP agents are not
+#. counted.
+#. chrys-meta={"fingerprint":"a87aa08d2639c51b43157a086c097d76e872dbba2633ac4b416249d6d2bb8e62","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.usage.body"
 msgstr ""
 "打开 token 用量对话框，数据来自所有已保存的会话。\n"
 "\n"
 "    总览：按日期范围查看新增 token 及其趋势，\n"
-"    并按模型、来源或项目查看合计，以及每个模型的速度。\n"
+"    并按模型、来源、项目或模型配置查看合计，以及每个模型的速度。\n"
+"    同一模型经多个现有的模型配置使用时，按模型配置分行显示。\n"
 "    日历：逐日查看新增 token，以及某一天的详情。\n"
 "\n"
 "    新增 token 指未命中服务商缓存的输入，加上输出（含思考）。\n"
@@ -9678,41 +10216,96 @@ msgstr "快捷指令还在读取中，请稍后再按一次 Enter。"
 msgid "tui.prompt_shortcuts.loading_tab"
 msgstr "快捷指令还在读取中，请稍后再按一次 Tab。"
 
+#. English: Quote
+#. chrys-meta={"fingerprint":"b56f5707a79d26529841e989a546164a27d878233381ef580e3fffa074064d97","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/quote_popup.py
+msgid "tui.quote.action"
+msgstr "引用"
+
+#. English: The message input cannot take a quote right now.
+#. chrys-meta={"fingerprint":"d18638da52c62272e849df046bafd5ad2e2ca44d608529bf3fcdd2a63ad7366b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.quote.input_unavailable"
+msgstr "输入框现在无法插入引用。"
+
+#. English: Loading image…
+#. chrys-meta={"fingerprint":"2e0e3cfa77e3b1575c836a2910774c9d8b5320bc55a79df3c0382e0e704759ca","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.loading"
+msgstr "正在加载图片…"
+
+#. English: The image file can no longer be read.
+#. chrys-meta={"fingerprint":"1665edb900fd0863fa3fae2d2eeae2d8bfcc146c11d4628dce49c607f723ac9a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.missing"
+msgstr "图片文件已无法读取。"
+
+#. English: Path: {path}
+#. chrys-meta={"fingerprint":"20faefd025f55bd564eb151a9897cc545779f2eb7b9da3fe0f9a283b2f51b5df","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.path"
+msgstr "路径：{path}"
+
+#. English: This image cannot be shown.
+#. chrys-meta={"fingerprint":"c66ef735462f45c1657eeeacbfb48476aabb23fa452d304be8b3716f513f34f6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/reference_preview.py
+msgid "tui.reference_preview.unreadable"
+msgstr "无法显示这张图片。"
+
 #. English: Retry not started
 #. chrys-meta={"fingerprint":"7db136937dd3eb95b5c20273a433b782ffdd84353028e636f4d66a547f509d8b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/event_handlers.py
 msgid "tui.retry.not_started"
 msgstr "未开始重试"
 
-#. English: Rollback cancelled because the active session changed.
-#. chrys-meta={"fingerprint":"7ec29e015ec11115fb6dee0ad34efeccdbcb7d0dfe67bf57e39b4dbc2d081c42","multiline":false,"placeholders":[]}
+#. English: Discard cancelled because the active session changed.
+#. chrys-meta={"fingerprint":"177ecb0140d2638435a5bf28164b7105f41ef48e69a3319ba3f47bd29f0dfb6b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.active_session_changed"
-msgstr "活动会话已更改，回滚已取消。"
+msgstr "活动会话已更改，撤回已取消。"
 
-#. English: Cannot roll back while the agent is running.
-#. chrys-meta={"fingerprint":"a554cfeb2fdb0631db14fdbb42e53fd45805ca4f245430a0220fcd3bae19cc8d","multiline":false,"placeholders":[]}
+#. English: Cannot discard while the agent is running.
+#. chrys-meta={"fingerprint":"1192124655bc3cf80b426129f68cf0dcdd857c9a3a5b883eecb21c1320e538ae","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.agent_running"
-msgstr "智能体运行时无法回滚。"
+msgstr "智能体运行时无法撤回。"
 
-#. English: Close
-#. chrys-meta={"fingerprint":"b539b71b98c3530fcd17b6257d0bcdd95ec41dbd6ba78a0b8ad40de8ddc5103e","multiline":false,"placeholders":[]}
+#. English: A discard is already in progress.
+#. chrys-meta={"fingerprint":"e161f02c8fe640013d7edfaa6d1eb615876bf810a852c8e7f3d284cbdc8da51e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.already_in_progress"
+msgstr "正在撤回，请稍候。"
+
+#. English: Cancel
+#. chrys-meta={"fingerprint":"ee3eb6e02cd8772be8786b7d714f54bf90abe5d0f0523aebf9c292a1e48c7d3d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.button.close"
-msgstr "关闭"
+msgstr "取消"
 
-#. English: Discard conversation after Turn {turn}
-#. chrys-meta={"fingerprint":"b27ae902702950270c818b03f3b2beac10eb23714e232f542322a9cd0a9d26d5","multiline":false,"placeholders":["turn"]}
+#. English: Discard turns {first}–{last}
+#. chrys-meta={"fingerprint":"ed35e3dd37b0af9f64a5b74842efa05ced25390fa470011031d9d0d93b0d7ed1","multiline":false,"placeholders":["first","last"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.button.discard_after_turn"
-msgstr "丢弃第 {turn} 轮之后的对话"
+msgstr "撤回第 {first}–{last} 轮"
 
-#. English: Discard All
-#. chrys-meta={"fingerprint":"36c08b25f6b81dd7cb88d2c08eb8431a00f6bd647e90d805484076292484495c","multiline":false,"placeholders":[]}
+#. English: Discard all turns
+#. chrys-meta={"fingerprint":"a82b180139bb72a8e0c6ddfd07c1c8259ca354cfc3fb2f655b6f898019ec108d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.button.discard_all"
-msgstr "全部丢弃"
+msgstr "撤回全部"
+
+#. English: Discard turn {turn}
+#. chrys-meta={"fingerprint":"1d700424b7ef1bad653f9215ec7cf0271502e0e3303be81b2d40bf540d4c81e5","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.button.discard_turn"
+msgstr "撤回第 {turn} 轮"
+
+#. English: Discard turn {turn}? It is the latest turn and has no files to
+#. restore. A discarded turn cannot be recovered.
+#. chrys-meta={"fingerprint":"08de28cb6aa973888ac26e2976536af11c26eff4fd7b98457287d90da21a9621","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.confirm.latest_turn"
+msgstr "撤回第 {turn} 轮？这是最近一轮，没有要恢复的文件。撤回后无法找回。"
 
 #. English: Session start
 #. chrys-meta={"fingerprint":"0428764d7b8045e0c766dbc251372463fc0236918ee4c7be2cc20714aafe3606","multiline":false,"placeholders":[]}
@@ -9725,6 +10318,18 @@ msgstr "会话开始"
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.debug_target.turn"
 msgstr "第 {turn} 轮"
+
+#. English: After discard
+#. chrys-meta={"fingerprint":"93ff4c29d536ef7e62b9295d747a21190a24e06d9ccaca823b29dd751fc816e0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.diff.after"
+msgstr "撤回后"
+
+#. English: Now
+#. chrys-meta={"fingerprint":"6b05e61589d14f4ed3a95c079e10e33a424534d74f93b8d91ca7a580878595c6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.diff.now"
+msgstr "现在"
 
 #. English: modified internally and externally
 #. chrys-meta={"fingerprint":"d5a1840fc9dccd439bbfc13c50e30c4a5336d3364ff3b9261ca3a2ff410397f4","multiline":false,"placeholders":[]}
@@ -9768,11 +10373,11 @@ msgstr "无可恢复的备份"
 msgid "tui.rollback.exclusions.more"
 msgstr "另有 {extra_count} 个"
 
-#. English: Rollback failed: {error}
-#. chrys-meta={"fingerprint":"b1cb32a14df729fdc080257e91e1bab9eb0da2afc88c155746c36954aae281ec","multiline":false,"placeholders":["error"]}
+#. English: Discard failed: {error}
+#. chrys-meta={"fingerprint":"52f385759dfd0769908165d49abca408e682b9d92da6d8b11edaf4ec33d7c425","multiline":false,"placeholders":["error"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.failed"
-msgstr "回滚失败：{error}"
+msgstr "撤回失败：{error}"
 
 #. English: {count} file excluded from revert: {preview}
 #. English-plural: {count} files excluded from revert: {preview}
@@ -9782,35 +10387,23 @@ msgid "tui.rollback.files_excluded_note"
 msgid_plural "tui.rollback.files_excluded_note#plural"
 msgstr[0] "{count} 个文件已从还原中排除：{preview}"
 
-#. English: No file changes to revert.
-#. chrys-meta={"fingerprint":"391d17f110db8850519be6ff3709e73d78325de8a98334b53d4eee2e938a63e6","multiline":false,"placeholders":[]}
+#. English: No files to restore.
+#. chrys-meta={"fingerprint":"3f1c158faaa61962323492e471d1d8723aa5f4ec5acbb82c929fa2cb9de03c4c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.no_file_changes"
-msgstr "没有要还原的文件更改。"
+msgstr "没有要恢复的文件。"
 
-#. English: No rollback snapshots are available yet.
-#. chrys-meta={"fingerprint":"a6c21b36cd3deab72cb7dc54973318571e90636bd36aef7e7e3ec64ec52014c2","multiline":false,"placeholders":[]}
+#. English: No saved turns are available to discard yet.
+#. chrys-meta={"fingerprint":"55b32450b589d828afddbbac2af831d7d21c844ebc69d2836f9059fba0458039","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.no_snapshots"
-msgstr "尚无可用的回滚快照。"
+msgstr "尚无可用的撤回快照。"
 
-#. English:   — discard all
-#. chrys-meta={"fingerprint":"7e07746311a63827ee6303c476963f94453515eeb2247a608031ed26408efe3c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.discard_all_suffix"
-msgstr "  — 全部丢弃"
-
-#. English: Rollback to:
-#. chrys-meta={"fingerprint":"9a49bcdf29c84d4c02c6d490fb14d6e285b19dfb612060cd2297c9cb2360effc","multiline":false,"placeholders":[]}
+#. English: Discard starting from
+#. chrys-meta={"fingerprint":"4fd4e9b22947b74f478071419fbe9bb32f31570a18e0bd4d354dbe821d1b7dcb","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.picker.prompt"
-msgstr "回滚到："
-
-#. English: Session start
-#. chrys-meta={"fingerprint":"0428764d7b8045e0c766dbc251372463fc0236918ee4c7be2cc20714aafe3606","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.session_start"
-msgstr "会话开始"
+msgstr "从这一轮开始撤回"
 
 #. English: Turn {turn}
 #. chrys-meta={"fingerprint":"11385e9dd3f32a82cce844426e3a1855f16e77d5767a065fdbe090a8aadfe70e","multiline":false,"placeholders":["turn"]}
@@ -9818,47 +10411,47 @@ msgstr "会话开始"
 msgid "tui.rollback.picker.turn"
 msgstr "第 {turn} 轮"
 
-#. English: Turn {turn} (Current)
-#. chrys-meta={"fingerprint":"0596f61dd13af616467ed0569618b138d75487135e029a28e8a606ebd7e1e8ac","multiline":false,"placeholders":["turn"]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.turn_current"
-msgstr "第 {turn} 轮（当前）"
-
-#. English: Turn {turn} (Current) -
-#. chrys-meta={"fingerprint":"57718e52632b1cb0164170aa5d51bccf059c4570c5fdb1622e7e84d10e328bd7","multiline":false,"placeholders":["turn"]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.picker.turn_current_preview"
-msgstr "第 {turn} 轮（当前） - "
-
-#. English: Turn {turn} -
-#. chrys-meta={"fingerprint":"10376eca4cc2f396fd11e4eaa334c23aa099e87d6ecc74d5b925dcae2371dfe5","multiline":false,"placeholders":["turn"]}
+#. English: Turn {turn} —
+#. chrys-meta={"fingerprint":"2072df224eb9cad2a4241ce0638b1c64cfdca217eef02ccfdfe8ccccdd2e7513","multiline":false,"placeholders":["turn"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.picker.turn_preview"
-msgstr "第 {turn} 轮 - "
+msgstr "第 {turn} 轮 — "
 
-#. English: Rollback picker cancelled because the conversation changed.
-#. chrys-meta={"fingerprint":"9ad0314290d5d31f05ac3fb0d383c40654da0533a1038e3444c8c95524d30cbf","multiline":false,"placeholders":[]}
+#. English: Discard picker cancelled because the conversation changed.
+#. chrys-meta={"fingerprint":"c309e7f966904a5d2faab5960b0feab0a0412775bbcbb797088f200e09631c90","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.picker_conversation_changed"
-msgstr "对话已更改，回滚选择器已取消。"
+msgstr "对话已更改，撤回选择器已取消。"
 
-#. English: Rollback picker cancelled because the workspace or runtime changed.
-#. chrys-meta={"fingerprint":"a096bfb0f09e1866acc851b4fd5009b4997e55933a0ea1d3ff33476d49727767","multiline":false,"placeholders":[]}
+#. English: Discard picker cancelled because the workspace or runtime changed.
+#. chrys-meta={"fingerprint":"497e178be36ee9320c9d9caa0d5dd3cfb7d6c11f40b5a156582ae72d46774348","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.picker_runtime_changed"
-msgstr "工作区或运行时已更改，回滚选择器已取消。"
+msgstr "工作区或运行时已更改，撤回选择器已取消。"
 
-#. English: Error: unable to load rollback preview — {detail}
-#. chrys-meta={"fingerprint":"84b2a3cdab57280e3ea0e3ea1e46d5c6aca71328aef98f81bc28775fe4f34d6c","multiline":true,"placeholders":["detail"]}
+#. English: Error: unable to load discard preview — {detail}
+#. chrys-meta={"fingerprint":"9184f94f19644090c8f7c690edda60f5aea4d3deb4fd744baefb32f41dbf5468","multiline":true,"placeholders":["detail"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.preview.load_error"
-msgstr "错误：无法加载回滚预览 — {detail}"
+msgstr "错误：无法加载撤回预览 — {detail}"
 
-#. English: Error: unable to load this rollback preview — {detail}
-#. chrys-meta={"fingerprint":"28a097151c6424b669d60b4aef6112b4dcb51d450169b5e869c5dabb43ff37a7","multiline":true,"placeholders":["detail"]}
+#. English: Error: unable to load this discard preview — {detail}
+#. chrys-meta={"fingerprint":"52298f33dc750cf4a2b228113235d091bdba0455f937efe5c903d6112d47ade9","multiline":true,"placeholders":["detail"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.preview.refresh_error"
-msgstr "错误：无法加载此回滚预览 — {detail}"
+msgstr "错误：无法加载此撤回预览 — {detail}"
+
+#. English: {range}; files stay as they are
+#. chrys-meta={"fingerprint":"9b5ec21916b8c63e8b43f6f3d9d4f9577bc0c33c590ec1b29f4eb08ffd2874fe","multiline":false,"placeholders":["range"]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.range.keep_files"
+msgstr "{range}，文件保持不变"
+
+#. English: {range}; checked files go back to before turn {turn}
+#. chrys-meta={"fingerprint":"c42dbd68e2a99aa3308650f1593163e8dfd488481e8ad506e4704b7f8db36ef5","multiline":false,"placeholders":["range","turn"]}
+#: src/chrys/app/tui/screens/diff/rollback_modal.py
+msgid "tui.rollback.range.restore"
+msgstr "{range}，勾选的文件改回第 {turn} 轮之前的内容"
 
 #. English: {matched_count} already matched
 #. chrys-meta={"fingerprint":"5d38d9719a84b82b2a4741e4a4b3dd7c0ae9492fe81bdd583a5d259802bf9168","multiline":false,"placeholders":["matched_count"]}
@@ -9914,17 +10507,23 @@ msgstr[0] "已还原 {count} 个文件更改"
 msgid "tui.rollback.result.more_suffix"
 msgstr "（另有 {extra_count} 个）"
 
-#. English: Rolled back to Session start.
-#. chrys-meta={"fingerprint":"eee1c078f5335606bde587cbefa4f8393c6697c936e99db78ad357ffdda567fe","multiline":false,"placeholders":[]}
+#. English: Discarded all turns.
+#. chrys-meta={"fingerprint":"775aea7d30d4b742c1d07f591c63029a2bd51ead7cc74dca1e3fa4f266edb228","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.result.session_start"
-msgstr "已回滚到会话开始位置。"
+msgstr "已撤回全部轮次。"
 
-#. English: Rolled back to Turn {turn}.
-#. chrys-meta={"fingerprint":"e60488643c1e61b85dd2cca90e7eedbbcaa8d45ba8196f3ca8a39f4a8361da75","multiline":false,"placeholders":["turn"]}
+#. English: Discarded turn {turn}.
+#. chrys-meta={"fingerprint":"b8eb1feff980266c5fbfbf1ed32048b21291241aef97f44cacb645c147b8b56c","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.result.single_turn"
+msgstr "已撤回第 {turn} 轮。"
+
+#. English: Discarded turn {turn} and later turns.
+#. chrys-meta={"fingerprint":"71443fa909d6855e0dba3b9ca4845ec33299214de52ab8f3433a3be63e3b17f1","multiline":false,"placeholders":["turn"]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.result.turn"
-msgstr "已回滚到第 {turn} 轮。"
+msgstr "已撤回第 {turn} 轮及之后。"
 
 #. English: {count} warning
 #. English-plural: {count} warnings
@@ -9934,13 +10533,13 @@ msgid "tui.rollback.result.warnings_count"
 msgid_plural "tui.rollback.result.warnings_count#plural"
 msgstr[0] "{count} 条警告"
 
-#. English: Revert {count} file change (WYSIWYG)
-#. English-plural: Revert {count} file changes (WYSIWYG)
-#. chrys-meta={"fingerprint":"5c55f84bd499dff81c1bbb1f46b3b74ed243fcf7e9c96d4859d363370deae2a4","multiline":false,"placeholders":[]}
+#. English: Also restore {count} checked file
+#. English-plural: Also restore {count} checked files
+#. chrys-meta={"fingerprint":"06a791ec9bdd52deefb4582e9d7cf95a83b6272c1daeb93162c90fa6a3225b4b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.revert_file_changes"
 msgid_plural "tui.rollback.revert_file_changes#plural"
-msgstr[0] "还原 {count} 个文件更改（所见即所得）"
+msgstr[0] "同时恢复勾选的 {count} 个文件"
 
 #. English: The target turn must be zero or greater.
 #. chrys-meta={"fingerprint":"98174cb547c8245eb5eeff19f20d1ae6d5f3db9a2d1aae1f3157c85d724095f4","multiline":false,"placeholders":[]}
@@ -9948,23 +10547,29 @@ msgstr[0] "还原 {count} 个文件更改（所见即所得）"
 msgid "tui.rollback.target_nonnegative"
 msgstr "目标轮次必须大于或等于零。"
 
-#. English: Rollback
-#. chrys-meta={"fingerprint":"a6f676dbe1a7754d87fa0370c0d6c07595a08e6b1721f72fed7bfff7ac125348","multiline":false,"placeholders":[]}
+#. English: Discard
+#. chrys-meta={"fingerprint":"33905600ad4c923bc409677370cab1f223df19a44e49e594b447be0c1e744078","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
 msgid "tui.rollback.title"
-msgstr "回滚"
+msgstr "撤回"
 
-#. English: The number of turns to roll back must be positive.
-#. chrys-meta={"fingerprint":"c6c4dd8d4e5d42c50edb73d2dce89a32a5191a9662e3abcb9ec568ec476921fe","multiline":false,"placeholders":[]}
+#. English: The number of turns to discard must be positive.
+#. chrys-meta={"fingerprint":"938fc61d7bbccf784d9f71055ecb735db318322f45a8f588b9668a4baf735c01","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.turn_count_positive"
-msgstr "要回滚的轮数必须为正数。"
+msgstr "要撤回的轮数必须为正数。"
 
-#. English: Rollback is not available.
-#. chrys-meta={"fingerprint":"3f93c35e075aa5843008fb27775ffcbfdf69a3f7b0b847c900790563a25c91d8","multiline":false,"placeholders":[]}
+#. English: The last turn is still finishing; try again in a moment.
+#. chrys-meta={"fingerprint":"f5e741ec933cc55ad5aeabce431fa0751c25029f8ebde4df8396a67e90fcc242","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/rollback_controller.py
+msgid "tui.rollback.turn_finishing"
+msgstr "上一轮还在收尾，请稍后再试。"
+
+#. English: Discard is not available.
+#. chrys-meta={"fingerprint":"9f1153f45de616ad88aea2c05e3ce29c194450a0c2db347392e104989c1bb988","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.unavailable"
-msgstr "回滚不可用。"
+msgstr "撤回不可用。"
 
 #. English: Usage: /rollback, /rollback N, or /rollback to N.
 #. chrys-meta={"fingerprint":"008c856d921c09dc14bee662fffd4525089838ee322172a4db1d87c2c11fc183","multiline":false,"placeholders":[]}
@@ -10061,6 +10666,24 @@ msgstr "未加载 Skills。"
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
 msgid "tui.runtime_details.empty.tools"
 msgstr "未加载内置工具或子智能体工具。"
+
+#. English: After tool calls: {name}
+#. chrys-meta={"fingerprint":"fe334eb1710d7d83e369e946d87290f2d950d555acfc11a79c456a9a4c63c318","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.extension.after_tool"
+msgstr "工具调用后：{name}"
+
+#. English: Before tool calls: {name}
+#. chrys-meta={"fingerprint":"f4dcc991135d891da4ba94ddd2366fdeae9829466f77f184f2e2a8cf70cab353","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.extension.before_tool"
+msgstr "工具调用前：{name}"
+
+#. English: Context each turn: {name}
+#. chrys-meta={"fingerprint":"ac01b90dc082ae43b76af98a7fbc52e3295c09078d586a7696a215f6c270c70c","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.extension.context"
+msgstr "每轮上下文：{name}"
 
 #. English: Files
 #. chrys-meta={"fingerprint":"4b7adbbf83c89f58eee633676f53c80b5817f1051bde68a510ee8db1553136bc","multiline":false,"placeholders":[]}
@@ -10229,6 +10852,12 @@ msgstr "项目钩子"
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
 msgid "tui.runtime_details.section.sub_agent_tools"
 msgstr "子智能体工具"
+
+#. English: Unavailable extensions
+#. chrys-meta={"fingerprint":"da20c6c120ecb78cc05772af898747418966d2b18fad72c8c8f7d2de3361d700","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.section.unavailable_extensions"
+msgstr "不可用的扩展"
 
 #. English: Shortcuts
 #. chrys-meta={"fingerprint":"85a8e1c1cc90a21e40d54ae7f6a87925bb1028e151d567aa10f3b9c7c35005d2","multiline":false,"placeholders":[]}
@@ -10978,7 +11607,7 @@ msgstr "自动模式下裁定工具审批的模型。"
 #. English: Model that writes what the buddy says when petted.
 #. chrys-meta={"fingerprint":"931f45640e05798485642104d8c820c06b0e793fa6e8fa9bdf98fa2f2466cc65","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.model.role.buddy_model_id"
+msgid "tui.settings.hint.model.role.buddy"
 msgstr "撰写伙伴被抚摸时所说的话的模型。"
 
 #. English: Model that writes session titles.
@@ -11160,13 +11789,13 @@ msgstr "成功回复后折叠执行过程。适用于之后完成的轮次和之
 msgid "tui.settings.hint.ui.chat.image_graphics"
 msgstr "在 Ghostty、kitty、iTerm2 3.7.5 及以上版本、WezTerm、开启了终端图片的 VS Code 和 Windows Terminal 1.22 及以上版本中以全彩显示图片，为此启动时会询问终端类型。关闭此项或在其他终端中，图片以彩色色块绘制。"
 
-#. English: Show new thinking expanded while the model writes it. When off, it
-#. stays on one line, its newest words running along it. Either way it folds to
-#. one line once the turn moves on; click it at any time to read it in full.
-#. chrys-meta={"fingerprint":"fe88fd32f261c70edfb174380743699800ee033edff5218b58c029896eceed0a","multiline":false,"placeholders":[]}
+#. English: Expand new thinking while the model writes it. When off, the folded
+#. row shows the estimated token count and speed. Click it at any time to read
+#. the full text.
+#. chrys-meta={"fingerprint":"b0fb777fbe8cd96c7286ab6c22895ed223bf50a353552011d1d8270d6e366695","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.show_thinking"
-msgstr "开启后，模型写出思考时完整展开显示；关闭后只显示一行，滚动显示最新内容。无论开关，轮次继续后思考都会折叠为一行，可随时点击展开查看完整思考。"
+msgstr "开启后，模型写出思考时完整展开显示。关闭时，折叠行显示估算的 token 数和速度。随时点击都可查看完整思考。"
 
 #. English: Expand new tool groups by default. When off, click the tool status
 #. at any time to view details.
@@ -11318,6 +11947,24 @@ msgstr "保存的值被拒绝，当前使用内置默认值。"
 #: src/chrys/app/tui/screens/settings/provenance.py
 msgid "tui.settings.provenance.session"
 msgstr "已为本会话固定；保存的值适用于新会话。"
+
+#. English: Could not finish saving the Settings panel. Reload stopped.
+#. chrys-meta={"fingerprint":"f9d2fd6a83efef08231b569e10f7ac5e98a97805cd8af43ccd8e7dfd644dea4b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.settings.reload_finalize_failed"
+msgstr "设置面板未能完成保存，本次刷新已停止。"
+
+#. English: Close the theme editor before reloading settings.
+#. chrys-meta={"fingerprint":"4e5b557d5df930f79f74141a517a8b734257cbf2f3a912c35d55d3216c78494a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.settings.reload_theme_editor_busy"
+msgstr "请先关闭主题编辑器，再重新加载设置。"
+
+#. English: Wait for the workflow run to finish before reloading settings.
+#. chrys-meta={"fingerprint":"f4455ec9d7f3f3d742e58508d5ba4cfc6f3fdc3bc7736a16c45262fdccde7f9e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.settings.reload_workflow_busy"
+msgstr "请等工作流运行结束后再刷新设置。"
 
 #. English: Could not save settings; the store rejected: {keys}.
 #. chrys-meta={"fingerprint":"16a74971b57de5711328da353dbee3a64d24fe1089f8b419d04f51f960848eac","multiline":false,"placeholders":["keys"]}
@@ -11679,6 +12326,20 @@ msgstr "✨ 金光熠熠！"
 msgid "tui.sidebar.buddy.species"
 msgstr "物种：{species}"
 
+#. English: File Changes ({count})
+#. English-plural: File Changes ({count})
+#. chrys-meta={"fingerprint":"9f424008012391b9035f4fece187527576bd2f0e2e4f37a4c314b3f2f4e6332c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/diff_preview.py
+msgid "tui.sidebar.changes.title"
+msgid_plural "tui.sidebar.changes.title#plural"
+msgstr[0] "文件变更（{count}）"
+
+#. English: View all
+#. chrys-meta={"fingerprint":"cf92a75eb64004823d84791e2d49939519b39905a2f41df384f018ab06465f40","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/diff_preview.py
+msgid "tui.sidebar.changes.view_all"
+msgstr "查看全部"
+
 #. English: {formatted} message
 #. English-plural: {formatted} messages
 #. chrys-meta={"fingerprint":"1694c49b2685d87eddcb6b7fec72854db3edb06e6dc110a88db4d961ee17e6a8","multiline":false,"placeholders":["formatted"]}
@@ -11911,6 +12572,12 @@ msgstr[0] "钩子（{count} 个进行中）"
 msgid "tui.sidebar.tab.buddy"
 msgstr "伙伴"
 
+#. English: Chat
+#. chrys-meta={"fingerprint":"6f3d1883841694bc43cd5e19295cc29be33ce21fe16df5c5ebc23e4a823d0b32","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/panel.py
+msgid "tui.sidebar.tab.chat"
+msgstr "对话"
+
 #. English: Context
 #. chrys-meta={"fingerprint":"568799b368ac02572fc839679f574112d64515edf6186c890b307cc520a65063","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/panel.py
@@ -11928,12 +12595,6 @@ msgstr "调试"
 #: src/chrys/app/tui/widgets/sidebar/panel.py
 msgid "tui.sidebar.tab.hooks"
 msgstr "钩子"
-
-#. English: Messages
-#. chrys-meta={"fingerprint":"dc539a1862021f7a116d2443dde9458f890e3f149671bfc0021d3b6300e6147f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/sidebar/panel.py
-msgid "tui.sidebar.tab.messages"
-msgstr "消息"
 
 #. English: Tasks
 #. chrys-meta={"fingerprint":"cc8ff8e348305c333fe5b910bcf774101b1a3e7439d96b96462599d8a6e3e29a","multiline":false,"placeholders":[]}
@@ -11964,6 +12625,19 @@ msgstr "待办"
 #: src/chrys/app/tui/widgets/sidebar/toc.py
 msgid "tui.sidebar.toc.empty"
 msgstr "你的对话将显示在这里"
+
+#. English: Messages
+#. chrys-meta={"fingerprint":"dc539a1862021f7a116d2443dde9458f890e3f149671bfc0021d3b6300e6147f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/toc.py
+msgid "tui.sidebar.toc.title"
+msgstr "消息"
+
+#. English: Reload settings, profiles, memory, skills, hooks, MCP servers,
+#. themes and prompt shortcuts
+#. chrys-meta={"fingerprint":"997389a23bb77d18bc898490f75dd781e2f91effe2bdd38f95566f833ac9ef9e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "tui.slash.reload_description"
+msgstr "重新加载设置、智能体与模型配置、记忆、Skills、钩子、MCP 服务器、主题和快捷指令"
 
 #. English: Session {session_id} was not found.
 #. chrys-meta={"fingerprint":"a5c2002c8e98be1f6de66c9e7ceb5fd6595b9dcfc1595822cbd0bc7cdf8036c6","multiline":false,"placeholders":["session_id"]}
@@ -15371,6 +16045,12 @@ msgstr "分组"
 msgid "tui.usage.group.model"
 msgstr "模型"
 
+#. English: Profile
+#. chrys-meta={"fingerprint":"1f32e5bec5d54398a6c913fbd43a7560087c02343db62f7787dcff3926ae39c4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.profile"
+msgstr "模型配置"
+
 #. English: Project
 #. chrys-meta={"fingerprint":"bb494880de8a82165303fb5db8a2bd69147f6fff4874591b25d51ec1569bafb1","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
@@ -15494,6 +16174,12 @@ msgstr[0] "{count} 个日志无法读取"
 msgid "tui.usage.note.unreported"
 msgid_plural "tui.usage.note.unreported#plural"
 msgstr[0] "{count} 次调用未报告用量"
+
+#. English: Other profiles
+#. chrys-meta={"fingerprint":"fa4919283bfc36cffdd2cb8d70c78fc0e0870bf186fad1652a8c9fd73dd291a0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.profile.other"
+msgstr "其他模型配置"
 
 #. English: Other workspaces
 #. chrys-meta={"fingerprint":"6d7805200d84a36fdff69306ab89e5d5baf0d2008448aa2166941869367ba36c","multiline":false,"placeholders":[]}
@@ -16677,6 +17363,9 @@ msgstr "提示已被钩子阻止。"
 #~ "\n"
 #~ "重试路径将仅重新发送原始提示中的文本。请改为在新消息中重新发送图像。"
 
+#~ msgid "builder.tool_pack_unavailable"
+#~ msgstr "智能体 {agent} 启动时未包含工具包 {pack}：{reason}"
+
 #~ msgid "cli.profiles.agents.empty"
 #~ msgstr "未找到代理配置。"
 
@@ -16728,6 +17417,9 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "run.unexpected_error"
 #~ msgstr "发生意外错误。"
 
+#~ msgid "settings.model.role.buddy_model_id.label"
+#~ msgstr "Buddy 模型"
+
 #~ msgid "settings.prompt_shortcuts.load_user_folder.label"
 #~ msgstr "从用户目录加载快捷指令（如果存在）"
 
@@ -16746,6 +17438,30 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "startup.settings_migration_failed"
 #~ msgstr "无法把设置迁移到 {path}（{error}）。现有配置仍然生效；下次启动会重试迁移。"
 
+#~ msgid "tui.agent_config.tools.custom_packs"
+#~ msgstr "自定义工具包"
+
+#~ msgid "tui.agent_config.tools.custom_packs_description"
+#~ msgstr "为 {app} 安装的 Python 工具包。它们在 {app} 内以你的权限运行：只安装你信任的工具包"
+
+#~ msgid "tui.agent_config.tools.finding_packs"
+#~ msgstr "正在查找已安装的工具包…"
+
+#~ msgid "tui.agent_config.tools.no_packs"
+#~ msgstr "尚未安装工具包。Python 工具包指南（F8）介绍如何编写或安装工具包"
+
+#~ msgid "tui.agent_config.tools.pack_conflict"
+#~ msgstr "安装了不止一份，因此都不会加载：{locations}"
+
+#~ msgid "tui.agent_config.tools.pack_not_installed"
+#~ msgstr "未安装：智能体启动时不会包含它"
+
+#~ msgid "tui.agent_config.tools.pack_skipped"
+#~ msgstr "已跳过 {problem}"
+
+#~ msgid "tui.agent_config.tools.packs_unreadable"
+#~ msgstr "无法列出已安装的工具包"
+
 #~ msgid "tui.agent_config.tools.sleep"
 #~ msgstr "等待"
 
@@ -16760,6 +17476,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.agent_config.tools.web_group"
 #~ msgstr "网页"
+
+#~ msgid "tui.agent_config.validation.acp.no_custom_tools"
+#~ msgstr "ACP 配置文件不能配置自定义工具。"
 
 #~ msgid "tui.app.open_visible_diagram"
 #~ msgstr "打开可见图表"
@@ -16800,6 +17519,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.chat.copy_agent_response_button"
 #~ msgstr "复制"
+
+#~ msgid "tui.chat.interrupted_rollback_button"
+#~ msgstr "回滚"
 
 #~ msgid "tui.chat.think_prefix"
 #~ msgstr "思考：{body}"
@@ -16883,8 +17605,29 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "tui.prompt_card.switch_failed"
 #~ msgstr "未发送：无法切换到 {target}"
 
+#~ msgid "tui.rollback.picker.discard_all_suffix"
+#~ msgstr "  — 全部丢弃"
+
+#~ msgid "tui.rollback.picker.session_start"
+#~ msgstr "会话开始"
+
+#~ msgid "tui.rollback.picker.turn_current"
+#~ msgstr "第 {turn} 轮（当前）"
+
+#~ msgid "tui.rollback.picker.turn_current_preview"
+#~ msgstr "第 {turn} 轮（当前） - "
+
+#~ msgid "tui.rollback.range.turn"
+#~ msgstr "撤回第 {turn} 轮"
+
+#~ msgid "tui.rollback.range.turns"
+#~ msgstr "撤回第 {first}–{last} 轮"
+
 #~ msgid "tui.runtime_details.label.source"
 #~ msgstr "来源"
+
+#~ msgid "tui.runtime_details.section.unavailable_tool_packs"
+#~ msgstr "不可用的工具包"
 
 #~ msgid "tui.runtime_details.shortcut.agent"
 #~ msgstr "智能体 {agent}"
@@ -16900,6 +17643,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.settings.badge.dotenv"
 #~ msgstr ".env"
+
+#~ msgid "tui.settings.hint.model.role.buddy_model_id"
+#~ msgstr "撰写伙伴被抚摸时所说的话的模型。"
 
 #~ msgid "tui.settings.hint.trajectory.verify_commands"
 #~ msgstr "以逗号分隔、视为测试、构建或代码检查验证的命令词或短语。"

@@ -218,7 +218,7 @@ async def test_incomplete_shell_scans_cannot_override_healthy_git_or_delete_exis
             else:
                 _block_scandir(patch, repo)
         context = await prepare_mutation_tracking(
-            tracker, "shell", {"command": "chmod +x .", "working_dir": str(repo)}, "noop", True, str(repo)
+            tracker, "shell", {"command": "chmod +x .", "workdir": str(repo)}, "noop", True, str(repo)
         )
     with monkeypatch.context() as patch:
         if phase == "after":
@@ -247,7 +247,7 @@ async def test_git_stat_failure_does_not_turn_existing_dirty_file_into_delete(
         if phase == "before":
             _block_lstat(patch, target, errno.EIO)
         context = await prepare_mutation_tracking(
-            tracker, "shell", {"command": "opaque-launcher", "working_dir": str(repo)}, "noop", True, str(repo)
+            tracker, "shell", {"command": "opaque-launcher", "workdir": str(repo)}, "noop", True, str(repo)
         )
     with monkeypatch.context() as patch:
         if phase == "after":
@@ -325,7 +325,7 @@ async def test_directory_scan_snapshots_child_before_actual_edit(tmp_path: Path)
     tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
     tracker.start_turn(1)
     context = await prepare_mutation_tracking(
-        tracker, "shell", {"command": "chmod +x .", "working_dir": str(repo)}, "shell", True, str(repo)
+        tracker, "shell", {"command": "chmod +x .", "workdir": str(repo)}, "shell", True, str(repo)
     )
     target.write_bytes(b"changed inside directory")
     await finalize_mutation_tracking(tracker, context, "shell")

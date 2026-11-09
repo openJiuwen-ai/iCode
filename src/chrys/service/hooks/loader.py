@@ -32,6 +32,7 @@ from chrys.foundation.tool_kinds import strip_legacy_kind_prefix
 from chrys.foundation.trajectory.ids import OPAQUE_ID_MAX_LENGTH, is_valid_opaque_id
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.matcher import REGEX_COMPILE_ERRORS
+from chrys.service.hooks.retired_shell_args import retired_arg_names_warning
 from chrys.service.hooks.schema import (
     HookArgMatch,
     HookConfig,
@@ -505,6 +506,8 @@ def _parse_one_hook(raw: Any) -> HookConfig:
         logger.warning("Hook %r %s", hook_id, warning)
     if (warning := broad_before_tool_call_warning(hook)) is not None:
         logger.warning("Hook %r is %s", hook_id, warning)
+    if (warning := retired_arg_names_warning(hook)) is not None:  # DEPRECATED with the retired names
+        logger.warning("Hook %r: %s", hook_id, warning)
     return hook
 
 

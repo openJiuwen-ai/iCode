@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal
 
 from chrys.app.tui.screens.main.model_indicator import model_lock_notice
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
+from chrys.foundation.config.errors import config_error_display
 from chrys.foundation.events.types import SetApprovalMode
 from chrys.foundation.i18n import msg
 from chrys.service.approval.policy import ApprovalMode
@@ -209,7 +210,7 @@ class RuntimeConfigController:
             await asyncio.to_thread(activate_model_profile, profile_id)
         except Exception as exc:
             self._view.notify(
-                str(exc),
+                config_error_display(exc),
                 title=_MODEL_SETTINGS_TITLE.bind(),
                 severity="error",
                 timeout=5,
@@ -285,7 +286,7 @@ class RuntimeConfigController:
             )
         except Exception as exc:
             self._view.notify(
-                str(exc),
+                config_error_display(exc),
                 title=_MODEL_SETTINGS_TITLE.bind(),
                 severity="error",
                 timeout=5,
@@ -353,8 +354,10 @@ class RuntimeConfigController:
         self._view.open_runtime_details(self._state.runtime.details, initial_tab=initial_tab)
 
     def open_usage(self) -> None:
-        """Open the token usage modal."""
-        self._view.open_usage()
+        """Open the token usage modal, naming each model profile as it is called now."""
+        registry = self._services.model_registry
+        profiles = registry.list_profiles() if registry is not None else []
+        self._view.open_usage({profile.id: profile.name for profile in profiles if profile.id})
 
     def open_settings(self, initial_tab: str) -> None:
         """Open the Settings dialog on *initial_tab*."""

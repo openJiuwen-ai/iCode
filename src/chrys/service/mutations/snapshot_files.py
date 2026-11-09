@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -161,6 +162,17 @@ def _is_legacy_numeric_snapshot_name(path: Path) -> bool:
 
 
 def _snapshot_payload_turn_counter(path: Path) -> int | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return _cached_snapshot_turn(path, stat.st_mtime_ns, stat.st_size)
+
+
+@cache
+def _cached_snapshot_turn(path: Path, mtime_ns: int, size: int) -> int | None:
+    # A replaced whole-file snapshot gets a new key, including when its turn number is reused.
+    _ = mtime_ns, size
     state = _snapshot_payload_state(path)
     if state is None:
         return None

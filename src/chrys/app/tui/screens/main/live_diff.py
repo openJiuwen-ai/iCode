@@ -47,6 +47,7 @@ class LiveFileMutation:
     # live model, so this is "proven" / "assumed" in practice.
     provenance: str = ""
     contested: bool = False
+    last_changed_at: float = 0
 
 
 def merge_provenance(current: str, latest: str) -> str:
@@ -123,6 +124,7 @@ def merge_live_mutation(
         # the merged row stays inferred.  Contested is sticky-True.
         provenance=merge_provenance(original.provenance, latest.provenance),
         contested=original.contested or latest.contested,
+        last_changed_at=max(original.last_changed_at, latest.last_changed_at),
     )
 
 
@@ -152,6 +154,7 @@ def build_live_diff_entries(
             content_omitted=mutation.content_omitted,
             contested=mutation.contested,
             inferred=mutation.provenance == "assumed",
+            last_changed_at=mutation.last_changed_at,
         )
         if entry_has_visible_change(entry):
             entries.append(entry)
@@ -236,6 +239,7 @@ def merge_live_entries_into_all(
             content_omitted=live.content_omitted or existing.content_omitted,
             contested=existing.contested or live.contested,
             inferred=existing.inferred or live.inferred,
+            last_changed_at=max(existing.last_changed_at, live.last_changed_at),
         )
 
     if dropped_indices:

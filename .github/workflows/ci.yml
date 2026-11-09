@@ -27,7 +27,7 @@ jobs:
           ref: ${{ inputs.build_ref || github.sha }}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.13.1"
+          version: "0.13.7"
           prune-cache: true
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -35,8 +35,8 @@ jobs:
           python-version-file: .python-version
           allow-prereleases: true
       - run: uv sync
-      - run: uv run ruff check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py scripts/chat_panel_workloads.py
-      - run: uv run ruff format --check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py scripts/chat_panel_workloads.py
+      - run: uv run ruff check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py scripts/chat_panel_workloads.py hatch_build.py scripts/i18n_mo.py
+      - run: uv run ruff format --check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py scripts/chat_panel_workloads.py hatch_build.py scripts/i18n_mo.py
 
   test_linux:
     name: Unix shard (${{ matrix.label }})
@@ -50,26 +50,36 @@ jobs:
             os: linux
             workers: 4
             pytest_args: tests --ignore=tests/architecture --ignore=tests/app/tui
-          # The main screen's tests drive whole workflow runs and weigh as much
-          # as the rest of the TUI suite, which alone fills a runner; the
-          # second shard takes everything the first does not name.
+          # The TUI suite fills two runners, cut the same on every platform at
+          # a measured, roughly even point: the main screen's, behaviors',
+          # themes', settings' and terminal tests weigh as much as the rest.
+          # The second shard takes everything the first does not name. Move
+          # the cut by the shards' JUnit times when one nears the step limit.
           - label: linux/1/tui
             artifact: linux-tui-1
             os: linux
             workers: 4
-            pytest_args: tests/app/tui/screens/main
+            pytest_args: >-
+              tests/app/tui/screens/main tests/app/tui/behaviors
+              tests/app/tui/screens/themes tests/app/tui/screens/settings
+              tests/app/tui/terminal
           - label: linux/2/tui
             artifact: linux-tui-2
             os: linux
             workers: 4
-            pytest_args: tests/app/tui --ignore=tests/app/tui/screens/main
+            pytest_args: >-
+              tests/app/tui --ignore=tests/app/tui/screens/main
+              --ignore=tests/app/tui/behaviors
+              --ignore=tests/app/tui/screens/themes
+              --ignore=tests/app/tui/screens/settings
+              --ignore=tests/app/tui/terminal
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.build_ref || github.sha }}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.13.1"
+          version: "0.13.7"
           prune-cache: true
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -125,14 +135,15 @@ jobs:
             os: macos
             workers: 6
             pytest_args: tests --ignore=tests/architecture --ignore=tests/app/tui
-          # The same cut as Windows: the main screen's and behaviors' tests weigh
-          # as much as the rest of the TUI suite; the second shard takes
-          # everything the first does not name.
+          # The same TUI cut as Linux and Windows (see test_linux).
           - label: macos/1/tui
             artifact: macos-tui-1
             os: macos
             workers: 6
-            pytest_args: tests/app/tui/screens/main tests/app/tui/behaviors
+            pytest_args: >-
+              tests/app/tui/screens/main tests/app/tui/behaviors
+              tests/app/tui/screens/themes tests/app/tui/screens/settings
+              tests/app/tui/terminal
           - label: macos/2/tui
             artifact: macos-tui-2
             os: macos
@@ -140,13 +151,16 @@ jobs:
             pytest_args: >-
               tests/app/tui --ignore=tests/app/tui/screens/main
               --ignore=tests/app/tui/behaviors
+              --ignore=tests/app/tui/screens/themes
+              --ignore=tests/app/tui/screens/settings
+              --ignore=tests/app/tui/terminal
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.build_ref || github.sha }}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.13.1"
+          version: "0.13.7"
           prune-cache: true
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -190,11 +204,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The core suite fits one four-vCPU runner. The TUI suite splits in
-          # two at a measured, roughly even cut: the main screen's tests drive
-          # whole workflow runs and, with the behaviors tests, weigh as much as
-          # the rest of the TUI suite; the second shard takes everything the
-          # first does not name.
+          # The core suite fits one four-vCPU runner; the TUI suite takes the
+          # same cut as Linux and macOS (see test_linux).
           - label: windows/core
             artifact: windows-core
             workers: 4
@@ -204,7 +215,10 @@ jobs:
             artifact: windows-tui-1
             workers: 4
             py39: false
-            pytest_args: tests/app/tui/screens/main tests/app/tui/behaviors
+            pytest_args: >-
+              tests/app/tui/screens/main tests/app/tui/behaviors
+              tests/app/tui/screens/themes tests/app/tui/screens/settings
+              tests/app/tui/terminal
           - label: windows/2/tui
             artifact: windows-tui-2
             workers: 4
@@ -212,6 +226,9 @@ jobs:
             pytest_args: >-
               tests/app/tui --ignore=tests/app/tui/screens/main
               --ignore=tests/app/tui/behaviors
+              --ignore=tests/app/tui/screens/themes
+              --ignore=tests/app/tui/screens/settings
+              --ignore=tests/app/tui/terminal
     steps:
       # Hosted Windows images already disable real-time Defender scanning, so
       # changing Defender settings here is a measured no-op.
@@ -230,7 +247,7 @@ jobs:
           ref: ${{ inputs.build_ref || github.sha }}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.13.1"
+          version: "0.13.7"
           prune-cache: true
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -288,7 +305,7 @@ jobs:
           ref: ${{ inputs.build_ref || github.sha }}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.13.1"
+          version: "0.13.7"
           prune-cache: true
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -357,7 +374,7 @@ jobs:
           ref: ${{ inputs.build_ref || github.sha }}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.13.1"
+          version: "0.13.7"
           prune-cache: true
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -395,7 +412,7 @@ jobs:
           ref: ${{ inputs.build_ref || github.sha }}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.13.1"
+          version: "0.13.7"
           prune-cache: true
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

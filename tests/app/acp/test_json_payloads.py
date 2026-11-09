@@ -82,6 +82,7 @@ _SHELL_SNAPSHOT = FileMutationTextSnapshot(
     before_hash="h1",
     after_skip=SnapshotSkipReason.BINARY,
     provenance="observed",
+    last_changed_at=1_793_664_000.25,
 )
 _SHELL_SNAPSHOT_JSON = {
     "before_text": "old\n",
@@ -95,6 +96,7 @@ _SHELL_SNAPSHOT_JSON = {
     "after_skip": "binary",
     "provenance": "observed",
     "contested": False,
+    "last_changed_at": 1_793_664_000.25,
 }
 _SHELL_SUMMARY_JSON = {key: value for key, value in _SHELL_SNAPSHOT_JSON.items() if not key.endswith("_text")}
 
@@ -179,6 +181,7 @@ def _sub_agent_edit_result(metadata: dict[str, Any] | None = None) -> Invocation
         or {
             "file_snapshot": ("old\n", "new\n"),
             "file_mutation_op": "modify",
+            "file_changed_at": 1_793_664_001.5,
             "file_mutation_hashes": _HASHES,
             "shell_file_snapshots": {"/w/a.txt": _SHELL_SNAPSHOT},
         },
@@ -213,6 +216,7 @@ async def test_prompt_ends_normally_after_sub_agent_file_edit() -> None:
     # File contents stay in-process; the hashes and skip reasons say what changed.
     assert acp_outgoing_json(params)["metadata"] == {
         "file_mutation_op": "modify",
+        "file_changed_at": 1_793_664_001.5,
         "file_mutation_hashes": _HASHES_JSON,
         "shell_file_snapshots": [_shell_summary("/w/a.txt")],
     }

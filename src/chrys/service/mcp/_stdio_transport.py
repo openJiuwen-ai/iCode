@@ -300,6 +300,9 @@ def _inherited_stdio_environment(extra: dict[str, str] | None = None) -> dict[st
     strip_python_runtime_overrides(env)
     extra_keys = set(extra or ())
     if extra:
+        if sys.platform == "win32":
+            explicit = {key.upper() for key in extra}
+            env = {key: value for key, value in env.items() if key.upper() not in explicit}
         env.update(extra)
     _mirror_no_proxy_aliases(env, extra_keys)
     reorder_path_demoting_runtime(env)

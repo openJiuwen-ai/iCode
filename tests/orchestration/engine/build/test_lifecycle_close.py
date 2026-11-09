@@ -95,6 +95,9 @@ class _FakeExecutor:
 
 
 class _Permits:
+    def staged_profiles(self) -> None:
+        return None
+
     def advance_build_generation(self) -> None:
         return None
 
@@ -141,7 +144,9 @@ class _LoaderFixture:
     def __init__(self, bus: EventBus, executor: _FakeExecutor) -> None:
         self.current = SimpleNamespace(loaded=SimpleNamespace(), manifest=make_manifest())
         self.permits = _Permits()
-        self.session = _BuildSession(session_dir=None, background_tasks=None, surface=None)
+        self.session = _BuildSession(
+            session_dir=None, background_tasks=None, surface=None, pause_failed_sub_agents=True
+        )
         self.session.agent_profile = AgentProfile(name="Code")
         self.session.workspace = None
         self.session.session_id = "session-1"

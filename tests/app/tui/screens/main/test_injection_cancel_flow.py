@@ -19,6 +19,10 @@ from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
 
 
+async def _unused_turn_event(event: object) -> None:
+    raise AssertionError(f"unexpected turn fact: {event!r}")
+
+
 class _FakeInputFlowView:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -56,6 +60,8 @@ def _make_controller(
         handle_agent_message=_noop_agent_message,
         handle_agent_content=_noop_agent_message,
         handle_error=_noop_error,
+        handle_turn_event=_unused_turn_event,
+        handle_answer_withdrawn=_unused_turn_event,
         set_agent_running=lambda _running: None,
         set_has_messages=lambda _has: None,
         clear_workspace_marker=lambda: None,

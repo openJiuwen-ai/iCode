@@ -94,6 +94,7 @@ sub_agent_only: false
 instructions: ignore me
 tools:
   builtins: [filesystem.read]
+extensions: [acme_release]
 skills:
   paths: [skills]
 sub_agents:
@@ -117,12 +118,14 @@ acp:
     assert profile.sub_agent_only is True
     assert profile.instructions == ""
     assert profile.tools.builtins == []
+    assert profile.extensions == []
     assert profile.skills.paths == []
     assert profile.sub_agents.agents == []
     assert profile.memory.files == []
     assert profile.model.profile_id == ""
     for section in (
         "tools",
+        "extensions",
         "skills",
         "sub_agents.agents",
         "memory",

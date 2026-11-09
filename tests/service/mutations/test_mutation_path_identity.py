@@ -51,7 +51,7 @@ async def test_file_tool_and_shell_alias_edits_restore_the_earliest_content(
         context = await prepare_mutation_tracking(
             tracker,
             "shell" if is_shell else file_tool,
-            {"command": command, "working_dir": cwd} if is_shell else {"path": str(aliased)},
+            {"command": command, "workdir": cwd} if is_shell else {"path": str(aliased)},
             str(index),
             True,
             cwd,
@@ -116,9 +116,7 @@ async def test_nul_path_normalization_cannot_abort_tool_tracking(
     tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
     tracker.start_turn(1)
     args = (
-        {"command": f'echo data > "{invalid}"', "working_dir": str(tmp_path)}
-        if tool_name == "shell"
-        else {"path": invalid}
+        {"command": f'echo data > "{invalid}"', "workdir": str(tmp_path)} if tool_name == "shell" else {"path": invalid}
     )
     context = await prepare_mutation_tracking(tracker, tool_name, args, "invalid", True, str(tmp_path))
     await finalize_mutation_tracking(tracker, context, "invalid")

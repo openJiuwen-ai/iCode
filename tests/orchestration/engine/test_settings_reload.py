@@ -604,3 +604,413 @@ async def test_settings_reload_survives_one_invalid_env_value(
     await engine._on_settings_reload(SettingsReload())
 
     assert engine.settings.rollback_snapshots_keep == DEFAULT_ROLLBACK_SNAPSHOTS_KEEP
+
+
+@pytest.mark.parametrize("style", ["chat_completions", "responses"])
+async def test_manual_reload_next_provider_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine, style: str
+) -> None:
+    """Compare requests from identical history, then change memory and skills independently.
+
+    The agent has a real MCP server and hooks file: the reload reconnects the one and reads the other,
+    and neither may show in the request or disturb the running hooks when nothing was edited.
+    """
+    import json
+    import sys
+    from unittest.mock import create_autospec
+
+    import httpx
+
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.foundation.events.types import UserMessage
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.agent_middleware.reminders.turn_line import TurnLineSource
+    from chrys.service.llm import clients
+    from chrys.service.profiles.agents.schema import MCPServerConfig, MemoryConfig
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from tests.support.waiting import await_run_task_chain
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
+    monkeypatch.setattr(TurnLineSource, "clock", staticmethod(lambda: "[Turn Start] fixed clock"))
+    memory = tmp_path / "AGENTS.md"
+    memory.write_text("manual-reload-memory-one", encoding="utf-8")
+    path = user_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("model.profile.active: sandbox-model\nsession.title.auto: false\n", encoding="utf-8")
+    loaded = bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded
+    registry = ModelProfileRegistry()
+    registry.register(
+        ModelProfile(
+            id="sandbox-model",
+            name="Sandbox",
+            model_id="model",
+            provider="openai",
+            api_style=style,
+            base_url="https://example.invalid/v1",
+            api_key="test",
+            chat_options='{"store": true}' if style == "responses" else "",
+            stream=False,
+            http_max_retries=0,
+        )
+    )
+    profile = _profile()
+    profile.memory = MemoryConfig(files=["AGENTS.md"])
+    mcp_state = tmp_path / "mcp-state"
+    mcp_state.mkdir()
+    (mcp_state / "instructions").write_text("manual-reload-server-instructions", encoding="utf-8")
+    probe_server = Path(__file__).parents[2] / "support" / "mcp_reload_probe_server.py"
+    profile.tools.mcp = [
+        MCPServerConfig(
+            name="probe-server",
+            transport="stdio",
+            command=sys.executable,
+            args=[str(probe_server), "--state-dir", str(mcp_state)],
+        )
+    ]
+    hooks_file = path.parent / "hooks" / "hooks.json"
+    hooks_file.parent.mkdir(parents=True)
+    hook = {
+        "id": "never-matches",
+        "event": "before_tool_call",
+        "run": {"type": "command", "argv": [sys.executable, "-c", "pass"]},
+        "execution": {"mode": "blocking", "timeout_seconds": 30},
+        "match": {"tool_name": "no_such_tool"},
+    }
+    hooks_file.write_text(json.dumps({"version": 1, "hooks": [hook]}), encoding="utf-8")
+    sent: list[bytes] = []
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        sent.append(request.content)
+        if style == "responses":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "resp_fixed",
+                    "object": "response",
+                    "created_at": 1,
+                    "model": "model",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "id": "msg_1",
+                            "role": "assistant",
+                            "status": "completed",
+                            "content": [{"type": "output_text", "text": "answer", "annotations": []}],
+                        }
+                    ],
+                    "usage": {"input_tokens": 4, "output_tokens": 1, "total_tokens": 5},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "model",
+                "choices": [
+                    {"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "answer"}}
+                ],
+            },
+        )
+
+    # Each build owns its own transport, including the two branches' pre- and post-reload clients.
+    clients_created = [httpx.AsyncClient(transport=httpx.MockTransport(reply)) for _ in range(8)]
+    monkeypatch.setattr(
+        clients,
+        "_build_profile_http_client",
+        create_autospec(clients._build_profile_http_client, side_effect=clients_created),
+    )
+    payloads = []
+
+    async def ask(engine, text: str) -> bytes:
+        before = len(sent)
+        await engine.event_bus.publish(UserMessage(text=text), raise_handler_errors=True)
+        await await_run_task_chain(engine, turn_state=engine.turns.turn_state, expect_installed=True)
+        assert len(sent) == before + 1
+        return sent[-1]
+
+    try:
+        for reload_first in (False, True):
+            engine = agent_engine(
+                EventBus(), loaded_settings=loaded, model_registry=registry, agent_registry=_registry(profile)
+            )
+            engine.session.session_id = "abcd01234567"
+            await engine.start(profile, workspace=Workspace.from_cwd(str(tmp_path)))
+
+            manual = SettingsReload(manual=True, session_id=engine.session.session_id)
+            await ask(engine, "first turn")
+            if reload_first:
+                hook_manager = engine.session.hook_manager
+                assert hook_manager is not None
+                connects = len((mcp_state / "starts").read_text(encoding="utf-8").split())
+                await engine.event_bus.publish(manual, raise_handler_errors=True)
+                assert engine.session.hook_manager is hook_manager
+                assert len((mcp_state / "starts").read_text(encoding="utf-8").split()) == connects + 1
+            payloads.append(await ask(engine, "second turn"))
+            if reload_first:
+                memory.write_text("manual-reload-memory-two", encoding="utf-8")
+                await engine.event_bus.publish(manual, raise_handler_errors=True)
+                updated = await ask(engine, "third turn")
+                assert b"manual-reload-memory-two" in updated
+                if style == "responses":
+                    assert "previous_response_id" not in json.loads(updated)
+                skill = path.parent / "skills" / "reload-example" / "SKILL.md"
+                skill.parent.mkdir(parents=True)
+                skill.write_text(
+                    "---\nname: reload-example\ndescription: Inspect the reload example.\n---\nRead the example.",
+                    encoding="utf-8",
+                )
+                completions = await capture_events(engine.event_bus, SettingsReloaded)
+                await engine.event_bus.publish(manual, raise_handler_errors=True)
+                details = completions[-1].runtime_details.skill_details
+                assert "reload-example" in [detail.name for detail in details]
+                assert b"reload-example" in await ask(engine, "fourth turn")
+        control, refreshed = (json.loads(raw) for raw in payloads)
+        assert b"probe" in payloads[1]
+        assert b"manual-reload-server-instructions" in payloads[1]
+        if style == "chat_completions":
+            assert payloads[0] == payloads[1]
+        else:
+            for payload in (control, refreshed):
+                payload["wire_system"] = [
+                    item for item in payload["input"] if item.get("role") in ("system", "developer")
+                ]
+            assert control.get("instructions") == refreshed.get("instructions")
+            assert control["wire_system"] == refreshed["wire_system"]
+            assert control["tools"] == refreshed["tools"]
+            assert control["previous_response_id"] == refreshed["previous_response_id"] == "resp_fixed"
+    finally:
+        for client in clients_created:
+            await client.aclose()
+
+
+async def test_a_reload_after_a_failed_first_build_loads_the_hooks_it_can(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine
+) -> None:
+    import json
+    import sys
+    from unittest.mock import create_autospec
+
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.foundation.i18n.formatting import format_message
+    from chrys.orchestration.engine.build import builder
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
+    path = user_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("model.profile.active: mock-model\nsession.title.auto: false\n", encoding="utf-8")
+    hooks_file = path.parent / "hooks" / "hooks.json"
+    hooks_file.parent.mkdir()
+    rule = {
+        "event": "before_tool_call",
+        "run": {"type": "command", "argv": [sys.executable, "-c", "pass"]},
+        "execution": {"mode": "blocking", "timeout_seconds": 30},
+    }
+    skipped = {**rule, "id": "skipped", "match": {"args": {"path": {"regex": "("}}}}
+    hooks_file.write_text(json.dumps({"version": 1, "hooks": [{**rule, "id": "guard"}, skipped]}), encoding="utf-8")
+    loaded = bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded
+    registry = ModelProfileRegistry()
+    registry.register(ModelProfile(id="mock-model", name="Mock", model_id="model", provider="mock"))
+    profile = _profile()
+    create_client = builder.create_client
+    attempts: list[None] = []
+
+    async def fails_once(*args, **kwargs):
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise RuntimeError("cannot reach the model")
+        return await create_client(*args, **kwargs)
+
+    monkeypatch.setattr(builder, "create_client", create_autospec(create_client, side_effect=fails_once))
+    engine = agent_engine(
+        EventBus(), loaded_settings=loaded, model_registry=registry, agent_registry=_registry(profile)
+    )
+    engine.session.session_id = "abcd01234567"
+    with pytest.raises(RuntimeError):
+        await engine.start(profile, workspace=Workspace.from_cwd(str(tmp_path)))
+    assert engine.session.hook_manager is None
+
+    completions = await capture_events(engine.event_bus, SettingsReloaded)
+    manual = SettingsReload(manual=True, session_id=engine.session.session_id)
+    await engine.event_bus.publish(manual, raise_handler_errors=True)
+
+    manager = engine.session.hook_manager
+    assert manager is not None
+    assert [hook.id for hook in manager.file.hooks] == ["guard"]
+    report = [format_message(line) for line in completions[-1].report]
+    assert [line for line in report if "Some hooks could not be loaded" in line and "skipped" in line]
+    assert not [line for line in report if "previous rules" in line]
+
+
+async def test_manual_model_edit_is_validated_before_installing_or_syncing_the_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine
+) -> None:
+    from chrys.foundation.config.runtime_pointer import get_model_pointer
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
+    path = user_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("model.profile.active: A\n", encoding="utf-8")
+    loaded = bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded
+    models = ModelProfileRegistry()
+    for name in ("A", "B"):
+        models.register(ModelProfile(id=name, name=name, model_id=name, provider="mock"))
+    profile = _profile()
+    bus = EventBus()
+    engine = agent_engine(bus, loaded_settings=loaded, model_registry=models, agent_registry=_registry(profile))
+    await engine.start(profile, workspace=Workspace.from_cwd(str(tmp_path)))
+    results = await capture_events(bus, SettingsReloaded)
+    models.register(ModelProfile(id="empty", name="Empty", model_id="", provider="openai"))
+    from chrys.service.profiles.models.serializer import save_profile
+
+    save_profile(ModelProfile(id="on-disk", name="On disk", model_id="new", provider="mock"))
+    for choice, expected in (("unknown", "A"), ("empty", "A"), ("on-disk", "on-disk"), ("B", "B")):
+        path.write_text(f"model.profile.active: {choice}\n", encoding="utf-8")
+        await bus.publish(SettingsReload(manual=True, session_id=engine.session.session_id), raise_handler_errors=True)
+        assert engine.current_profile_snapshot().model_profile_id == expected
+        assert get_model_pointer()[0] == expected
+        if expected == "A":
+            assert any(ref.definition.key == "controls.reload_kept_model" for ref in results[-1].report)
+        await bus.publish(SettingsReload(), raise_handler_errors=True)
+        assert engine.current_profile_snapshot().model_profile_id == expected
+
+    before = engine.current.require_loaded()
+    path.write_text("ui: [unclosed", encoding="utf-8")
+    errors = await capture_events(bus, Error)
+    await bus.publish(SettingsReload(manual=True, session_id=engine.session.session_id))
+    assert errors[-1].code == "manual_settings_reload_failed"
+    assert engine.current.require_loaded() is before
+    assert path.read_text(encoding="utf-8") == "ui: [unclosed"
+
+
+async def test_a_mistyped_model_edit_fails_by_name_when_no_earlier_model_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine
+) -> None:
+    from chrys.foundation.config.runtime_pointer import get_model_pointer
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
+    path = user_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("model.profile.active: typo-one\n", encoding="utf-8")
+    loaded = bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded
+    models = ModelProfileRegistry()
+    models.register(ModelProfile(id="A", name="A", model_id="A", provider="mock"))
+    profile = _profile()
+    bus = EventBus()
+    engine = agent_engine(bus, loaded_settings=loaded, model_registry=models, agent_registry=_registry(profile))
+    await engine.start(profile, workspace=Workspace.from_cwd(str(tmp_path)))
+    before = engine.current_profile_snapshot().model_profile_id
+    errors = await capture_events(bus, Error)
+
+    path.write_text("model.profile.active: typo-two\n", encoding="utf-8")
+    await bus.publish(SettingsReload(manual=True, session_id=engine.session.session_id))
+
+    assert [(error.code, error.message) for error in errors] == [
+        ("manual_settings_reload_failed", "Model profile is unavailable: typo-two")
+    ]
+    assert engine.current_profile_snapshot().model_profile_id == before != "A"
+    assert get_model_pointer()[0] != "A"
+
+
+async def test_a_removed_launch_model_falls_back_to_the_edited_file_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine
+) -> None:
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.serializer import save_profile
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "X")
+    path = user_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("model.profile.active: A\n", encoding="utf-8")
+    for name in ("X", "A", "B"):
+        save_profile(ModelProfile(id=name, name=name, model_id=name, provider="mock"))
+    loaded = bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded
+    models = ModelProfileRegistry()
+    models.load_all()
+    profile = _profile()
+    bus = EventBus()
+    engine = agent_engine(bus, loaded_settings=loaded, model_registry=models, agent_registry=_registry(profile))
+    await engine.start(profile, workspace=Workspace.from_cwd(str(tmp_path)))
+    assert engine.current_profile_snapshot().model_profile_id == "X"
+    results = await capture_events(bus, SettingsReloaded)
+    errors = await capture_events(bus, Error)
+
+    (path.parent / "models" / "X.yaml").unlink()
+    path.write_text("model.profile.active: B\n", encoding="utf-8")
+    await bus.publish(SettingsReload(manual=True, session_id=engine.session.session_id))
+
+    assert [error.code for error in errors] == []
+    assert "controls.reload_model_fallback" in [ref.definition.key for ref in results[-1].report]
+    assert engine.current_profile_snapshot().model_profile_id == "B"
+
+
+async def test_a_manual_reload_with_no_usable_model_anywhere_still_reloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine
+) -> None:
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.orchestration.startup import bootstrap_runtime
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
+    path = user_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("model.profile.active: missing\n", encoding="utf-8")
+    loaded = bootstrap_runtime(apply_patches=False, setup_telemetry=False).loaded
+    profile = _profile()
+    bus = EventBus()
+    engine = agent_engine(
+        bus, loaded_settings=loaded, model_registry=ModelProfileRegistry(), agent_registry=_registry(profile)
+    )
+    await engine.start(profile, workspace=Workspace.from_cwd(str(tmp_path)))
+    results = await capture_events(bus, SettingsReloaded)
+    errors = await capture_events(bus, Error)
+
+    await bus.publish(SettingsReload(manual=True, session_id=engine.session.session_id), raise_handler_errors=True)
+
+    assert [error.code for error in errors] == []
+    assert [ref.definition.key for ref in results[-1].report] == ["controls.reload_done"]
+
+
+@pytest.mark.parametrize(
+    ("reason", "notice"),
+    [
+        ("busy", "controls.reload_busy"),
+        ("load_active", "controls.reload_loading"),
+        ("not_ready", "controls.reload_loading"),
+        ("shutdown", "controls.reload_shutdown"),
+        ("session_changed", "controls.reload_session_changed"),
+        ("superseded", "controls.reload_superseded"),
+    ],
+)
+async def test_all_manual_permit_refusals_have_their_own_localized_non_turn_error(
+    monkeypatch, agent_engine, reason, notice
+):
+    from chrys.foundation.i18n import Localizer
+    from chrys.orchestration.engine.state.lifecycle_permits import RebuildPermitDenied
+
+    bus = EventBus()
+    engine = agent_engine(bus, settings=Settings())
+    errors = await capture_events(bus, Error)
+
+    async def refuse(token, *, reject_running):
+        assert reject_running
+        return RebuildPermitDenied(reason=reason, code=f"runtime_mutation_{reason}", message="Raw permit diagnostic")
+
+    monkeypatch.setattr(engine.permits, "acquire_rebuild_permit", refuse)
+    await engine._on_settings_reload(SettingsReload(manual=True, session_id=engine.session_id))
+    (error,) = errors
+    assert error.code == "manual_settings_reload_denied"
+    assert error.display_message.definition.key == notice
+    assert Localizer("zh-Hans").render(error.display_message) != Localizer("en").render(error.display_message)

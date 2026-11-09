@@ -137,3 +137,12 @@ def test_user_text_matches_kind_compatibility() -> None:
 
     with pytest.raises(ValueError, match="unknown user message kind"):
         user_text_matches(opener, "same text", kind="bogus")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("boundary", [HistoryMarkerKind.SUMMARY, HistoryMarkerKind.TURN])
+def test_current_region_starts_after_the_latest_completed_turn_or_summary(boundary: str) -> None:
+    summary = _Msg("assistant", "Completed context", {HistoryMarkerKind.KEY: HistoryMarkerKind.SUMMARY})
+    last = _Msg("assistant", "", {HistoryMarkerKind.KEY: boundary})
+    messages = [_user("old"), _turn_marker(), summary, _user("later"), last, _user("current")]
+    assert current_turn_start(messages) == 5
+    assert current_turn_start([summary]) == 1

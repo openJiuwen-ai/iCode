@@ -362,11 +362,15 @@ async def test_the_list_ticks_and_its_details_open_without_restyling_a_populated
         stopping = dataclasses.replace(_task("t2"), stopped_by="user")
         await bus.publish(BackgroundTasksChanged(session_id=_SESSION, tasks=(_task("t1"), stopping)))
         await wait_for(lambda: "stopping" in _row_texts(rows)[1], description="the stopping row")
-        # It ends: "Clear ended" comes into view without laying the screen out.
+        # It ends: "Clear ended" comes onto the box's bottom border without laying the screen out.
         ended = dataclasses.replace(_task("t2", running=False), stopped_by="user")
         await bus.publish(BackgroundTasksChanged(session_id=_SESSION, tasks=(_task("t1"), ended)))
         await wait_for(lambda: _row_texts(rows)[1].startswith("■"), description="the stopped row")
-        assert background.query_one("#background-tasks-clear").visible
+        width, height = background.outer_size
+        await wait_for(
+            lambda: background.render_lines(Region(0, height - 1, width, 1))[0].text.endswith(" Clear ended ─╯"),
+            description="clear ended on the bottom border",
+        )
 
         await click_when_settled(pilot, rows, offset=(2, 0))
         await wait_for(

@@ -232,9 +232,9 @@ ACP_NO_MCP = msg(
     "tui.agent_config.validation.acp.no_mcp",
     fallback="ACP profiles cannot configure MCP servers.",
 )
-ACP_NO_CUSTOM_TOOLS = msg(
-    "tui.agent_config.validation.acp.no_custom_tools",
-    fallback="ACP profiles cannot configure custom tools.",
+ACP_NO_EXTENSIONS = msg(
+    "tui.agent_config.validation.acp.no_extensions",
+    fallback="ACP profiles cannot use extensions.",
 )
 ACP_NO_BUILTIN_TOOLS = msg(
     "tui.agent_config.validation.acp.no_builtin_tools",

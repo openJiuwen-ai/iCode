@@ -20,7 +20,8 @@ from chrys.service.analytics import _insights as insights_module
 from tests.service.analytics._events import BRANCH_ID, NS, EventLog
 
 
-def test_rollback_reverses_superseded_usage_contributions_before_overview(tmp_path) -> None:
+@pytest.mark.parametrize("reason_code", ["user_rollback", "fresh_turn_retired"])
+def test_rollback_reverses_superseded_usage_contributions_before_overview(tmp_path, reason_code: str) -> None:
     """A later rollback removes earlier contributions instead of requiring inverse events."""
     old_turn_id = "4" * 32
     live_turn_id = "5" * 32
@@ -73,6 +74,7 @@ def test_rollback_reverses_superseded_usage_contributions_before_overview(tmp_pa
             "new_branch_id": new_branch_id,
             "superseded_from_sequence": 1,
             "superseded_to_sequence": 7,
+            "reason_code": reason_code,
         },
     )
     log.add(

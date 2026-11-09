@@ -10,12 +10,13 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from chrys.foundation.events.types import InvocationAnswerWithdrawn, TurnStarted
+from chrys.foundation.events.types import InvocationAnswerWithdrawn, RollbackSnapshotsChanged, TurnStarted
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.turns import current_turn_start, is_continuation_message
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine import trajectory as trajectory_recorder
+from chrys.orchestration.engine.execution import BARE_RETRY, RetryInput
 from chrys.orchestration.engine.rollback import capture_snapshot_writer
 from chrys.orchestration.engine.run.finalizer import PostRunOutcome, TurnFinalizer, _expire_current_run_scope
 from chrys.orchestration.engine.run.input_refs import format_skill_reference_reminder, parse_skill_reference
@@ -24,7 +25,15 @@ from chrys.orchestration.engine.run.retry import RetryCoordinator
 from chrys.orchestration.engine.run.runtime_skills import RuntimeSkillRefresher
 from chrys.orchestration.engine.run.turn_hooks import TurnHookDispatcher
 from chrys.orchestration.engine.state.machine import EngineState, Trigger
-from chrys.orchestration.invoker.contracts import OverlappingRun, PreparedClosed, StaleContinuation, UnsupportedRequest
+from chrys.orchestration.invoker.contracts import (
+    AbortCause,
+    Aborted,
+    OverlappingRun,
+    PreparedClosed,
+    RunRequest,
+    StaleContinuation,
+    UnsupportedRequest,
+)
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationScope, PreparationTrace
 from chrys.service.trajectory.state import (
     TurnRecord,
@@ -138,6 +147,7 @@ class TurnRunner:
         binding_failure: Exception | None = None,
         user_message_id: str | None = None,
         typed_text: str | None = None,
+        skip_rollback_snapshot: bool = False,
     ) -> None:
         """Execute a fresh agent turn and finalize it.
 
@@ -188,8 +198,10 @@ class TurnRunner:
             )
             await self._compute_workspace_notice(is_retry=False)
             await self._content.shrink_history_images()
-            write_rollback_snapshot = capture_snapshot_writer(self._session, self._settings_handle)
-            await asyncio.to_thread(write_rollback_snapshot)
+            if not skip_rollback_snapshot:
+                write_rollback_snapshot = capture_snapshot_writer(self._session, self._settings_handle)
+                await asyncio.to_thread(write_rollback_snapshot)
+                await self._bus.publish(RollbackSnapshotsChanged(session_id=self._session.session_id))
             await self._refresh_runtime_skills(update_active_turn=False)
             self._queue_skill_reference_reminder(typed, for_next_turn=True)
             if self._current.loaded is not None:
@@ -202,6 +214,7 @@ class TurnRunner:
                     self._current.require_loaded().reminder_middleware.prepare_turn(
                         usage=self._session.runtime_meta.last_usage_details or None
                     )
+                await self._ask_extension_contexts(typed)
             self._current.require_loaded().bindings.approval.set_user_messages([typed] if typed else [])
             self._turn_state.set_current_input(text, contents, created_at)
             if preamble is not None:
@@ -224,11 +237,9 @@ class TurnRunner:
             elif self._turn_state.lease.consume_pre_executor_interrupt():
                 self._current.require_loaded().bindings.record_pre_run_interrupt()
             else:
-                self._current.require_loaded().bindings.record_outcome(
-                    await self._current.require_loaded().bindings.backend.run(
-                        self._current.require_loaded().bindings.inputs.fresh_request(
-                            contents, created_at=created_at, typed_text=typed_text
-                        )
+                await self._run_passes(
+                    self._current.require_loaded().bindings.inputs.fresh_request(
+                        contents, created_at=created_at, typed_text=typed_text
                     )
                 )
         except (StaleContinuation, OverlappingRun, PreparedClosed, UnsupportedRequest) as exc:
@@ -256,8 +267,7 @@ class TurnRunner:
 
     async def run_retry(
         self,
-        additional_text: str = "",
-        created_at: datetime | str | None = None,
+        retry: RetryInput = BARE_RETRY,
         *,
         run_scope: CurrentRunScope | None = None,
         injection_window: CurrentRunInjectionWindow | None = None,
@@ -266,6 +276,7 @@ class TurnRunner:
     ) -> None:
         """Resume the agent from current state and finalize it."""
         _ = injection_window
+        additional_text, created_at = retry.text, retry.created_at
         self._turn_state.pass_started_at = created_at
         # Retry keeps the invocation, not its input: until retry_request binds
         # this pass's message, a recovery checkpoint must not lend the previous
@@ -275,7 +286,8 @@ class TurnRunner:
             await self.pre_run(
                 reset_batch_id=False,
                 is_retry=True,
-                has_opening_input=bool(additional_text),
+                has_opening_input=retry.guided,
+                note_message_id=retry.note_message_id,
                 preparation_scope_operation_id=self._preparation_operation_id(admission_preparation),
             )
             if admission_preparation is not None:
@@ -317,10 +329,12 @@ class TurnRunner:
                         preserve_last_words=True,
                         preserve_turn_reminders=True,
                     )
+                # What the turn's opener asked; a retry that kept the turn's reminders keeps their text.
+                await self._ask_extension_contexts(next(iter(self._current_turn_user_messages()), ""), keep=True)
             approval_context = self._retry_approval_context_messages(additional_text)
             if approval_context:
                 self._current.require_loaded().bindings.approval.set_user_messages(approval_context)
-            if additional_text:
+            if retry.guided:
                 # Retry guidance is user-authored MID-TURN input: a recovery
                 # checkpoint must re-create it flagged (kind-aware), or a crash
                 # during a guided retry restores unflagged guidance that opens a
@@ -343,10 +357,6 @@ class TurnRunner:
         try:
             if self._turn_state.lease.consume_pre_executor_interrupt():
                 self._current.require_loaded().bindings.record_pre_run_interrupt()
-                if additional_text:
-                    self._history.ensure_user_message(
-                        additional_text, created_at=created_at, kind="injected", item_id=self._opening_item_id
-                    )
             else:
                 async with self._current.require_loaded().bindings.inputs.retry_request(
                     additional_text=additional_text, created_at=created_at, withdraw=self._withdraw_answer
@@ -359,12 +369,10 @@ class TurnRunner:
                                 # Stopped while frontends heard the dropped answer's withdrawal.
                                 self._current.require_loaded().bindings.record_pre_run_interrupt()
                             else:
-                                self._current.require_loaded().bindings.record_outcome(
-                                    await self._current.require_loaded().bindings.backend.run(request)
-                                )
+                                await self._run_passes(request)
                         except (StaleContinuation, OverlappingRun, PreparedClosed, UnsupportedRequest) as exc:
-                            # Exit normally so retry_request restores its input
-                            # with the existing kind-aware post-yield fallback.
+                            # Exit normally so retry_request restores a bare
+                            # retry's popped prompt after its yield.
                             self._record_admission_failure(exc)
         except (StaleContinuation, OverlappingRun, PreparedClosed, UnsupportedRequest) as exc:
             self._record_admission_failure(exc)
@@ -372,21 +380,45 @@ class TurnRunner:
             if run_scope is not None:
                 self._turn_state.lease.close_injection_admission(run_scope)
             self._requeue_undelivered_file_change()
-        state = self._current.require_loaded().bindings.state
-        if additional_text and (state.run_failed or state.was_interrupted):
-            # retry_request restores guidance only after its yield. A rejection
-            # at its entrance validation (owner closed between promotion and
-            # bind, or any other pre-yield admission failure) never reaches
-            # that fallback, so mirror the fresh path here. ensure_user_message
-            # is kind-aware and scoped to the current turn, so the post-yield
-            # and pre-executor-interrupt appends stay single-copy. A note sent
-            # to the model was appended after the yield with its reminder
-            # record; one rejected here was never sent and carries none.
+        bindings = self._current.require_loaded().bindings
+        if retry.guided and (bindings.state.run_failed or bindings.state.was_interrupted):
+            # The one place guidance that history has not stored is kept, so
+            # the next retry sees it: stopped before it was sent, refused at
+            # admission, or failed after. A note the request sent carries the
+            # reminder record it went out with (input_properties, which stays
+            # None until retry_request binds the note); one never sent has none.
             self._history.ensure_user_message(
-                additional_text, created_at=created_at, kind="injected", item_id=self._opening_item_id
+                additional_text,
+                created_at=created_at,
+                kind="injected",
+                item_id=self._opening_item_id,
+                reminder_source=bindings.inputs.input_properties,
             )
         self._tag_consumed_profile_switch()
         await self.finalize_current_run()
+
+    async def _run_passes(self, request: RunRequest) -> None:
+        """Run the turn's pass and, after each steer, the next one, all in this run task.
+
+        A steer aborts the running pass: what it committed is settled into
+        history and the next pass goes on from there, delivering the steer
+        message at its first model call. Only the last pass's outcome ends
+        the turn.
+        """
+        while True:
+            bindings = self._current.require_loaded().bindings
+            outcome = await bindings.backend.run(request)
+            bindings.record_outcome(outcome)
+            # The pass gave its output up for the steer: settle it so, even when an owner closing took over its cause.
+            if not isinstance(outcome, Aborted) or not bindings.state.steered:
+                return
+            await self._finalizer.settle_steered_pass(request.messages, withdraw=self._withdraw_answer)
+            stopped = self._turn_state.lease.consume_pre_executor_interrupt()
+            if stopped or outcome.cause is not AbortCause.STEER or self._session.shutting_down:
+                # Stopped or closing since the steer: the turn ends interrupted, keeping what the steer settled.
+                self._current.require_loaded().bindings.record_pre_run_interrupt()
+                return
+            request = self._current.require_loaded().bindings.inputs.steer_request()
 
     def _record_admission_failure(self, error: Exception) -> None:
         """Reject once, then use the ordinary Turn finalizer/save/lease release."""
@@ -414,6 +446,7 @@ class TurnRunner:
         is_retry: bool = False,
         has_opening_input: bool = True,
         user_message_id: str | None = None,
+        note_message_id: str | None = None,
         preparation_scope_operation_id: str | None = None,
     ) -> None:
         """Common Turn setup before submitting a request to KernelConversation.
@@ -423,6 +456,8 @@ class TurnRunner:
         have an opening item to name in its ``turn.started`` event.
         *user_message_id* is the frontend's own id for that message, recorded
         with the turn so a replay can hand the same id back.
+        *note_message_id* is a guided retry's frontend id for its guidance,
+        published with the pass's ``TurnStarted``.
         """
         self._turn_state.lease.advance_conversation_revision()
         # Fresh and retry turns alike make this launch's surface the session's last one.
@@ -465,6 +500,8 @@ class TurnRunner:
                 turn_number=turn_number,
                 is_retry=is_retry,
                 user_message_id=event_user_message_id,
+                opening_item_id=self._opening_item_id,
+                note_message_id=note_message_id,
             )
         )
 
@@ -661,6 +698,12 @@ class TurnRunner:
                 notice,
                 cwd=self._session.workspace.primary_cwd if self._session.workspace is not None else None,
             )
+
+    async def _ask_extension_contexts(self, prompt: str, *, keep: bool = False) -> None:
+        """Ask the prepared turn's extension contexts for their text; each failure is reported."""
+        reminder = self._current.require_loaded().reminder_middleware
+        for warning in await reminder.refresh_extension_context(prompt, keep=keep):
+            await self._bus.publish(warning)
 
     async def _refresh_runtime_skills(self, *, update_active_turn: bool = False) -> None:
         """Refresh runtime skills and optionally update the active reminder snapshot."""

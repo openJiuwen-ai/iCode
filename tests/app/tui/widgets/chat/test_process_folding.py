@@ -138,7 +138,11 @@ async def test_compressed_failure_followed_by_success_still_folds(answer_inside:
             [summary] if answer_inside else [summary, final], compressed_blocks={"archive": block}
         )
         await panel.wait_replay_complete()
-        assert _summary(panel) == [(0, 0, True, True, "▸ Activity"), (1, 0, True, True, "▸ Activity")]
+        assert _summary(panel) == [
+            (0, 1, True, "▸ 1 tool call: 1 read"),
+            (1, 1, True, "▸ 1 tool call: 1 read"),
+        ]
+        assert all(group.has_class("--compressed") for group in panel.query(ToolGroup))
         assert not panel.query(InterruptedMessage)
         assert panel.get_agent_responses() == [
             ("Agent", "Checking."),
@@ -214,7 +218,11 @@ async def test_omitted_failure_survives_setting_changes_until_a_later_success() 
         await panel.add_agent_message("")
         assert not panel.query(ProcessBlock)
         await panel.add_agent_message("Recovered.")
-        assert _summary(panel) == [(0, 0, True, True, "▸ Activity"), (1, 0, True, True, "▸ Activity")]
+        assert _summary(panel) == [
+            (0, 1, True, "▸ 1 tool call: 1 read"),
+            (1, 1, True, "▸ 1 tool call: 1 read"),
+        ]
+        assert all(group.has_class("--compressed") for group in panel.query(ToolGroup))
         assert panel.get_agent_responses()[-1] == ("Agent", "Recovered.")
 
 
@@ -235,12 +243,11 @@ async def _live(panel: ChatPanel) -> None:
     await panel.add_agent_message("Done.")
 
 
-def _summary(panel: ChatPanel) -> list[tuple[int, int, bool, bool, str]]:
+def _summary(panel: ChatPanel) -> list[tuple[int, int, bool, str]]:
     return [
         (
             block.segment_index,
             block.tool_count,
-            block.is_compressed or block.tool_count == 0,
             block.collapsed,
             rich_plain(block.render()),
         )
@@ -255,8 +262,8 @@ async def test_live_and_replay_share_segments_counts_and_default_fold_state() ->
         await pilot.pause()
         expected = _summary(panel)
         assert expected == [
-            (0, 1, False, True, "▸ 1 tool call: 1 read"),
-            (1, 1, False, True, "▸ 1 tool call: 1 read"),
+            (0, 1, True, "▸ 1 tool call: 1 read"),
+            (1, 1, True, "▸ 1 tool call: 1 read"),
         ]
         copied = panel.get_all_messages()
         assert copied == [
@@ -282,7 +289,7 @@ async def test_live_and_replay_share_segments_counts_and_default_fold_state() ->
 
 @pytest.mark.parametrize("fold", [False, True])
 @pytest.mark.parametrize("failed", [False, True])
-async def test_archived_turn_does_not_build_omitted_local_tool_groups(fold: bool, failed: bool) -> None:
+async def test_archived_local_tools_keep_results_and_follow_the_turn_fold_policy(fold: bool, failed: bool) -> None:
     history = _history()
     if failed:
         history[-1] = Message(
@@ -300,19 +307,32 @@ async def test_archived_turn_does_not_build_omitted_local_tool_groups(fold: bool
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history([summary], compressed_blocks={"archive": archived})
         await panel.wait_replay_complete()
-        assert not panel.query(ToolGroup)
-        assert all(block.tool_count == 0 for block in panel.query(ProcessBlock))
+        groups = list(panel.query(ToolGroup))
+        assert len(groups) == 2
+        assert all(group.has_class("--compressed") for group in groups)
+        assert [[(record.tool_name, record.result) for record in group._tool_records.values()] for group in groups] == [
+            [("read_file", "ok")],
+            [("read_file", "ok")],
+        ]
         if failed:
             assert not panel.query(ProcessBlock)
+            assert all(group.display for group in groups)
         if fold and not failed:
-            # Without its omitted call, the section after the injection holds only its text: that folds on its own.
-            assert _summary(panel) == [(0, 0, True, True, "▸ Activity")]
-            lone = next(message for message in panel.query(AgentMessage) if message.text == "One more.")
-            assert lone.collapsed and not lone.process_hidden
+            # The injection still divides the turn's two tool batches into separate folded activities.
+            assert _summary(panel) == [
+                (0, 1, True, "▸ 1 tool call: 1 read"),
+                (1, 1, True, "▸ 1 tool call: 1 read"),
+            ]
+            second_narration = next(message for message in panel.query(AgentMessage) if message.text == "One more.")
+            assert second_narration.process_hidden
+            assert all(not group.display for group in groups)
+        elif not failed:
+            assert not panel.query(ProcessBlock)
+            assert all(group.display for group in groups)
 
 
 @pytest.mark.parametrize("retained_kind", ["hosted", "informational"])
-async def test_mixed_compressed_turn_always_uses_activity_title(retained_kind: str) -> None:
+async def test_mixed_compressed_turn_counts_tools_in_collapsed_and_expanded_titles(retained_kind: str) -> None:
     history = _history()
     if retained_kind == "hosted":
         retained = [
@@ -332,7 +352,7 @@ async def test_mixed_compressed_turn_always_uses_activity_title(retained_kind: s
         call = Content.from_function_call(call_id="server", name="server_task", arguments="{}").to_dict()
         call["informational_only"] = True
         retained = [call]
-    # Both process segments retain a call, while their local calls stay omitted.
+    # Each segment keeps its original local read alongside the hosted or informational call.
     history[1]["contents"].extend(retained)
     history[4]["contents"].extend(retained)
     archived = CompressedBlock(compressed_context_id="mixed", messages=[Message.from_dict(item) for item in history])
@@ -347,28 +367,20 @@ async def test_mixed_compressed_turn_always_uses_activity_title(retained_kind: s
         await panel.wait_replay_complete()
         blocks = list(panel.query(ProcessBlock))
         assert len(blocks) == 2
-        assert all(block.tool_count == 1 and block.is_compressed for block in blocks)
-        assert [rich_plain(block.render()).strip() for block in blocks] == ["▸ Activity", "▸ Activity"]
+        assert all(block.tool_count == 2 for block in blocks)
+        assert all(group.has_class("--compressed") for group in panel.query(ToolGroup))
+        assert [[record.tool_name for record in group._tool_records.values()] for group in panel.query(ToolGroup)] == [
+            ["read_file", "web_search" if retained_kind == "hosted" else "server_task"]
+        ] * 2
+        detail = "1 read · 1 web search" if retained_kind == "hosted" else "1 read · 1 other call"
+        assert [rich_plain(block.render()).strip() for block in blocks] == [f"▸ 2 tool calls: {detail}"] * 2
         assert panel.toggle_fold_all() is False
-        assert [rich_plain(block.render()).strip() for block in blocks] == ["▾ Activity", "▾ Activity"]
+        assert [rich_plain(block.render()).strip() for block in blocks] == [f"▾ 2 tool calls: {detail}"] * 2
         await wait_for(
             lambda: all(group._content_mounted and group._tools for group in panel.query(ToolGroup)),
             pilot=pilot,
             description="retained tool details mounted",
         )
-
-
-def test_compressed_opener_marks_every_process_segment() -> None:
-    segments = plan_process_segments(
-        [
-            ProcessEntry("user", compressed=True),
-            ProcessEntry("tool"),
-            ProcessEntry("injection"),
-            ProcessEntry("tool"),
-            ProcessEntry("answer"),
-        ]
-    )
-    assert [segment.compressed for segment in segments] == [True, True]
 
 
 @pytest.mark.parametrize("status_code", [None, HistoryMarkerKind.STATUS_AWAITING_SUB_AGENTS])
@@ -409,14 +421,14 @@ async def test_failed_header_mount_keeps_members_visible_and_can_be_retried(monk
 
         monkeypatch.setattr(panel, "mount_transcript_after", fail_first_segment)
         await _live(panel)
-        assert _summary(panel) == [(1, 1, False, True, "▸ 1 tool call: 1 read")]
+        assert _summary(panel) == [(1, 1, True, "▸ 1 tool call: 1 read")]
         assert panel.query(ToolGroup).first().display
         existing = panel.query_one(ProcessBlock)
         monkeypatch.setattr(panel, "mount_transcript_after", mount)
         await panel._process_controller.complete_live()
         assert _summary(panel) == [
-            (0, 1, False, True, "▸ 1 tool call: 1 read"),
-            (1, 1, False, True, "▸ 1 tool call: 1 read"),
+            (0, 1, True, "▸ 1 tool call: 1 read"),
+            (1, 1, True, "▸ 1 tool call: 1 read"),
         ]
         assert panel.query(ProcessBlock).last() is existing
 
@@ -532,7 +544,7 @@ async def test_tool_free_activity_uses_fallback_title_and_single_thinking_has_no
         await panel.add_answer_delta("final", "Done.")
         panel.finish_answer_segment("final", completed=True)
         await panel.add_agent_message("Done.")
-        assert _summary(panel) == [(0, 0, True, True, "▸ Activity")]
+        assert _summary(panel) == [(0, 0, True, "▸ Activity")]
         await panel.clear()
         await panel.add_user_message("prompt")
         await panel.add_thinking_delta("only", "reasoning", "Thinking.")
@@ -548,6 +560,8 @@ async def test_failure_prompt_cleanup_has_no_precreated_header() -> None:
         await panel.add_user_message("failed prompt")
         await panel.add_error("failed")
         await panel.add_user_message("replacement")
+        await panel.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=())
+        panel.apply_turn_started(1)
         assert [message.text for message in panel.query(UserMessage)] == ["replacement"]
         assert not panel.query(ProcessBlock)
 
@@ -763,8 +777,8 @@ async def test_a_compaction_during_a_turn_stays_visible_between_the_sections_it_
         await pilot.pause()
 
         assert _summary(panel) == [
-            (0, 1, False, True, "▸ 1 tool call: 1 read"),
-            (1, 2, False, True, "▸ 2 tool calls: 2 commands"),
+            (0, 1, True, "▸ 1 tool call: 1 read"),
+            (1, 2, True, "▸ 2 tool calls: 2 commands"),
         ]
         card = panel.query_one(CompactionCard)
         assert card.display

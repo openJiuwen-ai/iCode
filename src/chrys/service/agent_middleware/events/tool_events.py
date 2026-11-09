@@ -33,6 +33,7 @@ from chrys.foundation.trajectory.context import bind_tool_operation, reset_tool_
 from chrys.foundation.trajectory.event_types import ToolOutcome
 from chrys.foundation.trajectory_timing import build_trajectory_timing, stamp_trajectory_timing
 from chrys.kernel._result_ceiling import preview_result_ceiling
+from chrys.kernel.exceptions import tool_error_result_text
 from chrys.kernel.middleware import FunctionMiddleware
 from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_MODIFIED_ARGS_KEY,
@@ -43,6 +44,7 @@ from chrys.service.agent_middleware._metadata_keys import (
 )
 from chrys.service.agent_middleware.events.hook_dispatch import (
     append_extra_context_to_result,
+    apply_after_tool_extensions,
     apply_before_tool_hooks,
     final_tool_args,
     fire_after_tool_hooks,
@@ -52,6 +54,7 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
     is_mutable_tool_args,
     set_call_id,
     set_tool_invocation_order,
+    tool_may_have_run,
 )
 from chrys.service.agent_middleware.events.intermediate_text import ResponseBatchCounter
 from chrys.service.agent_middleware.events.rejection_metadata import (
@@ -89,6 +92,7 @@ if TYPE_CHECKING:
 
     from chrys.foundation.events.bus import EventBus
     from chrys.kernel.middleware import FunctionInvocationContext
+    from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
     from chrys.service.hooks.manager import HookManager
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.tracker import MutationTracker
@@ -150,8 +154,10 @@ class ToolEventMiddleware(FunctionMiddleware):
         tool_result_ceiling_tokens: int | None = None,
         *,
         origin: InvocationOrigin,
+        extension_hooks: ExtensionToolHooks | None = None,
     ) -> None:
         self._origin = origin
+        self._extension_hooks = extension_hooks
         self._bus = event_bus
         self._session_id = session_id
         self._batch_counter = batch_counter
@@ -286,6 +292,7 @@ class ToolEventMiddleware(FunctionMiddleware):
             args=args,
             workspace_cwd=self._workspace_cwd,
             target_operation_id=trajectory.operation_id if trajectory is not None else None,
+            extension_hooks=self._extension_hooks,
         )
         args = context.arguments if is_mutable_tool_args(context.arguments) else {}
 
@@ -355,18 +362,32 @@ class ToolEventMiddleware(FunctionMiddleware):
             )
 
         tool_kind = get_tool_kind(context.function) or ""
-        await self._bus.publish(
-            InvocationToolCallStart(
-                origin=origin,
-                tool_name=tool_name,
-                tool_kind=tool_kind,
-                args=args,
-                call_id=call_id,
-                session_id=self._session_id,
+        try:
+            await self._bus.publish(
+                InvocationToolCallStart(
+                    origin=origin,
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    args=args,
+                    call_id=call_id,
+                    session_id=self._session_id,
+                )
             )
-        )
+        except BaseException:
+            if mut_ctx is not None:
+                abort_mutation_tracking(
+                    mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
+                )
+            raise
         if self._on_start_published is not None:
-            await self._on_start_published(provider_call_id)
+            try:
+                await self._on_start_published(provider_call_id)
+            except BaseException:
+                if mut_ctx is not None:
+                    abort_mutation_tracking(
+                        mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
+                    )
+                raise
 
         # Propagate parent call_id into the sub-agent's ``_invoke`` via
         # ContextVar so it can bind invocation_id ↔ parent call_id for the
@@ -378,6 +399,7 @@ class ToolEventMiddleware(FunctionMiddleware):
         sub_agent_metadata = None
         if is_sub_agent:
             from chrys.foundation.util.sub_agent_context import (
+                SUB_AGENT_PROGRESS_METADATA_KEY,
                 SUB_AGENT_RESULT_COMMIT_CALLBACK_KEY,
                 SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY,
                 SubAgentParentResultMetadata,
@@ -446,13 +468,21 @@ class ToolEventMiddleware(FunctionMiddleware):
                     background_request.set()
 
                 move_to_background = _move_to_background
-                await bus.subscribe(ShellToBackground, move_to_background)
+                try:
+                    await bus.subscribe(ShellToBackground, move_to_background)
+                except BaseException:
+                    if mut_ctx is not None:
+                        abort_mutation_tracking(
+                            mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
+                        )
+                    raise
                 background_token = shell_background_request.set(background_request)
 
         started_at = datetime.now(UTC)
         start = time.monotonic()
         error_text = ""
         errored = False
+        raised_text: str | None = None
         raised_error_kind: str | None = None
         cancelled = False
         tool_operation_token = bind_tool_operation(
@@ -486,6 +516,7 @@ class ToolEventMiddleware(FunctionMiddleware):
             errored = True
             raised_error_kind = type(exc).__name__
             error_text = tool_card_error_text(exc)
+            raised_text = tool_error_result_text(exc)
             raise
         except BaseException:
             # CancelledError (BaseException) — the agent task was cancelled by
@@ -551,9 +582,15 @@ class ToolEventMiddleware(FunctionMiddleware):
                 # so the async finalize below is unreachable — release the
                 # trace wrapper and close the coordination window
                 # synchronously or the registry advertises a live command
-                # to peers until shutdown. The command may have written
-                # before the interrupt, so implicit detection is truncated.
-                abort_mutation_tracking(mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker)
+                # to peers until shutdown. Interrupted before the commit step
+                # (e.g. at approval), the tool never ran; after it, the command
+                # may have written, so implicit detection is truncated.
+                abort_mutation_tracking(
+                    mut_ctx,
+                    self._mutation_coordinator,
+                    tracker=self._mutation_tracker,
+                    may_have_run=tool_may_have_run(context),
+                )
             if not cancelled:
                 try:
                     result_text = error_text or extract_result_text(context.result)
@@ -564,7 +601,9 @@ class ToolEventMiddleware(FunctionMiddleware):
                         # deliberately skipped (the tool never executed), so
                         # release the trace wrapper and close the observation
                         # window here.
-                        abort_mutation_tracking(mut_ctx, self._mutation_coordinator)
+                        abort_mutation_tracking(
+                            mut_ctx, self._mutation_coordinator, tracker=self._mutation_tracker, may_have_run=False
+                        )
 
                     # Post-execution mutation tracking
                     metadata: dict[str, Any] = {}
@@ -605,6 +644,8 @@ class ToolEventMiddleware(FunctionMiddleware):
                             metadata["file_bytes_changed"] = mut_result.file_bytes_changed
                         if mut_result.file_hashes is not None:
                             metadata["file_mutation_hashes"] = mut_result.file_hashes
+                        if mut_result.file_changed_at is not None:
+                            metadata["file_changed_at"] = mut_result.file_changed_at
                         if mut_result.shell_snapshots:
                             metadata["shell_file_snapshots"] = mut_result.shell_snapshots
                     if rejected:
@@ -626,6 +667,10 @@ class ToolEventMiddleware(FunctionMiddleware):
                             metadata[SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY] = (
                                 sub_agent_metadata.transcript_final_text
                             )
+                        if sub_agent_metadata.progress is not None and (
+                            progress := sub_agent_metadata.progress.to_metadata()
+                        ):
+                            metadata[SUB_AGENT_PROGRESS_METADATA_KEY] = progress
                     if errored:
                         metadata[TOOL_ERRORED_METADATA_KEY] = True
                     structured_failed = tool_result_metadata_failure_state(metadata) is True
@@ -638,6 +683,19 @@ class ToolEventMiddleware(FunctionMiddleware):
                     tool_context = resolve_tool_call_context(context.function, args)
                     write_result_carriage(context, metadata=metadata, tool_context=tool_context or None)
 
+                    result_text = await apply_after_tool_extensions(
+                        self._extension_hooks,
+                        context,
+                        tool_name=tool_name,
+                        kind=tool_kind,
+                        call_id=call_id,
+                        args=args,
+                        result_text=result_text,
+                        raised_text=raised_text,
+                        failed=errored or structured_failed or rejected,
+                        rejected=rejected,
+                        duration_ms=duration_ms,
+                    )
                     hook_decision = await fire_after_tool_hooks(
                         manager=self._hook_manager,
                         session_id=self._session_id,

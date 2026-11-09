@@ -11,9 +11,11 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.context import EvalContext
+from chrys.foundation.config.errors import ConfigError
 from chrys.foundation.config.process_settings import install_process_settings, settle_session_root
-from chrys.foundation.config.runtime_pointer import MODEL_POINTER_KEY, set_model_pointer
+from chrys.foundation.config.runtime_pointer import MODEL_POINTER_KEY, remember_file_model, set_model_pointer
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import DEFAULT_EVAL_CONTEXT, LoadedSettings, load_settings
 from chrys.foundation.events.types import Warning
@@ -26,6 +28,13 @@ _INVALID_NO_PROXY_ENV = msg(
     "startup.invalid_no_proxy_env",
     fallback="{var} is invalid for httpx and was ignored ({value}). Remove or fix this environment value.",
 )
+_INVALID_PROXY_ENV = msg(
+    "startup.invalid_proxy_env",
+    fallback=(
+        "{var} is not a proxy address {app} can use and was ignored ({value}). "
+        "Use an http://, https://, socks5:// or socks5h:// address, or remove this environment value."
+    ),
+)
 _CATALOG_LOAD_FAILED = msg(
     "i18n.catalog_load_failed",
     fallback="Could not load translations for locale {locale}; using English.",
@@ -36,6 +45,10 @@ _RAW_HTTP_CAPTURE_ON = msg(
         "Raw HTTP capture is on ({source}): request and response logs record API keys, "
         "prompts and model output unredacted. Turn it off when you are done."
     ),
+)
+_NOTIFICATIONS_MIGRATION_RETRY = msg(
+    "startup.notifications_migration_retry",
+    fallback="Could not import previous notification preferences. The migration will retry on the next start.",
 )
 _NOTIFICATIONS_MIGRATION_FAILED = msg(
     "startup.notifications_migration_failed",
@@ -89,8 +102,12 @@ def _dangerous_setting_warnings(loaded: LoadedSettings) -> list[Warning]:
 
 
 def _migrate_legacy_settings() -> list[Warning]:
-    """Import notification preferences and refresh retired theme names at startup."""
-    from chrys.foundation.config.migrations import migrate_notifications_v0, migrate_renamed_theme
+    """Import notification preferences and move retired theme names and keys at startup."""
+    from chrys.foundation.config.migrations import (
+        migrate_buddy_model_profile,
+        migrate_notifications_v0,
+        migrate_renamed_theme,
+    )
     from chrys.foundation.config.user_settings import user_settings_path
 
     warnings: list[Warning] = []
@@ -102,14 +119,43 @@ def _migrate_legacy_settings() -> list[Warning]:
             Warning(
                 code="notifications_migration_failed",
                 message=format_message(display_message),
-                display_message=display_message,
+                display_message=_NOTIFICATIONS_MIGRATION_RETRY.bind()
+                if isinstance(error, ConfigError)
+                else display_message,
+                display_hint=error.display if isinstance(error, ConfigError) else None,
             )
         )
     try:
         migrate_renamed_theme()
     except Exception:
         logger.info("Could not rename the saved theme in %s", user_settings_path(), exc_info=True)
+    try:
+        migrate_buddy_model_profile(_buddy_model_profile)
+    except Exception:
+        logger.info("Could not move the saved buddy model in %s", user_settings_path(), exc_info=True)
     return warnings
+
+
+def _buddy_model_profile(model_id: str) -> str | None:
+    """The model profile a saved bare buddy model id becomes, for ``migrate_buddy_model_profile``.
+
+    A value that already names a profile stays; a model exactly one profile
+    serves becomes that profile's id; anything else becomes ``""``, the active
+    profile. While a profile file or the directory cannot be read, the answer
+    could change once it can, so it is None and the value waits.
+    """
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.resolver import resolve_profile_selector
+
+    registry = ModelProfileRegistry()
+    directory, scan = registry.read_profiles()
+    if scan.invalid or scan.directory_error is not None:
+        return None
+    registry.install_profiles(directory, scan)
+    if resolve_profile_selector(registry, model_id) is not None:
+        return model_id
+    serving = [profile.id for profile in registry.list_profiles() if profile.model_id == model_id]
+    return serving[0] if len(serving) == 1 else ""
 
 
 def catalog_load_warning(warning: CatalogLoadWarning) -> Warning:
@@ -175,18 +221,29 @@ def bootstrap_runtime(
         configure_utf8_stdio()
 
     from chrys.foundation.config.process_env import freeze_process_env
-    from chrys.service.profiles.models.env_bridge import sanitize_no_proxy_env
+    from chrys.service.profiles.models.env_bridge import sanitize_no_proxy_env, sanitize_proxy_url_env
 
     freeze_process_env()
 
     warnings = [
+        Warning(
+            code="invalid_proxy",
+            message=(
+                f"{var} is not a proxy address {APP_DISPLAY_NAME} can use and was ignored ({value!r}). "
+                "Use an http://, https://, socks5:// or socks5h:// address, or remove this environment value."
+            ),
+            display_message=_INVALID_PROXY_ENV.bind(var=var, app=APP_DISPLAY_NAME, value=repr(value)),
+        )
+        for var, value in sanitize_proxy_url_env().items()
+    ]
+    warnings.extend(
         Warning(
             code="invalid_no_proxy",
             message=f"{var} is invalid for httpx and was ignored ({value!r}). Remove or fix this environment value.",
             display_message=_INVALID_NO_PROXY_ENV.bind(var=var, value=repr(value)),
         )
         for var, value in sanitize_no_proxy_env().items()
-    ]
+    )
     warnings.extend(_migrate_legacy_settings())
 
     if apply_patches:
@@ -196,6 +253,7 @@ def bootstrap_runtime(
 
     loaded = settle_session_root(load_settings(project_root=project_root, eval_context=eval_context))
     install_process_settings(loaded)
+    remember_file_model(loaded.file_model)
     # Seed the live model pointer with the layered verdict, origin intact —
     # never an unconditional overwrite: when the shell exported a value, that
     # value IS the verdict, so the write is a no-op and the origin stays ENV.

@@ -28,6 +28,7 @@ from chrys.foundation.tool_result_metadata import (
     WEB_FETCH_FINAL_URL_METADATA_KEY,
     WEB_SEARCH_METADATA_KEY,
 )
+from chrys.foundation.util.sub_agent_context import SUB_AGENT_PROGRESS_METADATA_KEY
 
 if TYPE_CHECKING:
     from chrys.kernel.middleware import FunctionInvocationContext
@@ -47,6 +48,8 @@ PERSISTED_RESULT_METADATA_KEYS = frozenset(
         RESULT_SUB_AGENT_INVOCATION_ID_METADATA_KEY,
         RESULT_SUB_AGENT_LOG_FILE_METADATA_KEY,
         RESULT_SUB_AGENT_AUDIT_COMPLETE_METADATA_KEY,
+        # A restored sub-agent card shows its run's counters from this.
+        SUB_AGENT_PROGRESS_METADATA_KEY,
         PROCESS_EXIT_CODE_METADATA_KEY,
         PROCESS_TIMED_OUT_METADATA_KEY,
         PROCESS_TIMEOUT_SECONDS_METADATA_KEY,

@@ -34,6 +34,7 @@ from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.platform.paths import resolve_cross_platform_path
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.text.tool_output import truncate_output
+from chrys.foundation.tool_approval import declare_requires_approval
 from chrys.foundation.tool_call_context import set_tool_context_builder
 from chrys.foundation.tool_kinds import KIND_SKILL, set_tool_kind
 from chrys.kernel import ContextProvider, FunctionTool
@@ -565,7 +566,7 @@ class ChrysSkillsProvider(ContextProvider):
             suffix = (
                 f"[Full resource available at: {path}\n"
                 f"{text.count(chr(10)) + 1} lines, ~{_tokenizer.count_tokens(text)} tokens. "
-                "Use read_file or shell tools to inspect it.]"
+                "Call read_skill_resource again with a higher max_tokens to read more.]"
             )
         return truncate_output(text, budget, head_ratio=2 / 3, truncation_suffix=suffix)
 
@@ -769,6 +770,9 @@ class ChrysSkillsProvider(ContextProvider):
         for tool in tools:
             set_tool_kind(tool, KIND_SKILL)
             set_tool_context_builder(tool, context_builders[tool.name])
+            if tool.name == RUN_SKILL_SCRIPT_TOOL_NAME:
+                # A skill script is an ordinary subprocess with the user's privileges.
+                declare_requires_approval(tool)
 
         return tools
 

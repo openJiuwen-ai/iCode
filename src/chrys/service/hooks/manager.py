@@ -39,6 +39,7 @@ from chrys.service.hooks.events import GATED_EVENTS, HookEvent
 from chrys.service.hooks.matcher import matches
 from chrys.service.hooks.operation import args_key
 from chrys.service.hooks.outbox import Outbox, OutboxJob
+from chrys.service.hooks.retired_shell_args import renamed_override, with_new_names, with_retired_names
 from chrys.service.hooks.run_log import indented_json
 from chrys.service.hooks.runner import HookResult, HookRunner
 from chrys.service.hooks.schema import HookConfig, HookDecision, HooksFile, MergedHooksFile
@@ -587,7 +588,7 @@ class HookManager:
         reminders_before = len(decision.system_reminders)
         contexts_before = len(decision.extra_context)
         try:
-            ask = _merge_blocking_result(decision, hook, result, event=event)
+            ask = _merge_blocking_result(decision, hook, result, event=event, tool=envelope.get("tool"))
             # Compared as JSON, what the tool gets: a hook returning the arguments as they were
             # changed nothing, while 1 turned to true did, though Python finds them equal.
             args_changed = False
@@ -661,7 +662,8 @@ class HookManager:
         # Every event a sub-agent fires carries its profile name; only some carry its display name.
         sub_agent = _text_field(fields, "profile") if origin is not None and origin.kind == "sub_agent" else ""
         try:
-            payload_text: str | None = encode_json_like(payload)
+            # DEPRECATED: with_retired_names shows a script the shell's retired argument names too.
+            payload_text: str | None = encode_json_like(with_retired_names(payload))
         except TypeError, ValueError, RecursionError:
             payload_text = None
         return _Run(
@@ -987,7 +989,8 @@ class HookManager:
             # original incident if anyone goes looking.
             await self._spawn_nonblocking(
                 hook,
-                job.payload,
+                # DEPRECATED: a job left pending across the shell's argument rename shows its script the new names too.
+                with_new_names(job.payload),
                 scope="session",
                 session_drain_generation=self._session_drain_generation,
                 existing_job=job,
@@ -1489,6 +1492,7 @@ def _merge_blocking_result(
     result: HookResult,
     *,
     event: HookEvent,
+    tool: object = None,
 ) -> str | None:
     """Fold one blocking hook's outcome into the running :class:`HookDecision`.
 
@@ -1535,6 +1539,8 @@ def _merge_blocking_result(
     if action == "modify" and event in _ARGS_OVERRIDE_EVENTS:
         args_override = result.decision.get("args_override")
         if isinstance(args_override, dict):
+            # DEPRECATED: a retired shell argument name sets its new one (*tool* is the call as this hook saw it).
+            args_override = renamed_override(tool, args_override)
             decision.args_override = {**(decision.args_override or {}), **args_override}
 
     reminder = result.decision.get("system_reminder")

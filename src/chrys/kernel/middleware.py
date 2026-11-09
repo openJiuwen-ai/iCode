@@ -91,8 +91,8 @@ class FunctionInvocationContext:
         self.tools = tools
         # Count calls in the current gather-batch targeting this tool. The loop stamps
         # the real per-name count before execution; the default keeps direct /
-        # test invocations behaving as singletons. Middleware enforcing
-        # singleton semantics (whole-list replacement tools) rejects when > 1.
+        # test invocations behaving as singletons. A tool with singleton
+        # semantics (one that replaces a whole list) rejects every call when > 1.
         self.same_tool_calls_in_batch: int = 1
 
     def add_tools(

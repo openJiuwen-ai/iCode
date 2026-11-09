@@ -17,9 +17,8 @@ from chrys.service.tools.builtins.web.build import build_web_tools
 from chrys.service.tools.builtins.web.config import parse_provider, parse_search
 from chrys.service.tools.builtins.web.http import WebError
 from chrys.service.tools.builtins.web.search.exa_mcp import parse_results, rpc_result
-from chrys.service.tools.registry import ToolRegistry
 from chrys.service.tools.result_metadata import tool_result_metadata
-from tests.service.tools.web._support import Chunks, assemble
+from tests.service.tools.web._support import Chunks, assemble_agent_tools
 from tests.support.paths import REPO_ROOT
 
 _TEXT = (
@@ -41,18 +40,17 @@ def test_shipped_profiles_leave_web_tools_off(name):
     assert profile.tools.web_search is None and profile.tools.web_fetch is None
 
 
-def test_enabling_web_search_without_configuration_uses_keyless_exa():
+async def test_enabling_web_search_without_configuration_uses_keyless_exa():
     with patch(
         "chrys.service.tools.builtins.web.build.resolve_search_credentials",
         autospec=True,
         side_effect=AssertionError("secret lookup"),
     ):
-        registry = ToolRegistry()
-        registry.load_builtins(["web_search"], settings=Settings(), web=assemble(["web_search"]))
-        tools = registry.get_by_category("web_search")
-    assert [tool.name for tool in tools] == ["web_search"]
-    assert get_tool_kind(tools[0]) == "web_search"
-    assert "exa (https://mcp.exa.ai)" in tools[0].description
+        assembled = await assemble_agent_tools(["web_search"])
+    assert assembled.by_pack["web_search"] == ["web_search"]
+    tool = assembled.tools[0]
+    assert get_tool_kind(tool) == "web_search"
+    assert "exa (https://mcp.exa.ai)" in tool.description
 
 
 def test_disabled_and_missing_category_do_not_create_search():

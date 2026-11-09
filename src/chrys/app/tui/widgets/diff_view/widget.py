@@ -9,8 +9,10 @@ from collections.abc import Generator
 from functools import partial
 from typing import TYPE_CHECKING, NamedTuple
 
+from rich.text import Text
 from textual import containers
 from textual.reactive import reactive, var
+from textual.widgets import Static
 
 from chrys.app.tui.widgets.diff_view.cells import ANNOTATION_WIDTH, annotation_cell, number_cell, number_cell_width
 from chrys.app.tui.widgets.diff_view.code import CodeColumn
@@ -69,6 +71,8 @@ class DiffView(containers.VerticalGroup):
             background: $foreground 4%;
         }
 
+        .diff-column-titles { height: 1; }
+        .diff-column-title { width: 1fr; height: 1; padding: 0 1; color: $text-muted; }
         .annotations { width: 1; }
         &.-with-annotations {
             .annotations { width: auto; }
@@ -86,11 +90,13 @@ class DiffView(containers.VerticalGroup):
         code_before: str,
         code_after: str,
         *,
+        column_titles: tuple[str, str] | None = None,
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
     ) -> None:
         super().__init__(name=name, id=id, classes=classes)
+        self.column_titles = column_titles
         self.path_before = path_before
         self.path_after = path_after
         self.code_before = code_before
@@ -155,6 +161,11 @@ class DiffView(containers.VerticalGroup):
             lines.set_annotations(annotations)
 
     def compose(self) -> ComposeResult:
+        if self.column_titles is not None:
+            titles = self.column_titles if self.split else (" → ".join(self.column_titles),)
+            with containers.HorizontalGroup(classes="diff-column-titles"):
+                for title in titles:
+                    yield Static(Text(title), classes="diff-column-title")
         layout = self._layout(self.split)
         row_count = len(layout.sides[0])
         if not self.split and not self.show_scrollbars:

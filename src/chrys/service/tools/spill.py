@@ -16,7 +16,11 @@ from typing import Any
 from uuid import uuid4
 
 from chrys.foundation.platform import get_platform
-from chrys.foundation.platform.files import atomic_write_owner_only_bytes, secure_unlink_owner_verified
+from chrys.foundation.platform.files import (
+    atomic_write_owner_only_bytes,
+    secure_unlink_owner_verified,
+    surrogate_safe_text,
+)
 from chrys.foundation.platform.output_capture import CapturedOutput, capture_limit_footer
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.text.tool_output import truncate_output
@@ -72,13 +76,15 @@ def _ensure_owner_only_directory(path: Path) -> None:
 def format_spill_notice(path: Path, text: str, *, kept_only: bool = False) -> str:
     """Format the bounded-result notice for a spill at *path*.
 
-    *kept_only* says the spill holds only what a bounded capture kept.
+    *kept_only* says the spill holds only what a bounded capture kept. The notice
+    goes to the model, so a lone surrogate in *path* (a POSIX folder name that is
+    not UTF-8) is escaped; the file itself stays at the raw path.
     """
     line_count = text.count("\n") + 1
     token_count = _tokenizer.count_tokens(text)
     saved = "Kept output" if kept_only else "Full output"
     return (
-        f"[{saved} saved to: {path}\n"
+        f"[{saved} saved to: {surrogate_safe_text(str(path))}\n"
         f"{line_count} lines, ~{token_count} tokens. Use read_file or shell tools to inspect it.]"
     )
 
@@ -168,6 +174,23 @@ def _spill_and_truncate_text(
         discard_spill(info)
         bounded = truncate_output(body, budget)
     return lead + bounded + footer
+
+
+async def bound_result_text(text: str, budget: int, spill_dir: Path | None, prefix: str) -> str:
+    """Bound *text* to *budget* tokens, saving the whole text under *spill_dir* when its notice fits."""
+    plain = truncate_output(text, budget)
+    if plain == text:
+        return text
+    return await run_spill_finalizer(_spill_and_bound_result_text, text, budget, spill_dir, prefix, plain)
+
+
+def _spill_and_bound_result_text(text: str, budget: int, spill_dir: Path | None, prefix: str, plain: str) -> str:
+    info = try_spill_text(spill_dir, prefix, text, budget)
+    bounded = truncate_output(text, budget, truncation_suffix=info.notice if info else "")
+    if info is not None and info.notice not in bounded:
+        discard_spill(info)
+        return plain
+    return bounded
 
 
 async def run_spill_finalizer[T](function: Callable[..., T], /, *args: Any) -> T:

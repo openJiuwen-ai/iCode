@@ -59,6 +59,7 @@ from chrys.foundation.platform.runtime_paths import (
 )
 from chrys.foundation.platform.script_commands import build_script_command
 from chrys.foundation.tool_execution_stamp import encode_json_like
+from chrys.service.hooks.retired_shell_args import with_retired_names
 
 if TYPE_CHECKING:
     from chrys.service.hooks.outbox import OutboxJob
@@ -298,7 +299,8 @@ class HookRunner:
             with os.fdopen(payload_fd, "w", encoding="utf-8") as f:
                 payload_fd = -1
                 if payload_text is None:
-                    f.write(encode_json_like(payload))
+                    # DEPRECATED: with_retired_names shows a script the shell's retired argument names too.
+                    f.write(encode_json_like(with_retired_names(payload)))
                 else:
                     f.write(payload_text)
             env["CHRYS_HOOK_PAYLOAD_FILE"] = payload_path

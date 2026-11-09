@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from chrys.app.tui.widgets.chrome import file_scanner as file_scanner_module
-from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex
+from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex, WorkspacePathIndex
 from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion, fuzzy_filter
+from tests.support.waiting import wait_for
 
 
 def _index(suggestions: list[ProjectPathSuggestion]) -> ProjectPathIndex:
@@ -124,3 +127,59 @@ class TestProjectPathIndex:
 
         assert _paths(index.query("FILE", limit=7)) == expected
         assert calls == ["FILE"]
+
+
+def _scan(root: str, *files: str) -> ProjectPathScanResult:
+    return ProjectPathScanResult.from_suggestions(
+        root=root,
+        paths=[ProjectPathSuggestion(path=path, kind="file") for path in files],
+    )
+
+
+class TestWorkspacePathIndex:
+    async def test_rescan_installs_the_scan_and_clears_staleness(self) -> None:
+        index = WorkspacePathIndex("/repo")
+        index.install(_scan("/repo", "old.py"))
+        index.mark_stale()
+
+        async def scan(root: str) -> ProjectPathScanResult:
+            return _scan(root, "new.py")
+
+        assert await index.rescan(scan) is True
+        assert index.current is True
+        assert index.snapshot is not None
+        assert _paths(index.snapshot.head()) == ["new.py"]
+
+    async def test_a_change_marked_during_a_rescan_leaves_the_new_snapshot_stale(self) -> None:
+        index = WorkspacePathIndex("/repo")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def scan(root: str) -> ProjectPathScanResult:
+            started.set()
+            await release.wait()
+            return _scan(root, "a.py")
+
+        rescan = asyncio.create_task(index.rescan(scan))
+        await wait_for(lambda: started.is_set() or rescan.done(), description="rescan started")
+        assert not rescan.done()
+        index.mark_stale()
+        release.set()
+
+        assert await rescan is True
+        assert index.snapshot is not None
+        assert index.stale is True
+        assert index.current is False
+
+    async def test_a_failed_rescan_keeps_the_snapshot_and_its_staleness(self) -> None:
+        index = WorkspacePathIndex("/repo")
+        index.install(_scan("/repo", "a.py"))
+        snapshot = index.snapshot
+        index.mark_stale()
+
+        async def scan(_root: str) -> ProjectPathScanResult:
+            raise OSError("scan failed")
+
+        assert await index.rescan(scan) is False
+        assert index.snapshot is snapshot
+        assert index.stale is True

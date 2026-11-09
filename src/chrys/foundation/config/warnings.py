@@ -85,6 +85,10 @@ _CLAMPED_MAXIMUM = msg(
     "settings.clamped.maximum",
     fallback="Lowering {source}={raw} to the maximum of {limit}.",
 )
+_DOCUMENT_ERROR = msg(
+    "settings.document_read_failed",
+    fallback="Settings could not be read. Using the last available configuration.",
+)
 _UNKNOWN_KEYS = msg(
     "settings.unknown_keys",
     fallback="Ignoring unknown settings keys in {path}: {keys}.",
@@ -213,6 +217,16 @@ def settings_warning_events(
     events: list[Warning] = [
         _verdict_event(warning) for warning in loaded.warnings if skip is None or not skip(warning)
     ]
+    if loaded.document_error:
+        display_message = _DOCUMENT_ERROR.bind()
+        events.append(
+            Warning(
+                code="settings_document_read_failed",
+                message=f"{format_message(display_message)} {format_message(loaded.document_error)}",
+                display_hint=loaded.document_error,
+                display_message=display_message,
+            )
+        )
     if loaded.unknown_keys:
         # One warning for the batch, not one per key: a whole section of
         # misindented YAML is a single mistake, not twelve.

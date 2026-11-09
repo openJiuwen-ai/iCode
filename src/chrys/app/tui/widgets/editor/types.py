@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -152,8 +152,8 @@ class EditorKeyResult:
 class EditorCommandHost(Protocol):
     """Narrow document surface available to editor keymaps.
 
-    Compound edits go through ``replace_editor_range`` or
-    ``delete_editor_range``; implementations isolate each call as one public
+    Compound edits go through ``replace_editor_ranges``, ``replace_editor_range``
+    or ``delete_editor_range``; implementations isolate each call as one public
     undo batch. Keymaps receive this host only for the duration of a key
     dispatch and must never retain it.
     """
@@ -183,7 +183,21 @@ class EditorCommandHost(Protocol):
 
     def replace_editor_range(self, source_range: EditorTextRange, text: str) -> None: ...
 
+    def replace_editor_ranges(self, replacements: Sequence[tuple[EditorTextRange, str]]) -> None:
+        """Replace non-overlapping ranges in document order as one undo step.
+
+        Ranges refer to the document before any replacement. Apply them last
+        to first, through the same ``MessageEditor.replace`` path as a single
+        range, including the character ceiling. An unchanged unit must stay outside
+        the ranges unless the entire replacement writes back exactly the same text.
+        """
+        ...
+
     def delete_editor_range(self, source_range: EditorTextRange) -> None: ...
+
+    def editor_unit_spans(self) -> list[tuple[int, int]]:
+        """The ordered absolute ``[start, end)`` offsets of whole units in ``editor_text``."""
+        ...
 
     def editor_undo(self) -> None: ...
 
@@ -212,5 +226,9 @@ class EditorKeymap(Protocol):
     def prepare_delegated_edit(self) -> None: ...
 
     def prepare_delegated_paste(self) -> bool: ...
+
+    def accepts_text(self) -> bool:
+        """Whether typed text goes into the document now (no pending modal command); changes nothing."""
+        ...
 
     def reset(self) -> None: ...

@@ -4,19 +4,20 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import create_autospec
 
 import pytest
 
-from chrys.app.tui.screens.diff.screen import _is_within_cwd
 from chrys.app.tui.screens.main.diff_controller import DiffController, LiveDiffTracker
 from chrys.app.tui.screens.main.live_diff import build_live_diff_entries
 from chrys.app.tui.screens.main.main_screen_presenter import MainScreenPresenter
 from chrys.app.tui.screens.main.ports import DiffView
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, RunState
 from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
+from chrys.app.tui.util.diff_labels import is_within_cwd
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import InvocationToolCallResult, InvocationToolCallStart
 from chrys.foundation.models.invocations import InvocationOrigin
@@ -46,6 +47,14 @@ async def test_live_tool_paths_use_workspace_for_grouping_and_merging(
     presenter = create_autospec(MainScreenPresenter, instance=True, spec_set=True)
     presenter.chat_session_id.return_value = "session-1"
     monkeypatch.setattr(handler, "_presenter", presenter)
+
+    refreshes: list[bool] = []
+    handler._callbacks = replace(handler._callbacks, refresh_diff_preview=refreshes.append)
+    for metadata in ({}, {"shell_file_snapshots": {}}, {"file_snapshot": "invalid"}):
+        await handler.on_tool_result(
+            InvocationToolCallResult(origin=origin, call_id="read", tool_name="read_file", metadata=metadata)
+        )
+    assert refreshes == []
 
     for call_id, path, before, after in [
         ("relative", "file.py", "before", "first"),
@@ -79,14 +88,15 @@ async def test_live_tool_paths_use_workspace_for_grouping_and_merging(
         )
     )
 
+    assert refreshes == [False] * 4
     entries = build_live_diff_entries(live.snapshot_file_mutations(), str(workspace))
     assert {entry.path for entry in entries} == {target, external}
     local_entry = next(entry for entry in entries if entry.path == target)
     assert local_entry.rel_path == "file.py"
-    assert _is_within_cwd(local_entry.rel_path)
+    assert is_within_cwd(local_entry.rel_path)
     assert (local_entry.before_text, local_entry.after_text) == ("before", "final")
     outside_entry = next(entry for entry in entries if entry.path == external)
-    assert not _is_within_cwd(outside_entry.rel_path)
+    assert not is_within_cwd(outside_entry.rel_path)
     assert (outside_entry.before_text, outside_entry.after_text) == ("outside-before", "outside-after")
 
     persisted = DiffFileEntry(

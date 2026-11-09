@@ -120,6 +120,11 @@ class ChatSelectionController:
         """Whether a chat logical selection currently exists."""
         return self._first is not None and self._last is not None
 
+    @property
+    def first_leaf(self) -> Widget | None:
+        """The selectable leaf the selection starts on: the quote pill shows only for a drag that starts in the chat."""
+        return self._first.leaf if self._first is not None else None
+
     def clear(self) -> None:
         """Drop the logical selection (highlights are owned by the screen)."""
         self._panel = None

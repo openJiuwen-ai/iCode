@@ -60,7 +60,7 @@ async def test_human_command_grant_survives_rebuild_and_environment_change(runti
     await bus.subscribe(ApprovalRequest, approve)
     called = AsyncMock(spec=lambda: None)
     middleware = ApprovalMiddleware(policy, bus, session_id=runtime.session_id, reuse=binding)
-    args = {"command": "npm run test", "reason": "first", "timeout": 30, "max_tokens": 8000}
+    args = {"command": "npm run test", "reason": "first", "timeout": 30, "max_output_tokens": 8000}
     try:
         await middleware.process(FunctionInvocationContext(tool, args), called)
         assert len(requests) == len(binding.service.rules()) == 1
@@ -79,7 +79,7 @@ async def test_human_command_grant_survives_rebuild_and_environment_change(runti
 
     await bus.subscribe(ApprovalRequest, decline)
     try:
-        changed = {**args, "reason": "rerun checks", "timeout": 90, "max_tokens": 1000}
+        changed = {**args, "reason": "rerun checks", "timeout": 90, "max_output_tokens": 1000}
         if choice.startswith("PREFIX"):
             changed["command"] += " -- --runInBand"
         await middleware.process(FunctionInvocationContext(rebuilt_tool, changed), called)

@@ -22,10 +22,12 @@ from chrys.app.tui.screens.main.ports import InputFlowView, StartWorker
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, SubmitKind
 from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcAbsorbRequested
 from chrys.app.tui.widgets.chat.replay import contents_text
-from chrys.app.tui.widgets.chrome.input_bar import INPUT_CONTINUE, ChatDraft
+from chrys.app.tui.widgets.chrome.input_bar import INPUT_CONTINUE
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_RESUMING, STATUS_THINKING
 from chrys.foundation.events.types import (
     Error,
+    InvocationAnswerWithdrawn,
     InvocationContentAbandoned,
     InvocationContentDelta,
     InvocationContentFinished,
@@ -34,6 +36,8 @@ from chrys.foundation.events.types import (
     PromptCommandsRunning,
     PromptShortcutRef,
     SessionOnlySwitch,
+    TurnStarted,
+    UnansweredInputDropped,
     UserInjectCancel,
     UserInterrupt,
     UserMessage,
@@ -69,6 +73,8 @@ class InputFlowController:
             [InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned], Awaitable[None]
         ],
         handle_error: Callable[[Error], Awaitable[None]],
+        handle_turn_event: Callable[[UnansweredInputDropped | TurnStarted], Awaitable[None]],
+        handle_answer_withdrawn: Callable[[InvocationAnswerWithdrawn], Awaitable[None]],
         set_agent_running: Callable[[bool], None],
         set_has_messages: Callable[[bool], None],
         clear_workspace_marker: Callable[[], None],
@@ -87,6 +93,8 @@ class InputFlowController:
         self._handle_agent_message = handle_agent_message
         self._handle_agent_content = handle_agent_content
         self._handle_error = handle_error
+        self._handle_turn_event = handle_turn_event
+        self._handle_answer_withdrawn = handle_answer_withdrawn
         self._set_agent_running = set_agent_running
         self._set_has_messages = set_has_messages
         self._clear_workspace_marker = clear_workspace_marker
@@ -106,7 +114,7 @@ class InputFlowController:
     def submit_user_text(self, text: str, draft: ChatDraft | None = None) -> None:
         """Submit normal user text as a new turn or mid-run injection; *draft* is the composer's whole draft."""
         if self._state.run.agent_running:
-            self._start_worker(partial(self.queue_injection, text))
+            self._start_worker(partial(self.queue_injection, text, draft))
             return
         self._start_worker(partial(self.send_user_message, text, draft))
 
@@ -158,23 +166,26 @@ class InputFlowController:
     def _begin_claim(self, text: str, *, kind: SubmitKind, draft: ChatDraft | None = None) -> None:
         """Claim the submit in flight with what it hands back if it does not go out: *draft*, else plain *text*."""
         # Where a shortcut's draft was taken, read only for one: it goes back without its owner elsewhere.
-        generation, cwd = self._place() if draft is not None and draft.owner is not None else (0, "")
+        generation, cwd = self.place() if draft is not None and draft.owner is not None else (0, "")
         self._state.submit.begin(text, kind=kind, draft=draft, session_generation=generation, cwd=cwd)
 
-    def _place(self) -> tuple[int, str]:
-        """The engine's session generation and the working folder, now."""
+    def place(self) -> tuple[int, str]:
+        """The engine's session generation and the working folder, now: where a prompt shortcut's draft is its own."""
         return self._services.session_generation(), self._state.workspace.current_cwd
 
     def _give_back_draft(self) -> None:
         """Hand the claimed draft back whole, if no refusal handler took it already."""
-        draft = self._state.submit.take_draft_for(self._place)
+        draft = self._state.submit.take_draft_for(self.place)
         if draft is not None:
             self._view.restore_input_draft(draft)
 
-    def _finish_unrendered(self) -> None:
-        """The submit opened no turn: stop deferring, and show any error held back meanwhile as a notice."""
-        for error in self._state.render_gate.finish(rendered=False):
-            self._show_error_notice(error)
+    async def _finish_unrendered(self) -> None:
+        """The submit opened no turn: stop deferring, show any error held back meanwhile as a notice, and apply a withdrawal."""
+        for event in self._state.render_gate.finish(rendered=False):
+            if isinstance(event, InvocationAnswerWithdrawn):
+                await self._handle_answer_withdrawn(event)
+            else:
+                self._show_error_notice(event)
 
     async def _publish_submit(self, event: UserMessage | UserRetry | SessionOnlySwitch) -> bool:
         """Publish the submit in flight; return whether the backend refused it.
@@ -225,7 +236,7 @@ class InputFlowController:
             # Neither refused nor a new turn: the run seen ending here was still
             # finishing and took the message, or the backend dropped it. If that
             # run used it, its outcome shows it in the transcript and clears the composer.
-            self._finish_unrendered()
+            await self._finish_unrendered()
         if not (published and event.started_turn):
             self._debug("UserMessage (no turn)", text[:60])
             return
@@ -291,11 +302,11 @@ class InputFlowController:
             self._state.render_gate.finish(rendered=rendered)
 
         await self.flush_deferred_agent_messages()
-        self._view.update_toc()
+        self._view.update_toc(live=True)
 
-    async def queue_injection(self, text: str) -> None:
-        """Queue a user message for mid-run injection without chat display."""
-        if not self._claim_submit(text, kind="injection"):
+    async def queue_injection(self, text: str, draft: ChatDraft | None = None) -> None:
+        """Queue a user message for mid-run injection without chat display; *draft* is the composer's whole draft."""
+        if not self._claim_submit(text, kind="injection", draft=draft):
             return
         try:
             injection_id = uuid4().hex[:12]
@@ -314,7 +325,8 @@ class InputFlowController:
             # so only the sent text leaves it.
             if self._state.pending_injection.matches(injection_id):
                 self._state.pending_injection.clear()
-                self._view.unlock_input_clearing(text)
+                # The locked composer holds the draft, not the text it sent.
+                self._view.unlock_input_clearing(draft.text.strip() if draft is not None else text)
             self._state.render_gate.begin()
             await self._open_turn(event)
             self._debug("UserMessage (inject → new turn)", text[:60])
@@ -352,8 +364,12 @@ class InputFlowController:
             await self._handle_agent_message(event)
         elif isinstance(event, InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned):
             await self._handle_agent_content(event)
+        elif isinstance(event, InvocationAnswerWithdrawn):
+            await self._handle_answer_withdrawn(event)
         elif isinstance(event, Error):
             await self._handle_error(event)
+        elif isinstance(event, (UnansweredInputDropped, TurnStarted)):
+            await self._handle_turn_event(event)
 
     async def publish_interrupt(self) -> None:
         """Publish an interrupt and update local UI state after the backend sees it."""
@@ -390,7 +406,8 @@ class InputFlowController:
         if self._state.run.agent_running or self._state.submit.active:
             return None
 
-        event = UserRetry(text=text)
+        # Guidance shows as a note the retry's TurnStarted names by this id.
+        event = UserRetry(text=text, client_message_id=uuid4().hex[:12] if text else None)
         self._state.render_gate.begin()
         # A refusal gives back the whole draft, its unfilled fields included, as for Enter.
         self._begin_claim(text, kind="retry", draft=draft)
@@ -401,7 +418,7 @@ class InputFlowController:
         text = event.text
         try:
             if await self._publish_submit(event):
-                self._finish_unrendered()
+                await self._finish_unrendered()
                 return
         except BaseException:
             self._state.render_gate.finish(rendered=False)
@@ -420,7 +437,9 @@ class InputFlowController:
             self._view.add_input_history(text, session_id=self._view.current_chat_session_id() or None)
             rendered = False
             try:
-                await self._view.render_user_retry_note(text, created_at=event.timestamp)
+                await self._view.render_user_retry_note(
+                    text, created_at=event.timestamp, client_message_id=event.client_message_id
+                )
                 rendered = True
             finally:
                 self._state.render_gate.finish(rendered=rendered)

@@ -9,6 +9,8 @@ from typing import ClassVar
 
 import pytest
 
+from chrys.foundation.errors import ErrorKind
+from chrys.foundation.models.failures import FailureFacts
 from chrys.foundation.retry import RetryAttemptInfo
 from chrys.kernel import Content, Message
 from chrys.service.context.compaction.last_words import (
@@ -712,6 +714,9 @@ async def test_transport_and_format_failures_use_independent_fallback_retry_budg
         (2, 2, 7),
         (1, 1, 3),
     ]
+    # Transport retries carry the classifier's verdict; a retry on the note's own format check has none.
+    dropped = FailureFacts(kind=ErrorKind.UNKNOWN, retryable=True)
+    assert [event.facts for event in retry_events] == [dropped, dropped, None]
 
 
 async def test_short_terminal_retry_does_not_replace_adequate_invalid_note(tmp_path, monkeypatch):

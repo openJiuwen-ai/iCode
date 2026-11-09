@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from chrys.app.tui.screens.diff.rollback_modal import _build_cumulative_entries, _exclusion_note_text
-from chrys.app.tui.screens.diff.screen import _build_period_entries, _build_session_entries, _is_within_cwd
+from chrys.app.tui.screens.diff.screen import _build_period_entries, _build_session_entries
 from chrys.app.tui.screens.main.live_diff import LiveFileMutation, build_live_diff_entries
+from chrys.app.tui.util.diff_labels import is_within_cwd
 from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, MutationSource, RollbackExclusionReason
@@ -49,6 +50,6 @@ def test_diff_and_rollback_keep_physical_entries_inside_alias_cwd(tmp_path: Path
         assert len(entries) == 1
         assert entries[0].path == str(target)
         assert entries[0].rel_path == "file.txt"
-        assert _is_within_cwd(entries[0].rel_path)
+        assert is_within_cwd(entries[0].rel_path)
     note = _exclusion_note_text([(str(target), RollbackExclusionReason.UNRESTORABLE)], str(alias))
     assert "file.txt" in note and "../" not in note and str(real) not in note

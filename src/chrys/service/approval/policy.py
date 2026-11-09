@@ -8,8 +8,8 @@ import logging
 from enum import Enum
 from typing import TYPE_CHECKING, Literal, cast
 
-from chrys.foundation.tool_kinds import KIND_SKILL, KIND_WEB_FETCH, KIND_WEB_SEARCH, TOOL_KINDS, get_tool_kind
-from chrys.service.skills.constants import RUN_SKILL_SCRIPT_TOOL_NAME
+from chrys.foundation.tool_approval import declares_requires_approval
+from chrys.foundation.tool_kinds import KIND_WEB_FETCH, KIND_WEB_SEARCH, TOOL_KINDS, get_tool_kind
 
 if TYPE_CHECKING:
     from chrys.kernel import FunctionTool
@@ -115,15 +115,15 @@ class ApprovalPolicy:
     2. Kind-qualified tool override (``kind.tool_name``)
     3. Bare exact tool-name override
     4. Kind-only override
-    5. Secure built-in floor for ``run_skill_script``
-    6. Secure built-in floor for local web search/fetch
-    7. Profile-level default
+    5. The called tool's own ``requires_approval`` declaration
+       (:mod:`chrys.foundation.tool_approval`): require
+    6. Profile-level default
 
-    Resolution is independent of YAML mapping order.  Tool kind is accepted at
-    invocation time so tools contributed by context providers or loaded
-    dynamically obey the same rules as construction-time tools.  The initial
-    tool list remains a compatibility fallback for callers that omit the live
-    kind and supplies reserved-name diagnostics only.
+    Resolution is independent of YAML mapping order.  Tool kind and the
+    declaration are accepted at invocation time so tools contributed by context
+    providers or loaded dynamically obey the same rules as construction-time
+    tools.  The initial tool list remains a compatibility fallback for callers
+    that omit them and supplies reserved-name diagnostics only.
 
     Override keys support two formats:
 
@@ -134,9 +134,10 @@ class ApprovalPolicy:
     Keys that don't match any tool kind are treated as bare tool-name
     overrides (exact name match).
 
-    Skill scripts are ordinary subprocesses with the user's OS privileges, not
-    sandboxed execution.  They therefore require approval by default even when
-    the profile default is ``auto`` or ``skip``.  A matching explicit override
+    A declaration is a secure floor: local web search/fetch reach the network,
+    and skill scripts are ordinary subprocesses with the user's OS privileges,
+    not sandboxed execution, so they declare it and require approval by default
+    even when the profile default is ``auto`` or ``skip``.  A matching explicit override
     (including ``auto`` or ``skip``) is the deliberate opt-out.  Kind-wide
     ``skill`` overrides count as explicit and intentionally affect all skill
     tools, including script execution; profiles that only intend to configure
@@ -149,6 +150,7 @@ class ApprovalPolicy:
         self._default = _fail_closed_rule(config.default, source="approval.default")
         self._user_override: ApprovalRule | None = None
         self._initial_tool_kinds: dict[str, str] = {}
+        self._initial_declared: set[str] = set()
         self._kind_tool_overrides: dict[tuple[str, str], ApprovalRule] = {}
         self._tool_overrides: dict[str, ApprovalRule] = {}
         self._kind_overrides: dict[str, ApprovalRule] = {}
@@ -159,6 +161,8 @@ class ApprovalPolicy:
             if kind:
                 tool_kinds.add(kind)
                 self._initial_tool_kinds[tool.name] = kind
+            if declares_requires_approval(tool):
+                self._initial_declared.add(tool.name)
 
         known_kinds = tool_kinds | set(TOOL_KINDS)
         tool_names = {t.name for t in tools} if tools else set()
@@ -175,7 +179,7 @@ class ApprovalPolicy:
             else:
                 self._tool_overrides[key] = safe_rule
 
-    def _resolve_rule(self, tool_name: str, tool_kind: str) -> ApprovalRule:
+    def _resolve_rule(self, tool_name: str, tool_kind: str, *, declared: bool) -> ApprovalRule:
         if self._user_override is not None and self._config.user_can_override:
             return self._user_override
 
@@ -188,18 +192,22 @@ class ApprovalPolicy:
         if tool_kind and (rule := self._kind_overrides.get(tool_kind)):
             return rule
 
-        if tool_name == RUN_SKILL_SCRIPT_TOOL_NAME and (not tool_kind or tool_kind == KIND_SKILL):
-            return "require"
-
-        if tool_kind in {KIND_WEB_SEARCH, KIND_WEB_FETCH}:
+        if declared:
             return "require"
 
         return self._default
 
-    def should_require_approval(self, tool_name: str, tool_kind: str | None = None) -> bool:
-        """Return whether the live tool invocation requires approval."""
+    def should_require_approval(
+        self, tool_name: str, tool_kind: str | None = None, *, tool_requires_approval: bool | None = None
+    ) -> bool:
+        """Return whether the live tool invocation requires approval.
+
+        *tool_requires_approval* is the called tool's own declaration
+        (``declares_requires_approval``); omitted, the initial tool list's is used.
+        """
         resolved_kind = tool_kind if tool_kind is not None else self._initial_tool_kinds.get(tool_name, "")
-        return self._resolve_rule(tool_name, resolved_kind) == "require"
+        declared = tool_requires_approval if tool_requires_approval is not None else tool_name in self._initial_declared
+        return self._resolve_rule(tool_name, resolved_kind, declared=declared) == "require"
 
     def set_user_override(self, policy: ApprovalRule | None) -> bool:
         """Set a session-level user override. Returns False if not allowed."""

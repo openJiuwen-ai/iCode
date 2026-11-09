@@ -9,6 +9,12 @@ with its log, and an external ACP agent's model calls never reach it.
 
 "New" tokens are what a request added on top of the provider's cache: its input
 less cache reads, plus its output (reasoning included).
+
+A request counts under the model profile it went through, by the profile's id:
+the log never holds a profile's name, so the names are today's.
+
+A request counts once: a terminal repeated for the same exchange operation is
+the same spend, not a second request.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from math import ceil
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Final, NamedTuple, Protocol
 
 from chrys.foundation.platform import get_platform
 from chrys.foundation.trajectory.envelope import TrajectoryEvent
@@ -52,6 +58,8 @@ class UsageCall:
     """The local hour of that day, 0 to 23."""
     model: str
     """The model that answered; empty when none did and the request does not say."""
+    profile: str
+    """The id of the model profile the request went through; empty when the log does not say or the profile is gone."""
     source: str
     """``actor.role``: the main agent, a sub-agent, a workflow node or a side call."""
     project: str
@@ -116,12 +124,22 @@ class UsageTotals:
         return self.speed_output / (self.speed_ms / 1000) if self.speed_ms else None
 
 
+class UsageModelKey(NamedTuple):
+    """A model's row: the model alone, or one profile's share of it."""
+
+    model: str
+    profile: str | None = None
+    """``None`` for all of the model's calls; else a profile id, ``""`` for the calls of no known profile."""
+
+
 @dataclass(slots=True)
 class UsageSummary:
     """One date range's totals, overall and by each grouping."""
 
     total: UsageTotals = field(default_factory=UsageTotals)
-    models: defaultdict[str, UsageTotals] = field(default_factory=lambda: defaultdict(UsageTotals))
+    models: defaultdict[UsageModelKey, UsageTotals] = field(default_factory=lambda: defaultdict(UsageTotals))
+    """By model; a model that more than one known profile served in the range, by profile too."""
+    profiles: defaultdict[str, UsageTotals] = field(default_factory=lambda: defaultdict(UsageTotals))
     sources: defaultdict[str, UsageTotals] = field(default_factory=lambda: defaultdict(UsageTotals))
     projects: defaultdict[str, UsageTotals] = field(default_factory=lambda: defaultdict(UsageTotals))
 
@@ -136,6 +154,8 @@ class UsageReport:
     new_tokens_by_day: Mapping[date, int] = field(default_factory=dict)
     new_tokens_by_hour: Mapping[int, int] = field(default_factory=dict)
     """Today's new tokens by local hour."""
+    profile_names: Mapping[str, str] = field(default_factory=dict)
+    """Each profile a call names, by id, as it is called now."""
 
     @property
     def first_day(self) -> date | None:
@@ -143,13 +163,20 @@ class UsageReport:
 
     def summarize(self, start: date, end: date) -> UsageSummary:
         """The calls from *start* to *end*, both included."""
+        calls = [call for call in self.calls if start <= call.day <= end]
+        profiles_by_model: defaultdict[str, set[str]] = defaultdict(set)
+        for call in calls:
+            if call.profile:
+                profiles_by_model[call.model].add(call.profile)
         summary = UsageSummary()
-        for call in self.calls:
-            if start <= call.day <= end:
-                summary.total.add(call)
-                summary.models[call.model].add(call)
-                summary.sources[call.source].add(call)
-                summary.projects[call.project].add(call)
+        for call in calls:
+            # One model through several subscriptions is told apart by them; through one, it is just the model.
+            split = len(profiles_by_model[call.model]) > 1
+            summary.total.add(call)
+            summary.models[UsageModelKey(call.model, call.profile if split else None)].add(call)
+            summary.profiles[call.profile].add(call)
+            summary.sources[call.source].add(call)
+            summary.projects[call.project].add(call)
         return summary
 
 
@@ -172,13 +199,19 @@ class UsageSessionStore(Protocol):
     def session_folder_cwds(self) -> dict[str, str]: ...
 
 
-def load_usage_report(store: UsageSessionStore | None, cancel_event: Event | None = None) -> UsageReport:
-    """Read every session's usage; blocking, so it runs off the event loop."""
+def load_usage_report(
+    store: UsageSessionStore | None, cancel_event: Event | None = None, *, profile_names: Mapping[str, str]
+) -> UsageReport:
+    """Read every session's usage; blocking, so it runs off the event loop.
+
+    *profile_names* names each model profile that exists now, by id.
+    """
     if store is None:
-        return UsageReport(calls=(), today=datetime.now().astimezone().date())
+        return UsageReport(calls=(), today=datetime.now().astimezone().date(), profile_names=dict(profile_names))
     return scan_usage(
         store.sessions_root,
         session_cwds=store.session_folder_cwds(),
+        profile_names=profile_names,
         fingerprint_key=_fingerprint_key(),
         cancel_event=cancel_event,
     )
@@ -196,6 +229,7 @@ def scan_usage(
     sessions_root: Path,
     *,
     session_cwds: Mapping[str, str],
+    profile_names: Mapping[str, str],
     fingerprint_key: bytes | None,
     today: date | None = None,
     cancel_event: Event | None = None,
@@ -205,6 +239,8 @@ def scan_usage(
     *session_cwds* names each saved session's working folder. With
     *fingerprint_key*, a request belongs to the folder its turn ran in, as the
     log fingerprints it, rather than the one its session has moved on to.
+    *profile_names* holds the model profiles that exist now: a request through
+    any other counts under no profile, as one whose log names none does.
     """
     cwd_by_fingerprint = (
         {fingerprint_text(fingerprint_key, DOMAIN_WORKSPACE, cwd): cwd for cwd in set(session_cwds.values()) if cwd}
@@ -219,7 +255,7 @@ def scan_usage(
         if folder.name.startswith(".") or folder.name in deleted:
             continue
         log = folder.joinpath(*_TRAJECTORY_LOG)
-        collector = _SessionUsage(session_cwds.get(folder.name, ""), cwd_by_fingerprint, calls.append)
+        collector = _SessionUsage(session_cwds.get(folder.name, ""), cwd_by_fingerprint, profile_names, calls.append)
         try:
             scan_event_types(log, _USAGE_EVENT_TYPES, collector.take, cancel_event=cancel_event)
         except FileNotFoundError, NotADirectoryError:
@@ -240,6 +276,7 @@ def scan_usage(
         unreadable_logs=unreadable,
         new_tokens_by_day=dict(new_tokens_by_day),
         new_tokens_by_hour=dict(new_tokens_by_hour),
+        profile_names=dict(profile_names),
     )
 
 
@@ -247,19 +284,36 @@ class _SessionUsage:
     """Turns one session's log into calls, tracking the working folder each pass ran in."""
 
     def __init__(
-        self, session_cwd: str, cwd_by_fingerprint: Mapping[str, str], add_call: Callable[[UsageCall], None]
+        self,
+        session_cwd: str,
+        cwd_by_fingerprint: Mapping[str, str],
+        profile_names: Mapping[str, str],
+        add_call: Callable[[UsageCall], None],
     ) -> None:
         self._session_cwd = session_cwd
         self._cwd_by_fingerprint = cwd_by_fingerprint
+        self._profile_names = profile_names
         self._add_call = add_call
         self._fingerprint_by_pass: dict[str, str] = {}
         self._latest_fingerprint = ""
+        # Operations whose request was already counted: a terminal repeated for
+        # one of them is the same spend, not a second request.
+        self._counted_operations: set[str] = set()
 
     def take(self, event: TrajectoryEvent) -> None:
         if event.event_type == EventType.MODEL_EXCHANGE_FINISHED:
+            operation_id = event.operation_id
+            if operation_id is not None and operation_id in self._counted_operations:
+                return
             call = self._call(event)
-            if call is not None:
-                self._add_call(call)
+            if call is None:
+                return
+            # Only a readable terminal claims the operation: one whose timestamp
+            # does not parse is no call at all, and must not keep a later copy
+            # of the same terminal from counting.
+            if operation_id is not None:
+                self._counted_operations.add(operation_id)
+            self._add_call(call)
         elif event.event_type == EventType.TURN_STARTED:
             self._note_fingerprint(event.payload.get("workspace_revision"), event.turn_id)
         else:
@@ -292,10 +346,13 @@ class _SessionUsage:
         output = plain_int_value(normalized.get("output_total"))
         cache_read = plain_int_value(normalized.get("cache_read")) or 0
         model = payload.get("response_model") or payload.get("request_model")
+        # An older log names it for the main agent's requests alone.
+        profile = payload.get("model_profile_id")
         return UsageCall(
             day=ended.date(),
             hour=ended.hour,
             model=model if isinstance(model, str) else "",
+            profile=profile if isinstance(profile, str) and profile in self._profile_names else "",
             source=event.actor.role,
             project=self._project(event.turn_id),
             new_input=max(0, (input_total or 0) - cache_read),

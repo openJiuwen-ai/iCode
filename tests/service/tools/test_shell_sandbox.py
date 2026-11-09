@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import chrys.service.tools.builtins.shell as shell_mod
-import chrys.service.tools.registry as registry_mod
+import chrys.service.tools.packs as packs_mod
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform import ShellInfo
@@ -27,6 +27,7 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_ERRORED_METADATA_KEY,
 )
 from chrys.kernel.tools import FunctionTool
+from chrys.service.profiles.agents.schema import ToolsConfig
 from chrys.service.sandbox.backend import SandboxError, SandboxExec
 from chrys.service.tools.approval_targets import ApprovedTargets, approved_targets
 from chrys.service.tools.background import BackgroundTasks
@@ -408,10 +409,10 @@ async def test_missing_working_directory_returns_before_sandbox(
 ) -> None:
     shell, calls = _enabled_shell(runtime, monkeypatch)
 
-    result = await shell.execute("echo hello", reason="test", working_dir="missing-sandbox-dir")
+    result = await shell.execute("echo hello", reason="test", workdir="missing-sandbox-dir")
 
     assert result.startswith("Error:")
-    assert "working_dir not found" in result
+    assert "workdir not found" in result
     assert calls == []
 
 
@@ -449,7 +450,7 @@ async def test_sandbox_long_output_is_truncated_without_host(
     monkeypatch.setattr(shell_mod, "bound_process_output", bound_process_output)
     shell = ShellTools(runtime, settings=Settings(sandbox_enabled=True))
 
-    result = await shell.execute("echo hello", reason="test", max_tokens=100)
+    result = await shell.execute("echo hello", reason="test", max_output_tokens=100)
 
     assert len(passed) == 1
     assert "sandbox-line-0000" in passed[0]
@@ -551,18 +552,19 @@ async def test_sandbox_timeout_does_not_background_or_spawn_host(
 # ───────────────────────── both shell constructions ─────────────────────────
 
 
-def test_registry_shell_constructions_pass_settings() -> None:
-    tree = ast.parse(Path(registry_mod.__file__).read_text(encoding="utf-8"))
+def test_shell_pack_passes_settings() -> None:
+    tree = ast.parse(Path(packs_mod.__file__).read_text(encoding="utf-8"))
     calls = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "ShellTools"
     ]
-    assert len(calls) == 2
-    for call in calls:
-        value = next((keyword.value for keyword in call.keywords if keyword.arg == "settings"), None)
-        assert isinstance(value, ast.Name)
-        assert value.id == "settings"
+    assert len(calls) == 1
+    value = next((keyword.value for keyword in calls[0].keywords if keyword.arg == "settings"), None)
+    assert isinstance(value, ast.Attribute)
+    assert value.attr == "settings"
+    assert isinstance(value.value, ast.Name)
+    assert value.value.id == "build"
 
 
 async def test_extra_shell_receives_settings_and_bypasses_host(
@@ -575,7 +577,14 @@ async def test_extra_shell_receives_settings_and_bypasses_host(
     counts = _spy_host(monkeypatch)
     calls: list[_ShellCall] = []
     _patch_run_shell(monkeypatch, calls, SandboxExec(0, "from-sandbox", ""))
-    tools = registry_mod.ToolRegistry()._create_instance_tools("shell", runtime, settings)
+    tools = packs_mod._create_shell(
+        packs_mod.ToolBuild(
+            tools=ToolsConfig(builtins=["shell"]),
+            agent_name="test",
+            runtime=runtime,
+            settings=settings,
+        )
+    )
     instances = _shell_instances(tools)
     primary = next(instance for instance in instances if instance.shell is runtime.platform.shell)
     chosen = next(instance for instance in instances if instance.shell is extra)

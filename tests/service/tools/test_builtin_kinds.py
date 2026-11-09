@@ -27,7 +27,7 @@ from chrys.service.tools.builtins.ask_user import ask_user
 from chrys.service.tools.builtins.filesystem import edit_file, read_file, view_image, write_file
 from chrys.service.tools.builtins.search import glob, grep
 from chrys.service.tools.builtins.sleep import sleep
-from chrys.service.tools.builtins.todo import todo_write
+from chrys.service.tools.builtins.todo import TodoTools
 from chrys.service.tools.builtins.web.fetch.tool import WebFetchTools
 from chrys.service.tools.builtins.web.search.tool import WebSearchTools
 
@@ -43,7 +43,7 @@ def test_static_builtin_tools_use_out_of_band_kinds() -> None:
         "glob": (glob, KIND_SEARCH),
         "ask_user": (ask_user, KIND_ASK_USER),
         "sleep": (sleep, KIND_SLEEP),
-        "todo_write": (todo_write, KIND_TODO),
+        "todo_write": (TodoTools.todo_write, KIND_TODO),
         "web_search": (WebSearchTools.web_search, "web_search"),
         "web_fetch": (WebFetchTools.web_fetch, "web_fetch"),
     }
@@ -86,25 +86,31 @@ def test_doc_converter_tool_uses_out_of_band_kind(tmp_path) -> None:
         assert t.kind is None
 
 
-def test_registry_loaded_builtins_all_classified_and_kindless(tmp_path) -> None:
-    """End-to-end: load every static + instance category through ToolRegistry
-    and verify every emitted tool carries a canonical chrys kind out of band
-    while ``FunctionTool.kind`` stays None.
+async def test_assembled_builtins_all_classified_and_kindless(tmp_path) -> None:
+    """End-to-end: assemble every first-party pack and verify every emitted
+    tool carries a canonical chrys kind out of band while ``FunctionTool.kind``
+    stays None.
 
-    A new builtin category that writes ``.kind`` or ships an unregistered kind
+    A new builtin pack that writes ``.kind`` or ships an unregistered kind
     value is caught here.
     """
+    from chrys.foundation.config.settings import Settings
     from chrys.foundation.models.session_env import SessionEnvironment
-    from chrys.service.tools.registry import ToolRegistry
+    from chrys.service.profiles.agents.schema import ToolsConfig
+    from chrys.service.tools.packs import BUILTIN_PACK_IDS, ToolBuild, assemble_tools
 
-    reg = ToolRegistry()
-    runtime = SessionEnvironment.capture()
-    tools = reg.load_builtins(
-        ["filesystem.read", "filesystem.write", "search", "ask_user", "sleep", "shell", "doc_converter", "todo"],
-        runtime=runtime,
-        session_id="test",
+    assembled = await assemble_tools(
+        ToolBuild(
+            tools=ToolsConfig(builtins=sorted(BUILTIN_PACK_IDS)),
+            agent_name="test",
+            runtime=SessionEnvironment.capture(),
+            settings=Settings(),
+            session_id="test",
+            vision=True,
+        )
     )
-    assert tools, "registry should produce tools for these categories"
+    tools = assembled.tools
+    assert tools, "assembly should produce tools for these packs"
     unclassified = [t.name for t in tools if get_tool_kind(t) not in TOOL_KINDS]
     assert not unclassified, (
         f"Built-in tools without a canonical chrys kind: {unclassified}. "

@@ -163,7 +163,7 @@ async def test_a_small_budget_spills_the_kept_output_and_keeps_the_note_and_exit
     shell = ShellTools(SessionEnvironment.capture(), session_dir=tmp_path)
 
     # Room for the spill notice, whose path is a long temporary one.
-    result = await shell.execute(_command(tmp_path), reason="test", timeout=15, max_tokens=200)
+    result = await shell.execute(_command(tmp_path), reason="test", timeout=15, max_output_tokens=200)
 
     _body, dropped = _split_note(result)
     assert MixedLanguageTokenizer().count_tokens(result) <= 200
@@ -179,7 +179,7 @@ async def test_a_small_budget_spills_the_kept_output_and_keeps_the_note_and_exit
 async def test_a_small_budget_without_a_session_keeps_the_note_and_exit_code(tmp_path: Path) -> None:
     shell = ShellTools(SessionEnvironment.capture())
 
-    result = await shell.execute(_command(tmp_path), reason="test", timeout=15, max_tokens=100)
+    result = await shell.execute(_command(tmp_path), reason="test", timeout=15, max_output_tokens=100)
 
     _split_note(result)
     assert MixedLanguageTokenizer().count_tokens(result) <= 100
@@ -199,7 +199,7 @@ async def test_a_failed_spill_keeps_the_note_and_exit_code(tmp_path: Path, monke
     shell = ShellTools(SessionEnvironment.capture(), session_dir=tmp_path)
 
     # Room for the spill notice, so the write is tried.
-    result = await shell.execute(_command(tmp_path), reason="test", timeout=15, max_tokens=200)
+    result = await shell.execute(_command(tmp_path), reason="test", timeout=15, max_output_tokens=200)
 
     assert len(writes) == 1
     _split_note(result)
@@ -236,7 +236,7 @@ async def test_a_timed_out_result_keeps_its_error_line_under_a_small_budget(
 
     monkeypatch.setattr(shell, "_execute_pty" if IS_UNIX else "_execute_pipe", timed_out)
 
-    result = await shell.execute("sleep 999", reason="test", timeout=7, max_tokens=200)
+    result = await shell.execute("sleep 999", reason="test", timeout=7, max_output_tokens=200)
 
     assert result.startswith("Error: command timed out after 7 seconds.\n")
     assert "Kept output saved to:" in result

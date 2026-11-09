@@ -241,7 +241,7 @@ class HookRunList(Vertical, can_focus=False):
         text-style: underline;
         pointer: pointer;
     }
-    /* No box, as the Messages tab: the rows take the whole width. */
+    /* No surrounding border: the rows take the whole width. */
     HookRunList > #hook-runs-box {
         height: 1fr;
         scrollbar-size: 1 1;
@@ -513,7 +513,7 @@ class HookRunList(Vertical, can_focus=False):
         self._row_styles = running_style, hover, selected = self._resolve_row_styles()
         now = time.monotonic()
         grid = Table.grid(padding=(0, 1), expand=True)
-        # Numbered as the Messages tab numbers turns: the run's place since iCode started.
+        # Numbered as the Chat tab numbers turns: the run's place since iCode started.
         grid.add_column(justify="right", no_wrap=True, style="dim")
         grid.add_column(width=1, no_wrap=True)
         # No result column: the icon says how it went, and the run's details say the rest.

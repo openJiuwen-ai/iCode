@@ -120,6 +120,7 @@ def _slash_actions(warn: Any) -> SlashCommandActions:
         configure_model=noop,
         configure_agent=noop,
         configure_agent_tab=noop,
+        reload_settings=lambda: None,
         show_runtime_details=noop,
         show_usage=noop,
         configure_settings=lambda _tab: None,
@@ -243,6 +244,7 @@ async def _rollback_message(count: int, locale: str | None) -> str:
         set_has_messages=lambda _value: None,
         post_gc_message=lambda _message: None,
         debug=lambda *_args: None,
+        invalidate_file_index=lambda: None,
         locale_controller=controller,
     )
     results = [RestoreResult(path=f"/workspace/{index}.txt", outcome=RestoreOutcome.APPLIED) for index in range(count)]

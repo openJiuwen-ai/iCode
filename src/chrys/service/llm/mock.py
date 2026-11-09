@@ -154,9 +154,11 @@ class MockChatClient(BaseChatClient):
         middleware: Sequence[Any] | None = None,
         on_intermediate_text: Callable[[str], None] | None = None,
         tool_result_ceiling_tokens: int | None = None,
+        connection: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__()
         self._responses: list[MockResponse] = list(responses) if responses else []
+        self._connection = connection
         self._default_model_id = default_model_id
         self._call_index: int = 0
         self._call_history: list[tuple[Sequence[Message], Mapping[str, Any]]] = []
@@ -306,6 +308,7 @@ class MockChatClient(BaseChatClient):
             stream=stream,
             forwarded_trace=forwarded_trace,
             internal_side_call=suppress_intermediate,
+            connection=self._connection,
         )
 
         if stream:

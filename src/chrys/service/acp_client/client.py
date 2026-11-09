@@ -91,6 +91,9 @@ logger = logging.getLogger(__name__)
 _MAX_PERMISSION_OPTIONS = 128
 _CLOSE_RPC_TIMEOUT_SECONDS = 2.0
 _FINAL_DRAIN_TIMEOUT_SECONDS = 30.0
+# The idle watchdog's wake granularity, as a fraction of its budget: it bounds
+# how much of one stall of this loop can still count as the agent's silence.
+_IDLE_WATCH_SLICES = 8
 
 _INITIALIZE_METHOD = "initialize"
 _NEW_SESSION_METHOD = "session/new"
@@ -191,7 +194,6 @@ class AcpAgentClient:
         self._force_close_task: asyncio.Task[None] | None = None
         self._failure_close_task: asyncio.Task[None] | None = None
         self._activity_event: asyncio.Event | None = None
-        self._last_activity = 0.0
 
     @property
     def stderr_tail(self) -> str:
@@ -218,7 +220,6 @@ class AcpAgentClient:
         loop = asyncio.get_running_loop()
         self._terminal_failure = loop.create_future()
         self._activity_event = asyncio.Event()
-        self._last_activity = loop.time()
         try:
             # A command's time isn't the agent's to answer for: the handshake clock starts after it.
             launch_spec = await with_fresh_tokens(self._spec)
@@ -992,8 +993,6 @@ class AcpAgentClient:
             self._announced_session_id = session_id
 
     def _touch_activity(self) -> None:
-        with contextlib.suppress(RuntimeError):
-            self._last_activity = asyncio.get_running_loop().time()
         if self._activity_event is not None:
             self._activity_event.set()
 
@@ -1007,6 +1006,22 @@ class AcpAgentClient:
         event = self._activity_event
         if event is None:
             return
+        loop = asyncio.get_running_loop()
+        # Idle time is time this loop could have read the agent's frames in.
+        # A stall of the loop itself (a stop-the-world GC pause, a slow
+        # callback) is not the agent's silence: frames it wrote meanwhile sit
+        # unread in the pipe, or it waits on a write the stall held back, and
+        # the first wake after the stall comes before any of them reaches the
+        # frame observer. So the clock starts when this task sees activity and
+        # runs in slices; a slice that wakes more than a slice late gives the
+        # agent that lateness back and, once per silence, keeps one slice open
+        # to read what queued up meanwhile. At most two slices of a stall
+        # still count, and loop time the agent stays silent through always does.
+        # The clock is read once per wake: a stall after that read shows up as
+        # the next slice's lateness, never as idle time.
+        slice_seconds = timeout_seconds / _IDLE_WATCH_SLICES
+        now = idle_since = loop.time()
+        grace = slice_seconds
         while True:
             event.clear()
             # The exact prompt response ends the agent's idle responsibility;
@@ -1017,21 +1032,35 @@ class AcpAgentClient:
             observer = self._observer
             if observer is not None and observer.human_wait_count:
                 await event.wait()
+                now = idle_since = loop.time()
+                grace = slice_seconds
                 continue
-            remaining = timeout_seconds - (asyncio.get_running_loop().time() - self._last_activity)
-            if remaining <= 0:
+            deadline = idle_since + timeout_seconds
+            if now >= deadline:
                 self._fail(AcpIdleTimeoutError("The ACP agent stopped producing protocol activity."))
                 return
+            slice_end = min(deadline, now + slice_seconds)
             try:
-                async with asyncio.timeout(remaining):
+                async with asyncio.timeout(slice_end - now):
                     await event.wait()
+                now = idle_since = loop.time()
+                grace = slice_seconds
             except TimeoutError:
                 # The seal and the expiry timer can land on the same wake;
                 # a sealed attempt must never fail as agent-idle.
                 if self._prompt_response_sealed():
                     return
-                self._fail(AcpIdleTimeoutError("The ACP agent stopped producing protocol activity."))
-                return
+                now = loop.time()
+                if event.is_set():
+                    # Activity landed on the same wake as the timer.
+                    idle_since, grace = now, slice_seconds
+                elif (late := now - slice_end) > slice_seconds:
+                    idle_since += late
+                    # In the last slice the lateness alone would end the
+                    # budget on this very wake, before the reader runs.
+                    extension = min(grace, max(0.0, now + slice_seconds - (idle_since + timeout_seconds)))
+                    idle_since += extension
+                    grace -= extension
 
     def _prompt_response_sealed(self) -> bool:
         observer = self._observer

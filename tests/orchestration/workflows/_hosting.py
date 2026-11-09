@@ -20,7 +20,6 @@ from chrys.foundation.events.types import Event, WorkflowRunAccepted
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform.files import atomic_write_owner_only_bytes
-from chrys.kernel import FunctionTool
 from chrys.orchestration.session_host import ChrysSessionHost
 from chrys.orchestration.workflows.preview import WorkflowPreview
 from chrys.orchestration.workflows.runner import WorkflowRunResult
@@ -31,8 +30,8 @@ from chrys.service.profiles.agents.schema import AgentProfile, ApprovalConfig, C
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
-from chrys.service.tools.registry import ToolRegistry
 from chrys.service.workflows.discovery import project_workflows_dir
+from tests.support.tool_packs import install_tools
 
 PROFILE = "Headless"
 """The session's own profile; agent nodes in the tests bind to it too."""
@@ -73,13 +72,10 @@ def patch_runtime(
     async def _create_client(*_args: Any, **kwargs: Any) -> MockChatClient:
         return _configure(clients.pop(0), kwargs)
 
-    def _load_builtins(self: ToolRegistry, _categories: Any, **_kwargs: Any) -> list[FunctionTool]:
-        return []
-
     monkeypatch.setattr(builder_module, "create_client", _main_client)
     monkeypatch.setattr(agent_node_module, "create_client", _create_client)
     if not builtin_tools:
-        monkeypatch.setattr(ToolRegistry, "load_builtins", _load_builtins)
+        install_tools(monkeypatch)
 
 
 def make_profile(name: str = PROFILE, *, builtins: Sequence[str] = ()) -> AgentProfile:

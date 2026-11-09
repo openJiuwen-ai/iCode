@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import chrys.service.mcp._http_transport as http_transport_module
 from chrys.service.mcp._http_transport import (
     _chrys_streamable_http_client,
     _HTTPMCPTool,
@@ -122,6 +123,35 @@ async def test_streamable_http_post_failure_wakes_pending_request() -> None:
     # Marked local, so the tool loop never hands this detail to the model.
     assert error.error.data == LOCAL_HTTP_FAILURE_ERROR_DATA
     assert terminated == [("sess-1", client)]
+
+
+async def test_a_server_that_stops_answering_the_session_delete_cannot_hold_the_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp.client.streamable_http import StreamableHTTPTransport
+    from mcp.types import JSONRPCRequest
+
+    terminating = asyncio.Event()
+
+    async def terminate_session(self: Any, client_arg: object) -> None:
+        terminating.set()
+        await asyncio.Event().wait()
+
+    async def open_and_close(client: Any) -> None:
+        async with _chrys_streamable_http_client(
+            "http://mcp.example/mcp", http_client=client, terminate_on_close=True
+        ) as (read_stream, _write_stream, _get_session_id):
+            await read_stream.receive()
+
+    monkeypatch.setattr(http_transport_module, "_SESSION_TERMINATE_TIMEOUT_SECONDS", 0.01)
+    request = JSONRPCRequest(jsonrpc="2.0", id=7, method="tools/list")
+    with (
+        _post_failure_transport(request, RuntimeError("post exploded"), session_id="sess-1") as client,
+        patch.object(StreamableHTTPTransport, "terminate_session", new=terminate_session),
+    ):
+        await asyncio.wait_for(open_and_close(client), timeout=20.0)
+
+    assert terminating.is_set()
 
 
 async def test_streamable_http_post_failure_uses_readable_empty_exception_label() -> None:

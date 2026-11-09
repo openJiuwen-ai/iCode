@@ -25,7 +25,11 @@ llm:
     max_transient: 3
 ```
 
-After editing the settings file manually, save it and restart iCode for the changes to take effect.
+After editing settings manually, save the file and run `/reload` while the TUI is idle. Theme, language, notifications and verify commands change right away. The editor keymap applies the next time you open the message editor. Chat display preferences and the option to delay the approval dialog during automatic review are read when next used. The default agent and default approval mode take effect the next time you start iCode. Your edit also replaces a choice you made earlier in the Settings panel, theme picker, language picker or message editor, once that choice has been saved. A choice that could not be saved stays in use for the rest of this session. If the file names a theme that is not in your theme list, the screen keeps its current theme, or the default theme if the current theme's file was deleted, and the file stays as you wrote it. The summary lists conflicting values and settings that require a restart. An invalid settings document stops the command and is left intact. Fix it before saving other settings. Ordinary reads can use the last valid document or a backup until you fix it. Deleting the file removes that layer.
+
+The same reload scans the agent and model profile directories. A newly added model can be selected in the same edit. If an existing profile file is invalid, iCode keeps its last loaded definition and names the file. If you rename an agent, iCode moves its file to match the new name after the replacement builds successfully. It also fills in missing agent IDs and removes references to the retired Plan agent when appropriate. If you add or remove a same-name override for the active built-in agent, `/reload` keeps that agent selected even if the override has its own ID. Removing a custom active agent selects an available launch agent. Removing the selected model selects another available model. If no model can take over, the current runtime stays available. A failed file migration reports which files were already changed so you can correct the problem and retry.
+
+The reload also reads your [hooks](../guides/extensions/hooks.md#apply-edits-with-reload) again and [reconnects MCP servers](../guides/extensions/mcp.md#reconnect-with-reload).
 
 ## Settings keys
 
@@ -39,7 +43,7 @@ In the tables, “None” means there is no corresponding environment variable, 
 | `ui.locale` | `CHRYS_LOCALE` | `system` | String; `system` follows the system language. You can also set `en` or `zh-Hans`. Unsupported languages fall back to English; this does not change the language of model responses |
 | `ui.editor.keymap` | `CHRYS_EDITOR_KEYMAP` | `standard` | String; `standard`, `emacs`, or `vim` selects the input editor's key bindings |
 | `ui.chat.tool_groups_expanded` | None | `false` | Boolean; whether newly displayed tool groups expand their details by default |
-| `ui.chat.show_thinking` | None | `false` | Boolean; whether new readable thinking in the TUI chat is expanded above the reply while the model writes it; when `false`, it stays on one line, which shows the newest words as the model writes them. Either way it folds once the model moves on. Thinking the service returns only in encrypted form is never shown |
+| `ui.chat.show_thinking` | None | `false` | Boolean; whether new readable thinking is expanded above the reply in the TUI. When `false`, the folded row shows an estimated token count and, once enough text has arrived, the recent speed. Either way it folds once the model moves on. Thinking the service returns only in encrypted form is never shown |
 | `ui.chat.fold_finished_turns` | None | `true` | Boolean; automatically fold intermediate activity after successful replies. Applies to future completed turns and subsequently opened sessions; existing sections keep their state. User messages and final replies remain visible |
 | `ui.chat.image_graphics` | None | `true` | Boolean; ask the terminal what it is at startup, and in Ghostty, kitty, iTerm2 3.7.5 or later, WezTerm, VS Code with terminal images on and Windows Terminal 1.22 or later show conversation images in full color with the terminal's own graphics; when `false` the terminal is not asked and, as in other terminals, images are drawn with colored blocks. Read at startup |
 | `ui.chat.file_snapshot_inline_chars` | `CHRYS_TUI_FILE_SNAPSHOT_INLINE_CHARS` | `131072` | Integer; limits the before-and-after file content loaded directly with a file edit card, measured by their combined byte size. Within the limit, content loads with the card and the header shows the exact numbers of added and deleted lines. Above the limit, if snapshot references are available, content is read only when the diff is expanded, and the header does not show exact line counts. `0` or a negative value sets the limit to zero; inline content may still be retained when no snapshot references are available. This setting controls only how the card loads content; `mutations.snapshot.max_file_mb` and `mutations.snapshot.skip_binary` determine whether file content is backed up |
@@ -49,7 +53,7 @@ In the tables, “None” means there is no corresponding environment variable, 
 
 ### Agents, models, and requests
 
-Model role keys take the ID or unique name of an existing model profile. Buddy does not select a model profile: its key takes the model name used by the model service (`model_id`).
+Model role keys take the ID or unique name of an existing model profile. `model.role.buddy` replaces `model.role.buddy_model_id` from earlier versions, which took a model name: when iCode starts, it replaces a saved model name with the model profile that uses that model. If no model profile uses it, or more than one does, the old value is removed and Buddy uses the current model. `CHRYS_PET_MODEL` is no longer read; set `CHRYS_MODEL_PROFILE_BUDDY` to a model profile's ID or name instead.
 
 | YAML key | Environment variable | Default | Type, values, and effect |
 | --- | --- | --- | --- |
@@ -57,7 +61,7 @@ Model role keys take the ID or unique name of an existing model profile. Buddy d
 | `model.profile.active` | `CHRYS_MODEL_PROFILE` | Unset | String; select an existing model profile as the fallback when the agent has no valid `model.profile_id`. An explicit `--model` takes precedence over this key but still serves as a fallback; explicitly switching models in an ACP session takes precedence over the model specified by the agent |
 | `model.role.approval_judge` | `CHRYS_MODEL_PROFILE_APPROVAL_JUDGE` | Unset | String; the model profile used for automatic approval. Uses the current model when unset |
 | `model.role.session_title` | `CHRYS_MODEL_PROFILE_SESSION_TITLE` | Unset | String; the model profile used to generate session titles automatically. Uses the current model when unset |
-| `model.role.buddy_model_id` | `CHRYS_PET_MODEL` | Unset | String; the model used by Buddy, using the current model profile's connection. Uses the current model when unset |
+| `model.role.buddy` | `CHRYS_MODEL_PROFILE_BUDDY` | Unset | String; the model profile used by Buddy, with that profile's own provider, address and model. Uses the current model when unset |
 | `llm.retry.max_transient` | `CHRYS_MAX_TRANSIENT_RETRIES` | `null` | Integer or `null`; `null` uses the default retry count for the launch command: `10` for the TUI (including `icode serve`) and `icode acp`, or `18` for `icode run` and `icode workflow run`. The wait before each retry grows, up to 10 minutes. `0` disables automatic retries for transient errors; negative values are invalid; capped at `50` |
 | `llm.credential_command.ttl_seconds` | `CHRYS_CREDENTIAL_COMMAND_TTL_SECONDS` | `3600` | Integer; how long, in seconds, a value from a `{{!command}}` placeholder is used before the next request runs the command again. Minimum `60`. A value the service refuses is replaced at once. Takes effect after a restart. See [Get an API key from a command](../guides/configuration/models.md#get-an-api-key-from-a-command) |
 
@@ -70,7 +74,7 @@ The `approval` keys control approval behavior when an agent requests an operatio
 | YAML key | Environment variable | Default | Type, values, and effect |
 | --- | --- | --- | --- |
 | `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | String; `manual` for manual approval, `auto` for automatic approval, or `bypass` to bypass approval. Setting the default mode does not switch the current session's mode |
-| `approval.auto_review` | `CHRYS_APPROVAL_AUTO_REVIEW` | `direct` | `direct` selects **Direct review**; `formal` selects **Individual risk checks**, which ask you to confirm detected risks such as file deletion or code publication. See [Choose how automatic review works](../guides/configuration/approval.md#choose-how-automatic-review-works). Used only in `auto` mode. Close Settings to apply changes made there; after editing the file directly, restart iCode. Set it in your user settings; projects cannot override it. Invalid values use `direct` |
+| `approval.auto_review` | `CHRYS_APPROVAL_AUTO_REVIEW` | `direct` | `direct` selects **Direct review**; `formal` selects **Individual risk checks**, which ask you to confirm detected risks such as file deletion or code publication. See [Choose how automatic review works](../guides/configuration/approval.md#choose-how-automatic-review-works). Used only in `auto` mode. Close Settings to apply changes made there; after editing the file directly, run `/reload`. Set it in your user settings; projects cannot override it. Invalid values use `direct` |
 | `approval.timeout_seconds` | `CHRYS_APPROVAL_TIMEOUT_SECONDS` | `0` | Integer; seconds to wait for human approval in TUI and ACP. `0` disables the timeout; positive values set a deadline. Negative values are raised to `0`. Timeout rejects the tool call. Restart iCode to apply |
 | `ui.approval.defer_while_judging` | None | `true` | Boolean; in automatic mode, whether the TUI opens the approval dialog only when the approval judge model flags a call or evaluation fails. `false` opens it at once while the call is evaluated. The ACP server and `icode run` ignore it |
 | `project.config_enabled` | None | `false` | Boolean; whether to load project settings for each working directory. Must be enabled in user settings |
@@ -235,7 +239,7 @@ llm:
     max_transient: 3
 ```
 
-After enabling project settings and restarting, if the user has not set a retry count, the project's `3` retries apply. If user YAML already sets `1`, the project's `3` is rejected and `1` still applies. A valid value in the startup environment always takes precedence.
+After enabling project settings and reloading, if the user has not set a retry count, the project's `3` retries apply. If user YAML already sets `1`, the project's `3` is rejected and `1` still applies. A valid value in the startup environment always takes precedence.
 
 iCode reports and ignores disallowed project keys, values that exceed override restrictions, and unknown keys, while continuing to apply other valid settings.
 
@@ -250,7 +254,7 @@ iCode reports and ignores disallowed project keys, values that exceed override r
 
 ## When a setting does not take effect
 
-1. Confirm that the settings file is in the correct location and that you have saved it and restarted iCode.
+1. Confirm that the settings file is in the correct location and that you have saved it and run `/reload` (or restarted iCode for settings the summary says need a restart or the next launch).
 2. Check for a higher-priority source. Deleting a key from YAML does not clear values from other sources.
 3. For project settings, confirm that loading is enabled in user settings and that the key and override direction meet the restrictions.
 4. Check the messages iCode reports at startup. For how invalid values and unknown keys are handled, see [Value syntax and invalid values](#value-syntax-and-invalid-values); for directory-related messages, check [File locations and format](#file-locations-and-format).

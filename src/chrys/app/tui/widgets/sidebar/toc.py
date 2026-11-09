@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
+from textual.containers import Vertical
 from textual.message import Message
 from textual.strip import Strip
 from textual.widget import Widget
@@ -22,6 +23,7 @@ from chrys.foundation.i18n.formatting import format_message
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.widgets.tree import TreeNode
 
     from chrys.app.tui.i18n import LocaleController
 
@@ -33,6 +35,7 @@ __all__ = ["ConversationToc", "TocItem", "summarize_prompt"]
 _MAX_LABEL = _SUMMARY_MAX_LENGTH + 8
 _TREE_TAB_SIZE = 8
 _TOC_EMPTY = msg("tui.sidebar.toc.empty", fallback="Your conversation will appear here")
+_TOC_TITLE = msg("tui.sidebar.toc.title", fallback="Messages")
 
 
 def _tree_label_text(text: str) -> str:
@@ -67,13 +70,20 @@ class ConversationToc(Widget, can_focus=False):
     DEFAULT_CSS = """
     ConversationToc {
         height: 1fr;
-        padding: 0 0 0 1;
     }
-    ConversationToc > Tree {
-        background: transparent;
+    ConversationToc > #toc-box {
+        height: 1fr;
+        border: round $tui-border-primary-darken-3 $inner-border-opacity;
+        border-title-color: $text-muted;
+        border-title-style: bold;
         padding: 0;
+    }
+    ConversationToc #toc-tree {
+        height: 1fr;
+        background: transparent;
+        padding: 0 0 0 1;
         overflow-x: hidden;
-        scrollbar-size-vertical: 1;
+        scrollbar-size: 1 1;
     }
     ConversationToc Tree > .tree--cursor {
         background: $primary 18%;
@@ -91,7 +101,7 @@ class ConversationToc(Widget, can_focus=False):
     ConversationToc Tree > .tree--guides {
         color: $primary 40%;
     }
-    ConversationToc > .toc-empty {
+    ConversationToc .toc-empty {
         width: 1fr;
         height: 1fr;
         content-align: center middle;
@@ -114,17 +124,23 @@ class ConversationToc(Widget, can_focus=False):
         self._empty_label: Static = SidebarEmptyStateLabel("", classes="toc-empty")
 
     def compose(self) -> ComposeResult:
-        self._tree = _TocTree("TOC", id="toc-tree")
-        self._tree.show_root = False
-        self._tree.show_guides = True
-        self._tree.display = False
-        yield self._tree
-        self._empty_label = SidebarEmptyStateLabel(Text(self._render_message(_TOC_EMPTY.bind())), classes="toc-empty")
-        yield self._empty_label
+        box = Vertical(id="toc-box")
+        box.border_title = Text(self._render_message(_TOC_TITLE.bind()))
+        with box:
+            self._tree = _TocTree("TOC", id="toc-tree")
+            self._tree.show_root = False
+            self._tree.show_guides = True
+            self._tree.display = False
+            yield self._tree
+            self._empty_label = SidebarEmptyStateLabel(
+                Text(self._render_message(_TOC_EMPTY.bind())), classes="toc-empty"
+            )
+            yield self._empty_label
 
     def refresh_localization(self) -> None:
-        """Retranslate the current empty-state text without rebuilding the tree."""
+        """Retranslate the title and empty state without rebuilding the tree."""
         if self.is_mounted:
+            self.query_one("#toc-box").border_title = Text(self._render_message(_TOC_TITLE.bind()))
             self._empty_label.update(Text(self._render_message(_TOC_EMPTY.bind())))
 
     def _render_message(self, reference: MessageRef) -> str:
@@ -137,6 +153,54 @@ class ConversationToc(Widget, can_focus=False):
         self._items = items
         self._rebuild_tree()
 
+    def update_live_items(self, items: list[TocItem]) -> None:
+        """Apply live additions and removals without rebuilding retained nodes.
+
+        Live cleanup preserves the relative order of surviving entries. Only
+        the backend's turn index labels a live opener; pending openers have no
+        number until TurnStarted provides it.
+        """
+        self._items = items
+        tree = self._tree
+        if tree is None:
+            return
+        self._empty_label.display = not items
+        tree.display = bool(items)
+        self._update_live_nodes(tree.root, items, top_level=True)
+
+    def _update_live_nodes(self, parent: TreeNode[str], items: list[TocItem], *, top_level: bool) -> None:
+        nodes = {node.data: node for node in parent.children}
+        wanted = {item.turn_id for item in items}
+        for node in tuple(parent.children):
+            if node.data not in wanted:
+                node.remove()
+        for index, item in enumerate(items):
+            label = self._item_label(item, turn_index=item.turn_index, top_level=top_level)
+            node = nodes.get(item.turn_id)
+            if node is None:
+                node = parent.add(
+                    label,
+                    data=item.turn_id,
+                    before=index,
+                    expand=bool(item.children),
+                    allow_expand=False,
+                )
+            else:
+                if node.label != label:
+                    node.set_label(label)
+                if item.children and not node.children:
+                    node.expand()
+            self._update_live_nodes(node, item.children, top_level=False)
+
+    @staticmethod
+    def _item_label(item: TocItem, *, turn_index: int | None, top_level: bool) -> Text:
+        prefix = f"{turn_index}. " if top_level and turn_index is not None else ""
+        raw = _tree_label_text(prefix + item.summary)
+        limit = _MAX_LABEL if top_level else _MAX_LABEL - 2
+        if len(raw) > limit:
+            raw = raw[: limit - 3] + "..."
+        return Text(raw, style="dim") if item.compressed else Text(raw)
+
     def _rebuild_tree(self) -> None:
         if self._tree is None:
             return
@@ -144,20 +208,15 @@ class ConversationToc(Widget, can_focus=False):
         self._empty_label.display = not self._items
         self._tree.display = bool(self._items)
         for i, item in enumerate(self._items, start=1):
-            raw = _tree_label_text(f"{i}. {item.summary}")
-            if len(raw) > _MAX_LABEL:
-                raw = raw[: _MAX_LABEL - 3] + "..."
-            label = Text(raw, style="dim") if item.compressed else Text(raw)
+            label = self._item_label(
+                item, turn_index=item.turn_index if item.turn_index is not None else i, top_level=True
+            )
             if item.children:
                 node = self._tree.root.add(label, data=item.turn_id)
                 node.expand()
                 node.allow_expand = False
                 for child in item.children:
-                    raw_child = _tree_label_text(child.summary)
-                    if len(raw_child) > _MAX_LABEL - 2:
-                        raw_child = raw_child[: _MAX_LABEL - 5] + "..."
-                    child_label = Text(raw_child, style="dim") if child.compressed else Text(raw_child)
-                    node.add_leaf(child_label, data=child.turn_id)
+                    node.add_leaf(self._item_label(child, turn_index=None, top_level=False), data=child.turn_id)
             else:
                 self._tree.root.add_leaf(label, data=item.turn_id)
 

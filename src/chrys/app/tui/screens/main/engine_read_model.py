@@ -164,6 +164,10 @@ class EngineReadModel:
         """
         return await asyncio.to_thread(self.rollback_state)
 
+    async def load_available_rollback_turns(self) -> list[int]:
+        """Read retained snapshot headers without blocking the message pump."""
+        return await asyncio.to_thread(self._engine.available_rollback_turns)
+
     def rollback_state(self) -> RollbackReadState | None:
         """Return rollback modal state, or ``None`` when rollback is unavailable."""
         tracker = self._engine.mutation_tracker

@@ -199,7 +199,27 @@ REGULAR_RULES = (
     TestRule("tests/service/approval/test_formal_core.py", ("src/chrys/service/approval/principles.json",)),
     TestRule("tests/app/tui/screens/test_approval_review_reason.py", ("src/chrys/service/approval/principles.json",)),
     TestRule("tests/foundation/test_documentation.py", ("pyproject.toml", "docs/index.yaml")),
+    # Builds a wheel in a subprocess: the build hook compiles the PO into it.
+    TestRule(
+        "tests/integration/test_distribution_artifacts.py",
+        ("hatch_build.py", "scripts/i18n_mo.py", "locales/**"),
+    ),
     TestRule("tests/service/acp_client", ("tests/support/acp_stub_agent.py",)),
+    # These install the example extension by copying its source, never importing it.
+    TestRule("tests/service/extensions", ("tests/support/acme_release_extension.py",)),
+    TestRule("tests/integration/engine/test_pipeline_extensions.py", ("tests/support/acme_release_extension.py",)),
+    TestRule("tests/app/tui/screens/test_agent_config_extensions.py", ("tests/support/acme_release_extension.py",)),
+    TestRule("tests/service/mcp/test_cache_refresh.py", ("tests/support/mcp_reload_probe_server.py",)),
+    TestRule(
+        "tests/service/mcp/test_connect_imports.py",
+        (
+            "src/chrys/service/mcp/**",
+            "src/chrys/foundation/util/imports.py",
+            "tests/support/mcp_reload_probe_server.py",
+        ),
+    ),
+    TestRule("tests/app/tui/screens/test_reload_mcp.py", ("tests/support/mcp_reload_probe_server.py",)),
+    TestRule("tests/orchestration/engine/test_settings_reload.py", ("tests/support/mcp_reload_probe_server.py",)),
     TestRule("tests/orchestration/sub_agents/test_acp_engine.py", ("tests/support/acp_stub_agent.py",)),
     TestRule("tests/service/workflows/test_protocol.py", _WORKFLOW_WORKER_HOST),
     TestRule("tests/orchestration/workflows/test_worker_client.py", (*_WORKFLOW_WORKER_HOST, *_WORKFLOW_FAKE_WORKER)),
@@ -1630,7 +1650,7 @@ def _add_runtime_asset_targets(selection: Selection, changes: tuple[Change, ...]
         elif path.startswith("src/chrys/service/workflows/builtins/"):
             for target in _BUILTIN_WORKFLOW_TEST_TARGETS:
                 selection.add(target, f"built-in workflow changed: {path}")
-        elif path.startswith("locales/") or path.endswith("/LC_MESSAGES/chrys.mo"):
+        elif path.startswith("locales/") or path in {"hatch_build.py", "scripts/i18n_mo.py"}:
             selection.add("tests/foundation/i18n", f"i18n artifact changed: {path}")
             selection.add("tests/app/tui/i18n", f"i18n artifact changed: {path}")
         elif path.startswith("src/chrys/") and not path.endswith((".py", ".md")):

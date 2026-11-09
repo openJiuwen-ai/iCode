@@ -31,6 +31,8 @@ from chrys.foundation.platform.process import (
     wait_for_subprocess,
     windows_hidden_subprocess_kwargs,
 )
+from tests.support.processes import still_running
+from tests.support.stopped_child import STOPS_ITSELF
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
@@ -146,19 +148,6 @@ def test_process_session_status_falls_back_to_ps_on_non_linux(monkeypatch: pytes
     monkeypatch.setattr(process_mod.os, "getpgid", lambda pid: {10: 100, 11: 101}[pid])
 
     assert process_mod._process_session_has_stopped_member(300)
-
-
-def _still_running(process: Any) -> bool:
-    """Whether *process* (a ``psutil.Process`` captured while alive) still runs; a zombie has ended.
-
-    It can exit between any two reads, so a process that vanishes while read has ended too.
-    """
-    import psutil
-
-    try:
-        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
-    except psutil.NoSuchProcess:
-        return False
 
 
 def _stub_subprocess_spawn(monkeypatch: pytest.MonkeyPatch, spawn: object) -> None:
@@ -934,18 +923,13 @@ async def test_file_not_found_propagates():
 @pytest.mark.asyncio
 async def test_timeout_kills_stopped_grandchild_holding_pipe():
     """Cleanup kills the whole process group even after the wrapper exits."""
+    child = "import os; print(os.getpid(), flush=True); " + STOPS_ITSELF
     script = textwrap.dedent(
-        """
-        import os
-        import signal
+        f"""
         import subprocess
         import sys
 
-        subprocess.Popen([
-            sys.executable,
-            "-c",
-            "import os, signal, time; print(os.getpid(), flush=True); os.kill(os.getpid(), signal.SIGSTOP); time.sleep(30)",
-        ])
+        subprocess.Popen([sys.executable, "-c", {child!r}])
         """
     )
 
@@ -1134,7 +1118,7 @@ async def test_a_start_that_finishes_as_its_wait_times_out_still_has_its_tree_en
         await asyncio.wait_for(task, ENGINE_TURN_TIMEOUT)
 
     def gone() -> bool:
-        return not any(_still_running(process) for process in processes)
+        return not any(still_running(process) for process in processes)
 
     await wait_for(gone, timeout=ENGINE_TURN_TIMEOUT, description="the shell and its sleep ended")
 
@@ -1186,12 +1170,12 @@ async def test_a_start_finishing_after_its_cancel_went_on_still_has_its_tree_end
     # The cancel went on while the start was still connecting, which was left to finish.
     (spawn,) = spawns
     assert not spawn.done()
-    assert all(_still_running(process) for process in processes)
+    assert all(still_running(process) for process in processes)
 
     connected.set()
 
     def gone() -> bool:
-        return not any(_still_running(process) for process in processes)
+        return not any(still_running(process) for process in processes)
 
     await wait_for(gone, timeout=ENGINE_TURN_TIMEOUT, description="the shell and its sleep ended")
     assert not spawn.cancelled()
@@ -1293,6 +1277,6 @@ async def test_a_cancel_while_the_child_starts_ends_everything_it_started(
         await asyncio.wait_for(task, ENGINE_TURN_TIMEOUT)
 
     def gone() -> bool:
-        return not any(_still_running(process) for process in processes)
+        return not any(still_running(process) for process in processes)
 
     await wait_for(gone, timeout=ENGINE_TURN_TIMEOUT, description="the shell and its sleep ended")
