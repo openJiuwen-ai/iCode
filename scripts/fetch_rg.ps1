@@ -48,9 +48,10 @@ if ($RgArchive) {
     $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "fetch-rg-$(Get-Random)"
     New-Item -ItemType Directory -Path $TmpDir -Force | Out-Null
     $ArchivePath = Join-Path $TmpDir $ArchiveName
-    # The release CDN answers 5xx now and then. Spelled as a loop: Windows PowerShell 5.1 has no
-    # -MaximumRetryCount.
-    $Attempts = 5
+    # The release CDN answers 5xx now and then, and an outage can hold for minutes: keep asking with
+    # a capped exponential backoff instead of giving up after seconds. Spelled as a loop: Windows
+    # PowerShell 5.1 has no -MaximumRetryCount.
+    $Attempts = 10
     for ($Attempt = 1; ; $Attempt++) {
         try {
             Invoke-WebRequest -Uri $Url -OutFile $ArchivePath
@@ -58,7 +59,7 @@ if ($RgArchive) {
         } catch {
             if ($Attempt -ge $Attempts) { throw }
             Write-Host "    attempt $Attempt failed: $($_.Exception.Message)"
-            Start-Sleep -Seconds ([math]::Pow(2, $Attempt - 1))
+            Start-Sleep -Seconds ([math]::Min([math]::Pow(2, $Attempt - 1), 30))
         }
     }
 }

@@ -58,8 +58,10 @@ fetch_one() {
         local tmpdir
         tmpdir=$(mktemp -d)
         local archive_path="$tmpdir/$archive_name"
-        # The release CDN answers 5xx now and then; curl backs off and asks again for those.
-        curl -fsSL --retry 5 --retry-connrefused "$url" -o "$archive_path"
+        # The release CDN answers 5xx now and then, and an outage can hold for minutes: curl backs
+        # off and asks again, bounded overall so a truly down CDN still fails this step within
+        # minutes instead of after seconds, and each connect is bounded so nothing hangs one.
+        curl -fsSL --retry 10 --retry-max-time 300 --retry-connrefused --connect-timeout 30 "$url" -o "$archive_path"
     fi
 
     echo "==> Extracting $dest_name to $DEST_DIR..."
