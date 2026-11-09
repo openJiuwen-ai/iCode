@@ -12,6 +12,7 @@ from textual.screen import ModalScreen
 
 from chrys.app.tui.screens.dialogs.approval.bodies.file_edit import ApprovalDiffPreview
 from chrys.app.tui.screens.dialogs.approval.dialog import ApprovalDialog
+from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.widgets.diff_view import DiffView
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
@@ -25,8 +26,18 @@ class _Cover(ModalScreen[None]):
     """Another screen the user opened over the approval dialog."""
 
 
+# The deadline the configured setting gives: the "ready" case runs it, through the setting.
+_CONFIGURED_DEADLINE = 1
+# The other cases are about when the deadline starts, not how long it is: a short one, outlasted the same way.
+_SHORT_DEADLINE = 0.2
+
+
 @pytest.mark.parametrize("outcome", ["ready", "error", "cancel", "covered"])
 async def test_preview_preparation_does_not_consume_approval_timeout(tmp_path: Path, monkeypatch, outcome: str) -> None:
+    deadline: float = _CONFIGURED_DEADLINE
+    if outcome != "ready":
+        deadline = _SHORT_DEADLINE
+        monkeypatch.setattr(MainScreen, "_approval_timeout_seconds", lambda _self: _SHORT_DEADLINE)
     started = asyncio.Event()
     release = asyncio.Event()
     original = DiffView.prepare
@@ -48,7 +59,7 @@ async def test_preview_preparation_does_not_consume_approval_timeout(tmp_path: P
         responses.append(event)
 
     await bus.subscribe(ApprovalResponse, collect)
-    app = make_chrys_app(tmp_path, event_bus=bus, settings=Settings(approval_timeout_seconds=1))
+    app = make_chrys_app(tmp_path, event_bus=bus, settings=Settings(approval_timeout_seconds=_CONFIGURED_DEADLINE))
     try:
         async with app.run_test(size=(120, 36)) as pilot:
             main = app._main_screen
@@ -68,11 +79,11 @@ async def test_preview_preparation_does_not_consume_approval_timeout(tmp_path: P
                 pilot=pilot,
                 description="approval dialog mounted while preparing preview",
             )
-            # Outlast the configured deadline while the actual DiffView is blocked.
+            # Outlast the deadline while the actual DiffView is blocked.
             assert not await wait_until(
                 lambda: bool(responses) or bool(main._events._approval()._timeouts),
                 pilot=pilot,
-                timeout=1.5,
+                timeout=deadline + 0.5,
             )
             if outcome == "cancel":
                 await bus.publish(ApprovalCancelled(request_id="preview"), raise_handler_errors=True)
@@ -92,9 +103,10 @@ async def test_preview_preparation_does_not_consume_approval_timeout(tmp_path: P
                         return bool(previews) and all(preview.is_ready for preview in previews)
 
                     await wait_for(previews_ready, pilot=pilot, description="preview ready behind another screen")
-                    # A covered dialog is not shown, so its deadline has not started.
+                    # A covered dialog is not shown, so its deadline has not started: the ready preview's
+                    # callback would arm it on the next pumps, well inside 0.3 s.
                     assert not await wait_until(
-                        lambda: bool(main._events._approval()._timeouts), pilot=pilot, timeout=0.5
+                        lambda: bool(main._events._approval()._timeouts), pilot=pilot, timeout=0.3
                     )
                     await app.pop_screen()
                 await wait_for(
