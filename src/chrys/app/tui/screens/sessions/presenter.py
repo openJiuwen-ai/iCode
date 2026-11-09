@@ -21,7 +21,7 @@ from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.util.session_ids import session_short_id
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     from chrys.service.state.session_listing import SessionListingEntry
     from chrys.service.state.store import ChatSessionMeta, SessionMeta, WorkflowSessionMeta
@@ -357,6 +357,39 @@ def rank_search_matches(
         elif match.prompt:
             prompt_only.append(entry)
     return (*visible, *prompt_only)
+
+
+def fork_anchors(
+    page: Sequence[SessionListingEntry],
+    candidates: Iterable[SessionListingEntry],
+    matches: Iterable[SessionListingEntry],
+) -> tuple[SessionListingEntry, ...]:
+    """The sessions a result page shows only to anchor its forks: their parents that do not match.
+
+    The rows nest a fork under its parent and keep an unmatched parent,
+    dimmed, so the tree stays anchored (:func:`build_session_rows`). A result
+    page holds only *matches*, so each fork's parents come from *candidates*
+    (the snapshot entries searched), up its chain to the first one that
+    matches: that one lists on its own result page, and a fork on another
+    page starts its own tree there, as when browsing.
+    """
+    by_short: dict[str, SessionListingEntry] = {}
+    for entry in candidates:
+        by_short.setdefault(session_short_id(entry.session_id), entry)
+    # Also ends a chain at an anchor already taken, and so at any parent cycle.
+    taken = {session_short_id(entry.session_id) for entry in matches}
+    anchors: list[SessionListingEntry] = []
+    for entry in page:
+        meta = entry.meta
+        while meta.kind == "chat" and meta.parent_session_id:
+            short = session_short_id(meta.parent_session_id)
+            parent = by_short.get(short)
+            if parent is None or short in taken:
+                break
+            taken.add(short)
+            anchors.append(parent)
+            meta = parent.meta
+    return tuple(anchors)
 
 
 def _prompt_haystack(meta: ChatSessionMeta) -> str:

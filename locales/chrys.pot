@@ -10902,8 +10902,8 @@ msgstr ""
 msgid "tui.sessions.empty.filtered"
 msgstr ""
 
-#. English: No sessions on this page match your search.
-#. chrys-meta={"fingerprint":"049a3963099d161b2180c5b93b2c564d43b83dbb75e58dc5dbb04e68f9e65e7f","multiline":false,"placeholders":[]}
+#. English: No sessions match your search.
+#. chrys-meta={"fingerprint":"d8dd0f10e31974129a71eb3a145c7b7b177b70cbaef3d24bc9c4d03f8d477496","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.empty.search"
 msgstr ""
@@ -10914,8 +10914,8 @@ msgstr ""
 msgid "tui.sessions.loading"
 msgstr ""
 
-#. English: Search this page… (IDs, titles, directories & your prompts)
-#. chrys-meta={"fingerprint":"c8236316f626be5b76eee19ff493ddc06cf15453d733618a4467a1b5b31e0f63","multiline":false,"placeholders":[]}
+#. English: Search all sessions… (IDs, titles, directories & your prompts)
+#. chrys-meta={"fingerprint":"3e45418cb122de3d72564c493b36d3f6380ff6c4bad686e8fb01c7455aa74d74","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.search_placeholder"
 msgstr ""

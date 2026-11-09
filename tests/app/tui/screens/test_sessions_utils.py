@@ -339,13 +339,15 @@ async def test_rapid_delete_while_reload_is_pending_renders_from_the_last_render
         assert [table.get_row_at(i)[0].plain for i in range(2)] == ["session1", "session3"]
         assert screen._get_selected_session_id() == "session-3"
 
-        # The second delete's reload replaced the first.
+        # The second delete's reload replaced the first, and reads only once the first's read is done.
+        store.release_all()
         await wait_for_blocked_loads(store, pilot, 2)
-        await wait_for(lambda: store.cancelled_loads == 1, pilot=pilot, description="first reload is cancelled")
         store.release_all()
         await wait_for_load_idle(screen, pilot)
         assert [table.get_row_at(i)[0].plain for i in range(2)] == ["session1", "session3"]
         assert screen._get_selected_session_id() == "session-3"
+        assert store.most_loads_running == 1
+        assert store.cancelled_loads == 0
 
 
 @pytest.mark.asyncio

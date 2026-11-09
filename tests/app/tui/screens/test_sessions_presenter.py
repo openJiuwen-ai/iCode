@@ -19,6 +19,7 @@ from chrys.app.tui.screens.sessions.presenter import (
     build_session_rows,
     build_workflow_rows,
     column_by_key,
+    fork_anchors,
     format_tokens,
     rank_search_matches,
     row_cells,
@@ -538,6 +539,26 @@ class TestRankSearchMatches:
                 cell_matches,
                 prompt_only,
             ), query
+
+    def test_fork_anchors_are_the_unmatched_parents_up_each_fork_chain(self) -> None:
+        """A result page holds only matches: these come along so its forks keep the tree the rows show."""
+        entries = _entries(
+            _meta("root", title="plain root"),
+            _meta("mid", parent="root", title="plain middle"),
+            _meta("leaf", parent="mid", title="needle leaf"),
+            _meta("matched", title="needle parent"),
+            _meta("child", parent="matched", title="needle child"),
+            _meta("loop-a", parent="loop-b", title="plain a"),
+            _meta("loop-b", parent="loop-a", title="plain b"),
+            _meta("in-loop", parent="loop-a", title="needle in a loop"),
+        )
+        ranked = rank_search_matches(entries, "needle", status_labels=workflow_status_labels())
+        # "matched" lists on another result page, where the fork's own chain ends.
+        page = [entry for entry in ranked if entry.session_id != "matched"]
+        anchors = fork_anchors(page, entries, ranked)
+        # A corrupt parent cycle ends at the anchor it started from.
+        assert [entry.session_id for entry in anchors] == ["mid", "root", "loop-a", "loop-b"]
+        assert fork_anchors([entry for entry in ranked if entry.session_id == "child"], entries, ranked) == ()
 
     def test_workflow_sessions_match_their_run_title_status_and_input(self) -> None:
         sessions: list[SessionMeta] = [
