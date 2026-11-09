@@ -16,14 +16,14 @@ uv run python aixcoding/mock/model_catalog/server.py --no-auth  # 只挂目录�
 
 **一个端口同时是目录服务和登录服务**：客户端先登录才同步得了目录，所以本 mock
 默认把 `aixcoding_auth` 的路由挂在同一个端口（`/api/v1/...`、`/device/...`），
-而 `AIXCODING_AUTH_ENVIRONMENT=local` 指向的正是 :7777 —— 不用再单独起登录 mock。
+而 `AIXCODING_ENVIRONMENT=local` 指向的正是 :7777 —— 不用再单独起登录 mock。
 `--auth-mode manual` 时授权要人在 `http://127.0.0.1:7777/device/verify` 点确认，
 默认 `auto` 自动放行。
 
 然后让 iCode 指向它：
 
 ```bash
-AIXCODING_AUTH_ENVIRONMENT=local uv run aixcoding-cli
+AIXCODING_ENVIRONMENT=local uv run aixcoding-cli
 ```
 
 ## 端点

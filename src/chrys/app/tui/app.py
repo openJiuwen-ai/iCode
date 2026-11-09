@@ -1501,7 +1501,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
         # sync keeps the previous list and never breaks startup), then the
         # poll runtime started below keeps a long-lived session current
         # without a restart (aixcoding/docs/batches/catalog-sync/design.md).
-        from chrys.service.aixcoding.catalog import (
+        from chrys.service.aixcoding.models.catalog import (
             start_sync_runtime,
             stop_sync_runtime,
             sync_catalog_blocking,

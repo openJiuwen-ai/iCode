@@ -127,7 +127,7 @@ def _make_credential_rejected_callback(screen: SilentCheckScreen) -> Callable[[]
 
     def _apply() -> None:
         # Lazy import — the silent check imports this module on every startup.
-        from chrys.service.aixcoding.catalog import stop_sync_runtime
+        from chrys.service.aixcoding.models.catalog import stop_sync_runtime
 
         stop_sync_runtime()
         screen.notify(_CREDENTIAL_REJECTED_TOAST, severity="warning")
@@ -158,7 +158,7 @@ def open_login_dialog(host: LoginActionHost) -> None:
         # The login changed whose catalog is served: pull one now instead of
         # waiting out an interval that began before it. Lazy import — the
         # silent check imports this module on every startup.
-        from chrys.service.aixcoding.catalog import resume_sync_runtime
+        from chrys.service.aixcoding.models.catalog import resume_sync_runtime
 
         resume_sync_runtime()
 
@@ -185,7 +185,7 @@ def perform_logout(host: LoginActionHost) -> None:
     # A logged-out session has no credential to poll with; stop it so an
     # in-flight sync cannot publish the logged-out account's catalog. Lazy
     # import — the silent check imports this module on every startup.
-    from chrys.service.aixcoding.catalog import stop_sync_runtime
+    from chrys.service.aixcoding.models.catalog import stop_sync_runtime
 
     stop_sync_runtime()
     host.notify(_LOGGED_OUT_TOAST)

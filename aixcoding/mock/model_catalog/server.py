@@ -6,15 +6,14 @@ Stands in for whatever backend will eventually publish the catalog, so the
 client's sync path — fetch, validate, replace wholesale, skip on unchanged
 version — can be exercised locally.
 
-The catalog is served on the reference server's dispatch path: that is the path
-the client will build for itself once ``CHRYS_MODEL_CATALOG_URL`` becomes a
-base (docs/model-catalog-sync-details.md §7). Until that lands the client takes
-a full URL, so spell the path out when pointing it here.
+The catalog is served on the reference server's dispatch path. The client
+appends this path to the base URL from ``aixcoding.toml`` or the deployment
+tier; a full endpoint override must include the path explicitly.
 
 One port serves both backends the client needs before it can sync: the catalog
 on the reference dispatch path, and the device-code login flow on the auth
 mock's paths (``/api/v1/...``, ``/device/...``), which is why this listens on
-7777 — the port ``AIXCODING_AUTH_ENVIRONMENT=local`` already names. ``--no-auth``
+7777 — the port ``AIXCODING_ENVIRONMENT=local`` already names. ``--no-auth``
 serves the catalog alone.
 
 Usage::
@@ -23,7 +22,7 @@ Usage::
                   [--catalog FILE] [--mode {ok,empty,invalid,error,slow,stale}]
                   [--no-auth] [--auth-mode {auto,manual}]
 
-    AIXCODING_AUTH_ENVIRONMENT=local uv run aixcoding-cli
+    AIXCODING_ENVIRONMENT=local uv run aixcoding-cli
 
 Endpoints::
 
@@ -80,8 +79,7 @@ from aixcoding.mock.model_catalog.state import (
 
 logger = logging.getLogger("chrys.mock_model_catalog")
 
-#: The path the client builds once ``CHRYS_MODEL_CATALOG_URL`` is a base, and
-#: the one to spell out while the client still takes a full URL.
+#: Dispatch path appended to a configured base; full endpoint overrides include it explicitly.
 CATALOG_ROUTE = "/llm/api/v1/continue-config/dispatch"
 CONTROL_ROUTE = "/mock/control"
 #: The OpenAI-style endpoint a synced profile's ``apiBase`` points at: with
@@ -92,7 +90,7 @@ LLM_ROUTE = "/v1/chat/completions"
 DEFAULT_HOST = "127.0.0.1"
 #: The auth mock's port, because this is one server now: the client logs in
 #: before it can sync a catalog, so both mock backends answer on it. The client's
-#: ``AIXCODING_AUTH_ENVIRONMENT=local`` already names :7777, which is why the mock
+#: ``AIXCODING_ENVIRONMENT=local`` already names :7777, which is why the mock
 #: moved to it rather than the client.
 DEFAULT_PORT = 7777
 

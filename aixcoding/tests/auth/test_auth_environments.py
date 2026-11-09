@@ -1,13 +1,25 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Endpoint resolution tests: tier selection and origin override."""
+"""Endpoint resolution tests: tier selection, app injection and origin override."""
 
 from __future__ import annotations
 
 import pytest
 
 from chrys.kernel.aixcoding.auth import Environment
-from chrys.kernel.aixcoding.auth.environments import resolve_endpoints, resolve_environment
+from chrys.kernel.aixcoding.auth.environments import (
+    ENVIRONMENT_VARIABLE,
+    configure_environment,
+    resolve_endpoints,
+    resolve_environment,
+)
+
+
+@pytest.fixture(autouse=True)
+def reset_configured_environment():
+    configure_environment(None)
+    yield
+    configure_environment(None)
 
 
 def test_default_environment_is_prod() -> None:
@@ -18,12 +30,30 @@ def test_default_environment_is_prod() -> None:
     "raw,expected", [("local", Environment.LOCAL), ("DEV", Environment.DEV), ("prod", Environment.PROD)]
 )
 def test_environment_variable_selects_tier(raw: str, expected: Environment) -> None:
-    assert resolve_environment({"AIXCODING_AUTH_ENVIRONMENT": raw}) is expected
+    assert resolve_environment({ENVIRONMENT_VARIABLE: raw}) is expected
 
 
 @pytest.mark.parametrize("raw", ["", "staging", "prod ", "0", "null"])
 def test_unknown_environment_falls_back_to_prod(raw: str) -> None:
-    assert resolve_environment({"AIXCODING_AUTH_ENVIRONMENT": raw}) is Environment.PROD
+    assert resolve_environment({ENVIRONMENT_VARIABLE: raw}) is Environment.PROD
+
+
+@pytest.mark.parametrize("old_name", ["AIXCODING_AUTH_ENVIRONMENT", "CHRYS_AUTH_ENVIRONMENT"])
+def test_old_environment_names_are_ignored(old_name: str) -> None:
+    assert resolve_environment({old_name: "local"}) is Environment.PROD
+
+
+def test_configure_environment_injects_production_default() -> None:
+    configure_environment("local")
+    assert resolve_environment() is Environment.LOCAL
+    assert resolve_environment({ENVIRONMENT_VARIABLE: "dev"}) is Environment.DEV
+
+
+def test_resolve_endpoints_preserves_injected_environment() -> None:
+    configure_environment("local")
+    auth_url, data_url = resolve_endpoints()
+    assert auth_url == "http://localhost:7777/api/v1"
+    assert data_url == "http://localhost:7777/api/v1"
 
 
 def test_local_tier_points_at_mock_port() -> None:
@@ -63,5 +93,5 @@ def test_invalid_server_url_is_ignored(bad: str) -> None:
 
 
 def test_endpoints_follow_environment_variable_when_tier_not_passed() -> None:
-    auth_url, _ = resolve_endpoints(environ={"AIXCODING_AUTH_ENVIRONMENT": "local"})
+    auth_url, _ = resolve_endpoints(environ={ENVIRONMENT_VARIABLE: "local"})
     assert auth_url == "http://localhost:7777/api/v1"

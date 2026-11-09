@@ -17,7 +17,7 @@
 | [batches/diagnostics](batches/diagnostics/) | 功能批次 | 本地诊断包（config + logging_support；crash/snapshot/launcher 已退役） |
 | [batches/auth-isolation-mock-ports](batches/auth-isolation-mock-ports/) | 功能批次 | auth 测试默认构造隔离 + mock launcher 动态端口（local-verify 前置微改动，豁免管线） |
 | [batches/catalog-sync](batches/catalog-sync/) | 功能批次 | 模型目录同步 + 档案集中管理（服务端目录整替、15min 轮询、登录联动、模型配置只读） |
-| [batches/catalog-auth-gating](batches/catalog-auth-gating/) | 功能批次 | catalog 登录预验证（未登录/失效不请求）+ mock 凭证 401 校验 + 响应详版 detail 日志 |
+| [batches/catalog-auth-gating](batches/catalog-auth-gating/) | 功能批次 | 模型目录登录预验证（未登录/失效不请求）+ mock 凭证 401 校验 + 响应详版 detail 日志 |
 | [batches/branding-and-command](batches/branding-and-command/) | 功能批次 | 功能品牌与命令切换 C4（AIxCoding 运行时品牌 + aixcoding-cli 全渠道入口/制品 + 安装迁移与卸载；纯文档后置） |
 | [batches/ai-gates](batches/ai-gates/) | 治理批次 | AI 流程闸门 |
 | [batches/ci-gate](batches/ci-gate/) | 治理批次 | 定制 CI 质量门（`aixcoding-tests.yml`） |
@@ -30,7 +30,7 @@
 | [batches/windows-matrix](batches/windows-matrix/) | 治理批次 | 定制门扩 Windows 矩阵（test/govern/gate 三层，DPAPI 平台真实用例实跑） |
 | [batches/composition-tests](batches/composition-tests/) | 治理批次 | 服务组合测试（登录→LLM 请求→登出的生产组装链路，凭据生命周期闭环） |
 | [batches/docs-reorg](batches/docs-reorg/) | 治理批次 | docs 目录分层组织（`batches/` 布局 + 本索引，ADR-0016） |
-| [batches/catalog-readonly-coverage](batches/catalog-readonly-coverage/) | 治理批次 | catalog 只读行为正向测试覆盖盘点与补缺（覆盖矩阵落盘 + busy 恒只读 + 指示器 configure 入口锚定） |
+| [batches/catalog-readonly-coverage](batches/catalog-readonly-coverage/) | 治理批次 | 模型目录只读行为正向测试覆盖盘点与补缺（覆盖矩阵落盘 + busy 恒只读 + 指示器 configure 入口锚定） |
 | [batches/upstream-merge-v0.32.2](batches/upstream-merge-v0.32.2/) | 升级批次 | 追上游 v0.32.2（基线 0.31.0 → 0.32.2） |
 | [batches/launcher-retirement](batches/launcher-retirement/) | 退役批次 | 退役 diagnostics launcher（ADR-0013） |
 | [batches/restructure](batches/restructure/) | 改造专项 | 目录重组执行计划——迁入考古参考（管线外） |
@@ -40,3 +40,4 @@
 | [batches/internal-installer](batches/internal-installer/) | 功能批次 | 内网安装器与发布约定迁移（`aixcoding/release/` 分发物料：镜像安装器双脚本 + INSTALL.md + 发布约定） |
 | [batches/guard-hooks](batches/guard-hooks/) | 功能批次 | 安全护栏迁入（提示词层 + 工具层阻塞拦截规则包 + 启动自装，`src/chrys/kernel/aixcoding/guard`） |
 | [batches/guard-switches](batches/guard-switches/) | 功能批次 | 护栏开关（总开关 / 单规则 / 写入范围，`guardctl.py` + 免 uv 入口 `guardctl.cmd` / `guardctl.sh`） |
+| [batches/environment-config](batches/environment-config/) | 功能批次 | 定制环境配置与上游 Settings 解耦（AIXCODING_ENVIRONMENT + aixcoding.toml；service 共享快照 + app 注入；零兼容；ADR-0022） |

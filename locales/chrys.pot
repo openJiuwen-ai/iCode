@@ -1284,12 +1284,6 @@ msgstr ""
 msgid "settings.max_transient_retries_invalid"
 msgstr ""
 
-#. English: Model catalog base URL
-#. chrys-meta={"fingerprint":"e6cd53a77c510f41e59f222a3b3dc6a61c6904ecd2f7682c4ac327f4d48c787f","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.model.catalog.base_url.label"
-msgstr ""
-
 #. English: Active model profile
 #. chrys-meta={"fingerprint":"1fa94dedf5f593c4f5b9d72de45505809a093ee822d1cd987a4ae11d4865daf5","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py

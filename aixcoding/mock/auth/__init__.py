@@ -14,7 +14,7 @@ client must parse the envelope, never the HTTP status.
 Public API lives in :mod:`aixcoding.mock.auth.server`; the canonical
 entry points are :func:`aixcoding.mock.auth.server.create_server`
 (tests) and ``python aixcoding/mock/auth/server.py`` (CLI, port 7777).
-Point iCode at it with ``AIXCODING_AUTH_ENVIRONMENT=local``.
+Point iCode at it with ``AIXCODING_ENVIRONMENT=local``.
 
 Layout::
 

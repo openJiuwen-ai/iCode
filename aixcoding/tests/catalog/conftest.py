@@ -25,15 +25,17 @@ from chrys.kernel.aixcoding.auth import AccountInfo
 
 @pytest.fixture(autouse=True)
 def _reset_catalog_sync_singleton() -> None:
-    """Stop and fully reset the poll singleton around every test."""
-    from chrys.service.aixcoding import catalog
+    """Stop the poll singleton and clear the shared config around every test."""
+    from chrys.service.aixcoding.config import load_config
+    from chrys.service.aixcoding.models import catalog
 
+    load_config.cache_clear()
     yield
     catalog.stop_sync_runtime()
     with catalog._runtime_lock:
         catalog._runtime = None
         catalog._last_wiring = None
-    catalog._warned_retired_env.clear()
+    load_config.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +53,7 @@ def _verified_login_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr("chrys.kernel.aixcoding.auth.get_login_session", lambda: session)
     monkeypatch.delenv("AIXCODING_MODEL_CATALOG_TOKEN", raising=False)
+    monkeypatch.delenv("AIXCODING_ENVIRONMENT", raising=False)
 
 
 async def wait_until(

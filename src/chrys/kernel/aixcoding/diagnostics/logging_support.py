@@ -132,18 +132,15 @@ def setup_logging(cfg: DiagnosticsConfig, config_dir: Path | None = None) -> Pat
     return main_path
 
 
-def ensure_file_sink(config_dir: Path | None = None) -> Path | None:
-    """Fail-safe composition of load_config + setup_logging; never raises.
+def ensure_file_sink(config: DiagnosticsConfig, config_dir: Path | None = None) -> Path | None:
+    """Apply a parsed diagnostics config without raising into CLI startup.
 
-    The startup wiring target (app/aixcoding/startup.py): both steps are
-    individually fail-safe already; this adds containment for unexpected
-    failures the same way (stderr note, §9) so the sink can never break CLI
-    startup. Idempotent through setup_logging's sink reuse.
+    The startup wiring target (app/aixcoding/startup): configuration is read
+    by the service-tier shared snapshot; this function only applies it.
+    Idempotent through setup_logging's sink reuse.
     """
     try:
-        from .config import load_config
-
-        return setup_logging(load_config(config_dir), config_dir)
+        return setup_logging(config, config_dir)
     except Exception as exc:
         # Degraded but observable (§9): a startup hook must never raise.
         print(f"aixcoding.logging: file sink setup failed ({exc}); logs off", file=sys.stderr)

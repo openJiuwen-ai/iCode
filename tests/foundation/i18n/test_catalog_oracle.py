@@ -23,9 +23,8 @@ def test_live_catalog_artifacts_contain_effective_translations_and_are_loadable(
     pot = _read_catalog(i18n.POT_PATH)
     po = _read_catalog(i18n.ZH_PO_PATH)
 
-    # AIxCoding catalog: +1 borrow-shell key
     # AIxCoding tui: +4 borrow-shell keys
-    assert len(EXPECTED_MESSAGE_IDS) == 2705
+    assert len(EXPECTED_MESSAGE_IDS) == 2704
     assert {_entry_id(message) for message in pot if message.id} == EXPECTED_MESSAGE_IDS
     assert {_entry_id(message) for message in po if message.id} == EXPECTED_MESSAGE_IDS
     assert set(_effective_catalog_entries(po)) == EXPECTED_MESSAGE_IDS

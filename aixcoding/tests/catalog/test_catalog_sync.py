@@ -3,8 +3,8 @@
 """Tests for the model catalog sync (migrated from the 0.28 deployment).
 
 The sync itself is exercised against a stubbed fetch: what these cover is the
-clock, the generation guard, the two-phase publish, the retired-name warnings
-and the in-memory replacement a sync triggers — the parts that decide whether
+clock, the generation guard, the two-phase publish, the absence of retired-name
+warnings and the in-memory replacement a sync triggers — the parts that decide whether
 a server-side change reaches a running session (aixcoding/docs/batches/
 catalog-sync/test-plan.md).
 """
@@ -26,8 +26,8 @@ from aixcoding.tests.catalog.conftest import wait_until
 
 from chrys.kernel.aixcoding.auth import AccountInfo
 from chrys.kernel.aixcoding.diagnostics.logging_support import DETAIL_LEVEL
-from chrys.service.aixcoding import catalog as catalog_module
-from chrys.service.aixcoding.catalog import (
+from chrys.service.aixcoding.models import catalog as catalog_module
+from chrys.service.aixcoding.models.catalog import (
     CatalogSyncResult,
     ModelCatalog,
     ModelCatalogError,
@@ -279,26 +279,50 @@ async def test_a_failing_callback_does_not_kill_the_loop(monkeypatch: pytest.Mon
 
 
 def test_the_tier_is_auths_tier(monkeypatch: pytest.MonkeyPatch) -> None:
-    """One deployment, one variable: the catalog must not name its own."""
-    from chrys.foundation.config import process_settings as process_settings_module
+    """One shared deployment environment drives auth and the model catalog."""
     from chrys.kernel.aixcoding.auth import environments
     from chrys.kernel.aixcoding.auth.types import Environment
+    from chrys.service.aixcoding.config import load_config
+    from chrys.service.aixcoding.config import loader as config_loader
 
-    assert catalog_module.ENVIRONMENT_ENV == environments.ENVIRONMENT_VARIABLE
-    assert set(catalog_module._CATALOG_BASES) == {tier.value for tier in Environment}
+    expected_tiers = {tier.value for tier in Environment}
+    assert set(catalog_module._CATALOG_BASES) == set(config_loader.VALID_ENVIRONMENTS) == expected_tiers
     assert Environment.PROD.value == catalog_module.DEFAULT_ENVIRONMENT
-
-    class _NoConfiguredBase:
-        model_catalog_base_url = ""
-
-    monkeypatch.setattr(process_settings_module, "process_settings", _NoConfiguredBase)
 
     for tier in Environment:
         monkeypatch.setenv(environments.ENVIRONMENT_VARIABLE, tier.value)
+        load_config.cache_clear()
+        assert catalog_module.catalog_tier() == tier.value
         assert catalog_module.catalog_base_url() == catalog_module._CATALOG_BASES[tier.value]
 
     monkeypatch.setenv(environments.ENVIRONMENT_VARIABLE, "staging")
+    load_config.cache_clear()
     assert catalog_module.catalog_base_url() == catalog_module._CATALOG_BASES["prod"]
+
+
+@pytest.mark.parametrize("base_url", ["http://configured.example", "http://configured.example/"])
+def test_toml_base_url_appends_catalog_path(monkeypatch: pytest.MonkeyPatch, base_url: str) -> None:
+    snapshot = SimpleNamespace(environment="dev", model_catalog=SimpleNamespace(base_url=base_url))
+    monkeypatch.setattr(catalog_module, "load_config", lambda: snapshot)
+    assert catalog_module.catalog_base_url() == base_url
+    assert catalog_module.catalog_url() == f"http://configured.example{catalog_module.CATALOG_PATH}"
+
+
+def test_full_url_env_has_highest_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    snapshot = SimpleNamespace(environment="dev", model_catalog=SimpleNamespace(base_url="http://configured.example"))
+    monkeypatch.setattr(catalog_module, "load_config", lambda: snapshot)
+    monkeypatch.setenv(catalog_module.CATALOG_URL_ENV, "http://full.example/complete")
+    assert catalog_module.catalog_url() == "http://full.example/complete"
+
+
+def test_old_settings_base_url_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden_settings_read():
+        raise AssertionError("the model catalog must not read upstream process settings")
+
+    snapshot = SimpleNamespace(environment="prod", model_catalog=SimpleNamespace(base_url=""))
+    monkeypatch.setattr(catalog_module, "load_config", lambda: snapshot)
+    monkeypatch.setattr("chrys.foundation.config.process_settings.process_settings", forbidden_settings_read)
+    assert catalog_module.catalog_base_url() == "http://82.187.34.98/csas"
 
 
 def test_install_snapshot_forgets_deleted_profiles(tmp_path: Path) -> None:
@@ -659,26 +683,22 @@ async def test_poll_survives_unexpected_errors(monkeypatch: pytest.MonkeyPatch) 
 @pytest.mark.parametrize(
     "retired_name",
     [
+        "CHRYS_MODEL_CATALOG_BASE_URL",
         "CHRYS_MODEL_CATALOG_URL",
         "CHRYS_MODEL_CATALOG_TOKEN",
         "CHRYS_MODEL_CATALOG_SYNC_INTERVAL",
         "CHRYS_REMOTE_MODEL_CONFIG_URL",
     ],
 )
-def test_retired_env_names_warn_and_do_not_apply(
+def test_retired_environment_names_have_no_effect_or_warning(
     retired_name: str,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     detail_capture: list[logging.LogRecord],
 ) -> None:
-    """Retired 0.28 names neither act nor leak their values into the log."""
-    from chrys.foundation.config import process_settings as process_settings_module
-
-    class _NoConfiguredBase:
-        model_catalog_base_url = ""
-
-    monkeypatch.setattr(process_settings_module, "process_settings", _NoConfiguredBase)
-    monkeypatch.setenv(catalog_module.ENVIRONMENT_ENV, "prod")
+    """Retired names are not read, detected, aliased or warned about."""
+    snapshot = SimpleNamespace(environment="prod", model_catalog=SimpleNamespace(base_url=""))
+    monkeypatch.setattr(catalog_module, "load_config", lambda: snapshot)
     monkeypatch.setattr(
         "chrys.kernel.aixcoding.auth.get_login_session",
         lambda: SimpleNamespace(stored_token=""),
@@ -687,40 +707,15 @@ def test_retired_env_names_warn_and_do_not_apply(
         monkeypatch.delenv(env, raising=False)
     base = catalog_module.catalog_url()
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level(logging.WARNING):
         monkeypatch.setenv(retired_name, f"retired-value-for-{retired_name}")
-        assert catalog_module.catalog_url() == base, "a retired name must not configure the url"
-        assert catalog_module.sync_interval_seconds() == 15 * 60, "a retired name must not change the interval"
-        assert catalog_module._catalog_token() == "", "a retired name must not supply a credential"
+        assert catalog_module.catalog_url() == base
+        assert catalog_module.sync_interval_seconds() == 15 * 60
+        assert catalog_module._catalog_token() == ""
 
-    warnings = "\n".join(record.getMessage() for record in detail_capture)  # 方案六: detail volume
-    assert retired_name in warnings, f"the retired name {retired_name} should be warned about"
-    assert f"retired-value-for-{retired_name}" not in warnings, "values must not leak into the log"
-    # logging-routing-fixes D: a still-set retired env name is a user-actionable
-    # configuration error — the one public-channel exception to 方案六's
-    # detail-only catalog routing; it must reach the main volume as a WARNING.
-    public = [
-        record for record in caplog.records if record.name == "aixcoding.catalog" and record.levelno == logging.WARNING
-    ]
-    assert any(retired_name in record.getMessage() for record in public), (
-        "the retired-name warning must reach the main volume as a WARNING (logging-routing-fixes D)"
-    )
-    assert not any(f"retired-value-for-{retired_name}" in record.getMessage() for record in public), (
-        "values must not leak into the public volume either"
-    )
-    # Pin the double-write shape (self-review S3): a DETAIL record from
-    # aixcoding.detail.catalog whose text matches the public WARNING — a text
-    # drift between the two volumes must fail here, not slip through.
-    detail_records = [
-        record
-        for record in detail_capture
-        if record.name == "aixcoding.detail.catalog" and retired_name in record.getMessage()
-    ]
-    assert detail_records, "the detail double-write must come from aixcoding.detail.catalog"
-    assert detail_records[0].levelno == catalog_module._DETAIL_LEVEL, "the detail side logs at DETAIL level"
-    assert any(detail_records[0].getMessage() == record.getMessage() for record in public), (
-        "the detail copy must match the public WARNING text"
-    )
+    messages = "\n".join(record.getMessage() for record in [*caplog.records, *detail_capture])
+    assert retired_name not in messages
+    assert f"retired-value-for-{retired_name}" not in messages
 
 
 def test_new_env_names_take_priority(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -865,7 +860,7 @@ def test_login_actions_wire_sync_calls() -> None:
 def test_perform_logout_stops_the_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     """Behavioural anchor: logout stops the poll even with the runtime never started."""
     from chrys.app.aixcoding.tui import login_actions
-    from chrys.service.aixcoding import catalog
+    from chrys.service.aixcoding.models import catalog
 
     stopped: list[bool] = []
     monkeypatch.setattr(catalog, "stop_sync_runtime", lambda: stopped.append(True))
@@ -895,7 +890,7 @@ def test_perform_logout_stops_the_poll(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_credential_rejected_callback_mirrors_logout(monkeypatch: pytest.MonkeyPatch) -> None:
     """方案四: the rejected hook stops the poll, toasts and refreshes — via call_from_thread."""
     from chrys.app.aixcoding.tui import login_actions
-    from chrys.service.aixcoding import catalog
+    from chrys.service.aixcoding.models import catalog
 
     events: list[str] = []
     monkeypatch.setattr(catalog, "stop_sync_runtime", lambda: events.append("stop"))
@@ -924,7 +919,7 @@ def test_credential_rejected_callback_mirrors_logout(monkeypatch: pytest.MonkeyP
 def test_credential_rejected_callback_on_the_ui_thread_applies_directly(monkeypatch: pytest.MonkeyPatch) -> None:
     """call_from_thread raises RuntimeError on the UI thread: fall back to applying directly."""
     from chrys.app.aixcoding.tui import login_actions
-    from chrys.service.aixcoding import catalog
+    from chrys.service.aixcoding.models import catalog
 
     events: list[str] = []
     monkeypatch.setattr(catalog, "stop_sync_runtime", lambda: events.append("stop"))
