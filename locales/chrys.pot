@@ -5055,12 +5055,6 @@ msgstr ""
 msgid "tui.btw.unavailable"
 msgstr ""
 
-#. English: evolution {stage}
-#. chrys-meta={"fingerprint":"213dcab508e98efe844bd6e8477d10f7e22a0d6cc09837a04e065130c59ad0b7","multiline":false,"placeholders":["stage"]}
-#: src/chrys/app/features/buddy/commands.py
-msgid "tui.buddy.card.evolution"
-msgstr ""
-
 #. English: {level} · fully grown
 #. chrys-meta={"fingerprint":"ecb013916a40fb039a3395b0b7c6352074c921954892bb07f42cb356700b2460","multiline":false,"placeholders":["level"]}
 #: src/chrys/app/features/buddy/commands.py

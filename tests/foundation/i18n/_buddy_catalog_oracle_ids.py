@@ -6,7 +6,6 @@ from __future__ import annotations
 
 BUDDY_MESSAGE_IDS = frozenset(
     {
-        "tui.buddy.card.evolution",
         "tui.buddy.card.fully_grown",
         "tui.buddy.card.level",
         "tui.buddy.card.progress",

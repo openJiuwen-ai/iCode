@@ -5098,12 +5098,6 @@ msgstr "顺便问"
 msgid "tui.btw.unavailable"
 msgstr "会话正在切换，暂时无法使用顺便问。请就绪后重试。"
 
-#. English: evolution {stage}
-#. chrys-meta={"fingerprint":"213dcab508e98efe844bd6e8477d10f7e22a0d6cc09837a04e065130c59ad0b7","multiline":false,"placeholders":["stage"]}
-#: src/chrys/app/features/buddy/commands.py
-msgid "tui.buddy.card.evolution"
-msgstr "进化 {stage}"
-
 #. English: {level} · fully grown
 #. chrys-meta={"fingerprint":"ecb013916a40fb039a3395b0b7c6352074c921954892bb07f42cb356700b2460","multiline":false,"placeholders":["level"]}
 #: src/chrys/app/features/buddy/commands.py
@@ -17483,6 +17477,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.btw.subtitle"
 #~ msgstr "关闭结束本次顺便问"
+
+#~ msgid "tui.buddy.card.evolution"
+#~ msgstr "进化 {stage}"
 
 #~ msgid "tui.buddy.hums"
 #~ msgstr "💭 {name} 若有所思地哼着歌..."
