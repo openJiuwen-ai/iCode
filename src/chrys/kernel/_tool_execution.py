@@ -85,6 +85,7 @@ from ._result_ceiling import apply_result_ceiling
 from ._tool_arg_errors import (
     _accepts_arbitrary_argument_names,
     _argument_validation_message,
+    _integer_limit_argument_message,
     _rejects_unexpected_arguments,
     _unexpected_argument_names,
 )
@@ -300,7 +301,9 @@ def _arguments_unparseable(arguments: Any) -> bool:
         return True
     try:
         json.loads(arguments)
-    except json.JSONDecodeError:
+    # A bare ValueError is an integer literal past Python's integer-string
+    # conversion limit: as unparseable as malformed JSON.
+    except ValueError:
         return True
     return False
 
@@ -322,10 +325,30 @@ def _arguments_not_object(arguments: Any) -> bool:
             return False
         try:
             loaded = json.loads(arguments)
-        except json.JSONDecodeError:
+        # A bare ValueError is an integer literal past Python's integer-string
+        # conversion limit: not an object this build can hand a tool.
+        except ValueError:
             return True
         return not isinstance(loaded, dict)
     return not isinstance(arguments, Mapping)
+
+
+def _arguments_exceed_integer_limit(arguments: Any) -> bool:
+    """True when valid-JSON arguments hold an integer past Python's conversion limit.
+
+    ``json.loads`` then raises a bare ValueError rather than ``JSONDecodeError``,
+    and the payload's shape is an object: the generic "arguments must be a valid
+    JSON object" advice would misdescribe what the model has to repair.
+    """
+    if not isinstance(arguments, str) or not arguments:
+        return False
+    try:
+        json.loads(arguments)
+    except json.JSONDecodeError:
+        return False
+    except ValueError:
+        return True
+    return False
 
 
 def _middleware_arguments_equal(left: Any, right: Any) -> bool:
@@ -787,7 +810,15 @@ async def _invoke_function_call(
             function_call_may_be_truncated
             and _arguments_look_like_truncated_mapping(function_call.arguments, argument_schema)
         )
-        if response_truncated and arguments_cut_off:
+        if _arguments_exceed_integer_limit(function_call.arguments):
+            # A complete JSON object whose integer literal is past the conversion
+            # limit outranks the truncation hint: a runaway integer loop often
+            # also hits max_tokens, and "raise max_tokens" would send the model
+            # back with the same value. Truly cut-off payloads are undecodable
+            # JSON and never reach this branch.
+            message = _integer_limit_argument_message(tool_name=tool.name)
+            error_kind = "argument_parsing"
+        elif response_truncated and arguments_cut_off:
             message = (
                 "The tool call was cut off at the model's output token limit "
                 "(max_tokens) before its arguments were complete, so they could not "

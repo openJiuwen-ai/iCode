@@ -43,6 +43,7 @@ from tests.kernel._fakes import (
     _text_update,
     _user,
 )
+from tests.support.oversized_int import oversized_integer_json
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -1085,3 +1086,28 @@ class TestNonStreamingLoop:
             arguments["text"] for (_call_id, arguments), verdict in zip(calls, expected, strict=True) if verdict == "ok"
         ]
         assert events == [f"tool:echo:{text}" for text in ran]
+
+    @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+    async def test_length_finish_reason_does_not_mask_an_over_limit_integer(self, stream: bool) -> None:
+        """A complete JSON object over the integer limit outranks the max_tokens hint.
+
+        A runaway integer loop usually hits max_tokens too; telling the model to
+        raise max_tokens would send the same value back.
+        """
+        arguments = oversized_integer_json()
+        contents = [Content.from_function_call("c1", "echo", arguments=arguments)]
+        if stream:
+            truncated_update = ChatResponseUpdate(contents=contents, role="assistant", finish_reason="length")
+            layer, _wire = _stack([[truncated_update], [_text_update("final")]])
+        else:
+            truncated_response = ChatResponse(messages=[Message("assistant", contents)], finish_reason="length")
+            layer, _wire = _stack([truncated_response, _text_response()])
+        events: list[str] = []
+
+        response = await _final_response(layer, [_user()], stream=stream, options={"tools": [_make_tool(events)]})
+
+        (result,) = _result_contents(response)
+        assert events == []
+        assert result.additional_properties[TOOL_FAILED_METADATA_KEY] is True
+        assert result.additional_properties[TOOL_ERROR_KIND_METADATA_KEY] == "argument_parsing"
+        assert "integer-string conversion limit" in str(result.result)

@@ -34,6 +34,7 @@ from chrys.service.session.message_metadata import TOOL_CALL_KIND_METADATA_KEY, 
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.acp_wire import acp_outgoing_json
 from tests.support.images import image_bytes
+from tests.support.oversized_int import oversized_integer_json
 
 
 class _FakeClient:
@@ -107,6 +108,32 @@ async def test_replay_session_history_includes_tool_calls_and_results(tmp_path) 
     assert tool_result.tool_call_id == _history_id(1, 1, 1)
     assert tool_result.status == "completed"
     assert tool_result.raw_output == "contents"
+
+
+@pytest.mark.asyncio
+async def test_replay_session_history_keeps_unparseable_arguments_as_raw_text(tmp_path) -> None:
+    """An integer past Python's conversion limit cannot be decoded; replay keeps the raw text."""
+    arguments = oversized_integer_json()
+    store = JsonFileStateStore(tmp_path / "sessions")
+    await store.save_session(
+        "s1",
+        {
+            "messages": [
+                Message("user", ["inspect"]),
+                Message("assistant", [Content.from_function_call("call_1", "read_file", arguments=arguments)]),
+            ]
+        },
+        agent_profile="Code",
+        primary_cwd=str(tmp_path),
+    )
+    client = _FakeClient()
+
+    await replay_session_history(client, store, "s1", tool_kind_resolver=lambda _name: "")
+
+    tool_start = next(
+        notification.update for notification in client.updates if notification.update.session_update == "tool_call"
+    )
+    assert tool_start.raw_input == arguments
 
 
 @pytest.mark.asyncio

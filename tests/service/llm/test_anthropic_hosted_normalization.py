@@ -16,6 +16,7 @@ from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message
 from chrys.service.llm.anthropic_messages.decode import blocking_context_estimate, decode_blocks, decode_message
 from chrys.service.llm.anthropic_messages.history import encode_messages
 from chrys.service.llm.anthropic_messages.stream import StreamState
+from tests.support.oversized_int import oversized_integer_json
 
 
 def _replayed_blocks(message: Message) -> list[dict[str, Any]]:
@@ -193,6 +194,27 @@ def test_streamed_hosted_call_is_refreshed_in_place_after_it_is_emitted() -> Non
     assert list(state.updates_for(SimpleNamespace(type="content_block_stop", index=0))) == []
     assert call.provider_phase == HostedToolPhase.START
     assert ChatResponse.from_updates([start, update]).messages[0].contents == [call]
+
+
+def test_streamed_hosted_call_keeps_oversized_integer_input_as_raw_text() -> None:
+    """An integer past Python's conversion limit is not decoded; the raw text is kept."""
+    (block,) = _blocks([{"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {}}])
+    state = StreamState()
+    (start,) = state.updates_for(SimpleNamespace(type="content_block_start", index=0, content_block=block))
+    (call,) = start.contents
+    raw_input = oversized_integer_json()
+
+    (update,) = state.updates_for(
+        SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="input_json_delta", partial_json=raw_input),
+        )
+    )
+
+    assert update.contents == [call]
+    assert call.arguments == raw_input
+    assert call.provider_phase == HostedToolPhase.DELTA
 
 
 def _content_dicts(contents: list[Content]) -> list[dict[str, Any]]:
