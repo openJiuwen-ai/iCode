@@ -961,6 +961,9 @@ class ModelConfigScreen(BaseDialog[str]):
     # ── Mount ────────────────────────────────────────────────────────
 
     async def on_mount(self) -> None:
+        if not self._composed_live:
+            # Opened as the app shuts down: its children were pruned or never mounted.
+            return
         profiles = self._listed_profiles()
         if not profiles:
             if self._read_only:

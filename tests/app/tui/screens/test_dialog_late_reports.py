@@ -22,9 +22,13 @@ from chrys.app.tui.screens.dialogs.fork_session import ForkSessionDialog
 from chrys.app.tui.screens.dialogs.image_compression import ImageCompressionDialog
 from chrys.app.tui.screens.dialogs.vision_unsupported import VisionUnsupportedDialog
 from chrys.app.tui.screens.main.hook_confirmation_dialog import HookConfirmationDialog
+from chrys.app.tui.screens.models.screen import ModelConfigScreen
 from chrys.foundation.events.types import HookConfirmationRequest
 from chrys.foundation.tool_kinds import KIND_SHELL
 from chrys.service.approval.judge import JudgeVerdict
+from chrys.service.profiles.models.registry import ModelProfileRegistry
+from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.profiles.models.serializer import save_profile
 
 
 def _report_workflow_load(dialog: AgentLoadDialog) -> None:
@@ -201,4 +205,27 @@ async def test_a_question_that_mounts_as_the_app_exits_renders_nothing(kind: str
             mounted.append((self._pruning, self.app.is_running, self.is_attached))
 
     await _push_as_the_app_exits(build(Mounting), window)
+    assert mounted == [_MOUNTED_IN[window]]
+
+
+def _models_page(cls: type[ModelConfigScreen]) -> ModelConfigScreen:
+    save_profile(ModelProfile(id="main", name="Main", provider="openai", model_id="gpt-test"))
+    registry = ModelProfileRegistry()
+    registry.load_all()
+    return cls(registry, "main")
+
+
+@pytest.mark.parametrize("window", list(_MOUNTED_IN))
+async def test_a_models_page_that_mounts_as_the_app_exits_renders_nothing(window: str) -> None:
+    """The user can open the Models page and quit before it mounts: it lists and loads no profile then."""
+    mounted: list[tuple[bool, bool, bool]] = []
+
+    class Mounting(ModelConfigScreen):
+        CSS_PATH = _css_path(ModelConfigScreen)
+
+        def on_mount(self) -> None:
+            # Dispatch runs the page's own handler after this one.
+            mounted.append((self._pruning, self.app.is_running, self.is_attached))
+
+    await _push_as_the_app_exits(_models_page(Mounting), window)
     assert mounted == [_MOUNTED_IN[window]]

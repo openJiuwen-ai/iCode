@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
+from textual.widget import Widget
 from textual.widgets import Input
 
 from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
@@ -39,6 +42,47 @@ async def reload_success(session):
         timeout=ENGINE_TURN_TIMEOUT,
         description="manual reload completed",
     )
+
+
+async def models_page(session) -> ModelConfigScreen:
+    """The Models page once its form is in place: F4 stacks it before it composes, mounts and loads a profile."""
+    await wait_for(
+        lambda: isinstance(session.app.screen, ModelConfigScreen) and session.app.screen.is_mounted,
+        pilot=session.pilot,
+        description="models page",
+    )
+    dialog = session.app.screen
+    assert isinstance(dialog, ModelConfigScreen)
+    return dialog
+
+
+async def test_the_models_page_counts_as_open_only_once_its_form_is_in_place(agent_engine, tmp_path, monkeypatch):
+    """Under load a test that queried the page as soon as F4 stacked it found no form and failed."""
+    composing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def held_compose(screen: ModelConfigScreen) -> None:
+        composing.set()
+        await release.wait()
+        await Widget._compose(screen)
+
+    monkeypatch.setattr(ModelConfigScreen, "_compose", held_compose, raising=False)
+    settings_path()
+    models = _models_on_disk()
+    activate_model_profile(MAIN_MODEL)
+    async with running_session(agent_engine, tmp_path, monkeypatch, models=models) as session:
+        try:
+            # No pilot wait while the page composes: it waits for that page to settle.
+            session.main.action_models_config()
+            await wait_for(composing.is_set, description="models page composing")
+            assert isinstance(session.app.screen, ModelConfigScreen)
+            opened = asyncio.create_task(models_page(session))
+            await asyncio.sleep(0)  # the task's first step: a predicate the stacked page meets returns here
+            assert not opened.done()
+        finally:
+            release.set()
+        dialog = await opened
+        assert dialog.query_one("#mc-model", Input).value == "gpt-test"
 
 
 async def test_renamed_launch_agent_and_new_disk_model_survive_the_next_session(agent_engine, tmp_path, monkeypatch):
@@ -161,15 +205,8 @@ async def test_later_model_editor_save_rebuilds_children_from_the_shared_registr
         gc.collect()
         assert len(model_views) == 1 and model_views[0]() is None
         await session.pilot.press("f4")
-        await wait_for(
-            lambda: isinstance(session.app.screen, ModelConfigScreen), pilot=session.pilot, description="models page"
-        )
-        dialog = session.app.screen
-        await wait_for(
-            lambda: dialog.query_one("#mc-model", Input).value == "after-disk",
-            pilot=session.pilot,
-            description="updated default loaded",
-        )
+        dialog = await models_page(session)
+        assert dialog.query_one("#mc-model", Input).value == "after-disk"
         dialog.query_one("#mc-model", Input).value = "after-editor"
         await click_when_settled(session.pilot, "#mc-save")
         await wait_for(
