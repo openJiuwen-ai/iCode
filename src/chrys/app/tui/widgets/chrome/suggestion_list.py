@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
     from chrys.foundation.i18n import MessageRef
 
-_SUGGESTIONS_NO_RESULTS = msg("tui.suggestions.no_results", fallback="No results")
+SUGGESTIONS_NO_RESULTS = msg("tui.suggestions.no_results", fallback="No results")
 
 _SUGGESTION_ROWS = 12
 # Prompt history shows its loading indicator only for loads slower than this,
@@ -298,7 +298,7 @@ class SuggestionList(Widget):
         self._clear_items()
         if not items:
             if empty_text is None:
-                empty_text = self._render_message(_SUGGESTIONS_NO_RESULTS.bind())
+                empty_text = self._render_message(SUGGESTIONS_NO_RESULTS.bind())
             self._values.append(None)
             self._kinds.append("")
             self._contents.append(Content.styled(self._single_line(empty_text), "#888888"))

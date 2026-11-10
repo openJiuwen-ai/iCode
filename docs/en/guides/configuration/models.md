@@ -21,7 +21,7 @@ While a task is running, the "Model Configuration" window opens in read-only mod
 1. Click "New".
 2. Enter a "Profile Name" of your choice, such as `My Model`.
 3. In the "Model Options" section, select the "Provider" and "API Style". Only OpenAI and DeepSeek (OpenAI) provide an API Style option. Before configuring it, check the model service's documentation for supported APIs and follow its recommendation when choosing "Chat Completions" or "Responses". If the service supports only one API, select its corresponding style; if it supports both, choose according to the service's recommendation or your needs. DeepSeek's Responses style is also used for the server-side `web_search`; see DeepSeek's documentation for supported models.
-4. Enter the model ID in "Model" and, as required by the model service, fill in "Base URL" and "API Key".
+4. Fill in "Base URL" and "API Key" as needed (leave them blank to use the address and environment variable shown in gray), then enter the model ID; click "Fetch" next to the "Model" input to choose from the service's model list. If the service address is incorrect, iCode tries to correct it and shows what changed.
 5. Set "Max Context Window" and the "Max Output Tokens" field according to the provider's documentation.
 6. Adjust "Streaming", "Vision Model", and "Connection Options" as needed. "Streaming" is on for a new profile.
 7. Click "Save".
@@ -146,6 +146,8 @@ The conversation continues with the new profile. Some model services return the 
 If the model profile name in the status bar is grayed out, the current agent is bound to a specific model profile, and clicking it only shows a notice about the binding. In this case, entering `$` does not display the model profile list either. You must first [change the agent's model settings](./agents.md#set-the-model-an-agent-uses) before you can switch model profiles. You also cannot switch while the agent is running.
 
 ### Verify a model profile
+
+Click "Test" in the "Model Configuration" window to check the current form values before saving; this sends a short request and uses a small number of tokens.
 
 After switching models, submit the following in the input field:
 

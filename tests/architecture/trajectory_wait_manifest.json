@@ -4512,6 +4512,27 @@
         ["sleep", "await asyncio.sleep(resp.chunk_delay)", "unresolved"]
       ]
     },
+    "chrys.service.llm.model_list": {
+      "_discover": [
+        ["wrapper", "await import_off_loop(*_SDK_MODULES[PROVIDERS[snapshot.provider].sdk])", "unresolved", "chrys.foundation.util.imports.import_off_loop"],
+        ["sleep", "await asyncio.sleep(pause)", "unresolved"],
+        ["wrapper", "await _read_page(client, replace(location, url=url), group, snapshot, budget)", "unresolved", "chrys.service.llm.model_list._read_page"],
+        ["wrapper", "await _pages(client, replace(location, url=page_url), group, snapshot, budget, payload, models)", "unresolved", "chrys.service.llm.model_list._pages"],
+        ["awaitable", "await close()", "unresolved"]
+      ],
+      "_pages": [
+        ["wrapper", "await _read_page(client, replace(location, url=url), headers, snapshot, budget)", "unresolved", "chrys.service.llm.model_list._read_page"]
+      ],
+      "_read_page": [
+        ["timeout", "async with asyncio.timeout(remaining)", "unresolved"],
+        ["async_context", "async with client.stream('GET', url, headers=headers, timeout=timeout, auth=None)", "unresolved"],
+        ["async_iteration", "async for chunk in response.aiter_bytes()", "unresolved"]
+      ],
+      "discover_models": [
+        ["timeout", "async with asyncio.timeout(_TOTAL_SECONDS)", "unresolved"],
+        ["wrapper", "await _discover(snapshot, transport, budget, on_retry)", "unresolved", "chrys.service.llm.model_list._discover"]
+      ]
+    },
     "chrys.service.llm.observer": {
       "ExchangeRecorder.wrap_awaitable._observe": [
         ["awaitable", "await awaitable", "unresolved"]

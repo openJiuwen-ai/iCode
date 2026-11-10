@@ -9259,6 +9259,12 @@ msgstr "保存"
 msgid "tui.model_config.bypass_proxy"
 msgstr "绕过代理"
 
+#. English: Couldn't connect; check address or network
+#. chrys-meta={"fingerprint":"d47f16927a8db5af2192b1f2d9298519a595246ea58b59242a24074f4ce7d847","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.cannot_connect"
+msgstr "无法连接，请检查地址或网络"
+
 #. English: Chat Options
 #. chrys-meta={"fingerprint":"f18242f99ec2064e9688394db34a9f4f50dc06164023bdf8fb2bf7fcbaf79b64","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/models/screen.py
@@ -9287,11 +9293,29 @@ msgstr "删除模型配置"
 msgid "tui.model_config.connection_options"
 msgstr "连接选项"
 
+#. English: ;
+#. chrys-meta={"fingerprint":"eb620819bc378404ef69f26712c3db49f776c204f0d04f58e2866ed27d7aeb07","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.correction_separator"
+msgstr "，"
+
 #. English: Extra Options
 #. chrys-meta={"fingerprint":"b731f916669e207f09e253cf50283ccb867c089c766b049a2d5d59f0ee8ac345","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/models/screen.py
 msgid "tui.model_config.extra_options"
 msgstr "其他选项"
+
+#. English: Fetch
+#. chrys-meta={"fingerprint":"04d6f891a9d44a7db524197153946fdcb991ce27e4a9f97707d79df5c8f9cbed","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.fetch_models"
+msgstr "获取列表"
+
+#. English: Fetching the model list
+#. chrys-meta={"fingerprint":"f91afab00ec06c8c3d13fe90c7c63fa39116ec73733780636f130a2480dcfb68","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.fetching_models"
+msgstr "获取模型列表中"
 
 #. English: HTTP Connect Timeout (s)
 #. chrys-meta={"fingerprint":"13090c310586d31eee18e0d9be852a55bc958f00e55fcd41dd69edae931b62d7","multiline":false,"placeholders":[]}
@@ -9330,6 +9354,24 @@ msgstr "HTTP 读取超时（秒）"
 msgid "tui.model_config.insecure_tls"
 msgstr "不安全：禁用 HTTPS 证书验证。仅用于受信任的端点。"
 
+#. English: Try an API key
+#. chrys-meta={"fingerprint":"711b0d16ef394f4810386010b2975d76b452f8ce5a7c50d5c56809695c03cd8f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.key_needed"
+msgstr "可尝试填写 API Key"
+
+#. English: The list request was rejected
+#. chrys-meta={"fingerprint":"220c2115bde0eb3047786f555ae6ac8b4a1eaa7b08cdaee862cc4d0d826454cb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.key_rejected"
+msgstr "列表请求被拒绝"
+
+#. English: No model list found
+#. chrys-meta={"fingerprint":"d9ac2b9833b62880a3758430276a7d40399dd4f165d9fbba58fb9a9263ba473e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.list_not_found"
+msgstr "未找到模型列表"
+
 #. English: Max Context Window
 #. chrys-meta={"fingerprint":"a7b408bd95a44f4ddb54c2ca07924a8e5879ac7c580c423f34ac84cb8ee82df2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/models/screen.py
@@ -9353,6 +9395,12 @@ msgstr "模型"
 #: src/chrys/app/tui/screens/models/screen.py
 msgid "tui.model_config.model_options"
 msgstr "模型选项"
+
+#. English: Using {env}
+#. chrys-meta={"fingerprint":"fe5313895bffa4dec084e03aed291f06f861137f1e94006431596cec25bf2a43","multiline":false,"placeholders":["env"]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.placeholder.api_key_from_env"
+msgstr "使用环境变量 {env}"
 
 #. English: e.g. X-Auth-Token
 #. chrys-meta={"fingerprint":"8577701dc6d38528cf0b7ca927548021220a146f9970f598197eab99ac028248","multiline":false,"placeholders":[]}
@@ -9438,6 +9486,12 @@ msgstr "{provider} 模型"
 msgid "tui.model_config.read_only_notice"
 msgstr "• 智能体正在运行。此页面为只读。"
 
+#. English: Couldn't connect; retry round {round}/{rounds}
+#. chrys-meta={"fingerprint":"85924618f2548118655da0458a49898f2482addc5dadebd2b26963e8d320cae9","multiline":false,"placeholders":["round","rounds"]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.retrying_models"
+msgstr "连接失败，第 {round}/{rounds} 轮重试中"
+
 #. English: Model profile saved
 #. chrys-meta={"fingerprint":"9477d2c9e38ba2b51d8d76039aef85b4d0be325ab302cc567a88fe0047153286","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/models/screen.py
@@ -9455,6 +9509,24 @@ msgstr "跳过 TLS 验证"
 #: src/chrys/app/tui/screens/models/screen.py
 msgid "tui.model_config.streaming"
 msgstr "流式输出"
+
+#. English: Test
+#. chrys-meta={"fingerprint":"5fccea5ed8ffa65ee76557e360364d3daab3505c5c4548ae7d66c07d8a85cefd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.test"
+msgstr "测试"
+
+#. English: {seconds}s
+#. chrys-meta={"fingerprint":"0bfa61e4eb8c0afaec63f7ab2cb0c32145b2546fded952700164934b96db4e05","multiline":false,"placeholders":["seconds"]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.test_elapsed"
+msgstr "{seconds} 秒"
+
+#. English: Model
+#. chrys-meta={"fingerprint":"c820b93516ff203603ed60a227ea14ad662f6ca472bb143e0987a574f55d0eba","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.test_subject"
+msgstr "模型"
 
 #. English: Model Configuration
 #. chrys-meta={"fingerprint":"708885b937576fd09612915eee2130e89e8efeb79556d33dfe6af4170ab79b5d","multiline":false,"placeholders":[]}
@@ -9479,6 +9551,48 @@ msgstr "模型设置"
 #: src/chrys/app/tui/screens/models/screen.py
 msgid "tui.model_config.title.validation_error"
 msgstr "验证错误"
+
+#. English: added https://
+#. chrys-meta={"fingerprint":"a3123350a66145bfed7be4a853042b83636a562d2aa6f5c4ed3a71ad4922708f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.url_added_https"
+msgstr "补上 https://"
+
+#. English: added /v1
+#. chrys-meta={"fingerprint":"d5bdb98e0a1121fa0cc0903789047420f29c1f1125bb3e6edc8dbd625423a736","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.url_added_v1"
+msgstr "补上 /v1"
+
+#. English: Automatically {changes}
+#. chrys-meta={"fingerprint":"7dfb921033ffc721050017a016cace07a1663969360d645476c6c4ae525dd5eb","multiline":false,"placeholders":["changes"]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.url_corrected"
+msgstr "已自动{changes}"
+
+#. English: removed the endpoint path
+#. chrys-meta={"fingerprint":"f32c50655b1d57710c0db25f6f5c06ff40ea1835685e9a834cb31e62e4d19125","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.url_removed_endpoint"
+msgstr "去掉接口路径"
+
+#. English: removed /v1
+#. chrys-meta={"fingerprint":"143a2f0e2f604262982eeb74227f5f0df6dbed30b0676db1047d7de246c152f6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.url_removed_v1"
+msgstr "去掉 /v1"
+
+#. English: switched to http
+#. chrys-meta={"fingerprint":"a5a51e44ff1064c43f4589cd9985c0f54f9e25e9d58274407e2c16e8f8663f61","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.url_switched_http"
+msgstr "改为 http"
+
+#. English: switched to https
+#. chrys-meta={"fingerprint":"c2fb0e2235de055340c84d7412cc5609f409d3d2ce2c05b4b7d8554c98835f06","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.url_switched_https"
+msgstr "改为 https"
 
 #. English: Base URL must start with http:// or https://.
 #. chrys-meta={"fingerprint":"cca27922e8b6cc0484957a8a2dbe43a7739b2966415bac4475d00839e16f094a","multiline":false,"placeholders":[]}
