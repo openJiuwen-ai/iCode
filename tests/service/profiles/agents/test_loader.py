@@ -993,6 +993,95 @@ tools:
     assert mcps[1].load_prompts is True
 
 
+@pytest.mark.parametrize(
+    ("field", "literal", "expected"),
+    [
+        (field, literal, expected)
+        for field in ("enabled", "load_prompts")
+        for literal, expected in (
+            ("false", False),
+            ('"false"', False),
+            ("no", False),
+            ("off", False),
+            ("0", False),
+            ("true", True),
+            ('"true"', True),
+            ("yes", True),
+        )
+    ],
+)
+def test_load_mcp_boolean_literals(tmp_path: Path, field: str, literal: str, expected: bool) -> None:
+    """MCP flags follow the profile boolean words; a quoted 'false' never reads as true."""
+    p = tmp_path / "mcp_boolean_literal.yaml"
+    p.write_text(
+        f"""\
+name: mcp-boolean-literal
+tools:
+  mcp:
+    - name: srv
+      transport: stdio
+      command: python
+      {field}: {literal}
+""",
+        encoding="utf-8",
+    )
+
+    config = load_profile_from_yaml(p).tools.mcp[0]
+
+    actual = config.enabled if field == "enabled" else config.load_prompts
+    assert actual is expected
+
+
+def test_load_mcp_boolean_defaults(tmp_path: Path) -> None:
+    """An omitted flag and a flag written with no value both keep the default true."""
+    p = tmp_path / "mcp_boolean_defaults.yaml"
+    p.write_text(
+        """\
+name: mcp-boolean-defaults
+tools:
+  mcp:
+    - name: omitted
+      transport: stdio
+      command: python
+    - name: blank
+      transport: stdio
+      command: python
+      enabled:
+      load_prompts:
+""",
+        encoding="utf-8",
+    )
+
+    profile = load_profile_from_yaml(p)
+    omitted, blank = profile.tools.mcp
+
+    assert omitted.enabled is True
+    assert omitted.load_prompts is True
+    assert blank.enabled is True
+    assert blank.load_prompts is True
+
+
+def test_load_mcp_enable_alias(tmp_path: Path) -> None:
+    """The legacy ``enable`` key still disables a server."""
+    p = tmp_path / "mcp_enable_alias.yaml"
+    p.write_text(
+        """\
+name: mcp-enable-alias
+tools:
+  mcp:
+    - name: legacy-disabled
+      transport: stdio
+      command: python
+      enable: "false"
+""",
+        encoding="utf-8",
+    )
+
+    profile = load_profile_from_yaml(p)
+
+    assert profile.tools.mcp[0].enabled is False
+
+
 def test_load_mcp_invalid_transport(tmp_path: Path) -> None:
     """MCP server with invalid transport should raise."""
     p = tmp_path / "bad_transport.yaml"
@@ -1216,6 +1305,85 @@ skills:
     )
     profile = load_profile_from_yaml(p)
     assert profile.skills.script_timeout == 60
+
+
+@pytest.mark.parametrize("literal", ["0", "-1", '"300"', "1.5", "true"])
+def test_load_skills_rejects_invalid_script_timeout(tmp_path: Path, literal: str) -> None:
+    """A zero, negative, quoted or fractional timeout is a field-level load error."""
+    p = tmp_path / "timeout-invalid.yaml"
+    p.write_text(
+        f"""\
+name: timeout-invalid
+skills:
+  script_timeout: {literal}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AgentProfileLoadError) as excinfo:
+        load_profile_from_yaml(p)
+
+    assert excinfo.value.field == "skills.script_timeout"
+
+
+def test_load_skills_script_timeout_blank_keeps_default(tmp_path: Path) -> None:
+    """A ``script_timeout`` key with no value keeps the documented default."""
+    p = tmp_path / "timeout-blank.yaml"
+    p.write_text(
+        """\
+name: timeout-blank
+skills:
+  script_timeout:
+""",
+        encoding="utf-8",
+    )
+
+    assert load_profile_from_yaml(p).skills.script_timeout == 300
+
+
+@pytest.mark.parametrize(
+    ("section", "value", "field"),
+    [
+        ("files", "README.md", "memory.files"),
+        ("folders", "docs", "memory.folders"),
+        ("files", "[a.md, 1]", "memory.files"),
+    ],
+)
+def test_load_memory_rejects_non_list_paths(tmp_path: Path, section: str, value: str, field: str) -> None:
+    """A scalar path or a mixed list is a field-level load error, not a char split."""
+    p = tmp_path / "memory-invalid.yaml"
+    p.write_text(
+        f"""\
+name: memory-invalid
+memory:
+  {section}: {value}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AgentProfileLoadError) as excinfo:
+        load_profile_from_yaml(p)
+
+    assert excinfo.value.field == field
+
+
+def test_load_memory_null_is_empty(tmp_path: Path) -> None:
+    """A path list written with no value loads as no paths."""
+    p = tmp_path / "memory-blank.yaml"
+    p.write_text(
+        """\
+name: memory-blank
+memory:
+  files:
+  folders:
+""",
+        encoding="utf-8",
+    )
+
+    profile = load_profile_from_yaml(p)
+
+    assert profile.memory.files == []
+    assert profile.memory.folders == []
 
 
 def test_load_builtin_profiles() -> None:
