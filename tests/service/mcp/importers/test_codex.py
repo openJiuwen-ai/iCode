@@ -4,14 +4,16 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind
+from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind, codex
 from chrys.service.mcp.importers import WarningKind as Kind
 from chrys.service.mcp.importers.base import MAX_REQUEST_TIMEOUT_SECONDS
 from chrys.service.mcp.importers.codex import CodexSource
+from tests.support.symlinks import symlink_or_skip
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -80,6 +82,19 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, body: str, expected: d
             {"headers": {"X-Token": "{{TOKEN}}"}},
         ),
         ('url = "https://x"\nauth = "chatgpt"\n', (ImportWarning(Kind.AUTH_NOT_IMPORTED),), {}),
+        # A `codex mcp login` sign-in lives outside the file.
+        ('url = "https://x"\n', (ImportWarning(Kind.AUTH_NOT_IMPORTED),), {}),
+        # iCode passes on its whole environment but these two, so they must be set.
+        (
+            'command = "run"\nenv_vars = ["PATH", "PYTHONPATH", { name = "PYTHONHOME", source = "local" }]\n',
+            (ImportWarning(Kind.VARIABLE_REQUIRED, ("PYTHONPATH", "PYTHONHOME")),),
+            {"env": {"PYTHONPATH": "{{PYTHONPATH}}", "PYTHONHOME": "{{PYTHONHOME}}"}},
+        ),
+        (
+            'command = "run"\nenv_vars = ["PYTHONPATH"]\nenv = { PYTHONPATH = "/x" }\n',
+            (),
+            {"env": {"PYTHONPATH": "/x"}},
+        ),
         ('command = "run"\ndisabled_tools = ["rm"]\n', (ImportWarning(Kind.TOOLS_RESTRICTED),), {"allowed_tools": []}),
         (
             'command = "run"\ntool_timeout_sec = 0\n',
@@ -101,7 +116,16 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, body: str, expected: d
             {},
         ),
     ],
-    ids=["optional-variable", "provider-auth", "deny-only", "zero-timeout", "unread-settings"],
+    ids=[
+        "optional-variable",
+        "provider-auth",
+        "no-headers",
+        "passed-variables",
+        "passed-variable-set",
+        "deny-only",
+        "zero-timeout",
+        "unread-settings",
+    ],
 )
 def test_what_the_import_changes_is_reported(
     tmp_path: Path, body: str, warnings: tuple[ImportWarning, ...], expected: dict[str, Any]
@@ -156,16 +180,26 @@ def test_entries_codex_rejects_are_not_listed(tmp_path: Path, body: str) -> None
     assert _discover(tmp_path).candidates == ()
 
 
+def _repo(path: Path) -> Path:
+    """A Git checkout Codex recognizes as a project root: its ``.git`` folder holds ``HEAD``."""
+    _write(path / ".git" / "HEAD", "ref: refs/heads/main\n")
+    return path
+
+
+def _trust(folder: Path, level: str = "trusted") -> str:
+    # A literal key: a Windows path's backslashes are not escapes.
+    return f"[projects.'{folder}']\ntrust_level = \"{level}\"\n"
+
+
 def test_project_files_merge_into_same_named_user_servers(tmp_path: Path) -> None:
-    home, repo = tmp_path / "home", tmp_path / "repo"
+    home, repo = tmp_path / "home", _repo(tmp_path / "repo")
     workspace = repo / "pkg"
-    (repo / ".git").mkdir(parents=True)
     workspace.mkdir()
     user = (
         '[mcp_servers.a]\ncommand = "user"\nargs = ["x", "y"]\nenv = { A = "1", B = "1" }\n'
         '[mcp_servers.off]\ncommand = "user"\n'
         '[mcp_servers.web]\nurl = "https://user"\nhttp_headers = { X = "1" }\n'
-    )
+    ) + _trust(repo)
     _write(home / ".codex" / "config.toml", user)
     root = '[mcp_servers.a]\ncommand = "root"\nargs = ["z"]\nenv = { B = "2" }\n[mcp_servers.off]\nenabled = false\n'
     _write(repo / ".codex" / "config.toml", root)
@@ -182,6 +216,166 @@ def test_project_files_merge_into_same_named_user_servers(tmp_path: Path) -> Non
     # The file shown is the last one that sets the connection.
     assert candidates["off"].source_path == str(home / ".codex" / "config.toml")
     assert candidates["web"].source_path == str(workspace / ".codex" / "config.toml")
+
+
+def test_every_trusted_folder_from_the_project_root_down_to_the_workspace_is_read(tmp_path: Path) -> None:
+    home, repo = tmp_path / "home", _repo(tmp_path / "repo")
+    workspace = repo / "a" / "b"
+    workspace.mkdir(parents=True)
+    _write(home / ".codex" / "config.toml", _trust(repo))
+    for folder, command in ((tmp_path, "above"), (repo, "root"), (repo / "a", "middle"), (workspace, "workspace")):
+        _write(folder / ".codex" / "config.toml", f'[mcp_servers.{command}]\ncommand = "{command}"\n')
+
+    assert [c.name for c in _discover(home, workspace).candidates] == ["root", "middle", "workspace"]
+
+
+@pytest.mark.parametrize(
+    ("trust", "read"),
+    [
+        ("", []),
+        ("untrusted-root", []),
+        ("trusted-root", ["root", "workspace"]),
+        ("workspace-untrusted", ["root"]),
+        ("trusted-workspace", ["workspace"]),
+    ],
+)
+def test_project_files_are_read_only_from_folders_the_user_trusts(tmp_path: Path, trust: str, read: list[str]) -> None:
+    home, repo = tmp_path / "home", _repo(tmp_path / "repo")
+    workspace = repo / "pkg"
+    workspace.mkdir()
+    entries = {
+        "": "",
+        "untrusted-root": _trust(repo, "untrusted"),
+        "trusted-root": _trust(repo),
+        # A folder's own entry comes before the project root's.
+        "workspace-untrusted": _trust(repo) + _trust(workspace, "untrusted"),
+        "trusted-workspace": _trust(workspace),
+    }
+    _write(home / ".codex" / "config.toml", '[mcp_servers.user]\ncommand = "user"\n' + entries[trust])
+    _write(repo / ".codex" / "config.toml", '[mcp_servers.root]\ncommand = "root"\n')
+    _write(workspace / ".codex" / "config.toml", '[mcp_servers.workspace]\ncommand = "workspace"\n')
+
+    assert [c.name for c in _discover(home, workspace).candidates] == ["user", *read]
+
+
+def test_a_key_naming_another_path_to_the_folder_does_not_override_its_own(tmp_path: Path) -> None:
+    home, repo = tmp_path / "home", _repo(tmp_path / "repo")
+    workspace = repo / "pkg"
+    workspace.mkdir()
+    symlink_or_skip(tmp_path / "alias", workspace, target_is_directory=True)
+    # Listed first, a trusted alias still loses to the folder's own key, which Codex looks up first.
+    _write(home / ".codex" / "config.toml", _trust(tmp_path / "alias") + _trust(workspace, "untrusted"))
+    _write(workspace / ".codex" / "config.toml", '[mcp_servers.srv]\ncommand = "run"\n')
+
+    assert _discover(home, workspace).candidates == ()
+
+
+@pytest.mark.parametrize(
+    ("windows", "keys", "read"),
+    [
+        (False, {"given": "trusted", "lower": "untrusted"}, True),
+        (True, {"given": "trusted", "lower": "untrusted"}, False),
+        (True, {"upper": "trusted"}, True),
+        (False, {"upper": "trusted"}, False),
+    ],
+    ids=["exact", "windows-lowercase-first", "windows-any-case", "case-sensitive"],
+)
+def test_trust_keys_are_looked_up_as_codex_looks_them_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, windows: bool, keys: dict[str, str], read: bool
+) -> None:
+    monkeypatch.setattr(codex, "get_platform", lambda: SimpleNamespace(is_windows=windows))
+    home, repo = tmp_path / "home", _repo(tmp_path / "Repo")
+    # On Windows Codex lowercases the path it looks up, then takes any key equal but for case.
+    spelled = {"given": str(repo), "lower": str(repo).lower(), "upper": str(repo).upper()}
+    _write(home / ".codex" / "config.toml", "".join(_trust(spelled[key], level) for key, level in keys.items()))
+    _write(repo / ".codex" / "config.toml", '[mcp_servers.srv]\ncommand = "run"\n')
+
+    assert [c.name for c in _discover(home, repo).candidates] == (["srv"] if read else [])
+
+
+def test_a_project_file_cannot_change_a_user_server_unless_trusted(tmp_path: Path) -> None:
+    home, repo = tmp_path / "home", _repo(tmp_path / "repo")
+    _write(home / ".codex" / "config.toml", '[mcp_servers.github]\ncommand = "github-mcp"\n')
+    _write(repo / ".codex" / "config.toml", '[mcp_servers.github]\ncommand = "evil"\n')
+
+    (candidate,) = _discover(home, repo).candidates
+
+    assert candidate.config is not None
+    assert candidate.config.command == "github-mcp"
+
+
+def test_a_linked_worktree_is_trusted_through_its_main_checkout(tmp_path: Path) -> None:
+    home, main, worktree = tmp_path / "home", _repo(tmp_path / "main"), tmp_path / "wt"
+    admin = main / ".git" / "worktrees" / "wt"
+    _write(admin / "commondir", "../..\n")
+    _write(admin / "gitdir", f"{worktree / '.git'}\n")
+    _write(worktree / ".git", f"gitdir: {admin}\n")
+    _write(home / ".codex" / "config.toml", _trust(main))
+    _write(worktree / ".codex" / "config.toml", '[mcp_servers.srv]\ncommand = "run"\n')
+
+    assert [c.name for c in _discover(home, worktree).candidates] == ["srv"]
+
+
+def test_a_worktree_of_a_separate_git_folder_is_trusted_through_the_folder_pointing_at_it(tmp_path: Path) -> None:
+    home, project = tmp_path / "home", tmp_path / "proj"
+    bare, worktree = project / ".bare", project / "main"
+    admin = bare / "worktrees" / "main"
+    _write(bare / "HEAD", "ref: refs/heads/main\n")
+    _write(admin / "commondir", "../..\n")
+    _write(admin / "gitdir", f"{worktree / '.git'}\n")
+    _write(project / ".git", "gitdir: ./.bare\n")
+    _write(worktree / ".git", f"gitdir: {admin}\n")
+    _write(home / ".codex" / "config.toml", _trust(project))
+    _write(worktree / ".codex" / "config.toml", '[mcp_servers.srv]\ncommand = "run"\n')
+
+    assert [c.name for c in _discover(home, worktree).candidates] == ["srv"]
+
+
+def test_a_worktree_is_not_trusted_through_a_folder_whose_git_is_another_repository(tmp_path: Path) -> None:
+    home, code, worktree = tmp_path / "home", _repo(tmp_path / "code"), tmp_path / "wt"
+    common = code / "x.git"
+    admin = common / "worktrees" / "wt"
+    _write(common / "HEAD", "ref: refs/heads/main\n")
+    _write(admin / "commondir", "../..\n")
+    _write(admin / "gitdir", f"{worktree / '.git'}\n")
+    _write(worktree / ".git", f"gitdir: {admin}\n")
+    # code holds the bare repository, but its own .git is a different one: Codex keys this worktree by no folder.
+    _write(home / ".codex" / "config.toml", _trust(code))
+    _write(worktree / ".codex" / "config.toml", '[mcp_servers.srv]\ncommand = "run"\n')
+
+    assert _discover(home, worktree).candidates == ()
+
+
+@pytest.mark.parametrize(("git", "read"), [("folder", ["srv"]), ("submodule", [])], ids=["checkout", "submodule"])
+def test_only_a_main_checkout_lends_its_trust_to_a_project_inside_it(tmp_path: Path, git: str, read: list[str]) -> None:
+    home, repo = tmp_path / "home", tmp_path / "super" / "sub"
+    workspace = repo / "pkg"
+    if git == "folder":
+        _repo(repo)
+    else:
+        _write(tmp_path / "super" / ".git" / "modules" / "sub" / "HEAD", "ref: refs/heads/main\n")
+        _write(repo / ".git", "gitdir: ../.git/modules/sub\n")
+    _write(workspace / "pyproject.toml", "")
+    # The project is pkg, by its marker; the repository around it counts only as a main checkout.
+    _write(home / ".codex" / "config.toml", 'project_root_markers = ["pyproject.toml"]\n' + _trust(repo))
+    _write(workspace / ".codex" / "config.toml", '[mcp_servers.srv]\ncommand = "run"\n')
+
+    assert [c.name for c in _discover(home, workspace).candidates] == read
+
+
+def test_a_project_folder_that_is_the_codex_home_is_not_read_again(tmp_path: Path) -> None:
+    home, repo = tmp_path / "home", _repo(tmp_path / "repo")
+    workspace = repo / "pkg"
+    workspace.mkdir()
+    _write(home / ".codex" / "config.toml", '[mcp_servers.srv]\ncommand = "user"\n' + _trust(repo))
+    _write(repo / ".codex" / "config.toml", '[mcp_servers.srv]\ncommand = "project"\nenabled = false\n')
+    # Codex skips the folder it read as the user's, however it is reached.
+    symlink_or_skip(workspace / ".codex", home / ".codex", target_is_directory=True)
+
+    (candidate,) = _discover(home, workspace).candidates
+
+    assert candidate.config is not None
+    assert (candidate.config.command, candidate.config.enabled) == ("project", False)
 
 
 def test_codex_home_moves_the_user_file(tmp_path: Path) -> None:
@@ -209,12 +403,21 @@ def test_broken_files_are_reported(tmp_path: Path, text: str, kind: SourceErrorK
     assert kind is not SourceErrorKind.UNPARSABLE or error.line == 1
 
 
-def test_a_file_nested_too_deep_to_parse_is_reported_and_the_others_still_listed(tmp_path: Path) -> None:
-    workspace = tmp_path / "work"
-    _write(tmp_path / ".codex" / "config.toml", "a = " + "[" * 5000 + "]" * 5000 + "\n")
+@pytest.mark.parametrize(
+    "text",
+    ["a = " + "[" * 5000 + "]" * 5000 + "\n", "a = " + "1" * 5000 + "\n"],
+    ids=["nested-too-deep", "number-too-long"],
+)
+def test_a_file_too_large_to_parse_is_reported_and_the_others_still_listed(tmp_path: Path, text: str) -> None:
+    home, repo = tmp_path / "home", _repo(tmp_path / "repo")
+    workspace = repo / "work"
+    _write(home / ".codex" / "config.toml", _trust(repo))
+    _write(repo / ".codex" / "config.toml", text)
     _write(workspace / ".codex" / "config.toml", '[mcp_servers.srv]\ncommand = "run"\n')
 
-    result = _discover(tmp_path, workspace)
+    result = _discover(home, workspace)
 
     assert [c.name for c in result.candidates] == ["srv"]
-    assert [e.kind for e in result.source_errors] == [SourceErrorKind.UNPARSABLE]
+    assert [(e.path, e.kind) for e in result.source_errors] == [
+        (str(repo / ".codex" / "config.toml"), SourceErrorKind.UNPARSABLE)
+    ]

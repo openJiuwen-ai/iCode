@@ -71,7 +71,7 @@ The mark after a server's name tells you what to check. "⚠" with a number coun
 ### Check before use
 
 - **Warnings (⚠)**: Each one says what to do before the server works: settings that were not copied, sign-in to redo, environment variables to set, or tools to choose. They are shown in the card's Description and kept there after import, so you can come back to them; delete them once handled.
-- **Enabled**: A server turned off in the other application, including a project server you rejected in Claude Code, is imported with "Enabled" unchecked. Check it in the card if you want to use the server.
+- **Enabled**: A server the other application would not start is imported with "Enabled" unchecked: one turned off there, or a Claude Code project server (from `.mcp.json`) that you rejected or have not approved yet. Check it in the card if you want to use the server.
 - **Scope**: Imported servers work in every project that uses this agent, even if the other application used them in one project only. STDIO servers start in iCode's working folder.
 - **Credentials**: Tokens written directly in the other application's configuration are copied into the agent's file. Sign-in done in the other application, such as OAuth, is not copied. If the server needs authentication, add the headers it expects, or [get a value from a command](../configuration/models.md#get-an-api-key-from-a-command).
 - **Tools turned off everywhere**: Settings that turn tools off for all servers in the other application, such as OpenCode's global `tools`, are not imported. Choose the server's tools again in "Available Tool Scope".
@@ -81,10 +81,12 @@ The mark after a server's name tells you what to check. "⚠" with a number coun
 
 | Application | Files read |
 | --- | --- |
-| Claude Code | `~/.claude.json` (or the one in `CLAUDE_CONFIG_DIR`), for your servers and those added for the current project; `.mcp.json` in the current folder and at the top of its Git repository |
-| Codex | `~/.codex/config.toml` (or the one in `CODEX_HOME`); `.codex/config.toml` in the current folder and at the top of its Git repository |
-| OpenCode | `opencode.json`, `opencode.jsonc` or `config.json` in `~/.config/opencode`; `opencode.json` or `opencode.jsonc` in the current folder, at the top of its Git repository, and in the current folder's `.opencode` folder |
-| Pi | `~/.pi/agent/mcp.json` (or the one in `PI_CODING_AGENT_DIR`); `.pi/mcp.json` in the current folder |
+| Claude Code | `~/.claude.json` (or the one in `CLAUDE_CONFIG_DIR`), for your servers and those added for the current project (in a Git worktree, the project is the repository's main folder, as in Claude Code); `.mcp.json` in the current folder and at the top of its Git repository |
+| Codex | `~/.codex/config.toml` (or the one in `CODEX_HOME`); `.codex/config.toml` in each folder from the top of the Git repository down to the current folder that you trust in Codex |
+| OpenCode | `opencode.json`, `opencode.jsonc` or `config.json` in `~/.config/opencode`; the file named by `OPENCODE_CONFIG`; `opencode.json` or `opencode.jsonc` in each folder from the top of the Git repository (outside a repository, from the top of the disk) down to the current folder, in those folders' `.opencode` folders, in `~/.opencode` and in the folder named by `OPENCODE_CONFIG_DIR` |
+| Pi | `~/.pi/agent/mcp.json` (or the one in `PI_CODING_AGENT_DIR`); `.pi/mcp.json` in the current folder, if you trust it in Pi |
+
+A project's own files cannot add servers to your agent on their own. As in Codex and Pi, their project files are read only if you trust the folder there; in Claude Code, a server from `.mcp.json` is imported turned off until you approve it, and approvals saved in the project's own settings count only once you trust that project itself (trusting a folder above it is not enough).
 
 When several files define a server with the same name, the one that applies to the current project is listed. Servers added only by cloud services, plugins or extensions are not listed; add them manually.
 

@@ -3,10 +3,14 @@
 """Import MCP servers configured in pi, the coding agent (https://github.com/earendil-works/pi).
 
 Read: ``mcp.json`` in pi's agent folder (``$PI_CODING_AGENT_DIR``, default
-``~/.pi/agent``), then ``.pi/mcp.json`` in the workspace. A project server
-replaces the global one of the same name; a project entry with none of
-``command``, ``url`` and ``type`` only changes the ``enabled``, ``exposure``
-and ``toolExposure`` of the global server it names.
+``~/.pi/agent``), then ``.pi/mcp.json`` in the workspace once the user trusts
+it, as pi does: the nearest of the workspace and the folders above it that
+``trust.json`` in the agent folder decides, else ``defaultProjectTrust:
+"always"`` in the agent folder's ``settings.json`` (pi otherwise asks, so an
+undecided project is not read). A project server replaces the global one of
+the same name; a project entry with none of ``command``, ``url`` and ``type``
+only changes the ``enabled``, ``exposure`` and ``toolExposure`` of the global
+server it names.
 
 Values in ``env`` and ``headers`` may reference ``$NAME`` or ``${NAME}``; ``$$``
 and ``$!`` are a literal ``$`` and ``!``. A value starting with ``!`` runs a
@@ -21,7 +25,8 @@ can; a rule hiding tools iCode can't express imports the server with no tools.
 
 Checked against https://github.com/earendil-works/pi tag ``v1.5.0`` (commit
 f9a263655), read 2026-11-04; paths are under ``packages/coding-agent/src``:
-the files and project overrides (``extensions/mcp/config.ts:92-157``), the
+the files and project overrides (``extensions/mcp/config.ts:92-157``), trust
+(``core/trust-manager.ts``, ``core/project-trust.ts``, read 2026-11-11), the
 variables and ``!`` commands (``core/resolve-config-value.ts``), the server
 fields and exposure (``core/mcp-servers.ts:260-317``) and ``~`` expansion
 (``extensions/mcp/runtime.ts:89-121``).
@@ -48,15 +53,17 @@ from chrys.service.mcp.importers.base import (
     WarningKind,
     by_name,
     convert,
+    folders_down_to,
     is_str_list,
     is_str_mapping,
     missing_fields,
+    path_matches,
     positive_number,
     read_json_object,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
 _NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 _VARIABLE_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*)|([$!]))")
@@ -85,16 +92,30 @@ class PiSource:
         return "Pi"
 
     def detect(self, ctx: ImportContext) -> bool:
-        return any(path.is_file() for path in _files(ctx))
+        agent = _agent_folder(ctx)
+        return (agent / "mcp.json").is_file() or (
+            ctx.workspace_cwd is not None and (Path(ctx.workspace_cwd) / ".pi" / "mcp.json").is_file()
+        )
 
     def discover(self, ctx: ImportContext) -> McpImportResult:
         errors: list[McpSourceError] = []
-        entries: dict[str, tuple[dict[str, Any], str]] = {}
-        for position, path in enumerate(_files(ctx)):
+
+        def read(path: Path) -> dict[str, Any] | None:
             try:
-                document = read_json_object(path) or {}
+                return read_json_object(path) or {}
             except SourceReadError as exc:
                 errors.append(exc.at(path))
+                return None
+
+        agent = _agent_folder(ctx)
+        files = [agent / "mcp.json"]
+        project = Path(ctx.workspace_cwd) / ".pi" / "mcp.json" if ctx.workspace_cwd else None
+        if project is not None and project.is_file() and _trusted(ctx.workspace_cwd or "", agent, read):
+            files.append(project)
+        entries: dict[str, tuple[dict[str, Any], str]] = {}
+        for position, path in enumerate(files):
+            document = read(path)
+            if document is None:
                 continue
             servers = document.get("mcpServers", {})
             if not isinstance(servers, dict):
@@ -116,15 +137,25 @@ class PiSource:
         return McpImportResult(candidates, tuple(errors))
 
 
-def _files(ctx: ImportContext) -> list[Path]:
+def _agent_folder(ctx: ImportContext) -> Path:
     folder = ctx.environ.get("PI_CODING_AGENT_DIR")
     agent = Path(_expand_home(folder, ctx.home)) if folder else ctx.home / ".pi" / "agent"
     if not agent.is_absolute() and ctx.workspace_cwd:
         agent = Path(ctx.workspace_cwd) / agent
-    files = [agent / "mcp.json"]
-    if ctx.workspace_cwd:
-        files.append(Path(ctx.workspace_cwd) / ".pi" / "mcp.json")
-    return files
+    return agent
+
+
+def _trusted(workspace_cwd: str, agent: Path, read: Callable[[Path], dict[str, Any] | None]) -> bool:
+    """Whether pi loads the workspace's project files without asking."""
+    decisions = read(agent / "trust.json") or {}
+    for folder in reversed(folders_down_to(workspace_cwd, None)):
+        decision = next(
+            (value for key, value in decisions.items() if isinstance(value, bool) and path_matches(key, str(folder))),
+            None,
+        )
+        if decision is not None:
+            return decision
+    return (read(agent / "settings.json") or {}).get("defaultProjectTrust") == "always"
 
 
 def _expand_home(text: str, home: Path) -> str:
@@ -174,8 +205,8 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
         name,
         path,
         transport,
-        command=_expand_home(entry.get("command", ""), home),
-        args=tuple(_expand_home(arg, home) for arg in entry.get("args", [])),
+        command=_expand_home(entry["command"], home) if transport == "stdio" else "",
+        args=tuple(_expand_home(arg, home) for arg in entry.get("args", [])) if transport == "stdio" else (),
         env=values if transport == "stdio" else {},
         url=entry.get("url", ""),
         headers=values if transport == "http" else {},

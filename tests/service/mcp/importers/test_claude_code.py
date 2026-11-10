@@ -12,6 +12,7 @@ import pytest
 from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind
 from chrys.service.mcp.importers import WarningKind as Kind
 from chrys.service.mcp.importers.claude_code import ClaudeCodeSource
+from tests.support.symlinks import symlink_or_skip
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -88,8 +89,10 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, entry: dict[str, Any],
             {"command": "run", "alwaysLoad": True, "cwd": "/x"},
             (ImportWarning(Kind.NOT_IMPORTED, ("mcpServers.srv.cwd",)),),
         ),
+        # Claude Code signs in with OAuth whenever such a server asks.
+        ({"type": "http", "url": "https://x"}, (ImportWarning(Kind.AUTH_NOT_IMPORTED),)),
     ],
-    ids=["required-variables", "auth-and-helper", "credential-header", "unknown-field"],
+    ids=["required-variables", "auth-and-helper", "credential-header", "unknown-field", "no-headers"],
 )
 def test_what_the_import_leaves_out_is_reported(
     tmp_path: Path, entry: dict[str, Any], warnings: tuple[ImportWarning, ...]
@@ -100,13 +103,27 @@ def test_what_the_import_leaves_out_is_reported(
     assert candidate.warnings == warnings
 
 
-def test_a_header_referencing_a_credential_variable_is_not_imported(tmp_path: Path) -> None:
-    candidate = _only(
-        tmp_path, {"type": "http", "url": "https://x", "headers": {"Authorization": "Bearer ${NPM_TOKEN}", "X": "1"}}
-    )
+@pytest.mark.parametrize(
+    ("variable", "imported"),
+    [
+        ("NPM_TOKEN", False),
+        ("CLAUDE_CODE_OAUTH_TOKEN", False),
+        ("MCP_CLIENT_SECRET", False),
+        ("INPUT_twine_password", False),
+        ("OTEL_EXPORTER_OTLP_HEADERS", False),
+        ("CARGO_REGISTRIES_MINE_TOKEN", False),
+        ("GITHUB_TOKEN", True),
+    ],
+)
+def test_a_header_referencing_a_credential_variable_is_not_imported(
+    tmp_path: Path, variable: str, imported: bool
+) -> None:
+    headers = {"Authorization": f"Bearer ${{{variable}}}", "X": "1"}
+    candidate = _only(tmp_path, {"type": "http", "url": "https://x", "headers": headers})
 
     assert candidate.config is not None
-    assert candidate.config.headers == {"X": "1"}
+    expected = {"Authorization": f"Bearer {{{{{variable}}}}}", "X": "1"} if imported else {"X": "1"}
+    assert candidate.config.headers == expected
 
 
 @pytest.mark.parametrize(
@@ -177,16 +194,26 @@ def test_servers_turned_off_in_claude_code_are_imported_turned_off(tmp_path: Pat
             "projects": {
                 str(repo): {
                     "mcpServers": {"local-off": run},
-                    # /mcp toggles servers outside .mcp.json; approvals cover only .mcp.json servers.
-                    "disabledMcpServers": ["user-off", "local-off", "team-on"],
+                    # /mcp turns off any server; approvals cover only .mcp.json servers.
+                    "disabledMcpServers": ["user-off", "local-off", "team-toggled-off"],
                     "disabledMcpjsonServers": ["rejected-in-prompt", "user-on"],
                 }
             },
         },
     )
-    team = ["rejected-in-prompt", "rejected-by-user", "rejected-by-team", "rejected-by-me", "team-on"]
+    team = [
+        "rejected-in-prompt",
+        "rejected-by-user",
+        "rejected-by-team",
+        "rejected-by-me",
+        "team-toggled-off",
+        "team-on",
+    ]
     _write(repo / ".mcp.json", {"mcpServers": dict.fromkeys(team, run)})
-    _write(home / ".claude" / "settings.json", {"disabledMcpjsonServers": ["rejected-by-user"]})
+    _write(
+        home / ".claude" / "settings.json",
+        {"disabledMcpjsonServers": ["rejected-by-user"], "enableAllProjectMcpServers": True},
+    )
     _write(workspace / ".claude" / "settings.json", {"disabledMcpjsonServers": ["rejected-by-team"]})
     _write(repo / ".claude" / "settings.local.json", {"disabledMcpjsonServers": ["rejected-by-me"]})
 
@@ -200,8 +227,151 @@ def test_servers_turned_off_in_claude_code_are_imported_turned_off(tmp_path: Pat
         "rejected-by-user": False,
         "rejected-by-team": False,
         "rejected-by-me": False,
+        "team-toggled-off": False,
         "team-on": True,
     }
+
+
+@pytest.mark.parametrize("trusted", [False, True], ids=["untrusted", "trusted"])
+def test_a_repository_cannot_approve_its_own_servers_until_its_folder_is_trusted(tmp_path: Path, trusted: bool) -> None:
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    # Older Claude Code kept approvals in the project's entry, now moved to the trust-gated local settings.
+    entry = {"enabledMcpjsonServers": ["approved-in-entry"], "hasTrustDialogAccepted": trusted}
+    _write(home / ".claude.json", {"projects": {str(repo): entry}})
+    names = ["approved-by-user", "approved-by-repo", "approved-locally", "approved-in-entry", "pending"]
+    _write(repo / ".mcp.json", {"mcpServers": {name: {"command": "run"} for name in names}})
+    _write(home / ".claude" / "settings.json", {"enabledMcpjsonServers": ["approved-by-user"]})
+    _write(repo / ".claude" / "settings.json", {"enabledMcpjsonServers": ["approved-by-repo"]})
+    _write(repo / ".claude" / "settings.local.json", {"enabledMcpjsonServers": ["approved-locally"]})
+
+    enabled = {c.name: c.config.enabled for c in _discover(home, repo).candidates if c.config}
+
+    assert enabled == {
+        "approved-by-user": True,
+        "approved-by-repo": trusted,
+        "approved-locally": trusted,
+        "approved-in-entry": trusted,
+        "pending": False,
+    }
+
+
+def test_trusting_a_folder_above_the_project_does_not_let_the_repository_approve_servers(tmp_path: Path) -> None:
+    home, repo = tmp_path / "home", tmp_path / "repos" / "repo"
+    (repo / ".git").mkdir(parents=True)
+    # Claude Code reads approvals from a repository's own settings only when the project itself is trusted.
+    _write(home / ".claude.json", {"projects": {str(tmp_path / "repos"): {"hasTrustDialogAccepted": True}}})
+    _write(repo / ".mcp.json", {"mcpServers": {"srv": {"command": "run"}}})
+    _write(repo / ".claude" / "settings.json", {"enabledMcpjsonServers": ["srv"]})
+
+    (candidate,) = _discover(home, repo).candidates
+
+    assert candidate.config is not None
+    assert candidate.config.enabled is False
+
+
+def test_approvals_and_rejections_match_names_as_claude_code_compares_them(tmp_path: Path) -> None:
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    names = ["my.api", "your api", "their/api", "plugin:x", "plugin_y", "a😀b", "my😀api"]
+    _write(repo / ".mcp.json", {"mcpServers": {name: {"command": "run"} for name in names}})
+    _write(
+        home / ".claude" / "settings.json",
+        {
+            "enabledMcpjsonServers": ["my_api", "your_api", "their_api", "plugin_x", "plugin:y", "a__b", "my_api"],
+            "disabledMcpjsonServers": ["your-api", "their_api"],
+        },
+    )
+
+    enabled = {c.name: c.config.enabled for c in _discover(home, repo).candidates if c.config}
+
+    # Other characters compare as "_", one per UTF-16 unit (two for an emoji); a plugin's name only as written.
+    assert enabled == {
+        "my.api": True,
+        "your api": True,
+        "their/api": False,
+        "plugin:x": False,
+        "plugin_y": False,
+        "a😀b": True,
+        "my😀api": False,
+    }
+
+
+def test_trust_kept_under_another_path_to_the_project_does_not_count(tmp_path: Path) -> None:
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    symlink_or_skip(tmp_path / "alias", repo, target_is_directory=True)
+    # Claude Code looks the project up under its real path only.
+    _write(home / ".claude.json", {"projects": {str(tmp_path / "alias"): {"hasTrustDialogAccepted": True}}})
+    _write(repo / ".mcp.json", {"mcpServers": {"srv": {"command": "run"}}})
+    _write(repo / ".claude" / "settings.json", {"enabledMcpjsonServers": ["srv"]})
+
+    (candidate,) = _discover(home, repo).candidates
+
+    assert candidate.config is not None
+    assert candidate.config.enabled is False
+
+
+def test_an_untrusted_repository_cannot_approve_all_its_servers(tmp_path: Path) -> None:
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _write(repo / ".mcp.json", {"mcpServers": {"srv": {"command": "run"}}})
+    _write(repo / ".claude" / "settings.json", {"enableAllProjectMcpServers": True})
+
+    (candidate,) = _discover(home, repo).candidates
+
+    assert candidate.config is not None
+    assert candidate.config.enabled is False
+
+
+def _linked_worktree(main: Path, worktree: Path, *, backlink: Path | None = None) -> None:
+    """A main checkout and a worktree linked to it, as ``git worktree add`` writes them."""
+    admin = main / ".git" / "worktrees" / worktree.name
+    admin.mkdir(parents=True)
+    (main / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (admin / "commondir").write_text("../..\n", encoding="utf-8")
+    (admin / "gitdir").write_text(f"{backlink or worktree / '.git'}\n", encoding="utf-8")
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+
+
+def test_a_linked_worktree_reads_what_claude_code_keeps_for_the_main_checkout(tmp_path: Path) -> None:
+    home, main, worktree = tmp_path / "home", tmp_path / "main", tmp_path / "wt"
+    _linked_worktree(main, worktree)
+    project = {"mcpServers": {"mine": {"command": "local"}}, "disabledMcpServers": ["mine"]}
+    _write(home / ".claude.json", {"projects": {str(main): project}})
+
+    (candidate,) = _discover(home, worktree).candidates
+
+    assert candidate.config is not None
+    assert (candidate.name, candidate.config.command, candidate.config.enabled) == ("mine", "local", False)
+
+
+@pytest.mark.parametrize("bare", ["proj.git", "proj/.bare"])
+def test_a_bare_repositorys_worktree_reads_what_claude_code_keeps_for_the_repository(tmp_path: Path, bare: str) -> None:
+    home, common, worktree = tmp_path / "home", tmp_path / bare, tmp_path / "main"
+    admin = common / "worktrees" / "main"
+    admin.mkdir(parents=True)
+    (common / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (admin / "commondir").write_text("../..\n", encoding="utf-8")
+    (admin / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+    project = {"mcpServers": {"mine": {"command": "local"}}, "disabledMcpServers": ["user"]}
+    _write(home / ".claude.json", {"mcpServers": {"user": {"command": "run"}}, "projects": {str(common): project}})
+
+    enabled = {c.name: c.config.enabled for c in _discover(home, worktree).candidates if c.config}
+
+    assert enabled == {"user": False, "mine": True}
+
+
+def test_a_worktree_the_main_checkout_does_not_list_reads_nothing_kept_for_it(tmp_path: Path) -> None:
+    home, main, worktree = tmp_path / "home", tmp_path / "main", tmp_path / "wt"
+    # The main checkout's records name another folder, so the .git file is not its worktree's.
+    _linked_worktree(main, worktree, backlink=tmp_path / "elsewhere" / ".git")
+    _write(home / ".claude.json", {"projects": {str(main): {"mcpServers": {"mine": {"command": "local"}}}}})
+
+    assert _discover(home, worktree).candidates == ()
 
 
 def test_claude_config_dir_moves_the_global_file(tmp_path: Path) -> None:

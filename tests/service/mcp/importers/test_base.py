@@ -22,12 +22,15 @@ from chrys.service.mcp.importers.base import (
     WarningKind,
     by_name,
     convert,
+    linked_common_dir,
+    main_checkout,
     merge_entries,
     merge_warnings,
     parse_json_object,
     read_text,
     render,
 )
+from tests.support.symlinks import symlink_or_skip
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -242,3 +245,37 @@ def test_parse_json_object_refuses_a_document_that_is_not_an_object() -> None:
         parse_json_object("[]")
 
     assert caught.value.kind is SourceErrorKind.INVALID
+
+
+def test_a_commondir_reaching_its_folder_by_another_name_is_not_followed(tmp_path: Path) -> None:
+    owner, worktree = tmp_path / "owner", tmp_path / "wt"
+    admin = owner / ".git" / "worktrees" / "wt"
+    admin.mkdir(parents=True)
+    worktree.mkdir()
+    (owner / "child").mkdir()
+    (tmp_path / "trusted").mkdir()
+    # Through links (where they resolve before ".."), commondir names owner/.git; spelled out, tmp/trusted.
+    symlink_or_skip(tmp_path / "link", owner / "child", target_is_directory=True)
+    symlink_or_skip(owner / "trusted", owner / ".git", target_is_directory=True)
+    (admin / "commondir").write_text(f"{tmp_path / 'link' / '..' / 'trusted'}\n", encoding="utf-8")
+    (admin / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
+    (worktree / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+
+    assert (linked_common_dir(str(worktree)), main_checkout(str(worktree))) == (None, None)
+
+
+def test_a_git_file_reaching_the_worktrees_folder_by_another_name_is_not_followed(tmp_path: Path) -> None:
+    repo, worktree = tmp_path / "repo", tmp_path / "wt"
+    admin = repo / ".git" / "worktrees" / "wt"
+    admin.mkdir(parents=True)
+    worktree.mkdir()
+    (admin / "commondir").write_text("../..\n", encoding="utf-8")
+    (admin / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
+    # Spelled through the link, "../.." from the worktree's Git folder names repo, not repo/.git.
+    symlink_or_skip(repo / "alias", repo / ".git" / "worktrees", target_is_directory=True)
+    (worktree / ".git").write_text(f"gitdir: {repo / 'alias' / 'wt'}\n", encoding="utf-8")
+
+    assert (linked_common_dir(str(worktree)), main_checkout(str(worktree))) == (None, None)
+    # The same worktree, its Git file as Git writes it.
+    (worktree / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+    assert (linked_common_dir(str(worktree)), main_checkout(str(worktree))) == (str(repo / ".git"), str(repo))

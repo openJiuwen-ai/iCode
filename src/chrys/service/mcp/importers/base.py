@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import unicodedata
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from enum import StrEnum
@@ -266,6 +267,126 @@ def project_folders(workspace_cwd: str | None) -> list[Path]:
     if root is None or Path(root) == Path(os.path.realpath(workspace_cwd)):
         return [workspace]
     return [Path(root), workspace]
+
+
+def folders_down_to(workspace_cwd: str, top: str | None) -> list[Path]:
+    """Every folder from *top* (else the filesystem root) down to the workspace, the workspace last as given."""
+    try:
+        folder = Path(os.path.realpath(workspace_cwd))
+        stop = Path(os.path.realpath(top)) if top else Path(folder.anchor)
+    except OSError, ValueError:
+        return [Path(workspace_cwd)]
+    chain = [folder]
+    while folder != stop and folder.parent != folder:
+        folder = folder.parent
+        chain.append(folder)
+    chain.reverse()
+    chain[-1] = Path(workspace_cwd)
+    return chain
+
+
+# Git keeps a worktree's pointer files small; anything larger is not one.
+_MAX_GIT_POINTER_BYTES = 64 * 1024
+
+
+def _git_pointer(path: str) -> str | None:
+    """The stripped text of a small regular file Git writes (not a link), else ``None``."""
+    try:
+        if os.path.islink(path) or not os.path.isfile(path) or os.path.getsize(path) > _MAX_GIT_POINTER_BYTES:
+            return None
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip() or None
+    except OSError, UnicodeDecodeError, ValueError:
+        return None
+
+
+def linked_common_dir(root: str) -> str | None:
+    """The common Git folder of the linked worktree *root*, as its ``.git`` file spells it, read from Git's files only.
+
+    *root*'s ``.git`` file points at ``<common>/worktrees/<name>``; ``<common>`` counts once that
+    folder's own records point back at *root* (``gitdir``) and at ``<common>`` (``commondir``,
+    spelled as the pointer spells it and naming the same real folder, as Git writes it): Claude
+    Code and Codex both check this before keying settings or trust by the main checkout, so a
+    ``.git`` file can't borrow another repository's. ``None`` for anything else (a main checkout,
+    a submodule, a broken link).
+    """
+    dot_git = os.path.join(root, ".git")
+    pointer = _git_pointer(dot_git)
+    if pointer is None or not pointer.startswith("gitdir:"):
+        return None
+    git_dir = os.path.normpath(os.path.join(root, pointer.removeprefix("gitdir:").strip()))
+    try:
+        if not os.path.isdir(git_dir) or os.path.islink(git_dir):
+            return None
+        real_git_dir = os.path.realpath(git_dir)
+        if os.path.basename(os.path.dirname(real_git_dir)) != "worktrees":
+            return None
+        real_common = os.path.dirname(os.path.dirname(real_git_dir))
+        back = _git_pointer(os.path.join(real_git_dir, "gitdir"))
+        common = _git_pointer(os.path.join(real_git_dir, "commondir"))
+        if back is None or common is None:
+            return None
+        registered = os.path.join(real_git_dir, back)
+        if os.path.basename(registered) != ".git":
+            return None
+        if os.path.realpath(os.path.dirname(registered)) != os.path.realpath(root):
+            return None
+        if os.path.realpath(os.path.join(real_git_dir, common)) != real_common:
+            return None
+    except OSError, ValueError:
+        return None
+    spelled = os.path.dirname(os.path.dirname(git_dir))
+    # Claude Code compares the spelling too: through links, ``..`` can reach the same folder by another name.
+    if os.path.basename(os.path.dirname(git_dir)) != "worktrees":
+        return None
+    return spelled if os.path.normpath(os.path.join(git_dir, common)) == spelled else None
+
+
+def main_checkout(root: str) -> str | None:
+    """The main checkout of the repository whose working tree is *root*, as Codex finds it for trust.
+
+    *root* itself when its ``.git`` is a folder. For a linked worktree, the folder holding its
+    common Git folder, once that folder's own ``.git`` (a folder, or a file pointing elsewhere as
+    with ``--separate-git-dir``) is that same common folder. ``None`` for anything else.
+    """
+    dot_git = os.path.join(root, ".git")
+    if os.path.isdir(dot_git) and not os.path.islink(dot_git):
+        return root
+    common = linked_common_dir(root)
+    if common is None:
+        return None
+    main = os.path.dirname(common)
+    main_git = os.path.join(main, ".git")
+    try:
+        if not os.path.isdir(main_git):
+            pointer = _git_pointer(main_git)
+            if pointer is None or not pointer.startswith("gitdir:"):
+                return None
+            main_git = os.path.join(main, pointer.removeprefix("gitdir:").strip())
+        if os.path.realpath(main_git) != os.path.realpath(common):
+            return None
+    except OSError, ValueError:
+        return None
+    return main
+
+
+def path_matches(key: str, folder: str) -> bool:
+    """Whether a path an application stored as a key names *folder*, as given or as its real path.
+
+    The key itself is not resolved: an application looks up the spelling it computes, so a key
+    naming another path to the same folder is a different entry (and may decide differently).
+    """
+    if key == folder:
+        return True
+    try:
+        spellings = {_path_key(folder), _path_key(os.path.realpath(folder))}
+        return _path_key(key) in spellings
+    except OSError, ValueError:
+        return False
+
+
+def _path_key(path: str) -> str:
+    return os.path.normcase(unicodedata.normalize("NFC", os.path.normpath(path)))
 
 
 def by_name(servers: Iterable[SourceServer]) -> list[SourceServer]:

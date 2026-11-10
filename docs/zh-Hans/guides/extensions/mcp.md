@@ -71,7 +71,7 @@ STDIO 连接会在本机启动指定程序。如果启动命令会下载或运�
 ### 使用前检查
 
 - **提醒（⚠）**：每条提醒都说明服务器可用前要做什么：未复制的设置、需要重新登录、需要设置的环境变量，或需要选择的工具。提醒显示在卡片的“描述”中，导入后也会保留，方便之后查看；处理完后可以删除。
-- **启用状态**：在原应用中已停用的服务器（包括在 Claude Code 中拒绝过的项目服务器），导入后“启用”不勾选。如需使用，请在卡片中勾选。
+- **启用状态**：原应用不会启动的服务器，导入后“启用”不勾选：包括在原应用中已停用的服务器，以及在 Claude Code 中拒绝过或尚未批准的项目服务器（来自 `.mcp.json`）。如需使用，请在卡片中勾选。
 - **使用范围**：导入的服务器在使用当前智能体的所有项目中都可用，即使原应用只在某个项目中使用它。STDIO 服务器在 iCode 的工作目录中启动。
 - **凭据**：直接写在原应用配置中的令牌会复制到智能体文件中。在原应用中完成的登录（例如 OAuth）不会复制。如果服务器需要认证，请添加服务器要求的请求头，或[通过命令获取值](../configuration/models.md#通过命令获取-api-密钥)。
 - **全局关闭的工具**：原应用中对所有服务器生效的工具开关（例如 OpenCode 的全局 `tools`）不会导入。请在“可用工具范围”中重新选择该服务器的工具。
@@ -81,10 +81,12 @@ STDIO 连接会在本机启动指定程序。如果启动命令会下载或运�
 
 | 应用 | 读取的文件 |
 | --- | --- |
-| Claude Code | `~/.claude.json`（或 `CLAUDE_CONFIG_DIR` 中的同名文件）中你的服务器和为当前项目添加的服务器；当前目录及其 Git 仓库顶层的 `.mcp.json` |
-| Codex | `~/.codex/config.toml`（或 `CODEX_HOME` 中的同名文件）；当前目录及其 Git 仓库顶层的 `.codex/config.toml` |
-| OpenCode | `~/.config/opencode` 中的 `opencode.json`、`opencode.jsonc` 或 `config.json`；当前目录、其 Git 仓库顶层以及当前目录下 `.opencode` 文件夹中的 `opencode.json` 或 `opencode.jsonc` |
-| Pi | `~/.pi/agent/mcp.json`（或 `PI_CODING_AGENT_DIR` 中的同名文件）；当前目录下的 `.pi/mcp.json` |
+| Claude Code | `~/.claude.json`（或 `CLAUDE_CONFIG_DIR` 中的同名文件）中你的服务器和为当前项目添加的服务器（在 Git 工作树中，项目指仓库的主目录，与 Claude Code 一致）；当前目录及其 Git 仓库顶层的 `.mcp.json` |
+| Codex | `~/.codex/config.toml`（或 `CODEX_HOME` 中的同名文件）；从 Git 仓库顶层到当前目录之间、已在 Codex 中信任的每个目录下的 `.codex/config.toml` |
+| OpenCode | `~/.config/opencode` 中的 `opencode.json`、`opencode.jsonc` 或 `config.json`；`OPENCODE_CONFIG` 指定的文件；从 Git 仓库顶层（不在仓库中时为磁盘根目录）到当前目录之间每个目录及其 `.opencode` 文件夹、`~/.opencode`，以及 `OPENCODE_CONFIG_DIR` 指定目录中的 `opencode.json` 或 `opencode.jsonc` |
+| Pi | `~/.pi/agent/mcp.json`（或 `PI_CODING_AGENT_DIR` 中的同名文件）；当前目录下的 `.pi/mcp.json`，前提是已在 Pi 中信任该目录 |
+
+项目自带的文件不能自行向智能体添加服务器。与 Codex 和 Pi 一致，只有在其中信任了该目录，才会读取项目文件；在 Claude Code 中，来自 `.mcp.json` 的服务器在你批准前导入为停用，而保存在项目自身设置中的批准，只有在你信任该项目本身后才算数（仅信任其上层目录不够）。
 
 多个文件中有同名服务器时，只列出对当前项目生效的那个。仅由云服务、插件或扩展添加的服务器不会列出，请手动添加。
 

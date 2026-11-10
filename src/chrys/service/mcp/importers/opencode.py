@@ -6,8 +6,16 @@ Read (https://opencode.ai/docs/config/), lowest precedence first:
 
 - ``config.json``, ``opencode.json`` and ``opencode.jsonc`` in the global
   folder ``$XDG_CONFIG_HOME/opencode`` (default ``~/.config/opencode``);
-- ``opencode.json`` and ``opencode.jsonc`` in the Git root, then in the workspace;
-- ``opencode.json`` and ``opencode.jsonc`` in the workspace's ``.opencode`` folder.
+- the file ``$OPENCODE_CONFIG`` names;
+- ``opencode.json`` and ``opencode.jsonc`` in every folder from the Git root
+  (the filesystem root outside a repository) down to the workspace;
+- ``opencode.json`` and ``opencode.jsonc`` in each ``.opencode`` folder in the
+  same folders, the workspace's first (so a folder above it wins, as in
+  opencode), then in ``~/.opencode`` and in ``$OPENCODE_CONFIG_DIR``.
+
+``OPENCODE_DISABLE_PROJECT_CONFIG`` (``true`` or ``1``) skips the files of the
+Git root and the folders below it. ``OPENCODE_CONFIG_CONTENT`` and managed
+settings are not read.
 
 Files are JSON with comments and trailing commas. ``{env:NAME}`` in
 ``environment`` and ``headers`` values becomes an iCode reference, with a
@@ -24,9 +32,11 @@ turns off a server an earlier file defines. A server's file is the last one
 that sets its ``type``.
 
 Checked against https://github.com/anomalyco/opencode tag ``v1.19.5``
-(commit 810c0eba1a), read 2026-11-10 unless noted: each file is checked on its
+(commit 810c0eba1a), read 2026-11-10 unless noted: the files read
+(``packages/opencode/src/config/config.ts:272-274, 415-445``,
+``packages/opencode/src/config/paths.ts``, read 2026-11-11), each checked on its
 own, then folded with remeda's ``mergeDeep``
-(``packages/opencode/src/config/config.ts:42, 188-198, 272-274``); an ``mcp``
+(``packages/opencode/src/config/config.ts:42, 188-198``); an ``mcp``
 entry is a full server or ``{enabled}`` only, and ``experimental.mcp_timeout``
 is in milliseconds (``packages/core/src/v1/config/config.ts:113-115, 182-184``,
 ``packages/core/src/v1/config/mcp.ts``); the 60-second default
@@ -52,13 +62,14 @@ from chrys.service.mcp.importers.base import (
     Value,
     WarningKind,
     convert,
+    folders_down_to,
+    git_root,
     is_str_list,
     is_str_mapping,
     merge_entries,
     missing_fields,
     parse_json_object,
     positive_number,
-    project_folders,
     read_text,
     split_variables,
     variables,
@@ -124,13 +135,30 @@ class OpenCodeSource:
 
 
 def _files(ctx: ImportContext) -> list[Path]:
-    config_home = Path(ctx.environ.get("XDG_CONFIG_HOME") or ctx.home / ".config")
-    project = ("opencode.json", "opencode.jsonc")
-    folders = project_folders(ctx.workspace_cwd)
-    if ctx.workspace_cwd:
-        folders.append(Path(ctx.workspace_cwd) / ".opencode")
-    global_files = [config_home / "opencode" / name for name in ("config.json", *project)]
-    return global_files + [folder / name for folder in folders for name in project]
+    environ = ctx.environ
+    global_folder = Path(environ.get("XDG_CONFIG_HOME") or ctx.home / ".config") / "opencode"
+    names = ("opencode.json", "opencode.jsonc")
+    files = [global_folder / name for name in ("config.json", *names)]
+    if custom := environ.get("OPENCODE_CONFIG"):
+        files.append(_absolute(custom, ctx))
+    # Folders in opencode's order, each kept where it first appears, compared as opencode compares
+    # them, as text: the global folder first, so OPENCODE_CONFIG_DIR spelling it is read there.
+    folders = [str(global_folder)]
+    if ctx.workspace_cwd and environ.get("OPENCODE_DISABLE_PROJECT_CONFIG", "").lower() not in ("true", "1"):
+        chain = folders_down_to(ctx.workspace_cwd, git_root(ctx.workspace_cwd))
+        files += [folder / name for folder in chain for name in names]
+        folders += [str(folder / ".opencode") for folder in reversed(chain)]
+    folders.append(str(ctx.home / ".opencode"))
+    config_dir = environ.get("OPENCODE_CONFIG_DIR") or None
+    if config_dir is not None:
+        folders.append(config_dir)
+    read = [folder for folder in dict.fromkeys(folders) if folder.endswith(".opencode") or folder == config_dir]
+    return files + [_absolute(folder, ctx) / name for folder in read for name in names]
+
+
+def _absolute(path: str, ctx: ImportContext) -> Path:
+    """*path* as opencode, started in the workspace, reads it."""
+    return Path(ctx.workspace_cwd or "") / path if not Path(path).is_absolute() else Path(path)
 
 
 def strip_jsonc(text: str) -> str:
@@ -188,7 +216,10 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
         fields = [(prefix, name), (f"{prefix}.url", url)]
         field, problem = _first_refusal(fields) or value_refusal or ("", Problem.VALUE_NOT_REPRESENTABLE)
         warnings = [missing_fields(entry, _REMOTE_FIELDS, prefix), _variables_required(values)]
-        if entry.get("oauth", False) is not False:
+        # opencode signs in with OAuth whenever the server asks, unless ``oauth`` is false; so warn
+        # unless headers authenticate.
+        oauth = entry.get("oauth")
+        if oauth is not False and (oauth is not None or not values):
             warnings.append(ImportWarning(WarningKind.AUTH_NOT_IMPORTED))
         return SourceServer(
             name,

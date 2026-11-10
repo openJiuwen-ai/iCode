@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -25,8 +26,8 @@ def _write(path: Path, document: object) -> None:
     path.write_text(document if isinstance(document, str) else json.dumps(document), encoding="utf-8")
 
 
-def _discover(home: Path, workspace: Path | None = None):
-    return OpenCodeSource().discover(ImportContext(str(workspace) if workspace else None, home, {}))
+def _discover(home: Path, workspace: Path | None = None, environ: dict[str, str] | None = None):
+    return OpenCodeSource().discover(ImportContext(str(workspace) if workspace else None, home, environ or {}))
 
 
 def _global(home: Path) -> Path:
@@ -108,6 +109,9 @@ def test_the_experimental_timeout_applies_to_servers_without_their_own(tmp_path:
     ("entry", "warnings"),
     [
         ({"type": "remote", "url": "https://x", "oauth": {}}, (ImportWarning(Kind.AUTH_NOT_IMPORTED),)),
+        # opencode signs in with OAuth whenever the server asks, unless told not to.
+        ({"type": "remote", "url": "https://x"}, (ImportWarning(Kind.AUTH_NOT_IMPORTED),)),
+        ({"type": "remote", "url": "https://x", "oauth": False}, ()),
         (
             {"type": "local", "command": ["run"], "cwd": "/x"},
             (ImportWarning(Kind.NOT_IMPORTED, ("mcp.srv.cwd",)),),
@@ -121,7 +125,7 @@ def test_the_experimental_timeout_applies_to_servers_without_their_own(tmp_path:
             (ImportWarning(Kind.VARIABLE_REQUIRED, ("KEY",)),),
         ),
     ],
-    ids=["oauth", "unread-setting", "environment-variables", "header-variable"],
+    ids=["oauth", "oauth-by-default", "oauth-off", "unread-setting", "environment-variables", "header-variable"],
 )
 def test_what_the_import_leaves_out_is_reported(
     tmp_path: Path, entry: dict[str, Any], warnings: tuple[ImportWarning, ...]
@@ -194,6 +198,58 @@ def test_later_files_win_for_same_named_servers(tmp_path: Path) -> None:
     commands = {c.name: c.config.command for c in _discover(home, workspace).candidates if c.config}
 
     assert commands == {"a": "root", "b": "dot-opencode"}
+
+
+def test_every_folder_from_the_git_root_down_to_the_workspace_is_read(tmp_path: Path) -> None:
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    workspace = repo / "a" / "b"
+    (repo / ".git").mkdir(parents=True)
+    workspace.mkdir(parents=True)
+    remote = {"type": "remote", "headers": {"X": "1"}}
+    _write(_global(home), {"mcp": {"api": {**remote, "url": "https://prod"}, "b": {**remote, "url": "https://g"}}})
+    _write(tmp_path / "opencode.json", {"mcp": {"above": {**remote, "url": "https://above"}}})
+    _write(repo / "a" / "opencode.json", {"mcp": {"api": {"url": "https://dev"}}})
+    # .opencode folders are read nearest first, so the one higher up wins, as in opencode.
+    _write(repo / ".opencode" / "opencode.json", {"mcp": {"b": {"url": "https://root-folder"}}})
+    _write(workspace / ".opencode" / "opencode.json", {"mcp": {"b": {"url": "https://workspace-folder"}}})
+
+    urls = {c.name: c.config.url for c in _discover(home, workspace).candidates if c.config}
+
+    assert urls == {"api": "https://dev", "b": "https://root-folder"}
+
+
+def test_the_home_folder_and_the_environment_add_files(tmp_path: Path) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "repo"
+    (workspace / ".git").mkdir(parents=True)
+    local = {"type": "local"}
+    _write(workspace / "opencode.json", {"mcp": {"project": {**local, "command": ["project"]}}})
+    _write(home / ".opencode" / "opencode.json", {"mcp": {"home": {**local, "command": ["home"]}}})
+    _write(tmp_path / "custom.json", {"mcp": {"custom": {**local, "command": ["custom"]}}})
+    _write(tmp_path / "dir" / "opencode.jsonc", {"mcp": {"dir": {**local, "command": ["dir"]}}})
+    environ = {"OPENCODE_CONFIG": str(tmp_path / "custom.json"), "OPENCODE_CONFIG_DIR": str(tmp_path / "dir")}
+
+    assert [c.name for c in _discover(home, workspace, environ).candidates] == ["custom", "project", "home", "dir"]
+    environ["OPENCODE_DISABLE_PROJECT_CONFIG"] = "true"
+    assert [c.name for c in _discover(home, workspace, environ).candidates] == ["custom", "home", "dir"]
+
+
+@pytest.mark.parametrize(
+    ("suffix", "command"), [("", "project"), (os.sep, "global")], ids=["same", "trailing-separator"]
+)
+def test_the_config_dir_variable_spelling_the_global_folder_reads_it_first(
+    tmp_path: Path, suffix: str, command: str
+) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "repo"
+    (workspace / ".git").mkdir(parents=True)
+    _write(_global(home), {"mcp": {"srv": {"type": "local", "command": ["global"]}}})
+    _write(workspace / ".opencode" / "opencode.json", {"mcp": {"srv": {"type": "local", "command": ["project"]}}})
+    # opencode compares the folders as text: spelled any other way, the global folder is read again, last.
+    environ = {"OPENCODE_CONFIG_DIR": str(_global(home).parent) + suffix}
+
+    (candidate,) = _discover(home, workspace, environ).candidates
+
+    assert candidate.config is not None
+    assert candidate.config.command == command
 
 
 def test_later_files_merge_into_same_named_servers(tmp_path: Path) -> None:
