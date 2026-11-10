@@ -14,6 +14,7 @@ import pytest
 from rich.cells import cell_len
 from rich.style import Style
 from textual.app import App, ComposeResult
+from textual.events import Key
 from textual.widgets import Button, Static, Tab, TabbedContent, TextArea
 from textual.widgets._tabbed_content import ContentTabs
 
@@ -640,6 +641,19 @@ async def test_by_the_week_a_month_or_30_days_shows_only_the_weeks_of_the_range(
         assert lines[0].startswith("█" * spans[0][1])
         assert lines[0].count("█") == spans[0][1]
         assert _text(dialog, "usage-peak") == "peak 3.00M"
+
+
+async def test_a_trend_chosen_right_after_a_range_key_keeps_to_the_new_range() -> None:
+    report = _report(_call(date(2026, 10, 2), new_input=3_000_000, output=0), _call(new_input=1_000_000, output=0))
+    async with _HostApp().run_test(size=(100, 30)) as pilot:
+        dialog = await _open(pilot, report)
+        assert (_active_range(dialog), _chosen(dialog, "usage-trend")) == ("This month", "Daily")
+        # Both keys are queued before the tabs' TabActivated for the first can climb to the dialog.
+        dialog.post_message(Key("right", None))
+        dialog.post_message(Key("t", "t"))
+        await pilot.pause()
+
+        assert (_active_range(dialog), _chosen(dialog, "usage-trend")) == ("30 days", "Weekly")
 
 
 async def test_a_month_just_begun_still_shows_all_of_it_by_the_day_and_by_the_week() -> None:

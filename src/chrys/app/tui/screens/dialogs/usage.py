@@ -904,8 +904,8 @@ class UsageDialog(BaseDialog[None]):
         ranges = self.query_one(_RangeTabs)
         rows = self.query_one(_UsageRows)
         moves: dict[str, Callable[[], None]] = {
-            "left": ranges.action_previous_tab,
-            "right": ranges.action_next_tab,
+            "left": lambda: self._step_range(ranges, -1),
+            "right": lambda: self._step_range(ranges, 1),
             "up": rows.action_cursor_up,
             "down": rows.action_cursor_down,
             "pageup": rows.action_page_up,
@@ -932,10 +932,20 @@ class UsageDialog(BaseDialog[None]):
             return False
         return True
 
+    def _step_range(self, ranges: _RangeTabs, step: int) -> None:
+        (ranges.action_next_tab if step > 0 else ranges.action_previous_tab)()
+        # Taken now rather than when the tabs' TabActivated arrives: a "t" handled before that
+        # would choose the old range's trend, and the new range's reset would then drop it.
+        self._take_range(ranges)
+
     @on(Tabs.TabActivated, "#usage-ranges")
     def _range_activated(self, event: Tabs.TabActivated) -> None:
         event.stop()
-        index = _RANGE_TAB_IDS.index(event.tabs.active)
+        self._take_range(event.tabs)
+
+    def _take_range(self, ranges: Tabs) -> None:
+        """Follow the tab *ranges* shows now, whichever change its message was posted for."""
+        index = _RANGE_TAB_IDS.index(ranges.active)
         if index != self._range:
             self._range = index
             self._weekly_trend = None
