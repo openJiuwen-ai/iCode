@@ -334,11 +334,15 @@ def _arguments_not_object(arguments: Any) -> bool:
 
 
 def _arguments_exceed_integer_limit(arguments: Any) -> bool:
-    """True when valid-JSON arguments hold an integer past Python's conversion limit.
+    """True when decoding stops at an integer literal past Python's conversion limit.
 
-    ``json.loads`` then raises a bare ValueError rather than ``JSONDecodeError``,
-    and the payload's shape is an object: the generic "arguments must be a valid
-    JSON object" advice would misdescribe what the model has to repair.
+    ``json.loads`` converts each integer as soon as it has scanned it and raises
+    a bare ValueError, not ``JSONDecodeError``, on one past the limit, before it
+    reads anything after it. So this holds for a complete object, a bare number
+    and a payload cut off at or after the oversized integer alike; only a syntax
+    error earlier in the text raises ``JSONDecodeError`` first. Neither the generic
+    "arguments must be a valid JSON object" advice nor the max_tokens hint names
+    what the model has to change.
     """
     if not isinstance(arguments, str) or not arguments:
         return False
@@ -811,11 +815,12 @@ async def _invoke_function_call(
             and _arguments_look_like_truncated_mapping(function_call.arguments, argument_schema)
         )
         if _arguments_exceed_integer_limit(function_call.arguments):
-            # A complete JSON object whose integer literal is past the conversion
-            # limit outranks the truncation hint: a runaway integer loop often
-            # also hits max_tokens, and "raise max_tokens" would send the model
-            # back with the same value. Truly cut-off payloads are undecodable
-            # JSON and never reach this branch.
+            # The integer-limit hint outranks the truncation hint. A runaway digit
+            # loop usually runs into max_tokens as well, and its payload lands here
+            # whether or not it was cut off, since the decoder fails on the integer
+            # before it reaches the missing close: "raise max_tokens" would only
+            # buy a longer number. An object cut off before its digits pass the
+            # limit is undecodable JSON and keeps the truncation hint.
             message = _integer_limit_argument_message(tool_name=tool.name)
             error_kind = "argument_parsing"
         elif response_truncated and arguments_cut_off:
