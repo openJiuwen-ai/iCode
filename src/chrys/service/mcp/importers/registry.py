@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from chrys.service.mcp.importers.claude_code import ClaudeCodeSource
 from chrys.service.mcp.importers.codex import CodexSource
 from chrys.service.mcp.importers.opencode import OpenCodeSource
+from chrys.service.mcp.importers.pi import PiSource
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-IMPORT_SOURCES: tuple[McpImportSource, ...] = (ClaudeCodeSource(), CodexSource(), OpenCodeSource())
+IMPORT_SOURCES: tuple[McpImportSource, ...] = (ClaudeCodeSource(), CodexSource(), OpenCodeSource(), PiSource())
 
 
 def detected_sources(ctx: ImportContext, sources: Sequence[McpImportSource] | None = None) -> list[McpImportSource]:

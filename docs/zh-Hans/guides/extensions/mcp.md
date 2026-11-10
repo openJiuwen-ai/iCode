@@ -59,7 +59,7 @@ STDIO 连接会在本机启动指定程序。如果启动命令会下载或运�
 
 ## 从其他应用导入服务器
 
-可以把已在 Claude Code、Codex 或 OpenCode 中使用的 MCP 服务器复制到当前智能体。这是一次性复制：之后在其他应用中修改，不会同步到 iCode。
+可以把已在 Claude Code、Codex、OpenCode 或 Pi 中使用的 MCP 服务器复制到当前智能体。这是一次性复制：之后在其他应用中修改，不会同步到 iCode。
 
 1. 在 `/agents mcp` 中，点击“+ 添加”旁的“从其他应用导入”。
 2. 在左侧选择应用。每个服务器都以导入后的卡片样式显示，点击名称可展开。
@@ -84,6 +84,7 @@ STDIO 连接会在本机启动指定程序。如果启动命令会下载或运�
 | Claude Code | `~/.claude.json`（或 `CLAUDE_CONFIG_DIR` 中的同名文件）中你的服务器和为当前项目添加的服务器；当前目录及其 Git 仓库顶层的 `.mcp.json` |
 | Codex | `~/.codex/config.toml`（或 `CODEX_HOME` 中的同名文件）；当前目录及其 Git 仓库顶层的 `.codex/config.toml` |
 | OpenCode | `~/.config/opencode` 中的 `opencode.json`、`opencode.jsonc` 或 `config.json`；当前目录、其 Git 仓库顶层以及当前目录下 `.opencode` 文件夹中的 `opencode.json` 或 `opencode.jsonc` |
+| Pi | `~/.pi/agent/mcp.json`（或 `PI_CODING_AGENT_DIR` 中的同名文件）；当前目录下的 `.pi/mcp.json` |
 
 多个文件中有同名服务器时，只列出对当前项目生效的那个。仅由云服务、插件或扩展添加的服务器不会列出，请手动添加。
 
@@ -96,6 +97,7 @@ STDIO 连接会在本机启动指定程序。如果启动命令会下载或运�
 | 服务器使用 SSE 或 WebSocket，或在 Codex 远程环境中运行 | 如果它也提供 Streamable HTTP，或可在本机用 STDIO 命令启动，请按该方式手动添加。 |
 | URL、命令或参数中引用了环境变量 | 手动添加服务器，填写完整的 URL 或实际的值。 |
 | 值从文件读取，例如 OpenCode 的 `{file:...}` | 手动添加服务器，填写实际的值，或引用环境变量。 |
+| 值由 Pi 运行命令获取（以 `!` 开头） | 手动添加服务器，在 iCode 中[通过命令获取值](../configuration/models.md#通过命令获取-api-密钥)，或直接填写。 |
 | 值为空，或首尾有空格 | 手动添加服务器，并填写所需的值。 |
 | 请求头名称无效，请求头的值含非 ASCII 文本或控制字符，或有两个请求头名称仅大小写不同 | 手动添加服务器，填写服务器接受的请求头。 |
 
