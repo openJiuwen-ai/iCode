@@ -27,17 +27,17 @@
 |---|---|---|
 | manual/ 入库 67 文件、结构同构 docs/、docs/ 零定制 | `git ls-files aixcoding/manual`（67）+ `git diff <上游tag> -- docs`（空） | 结构检查 |
 | 内锚 237 全有效 / 外链 0 | `check_links.py <手册MD>` → `内锚 237 \| 失效 0 \| 外链 0 \| PASS` | 内容门禁 |
-| wheel 捆绑源 = manual，逐文件一致 | `python -m hatchling build` + zipfile 清单/哈希比对（verification 2026-11-10 节）；正式门禁 `python scripts/check_wheel.py dist/<wheel>`（SAC 受限机器用等价脚本替代，见 verification 注记） | 构建/契约 |
+| wheel 捆绑源 = manual，逐文件一致 | `python -m hatchling build` + zipfile 清单/哈希比对（verification 2026-11-10 节）；正式门禁 `python scripts/check_wheel.py dist/<wheel>`（SAC 受限机器以一次性等价校验替代：脚本用毕即删，输出与复现方式留 verification） | 构建/契约 |
 | check_wheel 比对源切换 | `git grep -n "aixcoding/manual" scripts/check_wheel.py`（2 处）+ 构建比对绿 | 静态 + 契约 |
 | 开发机 F8 指向 manual | `CHRYS_DOCS_ROOT=<repo>/aixcoding/manual` 下调 `resolve_docs_root()` 断言路径（verification 实测） | 行为锚定（上游符号） |
 | 上游解析/手册 UI 不回归 | `pytest tests/foundation/test_documentation.py tests/app/tui/screens/guides tests/service/context/providers/test_documentation.py tests/orchestration/{workflows,invoker}/test_documentation.py -q`（含契约测试 C147 跟改后断言） | 上游回归 |
 | 桌面 PDF 同步 | Edge 无头打印页数核验（139 页）+ HTML 锚点数复核 | 人工/交付 |
 | check_docs 门禁绿（文档入库后） | `uv run python aixcoding/tools/check_docs.py` → exit 0 | 文档门禁 |
 
-覆盖缺口与理由：无新增定制代码模块（§5"新增独立定制模块须有测试"不触发）；构建比对在
-SAC 受限机器上无法直接跑 `check_wheel.py`（其子进程 exe 被拦，os error 4551），等价脚本
-校验已落 verification.md——正式 CI（Linux）环境无此限制，`aixcoding-upstream-ci` 桥接跑
-build+wheel 探测时自然覆盖。
+覆盖缺口与理由：无新增定制代码模块（§5"新增独立定制代码模块须有测试"不触发）；构建比对在
+SAC 受限机器上无法直接跑 `check_wheel.py`（其子进程 exe 被拦，os error 4551），已用一次性
+等价校验取得证据（命令与输出留 verification.md，脚本不保留）——正式 CI（Linux）环境无此
+限制，`aixcoding-upstream-ci` 桥接跑 build+wheel 探测时自然覆盖，此为**本批次唯一遗留缺口**。
 
 ## 异常与降级路径
 

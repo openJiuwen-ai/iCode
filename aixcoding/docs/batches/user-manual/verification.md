@@ -187,5 +187,8 @@ python aixcoding/tools/check_docs.py
 
 ## 待补项
 
-- [ ] 评审第一轮修复后的增量复审（HOWTO ③，同一评审 AI 复审增量）——签认不阻塞，记录追加不重签；
-- [ ] Linux 侧 `check_wheel.py` 正式门禁输出（CI 桥接或无 SAC 环境补跑）。
+- [x] 评审第一轮修复后的增量复审（2026-11-10，同一评审 AI）——3 blocker 修复经独立复现确认，
+  新增 N1/N2/N3 已处置或登记，结论收敛（记录见 self-review 第二轮节）；
+- [ ] Linux 侧 `check_wheel.py` 正式门禁输出（CI 桥接或无 SAC 环境补跑）——**本批次唯一遗留项**；
+- [ ] 双轨同源对账（增量复审 N3）：从 `aixcoding/manual/` 重出桌面 MD/PDF 做字符级对账，
+  登记为下个手册批次待办（plan「挂起与备忘」）。

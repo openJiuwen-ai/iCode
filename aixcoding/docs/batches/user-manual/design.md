@@ -90,7 +90,7 @@
 
 ## 定制点登记预告
 
-（ADR-0015 点级登记；本批次 2 个定制点，编号接现有高水位 C144 之后的 C145/C146。）
+（ADR-0015 点级登记；本批次 4 个定制点，编号接现有高水位 C144 之后的 C145-C148。）
 
 | id | 落点 | marker 锚 | 预期计数 | anchor | risk | removal_condition |
 |---|---|---|---|---|---|---|
@@ -99,8 +99,8 @@
 | C147 | tests/foundation/test_documentation.py | AIxCoding manual bundle | 1 | `test_wheel_bundles_docs_where_the_resolver_looks` 断言 | 低——契约测试随 C145 键名联动 | 〔机制替代〕同 C145（契约随捆绑源同生共死） |
 | C148 | pyproject.toml | AIxCoding manual bundle: the manual is delivered user-facing content | 1 | `[tool.ruff] extend-exclude` | 低——格式化配置，上游改 lint 版式策略时冲突 | 〔机制替代〕上游把交付文档纳入格式化治理并提供正式排除通道，或手册定制淘汰 |
 
-> R3 正式单行标记与 `customization-registry` 登记为收尾项（plan.md 待办），登记完成后
-> `gen_customizations.py --strict` 对账作为门禁。
+> R3 正式单行标记已补齐（C145-C148 四行），本表随设计签认生效（2026-11-10）；
+> `gen_customizations.py --strict` 对账绿（105 登记行 / 142 标记 / 0 warning，见 verification）。
 
 ## 风险与最坏情况
 

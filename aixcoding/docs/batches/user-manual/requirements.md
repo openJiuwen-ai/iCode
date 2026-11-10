@@ -55,10 +55,13 @@
       内容哈希零差异）；
 - [x] `scripts/check_wheel.py` 捆绑完整性比对源为 `aixcoding/manual`（git ls-files）；
 - [x] 开发机 F8 经 `CHRYS_DOCS_ROOT` 解析到 `aixcoding/manual/`（实测）；
-- [x] 桌面定稿 PDF 与本目录 MD 同步（139 页，2026-11-09 15:42 版后随内容更新重出）；
-- [ ] 本批次文档入库后 `check_docs.py` 门禁绿（26 design / 32 self-review）；
-- [ ] R3 标记注释补录 + 定制点登记（C145-C148）+ `gen_customizations.py --strict` 对账绿
-      （收尾项，见 plan.md）。
+- [x] 桌面定稿 PDF 与本目录 MD 同步（139 页，2026-11-09 15:42 版后随内容更新重出）——注：
+      本批次 manual 树去链后**未重出**该 PDF，依据是桌面版此前已单独去链、含外链的
+      chat-options 章节为 manual 树独有；双轨同源的全等对账未做，登记为 plan「挂起与备忘」
+      N3，下个手册批次补（增量复审 N3）；
+- [x] 本批次文档入库后 `check_docs.py` 门禁绿（24 ADR / 34 design / 32 self-review，2026-11-10）；
+- [x] R3 标记注释补录 + 定制点登记（C145-C148）+ `gen_customizations.py --strict` 对账绿
+      （105 登记行 / 142 标记 / 0 warning，2026-11-10）。
 
 ## 开放问题
 
