@@ -4,7 +4,7 @@
 
 ## 1. 安装 iCode
 
-使用 [uv](https://docs.astral.sh/uv/getting-started/installation/) 安装 iCode。如果系统中没有 Python 3.14，uv 会自动下载：
+使用 uv 安装 iCode。如果系统中没有 Python 3.14，uv 会自动下载：
 
 ```shell
 uv tool install iCode-TUI

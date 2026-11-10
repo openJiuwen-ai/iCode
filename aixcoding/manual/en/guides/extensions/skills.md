@@ -145,7 +145,7 @@ The optional fields serve the following purposes:
 * `license`: Declares the skill's license. This can be a license name or the name of a license file in the skill directory.
 * `allowed-tools`: Declares tools that may be approved in advance under the Agent Skills specification. This field is still experimental. iCode currently only reads and retains its value; it does not automatically grant tool permissions based on it.
 
-iCode skill directories and the `SKILL.md` format follow the common Agent Skills specification. For details on these fields and the complete skill specification, see the [official Agent Skills specification](https://agentskills.io/specification).
+iCode skill directories and the `SKILL.md` format follow the common Agent Skills specification. For details on these fields and the complete skill specification, see the official Agent Skills specification.
 
 #### Add scripts and resources
 

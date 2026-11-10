@@ -76,7 +76,8 @@ def test_resolve_docs_root_ignores_docs_outside_a_checkout(tmp_path: Path, monke
 def test_wheel_bundles_docs_where_the_resolver_looks() -> None:
     pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     force_include = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
-    assert force_include["docs"] == (Path("chrys") / BUNDLED_DOCS_PATH).as_posix()
+    # AIxCoding manual bundle: source key follows the fork-owned manual tree (user-manual C147)
+    assert force_include["aixcoding/manual"] == (Path("chrys") / BUNDLED_DOCS_PATH).as_posix()
 
 
 def test_relative_override_uses_current_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

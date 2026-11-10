@@ -141,10 +141,10 @@ iCode 会根据结构化错误详情区分请求被拒绝和临时服务故障�
 
 | 服务或网关 | 识别的错误详情 | 处理方式 |
 | --- | --- | --- |
-| [New API](https://github.com/QuantumNous/new-api) 及兼容中转服务 | `sensitive_words_detected`、`prompt_blocked`，以及 Anthropic 兼容端点使用的 `new_api_error` 消息形式 | 内容过滤拦截，包括被包装成 HTTP 500 的情况 |
-| [阿里云百炼 / DashScope](https://www.alibabacloud.com/help/zh/model-studio/error-code) | `DataInspectionFailed` / `data_inspection_failed`；`Arrearage` | 内容过滤拦截；账户额度不足 |
-| [火山方舟](https://console.volcengine.com/ark/region%3Acn-beijing/docs/error-codes) | `SensitiveContentDetected` 和文档中明确列出的输入、输出内容策略错误码 | 内容过滤拦截 |
-| [OpenRouter](https://openrouter.ai/docs/api_reference/errors-and-debugging) | 精确的 `error_type`、审核 metadata 和预算 `limit_source` | 在 Chat Completions、Anthropic Messages 和 Responses 错误格式之间保留具体的拒绝、额度、限流或服务故障分类 |
+| New API 及兼容中转服务 | `sensitive_words_detected`、`prompt_blocked`，以及 Anthropic 兼容端点使用的 `new_api_error` 消息形式 | 内容过滤拦截，包括被包装成 HTTP 500 的情况 |
+| 阿里云百炼 / DashScope | `DataInspectionFailed` / `data_inspection_failed`；`Arrearage` | 内容过滤拦截；账户额度不足 |
+| 火山方舟 | `SensitiveContentDetected` 和文档中明确列出的输入、输出内容策略错误码 | 内容过滤拦截 |
+| OpenRouter | 精确的 `error_type`、审核 metadata 和预算 `limit_source` | 在 Chat Completions、Anthropic Messages 和 Responses 错误格式之间保留具体的拒绝、额度、限流或服务故障分类 |
 
 对于非流式 Chat Completions，即使 HTTP 状态是 200，`choices[].error` 中的错误也会使整个响应失败：部分回答不会作为成功结果接收，工具调用不会执行，已报告的 token 用量仍会保留。只有 `finish_reason: "error"` 而没有错误详情时，按可重试的服务故障处理。
 

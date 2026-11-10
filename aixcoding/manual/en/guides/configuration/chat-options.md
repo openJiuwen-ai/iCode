@@ -75,7 +75,7 @@ OpenAI, DeepSeek, GLM, Kimi's Chat Completions API, and Qwen offer automatic cac
 | --- | --- |
 | `extra_body` | `{"cache_control": {"type": "ephemeral"}}` |
 
-If the profile already has an `extra_body` row, add `"cache_control": {"type": "ephemeral"}` to its object instead. Anthropic's standard 5-minute writes cost 1.25× the base input rate; reads cost 0.1× or less, depending on the model. For a 1-hour entry, use `{"type": "ephemeral", "ttl": "1h"}`; writes cost 2×. The TTL runs from the start of a request that writes or reuses the entry, so generation time consumes part of it. A model-specific minimum prefix length also applies. See [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) for current limits and pricing rules.
+If the profile already has an `extra_body` row, add `"cache_control": {"type": "ephemeral"}` to its object instead. Anthropic's standard 5-minute writes cost 1.25× the base input rate; reads cost 0.1× or less, depending on the model. For a 1-hour entry, use `{"type": "ephemeral", "ttl": "1h"}`; writes cost 2×. The TTL runs from the start of a request that writes or reuses the entry, so generation time consumes part of it. A model-specific minimum prefix length also applies. See Anthropic prompt caching for current limits and pricing rules.
 
 ### The "Prompt Caching Is Off" reminder
 
@@ -117,7 +117,7 @@ Provider "OpenAI", API style "Responses", with the default base URL. "Chat Compl
 | Cheaper, slower processing | `service_tier` | `flex` |
 | Cache lifetime on GPT-5.6 and later (Responses) | `extra_body` | `{"prompt_cache_options": {"mode": "implicit", "ttl": "30m"}}` |
 
-On Responses, use `reasoning` rather than `reasoning_effort`. iCode translates its `verbosity` option to the API's `text.verbosity`. Allowed effort levels, summaries, verbosity, and Flex availability vary by model. Flex can also return resource-unavailable errors; see [Flex processing](https://developers.openai.com/api/docs/guides/flex-processing).
+On Responses, use `reasoning` rather than `reasoning_effort`. iCode translates its `verbosity` option to the API's `text.verbosity`. Allowed effort levels, summaries, verbosity, and Flex availability vary by model. Flex can also return resource-unavailable errors; see Flex processing.
 
 GPT-5.6 and later use `prompt_cache_options` with a `30m` TTL; automatic cache writes are billable. Earlier models use `prompt_cache_retention`, with values such as `in_memory` or `24h` depending on the model. These settings are not interchangeable. Keep `mode` implicit: explicit mode requires content-block breakpoints, which the Chat Options form does not add.
 
@@ -125,7 +125,7 @@ On Responses with OpenAI's own address, iCode also sends the session ID as `prom
 
 Leave `store` unset unless you want service-side continuation: iCode sends `false` by default, which still allows prompt caching. Setting it to `true` disables iCode's context compaction.
 
-Documentation: [Reasoning](https://developers.openai.com/api/docs/guides/reasoning), [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching), [Responses API reference](https://developers.openai.com/api/reference/resources/responses/methods/create), [Chat Completions API reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+Documentation: Reasoning, Prompt caching, Responses API reference, Chat Completions API reference.
 
 ### Anthropic
 
@@ -146,7 +146,7 @@ Provider "Anthropic", base URL `https://api.anthropic.com`. Don't add `/v1` to t
 - With fixed-budget thinking at Anthropic's own address, iCode adds the interleaved-thinking flag itself; see [Claude thinking settings](./models.md#claude-thinking-settings). At another address, add it yourself as in the table above. Adaptive thinking already interleaves and needs no flag. Interleaving depends on the exact model, and accepting a beta flag does not mean it takes effect.
 - With Claude Opus 5.5, Fable 5.1 or Sonnet 5.5 and adaptive thinking at Anthropic's own address, iCode asks the service to leave out earlier thinking that no longer matches the conversation; see [Claude thinking settings](./models.md#claude-thinking-settings). A `block_binding` you write into `thinking` yourself is sent as written, and iCode adds the beta flag it needs.
 
-Documentation: [Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching), [Adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/thinking), [Extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking), [Effort](https://platform.claude.com/docs/en/build-with-claude/effort), [Beta headers](https://platform.claude.com/docs/en/api/beta-headers).
+Documentation: Prompt caching, Adaptive thinking, Extended thinking, Effort, Beta headers.
 
 ### DeepSeek
 
@@ -167,7 +167,7 @@ DeepSeek also supports the Responses API. Server-side `web_search` requires Resp
 
 The declaration makes the provider own the `web_search` name; if the agent also enables the local `web_search`, iCode turns the local tool off for that run and shows a notice. Provider-run search is not covered by iCode approval or network settings. You can also use the local `web_search` with DeepSeek's Search API; see [Configure web tools](./web-tools.md#deepseek-search-api).
 
-Documentation: [Thinking mode](https://api-docs.deepseek.com/guides/thinking_mode), [Context caching](https://api-docs.deepseek.com/guides/kv_cache), [API reference](https://api-docs.deepseek.com/api/create-chat-completion).
+Documentation: Thinking mode, Context caching, API reference.
 
 ### GLM (Zhipu / Z.ai)
 
@@ -181,7 +181,7 @@ Provider "GLM (OpenAI)". The default base URL is `https://open.bigmodel.cn/api/p
 
 GLM-5.3 always thinks and accepts `low`, `high`, or `max` effort; do not send `thinking.type: disabled` to it. GLM-5.2 has different effort mappings, and earlier models do not support this effort field. `clear_thinking: false` also requires intact historical reasoning, which iCode's GLM provider preserves. `temperature` ranges from 0 to 1.
 
-Documentation: [Thinking mode](https://docs.z.ai/guides/capabilities/thinking-mode), [Context caching](https://docs.z.ai/guides/capabilities/cache), [API reference](https://docs.z.ai/api-reference/llm/chat-completion).
+Documentation: Thinking mode, Context caching, API reference.
 
 ### Kimi (Moonshot AI)
 
@@ -199,7 +199,7 @@ Chat Completions uses a 5-minute cache by default. The 1-hour option has a highe
 
 Kimi also offers an Anthropic-protocol endpoint: provider "Anthropic", base URL `https://api.moonshot.ai/anthropic`. On it, requests write to the cache only when they ask for caching, so add the `cache_control` setting from [Prompt caching](#prompt-caching).
 
-Documentation: [Chat API](https://platform.kimi.ai/docs/api/chat), [Thinking models](https://platform.kimi.ai/docs/guide/use-thinking-models), [Context caching](https://platform.kimi.ai/docs/guide/context-caching), [Anthropic-compatible API](https://platform.kimi.ai/docs/api/messages).
+Documentation: Chat API, Thinking models, Context caching, Anthropic-compatible API.
 
 ### Qwen (Alibaba Cloud Model Studio)
 
@@ -214,7 +214,7 @@ Provider "OpenAI", API style "Chat Completions", and the OpenAI-compatible base 
 
 `enable_thinking: false` applies to hybrid thinking models; thinking-only models cannot disable it. Budget limits, `top_k`, and `enable_search` support also vary by model. Some open-source Qwen models require "Streaming" for thinking, while commercial models can also support non-streaming requests. Model Studio also offers explicit caching via message-block markers; the Chat Options form does not add those markers.
 
-Documentation: [OpenAI compatibility](https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope), [Deep thinking](https://www.alibabacloud.com/help/en/model-studio/deep-thinking), [Context cache](https://www.alibabacloud.com/help/en/model-studio/context-cache).
+Documentation: OpenAI compatibility, Deep thinking, Context cache.
 
 ### vLLM
 
@@ -230,7 +230,7 @@ For iCode agents that use tools, start the server with `--enable-auto-tool-choic
 
 These are model-template options, not universal switches. Some models always think; others use a different toggle. `reasoning_effort` does not provide the same effort levels on every model. Match the documentation to your installed vLLM version.
 
-Documentation: [Tool calling](https://docs.vllm.ai/en/latest/features/tool_calling/), [Reasoning outputs](https://docs.vllm.ai/en/latest/features/reasoning_outputs/), [OpenAI-compatible server](https://docs.vllm.ai/en/latest/serving/openai_compatible_server/), [Server arguments](https://docs.vllm.ai/en/latest/cli/serve/).
+Documentation: Tool calling, Reasoning outputs, OpenAI-compatible server, Server arguments.
 
 ### SGLang
 
@@ -245,7 +245,7 @@ Provider "OpenAI", API style "Chat Completions", base URL `http://<host>:<port>/
 
 The template's accepted keys and effort levels depend on the model and SGLang version. A reasoning parser separates output; it does not itself enable thinking. Keep `separate_reasoning` enabled to display reasoning separately. Configure `reasoning_effort` in either the request or the server's template defaults, not both.
 
-Documentation: [OpenAI-compatible API](https://docs.sglang.io/docs/basic_usage/openai_api_completions), [Server arguments](https://docs.sglang.io/docs/advanced_features/server_arguments), [Tool parser](https://docs.sglang.io/docs/advanced_features/tool_parser), [Reasoning parser](https://docs.sglang.io/docs/advanced_features/separate_reasoning).
+Documentation: OpenAI-compatible API, Server arguments, Tool parser, Reasoning parser.
 
 ### LiteLLM proxy
 
@@ -260,7 +260,7 @@ Tag routing requires matching deployment tags and enabled tag filtering in the p
 
 For unsupported OpenAI parameters, the proxy administrator can configure `drop_params`; those settings are then silently omitted. It is not a general fix for an invalid provider-specific field or value. Remove or correct those fields in the profile.
 
-Documentation: [Virtual keys](https://docs.litellm.ai/docs/proxy/user_keys), [Cost tracking](https://docs.litellm.ai/docs/proxy/cost_tracking), [Tag routing](https://docs.litellm.ai/docs/proxy/tag_routing), [Dropping unsupported parameters](https://docs.litellm.ai/docs/completion/drop_params), [Anthropic `/v1/messages` endpoint](https://docs.litellm.ai/docs/anthropic_unified).
+Documentation: Virtual keys, Cost tracking, Tag routing, Dropping unsupported parameters, Anthropic `/v1/messages` endpoint.
 
 ### OpenRouter
 
@@ -276,7 +276,7 @@ To combine these, put them in one object, for example `{"provider": {"order": ["
 
 `provider.order` sets preference; retain `allow_fallbacks: false` if only the listed providers should serve the request. Top-level `cache_control` is supported for Claude automatic caching, but model and provider support still matters. OpenRouter's documented behavior can differ from calling that provider directly.
 
-Documentation: [Quickstart](https://openrouter.ai/docs/quickstart), [Provider selection](https://openrouter.ai/docs/guides/routing/provider-selection), [Reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens), [Prompt caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching).
+Documentation: Quickstart, Provider selection, Reasoning tokens, Prompt caching.
 
 ## If requests fail after you add an option
 

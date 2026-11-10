@@ -228,7 +228,7 @@ tools:
         credential_env_names: [DEEPSEEK_API_KEY]
 ```
 
-`/summary` returns a longer result summary. For request fields, query syntax, billing, and limits, see the [DeepSeek search guide](https://api-docs.deepseek.com/guides/search/).
+`/summary` returns a longer result summary. For request fields, query syntax, billing, and limits, see the DeepSeek search guide.
 
 DeepSeek's Fetch API is a separate endpoint. iCode's `web_fetch` reads pages directly and does not call it; to use DeepSeek Fetch, wrap it in an MCP server or a script tool.
 
@@ -331,7 +331,7 @@ DeepSeek's Responses API supports a server-side `web_search` tool. To use it:
 - Add a `tools` row in **Chat Options** with the value `[{"type": "web_search"}]`.
 - Do not include local `web_search` in the agent's `tools.builtins`; if you do, iCode turns the local tool off for that run and shows a notice. `web_fetch` is unaffected.
 
-See the [DeepSeek Responses API guide](https://api-docs.deepseek.com/guides/responses_api/) for supported models, billing, and limits; you can also use the [DeepSeek Search API](#deepseek-search-api) above through the local `web_search` tool.
+See the DeepSeek Responses API guide for supported models, billing, and limits; you can also use the [DeepSeek Search API](#deepseek-search-api) above through the local `web_search` tool.
 
 ## When web tools do not appear
 

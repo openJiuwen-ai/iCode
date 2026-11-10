@@ -75,7 +75,7 @@ OpenAI、DeepSeek、GLM、Kimi 的 Chat Completions 接口和通义千问在支�
 | --- | --- |
 | `extra_body` | `{"cache_control": {"type": "ephemeral"}}` |
 
-如果配置中已有 `extra_body` 行，请把 `"cache_control": {"type": "ephemeral"}` 加进它的对象中。Anthropic 标准的 5 分钟缓存写入费用为基础输入价格的 1.25 倍；读取费用为 0.1 倍或更低，因模型而异。如需保留 1 小时，使用 `{"type": "ephemeral", "ttl": "1h"}`，写入费用为 2 倍。有效期从写入或复用缓存的请求开始时计算，因此生成回答也会消耗其中一部分时间。此外，模型还有最短可缓存前缀的要求。当前限制和计费规则见 [Anthropic 提示词缓存文档](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。
+如果配置中已有 `extra_body` 行，请把 `"cache_control": {"type": "ephemeral"}` 加进它的对象中。Anthropic 标准的 5 分钟缓存写入费用为基础输入价格的 1.25 倍；读取费用为 0.1 倍或更低，因模型而异。如需保留 1 小时，使用 `{"type": "ephemeral", "ttl": "1h"}`，写入费用为 2 倍。有效期从写入或复用缓存的请求开始时计算，因此生成回答也会消耗其中一部分时间。此外，模型还有最短可缓存前缀的要求。当前限制和计费规则见 Anthropic 提示词缓存文档。
 
 ### “提示词缓存未开启”提醒
 
@@ -117,7 +117,7 @@ OpenAI、DeepSeek、GLM、Kimi 的 Chat Completions 接口和通义千问在支�
 | 更便宜、处理更慢 | `service_tier` | `flex` |
 | GPT-5.6 及之后模型的缓存有效期（Responses） | `extra_body` | `{"prompt_cache_options": {"mode": "implicit", "ttl": "30m"}}` |
 
-使用 Responses 时，请用 `reasoning`，不要用 `reasoning_effort`。iCode 会把 `verbosity` 选项转换为 API 的 `text.verbosity`。支持的推理强度、摘要、详细程度和 Flex 服务因模型而异。Flex 还可能返回资源不可用错误，参见 [Flex processing](https://developers.openai.com/api/docs/guides/flex-processing)。
+使用 Responses 时，请用 `reasoning`，不要用 `reasoning_effort`。iCode 会把 `verbosity` 选项转换为 API 的 `text.verbosity`。支持的推理强度、摘要、详细程度和 Flex 服务因模型而异。Flex 还可能返回资源不可用错误，参见 Flex processing。
 
 GPT-5.6 及之后的模型使用 `prompt_cache_options`，有效期为 `30m`，自动缓存写入也会计费。较早的模型使用 `prompt_cache_retention`，取值可能为 `in_memory` 或 `24h`，取决于具体模型，两类设置不能混用。请保留 `implicit` 模式：`explicit` 模式需要在内容块上添加缓存断点，Chat 选项表单不会添加这些断点。
 
@@ -125,7 +125,7 @@ GPT-5.6 及之后的模型使用 `prompt_cache_options`，有效期为 `30m`，�
 
 除非需要服务端续接，否则请不要设置 `store`：iCode 默认发送 `false`，这仍然允许提示词缓存。设为 `true` 后，iCode 的上下文压缩会被禁用。
 
-官方文档：[Reasoning](https://developers.openai.com/api/docs/guides/reasoning)、[Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)、[Responses API 参考](https://developers.openai.com/api/reference/resources/responses/methods/create)、[Chat Completions API 参考](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。
+官方文档：Reasoning、Prompt caching、Responses API 参考、Chat Completions API 参考。
 
 ### Anthropic
 
@@ -146,7 +146,7 @@ GPT-5.6 及之后的模型使用 `prompt_cache_options`，有效期为 `30m`，�
 - 在 Anthropic 官方地址上使用固定预算的思考时，iCode 会自动添加交错思考的标志，详见 [Claude 思考设置](./models.md#claude-思考设置)。在其他地址上，请按上表自行添加。自适应思考已自动支持交错思考，无需该标志。交错思考的支持情况因模型而异，服务接受某个 Beta 标志并不代表它实际生效。
 - 在 Anthropic 官方地址上，Claude Opus 5.5、Fable 5.1 或 Sonnet 5.5 使用自适应思考时，iCode 会请服务略去与对话对不上的早先思考内容，详见 [Claude 思考设置](./models.md#claude-思考设置)。你在 `thinking` 中自己写的 `block_binding` 会原样发送，iCode 会补上它所需的 Beta 标志。
 
-官方文档：[Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)、[Adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/thinking)、[Extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)、[Effort](https://platform.claude.com/docs/en/build-with-claude/effort)、[Beta headers](https://platform.claude.com/docs/en/api/beta-headers)。
+官方文档：Prompt caching、Adaptive thinking、Extended thinking、Effort、Beta headers。
 
 ### DeepSeek
 
@@ -167,7 +167,7 @@ DeepSeek 也支持 Responses API。使用服务端 `web_search` 时必须选 Res
 
 声明后，模型提供方会接管 `web_search` 这个名称；如果智能体也启用了本地 `web_search`，本地工具会在该次运行中停用并显示提示。服务端搜索不受 iCode 审批和网络设置约束。也可以改用本地 `web_search` 调 DeepSeek Search API，配置见[配置网络工具](./web-tools.md#deepseek-search-api)。
 
-官方文档：[思考模式](https://api-docs.deepseek.com/guides/thinking_mode)、[上下文硬盘缓存](https://api-docs.deepseek.com/guides/kv_cache)、[API 参考](https://api-docs.deepseek.com/api/create-chat-completion)。
+官方文档：思考模式、上下文硬盘缓存、API 参考。
 
 ### GLM（智谱 / Z.ai）
 
@@ -181,7 +181,7 @@ DeepSeek 也支持 Responses API。使用服务端 `web_search` 时必须选 Res
 
 GLM-5.3 始终思考，推理强度支持 `low`、`high` 和 `max`，不要给它传入 `thinking.type: disabled`。GLM-5.2 的强度映射不同，更早的模型不支持该强度字段。`clear_thinking: false` 还要求完整保留历史推理，iCode 的 GLM 提供商会保留这些内容。`temperature` 的取值范围为 0 到 1。
 
-官方文档：[Thinking mode](https://docs.z.ai/guides/capabilities/thinking-mode)、[Context caching](https://docs.z.ai/guides/capabilities/cache)、[API 参考](https://docs.z.ai/api-reference/llm/chat-completion)。
+官方文档：Thinking mode、Context caching、API 参考。
 
 ### Kimi（月之暗面）
 
@@ -199,7 +199,7 @@ Chat Completions 默认使用 5 分钟缓存。1 小时选项的写入价格更�
 
 Kimi 也提供兼容 Anthropic 协议的接口：提供商选“Anthropic”，服务地址为 `https://api.moonshot.ai/anthropic`。在该接口上，只有请求中要求缓存时才会写入缓存，因此请添加[提示词缓存](#提示词缓存)中的 `cache_control` 设置。
 
-官方文档：[Chat API](https://platform.kimi.ai/docs/api/chat)、[使用思考模型](https://platform.kimi.ai/docs/guide/use-thinking-models)、[上下文缓存](https://platform.kimi.ai/docs/guide/context-caching)、[Anthropic 兼容 API](https://platform.kimi.ai/docs/api/messages)。
+官方文档：Chat API、使用思考模型、上下文缓存、Anthropic 兼容 API。
 
 ### 通义千问（阿里云百炼）
 
@@ -214,7 +214,7 @@ Kimi 也提供兼容 Anthropic 协议的接口：提供商选“Anthropic”，�
 
 `enable_thinking: false` 适用于混合思考模型，纯思考模型无法关闭思考。预算范围、`top_k` 和 `enable_search` 的支持情况也因模型而异。部分开源千问模型的思考模式要求开启“流式输出”，商业模型则可能同时支持非流式请求。百炼还提供通过消息内容块标记启用的显式缓存，Chat 选项表单不会添加这些标记。
 
-官方文档：[OpenAI 兼容](https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope)、[深度思考](https://www.alibabacloud.com/help/en/model-studio/deep-thinking)、[上下文缓存](https://www.alibabacloud.com/help/en/model-studio/context-cache)。
+官方文档：OpenAI 兼容、深度思考、上下文缓存。
 
 ### vLLM
 
@@ -230,7 +230,7 @@ Kimi 也提供兼容 Anthropic 协议的接口：提供商选“Anthropic”，�
 
 这些参数取决于模型模板，不是通用开关。有些模型始终思考，有些使用不同的开关。`reasoning_effort` 也不是在每个模型上都提供相同的强度等级。请使用与所安装 vLLM 版本对应的文档。
 
-官方文档：[Tool calling](https://docs.vllm.ai/en/latest/features/tool_calling/)、[Reasoning outputs](https://docs.vllm.ai/en/latest/features/reasoning_outputs/)、[OpenAI-compatible server](https://docs.vllm.ai/en/latest/serving/openai_compatible_server/)、[Server arguments](https://docs.vllm.ai/en/latest/cli/serve/)。
+官方文档：Tool calling、Reasoning outputs、OpenAI-compatible server、Server arguments。
 
 ### SGLang
 
@@ -245,7 +245,7 @@ Kimi 也提供兼容 Anthropic 协议的接口：提供商选“Anthropic”，�
 
 模板接受的字段和强度等级取决于模型和 SGLang 版本。推理解析器负责分离输出，本身不会开启思考。保持 `separate_reasoning` 开启，才能分开显示推理过程。`reasoning_effort` 应在请求或服务端模板默认值中择一设置，不要两处同时设置。
 
-官方文档：[OpenAI-compatible API](https://docs.sglang.io/docs/basic_usage/openai_api_completions)、[Server arguments](https://docs.sglang.io/docs/advanced_features/server_arguments)、[Tool parser](https://docs.sglang.io/docs/advanced_features/tool_parser)、[Reasoning parser](https://docs.sglang.io/docs/advanced_features/separate_reasoning)。
+官方文档：OpenAI-compatible API、Server arguments、Tool parser、Reasoning parser。
 
 ### LiteLLM 代理
 
@@ -260,7 +260,7 @@ Kimi 也提供兼容 Anthropic 协议的接口：提供商选“Anthropic”，�
 
 对于不支持的 OpenAI 参数，代理管理员可以配置 `drop_params`，这些设置随后会被静默省略。它不能通用地修复无效的提供商扩展字段或参数值，此类问题应在模型配置中删除或修正对应字段。
 
-官方文档：[Virtual keys](https://docs.litellm.ai/docs/proxy/user_keys)、[Cost tracking](https://docs.litellm.ai/docs/proxy/cost_tracking)、[Tag routing](https://docs.litellm.ai/docs/proxy/tag_routing)、[Drop unsupported params](https://docs.litellm.ai/docs/completion/drop_params)、[Anthropic `/v1/messages` 接口](https://docs.litellm.ai/docs/anthropic_unified)。
+官方文档：Virtual keys、Cost tracking、Tag routing、Drop unsupported params、Anthropic `/v1/messages` 接口。
 
 ### OpenRouter
 
@@ -276,7 +276,7 @@ Kimi 也提供兼容 Anthropic 协议的接口：提供商选“Anthropic”，�
 
 `provider.order` 设置优先顺序；如果只允许所列提供商处理请求，请保留 `allow_fallbacks: false`。顶层 `cache_control` 可用于 Claude 的自动缓存，但仍需模型和提供商支持。OpenRouter 文档规定的行为可能与直接调用提供商不同。
 
-官方文档：[Quickstart](https://openrouter.ai/docs/quickstart)、[Provider selection](https://openrouter.ai/docs/guides/routing/provider-selection)、[Reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)、[Prompt caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching)。
+官方文档：Quickstart、Provider selection、Reasoning tokens、Prompt caching。
 
 ## 添加选项后请求失败时
 

@@ -4,7 +4,7 @@ This tutorial shows how to install iCode, configure a model, and use agents to c
 
 ## 1. Install iCode
 
-Install iCode with [uv](https://docs.astral.sh/uv/getting-started/installation/). If Python 3.14 is not on your system, uv downloads it for you:
+Install iCode with uv. If Python 3.14 is not on your system, uv downloads it for you:
 
 ```shell
 uv tool install iCode-TUI

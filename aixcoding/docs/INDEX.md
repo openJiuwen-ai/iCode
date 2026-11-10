@@ -43,3 +43,4 @@
 | [batches/environment-config](batches/environment-config/) | 功能批次 | 定制环境配置与上游 Settings 解耦（AIXCODING_ENVIRONMENT + aixcoding.toml；service 共享快照 + app 注入；零兼容；ADR-0022） |
 | [batches/upstream-merge-v0.34.0](batches/upstream-merge-v0.34.0/) | 升级批次 | 追上游 v0.34.0（基线 0.33.0 → 0.34.0） |
 | [batches/upstream-merge-v0.35.1](batches/upstream-merge-v0.35.1/) | 升级批次 | 追上游 v0.35.1（基线 0.34.0 → 0.35.1，目标 ref = release tag 已裁决） |
+| [batches/user-manual](batches/user-manual/) | 功能批次 | 定制版用户手册入库 `aixcoding/manual/` + wheel 捆绑源切换（安装版 F8 展示定制手册；C145/C146；ADR-0001） |

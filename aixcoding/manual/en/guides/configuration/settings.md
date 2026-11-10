@@ -141,10 +141,10 @@ iCode uses structured error details to distinguish a rejected request from a tem
 
 | Service or gateway | Recognized details | Handling |
 | --- | --- | --- |
-| [New API](https://github.com/QuantumNous/new-api) and compatible relays | `sensitive_words_detected`, `prompt_blocked`; the `new_api_error` message form used by Anthropic-compatible endpoints | Content-filter rejection, including when wrapped in HTTP 500 |
-| [Alibaba Cloud Model Studio / DashScope](https://www.alibabacloud.com/help/en/model-studio/error-code) | `DataInspectionFailed` / `data_inspection_failed`; `Arrearage` | Content-filter rejection; account quota exhausted |
-| [Volcengine Ark](https://console.volcengine.com/ark/region%3Acn-beijing/docs/error-codes) | `SensitiveContentDetected` and documented input/output content-policy codes | Content-filter rejection |
-| [OpenRouter](https://openrouter.ai/docs/api_reference/errors-and-debugging) | Canonical `error_type`, moderation metadata, and budget `limit_source` | Preserves the specific rejection, quota, throttling, or service-failure category across Chat Completions, Anthropic Messages, and Responses error formats |
+| New API and compatible relays | `sensitive_words_detected`, `prompt_blocked`; the `new_api_error` message form used by Anthropic-compatible endpoints | Content-filter rejection, including when wrapped in HTTP 500 |
+| Alibaba Cloud Model Studio / DashScope | `DataInspectionFailed` / `data_inspection_failed`; `Arrearage` | Content-filter rejection; account quota exhausted |
+| Volcengine Ark | `SensitiveContentDetected` and documented input/output content-policy codes | Content-filter rejection |
+| OpenRouter | Canonical `error_type`, moderation metadata, and budget `limit_source` | Preserves the specific rejection, quota, throttling, or service-failure category across Chat Completions, Anthropic Messages, and Responses error formats |
 
 For non-streaming Chat Completions, an error in `choices[].error` fails the whole response even under HTTP 200: partial answers are not accepted and tool calls are not executed. Reported token usage is retained. A bare `finish_reason: "error"` without details is treated as a retryable service failure.
 

@@ -228,7 +228,7 @@ tools:
         credential_env_names: [DEEPSEEK_API_KEY]
 ```
 
-`snippet_pointer` 用 `/summary` 可获得较长的结果摘要；接口字段、搜索语法、计费和限制以 [DeepSeek 网页搜索与抓取文档](https://api-docs.deepseek.com/zh-cn/guides/search/) 为准。
+`snippet_pointer` 用 `/summary` 可获得较长的结果摘要；接口字段、搜索语法、计费和限制以 DeepSeek 网页搜索与抓取文档 为准。
 
 DeepSeek 的 Fetch API 是另一个独立接口。iCode 的 `web_fetch` 直接读取网页，不调用它；如需使用 DeepSeek Fetch，需要通过 MCP 服务器或脚本工具封装。
 
@@ -331,7 +331,7 @@ DeepSeek 的 Responses API 支持服务端执行的 `web_search`。使用时：
 - 在“Chat 选项（额外请求字段）”中加一行 `tools`，值为 `[{"type": "web_search"}]`。
 - 智能体的 `tools.builtins` 不要包含本地 `web_search`，否则本地工具会在该次运行中停用并显示提示；`web_fetch` 不受影响。
 
-具体支持的模型、计费和使用限制以 [DeepSeek 官方文档](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) 为准；也可以改用 [DeepSeek Search API](#deepseek-search-api) 通过本地 `web_search` 使用。
+具体支持的模型、计费和使用限制以 DeepSeek 官方文档 为准；也可以改用 [DeepSeek Search API](#deepseek-search-api) 通过本地 `web_search` 使用。
 
 ## 网络工具没有出现时
 

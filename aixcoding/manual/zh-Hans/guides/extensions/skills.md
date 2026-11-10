@@ -145,7 +145,7 @@ description: 根据提交记录起草面向用户的发布说明
 * `license`：声明 Skill 采用的许可证，可以填写许可证名称或 Skill 目录中许可证文件的名称。
 * `allowed-tools`：按照 Agent Skills 规范声明可预先批准运行的工具。该字段仍处于实验阶段；iCode 当前只读取并保留字段值，不会据此自动授予工具权限。
 
-iCode 的 Skill 目录和 `SKILL.md` 格式遵循 Agent Skills 通用规范。上述字段的详细写法和 Skill 的完整规范参阅 [Agent Skills 官方规范](https://agentskills.io/specification)。
+iCode 的 Skill 目录和 `SKILL.md` 格式遵循 Agent Skills 通用规范。上述字段的详细写法和 Skill 的完整规范参阅 Agent Skills 官方规范。
 
 #### 添加脚本和资源
 

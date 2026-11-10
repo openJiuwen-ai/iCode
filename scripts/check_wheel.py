@@ -143,6 +143,7 @@ def check_archive(wheel: Path, version: str) -> None:
         problems.append(f"the wheel installs the commands {commands}, not only {COMMAND}")
 
     bundled = {name.removeprefix(BUNDLED_DOCS_PREFIX) for name in names if name.startswith(BUNDLED_DOCS_PREFIX)}
+    # AIxCoding manual bundle: compare against the fork-owned manual tree (user-manual C146)
     listed = subprocess.run(
         ["git", "ls-files", "-z", "aixcoding/manual"],
         cwd=REPO_ROOT,
