@@ -216,7 +216,7 @@ Available presets:
 | `read_only` | Allows only commands in the built-in command list and blocks unquoted redirection and command substitution. Examples include `ls`, `cat`, `rg`, `git`, `python`, `curl`, and PowerShell's `Get-Content`. It does not inspect arguments, subcommands, or script contents, so it does not guarantee read-only execution and is not a security sandbox. |
 | `unrestricted` | Does not filter shell commands. Usually, you can simply omit `shell_filter`. |
 
-Only the names in this table enable presets. Unrecognized presets do not take effect: the scalar form performs no shell filtering; for the object form, iCode attempts to use the custom rules in the same object. If `commands` is empty, no shell filtering occurs in that case either.
+Only the names in this table are valid. Any other name, in either form, makes the whole profile invalid: iCode skips the file instead of loading it with shell filtering switched off, and names `tools.shell_filter.preset` as the field to fix. To switch filtering off, write `unrestricted` or omit `shell_filter`.
 
 To specify your own allowed or blocked commands, use the object form. For example:
 
@@ -233,7 +233,7 @@ The object form supports these fields:
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `preset` | `read_only`, `unrestricted`, or empty | Empty | Selects a preset. A recognized preset takes precedence over all custom filtering fields. |
+| `preset` | `read_only`, `unrestricted`, or empty | Empty | Selects a preset. A recognized preset takes precedence over all custom filtering fields. Any other value is a load error. |
 | `mode` | `whitelist` or `blacklist` | `whitelist` | `whitelist` allows only commands in `commands`; `blacklist` blocks commands in `commands` and allows others. |
 | `commands` | List of strings | `[]` | Command names to allow in `whitelist` mode or block in `blacklist` mode. Must contain at least one command for custom filtering to take effect. An empty list means no shell filtering. |
 | `allow_redirections` | Boolean | `true` | Whether to allow unquoted `>`, `>>`, and `<`. |
