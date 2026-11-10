@@ -202,6 +202,8 @@ class NewFolderDialog(BaseDialog[Path | None]):
                 )
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         self.query_one("#new-folder-input", EnhancedInput).focus()
 
     @on(EnhancedInput.Changed, "#new-folder-input")

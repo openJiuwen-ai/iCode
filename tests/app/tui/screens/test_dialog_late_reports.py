@@ -11,24 +11,59 @@ from pathlib import Path
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
+from textual.theme import Theme
 from textual.widgets import Static
 
+from chrys.app.tui.i18n import LocaleController
+from chrys.app.tui.screens.agents.config import AgentsConfigScreen
+from chrys.app.tui.screens.agents.mcp_choices import collect_mcp_choices
+from chrys.app.tui.screens.agents.mcp_picker import MCPPickerDialog
+from chrys.app.tui.screens.agents.picker import AgentsScreen
 from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
 from chrys.app.tui.screens.dialogs.approval.dialog import ApprovalDialog
+from chrys.app.tui.screens.dialogs.approval.mode import ApprovalModeScreen
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.dialogs.connection_test import ConnectionTestDialog
+from chrys.app.tui.screens.dialogs.diagram import DiagramDialog
+from chrys.app.tui.screens.dialogs.editor import EditorDialog
+from chrys.app.tui.screens.dialogs.file_picker import FilePicker
 from chrys.app.tui.screens.dialogs.fork_session import ForkSessionDialog
 from chrys.app.tui.screens.dialogs.image_compression import ImageCompressionDialog
+from chrys.app.tui.screens.dialogs.man_page import ManPageDialog
+from chrys.app.tui.screens.dialogs.new_folder import NewFolderDialog
+from chrys.app.tui.screens.dialogs.session_title import SessionTitleDialog
 from chrys.app.tui.screens.dialogs.vision_unsupported import VisionUnsupportedDialog
+from chrys.app.tui.screens.dialogs.workflow_input import WorkflowInputContext, WorkflowInputDialog
+from chrys.app.tui.screens.diff.rollback_modal import RollbackModal
+from chrys.app.tui.screens.diff.screen import DiffScreen
+from chrys.app.tui.screens.guides.screen import GuideDialog
 from chrys.app.tui.screens.main.hook_confirmation_dialog import HookConfirmationDialog
+from chrys.app.tui.screens.menus.languages import LanguagesScreen
+from chrys.app.tui.screens.models.picker import ModelsScreen
 from chrys.app.tui.screens.models.screen import ModelConfigScreen
+from chrys.app.tui.screens.sessions.screen import SessionsScreen
+from chrys.app.tui.screens.settings import SettingsDialog
+from chrys.app.tui.screens.settings.migrate_dialog import MigrateSessionsDialog
+from chrys.app.tui.screens.themes.picker import ThemesScreen
+from chrys.app.tui.screens.themes.save import SaveThemeDialog
+from chrys.app.tui.themes.store import UserThemeStore
+from chrys.app.tui.widgets.chrome.commands import ManPageSpec, ManPageVerbatimBlock
+from chrys.app.tui.widgets.editor import EditorBufferSnapshot
+from chrys.app.tui.widgets.markdown.diagram.model import CompiledDiagram, DiagramKind
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import HookConfirmationRequest
 from chrys.foundation.tool_kinds import KIND_SHELL
 from chrys.service.approval.judge import JudgeVerdict
+from chrys.service.approval.policy import ApprovalMode
+from chrys.service.profiles.agents.registry import AgentProfileRegistry
+from chrys.service.profiles.agents.schema import MCPServerConfig, ToolsConfig
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.profiles.models.serializer import save_profile
+from chrys.service.state.store import JsonFileStateStore
+from tests.app.tui.screens._agent_config_support import make_profile
+from tests.app.tui.screens.settings.support import StubPorts, StubSessionStorage
 
 
 def _report_workflow_load(dialog: AgentLoadDialog) -> None:
@@ -78,8 +113,10 @@ _DIALOGS: dict[str, tuple[type[ModalScreen], Callable, Callable]] = {
 }
 
 
-def _css_path(base: type[ModalScreen]) -> Path:
+def _css_path(base: type[Screen]) -> Path | None:
     """*base*'s stylesheet: a relative CSS_PATH resolves against the subclass's module."""
+    if base.CSS_PATH is None:
+        return None
     return Path(inspect.getfile(base)).parent / str(base.CSS_PATH)
 
 
@@ -113,7 +150,7 @@ async def test_reports_during_and_after_removal_are_buffered(kind: str, removal:
     report(dialog)
 
 
-async def _push_as_the_app_exits(dialog: ModalScreen, window: str) -> None:
+async def _push_as_the_app_exits(dialog: Screen, window: str) -> None:
     """Push *dialog* as the app shuts down, at the moment *window* names; leaving re-raises what its mount raised.
 
     - ``prune``: as the test's last step: the app then closes its screens, which prunes the dialog's children first;
@@ -215,17 +252,98 @@ def _models_page(cls: type[ModelConfigScreen]) -> ModelConfigScreen:
     return cls(registry, "main")
 
 
+def _agents() -> AgentProfileRegistry:
+    registry = AgentProfileRegistry()
+    registry.load_all()
+    return registry
+
+
+def _models() -> ModelProfileRegistry:
+    registry = ModelProfileRegistry()
+    registry.register(ModelProfile(id="main", name="Main", provider="openai", model_id="gpt-test"))
+    return registry
+
+
+def _mcp_picker(cls: type[MCPPickerDialog]) -> MCPPickerDialog:
+    server = MCPServerConfig(name="files", transport="stdio", command="/bin/files")
+    return cls(collect_mcp_choices([make_profile("Code", tools=ToolsConfig(mcp=[server]))]), [])
+
+
+def _diagram(cls: type[DiagramDialog]) -> DiagramDialog:
+    rows = ("A --> B",)
+    return cls(
+        CompiledDiagram(source="flowchart LR\n    A --> B", kind=DiagramKind.FLOWCHART, width=7, height=1, rows=rows)
+    )
+
+
+def _workflow_input(cls: type[WorkflowInputDialog]) -> WorkflowInputDialog:
+    context = WorkflowInputContext(
+        title="echo",
+        description="",
+        source_kind="builtin",
+        working_directory=str(Path.cwd()),
+        has_kernel_agents=False,
+        can_change_directory=False,
+    )
+    return cls(context=context)
+
+
+def _save_theme(cls: type[SaveThemeDialog]) -> SaveThemeDialog:
+    return cls(
+        Theme("draft", primary="#004578"),
+        UserThemeStore(Path.cwd()),
+        None,
+        preview=lambda _theme: None,
+        saved=lambda _theme, _revision: None,
+        restore=lambda: None,
+        locale_controller=LocaleController(Settings()),
+        preview_error=str,
+    )
+
+
+# Pages and dialogs the user opens, who may quit before they mount, and how to build each.
+_OPENED: dict[str, tuple[type[Screen], Callable]] = {
+    "agents": (AgentsScreen, lambda cls: cls(_agents(), current_profile="Code")),
+    "agent-config": (AgentsConfigScreen, lambda cls: cls(_agents(), current_profile="Code", initial_profile="Code")),
+    "approval-mode": (ApprovalModeScreen, lambda cls: cls(ApprovalMode.MANUAL)),
+    "diagram": (DiagramDialog, _diagram),
+    "diff": (DiffScreen, lambda cls: cls({}, cwd=str(Path.cwd()), subtitle_parts=("macOS",))),
+    "editor": (EditorDialog, lambda cls: cls(EditorBufferSnapshot("draft", (0, 5)))),
+    "file-picker": (FilePicker, lambda cls: cls(initial_path=str(Path.cwd()))),
+    "guide": (GuideDialog, _bare),
+    "languages": (LanguagesScreen, lambda cls: cls("en")),
+    "man-page": (ManPageDialog, lambda cls: cls([ManPageSpec("demo", (ManPageVerbatimBlock("text", indent=0),))])),
+    "mcp-picker": (MCPPickerDialog, _mcp_picker),
+    "migrate-sessions": (
+        MigrateSessionsDialog,
+        lambda cls: cls(StubSessionStorage(Path.cwd()), source=Path.cwd() / "sessions", destination=None),
+    ),
+    "model-picker": (ModelsScreen, lambda cls: cls(_models(), "main")),
+    "models-page": (ModelConfigScreen, _models_page),
+    "new-folder": (NewFolderDialog, lambda cls: cls(Path.cwd())),
+    "rollback": (RollbackModal, lambda cls: cls(tracker=None, available_turns=[0, 1], cwd=str(Path.cwd()))),
+    "save-theme": (SaveThemeDialog, _save_theme),
+    "session-title": (SessionTitleDialog, lambda cls: cls(auto_title="Auto title")),
+    "sessions": (SessionsScreen, lambda cls: cls(JsonFileStateStore(Path.cwd()))),
+    "settings": (SettingsDialog, lambda cls: cls(StubPorts())),
+    "themes": (ThemesScreen, lambda cls: cls("textual-dark")),
+    "workflow-input": (WorkflowInputDialog, _workflow_input),
+}
+
+
 @pytest.mark.parametrize("window", list(_MOUNTED_IN))
-async def test_a_models_page_that_mounts_as_the_app_exits_renders_nothing(window: str) -> None:
-    """The user can open the Models page and quit before it mounts: it lists and loads no profile then."""
+@pytest.mark.parametrize("kind", list(_OPENED))
+async def test_a_page_the_user_opens_as_the_app_exits_renders_nothing(kind: str, window: str) -> None:
+    """The user can open a page or dialog and quit before it mounts: it lists, loads and focuses nothing then."""
+    base, build = _OPENED[kind]
     mounted: list[tuple[bool, bool, bool]] = []
 
-    class Mounting(ModelConfigScreen):
-        CSS_PATH = _css_path(ModelConfigScreen)
+    class Mounting(base):
+        CSS_PATH = _css_path(base)
 
         def on_mount(self) -> None:
             # Dispatch runs the page's own handler after this one.
             mounted.append((self._pruning, self.app.is_running, self.is_attached))
 
-    await _push_as_the_app_exits(_models_page(Mounting), window)
+    await _push_as_the_app_exits(build(Mounting), window)
     assert mounted == [_MOUNTED_IN[window]]

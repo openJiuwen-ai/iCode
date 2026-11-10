@@ -215,6 +215,8 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
                 yield Button(Text(render_message(_DISCARD.bind())), id="editor-cancel", variant="error", flat=True)
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         self._sync_narrow_layout(self.app.size.width)
         self.query_one(MessageEditor).focus()
 

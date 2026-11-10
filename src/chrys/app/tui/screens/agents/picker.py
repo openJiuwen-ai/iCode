@@ -73,6 +73,8 @@ class AgentsScreen(BaseDialog[str | None]):
             yield OptionList()
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         ol = self.query_one(OptionList)
         # Estimate usable width: container width - border(2) - padding(1) - scrollbar(1)
         content_width = ol.size.width or 54

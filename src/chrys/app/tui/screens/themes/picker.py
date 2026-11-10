@@ -83,6 +83,8 @@ class ThemesScreen(BaseDialog[str | None]):
             yield OptionList()
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         from chrys.app.tui.app import ChrysApp
 
         if isinstance(self.app, ChrysApp):

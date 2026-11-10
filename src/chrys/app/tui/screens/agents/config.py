@@ -341,6 +341,8 @@ class AgentsConfigScreen(BaseDialog[str]):
     # ── Mount ────────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         self._initialize_drafts()
         self._populate_sidebar()
         self._select_initial_profile()

@@ -68,6 +68,8 @@ class LanguagesScreen(BaseDialog[str | None]):
             yield OptionList()
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         localizer = widget_localizer(self)
         container = self.query_one("#container", VerticalGroup)
         container.border_title = render_content(localizer, LANGUAGE_PICKER_TITLE.bind())

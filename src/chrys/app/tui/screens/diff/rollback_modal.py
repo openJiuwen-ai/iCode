@@ -802,6 +802,8 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
                     yield ChrysLoadingIndicator(id="rollback-loading")
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         if self._load_state is None:
             self._refresh_button_labels()
         self.call_after_refresh(self._start_initial_load)

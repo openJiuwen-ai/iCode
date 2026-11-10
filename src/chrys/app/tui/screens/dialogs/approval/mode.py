@@ -70,6 +70,8 @@ class ApprovalModeScreen(BaseDialog[ApprovalMode | None]):
             yield MenuOptionList()
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         localizer = widget_localizer(self)
         self.query_one(MenuOptionList).set_items(
             [

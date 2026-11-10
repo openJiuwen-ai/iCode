@@ -177,6 +177,8 @@ class SessionTitleDialog(BaseDialog[str | None]):
                     )
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         self.query_one("#session-title-input", EnhancedInput).focus()
 
     @on(_CopyIdLink.Clicked)
