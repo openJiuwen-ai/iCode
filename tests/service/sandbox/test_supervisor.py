@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import os
 import socket
 import subprocess
@@ -42,6 +43,11 @@ _FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 @dataclass
 class _FakeProcess:
     returncode: int | None = None
+    stderr: str = ""
+    stdout: str = ""
+
+    async def startup_output(self) -> tuple[str, str]:
+        return self.stderr, self.stdout
 
 
 @pytest.fixture(autouse=True)
@@ -72,18 +78,30 @@ def _patch_spawn(monkeypatch: pytest.MonkeyPatch, proc: _FakeProcess) -> list[di
 async def test_live_child_is_reused_until_it_exits(monkeypatch: pytest.MonkeyPatch):
     proc = _FakeProcess()
     seen = _patch_spawn(monkeypatch, proc)
+    issued: list[str] = []
+
+    def issue() -> str:
+        token = f"fresh-{len(issued)}"
+        issued.append(token)
+        return token
+
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", issue)
+    monkeypatch.setenv("CHRYS_SANDBOX_TOKEN", "user-settings-token")
 
     async def healthy(_base_url: str, _token: str) -> bool:
         return True
 
     monkeypatch.setattr(supervisor, "_health_ok", healthy)
-    first = await supervisor.ensure_started("sekret")
-    second = await supervisor.ensure_started("sekret")
-    assert first == second == "http://127.0.0.1:9"
+    first_url, first_token = await supervisor.ensure_started()
+    second_url, second_token = await supervisor.ensure_started()
+    assert first_url == second_url == "http://127.0.0.1:9"
+    assert first_token == second_token == "fresh-0"
+    assert first_token != "user-settings-token"
     assert len(seen) == 1
     assert seen[0]["JIUWENBOX_LISTEN"] == "http://127.0.0.1:9"
     assert seen[0]["JIUWENBOX_POLICY_PATH"] == "policy.yaml"
-    assert seen[0]["JIUWENBOX_API_TOKEN"] == "sekret"
+    assert seen[0]["JIUWENBOX_API_TOKEN"] == "fresh-0"
+    assert [key for key, value in seen[0].items() if value == "fresh-0"] == ["JIUWENBOX_API_TOKEN"]
     proc.returncode = 1
     replacement = _FakeProcess()
 
@@ -93,14 +111,18 @@ async def test_live_child_is_reused_until_it_exits(monkeypatch: pytest.MonkeyPat
         yield replacement
 
     monkeypatch.setattr(supervisor, "_spawn_launcher", spawn_again)
-    third = await supervisor.ensure_started("")
-    assert third == "http://127.0.0.1:9"
+    third_url, third_token = await supervisor.ensure_started()
+    assert third_url == "http://127.0.0.1:9"
+    assert third_token == "fresh-1"
+    assert third_token != "user-settings-token"
     assert len(seen) == 2
-    assert "JIUWENBOX_API_TOKEN" not in seen[1]
+    assert seen[1]["JIUWENBOX_API_TOKEN"] == "fresh-1"
+    assert issued == ["fresh-0", "fresh-1"]
 
 
 async def test_child_exit_before_health_is_sandbox_error(monkeypatch: pytest.MonkeyPatch):
     _patch_spawn(monkeypatch, _FakeProcess(returncode=3))
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-secret")
     probed = False
 
     async def healthy(_base_url: str, _token: str) -> bool:
@@ -110,21 +132,164 @@ async def test_child_exit_before_health_is_sandbox_error(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(supervisor, "_health_ok", healthy)
     with pytest.raises(SandboxError, match="exited") as caught:
-        await supervisor.ensure_started("sekret")
+        await supervisor.ensure_started()
     assert probed is False
-    assert "sekret" not in str(caught.value)
+    assert "fresh-secret" not in str(caught.value)
 
 
 async def test_health_that_never_arrives_is_sandbox_error(monkeypatch: pytest.MonkeyPatch):
     _patch_spawn(monkeypatch, _FakeProcess())
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-secret")
 
     async def unhealthy(_base_url: str, _token: str) -> bool:
         return False
 
     monkeypatch.setattr(supervisor, "_health_ok", unhealthy)
     with pytest.raises(SandboxError, match="did not become healthy") as caught:
-        await supervisor.ensure_started("sekret", health_timeout=0)
-    assert "sekret" not in str(caught.value)
+        await supervisor.ensure_started(health_timeout=0)
+    assert "fresh-secret" not in str(caught.value)
+
+
+async def test_exit_before_health_quotes_one_stderr_line(monkeypatch: pytest.MonkeyPatch):
+    _patch_spawn(
+        monkeypatch,
+        _FakeProcess(returncode=3, stderr="warning: ignored\nbwrap: setting up uid map: Permission denied\n"),
+    )
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-secret")
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        raise AssertionError("health probe")
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    with pytest.raises(SandboxError) as caught:
+        await supervisor.ensure_started()
+    assert str(caught.value) == (
+        "Sandbox server exited before it became healthy. bwrap: setting up uid map: Permission denied"
+    )
+    assert "fresh-secret" not in str(caught.value)
+    assert "warning" not in str(caught.value)
+
+
+async def test_health_timeout_quotes_stderr_and_strips_the_token(monkeypatch: pytest.MonkeyPatch):
+    _patch_spawn(
+        monkeypatch,
+        _FakeProcess(stderr="bwrap: failed fresh-secret for this user\n"),
+    )
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-secret")
+
+    async def unhealthy(_base_url: str, _token: str) -> bool:
+        return False
+
+    monkeypatch.setattr(supervisor, "_health_ok", unhealthy)
+    with pytest.raises(SandboxError) as caught:
+        await supervisor.ensure_started(health_timeout=0)
+    message = str(caught.value)
+    assert message == "Sandbox server did not become healthy. bwrap: failed for this user"
+    assert "fresh-secret" not in message
+
+
+async def test_stdout_line_is_used_when_stderr_has_nothing_usable(monkeypatch: pytest.MonkeyPatch):
+    _patch_spawn(
+        monkeypatch,
+        _FakeProcess(returncode=4, stderr="fresh-secret\n", stdout="launcher wrote: policy unreadable\n"),
+    )
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-secret")
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        raise AssertionError("health probe")
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    with pytest.raises(SandboxError) as caught:
+        await supervisor.ensure_started()
+    message = str(caught.value)
+    assert message == "Sandbox server exited before it became healthy. launcher wrote: policy unreadable"
+    assert "fresh-secret" not in message
+
+
+async def test_stderr_line_wins_over_stdout(monkeypatch: pytest.MonkeyPatch):
+    _patch_spawn(monkeypatch, _FakeProcess(returncode=4, stderr="from stderr\n", stdout="from stdout\n"))
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-secret")
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        raise AssertionError("health probe")
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    with pytest.raises(SandboxError, match="from stderr") as caught:
+        await supervisor.ensure_started()
+    assert "from stdout" not in str(caught.value)
+    assert "fresh-secret" not in str(caught.value)
+
+
+def test_output_tail_keeps_the_last_bytes():
+    tail = supervisor._OutputTail(8)
+    tail.extend(b"0123456789")
+    tail.extend(b"abcdef")
+    assert tail.text() == "89abcdef"
+    huge = supervisor._OutputTail(4)
+    huge.extend(b"abcdefghij")
+    assert huge.text() == "ghij"
+
+
+async def test_pumped_stream_keeps_an_8kib_tail():
+    reader = asyncio.StreamReader()
+    marker = b"TAIL-MARK"
+    reader.feed_data(b"a" * (supervisor._LAUNCHER_OUTPUT_BYTES + 50) + marker)
+    reader.feed_eof()
+    tail = supervisor._OutputTail(supervisor._LAUNCHER_OUTPUT_BYTES)
+    await supervisor._pump_stream(reader, tail)
+    text = tail.text()
+    assert text == ("a" * (supervisor._LAUNCHER_OUTPUT_BYTES - len(marker))) + "TAIL-MARK"
+
+
+async def test_real_spawn_reports_stderr_text_from_the_fake_child(monkeypatch: pytest.MonkeyPatch):
+    """The real spawn path reads stderr text off the fake child and does not exec."""
+    from chrys.foundation.platform import process as platform_process
+
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-secret")
+    seen: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def fake_managed(*_args: object, **kwargs: object) -> AsyncIterator[_FakeProcess]:
+        seen["stdin"] = kwargs.get("stdin")
+        seen["stdout"] = kwargs.get("stdout")
+        seen["stderr"] = kwargs.get("stderr")
+        yield _FakeProcess(returncode=5, stderr="bwrap: No such file or directory\n")
+
+    monkeypatch.setattr(platform_process, "managed_subprocess", fake_managed)
+    monkeypatch.setattr(supervisor, "_spawn_launcher", _REAL_SPAWN)
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        raise AssertionError("health probe")
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    with pytest.raises(SandboxError) as caught:
+        await supervisor.ensure_started()
+    message = str(caught.value)
+    assert message == "Sandbox server exited before it became healthy. bwrap: No such file or directory"
+    assert "fresh-secret" not in message
+    assert seen["stdin"] is subprocess.DEVNULL
+    assert seen["stdout"] is subprocess.PIPE
+    assert seen["stderr"] is subprocess.PIPE
+
+
+async def test_startup_failure_keeps_one_short_line(monkeypatch: pytest.MonkeyPatch):
+    detail = "bwrap: " + ("x" * 400) + " fresh-secret"
+    _patch_spawn(monkeypatch, _FakeProcess(returncode=2, stderr=detail))
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-secret")
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        raise AssertionError("health probe")
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    with pytest.raises(SandboxError) as caught:
+        await supervisor.ensure_started()
+    message = str(caught.value)
+    prefix = "Sandbox server exited before it became healthy. "
+    assert message.startswith(prefix + "bwrap: ")
+    assert message.endswith("…")
+    assert "fresh-secret" not in message
+    assert "\n" not in message
+    assert len(message) - len(prefix) == supervisor._FAILURE_LINE_CHARS
 
 
 def test_listen_address_is_loopback_on_an_ephemeral_port(monkeypatch: pytest.MonkeyPatch):
@@ -182,9 +347,11 @@ def test_child_env_sets_policy_listen_and_token(monkeypatch: pytest.MonkeyPatch)
     assert "JIUWENBOX_API_TOKEN" not in empty
 
 
-def test_launcher_argv_and_spawn_use_devnull():
+def test_launcher_argv_detaches_stdin_and_captures_output():
     argv = supervisor._launcher_argv()
-    assert argv == [sys.executable, "-m", "jiuwenbox.server.launcher"]
+    assert argv == [sys.executable, "-P", "-m", "jiuwenbox.server.launcher"]
+    assert "-I" not in argv
+    assert supervisor._launcher_cwd() == sys.prefix
     source = (_SRC / "service" / "sandbox" / "supervisor.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     spawn = next(
@@ -194,8 +361,11 @@ def test_launcher_argv_and_spawn_use_devnull():
     assert text is not None
     assert "managed_subprocess" in text
     assert "stdin=subprocess.DEVNULL" in text
-    assert "stdout=subprocess.DEVNULL" in text
-    assert "stderr=subprocess.DEVNULL" in text
+    assert "stdout=subprocess.PIPE" in text
+    assert "stderr=subprocess.PIPE" in text
+    assert "stdout=subprocess.DEVNULL" not in text
+    assert "stderr=subprocess.DEVNULL" not in text
+    assert "cwd=_launcher_cwd()" in text
 
 
 def test_bundled_policy_path_is_the_vendored_code_agent_file():
@@ -263,9 +433,11 @@ async def test_shutdown_close_does_not_raise_async_generator_already_running(
         nonlocal entered
         entered = True
         assert args == tuple(supervisor._launcher_argv())
+        assert "-P" in args
         assert kwargs["stdin"] is subprocess.DEVNULL
-        assert kwargs["stdout"] is subprocess.DEVNULL
-        assert kwargs["stderr"] is subprocess.DEVNULL
+        assert kwargs["stdout"] is subprocess.PIPE
+        assert kwargs["stderr"] is subprocess.PIPE
+        assert kwargs["cwd"] == sys.prefix
         yield proc
 
     monkeypatch.setattr(platform_process, "managed_subprocess", fake_managed)
@@ -275,10 +447,65 @@ async def test_shutdown_close_does_not_raise_async_generator_already_running(
         return True
 
     monkeypatch.setattr(supervisor, "_health_ok", healthy)
-    await supervisor.ensure_started("sekret")
+    await supervisor.ensure_started()
     await supervisor._shutdown()
     assert entered is True
     assert proc.returncode is None
+
+
+async def test_bundled_server_sends_a_fresh_bearer_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Argv, cwd, child env, and the health client share one fresh token."""
+    from chrys.foundation.platform import process as platform_process
+
+    monkeypatch.setenv("CHRYS_SANDBOX_TOKEN", "user-settings-token")
+    monkeypatch.setenv("JIUWENBOX_API_TOKEN", "inherited-token")
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-server-token")
+    captured: dict[str, object] = {}
+    headers: list[str | None] = []
+
+    @asynccontextmanager
+    async def fake_managed(*args: object, **kwargs: object) -> AsyncIterator[_FakeProcess]:
+        captured["args"] = args
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env")
+        captured["stdin"] = kwargs.get("stdin")
+        captured["stdout"] = kwargs.get("stdout")
+        captured["stderr"] = kwargs.get("stderr")
+        yield _FakeProcess()
+
+    monkeypatch.setattr(platform_process, "managed_subprocess", fake_managed)
+    monkeypatch.setattr(supervisor, "_spawn_launcher", _REAL_SPAWN)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers.append(request.headers.get("authorization"))
+        return httpx.Response(200, json={"status": "ok"})
+
+    def new_client(**kwargs: object) -> httpx.AsyncClient:
+        built = dict(kwargs)
+        built["transport"] = httpx.MockTransport(handler)
+        return httpx.AsyncClient(**built)
+
+    monkeypatch.setattr(client, "_new_client", new_client)
+    url, token = await supervisor.ensure_started()
+    assert url == "http://127.0.0.1:9"
+    assert token == "fresh-server-token"
+    assert token not in url
+    assert token != "user-settings-token"
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["JIUWENBOX_API_TOKEN"] == "fresh-server-token"
+    assert env["JIUWENBOX_API_TOKEN"] != "inherited-token"
+    assert [key for key, value in env.items() if value == "fresh-server-token"] == ["JIUWENBOX_API_TOKEN"]
+    assert captured["args"] == (sys.executable, "-P", "-m", "jiuwenbox.server.launcher")
+    assert captured["cwd"] == sys.prefix
+    assert captured["cwd"] != os.getcwd()
+    assert captured["stdin"] is subprocess.DEVNULL
+    assert captured["stdout"] is subprocess.PIPE
+    assert captured["stderr"] is subprocess.PIPE
+    assert headers == ["Bearer fresh-server-token"]
+    running = supervisor._server
+    assert running is not None
+    assert token not in repr(running)
 
 
 def test_jiuwenbox_appears_only_inside_supervisor_functions() -> None:
@@ -311,10 +538,15 @@ def test_sandbox_package_import_does_not_load_jiuwenbox_fastapi_or_bwrap() -> No
     assert completed.returncode == 0, completed.stderr
 
 
-def test_jiuwenbox_is_an_exact_pin_and_other_pins_stay_exact() -> None:
+def test_jiuwenbox_is_vendored_and_other_pins_stay_exact() -> None:
     project = tomllib.loads((_REPO / "pyproject.toml").read_text(encoding="utf-8"))
     parsed = dict(_dependency_name_and_specifier(item) for item in project["project"]["dependencies"])
-    assert parsed["jiuwenbox"] == "==0.1.0"
+    # The engine is copied into the wheel. A published Requires-Dist would
+    # send pip to PyPI for a distribution that is not there.
+    assert "jiuwenbox" not in parsed
+    assert "jiuwenbox" not in project["tool"]["uv"].get("sources", {})
+    assert parsed["fastapi"] == "==0.162.0"
+    assert parsed["uvicorn"] == "==0.51.0"
     loosened = sorted(
         name for name, specifier in parsed.items() if name not in _RANGE_PINS and not _is_exact_pin(specifier)
     )
@@ -323,20 +555,12 @@ def test_jiuwenbox_is_an_exact_pin_and_other_pins_stay_exact() -> None:
     assert unbounded == []
 
     lock = tomllib.loads((_REPO / "uv.lock").read_text(encoding="utf-8"))
-    boxed = [package for package in lock["package"] if package["name"] == "jiuwenbox"]
-    assert len(boxed) == 1
-    assert boxed[0]["version"] == "0.1.0"
-    assert boxed[0]["source"] == {"editable": "third_party/jiuwenbox"}
+    assert [package for package in lock["package"] if package["name"] == "jiuwenbox"] == []
     requires = next(package for package in lock["package"] if package["name"] == "icode-tui")
     by_name = {item["name"]: item for item in requires["metadata"]["requires-dist"]}
+    assert "jiuwenbox" not in by_name
     for name, specifier in parsed.items():
-        recorded = by_name[name]
-        if name == "jiuwenbox":
-            recorded_spec = recorded.get("specifier")
-            assert recorded_spec is None or _is_exact_pin(recorded_spec)
-            assert recorded.get("editable") == "third_party/jiuwenbox"
-            continue
-        assert recorded["specifier"] == specifier
+        assert by_name[name]["specifier"] == specifier
 
 
 def test_pytest_does_not_collect_third_party_jiuwenbox() -> None:

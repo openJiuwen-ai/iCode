@@ -19,7 +19,7 @@ sandbox:
 
 - `sandbox.enabled`: `true` turns the sandbox on. `false` leaves it off.
 - `sandbox.url`: Leave this empty to let iCode start its own sandbox on this computer. Set a URL only if you already have a sandbox service to connect to. When a URL is set, iCode connects to that service and does not start a sandbox itself.
-- `sandbox.token`: Optional. iCode sends the token only when you set one. Leave it empty when you do not need a token.
+- `sandbox.token`: Optional. Leave it empty when `sandbox.url` is empty. iCode then starts its own sandbox and sends a token it creates for that sandbox. Set `sandbox.token` only when `sandbox.url` points at a sandbox service that requires a token. iCode sends that token to the service.
 
 Write these keys in the user settings file. A project's `.chrys/settings.yaml` cannot turn the sandbox on, or change the URL or token.
 
@@ -29,9 +29,9 @@ The default is off. While it is off, Shell commands behave as they do today. iCo
 
 ## Linux, and the sandbox iCode starts
 
-The sandbox runs on Linux only. The computer needs bubblewrap installed. iCode does not install bubblewrap for you.
+The sandbox runs on Linux only. The computer must be Linux, and it must have bubblewrap installed. iCode does not install bubblewrap for you.
 
-With the sandbox on, iCode starts the sandbox engine that ships with iCode. You do not install or deploy a separate product, and you do not start that engine yourself. Leave `sandbox.url` empty for this.
+With the sandbox on, iCode starts the sandbox engine that ships with iCode. You do not install or deploy a separate product, and you do not start that engine yourself. Leave `sandbox.url` empty for this. If that sandbox fails to start, the error includes the sandbox engine's own error.
 
 ## If the sandbox cannot run the command
 

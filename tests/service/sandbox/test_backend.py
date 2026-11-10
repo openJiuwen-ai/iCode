@@ -9,6 +9,7 @@ import asyncio
 import builtins
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -18,7 +19,13 @@ import httpx
 import pytest
 
 from chrys.service.sandbox import backend
-from chrys.service.sandbox.backend import _HTTP_TIMEOUT_SLACK_SECONDS, SandboxError, SandboxExec, run_shell
+from chrys.service.sandbox.backend import (
+    _HTTP_TIMEOUT_SLACK_SECONDS,
+    _STOP_TIMEOUT_SECONDS,
+    SandboxError,
+    SandboxExec,
+    run_shell,
+)
 from tests.support.waiting import wait_for
 
 _SPAWN_CALLS: list[str] = []
@@ -49,6 +56,13 @@ class _Script:
         self.malformed_path: str | None = None
         self.fail_path: str | None = None
         self.fail_error: Exception | None = None
+        self.distinct_ids = False
+        self.create_status = 201
+        self.not_found_gets = 0
+        self.phase_error: str | None = None
+        self.phase_error_field = "error_message"
+        self.read_timeouts: list[tuple[str, float | None]] = []
+        self._issued = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if self.error is not None:
@@ -58,6 +72,9 @@ class _Script:
             (request.method, request.url.path, body, request.headers.get("authorization"), request.url.host)
         )
         path = request.url.path
+        recorded = request.extensions.get("timeout")
+        read_timeout = recorded.get("read") if isinstance(recorded, dict) else None
+        self.read_timeouts.append((path, read_timeout if isinstance(read_timeout, int | float) else None))
         if self.fail_path is not None and path == self.fail_path:
             if self.fail_error is None:
                 raise AssertionError("fail_path set without fail_error")
@@ -67,14 +84,41 @@ class _Script:
         if path == "/health":
             return httpx.Response(self.health_status, json=self.health)
         if request.method == "POST" and path == "/api/v1/sandboxes":
-            return httpx.Response(201, json={"id": "sb-1", "phase": self.create_phase})
-        if request.method == "POST" and path == "/api/v1/sandboxes/sb-1/start":
-            return httpx.Response(self.start_status, json={"id": "sb-1", "phase": self.start_phase})
-        if request.method == "GET" and path == "/api/v1/sandboxes/sb-1":
-            return httpx.Response(self.get_status, json={"id": "sb-1", "phase": self.get_phase})
-        if request.method == "POST" and path == "/api/v1/sandboxes/sb-1/exec":
+            if self.create_status < 200 or self.create_status >= 300:
+                return httpx.Response(self.create_status, json={"error": "unavailable"})
+            sandbox_id = self._allocate_id()
+            return httpx.Response(self.create_status, json=self._phase_body(sandbox_id, self.create_phase))
+        route = _sandbox_route(path)
+        if route is None:
+            return httpx.Response(500, json={"error": "unexpected"})
+        sandbox_id, action = route
+        if request.method == "POST" and action == "start":
+            return httpx.Response(self.start_status, json=self._phase_body(sandbox_id, self.start_phase))
+        if request.method == "POST" and action == "stop":
+            return httpx.Response(200, json={"id": sandbox_id, "phase": "stopped"})
+        if request.method == "GET" and action == "":
+            status = self.get_status
+            if self.not_found_gets > 0:
+                self.not_found_gets -= 1
+                status = 404
+            return httpx.Response(status, json={"id": sandbox_id, "phase": self.get_phase})
+        if request.method == "POST" and action == "exec":
             return httpx.Response(self.exec_status, json=self.exec_payload)
         return httpx.Response(500, json={"error": "unexpected"})
+
+    def _allocate_id(self) -> str:
+        if not self.distinct_ids:
+            return "sb-1"
+        self._issued += 1
+        return f"sb-{self._issued}"
+
+    def _phase_body(self, sandbox_id: str, phase: str) -> dict[str, object]:
+        body: dict[str, object] = {"id": sandbox_id, "phase": phase}
+        if self.phase_error is not None:
+            # SandboxRef serializes the engine failure as error_message.
+            # The HTTP error envelope's "error" key is a different response.
+            body[self.phase_error_field] = self.phase_error
+        return body
 
 
 class _ClosingClient(httpx.AsyncClient):
@@ -119,20 +163,47 @@ class _CountingLock(asyncio.Lock):
 
 
 class _PausingTransport(httpx.AsyncBaseTransport):
-    """Holds the first request until ``release`` so a second call can contend for the lock."""
+    """Holds the first matching request until ``release``.
 
-    def __init__(self, script: _Script, entered: asyncio.Event, release: asyncio.Event) -> None:
+    ``pause_when`` selects that request. The default holds the first request,
+    which is how a test parks a call inside create or exec.
+    """
+
+    def __init__(
+        self,
+        script: _Script,
+        entered: asyncio.Event,
+        release: asyncio.Event,
+        *,
+        pause_when: Callable[[httpx.Request], bool] | None = None,
+    ) -> None:
         self._script = script
         self._entered = entered
         self._release = release
+        self._pause_when = pause_when
         self.calls = 0
+        self._paused = False
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.calls += 1
-        if self.calls == 1:
+        should_pause = not self._paused and (
+            self._pause_when(request) if self._pause_when is not None else self.calls == 1
+        )
+        if should_pause:
+            self._paused = True
             self._entered.set()
             await self._release.wait()
         return self._script.handler(request)
+
+
+class _Clock:
+    """Manual ``time.monotonic`` so a lock wait can be longer than real time."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
 
 
 _SECRET = _Settings(
@@ -153,6 +224,63 @@ _SESSION_MARKERS = (
 
 def _paths(script: _Script) -> list[tuple[str, str]]:
     return [(method, path) for method, path, *_rest in script.events]
+
+
+def _sandbox_route(path: str) -> tuple[str, str] | None:
+    prefix = "/api/v1/sandboxes/"
+    if not path.startswith(prefix):
+        return None
+    sandbox_id, _separator, action = path.removeprefix(prefix).partition("/")
+    if not sandbox_id:
+        return None
+    return sandbox_id, action
+
+
+def _is_create(request: httpx.Request) -> bool:
+    return request.method == "POST" and request.url.path == "/api/v1/sandboxes"
+
+
+def _is_exec(request: httpx.Request) -> bool:
+    return request.method == "POST" and request.url.path.endswith("/exec")
+
+
+def _install_transport(monkeypatch: pytest.MonkeyPatch, transport: httpx.AsyncBaseTransport) -> None:
+    def new_client(**kwargs: Any) -> httpx.AsyncClient:
+        built = dict(kwargs)
+        built["transport"] = transport
+        return httpx.AsyncClient(**built)
+
+    monkeypatch.setattr("chrys.service.sandbox.client._new_client", new_client)
+
+
+async def _cancel_pending(*tasks: asyncio.Task[Any] | None) -> None:
+    pending = [task for task in tasks if task is not None and not task.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+def _exec_ids(script: _Script) -> list[str]:
+    ids: list[str] = []
+    for method, path in _paths(script):
+        if method != "POST":
+            continue
+        route = _sandbox_route(path)
+        if route is not None and route[1] == "exec":
+            ids.append(route[0])
+    return ids
+
+
+def _mount_body(cwd: str, mode: str) -> dict[str, object]:
+    return {
+        "policy_mode": "append",
+        "policy": {
+            "filesystem_policy": {
+                "bind_mounts": [{"host_path": cwd, "sandbox_path": cwd, "mode": mode}],
+            }
+        },
+    }
 
 
 def _create_bodies(script: _Script) -> list[object]:
@@ -244,12 +372,24 @@ def _assert_backend_has_no_session_writer() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_sandbox_mount_caches():
+    """Clear mount roots the process-wide id reset does not name."""
+    backend._writable_root = None
+    backend._readonly_id = None
+    backend._readonly_root = None
+    yield
+    backend._writable_root = None
+    backend._readonly_id = None
+    backend._readonly_root = None
+
+
+@pytest.fixture(autouse=True)
 def _forbid_supervisor_and_host_spawn(monkeypatch: pytest.MonkeyPatch):
     """A call into the supervisor or a managed child is a host-side path."""
     _SPAWN_CALLS.clear()
 
-    async def forbid(token: str, **_kwargs: object) -> str:
-        _SPAWN_CALLS.append(token)
+    async def forbid(*_args: object, **_kwargs: object) -> tuple[str, str]:
+        _SPAWN_CALLS.append("ensure-started")
         raise SandboxError("supervisor was started")
 
     def forbid_managed(*_args: object, **_kwargs: object) -> object:
@@ -422,11 +562,11 @@ async def test_configured_url_does_not_start_the_supervisor(monkeypatch: pytest.
 
 
 async def test_empty_url_asks_the_supervisor_and_uses_its_address(monkeypatch: pytest.MonkeyPatch):
-    tokens: list[str] = []
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    async def fake_started(token: str, **_kwargs: object) -> str:
-        tokens.append(token)
-        return "http://started.sandbox"
+    async def fake_started(*args: object, **kwargs: object) -> tuple[str, str]:
+        calls.append((args, kwargs))
+        return "http://started.sandbox", "generated-token"
 
     monkeypatch.setattr("chrys.service.sandbox.supervisor.ensure_started", fake_started)
     script = _Script()
@@ -435,9 +575,10 @@ async def test_empty_url_asks_the_supervisor_and_uses_its_address(monkeypatch: p
         monkeypatch,
         _Settings(sandbox_url="", sandbox_token="bearer-token"),
     )
-    assert tokens == ["bearer-token"]
+    assert calls == [((), {})]
     assert result.exit_code == 0
-    assert script.events[0][3] == "Bearer bearer-token"
+    assert script.events
+    assert {event[3] for event in script.events} == {"Bearer generated-token"}
     assert script.events[0][4] == "started.sandbox"
     assert _SPAWN_CALLS == []
 
@@ -489,16 +630,123 @@ async def test_cached_id_that_is_not_ready_is_recreated(monkeypatch: pytest.Monk
     assert _SPAWN_CALLS == []
 
 
-async def test_cached_id_get_404_is_sandbox_error(monkeypatch: pytest.MonkeyPatch):
+async def test_cached_id_404_recreates_once_and_the_next_command_reuses_it(monkeypatch: pytest.MonkeyPatch):
     script = _Script()
+    script.distinct_ids = True
+    _install(monkeypatch, script)
+    settings = _Settings()
+    await run_shell(settings, argv=("echo", "one"), cwd="/work", timeout_seconds=12, linux=True)
+    script.not_found_gets = 1
+    recovered = await run_shell(settings, argv=("echo", "two"), cwd="/work", timeout_seconds=12, linux=True)
+    following = await run_shell(settings, argv=("echo", "three"), cwd="/work/nested", timeout_seconds=12, linux=True)
+    assert recovered.exit_code == 0
+    assert following.exit_code == 0
+    assert _create_bodies(script) == [_mount_body("/work", "rw"), _mount_body("/work", "rw")]
+    assert _exec_ids(script) == ["sb-1", "sb-2", "sb-2"]
+    assert backend._sandbox_id == "sb-2"
+    assert backend._writable_root == "/work"
+    assert _paths(script).count(("GET", "/api/v1/sandboxes/sb-1")) == 1
+    assert _paths(script).count(("GET", "/api/v1/sandboxes/sb-2")) == 1
+    assert _SPAWN_CALLS == []
+
+
+async def test_readonly_cache_404_recreates_and_keeps_the_writable_sandbox(monkeypatch: pytest.MonkeyPatch):
+    script = _Script()
+    script.distinct_ids = True
+    _install(monkeypatch, script)
+    settings = _Settings()
+    await run_shell(settings, argv=("echo", "rw"), cwd="/work/sub", timeout_seconds=12, linux=True)
+    await run_shell(settings, argv=("echo", "ro"), cwd="/outside", timeout_seconds=12, linux=True)
+    script.not_found_gets = 1
+    replaced = await run_shell(settings, argv=("echo", "new"), cwd="/outside", timeout_seconds=12, linux=True)
+    back = await run_shell(settings, argv=("echo", "back"), cwd="/work/sub", timeout_seconds=12, linux=True)
+    assert replaced.exit_code == 0
+    assert back.exit_code == 0
+    assert _create_bodies(script) == [
+        _mount_body("/work/sub", "rw"),
+        _mount_body("/outside", "ro"),
+        _mount_body("/outside", "ro"),
+    ]
+    assert _exec_ids(script) == ["sb-1", "sb-2", "sb-3", "sb-1"]
+    assert backend._sandbox_id == "sb-1"
+    assert backend._writable_root == "/work/sub"
+    assert backend._readonly_id == "sb-3"
+    assert backend._readonly_root == "/outside"
+    assert _SPAWN_CALLS == []
+
+
+async def test_a_second_404_while_replacing_a_cached_sandbox_is_an_error(monkeypatch: pytest.MonkeyPatch):
+    script = _Script()
+    script.distinct_ids = True
     _install(monkeypatch, script)
     await run_shell(_SECRET, argv=("echo",), cwd="/work", timeout_seconds=12, linux=True)
-    script.get_status = 404
+    script.not_found_gets = 1
+    script.create_status = 404
     with pytest.raises(SandboxError, match="HTTP 404") as caught:
         await run_shell(_SECRET, argv=("echo",), cwd="/work", timeout_seconds=12, linux=True)
     _assert_no_secret(str(caught.value))
+    assert len(_create_bodies(script)) == 2
+    assert _exec_ids(script) == ["sb-1"]
+    assert backend._sandbox_id is None
+    assert backend._writable_root is None
+    assert _SPAWN_CALLS == []
+
+
+async def test_cached_get_other_http_error_does_not_create_another_sandbox(monkeypatch: pytest.MonkeyPatch):
+    script = _Script()
+    _install(monkeypatch, script)
+    await run_shell(_SECRET, argv=("echo",), cwd="/work", timeout_seconds=12, linux=True)
+    script.get_status = 500
+    with pytest.raises(SandboxError, match="HTTP 500") as caught:
+        await run_shell(_SECRET, argv=("echo",), cwd="/work", timeout_seconds=12, linux=True)
+    _assert_no_secret(str(caught.value))
     assert len(_create_bodies(script)) == 1
-    assert _paths(script).count(("POST", "/api/v1/sandboxes/sb-1/exec")) == 1
+    assert _exec_ids(script) == ["sb-1"]
+    assert backend._sandbox_id == "sb-1"
+    assert _SPAWN_CALLS == []
+
+
+async def test_cwd_outside_the_writable_root_runs_read_only(monkeypatch: pytest.MonkeyPatch):
+    """``/work`` is not inside the writable mount ``/work/sub``, so it runs read-only."""
+    script = _Script()
+    script.distinct_ids = True
+    _install(monkeypatch, script)
+    settings = _Settings()
+    first = await run_shell(settings, argv=("echo", "sub"), cwd="/work/sub", timeout_seconds=12, linux=True)
+    nested = await run_shell(settings, argv=("echo", "leaf"), cwd="/work/sub/leaf", timeout_seconds=12, linux=True)
+    outside = await run_shell(settings, argv=("echo", "root"), cwd="/work", timeout_seconds=12, linux=True)
+    back = await run_shell(settings, argv=("echo", "again"), cwd="/work/sub", timeout_seconds=12, linux=True)
+    assert first.exit_code == 0
+    assert nested.exit_code == 0
+    assert outside.exit_code == 0
+    assert back.exit_code == 0
+    assert _create_bodies(script) == [_mount_body("/work/sub", "rw"), _mount_body("/work", "ro")]
+    assert _exec_ids(script) == ["sb-1", "sb-1", "sb-2", "sb-1"]
+    assert backend._sandbox_id == "sb-1"
+    assert backend._writable_root == "/work/sub"
+    assert backend._readonly_id == "sb-2"
+    assert backend._readonly_root == "/work"
+    assert _SPAWN_CALLS == []
+
+
+async def test_sibling_directory_is_not_inside_the_writable_root(monkeypatch: pytest.MonkeyPatch):
+    script = _Script()
+    script.distinct_ids = True
+    _install(monkeypatch, script)
+    settings = _Settings()
+    await run_shell(settings, argv=("echo", "work"), cwd="/work", timeout_seconds=12, linux=True)
+    sibling = await run_shell(settings, argv=("echo", "extra"), cwd="/work-extra", timeout_seconds=12, linux=True)
+    escaped = await run_shell(
+        settings, argv=("echo", "dotdot"), cwd="/work/../work-extra", timeout_seconds=12, linux=True
+    )
+    child = await run_shell(settings, argv=("echo", "child"), cwd="/work/pkg", timeout_seconds=12, linux=True)
+    assert sibling.exit_code == 0
+    assert escaped.exit_code == 0
+    assert child.exit_code == 0
+    assert _create_bodies(script) == [_mount_body("/work", "rw"), _mount_body("/work-extra", "ro")]
+    assert _exec_ids(script) == ["sb-1", "sb-2", "sb-2", "sb-1"]
+    assert backend._sandbox_id == "sb-1"
+    assert backend._writable_root == "/work"
     assert _SPAWN_CALLS == []
 
 
@@ -523,6 +771,7 @@ async def test_exec_5xx_is_sandbox_error(monkeypatch: pytest.MonkeyPatch):
         await _run(script, monkeypatch, _SECRET)
     _assert_no_secret(str(caught.value))
     assert ("POST", "/api/v1/sandboxes/sb-1/exec") in _paths(script)
+    assert not any(path.endswith("/stop") for _method, path in _paths(script))
     assert _SPAWN_CALLS == []
 
 
@@ -555,16 +804,10 @@ async def test_concurrent_first_calls_create_one_sandbox(monkeypatch: pytest.Mon
     script = _Script()
     entered = asyncio.Event()
     release = asyncio.Event()
-    transport = _PausingTransport(script, entered, release)
+    transport = _PausingTransport(script, entered, release, pause_when=_is_create)
     lock = _CountingLock()
     backend._lock = lock
-
-    def new_client(**kwargs: Any) -> httpx.AsyncClient:
-        built = dict(kwargs)
-        built["transport"] = transport
-        return httpx.AsyncClient(**built)
-
-    monkeypatch.setattr("chrys.service.sandbox.client._new_client", new_client)
+    _install_transport(monkeypatch, transport)
     settings = _Settings()
 
     async def call(word: str) -> SandboxExec:
@@ -577,8 +820,8 @@ async def test_concurrent_first_calls_create_one_sandbox(monkeypatch: pytest.Mon
         if task_a.done():
             await task_a
         assert entered.is_set()
+        assert lock.locked()
         assert lock.acquires == 1
-        assert transport.calls == 1
         assert _create_bodies(script) == []
         task_b = asyncio.create_task(call("two"))
         await wait_for(
@@ -589,7 +832,7 @@ async def test_concurrent_first_calls_create_one_sandbox(monkeypatch: pytest.Mon
             await task_b
         assert lock.waiting == 1
         assert not task_b.done()
-        assert transport.calls == 1
+        assert _create_bodies(script) == []
         release.set()
         first, second = await asyncio.gather(task_a, task_b)
     finally:
@@ -690,3 +933,240 @@ async def test_dropped_exec_connection_is_sandbox_error_and_closes_client(monkey
     assert "disconnected" not in text
     _assert_client_closed(clients)
     assert _SPAWN_CALLS == []
+
+
+async def test_slow_exec_does_not_block_another_commands_create(monkeypatch: pytest.MonkeyPatch):
+    """A paused exec releases the cache lock, so another cwd can create and exec."""
+    script = _Script()
+    script.distinct_ids = True
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    transport = _PausingTransport(script, entered, release, pause_when=_is_exec)
+    lock = _CountingLock()
+    backend._lock = lock
+    _install_transport(monkeypatch, transport)
+    settings = _Settings()
+
+    async def call(cwd: str, word: str) -> SandboxExec:
+        return await run_shell(settings, argv=("echo", word), cwd=cwd, timeout_seconds=12, linux=True)
+
+    task_a: asyncio.Task[SandboxExec] | None = asyncio.create_task(call("/work", "one"))
+    task_b: asyncio.Task[SandboxExec] | None = None
+    try:
+        await wait_for(lambda: entered.is_set() or task_a.done(), description="first exec reached the sandbox")
+        if task_a.done():
+            await task_a
+        assert entered.is_set()
+        assert not lock.locked()
+        task_b = asyncio.create_task(call("/outside", "two"))
+        second = await task_b
+        assert not task_a.done()
+        assert not release.is_set()
+        assert second.exit_code == 0
+        assert _create_bodies(script) == [_mount_body("/work", "rw"), _mount_body("/outside", "ro")]
+        assert _exec_ids(script) == ["sb-2"]
+        release.set()
+        first = await task_a
+    finally:
+        release.set()
+        await _cancel_pending(task_a, task_b)
+    assert first.exit_code == 0
+    assert _exec_ids(script) == ["sb-2", "sb-1"]
+    assert backend._sandbox_id == "sb-1"
+    assert backend._readonly_id == "sb-2"
+    assert _SPAWN_CALLS == []
+
+
+async def test_lock_wait_longer_than_the_command_timeout_does_not_exec(monkeypatch: pytest.MonkeyPatch):
+    script = _Script()
+    _install(monkeypatch, script)
+    lock = _CountingLock()
+    backend._lock = lock
+    await lock.acquire()
+    task = asyncio.create_task(run_shell(_Settings(), argv=("echo",), cwd="/work", timeout_seconds=1, linux=True))
+    try:
+        with pytest.raises(SandboxError, match="timed out waiting") as caught:
+            await task
+    finally:
+        if lock.locked():
+            lock.release()
+        await _cancel_pending(task)
+    _assert_no_secret(str(caught.value))
+    assert not any(path.endswith("/exec") for _method, path in _paths(script))
+    assert ("POST", "/api/v1/sandboxes") not in _paths(script)
+    assert ("GET", "/health") in _paths(script)
+    assert _SPAWN_CALLS == []
+
+
+async def test_lock_wait_reduces_the_exec_timeout_and_http_timeout(monkeypatch: pytest.MonkeyPatch):
+    clock = _Clock()
+    monkeypatch.setattr(backend, "_monotonic", clock.monotonic)
+    script = _Script()
+    _install(monkeypatch, script)
+    lock = _CountingLock()
+    backend._lock = lock
+    await lock.acquire()
+    task = asyncio.create_task(run_shell(_Settings(), argv=("echo",), cwd="/work", timeout_seconds=12, linux=True))
+    try:
+        await wait_for(
+            lambda: lock.waiting == 1 or task.done(),
+            description="command waits for the sandbox lock",
+        )
+        if task.done():
+            await task
+        assert lock.waiting == 1
+        clock.now = 4.0
+        lock.release()
+        result = await task
+    finally:
+        if lock.locked():
+            lock.release()
+        await _cancel_pending(task)
+    assert result.exit_code == 0
+    exec_bodies = [event[2] for event in script.events if event[1].endswith("/exec")]
+    assert exec_bodies[0]["timeout_seconds"] == 8
+    health = [read for path, read in script.read_timeouts if path == "/health"]
+    exec_reads = [read for path, read in script.read_timeouts if path.endswith("/exec")]
+    assert health == [12 + _HTTP_TIMEOUT_SLACK_SECONDS]
+    assert exec_reads == [8 + _HTTP_TIMEOUT_SLACK_SECONDS]
+    assert _SPAWN_CALLS == []
+
+
+async def test_cancel_during_exec_stops_the_sandbox_and_clears_its_cache(monkeypatch: pytest.MonkeyPatch):
+    script = _Script()
+    script.distinct_ids = True
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    transport = _PausingTransport(script, entered, release, pause_when=_is_exec)
+    _install_transport(monkeypatch, transport)
+    settings = _Settings()
+    task = asyncio.create_task(run_shell(settings, argv=("echo", "one"), cwd="/work", timeout_seconds=12, linux=True))
+    try:
+        await wait_for(lambda: entered.is_set() or task.done(), description="exec is in flight")
+        if task.done():
+            await task
+        assert entered.is_set()
+        assert backend._sandbox_id == "sb-1"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        await _cancel_pending(task)
+    assert ("POST", "/api/v1/sandboxes/sb-1/stop") in _paths(script)
+    stop_reads = [read for path, read in script.read_timeouts if path.endswith("/stop")]
+    assert stop_reads == [_STOP_TIMEOUT_SECONDS]
+    assert backend._sandbox_id is None
+    assert backend._writable_root is None
+    followed = await run_shell(settings, argv=("echo", "two"), cwd="/work", timeout_seconds=12, linux=True)
+    assert followed.exit_code == 0
+    assert _create_bodies(script) == [_mount_body("/work", "rw"), _mount_body("/work", "rw")]
+    assert backend._sandbox_id == "sb-2"
+    assert _SPAWN_CALLS == []
+
+
+async def test_cancel_during_exec_still_cancels_when_stop_fails(monkeypatch: pytest.MonkeyPatch):
+    script = _Script()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    transport = _PausingTransport(script, entered, release, pause_when=_is_exec)
+    _install_transport(monkeypatch, transport)
+    task = asyncio.create_task(run_shell(_SECRET, argv=("echo",), cwd="/work", timeout_seconds=12, linux=True))
+    try:
+        await wait_for(lambda: entered.is_set() or task.done(), description="exec is in flight")
+        if task.done():
+            await task
+        script.fail_path = "/api/v1/sandboxes/sb-1/stop"
+        script.fail_error = httpx.ConnectError("down bearer-token http://user:userinfo-secret@sandbox.test")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        await _cancel_pending(task)
+    assert ("POST", "/api/v1/sandboxes/sb-1/stop") in _paths(script)
+    assert backend._sandbox_id is None
+    assert backend._writable_root is None
+    assert _SPAWN_CALLS == []
+
+
+async def test_cancel_during_create_does_not_stop_the_sandbox(monkeypatch: pytest.MonkeyPatch):
+    script = _Script()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    transport = _PausingTransport(script, entered, release, pause_when=_is_create)
+    _install_transport(monkeypatch, transport)
+    task = asyncio.create_task(run_shell(_Settings(), argv=("echo",), cwd="/work", timeout_seconds=12, linux=True))
+    try:
+        await wait_for(lambda: entered.is_set() or task.done(), description="create is in flight")
+        if task.done():
+            await task
+        assert entered.is_set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        await _cancel_pending(task)
+    assert not any(path.endswith("/stop") for _method, path in _paths(script))
+    assert not any(path.endswith("/exec") for _method, path in _paths(script))
+    assert backend._sandbox_id is None
+    assert _SPAWN_CALLS == []
+
+
+@pytest.mark.parametrize(
+    ("error", "shown"),
+    [
+        ("bubblewrap is missing", "Sandbox did not become ready: bubblewrap is missing"),
+        ("http://user:userinfo-secret@sandbox.test/nope", "Sandbox did not become ready."),
+        ("line one\nline two", "Sandbox did not become ready."),
+        ("x" * 201, "Sandbox did not become ready."),
+    ],
+)
+async def test_unready_sandbox_includes_only_a_short_error_line(
+    monkeypatch: pytest.MonkeyPatch,
+    error: str,
+    shown: str,
+):
+    script = _Script()
+    script.create_phase = "provisioning"
+    script.start_phase = "error"
+    script.phase_error = error
+    with pytest.raises(SandboxError, match="did not become ready") as caught:
+        await _run(script, monkeypatch, _SECRET)
+    text = str(caught.value)
+    assert text == shown
+    _assert_no_secret(text)
+    assert "\n" not in text
+    assert not any(path.endswith("/exec") for _method, path in _paths(script))
+    assert _SPAWN_CALLS == []
+
+
+async def test_unready_sandbox_ignores_the_http_error_key(monkeypatch: pytest.MonkeyPatch):
+    """``error`` is the HTTP failure envelope, not the sandbox ref field."""
+    script = _Script()
+    script.create_phase = "provisioning"
+    script.start_phase = "error"
+    script.phase_error = "bubblewrap is missing"
+    script.phase_error_field = "error"
+    with pytest.raises(SandboxError, match="did not become ready") as caught:
+        await _run(script, monkeypatch, _SECRET)
+    assert str(caught.value) == "Sandbox did not become ready."
+    assert _SPAWN_CALLS == []
+
+
+def test_unready_detail_reads_the_sandbox_ref_error_message() -> None:
+    """The client field is the one ``SandboxRef`` serializes."""
+    root = Path(__file__).resolve().parents[3]
+    model = (root / "third_party/jiuwenbox/src/jiuwenbox/models/sandbox.py").read_text(encoding="utf-8")
+    tree = ast.parse(model)
+    fields: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "SandboxRef":
+            for stmt in node.body:
+                if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                    fields.append(stmt.target.id)
+    assert "error_message" in fields
+    assert "error" not in fields
+    not_ready = _function_source(Path(backend.__file__).read_text(encoding="utf-8"), "_not_ready")
+    assert 'payload.get("error_message")' in not_ready

@@ -265,6 +265,7 @@ def test_sandbox_defaults_off_and_a_project_cannot_enable_it(config_dir: Path, p
     loaded = load_settings(project_root=project_root)
 
     assert loaded.settings.sandbox_enabled is False
+    assert loaded.settings.sandbox_enabled_was_rejected() is False
     assert loaded.settings.sandbox_url == ""
     assert loaded.settings.sandbox_token == ""
     (warning,) = loaded.warnings

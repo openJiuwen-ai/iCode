@@ -203,6 +203,11 @@ def _create_shell(build: ToolBuild) -> list[FunctionTool]:
     from chrys.service.tools.builtins.shell import ShellTools
 
     command_filter = _build_shell_filter(build.tools.shell_filter)
+    # A sandboxed command never moves to the background, so the description must not promise a log
+    # or a stop file. Sandbox off keeps the session's real background tasks.
+    background_tasks = build.background_tasks
+    if build.settings is not None and build.settings.sandbox_enabled:
+        background_tasks = None
     # The platform shell first, then any extra one (e.g. Git Bash on Windows). Every shell offers
     # list_workspace_dirs, which lists the same folders whatever the shell, so a name comes once.
     tools: dict[str, FunctionTool] = {}
@@ -211,7 +216,7 @@ def _create_shell(build: ToolBuild) -> list[FunctionTool]:
             build.runtime,
             command_filter=command_filter,
             session_dir=build.session_dir,
-            background_tasks=build.background_tasks,
+            background_tasks=background_tasks,
             shell=shell,
             session_wide_background=build.session_wide_background,
             settings=build.settings,

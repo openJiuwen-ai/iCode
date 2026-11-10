@@ -344,11 +344,18 @@ DAEMON_STARTUP_LOG_MAX_BYTES = 16 * 1024
 # is just an open/read/write or scandir call. Cap the IPC roundtrip at a
 # short upper bound so a wedged daemon does not stall HTTP requests.
 DAEMON_FILE_OP_TIMEOUT_SECONDS = 30.0
-# When the caller omits an exec timeout the daemon still waits for the
-# child to finish before responding. Cap the IPC read at the common
-# agent-core default (300s) plus the same +5s cushion used for explicit
-# timeouts so a wedged daemon cannot hang HTTP requests forever.
-DEFAULT_EXEC_IPC_READ_TIMEOUT_SECONDS = 305.0
+# How long the client keeps reading after the command timeout. Strictly
+# longer than the daemon's post-kill drain (sandbox_daemon
+# ``_POST_KILL_DRAIN_SECONDS``, 5s). The socket timer starts before the
+# daemon's command timer, and grandchildren can hold stdout for that
+# whole drain, so an equal cushion abandons the socket as the daemon
+# sends exit 124 "Command timed out". Do not shrink this to match the
+# drain; the drain stays 5s.
+EXEC_IPC_READ_MARGIN_SECONDS = 10.0
+# When the caller omits an exec timeout the daemon waits for the child
+# with no deadline. Cap the IPC read at the common agent-core default
+# (300s) plus the margin above so a wedged daemon cannot hang the request.
+DEFAULT_EXEC_IPC_READ_TIMEOUT_SECONDS = 300.0 + EXEC_IPC_READ_MARGIN_SECONDS
 
 # OS-level errors that mean the daemon is actually gone or its control
 # socket is permanently broken. When we see one of these, ``_daemon_socket_ready``
@@ -1057,6 +1064,11 @@ class ProcessRuntime(RuntimeAdapter):
         config = BwrapConfig.from_policy(policy, list(command))
         process_uid = config.uid
         process_gid = config.gid
+        if not policy.namespace.user and os.geteuid() == 0:
+            # Host root, user namespace off, a nobody drop cannot write the workspace bind.
+            process_uid, process_gid = self._resolve_backing_identity(policy)
+            config.uid = process_uid
+            config.gid = process_gid
         if sandbox_env:
             config.env.update(sandbox_env)
         if workdir:
@@ -1238,6 +1250,9 @@ class ProcessRuntime(RuntimeAdapter):
             # would then reject writes such as uploads under /home.
             if os.geteuid() != 0:
                 return os.getuid(), os.getgid()
+        elif os.geteuid() == 0:
+            # Host root, user namespace off, a nobody drop cannot write the workspace bind.
+            return os.geteuid(), os.getegid()
 
         try:
             uid = pwd.getpwnam(policy.process.run_as_user).pw_uid
@@ -1251,6 +1266,9 @@ class ProcessRuntime(RuntimeAdapter):
 
     @staticmethod
     def _resolve_process_uid(policy: SecurityPolicy) -> int:
+        if not policy.namespace.user and os.geteuid() == 0:
+            # Host root, user namespace off, a nobody drop cannot write the workspace bind.
+            return os.geteuid()
         try:
             return pwd.getpwnam(policy.process.run_as_user).pw_uid
         except KeyError:
@@ -2644,12 +2662,14 @@ class ProcessRuntime(RuntimeAdapter):
 
         sock = self._connect_daemon_socket(call.socket_path)
         try:
-            # The daemon waits for the user command to finish before
-            # responding, so the receive timeout has to outlive the request
-            # timeout. When no exec timeout is configured, use a bounded
-            # default instead of waiting forever on the socket.
+            # The daemon waits for the user command to finish, kills it,
+            # then drains pipes before responding. The margin is strictly
+            # longer than that post-kill drain, so this read is still open
+            # when the daemon sends "Command timed out". When no exec
+            # timeout is configured, use a bounded default instead of
+            # waiting forever on the socket.
             if call.timeout is not None:
-                sock.settimeout(call.timeout + 5.0)
+                sock.settimeout(call.timeout + EXEC_IPC_READ_MARGIN_SECONDS)
             else:
                 sock.settimeout(DEFAULT_EXEC_IPC_READ_TIMEOUT_SECONDS)
             self._send_request_blob(sock, header_blob, call.stdin_bytes)

@@ -71,6 +71,7 @@ def test_a_fresh_load_leaves_the_sandbox_off_with_blank_url_and_token(config_dir
     loaded = load_settings()
 
     assert loaded.settings.sandbox_enabled is False
+    assert loaded.settings.sandbox_enabled_was_rejected() is False
     assert loaded.settings.sandbox_url == ""
     assert loaded.settings.sandbox_token == ""
     assert loaded.source_for("sandbox.enabled").layer is Source.DEFAULT
@@ -97,6 +98,7 @@ def test_user_yaml_sets_sandbox_enabled_url_and_token(config_dir: Path) -> None:
     loaded = load_settings()
 
     assert loaded.settings.sandbox_enabled is True
+    assert loaded.settings.sandbox_enabled_was_rejected() is False
     assert loaded.settings.sandbox_url == "http://127.0.0.1:8321"
     assert loaded.settings.sandbox_token == "user-token"
     for key in ("sandbox.enabled", "sandbox.url", "sandbox.token"):
@@ -129,6 +131,7 @@ def test_process_env_overrides_user_yaml_for_sandbox_settings(
     loaded = load_settings()
 
     assert loaded.settings.sandbox_enabled is True
+    assert loaded.settings.sandbox_enabled_was_rejected() is False
     assert loaded.settings.sandbox_url == "http://from-env.example"
     assert loaded.settings.sandbox_token == "from-env"
     for key in ("sandbox.enabled", "sandbox.url", "sandbox.token"):
@@ -145,6 +148,7 @@ def test_an_invalid_user_yaml_sandbox_enabled_falls_back_to_false(config_dir: Pa
     loaded = load_settings()
 
     assert loaded.settings.sandbox_enabled is False
+    assert loaded.settings.sandbox_enabled_was_rejected() is True
     assert "sandbox.enabled" in loaded.sealed_keys
     assert loaded.source_for("sandbox.enabled").layer is Source.DEFAULT
     (warning,) = loaded.warnings
@@ -165,6 +169,7 @@ def test_an_invalid_env_sandbox_enabled_does_not_fall_through_to_user_yaml(
     loaded = load_settings()
 
     assert loaded.settings.sandbox_enabled is False
+    assert loaded.settings.sandbox_enabled_was_rejected() is True
     assert "sandbox.enabled" in loaded.sealed_keys
     assert loaded.source_for("sandbox.enabled").layer is Source.DEFAULT
     (warning,) = loaded.warnings

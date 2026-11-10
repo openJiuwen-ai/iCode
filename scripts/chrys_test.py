@@ -257,6 +257,24 @@ REGULAR_RULES = (
             "src/chrys/app/tui/screens/dialogs/editor.py",
         ),
     ),
+    # Reads vendored engine sources and sandbox package files by path.
+    TestRule(
+        "tests/service/sandbox/test_backend.py",
+        (
+            "third_party/jiuwenbox/src/jiuwenbox/server/sandbox_manager.py",
+            "third_party/jiuwenbox/src/jiuwenbox/server/policy_engine.py",
+            "third_party/jiuwenbox/src/jiuwenbox/models/sandbox.py",
+            "src/chrys/service/sandbox/__init__.py",
+            "src/chrys/service/sandbox/types.py",
+            "src/chrys/service/sandbox/client.py",
+            "src/chrys/service/sandbox/backend.py",
+        ),
+    ),
+    # Scans the source tree for engine imports and reads the dependency pins by path.
+    TestRule(
+        "tests/service/sandbox/test_supervisor.py",
+        ("src/chrys/**", "pyproject.toml", "uv.lock"),
+    ),
 )
 
 # Include every pytest configuration filename, even when absent from this tree:

@@ -15,7 +15,10 @@ import pytest
 
 import chrys.service.tools.builtins.shell as shell_mod
 import chrys.service.tools.packs as packs_mod
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.config.settings_store import load_settings
+from chrys.foundation.config.user_settings import user_settings_path
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform import ShellInfo
 from chrys.foundation.platform.output_capture import CapturedOutput
@@ -164,8 +167,10 @@ def _assert_host_idle(counts: dict[str, int]) -> None:
 
 
 def _pipe_argv(shell: ShellInfo, command: str) -> tuple[str, ...]:
-    """The argv ``_run_sandboxed`` passes to ``run_shell`` for *shell*."""
-    return _shell_argv_variants(shell, _prepare_pipe_command(command, shell))[0]
+    """The bare argv ``_run_sandboxed`` passes to ``run_shell`` for *shell*."""
+    prepared = _prepare_pipe_command(command, shell)
+    variants = _shell_argv_variants(shell, prepared)
+    return variants[-1]
 
 
 def _shell_source() -> ast.Module:
@@ -218,6 +223,69 @@ def _assert_sandbox_bypass_avoids_host(tree: ast.Module) -> None:
     assert sandboxed.isdisjoint(_HOST_EXECUTORS)
     assert sandboxed.isdisjoint({"spawn_managed_stdio_process", "adopt", "_backgrounded_result", "_follow"})
     assert "run_shell" in sandboxed
+
+
+def _load_invalid_sandbox(monkeypatch: pytest.MonkeyPatch, source: str) -> Settings:
+    """A sealed ``sandbox.enabled``: the value is False and the loader still warned."""
+    if source == "user_yaml":
+        path = user_settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("sandbox:\n  enabled: banana\n", encoding="utf-8")
+    else:
+        monkeypatch.setenv("CHRYS_SANDBOX_ENABLED", "banana")
+    freeze_process_env()
+    loaded = load_settings()
+    assert loaded.settings.sandbox_enabled is False
+    assert loaded.settings.sandbox_enabled_was_rejected() is True
+    assert any(warning.key == "sandbox.enabled" and warning.rejected for warning in loaded.warnings)
+    return loaded.settings
+
+
+async def _assert_command_is_not_run(shell: ShellTools, monkeypatch: pytest.MonkeyPatch) -> None:
+    counts = _spy_host(monkeypatch)
+    calls: list[_ShellCall] = []
+    _patch_run_shell(monkeypatch, calls, SandboxExec(0, "should-not-run", ""))
+
+    with _metadata() as metadata:
+        result = await shell.execute("echo hello", reason="test")
+
+    assert result.startswith("Error:")
+    assert "sandbox.enabled is invalid" in result
+    assert "[exit_code:" not in result
+    assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == "sandbox_unavailable"
+    assert metadata[TOOL_ERRORED_METADATA_KEY] is True
+    assert calls == []
+    _assert_host_idle(counts)
+
+
+def _packed_command_tools(
+    runtime: SessionEnvironment, settings: Settings, background: BackgroundTasks | None
+) -> list[FunctionTool]:
+    tools = packs_mod._create_shell(
+        packs_mod.ToolBuild(
+            tools=ToolsConfig(builtins=["shell"]),
+            agent_name="test",
+            runtime=runtime,
+            settings=settings,
+            background_tasks=background,
+        )
+    )
+    instances = _shell_instances(tools)
+    assert instances
+    command_tools: list[FunctionTool] = []
+    for instance in instances:
+        matched = [
+            tool
+            for tool in tools
+            if isinstance(tool, FunctionTool) and tool.bound_instance is instance and tool.name == instance.shell.name
+        ]
+        assert len(matched) == 1
+        command_tools.append(matched[0])
+        if settings.sandbox_enabled:
+            assert instance._tasks is None
+        else:
+            assert instance._tasks is background
+    return command_tools
 
 
 def _shell_instances(tools: Sequence[object]) -> list[ShellTools]:
@@ -348,8 +416,7 @@ async def test_sandbox_exec_returns_output_without_host(
     assert call.linux is (sys.platform == "linux")
     assert call.timeout_seconds == 17
     assert call.cwd == runtime.cwd
-    prepared = _prepare_pipe_command("echo hello", shell.shell)
-    assert call.argv == _shell_argv_variants(shell.shell, prepared)[0]
+    assert call.argv == _pipe_argv(shell.shell, "echo hello")
 
 
 async def test_sandbox_error_is_unavailable_and_skips_host(
@@ -466,16 +533,27 @@ async def test_sandbox_long_output_is_truncated_without_host(
 async def test_sandbox_argv_follows_selected_shell(
     runtime: SessionEnvironment, shell_info: ShellInfo, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The sandbox argv stays the bare shell launch when an fsatrace prefix is armed."""
+    from chrys.service.mutations.trace import shell_trace_argv
+
     counts = _spy_host(monkeypatch)
     calls: list[_ShellCall] = []
     _patch_run_shell(monkeypatch, calls, SandboxExec(0, "ok", ""))
     shell = ShellTools(runtime, shell=shell_info, settings=Settings(sandbox_enabled=True))
-
-    result = await shell.execute("echo hello", reason="test")
+    prefix = ("/opt/not-in-sandbox/fsatrace", "wmdt", "/tmp/chrys-not-a-trace", "--")
+    token = shell_trace_argv.set(prefix)
+    try:
+        result = await shell.execute("echo hello", reason="test")
+        variants = _shell_argv_variants(shell.shell, _prepare_pipe_command("echo hello", shell.shell))
+    finally:
+        shell_trace_argv.reset(token)
 
     assert shell.shell == shell_info
     assert len(calls) == 1
-    assert calls[0].argv == _pipe_argv(shell.shell, "echo hello")
+    assert variants[0][: len(prefix)] == prefix
+    assert calls[0].argv == variants[-1]
+    assert calls[0].argv[: len(prefix)] != prefix
+    assert prefix[0] not in calls[0].argv
     assert result.endswith("[exit_code: 0]")
     _assert_host_idle(counts)
 
@@ -601,3 +679,70 @@ async def test_extra_shell_receives_settings_and_bypasses_host(
     for instance, call in zip((primary, chosen), calls, strict=True):
         assert call.argv == _pipe_argv(instance.shell, "echo hello")
     _assert_host_idle(counts)
+
+
+# ───────────────────────── description matches what sandbox mode does ─────────────────────────
+
+
+def test_sandboxed_shell_description_does_not_promise_background(runtime: SessionEnvironment, tmp_path: Path) -> None:
+    tools = _packed_command_tools(runtime, Settings(sandbox_enabled=True), BackgroundTasks(tmp_path))
+
+    assert tools
+    for tool in tools:
+        assert "moves to the background" not in tool.description
+        assert "stop file" not in tool.description
+
+
+def test_host_shell_description_promises_background_when_tasks_are_passed(
+    runtime: SessionEnvironment, tmp_path: Path
+) -> None:
+    tools = _packed_command_tools(runtime, Settings(sandbox_enabled=False), BackgroundTasks(tmp_path))
+
+    assert tools
+    for tool in tools:
+        assert "moves to the background" in tool.description
+        assert "stop file" in tool.description
+
+
+# ───────────────────────── invalid sandbox.enabled does not run on the host ─────────────────────────
+
+
+@pytest.mark.parametrize("source", ["env", "user_yaml"])
+async def test_invalid_sandbox_enabled_does_not_run_on_the_host(
+    runtime: SessionEnvironment, source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _load_invalid_sandbox(monkeypatch, source)
+
+    await _assert_command_is_not_run(ShellTools(runtime, settings=settings), monkeypatch)
+
+
+async def test_replacing_other_fields_keeps_an_invalid_sandbox_rejection(
+    runtime: SessionEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = dataclasses.replace(_load_invalid_sandbox(monkeypatch, "env"), model_profile="still-invalid")
+
+    assert settings.sandbox_enabled is False
+    assert settings.sandbox_enabled_was_rejected() is True
+    await _assert_command_is_not_run(ShellTools(runtime, settings=settings), monkeypatch)
+
+
+async def test_valid_sandbox_enabled_false_still_uses_the_host(
+    runtime: SessionEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHRYS_SANDBOX_ENABLED", "false")
+    freeze_process_env()
+    settings = load_settings().settings
+    assert settings.sandbox_enabled is False
+    assert settings.sandbox_enabled_was_rejected() is False
+    assert dataclasses.replace(settings, model_profile="kept-off").sandbox_enabled_was_rejected() is False
+    host_calls: list[str] = []
+    sandbox_calls: list[_ShellCall] = []
+    _stub_host_executor(monkeypatch, host_calls)
+    _patch_run_shell(monkeypatch, sandbox_calls, SandboxExec(0, "sandbox-out", ""))
+
+    result = await ShellTools(runtime, settings=settings).execute("echo hello", reason="test")
+
+    assert host_calls == ["pipe" if sys.platform == "win32" else "pty"]
+    assert sandbox_calls == []
+    assert "host-executor-output" in result
+    assert "sandbox-out" not in result

@@ -107,6 +107,22 @@ MAX_FILE_BYTES = 256 * 1024 * 1024
 
 ACCEPT_TIMEOUT_SECONDS = 1.0
 SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 30.0
+# After a command timeout the daemon kills the process and drains
+# stdout/stderr for this long, then sends exit 124 "Command timed out".
+# Grandchildren that hold the pipes (npm, pytest -n) can use the whole
+# budget. Do not raise it; lengthen the client read instead. The client
+# IPC wait is strictly longer than this drain.
+_POST_KILL_DRAIN_SECONDS = 5.0
+# How long a client keeps reading after the command timeout. Strictly
+# longer than ``_POST_KILL_DRAIN_SECONDS``: the drain can consume its
+# whole budget, and the socket timer starts before the daemon's command
+# timer, so an equal cushion abandons the read as the timeout result is
+# sent. Box-server repeats this value as ``EXEC_IPC_READ_MARGIN_SECONDS``
+# (this module stays stdlib-only and does not import the server).
+_IPC_CLIENT_MARGIN_SECONDS = 10.0
+# Command budget used when the request omits a timeout. The fast-path
+# socket wait is this budget plus ``_IPC_CLIENT_MARGIN_SECONDS``.
+_FASTPATH_TIMEOUT_FLOOR_SECONDS = 300.0
 
 logger = logging.getLogger("jiuwenbox.sandbox_daemon")
 
@@ -337,7 +353,9 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
             except ProcessLookupError:
                 pass
             try:
-                stdout_bytes, stderr_bytes = proc.communicate(timeout=5.0)
+                stdout_bytes, stderr_bytes = proc.communicate(
+                    timeout=_POST_KILL_DRAIN_SECONDS,
+                )
             except subprocess.TimeoutExpired:
                 stdout_bytes, stderr_bytes = b"", b""
             stderr_text = stderr_bytes.decode("utf-8", errors="replace")
@@ -1755,7 +1773,13 @@ class ForkServerPool:
         # ``FastPathUnavailable``).
         dispatched = False
         try:
-            sock.settimeout((timeout or 305.0) + 5.0)
+            # Strictly longer than ``_POST_KILL_DRAIN_SECONDS``. A worker
+            # whose pipes take the whole post-kill drain to close is still
+            # answered here, instead of this socket timing out as the
+            # result is sent.
+            sock.settimeout(
+                (timeout or _FASTPATH_TIMEOUT_FLOOR_SECONDS) + _IPC_CLIENT_MARGIN_SECONDS
+            )
             dispatched = True  # dispatch begins here: about to send the header
             _send_frame(sock, json.dumps(header).encode("utf-8"))
             if stdin_bytes:

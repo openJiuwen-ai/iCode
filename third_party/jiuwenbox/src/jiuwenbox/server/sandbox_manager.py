@@ -43,10 +43,19 @@ def _truncate_for_audit(text: str | None, *, limit: int = _AUDIT_OUTPUT_LIMIT) -
     return text[-limit:] + f"\n[truncated, total {len(text)} chars]"
 
 
-def _is_daemon_ipc_exec_failure(result: ExecResult) -> bool:
+def _exec_failed_before_dispatch(result: ExecResult) -> bool:
+    """True only when this exec cannot have reached the daemon.
+
+    ``daemon IPC timeout`` is reported after the request was written, so
+    the command may already have run. Sending it again would run it twice;
+    the failure itself is the safe result. ``daemon IPC channel unavailable``
+    is returned before that write, when the control socket is already gone,
+    so one restart cannot double-execute. Any other failure is not retried:
+    a second exec is allowed only when this returns true.
+    """
     stderr = result.stderr or ""
-    if result.exit_code == 124 and "daemon IPC timeout" in stderr:
-        return True
+    if "daemon IPC timeout" in stderr:
+        return False
     return "daemon IPC channel unavailable" in stderr
 
 
@@ -880,10 +889,13 @@ class SandboxManager:
         )
         try:
             result = await runtime.exec(sandbox_id, runtime_request)
-            if runtime_name == RUNTIME_PROCESS and _is_daemon_ipc_exec_failure(result):
+            # Restart only when the command was not dispatched. An IPC
+            # timeout means the request was already written; exec again
+            # would run that command a second time.
+            if runtime_name == RUNTIME_PROCESS and _exec_failed_before_dispatch(result):
                 logger.warning(
-                    "Daemon IPC exec failed for sandbox %s (exit=%s), "
-                    "restarting sandbox once",
+                    "Daemon IPC channel unavailable for sandbox %s before "
+                    "dispatch (exit=%s), restarting sandbox once",
                     sandbox_id,
                     result.exit_code,
                 )

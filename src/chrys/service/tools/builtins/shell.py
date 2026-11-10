@@ -285,6 +285,11 @@ def _pipefail_args(shell: ShellInfo) -> tuple[str, ...]:
     return ("-o", "pipefail") if shell.name in _PIPEFAIL_SHELLS else ()
 
 
+def _bare_shell_argv(shell: ShellInfo, command: str) -> tuple[str, ...]:
+    """Shell path, pipefail args, shell args, and *command*, with no tracer prefix."""
+    return (shell.path, *_pipefail_args(shell), *shell.args, command)
+
+
 def _shell_argv_variants(shell: ShellInfo, command: str) -> list[tuple[str, ...]]:
     """Launch argvs to try in order: traced first (when armed), then bare.
 
@@ -294,7 +299,7 @@ def _shell_argv_variants(shell: ShellInfo, command: str) -> list[tuple[str, ...]
     variant must degrade to the bare one: tracing may never change
     user-visible shell behavior.
     """
-    base = (shell.path, *_pipefail_args(shell), *shell.args, command)
+    base = _bare_shell_argv(shell, command)
     prefix = shell_trace_argv.get()
     if prefix:
         return [(*prefix, *base), base]
@@ -1124,6 +1129,10 @@ class ShellTools:
         shell = self._shell
         if self._settings is not None and self._settings.sandbox_enabled:
             return await self._run_sandboxed(command, shell, cwd, timeout, budget)
+        # A rejected sandbox.enabled is sealed to False, which is the host path below.
+        if self._settings is not None and self._settings.sandbox_enabled_was_rejected():
+            _record_shell_error()
+            return tool_error("sandbox_unavailable", "sandbox.enabled is invalid, so the command was not run.")
         try:
             if sys.platform == "win32":
                 # Windows: snapshot outer TUI's console mode so a child TUI
@@ -1184,8 +1193,10 @@ class ShellTools:
         Compromises versus the host shell: there is no PTY, no streamed output, and
         no Ctrl+T move to the background. *timeout* is the remote exec timeout; when
         it fires, the remote exec ends and the command does not become an iCode
-        background task. The argv is the pipe path's shell argv (a Linux shell argv,
-        not a Windows PowerShell launch). Non-Linux does not execute the command.
+        background task. The argv is the pipe path's bare shell argv (a Linux shell
+        argv, not a Windows PowerShell launch): shell path, pipefail args, shell
+        args, and the command, with no fsatrace prefix. Non-Linux does not execute
+        the command.
         """
         # Imported here so a disabled shell never loads the sandbox package.
         from chrys.service.sandbox.backend import SandboxError, run_shell
@@ -1194,7 +1205,10 @@ class ShellTools:
         if settings is None:
             raise RuntimeError("sandbox shell path requires settings")
         prepared = _prepare_pipe_command(command, shell)
-        argv = _shell_argv_variants(shell, prepared)[0]
+        # The host may try an fsatrace prefix and fall back to the bare argv.
+        # That prefix is not in the sandbox image, so sending it fails the
+        # command and adds an error line to stderr.
+        argv = _bare_shell_argv(shell, prepared)
         try:
             completed = await run_shell(
                 settings,

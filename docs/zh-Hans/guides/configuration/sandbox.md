@@ -19,7 +19,7 @@ sandbox:
 
 - `sandbox.enabled`：`true` 表示打开沙箱。`false` 表示关闭。
 - `sandbox.url`：留空，让 iCode 在这台计算机上启动自带的沙箱。只有当你已经有一个沙箱服务、希望 iCode 连过去时，才填写地址。填写地址后，iCode 连接该服务，不再自己启动沙箱。
-- `sandbox.token`：可选。只有填写了令牌时，iCode 才会发送它。不需要令牌时留空。
+- `sandbox.token`：可选。`sandbox.url` 留空时，这里也留空。这时 iCode 会启动自带的沙箱，并发送一个由 iCode 为该沙箱生成的令牌。只有当 `sandbox.url` 指向的沙箱服务要求令牌时，才填写 `sandbox.token`。iCode 会把这个令牌发给该服务。
 
 请把这些键写在用户设置文件里。项目中的 `.chrys/settings.yaml` 不能打开沙箱，也不能修改地址或令牌。
 
@@ -29,9 +29,9 @@ sandbox:
 
 ## 仅在 Linux 上运行，以及 iCode 启动的沙箱
 
-沙箱只在 Linux 上运行。这台计算机需要已安装 bubblewrap。iCode 不会替你安装 bubblewrap。
+沙箱只在 Linux 上运行。这台计算机必须是 Linux，并且必须已安装 bubblewrap。iCode 不会替你安装 bubblewrap。
 
-打开沙箱后，iCode 会启动随 iCode 一起提供的沙箱引擎。你不需要单独安装或部署另一套产品，也不需要自己启动这个引擎。此时请把 `sandbox.url` 留空。
+打开沙箱后，iCode 会启动随 iCode 一起提供的沙箱引擎。你不需要单独安装或部署另一套产品，也不需要自己启动这个引擎。此时请把 `sandbox.url` 留空。如果这个沙箱启动失败，错误信息会包含沙箱引擎自己的报错。
 
 ## 沙箱无法运行命令时
 

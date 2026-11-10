@@ -475,6 +475,9 @@ def test_every_install_carries_the_whole_runtime() -> None:
         "opentelemetry-sdk",
         "opentelemetry-exporter-otlp-proto-grpc",
         "opentelemetry-instrumentation-logging",
+        # The vendored sandbox server imports these; they are not pulled in by the rest of the set.
+        "fastapi",
+        "uvicorn",
     } <= runtime
     # Test and lint tools stay in the dev group, which never reaches the published metadata.
     dev = names([item for item in pyproject["dependency-groups"]["dev"] if isinstance(item, str)])
