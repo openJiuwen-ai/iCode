@@ -362,6 +362,15 @@ class AskUserOptions(SelectionList[int]):
         self._locked = True
         self.disabled = True
 
+    def _on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        # ``SelectionList`` toggles whatever is highlighted when this queued
+        # message runs; keys typed at once (a lagging TUI) may have moved the
+        # highlight by then. Toggle the option Space, Enter or the click chose,
+        # and keep the base handler from toggling a second one.
+        event.stop()
+        event.prevent_default()
+        self.toggle(self.get_option_at_index(event.option_index))
+
     @on(SelectionList.SelectionToggled)
     def _on_selection_toggled(self, event: SelectionList.SelectionToggled) -> None:
         event.stop()
