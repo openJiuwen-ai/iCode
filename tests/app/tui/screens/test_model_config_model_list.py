@@ -22,6 +22,7 @@ import httpx
 import pytest
 from textual.containers import Horizontal
 from textual.pilot import Pilot
+from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Input, Label, Select
 from textual.worker import WorkerState
 
@@ -266,6 +267,41 @@ async def test_fetch_is_disabled_while_a_profile_loads(
         assert seen[0] is True, "Fetch is disabled from the moment the load starts"
         await wait_for(lambda: fetch_ready(screen), pilot=pilot, description="enabled once the load finished")
         await no_new_query(fake_discover, pilot, after=0)
+
+
+async def test_rows_a_profile_load_mounts_never_block_changed_messages_elsewhere(
+    fake_discover: FakeDiscover, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A widget built inside ``prevent()`` re-applies its set on the App-wide stack while it mounts.
+
+    The load fills the form under ``prevent``; rows built there would drop every widget's
+    ``Input.Changed`` while they mount. A probe in each loaded row posts one from the name input.
+    """
+    accepted: list[bool] = []
+
+    class _Probe(Widget):
+        def on_mount(self) -> None:
+            name = self.screen.query_one("#mc-name", Input)
+            accepted.append(name.post_message(Input.Changed(name, name.value)))
+
+    build_row = ModelConfigScreen._compose_kv_row
+
+    def build_row_with_probe(
+        screen: ModelConfigScreen, key: str, val: str, prefix: str, *, read_only: bool = False
+    ) -> Horizontal:
+        row = build_row(screen, key, val, prefix, read_only=read_only)
+        row.compose_add_child(_Probe())
+        return row
+
+    monkeypatch.setattr(ModelConfigScreen, "_compose_kv_row", build_row_with_probe)
+    async with open_model_config(_two_profiles(), global_default_profile_id="a") as (screen, pilot):
+        await wait_for(lambda: fetch_ready(screen), pilot=pilot, description="first load finished")
+        accepted.clear()
+        await _select_profile(screen, pilot, "b")
+        # Profile B has no headers or options: the load builds one blank row in each list.
+        await wait_for(lambda: len(accepted) == 2, pilot=pilot, description="loaded rows mounted")
+
+    assert accepted == [True, True]
 
 
 async def test_fetch_is_enabled_with_a_command_credential(fake_discover: FakeDiscover) -> None:

@@ -1423,21 +1423,25 @@ class ModelConfigScreen(BaseDialog[str]):
             self.query_one("#mc-stream", Checkbox).value = profile.stream
             self.query_one("#mc-vision", Checkbox).value = profile.vision
 
-            # Populate key-value lists
-            headers = _parse_json_dict(profile.http_headers, parse_values=False)
-            pending = self._populate_kv_list("mc-headers-list", headers, "h")
-
-            options = _parse_json_dict(profile.chat_options)
-            self._model_extra_headers = options.get("extra_headers")
-            pending.extend(self._populate_kv_list("mc-options-list", options, "o"))
-
             self._update_provider_labels(profile.provider)
             update_static_in_place(
                 self.query_one("#mc-max-tokens-label", Label),
                 self._max_context_label(self.query_one("#mc-max-tokens", Input).value),
             )
-            self._apply_read_only_state()
-            self.call_after_refresh(self._apply_read_only_state)
+
+        # Build the key-value rows outside ``prevent``: a widget keeps the prevented set it was built
+        # under, and Textual re-applies it on the App-wide stack across the widget's Mount, dropping
+        # those messages everywhere meanwhile. The rows' own Changed needs no blocking: it reaches the
+        # screen while ``_model_loading`` ignores it, or just after, when the form still holds the load.
+        headers = _parse_json_dict(profile.http_headers, parse_values=False)
+        pending = self._populate_kv_list("mc-headers-list", headers, "h")
+
+        options = _parse_json_dict(profile.chat_options)
+        self._model_extra_headers = options.get("extra_headers")
+        pending.extend(self._populate_kv_list("mc-options-list", options, "o"))
+
+        self._apply_read_only_state()
+        self.call_after_refresh(self._apply_read_only_state)
         if not self.call_after_refresh(self._finish_model_load, self._model_list_generation, pending):
             self._model_loading = False
             self._update_model_fetch_button()
