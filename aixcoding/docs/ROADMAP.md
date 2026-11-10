@@ -10,7 +10,7 @@
 第一轮定制化（至旧分支 `main_aixcoding_cli_0.28.0_final`，上游 0.28.0 基线）在无规范状态下进行，
 团队各成员做法不一致，追版本维护成本高企。2026-10 重建路线：基于上游最新版本拉新分支
 `main_aixcoding_cli`（初始 0.31.0 基线；经 `upstream-merge-v0.32.2`、`upstream-merge-v0.33.0`、
-`upstream-merge-v0.34.0` 批次现 0.34.0），**不带任何
+`upstream-merge-v0.34.0`、`upstream-merge-v0.35.1` 批次现 0.35.1），**不带任何
 旧功能代码**，仅带入规范体系，按"规范 → 基础工程 → 功能迁入"三阶段重建定制层。
 
 核心约束（与 DEVELOPMENT.md 一致）：对上游源码改动最少最集中，以降低追版本维护成本。
@@ -338,3 +338,12 @@ OTel 遥测框架（opt-in）与 trajectory 会话回放——这些定制化直
   `versioning.md` 分发身份出处）。纯结构重排，各条目决策内容不变。
 - 2026-11-07（三）：**§4 F 类新增"安全护栏规则包外置分发"重构候选**——责任人指示登记：guard 批次（PR #98）将规则包随 wheel/PyApp 打包系快速实现的临时措施，`rules.json` 作为配置/数据文件应独立分发（规则更新不依赖二进制重建发版）；现状逃生门在位（部署副本 + `AIXCODING_GUARD_RULES` env 覆盖），规则演进暂走源文件随版本发布（`rule-pack/SWITCHES.md` 已载双通道口径）；触发再评估条件与立项须裁决的开放问题（分发挂靠 ADR-0020 或独立机制、外置文件缺失/损坏的 fail-closed 语义、`guard_state.json` 归属、规则 schema 与引擎版本配对）见 F 类行。
 - 2026-11-09（二）：**environment-config 对账迁移**——PR #103 合并进 `main_aixcoding_cli`（f4dbf024 主体 + a4e8a468 PR peer review C1 补测，merge 30c94550），"平台连接配置"自 §4 B 类迁入 A 类"已迁入"；对账更新由合并后的独立纯文档 PR 落盘。批次本体、三轮 GLM 复审与 PR peer review 记录见 `batches/environment-config/`；INDEX.md 零状态导航（ADR-0016）无需联动。
+- 2026-11-10：**追上游 v0.35.1**——upstream-merge-v0.35.1 批次（PR #105 合并：edec1539 主体 +
+  c022feef 收尾评审 + e06701ff 补验闭环，merge b2899590），基线 0.34.0→0.35.1（§1 已更新）：
+  冲突 4 处全解（AGENTS.md 定制段双块保留 / chrys.po obsolete 区两侧双留 / chrys.mo 接受删除
+  改构建时编译 / catalog oracle 去计数化 C028 退役）+ merge 后 2 处新测试品牌断言适配
+  C143/C144；C004/C140 淘汰候选经对比分析由责任人裁决保留（上游扩展机制无进程启动时机
+  承载、tool hooks 为扩展编程接口非规则包分发通道）；i18n 构建机制适配（mo 由 build hook
+  生成）；fork-full 复跑真实语义冲突清零（32 环境性 WinError 448 失败在案，OS 级对照坐实）+
+  architecture 1248 全绿、TUI 冒烟通过（--version=0.35.1）、双 CI 全绿（aixcoding-tests +
+  上游 ci.yml 17 job）；strict 100/137→101/138、6 退役。
