@@ -357,11 +357,15 @@ async def test_editing_anywhere_in_the_input_refilters_live(fake_discover: FakeD
     async with opened_list(fake_discover, "") as (screen, pilot):
         await _click_input_keeping_list(screen, pilot)
 
-        await pilot.press("end", "5")
+        # End and Home each go in a press of their own (see ``type_into``).
+        await pilot.press("end")
+        await pilot.press("5")
         await wait_for(lambda: model_input(screen).value == "5", pilot=pilot)
         await wait_for(lambda: overlay_texts(screen) == [i for i in LIST if "5" in i], pilot=pilot)
 
-        await pilot.press("home", *"opus-")
+        await pilot.press("home")
+        await wait_for(lambda: model_input(screen).cursor_position == 0, pilot=pilot)
+        await pilot.press(*"opus-")
         await wait_for(lambda: model_input(screen).value == "opus-5", pilot=pilot)
         await wait_for(lambda: overlay_texts(screen) == ["anthropic/Claude-Opus-5"], pilot=pilot)
         assert overlay_expanded(screen)
@@ -513,7 +517,11 @@ async def _type_model_closed(screen: ModelConfigScreen, pilot: Pilot, text: str)
     model.focus()
     await wait_for(lambda: model.has_focus, pilot=pilot)
     await focus_handled(model, pilot)
-    await pilot.press("ctrl+a", "backspace", *text)
+    # Cleared in a press of its own (see ``type_into``): typed in the same press, the text could
+    # replace the value focus selected, and Backspace, run after it, would delete its last character.
+    await pilot.press("ctrl+a", "backspace")
+    await wait_for(lambda: model.value == "", pilot=pilot)
+    await pilot.press(*text)
     await wait_for(lambda: model.value == text, pilot=pilot)
     assert not overlay_expanded(screen)
 
