@@ -27,7 +27,8 @@
 - [x] 双 AI 评审第一轮（HOWTO ①②）：评审方 Claude Code + GLM-5.3，3 blocker/2
   suggestion/1 nit → 责任人拍板全部处置（见 verification 评审处置节）
 - [x] 评审修复：F1 契约测试跟改（C147）+ F2 重跑回填 + F3 manual 树去链 98 处 + F5 脚本落盘
-- [ ] 评审增量复审（HOWTO ③，同一评审 AI 复审 F1-F6 修复增量）——记录追加不重签
+- [x] 评审增量复审（HOWTO ③，同一评审 AI，2026-11-10）：F1-F6 六项修复经独立复现确认，
+  新增 N1/N2/N3 已处置或登记 → 收敛（记录见 self-review 第二轮节，不重签）
 - [x] **R3 标记补录**：pyproject.toml（C145/C148）/ check_wheel.py（C146）/
   test_documentation.py（C147）均带 `AIxCoding` 单行标记
 - [x] **定制点登记**：design.md「定制点登记预告」C145-C148 随签认生效 →
