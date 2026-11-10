@@ -411,3 +411,34 @@ async def test_picker_accept_waits_for_covering_dialog_to_close(
         await pilot.press("escape")
         await wait_for(lambda: app.screen is editor.screen, pilot=pilot)
         assert modal not in app.screen_stack and len(editor.document.undo_stack) == 1
+
+
+# What the picker sees as it mounts once pushed in each window: whether it is pruning, the app running, and it attached.
+_EXIT_WINDOWS = {"prune": (True, False, True), "late": (False, False, True)}
+
+
+@pytest.mark.parametrize("window", list(_EXIT_WINDOWS))
+async def test_a_picker_opened_as_the_app_exits_renders_nothing(tmp_path: Path, window: str) -> None:
+    """The user can open a color picker and quit before it mounts: it focuses and previews nothing then.
+
+    - ``prune``: pushed as the test's last step: the app then closes its screens, which prunes the picker's children;
+    - ``late``: pushed in the app's last running turn: the picker mounts once the app stopped, and no child does.
+    """
+    mounted: list[tuple[bool, bool, bool]] = []
+
+    class Mounting(_PickerModal):
+        def on_mount(self) -> None:
+            # Dispatch runs the picker's own handler after this one.
+            mounted.append((self._pruning, self.app.is_running, self.is_attached))
+
+    app = _app(tmp_path, copy_theme(CHRYS_LEGACY_THEME))
+    # Leaving run_test re-raises what the picker's mount raised.
+    async with app.run_test(size=(100, 40)) as pilot:
+        editor = await open_editor(app, pilot, tmp_path)
+        picker = Mounting(editor, target="color:success", initial=editor.document.draft.success)
+        if window == "prune":
+            app.push_screen(picker)
+        else:
+            # Pushed as leaving run_test yields, before the app shuts down.
+            asyncio.get_running_loop().call_soon(app.push_screen, picker)
+    assert mounted == [_EXIT_WINDOWS[window]]

@@ -245,7 +245,9 @@ async def test_quote_and_image_click_keep_read_only_preview(kind: str) -> None:
             pilot, area, offset=(area.content_region.x - area.region.x + 3, area.content_region.y - area.region.y)
         )
         await wait_for(
-            lambda: isinstance(app.screen, ReferencePreviewDialog), pilot=pilot, description="read only preview"
+            lambda: isinstance(app.screen, ReferencePreviewDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="read only preview",
         )
 
 
@@ -478,7 +480,11 @@ async def test_drag_across_paste_selects_without_opening_and_next_click_opens() 
         assert reference.label in area.selected_text
         await pilot.press("left")
         await click_when_settled(pilot, area, offset=(left + 4, row))
-        await wait_for(lambda: isinstance(app.screen, EditorDialog), pilot=pilot, description="next click opens editor")
+        await wait_for(
+            lambda: isinstance(app.screen, EditorDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="next click opens editor",
+        )
 
 
 async def test_a_changed_save_strips_the_message_ends_like_typed_text() -> None:

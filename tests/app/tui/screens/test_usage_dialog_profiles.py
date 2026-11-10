@@ -141,7 +141,9 @@ async def test_usage_opened_from_the_main_screen_names_the_profiles_the_app_know
         main_screen = app.screen
         assert isinstance(main_screen, MainScreen)
         main_screen._config_actions.open_usage()
-        await wait_for(lambda: isinstance(app.screen, UsageDialog), pilot=pilot, description="usage open")
+        await wait_for(
+            lambda: isinstance(app.screen, UsageDialog) and app.screen.is_mounted, pilot=pilot, description="usage open"
+        )
         dialog = app.screen
         assert isinstance(dialog, UsageDialog)
         await wait_for(lambda: not dialog._reading, pilot=pilot, description="usage read")

@@ -1592,7 +1592,7 @@ async def test_side_question_hook_confirmation_and_cancellation(
         session.chat.load_text("/btw Check first")
         session.bar.submit_input()
         await wait_for(
-            lambda: isinstance(session.app.screen, HookConfirmationDialog),
+            lambda: isinstance(session.app.screen, HookConfirmationDialog) and session.app.screen.is_mounted,
             pilot=session.pilot,
             timeout=ENGINE_TURN_TIMEOUT,
         )

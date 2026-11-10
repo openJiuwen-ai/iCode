@@ -189,7 +189,12 @@ async def test_default_model_only_for_kernel_nodes(tmp_path: Path, monkeypatch: 
             assert not main._workflow.session_id
         main._workspace_actions.open_working_dir_picker()
         await wait_for(
-            lambda: isinstance(app.screen, NoticeDialog) and bool(app.screen.query("#confirm-message")), pilot=pilot
+            lambda: (
+                isinstance(app.screen, NoticeDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query("#confirm-message"))
+            ),
+            pilot=pilot,
         )
         assert "current working directory" in str(app.screen.query_one("#confirm-message", Static).content)
         assert main._workflow.project_cwd == str(project)
@@ -334,7 +339,7 @@ async def test_directory_change_rejects_shadowed_workflow_before_loading_it(
             assert str(dialog.query_one("#workflow-input-directory", Static).content) == str(project)
             assert not dialog.query_one("#workflow-input-start", Button).disabled
         else:
-            await wait_for(lambda: isinstance(app.screen, NoticeDialog), pilot=pilot)
+            await wait_for(lambda: isinstance(app.screen, NoticeDialog) and app.screen.is_mounted, pilot=pilot)
         assert main._workflow.session_view.selection is target and not marker.exists()
         assert main._workflow.browser.loaded.preview is prepared and main._workflow.browser.catalog is catalog
         assert str(main._workflow_panel.border_subtitle) == str(project)
@@ -570,7 +575,11 @@ async def test_leaving_during_workspace_confirmation_dismisses_it_without_changi
         await open_workflow(main, pilot, "portable")
         target, prepared = main._workflow.session_view.selection, main._workflow.browser.loaded.preview
         await _choose_directory(main, pilot, other, "footer")
-        await wait_for(lambda: isinstance(app.screen, WorkflowConfirmDialog), pilot=pilot, timeout=ENGINE_TURN_TIMEOUT)
+        await wait_for(
+            lambda: isinstance(app.screen, WorkflowConfirmDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
+        )
         main._workflow.leave()
         await wait_for(lambda: app.screen is main and main._workflow.browser._workspace_task is None, pilot=pilot)
         assert main._workflow.session_view.selection is target and main._workflow.browser.loaded.preview is prepared

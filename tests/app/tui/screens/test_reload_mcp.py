@@ -229,7 +229,11 @@ async def test_a_name_collision_fails_the_reload_and_leaves_the_running_connecti
         session.bar.focus_input()
         await slash_reload(session)
         await wait_for(
-            lambda: isinstance(session.app.screen, AgentLoadDialog) and session.app.screen.has_class("-error"),
+            lambda: (
+                isinstance(session.app.screen, AgentLoadDialog)
+                and session.app.screen.is_mounted
+                and session.app.screen.has_class("-error")
+            ),
             pilot=session.pilot,
             timeout=ENGINE_TURN_TIMEOUT,
             description="the collision failed the build",

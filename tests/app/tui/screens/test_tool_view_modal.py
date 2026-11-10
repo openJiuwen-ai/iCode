@@ -150,7 +150,7 @@ async def _wait_for_tool_view(pilot: Pilot[None], *, timeout: float = 5.0) -> To
 
     def content_ready() -> bool:
         screen = pilot.app.screen
-        if not isinstance(screen, ToolDetailModal):
+        if not isinstance(screen, ToolDetailModal) or not screen.is_mounted:
             return False
         views = screen.query(ToolViewContent)
         return bool(views) and all(view.children for view in views)
@@ -250,7 +250,7 @@ async def test_tool_view_modal_stacks_nested_tool_detail_and_returns_to_parent()
 
         def nested_modal_mounted() -> bool:
             screen = pilot.app.screen
-            if screen is outer or not isinstance(screen, ToolDetailModal):
+            if screen is outer or not isinstance(screen, ToolDetailModal) or not screen.is_mounted:
                 return False
             if len(screen.query(ToolViewContent)) != 2:
                 return False
@@ -559,7 +559,7 @@ async def test_running_sub_agent_tool_view_disables_whole_payload_copy(monkeypat
 
         def modal_mounted() -> bool:
             screen = pilot.app.screen
-            if not isinstance(screen, ToolDetailModal):
+            if not isinstance(screen, ToolDetailModal) or not screen.is_mounted:
                 return False
             mounted[:] = [screen]
             return bool(screen.query(AgentTranscriptSurface))

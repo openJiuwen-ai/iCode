@@ -516,7 +516,7 @@ async def test_diff_screen_footer_uses_controller_and_localizes_without_main_tra
             all_entries=[entry],
         )
         await wait_for(
-            lambda: isinstance(app.screen, DiffScreen) and app.screen._content_ready,
+            lambda: isinstance(app.screen, DiffScreen) and app.screen.is_mounted and app.screen._content_ready,
             timeout=10.0,
             pilot=pilot,
             description="diff screen content ready",
@@ -597,7 +597,7 @@ async def test_diff_screen_resume_syncs_footer_bindings(
             all_entries=[entry],
         )
         await wait_for(
-            lambda: isinstance(app.screen, DiffScreen) and app.screen._content_ready,
+            lambda: isinstance(app.screen, DiffScreen) and app.screen.is_mounted and app.screen._content_ready,
             timeout=10.0,
             pilot=pilot,
             description="diff screen content ready",

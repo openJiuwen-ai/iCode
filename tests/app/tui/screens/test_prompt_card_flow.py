@@ -197,7 +197,11 @@ async def test_full_screen_editor_result_keeps_the_card(tmp_path: Path, monkeypa
         before = _card(main).state
 
         await pilot.press("ctrl+o")
-        await wait_for(lambda: isinstance(app.screen, EditorDialog), pilot=pilot, description="editor open")
+        await wait_for(
+            lambda: isinstance(app.screen, EditorDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="editor open",
+        )
         app.screen.dismiss(_edited(app.screen, "Review this file instead", main._editor_mode))
 
         await wait_for(lambda: chat.text == "Review this file instead", pilot=pilot, description="editor text applied")
@@ -223,7 +227,11 @@ async def test_an_editor_left_unchanged_keeps_the_draft_whole(tmp_path: Path, mo
         assert before.owner is not None
 
         await pilot.press("ctrl+o")
-        await wait_for(lambda: isinstance(app.screen, EditorDialog), pilot=pilot, description="editor open")
+        await wait_for(
+            lambda: isinstance(app.screen, EditorDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="editor open",
+        )
         app.screen.dismiss(_edited(app.screen, before.text, main._editor_mode))
         await wait_for(lambda: app.screen is main, pilot=pilot, description="editor closed")
         await pilot.pause()
@@ -267,7 +275,11 @@ async def test_an_editor_opened_before_a_draft_came_back_overwrites_it_and_ends_
         main, chat, _sent = await _ready(pilot, monkeypatch)
         # The editor opens on an empty input: no shortcut draft.
         await pilot.press("ctrl+o")
-        await wait_for(lambda: isinstance(app.screen, EditorDialog), pilot=pilot, description="editor open")
+        await wait_for(
+            lambda: isinstance(app.screen, EditorDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="editor open",
+        )
         editor = app.screen
         assert isinstance(editor, EditorDialog)
 

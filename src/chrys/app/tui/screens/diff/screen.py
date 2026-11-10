@@ -54,6 +54,7 @@ from chrys.app.tui.util.diff_labels import (
     filter_and_dedupe_entries,
     is_within_cwd,
 )
+from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.util.mutation_sources import merge_mutation_source as _merge_source
 from chrys.app.tui.util.removal import remove_children_shielded, remove_shielded
 from chrys.app.tui.widgets import ChrysLoadingIndicator
@@ -1342,6 +1343,8 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         yield ChrysFooter(locale_controller=self._locale_controller)
 
     def on_mount(self) -> None:
+        if not composed_live(self):
+            return
         # Propagate subtitle from the caller (platform info).
         if self._subtitle_parts:
             from chrys.app.tui.widgets.chrome.app_header import AppHeader
@@ -1435,6 +1438,8 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
 
     def on_screen_resume(self, _event: events.ScreenResume) -> None:
         """Honor a deferred close and recover stranded footer recomposition."""
+        if not composed_live(self):
+            return
         if self._close_when_current:
             self._close_if_current()
             return

@@ -345,6 +345,8 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
                 )
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         self._request_page(1)
 
     def on_unmount(self) -> None:

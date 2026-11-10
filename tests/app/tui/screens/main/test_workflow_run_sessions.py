@@ -491,6 +491,7 @@ async def test_workflow_selection_requires_new_after_any_run(
         await wait_for(
             lambda: (
                 isinstance(app.screen, WorkflowPickerDialog)
+                and app.screen.is_mounted
                 and main._workflow.browser._picker.selection.is_mounted
                 and bool(main._workflow.browser._picker.selection.rows)
             ),
@@ -505,6 +506,7 @@ async def test_workflow_selection_requires_new_after_any_run(
         await wait_for(
             lambda: (
                 isinstance(app.screen, WorkflowPickerDialog)
+                and app.screen.is_mounted
                 and main._workflow.browser._picker.selection.is_mounted
                 and bool(main._workflow.browser._picker.selection.rows)
             ),
@@ -636,7 +638,9 @@ async def test_start_from_history_preserves_the_bound_workflow_version(
             assert not controller.run_control.start("run again")  # An archive needs a fresh preview first.
             if changed:
                 await wait_for(
-                    lambda: isinstance(app.screen, WorkflowConfirmDialog), pilot=pilot, timeout=ENGINE_TURN_TIMEOUT
+                    lambda: isinstance(app.screen, WorkflowConfirmDialog) and app.screen.is_mounted,
+                    pilot=pilot,
+                    timeout=ENGINE_TURN_TIMEOUT,
                 )
                 await wait_for(lambda: bool(app.screen.query("#workflow-confirm-yes")), pilot=pilot)
                 await click_when_settled(pilot, "#workflow-confirm-yes")

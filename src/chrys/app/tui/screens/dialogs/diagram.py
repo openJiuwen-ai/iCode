@@ -75,6 +75,8 @@ class DiagramDialog(BaseDialog[None]):
 
     def on_mount(self) -> None:
         """Put keyboard scrolling directly on the diagram surface."""
+        if not self._composed_live:
+            return
         self.query_one(DiagramViewport).focus()
 
     def action_copy_source(self) -> None:

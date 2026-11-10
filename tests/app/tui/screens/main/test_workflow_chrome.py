@@ -59,7 +59,7 @@ async def test_workflow_hides_status_bar_through_run_and_restores_chat_details(
         bar.set_tool_info("13 tools · 1 skill")
         bar.clear_status()
         await click_when_settled(pilot, "#status-tool-info")
-        await wait_for(lambda: isinstance(app.screen, RuntimeDetailsDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, RuntimeDetailsDialog) and app.screen.is_mounted, pilot=pilot)
         await pilot.press("escape")
         await wait_for(lambda: app.screen is main, pilot=pilot)
 
@@ -119,7 +119,7 @@ async def test_workflow_hides_status_bar_through_run_and_restores_chat_details(
         assert str(bar.query_one("#status-flash-trail", Static).content) == "7 tools · 2 skills"
         bar.clear_status()
         await click_when_settled(pilot, "#status-tool-info")
-        await wait_for(lambda: isinstance(app.screen, RuntimeDetailsDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, RuntimeDetailsDialog) and app.screen.is_mounted, pilot=pilot)
 
 
 async def test_app_mode_and_workflow_are_separate_menus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,11 +132,11 @@ async def test_app_mode_and_workflow_are_separate_menus(tmp_path: Path, monkeypa
         assert str(badge.content) == " APP MODE: Chat "
         assert badge.region.width == len(str(badge.content))
         assert main._suggestions.dispatch_slash_command("/help")
-        await wait_for(lambda: isinstance(app.screen, GuideDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, GuideDialog) and app.screen.is_mounted, pilot=pilot)
         await pilot.press("escape")
         await wait_for(lambda: app.screen is main, pilot=pilot)
         await pilot.press("f8")
-        await wait_for(lambda: isinstance(app.screen, GuideDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, GuideDialog) and app.screen.is_mounted, pilot=pilot)
         await pilot.press("escape")
         await wait_for(lambda: app.screen is main, pilot=pilot)
         await click_when_settled(pilot, badge)
@@ -165,7 +165,9 @@ async def test_app_mode_and_workflow_are_separate_menus(tmp_path: Path, monkeypa
         await click_when_settled(pilot, "#workflow-new")
         await wait_for(
             lambda: (
-                isinstance(app.screen, WorkflowPickerDialog) and len(main._workflow.browser._picker.selection.rows) == 1
+                isinstance(app.screen, WorkflowPickerDialog)
+                and app.screen.is_mounted
+                and len(main._workflow.browser._picker.selection.rows) == 1
             ),
             pilot=pilot,
         )

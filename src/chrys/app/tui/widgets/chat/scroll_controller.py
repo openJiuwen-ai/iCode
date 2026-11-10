@@ -235,9 +235,13 @@ class ChatScrollController:
         # ``outer_size`` is set by a layout only: ``size`` reads the region, which a
         # lazily rebuilt widget map gives before any layout applies the new height.
         if widget.outer_size and self._arrangement is not None:
-            # A layout placed it while it mounted, and that layout's height is in.
+            # A layout placed it while it mounted.
             self._place_reveal(self._arrangement)
-            if self._reveal_top >= 0:
+            # A compositor resync for a visibility flip (the bottom-jump button a scroll
+            # shows) sizes the widgets it adds, not the transcript they grew: until a
+            # layout's size update takes that height in, the reveal would stop at the old
+            # bottom. ``size_updated`` reveals once it does.
+            if self._reveal_top >= 0 and self._sized_entries_bottom == self._entries_bottom:
                 self._reveal_placed()
 
     def _place_reveal(self, result: DockArrangeResult) -> None:

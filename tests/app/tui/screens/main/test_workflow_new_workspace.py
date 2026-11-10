@@ -75,7 +75,12 @@ async def test_new_workflow_picker_uses_current_workspace_and_cancel_keeps_bound
         for cancel in (True, False):
             controller.browser.enter_selection()
             await wait_for(
-                lambda: isinstance(app.screen, NoticeDialog) and bool(app.screen.query("#confirm-no")), pilot=pilot
+                lambda: (
+                    isinstance(app.screen, NoticeDialog)
+                    and app.screen.is_mounted
+                    and bool(app.screen.query("#confirm-no"))
+                ),
+                pilot=pilot,
             )
             assert str(app.screen.query_one("#confirm-yes", Button).label) == "New"
             assert str(app.screen.query_one("#confirm-no", Button).label) == "OK"
@@ -85,12 +90,18 @@ async def test_new_workflow_picker_uses_current_workspace_and_cancel_keeps_bound
                 assert controller.session_id == session_id and panel.preview == preview
                 controller.browser.enter_selection()
                 await wait_for(
-                    lambda: isinstance(app.screen, NoticeDialog) and bool(app.screen.query("#confirm-no")), pilot=pilot
+                    lambda: (
+                        isinstance(app.screen, NoticeDialog)
+                        and app.screen.is_mounted
+                        and bool(app.screen.query("#confirm-no"))
+                    ),
+                    pilot=pilot,
                 )
             await click_when_settled(pilot, "#confirm-yes")
             await wait_for(
                 lambda: (
                     isinstance(app.screen, WorkflowPickerDialog)
+                    and app.screen.is_mounted
                     and main._workflow.browser._picker.selection.is_mounted
                     and any(row.workflow_id == "current_only" for row in main._workflow.browser._picker.selection.rows)
                 ),

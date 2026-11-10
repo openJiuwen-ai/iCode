@@ -552,7 +552,7 @@ async def test_use_paths_instead_rewrites_a_mid_run_message_refused_for_its_imag
         await wait_for(lambda: input_bar.query_one("#chat-input").has_focus, pilot=pilot)
 
         await pilot.press("enter")
-        await wait_for(lambda: isinstance(app.screen, VisionUnsupportedDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, VisionUnsupportedDialog) and app.screen.is_mounted, pilot=pilot)
         assert [event.injection_id is not None for event in sent] == [True]
         await click_when_settled(pilot, "#vision-unsupported-use-paths")
         await wait_for(lambda: app.screen is main, pilot=pilot)

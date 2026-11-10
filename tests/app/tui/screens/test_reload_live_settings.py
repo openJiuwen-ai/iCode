@@ -397,7 +397,9 @@ async def test_an_editor_left_untouched_during_a_reload_does_not_undo_it(
         await wait_for(lambda: session.main._manual_reloads_running, pilot=session.pilot, description="reload started")
         await session.pilot.press("ctrl+o")
         await wait_for(
-            lambda: isinstance(session.app.screen, EditorDialog), pilot=session.pilot, description="editor open"
+            lambda: isinstance(session.app.screen, EditorDialog) and session.app.screen.is_mounted,
+            pilot=session.pilot,
+            description="editor open",
         )
         reload_held_before_its_read.set()
         await wait_for(
@@ -440,7 +442,9 @@ async def test_the_theme_picker_stays_shut_while_a_reload_may_move_the_theme(
 
         await session.pilot.press("f9")
         await wait_for(
-            lambda: isinstance(session.app.screen, ThemesScreen), pilot=session.pilot, description="the picker opens"
+            lambda: isinstance(session.app.screen, ThemesScreen) and session.app.screen.is_mounted,
+            pilot=session.pilot,
+            description="the picker opens",
         )
 
 

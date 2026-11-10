@@ -915,7 +915,11 @@ async def test_esc_during_the_switch_does_nothing_and_the_message_goes_out_after
 
         await pilot.press("enter")
         await wait_for(build.entered.is_set, pilot=pilot, timeout=ENGINE_TURN_TIMEOUT, description="switch building")
-        await wait_for(lambda: isinstance(app.screen, AgentLoadDialog), pilot=pilot, description="agent-load modal")
+        await wait_for(
+            lambda: isinstance(app.screen, AgentLoadDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="agent-load modal",
+        )
 
         await pilot.press("escape")
         assert not await wait_until(
@@ -1239,7 +1243,7 @@ async def test_a_config_dialog_opened_while_a_send_is_in_flight_is_read_only(
         async def opens_read_only() -> bool:
             await pilot.press(key)
             await wait_for(
-                lambda: isinstance(app.screen, dialog) and bool(app.screen.query(notice)),
+                lambda: isinstance(app.screen, dialog) and app.screen.is_mounted and bool(app.screen.query(notice)),
                 pilot=pilot,
                 description="dialog open",
             )
@@ -1328,7 +1332,11 @@ async def test_a_shortcuts_draft_that_names_a_command_runs_it_as_typed_text_woul
 
         await pilot.press("enter")
 
-        await wait_for(lambda: isinstance(app.screen, GuideDialog), pilot=pilot, description="the guide opened")
+        await wait_for(
+            lambda: isinstance(app.screen, GuideDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="the guide opened",
+        )
         assert session.seen.of(ev.UserMessage) == []
         assert main.query_one(InputBar).draft_owner is None
 
@@ -1403,7 +1411,9 @@ async def test_a_failed_switch_sends_nothing_and_gives_the_draft_back(
         await pilot.press("enter")
 
         await wait_for(
-            lambda: isinstance(app.screen, AgentLoadDialog) and app.screen.has_class("-error"),
+            lambda: (
+                isinstance(app.screen, AgentLoadDialog) and app.screen.is_mounted and app.screen.has_class("-error")
+            ),
             pilot=pilot,
             timeout=ENGINE_TURN_TIMEOUT,
             description="the load failure shown",
@@ -1639,7 +1649,11 @@ async def test_the_footer_status_bar_and_workflow_entry_follow_the_commands_and_
         await pilot.press("backspace")
         await wait_for(lambda: card_state(main) is None, pilot=pilot, description="draft deleted, card gone")
         await click_when_settled(pilot, "#profile-tag")
-        await wait_for(lambda: isinstance(app.screen, AgentsScreen), pilot=pilot, description="agent picker opens")
+        await wait_for(
+            lambda: isinstance(app.screen, AgentsScreen) and app.screen.is_mounted,
+            pilot=pilot,
+            description="agent picker opens",
+        )
         await pilot.press("escape")
         await wait_for(lambda: app.screen is main, pilot=pilot, description="agent picker closed")
         assert running.count == 1

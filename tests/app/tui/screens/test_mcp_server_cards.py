@@ -493,7 +493,7 @@ async def test_test_request_from_a_replaced_card_runs_nothing() -> None:
         rebuilt[1].query_one("#mcp-cmd-1", TextArea).text = ""
         panel.post_message(MCPConnectionCard.TestRequested(rebuilt[1]))
         await wait_for(
-            lambda: isinstance(app.screen, ConnectionTestDialog),
+            lambda: isinstance(app.screen, ConnectionTestDialog) and app.screen.is_mounted,
             pilot=pilot,
             description="the mounted card's test request opens the test dialog",
         )

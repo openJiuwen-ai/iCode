@@ -152,6 +152,8 @@ class WorkflowInputDialog(BaseDialog[WorkflowInputResult]):
         self._finish(False)
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         self._refresh_context()
         self.query_one("#workflow-input-directory-error").display = False
         self.query_one(MessageEditor).focus()
