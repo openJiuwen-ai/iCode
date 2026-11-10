@@ -188,10 +188,53 @@ def export_profile_yaml(source: Path, destination: Path, *, overwrite: bool = Fa
         raise RsiNotFound(f"profile not found: {source}")
     destination = destination.expanduser().resolve()
     if destination.exists() and not overwrite:
-        raise RsiBadRequest(f"export destination already exists (pass overwrite): {destination}")
+        raise RsiBadRequest(f"export destination already exists: {destination} (choose another path or pass --force)")
     destination.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_owner_only_text(destination, source.read_text(encoding="utf-8"))
     return destination
+
+
+def maybe_update_best_pointer(
+    store: RsiTaskStore,
+    task_id: str,
+    *,
+    candidate_id: str,
+    score: float,
+    profile_path: Path,
+    kind: str,
+) -> bool:
+    """Write ``best.json`` only when this run should replace the previous best.
+
+    Stub runs never replace a live best. Otherwise the new score must be at
+    least as high as the stored one (equal scores may update the pointer).
+    Returns True when the pointer was written.
+    """
+    path = best_pointer_path(store, task_id)
+    if path.is_file():
+        try:
+            existing = read_json(path)
+        except OSError, ValueError, TypeError:
+            existing = None
+        if isinstance(existing, dict):
+            existing_kind = str(existing.get("kind") or "stub")
+            try:
+                existing_score = float(existing.get("score"))
+            except TypeError, ValueError:
+                existing_score = float("-inf")
+            if kind == "stub" and existing_kind == "live":
+                return False
+            if score < existing_score:
+                return False
+    write_json_atomic(
+        path,
+        {
+            "candidate_id": candidate_id,
+            "score": score,
+            "profile_path": str(profile_path),
+            "kind": kind,
+        },
+    )
+    return True
 
 
 def best_export_path(store: RsiTaskStore, task_id: str, profile_name: str) -> Path:

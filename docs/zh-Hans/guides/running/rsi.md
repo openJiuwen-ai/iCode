@@ -105,12 +105,12 @@ icode rsi optimize rsi-<id> --agent Code -m <model> --epochs 2 --timeout 180
 1. **Baseline** — 用基线 profile（`Code`，除非 `--profile` 指向 YAML）跑完全部 case。
 2. **Propose** — optimizer 模型阅读失败摘要，只能发出白名单 mutation（`append_instructions`、`upsert_inline_skill`、`remove_inline_skill`）。
 3. **Materialize** — 写入 `<task>/run/candidates/<run>-epoch-N/`（每次 optimize 有独立 run id，重跑不会覆盖上一次的 baseline）。
-4. **Gate** — 先**只重跑仍失败的 case**（快速拒绝）；合并分数看起来更好时，再**用完整套件确认**后才采纳。`perfect` / `best` 一律以完整套件结果为准；`best.json` 只在本轮跑完后写入。
+4. **Gate** — 先**只重跑仍失败的 case**（快速拒绝）；合并分数看起来更好时，再**用完整套件确认**后才采纳。`perfect` / `best` 一律以完整套件结果为准；`best.json` 只在本轮跑完后写入，且新分数**不能低于**已有 best。stub 干跑不会替换 live（`--agent`）的 best。
 5. 直到 epoch 用尽、分数已完美，或模型返回空的 `{"mutations":[]}`（主动停止）。模型调用失败或非法 JSON 会 **drop** 该轮并继续；被丢弃的提议不会安装。
 
 Stdout 含 `baseline_score`、`best_score`、`best_candidate`、`epochs`、`dropped`、`perfect`。
 
-为什么：这才是真正的 RSI 搜索。不传 `--agent` 的 stub optimize 用于 CI 与接线检查，不会调用模型。
+为什么：这才是真正的 RSI 搜索。不传 `--agent` 的 stub optimize 用于 CI 与接线检查，不会调用模型。live optimize 之后再在同一任务上跑 stub，不会用只有 `rsi:case:` 标记的 stub profile 覆盖 `best.json`。
 
 常用变体：
 
@@ -123,6 +123,9 @@ icode rsi optimize rsi-<id> --agent Code --profile ./base.yaml -m <model>
 
 # Stub optimize（不调模型）：CI / 干跑
 icode rsi optimize rsi-<id> --epochs 2
+
+# 导出指定候选，而不是 best.json
+icode rsi install rsi-<id> --candidate <run>-epoch-2 --out ./candidate.yaml
 ```
 
 ### 6. 查看结果
@@ -136,9 +139,9 @@ icode rsi tree rsi-<id>
 
 | 路径 | 含义 |
 |------|------|
-| `run/best.json` | 指向最佳已采纳候选 |
-| `run/candidates/<id>/` | Profile YAML + `mutations.json` |
-| `run/analysis/epoch-N.json` | 失败摘要与提议的 mutation |
+| `run/best.json` | 指向最佳已采纳候选（`kind`：stub 或 live） |
+| `run/candidates/<run>-…/` | Profile YAML + `mutations.json`（按 optimize run 隔离） |
+| `run/analysis/<run>/epoch-N.json` | 失败摘要与提议的 mutation |
 | `run/evaluations/` | 各标签的 scorecard 与 `cases.jsonl` |
 | `tree.json` | 演进树（`ADOPTED` / `REJECTED`） |
 
@@ -287,9 +290,9 @@ perfect=True
 含义：
 
 - **`baseline_score=0.0`** — 未改动的 Code 至少挂了一项判分（常见是 `2^3^2` 或 `1++2i`）。
-- **`best_candidate=epoch-N`** — 该轮 mutation 因套件分数**严格上升**而被 **ADOPT**。
+- **`best_candidate=<run>-epoch-N`** — 该轮 mutation 因套件分数**严格上升**而被 **ADOPT**。
 - **`best_score=1.0` / `perfect=True`** — 在这份数据集上，采纳候选通过了 case（构建 + 全部算式 + 非法退出）。分数满分时 RSI 会提前结束。
-- 产物在 `<config_dir>/rsi/tasks/rsi-…/`：`run/best.json`、`run/candidates/epoch-N/Code.yaml`、`run/analysis/epoch-N.json`（提议的 mutation）、`run/evaluations/`（各轮 scorecard / `cases.jsonl`）。
+- 产物在 `<config_dir>/rsi/tasks/rsi-…/`：`run/best.json`、`run/candidates/<run>-epoch-N/Code.yaml`、`run/analysis/<run>/epoch-N.json`（提议的 mutation）、`run/evaluations/`（各轮 scorecard / `cases.jsonl`）。
 
 第一轮仍可能是 `0.0`（进树但未采纳，或增益不够）；真正 ADOPT 可能发生在更晚的 epoch。编程评测**非确定性**：同样命令不一定每次都到 `perfect=True`。若分数卡在 `0.0`，可再跑 `optimize` 或加大 `--epochs`。
 
@@ -297,7 +300,7 @@ perfect=True
 
 #### 相对基线改了什么（一次成功跑分示例）
 
-在一次 live 跑到 `baseline_score=0.0` → `best_candidate=epoch-2` / `perfect=True` 的任务里，**被采纳**的 profile 仍是 builtin Code，只叠加了白名单 mutation。与 `run/candidates/baseline/Code.yaml` 的 diff：
+在一次 live 跑到 `baseline_score=0.0` → `best_candidate=<run>-epoch-2` / `perfect=True` 的任务里，**被采纳**的 profile 仍是 builtin Code，只叠加了白名单 mutation。与 `run/candidates/<run>-baseline/Code.yaml` 的 diff：
 
 1. **`append_instructions`** — 在 `instructions` 末尾追加一小段，对准一直拖垮套件的判分失败：二进制 `+` 后紧跟一元 `+`（例如 `1++2i`）必须非零退出；不得把 `++` 收成 `+`；保留合法一元减（`-i`、`-(1+2i)`）与负指数（`2^-3`）。
 2. **`upsert_inline_skill`** — 新增 inline skill `complex-expression-parser`：运算符与字面量分开分词；求值前校验 token 序列；拒绝 `1++2i`（不要把第二个 `+` 当一元加）；在表达式开头、`(` 之后、`^` 之后保留一元减；重申 `^` 右结合 / 仅整型指数与优先级；成功输出必须是无空格的 `A+Bi` / `A-Bi`，整数部分不带 `.0`。
@@ -308,11 +311,11 @@ profile 其余部分未改（tools、approval、子 agent、原有 instruction �
 
 | 候选 | 父节点 | Mutation | 门控分数 | 结果 |
 |------|--------|----------|----------|------|
-| baseline | — | — | `0.0` | 作为起点 ADOPT（套件失败；常见 findings：`2^3^2` 和/或 `1++2i`） |
-| epoch-1 | baseline | 仅 `append_instructions`（更宽的「严格词法 / `++` / `^`」说明） | `0.0` | REJECTED — 分数未超过基线（常仍挂在 `1++2i`，直到 inline skill 落地） |
-| epoch-2 | baseline | 上文的 `append_instructions` + `upsert_inline_skill` | `1.0` | ADOPTED / best — 构建 + 全部算式 + 非法退出均过 |
+| `<run>-baseline` | — | — | `0.0` | 作为起点 ADOPT（套件失败；常见 findings：`2^3^2` 和/或 `1++2i`） |
+| `<run>-epoch-1` | baseline | 仅 `append_instructions`（更宽的「严格词法 / `++` / `^`」说明） | `0.0` | REJECTED — 分数未超过基线（常仍挂在 `1++2i`，直到 inline skill 落地） |
+| `<run>-epoch-2` | baseline | 上文的 `append_instructions` + `upsert_inline_skill` | `1.0` | ADOPTED / best — 构建 + 全部算式 + 非法退出均过 |
 
-Epoch-2 的父节点仍是 **baseline**，不是 epoch-1：被拒绝的 epoch 不会叠进下一轮候选。本机可用 `icode rsi tree <task>`、`run/analysis/epoch-N.json`，以及 `diff run/candidates/baseline/Code.yaml run/candidates/epoch-2/Code.yaml` 核对。之后重跑可能写出不同措辞；预期形态是对着 failure summary 的小段 instruction / skill 叠层，而不是整份重写 profile。
+Epoch-2 的父节点仍是 **baseline**，不是 epoch-1：被拒绝的 epoch 不会叠进下一轮候选。本机可用 `icode rsi tree <task>`、`run/analysis/<run>/epoch-N.json`，以及对 `run/candidates/` 下 `<run>-baseline` 与 `<run>-epoch-2` 做 `diff` 核对。之后重跑可能写出不同措辞；预期形态是对着 failure summary 的小段 instruction / skill 叠层，而不是整份重写 profile。
 
 ## Optimize 行为（细节）
 

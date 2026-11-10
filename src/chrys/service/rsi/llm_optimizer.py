@@ -69,6 +69,10 @@ class LlmOptimizer:
         self._complete = complete
         self._analysis_dir = Path(analysis_dir) if analysis_dir is not None else None
 
+    def redirect_analysis(self, directory: Path) -> None:
+        """Point analysis JSON at a run-scoped directory (avoids epoch overwrite)."""
+        self._analysis_dir = Path(directory)
+
     async def propose(
         self,
         profile: AgentProfile,

@@ -214,6 +214,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="User agents directory when --user is set (explicit; no default)",
     )
+    install.add_argument(
+        "--candidate",
+        metavar="ID",
+        default=None,
+        help="Export a specific candidate id instead of best.json",
+    )
+    install.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing export destination",
+    )
     install.add_argument("--json", action="store_true", help="Emit JSON")
 
     return parser
@@ -562,11 +573,16 @@ def _install(ctx: RsiServiceContext, args: argparse.Namespace) -> int:
     if args.user_dir and not args.user:
         _write_stderr("Error: --user-dir requires --user")
         return 2
+    if args.user and args.out:
+        _write_stderr("Error: pass only one of --out or --user/--user-dir")
+        return 2
     summary = ctx.install_best(
         args.task_id,
         destination=_expanded_path(args.out),
         user_agents_dir=_expanded_path(args.user_dir),
         write_user=bool(args.user),
+        candidate_id=args.candidate,
+        force=bool(args.force),
     )
     _emit(
         summary,

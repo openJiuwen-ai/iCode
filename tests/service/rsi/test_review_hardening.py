@@ -226,3 +226,175 @@ def test_copy_linked_gitfile_is_detached(tmp_path: Path) -> None:
     )
     assert (dest / "hello.txt").is_file()
     assert not (dest / ".git").exists()
+
+
+def test_upsert_rejects_non_ascii_skill_name_like_loader() -> None:
+    # Loader ``_SKILL_NAME_RE`` rejects this; the old ``str.islower()`` path accepted it.
+    with pytest.raises(RsiBadRequest, match="name is invalid"):
+        parse_mutation(
+            {
+                "kind": "upsert_inline_skill",
+                "name": "café-fix",
+                "description": "bad",
+                "instructions": "x",
+            }
+        )
+
+
+def test_create_refuses_script_that_escapes_via_dotdot(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "evil.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    ds_dir = tmp_path / "dataset"
+    ds_dir.mkdir()
+    dataset = ds_dir / "dataset.json"
+    dataset.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dataset_id": "escape",
+                "cases": [
+                    {
+                        "case_id": "c1",
+                        "prompt": "hi",
+                        "evaluation": {
+                            "method": "script_based",
+                            "script": "../outside/evil.py",
+                            "expect": {"response_contains": ["ok"]},
+                        },
+                        "fixture": {"response": "ok"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises((RsiDatasetInvalid, RsiBadRequest)):
+        load_dataset(dataset)
+
+
+@pytest.mark.asyncio
+async def test_stub_optimize_does_not_replace_live_best(tmp_path: Path) -> None:
+    from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.rsi.paths import write_json_atomic
+    from chrys.service.rsi.snapshot import best_pointer_path
+
+    fixture = Path(__file__).parent / "fixtures" / "optimize_dataset.json"
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    created = ctx.create_task(name="live-guard", max_iterations=1, dataset_path=fixture)
+    task_id = created["task_id"]
+    # Plant a live best that a stub dry-run must not overwrite.
+    planted = "planted-live"
+    write_json_atomic(
+        best_pointer_path(ctx.store, task_id),
+        {
+            "candidate_id": planted,
+            "score": 0.9,
+            "profile_path": "/tmp/planted.yaml",
+            "kind": "live",
+        },
+    )
+    await ctx.optimize_task(
+        task_id,
+        base_profile=AgentProfile(name="RsiCandidate", instructions=""),
+        max_epochs=1,
+    )
+    pointer = read_best_pointer(ctx.store, task_id)
+    assert pointer["candidate_id"] == planted
+    assert pointer.get("kind") == "live"
+
+
+@pytest.mark.asyncio
+async def test_lower_score_reoptimize_keeps_previous_best(tmp_path: Path) -> None:
+    from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.rsi.paths import write_json_atomic
+    from chrys.service.rsi.snapshot import best_pointer_path
+
+    fixture = Path(__file__).parent / "fixtures" / "optimize_dataset.json"
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    created = ctx.create_task(name="score-guard", max_iterations=1, dataset_path=fixture)
+    task_id = created["task_id"]
+    write_json_atomic(
+        best_pointer_path(ctx.store, task_id),
+        {
+            "candidate_id": "kept-high",
+            "score": 1.0,
+            "profile_path": "/tmp/high.yaml",
+            "kind": "stub",
+        },
+    )
+
+    # Force a 0-score baseline-only outcome by evaluating with an empty profile
+    # and zero epochs of useful mutations: max_epochs=1 still can improve via stub.
+    # Plant score 1.0 stub; a failed-only baseline (0.0) must not replace it.
+    # Use a runner that always fails so best stays 0 within the run, then policy keeps 1.0.
+    def factory(profile: AgentProfile):
+        class _Fail:
+            async def run_case(self, case, workdir):
+                from chrys.service.rsi.case_runner import CaseRunResult
+
+                return CaseRunResult(case_id=case.case_id, response_text="", workdir=workdir, error="forced")
+
+        return _Fail()
+
+    await ctx.optimize_task(
+        task_id,
+        base_profile=AgentProfile(name="RsiCandidate", instructions=""),
+        max_epochs=1,
+        runner_factory=factory,
+    )
+    pointer = read_best_pointer(ctx.store, task_id)
+    assert pointer["candidate_id"] == "kept-high"
+    assert float(pointer["score"]) == 1.0
+
+
+def test_rsi_main_keyboard_interrupt_returns_130(tmp_path: Path, monkeypatch) -> None:
+    from chrys.app.cli import rsi as rsi_cli
+
+    class _Prepared:
+        loaded = object()
+        settings = object()
+
+    def _prepared() -> _Prepared:
+        return _Prepared()
+
+    def _ctx() -> object:
+        return build_rsi_service_context(tasks_root=tmp_path)
+
+    def _interrupt(*_args: object, **_kwargs: object) -> int:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(rsi_cli, "_prepare_runtime", _prepared)
+    monkeypatch.setattr(rsi_cli, "build_rsi_service_context", _ctx)
+    monkeypatch.setattr(rsi_cli, "_dispatch", _interrupt)
+    assert rsi_cli.main(["list"]) == 130
+
+
+def test_busy_lock_refuses_concurrent_optimize(tmp_path: Path) -> None:
+    import threading
+
+    from chrys.foundation.util.lock import FileLock
+    from chrys.service.rsi.context import _BUSY_LOCK_NAME
+
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    created = ctx.create_task(name="busy")
+    task_id = created["task_id"]
+    lock_path = Path(ctx.store.get(task_id).run_dir) / _BUSY_LOCK_NAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    held = threading.Event()
+    release = threading.Event()
+
+    def _holder() -> None:
+        with FileLock(lock_path, timeout=5):
+            held.set()
+            release.wait(timeout=5)
+
+    thread = threading.Thread(target=_holder)
+    thread.start()
+    assert held.wait(timeout=5)
+    try:
+        with pytest.raises(RsiBadRequest, match="active eval/optimize"), ctx._task_busy_lock(task_id):
+            pass
+    finally:
+        release.set()
+        thread.join(timeout=5)

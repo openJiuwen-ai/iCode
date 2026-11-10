@@ -8,6 +8,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal
 
+from chrys.service.profiles.agents.loader import _SKILL_NAME_RE
 from chrys.service.profiles.agents.schema import AgentProfile, SkillConfig, SkillsConfig
 from chrys.service.rsi.errors import RsiBadRequest
 
@@ -58,22 +59,8 @@ def case_marker(case_id: str) -> str:
 
 
 def _valid_inline_skill_name(name: str) -> bool:
-    """Match agent profile loader rules for inline skill names."""
-    if not name or len(name) > 64 or "/" in name or "\\" in name:
-        return False
-    if name[0] == "-" or name[-1] == "-":
-        return False
-    prev_hyphen = False
-    for ch in name:
-        if ch == "-":
-            if prev_hyphen:
-                return False
-            prev_hyphen = True
-            continue
-        if not (ch.islower() or ch.isdigit()):
-            return False
-        prev_hyphen = False
-    return True
+    """Match agent profile loader rules for inline skill names (``_SKILL_NAME_RE``)."""
+    return bool(name) and _SKILL_NAME_RE.fullmatch(name) is not None
 
 
 def parse_mutation(raw: dict[str, Any]) -> Mutation:

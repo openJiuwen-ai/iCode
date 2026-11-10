@@ -19,7 +19,7 @@ from chrys.service.rsi.mutations import (
 from chrys.service.rsi.snapshot import (
     CandidateSnapshot,
     materialize_candidate,
-    write_best_pointer,
+    maybe_update_best_pointer,
 )
 from chrys.service.rsi.store import RsiTaskStore
 
@@ -107,8 +107,11 @@ class StubOptimizer:
         hint = (instruction or "").lower()
         if "skill" in hint:
             first = failed[0].case_id
-            # Skill names: 1-64 lowercase letters, numbers, single hyphens (loader rule).
-            safe = "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in first.lower()).strip("-")
+            # Skill names must match loader ``_SKILL_NAME_RE`` (no ``--``, ASCII only).
+            raw = "".join(ch if ch.isalnum() else "-" for ch in first.lower())
+            while "--" in raw:
+                raw = raw.replace("--", "-")
+            safe = raw.strip("-")
             skill_name = f"rsi-fix-{safe}"[:64].rstrip("-")
             mutations.append(
                 UpsertInlineSkill(
@@ -170,7 +173,8 @@ class OptimizeResult:
         }
 
 
-def _new_optimize_run_id() -> str:
+def new_optimize_run_id() -> str:
+    """Return a short unique id for one optimize run's candidate / analysis dirs."""
     return f"r{secrets.token_hex(4)}"
 
 
@@ -196,6 +200,7 @@ class OptimizeLoop:
         instruction: str | None = None,
         events: OptimizeEvents | None = None,
         run_id: str | None = None,
+        kind: str = "stub",
     ) -> OptimizeResult:
         """Run the gated optimize loop.
 
@@ -203,13 +208,15 @@ class OptimizeLoop:
         ``case_ids`` is ``None`` for a full-dataset run. A gate first re-runs
         only still-failing ids (fast reject), then a candidate that looks better
         is confirmed on the full suite before adoption. ``best.json`` is written
-        only after this run finishes successfully (interrupt leaves the prior
-        pointer alone). Candidate ids are scoped by ``run_id`` so re-optimize
-        never overwrites an earlier run's baseline/epoch directories.
+        only after this run finishes successfully, and only when the new score
+        is not worse than the previous best (stub never replaces a live best).
+        Candidate ids are scoped by ``run_id`` so re-optimize never overwrites
+        an earlier run's baseline/epoch directories.
         """
         if max_epochs < 1:
             max_epochs = 1
-        opt_run = (run_id or _new_optimize_run_id()).strip() or _new_optimize_run_id()
+        opt_run = (run_id or new_optimize_run_id()).strip() or new_optimize_run_id()
+        run_kind = "live" if kind == "live" else "stub"
 
         baseline_id = f"{opt_run}-baseline"
         baseline_snap = materialize_candidate(
@@ -346,15 +353,22 @@ class OptimizeLoop:
                 _write_candidate_score_meta(snap, score=confirmed.score, adopted=True)
 
         # Deferred: only commit best.json after a completed run so an interrupted
-        # re-optimize cannot point install at an unevaluated overwrite.
-        write_best_pointer(
+        # re-optimize cannot point install at an unevaluated overwrite. Stub dry-runs
+        # and lower-scoring re-runs leave a prior live best alone.
+        updated = maybe_update_best_pointer(
             self.store,
             task_id,
             candidate_id=best_snap.candidate_id,
             score=best_score,
             profile_path=best_snap.profile_path,
+            kind=run_kind,
         )
-        _write_candidate_score_meta(best_snap, score=best_score, adopted=True, best=True)
+        _write_candidate_score_meta(
+            best_snap,
+            score=best_score,
+            adopted=True,
+            best=updated,
+        )
 
         # best_eval is always from a full-suite evaluate (baseline or confirmed adopt).
         perfect = best_eval.passed_count == best_eval.total_count and best_eval.total_count > 0

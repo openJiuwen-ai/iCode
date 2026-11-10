@@ -4833,7 +4833,7 @@
         ["wrapper", "await self.evaluate_dataset(dataset_path, runner=runner, output_dir=out, task_id=task_id)", "unresolved", "chrys.service.rsi.context.RsiServiceContext.evaluate_dataset"]
       ],
       "RsiServiceContext.optimize_task": [
-        ["awaitable", "await loop.run(task_id, base_profile=profile, evaluate=evaluate, max_epochs=epochs, instruction=task.optimization_instruction, events=events)", "unresolved"]
+        ["awaitable", "await loop.run(task_id, base_profile=profile, evaluate=evaluate, max_epochs=epochs, instruction=task.optimization_instruction, events=events, run_id=run_id, kind=run_kind)", "unresolved"]
       ],
       "RsiServiceContext.optimize_task.evaluate": [
         ["wrapper", "await self.evaluate_dataset(dataset_path, runner=runner, output_dir=out, task_id=task_id, project=False, case_ids=case_ids)", "unresolved", "chrys.service.rsi.context.RsiServiceContext.evaluate_dataset"]

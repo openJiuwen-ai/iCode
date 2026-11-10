@@ -24,6 +24,10 @@ StatusHook = Callable[[RsiTask, str | None], None]
 def _force_remove(func, path, exc) -> None:
     if func not in (os.unlink, os.rmdir):
         raise exc
+    # Never chmod through a symlink — that would change the link target's mode.
+    if os.path.islink(path):
+        os.unlink(path)
+        return
     os.chmod(path, stat.S_IWRITE)
     func(path)
 

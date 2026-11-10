@@ -105,12 +105,12 @@ What happens inside one `optimize`:
 1. **Baseline** — run every case with the base profile (`Code`, unless `--profile` points at a YAML).
 2. **Propose** — an optimizer model reads failure summaries and may emit only whitelisted mutations (`append_instructions`, `upsert_inline_skill`, `remove_inline_skill`).
 3. **Materialize** — write a candidate under `<task>/run/candidates/<run>-epoch-N/` (each optimize run gets its own id so a re-run never overwrites an earlier baseline).
-4. **Gate** — first re-run **only cases that are still failing** (fast reject). If the merged score looks better, **confirm on the full suite** before adopting. `perfect` and `best` always reflect a full-suite result; `best.json` is written only when the run finishes.
+4. **Gate** — first re-run **only cases that are still failing** (fast reject). If the merged score looks better, **confirm on the full suite** before adopting. `perfect` and `best` always reflect a full-suite result; `best.json` is written only when the run finishes, and only when the new score is **not worse** than the previous best. A stub dry-run never replaces a live (`--agent`) best.
 5. Repeat until epochs are exhausted, the score is perfect, or the optimizer returns an empty `{"mutations":[]}` (deliberate stop). A bad model call or invalid JSON **drops** that epoch and continues; nothing from a dropped proposal is installed.
 
 Stdout includes `baseline_score`, `best_score`, `best_candidate`, `epochs`, `dropped`, and `perfect`.
 
-Why: this is the actual RSI search. Stub mode (`optimize` without `--agent`) is for CI and wiring checks; it does not call a model.
+Why: this is the actual RSI search. Stub mode (`optimize` without `--agent`) is for CI and wiring checks; it does not call a model. After a live optimize, a later stub run on the same task will not overwrite `best.json` with marker-only stub instructions.
 
 Useful variants:
 
@@ -123,6 +123,9 @@ icode rsi optimize rsi-<id> --agent Code --profile ./base.yaml -m <model>
 
 # Stub optimize (no model): CI / dry-run
 icode rsi optimize rsi-<id> --epochs 2
+
+# Export a specific candidate instead of best.json
+icode rsi install rsi-<id> --candidate <run>-epoch-2 --out ./candidate.yaml
 ```
 
 ### 6. Inspect results
@@ -136,9 +139,9 @@ Also open on disk (under `~/.chrys/rsi/tasks/rsi-<id>/` by default):
 
 | Path | Meaning |
 |------|---------|
-| `run/best.json` | Pointer to the best adopted candidate |
-| `run/candidates/<id>/` | Profile YAML + `mutations.json` |
-| `run/analysis/epoch-N.json` | Failure summary and proposed mutations |
+| `run/best.json` | Pointer to the best adopted candidate (`kind`: stub or live) |
+| `run/candidates/<run>-…/` | Profile YAML + `mutations.json` (per optimize run) |
+| `run/analysis/<run>/epoch-N.json` | Failure summary and proposed mutations |
 | `run/evaluations/` | Per-label scorecards and `cases.jsonl` |
 | `tree.json` | Evolution tree (`ADOPTED` / `REJECTED`) |
 
@@ -287,9 +290,9 @@ perfect=True
 Interpretation:
 
 - **`baseline_score=0.0`** — unmodified Code failed at least one judge check (often `2^3^2` or `1++2i`).
-- **`best_candidate=epoch-N`** — that epoch’s mutations were **adopted** because the gated suite score strictly improved.
+- **`best_candidate=<run>-epoch-N`** — that epoch’s mutations were **adopted** because the gated suite score strictly improved.
 - **`best_score=1.0` / `perfect=True`** — on this dataset, the adopted candidate passed the case (build + every expression + invalid exits). RSI stops early when the score is perfect.
-- Artifacts under `<config_dir>/rsi/tasks/rsi-…/`: `run/best.json`, `run/candidates/epoch-N/Code.yaml`, `run/analysis/epoch-N.json` (proposed mutations), `run/evaluations/` (per-epoch scorecards / `cases.jsonl`).
+- Artifacts under `<config_dir>/rsi/tasks/rsi-…/`: `run/best.json`, `run/candidates/<run>-epoch-N/Code.yaml`, `run/analysis/<run>/epoch-N.json` (proposed mutations), `run/evaluations/` (per-epoch scorecards / `cases.jsonl`).
 
 A first epoch can still score `0.0` (proposal accepted into the tree as rejected or weak); a later epoch may be the first adopt. Coding evals are **non-deterministic**: the same commands may not always reach `perfect=True`. Re-run `optimize` or raise `--epochs` if the search stalls at `0.0`.
 
@@ -297,7 +300,7 @@ A first epoch can still score `0.0` (proposal accepted into the tree as rejected
 
 #### What changed vs baseline (illustrative successful run)
 
-On a live run that finished `baseline_score=0.0` → `best_candidate=epoch-2` / `perfect=True`, the **adopted** profile was still builtin Code with only whitelist mutations. Diff against `run/candidates/baseline/Code.yaml`:
+On a live run that finished `baseline_score=0.0` → `best_candidate=<run>-epoch-2` / `perfect=True`, the **adopted** profile was still builtin Code with only whitelist mutations. Diff against `run/candidates/<run>-baseline/Code.yaml`:
 
 1. **`append_instructions`** — one short paragraph at the end of `instructions`, focused on the judge failure that kept killing the suite: reject a binary `+` immediately followed by unary `+` (example `1++2i`) with a non-zero exit; do not collapse `++` to `+`; keep valid unary minus (`-i`, `-(1+2i)`) and negative exponents (`2^-3`).
 2. **`upsert_inline_skill`** — new inline skill `complex-expression-parser`: tokenize operators separately from literals; validate token sequences before eval; reject `1++2i` instead of treating the second `+` as unary plus; preserve unary minus after `(`, start of expr, and after `^`; restate `^` right-associative / integer-only precedence; require `A+Bi` / `A-Bi` output with no spaces and no `.0` on integral parts.
@@ -308,11 +311,11 @@ How that search looked on the tree (same run):
 
 | Candidate | Parent | Mutations | Gate score | Outcome |
 |-----------|--------|-----------|------------|---------|
-| baseline | — | — | `0.0` | ADOPTED as starting point (suite failed; typical findings: `2^3^2` and/or `1++2i`) |
-| epoch-1 | baseline | `append_instructions` only (broader “strict lexer / `++` / `^`” note) | `0.0` | REJECTED — score did not beat baseline (often still failing `1++2i` until the inline skill lands) |
-| epoch-2 | baseline | `append_instructions` + `upsert_inline_skill` above | `1.0` | ADOPTED / best — build + all expressions + invalid exits passed |
+| `<run>-baseline` | — | — | `0.0` | ADOPTED as starting point (suite failed; typical findings: `2^3^2` and/or `1++2i`) |
+| `<run>-epoch-1` | baseline | `append_instructions` only (broader “strict lexer / `++` / `^`” note) | `0.0` | REJECTED — score did not beat baseline (often still failing `1++2i` until the inline skill lands) |
+| `<run>-epoch-2` | baseline | `append_instructions` + `upsert_inline_skill` above | `1.0` | ADOPTED / best — build + all expressions + invalid exits passed |
 
-Epoch-2’s parent was still **baseline**, not epoch-1: a rejected epoch does not stack into the next candidate. Inspect the same facts on your machine with `icode rsi tree <task>`, `run/analysis/epoch-N.json`, and `diff run/candidates/baseline/Code.yaml run/candidates/epoch-2/Code.yaml`. Later runs may propose different text; the shape to expect is small instruction/skill overlays aimed at the failure summary, not a full profile rewrite.
+Epoch-2’s parent was still **baseline**, not epoch-1: a rejected epoch does not stack into the next candidate. Inspect the same facts on your machine with `icode rsi tree <task>`, `run/analysis/<run>/epoch-N.json`, and `diff` between `<run>-baseline` and `<run>-epoch-2` under `run/candidates/`. Later runs may propose different text; the shape to expect is small instruction/skill overlays aimed at the failure summary, not a full profile rewrite.
 
 ## Optimize behavior (detail)
 

@@ -7,15 +7,17 @@ from __future__ import annotations
 import contextlib
 import json
 import shutil
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Generator
 from pathlib import Path
 from typing import Any
 
+from chrys.foundation.util.lock import FileLock
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.rsi.case_runner import CaseRunner, ProfileAwareStubRunner, StubCaseRunner
 from chrys.service.rsi.dataset import load_dataset, subset_dataset
 from chrys.service.rsi.errors import RsiBadRequest
 from chrys.service.rsi.evaluator import EvalSuiteResult, ScriptBasedEvaluator
+from chrys.service.rsi.llm_optimizer import LlmOptimizer
 from chrys.service.rsi.models import (
     RsiTask,
     Scenario,
@@ -29,6 +31,7 @@ from chrys.service.rsi.optimizer import (
     OptimizeLoop,
     OptimizeResult,
     StubOptimizer,
+    new_optimize_run_id,
 )
 from chrys.service.rsi.paths import resolve_rsi_tasks_root, safe_relpath_under, task_dir, write_json_atomic
 from chrys.service.rsi.projector import RsiProjector
@@ -44,7 +47,7 @@ from chrys.service.rsi.store import RsiTaskStore
 from chrys.service.rsi.workdir_seed import snapshot_seed_for_task
 from chrys.service.rsi.worker import PushCallback, RsiWorker
 
-_BUSY_LOCK_NAME = ".rsi_busy"
+_BUSY_LOCK_NAME = ".rsi_busy.lock"
 
 
 class RsiServiceContext:
@@ -85,15 +88,15 @@ class RsiServiceContext:
             self.store.add_status_hook(_hook)
 
     @contextlib.contextmanager
-    def _task_busy_lock(self, task_id: str) -> Iterator[None]:
-        lock = task_dir(self.tasks_root, task_id) / "run" / _BUSY_LOCK_NAME
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        lock.write_text("busy", encoding="utf-8")
+    def _task_busy_lock(self, task_id: str) -> Generator[None]:
+        """Exclusive eval/optimize lock; OS releases it if the process dies."""
+        lock_path = task_dir(self.tasks_root, task_id) / "run" / _BUSY_LOCK_NAME
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            yield
-        finally:
-            with contextlib.suppress(OSError):
-                lock.unlink(missing_ok=True)
+            with FileLock(lock_path, timeout=0):
+                yield
+        except TimeoutError as exc:
+            raise RsiBadRequest(f"task {task_id} has an active eval/optimize; wait for it to finish") from exc
 
     def create_task(
         self,
@@ -193,10 +196,15 @@ class RsiServiceContext:
         task = self.store.get(task_id)
         if task.status in {TaskStatus.RUNNING.value, TaskStatus.QUEUED.value}:
             raise RsiBadRequest(f"task {task_id} is {task.status}; terminate it before delete")
-        # Also refuse while an optimize/eval lock file marks in-flight work.
-        lock = task_dir(self.tasks_root, task_id) / "run" / ".rsi_busy"
-        if lock.is_file():
-            raise RsiBadRequest(f"task {task_id} has an active eval/optimize; wait or terminate first")
+        # Refuse only while another process currently holds the busy lock.
+        # A leftover lock file after a hard kill is fine — FileLock acquires it.
+        lock_path = task_dir(self.tasks_root, task_id) / "run" / _BUSY_LOCK_NAME
+        if lock_path.parent.is_dir():
+            try:
+                with FileLock(lock_path, timeout=0):
+                    pass
+            except TimeoutError as exc:
+                raise RsiBadRequest(f"task {task_id} has an active eval/optimize; wait for it to finish") from exc
         self.store.delete(task_id)
 
     def start(self, task_id: str) -> dict[str, Any]:
@@ -306,7 +314,12 @@ class RsiServiceContext:
             instructions="",
         )
         epochs = int(max_epochs) if max_epochs is not None else max(1, int(task.max_iterations))
-        loop = OptimizeLoop(self.store, optimizer=optimizer or StubOptimizer())
+        opt = optimizer or StubOptimizer()
+        run_id = new_optimize_run_id()
+        run_kind = "live" if runner_factory is not None else "stub"
+        if isinstance(opt, LlmOptimizer):
+            opt.redirect_analysis(Path(task.run_dir) / "analysis" / run_id)
+        loop = OptimizeLoop(self.store, optimizer=opt)
         events: OptimizeEvents = _OptimizeTreeEvents(self, task_id)
 
         async def evaluate(candidate: AgentProfile, label: str, case_ids: Collection[str] | None) -> EvalSuiteResult:
@@ -329,6 +342,8 @@ class RsiServiceContext:
                 max_epochs=epochs,
                 instruction=task.optimization_instruction,
                 events=events,
+                run_id=run_id,
+                kind=run_kind,
             )
             task.config = {
                 **dict(task.config or {}),
@@ -387,16 +402,24 @@ class RsiServiceContext:
         destination: Path | None = None,
         user_agents_dir: Path | None = None,
         write_user: bool = False,
+        candidate_id: str | None = None,
+        force: bool = False,
     ) -> dict[str, Any]:
-        """Export the best gated candidate YAML.
+        """Export the best gated candidate YAML (or an explicit *candidate_id*).
 
         Default writes ``<task>/export/<name>.yaml``. Writing into the user
         agents directory requires ``write_user=True`` and an explicit dir
-        (never implicit).
+        (never implicit). ``--user`` and ``--out`` are mutually exclusive.
         """
         self.store.get(task_id)  # raise if missing
-        pointer = read_best_pointer(self.store, task_id)
-        snap = load_candidate(self.store, task_id, str(pointer["candidate_id"]))
+        if write_user and destination is not None:
+            raise RsiBadRequest("pass only one of destination (--out) or --user/--user-dir")
+        if candidate_id:
+            snap = load_candidate(self.store, task_id, candidate_id)
+            pointer: dict[str, Any] = {"candidate_id": candidate_id}
+        else:
+            pointer = read_best_pointer(self.store, task_id)
+            snap = load_candidate(self.store, task_id, str(pointer["candidate_id"]))
         if write_user:
             if user_agents_dir is None:
                 raise RsiBadRequest("write_user requires an explicit user_agents_dir")
@@ -405,10 +428,20 @@ class RsiServiceContext:
             dest = Path(destination)
         else:
             dest = best_export_path(self.store, task_id, snap.profile.name)
-        # Task export/ default may rewrite the same path; user-dir installs refuse overwrite.
-        overwrite = not write_user and destination is None
+        # Task export/ default may rewrite the same path; other targets need --force.
+        overwrite = bool(force) or (not write_user and destination is None)
         written = export_profile_yaml(snap.profile_path, dest, overwrite=overwrite)
-        summary = dump_best_summary(self.store, task_id)
+        summary = (
+            dump_best_summary(self.store, task_id)
+            if not candidate_id
+            else {
+                "task_id": task_id,
+                "candidate_id": snap.candidate_id,
+                "profile_name": snap.profile.name,
+                "score": None,
+                "mutations": [m.to_dict() for m in snap.mutations],
+            }
+        )
         summary["export_path"] = str(written)
         summary["wrote_user_agents"] = bool(write_user)
         return summary

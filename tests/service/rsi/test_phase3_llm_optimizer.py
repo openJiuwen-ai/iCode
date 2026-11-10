@@ -102,7 +102,9 @@ async def test_llm_optimizer_adopts_marker_proposal_and_writes_analysis(tmp_path
     assert result.epochs[0].adopted is True
     assert seen and "Write hello.txt" in seen[0]
     assert "missing file: hello.txt" in seen[0]
-    analysis = json.loads((Path(task.run_dir) / "analysis" / "epoch-1.json").read_text(encoding="utf-8"))
+    analysis = json.loads(
+        (Path(task.run_dir) / "analysis" / result.run_id / "epoch-1.json").read_text(encoding="utf-8")
+    )
     assert analysis["proposal"] == "accepted"
     assert analysis["failures"][0]["case_id"] == "need-hello"
 
@@ -130,9 +132,13 @@ async def test_invalid_proposal_is_not_adopted(tmp_path: Path) -> None:
     assert result.best_score == result.baseline_score == 0.0
     assert [epoch.dropped for epoch in result.epochs] == [True, True]
     assert all(not epoch.adopted for epoch in result.epochs)
-    analysis = json.loads((Path(task.run_dir) / "analysis" / "epoch-1.json").read_text(encoding="utf-8"))
+    analysis = json.loads(
+        (Path(task.run_dir) / "analysis" / result.run_id / "epoch-1.json").read_text(encoding="utf-8")
+    )
     assert analysis["proposal"] == "invalid_proposal"
-    later = json.loads((Path(task.run_dir) / "analysis" / "epoch-2.json").read_text(encoding="utf-8"))
+    later = json.loads(
+        (Path(task.run_dir) / "analysis" / result.run_id / "epoch-2.json").read_text(encoding="utf-8")
+    )
     assert later["proposal"] == "invalid_proposal"
     descriptions = [node.get("description") for node in ctx.get_tree(task_id)["nodes"]]
     assert "scored baseline" in descriptions

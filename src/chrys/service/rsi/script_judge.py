@@ -149,9 +149,6 @@ def _run_check_script(
         "CHRYS_RSI_RESPONSE_PATH": str(response_file.resolve()),
         "CHRYS_RSI_DATASET_DIR": str(root),
     }
-    popen_kwargs: dict[str, object] = {}
-    if sys.platform != "win32":
-        popen_kwargs["start_new_session"] = True
     try:
         completed = subprocess.run(  # noqa: S603 - trusted dataset-local script, absolute interpreter
             [sys.executable, str(script_path)],
@@ -164,7 +161,6 @@ def _run_check_script(
             errors="replace",
             timeout=_SCRIPT_TIMEOUT_SECONDS,
             check=False,
-            **popen_kwargs,
             **windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
