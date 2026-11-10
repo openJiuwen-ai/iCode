@@ -117,8 +117,12 @@ aixcoding-launch.py 未提交（责任人裁定本地资产）
   ```
 
 - **F4（批次文档未入库 / plan 措辞）→ 本笔提交一并入库**；plan 措辞已改。
-- **F5（等价脚本不可复现）→ 脚本落盘**：`verify_wheel_bundle.py`（本目录，SAC 受限机器
-  等价校验，Linux CI 仍以 `scripts/check_wheel.py` 为准）。执行输出：
+- **F5（等价脚本不可复现）→ 一次性校验脚本落盘、用毕即删**：曾落盘本目录
+  `verify_wheel_bundle.py`（SAC 受限机器的等价校验：wheel 捆绑清单 + 逐文件 sha256
+  vs `aixcoding/manual/`；Linux CI 仍以 `scripts/check_wheel.py` 为准）；责任人 2026-11-10
+  裁决文件不再保留，**证据以本节输出留档**（复现方式：读 wheel 的
+  `chrys/app/tui/screens/guides/_docs/` 前缀清单与内容哈希，与 `aixcoding/manual/` 比对）。
+  当时执行输出：
 
   ```
   wheel: icode_tui-0.35.1-py3-none-any.whl
@@ -144,7 +148,7 @@ aixcoding-launch.py 未提交（责任人裁定本地资产）
 manual 树去链后重建（`python -m hatchling build`）：
 
 ```
-verify_wheel_bundle.py → 捆绑 67 = manual 67，清单一致 True，内容哈希不一致: 无
+等价校验（一次性脚本，已删）→ 捆绑 67 = manual 67，清单一致 True，内容哈希不一致: 无
 wheel 内围栏外第三方外链: 0（保留项 2 处在 manual 树源文件，wheel 内同样保留）
 ```
 
@@ -154,8 +158,8 @@ chat-options 章节为 manual 树独有），PDF 不需重出。
 ## 2026-11-10 签认与门禁总检
 
 责任人签认（单据头部代填按责任人当次指示执行，签字人 赵阔、日期 2026-11-10）：
-`design.md`（R2 获批记录 + R11 审批人/审批日期）、`self-review.md`（首轮评审结论）、
-`adr/0001`（随设计生效）。
+`design.md`（R2 获批记录 + R11 审批人/审批日期）、`self-review.md`（首轮评审结论）。
+ADR 判定四问 ①②③ 成立，责任人同日裁决不出 ADR（决策内容留 design），草案 adr/0001 删除。
 
 签认后连跑两道门禁：
 

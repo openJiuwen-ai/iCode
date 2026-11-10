@@ -22,7 +22,8 @@
 - [x] test-plan.md（覆盖矩阵对照验收 8 条）
 - [x] verification.md（2026-11-09/10 两节真实验证证据）
 - [x] plan.md（本文档）
-- [x] adr/0001（手册定制落位与捆绑源切换——决策快照）
+- [x] ~~adr/0001~~（责任人 2026-11-10 裁决不出 ADR、已删除；决策内容留在 design 备选对比/
+  风险节，见 design「ADR 判定」）
 - [x] 双 AI 评审第一轮（HOWTO ①②）：评审方 Claude Code CLI/GLM-5.3，3 blocker/2
   suggestion/1 nit → 责任人拍板全部处置（见 verification 评审处置节）
 - [x] 评审修复：F1 契约测试跟改（C147）+ F2 重跑回填 + F3 manual 树去链 98 处 + F5 脚本落盘
@@ -32,7 +33,7 @@
 - [x] **定制点登记**：design.md「定制点登记预告」C145-C148 随签认生效 →
   `gen_customizations.py --strict` → OK（105 行 / 142 标记 / 0 warning）
 - [x] ruff 双门（check + format --check aixcoding/）本地绿（C148 exclude 落地后）
-- [x] **责任人签认**：design.md / self-review.md / adr/0001（赵阔，2026-11-10）
+- [x] **责任人签认**：design.md / self-review.md（赵阔，2026-11-10）
 - [x] 门禁总检：`check_docs.py` OK + `gen_customizations.py --strict` OK（证据见 verification）
 - [x] INDEX.md 登记行与批次六件套已入库（评审 F4）
 - [ ] PR：fork/user-manual → 责任人裁决 push 时机与目标分支（git 写操作逐条授权）

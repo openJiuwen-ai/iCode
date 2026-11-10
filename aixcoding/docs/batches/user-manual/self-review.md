@@ -49,7 +49,8 @@
   - **F3** manual 树 100 处围栏外第三方外链（验收勾选失真）→ 已去链 98 处（保留产品仓库
     发布页 2 处），复扫 manual 树剩 2、wheel 内 0；requirements 验收第 2 项证据已更新。
 - suggestion / nit 处置：F4 批次文档与 INDEX 已成笔入库、plan 措辞修正；F5 等价校验脚本
-  落盘 `verify_wheel_bundle.py`（重跑 67=67 哈希零差异）；F6 随 F3 联动更新。
+  曾落盘 `verify_wheel_bundle.py`（重跑 67=67 哈希零差异），责任人 2026-11-10 裁决删除、
+  输出证据留 verification；F6 随 F3 联动更新。
 - 开发 AI 复检追加发现（评审未覆盖）：`ruff format --check aixcoding/`（CI govern 门）会重排
   manual 树 md 围栏内有意对齐的注释 → 已加 `[tool.ruff] extend-exclude = ["aixcoding/manual"]`
   （C148），ruff 双门本地全绿。
