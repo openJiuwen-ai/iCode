@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from rich.cells import cell_len
 
@@ -13,14 +15,23 @@ from chrys.app.tui.screens.sessions.presenter import (
     COLUMNS,
     DEFAULT_SORT_COLUMN,
     DEFAULT_SORT_REVERSE,
+    WORKFLOW_COLUMNS,
     build_session_rows,
+    build_workflow_rows,
     column_by_key,
+    fork_anchors,
     format_tokens,
+    rank_search_matches,
     row_cells,
     time_ago,
+    workflow_status_labels,
 )
 from chrys.app.tui.util.formatting import elide_middle
-from chrys.service.state.store import ChatSessionMeta, SessionMeta
+from chrys.foundation.models.session_surface import SessionSurface
+from chrys.service.state.session_listing import SessionListingEntry
+from chrys.service.state.store import ChatSessionMeta, SessionMeta, WorkflowSessionMeta
+from chrys.service.workflows.history import WorkflowRunMeta
+from chrys.service.workflows.outcomes import RunStatus
 
 _BASE = datetime(2026, 6, 1, tzinfo=UTC)
 
@@ -57,6 +68,40 @@ def _meta(
 
 def _ids(rows) -> list[str]:
     return [row.meta.session_id for row in rows]
+
+
+def _workflow(
+    session_id: str,
+    *,
+    title: str = "Review",
+    status: RunStatus = "completed",
+    input_text: str = "",
+    runs: int = 1,
+    minutes_old: int = 0,
+    size: int = 0,
+) -> WorkflowSessionMeta:
+    updated = _BASE - timedelta(minutes=minutes_old)
+    return WorkflowSessionMeta(
+        session_id=session_id,
+        created_at=updated,
+        updated_at=updated,
+        run_count=runs,
+        size_bytes=size,
+        latest_run_id="run",
+        latest_run=WorkflowRunMeta("run", "review", title, status, updated, input_text),
+    )
+
+
+def _entries(*metas: SessionMeta) -> list[SessionListingEntry]:
+    return [
+        SessionListingEntry(meta.session_id, meta.updated_at, SessionSurface.TUI, Path(meta.session_id), meta=meta)
+        for meta in metas
+    ]
+
+
+def _ranked(metas: Sequence[SessionMeta], query: str) -> list[str]:
+    ranked = rank_search_matches(_entries(*metas), query, status_labels=workflow_status_labels())
+    return [entry.session_id for entry in ranked]
 
 
 class TestColumns:
@@ -269,7 +314,7 @@ class TestForkTree:
 
 
 class TestFilter:
-    def test_query_matches_any_column(self) -> None:
+    def test_query_matches_the_searched_columns(self) -> None:
         sessions = [
             _meta("aaa", title="fix the bug", cwd="/repo/alpha", turns=3),
             _meta("bbb", title="write docs", cwd="/repo/beta", turns=12),
@@ -277,6 +322,23 @@ class TestFilter:
         assert _ids(build_session_rows(sessions, query="docs")) == ["bbb"]
         assert _ids(build_session_rows(sessions, query="alpha")) == ["aaa"]
         assert _ids(build_session_rows(sessions, query="12")) == ["bbb"]
+
+    def test_size_and_last_active_are_not_searched(self) -> None:
+        """Last Active is localized relative time ("2 days ago" matches nearly every row for "days"); Size needs a
+        folder walk per session, which a search across every session cannot afford."""
+        chat = _meta("aaa", minutes_old=3 * 24 * 60, size=3 * 1024 * 1024)
+        workflow = _workflow("wf-1", minutes_old=3 * 24 * 60, size=3 * 1024 * 1024)
+        workflow_cells = build_workflow_rows([workflow], now=_BASE)[0].cells
+        for cells in (row_cells(chat, now=_BASE), workflow_cells):
+            assert (cells["last_active"], cells["size"]) == ("3 days ago", "3.0 MB")
+        for query in ("days ago", "ago", "MB"):
+            assert build_session_rows([chat], query=query, now=_BASE) == [], query
+            assert build_workflow_rows([workflow], query=query, now=_BASE) == [], query
+            # The ranking reads no clock, so it is probed with what every relative time shows.
+            assert _ranked([chat, workflow], query) == [], query
+        for columns in (COLUMNS, WORKFLOW_COLUMNS):
+            # Nor highlighted: the table marks the query only in the columns the search reads.
+            assert [column.key for column in columns if not column.searched] == ["last_active", "size"]
 
     def test_query_is_case_insensitive(self) -> None:
         sessions = [_meta("aaa", title="Fix The Bug")]
@@ -434,3 +496,84 @@ class TestHiddenPromptTier:
         snippet = rows[0].prompt_snippet
         assert "AΣA" in snippet
         assert "İ" not in snippet
+
+
+class TestRankSearchMatches:
+    """The ranking a search across every session pages through: the same rule as the rows, cell matches first."""
+
+    def test_visible_matches_rank_before_prompt_only_ones_each_in_listing_order(self) -> None:
+        sessions = [
+            _meta("p-newest", prompts="ask about kernels", generated_title="其他"),
+            _meta("c-newer", minutes_old=5, title="kernel work"),
+            _meta("none", minutes_old=7, title="unrelated"),
+            _meta("p-older", minutes_old=9, prompts="the kernel again", generated_title="别的"),
+            _meta("c-oldest", minutes_old=11, cwd="/repos/kernel"),
+        ]
+        assert _ranked(sessions, "  KERNEL ") == ["c-newer", "c-oldest", "p-newest", "p-older"]
+        assert _ranked(sessions, "nothing like it") == []
+
+    def test_ranking_selects_exactly_the_rows_the_page_shows(self) -> None:
+        """The page re-filters its fresh metas by the same rule, so a result never vanishes from its page."""
+        sessions = [
+            _meta("aaa", title="fix the bug", cwd="/repo/alpha", turns=3, size=5 * 1024 * 1024),
+            _meta("bbb", minutes_old=60, title="write docs", prompts="update the alpha guide"),
+            _meta("ccc", minutes_old=90, parent="aaa", title="forked fix", prompts="more bug work"),
+            _meta("4201eebc-ca45-4328-8882-272f3d7c41cb", title="uuid", cwd="/home/user/deep/project"),
+        ]
+        for query in ("alpha", "bug", "3", "MB", "ago", "project", "/home/user", "4201eebcca45", "272f3d7c41cb"):
+            rows = build_session_rows(sessions, query=query)
+            assert set(_ranked(sessions, query)) == {row.meta.session_id for row in rows if row.matched}, query
+
+    def test_workflow_ranking_selects_exactly_the_rows_the_page_shows(self) -> None:
+        sessions: list[SessionMeta] = [
+            _workflow("wf-1", title="Code review", input_text="check the parser", size=5 * 1024 * 1024),
+            _workflow("wf-2", minutes_old=60, title="Release notes", status="failed", input_text="review the draft"),
+            _workflow("wf-3", minutes_old=90, title="Lint", status="running", runs=12),
+        ]
+        for query in ("review", "parser", "error", "running", "12", "wf1", "MB", "ago"):
+            rows = build_workflow_rows(sessions, query=query, now=_BASE)
+            ranked = _ranked(sessions, query)
+            cell_matches = {row.meta.session_id for row in rows if not row.prompt_only}
+            prompt_only = {row.meta.session_id for row in rows if row.prompt_only}
+            assert (set(ranked[: len(cell_matches)]), set(ranked[len(cell_matches) :])) == (
+                cell_matches,
+                prompt_only,
+            ), query
+
+    def test_fork_anchors_are_the_unmatched_parents_up_each_fork_chain(self) -> None:
+        """A result page holds only matches: these come along so its forks keep the tree the rows show."""
+        entries = _entries(
+            _meta("root", title="plain root"),
+            _meta("mid", parent="root", title="plain middle"),
+            _meta("leaf", parent="mid", title="needle leaf"),
+            _meta("matched", title="needle parent"),
+            _meta("child", parent="matched", title="needle child"),
+            _meta("loop-a", parent="loop-b", title="plain a"),
+            _meta("loop-b", parent="loop-a", title="plain b"),
+            _meta("in-loop", parent="loop-a", title="needle in a loop"),
+        )
+        ranked = rank_search_matches(entries, "needle", status_labels=workflow_status_labels())
+        # "matched" lists on another result page, where the fork's own chain ends.
+        page = [entry for entry in ranked if entry.session_id != "matched"]
+        anchors = fork_anchors(page, entries, ranked)
+        # A corrupt parent cycle ends at the anchor it started from.
+        assert [entry.session_id for entry in anchors] == ["mid", "root", "loop-a", "loop-b"]
+        assert fork_anchors([entry for entry in ranked if entry.session_id == "child"], entries, ranked) == ()
+
+    def test_workflow_sessions_match_their_run_title_status_and_input(self) -> None:
+        sessions: list[SessionMeta] = [
+            _workflow("wf-1", title="Code review", status="completed", input_text="check the parser"),
+            _workflow("wf-2", title="Release notes", status="failed", input_text="draft notes"),
+            _workflow("wf-3", title="ignored"),
+        ]
+        third = sessions[2]
+        assert isinstance(third, WorkflowSessionMeta)
+        third.latest_run = None
+        assert _ranked(sessions, "review") == ["wf-1"]
+        assert _ranked(sessions, "error") == ["wf-2"]  # the label the Status column shows
+        assert _ranked(sessions, "failed") == []  # the internal status name shows nowhere
+        assert _ranked(sessions, "parser") == ["wf-1"]
+        assert _ranked(sessions, "ignored") == []
+        rows = build_workflow_rows(sessions, query="parser")
+        assert [(row.meta.session_id, row.prompt_only) for row in rows] == [("wf-1", True)]
+        assert set(rows[0].cells) == {column.key for column in WORKFLOW_COLUMNS}

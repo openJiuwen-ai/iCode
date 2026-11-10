@@ -5,16 +5,20 @@
 Opens as a centered modal overlay (Ctrl+S).  Sessions list newest first, in
 pages of at most 100, filtered by where each was last used (TUI, CLI, ACP;
 TUI only by default).  The store snapshots the listing once, so paging never
-reshuffles, and each page loads fresh.  Within the page shown: click a column
-header to sort (click again to flip direction), type in the bottom search box
-to filter across every column plus each session's user prompts (rows found
-only through prompt text render in italics, list after the column matches,
-and carry the matched context in their tooltip), and forked sessions nest
-under their parent as a tree.  Resume to load, Delete to remove.
+reshuffles, and each page loads fresh.  The bottom search box searches every
+session of the checked surfaces, not just the page shown: every column but
+Last Active and Size, plus each session's indexed prompt text, matched
+against the snapshot (rows found only through prompt text render in italics,
+list after the column matches, and carry the matched context in their
+tooltip); results page like the listing, and clearing the search returns to
+the page being browsed.  Within the page shown: click a column header to sort
+(click again to flip direction), and forked sessions nest under their parent
+as a tree.  Resume to load, Delete to remove.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -38,11 +42,14 @@ from chrys.app.tui.screens.sessions.presenter import (
     build_session_rows,
     build_workflow_rows,
     column_by_key,
+    fork_anchors,
     format_tokens,
     last_interaction_display,
     profile_display,
+    rank_search_matches,
     surface_label,
     title_display,
+    workflow_status_labels,
 )
 from chrys.app.tui.util.rich_style import rich_style_from_textual_color
 from chrys.app.tui.widgets import (
@@ -60,6 +67,7 @@ from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.util.session_ids import session_short_id
+from chrys.service.state.session_listing import SESSION_PAGE_SIZE, SessionListing, page_slice
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -68,7 +76,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.timer import Timer
 
-    from chrys.service.state.session_listing import SessionListing
+    from chrys.service.state.session_listing import SessionPage
     from chrys.service.state.store import SessionMeta, StateStore
 
 logger = logging.getLogger(__name__)
@@ -78,6 +86,9 @@ _SEARCH_DEBOUNCE_SECONDS = 0.15
 
 _TREE_LEVEL_WIDTH = 2
 """Cells one fork level adds to the Session ID column ('└ ' / '│ ')."""
+
+_EVERY_SURFACE = frozenset(SessionSurface)
+"""A search result listing is filtered already: page it whatever surfaces its sessions have."""
 
 DEFAULT_SURFACES = frozenset({SessionSurface.TUI})
 """Surfaces listed until the user picks others; sessions from before surfaces were recorded count as TUI."""
@@ -100,10 +111,10 @@ _TOOLTIP_STATUS = msg("tui.sessions.tooltip.status", fallback="Status: {status}"
 _TOOLTIP_RUN = msg("tui.sessions.tooltip.run", fallback="Run: {run_id}")
 _NO_SAVED_SESSIONS = msg("tui.sessions.empty", fallback="No saved sessions.")
 _NO_FILTERED_SESSIONS = msg("tui.sessions.empty.filtered", fallback="No sessions match the selected filters.")
-_NO_SEARCH_MATCHES = msg("tui.sessions.empty.search", fallback="No sessions on this page match your search.")
+_NO_SEARCH_MATCHES = msg("tui.sessions.empty.search", fallback="No sessions match your search.")
 _SEARCH_PLACEHOLDER = msg(
     "tui.sessions.search_placeholder",
-    fallback="Search this page… (matches any column & your prompts)",
+    fallback="Search all sessions… (IDs, titles, directories & your prompts)",
 )
 _RESUME = msg("tui.sessions.button.resume", fallback="Resume")
 _DELETE = msg("tui.sessions.button.delete", fallback="Delete")
@@ -259,6 +270,18 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         self._page_count = 1
         self._filtered_total = 0
         """Sessions of the selected surfaces, across every page."""
+        self._search_query = ""
+        """The search the latest load asked for ('' browses the listing); set when the typing settles."""
+        self._shown_query = ""
+        """The search the rows shown were loaded for: what they are filtered, highlighted and counted by."""
+        self._shown_surfaces = self._surfaces
+        """The surfaces the rows shown were loaded for."""
+        self._match_count = 0
+        """Sessions matching the shown search, across every result page."""
+        self._browse_page = 1
+        """The listing page to show again once the search is cleared."""
+        self._hydration: asyncio.Task[SessionPage] | None = None
+        """The page load in flight, which every later load waits for (see ``_load_page``)."""
         self._page_loaded = False
         # The page's sessions: what sorting and searching work on.
         self._rendered_sessions: list[SessionMeta] = []
@@ -267,8 +290,10 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         self._sort_column: str = column_by_key("").key
         self._sort_reverse: bool = column_by_key("").default_reverse
         self._loading = True
-        self._loading_page: int | None = None
-        """The page the load in flight asked for (the store may clamp it); None once a load finishes."""
+        self._loading_request: tuple[int, str] | None = None
+        """The page and search the load in flight asked for (the page may be clamped); None once a load finishes."""
+        self._focus_results_of: str | None = None
+        """The search whose results take focus when they show: Enter asked for them while they loaded."""
         # Becomes True once the cursor has jumped to the currently loaded
         # session (or the initial scan finished without finding it).
         self._cursor_initialized = False
@@ -322,6 +347,10 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
     def on_mount(self) -> None:
         self._request_page(1)
 
+    def on_unmount(self) -> None:
+        if self._hydration is not None:
+            self._hydration.cancel()
+
     # ------------------------------------------------------------------
     # Loading & rendering
     # ------------------------------------------------------------------
@@ -329,41 +358,112 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
     def _request_page(
         self, page: int, *, preferred_cursor_row: int | None = None, preferred_session_id: str | None = None
     ) -> None:
-        """Load and show *page*, replacing any load in flight."""
-        self._loading_page = page
+        """Load and show *page* of the current search (or of the listing), replacing any load in flight."""
+        query = self._search_query
+        self._loading_request = (page, query)
+        # Enter claims focus for the results of its own request (claimed after this), not of any later one.
+        self._focus_results_of = None
         self._load_sessions(
-            page=page, preferred_cursor_row=preferred_cursor_row, preferred_session_id=preferred_session_id
+            page=page,
+            query=query,
+            preferred_cursor_row=preferred_cursor_row,
+            preferred_session_id=preferred_session_id,
         )
 
     @work(exclusive=True, group="load-sessions")
     async def _load_sessions(
         self,
         page: int = 1,
+        query: str = "",
         preferred_cursor_row: int | None = None,
         preferred_session_id: str | None = None,
     ) -> None:
-        """Load one page of the listing, then render it.
+        """Load one page of the listing, or of the sessions matching *query*, then render it.
 
         The listing is snapshotted by the first load; later loads (paging,
-        filtering, reloading after a delete) page through that snapshot.
-        Loads are exclusive: a newer request cancels the one in flight, so
-        the page shown is always the last one asked for.
+        filtering, searching, reloading after a delete) work on that
+        snapshot. A search ranks every snapshot entry of the selected
+        surfaces by the meta the snapshot read (off the event loop, ranking
+        again on every load, so no earlier result can go stale), then loads
+        only its result page fresh, with the unmatched parents its forks nest
+        under (uncounted, shown dimmed), which the presenter filters by the
+        same rule. So a session another process changed since the snapshot may be
+        counted but not shown, as one deleted since already is. Loads are
+        exclusive: a newer request cancels the one in flight, so the page
+        shown is always the last one asked for.
         """
         self._loading = True
         self._update_chrome()
         if self._listing is None:
             self._listing = await self._state_store.open_session_listing(kind=self._kind)
-        loaded = await self._state_store.load_session_page(self._listing, surfaces=self._surfaces, page=page)
+        listing = self._listing
+        surfaces = self._surfaces
+        candidates = listing.filtered(surfaces)
+        if query:
+            ranked = await asyncio.to_thread(
+                rank_search_matches, candidates, query, status_labels=workflow_status_labels(self._render_message)
+            )
+            selected, page, page_count, match_count = page_slice(
+                SessionListing(listing.kind, ranked), _EVERY_SURFACE, page
+            )
+            metas: tuple[SessionMeta, ...] = ()
+            if selected:
+                # The unmatched parents of its forks come along, uncounted, to anchor them in the tree.
+                anchors = await asyncio.to_thread(fork_anchors, selected, candidates, ranked)
+                shown = SessionListing(listing.kind, (*selected, *anchors))
+                metas = (await self._load_page(shown, _EVERY_SURFACE, 1, page_size=len(shown.entries))).metas
+            filtered_total = len(candidates)
+        else:
+            loaded = await self._load_page(listing, surfaces, page)
+            metas, page, page_count, filtered_total = loaded.metas, loaded.page, loaded.page_count, loaded.total
+            match_count = filtered_total
+        if not self._composed_live:
+            # Closing prunes the widgets before Textual cancels this worker.
+            return
         self._loading = False
-        self._loading_page = None
-        self._page, self._page_count, self._filtered_total = loaded.page, loaded.page_count, loaded.total
+        self._loading_request = None
+        self._page, self._page_count, self._filtered_total = page, page_count, filtered_total
+        self._shown_query, self._shown_surfaces, self._match_count = query, surfaces, match_count
         self._page_loaded = True
         self._render_table(
             preferred_cursor_row=preferred_cursor_row,
             preferred_session_id=preferred_session_id,
-            source_sessions=list(loaded.metas),
+            source_sessions=list(metas),
         )
         self._cursor_initialized = True
+        if self._focus_results_of is not None:
+            focus_results, self._focus_results_of = self._focus_results_of == query, None
+            search = self.query_one("#search", _SearchInput)
+            # Not once the user went on typing, or moved focus elsewhere.
+            if focus_results and self.focused is search and search.value.strip() == query:
+                self._focus_table()
+
+    async def _load_page(
+        self,
+        listing: SessionListing,
+        surfaces: frozenset[SessionSurface],
+        page: int,
+        *,
+        page_size: int = SESSION_PAGE_SIZE,
+    ) -> SessionPage:
+        """Load one page's fresh metas and folder sizes, one load at a time.
+
+        The store reads in a thread that cancelling a load cannot stop, so a
+        load first waits for the one before it to finish, and is shielded
+        itself: a newer request (each settled search asks for a page) never
+        starts its reads beside an abandoned one's. Exclusive loads make only
+        the newest waiting request go on.
+        """
+        previous = self._hydration
+        if previous is not None and not previous.done():
+            await asyncio.wait([previous])
+        task = asyncio.create_task(
+            self._state_store.load_session_page(listing, surfaces=surfaces, page=page, page_size=page_size)
+        )
+        # An abandoned load's error has no one awaiting it: retrieve it so asyncio doesn't log it as lost.
+        task.add_done_callback(lambda done: done.cancelled() or done.exception())
+        self._hydration = task
+        return await asyncio.shield(task)
 
     def _render_table(
         self,
@@ -375,7 +475,7 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
     ) -> None:
         """Rebuild the table from the in-memory metas (sort + filter + tree)."""
         table = self.query_one("#sessions", _SessionTable)
-        query = self.query_one("#search", _SearchInput).value
+        query = self._shown_query
         previous_selected = self._get_selected_session_id()
 
         render_source = source_sessions
@@ -438,7 +538,8 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
             cell = sanitize_legacy_scalar(surrogate_safe_text(row.cells[column.key]))
             value = Text(cell, justify="right" if column.numeric else "left")
             if highlight:
-                value.highlight_words([highlight], match_style, case_sensitive=False)
+                if column.searched:
+                    value.highlight_words([highlight], match_style, case_sensitive=False)
                 if not row.matched:
                     # Ancestor kept only to anchor a matching fork subtree.
                     value.stylize("dim")
@@ -548,7 +649,7 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         has_sessions = self._listing is not None and bool(self._listing.entries)
         visible_rows = len(self._rows)
         search = self.query_one("#search", _SearchInput)
-        searching = bool(search.value.strip())
+        searching = bool(self._shown_query)
         container = self.query_one("#container")
         if has_sessions or show_loading:
             container.remove_class("-empty")
@@ -562,7 +663,7 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         note.display = not show_loading and not show_table
         if not has_sessions:
             reason = _NO_SAVED_SESSIONS
-        elif searching and self._rendered_sessions:
+        elif searching and self._filtered_total:
             reason = _NO_SEARCH_MATCHES
         else:
             reason = _NO_FILTERED_SESSIONS
@@ -578,12 +679,12 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
             navigator.disables_focused(self._page, self._page_count) or (self.focused is table and not show_table)
         ):
             self.set_focus(table if show_table else search, scroll_visible=False)
-        navigator.show(self._page, self._page_count)
+        navigator.show(self._page, self._page_count, view=(self._shown_query, self._shown_surfaces))
 
         if show_loading:
             container.border_subtitle = Text(self._render_message(_LOADING_SESSIONS.bind()))
         elif has_sessions:
-            count = f"{visible_rows}/{len(self._rendered_sessions)}" if searching else f"{self._filtered_total}"
+            count = f"{self._match_count}/{self._filtered_total}" if searching else f"{self._filtered_total}"
             label = _WORKFLOW_SESSION_COUNT if self._workflow_mode else _SESSION_COUNT
             container.border_subtitle = Text(self._render_message(label.bind(count_text=count)))
         else:
@@ -605,17 +706,24 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         self._surfaces = surfaces
         if self._on_surfaces_changed is not None:
             self._on_surfaces_changed(surfaces)
+        self._browse_page = 1
         self._request_page(1)
 
     @on(PageNavigator.Changed, "#session-pages")
     def _on_page_changed(self, event: PageNavigator.Changed) -> None:
         event.stop()
-        table = self.query_one("#sessions", _SessionTable)
-        if table.display:
-            self.set_focus(table, scroll_visible=False)
-        # The pager still shows the old page while a slow load runs: asking again would only
-        # restart it, and the cancelled read would go on in its thread.
-        if event.page != self._loading_page:
+        # A press leaves focus on the pager. One that arrives after the user moved on (into the search box,
+        # say) must not undo what they did since: where they put focus, or an Enter's claim on its results.
+        if event.navigator.has_focus_within:
+            self._focus_results_of = None
+            table = self.query_one("#sessions", _SessionTable)
+            if table.display:
+                self.set_focus(table, scroll_visible=False)
+        if event.view != (self._search_query, self._surfaces):
+            # Pressed on the pages of a search or selection since replaced, shown or on its way: none is the new one's.
+            return
+        # The pager still shows the old page while a slow load runs: asking again would only restart it.
+        if (event.page, self._search_query) != self._loading_request:
             self._request_page(event.page)
 
     # ------------------------------------------------------------------
@@ -638,15 +746,37 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
 
     @on(Input.Changed, "#search")
     def _on_search_changed(self, event: Input.Changed) -> None:
-        """Debounce filter re-renders while the user is still typing."""
+        """Debounce searches while the user is still typing."""
         if self._search_timer is not None:
             self._search_timer.stop()
-        self._search_timer = self.set_timer(_SEARCH_DEBOUNCE_SECONDS, self._render_table)
+        self._search_timer = self.set_timer(_SEARCH_DEBOUNCE_SECONDS, self._apply_search)
+
+    def _apply_search(self) -> None:
+        """Search for what the box holds now: the first result page, or back to the page browsed before."""
+        if self._search_timer is not None:
+            self._search_timer.stop()
+            self._search_timer = None
+        query = self.query_one("#search", _SearchInput).value.strip()
+        if query == self._search_query:
+            return
+        if not self._search_query:
+            self._browse_page = self._page_asked_for()
+        self._search_query = query
+        self._request_page(1 if query else self._browse_page)
+
+    def _page_asked_for(self) -> int:
+        """The page last asked for: the one on its way while a load runs, else the one shown."""
+        return self._page if self._loading_request is None else self._loading_request[0]
 
     @on(Input.Submitted, "#search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
-        """Enter in the search box — jump to the filtered results."""
-        self._focus_table()
+        """Enter in the search box — search now, and jump to the results."""
+        self._apply_search()
+        if self._loading_request is None:
+            self._focus_table()
+        else:
+            # The results, not the rows they replace: those may give way to an empty note.
+            self._focus_results_of = self._search_query
 
     @on(_SearchInput.Escaped)
     def _on_search_escaped(self, event: _SearchInput.Escaped) -> None:
@@ -777,18 +907,26 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
                     markup=False,
                 )
                 return
+            if not self._composed_live:
+                # Closing prunes the widgets before Textual cancels this worker.
+                return
             if self._listing is not None:
                 self._listing = self._listing.without(session_id)
             optimistic_sessions = [meta for meta in self._rendered_sessions if meta.session_id != session_id]
             if len(optimistic_sessions) < len(self._rendered_sessions):
                 self._filtered_total = max(0, self._filtered_total - 1)
+                # Not a parent the result page shows only to anchor a matching fork.
+                if any(row.matched and row.meta.session_id == session_id for row in self._rows):
+                    self._match_count = max(0, self._match_count - 1)
             self._render_table(
                 preferred_cursor_row=preferred_cursor_row,
                 preferred_session_id=preferred_session_id,
                 prefer_live_selection=False,
                 source_sessions=optimistic_sessions,
             )
-            # The next page's first session moves up into this one.
+            # The next page's first session moves up into this one, or into the page on its way.
             self._request_page(
-                self._page, preferred_cursor_row=preferred_cursor_row, preferred_session_id=preferred_session_id
+                self._page_asked_for(),
+                preferred_cursor_row=preferred_cursor_row,
+                preferred_session_id=preferred_session_id,
             )

@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.35.1\n"
+"Project-Id-Version: Chrys 0.35.2\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -11124,11 +11124,11 @@ msgstr "没有已保存的会话。"
 msgid "tui.sessions.empty.filtered"
 msgstr "没有符合所选筛选条件的会话。"
 
-#. English: No sessions on this page match your search.
-#. chrys-meta={"fingerprint":"049a3963099d161b2180c5b93b2c564d43b83dbb75e58dc5dbb04e68f9e65e7f","multiline":false,"placeholders":[]}
+#. English: No sessions match your search.
+#. chrys-meta={"fingerprint":"d8dd0f10e31974129a71eb3a145c7b7b177b70cbaef3d24bc9c4d03f8d477496","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.empty.search"
-msgstr "本页没有匹配搜索的会话。"
+msgstr "没有匹配搜索的会话。"
 
 #. English: Loading sessions
 #. chrys-meta={"fingerprint":"6e1188e79edff717a8a95bb7fb83d4cfab60d38ee884b49f59321304cbcec79c","multiline":false,"placeholders":[]}
@@ -11136,11 +11136,11 @@ msgstr "本页没有匹配搜索的会话。"
 msgid "tui.sessions.loading"
 msgstr "正在加载会话"
 
-#. English: Search this page… (matches any column & your prompts)
-#. chrys-meta={"fingerprint":"f87aabb0dc1f39e3d61082c7eaf08c620cb7d84c86b982237d5797b7f2383d3d","multiline":false,"placeholders":[]}
+#. English: Search all sessions… (IDs, titles, directories & your prompts)
+#. chrys-meta={"fingerprint":"3e45418cb122de3d72564c493b36d3f6380ff6c4bad686e8fb01c7455aa74d74","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.search_placeholder"
-msgstr "搜索本页…（匹配任意列和你的提示词）"
+msgstr "搜索全部会话…（匹配 ID、标题、目录和你的提示词）"
 
 #. English: Cancelled
 #. chrys-meta={"fingerprint":"f0ea7e7ae2fa270015fa78e6b5fcff27cc4ffa6d30271bc6d150455cbf1c252f","multiline":false,"placeholders":[]}

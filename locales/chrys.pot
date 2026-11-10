@@ -3,7 +3,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.35.1\n"
+"Project-Id-Version: Chrys 0.35.2\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -10902,8 +10902,8 @@ msgstr ""
 msgid "tui.sessions.empty.filtered"
 msgstr ""
 
-#. English: No sessions on this page match your search.
-#. chrys-meta={"fingerprint":"049a3963099d161b2180c5b93b2c564d43b83dbb75e58dc5dbb04e68f9e65e7f","multiline":false,"placeholders":[]}
+#. English: No sessions match your search.
+#. chrys-meta={"fingerprint":"d8dd0f10e31974129a71eb3a145c7b7b177b70cbaef3d24bc9c4d03f8d477496","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.empty.search"
 msgstr ""
@@ -10914,8 +10914,8 @@ msgstr ""
 msgid "tui.sessions.loading"
 msgstr ""
 
-#. English: Search this page… (matches any column & your prompts)
-#. chrys-meta={"fingerprint":"f87aabb0dc1f39e3d61082c7eaf08c620cb7d84c86b982237d5797b7f2383d3d","multiline":false,"placeholders":[]}
+#. English: Search all sessions… (IDs, titles, directories & your prompts)
+#. chrys-meta={"fingerprint":"3e45418cb122de3d72564c493b36d3f6380ff6c4bad686e8fb01c7455aa74d74","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.search_placeholder"
 msgstr ""

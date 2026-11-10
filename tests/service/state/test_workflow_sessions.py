@@ -12,7 +12,7 @@ import pytest
 
 from chrys.kernel import Message
 from chrys.service.state.locks import ActiveSessionGuard
-from chrys.service.state.store import JsonFileStateStore
+from chrys.service.state.store import JsonFileStateStore, WorkflowSessionMeta
 from chrys.service.state.workflow import WorkflowSessionState
 from chrys.service.workflows.store import RunSpec, WorkflowRunStore
 from tests.service.state._store_helpers import browser_page
@@ -49,18 +49,31 @@ async def test_workflow_status_comes_from_log_without_resaving_session(
     first = (await store.list_sessions())[0]
     assert first.kind == "workflow" and first.run_count == 1
     assert first.latest_run.title == "Review [literal]" and first.latest_run.status == "interrupted"
+    # The browser's snapshot reads the same live status: its search goes by what each row shows.
+    assert await _snapshot_status(store) == "interrupted"
     envelope = (directory.parent.parent / "session.json").read_bytes()
     guard = ActiveSessionGuard(store)
     assert guard.ensure(session_id)
     try:
         assert (await store.list_sessions())[0].latest_run.status == "running"
+        assert await _snapshot_status(store) == "running"
         await run_store.finish(outcome, {"reason": reason})
         listed = await browser_page(store, "workflow")
         assert listed[0].latest_run.status == status
+        assert await _snapshot_status(store) == status
     finally:
         await run_store.close()
         guard.release()
     assert (directory.parent.parent / "session.json").read_bytes() == envelope
+
+
+async def _snapshot_status(store: JsonFileStateStore) -> str:
+    """The latest run's status as the sessions browser's snapshot read it."""
+    (entry,) = (await store.open_session_listing(kind="workflow")).entries
+    run = entry.meta.latest_run if isinstance(entry.meta, WorkflowSessionMeta) else None
+    if run is None:
+        raise AssertionError("the snapshot read no run summary")
+    return run.status
 
 
 async def test_session_kind_is_immutable_even_when_empty(tmp_path: Path) -> None:

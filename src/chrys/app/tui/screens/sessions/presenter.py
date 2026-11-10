@@ -21,9 +21,10 @@ from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.util.session_ids import session_short_id
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
-    from chrys.service.state.store import ChatSessionMeta, SessionMeta
+    from chrys.service.state.session_listing import SessionListingEntry
+    from chrys.service.state.store import ChatSessionMeta, SessionMeta, WorkflowSessionMeta
     from chrys.service.workflows.history import WorkflowRunMeta
 
 
@@ -89,6 +90,11 @@ WORKFLOW_STATUSES = {
     "failed": _STATUS_FAILED,
     "completed": _STATUS_COMPLETED,
 }
+
+
+def workflow_status_labels(render_message: Callable[[MessageRef], str] = format_message) -> dict[str, str]:
+    """Every run status's label as the Status column shows it, rendered once for matching off the UI thread."""
+    return {status: render_message(label.bind()) for status, label in WORKFLOW_STATUSES.items()}
 
 
 def format_size(size_bytes: int) -> str:
@@ -186,15 +192,27 @@ class SessionColumn:
     """First-click sort direction (True = descending first)."""
     numeric: bool = False
     """Right-align cell contents (counts / sizes)."""
+    searched: bool = True
+    """The search reads its cells, so a match is highlighted there (see ``_searchable_haystack``)."""
 
 
 COLUMNS: tuple[SessionColumn, ...] = (
     SessionColumn("id", _COLUMN_SESSION_ID, 12, lambda row: session_short_id(row.meta.session_id)),
     SessionColumn("title", _COLUMN_TITLE, 30, lambda row: row.cells["title"].lower()),
     SessionColumn("directory", _COLUMN_DIRECTORY, None, lambda row: directory_display(row.meta).lower()),
-    SessionColumn("last_active", _COLUMN_LAST_ACTIVE, 11, lambda row: row.updated_at, default_reverse=True),
+    SessionColumn(
+        "last_active", _COLUMN_LAST_ACTIVE, 11, lambda row: row.updated_at, default_reverse=True, searched=False
+    ),
     SessionColumn("turns", _COLUMN_TURNS, 5, lambda row: int(row.cells["turns"]), default_reverse=True, numeric=True),
-    SessionColumn("size", _COLUMN_SIZE, 9, lambda row: row.meta.size_bytes, default_reverse=True, numeric=True),
+    SessionColumn(
+        "size",
+        _COLUMN_SIZE,
+        9,
+        lambda row: row.meta.size_bytes,
+        default_reverse=True,
+        numeric=True,
+        searched=False,
+    ),
 )
 
 WORKFLOW_COLUMNS: tuple[SessionColumn, ...] = (
@@ -226,11 +244,26 @@ def column_by_key(key: str, *, workflow: bool = False) -> SessionColumn:
     return columns.get(key, columns[DEFAULT_SORT_COLUMN])
 
 
-def _common_cells(meta: SessionMeta) -> dict[str, str]:
+def _identity_cells(meta: SessionMeta) -> dict[str, str]:
     return {
         "id": session_short_id(meta.session_id),
         "directory": elide_middle(directory_display(meta), _DIRECTORY_MAX_WIDTH),
-        "size": format_size(meta.size_bytes),
+    }
+
+
+def _chat_search_cells(meta: ChatSessionMeta) -> dict[str, str]:
+    """The searched cells of a Chat row: every column but Last Active and Size."""
+    return _identity_cells(meta) | {"title": title_display(meta), "turns": str(meta.turn_count)}
+
+
+def _workflow_search_cells(
+    meta: WorkflowSessionMeta, run: WorkflowRunMeta, status_labels: Mapping[str, str]
+) -> dict[str, str]:
+    """The searched cells of a Workflow row: every column but Last Active and Size."""
+    return _identity_cells(meta) | {
+        "workflow": run.title,
+        "runs": str(meta.run_count),
+        "status": status_labels[run.status],
     }
 
 
@@ -241,21 +274,122 @@ def row_cells(
     render_message: Callable[[MessageRef], str] = format_message,
 ) -> dict[str, str]:
     """Plain display strings for a Chat row, keyed by column key."""
-    return _common_cells(meta) | {
-        "title": title_display(meta),
+    return _chat_search_cells(meta) | {
         "last_active": time_ago(meta.updated_at, now=now, render_message=render_message),
-        "turns": str(meta.turn_count),
+        "size": format_size(meta.size_bytes),
     }
 
 
 def _searchable_haystack(cells: dict[str, str]) -> str:
-    """Lower-cased searchable text: exactly the visible cell strings.
+    """Lower-cased searchable text: exactly the visible strings of the searched cells.
 
     Deliberately NOT the full session UUID or full cwd path — matching text
     the table doesn't display reads as a false positive (a row appears with
-    no visible highlight).
+    no visible highlight).  Last Active and Size are left out: one is
+    localized relative time that matches nearly every row ("days"), the
+    other needs a folder walk per session, which a search across every
+    session cannot afford.
     """
     return "\n".join(cells.values()).lower()
+
+
+@dataclass(frozen=True, slots=True)
+class SearchMatch:
+    """How the query matches one session; both False when it does not."""
+
+    cells: bool
+    """A searched cell of the row shows the query (always True for an empty query)."""
+    prompt: bool
+    """The session's indexed prompt text (a workflow's run input) holds the query."""
+
+    @property
+    def any(self) -> bool:
+        return self.cells or self.prompt
+
+
+def normalize_query(query: str) -> str:
+    """The form every match compares: trimmed and lower-cased like the haystacks."""
+    return query.strip().lower()
+
+
+def chat_match(meta: ChatSessionMeta, query_norm: str) -> SearchMatch:
+    """Match a Chat session against a normalized query: searched cells, then indexed prompt excerpts."""
+    if not query_norm:
+        return SearchMatch(cells=True, prompt=False)
+    return SearchMatch(
+        cells=query_norm in _searchable_haystack(_chat_search_cells(meta)),
+        prompt=query_norm in _prompt_haystack(meta).lower(),
+    )
+
+
+def workflow_match(meta: WorkflowSessionMeta, query_norm: str, status_labels: Mapping[str, str]) -> SearchMatch:
+    """Match a Workflow session by its latest run; one without a run summary has no row to match."""
+    run = meta.latest_run
+    if run is None:
+        return SearchMatch(cells=False, prompt=False)
+    if not query_norm:
+        return SearchMatch(cells=True, prompt=False)
+    return SearchMatch(
+        cells=query_norm in _searchable_haystack(_workflow_search_cells(meta, run, status_labels)),
+        prompt=query_norm in run.input_text.lower(),
+    )
+
+
+def rank_search_matches(
+    entries: Iterable[SessionListingEntry], query: str, *, status_labels: Mapping[str, str]
+) -> tuple[SessionListingEntry, ...]:
+    """The entries whose session matches *query*, ranked as the browser lists search results.
+
+    Sessions with a visible cell match come first, then those found only
+    through prompt text, each group in the given (listing) order. Matching
+    reads only each entry's snapshot meta, through the same rule the rows
+    use, and makes no localization calls (*status_labels* come rendered from
+    :func:`workflow_status_labels`), so it can run off the event loop.
+    """
+    query_norm = normalize_query(query)
+    visible: list[SessionListingEntry] = []
+    prompt_only: list[SessionListingEntry] = []
+    for entry in entries:
+        meta = entry.meta
+        match = chat_match(meta, query_norm) if meta.kind == "chat" else workflow_match(meta, query_norm, status_labels)
+        if match.cells:
+            visible.append(entry)
+        elif match.prompt:
+            prompt_only.append(entry)
+    return (*visible, *prompt_only)
+
+
+def fork_anchors(
+    page: Sequence[SessionListingEntry],
+    candidates: Iterable[SessionListingEntry],
+    matches: Iterable[SessionListingEntry],
+) -> tuple[SessionListingEntry, ...]:
+    """The sessions a result page shows only to anchor its forks: their parents that do not match.
+
+    The rows nest a fork under its parent and keep an unmatched parent,
+    dimmed, so the tree stays anchored (:func:`build_session_rows`). A result
+    page holds only *matches*, so each fork's parents come from *candidates*
+    (the snapshot entries searched), up its chain to the first one that
+    matches: that one lists on its own result page, and a fork on another
+    page starts its own tree there, as when browsing.
+    """
+    by_short: dict[str, SessionListingEntry] = {}
+    for entry in candidates:
+        by_short.setdefault(session_short_id(entry.session_id), entry)
+    # Also ends a chain at an anchor already taken, and so at any parent cycle.
+    taken = {session_short_id(entry.session_id) for entry in matches}
+    anchors: list[SessionListingEntry] = []
+    for entry in page:
+        meta = entry.meta
+        while meta.kind == "chat" and meta.parent_session_id:
+            short = session_short_id(meta.parent_session_id)
+            parent = by_short.get(short)
+            if parent is None or short in taken:
+                break
+            taken.add(short)
+            anchors.append(parent)
+            meta = parent.meta
+    return tuple(anchors)
 
 
 def _prompt_haystack(meta: ChatSessionMeta) -> str:
@@ -372,23 +506,20 @@ def build_workflow_rows(
     render_message: Callable[[MessageRef], str] = format_message,
 ) -> list[SessionRow]:
     """One row per workflow session, summarized by its latest run."""
-    query_norm = query.strip().lower()
+    query_norm = normalize_query(query)
     column = column_by_key(sort_column, workflow=True)
+    status_labels = workflow_status_labels(render_message)
     rows = []
     for meta in sessions:
         if meta.kind != "workflow" or meta.latest_run is None:
             continue
         run = meta.latest_run
-        cells = _common_cells(meta)
-        cells.update(
-            workflow=run.title,
-            runs=str(meta.run_count),
-            status=render_message(WORKFLOW_STATUSES[run.status].bind()),
-            last_active=time_ago(run.updated_at, now=now, render_message=render_message),
-        )
-        visible_match = not query_norm or query_norm in _searchable_haystack(cells)
-        prompt_match = bool(query_norm) and query_norm in run.input_text.lower()
-        if visible_match or prompt_match:
+        match = workflow_match(meta, query_norm, status_labels)
+        if match.any:
+            cells = _workflow_search_cells(meta, run, status_labels) | {
+                "last_active": time_ago(run.updated_at, now=now, render_message=render_message),
+                "size": format_size(meta.size_bytes),
+            }
             rows.append(
                 SessionRow(
                     meta,
@@ -396,8 +527,8 @@ def build_workflow_rows(
                     "",
                     cells,
                     True,
-                    prompt_only=prompt_match and not visible_match,
-                    prompt_snippet=_prompt_snippet(run.input_text, query_norm) if not visible_match else "",
+                    prompt_only=not match.cells,
+                    prompt_snippet=_prompt_snippet(run.input_text, query_norm) if not match.cells else "",
                     workflow=run,
                 )
             )
@@ -435,7 +566,7 @@ def build_session_rows(
     """
     column = column_by_key(sort_column)
     sort_key = column.sort_value
-    query_norm = query.strip().lower()
+    query_norm = normalize_query(query)
 
     by_short: dict[str, ChatSessionMeta] = {}
     for meta in sessions:
@@ -470,13 +601,10 @@ def build_session_rows(
         short: SessionRow(meta, 0, "", row_cells(meta, now=now, render_message=render_message), True)
         for short, meta in by_short.items()
     }
-    cell_matched = {
-        short: not query_norm or query_norm in _searchable_haystack(rows_by_short[short].cells) for short in by_short
-    }
-    prompt_matched = {
-        short: bool(query_norm) and query_norm in _prompt_haystack(meta).lower() for short, meta in by_short.items()
-    }
-    matched = {short: cell_matched[short] or prompt_matched[short] for short in by_short}
+    matches = {short: chat_match(meta, query_norm) for short, meta in by_short.items()}
+    cell_matched = {short: match.cells for short, match in matches.items()}
+    prompt_matched = {short: match.prompt for short, match in matches.items()}
+    matched = {short: match.any for short, match in matches.items()}
 
     # Bottom-up subtree visibility: a row stays when it matches or any
     # descendant does (ancestors anchor the tree for matching forks).
