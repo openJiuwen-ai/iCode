@@ -239,7 +239,11 @@ async def test_hook_interruption_keeps_invisible_tool_turn_through_message_rollb
             lambda: newest.query_one(MessageRollbackButton).display, pilot=pilot, description="new rollback link"
         )
         await click_when_settled(pilot, newest.query_one(MessageRollbackButton))
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="discard confirm")
+        await wait_for(
+            lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="discard confirm",
+        )
         await click_when_settled(pilot, "#confirm-yes")
         await wait_for(
             lambda: (

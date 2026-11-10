@@ -244,7 +244,11 @@ async def test_a_new_session_asks_before_stopping_running_tasks(tmp_path: Path) 
         assert news == []
 
         main.post_message(InputBar.NewSessionRequested())
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="asked again")
+        await wait_for(
+            lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="asked again",
+        )
         await click_when_settled(pilot, "#confirm-yes")
         await wait_for(lambda: len(news) == 1, pilot=pilot, description="the new session")
 
@@ -265,7 +269,11 @@ async def test_restoring_another_session_asks_but_reopening_this_one_does_not(tm
         await _ready(bus, main, pilot, _task())
 
         main.run_worker(main._sessions.do_session_restore("other"), exit_on_error=False)
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="the confirmation")
+        await wait_for(
+            lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="the confirmation",
+        )
         await click_when_settled(pilot, "#confirm-no")
         await wait_for(lambda: app.screen is main, pilot=pilot, description="back to chat")
         assert restores == []
@@ -304,7 +312,11 @@ async def test_quit_asks_while_tasks_run_and_a_second_quit_exits(
         assert exits == []
 
         await pilot.press("ctrl+q")
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="asked again")
+        await wait_for(
+            lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="asked again",
+        )
         await pilot.press("ctrl+q")
         await wait_for(lambda: exits, pilot=pilot, description="quit at once")
 

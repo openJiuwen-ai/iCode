@@ -66,7 +66,12 @@ async def test_manage_entry_builtin_protection_and_save_applies_theme(
         options.highlighted = options.option_count - 1
         await pilot.press("enter")
         await wait_for(
-            lambda: isinstance(app.screen, MainScreen) and bool(app.screen.query(ResettableThemeEditor)), pilot=pilot
+            lambda: (
+                isinstance(app.screen, MainScreen)
+                and app.screen.is_mounted
+                and bool(app.screen.query(ResettableThemeEditor))
+            ),
+            pilot=pilot,
         )
         editor = app.screen.query_one(ResettableThemeEditor)
         assert editor.query_one("#theme-select", Select).value == source
@@ -96,7 +101,7 @@ async def test_manage_entry_builtin_protection_and_save_applies_theme(
             pilot=pilot,
         )
         assert await pilot.click("#save-theme-confirm")
-        await wait_for(lambda: isinstance(app.screen, MainScreen), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, MainScreen) and app.screen.is_mounted, pilot=pilot)
         assert not editor.document.unsaved
         assert app.theme == app._settings.theme == name
         assert app.current_theme == editor.document.draft
@@ -113,7 +118,10 @@ async def test_manage_entry_builtin_protection_and_save_applies_theme(
         await click_when_settled(pilot, "#theme-close")
         await wait_for(
             lambda: (
-                app.theme_preview is None and isinstance(app.screen, MainScreen) and app.screen.theme_editor is None
+                app.theme_preview is None
+                and isinstance(app.screen, MainScreen)
+                and app.screen.is_mounted
+                and app.screen.theme_editor is None
             ),
             pilot=pilot,
         )
@@ -155,7 +163,7 @@ async def test_discard_confirmation_retains_or_closes_the_draft(tmp_path: Path) 
         await wait_for_confirmation(pilot)
         assert str(app.screen.query_one("#confirm-yes", Button).label) == "放弃修改"
         await pilot.click("#confirm-no")
-        await wait_for(lambda: isinstance(app.screen, MainScreen), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, MainScreen) and app.screen.is_mounted, pilot=pilot)
         assert editor.document.draft.primary == "#123456"
         assert len(editor.document.undo_stack) == 1
         await pilot.press("escape")

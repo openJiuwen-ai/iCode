@@ -150,7 +150,9 @@ async def test_compacted_originals_keep_copy_rollback_and_tool_rows():
 
 async def interrupt_session(session):
     await session.pilot.press("escape")
-    await wait_for(lambda: isinstance(session.app.screen, ConfirmDialog), pilot=session.pilot)
+    await wait_for(
+        lambda: isinstance(session.app.screen, ConfirmDialog) and session.app.screen.is_mounted, pilot=session.pilot
+    )
     await click_when_settled(session.pilot, "#confirm-yes")
 
 
@@ -186,7 +188,9 @@ async def click_message_rollback(session, text):
 async def confirm_message_rollback(session, text):
     """A header link always asks first; the latest turn without file changes asks with a plain confirm."""
     await click_message_rollback(session, text)
-    await wait_for(lambda: isinstance(session.app.screen, ConfirmDialog), pilot=session.pilot)
+    await wait_for(
+        lambda: isinstance(session.app.screen, ConfirmDialog) and session.app.screen.is_mounted, pilot=session.pilot
+    )
     await click_when_settled(session.pilot, "#confirm-yes")
 
 
@@ -210,7 +214,10 @@ async def test_last_turn_without_files_one_click_restores_text_and_focus(
             button.scroll_visible(animate=False, immediate=True)
             await click_when_settled(session.pilot, button)
             # The card's Discard asks first too, like the header link.
-            await wait_for(lambda: isinstance(session.app.screen, ConfirmDialog), pilot=session.pilot)
+            await wait_for(
+                lambda: isinstance(session.app.screen, ConfirmDialog) and session.app.screen.is_mounted,
+                pilot=session.pilot,
+            )
             await click_when_settled(session.pilot, "#confirm-yes")
         else:
             await submit(session, "recover my second prompt")
@@ -242,7 +249,9 @@ async def test_cancelled_header_confirm_keeps_the_turn(agent_engine, tmp_path, m
         await submit(session, "kept by cancel")
         results = await capture_events(session.bus, ev.RollbackResult)
         await click_message_rollback(session, "kept by cancel")
-        await wait_for(lambda: isinstance(session.app.screen, ConfirmDialog), pilot=session.pilot)
+        await wait_for(
+            lambda: isinstance(session.app.screen, ConfirmDialog) and session.app.screen.is_mounted, pilot=session.pilot
+        )
         await session.pilot.press("escape")
         await wait_for(lambda: session.app.screen is session.main, pilot=session.pilot)
         button = opening_message(session, "kept by cancel").query_one(MessageRollbackButton)
@@ -269,7 +278,9 @@ async def test_destructive_selection_opens_picker_at_clicked_turn(agent_engine, 
         else:
             selected, target = "second", 1
         await click_message_rollback(session, selected)
-        await wait_for(lambda: isinstance(session.app.screen, RollbackModal), pilot=session.pilot)
+        await wait_for(
+            lambda: isinstance(session.app.screen, RollbackModal) and session.app.screen.is_mounted, pilot=session.pilot
+        )
         modal = session.app.screen
         # The picker joins the DOM hidden, before its Mount applies the
         # selection (Select.NULL until then): wait for the revealed content.
@@ -333,7 +344,10 @@ async def test_interrupted_final_save_wait_is_bounded_and_preserves_turn(agent_e
         if settle:
             save.release()
             # The click waits for the save, then asks before it discards.
-            await wait_for(lambda: isinstance(session.app.screen, ConfirmDialog), pilot=session.pilot)
+            await wait_for(
+                lambda: isinstance(session.app.screen, ConfirmDialog) and session.app.screen.is_mounted,
+                pilot=session.pilot,
+            )
             assert not results
             await click_when_settled(session.pilot, "#confirm-yes")
             await wait_for(lambda: bool(results), pilot=session.pilot)

@@ -278,7 +278,7 @@ async def test_acp_panel_test_button_opens_ephemeral_session_and_force_closes(
     async with _PanelApp(panel).run_test() as pilot:
         panel.query_one("#acp-test").press()
         await wait_for(
-            lambda: isinstance(pilot.app.screen, ConnectionTestDialog),
+            lambda: isinstance(pilot.app.screen, ConnectionTestDialog) and pilot.app.screen.is_mounted,
             pilot=pilot,
             description="ACP test dialog",
         )
@@ -353,7 +353,7 @@ async def test_acp_panel_test_stderr_log_path_has_no_symlinked_parents(
     async with _PanelApp(panel).run_test() as pilot:
         panel.query_one("#acp-test").press()
         await wait_for(
-            lambda: isinstance(pilot.app.screen, ConnectionTestDialog),
+            lambda: isinstance(pilot.app.screen, ConnectionTestDialog) and pilot.app.screen.is_mounted,
             pilot=pilot,
             description="ACP test dialog",
         )

@@ -141,7 +141,11 @@ async def test_build_failure_before_normalization_leaves_active_runtime_and_file
         session.builds.failing.add(MAIN_MODEL)
         await slash_reload(session)
         await wait_for(
-            lambda: isinstance(session.app.screen, AgentLoadDialog) and session.app.screen.has_class("-error"),
+            lambda: (
+                isinstance(session.app.screen, AgentLoadDialog)
+                and session.app.screen.is_mounted
+                and session.app.screen.has_class("-error")
+            ),
             pilot=session.pilot,
             timeout=ENGINE_TURN_TIMEOUT,
             description="build failed",

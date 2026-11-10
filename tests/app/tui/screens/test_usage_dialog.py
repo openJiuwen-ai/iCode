@@ -1863,7 +1863,9 @@ async def test_opening_from_a_populated_main_screen_does_not_restyle_recompose_o
             usage_report, "load_usage_report", lambda _store, _cancel, *, profile_names: _sample_report()
         )
         main_screen._config_actions.open_usage()
-        await wait_for(lambda: isinstance(app.screen, UsageDialog), pilot=pilot, description="usage open")
+        await wait_for(
+            lambda: isinstance(app.screen, UsageDialog) and app.screen.is_mounted, pilot=pilot, description="usage open"
+        )
         dialog = app.screen
         assert isinstance(dialog, UsageDialog)
         await wait_for(lambda: "model-b" in _painted(pilot), pilot=pilot, description="usage read")

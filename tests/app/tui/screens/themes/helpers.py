@@ -259,14 +259,16 @@ async def wait_for_editor(pilot: Pilot) -> ResettableThemeEditor:
     That handler refreshes the selector and may reveal the Delete button,
     moving Close; testing only app.screen or the saved document races both.
     """
-    await wait_for(lambda: isinstance(pilot.app.screen, (MainScreen, _EditorScreen)), pilot=pilot)
+    await wait_for(
+        lambda: isinstance(pilot.app.screen, (MainScreen, _EditorScreen)) and pilot.app.screen.is_mounted, pilot=pilot
+    )
     # Pop posts ScreenResume synchronously; drain the restored screen's queue
     # before inspecting geometry that could still be left over from suspension.
     await pilot.pause()
 
     def ready() -> bool:
         main = pilot.app.screen
-        if not isinstance(main, (MainScreen, _EditorScreen)) or main._layout_required:
+        if not isinstance(main, (MainScreen, _EditorScreen)) or not main.is_mounted or main._layout_required:
             return False
         panels = main.query(ThemeEditorPanel)
         if not panels:

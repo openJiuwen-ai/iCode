@@ -124,7 +124,7 @@ async def test_edited_expanded_quotes_and_image_reach_the_mock_model_in_their_se
         await session.pilot.press("enter")
         if not vision:
             await wait_for(
-                lambda: isinstance(session.app.screen, VisionUnsupportedDialog),
+                lambda: isinstance(session.app.screen, VisionUnsupportedDialog) and session.app.screen.is_mounted,
                 pilot=session.pilot,
                 timeout=ENGINE_TURN_TIMEOUT,
                 description="text-only model image fallback",

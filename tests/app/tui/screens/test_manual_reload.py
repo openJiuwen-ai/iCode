@@ -258,7 +258,11 @@ async def test_manual_model_commits_only_after_success_and_keeps_the_session_mod
         path.write_text(f"model.profile.active: {BROKEN_MODEL}\n", encoding="utf-8")
         await slash_reload(session)
         await wait_for(
-            lambda: session.seen.of(ev.AgentLoadFailed) and isinstance(session.app.screen, AgentLoadDialog),
+            lambda: (
+                session.seen.of(ev.AgentLoadFailed)
+                and isinstance(session.app.screen, AgentLoadDialog)
+                and session.app.screen.is_mounted
+            ),
             pilot=session.pilot,
             description="candidate build failed",
         )

@@ -119,7 +119,7 @@ async def test_main_screen_mouse_rollback_needs_no_model_and_restores_first_prom
             button = panel.query_one(UserMessage).query_one(MessageRollbackButton)
         await click_when_settled(pilot, button)
         # Both entries ask even for the latest turn without file changes.
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted, pilot=pilot)
         assert requests == []
         await click_when_settled(pilot, "#confirm-yes")
         await wait_for(

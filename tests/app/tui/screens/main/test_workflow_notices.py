@@ -75,7 +75,11 @@ async def test_missing_selection_notice_preserves_draft_and_underlay(
         monkeypatch.setattr(footer, "recompose", recompose)
         main._on_workflow_start()
         await wait_for(
-            lambda: isinstance(app.screen, NoticeDialog) and bool(app.screen.query("#confirm-yes")),
+            lambda: (
+                isinstance(app.screen, NoticeDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query("#confirm-yes"))
+            ),
             pilot=pilot,
         )
         dialog = app.screen
@@ -135,7 +139,11 @@ async def test_rejection_waits_for_other_modal_and_long_notice_remains_dismissib
         assert len(controller.feedback._pending_notices) == 1
         await pilot.press("escape")
         await wait_for(
-            lambda: isinstance(app.screen, NoticeDialog) and bool(app.screen.query("#confirm-yes")),
+            lambda: (
+                isinstance(app.screen, NoticeDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query("#confirm-yes"))
+            ),
             pilot=pilot,
         )
         dialog = app.screen

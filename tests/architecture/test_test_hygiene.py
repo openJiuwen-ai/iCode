@@ -55,6 +55,7 @@ from tests.architecture.test_hygiene_test_source_rules import (
     _assert_no_scroll_relative,
     _assert_no_unapproved_local_polling_helpers,
     _assert_quarantine_marker_metadata,
+    _assert_screen_waits_require_a_mounted_screen,
     _assert_tool_loop_layer_uses_are_invariant_checked,
     _assert_trajectory_prefix_checks_use_physical_slots,
 )
@@ -106,6 +107,7 @@ _HYGIENE_RULES = (
     _assert_no_scroll_relative,
     _assert_no_unapproved_local_polling_helpers,
     _assert_no_ignored_wait_until_results,
+    _assert_screen_waits_require_a_mounted_screen,
     _assert_integration_marker_directory_disjoint,
     _assert_no_direct_agent_engine_start,
     _assert_quarantine_marker_metadata,

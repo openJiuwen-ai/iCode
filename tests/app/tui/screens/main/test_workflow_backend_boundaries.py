@@ -220,7 +220,10 @@ async def test_workflow_diff_reads_active_run_snapshot_not_chat(
         snapshot = create_autospec(engine.workflows.mutation_snapshot, return_value=tracker.serialize())
         monkeypatch.setattr(engine.workflows, "mutation_snapshot", snapshot)
         main.action_show_diff()
-        await wait_for(lambda: isinstance(app.screen, DiffScreen) and app.screen._content_ready, pilot=pilot)
+        await wait_for(
+            lambda: isinstance(app.screen, DiffScreen) and app.screen.is_mounted and app.screen._content_ready,
+            pilot=pilot,
+        )
         snapshot.assert_called_once_with("workflow")
         assert app.screen.query_one("#--content-tab-turn-1", Tab).label.plain == "Run 1"
 
