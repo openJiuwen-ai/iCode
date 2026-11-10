@@ -167,9 +167,11 @@ async def test_ctrl_r_opens_prompt_history_and_enter_restores_original_prompt(
     retry_pending: bool,
 ) -> None:
     markup_shaped_prompt = "failure [type=missing, input_value={}, input_type=dict])"
+    release = asyncio.Event()
 
     async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
         assert max_entries == 1000
+        await release.wait()
         return ["older", "middle\nwith newline", markup_shaped_prompt]
 
     monkeypatch.setattr(InputBar, "load_prompt_history", load_prompt_history)
@@ -193,7 +195,14 @@ async def test_ctrl_r_opens_prompt_history_and_enter_restores_original_prompt(
 
         suggestions = app.main_screen.query_one(SuggestionList)
         assert suggestions.mode == "history"
-        assert suggestions._values == [markup_shaped_prompt, "middle\nwith newline", "older"]
+        # The rows come from the load and an indexing thread, which no pilot wait covers.
+        assert suggestions._values == []
+        release.set()
+        await wait_for(
+            lambda: suggestions._values == [markup_shaped_prompt, "middle\nwith newline", "older"],
+            pilot=pilot,
+            description="prompt history rows",
+        )
         assert [content.plain for content in suggestions._contents] == [
             markup_shaped_prompt,
             "middle ↵ with newline",
@@ -538,9 +547,9 @@ async def test_prompt_history_selection_resets_up_down_browsing(monkeypatch: pyt
         await pilot.press("ctrl+r")
         await pilot.pause()
         await pilot.press("tab")
-        await pilot.pause()
+        # Tab is held until the loaded rows show, which no pilot wait covers.
+        await wait_for(lambda: input_bar.value == "selected prompt", pilot=pilot, description="history row selected")
 
-        assert input_bar.value == "selected prompt"
         assert text_area._history.index == -1
         assert text_area._history_browsing is False
 
