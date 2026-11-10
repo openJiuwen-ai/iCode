@@ -57,7 +57,7 @@
 - [x] 开发机 F8 经 `CHRYS_DOCS_ROOT` 解析到 `aixcoding/manual/`（实测）；
 - [x] 桌面定稿 PDF 与本目录 MD 同步（139 页，2026-11-09 15:42 版后随内容更新重出）；
 - [ ] 本批次文档入库后 `check_docs.py` 门禁绿（26 design / 32 self-review）；
-- [ ] R3 标记注释补录 + 定制点登记（C145/C146）+ `gen_customizations.py --strict` 对账绿
+- [ ] R3 标记注释补录 + 定制点登记（C145-C148）+ `gen_customizations.py --strict` 对账绿
       （收尾项，见 plan.md）。
 
 ## 开放问题

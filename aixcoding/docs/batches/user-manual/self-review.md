@@ -55,3 +55,22 @@
   manual 树 md 围栏内有意对齐的注释 → 已加 `[tool.ruff] extend-exclude = ["aixcoding/manual"]`
   （C148），ruff 双门本地全绿。
 - 未修项（次要问题，责任人拍板不修）：无（suggestion/nit 全部处置）。
+
+## 2026-11-10 增量复审（第一轮修复后）：已收敛
+
+- 轮次：第 2 轮（同一评审 AI 复审增量，只读 + 关键主张独立复现；对象 `4239ee95`，
+  连 `2faa4c71` 一并核验）。
+- 原 6 项处置核验：F1-F6 **6/6 修复**，逐项独立复现通过（92 passed 复跑一致、manual 树
+  复扫 2 处保留项、脚本实在、证据对口）。
+- 新增 findings 处置：
+  - **N1（suggestion，C148 "必红"证据口径）→ 已修**：复审实证 `ruff format --check
+    --config "extend-exclude=[]" aixcoding/` 为 316 files already formatted（md 未被目录
+    遍历覆盖），"CI 必红"不成立。开发 AI 复现确认：**显式路径** `aixcoding/manual` 下
+    6 个 md 确报 unformatted（机制前提为真）。处置：design R2 行与 verification 节改为
+    防御性策略声明（防未来行为变化/显式路径调用），保留可复现命令与输出，原表述按
+    "更正不删旧记录"原则加注。
+  - **N2（nit，C145-C148 口径三处不一致）→ 已修**：requirements 验收第 8 条、
+    verification 待补项、plan 待办统一为 C145-C148。
+  - **N3（nit，双轨同源缺实证）→ 已登记**：plan.md「挂起与备忘」新增下批次待办
+    （从 manual 树重出桌面版并做字符级对账），本批次不追溯补齐。
+- 结论：blocker 清零，suggestion/nit 全部处置或登记，收敛。

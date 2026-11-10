@@ -133,13 +133,22 @@ aixcoding-launch.py 未提交（责任人裁定本地资产）
 - **F6（nit）→ 随 F3 联动**，requirements 验收第 2 项证据更新。
 - **顺带完成收尾项**：R3 标记补录——pyproject.toml（C145 行）/ check_wheel.py（C146 行）
   补 `AIxCoding` 单行标记，design C145/C146 marker 锚同步为正式标记文本。
-- **开发 AI 复检追加发现（评审未覆盖）→ 已修复**：`ruff format --check aixcoding/`
-  （CI govern 门，`aixcoding-tests.yml:129`）对 manual 树 6 个 md 的 ```python 围栏报
-  unformatted（ruff 0.17 会重排手册中有意对齐的注释）——处置：`[tool.ruff] extend-exclude
-  = ["aixcoding/manual"]`（C148，交付内容不参与格式化治理）。复检：
+- **开发 AI 复检追加发现（评审未覆盖）→ 已处置（理由口径经增量复审 N1 更正）**：
+  ruff 0.17.1 会格式化 md 内 ```python 围栏，把手册有意对齐的注释重排。显式路径下可复现：
 
   ```
-  ruff format --check aixcoding/ → 317 files already formatted
+  ruff format --check --config "extend-exclude=[]" aixcoding/manual
+  → 6 个 md unformatted（python-extensions / running/workflows / reference/workflows，zh+en 各 1）
+  ```
+
+  但 **CI（`aixcoding-tests.yml:129` `ruff format --check aixcoding/`）当前用目录遍历时不覆盖
+  md**（同配置下 `aixcoding/` 目标 316 files already formatted），故原记录"CI 必红"表述过强，
+  更正为：C148（`[tool.ruff] extend-exclude = ["aixcoding/manual"]`）是**防御性策略声明**
+  ——交付内容不参与格式化治理，防止未来 ruff 行为变化或显式路径调用时手册被机器重排。
+  落地后复检：
+
+  ```
+  ruff format --check aixcoding/ → 316 files already formatted
   ruff check aixcoding/         → All checks passed!
   ```
 

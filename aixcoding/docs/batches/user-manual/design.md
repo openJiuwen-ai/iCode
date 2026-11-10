@@ -55,7 +55,7 @@
 
 | 文件 | 改什么 | 预估行数 | 标记注释位置 |
 |---|---|---|---|
-| `pyproject.toml` | ① `[tool.hatch.build.targets.wheel.force-include]` 源键 `"docs"` → `"aixcoding/manual"`；② `[tool.ruff] extend-exclude = ["aixcoding/manual"]`（**评审后增补**：ruff 0.17 会格式化 md 内 ```python 围栏，重排手册有意对齐的注释——交付内容不允许机器改写；CI govern `ruff format --check aixcoding/` 必红，2026-11-10） | +8 / −1 | ① 键行上方 `# AIxCoding manual bundle: wheel docs source key (user-manual C145)`；② extend-exclude 行上方 `…(user-manual C148)` |
+| `pyproject.toml` | ① `[tool.hatch.build.targets.wheel.force-include]` 源键 `"docs"` → `"aixcoding/manual"`；② `[tool.ruff] extend-exclude = ["aixcoding/manual"]`（**评审后增补的防御性策略**：ruff 0.17.1 会格式化 md 内 ```python 围栏、重排手册有意对齐的注释〔显式路径可复现：`ruff format --check aixcoding/manual` 报 6 个 md unformatted〕——交付内容不允许机器改写；CI 现用目录遍历 `aixcoding/` 尚未覆盖 md，故此项为预防未来行为变化/显式路径调用的策略声明，非为修当前红灯。理由口径已按增量复审 N1 更正，2026-11-10） | +8 / −1 | ① 键行上方 `# AIxCoding manual bundle: wheel docs source key (user-manual C145)`；② extend-exclude 行上方 `…(user-manual C148)` |
 | `scripts/check_wheel.py` | `check_archive()` 捆绑清单比对源 `git ls-files -z docs` → `-z aixcoding/manual`；`removeprefix("docs/")` → `removeprefix("aixcoding/manual/")` | +3 / −2 | 比对源行上方 `# AIxCoding manual bundle: compare against the fork-owned manual tree (user-manual C146)` |
 | `tests/foundation/test_documentation.py` | 契约测试 `test_wheel_bundles_docs_where_the_resolver_looks` 断言键 `force_include["docs"]` → `["aixcoding/manual"]`（**评审 F1 增补**，2026-11-10：改键名必然连带，跟改使契约测试继续守护新契约） | +2 / −1 | 断言上一行 `# AIxCoding manual bundle: …`（C147） |
 
