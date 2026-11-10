@@ -56,11 +56,12 @@ def set_rules_without_layout(
 
     *visibility* as :func:`set_widgets_visibility_without_layout` takes it. Each
     of *heights* pins a widget to that many rows; a changed one drops the
-    recorded arrangement of the widget and its ancestors, so the one remap
-    places them again (a widget sized by what it shows, such as an overlay
-    card, stays out of the screen's layout this way). With *remap* False
-    nothing is remapped yet: for a hidden widget, the flip that shows it
-    remaps it. All widgets must live on the same screen.
+    recorded arrangement of the widget and its ancestors, and the box model of
+    each ancestor sized to its content, so the one remap places and measures
+    them again (a widget sized by what it shows, such as an overlay card, stays
+    out of the screen's layout this way). With *remap* False nothing is
+    remapped yet: for a hidden widget, the flip that shows it remaps it, and
+    otherwise the next layout does. All widgets must live on the same screen.
 
     Returns whether any rule changed.
     """
@@ -77,9 +78,18 @@ def set_rules_without_layout(
             changed.append(widget)
     for widget, rows in heights:
         if widget.styles.set_rule("height", Scalar.from_number(rows)):
-            for node in widget.ancestors_with_self:
+            # The rule write changes the key of the widget's own box model only.
+            # Each ancestor keeps its box model under its layout count, so bump
+            # that count as a layout refresh does: up to the first ancestor not
+            # sized to its content, whose size the new height cannot change.
+            measured = True
+            for node in widget.ancestors:
                 if isinstance(node, Widget):
                     node._clear_arrangement_cache()
+                    if measured:
+                        node._layout_updates += 1
+                        measured = node.styles.auto_dimensions
+            widget._clear_arrangement_cache()
             changed.append(widget)
     if not changed:
         return False
