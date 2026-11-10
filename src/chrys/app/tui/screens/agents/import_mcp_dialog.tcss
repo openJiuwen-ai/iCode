@@ -96,13 +96,6 @@ ImportMcpServersDialog {
     width: 1fr;
 }
 
-/* A name too long for its line is cut short with "…", not wrapped onto a hidden second line;
-   an opened card shows it whole in its Server Name field. */
-#mcp-import-servers .config-card-title {
-    text-wrap: nowrap;
-    text-overflow: ellipsis;
-}
-
 /* A server that can't be ticked: the tick keeps its column so names stay aligned, and the name is muted
    except under the pointer or cursor, which keep the card title's colors. */
 #mcp-import-servers .mcp-import-item.-unavailable > .mcp-import-tick {

@@ -126,6 +126,19 @@ async def test_saved_servers_open_folded_to_three_rows_titled_by_name() -> None:
         assert panel.validate() == []
 
 
+async def test_a_name_too_long_for_its_card_is_cut_short_on_its_line() -> None:
+    long_name = "n" * 150
+    panel = MCPConfigPanel(_servers(long_name))
+    async with _MCPPanelApp(panel).run_test(size=(80, 30)) as pilot:
+        (card,) = await _cards_laid_out(panel, pilot, 1)
+
+        # Wrapped, the name would leave "▶" alone on the one row a folded card shows.
+        line = card.query_one(CollapsibleTitle).render_line(0).text.rstrip()
+        assert line.startswith("▶ nnn") and line.endswith("…")
+        # The card's Server Name field holds it whole.
+        assert card.query_one(f"#mcp-name-{card.index}", Input).value == long_name
+
+
 async def test_added_server_opens_unfolded_and_rebuilds_keep_each_fold() -> None:
     panel = MCPConfigPanel(_servers("one", "two"))
     async with _MCPPanelApp(panel).run_test(size=(120, 40)) as pilot:

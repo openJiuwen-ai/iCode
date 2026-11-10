@@ -128,10 +128,14 @@ class CollapsibleConfigCard(ConfigCard):
     CollapsibleConfigCard .config-card-body {
         height: auto;
     }
+    /* One line: a title too long for it is cut short with "…", not wrapped onto a second line the
+       one-row header hides, where the ▶ would stay alone. An open card shows the full value in its fields. */
     CollapsibleConfigCard CollapsibleTitle.config-card-title {
         padding: 0 1;
         color: $secondary;
         text-style: bold;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
     CollapsibleConfigCard CollapsibleTitle.config-card-title:hover {
         background: $block-hover-background;
