@@ -32,7 +32,15 @@ def comparable_mcp_config(config: MCPServerConfig) -> MCPServerConfig:
             verify_ssl=True,
             bypass_proxy=False,
         )
-    return replace(normalized, command="", args=[], encoding=None, env={}, cwd="")
+    return replace(
+        normalized,
+        command="",
+        args=[],
+        encoding=None,
+        env={},
+        cwd="",
+        resolve_env_templates=True,
+    )
 
 
 @dataclass(frozen=True)
@@ -69,6 +77,7 @@ def _valid_source_shape(config: MCPServerConfig) -> bool:
             active.expose_instructions,
             active.use_progressive_disclosure,
             active.resolve_header_templates,
+            active.resolve_env_templates,
             active.verify_ssl,
             active.bypass_proxy,
         )

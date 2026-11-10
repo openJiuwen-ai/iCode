@@ -29,6 +29,7 @@ from tests.app.acp._session_manager_fakes import (
     _registries,
     _StartedHost,
     _StaticListStore,
+    _stdio_mcp,
     _unsupported_sse_mcp,
 )
 from tests.support.workflow_history import workflow_state
@@ -910,11 +911,64 @@ def test_acp_http_mcp_overlay_uses_literal_headers() -> None:
     assert configs[0].resolve_header_templates is False
 
 
-def test_mcp_test_config_rejects_client_supplied_stdio() -> None:
-    with pytest.raises(AcpSessionError, match="stdio MCP servers are not supported"):
-        session_manager_module._mcp_config_from_data(
-            {"name": "local", "transport": "stdio", "command": "dangerous-server"}
-        )
+def test_acp_stdio_mcp_overlay_builds_stdio_config() -> None:
+    configs = session_manager_module._mcp_overlay(
+        [
+            acp_schema.McpServerStdio(
+                type="stdio",
+                name="local",
+                command="/usr/bin/python3",
+                args=["-m", "local_server"],
+                env=[acp_schema.EnvVariable(name="TOKEN", value="literal-{{NOT_A_PLACEHOLDER}}")],
+            )
+        ]
+    )
+
+    assert len(configs) == 1
+    config = configs[0]
+    assert config.name == "local"
+    assert config.transport == "stdio"
+    assert config.command == "/usr/bin/python3"
+    assert config.args == ["-m", "local_server"]
+    assert config.env == {"TOKEN": "literal-{{NOT_A_PLACEHOLDER}}"}
+    # ACP has no template syntax, so the client's values reach the child as written.
+    assert config.resolve_env_templates is False
+
+
+@pytest.mark.asyncio
+async def test_new_session_passes_stdio_mcp_overlay_to_host(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    manager = _manager(None, JsonFileStateStore(tmp_path / "sessions"))
+    _StartedHost.instances.clear()
+    monkeypatch.setattr(session_manager_module, "ChrysSessionHost", _StartedHost)
+
+    try:
+        await manager.new_session(cwd=str(project), mcp_servers=_stdio_mcp())
+    finally:
+        await manager.shutdown()
+
+    overlay = _StartedHost.instances[-1].kwargs["mcp_overlay"]
+    assert [config.transport for config in overlay] == ["stdio"]
+    assert overlay[0].command == "/usr/bin/python3"
+
+
+def test_mcp_test_config_accepts_client_supplied_stdio() -> None:
+    config = session_manager_module._mcp_config_from_data(
+        {
+            "name": "local",
+            "transport": "stdio",
+            "command": "local-server",
+            "args": ["--stdio"],
+            "env": {"TOKEN": "literal-{{NOT_A_PLACEHOLDER}}"},
+        }
+    )
+
+    assert config.transport == "stdio"
+    assert config.command == "local-server"
+    assert config.args == ["--stdio"]
+    assert config.env == {"TOKEN": "literal-{{NOT_A_PLACEHOLDER}}"}
+    assert config.resolve_env_templates is False
 
 
 def test_mcp_test_http_config_keeps_headers_literal() -> None:

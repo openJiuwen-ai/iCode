@@ -1638,11 +1638,22 @@ def _mcp_overlay(
                 )
             )
             continue
-        if isinstance(server, acp_schema.SseMcpServer):
-            msg = f"SSE MCP servers are not supported by {APP_DISPLAY_NAME} ACP phase 1."
-            raise AcpSessionError(msg)
         if isinstance(server, acp_schema.McpServerStdio):
-            msg = f"Client-supplied stdio MCP servers are not supported by {APP_DISPLAY_NAME} ACP phase 1."
+            configs.append(
+                MCPServerConfig(
+                    name=server.name,
+                    transport="stdio",
+                    command=server.command,
+                    args=list(server.args),
+                    env={variable.name: variable.value for variable in server.env},
+                    # ACP has no template syntax: the client's values are what the
+                    # child process gets, as its HTTP headers stay literal above.
+                    resolve_env_templates=False,
+                )
+            )
+            continue
+        if isinstance(server, acp_schema.SseMcpServer):
+            msg = f"SSE MCP servers are not supported by {APP_DISPLAY_NAME} ACP."
             raise AcpSessionError(msg)
         msg = f"Unsupported MCP server type: {type(server).__name__}"
         raise AcpSessionError(msg)
@@ -1727,15 +1738,13 @@ def _mcp_config_from_data(data: dict[str, object]) -> MCPServerConfig:
         msg = "MCP server name is required."
         raise AcpSessionError(msg)
     transport = payload.get("transport")
-    if transport == "stdio":
-        msg = f"Client-supplied stdio MCP servers are not supported by {APP_DISPLAY_NAME} ACP."
+    if transport not in {"stdio", "http"}:
+        msg = "mcp/test supports stdio and HTTP MCP servers only."
         raise AcpSessionError(msg)
-    if transport != "http":
-        msg = "mcp/test supports HTTP MCP servers only."
-        raise AcpSessionError(msg)
-    # ACP client-supplied headers must stay literal; profile-owned YAML is the
-    # only MCP path that resolves {{ENV_VAR}} templates.
+    # ACP client-supplied headers and env must stay literal; profile-owned YAML
+    # is the only MCP path that resolves {{ENV_VAR}} templates.
     payload["resolve_header_templates"] = False
+    payload["resolve_env_templates"] = False
     agent = _agent_profile_from_data(
         {
             "name": "MCP Test",

@@ -330,6 +330,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 command=entry.get("command", ""),
                 args=entry.get("args", []),
                 env=_mcp_string_mapping(entry.get("env"), "tools.mcp.env") if transport == "stdio" else {},
+                resolve_env_templates=coerce_bool(entry.get("resolve_env_templates"), default=True),
                 encoding=entry.get("encoding"),
                 cwd=_mcp_cwd(entry.get("cwd")) if transport == "stdio" else "",
                 # http

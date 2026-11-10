@@ -157,7 +157,7 @@ tools:
         Authorization: "Bearer {{MCP_API_TOKEN}}"
 ```
 
-Both `env` and `headers` are key-value mappings: enter the variable or header name on the left and its value on the right. You can specify values directly, use `{{ENV_VAR}}` to reference an environment variable set before starting iCode, or use `{{!command}}` to use what a command prints (see [Get an API key from a command](../guides/configuration/models.md#get-an-api-key-from-a-command)). If a variable referenced in `env` is missing or empty, or a command fails the first time, the server connection fails. For `headers`, placeholders are resolved and this rule applies only when `resolve_header_templates` is `true`.
+Both `env` and `headers` are key-value mappings: enter the variable or header name on the left and its value on the right. You can specify values directly, use `{{ENV_VAR}}` to reference an environment variable set before starting iCode, or use `{{!command}}` to use what a command prints (see [Get an API key from a command](../guides/configuration/models.md#get-an-api-key-from-a-command)). If a variable referenced in `env` is missing or empty, or a command fails the first time, the server connection fails. For `headers`, placeholders are resolved and this rule applies only when `resolve_header_templates` is `true`; `env` placeholders are resolved unless `resolve_env_templates` is `false`.
 
 | Field | Type | Default | Applies to | Description |
 | --- | --- | --- | --- | --- |
@@ -177,6 +177,7 @@ Both `env` and `headers` are key-value mappings: enter the variable or header na
 | `args` | List of strings | `[]` | STDIO | Arguments passed to the server process. |
 | `cwd` | String | Empty | STDIO | Folder the server starts in; leading and trailing whitespace is ignored, and an empty value uses the current session's working directory. Relative paths start from that directory and can use `..` to point outside it. Also supports `~/` and absolute paths. Supports `{{ENV_VAR}}` references but not `{{!command}}`. Cannot contain NUL. See [Choose a working directory](../guides/extensions/mcp.md#choose-a-working-directory) for examples and [Test and save](../guides/extensions/mcp.md#test-and-save) for troubleshooting. |
 | `env` | String-valued object | `{}` | STDIO | Environment variables passed to the server process. Ignored for HTTP configurations. |
+| `resolve_env_templates` | Boolean | `true` | STDIO | Whether to resolve `{{ENV_VAR}}` and `{{!command}}` in `env` values. If `false`, passes values literally. |
 | `encoding` | String or `null` | `null` | STDIO | Encoding for the server's standard input and output. Usually left empty. |
 | `url` | String | Empty | HTTP | Server URL beginning with `http://` or `https://`. |
 | `headers` | String-valued object | `{}` | HTTP | HTTP request headers. |
