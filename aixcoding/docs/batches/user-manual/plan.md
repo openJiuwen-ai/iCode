@@ -37,8 +37,20 @@
 - [x] **责任人签认**：design.md / self-review.md（赵阔，2026-11-10）
 - [x] 门禁总检：`check_docs.py` OK + `gen_customizations.py --strict` OK（证据见 verification）
 - [x] INDEX.md 登记行与批次六件套已入库（评审 F4）
-- [ ] PR：fork/user-manual → 责任人裁决 push 时机与目标分支（git 写操作逐条授权）
+- [x] push：`fork/user-manual` 已推 origin（2026-11-10，远端 `42667097`；PR 未建，按需）
 - [ ] 桌面 PDF 若手册后续再改：按 manual-version-update 技能链路重出（MD → HTML → Edge）
+
+## 责任人裁决记录（2026-11-10，赵阔）
+
+| # | 事项 | 裁决 | 落地 |
+|---|---|---|---|
+| 1 | 分支推送 | **推** | 已推 `origin/fork/user-manual`（`42667097`），未建 PR |
+| 2 | 验收 8 条 | **全部通过** | requirements 验收清单全勾（含 F3 口径变更后的第 2 项） |
+| 3 | C148（ruff extend-exclude） | **保留** | 按防御性策略口径留档，不撤销 |
+| 4 | Linux 侧 check_wheel 正式门禁 | **不改 CI** | 等 `aixcoding-upstream-ci` 桥接自然覆盖，不新增上游 CI 改动（R2 免增） |
+| 5 | 双轨同源对账（N3） | **下批次做** | 已登记「挂起与备忘」 |
+| 6 | 定制版 wheel 交付 | **拷交付目录，不入库** | 已拷 `桌面\用户手册\20261110\icode_tui-0.35.1-定制手册版-py3-none-any.whl`（`dist/` 仍 gitignore） |
+| 7 | 分支策略 | **长期分支** | `fork/user-manual` 存续，后续手册批次挂此分支 |
 
 ## 挂起与备忘
 
