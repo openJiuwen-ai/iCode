@@ -59,7 +59,7 @@ An STDIO connection starts the specified program on the local machine. If the st
 
 ## Import servers from other applications
 
-You can copy MCP servers you already use in Claude Code or Codex into the current agent. This is a one-time copy: later changes in the other application do not update iCode.
+You can copy MCP servers you already use in Claude Code, Codex or OpenCode into the current agent. This is a one-time copy: later changes in the other application do not update iCode.
 
 1. In `/agents mcp`, click "Import from Other Apps" next to "+ Add".
 2. Select an application on the left. Each server is shown as the card it will become; click its name to expand it.
@@ -74,6 +74,7 @@ The mark after a server's name tells you what to check. "⚠" with a number coun
 - **Enabled**: A server turned off in the other application, including a project server you rejected in Claude Code, is imported with "Enabled" unchecked. Check it in the card if you want to use the server.
 - **Scope**: Imported servers work in every project that uses this agent, even if the other application used them in one project only. STDIO servers start in iCode's working folder.
 - **Credentials**: Tokens written directly in the other application's configuration are copied into the agent's file. Sign-in done in the other application, such as OAuth, is not copied. If the server needs authentication, add the headers it expects, or [get a value from a command](../configuration/models.md#get-an-api-key-from-a-command).
+- **Tools turned off everywhere**: Settings that turn tools off for all servers in the other application, such as OpenCode's global `tools`, are not imported. Choose the server's tools again in "Available Tool Scope".
 - **Approval**: Approval rules from the other application do not carry over. See [approval modes](../configuration/approval.md).
 
 ### Where servers are found
@@ -82,6 +83,7 @@ The mark after a server's name tells you what to check. "⚠" with a number coun
 | --- | --- |
 | Claude Code | `~/.claude.json` (or the one in `CLAUDE_CONFIG_DIR`), for your servers and those added for the current project; `.mcp.json` in the current folder and at the top of its Git repository |
 | Codex | `~/.codex/config.toml` (or the one in `CODEX_HOME`); `.codex/config.toml` in the current folder and at the top of its Git repository |
+| OpenCode | `opencode.json`, `opencode.jsonc` or `config.json` in `~/.config/opencode`; `opencode.json` or `opencode.jsonc` in the current folder, at the top of its Git repository, and in the current folder's `.opencode` folder |
 
 When several files define a server with the same name, the one that applies to the current project is listed. Servers added only by cloud services, plugins or extensions are not listed; add them manually.
 
@@ -93,6 +95,7 @@ When several files define a server with the same name, the one that applies to t
 | --- | --- |
 | The server uses SSE or WebSocket, or runs in a remote Codex environment | If it also offers Streamable HTTP or a STDIO command on this computer, add it manually that way. |
 | An environment variable in a URL, command or argument | Add the server manually with the full URL or the actual value. |
+| A value read from a file, such as OpenCode's `{file:...}` | Add the server manually and enter the value, or reference an environment variable. |
 | An empty value, or one with spaces at either end | Add the server manually and enter the value it needs. |
 | An invalid header name, a header value with non-ASCII text or control characters, or two header names that differ only in case | Add the server manually and enter the header the server accepts. |
 
