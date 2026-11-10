@@ -1,0 +1,106 @@
+# Default topic ID when opening the user guide.
+default: intro
+# Locale directory names, in language-switching order.
+locales:
+  - zh-Hans
+  - en
+# Topics appear in declaration order. Paths are relative to each locale directory.
+# Use children for groups and labels for localized display names; leaf titles
+# otherwise come from the Markdown H1.
+topics:
+  - id: start
+    labels:
+      zh-Hans: 快速开始
+      en: Quick Start
+    children:
+      - id: intro
+        path: start/what-is-icode.md
+      - id: getting_started
+        path: start/getting-started.md
+  - id: daily_use
+    labels:
+      zh-Hans: 日常使用
+      en: Daily Use
+    children:
+      - id: sessions
+        path: guides/daily-use/sessions.md
+      - id: workspaces
+        path: guides/daily-use/workspaces.md
+  - id: running
+    labels:
+      zh-Hans: 运行 iCode
+      en: Running iCode
+    children:
+      - id: icode_run
+        path: guides/running/icode-run.md
+      - id: icode_acp
+        path: guides/running/icode-acp.md
+      - id: icode_serve
+        path: guides/running/icode-serve.md
+      - id: workflows
+        path: guides/running/workflows.md
+      - id: terminal_status
+        path: guides/running/terminal-status.md
+  - id: configuration
+    labels:
+      zh-Hans: 配置 iCode
+      en: Configuration
+    children:
+      - id: models
+        path: guides/configuration/models.md
+      - id: chat_options
+        path: guides/configuration/chat-options.md
+      - id: agents
+        path: guides/configuration/agents.md
+      - id: tools
+        path: guides/configuration/tools.md
+      - id: web_tools
+        path: guides/configuration/web-tools.md
+      - id: approval
+        path: guides/configuration/approval.md
+      - id: memory
+        path: guides/configuration/memory.md
+      - id: compaction
+        path: guides/configuration/compaction.md
+      - id: settings
+        path: guides/configuration/settings.md
+      - id: theme_editor
+        path: guides/configuration/themes.md
+  - id: extensions
+    labels:
+      zh-Hans: 扩展 iCode
+      en: Extensions
+    children:
+      - id: skills
+        path: guides/extensions/skills.md
+      - id: mcp
+        path: guides/extensions/mcp.md
+      - id: python_extensions
+        path: guides/extensions/python-extensions.md
+      - id: hooks
+        path: guides/extensions/hooks.md
+      - id: shortcuts
+        path: guides/extensions/shortcuts.md
+      - id: external_acp_agents
+        path: guides/extensions/external-acp-agents.md
+  - id: reference
+    labels:
+      zh-Hans: 参考
+      en: Reference
+    children:
+      - id: workflow_reference
+        path: reference/workflows.md
+      - id: tui_slash_commands
+        path: reference/tui-slash-commands.md
+      - id: tool_kinds_and_names
+        path: reference/tool-kinds-and-names.md
+      - id: agent_profile_reference
+        path: reference/agent-profile.md
+      - id: settings_reference
+        path: reference/settings.md
+      - id: opentelemetry_reference
+        path: reference/opentelemetry.md
+      - id: hooks_reference
+        path: reference/hooks.md
+      - id: themes_reference
+        path: reference/themes.md

@@ -128,7 +128,10 @@ packages = ["src/chrys"]
 [tool.hatch.build.targets.wheel.force-include]
 # The /help user guide and agent runtime read docs/; installed builds carry it here
 # (src/chrys/foundation/documentation.py::resolve_docs_root).
-"docs" = "chrys/app/tui/screens/guides/_docs"
+# Fork change: bundle the customized manual (aixcoding/manual, fork-owned
+# namespace) instead of the upstream docs/ so intranet customers get our
+# adapted user guide. Local dev F8 overrides via CHRYS_DOCS_ROOT.
+"aixcoding/manual" = "chrys/app/tui/screens/guides/_docs"
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 # hatch_build.py compiles locales/zh-Hans/LC_MESSAGES/chrys.po into the wheel's
