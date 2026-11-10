@@ -1040,10 +1040,18 @@ async def test_chat_panel_inline_ask_user_card_follows_draft_height_without_rese
 
 
 @pytest.mark.asyncio
-async def test_inline_input_grows_when_the_card_was_laid_out_between_the_edit_and_the_resize() -> None:
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [pytest.param("", "\n\n", id="grow"), pytest.param("\n\n", "", id="shrink")],
+)
+async def test_inline_input_follows_an_edit_when_the_card_was_laid_out_between_the_edit_and_the_resize(
+    before: str, after: str
+) -> None:
     """The input's own refresh lays the card out as soon as an edit lands; the footer sizes the
-    input only once the edit's Changed reaches it. On a loaded runner that layout came first, the
-    card's arrangements kept the input's old height, and the input never grew."""
+    input only once the edit's Changed reaches it. On a loaded runner that layout came first and
+    recorded the card at the input's old height: its arrangements, and the box models of the boxes
+    around the input that are sized to their content. Growing, the input never grew; shrinking, it
+    did, but the card kept its old height."""
 
     class PanelApp(App):
         def compose(self) -> ComposeResult:
@@ -1058,30 +1066,31 @@ async def test_inline_input_grows_when_the_card_was_laid_out_between_the_edit_an
         input_area = panel.query_one("#askuser-input", _AskUserTextArea)
         footer = panel.query_one(AskUserResponseFooter)
         card_panel = panel.query_one("#ask-panel")
+        if before:
+            input_area.insert(before)
+        rows_before = ASK_USER_INPUT_MIN_HEIGHT + before.count("\n")
         await _wait_for_layout(
             pilot,
-            lambda: (
-                input_area.outer_size.height == ASK_USER_INPUT_MIN_HEIGHT
-                and screen_is_settled(pilot.app, pilot.app.screen)
-            ),
+            lambda: input_area.outer_size.height == rows_before and screen_is_settled(pilot.app, pilot.app.screen),
         )
         initial_panel_height = card_panel.region.height
 
         with messages_disabled(TextArea.Changed, input_area):
-            input_area.insert("\n\n")
+            input_area.replace(after, (0, 0), input_area.document.end)
         # The layout the edit asked for runs while the input still has its old height.
         await _wait_for_layout(pilot, lambda: screen_is_settled(pilot.app, pilot.app.screen))
-        assert input_area.virtual_size.height == 3
-        assert input_area.outer_size.height == ASK_USER_INPUT_MIN_HEIGHT
+        assert input_area.virtual_size.height == after.count("\n") + 1
+        assert input_area.outer_size.height == rows_before
 
         footer.sync_response_state(input_area)
+        rows_after = ASK_USER_INPUT_MIN_HEIGHT + after.count("\n")
         await wait_for(
             lambda: (
-                input_area.outer_size.height == ASK_USER_INPUT_MIN_HEIGHT + 2
-                and card_panel.region.height == initial_panel_height + 2
+                input_area.outer_size.height == rows_after
+                and card_panel.region.height == initial_panel_height + rows_after - rows_before
             ),
             pilot=pilot,
-            description="the input and its card grown by the two new lines",
+            description="the input and its card sized to the edited text",
         )
 
 
