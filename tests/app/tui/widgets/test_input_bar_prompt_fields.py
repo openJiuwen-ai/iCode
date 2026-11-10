@@ -784,6 +784,46 @@ async def test_undoing_a_send_then_a_field_delete_does_not_duplicate_fields() ->
         assert chat.prompt_fields == ((1, 6),)
 
 
+def _type_at_once(app: App[None], *keys: tuple[str, str | None]) -> None:
+    """Hand *keys* to the App as a terminal hands over what was typed while the loop was busy."""
+    for key, character in keys:
+        app.post_message(events.Key(key, character))
+
+
+@pytest.mark.parametrize(
+    ("draft", "column", "sent"),
+    [(ChatDraft("foo"), 3, "fo"), (ChatDraft("xfieldy", ((1, 6),)), 6, "xy")],
+    ids=["plain", "last-field"],
+)
+async def test_enter_typed_at_once_after_backspace_sends_what_backspace_left(
+    draft: ChatDraft, column: int, sent: str
+) -> None:
+    """Enter sends the draft the Backspace typed before it left, not the one before (whose field asked first)."""
+    app = _FieldsApp()
+    async with app.run_test() as pilot:
+        chat = await _draft(pilot, app, draft)
+        chat.move_cursor((0, column))
+        _type_at_once(app, ("backspace", None), ("enter", "\r"))
+        await wait_for(lambda: bool(app.submitted), pilot=pilot, description="Enter sent the draft")
+
+        assert app.submitted == [sent]
+        assert chat.text == ""
+
+
+async def test_tab_typed_at_once_after_home_selects_from_where_home_moved() -> None:
+    """Tab selects the field after where Home moved, and Backspace deletes that field, not the line break."""
+    text = "intro\nargument 1 argument 2"
+    app = _FieldsApp()
+    async with app.run_test() as pilot:
+        chat = await _draft(pilot, app, ChatDraft(text, ((6, 16), (17, 27))))
+        chat.move_cursor((1, 15))
+        _type_at_once(app, ("home", None), ("tab", "\t"), ("backspace", None))
+        await wait_for(lambda: chat.text != text, pilot=pilot, description="Backspace deleted")
+
+        assert chat.text == "intro\n argument 2"
+        assert chat.prompt_fields == ((7, 17),)
+
+
 async def test_an_ownerless_draft_keeps_whole_field_editing_and_undo() -> None:
     app = _FieldsApp()
     async with app.run_test() as pilot:

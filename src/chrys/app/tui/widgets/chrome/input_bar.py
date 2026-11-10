@@ -21,6 +21,7 @@ from time import monotonic, time
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from rich.text import Text
+from textual import events
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.css.scalar import Scalar
@@ -495,6 +496,26 @@ class _ChatTextArea(DraftTextArea, EnhancedTextArea):
             self.post_message(self.AgentTrigger())
         elif event.character in ("$", "\uff04") and self.text in ("$", "\uff04") and self.cursor_location == (0, 1):
             self.post_message(self.ModelTrigger())
+
+    async def handle_key(self, event: events.Key) -> bool:
+        """Run this area's own binding for a key no handler took, at once and in the order keys arrive.
+
+        Textual runs a non-priority binding only once the key has bubbled up to
+        the App (Textual 8.2.7 ``App._on_key``), but takes what this area handles
+        itself (a character, Tab to a field, Enter) as soon as it is read. Keys a
+        busy loop hands over at once all reach this area first, so an Enter
+        would otherwise send the text before the Backspace typed ahead of it
+        took effect. ``Widget._on_key`` calls this only for a key no handler
+        above prevented. While a suggestion list is open the keys still go up:
+        the input bar steers the list with them.
+        """
+        if not self._suggestions_active:
+            for binding in self._bindings.key_to_bindings.get(event.key, ()):
+                if not binding.priority and await self.app.run_action(binding.action, self):
+                    event.stop()
+                    event.prevent_default()
+                    return True
+        return await super().handle_key(event)
 
     def add_to_history(self, text: str, *, session_id: str | None = None) -> None:
         """Append *text* to input history (deduplicates consecutive)."""
