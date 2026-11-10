@@ -15,6 +15,13 @@ from textual.app import App
 from chrys.app.tui import app as chrys_app
 from chrys.app.tui.support import gc_freeze
 from chrys.app.tui.theme import TUI_VARIABLE_DEFAULTS, with_tui_css_variables
+from tests.support.toasts import record_shown_toasts
+
+
+@pytest.fixture(autouse=True)
+def record_toasts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every toast readable through ``shown_toasts`` after it times out."""
+    record_shown_toasts(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

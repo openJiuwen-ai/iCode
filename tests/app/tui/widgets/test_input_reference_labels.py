@@ -19,6 +19,7 @@ from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.text.draft_references import iter_reference_labels
 from chrys.foundation.text.mentions import format_file_mention
+from tests.support.toasts import shown_toasts
 from tests.support.tui_helpers import click_when_settled, png_bytes
 from tests.support.waiting import wait_for
 
@@ -518,7 +519,7 @@ async def test_a_quote_inside_a_command_a_shortcut_runs_is_not_sent(typed: str, 
         else:
             assert app.submitted == []
             assert input_bar.draft() == draft
-            assert app._notifications
+            assert shown_toasts(app)
 
 
 @pytest.mark.asyncio
@@ -537,7 +538,7 @@ async def test_a_quote_inside_a_command_a_paste_opens_is_not_sent() -> None:
         await pilot.pause()
 
         assert app.submitted == []
-        assert app._notifications
+        assert shown_toasts(app)
 
 
 @pytest.mark.asyncio

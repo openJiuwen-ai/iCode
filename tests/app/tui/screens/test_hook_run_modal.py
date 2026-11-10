@@ -22,6 +22,7 @@ from chrys.app.tui.screens.dialogs.hook_run import HookRunModal, _CopySection
 from chrys.app.tui.widgets.chat.tool_call import fmt_duration
 from chrys.foundation.models.hook_runs import HookRunApplied, HookRunDetail, HookRunIO, HookRunRecord
 from chrys.service.trajectory.hooks import HookOutcome
+from tests.support.toasts import shown_toasts
 from tests.support.tui_helpers import click_when_settled, rich_plain
 from tests.support.waiting import wait_for, wait_until
 
@@ -608,7 +609,7 @@ def _sections(modal: HookRunModal, pane: str) -> list[_CopySection]:
 
 
 def _notices(app: App) -> list[str]:
-    return [str(notification.message) for notification in app._notifications]
+    return [str(notification.message) for notification in shown_toasts(app)]
 
 
 async def _ended_with_output(pilot) -> HookRunModal:

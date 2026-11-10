@@ -41,6 +41,7 @@ from tests.app.tui.screens.test_prompt_shortcut_send import (
 )
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.secure_files import plant_owner_only_bytes
+from tests.support.toasts import shown_toasts
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled, make_wheel
 from tests.support.waiting import (
@@ -422,7 +423,7 @@ async def test_failure_and_session_change_do_not_keep_a_side_request_alive(
             lambda: ("warning", "No side questions yet. Use /btw <question> to ask one.") in notices(session.app),
             pilot=session.pilot,
         )
-        toast = next(item for item in session.app._notifications if item.message.startswith("No side questions"))
+        toast = next(item for item in shown_toasts(session.app) if item.message.startswith("No side questions"))
         assert (toast.title, toast.timeout, toast.markup) == ("Side Questions", 3, False)
         assert not panel.display
         assert not panel.request_id

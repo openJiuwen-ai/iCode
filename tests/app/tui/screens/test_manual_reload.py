@@ -26,6 +26,7 @@ from tests.app.tui.screens.test_prompt_shortcut_send import (
     turn_finished,
     type_text,
 )
+from tests.support.toasts import shown_toasts
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 pytestmark = pytest.mark.usefixtures("clear_model_profile_env")
@@ -105,7 +106,7 @@ async def test_broken_settings_and_subsequent_repair_leave_chat_usable(agent_eng
             pilot=session.pilot,
             description="settings error shown in a toast",
         )
-        errors = [n for n in session.app._notifications if str(path) in str(n.message)]
+        errors = [n for n in shown_toasts(session.app) if str(path) in str(n.message)]
         assert [n.timeout for n in errors] == [8]
         assert path.read_text(encoding="utf-8") == "ui: [broken"
         await ask_after_reload(session, "after broken settings")

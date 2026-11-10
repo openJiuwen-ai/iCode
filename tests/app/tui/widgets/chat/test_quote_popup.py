@@ -23,6 +23,7 @@ from chrys.foundation.text.draft_references import (
     DraftReference,
     expand_references,
 )
+from tests.support.toasts import shown_toasts
 from tests.support.tui_helpers import rich_plain
 from tests.support.waiting import wait_for
 
@@ -223,12 +224,12 @@ async def test_a_locked_draft_refuses_the_quote_and_says_so() -> None:
         input_bar.lock_with_text()
         await pilot.pause()
         popup = await _finish_drag_over(app, body, text)
-        notifications_before = len(app._notifications)
+        notifications_before = len(shown_toasts(app))
 
         await _click_pill(app, pilot, popup)
 
         assert input_bar.value == "queued note"
-        assert len(app._notifications) == notifications_before + 1
+        assert len(shown_toasts(app)) == notifications_before + 1
 
 
 def test_the_pill_reads_quote_alone() -> None:

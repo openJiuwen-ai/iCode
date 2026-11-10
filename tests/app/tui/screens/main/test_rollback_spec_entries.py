@@ -302,8 +302,9 @@ async def test_running_click_is_refused_and_link_remains_visible(agent_engine, t
         await wait_for(hold.entered.is_set, pilot=session.pilot)
         results = await capture_events(session.bus, ev.RollbackResult)
         await click_message_rollback(session, "first")
-        await wait_for(lambda: bool(notices(session.app)), pilot=session.pilot)
-        assert any("running" in str(notice).lower() for notice in notices(session.app))
+        await wait_for(
+            lambda: any("running" in str(notice).lower() for notice in notices(session.app)), pilot=session.pilot
+        )
         assert not results
         assert opening_message(session, "first").query_one(MessageRollbackButton).display
         assert session.app.screen is session.main
@@ -354,16 +355,15 @@ async def test_interrupted_final_save_wait_is_bounded_and_preserves_turn(agent_e
             assert results[0].rolled_back_user_text == "interrupt me"
             assert session.engine.current_turn_number == 1
             return
+        # The previous turn is still finishing, not running.
         await wait_for(
-            lambda: bool(notices(session.app)),
+            lambda: any("finishing" in str(notice).lower() for notice in notices(session.app)),
             pilot=session.pilot,
             timeout=wait_seconds + 5,
             description="bounded rollback wait limit",
         )
         elapsed = asyncio.get_running_loop().time() - started
         assert wait_seconds * 0.8 <= elapsed <= wait_seconds + 5
-        # The previous turn is still finishing, not running.
-        assert any("finishing" in str(notice).lower() for notice in notices(session.app))
         assert lifecycle is not None and not lifecycle.done() and not lifecycle.cancelled()
         assert not button.disabled
         save.release()

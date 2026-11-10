@@ -73,6 +73,7 @@ from chrys.service.profiles.models.serializer import save_profile
 from chrys.service.prompt_shortcuts import load_prompt_shortcuts, prompt_shortcut_folders
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.scripted_clients import FrameworkBoom
+from tests.support.toasts import shown_toasts
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled, hold_prompt_fields_confirm_window
 from tests.support.waiting import (
@@ -460,8 +461,8 @@ def footer_actions(main: MainScreen) -> set[str]:
 
 
 def notices(app: ChrysApp) -> list[tuple[str, str]]:
-    """Every toast on screen, as ``(severity, message)``."""
-    return [(str(notification.severity), str(notification.message)) for notification in app._notifications]
+    """Every toast the App has shown, as ``(severity, message)``."""
+    return [(str(notification.severity), str(notification.message)) for notification in shown_toasts(app)]
 
 
 def user_bubbles(main: MainScreen) -> list[str]:

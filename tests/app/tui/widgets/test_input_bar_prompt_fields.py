@@ -12,6 +12,7 @@ from textual.document._document import Location, Selection
 from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar, _ChatTextArea
 from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent, shift_prompt_fields
 from chrys.foundation.text.draft_references import EMPTY_REFERENCES, iter_reference_labels
+from tests.support.toasts import shown_toasts
 from tests.support.tui_helpers import click_when_settled, hold_prompt_fields_confirm_window
 from tests.support.waiting import wait_for
 
@@ -882,7 +883,7 @@ _PENDING_WARNING = "highlighted placeholders are not filled in"
 
 
 def _pending_warnings(app: App[None]) -> list[str]:
-    return [n.message for n in app._notifications if _PENDING_WARNING in n.message]
+    return [n.message for n in shown_toasts(app) if _PENDING_WARNING in n.message]
 
 
 async def _retry_state(pilot, app: _FieldsApp) -> InputBar:
