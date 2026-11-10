@@ -287,6 +287,7 @@ PROFILE_CONFIG_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "tui.model_config.placeholder.profile_name",
         "tui.model_config.profile_name",
         "tui.model_config.provider",
+        "tui.model_config.provider.not_listed",
         "tui.model_config.provider_api_key",
         "tui.model_config.provider_base_url",
         "tui.model_config.provider_model",

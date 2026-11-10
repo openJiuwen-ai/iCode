@@ -9239,6 +9239,12 @@ msgstr ""
 msgid "tui.model_config.provider"
 msgstr ""
 
+#. English: Not listed: {provider}
+#. chrys-meta={"fingerprint":"37af17efad49cc53e0d4b0fc26a0664dc16a5f6b331322ca819b2f279eeeafd1","multiline":false,"placeholders":["provider"]}
+#: src/chrys/app/tui/screens/models/screen.py
+msgid "tui.model_config.provider.not_listed"
+msgstr ""
+
 #. English: {provider} API Key
 #. chrys-meta={"fingerprint":"4de364c5b6224e69c5b519eea9177159d6aa8b46d41df7ec441fb6f8927f6a0f","multiline":false,"placeholders":["provider"]}
 #: src/chrys/app/tui/screens/models/screen.py
