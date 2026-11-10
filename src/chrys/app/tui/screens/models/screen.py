@@ -11,12 +11,13 @@ import json
 import math
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
 from rich.markup import escape
 from rich.text import Text
-from textual import on
+from textual import on, work
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
@@ -27,16 +28,24 @@ from textual.widgets.option_list import Option, OptionDoesNotExist
 from chrys.app.tui.binding_display import CANCEL_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
+from chrys.app.tui.screens.dialogs.connection_test import ConnectionTestDialog
+from chrys.app.tui.screens.models.model_picker import _ModelPicker
 from chrys.app.tui.util.formatting import with_count_hint
+from chrys.app.tui.util.removal import finish_shielded, remove_all_shielded, remove_shielded
+from chrys.app.tui.util.spinner import SPINNER_FRAMES, STATIC_SPINNER
 from chrys.app.tui.util.static_update import update_static_in_place
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets import Checkbox, ConfigAddButton, Select
 from chrys.app.tui.widgets import EnhancedInput as Input
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.errors import ConfigError
 from chrys.foundation.config.runtime_pointer import set_model_pointer
 from chrys.foundation.config.spec import SettingOrigin, Source
+from chrys.foundation.errors import classify_error
+from chrys.foundation.errors.display import describe_error
+from chrys.foundation.errors.formatting import clean_error_message
 from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block
 from chrys.foundation.text.reading_order import reading_order
 from chrys.foundation.util.chrys_headers import is_chrys_managed_header_name
 from chrys.foundation.util.env_templates import blank_commands
@@ -46,12 +55,25 @@ from chrys.foundation.util.header_charset import (
     header_value_charset_error,
     model_id_charset_error,
 )
+from chrys.kernel import Message
 from chrys.service.context.compaction.budgets import MIN_DERIVABLE_CONTEXT_TOKENS
+from chrys.service.llm.clients import effective_model_base_url, scoped_client
+from chrys.service.llm.model_list import (
+    ConnectionSnapshot,
+    ModelDiscovery,
+    ModelInfo,
+    UrlCorrection,
+    discover_models,
+    has_command_placeholder,
+    resolve_model_connection,
+)
+from chrys.service.llm.one_shot import get_final_response
 from chrys.service.llm.providers import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS, PROVIDERS
 from chrys.service.profiles.models.options import (
     OUTPUT_CAP_OPTION_ALIASES,
     PROTECTED_EXTRA_BODY_CHAT_OPTION_KEYS,
     PROTECTED_TOP_LEVEL_CHAT_OPTION_KEYS,
+    effective_chat_options,
     is_anthropic_claude_profile,
     lacks_anthropic_prompt_cache_option,
     with_anthropic_prompt_cache_option,
@@ -67,6 +89,8 @@ from chrys.service.profiles.models.schema import (
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.timer import Timer
+    from textual.worker import Worker
 
     from chrys.app.tui.screens.dialogs.prompt_cache import PromptCacheDialogResult
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -127,6 +151,33 @@ _CLONE = msg("tui.model_config.button.clone", fallback="Clone")
 _DELETE = msg("tui.model_config.button.delete", fallback="Delete")
 _SAVE = msg("tui.model_config.button.save", fallback="Save")
 _CLOSE = msg("tui.model_config.button.close", fallback="Close")
+_KEY_NEEDED = msg("tui.model_config.key_needed", fallback="Try an API key")
+_KEY_REJECTED = msg("tui.model_config.key_rejected", fallback="The list request was rejected")
+_FETCH_MODELS = msg("tui.model_config.fetch_models", fallback="Fetch")
+_FETCHING_MODELS = msg("tui.model_config.fetching_models", fallback="Fetching the model list")
+_RETRYING_MODELS = msg("tui.model_config.retrying_models", fallback="Couldn't connect; retry round {round}/{rounds}")
+_LIST_NOT_FOUND = msg("tui.model_config.list_not_found", fallback="No model list found")
+_API_KEY_FROM_ENV = msg("tui.model_config.placeholder.api_key_from_env", fallback="Using {env}")
+_URL_ADDED_V1 = msg("tui.model_config.url_added_v1", fallback="added /v1")
+_URL_REMOVED_V1 = msg("tui.model_config.url_removed_v1", fallback="removed /v1")
+_URL_REMOVED_ENDPOINT = msg("tui.model_config.url_removed_endpoint", fallback="removed the endpoint path")
+_URL_ADDED_HTTPS = msg("tui.model_config.url_added_https", fallback="added https://")
+_URL_SWITCHED_HTTPS = msg("tui.model_config.url_switched_https", fallback="switched to https")
+_URL_SWITCHED_HTTP = msg("tui.model_config.url_switched_http", fallback="switched to http")
+_URL_CORRECTED = msg("tui.model_config.url_corrected", fallback="Automatically {changes}")
+_CORRECTION_SEPARATOR = msg("tui.model_config.correction_separator", fallback="; ")
+_CANNOT_CONNECT = msg("tui.model_config.cannot_connect", fallback="Couldn't connect; check address or network")
+_URL_CORRECTIONS: dict[UrlCorrection, MessageDef] = {
+    "added_v1": _URL_ADDED_V1,
+    "removed_v1": _URL_REMOVED_V1,
+    "removed_endpoint": _URL_REMOVED_ENDPOINT,
+    "added_https": _URL_ADDED_HTTPS,
+    "switched_https": _URL_SWITCHED_HTTPS,
+    "switched_http": _URL_SWITCHED_HTTP,
+}
+_TEST = msg("tui.model_config.test", fallback="Test")
+_TEST_SUBJECT = msg("tui.model_config.test_subject", fallback="Model")
+_TEST_ELAPSED = msg("tui.model_config.test_elapsed", fallback="{seconds}s")
 _ADD = msg("tui.model_config.button.add", fallback="+ Add")
 _HEADER_NAME_PLACEHOLDER = msg(
     "tui.model_config.placeholder.header_name",
@@ -390,8 +441,6 @@ _PROVIDER_LABELS: dict[str, str] = {
     "deepseek-openai": "DeepSeek (OpenAI)",
     "glm-openai": "GLM (OpenAI)",
 }
-
-_PROVIDER_DEFAULT_BASE_URLS: dict[str, str] = {name: spec.default_base_url for name, spec in PROVIDERS.items()}
 
 
 def _token_limit_param_name(provider: str, api_style: str) -> str:
@@ -741,6 +790,10 @@ class ModelConfigScreen(BaseDialog[str]):
     """
 
     CSS_PATH = "screen.tcss"
+    # Below this width the full-size footer buttons (plus the footer padding) no longer fit the dialog.
+    HORIZONTAL_BREAKPOINTS: list[tuple[int, str]] | None = [(0, "-narrow"), (77, "-regular")]  # noqa: RUF012 - Textual declares the base as an instance attribute.
+    discover_models = staticmethod(discover_models)
+    MODEL_TEST_TIMEOUT_SECONDS = 30.0
 
     BINDINGS: ClassVar[list] = [
         localized_binding("escape", "cancel", CANCEL_BINDING, show=False, priority=True),
@@ -765,6 +818,20 @@ class ModelConfigScreen(BaseDialog[str]):
         # Set while the prompt-caching reminder is pushed or showing: a second
         # Save pressed before it mounts would push a second reminder.
         self._prompt_cache_offer_open = False
+        self._model_auth_hint: MessageDef | None = None
+        self._model_url_hint: tuple[MessageDef, ...] = ()
+        self._model_row_removals: set[asyncio.Task[None]] = set()
+        self._model_list_worker: Worker | None = None
+        self._model_list_generation = 0
+        self._model_loading = False
+        self._fetching_models = False
+        self._fetch_spinner: Timer | None = None
+        self._fetch_frame = 0
+        self._fetch_retry_round = 0
+        self._fetch_retry_rounds = 0
+        self._model_extra_headers: str | None = None
+        self._testing_model = False
+        self._test_button_had_focus = False
         super().__init__()
 
     # ── Compose ──────────────────────────────────────────────────────
@@ -814,16 +881,41 @@ class ModelConfigScreen(BaseDialog[str]):
                             allow_blank=False,
                         )
 
-                        # Model name
+                        # Connection defaults are refreshed for the selected provider.
+                        yield Label(render_str(localizer, _BASE_URL.bind()), classes="mc-label", id="mc-url-label")
+                        yield Input(
+                            placeholder="",
+                            id="mc-base-url",
+                        )
+                        url_hint = Label("", id="mc-url-hint", classes="mc-hint mc-tls-hint")
+                        url_hint.display = False
+                        yield url_hint
+
+                        # API Key
+                        yield Label(render_str(localizer, _API_KEY.bind()), classes="mc-label", id="mc-key-label")
+                        yield Input(
+                            placeholder="sk-...",
+                            password=True,
+                            id="mc-api-key",
+                        )
+
+                        # Model name, with the explicit list lookup after the input
                         yield Label(
                             f"[red]*[/red] {escape(render_str(localizer, _MODEL.bind()))}",
                             classes="mc-label",
                             id="mc-model-label",
                         )
-                        yield Input(
-                            placeholder=render_str(localizer, _MODEL_PLACEHOLDER.bind()),
-                            id="mc-model",
-                        )
+                        with Horizontal(id="mc-model-line"):
+                            yield _ModelPicker(render_str(localizer, _MODEL_PLACEHOLDER.bind()))
+                            yield ConfigAddButton(
+                                render_str(localizer, _FETCH_MODELS.bind()),
+                                compact=True,
+                                classes="mc-kv-add-btn",
+                                id="mc-model-fetch",
+                            )
+                        model_hint = Label("", id="mc-model-hint", classes="mc-hint mc-tls-hint")
+                        model_hint.display = False
+                        yield model_hint
 
                         # Max context tokens
                         yield Label(
@@ -849,23 +941,6 @@ class ModelConfigScreen(BaseDialog[str]):
                                 _OUTPUT_CAP_PLACEHOLDER.bind(default=DEFAULT_MAX_OUTPUT_TOKENS),
                             ),
                             id="mc-max-output-tokens",
-                        )
-
-                        # Base URL — placeholder is updated per-provider in
-                        # ``_update_provider_labels``; the initial value matches
-                        # the default provider above (``openai``).
-                        yield Label(render_str(localizer, _BASE_URL.bind()), classes="mc-label", id="mc-url-label")
-                        yield Input(
-                            placeholder=_PROVIDER_DEFAULT_BASE_URLS["openai"],
-                            id="mc-base-url",
-                        )
-
-                        # API Key
-                        yield Label(render_str(localizer, _API_KEY.bind()), classes="mc-label", id="mc-key-label")
-                        yield Input(
-                            placeholder="sk-...",
-                            password=True,
-                            id="mc-api-key",
                         )
 
                         yield Checkbox(
@@ -952,6 +1027,7 @@ class ModelConfigScreen(BaseDialog[str]):
                     yield Button(render_str(localizer, _CLONE.bind()), variant="primary", id="mc-clone", flat=True)
                     yield Button(render_str(localizer, _DELETE.bind()), variant="error", id="mc-delete", flat=True)
                     yield Static(id="mc-buttons-spacer")
+                    yield Button(render_str(localizer, _TEST.bind()), id="mc-test", flat=True)
                     yield Button(render_str(localizer, _SAVE.bind()), variant="primary", id="mc-save", flat=True)
                     yield Button(render_str(localizer, _CLOSE.bind()), variant="warning", id="mc-cancel", flat=True)
                 notice = Static(Text(render_str(localizer, _READ_ONLY_NOTICE.bind())), id="mc-read-only-notice")
@@ -967,6 +1043,7 @@ class ModelConfigScreen(BaseDialog[str]):
         profiles = self._listed_profiles()
         if not profiles:
             if self._read_only:
+                self._update_provider_labels("openai")
                 self._set_form_enabled(False)
                 self._apply_read_only_state()
                 return
@@ -1081,21 +1158,27 @@ class ModelConfigScreen(BaseDialog[str]):
             id=f"mc-{prefix}add-row",
         )
 
-    def _populate_kv_list(self, container_id: str, items: dict[str, str], prefix: str) -> None:
+    def _populate_kv_list(self, container_id: str, items: dict[str, str], prefix: str) -> list[Awaitable[object]]:
         """Clear and repopulate a key-value list container."""
         container = self.query_one(f"#{container_id}", Vertical)
-        # Remove all existing item rows (keep the add row)
-        for row in list(container.query(".mc-kv-item-row")):
-            row.remove()
+        # A rejected load callback still leaves the removal owned until unmount.
+        removal = asyncio.create_task(remove_all_shielded(list(container.query(".mc-kv-item-row"))))
+        self._model_row_removals.add(removal)
+        pending: list[Awaitable[object]] = [removal]
         # Add rows before the add-row
         add_row_id = f"mc-{prefix}add-row"
         add_row = self.query_one(f"#{add_row_id}", Horizontal)
         for key, val in items.items():
-            container.mount(self._compose_kv_row(key, val, prefix, read_only=self._read_only), before=add_row)
+            pending.append(
+                container.mount(self._compose_kv_row(key, val, prefix, read_only=self._read_only), before=add_row)
+            )
         if not items:
-            container.mount(self._compose_kv_row("", "", prefix, read_only=self._read_only), before=add_row)
+            pending.append(
+                container.mount(self._compose_kv_row("", "", prefix, read_only=self._read_only), before=add_row)
+            )
         self._apply_read_only_state()
         self.call_after_refresh(self._apply_read_only_state)
+        return pending
 
     def _read_kv_list(self, container_id: str) -> dict[str, str]:
         """Read all key-value pairs from a list container."""
@@ -1302,6 +1385,7 @@ class ModelConfigScreen(BaseDialog[str]):
 
         await container.mount(self._compose_kv_row("", "", prefix), before=add_row)
         container.refresh(layout=True)
+        self._model_connection_rows_changed(container_id)
 
     # ── Profile loading ──────────────────────────────────────────────
 
@@ -1310,56 +1394,72 @@ class ModelConfigScreen(BaseDialog[str]):
         profile = self._registry.get(profile_id)
         if profile is None:
             return
-        self._selected_profile_id = profile_id
-        self._set_form_enabled(True)
+        self._cancel_model_lookup()
+        self._set_model_list([])
+        self._model_loading = True
+        with self.prevent(Input.Changed, Select.Changed, Checkbox.Changed):
+            self._selected_profile_id = profile_id
+            self._set_form_enabled(True)
 
-        self.query_one("#mc-name", Input).value = profile.name
-        self.query_one("#mc-provider", Select).value = profile.provider
-        self.query_one("#mc-api-style", Select).value = (
-            profile.api_style if profile.provider in ("openai", "deepseek-openai") else API_STYLE_CHAT_COMPLETIONS
-        )
-        self.query_one("#mc-model", Input).value = profile.model_id
-        self.query_one("#mc-max-tokens", Input).value = str(profile.max_context_tokens)
-        self.query_one("#mc-max-output-tokens", Input).value = str(
-            profile.max_output_tokens if profile.max_output_tokens > 0 else DEFAULT_MAX_OUTPUT_TOKENS
-        )
-        self.query_one("#mc-base-url", Input).value = profile.base_url
-        self.query_one("#mc-api-key", Input).value = profile.api_key
-        self.query_one("#mc-connect-timeout", Input).value = str(profile.http_connect_timeout)
-        self.query_one("#mc-read-timeout", Input).value = str(profile.http_read_timeout)
-        self.query_one("#mc-max-retries", Input).value = str(profile.http_max_retries)
-        skip_tls = not profile.verify_ssl
-        self.query_one("#mc-skip-tls", Checkbox).value = skip_tls
-        self.query_one("#mc-skip-tls-hint", Label).display = skip_tls
-        self.query_one("#mc-bypass-proxy", Checkbox).value = profile.bypass_proxy
-        self.query_one("#mc-stream", Checkbox).value = profile.stream
-        self.query_one("#mc-vision", Checkbox).value = profile.vision
+            self.query_one("#mc-name", Input).value = profile.name
+            self.query_one("#mc-provider", Select).value = profile.provider
+            self.query_one("#mc-api-style", Select).value = (
+                profile.api_style if profile.provider in ("openai", "deepseek-openai") else API_STYLE_CHAT_COMPLETIONS
+            )
+            self.query_one("#mc-model", Input).value = profile.model_id
+            self.query_one("#mc-max-tokens", Input).value = str(profile.max_context_tokens)
+            self.query_one("#mc-max-output-tokens", Input).value = str(
+                profile.max_output_tokens if profile.max_output_tokens > 0 else DEFAULT_MAX_OUTPUT_TOKENS
+            )
+            self.query_one("#mc-base-url", Input).value = profile.base_url
+            self.query_one("#mc-api-key", Input).value = profile.api_key
+            self.query_one("#mc-connect-timeout", Input).value = str(profile.http_connect_timeout)
+            self.query_one("#mc-read-timeout", Input).value = str(profile.http_read_timeout)
+            self.query_one("#mc-max-retries", Input).value = str(profile.http_max_retries)
+            skip_tls = not profile.verify_ssl
+            self.query_one("#mc-skip-tls", Checkbox).value = skip_tls
+            self.query_one("#mc-skip-tls-hint", Label).display = skip_tls
+            self.query_one("#mc-bypass-proxy", Checkbox).value = profile.bypass_proxy
+            self.query_one("#mc-stream", Checkbox).value = profile.stream
+            self.query_one("#mc-vision", Checkbox).value = profile.vision
 
-        # Populate key-value lists
-        headers = _parse_json_dict(profile.http_headers, parse_values=False)
-        self._populate_kv_list("mc-headers-list", headers, "h")
+            # Populate key-value lists
+            headers = _parse_json_dict(profile.http_headers, parse_values=False)
+            pending = self._populate_kv_list("mc-headers-list", headers, "h")
 
-        options = _parse_json_dict(profile.chat_options)
-        self._populate_kv_list("mc-options-list", options, "o")
+            options = _parse_json_dict(profile.chat_options)
+            self._model_extra_headers = options.get("extra_headers")
+            pending.extend(self._populate_kv_list("mc-options-list", options, "o"))
 
-        self._update_provider_labels(profile.provider)
-        self._apply_read_only_state()
-        self.call_after_refresh(self._apply_read_only_state)
+            self._update_provider_labels(profile.provider)
+            update_static_in_place(
+                self.query_one("#mc-max-tokens-label", Label),
+                self._max_context_label(self.query_one("#mc-max-tokens", Input).value),
+            )
+            self._apply_read_only_state()
+            self.call_after_refresh(self._apply_read_only_state)
+        if not self.call_after_refresh(self._finish_model_load, self._model_list_generation, pending):
+            self._model_loading = False
+            self._update_model_fetch_button()
 
     # ── Provider-dependent labels ────────────────────────────────────
 
     def _update_provider_labels(self, provider: str) -> None:
-        """Update field labels and the Base URL placeholder for the selected provider."""
+        """Refresh provider labels and the defaults shown by the form."""
         prefix = _PROVIDER_LABELS.get(provider, provider.title())
-        self.query_one("#mc-model-label", Label).update(
-            f"[red]*[/red] {escape(self._render_toast(_PROVIDER_MODEL.bind(provider=prefix)))}"
-        )
-        self.query_one("#mc-url-label", Label).update(self._render_toast(_PROVIDER_BASE_URL.bind(provider=prefix)))
+        self._refresh_model_heading_and_hint()
+        self._refresh_url_label()
         self.query_one("#mc-key-label", Label).update(self._render_toast(_PROVIDER_API_KEY.bind(provider=prefix)))
 
-        default_base_url = _PROVIDER_DEFAULT_BASE_URLS.get(provider, "")
-        self.query_one("#mc-base-url", Input).placeholder = default_base_url or self._render_toast(
+        defaults = resolve_model_connection(ConnectionSnapshot(provider, ""))
+        self.query_one("#mc-base-url", Input).placeholder = defaults.base_url or self._render_toast(
             _LEAVE_BLANK_FOR_DEFAULT.bind()
+        )
+        spec = PROVIDERS.get(provider)
+        self.query_one("#mc-api-key", Input).placeholder = (
+            self._render_toast(_API_KEY_FROM_ENV.bind(env=spec.api_key_env))
+            if defaults.api_key and spec is not None
+            else "sk-..."
         )
         api_style_label = self.query_one("#mc-api-style-label", Label)
         api_style_select = self.query_one("#mc-api-style", Select)
@@ -1369,6 +1469,84 @@ class ModelConfigScreen(BaseDialog[str]):
         if not supports_api_style:
             api_style_select.value = API_STYLE_CHAT_COMPLETIONS
         self._refresh_max_output_label(provider, str(api_style_select.value))
+        self._update_model_fetch_button()
+
+    def _refresh_model_heading_and_hint(self) -> None:
+        provider = str(self.query_one("#mc-provider", Select).value)
+        prefix = _PROVIDER_LABELS.get(provider, provider.title())
+        label = Text.assemble(("*", "red"), " ", self._render_toast(_PROVIDER_MODEL.bind(provider=prefix)))
+        update_static_in_place(self.query_one("#mc-model-label", Label), label)
+        # Progress and results share the row under the model input; only progress is muted.
+        hint = self._model_auth_hint
+        row = self.query_one("#mc-model-hint", Label)
+        text = ""
+        if self._fetching_models:
+            frame = SPINNER_FRAMES[self._fetch_frame] if self.app.animation_level != "none" else STATIC_SPINNER
+            progress = (
+                _RETRYING_MODELS.bind(round=self._fetch_retry_round, rounds=self._fetch_retry_rounds)
+                if self._fetch_retry_round
+                else _FETCHING_MODELS.bind()
+            )
+            text = f"{frame} " + self._render_toast(progress)
+        elif hint is not None:
+            text = self._render_toast(hint.bind())
+        row.set_class(self._fetching_models, "-progress")
+        update_static_in_place(row, Text(text))
+        row.display = bool(text)
+
+    def _set_model_auth_hint(self, hint: MessageDef | None) -> None:
+        if hint is not None or self._fetching_models:
+            self._set_model_url_hint(None)
+        self._model_auth_hint = hint
+        self._sync_fetch_spinner()
+        self._refresh_model_heading_and_hint()
+
+    def _sync_fetch_spinner(self) -> None:
+        """Run the progress spinner exactly while the fetching hint is shown."""
+        spinning = self._fetching_models and self.app.animation_level != "none"
+        if spinning and self._fetch_spinner is None:
+            self._fetch_frame = 0
+            self._fetch_spinner = self.set_interval(0.12, self._advance_fetch_spinner)
+        elif not spinning and self._fetch_spinner is not None:
+            self._fetch_spinner.stop()
+            self._fetch_spinner = None
+
+    def _show_fetch_retry(self, generation: int, round_number: int, total_rounds: int) -> None:
+        """Show the current retry round without accepting stale worker updates."""
+        if generation != self._model_list_generation or not self._composed_live:
+            return
+        self._fetch_retry_round = round_number
+        self._fetch_retry_rounds = total_rounds
+        self._refresh_model_heading_and_hint()
+
+    def _advance_fetch_spinner(self) -> None:
+        if not self._composed_live or not is_widget_shown_on_active_screen(self.query_one("#mc-model-hint", Label)):
+            return
+        self._fetch_frame = (self._fetch_frame + 1) % len(SPINNER_FRAMES)
+        self._refresh_model_heading_and_hint()
+
+    def _refresh_url_label(self) -> None:
+        provider = str(self.query_one("#mc-provider", Select).value)
+        prefix = _PROVIDER_LABELS.get(provider, provider.title())
+        update_static_in_place(
+            self.query_one("#mc-url-label", Label), Text(self._render_toast(_PROVIDER_BASE_URL.bind(provider=prefix)))
+        )
+        hint = ""
+        if self._model_url_hint:
+            separator = self._render_toast(_CORRECTION_SEPARATOR.bind())
+            changes = separator.join(self._render_toast(message.bind()) for message in self._model_url_hint)
+            hint = self._render_toast(_URL_CORRECTED.bind(changes=changes))
+        warning = self.query_one("#mc-url-hint", Label)
+        update_static_in_place(warning, Text(hint))
+        warning.display = bool(hint)
+
+    def _set_model_url_hint(self, hint: tuple[MessageDef, ...] | None) -> None:
+        hint = hint or ()
+        if hint:
+            self._set_model_auth_hint(None)
+        if hint != self._model_url_hint:
+            self._model_url_hint = hint
+            self._refresh_url_label()
 
     def _refresh_max_output_label(self, provider: str, api_style: str) -> None:
         raw = self.query_one("#mc-max-output-tokens", Input).value
@@ -1390,11 +1568,273 @@ class ModelConfigScreen(BaseDialog[str]):
         label = Text.assemble(("*", "red"), " ", self._render_toast(_MAX_CONTEXT_WINDOW.bind()))
         return with_count_hint(label, raw)
 
+    # ── Model discovery ──────────────────────────────────────────────
+
+    def _connection_snapshot(self) -> ConnectionSnapshot | None:
+        """Read the connection fields straight from the form for discovery.
+
+        These fields are also read by ``_build_profile_from_form`` (for Save and
+        Test): a new field that changes the request must be added in both.
+        """
+
+        try:
+            headers = self._read_kv_list("mc-headers-list")
+            options = self._read_kv_list("mc-options-list")
+        except NoMatches:
+            # A row may be between mounting/removal and attaching its inputs.
+            return None
+        extra_headers: dict[str, str] = {}
+        if "extra_headers" in options:
+            parsed = _parse_chat_option_value_for_validation(options["extra_headers"])
+            if not isinstance(parsed, dict) or not all(isinstance(value, str) for value in parsed.values()):
+                return None
+            extra_headers = parsed
+        try:
+            timeout = float(self.query_one("#mc-connect-timeout", Input).value)
+        except ValueError:
+            timeout = 10.0
+        if not math.isfinite(timeout) or timeout <= 0:
+            timeout = 10.0
+        return ConnectionSnapshot(
+            provider=str(self.query_one("#mc-provider", Select).value),
+            base_url=self.query_one("#mc-base-url", Input).value.strip(),
+            api_key=self.query_one("#mc-api-key", Input).value.strip(),
+            http_headers=headers,
+            extra_headers=extra_headers,
+            verify_ssl=not self.query_one("#mc-skip-tls", Checkbox).value,
+            bypass_proxy=self.query_one("#mc-bypass-proxy", Checkbox).value,
+            connect_timeout=timeout,
+        )
+
+    def _update_model_fetch_button(self) -> None:
+        button = self.query_one("#mc-model-fetch", Button)
+        provider = str(self.query_one("#mc-provider", Select).value)
+        connection = resolve_model_connection(
+            ConnectionSnapshot(
+                provider,
+                self.query_one("#mc-base-url", Input).value,
+            )
+        )
+        button.disabled = self._read_only or self._model_loading or self._fetching_models or not connection.base_url
+        button.display = not self._read_only
+
+    def _cancel_model_lookup(self) -> None:
+        self._model_list_generation += 1
+        if self._model_list_worker is not None:
+            self._model_list_worker.cancel()
+            self._model_list_worker = None
+        self._fetching_models = False
+        if self._composed_live:
+            self._update_model_fetch_button()
+
+    def _set_model_list(self, models: list[ModelInfo]) -> None:
+        self._set_model_auth_hint(None)
+        self._set_model_url_hint(None)
+        self.query_one(_ModelPicker).set_models(models)
+
+    async def _finish_model_load(self, generation: int, pending: list[Awaitable[object]]) -> None:
+        try:
+            await finish_shielded(asyncio.gather(*pending))
+        finally:
+            self._model_row_removals.difference_update({task for task in self._model_row_removals if task.done()})
+        if generation != self._model_list_generation or not self._composed_live:
+            return
+        self._model_loading = False
+        self._update_model_fetch_button()
+
+    def _connection_changed(self) -> None:
+        if self._read_only or self._model_loading or not self._composed_live:
+            return
+        self._cancel_model_lookup()
+        self._set_model_list([])
+
+    def _model_connection_rows_changed(self, container_id: str) -> None:
+        if not self._composed_live or self._model_loading:
+            return
+        if container_id == "mc-options-list":
+            extra_headers = self._read_kv_list(container_id).get("extra_headers")
+            if extra_headers == self._model_extra_headers:
+                return
+            self._model_extra_headers = extra_headers
+        self._connection_changed()
+
+    @on(Button.Pressed, "#mc-model-fetch")
+    def _on_model_fetch(self, _event: Button.Pressed) -> None:
+        if self._read_only or self._model_loading or self._fetching_models:
+            return
+        had_focus = self.query_one("#mc-model-fetch", Button).has_focus
+        self._cancel_model_lookup()
+        self._fetch_retry_round = 0
+        self._fetching_models = True
+        self._set_model_auth_hint(None)
+        self._update_model_fetch_button()
+        snapshot = self._connection_snapshot()
+        try:
+            if snapshot is None or has_command_placeholder(snapshot):
+                raise ValueError("Unresolved model-list connection")
+            connection = resolve_model_connection(snapshot)
+        except Exception:
+            self._apply_model_discovery(ModelDiscovery([]), key_empty=True, had_focus=had_focus)
+            return
+        self._model_list_worker = self._fetch_models(
+            snapshot, self._model_list_generation, key_empty=not connection.api_key, had_focus=had_focus
+        )
+
+    @work(exclusive=True, group="model-list", exit_on_error=False)
+    async def _fetch_models(
+        self, snapshot: ConnectionSnapshot, generation: int, *, key_empty: bool, had_focus: bool
+    ) -> None:
+        try:
+            result = await self.discover_models(snapshot, on_retry=partial(self._show_fetch_retry, generation))
+        except Exception:
+            result = ModelDiscovery([])
+        if generation != self._model_list_generation or not self._composed_live:
+            return
+        self._model_list_worker = None
+        current = self._connection_snapshot()
+        if current is not None and current != snapshot:
+            # The form changed but its Changed event has not reached the screen yet: the result
+            # belongs to the old connection and must not rewrite the new Base URL.
+            self._cancel_model_lookup()
+            self._set_model_list([])
+            return
+        self._apply_model_discovery(result, key_empty=key_empty, had_focus=had_focus)
+
+    def _apply_model_discovery(self, result: ModelDiscovery, *, key_empty: bool, had_focus: bool) -> None:
+        # Disabling Fetch blurs it, so focus is None unless the user moved on while waiting:
+        # then the result must not take focus (the open list would swallow their typing).
+        fetch = self.query_one("#mc-model-fetch", Button)
+        user_moved_on = self.focused not in (None, fetch, self.query_one("#mc-model", Input))
+        self._fetching_models = False
+        if result.models and result.corrected_base_url is not None:
+            with self.prevent(Input.Changed):
+                self.query_one("#mc-base-url", Input).value = result.corrected_base_url
+            self._update_provider_labels(str(self.query_one("#mc-provider", Select).value))
+        self._update_model_fetch_button()
+        self._set_model_list(result.models)
+        if result.models:
+            if result.corrected_base_url is not None:
+                self._set_model_url_hint(tuple(_URL_CORRECTIONS[correction] for correction in result.url_corrections))
+            if not user_moved_on:
+                self.query_one(_ModelPicker).set_expanded(True)
+            return
+        if result.auth_rejected:
+            self._set_model_auth_hint(_KEY_NEEDED if key_empty else _KEY_REJECTED)
+        elif result.unreachable:
+            self._set_model_auth_hint(_CANNOT_CONNECT)
+        else:
+            self._set_model_auth_hint(_LIST_NOT_FOUND)
+        if had_focus and self.focused is None:
+            fetch.focus(scroll_visible=False)
+
+    @on(Input.Changed, "#mc-base-url")
+    @on(Input.Changed, "#mc-api-key")
+    @on(Input.Changed, "#mc-connect-timeout")
+    @on(Input.Changed, "#mc-max-retries")
+    def _on_model_connection_changed(self, _event: Input.Changed) -> None:
+        self._connection_changed()
+
+    @on(Input.Changed, ".mc-kv-field")
+    def _on_model_headers_changed(self, event: Input.Changed) -> None:
+        row = event.input.parent
+        if row is not None and row.parent is not None and row.parent.id is not None:
+            self._model_connection_rows_changed(row.parent.id)
+
+    @on(Checkbox.Changed, "#mc-bypass-proxy")
+    def _on_model_proxy_changed(self, _event: Checkbox.Changed) -> None:
+        self._connection_changed()
+
+    def _before_dismiss(self, _result: object | None = None) -> None:
+        self._cancel_model_lookup()
+
+    async def on_unmount(self) -> None:
+        self._cancel_model_lookup()
+        if self._model_row_removals:
+            await finish_shielded(asyncio.gather(*self._model_row_removals))
+            self._model_row_removals.clear()
+
+    # ── Connection test ───────────────────────────────────────────────
+
+    @on(Button.Pressed, "#mc-test")
+    def _on_test_model(self, _event: Button.Pressed) -> None:
+        if self._read_only or self._testing_model:
+            return
+        self._testing_model = True
+        button = self.query_one("#mc-test", Button)
+        # Disabling moves focus to the next button (New); give it back afterwards.
+        self._test_button_had_focus = button.has_focus
+        button.disabled = True
+        self._run_model_test()
+
+    def _model_test_error(self, exc: BaseException) -> str:
+        description = describe_error(exc)
+        parts: list[str] = []
+        if description is not None:
+            parts.append(self._render_toast(description.message))
+            if description.hint is not None:
+                parts.append(self._render_toast(description.hint))
+        parts.append(clean_error_message(exc) or type(exc).__name__)
+        return sanitize_legacy_block("\n\n".join(parts))
+
+    @work(exit_on_error=False)
+    async def _run_model_test(self) -> None:
+        dialog = ConnectionTestDialog(
+            server_name=self.query_one("#mc-name", Input).value,
+            subject_label=_TEST_SUBJECT.bind(),
+        )
+        self.app.push_screen(dialog)
+        try:
+            errors = self._validate()
+            if errors:
+                dialog.set_result(success=False, message="\n".join(errors))
+                return
+            profile = self._build_profile_from_form()
+            profile.http_max_retries = 0
+            started = asyncio.get_running_loop().time()
+            async with asyncio.timeout(self.MODEL_TEST_TIMEOUT_SECONDS), scoped_client(profile) as client:
+                await get_final_response(
+                    client,
+                    [Message(role="user", contents=["Reply with OK."])],
+                    stream=profile.stream,
+                    options={"model": profile.model_id, **(effective_chat_options(profile) or {})},
+                    timeout=profile.http_read_timeout,
+                )
+            elapsed = asyncio.get_running_loop().time() - started
+            first_line = profile.model_id
+            if profile.provider in ("openai", "deepseek-openai"):
+                style = next((label for label, value in _API_STYLES if value == profile.api_style), None)
+                if style is not None:
+                    first_line += " · " + self._render_toast(style.bind())
+            address = effective_model_base_url(profile)
+            timing = self._render_toast(_TEST_ELAPSED.bind(seconds=f"{elapsed:.1f}"))
+            dialog.set_result(success=True, message=sanitize_legacy_block(f"{first_line}\n{address} · {timing}"))
+        except asyncio.CancelledError as exc:
+            dialog.set_result(success=False, message=self._model_test_error(exc))
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+        except Exception as exc:
+            dialog.set_result(
+                success=False,
+                message=self._model_test_error(exc),
+                allow_esc=isinstance(exc, TimeoutError) or classify_error(exc).timeout_phase is not None,
+            )
+        finally:
+            self._testing_model = False
+            if self._composed_live:
+                button = self.query_one("#mc-test", Button)
+                button.disabled = self._read_only
+                if self._test_button_had_focus and not self._read_only:
+                    button.focus(scroll_visible=False)
+
     # ── Events ───────────────────────────────────────────────────────
 
     @on(Select.Changed, "#mc-provider")
-    def _on_provider_changed(self, event: Select.Changed) -> None:
-        self._update_provider_labels(str(event.value))
+    def _on_provider_changed(self, _event: Select.Changed) -> None:
+        # Read the widget, not the event: a Changed queued before _load_profile's
+        # prevented assignments must not reapply the stale initial value.
+        self._update_provider_labels(str(self.query_one("#mc-provider", Select).value))
+        self._connection_changed()
 
     @on(Select.Changed, "#mc-api-style")
     def _on_api_style_changed(self, _event: Select.Changed) -> None:
@@ -1404,8 +1844,9 @@ class ModelConfigScreen(BaseDialog[str]):
         )
 
     @on(Input.Changed, "#mc-max-tokens")
-    def _on_max_context_changed(self, event: Input.Changed) -> None:
-        update_static_in_place(self.query_one("#mc-max-tokens-label", Label), self._max_context_label(event.value))
+    def _on_max_context_changed(self, _event: Input.Changed) -> None:
+        raw = self.query_one("#mc-max-tokens", Input).value
+        update_static_in_place(self.query_one("#mc-max-tokens-label", Label), self._max_context_label(raw))
 
     @on(Input.Changed, "#mc-max-output-tokens")
     def _on_max_output_changed(self, _event: Input.Changed) -> None:
@@ -1415,9 +1856,10 @@ class ModelConfigScreen(BaseDialog[str]):
         )
 
     @on(Checkbox.Changed, "#mc-skip-tls")
-    def _on_skip_tls_changed(self, event: Checkbox.Changed) -> None:
+    def _on_skip_tls_changed(self, _event: Checkbox.Changed) -> None:
         with contextlib.suppress(Exception):
-            self.query_one("#mc-skip-tls-hint", Label).display = bool(event.value)
+            self.query_one("#mc-skip-tls-hint", Label).display = self.query_one("#mc-skip-tls", Checkbox).value
+        self._connection_changed()
 
     @on(OptionList.OptionSelected, "#mc-list")
     def _on_profile_selected(self, event: OptionList.OptionSelected) -> None:
@@ -1433,7 +1875,7 @@ class ModelConfigScreen(BaseDialog[str]):
         await self._add_kv_item("mc-options-list", "o")
 
     @on(Button.Pressed)
-    def _on_kv_remove(self, event: Button.Pressed) -> None:
+    async def _on_kv_remove(self, event: Button.Pressed) -> None:
         """Handle removal of key-value rows (header or option)."""
         if self._read_only:
             return
@@ -1448,7 +1890,9 @@ class ModelConfigScreen(BaseDialog[str]):
                     row.query_one(".mc-kv-value-input", Input).value = ""
                     row.refresh(layout=True)
                 else:
-                    row.remove()
+                    # Read the form only after the deleted row leaves the DOM.
+                    await remove_shielded(row)
+                self._model_connection_rows_changed(container.id or "")
 
     async def _create_new_profile(self) -> None:
         """Create a new blank profile, add to sidebar, and select it.

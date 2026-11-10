@@ -12,16 +12,25 @@ from typing import Any, cast
 from textual.pilot import Pilot
 from textual.widgets import Input
 
+from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.main.config_actions import RuntimeConfigController
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.models.screen import ModelConfigScreen
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import SettingsReload
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.support.event_capture import capture_events
+from tests.support.paths import SRC_ROOT
 from tests.support.tui_helpers import PlaceholderHostApp
 from tests.support.waiting import wait_for
+
+
+class ModelConfigHostApp(PlaceholderHostApp):
+    """Host the form with the shared control styles used in production."""
+
+    CSS_PATH = SRC_ROOT / "chrys" / "app" / "tui" / "chrys.tcss"
 
 
 def single_profile_registry(**overrides: Any) -> tuple[ModelProfileRegistry, ModelProfile]:
@@ -44,14 +53,16 @@ async def open_model_config(
     registry: ModelProfileRegistry,
     *,
     size: tuple[int, int] = (120, 40),
+    locale: str = "en",
     **screen_kwargs: Any,
 ) -> AsyncIterator[tuple[ModelConfigScreen, Pilot]]:
-    """Mount ``ModelConfigScreen`` on a bare host app and yield it with the pilot.
+    """Yield the model form and pilot with production CSS and the requested locale.
 
     Tests that need the host app reach it through ``pilot.app``; assertions on
     values captured inside the block stay valid after it exits.
     """
-    app = PlaceholderHostApp()
+    app = ModelConfigHostApp()
+    app.locale_controller = LocaleController(Settings(locale=locale))
     async with app.run_test(size=size) as pilot:
         screen = ModelConfigScreen(registry, **screen_kwargs)
         await app.push_screen(screen)
