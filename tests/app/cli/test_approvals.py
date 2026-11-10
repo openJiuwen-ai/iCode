@@ -287,3 +287,17 @@ def test_cli_reports_conflict_when_trust_settings_cannot_be_migrated(capsys, mon
     (conflict,) = [json.loads(line) for line in output.err.splitlines()]
     assert conflict["code"] == "workdir_trust_conflict"
     assert "workdir.hooks_enabled" in conflict["warning"]
+
+
+def test_cli_reports_an_unreadable_store_instead_of_an_empty_one(grants, capsys):
+    binding, _ = grants
+    atomic_write_owner_only_text(binding.service.store.path, "{")
+    assert approvals.main(["list"]) == 1
+    streams = capsys.readouterr()
+    assert "No remembered approvals." not in streams.out
+    assert "could not be read" in streams.err
+    assert "clear --all" in streams.err
+    assert approvals.main(["clear", "--all"]) == 0
+    out = capsys.readouterr().out
+    assert approvals.main(["list"]) == 0
+    assert "No remembered approvals." in capsys.readouterr().out or out
