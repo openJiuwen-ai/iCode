@@ -7,12 +7,12 @@
 完整操作见 SELF-REVIEW-HOWTO.md。
 -->
 
-- 责任人：
-- 状态：草案
-- 确认日期：
-- 确认意见：（可选）
+- 责任人：赵阔
+- 状态：已确认
+- 确认日期：2026-11-10
+- 确认意见：同意第一轮评审拍板结论（1A + 2 必做 + 3 方案一 + 4/5/6 做）；剩余收尾项按 plan.md 跟踪，增量复审记录后续追加。
 - 开发 AI：CodeBuddy（Claude）
-- 评审 AI：待定（须与开发 AI 不同源；候选：另开 IDE 会话的不同模型，或外部 AI 工具）
+- 评审 AI：Claude Code CLI · 底层模型 GLM-5.3（智谱），经本机 Anthropic 兼容端点接入（与开发 AI 工具、模型均不同源）
 
 > 状态说明：本批次为事后补录，双 AI 评审**尚未执行**——按 SELF-REVIEW-HOWTO §一 五步
 > 流程走完后由开发 AI 回填下方评审结论节，再交责任人签认。评审时请评审 AI 重点覆盖
@@ -35,9 +35,22 @@
 7. vacuous test：本批次无新增测试——检查"构建比对"是否真的会在捆绑缺失时红
    （故意删一个 manual 文件重建，check_wheel 应报 missing）。
 
-## <日期待填> 评审结论：待评审
+## 2026-11-10 评审结论：第一轮已收敛（增量复审记录后续追加）
 
-- 轮次：待执行（每轮 = 评审 + 修复 + 复审）
-- blocker 处置：待回填（逐条：finding → 已修复，验证命令与结果，引用 verification.md 对应节）
-- 未修项（次要问题，责任人拍板不修）：
-  - 待回填（位置 | 说明 | 不修理由）
+- 轮次：第 1 轮（评审 AI 只读核查：git diff 逐文件比对、上游符号实证、边界扫描、关键测试复现、
+  F8 解析独立复现；未修改仓库文件）。报告：桌面 `user-manual批次独立评审报告-20261110.md`
+  （3 blocker / 2 suggestion / 1 nit）。
+- blocker 处置（全部修复，证据见 verification.md「独立评审第一轮处置」节）：
+  - **F1** 契约测试连带跟改漏报（`test_wheel_bundles_docs_where_the_resolver_looks` 断言
+    `force_include["docs"]` 必红）→ 已跟改断言键并补 R2 表第 3 行 + C147 标记；
+    单验 1 passed。
+  - **F2** "92 passed" 证据对应 pyproject 切换前树况（R7 失真）→ 已在提交态重跑，92 passed
+    （含契约测试）；旧记录加注树况差异。
+  - **F3** manual 树 100 处围栏外第三方外链（验收勾选失真）→ 已去链 98 处（保留产品仓库
+    发布页 2 处），复扫 manual 树剩 2、wheel 内 0；requirements 验收第 2 项证据已更新。
+- suggestion / nit 处置：F4 批次文档与 INDEX 已成笔入库、plan 措辞修正；F5 等价校验脚本
+  落盘 `verify_wheel_bundle.py`（重跑 67=67 哈希零差异）；F6 随 F3 联动更新。
+- 开发 AI 复检追加发现（评审未覆盖）：`ruff format --check aixcoding/`（CI govern 门）会重排
+  manual 树 md 围栏内有意对齐的注释 → 已加 `[tool.ruff] extend-exclude = ["aixcoding/manual"]`
+  （C148），ruff 双门本地全绿。
+- 未修项（次要问题，责任人拍板不修）：无（suggestion/nit 全部处置）。

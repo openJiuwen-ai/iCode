@@ -151,10 +151,28 @@ wheel 内围栏外第三方外链: 0（保留项 2 处在 manual 树源文件，
 桌面定稿 MD/PDF 本轮未改（去链针对 manual 树；桌面合并版此前已清、含外链的
 chat-options 章节为 manual 树独有），PDF 不需重出。
 
+## 2026-11-10 签认与门禁总检
+
+责任人签认（单据头部代填按责任人当次指示执行，签字人 赵阔、日期 2026-11-10）：
+`design.md`（R2 获批记录 + R11 审批人/审批日期）、`self-review.md`（首轮评审结论）、
+`adr/0001`（随设计生效）。
+
+签认后连跑两道门禁：
+
+```
+python aixcoding/tools/gen_customizations.py --strict
+→ check OK — 105 registration row(s) / 142 marker(s) across 15 design(s), 6 retired id(s), 0 warning(s)
+
+python aixcoding/tools/check_docs.py
+→ scanned 24 ADR(s), 34 design(s), 32 self-review(s) under aixcoding/docs … OK
+```
+
+对账过程中发现并修正的两处格式问题（R2/R3 对账口径）：
+1. 登记表 marker 锚带反引号，解析器不剥离 → 改为纯文本（工具要求锚是代码标记的逐字前缀）；
+2. design 含 `第三方依赖申请` 章节且已确认 → 按 R11 规则补 `审批人` / `审批日期` 头部字段
+   （结论：无新增第三方依赖，批准）。
+
 ## 待补项
 
-- [ ] `check_docs.py` 门禁绿证据（本批次文档入库后补跑）；
-- [ ] C145/C146/C147 写入 customization-registry 批次清单 + `gen_customizations.py --strict`
-      对账输出（R3 标记已补录，仅剩登记与对账）；
-- [ ] 评审第一轮修复后的增量复审（HOWTO ③，同一评审 AI 复审增量）与责任人签认；
+- [ ] 评审第一轮修复后的增量复审（HOWTO ③，同一评审 AI 复审增量）——签认不阻塞，记录追加不重签；
 - [ ] Linux 侧 `check_wheel.py` 正式门禁输出（CI 桥接或无 SAC 环境补跑）。

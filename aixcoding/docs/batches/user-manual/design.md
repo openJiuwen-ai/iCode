@@ -5,10 +5,12 @@
 签认后修改正文需重新签认。校验：uv run python aixcoding/tools/check_docs.py
 -->
 
-- 责任人：
-- 状态：草案
-- 确认日期：
-- 确认意见：（可选；审阅中形成的判断、附加条件或保留）
+- 责任人：赵阔
+- 状态：已确认
+- 确认日期：2026-11-10
+- 确认意见：同意方案 C（数据源切换：fork 命名空间落位 + force-include 换源 + env 指向）；R2 表所列 pyproject.toml / scripts/check_wheel.py / tests/foundation/test_documentation.py 三处上游改动予以批准（C145-C148）；评审第一轮三个 blocker 按处置结论修复。
+- 审批人：赵阔（R11：无新增第三方依赖，本节结论批准）
+- 审批日期：2026-11-10
 
 ## 方案概述
 
@@ -92,10 +94,10 @@
 
 | id | 落点 | marker 锚 | 预期计数 | anchor | risk | removal_condition |
 |---|---|---|---|---|---|---|
-| C145 | pyproject.toml | `AIxCoding manual bundle: wheel docs source key` | 1 | `[tool.hatch.build.targets.wheel.force-include]` | 低——声明式配置，上游改捆绑数据源策略时冲突 | 〔机制替代〕上游提供手册数据源配置化能力，或手册定制淘汰回归纯上游版本 |
-| C146 | scripts/check_wheel.py | `AIxCoding manual bundle: compare against the fork-owned manual tree` | 1 | `check_archive()` 捆绑清单比对 | 低——校验脚本低频改动 | 〔机制替代〕同 C145（两点同生共死） |
-| C147 | tests/foundation/test_documentation.py | `AIxCoding manual bundle` | 1 | `test_wheel_bundles_docs_where_the_resolver_looks` 断言 | 低——契约测试随 C145 键名联动 | 〔机制替代〕同 C145（契约随捆绑源同生共死） |
-| C148 | pyproject.toml | `AIxCoding manual bundle: the manual is delivered user-facing content` | 1 | `[tool.ruff] extend-exclude` | 低——格式化配置，上游改 lint 版式策略时冲突 | 〔机制替代〕上游把交付文档纳入格式化治理并提供正式排除通道，或手册定制淘汰 |
+| C145 | pyproject.toml | AIxCoding manual bundle: wheel docs source key | 1 | `[tool.hatch.build.targets.wheel.force-include]` | 低——声明式配置，上游改捆绑数据源策略时冲突 | 〔机制替代〕上游提供手册数据源配置化能力，或手册定制淘汰回归纯上游版本 |
+| C146 | scripts/check_wheel.py | AIxCoding manual bundle: compare against the fork-owned manual tree | 1 | `check_archive()` 捆绑清单比对 | 低——校验脚本低频改动 | 〔机制替代〕同 C145（两点同生共死） |
+| C147 | tests/foundation/test_documentation.py | AIxCoding manual bundle | 1 | `test_wheel_bundles_docs_where_the_resolver_looks` 断言 | 低——契约测试随 C145 键名联动 | 〔机制替代〕同 C145（契约随捆绑源同生共死） |
+| C148 | pyproject.toml | AIxCoding manual bundle: the manual is delivered user-facing content | 1 | `[tool.ruff] extend-exclude` | 低——格式化配置，上游改 lint 版式策略时冲突 | 〔机制替代〕上游把交付文档纳入格式化治理并提供正式排除通道，或手册定制淘汰 |
 
 > R3 正式单行标记与 `customization-registry` 登记为收尾项（plan.md 待办），登记完成后
 > `gen_customizations.py --strict` 对账作为门禁。

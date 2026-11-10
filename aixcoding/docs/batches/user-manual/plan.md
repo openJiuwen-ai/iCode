@@ -26,14 +26,15 @@
 - [x] 双 AI 评审第一轮（HOWTO ①②）：评审方 Claude Code CLI/GLM-5.3，3 blocker/2
   suggestion/1 nit → 责任人拍板全部处置（见 verification 评审处置节）
 - [x] 评审修复：F1 契约测试跟改（C147）+ F2 重跑回填 + F3 manual 树去链 98 处 + F5 脚本落盘
-- [ ] 评审增量复审（HOWTO ③，同一评审 AI 复审 F1-F6 修复增量）→ 收敛 → 责任人签认
+- [ ] 评审增量复审（HOWTO ③，同一评审 AI 复审 F1-F6 修复增量）——记录追加不重签
 - [x] **R3 标记补录**：pyproject.toml（C145/C148）/ check_wheel.py（C146）/
   test_documentation.py（C147）均带 `AIxCoding` 单行标记
-- [ ] **定制点登记**：C145/C146/C147/C148 写入 customization-registry 批次清单 →
-  `gen_customizations.py --strict` 对账 0 error/0 warning
+- [x] **定制点登记**：design.md「定制点登记预告」C145-C148 随签认生效 →
+  `gen_customizations.py --strict` → OK（105 行 / 142 标记 / 0 warning）
 - [x] ruff 双门（check + format --check aixcoding/）本地绿（C148 exclude 落地后）
-- [ ] 门禁总检：`uv run python aixcoding/tools/check_docs.py` → exit 0（证据补 verification）
-- [ ] INDEX.md 登记行与批次六件套**工作区已备、随本笔提交入库**（评审 F4）
+- [x] **责任人签认**：design.md / self-review.md / adr/0001（赵阔，2026-11-10）
+- [x] 门禁总检：`check_docs.py` OK + `gen_customizations.py --strict` OK（证据见 verification）
+- [x] INDEX.md 登记行与批次六件套已入库（评审 F4）
 - [ ] PR：fork/user-manual → 责任人裁决 push 时机与目标分支（git 写操作逐条授权）
 - [ ] 桌面 PDF 若手册后续再改：按 manual-version-update 技能链路重出（MD → HTML → Edge）
 
