@@ -159,8 +159,17 @@ async def test_import_button_adds_ticked_servers_as_unsaved_cards(monkeypatch) -
         assert isinstance(dialog, ImportMcpServersDialog)
         (item,) = await wait_for_items(dialog, pilot, 1)
         assert badge_text(item) == "⚠ 1"
-        # The preview's Description shows what Import saves, warnings included.
+        # A folded card mounts its header only; its fields arrive when it is first opened, once.
         assert isinstance(item.card, MCPConnectionCard)
+        assert not item.card.query(".config-card-body")
+        item.card.set_collapsed(False, scroll_visible=False)
+        await wait_for(lambda: bool(item.card.query("#mcp-desc-0")), pilot=pilot, description="fields mounted")
+        item.card.set_collapsed(True)
+        item.card.set_collapsed(False, scroll_visible=False)
+        await pilot.pause()
+        (body,) = item.card.query(".config-card-body")
+        assert body.display
+        # The preview's Description shows what Import saves, warnings included.
         assert item.card.query_one("#mcp-desc-0", TextArea).text.splitlines() == description
         confirm = dialog.query_one("#mcp-import-confirm", Button)
         assert confirm.disabled

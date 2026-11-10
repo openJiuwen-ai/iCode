@@ -805,14 +805,21 @@ class MCPConnectionCard(CollapsibleConfigCard):
         return parsed
 
     def compose(self) -> ComposeResult:
-        cfg = self._config
-        localizer = widget_localizer(self)
+        yield from self.compose_title_row()
+        yield from self.compose_fields()
+
+    def compose_title_row(self) -> ComposeResult:
+        """The header row: all a folded card shows."""
         yield from self.compose_header(
-            self._header_title(cfg.name),
+            self._header_title(self._config.name),
             row_class="mcp-header-row",
             title_class="mcp-title",
         )
 
+    def compose_fields(self) -> ComposeResult:
+        """The foldable body with every field of the server."""
+        cfg = self._config
+        localizer = widget_localizer(self)
         with self.card_body():
             with Vertical(classes="mcp-field"):
                 yield Label(render_str(localizer, _TRANSPORT.bind()), classes="mcp-label")

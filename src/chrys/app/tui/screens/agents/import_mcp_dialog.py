@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 from rich.text import Text
 from textual import on
+from textual.compose import compose
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.widgets import Button, OptionList, Static
@@ -137,10 +138,20 @@ class _PreviewCard(MCPConnectionCard):
         self.badge = badge
         super().__init__(config, index, read_only=True, collapsed=collapsed)
 
+    def compose(self) -> ComposeResult:
+        # A folded card mounts its header alone: the fields are most of a card's widgets, and
+        # a pane of servers is rebuilt on every application switch. They mount on first unfold.
+        yield from self.compose_title_row()
+        if not self.collapsed:
+            yield from self.compose_fields()
+
     def compose_header_extras(self) -> ComposeResult:
         yield self.badge
 
     def set_collapsed(self, collapsed: bool, *, scroll_visible: bool = True) -> None:
+        if not collapsed and self._body is None and self._title_widget is not None:
+            # Composed folded, so without fields; card_body() records them, so this happens once.
+            self.mount(*compose(self, self.compose_fields()))
         super().set_collapsed(collapsed, scroll_visible=scroll_visible)
         _mark_open(self)
 
