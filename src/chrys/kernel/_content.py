@@ -1817,7 +1817,9 @@ class Content:
                 if isinstance(loaded, dict):
                     return loaded
                 return {"raw": loaded}
-            except json.JSONDecodeError, TypeError:
+            # A bare ValueError is an integer literal past Python's
+            # integer-string conversion limit: as unparseable as malformed JSON.
+            except ValueError, TypeError:
                 return {"raw": self.arguments}
         return self.arguments
 

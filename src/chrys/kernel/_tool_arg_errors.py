@@ -1632,3 +1632,13 @@ def _argument_validation_message(
         f"Expected: {_schema_type_text(display_schema, schema)}."
     )
     return _bounded_text(_sanitize_message_text(message), _MAX_MESSAGE_CHARS)
+
+
+def _integer_limit_argument_message(*, tool_name: str) -> str:
+    """Explain arguments whose integer literal is past Python's conversion limit."""
+    message = (
+        f"Invalid arguments for {_quoted_identifier(tool_name)}: an integer literal in the arguments is past "
+        "the integer-string conversion limit, so the arguments could not be parsed. Send the value as a "
+        "smaller integer or as a string."
+    )
+    return _bounded_text(_sanitize_message_text(message), _MAX_MESSAGE_CHARS)

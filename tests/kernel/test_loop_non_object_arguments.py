@@ -26,6 +26,7 @@ from tests.kernel._fakes import (
     _text_update,
     _user,
 )
+from tests.support.oversized_int import oversized_integer_json
 
 _PERMISSIVE_SCHEMAS = {
     "no_required": {
@@ -107,6 +108,25 @@ async def test_non_object_argument_text_is_an_argument_error(schema_name: str, s
     assert pipeline_entries == 0
     _assert_object_error(response)
     assert [call.arguments for call in _calls(response)] == [raw]
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+async def test_oversized_integer_literal_is_an_argument_error(stream: bool) -> None:
+    """An integer past Python's conversion limit is unreadable, not a failed turn."""
+    arguments = oversized_integer_json()
+
+    response, received, pipeline_entries = await _run(
+        arguments, schema=_PERMISSIVE_SCHEMAS["no_required"], stream=stream
+    )
+
+    assert received == []
+    assert pipeline_entries == 0
+    (result,) = _result_contents(response)
+    assert result.additional_properties[TOOL_FAILED_METADATA_KEY] is True
+    assert result.additional_properties[TOOL_ERROR_KIND_METADATA_KEY] == "argument_parsing"
+    assert "integer-string conversion limit" in str(result.result)
+    assert [call.arguments for call in _calls(response)] == [arguments]
+    assert Content.from_function_call("c1", "probe", arguments=arguments).parse_arguments() == {"raw": arguments}
 
 
 @pytest.mark.parametrize(
