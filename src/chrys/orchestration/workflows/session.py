@@ -28,6 +28,7 @@ from chrys.orchestration.invoker.resources import ResourceScope
 from chrys.orchestration.session_resources import SessionResources
 from chrys.orchestration.session_usage import SessionUsagePublisher
 from chrys.service.approval.judge import ApprovalJudge
+from chrys.service.approval.relay_risk import RelayRiskLatch
 from chrys.service.context.compaction.spill import reconcile_spill_storage
 from chrys.service.llm.route_sessions import derive_llm_route_session_id
 from chrys.service.mutations.coordination import ATTRIBUTION_DIR_NAME, MutationCoordinator
@@ -91,7 +92,12 @@ class WorkflowSessionOwner:
         )
         self.usage = SessionUsagePublisher(bus=bus, session=self.session)
         self.trajectory: SessionTrajectory | None = None
-        self._judge_model: Callable[[ModelProfile | None], ModelProfile] | None = None
+        self._judge_model: Callable[[ModelProfile | None], ModelProfile | None] | None = None
+        self._run_model: ModelProfile | None = None
+        # One latch for the owner's lifetime: relay risk discovered in any run
+        # (relay node model, relay node child) persists through runtime_meta,
+        # which restored sessions reload.
+        self._relay_latch = RelayRiskLatch(on_set=lambda: setattr(self.session.runtime_meta, "relay_risk_seen", True))
         self._judges: dict[str, ApprovalJudge] = {}
         self._auto_review = "direct"
         self.state: WorkflowSessionState | None = None
@@ -244,13 +250,49 @@ class WorkflowSessionOwner:
 
     def _prepare_agents(self, settings: Settings, model_registry: ModelProfileRegistry | None) -> None:
         run_model = resolve_active_profile(model_registry, settings)
+        self._run_model = run_model
 
-        def judge_model(node_model: ModelProfile | None) -> ModelProfile:
-            return resolve_judge_profile(model_registry, settings, run_model if node_model is None else node_model)
+        def judge_model(node_model: ModelProfile | None) -> ModelProfile | None:
+            # None while a relay node model has no independent judge: the node
+            # runs without one and AUTO approval defers to the user. The
+            # latched history risk takes part: a relay run must not fall back
+            # to a judge the relay operator controls once the risk is known.
+            return resolve_judge_profile(
+                model_registry,
+                settings,
+                run_model if node_model is None else node_model,
+                relay_history_risk=self.session.runtime_meta.relay_risk_seen,
+            )
 
         self._judge_model = judge_model
         self._auto_review = settings.approval_auto_review
         self._judges = {}
+
+    def approval_relay_context(self, node_model: ModelProfile | None) -> tuple[bool, str]:
+        """Relay-enhancement flag and reviewed model id for a node's approval.
+
+        Enhanced when the node's own model is a relay, the run's model is one,
+        or the session already latched relay risk (earlier runs, restored
+        sessions): a relay run cannot launder a protected call through a node
+        on a direct-connected model, and relay-sourced content in the run's
+        conversation keeps the strict review on after a switch to direct
+        models. A relay node model latches the same session fact for what
+        follows it. The reviewed model is named only when it is itself
+        relay-routed; otherwise the review prompt describes the latched
+        history risk instead.
+        """
+        model = self._run_model if node_model is None else node_model
+        run_relay = self._run_model is not None and self._run_model.is_relay
+        model_relay = model is not None and model.is_relay
+        if model_relay:
+            self._relay_latch.set()
+        enhanced = run_relay or model_relay or bool(self._relay_latch) or self.session.runtime_meta.relay_risk_seen
+        return enhanced, (model.model_id if model_relay else "")
+
+    @property
+    def relay_latch(self) -> RelayRiskLatch:
+        """The session's one-way relay-risk latch, wired into every node build."""
+        return self._relay_latch
 
     def judge_for(self, node_model: ModelProfile | None) -> ApprovalJudge | None:
         """The approval judge for a node that runs on ``node_model``; ``None`` before a run with agents.
@@ -267,6 +309,8 @@ class WorkflowSessionOwner:
         session = self.session
         session_id = self.require_session_id()
         profile = self._judge_model(node_model)
+        if profile is None:
+            return None
         judge = self._judges.get(profile.id)
         if judge is None:
             judge = ApprovalJudge(

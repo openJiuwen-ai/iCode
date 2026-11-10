@@ -128,6 +128,10 @@ Skill scripts run locally with the current user's permissions, without sandbox i
 
 Web tools send requests to outside services, so the `web_search` and `web_fetch` kinds also request approval by default, even when the agent's `approval.default` is `auto`. Explicit `approval.overrides` rules for these kinds or tool names still take precedence. In automatic mode the approval judge model may approve them, and in bypass mode they run without asking. Provider-run search, such as DeepSeek's server-side `web_search`, happens on the provider's side and is not covered by these approval rules. See [Configure web tools](./web-tools.md#approve-web-tool-calls).
 
+### When the model runs through a relay
+
+When the current model profile is marked as a relay endpoint, the operations listed above no longer run without a dialog: in automatic mode, every shell, file, web, skill, MCP, extension and sub-agent call is sent to the independent approval judge with a strict policy, and remembered approvals are paused. The judge must be a separate, directly connected profile — see [Relay endpoints and the approval judge](./models.md#relay-endpoints-and-the-approval-judge). If that judge is missing or its call fails, the call waits for you. Bypass mode still runs everything without review, so the extra protection does not apply while it is on.
+
 ## Verify approval modes in the TUI
 
 Select the built-in Code agent, then submit this request:

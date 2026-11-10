@@ -64,6 +64,8 @@ class _HeldJudge:
         request_id: str = "",
         log_dir: Path | None = None,
         user_messages: list[str] | None = None,
+        relay_enhanced: bool = False,
+        reviewed_model: str = "",
     ) -> JudgeVerdict:
         self.entered.set()
         try:

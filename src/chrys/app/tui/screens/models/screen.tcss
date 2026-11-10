@@ -192,6 +192,10 @@ ModelConfigScreen {
     color: $warning;
 }
 
+.mc-relay-hint {
+    color: $warning;
+}
+
 /* Footer buttons */
 #mc-footer {
     dock: bottom;

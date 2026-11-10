@@ -18,6 +18,7 @@ from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.session.runtime_metadata import (
     CONTEXT_CALIBRATION_KEY,
     LAST_USAGE_KEY,
+    RELAY_RISK_SEEN_KEY,
     TOTAL_SESSION_CACHE_HIT_TOKENS_KEY,
     TOTAL_SESSION_INPUT_TOKENS_KEY,
     TOTAL_SESSION_OUTPUT_TOKENS_KEY,
@@ -48,6 +49,8 @@ _PASS_THROUGH_OPTIONAL_KEYS = (
     TOTAL_SESSION_TOKENS_KEY,
     TOTAL_SESSION_INPUT_TOKENS_KEY,
     TOTAL_SESSION_OUTPUT_TOKENS_KEY,
+    # Relay-risk latch — truthy filter drops False (absent ≡ never relayed).
+    RELAY_RISK_SEEN_KEY,
 )
 # Keys where ``None`` and ``0`` are semantically distinct (e.g. provider
 # didn't report vs. reported zero), so the truthy-only filter above would

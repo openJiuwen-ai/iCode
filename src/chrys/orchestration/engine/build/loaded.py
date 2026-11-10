@@ -50,7 +50,9 @@ class LoadedAgent:
     loop_recorder: LoopRecorder
     reminder_middleware: SystemReminderMiddleware
     last_words: LastWordsState
-    approval_judge: ApprovalJudge
+    # None while a relay model has no independent approval judge: AUTO
+    # approval then defers to the user instead of asking the relay.
+    approval_judge: ApprovalJudge | None
     sub_agent_tools: SubAgentTools | None
     skills_provider: ChrysSkillsProvider | None
     mcp_adapter: MCPAdapter | None
@@ -129,6 +131,9 @@ class CompletedBuild:
     compaction_strategy: UnifiedContextStrategy | None
     mutation_tracker: MutationTracker | None
     todo_tracker: TodoTracker | None
+    # Ask the installing engine to latch the session's relay-risk marker; the
+    # build itself never writes live session state.
+    relay_risk_latch: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

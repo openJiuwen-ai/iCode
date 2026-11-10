@@ -820,6 +820,8 @@ class AcpPermissionBroker:
         allow_user_interaction: bool = True,
         trajectory_context: TrajectoryContext | None = None,
         trajectory_boundary_operation_id: str | None = None,
+        relay_enhanced: bool = False,
+        relay_reviewed_model: str = "",
     ) -> None:
         self._bus = event_bus
         self._session_id = session_id
@@ -829,6 +831,10 @@ class AcpPermissionBroker:
         self._workspace_roots = list(workspace_roots)
         self._workspace_cwd = workspace_cwd
         self._judge = approval_judge
+        # Relay enhancement inherited from the owning build, so bridged ACP
+        # permission requests are judged under the same strict policy.
+        self._relay_enhanced = relay_enhanced
+        self._relay_reviewed_model = relay_reviewed_model
         self._ask_timeout = ask_user_timeout_seconds
         self._allow_user_interaction = allow_user_interaction
         self._trajectory_context = trajectory_context
@@ -988,6 +994,8 @@ class AcpPermissionBroker:
                                 user_message=self._turn_context.user_message,
                                 user_messages=self._turn_context.user_messages,
                                 workspace_roots=list(self._workspace_roots),
+                                relay_enhanced=self._relay_enhanced,
+                                reviewed_model=self._relay_reviewed_model,
                             ),
                             decision_future=future,
                             approved_value=ApprovalResponse(

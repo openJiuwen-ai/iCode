@@ -259,6 +259,7 @@ def _parse_profile(path: Path, text: str) -> ModelProfile:
             bypass_proxy=coerce_bool(data.get("bypass_proxy"), default=False),
             http_headers=data.get("http_headers", ""),
             chat_options=chat_options,
+            is_relay=coerce_bool(data.get("is_relay"), default=False),
             stream=coerce_bool(data.get("stream"), default=True),
             vision=coerce_bool(data.get("vision"), default=False),
             stream_requires_finish_reason=coerce_bool(data.get("stream_requires_finish_reason"), default=False),

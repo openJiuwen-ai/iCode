@@ -932,6 +932,10 @@ class AgentLoader:
         self._session.install_build(
             staged, mutation_tracker=completed.mutation_tracker, todo_tracker=completed.todo_tracker
         )
+        if completed.relay_risk_latch:
+            # Build-provided fact, engine-owned write: this session has run on
+            # a relay, and relay-sourced content keeps the stricter review on.
+            self._session.runtime_meta.relay_risk_seen = True
         self._current.loaded = completed.loaded
         self._current.manifest = completed.manifest
         self._history.bind(completed.loaded.bindings.backend.history_state)

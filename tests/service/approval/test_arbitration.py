@@ -27,7 +27,16 @@ async def test_human_wins_without_late_review_but_retains_verdict(cancelled, aud
     judge = create_autospec(ApprovalJudge, instance=True)
 
     async def evaluated(
-        user_message, tool_name, tool_kind, args, workspace_roots, request_id="", log_dir=None, user_messages=None
+        user_message,
+        tool_name,
+        tool_kind,
+        args,
+        workspace_roots,
+        request_id="",
+        log_dir=None,
+        user_messages=None,
+        relay_enhanced=False,
+        reviewed_model="",
     ):
         future.set_result("human")
         if cancelled:

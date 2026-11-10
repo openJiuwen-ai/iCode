@@ -73,6 +73,8 @@ class ApprovalDecisionArbiter:
                 workspace_roots=list(judge_input.workspace_roots),
                 request_id=request_id,
                 log_dir=log_dir,
+                relay_enhanced=judge_input.relay_enhanced,
+                reviewed_model=judge_input.reviewed_model,
             )
         except FormalEvaluationCancelled as exc:
             # Owner-only evidence (e.g. ACP audit ring); no UI verdict and no

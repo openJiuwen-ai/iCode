@@ -14,6 +14,7 @@ import pytest
 from chrys.kernel import ChatResponse, Content, Message
 from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict, _assistant_retry_messages, _parse_verdict
 from chrys.service.profiles.models.resolver import default_profile
+from chrys.service.profiles.models.schema import ModelProfile
 
 # ─── _parse_verdict ─────────────────────────────────────────────────
 
@@ -664,3 +665,222 @@ def test_resolve_judge_profile_missing_id_falls_back() -> None:
 
     resolved = resolve_judge_profile(registry, settings, fallback)
     assert resolved is fallback
+
+
+# ─── Relay-aware resolution: a relay main model must not judge itself ───
+
+
+def test_relay_enhanced_user_prompt_carries_the_security_context() -> None:
+    from chrys.service.approval.review_types import (
+        RELAY_REVIEW_POLICY_VERSION,
+        ApprovalJudgeInput,
+        build_user_prompt,
+    )
+
+    def _request(**overrides: object) -> ApprovalJudgeInput:
+        fields: dict[str, object] = {
+            "tool_name": "zsh",
+            "tool_kind": "shell",
+            "args": {"command": "make build"},
+            "user_message": "ship it",
+            "user_messages": ["ship it"],
+            "workspace_roots": ["/workspace"],
+        }
+        fields.update(overrides)
+        return ApprovalJudgeInput(**fields)  # type: ignore[arg-type]
+
+    enhanced = build_user_prompt(_request(relay_enhanced=True, reviewed_model="gpt-relay-x"))
+    assert "RELAY RISK" in enhanced
+    assert "untrusted evidence" in enhanced
+    assert "gpt-relay-x" in enhanced
+    assert RELAY_REVIEW_POLICY_VERSION in enhanced
+
+    assert "RELAY RISK" not in build_user_prompt(_request())
+
+
+def test_relay_enhanced_prompt_with_latched_history_names_no_relayed_working_model() -> None:
+    """History-latched risk describes the conversation, not a relayed current model."""
+    from chrys.service.approval.review_types import ApprovalJudgeInput, build_user_prompt
+
+    request = ApprovalJudgeInput(
+        tool_name="zsh",
+        tool_kind="shell",
+        args={"command": "make build"},
+        user_message="ship it",
+        user_messages=["ship it"],
+        workspace_roots=["/workspace"],
+        relay_enhanced=True,
+        reviewed_model="",
+    )
+
+    prompt = build_user_prompt(request)
+
+    assert "RELAY RISK" in prompt
+    assert "already carries content produced through a third-party relay" in prompt
+    assert "untrusted evidence" in prompt
+    # No claim that the working model's traffic is relayed, and no model named.
+    assert "working model's traffic is routed" not in prompt
+    assert "Working model under review" not in prompt
+
+
+def _relay_profile(**overrides: object) -> ModelProfile:
+    fields: dict[str, object] = {
+        "id": "relay-1",
+        "name": "Relay",
+        "provider": "openai",
+        "model_id": "gpt-x",
+        "base_url": "https://relay.example.com/v1",
+        "api_key": "sk-relay",
+        "is_relay": True,
+    }
+    fields.update(overrides)
+    return ModelProfile(**fields)  # type: ignore[arg-type]
+
+
+def _direct_profile(**overrides: object) -> ModelProfile:
+    fields: dict[str, object] = {
+        "id": "judge-1",
+        "name": "Judge",
+        "provider": "openai",
+        "model_id": "gpt-y",
+        "base_url": "https://direct.example.com/v1",
+        "api_key": "sk-judge",
+    }
+    fields.update(overrides)
+    return ModelProfile(**fields)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("selector", "registry_profiles"),
+    [
+        pytest.param("", [], id="unset-selector"),
+        pytest.param("does-not-exist", [], id="unresolved-selector"),
+        pytest.param("relay-2", ["relay-2"], id="judge-is-another-relay"),
+        pytest.param("same-host", ["same-host"], id="judge-shares-the-relay-host"),
+    ],
+)
+def test_resolve_judge_profile_relay_fallback_without_independent_judge_defers_to_user(
+    selector: str, registry_profiles: list[str]
+) -> None:
+    from chrys.foundation.config.settings import Settings
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.resolver import resolve_judge_profile
+
+    registry = ModelProfileRegistry()
+    registry.register(_relay_profile(id="relay-2", name="Relay 2", base_url="https://other.example.com/v1"))
+    registry.register(_direct_profile(id="same-host", name="Same Host", base_url="https://relay.example.com/other"))
+    fallback = _relay_profile()
+
+    settings = replace(Settings.from_env(), approval_judge_model_profile=selector)
+
+    assert resolve_judge_profile(registry, settings, fallback) is None
+
+
+def test_resolve_judge_profile_relay_fallback_with_independent_judge_uses_it() -> None:
+    from chrys.foundation.config.settings import Settings
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.resolver import resolve_judge_profile
+
+    registry = ModelProfileRegistry()
+    judge = _direct_profile()
+    registry.register(judge)
+    fallback = _relay_profile()
+
+    settings = replace(Settings.from_env(), approval_judge_model_profile="judge-1")
+
+    assert resolve_judge_profile(registry, settings, fallback) is judge
+
+
+def test_resolve_judge_profile_direct_fallback_keeps_the_explicit_choice() -> None:
+    # A direct main model may explicitly choose any judge, relay included —
+    # the relay restriction exists to protect traffic the relay carries.
+    from chrys.foundation.config.settings import Settings
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.resolver import resolve_judge_profile
+
+    registry = ModelProfileRegistry()
+    chosen = _relay_profile()
+    registry.register(chosen)
+    fallback = _direct_profile()
+
+    settings = replace(Settings.from_env(), approval_judge_model_profile="relay-1")
+
+    assert resolve_judge_profile(registry, settings, fallback) is chosen
+
+
+def test_resolve_judge_profile_latched_history_rejects_a_relay_judge() -> None:
+    # A restored session with relay_risk_seen=True keeps relay-era content
+    # untrusted: even with a direct current model, a judge that is itself a
+    # relay must never review that traffic.
+    from chrys.foundation.config.settings import Settings
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.resolver import resolve_judge_profile
+
+    registry = ModelProfileRegistry()
+    registry.register(_relay_profile(id="judge-relay", name="Judge Relay"))
+    fallback = _direct_profile()
+
+    settings = replace(Settings.from_env(), approval_judge_model_profile="judge-relay")
+
+    assert resolve_judge_profile(registry, settings, fallback, relay_history_risk=True) is None
+
+
+def test_resolve_judge_profile_latched_history_rejects_a_mock_judge() -> None:
+    from chrys.foundation.config.settings import Settings
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.resolver import resolve_judge_profile
+
+    registry = ModelProfileRegistry()
+    registry.register(_direct_profile(id="mock-judge", name="Mock Judge", provider="mock"))
+    fallback = _direct_profile()
+
+    settings = replace(Settings.from_env(), approval_judge_model_profile="mock-judge")
+
+    assert resolve_judge_profile(registry, settings, fallback, relay_history_risk=True) is None
+
+
+def test_resolve_judge_profile_latched_history_keeps_follow_active_on_a_direct_model() -> None:
+    # Unset selector with a direct current model: "follow the active model"
+    # lands on the direct active profile — a sane direct service, kept.
+    from chrys.foundation.config.settings import Settings
+    from chrys.service.profiles.models.resolver import resolve_judge_profile
+
+    fallback = _direct_profile()
+    settings = replace(Settings.from_env(), approval_judge_model_profile="")
+
+    assert resolve_judge_profile(None, settings, fallback, relay_history_risk=True) is fallback
+
+
+def test_resolve_judge_profile_latched_history_allows_same_host_direct_judge() -> None:
+    # The historical relay profile is unknown, so with a direct current model
+    # there is no host to compare against: a judge sharing the current DIRECT
+    # model's host stays usable — only the judge's own directness is enforced.
+    from chrys.foundation.config.settings import Settings
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.resolver import resolve_judge_profile
+
+    registry = ModelProfileRegistry()
+    judge = _direct_profile(id="same-host", name="Same Host", base_url="https://direct.example.com/other")
+    registry.register(judge)
+    fallback = _direct_profile()
+
+    settings = replace(Settings.from_env(), approval_judge_model_profile="same-host")
+
+    assert resolve_judge_profile(registry, settings, fallback, relay_history_risk=True) is judge
+
+
+def test_resolve_judge_profile_relay_fallback_with_latched_history_uses_independent_judge() -> None:
+    # Current relay plus latched history: the full qualification applies and
+    # an independent judge still wins.
+    from chrys.foundation.config.settings import Settings
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.resolver import resolve_judge_profile
+
+    registry = ModelProfileRegistry()
+    judge = _direct_profile()
+    registry.register(judge)
+    fallback = _relay_profile()
+
+    settings = replace(Settings.from_env(), approval_judge_model_profile="judge-1")
+
+    assert resolve_judge_profile(registry, settings, fallback, relay_history_risk=True) is judge

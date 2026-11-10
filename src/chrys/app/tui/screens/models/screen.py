@@ -70,6 +70,7 @@ if TYPE_CHECKING:
 
     from chrys.app.tui.screens.dialogs.prompt_cache import PromptCacheDialogResult
     from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.relay_guard import RelayGuardIssue
     from chrys.service.profiles.models.schema import ModelProfile
 
 _READ_ONLY_NOTICE = msg(
@@ -113,6 +114,16 @@ _SKIP_TLS_VERIFICATION = msg("tui.model_config.skip_tls_verification", fallback=
 _INSECURE_TLS = msg(
     "tui.model_config.insecure_tls",
     fallback="Insecure: disables HTTPS certificate validation. Use only for trusted endpoints.",
+)
+_RELAY_ENDPOINT = msg("tui.model_config.relay", fallback="Relay endpoint")
+_RELAY_HINT = msg(
+    "tui.model_config.relay_hint",
+    fallback=(
+        "Marks this profile as a third-party relay and strengthens review in Auto (automatic) mode. "
+        "Before saving, select an independent non-relay model under Settings → Models & Agents → "
+        "Model roles → Approval judge model. When configuring the approval judge, prefer the model "
+        "provider's official channel."
+    ),
 )
 _BYPASS_PROXY = msg("tui.model_config.bypass_proxy", fallback="Bypass proxy")
 _HTTP_OPTIONS = msg("tui.model_config.http_options", fallback="HTTP Options")
@@ -752,10 +763,15 @@ class ModelConfigScreen(BaseDialog[str]):
         global_default_profile_id: str = "",
         *,
         read_only: bool = False,
+        approval_judge_selector: str = "",
     ) -> None:
         self._registry = registry
         self._global_default_profile_id = global_default_profile_id
         self._read_only = read_only
+        # The effective approval judge selector (id or unique name) at open
+        # time; the modal excludes every other settings surface, so it cannot
+        # change underneath the dialog.
+        self._approval_judge_selector = approval_judge_selector
         self._selected_profile_id: str = ""
         # A successful Save requires a soft restart even when the global
         # default pointer is unchanged because profile fields may affect
@@ -880,6 +896,19 @@ class ModelConfigScreen(BaseDialog[str]):
                             id="mc-vision",
                             classes="mc-checkbox",
                         )
+                        yield Checkbox(
+                            render_str(localizer, _RELAY_ENDPOINT.bind()),
+                            value=False,
+                            id="mc-relay",
+                            classes="mc-checkbox",
+                        )
+                        relay_hint = Label(
+                            render_str(localizer, _RELAY_HINT.bind()),
+                            id="mc-relay-hint",
+                            classes="mc-hint mc-relay-hint",
+                        )
+                        relay_hint.display = False
+                        yield relay_hint
 
                     with Vertical(id="mc-connection-options", classes="mc-option-section") as options:
                         options.border_title = render_str(localizer, _CONNECTION_OPTIONS.bind())
@@ -1334,6 +1363,8 @@ class ModelConfigScreen(BaseDialog[str]):
         self.query_one("#mc-bypass-proxy", Checkbox).value = profile.bypass_proxy
         self.query_one("#mc-stream", Checkbox).value = profile.stream
         self.query_one("#mc-vision", Checkbox).value = profile.vision
+        self.query_one("#mc-relay", Checkbox).value = profile.is_relay
+        self.query_one("#mc-relay-hint", Label).display = profile.is_relay
 
         # Populate key-value lists
         headers = _parse_json_dict(profile.http_headers, parse_values=False)
@@ -1418,6 +1449,11 @@ class ModelConfigScreen(BaseDialog[str]):
     def _on_skip_tls_changed(self, event: Checkbox.Changed) -> None:
         with contextlib.suppress(Exception):
             self.query_one("#mc-skip-tls-hint", Label).display = bool(event.value)
+
+    @on(Checkbox.Changed, "#mc-relay")
+    def _on_relay_changed(self, event: Checkbox.Changed) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one("#mc-relay-hint", Label).display = bool(event.value)
 
     @on(OptionList.OptionSelected, "#mc-list")
     def _on_profile_selected(self, event: OptionList.OptionSelected) -> None:
@@ -1547,6 +1583,12 @@ class ModelConfigScreen(BaseDialog[str]):
         duplicate = copy.deepcopy(source)
         duplicate.id = self._next_profile_id()
         duplicate.name = self._next_clone_name(source.name)
+        from chrys.service.profiles.models.relay_guard import check_profile_write
+
+        issues = check_profile_write(self._registry.list_profiles(), duplicate, self._approval_judge_selector)
+        if issues:
+            self._notify_relay_guard(issues)
+            return
         await asyncio.to_thread(save_profile, duplicate)
         self._registry.register(duplicate)
 
@@ -1609,9 +1651,15 @@ class ModelConfigScreen(BaseDialog[str]):
         if self._read_only:
             return
         from chrys.service.profiles.models.env_bridge import get_active_profile_id, get_global_default_profile_id
+        from chrys.service.profiles.models.relay_guard import check_profile_delete
         from chrys.service.profiles.models.resolver import resolve_profile_selector, resolve_selectable_profile
         from chrys.service.profiles.models.schema import is_model_profile_selectable
         from chrys.service.profiles.models.serializer import delete_profile
+
+        issues = check_profile_delete(self._registry.list_profiles(), profile_id, self._approval_judge_selector)
+        if issues:
+            self._notify_relay_guard(issues)
+            return
 
         was_global_default = profile_id == self._global_default_profile_id
         # The process pointer may hold a profile NAME (id-or-unique-name
@@ -1915,8 +1963,20 @@ class ModelConfigScreen(BaseDialog[str]):
         errors.extend(self._validate_kv_list("mc-headers-list", _HTTP_EXTRA_HEADERS, http_headers=True))
         errors.extend(self._validate_kv_list("mc-options-list", _CHAT_OPTIONS))
         errors.extend(self._validate_chat_option_values())
+        # The relay guard reads the whole form (via _build_profile_from_form),
+        # so it only runs once the field-level checks above are clean.
+        if not errors:
+            errors.extend(self._validate_relay_guard())
 
         return errors
+
+    def _validate_relay_guard(self) -> list[str]:
+        """Reject relay-breaking saves against the registry as it will be after the write."""
+        from chrys.service.profiles.models.relay_guard import check_profile_write
+
+        profile = self._build_profile_from_form()
+        issues = check_profile_write(self._registry.list_profiles(), profile, self._approval_judge_selector)
+        return [self._render_toast(issue.message) for issue in issues]
 
     # ── Save / Apply ─────────────────────────────────────────────────
 
@@ -1949,6 +2009,7 @@ class ModelConfigScreen(BaseDialog[str]):
             http_max_retries=int(self.query_one("#mc-max-retries", Input).value.strip() or "2"),
             verify_ssl=not self.query_one("#mc-skip-tls", Checkbox).value,
             bypass_proxy=self.query_one("#mc-bypass-proxy", Checkbox).value,
+            is_relay=self.query_one("#mc-relay", Checkbox).value,
             http_headers=_kv_to_json(headers, parse_values=False),
             chat_options=_kv_to_json(options),
             stream=self.query_one("#mc-stream", Checkbox).value,
@@ -2032,6 +2093,16 @@ class ModelConfigScreen(BaseDialog[str]):
 
     def _render_toast(self, reference: MessageRef) -> str:
         return render_str(widget_localizer(self), reference)
+
+    def _notify_relay_guard(self, issues: list[RelayGuardIssue]) -> None:
+        """Show relay-guard rejections; nothing was written, so the form keeps its content."""
+        self.notify(
+            "\n".join(self._render_toast(issue.message) for issue in issues),
+            title=self._render_toast(_VALIDATION_ERROR_TITLE.bind()),
+            severity="error",
+            timeout=8,
+            markup=False,
+        )
 
 
 def _parse_json_dict(raw: str, *, parse_values: bool = True) -> dict[str, str]:
