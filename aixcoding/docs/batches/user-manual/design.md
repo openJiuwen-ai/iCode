@@ -59,7 +59,7 @@
 | `scripts/check_wheel.py` | `check_archive()` 捆绑清单比对源 `git ls-files -z docs` → `-z aixcoding/manual`；`removeprefix("docs/")` → `removeprefix("aixcoding/manual/")` | +3 / −2 | 比对源行上方 `# AIxCoding manual bundle: compare against the fork-owned manual tree (user-manual C146)` |
 | `tests/foundation/test_documentation.py` | 契约测试 `test_wheel_bundles_docs_where_the_resolver_looks` 断言键 `force_include["docs"]` → `["aixcoding/manual"]`（**评审 F1 增补**，2026-11-10：改键名必然连带，跟改使契约测试继续守护新契约） | +2 / −1 | 断言上一行 `# AIxCoding manual bundle: …`（C147） |
 
-> 修订记录：2026-11-10 独立评审（GLM-5.3/Claude Code CLI）F1——上表第 3 行为评审后增补；
+> 修订记录：2026-11-10 独立评审（Claude Code + GLM-5.3）F1——上表第 3 行为评审后增补；
 > 原稿遗漏该连带跟改，系"上游测试零跟改"误判（该契约测试本机不跳过，旧 92 passed 证据
 > 对应 pyproject 切换前的树况）。
 

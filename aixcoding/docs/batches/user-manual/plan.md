@@ -24,7 +24,7 @@
 - [x] plan.md（本文档）
 - [x] ~~adr/0001~~（责任人 2026-11-10 裁决不出 ADR、已删除；决策内容留在 design 备选对比/
   风险节，见 design「ADR 判定」）
-- [x] 双 AI 评审第一轮（HOWTO ①②）：评审方 Claude Code CLI/GLM-5.3，3 blocker/2
+- [x] 双 AI 评审第一轮（HOWTO ①②）：评审方 Claude Code + GLM-5.3，3 blocker/2
   suggestion/1 nit → 责任人拍板全部处置（见 verification 评审处置节）
 - [x] 评审修复：F1 契约测试跟改（C147）+ F2 重跑回填 + F3 manual 树去链 98 处 + F5 脚本落盘
 - [ ] 评审增量复审（HOWTO ③，同一评审 AI 复审 F1-F6 修复增量）——记录追加不重签

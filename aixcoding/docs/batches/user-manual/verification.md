@@ -83,7 +83,7 @@ aixcoding-launch.py 未提交（责任人裁定本地资产）
 均未 push。
 ```
 
-## 2026-11-10 独立评审第一轮处置（评审方：Claude Code CLI · GLM-5.3，与开发 AI 不同源）
+## 2026-11-10 独立评审第一轮处置（评审方：Claude Code + GLM-5.3，与开发 AI〔CodeBuddy + D4 PRO〕不同源）
 
 评审报告：桌面 `user-manual批次独立评审报告-20261110.md`（3 blocker / 2 suggestion / 1 nit）。
 开发 AI 独立复核实证后，责任人拍板"同意"（1A + 2 必做 + 3 方案一 + 4/5/6 做）。处置：
