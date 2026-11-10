@@ -355,18 +355,38 @@ def _is_top_screen_read(node: ast.expr) -> bool:
     )
 
 
-def _screen_aliases(nodes: Sequence[ast.AST]) -> set[str]:
-    """Predicate-local names bound to a screen read: ``screen = app.screen`` or ``(screen := app.screen)``."""
-    aliases: set[str] = set()
+def _screen_aliases(nodes: Sequence[ast.AST]) -> dict[str, str]:
+    """Predicate-local names bound to a screen read (``screen = app.screen`` or ``(screen := app.screen)``).
+
+    Each maps to the dump of the read it names.
+    """
+    aliases: dict[str, str] = {}
     for node in nodes:
         if isinstance(node, ast.Assign) and _is_top_screen_read(node.value):
-            aliases.update(target.id for target in node.targets if isinstance(target, ast.Name))
+            aliases.update((target.id, ast.dump(node.value)) for target in node.targets if isinstance(target, ast.Name))
         elif isinstance(node, ast.NamedExpr) and _is_top_screen_read(node.value):
-            aliases.add(node.target.id)
+            aliases[node.target.id] = ast.dump(node.value)
     return aliases
 
 
-def _checked_screen(node: ast.expr, aliases: set[str]) -> ast.expr | None:
+def _screen_identity(node: ast.expr, aliases: Mapping[str, str]) -> str:
+    """The screen *node* reads: a local name for the screen is the read bound to it."""
+    if isinstance(node, ast.NamedExpr):
+        node = node.value
+    if isinstance(node, ast.Name) and node.id in aliases:
+        return aliases[node.id]
+    return ast.dump(node)
+
+
+def _keeps_waiting(statement: ast.If) -> bool:
+    """Whether the ``if`` branch answers "not yet": it ends returning nothing or a false constant."""
+    last = statement.body[-1]
+    return isinstance(last, ast.Return) and (
+        last.value is None or (isinstance(last.value, ast.Constant) and not last.value.value)
+    )
+
+
+def _checked_screen(node: ast.expr, aliases: Mapping[str, str]) -> ast.expr | None:
     """The expression whose ``.is_mounted`` read vouches for the screen *node* reads, if it reads one."""
     if isinstance(node, ast.NamedExpr):
         return ast.Name(id=node.target.id, ctx=ast.Load()) if _is_top_screen_read(node.value) else None
@@ -378,24 +398,33 @@ def _checked_screen(node: ast.expr, aliases: set[str]) -> ast.expr | None:
 def _unmounted_screen_type_checks(predicate: ast.AST) -> Iterator[tuple[ast.Call, ast.expr]]:
     """``isinstance(<screen>, ...)`` checks that read no ``<screen>.is_mounted`` beside them.
 
-    A negated check is a close-wait only in expression position (a lambda body
-    or a returned value); in an ``if`` test it gates the wait ("not there yet,
-    keep waiting") and needs the mount like a positive check.
+    A negated check is a close-wait, unless it is in the test of an ``if``
+    whose branch answers "not yet" (``return False``): that gates the wait
+    and needs the mount like a positive check.
     """
     nodes = list(ast.walk(predicate))
     aliases = _screen_aliases(nodes)
-    gates = {id(inner) for node in nodes if isinstance(node, ast.If) for inner in ast.walk(node.test)}
+    gates = {
+        id(inner)
+        for node in nodes
+        if isinstance(node, ast.If) and _keeps_waiting(node)
+        for inner in ast.walk(node.test)
+    }
     closes = {
         id(node.operand)
         for node in nodes
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not) and id(node) not in gates
     }
-    mounted = {ast.dump(node.value) for node in nodes if isinstance(node, ast.Attribute) and node.attr == "is_mounted"}
+    mounted = {
+        _screen_identity(node.value, aliases)
+        for node in nodes
+        if isinstance(node, ast.Attribute) and node.attr == "is_mounted"
+    }
     for node in nodes:
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "isinstance"):
             continue
         screen = _checked_screen(node.args[0], aliases) if node.args else None
-        if screen is not None and id(node) not in closes and ast.dump(screen) not in mounted:
+        if screen is not None and id(node) not in closes and _screen_identity(screen, aliases) not in mounted:
             yield node, screen
 
 
@@ -405,8 +434,8 @@ def _assert_screen_waits_require_a_mounted_screen(sources: Mapping[Path, str]) -
     push_screen makes the screen current before it composes, so a predicate
     met by the type alone can return before the screen's children exist and
     the next query raises NoMatches. A local name assigned from the screen
-    counts as that screen. Close-waits (``not isinstance(...)`` outside an
-    ``if`` test) need no mount, and neither does a bounded absence check
+    counts as that screen. Close-waits (``not isinstance(...)``, except in
+    the test of an ``if`` that keeps waiting) need no mount, and neither does a bounded absence check
     (``assert not await wait_until(...)``), for which the type alone is the
     stricter test.
     """
@@ -1009,6 +1038,18 @@ def test_screen_wait_guard_allows_mounted_close_and_absence_waits() -> None:
         "            return False\n"
         "        return bool(screen.query('#ok'))\n"
         "    await wait_for(gated)\n"
+        # A negated check whose branch ends the wait is a close-wait.
+        "    def dismissed():\n"
+        "        if not isinstance(app.screen, Dialog):\n"
+        "            return task.done()\n"
+        "        return False\n"
+        "    await wait_for(dismissed)\n"
+        # A local name for the screen and the read it names are the same screen.
+        "    def opened():\n"
+        "        screen = app.screen\n"
+        "        return isinstance(screen, Dialog) and app.screen.is_mounted\n"
+        "    await wait_for(opened)\n"
+        "    await wait_for(lambda: isinstance(app.screen, Dialog) and (screen := app.screen).is_mounted)\n"
         "    assert not await wait_until(lambda: isinstance(app.screen, Dialog), timeout=0.3)\n"
         "    await other.wait_for(lambda: isinstance(app.screen, Dialog))\n"
     )
