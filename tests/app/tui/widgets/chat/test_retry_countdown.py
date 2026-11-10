@@ -13,6 +13,7 @@ from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.widgets import Button, Static
 
+import chrys.app.tui.screens.main.view_adapter as view_adapter_module
 import chrys.app.tui.widgets.chat.messages as messages_module
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.theme import TuiVariableDefaultsMixin
@@ -217,7 +218,12 @@ async def test_the_notice_renders_the_message_as_text_not_markup(clock: _Clock) 
         assert "\x1b" not in body
 
 
-async def test_retry_now_on_the_main_chat_notice_asks_the_backend_to_retry(tmp_path: Path) -> None:
+async def test_retry_now_on_the_main_chat_notice_asks_the_backend_to_retry(
+    tmp_path: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The view adapter sets the deadline and the notice counts down from it: one frozen clock for both,
+    # so a stalled runner (a long GC pause) cannot move the seconds shown.
+    monkeypatch.setattr(view_adapter_module, "time", clock.module)
     bus = EventBus()
     skips = await capture_events(bus, RetryWaitSkip)
     app = make_chrys_app(tmp_path / "sessions", event_bus=bus)
@@ -246,7 +252,7 @@ async def test_retry_now_on_the_main_chat_notice_asks_the_backend_to_retry(tmp_p
             description="the retry notice",
         )
         retry = panel.query_one(RetryMessage)
-        assert _countdown(retry) in {"Retrying in 600s (2/10)", "Retrying in 599s (2/10)"}
+        assert _countdown(retry) == "Retrying in 600s (2/10)"
 
         await click_when_settled(pilot, retry.query_one(".retry-now-btn", Button))
         await wait_for(lambda: skips, pilot=pilot, description="the skip request")

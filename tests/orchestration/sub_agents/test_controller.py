@@ -70,6 +70,7 @@ from chrys.service.agent_middleware._metadata_keys import (
     _REJECTION_MESSAGE_KEY,
     _REJECTION_SOURCE_KEY,
 )
+from chrys.service.agent_middleware.control import sleep as sleep_module
 from chrys.service.agent_middleware.control.sleep import SleepMiddleware
 from chrys.service.agent_middleware.events.hook_dispatch import set_call_id
 from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware
@@ -87,6 +88,7 @@ from tests.orchestration.sub_agents._controller_fixtures import (
     kernel_shell,
 )
 from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.frozen_clock import freeze_monotonic
 from tests.support.provider_errors import API_HOST, openai_status
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
@@ -1276,8 +1278,10 @@ async def test_cascade_abort_mid_run_cancels_live_task_and_publishes_event():
 
 
 @pytest.mark.asyncio
-async def test_cascade_abort_mid_sleep_publishes_interrupted_inner_tool_result():
+async def test_cascade_abort_mid_sleep_publishes_interrupted_inner_tool_result(monkeypatch: pytest.MonkeyPatch):
     """Cascade abort lets an active inner sleep publish its interrupted result before task cancel."""
+    # The sleep's own clock, frozen: the interrupted result reports exactly 0 seconds slept.
+    freeze_monotonic(monkeypatch, sleep_module)
     bus = EventBus()
     sleep_mw = SleepMiddleware(bus, session_id="s-1")
     sub_events = SubAgentEventMiddleware(

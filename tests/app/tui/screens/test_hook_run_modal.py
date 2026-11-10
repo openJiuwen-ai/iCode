@@ -189,7 +189,9 @@ async def test_a_live_run_opens_on_input_and_says_its_output_comes_later(state: 
 
 
 async def test_the_input_tab_shows_the_configured_run_and_the_payload() -> None:
-    record = _record(registered_at=time.monotonic() - 10.0, started_at=time.monotonic() - 4.0)
+    # One reading: the start shown is the registration time plus the gap between the two.
+    now = time.monotonic()
+    record = _record(registered_at=now - 10.0, started_at=now - 4.0)
     record = dataclasses.replace(record, registered_wall=time.mktime((2026, 10, 21, 9, 30, 0, 0, 0, -1)))
     app = _ModalApp(_detail(record, delivery="durable", on_error="block", timeout_seconds=12.0))
     async with app.run_test(size=(140, 50)) as pilot:
