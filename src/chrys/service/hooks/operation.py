@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 from typing import Any, Literal
 from uuid import uuid4
 
 from chrys.foundation.models.hook_confirmations import HookConfirmationSubjectKind
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.tool_execution_stamp import canonicalize_effective_arguments
+
+logger = logging.getLogger(__name__)
 
 OperationState = Literal["pending", "committed", "invalidated"]
 
@@ -61,7 +64,7 @@ def _snapshot(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
         try:
             return copy.deepcopy(arguments), key
         except Exception:
-            pass
+            logger.debug("Hook operation snapshot: deepcopy failed; hooks get no snapshot for this call", exc_info=True)
     return dict(arguments), None
 
 
