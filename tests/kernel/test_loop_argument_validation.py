@@ -1088,13 +1088,31 @@ class TestNonStreamingLoop:
         assert events == [f"tool:echo:{text}" for text in ran]
 
     @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
-    async def test_length_finish_reason_does_not_mask_an_over_limit_integer(self, stream: bool) -> None:
-        """A complete JSON object over the integer limit outranks the max_tokens hint.
+    @pytest.mark.parametrize(
+        ("shape", "error_kind", "hint"),
+        [
+            pytest.param("complete", "argument_parsing", "integer-string conversion limit", id="complete"),
+            pytest.param(
+                "cut_off_past_limit", "argument_parsing", "integer-string conversion limit", id="cut_off_past_limit"
+            ),
+            pytest.param("cut_off_within_limit", "argument_truncated", "max_tokens", id="cut_off_within_limit"),
+        ],
+    )
+    async def test_length_finish_reason_does_not_mask_an_over_limit_integer(
+        self, stream: bool, shape: str, error_kind: str, hint: str
+    ) -> None:
+        """An integer past the conversion limit outranks the max_tokens hint, cut off or not.
 
-        A runaway integer loop usually hits max_tokens too; telling the model to
-        raise max_tokens would send the same value back.
+        A runaway digit loop usually hits max_tokens too, and the decoder fails on
+        the integer before it reaches the missing close: telling the model to raise
+        max_tokens would only buy a longer number. An object cut off before its
+        digits pass the limit is still a plain cutoff.
         """
-        arguments = oversized_integer_json()
+        if shape == "cut_off_within_limit":
+            arguments = '{"limit": 99999'
+        else:
+            oversized = oversized_integer_json()
+            arguments = oversized if shape == "complete" else oversized.removesuffix("}")
         contents = [Content.from_function_call("c1", "echo", arguments=arguments)]
         if stream:
             truncated_update = ChatResponseUpdate(contents=contents, role="assistant", finish_reason="length")
@@ -1109,5 +1127,5 @@ class TestNonStreamingLoop:
         (result,) = _result_contents(response)
         assert events == []
         assert result.additional_properties[TOOL_FAILED_METADATA_KEY] is True
-        assert result.additional_properties[TOOL_ERROR_KIND_METADATA_KEY] == "argument_parsing"
-        assert "integer-string conversion limit" in str(result.result)
+        assert result.additional_properties[TOOL_ERROR_KIND_METADATA_KEY] == error_kind
+        assert hint in str(result.result)

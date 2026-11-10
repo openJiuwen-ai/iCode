@@ -27,7 +27,14 @@ from chrys.service.agent_middleware.events.hook_dispatch import set_call_id
 from chrys.service.agent_middleware.events.tool_events import ToolEventMiddleware
 from chrys.service.tools.background import BackgroundTasks, TaskScope, current_scope
 from tests.support.background_tasks import HeldProcess
+from tests.support.frozen_clock import freeze_monotonic
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+
+
+@pytest.fixture
+def frozen_sleep_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Freeze the sleep's own clock: an early wake-up then reports exactly 0 seconds slept."""
+    freeze_monotonic(monkeypatch, sleep_mod)
 
 
 def _sleep_context(seconds: object, *, call_id: str = "sleep-call") -> SimpleNamespace:
@@ -57,6 +64,7 @@ async def test_sleep_middleware_completes_without_calling_tool() -> None:
     assert ctx.result == "Slept for 0 seconds."
 
 
+@pytest.mark.usefixtures("frozen_sleep_clock")
 async def test_sleep_middleware_skip_returns_tool_result() -> None:
     bus = EventBus()
     mw = SleepMiddleware(bus)
@@ -75,6 +83,7 @@ async def test_sleep_middleware_skip_returns_tool_result() -> None:
     assert ctx.metadata[_SLEEP_SKIPPED_KEY] is True
 
 
+@pytest.mark.usefixtures("frozen_sleep_clock")
 async def test_sleep_middleware_user_interrupt_returns_tool_result() -> None:
     bus = EventBus()
     mw = SleepMiddleware(bus)
@@ -93,6 +102,7 @@ async def test_sleep_middleware_user_interrupt_returns_tool_result() -> None:
     assert ctx.metadata[_SLEEP_INTERRUPTED_KEY] is True
 
 
+@pytest.mark.usefixtures("frozen_sleep_clock")
 async def test_executor_interrupt_lets_active_sleep_publish_result_before_cancel() -> None:
     bus = EventBus()
     sleep_mw = SleepMiddleware(bus)
@@ -303,6 +313,7 @@ async def test_an_end_that_comes_while_sleep_reads_the_logs_is_news_for_the_next
     assert second.result.endswith("[icode] process ended (its shell had exited with code 0)")
 
 
+@pytest.mark.usefixtures("frozen_sleep_clock")
 async def test_sleep_returns_at_once_for_a_task_that_already_ended_and_says_so_only_once(
     tasks: BackgroundTasks,
 ) -> None:

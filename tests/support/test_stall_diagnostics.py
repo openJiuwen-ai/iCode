@@ -99,14 +99,18 @@ async def test_sampler_sees_a_loop_waiting_in_the_selector_as_idle() -> None:
 def test_sampler_reports_a_failed_phase_however_short(monkeypatch: pytest.MonkeyPatch) -> None:
     reports: list[str] = []
     sampler = StallSampler(loop_thread_ident=threading.get_ident(), sink=reports.append, interval=0.02)
-    # A test that pins the clock (as the duration-formatting tests do) must not pin the phase's length.
-    monkeypatch.setattr(time, "monotonic", lambda: 1e6)
+    real_monotonic = time.monotonic
+    opened = real_monotonic()
     sampler.begin_phase("failed")
+    # A test that pins the clock mid-phase (as the duration-formatting tests do) must not pin the phase's length.
+    monkeypatch.setattr(time, "monotonic", lambda: 1e6)
     phase = sampler.end_phase(failed=True)
+    closed = real_monotonic()
     assert phase is not None
-    assert phase.seconds < 1.0
+    # The phase's real length, however long the runner stalled in it, never one the pinned clock made up.
+    assert 0.0 <= phase.seconds <= closed - opened
     assert reports == [format_report(phase, failed=True)]
-    assert "failed after 0.0s" in reports[0] and "no samples" in reports[0]
+    assert f"failed after {phase.seconds:.1f}s" in reports[0] and "no samples" in reports[0]
     assert sampler.end_phase(failed=True) is None
 
 

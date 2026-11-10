@@ -513,6 +513,7 @@ async def test_suggestion_chrome_renders_chinese_at_show_boundary_without_transl
     assert skill.disabled_reason == "被 /runtime 遮蔽"
     assert "Skill [blue]description" in skill.label.plain
 
+    screen.input_bar.value = "#"
     handler.on_agent_triggered()
     assert screen.suggestion_list.last_title == "智能体"
     agent = next(item for item in screen.suggestion_list.last_items if isinstance(item, SuggestionItem))
@@ -521,6 +522,7 @@ async def test_suggestion_chrome_renders_chinese_at_show_boundary_without_transl
     model_registry = ModelProfileRegistry()
     model_registry.register(ModelProfile(id="literal", name="Model [green]name", model_id="vendor/[model]"))
     screen.services.model_registry = model_registry
+    screen.input_bar.value = "$"
     handler.on_model_triggered()
     assert screen.suggestion_list.last_title == "模型"
     model = next(item for item in screen.suggestion_list.last_items if isinstance(item, SuggestionItem))

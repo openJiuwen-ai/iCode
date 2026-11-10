@@ -9,11 +9,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from textual import on
 from textual.app import App, ComposeResult
 from textual.color import Color
 from textual.content import Content
 from textual.css.query import NoMatches
-from textual.events import Paste
+from textual.events import Key, Paste
 from textual.widgets import Button, Select, Static, TextArea
 
 from chrys.app.tui.app import ChrysApp
@@ -133,6 +134,17 @@ async def _wait_for_condition(
         return consecutive_matches >= stable_observations
 
     await wait_for(condition, pilot=pilot, timeout=timeout, description=description)
+
+
+async def _press_one_at_a_time(pilot, *keys: str) -> None:
+    """Press *keys* in turn, each settled before the next.
+
+    The editor reports an edit as its key lands and once more when the text area's Changed comes off
+    the queue. Pressed together, the keys can all reach the editor before that Changed on a starved
+    runner, and the late report undoes what a later key set up: an armed discard, a refusal's status.
+    """
+    for key in keys:
+        await pilot.press(key)
 
 
 async def _wait_for_editor_dialog_ready(app: App, pilot, *, description: str) -> None:
@@ -498,7 +510,7 @@ async def test_cancel_discard_preserves_editor_text_cursor_and_undo(cancel_actio
         await wait_for(lambda: dialog.is_mounted, pilot=pilot, description="editor mounted before editing")
         editor = dialog.query_one(MessageEditor)
         await wait_for(lambda: editor.has_focus, pilot=pilot, description="editor focused before editing")
-        await pilot.press("x", "escape")
+        await _press_one_at_a_time(pilot, "x", "escape")
         assert dialog.discard_armed is True
         cursor = editor.cursor_location
         await click_when_settled(pilot, "#editor-cancel")
@@ -591,7 +603,7 @@ async def test_dirty_escape_arms_then_second_escape_discards() -> None:
     async with app.run_test() as pilot:
         app.push_screen(dialog, results.append)
         await pilot.pause()
-        await pilot.press("x", "escape")
+        await _press_one_at_a_time(pilot, "x", "escape")
         await pilot.pause()
 
         assert results == []
@@ -617,7 +629,7 @@ async def test_focus_traversal_keeps_dirty_discard_armed_until_escape(traversal_
             pilot,
             description="discard traversal editor focus",
         )
-        await pilot.press("x", "escape", traversal_key)
+        await _press_one_at_a_time(pilot, "x", "escape", traversal_key)
 
         assert dialog.discard_armed is True
         assert _status_text(dialog) == "Unsaved changes · Esc again discards · Ctrl+O/Ctrl+Enter commits"
@@ -639,7 +651,7 @@ async def test_edit_disarms_dirty_escape_but_cursor_movement_does_not() -> None:
     async with app.run_test() as pilot:
         app.push_screen(dialog, results.append)
         await pilot.pause()
-        await pilot.press("x", "escape")
+        await _press_one_at_a_time(pilot, "x", "escape")
         assert dialog.discard_armed is True
 
         await pilot.press("left")
@@ -674,7 +686,7 @@ async def test_paste_delete_undo_redo_and_vim_mutation_disarm_escape() -> None:
         )
         editor = dialog.query_one(MessageEditor)
 
-        await pilot.press("x", "escape")
+        await _press_one_at_a_time(pilot, "x", "escape")
         assert dialog.discard_armed is True
         await editor._on_paste(Paste("pasted"))
         await _wait_for_condition(
@@ -735,7 +747,7 @@ async def test_save_refuses_to_dismiss_while_input_is_unavailable() -> None:
     async with app.run_test() as pilot:
         app.push_screen(dialog, results.append)
         await pilot.pause()
-        await pilot.press("x", "ctrl+o")
+        await _press_one_at_a_time(pilot, "x", "ctrl+o")
         await pilot.pause()
 
         assert results == []
@@ -1038,12 +1050,12 @@ async def test_emacs_escape_guard_kill_activity_and_mode_switch_reset() -> None:
     async with app.run_test() as pilot:
         app.push_screen(dialog, results.append)
         await pilot.pause()
-        await pilot.press("alt+d", "escape")
+        await _press_one_at_a_time(pilot, "alt+d", "escape")
         assert dialog.discard_armed is True
         await pilot.press("ctrl+y")
         assert dialog.discard_armed is False
 
-        await pilot.press("x", "escape")
+        await _press_one_at_a_time(pilot, "x", "escape")
         assert dialog.discard_armed is True
         await pilot.press("f3")
         assert dialog.query_one(MessageEditor).mode is EditorMode.VIM
@@ -1069,6 +1081,115 @@ async def test_f3_resets_incomplete_vim_operator_before_returning_to_vim() -> No
         assert isinstance(replacement, VimKeymap)
         assert replacement is not original
         assert replacement.state is VimState.NORMAL
+
+
+@pytest.mark.parametrize(
+    "cancel_keys",
+    [(("Z", "Z"), ("Q", "Q")), (("colon", ":"), ("q", "q"), ("exclamation_mark", "!"), ("enter", None))],
+    ids=["ZQ", ":q!"],
+)
+async def test_keys_typed_at_once_after_f3_are_read_with_the_keymap_it_chose(
+    cancel_keys: tuple[tuple[str, str | None], ...],
+) -> None:
+    """What the user types while the loop is busy reaches the editor at once, queued behind F3.
+
+    Each key is read with the keymap the F3s before it chose, and the dialog's mode control, following
+    the first switch late, never switches the editor back.
+    """
+    app = _DialogApp()
+    results: list[EditorDialogResult] = []
+    dialog = EditorDialog(EditorBufferSnapshot("original", (0, 2)))
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        app.push_screen(dialog, results.append)
+        await _wait_for_editor_dialog_ready(app, pilot, description="editor before typing")
+        editor = dialog.query_one(MessageEditor)
+        typed = (("f3", None), ("f3", None), ("i", "i"), ("X", "X"), ("escape", "\x1b"), *cancel_keys)
+        for key, character in typed:
+            editor.post_message(Key(key, character))
+        await _wait_for_condition(lambda: bool(results), pilot, description="explicit Vim cancel")
+
+    assert [_outcome(result) for result in results] == [(False, "orXiginal", EditorMode.VIM)]
+
+
+@pytest.mark.parametrize("guard", ["discard", "overwrite"])
+async def test_f3_on_the_dialog_controls_disarms_before_the_next_key_is_read(guard: str) -> None:
+    """F3 on a control switches the keymap at once and the editor reports the switch later.
+
+    A key typed right behind F3 reaches the dialog before that report does, and must not take a
+    confirmation that was armed before the switch.
+    """
+    app = _DialogApp()
+    results: list[EditorDialogResult] = []
+    changed_elsewhere = guard == "overwrite"
+    dialog = EditorDialog(
+        EditorBufferSnapshot("draft", (0, 5), draft_revision=1),
+        current_draft_revision=lambda: 2 if changed_elsewhere else 1,
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        app.push_screen(dialog, results.append)
+        await _wait_for_editor_dialog_ready(app, pilot, description="editor before arming")
+        if changed_elsewhere:
+            await pilot.press("ctrl+o")
+            confirm = Key("ctrl+o", None)
+        else:
+            await _press_one_at_a_time(pilot, "x", "escape")
+            confirm = Key("escape", "\x1b")
+        commit = dialog.query_one("#editor-commit", Button)
+        commit.focus()
+        await wait_for(lambda: commit.has_focus, pilot=pilot, description="Commit focused")
+        assert dialog.discard_armed is not changed_elsewhere
+        assert (dialog._overwrite_armed_revision == 2) is changed_elsewhere
+
+        app.post_message(Key("f3", None))
+        app.post_message(confirm)
+        await pilot.pause()
+
+        assert results == []
+        assert dialog.query_one(MessageEditor).mode is EditorMode.EMACS
+        assert dialog.query_one("#editor-mode", Select).value == EditorMode.EMACS.value
+
+
+async def test_the_mode_control_following_the_editor_is_never_read_as_a_pick() -> None:
+    """Only a mode the user picks in the control switches the editor.
+
+    The control follows every switch the editor makes. Read back as a pick, that would reach the dialog
+    after any switch the user made meanwhile and undo it.
+    """
+
+    class _PickRecordingDialog(EditorDialog):
+        # A relative CSS_PATH would resolve against this module.
+        CSS_PATH = SRC_ROOT / "chrys" / "app" / "tui" / "screens" / "dialogs" / "editor.tcss"
+
+        def __init__(self, snapshot: EditorBufferSnapshot) -> None:
+            super().__init__(snapshot)
+            self.picks: list[object] = []
+
+        @on(Select.Changed, "#editor-mode")
+        def _record_pick(self, event: Select.Changed) -> None:
+            self.picks.append(event.value)
+
+    app = _DialogApp()
+    dialog = _PickRecordingDialog(EditorBufferSnapshot("draft", (0, 0)))
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        app.push_screen(dialog)
+        await _wait_for_editor_dialog_ready(app, pilot, description="editor before switching")
+        editor = dialog.query_one(MessageEditor)
+        mode_select = dialog.query_one("#editor-mode", Select)
+        picks_on_open = list(dialog.picks)
+
+        await pilot.press("f3", "f3")
+        await _wait_for_condition(
+            lambda: mode_select.value == EditorMode.VIM.value, pilot, description="control following the editor"
+        )
+        assert editor.mode is EditorMode.VIM
+        assert dialog.picks == picks_on_open
+
+        mode_select.value = EditorMode.EMACS.value
+        await _wait_for_condition(lambda: editor.mode is EditorMode.EMACS, pilot, description="the pick applied")
+        assert dialog.picks == [*picks_on_open, EditorMode.EMACS.value]
 
 
 async def test_ctrl_q_remains_the_priority_main_screen_quit_and_is_not_an_editor_hint() -> None:

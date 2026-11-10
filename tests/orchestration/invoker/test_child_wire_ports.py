@@ -26,6 +26,7 @@ from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.trajectory.retries import RetryBackoffTrace
 from tests.kernel.test_wire_retry import _ScriptedWire, _text_response, _text_update
 from tests.support.event_capture import capture_event_sequence
+from tests.support.frozen_clock import freeze_monotonic
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -123,7 +124,11 @@ async def test_real_child_cascade_drains_sleep_result_before_owned_task_cancel(
     import asyncio
 
     from chrys.foundation.events.types import InvocationToolCallResult, UserInterrupt
+    from chrys.service.agent_middleware.control import sleep as sleep_module
     from tests.kernel.test_wire_retry import _call_response, _call_update
+
+    # The sleep's own clock, frozen: the interrupted result reports exactly 0 seconds slept.
+    freeze_monotonic(monkeypatch, sleep_module)
 
     provider_entered = asyncio.Event()
     sleep_entered = asyncio.Event()

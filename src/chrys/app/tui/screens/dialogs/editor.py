@@ -20,6 +20,7 @@ from textual.widgets import Button, Select, Static
 from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
+from chrys.app.tui.util.message_gate import messages_disabled
 from chrys.app.tui.widgets.chrome.draft_editor import DraftEditor
 from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.editor import (
@@ -29,7 +30,7 @@ from chrys.app.tui.widgets.editor import (
     EditorMode,
     MessageEditor,
 )
-from chrys.app.tui.widgets.editor.types import COMMON_EDITOR_INTENTS, EditorStatus
+from chrys.app.tui.widgets.editor.types import COMMON_EDITOR_INTENTS, EDITOR_MODE_CYCLE, EditorStatus
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 
 if TYPE_CHECKING:
@@ -76,7 +77,6 @@ _EDITOR_MODE_MESSAGES: dict[EditorMode, MessageDef] = {
     EditorMode.EMACS: _MODE_EMACS,
     EditorMode.VIM: _MODE_VIM,
 }
-_EDITOR_MODE_SEQUENCE = (EditorMode.STANDARD, EditorMode.EMACS, EditorMode.VIM)
 
 
 def _build_editor_hint(mode: EditorMode, render_message: Callable[[MessageRef], str]) -> Text:
@@ -202,6 +202,7 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
                 clipboard_image_dir=self._clipboard_image_dir,
                 cursor_location=self._entry_snapshot.cursor_location,
                 mode=self._mode,
+                cycles_modes=True,
                 id="message-editor",
                 compact=True,
                 soft_wrap=True,
@@ -267,14 +268,25 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
     @on(MessageEditor.ModeChanged)
     def _on_editor_mode_changed(self, event: MessageEditor.ModeChanged) -> None:
         event.stop()
-        self._mode = event.mode
-        mode_select = self.query_one("#editor-mode", Select)
-        if mode_select.value != event.mode.value:
-            mode_select.value = event.mode.value
-        self._set_border_subtitle(event.mode)
-        self._set_hint(_build_editor_hint(event.mode, self._render_message))
-        self._clear_discard_armed()
+        self._show_editor_mode()
+
+    def _show_editor_mode(self) -> None:
+        """Show the editor's keymap in the chrome and disarm the confirmations a switch resets."""
         editor = self.query_one(MessageEditor)
+        # The editor's mode now, not the event's: after two quick switches the first one's event
+        # arrives with the editor already on the second mode.
+        mode = editor.mode
+        self._mode = mode
+        mode_select = self.query_one("#editor-mode", Select)
+        if mode_select.value != mode.value:
+            # Following the editor is no choice of the user's. Echoed back, the Select's Changed would
+            # arrive after any switch made meanwhile and undo it, and the two would chase each other.
+            with messages_disabled(Select.Changed, mode_select):
+                mode_select.value = mode.value
+        self._set_border_subtitle(mode)
+        self._set_hint(_build_editor_hint(mode, self._render_message))
+        self._clear_discard_armed()
+        self._clear_overwrite_armed()
         self._refresh_status(editor.status_text, warning=editor.status_warning)
 
     @on(Select.Changed, "#editor-mode")
@@ -377,7 +389,7 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
         editor = self.query_one(DraftEditor)
         self.dismiss(
             EditorDialogResult(
-                accepted=accepted, draft=editor.chat_draft(), cursor_location=editor.cursor_location, mode=self._mode
+                accepted=accepted, draft=editor.chat_draft(), cursor_location=editor.cursor_location, mode=editor.mode
             )
         )
 
@@ -425,25 +437,21 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
         container = self.query_one("#editor-dialog", VerticalGroup)
         container.border_subtitle = Text(self._render_message(_EDITOR_MODE_MESSAGES[mode].bind()))
         container.update_classes(
-            {f"editor-mode-{candidate.value}": candidate is mode for candidate in _EDITOR_MODE_SEQUENCE}
+            {f"editor-mode-{candidate.value}": candidate is mode for candidate in EDITOR_MODE_CYCLE}
         )
 
     def _cycle_mode(self) -> None:
-        current_index = _EDITOR_MODE_SEQUENCE.index(self._mode)
-        self._set_mode(_EDITOR_MODE_SEQUENCE[(current_index + 1) % len(_EDITOR_MODE_SEQUENCE)], update_control=True)
+        """F3 pressed on the dialog's chrome; the editor switches on its own F3."""
+        self.query_one(MessageEditor).cycle_mode()
+        # Now, not on the editor's ModeChanged: a key typed right behind F3 reaches the dialog first.
+        self._show_editor_mode()
 
-    def _set_mode(self, mode: EditorMode, *, update_control: bool = False) -> None:
-        if mode is self._mode:
-            return
-        self._mode = mode
-        self.query_one(MessageEditor).set_mode(mode)
-        if update_control:
-            self.query_one("#editor-mode", Select).value = mode.value
-        self._clear_discard_armed()
-        self._clear_overwrite_armed()
-        self._set_hint(_build_editor_hint(mode, self._render_message))
+    def _set_mode(self, mode: EditorMode) -> None:
+        """Switch the editor to the keymap the user picked."""
         editor = self.query_one(MessageEditor)
-        self._refresh_status(editor.status_text, warning=editor.status_warning)
+        if mode is not editor.mode:
+            editor.set_mode(mode)
+            self._show_editor_mode()
 
     def _render_message(self, reference: MessageRef) -> str:
         return render_str(widget_localizer(self), reference)

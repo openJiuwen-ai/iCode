@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from textual import events
+from textual.widgets import TextArea
 from textual.worker import WorkerCancelled
 
 from chrys.app.tui.screens.main import suggestions as suggestions_module
@@ -1179,6 +1181,52 @@ async def test_a_rescan_replaces_the_open_list_when_the_highlight_was_never_move
 
         assert suggestions._values == ["b.py", "new.py"]
         assert _highlighted(suggestions) == "b.py"
+
+
+@pytest.mark.parametrize("resident", [False, True], ids=["first-scan", "resident-snapshot"])
+async def test_a_query_typed_before_the_trigger_is_handled_filters_the_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resident: bool,
+) -> None:
+    """A lagging loop hands ``@`` and the query over at once: their text changes come before the list opens.
+
+    The list must still show what was typed, or Enter picks a file nobody chose.
+    """
+
+    async def scan(root: str) -> ProjectPathScanResult:
+        return scan_result(root, _rows("aaa.py", "notes.md"))
+
+    _patch_scan(monkeypatch, scan)
+    app = make_chrys_app(tmp_path / "state")
+    async with app.run_test(size=(120, 40)) as pilot:
+        main = await _ready_main_screen(app, pilot)
+        handler = main._suggestions
+        if resident:
+            index = handler._file_index_for(handler._current_file_root())
+            index.install(scan_result(index.root, _rows("aaa.py", "notes.md")))
+        chat = main.query_one("#chat-input", TextArea)
+        suggestions = main.query_one(SuggestionList)
+
+        for key, character in [("at", "@"), *((char, char) for char in "note")]:
+            chat.post_message(events.Key(key, character))
+
+        def answered() -> bool:
+            warmup = handler._file_warmup_worker
+            query = handler._file_query_worker
+            return (
+                chat.text == "@note"
+                and handler.suggestion_mode == "files"
+                and (resident or (warmup is not None and warmup.is_finished))
+                and handler._file_query_pending is None
+                and (query is None or query.is_finished)
+            )
+
+        await wait_for(answered, pilot=pilot, description="burst handled and the list answered")
+        assert suggestions._values == ["notes.md"]
+
+        await pilot.press("enter")
+        await wait_for(lambda: chat.text == "@notes.md ", pilot=pilot, description="the typed file picked")
 
 
 async def test_typing_without_an_installed_snapshot_starts_no_query_worker() -> None:
