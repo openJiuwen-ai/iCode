@@ -7,9 +7,12 @@ from __future__ import annotations
 import logging
 import math
 import os
+import sys
 import tempfile
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import FrameType
 from typing import Any, Final, Literal
 
 from chrys.foundation.config.coercion import (
@@ -806,6 +809,9 @@ _WEB_LABEL_WEB_FETCH_ALLOWED_ORIGINS = msg(
 _WEB_LABEL_WEB_FETCH_DENIED_ORIGINS = msg(
     "settings.tools.web_fetch.denied_origins.label", fallback="Web fetch denied origins"
 )
+_LABEL_SANDBOX_ENABLED = msg("settings.sandbox.enabled.label", fallback="Run shell in a sandbox")
+_LABEL_SANDBOX_URL = msg("settings.sandbox.url.label", fallback="Sandbox URL")
+_LABEL_SANDBOX_TOKEN = msg("settings.sandbox.token.label", fallback="Sandbox token")
 
 
 @dataclass(frozen=True)
@@ -2031,6 +2037,64 @@ class Settings:
         ),
     )
 
+    # ── Sandbox ───────────────────────────────────────────────────
+    # Off: shell runs on the host. On: shell runs in the sandbox and a
+    # failure stays a failure. Takes effect when the agent is rebuilt.
+    # A rejected value is sealed to off. That seal is not a choice to run
+    # on the host: see sandbox_enabled_was_rejected.
+    sandbox_enabled: bool = field(
+        default=False,
+        metadata=spec(
+            key="sandbox.enabled",
+            label=_LABEL_SANDBOX_ENABLED,
+            env="CHRYS_SANDBOX_ENABLED",
+            coerce=bool_coercer(),
+            apply=Apply.RELOAD,
+            group="sandbox",
+            kind=Kind.BOOL,
+            # A cloned repository must not move the user's shell into a sandbox.
+            project_merge=ProjectMerge.DENY,
+            risk=Risk.DANGEROUS,
+            invalid_policy=InvalidPolicy.SAFE_DEFAULT,
+        ),
+    )
+
+    # Empty: the supervisor picks a local address. A non-empty value is
+    # an http(s) or unix:// URL of a sandbox to connect to.
+    sandbox_url: str = field(
+        default="",
+        metadata=spec(
+            key="sandbox.url",
+            label=_LABEL_SANDBOX_URL,
+            env="CHRYS_SANDBOX_URL",
+            coerce=text_coercer(),
+            apply=Apply.RELOAD,
+            group="sandbox",
+            kind=Kind.TEXT,
+            # A project naming a URL would send the user's shell there.
+            project_merge=ProjectMerge.DENY,
+            risk=Risk.DANGEROUS,
+            invalid_policy=InvalidPolicy.SAFE_DEFAULT,
+        ),
+    )
+
+    # Empty: requests carry no Authorization header.
+    sandbox_token: str = field(
+        default="",
+        metadata=spec(
+            key="sandbox.token",
+            label=_LABEL_SANDBOX_TOKEN,
+            env="CHRYS_SANDBOX_TOKEN",
+            coerce=text_coercer(),
+            apply=Apply.RELOAD,
+            group="sandbox",
+            kind=Kind.TEXT,
+            # A project must not plant a credential the process would send.
+            project_merge=ProjectMerge.DENY,
+            risk=Risk.CAUTION,
+        ),
+    )
+
     @classmethod
     def from_env(cls, **overrides: Any) -> Settings:
         """Create settings from every source, dropping provenance and warnings.
@@ -2060,6 +2124,62 @@ class Settings:
     def image_send_limit_bytes(self) -> int:
         """Return the most bytes an image is sent to a model with."""
         return self.image_send_limit_kb * 1024
+
+    def __post_init__(self) -> None:
+        # ``load_settings`` seals a rejected ``sandbox.enabled`` to False, then
+        # builds this object. The seal is stored on the load, which the shell
+        # does not hold, so a typo would otherwise run on the host.
+        if _sandbox_enabled_rejected_by_caller(self):
+            _remember_sandbox_enabled_rejection(self)
+
+    def sandbox_enabled_was_rejected(self) -> bool:
+        """Whether the loader rejected ``sandbox.enabled`` and sealed it to the default.
+
+        The sealed value is ``False``, the same spelling as a real choice to run
+        on the host. A shell must treat this as unavailable. A project value is
+        refused by ``ProjectMerge.DENY`` and is not this: the user value, or the
+        default, still stands, and the loader's own warning is unchanged.
+        """
+        return id(self) in _SANDBOX_ENABLED_REJECTIONS
+
+
+# Object identity, not equality: a rejected load and a plain ``Settings()``
+# compare equal (both hold the default), and only the load must refuse the host.
+_SANDBOX_ENABLED_REJECTIONS: dict[int, None] = {}
+_SANDBOX_ENABLED_KEY = "sandbox.enabled"
+
+
+def _remember_sandbox_enabled_rejection(settings: Settings) -> None:
+    key = id(settings)
+    _SANDBOX_ENABLED_REJECTIONS[key] = None
+    weakref.finalize(settings, _SANDBOX_ENABLED_REJECTIONS.pop, key, None)
+
+
+def _frame_is(frame: FrameType, function: str, filename: str) -> bool:
+    code = frame.f_code
+    path = code.co_filename.replace("\\", "/")
+    return code.co_name == function and (path.endswith("/" + filename) or path == filename)
+
+
+def _sandbox_enabled_rejected_by_caller(settings: Settings) -> bool:
+    """Whether the load being built, or the settings being copied, rejected the key.
+
+    ``Settings`` is constructed before ``LoadedSettings`` exists, so the seal is
+    still the loader's local ``sealed`` set — the set later published as
+    ``sealed_keys``. ``dataclasses.replace`` builds a new object with no load on
+    the stack; the copy keeps the seal unless ``sandbox_enabled`` itself changed.
+    """
+    frame = sys._getframe(1)
+    while frame is not None:
+        if _frame_is(frame, "_replace", "dataclasses.py"):
+            donor = frame.f_locals.get("self")
+            if isinstance(donor, Settings) and donor is not settings:
+                return donor.sandbox_enabled == settings.sandbox_enabled and id(donor) in _SANDBOX_ENABLED_REJECTIONS
+        elif _frame_is(frame, "load_settings", "settings_store.py"):
+            sealed = frame.f_locals.get("sealed")
+            return isinstance(sealed, set) and _SANDBOX_ENABLED_KEY in sealed
+        frame = frame.f_back
+    return False
 
 
 def _persist_one(key: str, value: Any, *, log_value: bool = True) -> Exception | None:

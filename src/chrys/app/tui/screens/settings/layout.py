@@ -575,6 +575,10 @@ DEFERRED_KEYS: frozenset[str] = frozenset(
         "mutations.coordination.enabled",
         "mutations.parallel_implicit_tools",
         "workspace.change_notice.max_entries",
+        # Sandbox controls are not in the panel yet.
+        "sandbox.enabled",
+        "sandbox.url",
+        "sandbox.token",
     }
 )
 

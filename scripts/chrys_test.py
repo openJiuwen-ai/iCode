@@ -257,6 +257,56 @@ REGULAR_RULES = (
             "src/chrys/app/tui/screens/dialogs/editor.py",
         ),
     ),
+    # Reads vendored engine sources and sandbox package files by path.
+    TestRule(
+        "tests/service/sandbox/test_backend.py",
+        (
+            "third_party/jiuwenbox/src/jiuwenbox/server/sandbox_manager.py",
+            "third_party/jiuwenbox/src/jiuwenbox/server/policy_engine.py",
+            "third_party/jiuwenbox/src/jiuwenbox/models/sandbox.py",
+            "src/chrys/service/sandbox/__init__.py",
+            "src/chrys/service/sandbox/types.py",
+            "src/chrys/service/sandbox/client.py",
+            "src/chrys/service/sandbox/backend.py",
+        ),
+    ),
+    # Scans the source tree for engine imports and reads the dependency pins by path.
+    TestRule(
+        "tests/service/sandbox/test_supervisor.py",
+        ("src/chrys/**", "pyproject.toml", "uv.lock"),
+    ),
+    # These tests import vendored runtime modules; third_party/ is not a module root.
+    TestRule(
+        "tests/service/sandbox/test_root_sandbox_identity.py",
+        (
+            "third_party/jiuwenbox/src/jiuwenbox/server/runtime/process.py",
+            "third_party/jiuwenbox/src/jiuwenbox/supervisor/sandbox_daemon.py",
+        ),
+    ),
+    TestRule(
+        "tests/service/sandbox/test_exec_cancel_closes_ipc.py",
+        ("third_party/jiuwenbox/src/jiuwenbox/server/runtime/process.py",),
+    ),
+    TestRule(
+        "tests/service/sandbox/test_daemon_cancel_and_timeout.py",
+        ("third_party/jiuwenbox/src/jiuwenbox/supervisor/sandbox_daemon.py",),
+    ),
+    TestRule(
+        "tests/service/sandbox/test_daemon_ipc_exec_retry.py",
+        (
+            "third_party/jiuwenbox/src/jiuwenbox/server/runtime/process.py",
+            "third_party/jiuwenbox/src/jiuwenbox/supervisor/sandbox_daemon.py",
+        ),
+    ),
+    # These tests import the vendored HTTP server; third_party/ is not a module root.
+    TestRule(
+        "tests/service/sandbox/test_server_auth.py",
+        ("third_party/jiuwenbox/src/jiuwenbox/server/auth.py",),
+    ),
+    TestRule(
+        "tests/service/sandbox/test_server_cors.py",
+        ("third_party/jiuwenbox/src/jiuwenbox/server/app.py",),
+    ),
 )
 
 # Include every pytest configuration filename, even when absent from this tree:

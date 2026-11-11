@@ -58,6 +58,8 @@ topics:
         path: guides/configuration/web-tools.md
       - id: approval
         path: guides/configuration/approval.md
+      - id: sandbox
+        path: guides/configuration/sandbox.md
       - id: memory
         path: guides/configuration/memory.md
       - id: compaction

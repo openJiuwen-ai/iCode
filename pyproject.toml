@@ -69,6 +69,13 @@ dependencies = [
     "opentelemetry-sdk>=1.45.1,<2",
     "opentelemetry-exporter-otlp-proto-grpc>=1.45.1,<2",
     "opentelemetry-instrumentation-logging>=0.66b1,<1",
+    # Sandbox server. Its code is vendored from third_party/jiuwenbox into the
+    # wheel (hatch_build.py), so the published metadata does not depend on a
+    # jiuwenbox distribution. pydantic, pyyaml, httpx, python-multipart and mcp
+    # are already required above or by mcp. The server also imports fastapi
+    # and selects uvicorn's standard extras, which nothing else pulls in.
+    "fastapi==0.162.0",
+    "uvicorn[standard]==0.51.0",
 ]
 
 [project.urls]
@@ -127,11 +134,15 @@ packages = ["src/chrys"]
 [tool.hatch.build.targets.wheel.force-include]
 # The /help user guide and agent runtime read docs/; installed builds carry it here
 # (src/chrys/foundation/documentation.py::resolve_docs_root).
+# The vendored jiuwenbox package is force-included by hatch_build.py for a
+# standard wheel only. Listing it here would also copy it into the editable
+# install, ahead of third_party/jiuwenbox/src on the import path.
 "docs" = "chrys/app/tui/screens/guides/_docs"
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 # hatch_build.py compiles locales/zh-Hans/LC_MESSAGES/chrys.po into the wheel's
-# chrys/foundation/i18n/_catalogs/zh-Hans/LC_MESSAGES/chrys.mo.
+# chrys/foundation/i18n/_catalogs/zh-Hans/LC_MESSAGES/chrys.mo, and force-includes
+# the vendored jiuwenbox package for a standard wheel.
 
 [tool.hatch.build]
 # Include vendored assets that are gitignored (downloaded at build time)

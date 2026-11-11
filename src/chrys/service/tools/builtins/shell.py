@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
     from pathlib import Path
 
+    from chrys.foundation.config.settings import Settings
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.foundation.platform import ShellInfo
     from chrys.foundation.platform.output_capture import CapturedOutput
@@ -284,6 +285,11 @@ def _pipefail_args(shell: ShellInfo) -> tuple[str, ...]:
     return ("-o", "pipefail") if shell.name in _PIPEFAIL_SHELLS else ()
 
 
+def _bare_shell_argv(shell: ShellInfo, command: str) -> tuple[str, ...]:
+    """Shell path, pipefail args, shell args, and *command*, with no tracer prefix."""
+    return (shell.path, *_pipefail_args(shell), *shell.args, command)
+
+
 def _shell_argv_variants(shell: ShellInfo, command: str) -> list[tuple[str, ...]]:
     """Launch argvs to try in order: traced first (when armed), then bare.
 
@@ -293,7 +299,7 @@ def _shell_argv_variants(shell: ShellInfo, command: str) -> list[tuple[str, ...]
     variant must degrade to the bare one: tracing may never change
     user-visible shell behavior.
     """
-    base = (shell.path, *_pipefail_args(shell), *shell.args, command)
+    base = _bare_shell_argv(shell, command)
     prefix = shell_trace_argv.get()
     if prefix:
         return [(*prefix, *base), base]
@@ -748,6 +754,13 @@ async def _spawn_pipe(command: str, shell: ShellInfo, cwd: str) -> _Command:
     )
 
 
+def _captured_text(text: str) -> CapturedOutput:
+    """The pipe path's capture of *text*, as UTF-8 bytes kept by ``BoundedCapture``."""
+    capture = BoundedCapture()
+    capture.feed(text.encode("utf-8"))
+    return capture.snapshot()
+
+
 def _output_parts(captures: Sequence[CapturedOutput], *, partial: bool = False) -> list[str]:
     """What a command printed (*partial*: before it timed out or moved to the background), its stderr apart."""
     output_label, stderr_label = (f"{PARTIAL_OUTPUT_LABEL}\n", "[partial stderr]\n") if partial else ("", "[stderr]\n")
@@ -809,14 +822,19 @@ class ShellTools:
         background_tasks: BackgroundTasks | None = None,
         *,
         session_wide_background: bool = False,
+        settings: Settings | None = None,
     ) -> None:
-        """*session_wide_background*: the agent's background commands run until the session ends, not until it finishes."""
+        """*session_wide_background*: the agent's background commands run until the session ends, not until it finishes.
+
+        *settings*: sandbox configuration injected at tool assembly. None leaves the host shell path.
+        """
         self._runtime = runtime
         self._filter = command_filter
         self._shell = shell or runtime.platform.shell
         self._session_dir = session_dir
         self._tasks = background_tasks
         self._session_wide_background = session_wide_background
+        self._settings = settings
 
     @property
     def shell(self) -> ShellInfo:
@@ -1109,6 +1127,12 @@ class ShellTools:
 
     async def _run(self, command: str, reason: str, cwd: str, timeout: int, budget: int, workdir: str | None) -> str:
         shell = self._shell
+        if self._settings is not None and self._settings.sandbox_enabled:
+            return await self._run_sandboxed(command, shell, cwd, timeout, budget)
+        # A rejected sandbox.enabled is sealed to False, which is the host path below.
+        if self._settings is not None and self._settings.sandbox_enabled_was_rejected():
+            _record_shell_error()
+            return tool_error("sandbox_unavailable", "sandbox.enabled is invalid, so the command was not run.")
         try:
             if sys.platform == "win32":
                 # Windows: snapshot outer TUI's console mode so a child TUI
@@ -1162,6 +1186,56 @@ class ShellTools:
             return tool_error(
                 "command_execution_failed", f"failed to execute command — {e}", details={"command": command}
             )
+
+    async def _run_sandboxed(self, command: str, shell: ShellInfo, cwd: str, timeout: int, budget: int) -> str:
+        """Run *command* in the sandbox and return it in the pipe path's result shape.
+
+        Compromises versus the host shell: there is no PTY, no streamed output, and
+        no Ctrl+T move to the background. *timeout* is the remote exec timeout; when
+        it fires, the remote exec ends and the command does not become an iCode
+        background task. The argv is the pipe path's bare shell argv (a Linux shell
+        argv, not a Windows PowerShell launch): shell path, pipefail args, shell
+        args, and the command, with no fsatrace prefix. Non-Linux does not execute
+        the command.
+        """
+        # Imported here so a disabled shell never loads the sandbox package.
+        from chrys.service.sandbox.backend import SandboxError, run_shell
+
+        settings = self._settings
+        if settings is None:
+            raise RuntimeError("sandbox shell path requires settings")
+        prepared = _prepare_pipe_command(command, shell)
+        # The host may try an fsatrace prefix and fall back to the bare argv.
+        # That prefix is not in the sandbox image, so sending it fails the
+        # command and adds an error line to stderr.
+        argv = _bare_shell_argv(shell, prepared)
+        # The writable mount is the session workspace. ``cwd`` stays the command's
+        # exec directory, including when that directory is outside the workspace.
+        workspace_dirs = tuple(
+            working_dir.path
+            for working_dir in self._runtime.working_dirs
+            if not working_dir.is_primary and working_dir.path != self._runtime.cwd
+        )
+        try:
+            completed = await run_shell(
+                settings,
+                argv=argv,
+                cwd=cwd,
+                timeout_seconds=timeout,
+                linux=sys.platform == "linux",
+                workspace_root=self._runtime.cwd,
+                workspace_dirs=workspace_dirs,
+            )
+        except SandboxError as exc:
+            _record_shell_error()
+            message = str(exc)
+            if "supported only on Linux" in message:
+                return tool_error("sandbox_unsupported", message)
+            return tool_error("sandbox_unavailable", message)
+        _record_shell_exit_code(completed.exit_code)
+        captures = (_captured_text(completed.stdout), _captured_text(completed.stderr))
+        parts = [*_output_parts(captures), f"[exit_code: {completed.exit_code}]"]
+        return await self._bound_result("\n".join(parts), budget, captures)
 
     async def _output_then(
         self, captures: tuple[CapturedOutput, ...], budget: int, *lines: str, partial: bool = False
