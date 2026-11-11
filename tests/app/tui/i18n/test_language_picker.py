@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 from textual.app import App
 from textual.containers import VerticalGroup
+from textual.events import Key
 from textual.widgets import OptionList
 
 from chrys.app.tui import i18n as tui_i18n
@@ -26,6 +27,7 @@ from chrys.foundation.config.settings import DEFAULT_LOCALE, Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
+from tests.support.waiting import wait_for
 
 
 class _PickerApp(App[None]):
@@ -219,6 +221,24 @@ async def test_picker_enter_applies_highlight_exactly_once(monkeypatch: pytest.M
         assert switch_calls == ["zh-Hans"]
         assert persistence_calls == ["zh-Hans"]
         assert controller.revision == 1
+
+
+@pytest.mark.asyncio
+async def test_picker_enter_typed_right_after_a_move_confirms_the_row_moved_to() -> None:
+    """A terminal hands over what was typed while the loop was busy back to back: Enter follows the move."""
+    controller = LocaleController(Settings(locale="en"))
+    async with _PickerApp(controller).run_test() as pilot:
+        options = pilot.app.screen.query_one(OptionList)
+        await wait_for(lambda: options.has_focus, pilot=pilot, description="the choices focused")
+        assert options.highlighted is not None
+        moved_to = options.get_option_at_index(options.highlighted + 1).id
+        assert moved_to and moved_to != "en"
+
+        pilot.app.post_message(Key("down", None))
+        pilot.app.post_message(Key("enter", "\r"))
+        await wait_for(lambda: bool(pilot.app.results), pilot=pilot, description="the picker confirmed")
+
+        assert pilot.app.results == [moved_to]
 
 
 @pytest.mark.asyncio

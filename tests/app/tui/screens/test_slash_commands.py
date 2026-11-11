@@ -16,6 +16,7 @@ from chrys.app.tui.widgets.chrome.commands import (
     ManPageVerbatimBlock,
     is_slash_command_candidate,
 )
+from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex
 from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathSuggestion
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.foundation.config.settings import Settings
@@ -133,6 +134,7 @@ def test_build_slash_commands_uses_agents_and_no_legacy_entries() -> None:
     names = [c.name for c in commands]
 
     assert "agents" in names
+    assert "reload" in names
     assert "runtime" in names
     assert "settings" in names
     assert "notifications" not in names
@@ -217,7 +219,7 @@ def test_rollback_man_page_documents_direct_relative_and_absolute_forms() -> Non
     commands = handler.build_slash_commands()
     rollback = next(command for command in commands if command.name == "rollback")
 
-    assert format_message(rollback.description) == "Discard recent turns or return to a specific turn"
+    assert format_message(rollback.description) == "Discard recent turns or discard starting from a turn"
     assert rollback.subcommands is None
     assert rollback.synopsis is not None
     assert rollback.options_help is not None
@@ -511,6 +513,7 @@ async def test_suggestion_chrome_renders_chinese_at_show_boundary_without_transl
     assert skill.disabled_reason == "被 /runtime 遮蔽"
     assert "Skill [blue]description" in skill.label.plain
 
+    screen.input_bar.value = "#"
     handler.on_agent_triggered()
     assert screen.suggestion_list.last_title == "智能体"
     agent = next(item for item in screen.suggestion_list.last_items if isinstance(item, SuggestionItem))
@@ -519,6 +522,7 @@ async def test_suggestion_chrome_renders_chinese_at_show_boundary_without_transl
     model_registry = ModelProfileRegistry()
     model_registry.register(ModelProfile(id="literal", name="Model [green]name", model_id="vendor/[model]"))
     screen.services.model_registry = model_registry
+    screen.input_bar.value = "$"
     handler.on_model_triggered()
     assert screen.suggestion_list.last_title == "模型"
     model = next(item for item in screen.suggestion_list.last_items if isinstance(item, SuggestionItem))
@@ -534,7 +538,7 @@ async def test_suggestion_chrome_renders_chinese_at_show_boundary_without_transl
         suggestion_budget=1,
         source_truncations={"rg": True},
     )
-    index = handler._build_file_index(scan)
+    index = ProjectPathIndex.build(scan)
     truncation = handler._file_suggestion_items([], index=index)[0]
     assert truncation.label == "此有限索引之外还有更多文件"
     assert truncation.disabled_reason == "已索引 1 个文件 / 1 行"

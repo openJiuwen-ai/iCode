@@ -14,7 +14,6 @@ from rich.text import Text
 from textual import events, on
 from textual.containers import HorizontalGroup, VerticalGroup
 from textual.content import Content
-from textual.css.scalar import Scalar, Unit
 from textual.geometry import Region, Size
 from textual.message import Message
 from textual.strip import Strip
@@ -24,6 +23,7 @@ from textual.widgets.selection_list import Selection
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
 from chrys.app.tui.util.source_text import sanitize_source_text
+from chrys.app.tui.util.visibility import set_rules_without_layout
 from chrys.app.tui.widgets import EnhancedTextArea
 from chrys.app.tui.widgets.checkbox import CHECKED_MARKER, UNCHECKED_MARKER
 from chrys.app.tui.widgets.text_area import NEWLINE_SHORTCUT_KEYS
@@ -167,7 +167,10 @@ class _AskUserTextArea(EnhancedTextArea):
             return height
         self._last_reported_height = height
         if self._defer_layout_to_parent:
-            self.styles.set_rule("height", Scalar(float(height), Unit.CELLS, Unit.WIDTH))
+            # The card's relayout places the input. A bare rule write would keep
+            # the arrangements recorded around it, and one laid out after the
+            # edit but before this write holds the old height until the next one.
+            set_rules_without_layout(heights=((self, height),), remap=False)
         else:
             self.styles.height = height
             _refresh_layout_chain(self)
@@ -361,6 +364,15 @@ class AskUserOptions(SelectionList[int]):
         """Disable controls after the whole prompt is submitted."""
         self._locked = True
         self.disabled = True
+
+    def _on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        # ``SelectionList`` toggles whatever is highlighted when this queued
+        # message runs; keys typed at once (a lagging TUI) may have moved the
+        # highlight by then. Toggle the option Space, Enter or the click chose,
+        # and keep the base handler from toggling a second one.
+        event.stop()
+        event.prevent_default()
+        self.toggle(self.get_option_at_index(event.option_index))
 
     @on(SelectionList.SelectionToggled)
     def _on_selection_toggled(self, event: SelectionList.SelectionToggled) -> None:

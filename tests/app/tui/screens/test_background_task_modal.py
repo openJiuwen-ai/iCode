@@ -140,12 +140,12 @@ def test_confirm_stopping_names_each_task_and_the_note() -> None:
     assert dialog._tasks[0].command == task.command
     assert dialog._tasks[0].reason == task.reason
     assert dialog._tasks[0].duration.startswith("1m ")
-    assert dialog._impact_text().endswith("Rollback may not restore what they changed while in the background.")
+    assert dialog._impact_text().endswith("Discarding turns may not restore what they changed while in the background.")
 
     two = confirm_stopping([task, dataclasses.replace(task, id="t2", reason="")], Static())
     assert two._message == "This stops 2 background tasks:"
     assert len(two._tasks) == 2
-    assert "Rollback" not in two._impact_text()
+    assert "Discard" not in two._impact_text()
 
 
 @pytest.mark.asyncio

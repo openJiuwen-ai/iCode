@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, MutableMapping
+from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -18,6 +18,8 @@ from chrys.app.tui.screens.main.live_diff import (
     merge_live_mutation,
 )
 from chrys.app.tui.screens.main.state import MainScreenServices
+from chrys.app.tui.util.diff_content import PreviewCountCache, count_preview_entry
+from chrys.app.tui.util.diff_entries import DiffFocus
 from chrys.foundation.models.mutation_scope import MutationScope
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.paths import resolve_workspace_path
@@ -25,6 +27,8 @@ from chrys.service.mutations.git_state import entry_display_path
 from chrys.service.mutations.types import FileHashDiff, FileMutationTextSnapshot
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from chrys.app.tui.screens.main.ports import DiffView
     from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
     from chrys.service.mutations.tracker import MutationTracker
@@ -113,8 +117,9 @@ class LiveDiffTracker:
             resolved = resolve_workspace_path(path, base_cwd=workspace_cwd)
             self.call_paths[call_id] = entry_display_path(resolved)
 
-    def record_tool_result(self, event: LiveDiffToolResult) -> None:
-        """Accumulate file snapshots from main-agent or sub-agent tool results."""
+    def record_tool_result(self, event: LiveDiffToolResult) -> bool:
+        """Accumulate snapshots and report whether this result carries file state."""
+        recorded = False
         metadata = event.metadata
         file_snapshot = metadata.get("file_snapshot")
         if (
@@ -124,10 +129,12 @@ class LiveDiffTracker:
             and isinstance(file_snapshot[0], str)
             and isinstance(file_snapshot[1], str)
         ):
+            recorded = True
             path = self.call_paths[event.call_id]
             before_text, after_text = file_snapshot
             hashes = _metadata_hashes(metadata.get("file_mutation_hashes"))
             op = metadata.get("file_mutation_op")
+            changed_at = metadata.get("file_changed_at")
             skip = hashes.after_skip or hashes.before_skip
             self.accumulate_live_mutation(
                 path,
@@ -141,8 +148,9 @@ class LiveDiffTracker:
                 before_hash=hashes.before,
                 after_hash=hashes.after,
                 content_omitted=skip.value if skip else "",
+                last_changed_at=float(changed_at) if isinstance(changed_at, int | float) else 0.0,
             )
-        self.accumulate_shell_snapshots(metadata)
+        return self.accumulate_shell_snapshots(metadata) or recorded
 
     def accumulate_live_mutation(
         self,
@@ -158,6 +166,7 @@ class LiveDiffTracker:
         content_omitted: str = "",
         provenance: str = "",
         contested: bool = False,
+        last_changed_at: float = 0.0,
     ) -> None:
         """Record a single live file mutation for the current turn."""
         latest_op = infer_live_op(before_text, op_str)
@@ -173,6 +182,7 @@ class LiveDiffTracker:
             content_omitted=content_omitted,
             provenance=provenance,
             contested=contested,
+            last_changed_at=last_changed_at,
         )
         existing = self.file_mutations.get(path)
         if existing is not None:
@@ -187,15 +197,17 @@ class LiveDiffTracker:
             return
         self.file_mutations[path] = latest
 
-    def accumulate_shell_snapshots(self, metadata: dict[str, Any]) -> None:
+    def accumulate_shell_snapshots(self, metadata: dict[str, Any]) -> bool:
         """Accumulate shell-detected file mutations from event metadata."""
         shell_snapshots = metadata.get("shell_file_snapshots")
         if not isinstance(shell_snapshots, dict):
-            return
+            return False
+        recorded = False
         for path, snapshot in shell_snapshots.items():
             if not isinstance(path, str) or not isinstance(snapshot, FileMutationTextSnapshot):
                 logger.debug("dropping unexpected shell snapshot payload for %r: %r", path, snapshot)
                 continue
+            recorded = True
             skip = snapshot.after_skip or snapshot.before_skip
             self.accumulate_live_mutation(
                 path,
@@ -209,7 +221,10 @@ class LiveDiffTracker:
                 content_omitted=skip.value if skip else "",
                 provenance=snapshot.provenance,
                 contested=snapshot.contested,
+                last_changed_at=snapshot.last_changed_at,
             )
+
+        return recorded
 
     def has_live_entries(self) -> bool:
         """Return whether any live mutations are currently tracked."""
@@ -222,6 +237,28 @@ class LiveDiffTracker:
     def snapshot_file_mutations(self) -> dict[str, LiveFileMutation]:
         """Return an immutable-value snapshot of the current live turn."""
         return dict(self.file_mutations)
+
+
+@dataclass(frozen=True)
+class DiffRequest:
+    """One request-time snapshot shared by the modal and sidebar loader."""
+
+    engine: DiffEngine | None
+    cwd: str
+    session_id: str
+    live_mutations: dict[str, LiveFileMutation]
+    live_tracker_turn_count: int | None
+    live_scope: MutationScope | None
+    live_run_generation: int | None
+    lifecycle_task: asyncio.Task[None] | None
+
+
+@dataclass(frozen=True)
+class CurrentDiffLoad:
+    """The disk baseline and its live overlay; only an accepted result may be cached."""
+
+    persisted: DiffLoadResult
+    merged: DiffLoadResult
 
 
 class DiffController:
@@ -250,24 +287,29 @@ class DiffController:
         self._turn_lifecycle_task = turn_lifecycle_task or (lambda: None)
         self._turn_lifecycle_saved = turn_lifecycle_saved or (lambda _task: False)
 
-    def show_diff(self) -> None:
-        """Open the diff viewer, including live mutations for a running turn.
+    def show_diff(self, *, focus: DiffFocus | None = None) -> None:
+        """Push the loading shell before reading persisted or live changes."""
+        request = self._capture_request()
 
-        When cross-session coordination is active, peer attribution is
-        refreshed (and persisted) before loading entries so late peer claims
-        don't show as local changes. The loading screen is always pushed first;
-        persisted data is requested only after its initial paint.
-        """
+        async def load_data() -> DiffLoadResult:
+            return (await self.load_current(request=request)).merged
+
+        platform_label = get_platform().display_label
+        self._view.open_diff_screen(
+            {},
+            cwd=request.cwd,
+            subtitle_parts=(platform_label,) if platform_label else (),
+            session_id=request.session_id,
+            all_entries=[],
+            load_data=load_data,
+            focus=focus,
+        )
+
+    def _capture_request(self) -> DiffRequest:
         engine_provider = self._services.engine_provider
         engine = cast("DiffEngine", engine_provider()) if engine_provider is not None else None
-        self._open_loading_diff(engine)
-
-    def _open_loading_diff(self, engine: DiffEngine | None) -> None:
-        """Push the screen immediately and let it request diff data later."""
         cwd = self._workspace_cwd()
         session_id = self._view.current_chat_session_id()
-        platform_label = get_platform().display_label
-        subtitle_parts = (platform_label,) if platform_label else ()
         live_mutations: dict[str, LiveFileMutation] = {}
         live_tracker_turn_count: int | None = None
         live_scope: MutationScope | None = None
@@ -290,47 +332,76 @@ class DiffController:
                 period = engine.mutation_tracker.current_period
                 live_scope = period.scope if period is not None else None
 
-        async def load_data() -> DiffLoadResult:
-            if engine is not None and engine.mutation_coordinator is not None:
-                try:
-                    await engine.refresh_mutation_attribution()
-                except Exception:
-                    logger.debug("Pre-diff attribution refresh failed", exc_info=True)
-            diff_data = await asyncio.to_thread(self._load_persisted_diff, session_id, cwd)
-            live_turn_still_active = (
-                live_run_generation is not None
-                and self._is_agent_running()
-                and self._run_generation() == live_run_generation
-            )
-            persistence_finalized = False
-            if captured_lifecycle_task is not None and not live_turn_still_active:
-                await _lifecycle_task_completed_successfully(captured_lifecycle_task)
-                # The exact task's successful final save is the authority
-                # boundary. After-turn hooks may fail after the durable write;
-                # that must not make an older live snapshot override disk.
-                persistence_finalized = self._turn_lifecycle_saved(captured_lifecycle_task)
-                if persistence_finalized:
-                    # The first read may have raced the exact task's final
-                    # save. Re-read after observing its save outcome.
-                    diff_data = await asyncio.to_thread(self._load_persisted_diff, session_id, cwd)
-            return await asyncio.to_thread(
-                self._merge_live_diff,
-                diff_data,
-                cwd,
-                live_mutations,
-                live_tracker_turn_count,
-                persistence_finalized,
-                live_scope,
-            )
-
-        self._view.open_diff_screen(
-            {},
-            cwd=cwd,
-            subtitle_parts=subtitle_parts,
-            session_id=session_id or "",
-            all_entries=[],
-            load_data=load_data,
+        return DiffRequest(
+            engine,
+            cwd,
+            session_id,
+            live_mutations,
+            live_tracker_turn_count,
+            live_scope,
+            live_run_generation,
+            captured_lifecycle_task,
         )
+
+    async def load_current(
+        self,
+        *,
+        request: DiffRequest | None = None,
+        persisted: DiffLoadResult | None = None,
+        include_content: bool = True,
+    ) -> CurrentDiffLoad:
+        """Load the current session, or merge a cached disk result with a fresh live snapshot."""
+        request = request or self._capture_request()
+        engine, cwd, session_id = request.engine, request.cwd, request.session_id
+        live_mutations = request.live_mutations
+        live_tracker_turn_count = request.live_tracker_turn_count
+        live_scope = request.live_scope
+        live_run_generation = request.live_run_generation
+        captured_lifecycle_task = request.lifecycle_task
+        if persisted is None and engine is not None and engine.mutation_coordinator is not None:
+            try:
+                await engine.refresh_mutation_attribution()
+            except Exception:
+                logger.debug("Pre-diff attribution refresh failed", exc_info=True)
+        # A save already completed before the read cannot race that read.
+        # Keep cached-only refreshes in memory after the turn has finished.
+        persistence_finalized = (
+            captured_lifecycle_task is not None
+            and captured_lifecycle_task.done()
+            and self._turn_lifecycle_saved(captured_lifecycle_task)
+        )
+        diff_data = (
+            persisted
+            if persisted is not None
+            else await asyncio.to_thread(self._load_persisted_diff, session_id, cwd, include_content=include_content)
+        )
+        live_turn_still_active = (
+            live_run_generation is not None
+            and self._is_agent_running()
+            and self._run_generation() == live_run_generation
+        )
+        if captured_lifecycle_task is not None and not live_turn_still_active and not persistence_finalized:
+            await _lifecycle_task_completed_successfully(captured_lifecycle_task)
+            # The exact task's successful final save is the authority
+            # boundary. After-turn hooks may fail after the durable write;
+            # that must not make an older live snapshot override disk.
+            persistence_finalized = self._turn_lifecycle_saved(captured_lifecycle_task)
+            if persistence_finalized:
+                # The first read may have raced the exact task's final
+                # save. Re-read after observing its save outcome.
+                diff_data = await asyncio.to_thread(
+                    self._load_persisted_diff, session_id, cwd, include_content=include_content
+                )
+        merged = await asyncio.to_thread(
+            self._merge_live_diff,
+            diff_data,
+            cwd,
+            live_mutations,
+            live_tracker_turn_count,
+            persistence_finalized,
+            live_scope,
+        )
+        return CurrentDiffLoad(persisted=diff_data, merged=merged)
 
     def show_workflow_diff(self, session_id: str, cwd: str) -> None:
         """Read one workflow ledger, including a stable snapshot of its active run."""
@@ -349,12 +420,23 @@ class DiffController:
             {}, cwd=cwd, subtitle_parts=(), session_id=session_id, all_entries=[], load_data=load_data
         )
 
-    def _load_persisted_diff(self, session_id: str, cwd: str) -> DiffLoadResult:
+    def preview_entries(self, data: DiffLoadResult, session_id: str) -> tuple[DiffFileEntry, ...]:
+        """Sort metadata off the UI thread, without waiting for line counts."""
+        return sorted_preview_entries(data)
+
+    def preview_directory(self, session_id: str) -> Path | None:
+        """Snapshot namespace captured along with the current preview entries."""
+        store = self._services.state_store
+        return store.session_dir(session_id) if store is not None and session_id else None
+
+    def _load_persisted_diff(self, session_id: str, cwd: str, *, include_content: bool = True) -> DiffLoadResult:
         """Load persisted entries; async callers run this method in a thread."""
         from chrys.app.tui.screens.diff import DiffLoadResult, load_diff_entries_by_period
 
         if session_id and self._services.state_store:
-            return load_diff_entries_by_period(self._services.state_store, session_id, cwd)
+            if include_content:
+                return load_diff_entries_by_period(self._services.state_store, session_id, cwd)
+            return load_diff_entries_by_period(self._services.state_store, session_id, cwd, include_content=False)
         return DiffLoadResult.empty()
 
     def _merge_live_diff(
@@ -488,3 +570,141 @@ def _diff_entry_state_key(entry: DiffFileEntry) -> tuple[object, ...]:
         entry.after_hash,
         entry.content_omitted,
     )
+
+
+def sorted_preview_entries(data: DiffLoadResult) -> tuple[DiffFileEntry, ...]:
+    """Newest observed change first, with a stable display-path tie break."""
+    from chrys.app.tui.util.diff_labels import entry_display_key, filter_and_dedupe_entries
+
+    return tuple(
+        sorted(
+            filter_and_dedupe_entries(data.all_entries),
+            key=lambda entry: (-entry.last_changed_at, entry_display_key(entry)),
+        )
+    )
+
+
+class DiffPreviewController:
+    """Coalesce refreshes and publish serial progress while the current owner stays valid."""
+
+    def __init__(
+        self,
+        *,
+        diff: DiffController,
+        owner: Callable[[], tuple[str, int, str]],
+        visible: Callable[[], bool],
+        show: Callable[[tuple[DiffFileEntry, ...]], None],
+        start_worker: Callable[[Callable[[], Awaitable[object]]], object],
+    ) -> None:
+        self._diff = diff
+        self._owner = owner
+        self._visible = visible
+        self._show = show
+        self._start_worker = start_worker
+        self._cached: DiffLoadResult | None = None
+        self._cached_owner: tuple[str, int, str] | None = None
+        self._seq = 0
+        self._reread_seq = 0
+        self._reread_needed = True
+        self._stale = True
+        self._refreshing = False
+        self._counts = PreviewCountCache()
+        self._counting = False
+
+    def request_refresh(self, *, reread: bool = False) -> None:
+        owner = self._owner()
+        if owner != self._cached_owner:
+            previous = self._cached_owner
+            self._cached = None
+            self._cached_owner = owner
+            self._counts = PreviewCountCache()
+            self._reread_needed = True
+            if previous is None or (previous[0], previous[2]) != (owner[0], owner[2]):
+                self._show(())
+        if reread:
+            self._reread_seq += 1
+        self._reread_needed |= reread
+        self._seq += 1
+        self._stale = True
+        self.screen_resumed()
+
+    def screen_resumed(self) -> None:
+        """Resume deferred work when Chat is visible, including after an overlay."""
+        if self._owner() != self._cached_owner:
+            self.request_refresh(reread=True)
+            return
+        if self._stale and not self._refreshing and self._visible():
+            self._refreshing = True
+            self._start_worker(self._refresh)
+        elif not self._stale and self._visible() and self._counts.entries:
+            self._show(self._counts.entries)
+        self._resume_counts()
+
+    def _resume_counts(self) -> None:
+        if not self._counting and self._visible() and self._counts.next_pending() is not None:
+            self._counting = True
+            self._start_worker(self._count)
+
+    async def _count(self) -> None:
+        """One independent worker follows the latest list after every file."""
+        try:
+            while self._visible():
+                cache, owner = self._counts, self._cached_owner
+                entry = cache.next_pending()
+                if entry is None:
+                    return
+                directory = cache.directory
+                remember = True
+                try:
+                    counted = await count_preview_entry(entry, directory)
+                except Exception:
+                    logger.debug("Unable to count sidebar file changes", exc_info=True)
+                    counted = replace(entry, line_count_result="unavailable")
+                    # A failed file must not hold up other rows. Retry transient
+                    # errors on the next list refresh, without another state.
+                    remember = False
+                if cache is not self._counts:
+                    continue
+                if owner != self._owner():
+                    # The session moved on before its event arrived: refetch
+                    # for the new owner, whose refresh resumes counting.
+                    self.request_refresh(reread=True)
+                    return
+                if cache.accept(counted, directory, remember=remember) and self._visible():
+                    self._show(cache.entries)
+        finally:
+            self._counting = False
+
+    async def _refresh(self) -> None:
+        try:
+            while self._stale and self._visible():
+                if self._owner() != self._cached_owner:
+                    self.request_refresh(reread=True)
+                seq, owner = self._seq, self._owner()
+                reread, reread_seq = self._reread_needed, self._reread_seq
+                try:
+                    result = await self._diff.load_current(
+                        persisted=None if reread else self._cached, include_content=False
+                    )
+                    entries = await asyncio.to_thread(self._diff.preview_entries, result.merged, owner[0])
+                except Exception:
+                    logger.debug("Unable to refresh sidebar file changes", exc_info=True)
+                    if seq == self._seq:
+                        self._stale = False
+                        return
+                    continue
+                if owner != self._owner():
+                    continue
+                if not self._visible():
+                    return
+                self._cached = result.persisted
+                self._cached_owner = owner
+                if reread and reread_seq == self._reread_seq:
+                    self._reread_needed = False
+                # One worker computes serially: even with newer requests pending,
+                # this result advances the display. Only an owner change invalidates it.
+                self._stale = seq != self._seq
+                self._show(self._counts.fill(entries, self._diff.preview_directory(owner[0])))
+                self._resume_counts()
+        finally:
+            self._refreshing = False

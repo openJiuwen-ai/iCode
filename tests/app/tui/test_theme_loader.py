@@ -15,6 +15,7 @@ from textual.theme import BUILTIN_THEMES, Theme
 from chrys.app.tui.theme import CHRYS_THEMES
 from chrys.app.tui.theme_loader import (
     load_user_themes,
+    scan_user_themes,
     theme_name_is_valid,
 )
 from chrys.foundation.config.settings import RENAMED_THEMES
@@ -529,3 +530,44 @@ async def test_invalid_saved_theme_falls_back_and_valid_theme_can_be_applied(
         await wait_for(lambda: app.screen.query_one(Footer).styles.background == Color.parse("#123456"), pilot=pilot)
         assert app.theme == "good"
         persisted.assert_called_once_with("good")
+
+
+def test_a_scan_tells_a_deleted_theme_from_one_it_could_not_read(tmp_path) -> None:
+    root = tmp_path / "themes"
+    _write_theme(root, "kept.yaml", "primary: '#112233'\n")
+    _write_theme(root, "broken.yaml", "primary: [\n")
+
+    scan = scan_user_themes(root)
+
+    assert [theme.name for theme in scan.themes] == ["kept"]
+    assert scan.unreadable == {"broken"}
+    assert [warning.code for warning in scan.warnings] == ["user_theme_skipped"]
+    assert scan.absent_from({"kept", "broken", "deleted"}) == {"deleted"}
+
+
+def test_a_scan_of_a_missing_folder_says_every_theme_was_deleted(tmp_path) -> None:
+    assert scan_user_themes(tmp_path / "themes").absent_from({"mine"}) == {"mine"}
+
+
+def test_a_scan_that_cannot_list_the_folder_says_nothing_about_any_theme(tmp_path, monkeypatch) -> None:
+    import types
+
+    import chrys.app.tui.theme_loader as loader
+
+    def refuse(_path: object) -> object:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(loader, "os", types.SimpleNamespace(scandir=refuse))
+    scan = scan_user_themes(tmp_path)
+
+    assert scan.absent_from({"mine"}) == set()
+    assert [warning.code for warning in scan.warnings] == ["user_theme_skipped"]
+
+
+def test_a_folder_link_with_a_missing_target_is_not_a_deleted_folder(tmp_path) -> None:
+    from tests.support.symlinks import symlink_or_skip
+
+    root = tmp_path / "themes"
+    symlink_or_skip(root, tmp_path / "unmounted", target_is_directory=True)
+
+    assert scan_user_themes(root).absent_from({"mine"}) == set()

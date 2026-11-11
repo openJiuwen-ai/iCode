@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from chrys.foundation.config.process_settings import process_settings
 from chrys.foundation.text.encoding import decode_bytes
@@ -63,6 +64,8 @@ class FileSnapshotRef:
 
 
 FileSnapshotPayload = tuple[str, str] | FileSnapshotRef
+type FileSnapshotKey = str | tuple[Literal["operation"], str]
+"""Legacy provider ids are strings; operation ids have a disjoint tagged key."""
 
 
 def _text_snapshot_size(snapshot: tuple[str, str]) -> int:

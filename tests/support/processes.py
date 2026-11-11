@@ -1,10 +1,27 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Subprocess doubles for code that reads a process's output pipes."""
+"""Subprocess doubles for code that reads a process's output pipes, and a liveness check for real ones."""
 
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import psutil
+
+
+def still_running(process: psutil.Process) -> bool:
+    """Whether *process*, a ``psutil.Process`` captured while alive, still runs; a zombie has ended.
+
+    It can exit between any two reads, so a process that vanishes while read has ended too.
+    """
+    import psutil
+
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
 
 
 def finished_reader(data: bytes) -> asyncio.StreamReader:

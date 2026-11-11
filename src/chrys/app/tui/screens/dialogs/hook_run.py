@@ -48,6 +48,7 @@ from chrys.app.tui.screens.dialogs.tool_view import (
     COPIED_OUTPUT_UNAVAILABLE,
     copy_and_notify,
 )
+from chrys.app.tui.util.formatting import format_byte_size
 from chrys.app.tui.util.removal import remove_children_shielded
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets.chat.tool_call import fmt_duration
@@ -184,14 +185,6 @@ _COPIED_LOG_PATH_UNAVAILABLE = msg(
 
 def _wall_time(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _size(count: int) -> str:
-    if count < 1024:
-        return f"{count} B"
-    if count < 1024 * 1024:
-        return f"{count / 1024:.1f} KB"
-    return f"{count / (1024 * 1024):.1f} MB"
 
 
 def _pretty_json(text: str) -> str:
@@ -560,7 +553,7 @@ class HookRunModal(BaseDialog[None]):
             return _Section(
                 name,
                 (
-                    self._note(_PAYLOAD_TRUNCATED.bind(size=_size(io.payload_size)), copied=False),
+                    self._note(_PAYLOAD_TRUNCATED.bind(size=format_byte_size(io.payload_size)), copied=False),
                     _Code("text", io.payload),
                 ),
             )
@@ -631,7 +624,7 @@ class HookRunModal(BaseDialog[None]):
             if gone:
                 widgets.append(self._note(_DETAILS_GONE.bind(), copied=False))
             elif applied.args_size:
-                widgets.append(self._note(_ARGS_TRUNCATED.bind(size=_size(applied.args_size)), copied=False))
+                widgets.append(self._note(_ARGS_TRUNCATED.bind(size=format_byte_size(applied.args_size)), copied=False))
                 widgets.append(_Code("text", applied.args))
             else:
                 widgets.append(_Code("json", applied.args))

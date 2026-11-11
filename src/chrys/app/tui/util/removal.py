@@ -48,10 +48,25 @@ async def remove_children_shielded(container: Widget) -> None:
 
 
 async def remove_all_shielded(widgets: Iterable[Widget]) -> None:
-    """Remove each of *widgets* in turn, every one to the end, even when the caller is cancelled."""
-    await finish_shielded(_remove_each(list(widgets)))
+    """Remove every one of *widgets* to the end, even when the caller is cancelled.
+
+    Siblings leave in one removal: their message loops close together and their parent lays out
+    once. Removing them one after another would add up each widget's wait, which a turn of many
+    messages turns into seconds on a busy machine.
+    """
+    await finish_shielded(_remove_by_parent(list(widgets)))
 
 
-async def _remove_each(widgets: list[Widget]) -> None:
+async def _remove_by_parent(widgets: list[Widget]) -> None:
+    from textual.widget import Widget
+
+    groups: dict[int, tuple[object, list[Widget]]] = {}
     for widget in widgets:
-        await widget.remove()
+        parent = widget.parent
+        groups.setdefault(id(parent), (parent, []))[1].append(widget)
+    for parent, siblings in groups.values():
+        if isinstance(parent, Widget):
+            await parent.remove_children(siblings)
+        else:
+            for widget in siblings:
+                await widget.remove()

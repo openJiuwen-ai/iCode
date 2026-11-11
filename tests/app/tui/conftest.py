@@ -15,6 +15,13 @@ from textual.app import App
 from chrys.app.tui import app as chrys_app
 from chrys.app.tui.support import gc_freeze
 from chrys.app.tui.theme import TUI_VARIABLE_DEFAULTS, with_tui_css_variables
+from tests.support.toasts import record_shown_toasts
+
+
+@pytest.fixture(autouse=True)
+def record_toasts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every toast readable through ``shown_toasts`` after it times out."""
+    record_shown_toasts(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
@@ -78,6 +85,24 @@ def isolate_gc_freeze_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     assert leaked_owner is None
     assert gc_freeze._enabled_owner is None
     assert gc.get_freeze_count() == 0
+
+
+@pytest.fixture
+def frozen_earlier_heap() -> Iterator[None]:
+    """Keep what earlier tests in this worker left alive out of this test's full collections.
+
+    A transcript replay ends its GC pause with one full ``gc.collect()``. That pass walks every
+    tracked object in the process, so its cost grows with the worker's whole history, not with
+    the replay: a quarter second in a long-lived worker, seconds on a loaded runner. Frozen,
+    that heap is skipped and the pass walks only what this test allocated.
+
+    Opt in with ``pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")`` in modules that
+    replay transcripts; never in one that exercises the GC freeze or the scroll GC pause, which
+    count frozen objects and collections themselves.
+    """
+    gc.freeze()
+    yield
+    gc.unfreeze()
 
 
 @pytest.fixture

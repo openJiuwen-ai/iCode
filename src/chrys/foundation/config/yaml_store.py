@@ -27,12 +27,15 @@ import logging
 import os
 import stat
 from collections.abc import Callable, Generator, Iterator
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from chrys.foundation.config.errors import ConfigError
+from chrys.foundation.i18n import DisplayPath, MessageRef, msg
 from chrys.foundation.platform.files import atomic_write_text, digest_bytes
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.foundation.util.lock import FileLock
@@ -123,39 +126,52 @@ def _read_bytes(path: Path) -> bytes | None:
         return None
 
 
-def _parse(raw: bytes | None) -> dict[str, Any] | None:
-    """Decode a YAML mapping, returning ``None`` if undecodable or invalid.
+_INVALID_MAPPING = msg(
+    "settings.document_invalid_mapping",
+    fallback="{path}: expected a YAML mapping within the configuration size limits.",
+)
+_INVALID_YAML = msg("settings.document_invalid_yaml", fallback="{path}: invalid YAML or text encoding.")
+_INVALID_YAML_AT = msg(
+    "settings.document_invalid_yaml_at", fallback="{path}: invalid YAML at line {line}, column {column}."
+)
+_UNREADABLE = msg("settings.document_unreadable", fallback="Cannot read {path}: {detail}")
+_LOCK_TIMEOUT = msg("settings.document_lock_timeout", fallback="Timed out waiting for the lock on {path}.")
+_INVALID_PROJECT = msg(
+    "settings.document_invalid_project", fallback="{path}: unreadable or invalid project YAML document."
+)
 
-    The shared detector's strict decode raises ``UnicodeError`` (a
-    ``ValueError``) instead of replacing damaged bytes. PyYAML only wraps
-    *parser* failures in ``YAMLError``: its
-    constructors let the underlying exception out, so ``2026-99-99`` raises a
-    bare ``ValueError``, an integer past ``sys.get_int_max_str_digits()`` the
-    same, and deeply nested flow collections a ``RecursionError``.
 
-    Every one of those is reachable by hand-editing the file — which is exactly
-    the case the ``.bak`` fallback exists for, and it only runs if this returns
-    ``None`` instead of propagating.
-    """
+class ConfigDocumentError(ConfigError, OSError):
+    """The primary cannot safely participate in a settings operation."""
+
+
+def _parse(raw: bytes | None, *, required_at: Path | None = None) -> dict[str, Any] | None:
+    """Parse without including document excerpts in errors: they can contain secrets."""
     if raw is None:
         return None
+
     try:
-        text = decode_bytes(raw, errors="strict")
-        data = yaml.safe_load(text)
+        data = yaml.safe_load(decode_bytes(raw, errors="strict"))
+        if data is None:
+            return {}
+        if isinstance(data, dict) and _container_tree_within_bounds(data):
+            return data
+    except yaml.MarkedYAMLError as exc:
+        if required_at is not None:
+            mark = exc.problem_mark
+            path = DisplayPath(required_at)
+            detail = (
+                _INVALID_YAML_AT.bind(path=path, line=mark.line + 1, column=mark.column + 1)
+                if mark
+                else _INVALID_YAML.bind(path=path)
+            )
+            raise ConfigDocumentError(detail) from None
     except yaml.YAMLError, ValueError, RecursionError:
-        return None
-    if data is None:
-        # An empty file, a file of only comments, and an explicit ``null`` all
-        # land here, and all three mean "this document holds no settings".
-        # Only ``None`` may: ``or {}`` would have swallowed ``false``, ``0``
-        # and ``[]`` too, and a truncated file that happens to parse as one of
-        # those would then count as a valid empty document — skipping the
-        # ``.bak`` fallback and letting the next write mirror the emptiness
-        # over the one good copy that was left.
-        return {}
-    if not isinstance(data, dict) or not _container_tree_within_bounds(data):
-        return None
-    return data
+        if required_at is not None:
+            raise ConfigDocumentError(_INVALID_YAML.bind(path=DisplayPath(required_at))) from None
+    if required_at is not None:
+        raise ConfigDocumentError(_INVALID_MAPPING.bind(path=DisplayPath(required_at)))
+    return None
 
 
 _MAX_EXPANDED_CONTAINERS = 100_000
@@ -276,20 +292,24 @@ def _container_tree_within_bounds(doc: dict[str, Any]) -> bool:
     return True
 
 
-def _read_locked(path: Path, *, backup: bool) -> tuple[dict[str, Any] | None, bytes | None, bool]:
-    """Read *path* (caller holds the lock): ``(doc, raw, from_backup)``.
+# Owned config documents are few. Remember each independently of sessions so a
+# workspace switch can combine the last valid user layer with the new project.
+_last_valid: dict[Path, dict[str, Any]] = {}
 
-    ``raw`` is the primary's bytes as this read saw them — including when they
-    did not parse — so a caller that has to prove what it read digests those
-    rather than re-reading the path afterwards.
-    """
-    raw = _read_bytes(path)
-    doc = _parse(raw)
-    if doc is not None:
-        return doc, raw, False
-    if not backup:
-        return None, raw, False
-    return _parse(_read_bytes(backup_path_for(path))), raw, True
+
+def _primary(path: Path) -> tuple[dict[str, Any] | None, bytes | None]:
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        _last_valid.pop(path, None)
+        return None, None
+    except OSError as exc:
+        raise ConfigDocumentError(_UNREADABLE.bind(path=DisplayPath(path), detail=exc.strerror or str(exc))) from exc
+    doc = _parse(raw, required_at=path)
+    if doc is None:
+        raise ConfigDocumentError(_INVALID_YAML.bind(path=DisplayPath(path)))
+    _last_valid[path] = deepcopy(doc)
+    return doc, raw
 
 
 def _dump(doc: dict[str, Any]) -> str:
@@ -315,46 +335,41 @@ class YamlRead:
 
     doc: dict[str, Any] | None
     fingerprint: str | None
-    """Digest of the primary as this read left it; ``None`` when absent."""
+    """Digest of a successfully parsed primary. Recovery data cannot authorize migration."""
+    error: MessageRef | None = None
 
 
 def read_yaml_document(
-    path: Path,
-    *,
-    backup: bool = True,
-    lock_timeout: float = LOCK_TIMEOUT_SECONDS,
+    path: Path, *, backup: bool = True, strict: bool = False, lock_timeout: float = LOCK_TIMEOUT_SECONDS
 ) -> YamlRead:
-    """Read the YAML mapping at *path* together with the file's fingerprint.
-
-    For callers that later act destructively on the file they read — retiring
-    a migrated legacy document, say — and must be able to prove it is still
-    the same file. The fingerprint is over the very bytes ``doc`` was parsed
-    from, not over a second read of the path: an editor that ignores the
-    sidecar lock needs only one write to land between a parse and a re-read,
-    and the fingerprint would then certify a file whose contents nobody has
-    seen — the next phase retires the newer file and records the older state as
-    migrated. Re-entering this function under a caller-held lock self-deadlocks,
-    which is why the fingerprint has to come out of the same call.
-
-    A repaired primary is the one case where the two differ legitimately: this
-    call rewrites it from the backup, and the fingerprint then describes the
-    payload it just wrote, which is what the next reader will find there.
-    """
-    if not path.exists() and not (backup and backup_path_for(path).exists()):
-        return YamlRead(doc=None, fingerprint=None)
-    # No ``mkdir`` here: one of those two exists, so its directory does too, and
-    # a read must not be what creates the config directory.
-    with _read_guard(path, lock_timeout):
-        doc, raw, from_backup = _read_locked(path, backup=backup)
-        if doc is not None and from_backup:
-            try:
-                raw = atomic_write_text(path, _dump(doc))
-            except OSError:
-                # The repair failed, so the primary still holds what was read
-                # from it — unparseable, but that is its identity, and the
-                # caller's own guard decides what an unreadable one means.
-                logger.warning("Could not restore %s from its backup", path, exc_info=True)
-        return YamlRead(doc=doc, fingerprint=digest_bytes(raw))
+    """Read without repairing. Ordinary readers recover in memory, strict readers reject."""
+    try:
+        # A missing directory must not be created just to lock a missing file.
+        path.stat()
+        with _read_guard(path, lock_timeout):
+            doc, raw = _primary(path)
+            return YamlRead(doc, digest_bytes(raw))
+    except FileNotFoundError:
+        _last_valid.pop(path, None)
+        return YamlRead(None, None)
+    except OSError as exc:
+        if isinstance(exc, ConfigDocumentError):
+            fault = exc
+        elif isinstance(exc, TimeoutError):
+            fault = ConfigDocumentError(_LOCK_TIMEOUT.bind(path=DisplayPath(path)))
+        else:
+            fault = ConfigDocumentError(_UNREADABLE.bind(path=DisplayPath(path), detail=str(exc)))
+        if strict:
+            if fault is exc:
+                raise
+            raise fault from exc
+        error = str(fault)
+        logger.warning("%s", error)
+        cached = _last_valid.get(path) if backup else None
+        doc = (
+            deepcopy(cached) if cached is not None else (_parse(_read_bytes(backup_path_for(path))) if backup else None)
+        )
+        return YamlRead(doc, None, fault.display)
 
 
 def read_yaml_doc(
@@ -363,26 +378,16 @@ def read_yaml_doc(
     backup: bool = True,
     lock_timeout: float = LOCK_TIMEOUT_SECONDS,
 ) -> dict[str, Any] | None:
-    """Read the YAML mapping at *path*, falling back to its backup.
-
-    Returns ``None`` when neither copy yields a mapping, so callers can tell
-    "no config yet" from "empty config". When the primary is missing or corrupt
-    and the backup parses, the primary is restored from it before returning.
-
-    Nothing is created when neither file exists — a read must not materialise
-    the config directory.
-    """
+    """Read a document, optionally using remembered content or a backup on failure."""
     return read_yaml_document(path, backup=backup, lock_timeout=lock_timeout).doc
 
 
-def read_yaml_doc_readonly(path: Path) -> dict[str, Any] | None:
+def read_yaml_doc_readonly(path: Path, *, strict: bool = False) -> dict[str, Any] | None:
     """Read the YAML mapping at *path* with no lock, no backup and no repair.
 
     For documents Chrys does not own — a repository's ``.chrys/settings.yaml``
-    lives in someone's working tree, where the other readers' side effects are
-    exactly wrong: acquiring the courtesy lock creates a sidecar file in their
-    repo, and the backup repair *writes* into it. There is also no Chrys writer
-    to be courteous to, because nothing in Chrys ever writes these files.
+    lives in someone's working tree, where taking the owned-document lock would create a sidecar.
+    Project configuration has no backup or remembered user layer.
 
     Because the file is also not the *user's*, the read is defensive where the
     owned readers are trusting: only a regular file, never through a symlink,
@@ -393,10 +398,22 @@ def read_yaml_doc_readonly(path: Path) -> dict[str, Any] | None:
     carry the read out of the tree. Ancestors above the parent are the
     caller's trust domain (the project root the user chose to open).
 
-    Returns ``None`` when the file is absent, refused, or does not parse as a
-    mapping.
+    Missing files return ``None``. For refused or malformed files strict
+    reads raise and ordinary reads return ``None``.
     """
-    return _parse(_read_bytes_untrusted(path))
+    raw = _read_bytes_untrusted(path)
+    result = _parse(raw, required_at=path if strict else None)
+    if strict and result is None:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise ConfigDocumentError(
+                _UNREADABLE.bind(path=DisplayPath(path), detail=exc.strerror or str(exc))
+            ) from exc
+        raise ConfigDocumentError(_INVALID_PROJECT.bind(path=DisplayPath(path)))
+    return result
 
 
 def _read_bytes_untrusted(path: Path) -> bytes | None:
@@ -463,6 +480,7 @@ def update_yaml_doc(
     mutator: Callable[[dict[str, Any]], dict[str, Any]],
     *,
     lock_timeout: float = LOCK_TIMEOUT_SECONDS,
+    committed: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Apply *mutator* to the document at *path* under an exclusive lock.
 
@@ -470,16 +488,18 @@ def update_yaml_doc(
     concurrent writers merge instead of clobbering: same key is
     last-writer-wins, different keys both survive.
 
-    *mutator* receives the freshly read document (an empty dict when neither
-    the primary nor the backup parses) and returns the document to commit. If
+    *mutator* receives the freshly read primary (an empty dict when absent) and returns the document to commit. If
     it raises, the lock is released and **neither** file is touched.
 
     Returns the committed document.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(lock_path_for(path), timeout=lock_timeout):
-        current, _, _ = _read_locked(path, backup=True)
+        current, _ = _primary(path)
         updated = mutator(dict(current) if current is not None else {})
         payload = _dump(updated)
         _commit(path, payload)
+        _last_valid[path] = deepcopy(updated)
+        if committed is not None:
+            committed()
         return updated

@@ -87,7 +87,16 @@ def _handler(
         async def prepare_retry(self) -> None:
             return
 
-        async def add_retry(self, message: str, _attempt: int, _max_attempts: int, _delay_seconds: int) -> None:
+        async def add_retry(
+            self,
+            message: str,
+            _attempt: int,
+            _max_attempts: int,
+            _delay_seconds: int,
+            *,
+            deadline: float | None = None,
+            wait_id: str = "",
+        ) -> None:
             surfaces.retry_banners.append(message)
 
         def sub_agent_retry_attempt(

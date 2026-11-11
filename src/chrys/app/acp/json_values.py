@@ -55,7 +55,7 @@ def to_json_value(value: object) -> JsonValue:
     if value is None or isinstance(value, bool | int):
         return value
     if isinstance(value, str):
-        return _json_text(value)
+        return json_text(value)
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     if isinstance(value, Mapping):
@@ -74,7 +74,7 @@ def to_json_value(value: object) -> JsonValue:
         return to_json_value(os.fspath(value))
     if isinstance(value, bytes | bytearray | memoryview):
         return bytes(value).decode("utf-8", errors="replace")
-    return _json_text(str(value))
+    return json_text(str(value))
 
 
 def to_json_object(value: Mapping[Any, object]) -> dict[str, JsonValue]:
@@ -82,7 +82,8 @@ def to_json_object(value: Mapping[Any, object]) -> dict[str, JsonValue]:
     return {_json_key(key): to_json_value(member) for key, member in value.items()}
 
 
-def _json_text(text: str) -> str:
+def json_text(text: str) -> str:
+    """Return *text* as a strict JSON parser accepts it: pairs joined, unpaired surrogates spelled ``\\udcXX``."""
     try:
         text.encode("utf-8")
     except UnicodeEncodeError:

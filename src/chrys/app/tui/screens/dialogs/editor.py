@@ -1,6 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Large modal editor for preparing a multi-line chat draft."""
+"""Large modal editor for preparing a multi-line chat draft.
+
+It edits the expanded sending text, prompt fields and owner by the input
+box's rules (``DraftEditor``), then hands the whole draft back.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +20,9 @@ from textual.widgets import Button, Select, Static
 from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
+from chrys.app.tui.util.message_gate import messages_disabled
+from chrys.app.tui.widgets.chrome.draft_editor import DraftEditor
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.editor import (
     EditorBufferSnapshot,
     EditorIntent,
@@ -23,12 +30,16 @@ from chrys.app.tui.widgets.editor import (
     EditorMode,
     MessageEditor,
 )
-from chrys.app.tui.widgets.editor.types import COMMON_EDITOR_INTENTS, EditorStatus
+from chrys.app.tui.widgets.editor.types import COMMON_EDITOR_INTENTS, EDITOR_MODE_CYCLE, EditorStatus
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from textual import events
     from textual.app import ComposeResult
+
+    from chrys.app.tui.widgets.editor.types import EditorLocation
 
 
 _UNSAVED_WARNING = msg(
@@ -66,7 +77,6 @@ _EDITOR_MODE_MESSAGES: dict[EditorMode, MessageDef] = {
     EditorMode.EMACS: _MODE_EMACS,
     EditorMode.VIM: _MODE_VIM,
 }
-_EDITOR_MODE_SEQUENCE = (EditorMode.STANDARD, EditorMode.EMACS, EditorMode.VIM)
 
 
 def _build_editor_hint(mode: EditorMode, render_message: Callable[[MessageRef], str]) -> Text:
@@ -110,11 +120,17 @@ def _build_editor_hint(mode: EditorMode, render_message: Callable[[MessageRef], 
 
 @dataclass(frozen=True, slots=True)
 class EditorDialogResult:
-    """Draft and keymap state returned on every deliberate dismissal."""
+    """Draft, cursor and keymap state returned on every deliberate dismissal."""
 
     accepted: bool
-    text: str
+    draft: ChatDraft
+    cursor_location: EditorLocation
     mode: EditorMode
+
+    @property
+    def text(self) -> str:
+        """The draft's text."""
+        return self.draft.text
 
 
 class EditorDialog(BaseDialog[EditorDialogResult]):
@@ -129,8 +145,24 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
         mode: EditorMode | str = EditorMode.STANDARD,
         can_commit: Callable[[], bool] = lambda: True,
         current_draft_revision: Callable[[], int] | None = None,
+        draft: ChatDraft | None = None,
+        title: str = "",
+        paste_cwd: str = "",
+        clipboard_image_dir: Path | None = None,
     ) -> None:
+        """Edit *draft* (the snapshot's text when none), opened at the snapshot's cursor.
+
+        *title* replaces "Prompt Editor" when the editor holds one part of the
+        draft, such as a folded paste named by its label.
+
+        *paste_cwd* and *clipboard_image_dir* are the input box's, so a paste
+        resolves the same paths and stores clipboard images in the same place.
+        """
         self._entry_snapshot = snapshot
+        self._title = title
+        self._entry_draft = draft if draft is not None else ChatDraft(snapshot.text)
+        self._paste_cwd = paste_cwd
+        self._clipboard_image_dir = clipboard_image_dir
         self._mode = EditorMode.parse(mode)
         self._can_commit = can_commit
         self._current_draft_revision = current_draft_revision or (lambda: snapshot.draft_revision)
@@ -148,7 +180,7 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
     def compose(self) -> ComposeResult:
         render_message = self._render_message
         with VerticalGroup(id="editor-dialog", classes=f"editor-mode-{self._mode.value}") as container:
-            container.border_title = Text(render_message(_EDITOR_TITLE.bind()))
+            container.border_title = Text(self._title or render_message(_EDITOR_TITLE.bind()))
             container.border_subtitle = Text(render_message(_EDITOR_MODE_MESSAGES[self._mode].bind()))
             with HorizontalGroup(id="editor-header"):
                 yield Static(Text(render_message(_MODE_LABEL.bind())), id="editor-mode-label")
@@ -164,10 +196,13 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
                     id="editor-mode",
                 )
                 yield Static(_build_editor_hint(self._mode, render_message), id="editor-hint")
-            editor = MessageEditor(
-                text=self._entry_snapshot.text,
+            editor = DraftEditor(
+                self._entry_draft,
+                paste_cwd=self._paste_cwd,
+                clipboard_image_dir=self._clipboard_image_dir,
                 cursor_location=self._entry_snapshot.cursor_location,
                 mode=self._mode,
+                cycles_modes=True,
                 id="message-editor",
                 compact=True,
                 soft_wrap=True,
@@ -181,6 +216,8 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
                 yield Button(Text(render_message(_DISCARD.bind())), id="editor-cancel", variant="error", flat=True)
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         self._sync_narrow_layout(self.app.size.width)
         self.query_one(MessageEditor).focus()
 
@@ -231,14 +268,25 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
     @on(MessageEditor.ModeChanged)
     def _on_editor_mode_changed(self, event: MessageEditor.ModeChanged) -> None:
         event.stop()
-        self._mode = event.mode
-        mode_select = self.query_one("#editor-mode", Select)
-        if mode_select.value != event.mode.value:
-            mode_select.value = event.mode.value
-        self._set_border_subtitle(event.mode)
-        self._set_hint(_build_editor_hint(event.mode, self._render_message))
-        self._clear_discard_armed()
+        self._show_editor_mode()
+
+    def _show_editor_mode(self) -> None:
+        """Show the editor's keymap in the chrome and disarm the confirmations a switch resets."""
         editor = self.query_one(MessageEditor)
+        # The editor's mode now, not the event's: after two quick switches the first one's event
+        # arrives with the editor already on the second mode.
+        mode = editor.mode
+        self._mode = mode
+        mode_select = self.query_one("#editor-mode", Select)
+        if mode_select.value != mode.value:
+            # Following the editor is no choice of the user's. Echoed back, the Select's Changed would
+            # arrive after any switch made meanwhile and undo it, and the two would chase each other.
+            with messages_disabled(Select.Changed, mode_select):
+                mode_select.value = mode.value
+        self._set_border_subtitle(mode)
+        self._set_hint(_build_editor_hint(mode, self._render_message))
+        self._clear_discard_armed()
+        self._clear_overwrite_armed()
         self._refresh_status(editor.status_text, warning=editor.status_warning)
 
     @on(Select.Changed, "#editor-mode")
@@ -314,7 +362,7 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
 
     def request_escape_cancel(self) -> None:
         """Cancel clean text, or require a second Escape for dirty text."""
-        if self.query_one(MessageEditor).text == self._entry_snapshot.text:
+        if not self.query_one(MessageEditor).editor_is_dirty:
             self.cancel_immediately()
             return
         if self._discard_armed:
@@ -338,8 +386,12 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
             self._cycle_mode()
 
     def _dismiss_with_result(self, *, accepted: bool) -> None:
-        editor = self.query_one(MessageEditor)
-        self.dismiss(EditorDialogResult(accepted=accepted, text=editor.text, mode=self._mode))
+        editor = self.query_one(DraftEditor)
+        self.dismiss(
+            EditorDialogResult(
+                accepted=accepted, draft=editor.chat_draft(), cursor_location=editor.cursor_location, mode=editor.mode
+            )
+        )
 
     def _clear_discard_armed(self) -> None:
         if not self._discard_armed:
@@ -385,25 +437,21 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
         container = self.query_one("#editor-dialog", VerticalGroup)
         container.border_subtitle = Text(self._render_message(_EDITOR_MODE_MESSAGES[mode].bind()))
         container.update_classes(
-            {f"editor-mode-{candidate.value}": candidate is mode for candidate in _EDITOR_MODE_SEQUENCE}
+            {f"editor-mode-{candidate.value}": candidate is mode for candidate in EDITOR_MODE_CYCLE}
         )
 
     def _cycle_mode(self) -> None:
-        current_index = _EDITOR_MODE_SEQUENCE.index(self._mode)
-        self._set_mode(_EDITOR_MODE_SEQUENCE[(current_index + 1) % len(_EDITOR_MODE_SEQUENCE)], update_control=True)
+        """F3 pressed on the dialog's chrome; the editor switches on its own F3."""
+        self.query_one(MessageEditor).cycle_mode()
+        # Now, not on the editor's ModeChanged: a key typed right behind F3 reaches the dialog first.
+        self._show_editor_mode()
 
-    def _set_mode(self, mode: EditorMode, *, update_control: bool = False) -> None:
-        if mode is self._mode:
-            return
-        self._mode = mode
-        self.query_one(MessageEditor).set_mode(mode)
-        if update_control:
-            self.query_one("#editor-mode", Select).value = mode.value
-        self._clear_discard_armed()
-        self._clear_overwrite_armed()
-        self._set_hint(_build_editor_hint(mode, self._render_message))
+    def _set_mode(self, mode: EditorMode) -> None:
+        """Switch the editor to the keymap the user picked."""
         editor = self.query_one(MessageEditor)
-        self._refresh_status(editor.status_text, warning=editor.status_warning)
+        if mode is not editor.mode:
+            editor.set_mode(mode)
+            self._show_editor_mode()
 
     def _render_message(self, reference: MessageRef) -> str:
         return render_str(widget_localizer(self), reference)

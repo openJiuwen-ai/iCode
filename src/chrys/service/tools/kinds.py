@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.tool_approval import declare_requires_approval
 from chrys.foundation.tool_kinds import (
     KIND_ASK_USER as KIND_ASK_USER,
 )
@@ -92,22 +93,27 @@ def tool(
     /,
     *,
     kind: str | None = None,
+    requires_approval: bool = False,
     **kwargs: Any,
 ) -> FunctionTool | Callable[[Callable[..., Any]], FunctionTool]:
     """Drop-in for :func:`chrys.kernel.tool` that stores ``kind`` out of band.
 
     Identical to :func:`chrys.kernel.tool` except that ``kind=`` is intercepted
     and recorded via :func:`set_tool_kind` — ``FunctionTool.kind`` stays
-    ``None`` (see module docstring). All other arguments pass through.
-    Instance-method tools keep the kind across descriptor binding: the bound
-    clone produced by ``FunctionTool.__get__`` carries ``chrys_kind`` too
-    (pinned in the contract tests).
+    ``None`` (see module docstring) — and ``requires_approval=True`` declares
+    the tool asks before it runs unless an explicit rule says otherwise
+    (:mod:`chrys.foundation.tool_approval`). All other arguments pass through.
+    Instance-method tools keep both across descriptor binding: the bound clone
+    produced by ``FunctionTool.__get__`` carries them too (pinned in the
+    contract tests).
     """
 
     def decorate(f: Callable[..., Any]) -> FunctionTool:
         wrapped = _kernel_tool(f, **kwargs)
         if kind is not None:
             set_tool_kind(wrapped, kind)
+        if requires_approval:
+            declare_requires_approval(wrapped)
         return wrapped
 
     if func is not None:

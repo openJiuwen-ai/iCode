@@ -5,9 +5,8 @@
 from __future__ import annotations
 
 import asyncio
-import gc
 import inspect
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
@@ -33,6 +32,8 @@ from tests.support.tui_helpers import (
     title_text,
 )
 from tests.support.waiting import DEFAULT_WAIT_TIMEOUT, wait_for, wait_until, wait_until_quiet
+
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 # At _SIZE either history replays as a tail batch and two prepend batches,
 # so the first and the last prepended batch differ.
@@ -132,21 +133,6 @@ def _hold_refresh_callbacks(
 
     monkeypatch.setattr(controller, "_after_batch_mounted", hold_refresh_callbacks)
     return queued
-
-
-@pytest.fixture(autouse=True)
-def freeze_earlier_tests_heap() -> Iterator[None]:
-    """Keep what earlier tests in this worker left alive out of the replay's closing collection.
-
-    A prepend ends its GC pause with one full ``gc.collect()``, inside the
-    budget of :func:`_wait_complete`. That pass walks every tracked object in
-    the process, so its cost grows with the worker's whole history, not with
-    this replay: seconds on a loaded runner. Frozen, that heap is skipped and
-    the pass walks only what this test allocated.
-    """
-    gc.freeze()
-    yield
-    gc.unfreeze()
 
 
 async def _wait_complete(panel: ChatPanel) -> None:
@@ -976,3 +962,47 @@ async def test_a_withdrawal_mid_prepend_waits_for_the_replay_then_removes_each_a
 
         withdrawn = {"answer 0\n\nmore about 0", f"answer {_TURNS - 1}\n\nmore about {_TURNS - 1}"}
         assert _message_texts(cp) == [text for _, text in _expected_messages() if text not in withdrawn]
+
+
+async def test_retirement_mid_prepend_waits_and_removes_the_whole_failed_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from chrys.foundation.models.history_markers import HistoryMarkerKind
+    from chrys.kernel import Message
+
+    messages = [Message("user", ["Retired opener"]).to_dict()]
+    for index in range(90):
+        messages.append(
+            Message(
+                "user",
+                [f"Unanswered note {index}"],
+                additional_properties={HistoryMarkerKind.INJECTED_KEY: True},
+            ).to_dict()
+        )
+    messages.append(
+        Message(
+            "assistant", ["Stopped"], additional_properties={HistoryMarkerKind.KEY: HistoryMarkerKind.INTERRUPTED}
+        ).to_dict()
+    )
+    async with ChatPanelApp().run_test(size=_SIZE) as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        gate = _PrependGate(cp, monkeypatch)
+        cleanup = None
+        try:
+            await cp.replay_history(messages)
+            await gate.wait_held(pilot)
+            assert not any(message.text == "Retired opener" for message in cp.query(UserMessage))
+            await cp.add_user_message("Replacement")
+            cleanup = asyncio.create_task(cp.apply_fresh_turn_cleanup(retired_previous_turn=True, removed_item_ids=()))
+            await asyncio.sleep(0)
+            assert not cleanup.done()
+            gate.release.set()
+            await asyncio.wait_for(cleanup, timeout=DEFAULT_WAIT_TIMEOUT)
+            cp.apply_turn_started(1)
+            assert [message.text for message in cp.query(UserMessage)] == ["Replacement"]
+            assert [(item.summary, item.turn_index) for item in cp.toc_items] == [("Replacement", 1)]
+        finally:
+            gate.release.set()
+            if cleanup is not None:
+                await cleanup
+            await cp.wait_replay_complete()

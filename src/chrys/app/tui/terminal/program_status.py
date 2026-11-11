@@ -76,6 +76,8 @@ _REJECTED_OPERATION_ERROR_CODES = frozenset(
     {
         "hook_blocked",
         "image_attachment_error",
+        "manual_settings_reload_denied",
+        "manual_settings_reload_failed",
         "not_ready",
         "prompt_admission_conflict",
         "retry_missing_user_anchor",

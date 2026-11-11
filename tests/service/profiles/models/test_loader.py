@@ -534,3 +534,26 @@ def test_load_non_string_chat_options_warns(tmp_path: Path, caplog: pytest.LogCa
     with caplog.at_level("WARNING"):
         load_profile_from_yaml(p)
     assert "chat_options" not in caplog.text
+
+
+@pytest.mark.parametrize("headers", ["", "{Authorization: private-header-value}", "[a]", "5", "true", "[]", "false"])
+async def test_handwritten_optional_fields_load_at_startup_and_build_a_client(tmp_path, monkeypatch, caplog, headers):
+    from chrys.service.llm.clients import create_client
+    from chrys.service.profiles.models.options import parse_http_headers
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+
+    monkeypatch.setenv("OPENAI_API_KEY", "offline-test-key")
+    _write(
+        tmp_path / "handwritten.yaml",
+        f"name: Handwritten\nmodel_id: test-model\nbase_url:\napi_key:\nhttp_headers: {headers}\n",
+    )
+    registry = ModelProfileRegistry()
+    assert registry.load_all(tmp_path) == 1
+    profile = registry.get("handwritten")
+    assert profile is not None
+    assert profile.base_url == profile.api_key == ""
+    assert parse_http_headers(profile) == {}
+    client = await create_client(profile)
+    await client.aclose()
+    assert ("http_headers" in caplog.text) == bool(headers)
+    assert "private-header-value" not in caplog.text

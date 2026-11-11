@@ -33,8 +33,10 @@ from tests.support.waiting import wait_for
 from ._workflow_support import WorkflowEngine, open_workflow
 
 
-@pytest.mark.parametrize("detail_open", [True, False])
-@pytest.mark.parametrize("state", ["failed", "retrying", "awaiting_retry"])
+# Every failure state records the same error in the node's journal, which the open details render
+# live and a later open replays; the state only decides whether a retry follows. So each state runs
+# once, and each way of opening the details meets a state that retries.
+@pytest.mark.parametrize(("state", "detail_open"), [("failed", True), ("retrying", False), ("awaiting_retry", True)])
 async def test_agent_failure_uses_chat_error_and_retry_recovers_the_surface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, detail_open: bool, state: str
 ) -> None:
@@ -143,7 +145,8 @@ async def test_retry_compaction_pressure_and_progress_are_scoped_to_the_node(
             )
         )
         await wait_for(lambda: bool(surface.query(RetryMessage)), pilot=pilot)
-        assert "Temporary provider error" in surface.query_one(RetryMessage).render().plain
+        retry_body = surface.query_one(RetryMessage).query_one(".status-body", Static)
+        assert "Temporary provider error" in retry_body.render().plain
         await bus.publish(events.InvocationCompactionStarted(origin=origin, compaction_id="fold"))
         await wait_for(lambda: bool(surface.query(CompactionCard)), pilot=pilot)
         assert not surface.query(RetryMessage)

@@ -10,7 +10,7 @@ from typing import Any
 
 from chrys.foundation.text.tool_output import truncate_content_texts, truncate_output
 from chrys.kernel import Content
-from chrys.service.tools.spill import discard_spill, run_spill_finalizer, try_spill_text
+from chrys.service.tools.spill import bound_result_text, discard_spill, run_spill_finalizer, try_spill_text
 
 DEFAULT_MCP_TOOL_RESULT_MAX_TOKENS = 8000
 MCP_BINARY_MAX_BYTES = 3 * 1024 * 1024
@@ -28,10 +28,7 @@ def resolve_mcp_result_cap(value: int | None) -> int | None:
 async def truncate_mcp_result(result: Any, budget: int, spill_dir: Path | None) -> Any:
     """Copy and bound the text-bearing MCP result shapes used by Chrys."""
     if isinstance(result, str):
-        plain = truncate_output(result, budget)
-        if plain == result:
-            return result
-        return await run_spill_finalizer(_truncate_mcp_string_result, result, budget, spill_dir, plain)
+        return await bound_result_text(result, budget, spill_dir, "mcp")
 
     if not isinstance(result, list):
         return result
@@ -45,15 +42,6 @@ async def truncate_mcp_result(result: Any, budget: int, spill_dir: Path | None) 
         return result
 
     return await run_spill_finalizer(_truncate_mcp_list_result, result, texts, budget, spill_dir)
-
-
-def _truncate_mcp_string_result(result: str, budget: int, spill_dir: Path | None, plain: str) -> str:
-    info = try_spill_text(spill_dir, "mcp", result, budget)
-    bounded = truncate_output(result, budget, truncation_suffix=info.notice if info else "")
-    if info is not None and info.notice not in bounded:
-        discard_spill(info)
-        return plain
-    return bounded
 
 
 def _truncate_mcp_list_result(

@@ -169,7 +169,7 @@ iCode recognizes text files as skill resources only if they have one of these ex
 Text resources use the same automatic encoding detection as `SKILL.md`; UTF-8 is recommended. In addition:
 
 * Script extensions must be listed in the agent configuration's "Allowed Script Extensions".
-* iCode reads only files at the skill directory root and in its immediate subdirectories. For example, it discovers `guide.md` and `references/guide.md`, but ignores `references/api/guide.md`.
+* iCode reads files at the skill directory root and up to two levels of subdirectories. For example, it discovers `guide.md`, `references/guide.md`, and `references/api/guide.md`, but ignores `references/api/v1/guide.md`.
 * Within a skill directory, iCode skips files and directories accessed through symbolic links or Windows directory junctions. Both point to other locations on disk. To use their contents, place the actual files in the skill directory.
 
 Files that do not meet the extension, directory depth, or link rules do not appear in the skill's resource or script list. A missing, inaccessible, or undecodable resource fails when read. These issues do not prevent an otherwise valid `SKILL.md` from loading.

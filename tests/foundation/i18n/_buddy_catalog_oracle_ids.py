@@ -6,7 +6,6 @@ from __future__ import annotations
 
 BUDDY_MESSAGE_IDS = frozenset(
     {
-        "tui.buddy.card.evolution",
         "tui.buddy.card.fully_grown",
         "tui.buddy.card.level",
         "tui.buddy.card.progress",
@@ -31,6 +30,11 @@ BUDDY_MESSAGE_IDS = frozenset(
         "tui.buddy.persona.curiosity",
         "tui.buddy.persona.focus",
         "tui.buddy.persona.grit",
+        "tui.buddy.reply.blinks",
+        "tui.buddy.reply.hums",
+        "tui.buddy.reply.scoots",
+        "tui.buddy.reply.spins",
+        "tui.buddy.reply.wriggles",
         "tui.buddy.save_failed",
         "tui.buddy.subcommand.hatch",
         "tui.buddy.subcommand.info",

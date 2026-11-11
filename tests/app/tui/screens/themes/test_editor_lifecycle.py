@@ -332,7 +332,7 @@ async def test_picker_mount_is_idempotent_and_confirm_is_the_only_preference_wri
             await wait_for(lambda: app.theme == "dracula", pilot=pilot)
             persist.assert_not_called()
             await pilot.press("enter")
-            await wait_for(lambda: isinstance(app.screen, MainScreen), pilot=pilot)
+            await wait_for(lambda: isinstance(app.screen, MainScreen) and app.screen.is_mounted, pilot=pilot)
             assert app._theme_selection_depth == 0
             assert app._settings.theme == "dracula"
             persist.assert_called_once_with("dracula")

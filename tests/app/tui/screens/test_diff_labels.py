@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from textual.widgets import Tree
+
 from chrys.app.tui.screens.diff.screen import (
     _ALL_TAB,
     _BADGE_LEGENDS,
@@ -15,12 +17,14 @@ from chrys.app.tui.screens.diff.screen import (
     _TURN_TAB,
     DiffPeriodPane,
     _entry_content_subtitle,
-    _entry_source_suffix,
 )
 from chrys.app.tui.util.diff_entries import DiffFileEntry
+from chrys.app.tui.util.diff_labels import entry_source_suffix
 from chrys.foundation.i18n import Localizer
 from chrys.foundation.i18n.formatting import format_message
 from chrys.service.mutations.types import MutationOp
+from tests.support.tui_helpers import WidgetApp
+from tests.support.waiting import wait_for
 
 
 def test_diff_chrome_catalog_keeps_english_and_localizes_chinese() -> None:
@@ -81,17 +85,45 @@ def _entry(
 
 
 def test_badge_markers_and_styles() -> None:
-    assert _entry_source_suffix(_entry()) == []
-    assert _entry_source_suffix(_entry(inferred=True)) == [("~", "dim")]
-    assert _entry_source_suffix(_entry(source="implicit")) == [("?", "bold yellow")]
+    assert entry_source_suffix(_entry()) == []
+    assert entry_source_suffix(_entry(inferred=True)) == [("~", "dim")]
+    assert entry_source_suffix(_entry(source="implicit")) == [("?", "bold yellow")]
     # Contested is dim while the row's own attribution is inference…
-    assert _entry_source_suffix(_entry(inferred=True, contested=True)) == [("~", "dim"), ("!", "dim")]
-    assert _entry_source_suffix(_entry(source="implicit", contested=True)) == [
+    assert entry_source_suffix(_entry(inferred=True, contested=True)) == [("~", "dim"), ("!", "dim")]
+    assert entry_source_suffix(_entry(source="implicit", contested=True)) == [
         ("?", "bold yellow"),
         ("!", "dim"),
     ]
     # …and bold yellow on proven rows: a hard both-sessions-wrote conflict.
-    assert _entry_source_suffix(_entry(source="edit_file", contested=True)) == [("!", "bold yellow")]
+    assert entry_source_suffix(_entry(source="edit_file", contested=True)) == [("!", "bold yellow")]
+
+
+async def test_full_diff_tree_keeps_all_provenance_markers() -> None:
+    entries = [
+        _entry("implicit.py", source="implicit"),
+        _entry("inferred.py", inferred=True),
+        _entry("contested.py", source="edit_file", contested=True),
+        _entry("implicit_contested.py", source="implicit", contested=True),
+        _entry("inferred_contested.py", inferred=True, contested=True),
+    ]
+    async with WidgetApp(lambda: DiffPeriodPane(entries)).run_test(size=(100, 24)) as pilot:
+        tree = pilot.app.query_one(".workspace-tree", Tree)
+        await wait_for(
+            lambda: len(tree.root.children) == 5,
+            pilot=pilot,
+            description="full diff file leaves built",
+        )
+        labels = {
+            node.data.rel_path: node.label.plain for node in tree.root.children if isinstance(node.data, DiffFileEntry)
+        }
+        for name, markers in {
+            "implicit.py": "?",
+            "inferred.py": "~",
+            "contested.py": "!",
+            "implicit_contested.py": "? !",
+            "inferred_contested.py": "~ !",
+        }.items():
+            assert labels[name].endswith(f" {markers}")
 
 
 def test_no_backup_note_stays_in_body_before_badges() -> None:
@@ -127,6 +159,8 @@ def test_badge_blocks_end_align_across_depths() -> None:
         assert indent + len(label) == 40
         # Full display name always present, never truncated.
         assert entry.rel_path.rsplit("/", 1)[-1] in label
+        if entry.inferred and entry.contested:
+            assert label.endswith("~ !")
 
 
 def test_row_wider_than_tree_keeps_trailing_badge() -> None:

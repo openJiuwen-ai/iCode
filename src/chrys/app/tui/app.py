@@ -64,13 +64,14 @@ from chrys.app.tui.theme import (
     TuiVariableDefaultsMixin,
     with_tui_css_variables,
 )
-from chrys.app.tui.theme_loader import load_user_themes, user_theme_warning
+from chrys.app.tui.theme_loader import UserThemeScan, load_user_themes, user_theme_warning
 from chrys.app.tui.theme_stylesheet import ThemeStylesheet
 from chrys.app.tui.toasts import TEXTUAL_TOAST_RACK_FORK_VERSION, refresh_newest_first
 from chrys.app.tui.util.debug_log import configure_debug_logging, stop_debug_logging
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_AGENT_STARTUP_FAILED
 from chrys.foundation import platform as chrys_platform
 from chrys.foundation.branding import APP_DISPLAY_NAME, format_app_version_title
+from chrys.foundation.config.errors import ConfigError
 from chrys.foundation.config.runtime_pointer import set_model_pointer
 from chrys.foundation.config.settings import (
     DEFAULT_AGENT_PROFILE,
@@ -774,6 +775,75 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         self.unregister_theme(name)
         self._user_theme_names.discard(name)
 
+    def themes_after(self, scan: UserThemeScan) -> tuple[str, ...]:
+        """The theme names :meth:`follow_user_themes` would leave registered."""
+        gone = scan.absent_from(self._user_theme_names)
+        names = {name for name in self.available_themes if name not in gone}
+        return tuple(names.union(theme.name for theme in scan.themes))
+
+    def follow_user_themes(self, scan: UserThemeScan) -> None:
+        """Put the theme files and the settings' theme on screen, recording no choice.
+
+        A style pass reaches the whole transcript, so it runs only when what is
+        on screen changes, and once: a new or edited theme that is not showing
+        costs none, and one whose variables the styles reject is never shown
+        (recovering from it would be a second pass, on every reload after).
+        Nothing is written, even when the settings name a theme that no longer
+        exists: that costs this session's colours, not the setting. A preview
+        owns ``theme`` until it closes; the picker and the editor stay shut
+        during a reload, so none should be open here.
+        """
+        if self.theme_preview is not None or self._theme_selection_depth:
+            return
+        active = self.theme
+        edited = {theme.name: theme for theme in scan.themes if self.get_theme(theme.name) != theme}
+        gone = scan.absent_from(self._user_theme_names)
+        registered = (set(self.available_themes) - gone) | set(edited)
+        target = DEFAULT_THEME
+        for name in (self._settings.theme, active):
+            if name not in registered:
+                continue
+            if name == active and name not in edited:
+                target = name
+                break
+            theme = edited.get(name) or self.get_theme(name)
+            if theme is not None and self._parses_with(self.stylesheet, self._css_variables_of(theme)):
+                target = name
+                break
+            edited.pop(name, None)
+            reason = f"Theme {name!r} has invalid CSS; it was not applied"
+            self.call_next(self._bus.publish, user_theme_warning(name, reason))
+        for theme in edited.values():
+            self.register_user_theme(theme)
+        self.suspend_theme_choice()
+        try:
+            if target != active:
+                self.theme = target
+            elif target in edited:
+                self._watch_theme(active)
+                self._gc_freeze.request_reclaim(reason=GcReclaimReason.THEME_UPDATED, prompt=False)
+        finally:
+            self.resume_theme_choice()
+        for name in gone:
+            self.unregister_theme(name)
+            self._user_theme_names.discard(name)
+
+    def _css_variables_of(self, theme: Theme) -> dict[str, str]:
+        return with_tui_css_variables(
+            theme, {**self.get_theme_variable_defaults(), **theme.to_color_system().generate(), **theme.variables}
+        )
+
+    @staticmethod
+    def _parses_with(stylesheet: Stylesheet, variables: dict[str, str]) -> bool:
+        """Whether these same styles work with *variables*, leaving the live sheet alone."""
+        probe = Stylesheet(variables=variables)
+        probe.source = stylesheet.source.copy()
+        try:
+            probe.parse()
+        except StylesheetError, TokenError:
+            return False
+        return True
+
     def _watch_theme(self, theme_name: str) -> None:
         """Apply the selected theme and persist confirmed choices."""
         if self.theme_preview is not None:
@@ -808,15 +878,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         name = self.theme
         if name not in self._user_theme_names:
             return False
-        fallback = with_tui_css_variables(
-            CHRYS_THEME,
-            {**self.get_theme_variable_defaults(), **CHRYS_THEME.to_color_system().generate(), **CHRYS_THEME.variables},
-        )
-        probe = Stylesheet(variables=fallback)
-        probe.source = stylesheet.source.copy()
-        try:
-            probe.parse()
-        except StylesheetError, TokenError:
+        fallback = self._css_variables_of(CHRYS_THEME)
+        if not self._parses_with(stylesheet, fallback):
             # An application CSS error must still surface as an application error.
             return False
         stylesheet.set_variables(fallback)
@@ -839,8 +902,16 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         """Persist a theme choice and overlay it on the shared handle, as a pair."""
         if self.theme_preview is not None or self._theme_selection_depth:
             return
-        persist_theme(theme_name)
         self._settings_handle.override(theme=theme_name)
+        failure = persist_theme(theme_name)
+        if failure is None:
+            self._settings_handle.confirm_written({"ui.theme": theme_name})
+        else:
+            self.notify(
+                render_str(self.localizer, failure.display) if isinstance(failure, ConfigError) else str(failure),
+                severity="error",
+                markup=False,
+            )
 
     def apply_theme_setting(self, theme_name: str) -> bool:
         """Apply and persist an explicit theme choice, including an unchanged fallback.

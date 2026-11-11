@@ -127,6 +127,10 @@ class SkillConfig:
     scripts: list[SkillScriptConfig] = field(default_factory=list)
 
 
+DEFAULT_SKILL_SCRIPT_TIMEOUT = 300
+DEFAULT_SKILL_SCRIPT_EXTENSIONS: tuple[str, ...] = (".py", ".sh", ".ps1")
+
+
 @dataclass
 class SkillsConfig:
     """Skills configuration for an agent profile.
@@ -138,8 +142,8 @@ class SkillsConfig:
 
     paths: list[str] = field(default_factory=list)
     inline: list[SkillConfig] = field(default_factory=list)
-    script_timeout: int = 300  # seconds
-    script_extensions: list[str] = field(default_factory=lambda: [".py", ".sh", ".ps1"])
+    script_timeout: int = DEFAULT_SKILL_SCRIPT_TIMEOUT  # seconds
+    script_extensions: list[str] = field(default_factory=lambda: list(DEFAULT_SKILL_SCRIPT_EXTENSIONS))
     auto_load_user_agents_skills: bool = True
     """When True, also auto-load skills from ``~/.agents/skills`` (the shared
     user agents skills directory) in addition to the always-on
@@ -215,7 +219,6 @@ class ToolsConfig:
     """Tool set configuration for an agent profile."""
 
     builtins: list[str] = field(default_factory=list)
-    custom: list[str] = field(default_factory=list)
     mcp: list[MCPServerConfig] = field(default_factory=list)
     shell_filter: ShellFilterConfig | None = None
     web_search: WebSearchConfigPatch | None = None
@@ -370,6 +373,8 @@ class AgentProfile:
     acp: AcpAgentConfig | None = None
     instructions: str = ""
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    extensions: list[str] = field(default_factory=list)
+    """The Python extensions the agent loads, by id, in order; one that is not installed stays listed."""
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     approval: ApprovalConfig = field(default_factory=ApprovalConfig)
     sub_agents: SubAgentsConfig = field(default_factory=SubAgentsConfig)

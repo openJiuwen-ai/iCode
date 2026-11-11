@@ -27,6 +27,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeSkillDetails, UserMessage, UserRetry
 from chrys.foundation.platform import get_platform
 from chrys.service.prompt_shortcuts import PromptShortcut, load_prompt_shortcuts
+from tests.support.toasts import shown_toasts
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
@@ -258,7 +259,7 @@ class _Published:
 
 
 def _warnings(app: ChrysApp) -> list[str]:
-    return [str(notification.message) for notification in app._notifications]
+    return [str(notification.message) for notification in shown_toasts(app)]
 
 
 async def _app_with_bus(tmp_path: Path) -> tuple[ChrysApp, _Published]:

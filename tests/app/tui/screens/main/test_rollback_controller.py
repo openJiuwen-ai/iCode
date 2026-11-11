@@ -15,7 +15,7 @@ from rich.text import Text
 
 from chrys.app.tui.screens.diff import RollbackProgressModal
 from chrys.app.tui.screens.diff.rollback_modal import RollbackLoadCancelled
-from chrys.app.tui.screens.main.ports import RollbackView
+from chrys.app.tui.screens.main.ports import InputRestore, RollbackView
 from chrys.app.tui.screens.main.rollback_controller import RollbackController
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
@@ -39,7 +39,6 @@ from tests.support.tui_helpers import (
     main_screen_parts,
     main_screen_state_at,
     make_session_handler,
-    stale_file_cache,
 )
 
 
@@ -86,6 +85,7 @@ def _make_rollback_controller(
     set_has_messages: Callable[[bool], None] = lambda _value: None,
     post_gc_message: Callable[[GcReclaimRequested], object] = lambda _message: None,
     debug: Callable[[str, str], None] = lambda *_args: None,
+    invalidate_file_index: Callable[[], None] = lambda: None,
     confirm_stopping_background_tasks: Callable[[int], Awaitable[bool]] | None = None,
 ) -> RollbackController:
     """Build a RollbackController whose collaborators are inert unless overridden."""
@@ -102,6 +102,7 @@ def _make_rollback_controller(
         set_has_messages=set_has_messages,
         post_gc_message=post_gc_message,
         debug=debug,
+        invalidate_file_index=invalidate_file_index,
         confirm_stopping_background_tasks=confirm_stopping_background_tasks,
     )
 
@@ -136,6 +137,7 @@ def _make_rollback_controller_for_test(screen: SimpleNamespace) -> RollbackContr
         set_has_messages=setters.set_has_messages,
         post_gc_message=_post_gc_message,
         debug=screen._debug,
+        invalidate_file_index=lambda: None,
     )
 
 
@@ -285,7 +287,7 @@ def test_rollback_direct_command_normalizes_empty_chat_session_id() -> None:
     controller = _make_rollback_controller(
         view=_adapter_for(screen),
         bus=bus,
-        engine_provider=lambda: SimpleNamespace(current_turn_number=1),
+        engine_provider=lambda: SimpleNamespace(current_turn_number=1, conversation_revision=0),
         current_session_id=str,
     )
 
@@ -298,7 +300,7 @@ def test_rollback_direct_command_normalizes_empty_chat_session_id() -> None:
     assert published[0].session_id is None
 
 
-async def test_rollback_direct_command_delegates_fencing_and_target_resolution_to_backend() -> None:
+async def test_rollback_direct_command_waits_for_captured_lifecycle_and_preserves_selector() -> None:
     published: list[UserRollback] = []
     pushed: list[object] = []
     target_reads: list[str] = []
@@ -343,16 +345,18 @@ async def test_rollback_direct_command_delegates_fencing_and_target_resolution_t
         progress = pushed[0]
         assert isinstance(progress, RollbackProgressModal)
 
-        # Direct commands do not scan snapshots or await lifecycle state in
-        # the frontend. The backend event handler owns both operations under
-        # its transition fence.
-        lifecycle_ref[0] = replacement_task
-        await progress._operation()
+        operation = asyncio.create_task(progress._operation())
+        await asyncio.sleep(0)
+        assert not operation.done()
+        assert published == []
+        lifecycle_release.set()
+        await operation
         assert target_reads == []
         assert len(published) == 1
         assert published[0].target_turn == 0
         assert published[0].relative_turns == 1
-        assert not captured_task.done()
+        assert published[0].expected_conversation_revision == 7
+        assert captured_task.done()
         assert not replacement_task.done()
     finally:
         lifecycle_release.set()
@@ -512,6 +516,7 @@ async def test_rollback_picker_loader_revalidates_owner_after_lifecycle_wait(
         mutation_tracker = object()
         mutation_coordinator = None
         current_turn_number = 3
+        conversation_revision = 7
 
         def available_rollback_turns(self) -> list[int]:
             target_reads.append("targets")
@@ -545,7 +550,7 @@ async def test_rollback_picker_loader_revalidates_owner_after_lifecycle_wait(
         await asyncio.wait_for(operation, timeout=1)
 
     assert target_reads == []
-    assert notifications == ["Rollback cancelled because the active session changed."]
+    assert notifications == ["Discard cancelled because the active session changed."]
 
 
 async def test_rollback_picker_loader_waits_for_exact_captured_lifecycle(
@@ -659,7 +664,7 @@ async def test_rollback_picker_loader_discards_projection_if_run_revision_change
 
     with pytest.raises(RollbackLoadCancelled):
         await asyncio.wait_for(operation, timeout=1)
-    assert notifications == ["Rollback picker cancelled because the conversation changed."]
+    assert notifications == ["Discard picker cancelled because the conversation changed."]
 
 
 async def test_rollback_picker_loader_keeps_projection_fenced_until_cancelled_scan_quiesces(
@@ -770,7 +775,7 @@ async def test_rollback_picker_preview_rejects_runtime_rebuild_drift(
         await state.projection_acquire()
 
     assert engine.rollback_projection_fenced is False
-    assert notifications == ["Rollback picker cancelled because the workspace or runtime changed."]
+    assert notifications == ["Discard picker cancelled because the workspace or runtime changed."]
 
 
 def test_rollback_command_rejects_removed_revert_suffix() -> None:
@@ -792,8 +797,10 @@ def test_rollback_command_rejects_removed_revert_suffix() -> None:
     assert notifications == ["Usage: /rollback, /rollback N, or /rollback to N."]
 
 
+@pytest.mark.parametrize("advanced", [False, True])
 def test_rollback_confirmation_binds_picker_projection_before_default_file_revert(
     monkeypatch: pytest.MonkeyPatch,
+    advanced: bool,
 ) -> None:
     import chrys.app.tui.screens.diff as diff_pkg
 
@@ -846,7 +853,8 @@ def test_rollback_confirmation_binds_picker_projection_before_default_file_rever
     assert len(modal_callbacks) == 1
     state = asyncio.run(state_loaders[0]())  # type: ignore[operator]
     assert state is not None
-    conversation_revision[0] = 8
+    if advanced:
+        conversation_revision[0] = 8
     modal_callbacks[0]((2, True, ["/repo/workspace/a.py"]))  # type: ignore[operator]
 
     assert published == []
@@ -854,6 +862,9 @@ def test_rollback_confirmation_binds_picker_projection_before_default_file_rever
     progress = pushed[1]
     assert isinstance(progress, RollbackProgressModal)
     asyncio.run(progress._operation())
+    if advanced:
+        assert published == []
+        return
     assert len(published) == 1
     assert published[0].target_turn == 2
     assert published[0].expected_current_turn == 3
@@ -937,7 +948,7 @@ async def test_rollback_picker_confirmation_rechecks_owner_after_projection(
     await asyncio.wait_for(progress._operation(), timeout=1)
     if owner_changed:
         assert published == []
-        assert notifications == ["Rollback cancelled because the active session changed."]
+        assert notifications == ["Discard cancelled because the active session changed."]
     else:
         assert len(published) == 1
         assert published[0].target_turn == 2
@@ -970,8 +981,8 @@ def _start_the_agent(ownership: _DispatchOwnership) -> None:
     ownership.agent_busy = True
 
 
-SESSION_CHANGED_NOTIFICATION = "Rollback cancelled because the active session changed."
-AGENT_BUSY_NOTIFICATION = "Cannot roll back while the agent is running."
+SESSION_CHANGED_NOTIFICATION = "Discard cancelled because the active session changed."
+AGENT_BUSY_NOTIFICATION = "Cannot discard while the agent is running."
 
 
 @pytest.mark.parametrize(
@@ -1001,6 +1012,7 @@ def test_rollback_direct_command_cancels_when_ownership_changes_before_dispatch(
         mutation_tracker = object()
         mutation_coordinator = None
         current_turn_number = 3
+        conversation_revision = 7
 
         def available_rollback_turns(self) -> list[int]:
             return [0, 1, 2]
@@ -1054,8 +1066,13 @@ def test_rollback_result_restores_rolled_back_user_text() -> None:
         async def restore_welcome_rollback(self, *, session_id: str | None, profile: str, cwd: str) -> None:
             raise AssertionError("unexpected welcome restore")
 
-        def restore_input_text(self, text: str) -> None:
+        def restore_input_text(self, text: str) -> InputRestore:
             restored.append(text)
+            return InputRestore(generation=1, text=text)
+
+        def focus_input(self, *, cursor_at_end: bool = False) -> None:
+            assert cursor_at_end
+            restored.append("<focused>")
 
     controller = _make_rollback_controller(view=_RollbackView())
 
@@ -1065,8 +1082,42 @@ def test_rollback_result_restores_rolled_back_user_text() -> None:
         )
     )
 
-    assert restored == ["second prompt"]
+    assert restored == ["second prompt", "<focused>"]
     assert notifications[-1][1].get("severity") == "information"
+
+
+def test_a_rollback_result_invalidates_the_resident_file_index() -> None:
+    """The engine only publishes the result; the ``@`` snapshot learns of the restore here."""
+
+    class _RollbackView:
+        def notify(
+            self,
+            message: str,
+            *,
+            title: str,
+            severity: str = "information",
+            timeout: float | None = 3,
+        ) -> None:
+            pass
+
+        def open_rollback_modal(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("unexpected modal")
+
+        async def restore_welcome_rollback(self, *, session_id: str | None, profile: str, cwd: str) -> None:
+            raise AssertionError("unexpected welcome restore")
+
+        def restore_input_text(self, text: str) -> None:
+            return None
+
+    invalidations: list[str] = []
+    controller = _make_rollback_controller(
+        view=_RollbackView(),
+        invalidate_file_index=lambda: invalidations.append("invalidated"),
+    )
+
+    asyncio.run(controller.on_result(RollbackResult(session_id="session-1", target_turn=1)))
+
+    assert invalidations == ["invalidated"]
 
 
 def test_welcome_rollback_restores_input_after_welcome_state() -> None:
@@ -1089,8 +1140,13 @@ def test_welcome_rollback_restores_input_after_welcome_state() -> None:
         async def restore_welcome_rollback(self, *, session_id: str | None, profile: str, cwd: str) -> None:
             calls.append(("welcome", session_id, profile, cwd))
 
-        def restore_input_text(self, text: str) -> None:
+        def restore_input_text(self, text: str) -> InputRestore:
             calls.append(("input", text))
+            return InputRestore(generation=1, text=text)
+
+        def focus_input(self, *, cursor_at_end: bool = False) -> None:
+            assert cursor_at_end
+            calls.append(("focus",))
 
     controller = _make_rollback_controller(
         view=_RollbackView(),
@@ -1292,7 +1348,7 @@ def test_welcome_rollback_keeps_logo_metadata_and_suppresses_chdir_marker() -> N
             max_context_tokens=180_000,
             total_session_tokens=64_000,
         ),
-        _suggestions=SimpleNamespace(file_cache=stale_file_cache("stale.py")),
+        _suggestions=SimpleNamespace(discard_file_index=lambda: None),
         query_one=query_one,
         _update_toc=lambda: calls.append(("toc", None)),
         _session_title=fake_session_title(
@@ -1404,3 +1460,23 @@ def test_welcome_rollback_clears_todo_state() -> None:
     )
 
     assert screen.todo_state == TodoListState()
+
+
+@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
+@pytest.mark.parametrize("removed", [1, 4])
+async def test_result_wording_uses_removed_history_turn_count(locale: str, removed: int) -> None:
+    from chrys.app.tui.i18n import LocaleController
+    from chrys.foundation.config.settings import Settings
+
+    notices: list[str] = []
+    screen = SimpleNamespace(
+        notify=lambda text, **_kwargs: notices.append(text),
+        app=SimpleNamespace(push_screen=lambda _modal, _callback=None: None),
+    )
+    controller = _make_rollback_controller(view=_adapter_for(screen))
+    controller._locale_controller = LocaleController(Settings(locale=locale))
+    await controller.on_result(RollbackResult(target_turn=19, discarded_turn_count=removed))
+    if locale == "en":
+        assert notices == (["Discarded turn 20."] if removed == 1 else ["Discarded turn 20 and later turns."])
+    else:
+        assert notices == (["已撤回第 20 轮。"] if removed == 1 else ["已撤回第 20 轮及之后。"])

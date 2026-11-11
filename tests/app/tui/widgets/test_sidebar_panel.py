@@ -121,7 +121,7 @@ async def test_sidebar_relabels_tabs_and_current_child_chrome_in_place(monkeypat
         tabs_widget = sidebar.query_one(TabbedContent).query_one(Tabs)
         tabs_before = tuple(tabs_widget.query(Tab).results(Tab))
         assert sidebar in controller._surfaces
-        assert _tab_labels(sidebar) == ["Messages", "Tasks", "Context", "Hooks", "Debug", "Buddy"]
+        assert _tab_labels(sidebar) == ["Chat", "Tasks", "Context", "Hooks", "Debug", "Buddy"]
         assert str(sidebar.debug_panel.query_one(".debug-title", Static).render()) == "Event Stream"
 
         sidebar.todo_state = TodoListState(items=(TodoItem(content="done", status="completed"),))
@@ -144,8 +144,8 @@ async def test_sidebar_relabels_tabs_and_current_child_chrome_in_place(monkeypat
         assert controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
         tabs_after = tuple(tabs_widget.query(Tab).results(Tab))
         assert tabs_after == tabs_before
-        assert _tab_labels(sidebar) == ["消息", "任务", "上下文", "钩子", "调试", "伙伴"]
-        assert str(sidebar.tasks_panel.query_one(".tasks-label", Static).render()) == "待办 (1/1)"
+        assert _tab_labels(sidebar) == ["对话", "任务", "上下文", "钩子", "调试", "伙伴"]
+        assert sidebar.tasks_panel.query_one("#tasks-todos").border_title == "待办 (1/1)"
         assert str(sidebar.tasks_panel.query_one("#tasks-empty", Static).render()) == "暂无待办"
         assert str(sidebar.toc_panel.query_one(".toc-empty", Static).render()) == "你的对话将显示在这里"
         assert (

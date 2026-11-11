@@ -32,6 +32,8 @@ from chrys.kernel import Content
 from tests.support.tui_helpers import rich_plain
 from tests.support.waiting import wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 _CALL_ID_RE = re.compile(r"^- \*\*Call ID:\*\* `[^`]+`$", re.MULTILINE)
 _TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
 

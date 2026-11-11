@@ -244,7 +244,11 @@ async def test_a_new_session_asks_before_stopping_running_tasks(tmp_path: Path) 
         assert news == []
 
         main.post_message(InputBar.NewSessionRequested())
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="asked again")
+        await wait_for(
+            lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="asked again",
+        )
         await click_when_settled(pilot, "#confirm-yes")
         await wait_for(lambda: len(news) == 1, pilot=pilot, description="the new session")
 
@@ -265,7 +269,11 @@ async def test_restoring_another_session_asks_but_reopening_this_one_does_not(tm
         await _ready(bus, main, pilot, _task())
 
         main.run_worker(main._sessions.do_session_restore("other"), exit_on_error=False)
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="the confirmation")
+        await wait_for(
+            lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="the confirmation",
+        )
         await click_when_settled(pilot, "#confirm-no")
         await wait_for(lambda: app.screen is main, pilot=pilot, description="back to chat")
         assert restores == []
@@ -304,7 +312,11 @@ async def test_quit_asks_while_tasks_run_and_a_second_quit_exits(
         assert exits == []
 
         await pilot.press("ctrl+q")
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="asked again")
+        await wait_for(
+            lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="asked again",
+        )
         await pilot.press("ctrl+q")
         await wait_for(lambda: exits, pilot=pilot, description="quit at once")
 
@@ -362,11 +374,15 @@ async def test_the_list_ticks_and_its_details_open_without_restyling_a_populated
         stopping = dataclasses.replace(_task("t2"), stopped_by="user")
         await bus.publish(BackgroundTasksChanged(session_id=_SESSION, tasks=(_task("t1"), stopping)))
         await wait_for(lambda: "stopping" in _row_texts(rows)[1], description="the stopping row")
-        # It ends: "Clear ended" comes into view without laying the screen out.
+        # It ends: "Clear ended" comes onto the box's bottom border without laying the screen out.
         ended = dataclasses.replace(_task("t2", running=False), stopped_by="user")
         await bus.publish(BackgroundTasksChanged(session_id=_SESSION, tasks=(_task("t1"), ended)))
         await wait_for(lambda: _row_texts(rows)[1].startswith("■"), description="the stopped row")
-        assert background.query_one("#background-tasks-clear").visible
+        width, height = background.outer_size
+        await wait_for(
+            lambda: background.render_lines(Region(0, height - 1, width, 1))[0].text.endswith(" Clear ended ─╯"),
+            description="clear ended on the bottom border",
+        )
 
         await click_when_settled(pilot, rows, offset=(2, 0))
         await wait_for(

@@ -23,6 +23,8 @@ class AbortCause(Enum):
     RUN_TERMINAL = "run_terminal"
     CASCADE = "cascade"
     OWNER_CLOSE = "owner_close"
+    STEER = "steer"
+    """The user steered: the caller goes on from the pass's committed work with a new message."""
 
 
 class PreparedClosed(RuntimeError):

@@ -194,7 +194,8 @@ async def test_a_failed_turn_says_what_went_wrong_beside_the_raw_text(
             await _settle(started)
 
     [error] = errors
-    assert (error.code, error.reason) == ("executor_error", ErrorKind.DNS_FAILED.value)
+    assert error.code == "executor_error"
+    assert error.facts is not None and error.facts.kind is ErrorKind.DNS_FAILED
     assert str(gaierror(socket.EAI_NONAME)) in error.message
     assert error.display_message is not None
     assert (_key(error.display_message), dict(error.display_message.args)) == (
@@ -275,7 +276,7 @@ async def test_a_turn_over_a_smaller_server_window_says_which_window_to_set(
             await _settle(started)
 
     [error] = errors
-    assert (error.code, error.reason) == ("executor_error", ErrorKind.CONTEXT_OVERFLOW.value)
+    assert error.facts is not None and error.facts.kind is ErrorKind.CONTEXT_OVERFLOW
     assert "maximum context length is 131072 tokens" in error.message
     assert error.display_message is not None
     assert (_key(error.display_message), dict(error.display_message.args)) == (

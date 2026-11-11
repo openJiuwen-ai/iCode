@@ -797,7 +797,7 @@ class TestStreamStallPerChunk:
 
         async def _blocking() -> AgentResponse:
             response = ChatResponse(messages=[Message("assistant", [Content.from_text("final answer")])])
-            await executor._response_ready(response)
+            await executor._response_ready(response, True)
             return AgentResponse(messages=response.messages)
 
         class _Agent:
@@ -907,7 +907,6 @@ class TestStreamStallPerChunk:
         executor.tool_events = SimpleNamespace()
         executor._ask_user = SimpleNamespace()
         executor.approval = SimpleNamespace()
-        executor._extra_function_middleware = ()
         executor._sleep = SimpleNamespace()
         executor._compaction_strategy = None
         executor._chat_options = {"store": True}

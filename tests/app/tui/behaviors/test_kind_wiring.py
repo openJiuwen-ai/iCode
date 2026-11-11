@@ -250,7 +250,7 @@ def test_profile_switch_registers_sub_agent_exact_tool_names() -> None:
                 set_workspace_cwd=lambda value: setattr(state.workspace_marker, "current_cwd", value),
                 update_subtitle=lambda: None,
                 update_toc=lambda: None,
-                clear_suggestion_file_cache=lambda: None,
+                discard_suggestion_file_index=lambda: None,
                 start_worker=discard_worker,
                 post_gc_message=lambda _message: None,
                 debug=lambda _key, _message="": None,
@@ -402,6 +402,23 @@ def test_create_tool_widget_mcp_kind_never_resolves_builtin_names() -> None:
     )
 
     assert not isinstance(widget, ExecuteToolCall)
+    assert type(widget) is ToolCall
+
+
+@pytest.mark.parametrize("tool_name", ["bash", "web_search"])
+def test_create_tool_widget_extension_kind_never_resolves_builtin_names(tool_name: str) -> None:
+    """An extension picks its own tool names: ``bash`` (not this platform's shell)
+    or ``web_search`` (web tools off) is the extension's tool, shown as a plain call."""
+    from chrys.foundation.tool_kinds import extension_kind
+
+    widget = create_tool_widget(
+        call_id="c1",
+        tool_name=tool_name,
+        tool_kind=extension_kind("acme_release"),
+        args_summary="",
+        args={"command": "echo hi", "query": "q"},
+    )
+
     assert type(widget) is ToolCall
 
 

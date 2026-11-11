@@ -21,19 +21,17 @@ if TYPE_CHECKING:
 class ShutdownOnlyEngine:
     """Engine double exposing shutdown and an idle execution snapshot.
 
-    The narrowness is the point: ``ChrysApp._build_main_screen`` always installs
-    ``engine_provider=lambda: self._engine``, so a test that grows an
-    unintended engine-generation read fails here with ``AttributeError``
-    instead of silently reading a value the fake was never asked to supply.
-    Use :class:`SessionGenerationEngine` only where the test's own path
-    genuinely reaches ``engine_provider().session_generation``.
-    ``approval_mode`` and ``turn_lifecycle_task`` are the exceptions: every
-    MainScreen build seeds its header badge from the engine's launch mode, and
-    every turn end checks the working folder once that task is done.
+    ``ChrysApp._build_main_screen`` always installs an engine provider.
+    Permanent chrome reads the launch approval mode and lifecycle task;
+    the Messages preview reads the session generation and mutation baseline.
+    Other backend capabilities stay absent so unintended reads fail loudly.
     """
 
     approval_mode = ApprovalMode.MANUAL
     turn_lifecycle_task: asyncio.Task[None] | None = None
+    session_generation = 0
+    mutation_coordinator = None
+    mutation_tracker = None
 
     def execution(self) -> ExecutionSnapshot:
         return ExecutionSnapshot("idle")

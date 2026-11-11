@@ -60,6 +60,8 @@ CONTROL_VARIABLE_DEFAULTS: dict[str, str] = {
 TUI_VARIABLE_DEFAULTS: dict[str, str] = {
     **CONTROL_VARIABLE_DEFAULTS,
     "border-opacity": "80%",
+    # Boxes inside a bordered panel (the sidebar's sections) sit fainter than the panel's own outline.
+    "inner-border-opacity": "50%",
     "control-disabled-background": "transparent",
     "hatch-color": "#808080 15%",
     "ansi-background": "ansi_default",

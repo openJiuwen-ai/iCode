@@ -22,6 +22,7 @@ from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     MessageCopyButton,
     MessageHeaderRow,
+    MessageRollbackButton,
     UserMessage,
     _UserImagePreview,
 )
@@ -32,6 +33,7 @@ from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.text_area import EnhancedTextArea
 from chrys.foundation.events.bus import EventBus
 from chrys.kernel import Content
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import png_bytes
 from tests.support.waiting import wait_for
 
@@ -92,10 +94,21 @@ async def _click_coords_when_settled(pilot: Pilot[None], target: Widget) -> tupl
 
 
 async def _maximize_chat_panel_for_selection_test(app: _MainScreenApp, pilot: Pilot[None]) -> None:
-    """Hide surrounding chrome so ChatPanel has a realistic viewport in unit tests."""
+    """Hide surrounding chrome so ChatPanel has a realistic viewport in unit tests.
+
+    Returns once the screen is settled: the layout that hides the chrome posts ``Hide``, and the
+    focused chat input gives focus away only when it handles its own. ``pilot.pause()`` alone
+    does not cover that: when the screen's update timer has not run that layout by its last
+    step, that step runs it and returns with every ``Hide`` still queued.
+    """
+    screen = app.main_screen
     for selector in ("AppHeader", "SidebarPanel", "InputBar", "Footer"):
-        app.main_screen.query_one(selector).display = False
-    await pilot.pause()
+        screen.query_one(selector).display = False
+    await wait_for(
+        lambda: screen_is_settled(app, screen),
+        pilot=pilot,
+        description="the main screen is settled after hiding its chrome",
+    )
 
 
 async def _rendered_user_body(pilot: Pilot[None], message: UserMessage) -> VirtualizedMarkdown:
@@ -346,6 +359,29 @@ async def _point_on_markdown(pilot: Pilot[None], markdown: VirtualizedMarkdown, 
     found = point()
     assert found is not None
     return found
+
+
+@pytest.mark.asyncio
+async def test_hiding_the_chrome_returns_with_focus_settled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The chrome-hiding helper returns only once focus has left the hidden chat input.
+
+    The screen's update timer is held, as on a loaded runner where it has not fired before the
+    helper's last Pilot step: that step then runs the layout that hides the chrome itself.
+    """
+    app = _MainScreenApp()
+    async with app.run_test() as pilot:
+        screen = app.main_screen
+        chat_input = screen.query_one("#chat-input", EnhancedTextArea)
+        await wait_for(lambda: screen.focused is chat_input, pilot=pilot, description="the chat input has focus")
+        timer = screen._update_timer
+        timer.pause()
+        monkeypatch.setattr(timer, "resume", lambda: None)
+
+        await _maximize_chat_panel_for_selection_test(app, pilot)
+        focused = screen.focused
+        await pilot.pause()
+
+        assert screen.focused is focused
 
 
 @pytest.mark.asyncio
@@ -904,6 +940,7 @@ async def test_screen_copy_formats_chat_speaker_labels() -> None:
         panel = app.main_screen.query_one(ChatPanel)
         panel.set_profile("Code Agent")
         await panel.add_user_message("hello")
+        panel.apply_turn_started(1)
         await panel.add_agent_message("hi there")
         await pilot.pause()
 
@@ -925,6 +962,7 @@ async def test_screen_copy_formats_chat_speaker_labels() -> None:
             agent_body: SELECT_ALL,
         }
 
+        assert user.query_one(MessageRollbackButton).display
         assert screen.get_selected_text() == "[You]\nhello\n[Code Agent]\nhi there"
 
 

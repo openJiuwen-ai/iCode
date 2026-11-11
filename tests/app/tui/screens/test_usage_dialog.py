@@ -14,6 +14,7 @@ import pytest
 from rich.cells import cell_len
 from rich.style import Style
 from textual.app import App, ComposeResult
+from textual.events import Key
 from textual.widgets import Button, Static, Tab, TabbedContent, TextArea
 from textual.widgets._tabbed_content import ContentTabs
 
@@ -81,6 +82,7 @@ def _call(day: date = _TODAY, **overrides: Any) -> UsageCall:
         "day": day,
         "hour": 12,
         "model": "model-a",
+        "profile": "",
         "source": "main",
         "project": "/w/alpha",
         "new_input": 1000,
@@ -641,6 +643,19 @@ async def test_by_the_week_a_month_or_30_days_shows_only_the_weeks_of_the_range(
         assert _text(dialog, "usage-peak") == "peak 3.00M"
 
 
+async def test_a_trend_chosen_right_after_a_range_key_keeps_to_the_new_range() -> None:
+    report = _report(_call(date(2026, 10, 2), new_input=3_000_000, output=0), _call(new_input=1_000_000, output=0))
+    async with _HostApp().run_test(size=(100, 30)) as pilot:
+        dialog = await _open(pilot, report)
+        assert (_active_range(dialog), _chosen(dialog, "usage-trend")) == ("This month", "Daily")
+        # Both keys are queued before the tabs' TabActivated for the first can climb to the dialog.
+        dialog.post_message(Key("right", None))
+        dialog.post_message(Key("t", "t"))
+        await pilot.pause()
+
+        assert (_active_range(dialog), _chosen(dialog, "usage-trend")) == ("30 days", "Weekly")
+
+
 async def test_a_month_just_begun_still_shows_all_of_it_by_the_day_and_by_the_week() -> None:
     today = date(2026, 11, 1)
     report = _report(
@@ -752,6 +767,11 @@ async def test_the_groups_list_their_numbers_and_cycle_with_g() -> None:
         await pilot.press("g")
         assert _chosen(dialog, "usage-groups") == "Project"
         assert _row_names(dialog)[0] == "beta"
+
+        await pilot.press("g")
+        assert _chosen(dialog, "usage-groups") == "Profile"
+        assert _headers(dialog) == ["Profile", "", "New", "Input", "Output", "Hit", "Calls", "Failed"]
+        assert _row_names(dialog) == ["Other profiles"]
 
         await pilot.press("g")
         assert _chosen(dialog, "usage-groups") == "Model"
@@ -916,6 +936,8 @@ async def test_the_unknown_cases_read_as_words() -> None:
         assert _row_names(dialog) == ["new_role"]
         await pilot.press("g")
         assert _row_names(dialog) == ["Other workspaces"]
+        await pilot.press("g")
+        assert _row_names(dialog) == ["Other profiles"]
 
 
 def test_project_labels_widen_only_as_far_as_needed() -> None:
@@ -1837,9 +1859,13 @@ async def test_opening_from_a_populated_main_screen_does_not_restyle_recompose_o
 
         monkeypatch.setattr(main_screen.query_one(ChrysFooter), "recompose", record_footer_recompose)
 
-        monkeypatch.setattr(usage_report, "load_usage_report", lambda _store, _cancel: _sample_report())
+        monkeypatch.setattr(
+            usage_report, "load_usage_report", lambda _store, _cancel, *, profile_names: _sample_report()
+        )
         main_screen._config_actions.open_usage()
-        await wait_for(lambda: isinstance(app.screen, UsageDialog), pilot=pilot, description="usage open")
+        await wait_for(
+            lambda: isinstance(app.screen, UsageDialog) and app.screen.is_mounted, pilot=pilot, description="usage open"
+        )
         dialog = app.screen
         assert isinstance(dialog, UsageDialog)
         await wait_for(lambda: "model-b" in _painted(pilot), pilot=pilot, description="usage read")

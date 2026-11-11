@@ -799,6 +799,171 @@ def test_xlsx_parser_with_embedded_image_stays_text_only_without_result_warning(
     assert not (tmp_path / "session" / "doc_converter").exists()
 
 
+def test_xlsx_parser_marks_cells_whose_font_is_struck_through(tmp_path: Path) -> None:
+    """A struck-through cell reads as void, not as current data; a styled cell without strike stays plain."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    from chrys.service.tools.builtins.doc_converter.parsers.xlsx import XlsxParser
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Prices"
+    for row in [("Item", "Price"), ("Tea", 3), ("Coffee", 4), ("Juice", 5)]:
+        worksheet.append(row)
+    worksheet["A3"].font = Font(strike=True)
+    worksheet["B3"].font = Font(strike=True)
+    worksheet["A4"].font = Font(bold=True, strike=False)
+    spreadsheet = tmp_path / "prices.xlsx"
+    workbook.save(spreadsheet)
+    workbook.close()
+
+    result = XlsxParser().parse(str(spreadsheet))
+
+    assert result.markdown.splitlines() == [
+        "# Sheet: Prices",
+        "",
+        "| Item | Price |",
+        "| --- | --- |",
+        "| Tea | 3 |",
+        "| ~~Coffee~~ | ~~4~~ |",
+        "| Juice | 5 |",
+    ]
+
+
+def _excel_style_workbook(
+    path: Path,
+    shared_strings: list[str],
+    rows: list[list[tuple[int, int]]],
+    *,
+    default_font: str = "",
+) -> None:
+    """Write sheet "Plan" with *rows* of ``(shared string index, style)`` cells, stored the way Excel stores text.
+
+    Excel, WPS and LibreOffice keep cell text in the shared string table, each
+    formatted run an ``<r>`` with its own ``<rPr>``; openpyxl writes inline
+    strings only, so the package is assembled by hand. Each *shared_strings*
+    item is the inner XML of one ``<si>``. Style 0 uses the workbook's default
+    font, extended by *default_font*; style 1 strikes the whole cell out.
+    """
+    main = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    package_rels = 'xmlns="http://schemas.openxmlformats.org/package/2006/relationships"'
+    content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml"
+    sheet_rows = "".join(
+        f'<row r="{row_number}">'
+        + "".join(
+            f'<c r="{"ABCDEFGH"[column]}{row_number}" s="{style}" t="s"><v>{index}</v></c>'
+            for column, (index, style) in enumerate(cells)
+        )
+        + "</row>"
+        for row_number, cells in enumerate(rows, start=1)
+    )
+    parts = {
+        "[Content_Types].xml": (
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            f'<Override PartName="/xl/workbook.xml" ContentType="{content_type}.sheet.main+xml"/>'
+            f'<Override PartName="/xl/worksheets/sheet1.xml" ContentType="{content_type}.worksheet+xml"/>'
+            f'<Override PartName="/xl/sharedStrings.xml" ContentType="{content_type}.sharedStrings+xml"/>'
+            f'<Override PartName="/xl/styles.xml" ContentType="{content_type}.styles+xml"/>'
+            "</Types>"
+        ),
+        "_rels/.rels": (
+            f'<Relationships {package_rels}><Relationship Id="rId1" Type="{rel}/officeDocument" '
+            'Target="xl/workbook.xml"/></Relationships>'
+        ),
+        "xl/workbook.xml": (
+            f'<workbook {main} xmlns:r="{rel}"><sheets><sheet name="Plan" sheetId="1" r:id="rId1"/></sheets></workbook>'
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            f"<Relationships {package_rels}>"
+            f'<Relationship Id="rId1" Type="{rel}/worksheet" Target="worksheets/sheet1.xml"/>'
+            f'<Relationship Id="rId2" Type="{rel}/sharedStrings" Target="sharedStrings.xml"/>'
+            f'<Relationship Id="rId3" Type="{rel}/styles" Target="styles.xml"/>'
+            "</Relationships>"
+        ),
+        "xl/worksheets/sheet1.xml": f"<worksheet {main}><sheetData>{sheet_rows}</sheetData></worksheet>",
+        "xl/sharedStrings.xml": f"<sst {main}>" + "".join(f"<si>{item}</si>" for item in shared_strings) + "</sst>",
+        "xl/styles.xml": (
+            f"<styleSheet {main}>"
+            f'<fonts count="2"><font>{default_font}<sz val="11"/></font><font><strike/><sz val="11"/></font></fonts>'
+            '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+            '<borders count="1"><border/></borders>'
+            '<cellStyleXfs count="1"><xf/></cellStyleXfs>'
+            '<cellXfs count="2"><xf fontId="0"/><xf fontId="1" applyFont="1"/></cellXfs>'
+            '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+            "</styleSheet>"
+        ),
+    }
+    with zipfile.ZipFile(path, "w") as package:
+        for name, xml in parts.items():
+            package.writestr(name, xml)
+
+
+def test_xlsx_parser_marks_struck_runs_of_shared_strings(tmp_path: Path) -> None:
+    """Text struck out in part of a cell is marked by run: a run's own font decides, a bare run takes the cell's."""
+    from chrys.service.tools.builtins.doc_converter.parsers.xlsx import XlsxParser
+
+    spreadsheet = tmp_path / "plan.xlsx"
+    _excel_style_workbook(
+        spreadsheet,
+        [
+            "<t>Task</t>",
+            "<t>Owner</t>",
+            (
+                '<r><t xml:space="preserve">Ship </t></r><r><rPr><strike/></rPr><t>v1</t></r>'
+                '<r><t xml:space="preserve"> v2</t></r>'
+            ),
+            "<t>Ana</t>",
+            '<r><t xml:space="preserve">Old </t></r><r><rPr><strike val="0"/></rPr><t>kept</t></r>',
+            '<r><rPr><b/></rPr><t>Bold</t></r><r><t xml:space="preserve"> plain</t></r>',
+        ],
+        [[(0, 0), (1, 0)], [(2, 0), (3, 1)], [(4, 1), (5, 0)]],
+    )
+
+    result = XlsxParser().parse(str(spreadsheet))
+
+    assert result.markdown.splitlines() == [
+        "# Sheet: Plan",
+        "",
+        "| Task | Owner |",
+        "| --- | --- |",
+        "| Ship ~~v1~~ v2 | ~~Ana~~ |",
+        "| ~~Old~~ kept | Bold plain |",
+    ]
+
+
+def test_xlsx_parser_marks_text_struck_by_the_workbook_default_font(tmp_path: Path) -> None:
+    """Cells without a style of their own take the default font, which can strike them through too."""
+    from chrys.service.tools.builtins.doc_converter.parsers.xlsx import XlsxParser
+
+    spreadsheet = tmp_path / "void.xlsx"
+    _excel_style_workbook(
+        spreadsheet,
+        ["<t>Item</t>", '<r><t xml:space="preserve">Tea </t></r><r><rPr><b/></rPr><t>bold</t></r>'],
+        [[(0, 0)], [(1, 0)]],
+        default_font="<strike/>",
+    )
+
+    result = XlsxParser().parse(str(spreadsheet))
+
+    assert result.markdown.splitlines()[2:] == ["| ~~Item~~ |", "| --- |", "| ~~Tea~~ bold |"]
+
+
+def test_xlsx_parser_converts_a_cell_whose_style_index_is_out_of_range(tmp_path: Path) -> None:
+    """Some exporters write style indexes past the style table; openpyxl does not bound-check them."""
+    from chrys.service.tools.builtins.doc_converter.parsers.xlsx import XlsxParser
+
+    spreadsheet = tmp_path / "export.xlsx"
+    _excel_style_workbook(spreadsheet, ["<t>Item</t>", "<t>Tea</t>"], [[(0, 0)], [(1, 5)]])
+
+    result = XlsxParser().parse(str(spreadsheet))
+
+    assert result.markdown.splitlines()[2:] == ["| Item |", "| --- |", "| Tea |"]
+
+
 def test_xls_parser_tables() -> None:
     """XlsParser produces sheet-based Markdown tables."""
     from chrys.service.tools.builtins.doc_converter.parsers.xls import XlsParser
@@ -851,3 +1016,31 @@ def test_table_pipe_escaping() -> None:
     result = rows_to_markdown_table(rows)
     assert "| Header | Formula |" in result
     assert r"| A\|B | x \| y |" in result
+
+
+def test_table_newline_escaping() -> None:
+    """Line breaks in cell values become <br> so each table row stays one line."""
+    from chrys.service.tools.builtins.doc_converter.parsers._table import rows_to_markdown_table
+
+    rows = [("Header", "Note"), ("a\nb", "c\r\nd"), ("e\rf", "g|h\ni")]
+    result = rows_to_markdown_table(rows)
+
+    assert result.splitlines() == [
+        "| Header | Note |",
+        "| --- | --- |",
+        "| a<br>b | c<br>d |",
+        "| e<br>f | g\\|h<br>i |",
+    ]
+
+
+def test_mark_struck_merges_adjacent_struck_runs_and_keeps_edge_whitespace_outside() -> None:
+    from chrys.service.tools.builtins.doc_converter.parsers._table import mark_struck, rows_to_markdown_table
+
+    assert mark_struck([("keep ", False), ("dr", True), ("op", True), (" end", False)]) == "keep ~~drop~~ end"
+    assert mark_struck([(" void\n", True)]) == " ~~void~~\n"
+    assert mark_struck([("a", False), (" \t", True), ("b", False)]) == "a \tb"
+    assert mark_struck([("plain", False)]) == "plain"
+    assert mark_struck([]) == ""
+    assert rows_to_markdown_table([("Note",), (mark_struck([("x|y\nz", True)]),)]).splitlines()[2] == (
+        "| ~~x\\|y<br>z~~ |"
+    )

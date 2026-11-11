@@ -8,9 +8,9 @@ import contextlib
 import logging
 import unicodedata
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -22,8 +22,8 @@ from chrys.service.profiles.agents.loader import (
 )
 
 if TYPE_CHECKING:
-    from chrys.service.profiles.agents.loader import ProfileDirScan
     from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.profiles.file_scan import ProfileDirScan
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,11 @@ class AgentProfileRegistrySnapshot:
     profiles: dict[str, AgentProfile]
     builtin_profiles: dict[str, AgentProfile]
     user_dir: Path | None
+    sources: dict[Path, str] = field(default_factory=dict)
+
+
+def legacy_profile_id(name: str) -> str:
+    return _BUILTIN_IDS.get(name) or uuid.uuid4().hex[:12]
 
 
 def _default_user_dir() -> Path:
@@ -188,8 +193,30 @@ class AgentProfileRegistry:
         self._profiles: dict[str, AgentProfile] = {}
         self._builtin_profiles: dict[str, AgentProfile] = {}
         self._user_dir: Path | None = None
+        self.sources: dict[Path, str] = {}
+        self.revision = 0
 
-    def register(self, profile: AgentProfile) -> None:
+    @property
+    def directory(self) -> Path:
+        return self._user_dir or _default_user_dir()
+
+    def reload_base(self) -> AgentProfileRegistry:
+        """The builtins and host-injected profiles that survive a complete directory scan."""
+        view = AgentProfileRegistry()
+        view._user_dir = self._user_dir
+        view._builtin_profiles = self._builtin_profiles.copy()
+        view._profiles = {
+            **deepcopy(view._builtin_profiles),
+            **{name: p for name, p in self._profiles.items() if name not in self.sources.values()},
+        }
+        return view
+
+    def install_reload(self, view: AgentProfileRegistry) -> None:
+        self._profiles = view._profiles
+        self.sources = view.sources
+        self.revision += 1
+
+    def register(self, profile: AgentProfile, *, source: Path | None = None) -> None:
         """Register an agent profile definition."""
         conflicts = _profile_id_matches(
             (candidate for name, candidate in self._profiles.items() if name != profile.name),
@@ -205,6 +232,11 @@ class AgentProfileRegistry:
                 names,
             )
         self._profiles[profile.name] = profile
+        if source is not None:
+            self.sources[source] = profile.name
+        elif self._user_dir is not None:
+            self.sources[self._user_dir / f"{profile.name}.yaml"] = profile.name
+        self.revision += 1
 
     def snapshot(self) -> AgentProfileRegistrySnapshot:
         """Return a deep snapshot of registry state for transactional callers."""
@@ -212,6 +244,7 @@ class AgentProfileRegistry:
             profiles=deepcopy(self._profiles),
             builtin_profiles=deepcopy(self._builtin_profiles),
             user_dir=self._user_dir,
+            sources=self.sources.copy(),
         )
 
     def restore(self, snapshot: AgentProfileRegistrySnapshot) -> None:
@@ -219,6 +252,8 @@ class AgentProfileRegistry:
         self._profiles = deepcopy(snapshot.profiles)
         self._builtin_profiles = deepcopy(snapshot.builtin_profiles)
         self._user_dir = snapshot.user_dir
+        self.sources = snapshot.sources.copy()
+        self.revision += 1
 
     def get(self, name: str) -> AgentProfile | None:
         """Get a registered agent profile by name."""
@@ -308,6 +343,8 @@ class AgentProfileRegistry:
                     )
                 self._builtin_profiles[profile.name] = deepcopy(profile)
                 self.register(profile)
+                if self._user_dir is not None:
+                    self.sources.pop(self._user_dir / f"{profile.name}.yaml", None)
                 loaded += 1
             except AgentProfileLoadError as e:
                 logger.warning("Failed to load builtin agent profile %s: %s", path.name, e)
@@ -326,14 +363,21 @@ class AgentProfileRegistry:
         to that canonical path so later saves and deletes address them.
         """
         target = directory or _default_user_dir()
+        self._user_dir = target
+        from chrys.service.profiles.agents.serializer import profile_write_lock
+
+        with profile_write_lock:
+            return self._load_user_files(target)
+
+    def _load_user_files(self, target: Path) -> int:
         scan = scan_profile_dir(target)
-        loaded = self._canonicalize_profile_files(scan.loaded, target)
+        loaded = self.canonicalize_profile_files(scan.loaded, target)
         # Case-folded names: the registry key is the raw name, but
         # filesystem casing varies, so treat "Code" == "code" for
         # warning purposes.
         seen: set[str] = set()
         registered = 0
-        for p in loaded:
+        for source, p in loaded:
             key = p.name.casefold()
             if key in seen:
                 logger.warning(
@@ -345,14 +389,18 @@ class AgentProfileRegistry:
             else:
                 seen.add(key)
             self._migrate_legacy_id_if_needed(p, target)
-            self.register(p)
+            self.register(p, source=source)
             registered += 1
-        self._drop_retired_plan_refs(loaded, scan, target)
+        self._drop_retired_plan_refs((profile for _, profile in loaded), scan, target)
         return registered
 
-    def _canonicalize_profile_files(
-        self, loaded: list[tuple[Path, AgentProfile]], user_dir: Path
-    ) -> list[AgentProfile]:
+    def canonicalize_profile_files(
+        self,
+        loaded: list[tuple[Path, AgentProfile]],
+        user_dir: Path,
+        *,
+        move: Callable[[Path, Path], object] | None = None,
+    ) -> list[tuple[Path, AgentProfile]]:
         """Move every loaded profile file to ``<name>.yaml``; return the profiles that may be registered.
 
         Every write path (save, delete, rename, built-in reset) addresses a
@@ -384,7 +432,8 @@ class AgentProfileRegistry:
         quarantined, so the next load can finish the migration once the
         blocker is fixed.
         """
-        registrable: list[AgentProfile] = []
+        rename = move or Path.rename
+        registrable: list[tuple[Path, AgentProfile]] = []
         # Canonical paths owned by files that stay put — the only true conflicts.
         claimed: set[Path] = set()
         # Paths still occupied by files that failed to move aside this load.
@@ -394,7 +443,7 @@ class AgentProfileRegistry:
             canonical = user_dir / f"{profile.name}.yaml"
             if path.name == canonical.name:
                 claimed.add(canonical)
-                registrable.append(profile)
+                registrable.append((path, profile))
             else:
                 pending.append((path, profile))
 
@@ -405,7 +454,7 @@ class AgentProfileRegistry:
                 canonical = user_dir / f"{profile.name}.yaml"
                 try:
                     if canonical in claimed:
-                        if not self._quarantine_conflicting_profile(profile, path, canonical):
+                        if not self._quarantine_conflicting_profile(profile, path, canonical, rename):
                             blocked.add(path)
                         continue
                     if canonical in blocked:
@@ -414,7 +463,7 @@ class AgentProfileRegistry:
                         self._warn_blocked_profile(profile, path, canonical)
                         blocked.add(path)
                         continue
-                    if canonical.exists():
+                    if canonical.exists() or canonical.is_symlink():
                         if canonical in pending_paths:
                             # Occupied by a file that is itself moving away; retry once it has.
                             waiting.append((path, profile))
@@ -424,19 +473,19 @@ class AgentProfileRegistry:
                             # folds those: name-based lookups already resolve to this file.
                             # Any other alias (e.g. a hard link) would resurface after a delete.
                             claimed.add(canonical)
-                            registrable.append(profile)
+                            registrable.append((path, profile))
                             continue
-                        if not self._quarantine_conflicting_profile(profile, path, canonical):
+                        if not self._quarantine_conflicting_profile(profile, path, canonical, rename):
                             blocked.add(path)
                         continue
-                    path.rename(canonical)
+                    rename(path, canonical)
                 except OSError as exc:
                     self._warn_unmovable_profile(profile, path, canonical, exc)
                     blocked.add(path)
                     continue
                 logger.info("Moved agent profile %r from %s to canonical path %s.", profile.name, path.name, canonical)
                 claimed.add(canonical)
-                registrable.append(profile)
+                registrable.append((canonical, profile))
             if len(waiting) == len(pending):
                 # Every remaining file waits on another remaining file, so the
                 # targets form a cycle.  Park one file that is itself a target
@@ -449,7 +498,7 @@ class AgentProfileRegistry:
                 try:
                     if parked is None:
                         raise OSError("no free temporary name")
-                    path.rename(parked)
+                    rename(path, parked)
                 except OSError as exc:
                     self._warn_unmovable_profile(profile, path, user_dir / f"{profile.name}.yaml", exc)
                     blocked.add(path)
@@ -481,7 +530,9 @@ class AgentProfileRegistry:
         )
 
     @staticmethod
-    def _quarantine_conflicting_profile(profile: AgentProfile, path: Path, canonical: Path) -> bool:
+    def _quarantine_conflicting_profile(
+        profile: AgentProfile, path: Path, canonical: Path, rename: Callable[[Path, Path], object]
+    ) -> bool:
         """Move a duplicate source out of the scan as ``<file>.conflict``; contents are untouched.
 
         Returns whether *path* was actually vacated; a file that stays behind
@@ -490,7 +541,7 @@ class AgentProfileRegistry:
         quarantine = _quarantine_path(path)
         if quarantine is not None:
             try:
-                path.rename(quarantine)
+                rename(path, quarantine)
             except OSError as exc:
                 logger.warning(
                     "Ignoring agent profile %r in %s because %s already defines that name; the duplicate "
@@ -551,7 +602,7 @@ class AgentProfileRegistry:
         from chrys.service.profiles.agents.serializer import save_profile
 
         builtin_id = _BUILTIN_IDS.get(profile.name)
-        migrated_id = builtin_id or uuid.uuid4().hex[:12]
+        migrated_id = legacy_profile_id(profile.name)
         profile.id = migrated_id
         source = "builtin" if builtin_id else "generated"
         try:
@@ -591,7 +642,9 @@ class AgentProfileRegistry:
     # reference ``Plan``, delete this method, its single caller in
     # ``load_user_profiles`` and ``_RETIRED_PLAN_PROFILE``.
     # =========================================================================
-    def _drop_retired_plan_refs(self, profiles: Iterable[AgentProfile], scan: ProfileDirScan, user_dir: Path) -> None:
+    def _drop_retired_plan_refs(
+        self, profiles: Iterable[AgentProfile], scan: ProfileDirScan[AgentProfile], user_dir: Path
+    ) -> None:
         """Remove user profiles' sub-agent references to the retired builtin ``Plan`` and rewrite their YAML.
 
         A ``Plan`` profile of the user's own keeps every reference valid, so
@@ -657,6 +710,9 @@ class AgentProfileRegistry:
                 retargeting references themselves.
         """
         existed = self._profiles.pop(name, None) is not None
+        if existed:
+            self.revision += 1
+            self.sources = {path: key for path, key in self.sources.items() if key != name}
         if existed and cascade:
             self._remove_sub_agent_refs(name)
         return existed
@@ -699,6 +755,7 @@ class AgentProfileRegistry:
         template.skills = deepcopy(current.skills)
         template.tools.mcp = deepcopy(current.tools.mcp)
         template.memory = deepcopy(current.memory)
+        template.extensions = list(current.extensions)
         return template
 
     def profiles_referencing(self, name: str) -> list[AgentProfile]:

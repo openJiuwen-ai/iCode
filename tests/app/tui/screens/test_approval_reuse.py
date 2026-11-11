@@ -62,11 +62,15 @@ async def test_tui_remember_selection_persists_or_reports_failure(tmp_path, monk
     task = None
     try:
         async with app.run_test(size=(120, 45)) as pilot:
-            await wait_for(lambda: isinstance(app.screen, MainScreen), pilot=pilot, description="main screen mounted")
+            await wait_for(
+                lambda: isinstance(app.screen, MainScreen) and app.screen.is_mounted,
+                pilot=pilot,
+                description="main screen mounted",
+            )
             context = FunctionInvocationContext(tools[0], {"command": "npm run test"})
             task = asyncio.create_task(middleware.process(context, called))
             await wait_for(
-                lambda: isinstance(app.screen, ApprovalDialog) or task.done(),
+                lambda: (isinstance(app.screen, ApprovalDialog) and app.screen.is_mounted) or task.done(),
                 pilot=pilot,
                 description="backend approval dialog",
             )
@@ -271,7 +275,11 @@ async def test_deferred_auto_approval_never_saves_a_reuse_grant(tmp_path):
     app = make_chrys_app(tmp_path / "ui-sessions", event_bus=bus)
     try:
         async with app.run_test(size=(120, 45)) as pilot:
-            await wait_for(lambda: isinstance(app.screen, MainScreen), pilot=pilot, description="main screen mounted")
+            await wait_for(
+                lambda: isinstance(app.screen, MainScreen) and app.screen.is_mounted,
+                pilot=pilot,
+                description="main screen mounted",
+            )
             screen = app.screen
             for _ in range(2):
                 await middleware.process(FunctionInvocationContext(tools[0], {"command": "npm run test"}), called)

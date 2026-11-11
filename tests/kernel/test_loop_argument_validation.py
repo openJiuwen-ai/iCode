@@ -43,6 +43,7 @@ from tests.kernel._fakes import (
     _text_update,
     _user,
 )
+from tests.support.oversized_int import oversized_integer_json
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -351,6 +352,66 @@ class TestNonStreamingLoop:
         results = _result_contents(response)
         _assert_actionable_argument_error(results[0], "optional_int", "value: expected integer | null")
         assert results[1].exception is None
+
+    @pytest.mark.asyncio
+    async def test_schema_supplied_integer_takes_a_whole_float_from_the_model(self) -> None:
+        received: list[Any] = []
+
+        async def count(**call_kwargs: Any) -> str:
+            received.append(call_kwargs["count"])
+            return "counted"
+
+        counter = FunctionTool(
+            name="count",
+            description="Count.",
+            func=count,
+            input_model={
+                "type": "object",
+                "properties": {"count": {"type": "integer"}},
+                "required": ["count"],
+                "additionalProperties": False,
+            },
+        )
+        seen_by_middleware: list[type] = []
+
+        class _Record(FunctionMiddleware):
+            async def process(
+                self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]
+            ) -> None:
+                # Read on entry: ``invoke`` later rebinds the context's arguments.
+                seen_by_middleware.append(type(context.arguments["count"]))
+                await call_next()
+
+        layer, _wire = _stack([_call_response(("c1", "count", {"count": 3.0})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [counter]}, middleware=[_Record()])
+
+        assert received == [3]
+        assert type(received[0]) is int
+        assert _result_contents(response)[0].exception is None
+        # Middleware sees the value the callable gets.
+        assert seen_by_middleware == [int]
+
+    @pytest.mark.asyncio
+    async def test_schema_supplied_argument_error_does_not_blame_a_whole_float_integer(self) -> None:
+        async def count(**call_kwargs: Any) -> str:
+            return "counted"
+
+        counter = FunctionTool(
+            name="count",
+            description="Count.",
+            func=count,
+            input_model={
+                "type": "object",
+                "properties": {"count": {"type": "integer"}, "label": {"type": "string"}},
+                "required": ["count", "label"],
+                "additionalProperties": False,
+            },
+        )
+        layer, _wire = _stack([_call_response(("c1", "count", {"count": 3.0, "label": 5})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [counter]})
+
+        result_text = _assert_actionable_argument_error(_result_contents(response)[0], "count", "label")
+        assert "count: expected" not in result_text
 
     @pytest.mark.asyncio
     async def test_explicit_null_for_required_nullable_argument_reaches_tool(self) -> None:
@@ -1025,3 +1086,46 @@ class TestNonStreamingLoop:
             arguments["text"] for (_call_id, arguments), verdict in zip(calls, expected, strict=True) if verdict == "ok"
         ]
         assert events == [f"tool:echo:{text}" for text in ran]
+
+    @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+    @pytest.mark.parametrize(
+        ("shape", "error_kind", "hint"),
+        [
+            pytest.param("complete", "argument_parsing", "integer-string conversion limit", id="complete"),
+            pytest.param(
+                "cut_off_past_limit", "argument_parsing", "integer-string conversion limit", id="cut_off_past_limit"
+            ),
+            pytest.param("cut_off_within_limit", "argument_truncated", "max_tokens", id="cut_off_within_limit"),
+        ],
+    )
+    async def test_length_finish_reason_does_not_mask_an_over_limit_integer(
+        self, stream: bool, shape: str, error_kind: str, hint: str
+    ) -> None:
+        """An integer past the conversion limit outranks the max_tokens hint, cut off or not.
+
+        A runaway digit loop usually hits max_tokens too, and the decoder fails on
+        the integer before it reaches the missing close: telling the model to raise
+        max_tokens would only buy a longer number. An object cut off before its
+        digits pass the limit is still a plain cutoff.
+        """
+        if shape == "cut_off_within_limit":
+            arguments = '{"limit": 99999'
+        else:
+            oversized = oversized_integer_json()
+            arguments = oversized if shape == "complete" else oversized.removesuffix("}")
+        contents = [Content.from_function_call("c1", "echo", arguments=arguments)]
+        if stream:
+            truncated_update = ChatResponseUpdate(contents=contents, role="assistant", finish_reason="length")
+            layer, _wire = _stack([[truncated_update], [_text_update("final")]])
+        else:
+            truncated_response = ChatResponse(messages=[Message("assistant", contents)], finish_reason="length")
+            layer, _wire = _stack([truncated_response, _text_response()])
+        events: list[str] = []
+
+        response = await _final_response(layer, [_user()], stream=stream, options={"tools": [_make_tool(events)]})
+
+        (result,) = _result_contents(response)
+        assert events == []
+        assert result.additional_properties[TOOL_FAILED_METADATA_KEY] is True
+        assert result.additional_properties[TOOL_ERROR_KIND_METADATA_KEY] == error_kind
+        assert hint in str(result.result)

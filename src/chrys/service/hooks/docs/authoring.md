@@ -127,8 +127,11 @@ alone does not trigger `user_prompt_submit`.
 The `args` keys are whatever the tool function defines — e.g. `edit_file`
 takes `path` / `old_string` / `new_string` / `replace_all`; `write_file`
 takes `path` / `content` / `overwrite`; shell tools take
-`command` / `reason` / `timeout` / `working_dir` / `max_tokens`. MCP and
-skill tools have their own arg schemas.
+`command` / `reason` / `timeout` / `workdir` / `max_output_tokens`. MCP and
+skill tools have their own arg schemas. The shell's retired names
+`working_dir` / `max_tokens` are still honored for now — in `match.args`, beside
+the new ones in a script's payload, and in `args_override` — by the deprecated
+shim `service/hooks/retired_shell_args.py`; new hooks use the new names.
 
 `tool.kind` is the canonical chrys kind value in its bare form
 (e.g. `shell`, `filesystem.write`) — the same form used in YAML matchers.

@@ -21,10 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 import sys
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import create_autospec
@@ -74,8 +73,9 @@ from chrys.service.profiles.models.serializer import save_profile
 from chrys.service.prompt_shortcuts import load_prompt_shortcuts, prompt_shortcut_folders
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.scripted_clients import FrameworkBoom
+from tests.support.toasts import shown_toasts
 from tests.support.tui_app_harness import make_chrys_app
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_when_settled, hold_prompt_fields_confirm_window
 from tests.support.waiting import (
     ENGINE_TEST_WAIT_TIMEOUT,
     ENGINE_TURN_TIMEOUT,
@@ -162,19 +162,20 @@ class Hold:
 class ScriptedModel(MockChatClient):
     """The one model every build of the session gets.
 
-    It answers ``Done.`` to every request, unless the test queued a failure
-    (the turn fails, and the composer enters retry mode) or a hold (the request
-    waits, so a turn is running).
+    It answers ``Done.`` to every request, unless the test queued a response
+    (``scripted``), a failure (the turn fails, and the composer enters retry
+    mode) or a hold (the request waits, so a turn is running).
     """
 
     def __init__(self) -> None:
         super().__init__(responses=[])
         self.failures: list[BaseException] = []
         self.hold: Hold | None = None
+        self.scripted: list[MockResponse] = []
 
     def _next_response(self) -> MockResponse:
         self._call_index += 1
-        return MockResponse(text="Done.")
+        return self.scripted.pop(0) if self.scripted else MockResponse(text="Done.")
 
     def _inner_get_response(self, *, messages: Any, stream: bool, options: Any, **kwargs: Any) -> Any:
         if self.failures:
@@ -186,21 +187,13 @@ class ScriptedModel(MockChatClient):
                 raise failure
 
             return fail()
-        result = super()._inner_get_response(messages=messages, stream=stream, options=options, **kwargs)
+        return super()._inner_get_response(messages=messages, stream=stream, options=options, **kwargs)
+
+    async def _mock_response(self, resp, model_id, finish_reason, on_text):
         hold, self.hold = self.hold, None
-        if hold is None:
-            return result
-
-        async def held() -> Any:
-            try:
-                await hold.pass_through()
-            except BaseException:
-                if inspect.iscoroutine(result):
-                    result.close()
-                raise
-            return await result
-
-        return held()
+        if hold is not None:
+            await hold.pass_through()
+        return await super()._mock_response(resp, model_id, finish_reason, on_text)
 
     def last_user_text(self) -> str:
         """The text of the last user message the model was sent."""
@@ -347,18 +340,24 @@ async def running_session(
     monkeypatch: pytest.MonkeyPatch,
     *,
     agents: Sequence[AgentProfile] = (),
+    registry: AgentProfileRegistry | None = None,
     models: ModelProfileRegistry | None = None,
     settings: Settings | None = None,
     startup_agent: str = ALPHA,
     hold_startup_load: bool = False,
     size: tuple[int, int] = (120, 40),
+    load_holds: bool = False,
 ) -> AsyncIterator[Session]:
     """Run the app on a real engine until the session is ready, with the chat input focused.
 
     With *hold_startup_load* the startup's ``AgentLoadStarted`` is held before
     the screen sees it (the first hold in ``holds``): the agent is loading and
-    nothing is waited for.
+    nothing is waited for. A load's dialog goes through its finished steps and
+    closes without pausing on them unless *load_holds* keeps its real pauses.
     """
+    if not load_holds:
+        monkeypatch.setattr(AgentLoadDialog, "COMPLETE_STEP_HOLD_SECONDS", 0.0)
+        monkeypatch.setattr(AgentLoadDialog, "FINISH_HOLD_SECONDS", 0.0)
     bus = EventBus()
     seen = Seen()
     for kind in recorded_event_types():
@@ -371,9 +370,10 @@ async def running_session(
     model = ScriptedModel()
     builds = Builds(model)
     monkeypatch.setattr(builder_module, "create_client", builds.create_client)
-    registry = AgentProfileRegistry()
-    for profile in agents or (make_agent(ALPHA), make_agent(BETA)):
-        registry.register(profile)
+    if registry is None:
+        registry = AgentProfileRegistry()
+        for profile in agents or (make_agent(ALPHA), make_agent(BETA)):
+            registry.register(profile)
     models = models if models is not None else mock_models()
     engine = agent_engine(
         bus,
@@ -461,8 +461,8 @@ def footer_actions(main: MainScreen) -> set[str]:
 
 
 def notices(app: ChrysApp) -> list[tuple[str, str]]:
-    """Every toast on screen, as ``(severity, message)``."""
-    return [(str(notification.severity), str(notification.message)) for notification in app._notifications]
+    """Every toast the App has shown, as ``(severity, message)``."""
+    return [(str(notification.severity), str(notification.message)) for notification in shown_toasts(app)]
 
 
 def user_bubbles(main: MainScreen) -> list[str]:
@@ -624,10 +624,16 @@ async def await_error(session: Session, code: str) -> ev.Error:
     return error
 
 
-async def send_plain(session: Session, text: str) -> ev.UserMessage:
-    """Type *text* and press Enter; return the message once its turn has started."""
+async def send_plain(session: Session, text: str, *, typed: bool = True) -> ev.UserMessage:
+    """Type *text* and press Enter; return the message once its turn has started.
+
+    Unless *typed*, the text is put in whole: where it only labels the turn, typing it is not what is tested.
+    """
     before = len(session.seen.of(ev.UserMessage))
-    await type_text(session.pilot, text)
+    if typed:
+        await type_text(session.pilot, text)
+    else:
+        session.chat.insert(text)
     await session.pilot.press("enter")
     await wait_for(
         lambda: len(session.seen.of(ev.UserMessage)) > before and session.seen.of(ev.UserMessage)[-1].started_turn,
@@ -654,6 +660,20 @@ async def gives_back(session: Session, draft: ChatDraft) -> None:
     )
 
 
+async def card_back(session: Session, *, commands: int) -> None:
+    """The draft's card shows again with its *commands*.
+
+    It follows the draft through the composer's change messages, a step after
+    the draft itself, which a sender's worker may hand back after the last
+    message drain of :func:`gives_back`.
+    """
+    await wait_for(
+        lambda: (state := card_state(session.main)) is not None and state.commands == commands,
+        pilot=session.pilot,
+        description=f"the draft's card back with {commands} command(s)",
+    )
+
+
 def no_turn(session: Session) -> bool:
     """No turn started in this session's app and the model was never asked."""
     return session.seen.of(ev.TurnStarted) == [] and session.model.call_count == 0
@@ -670,7 +690,8 @@ async def test_enter_sends_the_draft_with_its_shortcut_and_shows_its_commands_ru
 ) -> None:
     command = held_command("go", "clean")
     write_shortcut("zzstatus", f"Status: {command}")
-    async with running_session(agent_engine, tmp_path, monkeypatch) as session:
+    # The startup load's dialog keeps its real pauses before the session counts as ready.
+    async with running_session(agent_engine, tmp_path, monkeypatch, load_holds=True) as session:
         main, pilot, chat = session.main, session.pilot, session.chat
         draft = await expand_shortcut(session, "zzstatus")
         assert draft.text == f"Status: {command}"
@@ -719,6 +740,7 @@ async def test_a_refused_message_comes_back_whole_and_only_once(
     agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_shortcut("zzreview", "Review $1 with !`echo checked`")
+    hold_prompt_fields_confirm_window(monkeypatch)
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         main, pilot, chat = session.main, session.pilot, session.chat
         draft = await expand_shortcut(session, "zzreview")
@@ -743,15 +765,8 @@ async def test_a_refused_message_comes_back_whole_and_only_once(
         # The end of the commands clears their status before the failure shows, so the failure stays.
         assert "echo checked" in status_line(main)
         assert no_turn(session)
-        assert card_state(main) is not None
-        assert card_state(main).commands == 1
-        # The failure names the command; the composer is not in retry mode, since no turn ran.
-        # Its card mounts after the draft comes back, so it is waited for.
-        await wait_for(
-            lambda: any("echo checked" in card for card in error_cards(main)),
-            pilot=pilot,
-            description="the failure's card naming the command",
-        )
+        await card_back(session, commands=1)
+        assert any("echo checked" in card for card in error_cards(main))
         assert not session.bar.retry_mode
 
         # Given back once: a composer the user empties stays empty.
@@ -761,30 +776,40 @@ async def test_a_refused_message_comes_back_whole_and_only_once(
         assert not await wait_until(lambda: chat.text != "", timeout=0.5, pilot=pilot)
 
 
+@pytest.mark.parametrize("code", ["prompt_shortcut_unavailable", "prompt_shortcut_command_failed"])
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
-async def test_an_unavailable_shortcut_comes_back_without_its_owner_and_then_sends_as_typed(
-    agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_refused_shortcut_returns_when_a_second_enter_can_send_it(
+    agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: str
 ) -> None:
-    path = write_shortcut("zzgone", "Note !`echo ran > ran.txt`")
+    path = write_shortcut("zzretry", "Note !`echo ran > ran.txt`")
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         main, pilot, chat = session.main, session.pilot, session.chat
-        draft = await expand_shortcut(session, "zzgone")
-        path.unlink()
-
-        await pilot.press("enter")
-
-        await await_error(session, "prompt_shortcut_unavailable")
-        await wait_for(
-            lambda: chat.text == draft.text and session.bar.draft_owner is None,
-            pilot=pilot,
-            description="the draft given back as plain text",
-        )
-        assert card_state(main) is None
-        assert session.seen.of(ev.PromptCommandsRunning) == []
+        draft = await expand_shortcut(session, "zzretry")
+        assert draft.owner is not None
+        missing = code == "prompt_shortcut_unavailable"
+        rejection = session.hold()
+        await hold_next(session.bus, ev.Error, rejection, when=lambda error: error.code == code)
+        with monkeypatch.context() as refusal:
+            if missing:
+                path.unlink()
+            else:
+                break_the_shell(refusal, tmp_path)
+            await pilot.press("enter")
+            await wait_for(rejection.entered.is_set, pilot=pilot, description="shortcut refusal shown")
+            # The error card is on screen while the first send still owns admission.
+            assert not chat.text
+            rejection.release()
+            await gives_back(session, replace(draft, owner=None) if missing else draft)
+        if missing:
+            # Plain text has no card: once the draft's change messages have run, none shows.
+            await pilot.pause()
+            assert card_state(main) is None
+        else:
+            await card_back(session, commands=1)
+        assert len(session.seen.of(ev.PromptCommandsRunning)) == (0 if missing else 1)
         assert not Path("ran.txt").exists()
         assert no_turn(session)
 
-        # No longer that shortcut's: a second Enter sends it as typed, and nothing runs.
         await pilot.press("enter")
         # Seen as it is published; its turn starts once the engine has admitted it.
         await wait_for(
@@ -793,12 +818,16 @@ async def test_an_unavailable_shortcut_comes_back_without_its_owner_and_then_sen
             timeout=ENGINE_TURN_TIMEOUT,
             description="sent again",
         )
-        again = session.seen.of(ev.UserMessage)[-1]
+        first, again = session.seen.of(ev.UserMessage)
         assert again.text == draft.text
-        assert again.prompt_shortcut is None
+        assert again.prompt_shortcut == (None if missing else first.prompt_shortcut)
         await turn_finished(session)
-        assert "!`echo ran > ran.txt`" in session.model.last_user_text()
-        assert not Path("ran.txt").exists()
+        if missing:
+            assert "!`echo ran > ran.txt`" in session.model.last_user_text()
+            assert not Path("ran.txt").exists()
+        else:
+            assert "!`" not in session.model.last_user_text()
+            assert Path("ran.txt").is_file()
 
 
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
@@ -864,7 +893,7 @@ async def test_esc_while_the_commands_run_withdraws_the_message_and_gives_the_dr
         )
         assert (await await_commands_ended(session, sent)).outcome == "cancelled"
         await gives_back(session, draft)
-        assert card_state(main) is not None
+        await card_back(session, commands=1)
         assert not sent.started_turn
         assert no_turn(session)
         assert session.seen.of(ev.UserInterrupt) == []
@@ -887,7 +916,11 @@ async def test_esc_during_the_switch_does_nothing_and_the_message_goes_out_after
 
         await pilot.press("enter")
         await wait_for(build.entered.is_set, pilot=pilot, timeout=ENGINE_TURN_TIMEOUT, description="switch building")
-        await wait_for(lambda: isinstance(app.screen, AgentLoadDialog), pilot=pilot, description="agent-load modal")
+        await wait_for(
+            lambda: isinstance(app.screen, AgentLoadDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="agent-load modal",
+        )
 
         await pilot.press("escape")
         assert not await wait_until(
@@ -1211,7 +1244,7 @@ async def test_a_config_dialog_opened_while_a_send_is_in_flight_is_read_only(
         async def opens_read_only() -> bool:
             await pilot.press(key)
             await wait_for(
-                lambda: isinstance(app.screen, dialog) and bool(app.screen.query(notice)),
+                lambda: isinstance(app.screen, dialog) and app.screen.is_mounted and bool(app.screen.query(notice)),
                 pilot=pilot,
                 description="dialog open",
             )
@@ -1247,6 +1280,7 @@ async def test_every_submit_route_asks_about_unfilled_fields_first(
     reached with fields by keys. ``list_fallback`` takes the route the fallback takes once the list
     has let Enter through, the input bar's ``submit_input``; ``send_button`` is the Send button."""
     write_shortcut("zzfields", "Review $1 and $2")
+    hold_prompt_fields_confirm_window(monkeypatch)
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         main, pilot, app = session.main, session.pilot, session.app
         draft = await expand_shortcut(session, "zzfields")
@@ -1299,7 +1333,11 @@ async def test_a_shortcuts_draft_that_names_a_command_runs_it_as_typed_text_woul
 
         await pilot.press("enter")
 
-        await wait_for(lambda: isinstance(app.screen, GuideDialog), pilot=pilot, description="the guide opened")
+        await wait_for(
+            lambda: isinstance(app.screen, GuideDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="the guide opened",
+        )
         assert session.seen.of(ev.UserMessage) == []
         assert main.query_one(InputBar).draft_owner is None
 
@@ -1374,7 +1412,9 @@ async def test_a_failed_switch_sends_nothing_and_gives_the_draft_back(
         await pilot.press("enter")
 
         await wait_for(
-            lambda: isinstance(app.screen, AgentLoadDialog) and app.screen.has_class("-error"),
+            lambda: (
+                isinstance(app.screen, AgentLoadDialog) and app.screen.is_mounted and app.screen.has_class("-error")
+            ),
             pilot=pilot,
             timeout=ENGINE_TURN_TIMEOUT,
             description="the load failure shown",
@@ -1610,7 +1650,11 @@ async def test_the_footer_status_bar_and_workflow_entry_follow_the_commands_and_
         await pilot.press("backspace")
         await wait_for(lambda: card_state(main) is None, pilot=pilot, description="draft deleted, card gone")
         await click_when_settled(pilot, "#profile-tag")
-        await wait_for(lambda: isinstance(app.screen, AgentsScreen), pilot=pilot, description="agent picker opens")
+        await wait_for(
+            lambda: isinstance(app.screen, AgentsScreen) and app.screen.is_mounted,
+            pilot=pilot,
+            description="agent picker opens",
+        )
         await pilot.press("escape")
         await wait_for(lambda: app.screen is main, pilot=pilot, description="agent picker closed")
         assert running.count == 1

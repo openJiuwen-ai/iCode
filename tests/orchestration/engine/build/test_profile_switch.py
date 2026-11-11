@@ -728,7 +728,10 @@ async def test_user_interrupt_does_not_wait_for_profile_switch_rebuild(
 
 
 @pytest.mark.asyncio
-async def test_settings_reload_recovers_after_startup_failure(monkeypatch: pytest.MonkeyPatch, agent_engine) -> None:
+@pytest.mark.parametrize("manual", [False, True])
+async def test_settings_reload_recovers_after_startup_failure(
+    monkeypatch: pytest.MonkeyPatch, agent_engine, manual: bool
+) -> None:
     """Startup failure should leave backend handlers available for in-app recovery."""
     import chrys.orchestration.engine.build.builder as builder_module
 
@@ -757,7 +760,7 @@ async def test_settings_reload_recovers_after_startup_failure(monkeypatch: pytes
     assert engine.current.loaded is None
     assert engine._subscribed is True
 
-    await bus.publish(SettingsReload())
+    await bus.publish(SettingsReload(session_id=engine.session_id, manual=manual))
 
     assert engine.current.loaded is not None
     assert engine.state is EngineState.IDLE

@@ -43,7 +43,7 @@ The following steps create an agent of the **Built-in** type. To connect an exte
 3. On the **Instructions** tab, enter system instructions to define the agent's behavior. System instructions cannot be empty.
 
 4. Configure the other tabs as needed:
-    - **Tools**: Select the built-in tools the agent can call. See [Configure tools](./tools.md).
+    - **Tools**: Select the built-in tools and the [Python extensions](../extensions/python-extensions.md) the agent can call. See [Configure tools](./tools.md).
     - **Sub-Agents**: Add sub-agents this agent can call. See [Configure sub-agents for an agent](#configure-sub-agents-for-an-agent).
     - **Skills**: Configure where the agent loads skills from. See [Install and use skills](../extensions/skills.md).
     - **MCP**: Connect MCP servers and configure the MCP tools the agent can use. See [Connect MCP servers](../extensions/mcp.md).
@@ -104,7 +104,7 @@ When you edit and save a built-in agent, iCode creates a user profile file with 
 
 At startup, iCode gives precedence to the user profile file with the same name, instead of merging user and built-in settings field by field. As a result, after an iCode upgrade, updates to built-in defaults such as agent instructions are not automatically applied to that agent.
 
-To adopt the built-in defaults from the current version, reset the built-in agent. Resetting preserves only skills, MCP server, and memory settings. Instructions, compaction, and all other settings return to the current version's built-in defaults.
+To adopt the built-in defaults from the current version, reset the built-in agent. Resetting preserves only skills, MCP server, memory, and [extension](../extensions/python-extensions.md) settings. Instructions, compaction, and all other settings return to the current version's built-in defaults.
 
 To reset an agent:
 
@@ -114,7 +114,7 @@ To reset an agent:
 
 Reset changes remain pending in the configuration window until saved. Closing the window discards unsaved changes.
 
-After a reset, if the user profile file with the same name no longer exists, future upgrades use the new built-in configuration directly. If the file remains because it preserves custom skills, MCP server, or memory settings, you still need to reset the agent again after future upgrades to adopt updated built-in defaults.
+After a reset, if the user profile file with the same name no longer exists, future upgrades use the new built-in configuration directly. If the file remains because it preserves custom skills, MCP server, memory, or extension settings, you still need to reset the agent again after future upgrades to adopt updated built-in defaults.
 
 ## Configure models and sub-agents
 
@@ -161,7 +161,7 @@ These settings work as follows:
 
 During a task, the agent uses each sub-agent's tool name and description to decide whether to delegate work to it. You can also request a specific sub-agent in the input field, for example: `Call <tool name> to complete <task>`. A successful result from the corresponding sub-agent tool confirms that the configuration has taken effect.
 
-A sub-agent returns its final reply to the agent that called it. Text it writes between tool calls appears on its card but is not returned. The card shows each piece of text once the sub-agent has finished writing it. A model request that fails before any of its text has appeared on the card is retried as in the main conversation; once some has appeared, the card keeps it and shows the error. In `icode run`, ACP clients and workflows, a sub-agent's text is not shown as it is written, so text it has already written does not by itself stop such a retry. If the final reply has no text, all the text the sub-agent wrote is returned, in order. If the sub-agent fails, its card shows the reason. An external ACP agent returns what its **Result** setting selects; see [Set the result and timeouts](../extensions/external-acp-agents.md#set-the-result-and-timeouts). Click **View details** on the card to see everything the sub-agent did: the view opens at its newest content and keeps showing new tool calls and text as they arrive while you stay at the bottom; scroll up to read earlier content and it stays where you are until you scroll back to the bottom.
+A sub-agent returns its final reply to the agent that called it. Text it writes between tool calls appears on its card but is not returned. The card shows each piece of text once the sub-agent has finished writing it. A model request that fails before any of its text has appeared on the card is retried as in the main conversation; once some has appeared, the card keeps it and shows the error. In `icode run`, ACP clients and workflows, a sub-agent's text is not shown as it is written, so text it has already written does not by itself stop such a retry. If the final reply has no text, all the text the sub-agent wrote is returned, in order. If the sub-agent fails, its card shows the reason. The bottom edge of the card shows how many tool calls the sub-agent made, its current context size, the tokens it has used and how long it ran; these stay on the card when you reopen the session, unless the sub-agent was interrupted. An external ACP agent returns what its **Result** setting selects; see [Set the result and timeouts](../extensions/external-acp-agents.md#set-the-result-and-timeouts). Click **View details** on the card to see everything the sub-agent did: the view opens at its newest content and keeps showing new tool calls and text as they arrive while you stay at the bottom; scroll up to read earlier content and it stays where you are until you scroll back to the bottom.
 
 **Notes:**
 

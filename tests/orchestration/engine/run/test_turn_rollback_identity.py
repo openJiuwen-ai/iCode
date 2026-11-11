@@ -1,12 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""A rollback after a failed turn retires turns by identity, not by ordinal.
+"""Rollback compatibility for sessions whose counters drifted before turn alignment.
 
-The registry and the saved counter drift apart the moment a turn fails: the
-turns admitted afterwards take fresh ordinals while the counter the save carries
-stays behind. A rollback that trusted the ordinal would then retire a turn that
-never opened, so these scenarios drive real turns and read the retired ids out
-of the result and the trajectory payload.
+The fixtures explicitly seed the former missing-boundary layout. New turns no
+longer create it, but rollback must keep handling those stored sessions.
 """
 
 from __future__ import annotations
@@ -24,8 +21,7 @@ from chrys.foundation.events.types import RollbackResult, TurnStarted, UserMessa
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.reader import read_trajectory
-from chrys.kernel import ChatResponseUpdate
-from chrys.service.llm.mock import MockChatClient, MockResponse
+from chrys.service.llm.mock import MockChatClient
 from chrys.service.state.serializers import serialize_state
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.trajectory.session import trajectory_events_path
@@ -36,38 +32,9 @@ from tests.support.pipeline_helpers import make_mock_settings_and_registry
 from tests.support.waiting import await_run_task_chain
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterable
     from pathlib import Path
 
 _SESSION_ID = "e0a1b2c3-d4e5-4f60-8a91-b2c3d4e5f601"
-
-
-class ProviderRefusal(RuntimeError):
-    """A provider failure the classifier cannot call transient, so no retry runs."""
-
-
-class _FailFirstClient(MockChatClient):
-    """Refuse the first wire call, then answer every later one.
-
-    Refusing before the scripted response is consumed keeps the answers for the
-    turns that are expected to succeed.
-    """
-
-    def __init__(self, responses: list[MockResponse]) -> None:
-        super().__init__(responses=responses)
-        self.calls = 0
-
-    async def _stream_updates(
-        self,
-        resp: MockResponse,
-        model_id: str,
-        finish_reason: str,
-    ) -> AsyncIterable[ChatResponseUpdate]:
-        self.calls += 1
-        if self.calls == 1:
-            raise ProviderRefusal("provider refused the first call")
-        async for update in super()._stream_updates(resp, model_id, finish_reason):
-            yield update
 
 
 async def _start(
@@ -108,6 +75,14 @@ async def _ask(engine, text: str) -> None:
     await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
 
 
+def _seed_legacy_drift(engine) -> None:
+    """Represent the missing boundary produced by older fresh-prompt cleanup."""
+    state = engine.current.require_loaded().bindings.backend.history_state
+    assert state["messages"][-1].additional_properties.get("_chrys_kind") == "turn"
+    state["messages"].pop()
+    state["turn_counter"] -= 1
+
+
 def _rollback_payload(engine) -> dict:
     """The payload of the last rollback the session's log recorded."""
     rollback = [
@@ -131,20 +106,19 @@ def _reopen(engine, saved: dict, services) -> None:
     engine.session.turn_number = saved.get("turn_counter", 0)
 
 
-class TestRollbackAfterAFailedTurn:
+class TestRollbackOfLegacyDrift:
     @pytest.mark.asyncio
     async def test_only_the_turns_after_the_snapshot_are_retired(
         self, tmp_path: Path, agent_engine, engine_services, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A turn admitted after a failed one is retired by id, not by ordinal."""
         store = JsonFileStateStore(tmp_path)
-        engine, _ = await _start(
-            agent_engine, tmp_path, monkeypatch, store, _FailFirstClient([]), session_id=_SESSION_ID
-        )
+        engine, _ = await _start(agent_engine, tmp_path, monkeypatch, store, MockChatClient([]), session_id=_SESSION_ID)
 
         # A fails, then B and C complete. B and C take ordinals 2 and 3 while the
         # counter the save carries reaches only 2: the drift this is about.
         await _ask(engine, "A")
+        _seed_legacy_drift(engine)
         await _ask(engine, "B")
         await _ask(engine, "C")
         turns = engine.turn_records()
@@ -217,11 +191,10 @@ class TestRollbackAfterAFailedTurn:
         session the restore came back with.
         """
         store = JsonFileStateStore(tmp_path)
-        engine, _ = await _start(
-            agent_engine, tmp_path, monkeypatch, store, _FailFirstClient([]), session_id=_SESSION_ID
-        )
+        engine, _ = await _start(agent_engine, tmp_path, monkeypatch, store, MockChatClient([]), session_id=_SESSION_ID)
 
         await _ask(engine, "A")
+        _seed_legacy_drift(engine)
         await _ask(engine, "B")
         await _ask(engine, "C")
         turns = engine.turn_records()
@@ -273,11 +246,10 @@ class TestRollbackAfterAFailedTurn:
     ) -> None:
         """The welcome branch reports the turns it drops, the failed one included."""
         store = JsonFileStateStore(tmp_path)
-        engine, _ = await _start(
-            agent_engine, tmp_path, monkeypatch, store, _FailFirstClient([]), session_id=_SESSION_ID
-        )
+        engine, _ = await _start(agent_engine, tmp_path, monkeypatch, store, MockChatClient([]), session_id=_SESSION_ID)
 
         await _ask(engine, "A")
+        _seed_legacy_drift(engine)
         await _ask(engine, "B")
         registered = engine.turn_records()
         assert len(registered) == 2

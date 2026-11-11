@@ -37,7 +37,8 @@ _NON_INVOCATION_CORRELATION_FIELDS = {
     "WorkflowNodeStateChanged": {"invocation_id"},
     **_INVOCATION_COMMAND_FIELDS,
 }
-# Existing exchange, content-segment and compaction identifiers are payloads.
+# Existing exchange, content-segment and compaction identifiers are payloads,
+# as is the retry wait a retry notice names for ``RetryWaitSkip`` to end.
 _INVOCATION_PAYLOAD_IDS = {
     "call_id",
     "parent_call_id",
@@ -45,6 +46,7 @@ _INVOCATION_PAYLOAD_IDS = {
     "segment_id",
     "segment_ids",
     "compaction_id",
+    "wait_id",
 }
 
 

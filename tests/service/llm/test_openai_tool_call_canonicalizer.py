@@ -13,6 +13,7 @@ from chrys.service.llm.chat_completions.client import OPENAI
 from chrys.service.llm.chat_completions.history import encode_messages
 from tests.service.llm._wire_stacks import make_chat_client
 from tests.support.openai_chat_wire import scripted_openai
+from tests.support.oversized_int import oversized_integer_json
 
 
 def _encode(chat_client: Any, message: Message) -> list[dict[str, Any]]:
@@ -99,6 +100,22 @@ def test_openai_encode_message_repairs_malformed_tool_call_arguments() -> None:
             "content": "",
         }
     ]
+
+
+def test_openai_encode_message_repairs_oversized_integer_tool_call_arguments() -> None:
+    """An integer past Python's conversion limit cannot be re-sent; replay falls back to "{}"."""
+    chat_client = make_chat_client()
+    arguments = oversized_integer_json()
+
+    prepared = _encode(
+        chat_client,
+        Message(
+            "assistant",
+            [Content.from_function_call(call_id="call_bad", name="glob", arguments=arguments)],
+        ),
+    )
+
+    assert prepared[0]["tool_calls"][0]["function"]["arguments"] == "{}"
 
 
 @pytest.mark.parametrize("arguments", [None, [], 123])

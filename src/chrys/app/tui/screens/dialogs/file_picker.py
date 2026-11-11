@@ -367,6 +367,8 @@ class FilePicker(BaseDialog[str | None]):
                 yield Button(Text(render_str(localizer, _CANCEL.bind())), id="fsd-cancel", variant="warning", flat=True)
 
     async def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         self.query_one("#fsd-tree", _FilteredDirectoryTree).focus()
         if self._recent_paths:
             self._recent_paths_task = asyncio.create_task(self._load_recent_paths())

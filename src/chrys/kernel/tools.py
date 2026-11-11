@@ -62,6 +62,11 @@ from ._null_overlay import (
     restore_explicit_nulls,
 )
 from ._serialization import SerializationMixin
+from ._tool_arg_errors import (
+    _accepts_arbitrary_argument_names,
+    _rejects_unexpected_arguments,
+    _unexpected_argument_names,
+)
 from .exceptions import ModelVisibleToolError, ToolException
 from .middleware import FunctionInvocationContext
 
@@ -215,7 +220,11 @@ def _matches_json_schema_type(value: Any, schema_type: str, *, tuples_as_arrays:
         case "string":
             return isinstance(value, str)
         case "integer":
-            return isinstance(value, int) and not isinstance(value, bool)
+            # JSON Schema "integer" is a number without a fraction, so a model
+            # sending ``3.0`` sent an integer. bool is not one here.
+            return (isinstance(value, int) and not isinstance(value, bool)) or (
+                isinstance(value, float) and value.is_integer()
+            )
         case "number":
             return (isinstance(value, int | float)) and not isinstance(value, bool)
         case "boolean":
@@ -235,6 +244,19 @@ def _matches_json_schema_type(value: Any, schema_type: str, *, tuples_as_arrays:
             return True
 
 
+def _normalize_json_schema_value(value: Any, allowed_types: Sequence[str]) -> Any:
+    """``value`` as the type the schema asked for, where JSON is looser than Python.
+
+    JSON has one number type, so a model sends ``3.0`` for a parameter declared
+    ``integer``; a callable that runs ``range(count)`` must still get an int. A
+    whole-number float becomes ``int`` only when ``integer`` is the sole numeric
+    type allowed: where ``number`` is allowed too, the value keeps its own type.
+    """
+    if isinstance(value, float) and value.is_integer() and "integer" in allowed_types and "number" not in allowed_types:
+        return int(value)
+    return value
+
+
 def _validate_arguments_against_schema(
     *,
     arguments: Mapping[str, Any],
@@ -243,7 +265,11 @@ def _validate_arguments_against_schema(
     tuples_as_arrays: bool = False,
     values_prevalidated: bool = False,
 ) -> dict[str, Any]:
-    """Apply lightweight schema checks at the callable argument boundary."""
+    """Apply lightweight schema checks at the callable argument boundary.
+
+    Returns a copy of ``arguments`` with each top-level value in the type its
+    schema declares (``_normalize_json_schema_value``); callers pass the copy on.
+    """
     parsed_arguments = dict(arguments)
 
     required_fields = [field for field in schema.get("required", []) if isinstance(field, str)]
@@ -260,7 +286,7 @@ def _validate_arguments_against_schema(
         if unexpected_fields:
             raise TypeError(f"Unexpected argument(s) for '{tool_name}': {', '.join(unexpected_fields)}")
 
-    for field_name, field_value in parsed_arguments.items():
+    for field_name, field_value in list(parsed_arguments.items()):
         if not isinstance(properties.get(field_name), dict):
             continue
 
@@ -277,6 +303,7 @@ def _validate_arguments_against_schema(
                     f"Invalid type for '{field_name}' in '{tool_name}': "
                     f"expected {schema_type}, got {type(field_value).__name__}"
                 )
+            parsed_arguments[field_name] = _normalize_json_schema_value(field_value, [schema_type])
             continue
 
         if isinstance(schema_type, list):
@@ -289,6 +316,7 @@ def _validate_arguments_against_schema(
                     f"Invalid type for '{field_name}' in '{tool_name}': expected one of "
                     f"{allowed_types}, got {type(field_value).__name__}"
                 )
+            parsed_arguments[field_name] = _normalize_json_schema_value(field_value, allowed_types)
 
     return parsed_arguments
 
@@ -577,6 +605,16 @@ class FunctionTool(SerializationMixin):
             self._null_overlay_policy_cached = policy
         return self._null_overlay_policy_cached
 
+    def _reject_unexpected_arguments(self, arguments: Mapping[str, Any]) -> None:
+        """Raise ``TypeError`` for top-level keys this typed tool does not accept, as the loop does."""
+        schema = self.parameters()
+        if not _rejects_unexpected_arguments(schema, typed_model_dump=True) or _accepts_arbitrary_argument_names(
+            self.input_model
+        ):
+            return
+        if _unexpected_argument_names(arguments, schema, reject_unexpected=True, input_model=self.input_model):
+            raise TypeError(f"Unexpected argument(s) for '{self.name}'.")
+
     def _dump_arguments(self, validated: BaseModel) -> dict[str, Any]:
         """Dump once, then apply the cached static explicit-null policy."""
         if self.input_model is None:
@@ -662,6 +700,10 @@ class FunctionTool(SerializationMixin):
                 elif isinstance(arguments, Mapping):
                     parsed_arguments = dict(arguments)
                     if self.input_model is not None and not self._schema_supplied:
+                        # Pydantic ignores an unadvertised key: reject what the tool loop's
+                        # pre-check rejects, or a misnamed argument is dropped and the call
+                        # runs on its default (a command in the wrong folder).
+                        self._reject_unexpected_arguments(parsed_arguments)
                         try:
                             validation_arguments = copy.deepcopy(parsed_arguments)
                         except Exception:
@@ -818,7 +860,7 @@ class FunctionTool(SerializationMixin):
     @staticmethod
     def _make_dumpable(value: Any) -> Any:
         """Recursively convert a value to a JSON-dumpable form."""
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return [FunctionTool._make_dumpable(item) for item in value]
         if isinstance(value, dict):
             return {key: FunctionTool._make_dumpable(item) for key, item in value.items()}
@@ -843,7 +885,7 @@ class FunctionTool(SerializationMixin):
             return [Content.from_text(result)]
         if content := _coerce_content(result):
             return [content]
-        if isinstance(result, list) and any(_coerce_content(item) is not None for item in result):
+        if isinstance(result, (list, tuple)) and any(_coerce_content(item) is not None for item in result):
             parsed_items: list[Content] = []
             for item in result:
                 if content := _coerce_content(item):
@@ -894,9 +936,14 @@ class FunctionTool(SerializationMixin):
         }
 
     def to_dict(self, *, exclude: set[str] | None = None, exclude_none: bool = True) -> dict[str, Any]:
-        """Serialize the tool with input_model represented as its parameter schema."""
+        """Serialize the tool with input_model represented as its parameter schema.
+
+        A tool built from a JSON schema (MCP, skills) has no model class, but
+        its schema is still its input model: token estimates and telemetry read
+        it here.
+        """
         as_dict = super().to_dict(exclude=exclude, exclude_none=exclude_none)
-        if (exclude and "input_model" in exclude) or not self.input_model:
+        if exclude and "input_model" in exclude:
             return as_dict
         as_dict["input_model"] = self.parameters()
         return as_dict

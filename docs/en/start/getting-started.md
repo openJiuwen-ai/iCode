@@ -205,6 +205,14 @@ Some terminals, including macOS's built-in Terminal and some tmux setups, can't 
 
 In other multi-line fields, **Enter** and **Shift+Enter** start a new line. In the Ctrl+O editor, press **Ctrl+O** or **Ctrl+Enter** to commit.
 
+### Attach images, quote the conversation and paste long text
+
+Paste a screenshot or an image, or drop an image file into the message box, and it shows as **[Image #1]**. To quote part of the conversation, select it with the mouse and click **Quote** when it appears; **[Quote #1]** is added where the cursor is. Long pasted text, more than 800 characters or six lines or more (fewer in a very short terminal), shows as **[Pasted text #1 +5 lines]**. Keep typing around them as usual; each message numbers each kind from 1.
+
+Click an image or quote label for a read-only preview. A label is edited as one piece: the cursor steps over it, and Backspace or Delete removes all of it. Click a pasted-text label to edit that text in the prompt editor; it stays folded while it is still long. Press **Ctrl+O** to open the prompt editor on the full text to be sent: save without changes to keep the labels; after any change, the message box shows the full text. Press **Ctrl+Z** to undo a save that changed the message.
+
+When you send, each label is replaced by what it stands for: the images go to the model with your message, pasted text goes back where its label was, and a quote goes on lines of its own as a block quote, so any headings, lists or code in it stay inside the quote. A quote is what someone else said, so an `@file` or `` !`command` `` in it does nothing: it is sent with a backslash in front so it stays plain text. Pasted text counts as your own words and works like typed text. Your message, and what you bring back with the Up arrow or from prompt history, shows that full text rather than the labels. After you send a message, press **Ctrl+Z** in the empty message box to get the whole message back, labels included.
+
 ### Read and copy replies
 
 All agents' replies support Markdown, formulas and Mermaid diagrams. Formulas in your own messages are not rendered as math.
@@ -217,9 +225,9 @@ For example, `$x^{n+1}$` displays as xⁿ⁺¹ and `$90^\circ$` as 90°.
 
 Mermaid code blocks appear as diagrams; choose **Open full diagram** to view and scroll the full result. Some diagrams are simplified with a notice; unsupported diagrams stay as source.
 
-When the model service returns the model's thinking as readable text, it appears in grey on one line above the reply: **Thinking:** followed by the newest words as the model writes them, then **Thought:** followed by how the thinking begins once it is complete, cut off where the line ends. Click it at any time, even while the model is still writing, to unfold it and read it in full, or to fold it again (`/fold` folds or unfolds all complete thinking, tool groups and text between tool calls at once). Once the model moves on to a tool call or its reply, the thinking folds, as tool groups do; so does text the model writes before a tool call, to one line showing how it begins. Thinking has no **copy** button, and copying replies leaves it out. To see thinking unfolded while the model writes it, turn on **Expand thinking by default** in the Settings dialog (**General** → **Display preferences**).
+When the model service returns readable thinking, a folded row above the reply shows **Thinking**. As text arrives, the row adds an estimated token count and then the recent speed, for example `Thinking (3.2k tokens · 70 tok/s)`. The figures appear in muted text and update once a second. When thinking ends, the row shows **Thought:** followed by the opening words. Click it at any time, even while the model is still writing, to unfold it and read it in full, or to fold it again (`/fold` folds or unfolds all complete thinking, tool groups and text between tool calls at once). Once the model moves on to a tool call or its reply, the thinking folds, as tool groups do; so does text the model writes before a tool call, to one line showing how it begins. Thinking has no **Copy** button, and copying replies leaves it out. To see thinking unfolded while the model writes it, turn on **Expand thinking by default** in the Settings dialog (**General** → **Display preferences**).
 
-Mouse selection copies what is displayed, without adding newlines for screen wrapping. Use **copy** beside the message header to copy the original Markdown and LaTeX. Reopening an older conversation uses the current rendering.
+Mouse selection copies what is displayed, without adding newlines for screen wrapping. Use **Copy** beside the message header to copy the original Markdown and LaTeX. Reopening an older conversation uses the current rendering.
 
 ## 5. End the session
 
@@ -235,4 +243,4 @@ You can continue exploring:
 - [Configure models](../guides/configuration/models.md) to connect to and switch between model services
 - [Working directory](../guides/daily-use/workspaces.md)
 - [Configure approval modes](../guides/configuration/approval.md)
-- Extend iCode with [Skills](../guides/extensions/skills.md) and [MCP](../guides/extensions/mcp.md)
+- Extend iCode with [Skills](../guides/extensions/skills.md), [MCP](../guides/extensions/mcp.md), and [Python extensions](../guides/extensions/python-extensions.md)

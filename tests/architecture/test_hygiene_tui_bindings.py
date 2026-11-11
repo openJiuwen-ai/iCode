@@ -31,6 +31,16 @@ _TUI_BINDING_DISPLAY_MODULE = _TUI_ROOT / "binding_display.py"
 
 
 _TUI_BINDING_CONSTRUCTION_ALLOWLIST = {
+    # Editable model picker: undisplayed navigation into its floating list.
+    (
+        Path("src/chrys/app/tui/screens/models/model_picker.py"),
+        "_ModelInput",
+        "Binding",
+        "down",
+        "show_models",
+        None,
+        False,
+    ),
     # Theme controls: non-displayed focus, movement and transaction shortcuts.
     (
         Path("src/chrys/app/tui/screens/themes/palette.py"),
@@ -479,6 +489,16 @@ _TUI_BINDING_CONSTRUCTION_ALLOWLIST = {
         None,
         False,
     ),
+    # Pickers: Enter chooses in key order with the list's moves.
+    (
+        Path("src/chrys/app/tui/widgets/choice_list.py"),
+        "ChoiceList",
+        "Binding",
+        "enter",
+        "screen.choose",
+        None,
+        False,
+    ),
 }
 
 
@@ -631,7 +651,7 @@ def test_tui_binding_display_guard_allowlist_entries_are_live_and_unambiguous() 
                 if isinstance(item, ast.Tuple) and len(item.elts) in {2, 3}
             )
 
-    assert len(_TUI_BINDING_CONSTRUCTION_ALLOWLIST) == 53
+    assert len(_TUI_BINDING_CONSTRUCTION_ALLOWLIST) == 55
     assert len(observed) == len(set(observed))
     assert set(observed) == _TUI_BINDING_CONSTRUCTION_ALLOWLIST
 

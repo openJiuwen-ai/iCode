@@ -16,10 +16,11 @@ from textual.widgets import Static, TabbedContent, TabPane
 from chrys.app.tui.binding_display import CLOSE_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
+from chrys.app.tui.util.formatting import format_compact_count
 from chrys.app.tui.util.removal import remove_children_shielded
 from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeModelDetails
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block, sanitize_legacy_scalar
 from chrys.foundation.platform.files import surrogate_safe_text
 
 if TYPE_CHECKING:
@@ -83,6 +84,10 @@ _NO_MODEL_PROFILE = msg(
 )
 _CONTEXT_TOOLS = msg("tui.runtime_details.section.context_tools", fallback="Context management tools")
 _SUB_AGENT_TOOLS = msg("tui.runtime_details.section.sub_agent_tools", fallback="Sub-agent tools")
+_UNAVAILABLE_EXTENSIONS = msg("tui.runtime_details.section.unavailable_extensions", fallback="Unavailable extensions")
+_EXTENSION_CONTEXT = msg("tui.runtime_details.extension.context", fallback="Context each turn: {name}")
+_EXTENSION_BEFORE_TOOL = msg("tui.runtime_details.extension.before_tool", fallback="Before tool calls: {name}")
+_EXTENSION_AFTER_TOOL = msg("tui.runtime_details.extension.after_tool", fallback="After tool calls: {name}")
 _NO_TOOLS = msg(
     "tui.runtime_details.empty.tools",
     fallback="No built-in or sub-agent tools loaded.",
@@ -124,16 +129,7 @@ def _context_label(
 ) -> str:
     if tokens <= 0:
         return "-"
-    if tokens >= 1_000_000:
-        count = tokens / 1_000_000
-        unit = "m"
-    elif tokens >= 1_000:
-        count = tokens / 1_000
-        unit = "k"
-    else:
-        return render_message(_TOKEN_COUNT.bind(count_text=str(tokens)))
-    formatted = f"{count:.0f}" if count == int(count) else f"{count:.1f}"
-    return render_message(_TOKEN_COUNT.bind(count_text=f"{formatted}{unit}"))
+    return render_message(_TOKEN_COUNT.bind(count_text=format_compact_count(tokens)))
 
 
 def _bool_label(
@@ -305,6 +301,22 @@ class RuntimeDetailsDialog(BaseDialog[None]):
             sections.append(self._section(category, _unique(lines)))
         if web_providers and "web_search" not in self._details.builtin_tools:
             sections.append(self._section("web_search", web_providers))
+        for extension_id, extension in self._details.extensions.items():
+            lines = [
+                *_unique(extension.tools),
+                *(self._render_message(_EXTENSION_CONTEXT.bind(name=name)) for name in extension.contexts),
+                *(self._render_message(_EXTENSION_BEFORE_TOOL.bind(name=name)) for name in extension.before_tool_hooks),
+                *(self._render_message(_EXTENSION_AFTER_TOOL.bind(name=name)) for name in extension.after_tool_hooks),
+            ]
+            sections.append(self._section(sanitize_legacy_scalar(extension_id), lines))
+        if self._details.extension_failures:
+            # An extension's import error is its own text: it may hold terminal control sequences,
+            # and a reason may name a path whose undecodable bytes are lone surrogates.
+            lines = [
+                f"{sanitize_legacy_scalar(extension_id)}: {sanitize_legacy_block(surrogate_safe_text(reason))}"
+                for extension_id, reason in self._details.extension_failures.items()
+            ]
+            sections.append(self._section(_UNAVAILABLE_EXTENSIONS.bind(), lines))
         if self._details.context_tools:
             sections.append(self._section(_CONTEXT_TOOLS.bind(), _unique(self._details.context_tools)))
         if self._details.sub_agent_tools:

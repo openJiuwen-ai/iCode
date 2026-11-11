@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.models.turns import current_turn_start, turn_slices
@@ -176,6 +176,26 @@ class _ProgressiveMCPExposure:
             )
         return matches[0]
 
+    def _resolve_loaded(
+        self, requested_name: str, live_tools_by_name: Mapping[str, list[FunctionTool]]
+    ) -> FunctionTool | None:
+        """Resolve a name against the run's loaded clones of tools the catalog no longer lists.
+
+        A ``list_changed`` refresh replaces the catalog, so a server can drop a
+        tool this run already loaded; the clone is still the run's to unload.
+        A clone whose tool the catalog still lists answers only through the
+        catalog, so an ambiguous name never unloads one of its matches.
+        """
+        catalog = self._catalog()
+        matches = [
+            tools[0]
+            for name, tools in live_tools_by_name.items()
+            if name not in self._control_names
+            and (name == requested_name or self._matches_configured_name(tools[0], {requested_name}))
+            and not any(self._same_catalog_identity(tools[0], source) for source in catalog)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     def resume_source(self, local_name: str) -> FunctionTool | None:
         """Return a hidden catalog source for one persisted local call name."""
         match = next(
@@ -322,8 +342,11 @@ class _ProgressiveMCPExposure:
                 try:
                     source = self._resolve(requested_name)
                 except ToolExecutionException as exc:
-                    messages.append(f"Error: {exc}")
-                    continue
+                    loaded = self._resolve_loaded(requested_name, live_tools_by_name)
+                    if loaded is None:
+                        messages.append(f"Error: {exc}")
+                        continue
+                    source = loaded
                 if self._matches_configured_name(source, self._always_load_names):
                     messages.append(f"MCP tool '{source.name}' is configured in always_load and cannot be unloaded.")
                     continue

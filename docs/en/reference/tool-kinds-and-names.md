@@ -2,7 +2,7 @@
 
 iCode uses tool kinds (`tool_kind`) to group tools with similar purposes or sources, and tool names (`tool_name`) to identify individual tools. A kind can contain multiple tools. For example, `filesystem.write` includes `write_file` and `edit_file`.
 
-In the terminal user interface (TUI), enter `/runtime` in the input field, or click the tool count at the right end of the status bar above the input field, to open the "Runtime Details" dialog. The "Tools" tab lists built-in tools grouped by kind, then context management tools and sub-agent tools; the "MCP" tab lists MCP tool names grouped by server. Skill tools are not listed in the dialog. An agent can only call tools that are currently loaded.
+In the terminal user interface (TUI), enter `/runtime` in the input field, or click the tool count at the right end of the status bar above the input field, to open the "Runtime Details" dialog. The "Tools" tab lists built-in tools grouped by kind, then each extension's tools under its id, then context management tools and sub-agent tools; the "MCP" tab lists MCP tool names grouped by server. Skill tools are not listed in the dialog. An agent can only call tools that are currently loaded.
 
 ## Overview of kinds and names
 
@@ -22,6 +22,7 @@ In the terminal user interface (TUI), enter `/runtime` in the input field, or cl
 | `todo` | Yes | Maintain to-do items | `todo_write` |
 | `sub_agent` | No | Call sub-agents | Determined by the agent profile |
 | `mcp` | No | MCP server tools and on-demand loading controls | Determined by the MCP server and its configuration |
+| `extension.<extension id>` | No; enabled with `extensions` | Tools from a [Python extension](../guides/extensions/python-extensions.md) | Determined by the extension |
 | `skill` | No | Load skills, read resources, and run scripts | `load_skill`, `read_skill_resource`, `run_skill_script` |
 | `context` | No | Compact and query conversation context | `compress_context`, `recall_context`, `list_compressed_contexts` |
 
@@ -42,6 +43,12 @@ ACP sessions also provide `list_workspace_dirs`, which lists the primary working
 In the `sub_agent` kind, each tool corresponds to a callable sub-agent. Its tool name is determined by [`sub_agents.agents[].tool_name`](./agent-profile.md#sub_agents) in the agent profile. If this field is omitted, the sub-agent's profile name is used by default.
 
 An explicitly set `tool_name` must start with a letter or underscore, followed only by letters, digits, or underscores. When `tool_name` is omitted, the profile name is used as is, so the tool name may contain hyphens or start with a digit. Tool names must be unique within the same parent agent.
+
+## Extension tool names
+
+Each [Python extension](../guides/extensions/python-extensions.md) has its own kind, `extension.<extension id>`, such as `extension.tracker`, and its author chooses its tool names. An extension cannot use the name of an iCode tool, a sub-agent, a tool from one of the agent's MCP servers, or a tool of another extension the same agent uses: if one of its names is taken, the whole extension is left out. An extension tool named like an iCode tool on another system, such as `bash`, is shown as a plain tool call.
+
+In `approval.overrides` and a hook's `match.tool_kind`, `extension.<extension id>` is a valid kind whether or not the extension is installed.
 
 ## MCP tool names
 

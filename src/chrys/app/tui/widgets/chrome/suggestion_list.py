@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
     from chrys.foundation.i18n import MessageRef
 
-_SUGGESTIONS_NO_RESULTS = msg("tui.suggestions.no_results", fallback="No results")
+SUGGESTIONS_NO_RESULTS = msg("tui.suggestions.no_results", fallback="No results")
 
 _SUGGESTION_ROWS = 12
 # Prompt history shows its loading indicator only for loads slower than this,
@@ -158,6 +158,15 @@ class SuggestionList(Widget):
     def is_loading(self) -> bool:
         """Return whether the popup is waiting for its initial result set."""
         return self._loading
+
+    @property
+    def chosen_value(self) -> str | None:
+        """Return the highlighted row's value once the highlight left the first selectable row, else None."""
+        highlighted = self._highlighted
+        if highlighted is None or highlighted >= len(self._values):
+            return None
+        first = next((row for row, disabled in enumerate(self._disabled) if not disabled), None)
+        return None if highlighted == first else self._values[highlighted]
 
     def show_loading(self, mode: str, *, title: str = "") -> None:
         """Show an immediate, non-selectable loading state for *mode*."""
@@ -289,7 +298,7 @@ class SuggestionList(Widget):
         self._clear_items()
         if not items:
             if empty_text is None:
-                empty_text = self._render_message(_SUGGESTIONS_NO_RESULTS.bind())
+                empty_text = self._render_message(SUGGESTIONS_NO_RESULTS.bind())
             self._values.append(None)
             self._kinds.append("")
             self._contents.append(Content.styled(self._single_line(empty_text), "#888888"))

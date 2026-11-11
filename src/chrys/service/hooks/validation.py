@@ -27,7 +27,7 @@ import yaml
 
 from chrys.foundation.platform.runtime_paths import is_windows_store_python_stub
 from chrys.foundation.platform.script_commands import build_script_command
-from chrys.foundation.tool_kinds import TOOL_KINDS
+from chrys.foundation.tool_kinds import TOOL_KINDS, is_extension_kind
 from chrys.service.hooks.events import GATED_EVENTS, TOOL_EVENTS
 from chrys.service.hooks.loader import (
     HookEntryError,
@@ -45,6 +45,7 @@ from chrys.service.hooks.loader import (
     read_hooks_text,
     same_hooks_file,
 )
+from chrys.service.hooks.retired_shell_args import retired_arg_names_warning
 from chrys.service.hooks.runner import TEMPLATE_VARIABLES
 from chrys.service.profiles.agents.loader import scan_profile_dir
 from chrys.service.profiles.agents.registry import BUILTIN_PROFILE_NAMES
@@ -300,7 +301,8 @@ def _check_hook(check: _FileCheck, hook: HookConfig, profiles: frozenset[str]) -
     if tool_fields and hook.event not in TOOL_EVENTS:
         verb = "never matches" if len(tool_fields) == 1 else "never match"
         warn("match_never_fires", f"{' and '.join(tool_fields)} {verb} on {hook.event}, which has no tool")
-    if match.tool_kind is not None and match.tool_kind not in TOOL_KINDS:
+    # An extension's kind is valid whether or not it is installed, so a shared hooks file stays quiet.
+    if match.tool_kind is not None and match.tool_kind not in TOOL_KINDS and not is_extension_kind(match.tool_kind):
         warn(
             "unknown_tool_kind",
             f"match.tool_kind {match.tool_kind!r} is not a tool kind{_did_you_mean(match.tool_kind, TOOL_KINDS)}",
@@ -321,6 +323,8 @@ def _check_hook(check: _FileCheck, hook: HookConfig, profiles: frozenset[str]) -
         warn("durable_blocking", message)
     if (message := broad_before_tool_call_warning(hook)) is not None:
         warn("broad_before_tool_call", message)
+    if (message := retired_arg_names_warning(hook)) is not None:  # DEPRECATED with the retired names
+        warn("retired_shell_arg", message)
     run = hook.run
     known = ", ".join(f"${{{variable}}}" for variable in TEMPLATE_VARIABLES)
     for where, value in [("run.cwd", run.cwd), *((f"run.env.{key}", value) for key, value in run.env.items())]:
@@ -465,6 +469,15 @@ def _entry_lines(text: str) -> list[int]:
             if isinstance(key, yaml.ScalarNode) and key.value == "hooks" and isinstance(value, yaml.SequenceNode):
                 lines = [item.start_mark.line + 1 for item in value.value]
     return lines
+
+
+def hooks_config_problem(exc: HooksConfigError) -> str:
+    """What is wrong with a hooks file, for a report line: a parse failure quotes nothing from the file."""
+    cause = exc.__cause__
+    if not isinstance(cause, yaml.YAMLError):
+        return str(exc)
+    message, line, column = _yaml_problem(cause)
+    return f"{message} (line {line}, column {column})" if line is not None else message
 
 
 def _yaml_problem(exc: yaml.YAMLError) -> tuple[str, int | None, int | None]:

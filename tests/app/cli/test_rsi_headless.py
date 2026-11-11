@@ -12,6 +12,7 @@ import pytest
 from chrys.app.cli import rsi_headless
 from chrys.foundation.errors import ErrorKind
 from chrys.foundation.events.types import Error
+from chrys.foundation.models.failures import FailureFacts
 from chrys.orchestration.session_host import HeadlessRunError, HeadlessRunResult
 from chrys.service.rsi.case_runner import case_sessions_dir
 from chrys.service.rsi.dataset import RsiCase, ScriptExpect
@@ -84,7 +85,8 @@ async def test_case_sessions_are_kept_beside_the_agent_folder(tmp_path: Path, fa
 
 
 def _turn_failed(message: str, kind: ErrorKind) -> HeadlessRunError:
-    return HeadlessRunError(Error(code="executor_error", message=message, reason=kind.value))
+    facts = FailureFacts(kind=kind, retryable=False)
+    return HeadlessRunError(Error(code="executor_error", message=message, facts=facts))
 
 
 @pytest.mark.asyncio

@@ -34,7 +34,6 @@ from tests.support.tui_helpers import (
     fake_session_title,
     main_screen_state_at,
     make_session_handler,
-    stale_file_cache,
     status_text,
 )
 
@@ -530,7 +529,7 @@ def test_workspace_update_with_messages_updates_terminal_title_and_chdir_marker(
     screen = SimpleNamespace(
         _state=state,
         _set_workspace_cwd=workspace_cwds.append,
-        _suggestions=SimpleNamespace(file_cache=stale_file_cache("stale.py")),
+        _suggestions=SimpleNamespace(discard_file_index=lambda: None),
         query_one=query_one,
         _session_title=fake_session_title(set_terminal_title_for_cwd=terminal_title_cwds.append),
         _debug=lambda *_args: None,
@@ -595,7 +594,7 @@ def test_workspace_update_with_missing_cwd_does_not_change_shell_directory(tmp_p
     screen = SimpleNamespace(
         _state=state,
         _set_workspace_cwd=workspace_cwds.append,
-        _suggestions=SimpleNamespace(file_cache=stale_file_cache("stale.py")),
+        _suggestions=SimpleNamespace(discard_file_index=lambda: None),
         query_one=query_one,
         _session_title=fake_session_title(set_terminal_title_for_cwd=terminal_title_cwds.append),
         _debug=lambda *_args: None,

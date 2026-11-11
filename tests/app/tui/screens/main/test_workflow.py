@@ -72,7 +72,11 @@ async def test_mode_drafts_selection_confirmation_and_keyboard(tmp_path: Path, m
             i for i, row in enumerate(main._workflow.browser._picker.selection.rows) if row.workflow_id == "first"
         )
         await pilot.press("j", "k", "enter")
-        await wait_for(lambda: isinstance(app.screen, WorkflowConfirmDialog), pilot=pilot, timeout=ENGINE_TURN_TIMEOUT)
+        await wait_for(
+            lambda: isinstance(app.screen, WorkflowConfirmDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
+        )
         dialog = app.screen
         assert isinstance(dialog, WorkflowConfirmDialog)
         assert dialog.preview.source.workflow_id == "first"  # The module has not run yet.
@@ -211,7 +215,7 @@ async def test_start_latch_reply_correlation_covered_projection_and_transcripts(
         graph = panel.query_one(WorkflowGraph)
         node_id = next(node["id"] for node in panel.preview.manifest["nodes"] if node["kind"] == "agent")
         main._workflow.session_view.open_node(node_id)
-        await wait_for(lambda: isinstance(app.screen, WorkflowNodeDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, WorkflowNodeDialog) and app.screen.is_mounted, pilot=pilot)
         dialog = app.screen
         assert isinstance(dialog, WorkflowNodeDialog)
         restyle = create_autospec(graph._node_spans, side_effect=graph._node_spans)
@@ -613,7 +617,12 @@ async def test_empty_workflow_input_lease_guards_and_escape_cancel(
         await wait_for(lambda: app.screen is main, pilot=pilot)
         await pilot.press("escape")
         await wait_for(
-            lambda: isinstance(app.screen, ConfirmDialog) and bool(app.screen.query("#confirm-yes")), pilot=pilot
+            lambda: (
+                isinstance(app.screen, ConfirmDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query("#confirm-yes"))
+            ),
+            pilot=pilot,
         )
         await click_when_settled(pilot, "#confirm-yes")
         await wait_for(lambda: len(cancellations) == 1, pilot=pilot)

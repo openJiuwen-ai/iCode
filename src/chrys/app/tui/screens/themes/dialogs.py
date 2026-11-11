@@ -137,6 +137,8 @@ class _PickerModal(_DismissableModal):
         return self._picker
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         self._update_confirm_state()
         if self._raw:
             self.query_one(Input).focus()

@@ -81,7 +81,7 @@ def waits_after(entry: Widget | None) -> bool:
     """Whether a running turn whose last transcript entry is *entry* waits with nothing on screen moving.
 
     It does after its prompt, complete thinking or text between tool calls, a compaction that ended, and notices.
-    Streaming text, open or running along a folded row, an answer that may be the last, and a tool group whose
+    Streaming text, a folded thinking row showing progress, an answer that may be the last, and a tool group whose
     title still runs show it is moving; errors, retries and interruptions say why it waits themselves.
     """
     if isinstance(entry, (UserMessage, SystemMessage, ContextFoldWidget)):

@@ -11,7 +11,8 @@ ones only old sessions still carry.
 - Every key-shaped string literal under ``src/chrys/service/llm`` (a provider
   namespace or a ``_chrys_`` stamp) is listed exactly, wherever its module
   moves: renaming or dropping one fails here.  Request-local markers, which
-  are removed before anything is sent or stored, are listed apart.
+  are removed before anything is sent or stored, and the SDK modules a client
+  imports by name are listed apart.
 - Plain metadata keys and marker values are recorded by the goldens, which
   compare every ``additional_properties`` exactly; the ones no golden
   records must still appear as literals.
@@ -52,6 +53,9 @@ REQUEST_LOCAL_MARKERS = frozenset(
     }
 )
 
+# SDK modules a client imports by name: never sent or stored.
+IMPORTED_MODULES = frozenset({"openai.resources", "openai.resources.responses"})
+
 # Stored names that are ordinary words and that no golden records by name, so
 # only their presence is checked.  ``_attribution`` is read from old sessions
 # and written by nothing; the goldens record its effects (the id a stored
@@ -84,7 +88,7 @@ def _string_literals() -> set[str]:
 
 def test_key_shaped_literals_are_exactly_the_recorded_set() -> None:
     key_shaped = {literal for literal in _string_literals() if _KEY_SHAPED.fullmatch(literal)}
-    assert key_shaped - REQUEST_LOCAL_MARKERS == KEY_SHAPED_LITERALS
+    assert key_shaped - REQUEST_LOCAL_MARKERS - IMPORTED_MODULES == KEY_SHAPED_LITERALS
 
 
 def test_unrecorded_plain_names_are_still_written_and_read() -> None:

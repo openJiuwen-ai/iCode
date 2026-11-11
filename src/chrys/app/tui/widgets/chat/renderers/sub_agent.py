@@ -62,7 +62,11 @@ from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.tool_kinds import KIND_SLEEP, KIND_SUB_AGENT
 from chrys.foundation.tool_result_metadata import TOOL_INTERRUPTED_METADATA_KEY
-from chrys.foundation.util.sub_agent_context import SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY
+from chrys.foundation.util.sub_agent_context import (
+    SUB_AGENT_PROGRESS_METADATA_KEY,
+    SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY,
+    SubAgentProgressTotals,
+)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -546,7 +550,10 @@ class SubAgentToolCall(BaseToolCard):
         return f"\u2717 {self.tool_name}"
 
     def _render_subtitle(self) -> str:
-        tool_calls = self._total_inner_calls if self.status != "running" else self._progress_tool_calls
+        tool_calls = self._progress_tool_calls if self.status == "running" else self._total_inner_calls
+        if not tool_calls and self.status != "running":
+            # A restored card saw none of the run's tool calls: it shows the persisted count.
+            tool_calls = self._progress_tool_calls
         parts = invocation_progress_parts(
             tool_calls=tool_calls,
             context_tokens=self._progress_ctx_tokens,
@@ -1161,6 +1168,7 @@ class SubAgentToolCall(BaseToolCard):
         self.result_text = result
         self.duration_ms = duration_ms
         self.status = "complete"
+        self._adopt_persisted_progress()
         self._finish_transcript(result, "complete")
         self._drop_inner_call_tracking()
         self._clear_transient_state()
@@ -1172,6 +1180,19 @@ class SubAgentToolCall(BaseToolCard):
             self._update_title()
         self._show_completion_controls()
 
+    def _adopt_persisted_progress(self) -> None:
+        """Take each counter the card never saw live from the run's totals its parent result keeps.
+
+        A card restored from a saved session saw none of them. A live card keeps
+        every counter it saw, and takes only one that stayed at zero.
+        """
+        totals = SubAgentProgressTotals.from_metadata((self.metadata or {}).get(SUB_AGENT_PROGRESS_METADATA_KEY))
+        self._progress_tool_calls = self._progress_tool_calls or totals.tool_calls
+        self._progress_ctx_tokens = self._progress_ctx_tokens or totals.context_tokens
+        self._progress_total_usage_tokens = self._progress_total_usage_tokens or totals.usage_tokens
+        self._usage_unreported_attempts = self._usage_unreported_attempts or totals.unreported_attempts
+        self._compaction_count = self._compaction_count or totals.compactions
+
     def set_error(self, error: str) -> None:
         """Mark this sub-agent call as failed."""
         self._set_error(error, int((time.monotonic() - self._start_time) * 1000))
@@ -1181,6 +1202,7 @@ class SubAgentToolCall(BaseToolCard):
         self.result_text = error
         self.duration_ms = duration_ms
         self.status = "error"
+        self._adopt_persisted_progress()
         self._finish_transcript(error, "error")
         self._drop_inner_call_tracking()
         self._clear_transient_state()

@@ -71,6 +71,7 @@ def assemble_agent_engine(
     allow_user_interaction: bool = True,
     surface: SessionSurface | None = None,
     record_hook_runs: bool = False,
+    pause_failed_sub_agents: bool = True,
 ) -> AgentEngine:
     """Build the owners and inject the engine's event-routing facade.
 
@@ -78,6 +79,8 @@ def assemble_agent_engine(
     record it on their session. Production entry points always pass it.
     *record_hook_runs* keeps every main-session hook run since the engine was
     built, with its input and output, for the TUI's Hooks panel.
+    *pause_failed_sub_agents* says whether the frontend can answer a failed
+    sub-agent's Retry or Abort; without it a failed sub-agent ends at once.
     """
     bus = event_bus
     if loaded_settings is not None and settings is not None and settings is not loaded_settings.settings:
@@ -92,6 +95,7 @@ def assemble_agent_engine(
         workspace=initial_workspace,
         approval_mode=initial_approval_mode or ApprovalMode(settings_handle.settings.default_approval_mode),
         surface=surface,
+        pause_failed_sub_agents=pause_failed_sub_agents,
     )
     current = CurrentAgent()
     on_successful_turn: Callable[[], None] = (
@@ -99,9 +103,9 @@ def assemble_agent_engine(
     )
     on_turn_started: Callable[[], None] = on_turn_started if on_turn_started is not None else _noop_turn_started
     turn_state = TurnRuntimeState(lease=ExecutionLease(bus=bus))
-    permits = LifecyclePermits(turn_state=turn_state, session=session)
-    recorder = trajectory_recorder.TrajectoryRecorder()
     fsm = EngineStateMachine()
+    permits = LifecyclePermits(turn_state=turn_state, session=session, turn_executing=fsm.is_running)
+    recorder = trajectory_recorder.TrajectoryRecorder()
     history = SessionHistoryManager()
     workspace_change_tracker = WorkspaceChangeTracker()
     usage_publisher = UsagePublisher(bus=bus, session=session, current=current)

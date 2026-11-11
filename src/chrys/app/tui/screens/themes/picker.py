@@ -17,6 +17,7 @@ from chrys.app.tui.binding_display import CLOSE_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.theme_loader import theme_is_read_only
+from chrys.app.tui.widgets.choice_list import ChoiceList
 from chrys.foundation.i18n import msg
 
 from . import messages as M
@@ -80,9 +81,11 @@ class ThemesScreen(BaseDialog[str | None]):
     def compose(self) -> ComposeResult:
         with VerticalGroup(id="container") as container:
             container.border_title = render_str(widget_localizer(self), _THEMES.bind())
-            yield OptionList()
+            yield ChoiceList()
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         from chrys.app.tui.app import ChrysApp
 
         if isinstance(self.app, ChrysApp):
@@ -110,6 +113,10 @@ class ThemesScreen(BaseDialog[str | None]):
     @on(OptionList.OptionHighlighted)
     def _on_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         """Preview theme on highlight."""
+        # A move typed right before Enter or Escape reports its row after they closed the picker.
+        # Previewing it then would replace the choice or the restored theme, and save it.
+        if self._dismissed:
+            return
         if event.option.id and event.option.id != _MANAGE_ID:
             self.app.theme = event.option.id
 
@@ -130,16 +137,14 @@ class ThemesScreen(BaseDialog[str | None]):
             self._last_selected = event.option.id
             self._last_selected_time = now
 
-    def on_key(self, event) -> None:
-        """Enter key applies current theme and dismisses."""
-        if event.key == "enter":
-            event.stop()
-            event.prevent_default()
-            options = self.query_one(OptionList)
-            if options.highlighted is not None and options.get_option_at_index(options.highlighted).id == _MANAGE_ID:
-                self._manage()
-            else:
-                self._safe_dismiss(self.app.theme)
+    def action_choose(self) -> None:
+        """Enter applies the highlighted theme and dismisses, or opens theme management."""
+        option = self.query_one(OptionList).highlighted_option
+        if option is not None and option.id == _MANAGE_ID:
+            self._manage()
+        else:
+            # The row, not the preview: a move just before Enter has not reported its row yet.
+            self._safe_dismiss(option.id if option is not None and option.id else self.app.theme)
 
     def action_cancel(self) -> None:
         self._safe_dismiss(None, restore_original=True)

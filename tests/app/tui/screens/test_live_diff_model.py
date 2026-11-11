@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from chrys.app.tui.screens.diff import DiffFileEntry
 from chrys.app.tui.screens.main.live_diff import (
     LiveFileMutation,
@@ -110,6 +112,22 @@ def test_mutation_op_for_live_op_defaults_unknown_to_modify() -> None:
     assert mutation_op_for_live_op("move") is MutationOp.MOVE
     assert mutation_op_for_live_op("unknown") is MutationOp.MODIFY
     assert mutation_op_for_live_op(None) is MutationOp.MODIFY
+
+
+def test_live_change_time_survives_collapsing_and_session_overlay() -> None:
+    first = replace(_live("original", "middle", "modify"), last_changed_at=10)
+    second = replace(_live("middle", "final", "modify"), last_changed_at=20)
+    merged = merge_live_mutation(first, second)
+    assert merged is not None
+    assert merged.last_changed_at == 20
+
+    live = build_live_diff_entries({"/repo/a.py": merged}, "/repo")[0]
+    assert live.last_changed_at == 20
+    for persisted_time in (10, 30):
+        persisted = replace(_entry("/repo/a.py", "original", "middle"), last_changed_at=persisted_time)
+        net = merge_live_entries_into_all([persisted], [live])[0]
+        assert net.last_changed_at == max(persisted_time, 20)
+        assert (net.before_text, net.after_text) == ("original", "final")
 
 
 def test_build_live_diff_entries_filters_invisible_entries_and_sorts() -> None:

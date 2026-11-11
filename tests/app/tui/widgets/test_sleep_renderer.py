@@ -22,6 +22,8 @@ from chrys.service.session.message_metadata import TOOL_RESULT_METADATA_KEY
 from tests.support.tui_helpers import LocalizedWidgetApp
 from tests.support.waiting import wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def _wait_for_nested_sleep(card: SubAgentToolCall, call_id: str, pilot: object) -> SleepToolCall:
     surface = card._tool_view_output_widgets()[0]

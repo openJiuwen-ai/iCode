@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from textual.message import Message
@@ -14,6 +16,7 @@ from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.widgets.editor.highlighter import MarkdownHighlightedTextArea
 from chrys.app.tui.widgets.editor.keymaps import DEFAULT_EDITOR_KEYMAP_REGISTRY, EditorKeymapRegistry
 from chrys.app.tui.widgets.editor.types import (
+    EDITOR_MODE_CYCLE,
     MESSAGE_EDITOR_CHARACTER_LIMIT_STATUS,
     MESSAGE_EDITOR_MAX_CHARACTERS,
     EditorBufferSnapshot,
@@ -87,10 +90,14 @@ class MessageEditor(MarkdownHighlightedTextArea):
         mode: EditorMode | str = EditorMode.STANDARD,
         max_paste_tokens: int | None = MESSAGE_EDITOR_PASTE_MAX_TOKENS,
         registry: EditorKeymapRegistry | None = None,
+        cycles_modes: bool = False,
         **kwargs: Any,
     ) -> None:
+        """With *cycles_modes*, F3 switches this editor to the next keymap itself, as ``cycle_mode`` does;
+        otherwise F3 reaches the host as a ``CYCLE_MODE`` intent."""
         if len(text) > MESSAGE_EDITOR_MAX_CHARACTERS:
             raise ValueError(f"Message editor text exceeds {MESSAGE_EDITOR_MAX_CHARACTERS:,} characters")
+        self._cycles_modes = cycles_modes
         self._registry = registry or DEFAULT_EDITOR_KEYMAP_REGISTRY
         self._keymap: EditorKeymap | None = self._registry.create(mode)
         self._initial_cursor_location = cursor_location
@@ -137,6 +144,11 @@ class MessageEditor(MarkdownHighlightedTextArea):
         keymap.normalize_cursor(self)
         self._set_status("")
         self.post_message(self.ModeChanged(keymap.mode))
+
+    def cycle_mode(self) -> None:
+        """Switch to the keymap after the current one in ``EDITOR_MODE_CYCLE``."""
+        position = EDITOR_MODE_CYCLE.index(self.mode)
+        self.set_mode(EDITOR_MODE_CYCLE[(position + 1) % len(EDITOR_MODE_CYCLE)])
 
     def snapshot(self) -> EditorBufferSnapshot:
         """Capture editor text and cursor without changing either."""
@@ -197,7 +209,11 @@ class MessageEditor(MarkdownHighlightedTextArea):
         if result.consumed:
             event.prevent_default()
             event.stop()
-            if result.intent is not EditorIntent.NONE:
+            if result.intent is EditorIntent.CYCLE_MODE and self._cycles_modes:
+                # Switched before the next key is read. Keys typed while the loop was busy are already
+                # queued here behind F3, and a host switching on the intent would get to it only after them.
+                self.cycle_mode()
+            elif result.intent is not EditorIntent.NONE:
                 self.emit_editor_intent(result.intent, result.status, warning=result.warning)
             return
 
@@ -315,9 +331,14 @@ class MessageEditor(MarkdownHighlightedTextArea):
         return self.get_text_range(source_range.start, source_range.end)
 
     def replace_editor_range(self, source_range: EditorTextRange, text: str) -> None:
-        self.history.checkpoint()
-        self.replace(text, source_range.start, source_range.end, maintain_selection_offset=False)
-        self.history.checkpoint()
+        self.replace_editor_ranges([(source_range, text)])
+
+    def replace_editor_ranges(self, replacements: Sequence[tuple[EditorTextRange, str]]) -> None:
+        """Apply document-ordered, non-overlapping replacements as one undo step."""
+        self._edit_as_one_step(
+            partial(self.replace, text, source_range.start, source_range.end, maintain_selection_offset=False)
+            for source_range, text in reversed(replacements)
+        )
         self.notify_editor_activity()
 
     def delete_editor_range(self, source_range: EditorTextRange) -> None:
@@ -325,6 +346,9 @@ class MessageEditor(MarkdownHighlightedTextArea):
         self.delete(source_range.start, source_range.end, maintain_selection_offset=False)
         self.history.checkpoint()
         self.notify_editor_activity()
+
+    def editor_unit_spans(self) -> list[tuple[int, int]]:
+        return []
 
     def editor_undo(self) -> None:
         self.action_undo()

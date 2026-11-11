@@ -40,6 +40,7 @@ from chrys.foundation.models.mutation_scope import MutationScope, WorkflowRunSco
 from chrys.service.mutations.git_state import entry_display_path
 from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.types import (
+    FileEditSnapshotRef,
     FileHashDiff,
     FileMutation,
     FileSnapshot,
@@ -221,6 +222,25 @@ class MutationTracker:
             self._last_known_hash.clear()
             self._last_known_skip.clear()
 
+    def has_turn_work(self, turn_id: int) -> bool:
+        """Whether a Chat turn owns mutations, incomplete detection, or snapshots."""
+        with self._state_lock:
+            return any(
+                turn.turn_id == turn_id and (turn.mutations or turn.detection_truncated) for turn in self._log.turns
+            ) or any(snapshot.period_index == turn_id for snapshot in self._log.snapshots.values())
+
+    def discard_empty_turn(self, turn_id: int) -> None:
+        """Forget the last no-work Chat turn before its ordinal is reused."""
+        with self._state_lock:
+            turn = self.current_turn
+            if turn is None or turn.turn_id != turn_id:
+                return
+            if self.has_turn_work(turn_id):
+                raise ValueError("Cannot discard a turn containing file work")
+            self._log.periods.pop()
+            self._last_known_hash.clear()
+            self._last_known_skip.clear()
+
     def mark_detection_truncated(self) -> None:
         """Record that the active turn's implicit detection was incomplete."""
         with self._state_lock:
@@ -369,11 +389,20 @@ class MutationTracker:
 
             return mutation
 
-    def record_after(self, mutation: FileMutation) -> None:
+    def settle_unexecuted(self, mutation: FileMutation) -> None:
+        """Close a file-tool row whose tool never ran: after equals before."""
+        with self._state_lock:
+            mutation.after_hash = mutation.before_hash
+            mutation.after_skip = mutation.before_skip
+            mutation.settled = True
+
+    def record_after(self, mutation: FileMutation, *, settled: bool = False) -> None:
         """Snapshot the file AFTER mutation and store the hash.
 
         Called after a tool (write_file, edit_file) completes to
         capture the post-mutation content for session replay diffs.
+        *settled* only once the tool has returned, so nothing can still
+        write the endpoint (see :attr:`FileMutation.settled`).
 
         Also updates ``_last_known_hash`` so subsequent mutations to
         the same file within this turn get an accurate ``before_hash``.
@@ -382,6 +411,7 @@ class MutationTracker:
             after = self._store.save_blob(mutation.path)
             mutation.after_hash = after.content_hash
             mutation.after_skip = after.skip_reason
+            mutation.settled = settled
             # A detector's DELETE is a candidate, not proof of absence:
             # refs can move without touching the worktree, and filesystem
             # probes can fail. Only an observed missing endpoint is deleted.
@@ -841,21 +871,22 @@ class MutationTracker:
                     results.append((before_text, after_text))
             return results
 
-    def get_file_edit_snapshot_refs(self) -> list[FileHashDiff]:
+    def get_file_edit_snapshot_refs(self) -> list[FileEditSnapshotRef]:
         """Return before/after blob hashes for all file-tool mutations, in order."""
         with self._state_lock:
             _file_sources = {MutationSource.WRITE_FILE, MutationSource.EDIT_FILE}
-            results: list[FileHashDiff] = []
+            results: list[FileEditSnapshotRef] = []
             for turn in self._log.periods:
                 for m in turn.mutations:
                     if m.source not in _file_sources:
                         continue
                     results.append(
-                        FileHashDiff(
+                        FileEditSnapshotRef(
                             before=m.before_hash,
                             after=m.after_hash,
                             before_skip=m.before_skip,
                             after_skip=m.after_skip,
+                            tool_operation_id=m.tool_operation_id,
                         )
                     )
             return results
@@ -867,9 +898,11 @@ class MutationTracker:
 
         Caller must hold ``_state_lock``.
 
-        Safety filters run AFTER earliest-wins selection; every filtered
-        path is reported via :attr:`RollbackPlan.exclusions` (never
-        silent):
+        Paths whose rows all prove no change (equal hashes, no skips or
+        moves) are omitted outright, without a safety exclusion.
+
+        Safety filters run AFTER earliest-wins selection; every unsafe
+        path is reported via :attr:`RollbackPlan.exclusions`:
 
         1. **Provenance** — a path touched by a ``FOREIGN`` row, or by a
            ``contested`` row, is excluded outright (poisoning-style):
@@ -893,10 +926,15 @@ class MutationTracker:
            that escaped content.
         """
         earliest: dict[str, FileSnapshot] = {}
+        changed: set[str] = set()
         foreign_touched: set[str] = set()
         contested: set[str] = set()
         for turn in rolled_back:
             for m in turn.mutations:
+                if not m.proves_no_change:
+                    changed.add(m.path)
+                    if m.old_path is not None:
+                        changed.add(m.old_path)
                 if m.provenance is MutationProvenance.FOREIGN:
                     foreign_touched.add(m.path)
                     if m.old_path:
@@ -944,6 +982,8 @@ class MutationTracker:
         entries: list[tuple[str, FileSnapshot]] = []
         exclusions: list[tuple[str, RollbackExclusionReason]] = []
         for path, snap in earliest.items():
+            if path not in changed:
+                continue
             if path in foreign_touched:
                 exclusions.append((path, RollbackExclusionReason.FOREIGN))
             elif path in contested:

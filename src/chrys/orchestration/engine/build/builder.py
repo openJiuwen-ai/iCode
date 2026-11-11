@@ -45,7 +45,8 @@ from chrys.foundation.i18n import DisplayBlock, msg
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.retry import RetryAttemptInfo
-from chrys.foundation.tool_kinds import KIND_ASK_USER, KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
+from chrys.foundation.util.imports import import_off_loop
 from chrys.kernel import Agent, LoopRecorder
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.invoker.origin import InvocationPublishers
@@ -69,10 +70,7 @@ from chrys.orchestration.sub_agents.registration import (
     sub_agent_registration_state,
     sub_agent_skip_reason,
 )
-from chrys.service.agent_middleware import (
-    ResponseBatchCounter,
-    TodoMiddleware,
-)
+from chrys.service.agent_middleware import ResponseBatchCounter
 from chrys.service.agent_middleware.injection import InjectionMiddleware
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
@@ -82,7 +80,6 @@ from chrys.service.context.compaction.spill import COMPACTIONS_DIR_NAME
 from chrys.service.context.memory_loader import load_memory_content, memory_truncated_warning
 from chrys.service.llm.clients import create_client, effective_model_base_url
 from chrys.service.llm.route_sessions import derive_llm_route_session_id
-from chrys.service.profiles.agents.schema import ALWAYS_LOADED_TOOL_CATEGORIES
 from chrys.service.profiles.models.options import (
     effective_chat_options,
     protected_chat_option_keys_warning_structured,
@@ -269,6 +266,7 @@ async def build_agent(
     allow_user_interaction: bool = True,
     shows_answer_text: bool = True,
     sub_agent_shows_answer_text: bool = True,
+    pause_failed_sub_agents: bool = True,
 ) -> AgentBuildResult:
     """Build an ``Agent``, ``TurnBindings``, and all supporting infrastructure.
 
@@ -307,6 +305,9 @@ async def build_agent(
         joins the session totals.
     on_compaction:
         Callback for intra-turn tool compaction events.
+    pause_failed_sub_agents:
+        Whether a failed sub-agent waits for the user's Retry or Abort; only
+        where the user can be asked. Otherwise it ends with its error at once.
 
     Returns
     -------
@@ -489,54 +490,39 @@ async def build_agent(
         await prepared.own_or_release(client.aclose)
 
         # Build tools from profile's builtin categories
-        from chrys.service.tools.builtins.web.build import assemble_web_tools
-        from chrys.service.tools.registry import ToolRegistry
-
         await _progress(AGENT_LOAD_PHASE_TOOLS, "Loading built-in tools", status=AGENT_LOAD_STATUS_RUNNING)
-        tool_registry = ToolRegistry(vision_enabled=active_profile.vision)
-        builtin_categories = profile.tools.builtins or []
-        web_tools = assemble_web_tools(
-            builtin_categories,
-            settings,
-            profile.tools.web_search,
-            profile.tools.web_fetch,
-            chat_options=chat_options,
-            agent=profile.name,
-            model_profile_id=active_profile.id,
-            session_id=session_id,
-        )
-        tool_registry.load_builtins(
-            builtin_categories,
+        # The tool implementations (the web tools bring in HTML parsing and conversion) load
+        # with the first build of a run, so they are imported off the event loop.
+        import chrys.service.tools.packs as tool_packs
+
+        await import_off_loop(*tool_packs.IMPLEMENTATION_MODULES)
+
+        builtin_categories = profile.tools.builtins
+        tool_build = tool_packs.ToolBuild(
+            tools=profile.tools,
+            agent_name=profile.name,
             runtime=runtime,
             settings=settings,
-            shell_filter_config=profile.tools.shell_filter,
             session_id=session_id,
             session_dir=effective_session_dir,
-            web=web_tools,
+            model_profile_id=active_profile.id,
+            chat_options=chat_options,
+            vision=active_profile.vision,
+            allow_user_interaction=allow_user_interaction,
             background_tasks=background_tasks,
             # An interactive session keeps them across turns; a headless run stops them when it ends.
             session_wide_background=allow_user_interaction,
+            todo_tracker=todo_tracker,
+            event_bus=bus,
         )
-        # Published once the web tools are decided, like the skill and memory warnings
+        assembled_tools = await tool_packs.assemble_tools(tool_build)
+        web_tools = assembled_tools.web
+        # Published once the local tools are decided, like the skill and memory warnings
         # further on; a later step can still fail the whole build.
-        for warning in web_tools.warnings:
+        for warning in assembled_tools.warnings:
             await bus.publish(warning)
-        from chrys.service.vision import filter_image_tools
-
-        tools = filter_image_tools(tool_registry.get_all(), vision_enabled=active_profile.vision)
-        if not allow_user_interaction:
-            tools = [tool for tool in tools if get_tool_kind(tool) != KIND_ASK_USER]
-        builtin_tools: dict[str, list[str]] = {}
-        for category in dict.fromkeys([*builtin_categories, *ALWAYS_LOADED_TOOL_CATEGORIES]):
-            names = [
-                tool.name
-                for tool in filter_image_tools(
-                    tool_registry.get_by_category(category), vision_enabled=active_profile.vision
-                )
-                if allow_user_interaction or get_tool_kind(tool) != KIND_ASK_USER
-            ]
-            if names:
-                builtin_tools[category] = names
+        tools = list(assembled_tools.tools)
+        builtin_tools = assembled_tools.by_pack
         builtin_tool_count = len(tools)
         await _progress(
             AGENT_LOAD_PHASE_TOOLS,
@@ -596,8 +582,9 @@ async def build_agent(
                 max_transient_retries=transient_retries,
                 tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
                 allow_user_interaction=allow_user_interaction,
-                # A headless run shows no card to pause on, so a failed child ends with its error.
-                human_failure_decisions=allow_user_interaction,
+                # A headless run, or an ACP client that can't answer a paused child,
+                # shows no card to pause on, so a failed child ends with its error.
+                human_failure_decisions=allow_user_interaction and pause_failed_sub_agents,
                 shows_answer_text=sub_agent_shows_answer_text,
             )
             prepared.own(sub_agent_tools.cleanup)
@@ -720,6 +707,20 @@ async def build_agent(
             tools.extend(mcp_tools)
             warn_if_tool_loading_unbinds_thinking(profile, active_profile, chat_options, mcp_tools_by_server)
 
+        # Extensions come last: their tools yield every name the agent's other tools take.
+        extensions = await tool_packs.assemble_extensions(
+            tool_build,
+            profile.extensions,
+            taken=[
+                *(tool.name for tool in tools),
+                *web_tools.hosted,
+                *(mcp_adapter.tool_namespace if mcp_adapter is not None else ()),
+            ],
+        )
+        for warning in extensions.warnings:
+            await bus.publish(warning)
+        tools.extend(extensions.tools)
+
         # Build skills provider (if configured)
         await _progress(AGENT_LOAD_PHASE_SKILLS, "Loading skills", status=AGENT_LOAD_STATUS_RUNNING)
         context_providers = []
@@ -775,6 +776,8 @@ async def build_agent(
                 selection_source=model_selection.source,
             ),
             builtin_tools=builtin_tools,
+            extensions=extensions.details,
+            extension_failures=extensions.unavailable,
             web_search_providers=web_tools.provider_origins(),
             context_tools=context_tool_names,
             sub_agent_tools=sub_agent_tool_names,
@@ -793,7 +796,7 @@ async def build_agent(
             message_hasher=serialized_message_payload,
         )
 
-        # Todo wiring gates on the profile category; the tracker's own
+        # The todo reminder gates on the profile category; the tracker's own
         # lifecycle (create/hydrate/save) is profile-independent and engine-owned.
         todo_enabled = "todo" in builtin_categories and todo_tracker is not None
 
@@ -819,6 +822,7 @@ async def build_agent(
             ),
             mcp_instructions_provider=mcp_adapter.render_instructions_reminder if mcp_adapter is not None else None,
             file_change_provider=file_change_provider,
+            extension_contexts=extensions.contexts,
         )
 
         # Wire up Phase 4 LAST_WORDS generator for the main agent.  Sub-agents
@@ -840,6 +844,7 @@ async def build_agent(
                     session_id=session_id,
                     display_message=_RETRY_LAST_WORDS_COMPACTION.bind(reason=DisplayBlock(info.reason)),
                     detail=info.reason,
+                    facts=info.facts,
                 )
             )
 
@@ -945,6 +950,7 @@ async def build_agent(
                     [effective_session_dir / COMPACTIONS_DIR_NAME] if effective_session_dir else None
                 ),
                 turn_context=turn_context,
+                extension_hooks=extensions.tool_hooks,
             ),
         )
         ask_user_middleware = create_ask_user(
@@ -956,9 +962,6 @@ async def build_agent(
                 timeout_seconds=settings.ask_user_timeout_seconds,
             ),
         )
-        extra_function_middleware: list[Any] = []
-        if todo_enabled and todo_tracker is not None:
-            extra_function_middleware.append(TodoMiddleware(bus, todo_tracker, session_id))
         executor = TurnBindings(
             conversation=conversation,
             agent=agent,
@@ -981,7 +984,6 @@ async def build_agent(
             profile_name=profile.name,
             workspace_cwd=runtime.cwd,
             serialize_implicit_windows=serialize_implicit_windows,
-            extra_function_middleware=extra_function_middleware,
             run_cycle_start_hooks=(web_tools.begin_pass,),
             hosted_commits_probe=validation_middleware.hosted_commits_observed,
             hosted_commits_in_flight_probe=validation_middleware.hosted_commits_in_flight,
@@ -990,6 +992,7 @@ async def build_agent(
             tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
             background_tasks=background_tasks,
             shows_answer_text=shows_answer_text,
+            extension_hooks=extensions.tool_hooks,
         )
 
         return AgentBuildResult(

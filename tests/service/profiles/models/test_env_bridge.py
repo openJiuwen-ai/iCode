@@ -5,22 +5,28 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 import yaml
 
 from chrys.foundation.config.runtime_pointer import get_model_pointer
 from chrys.foundation.config.spec import Source
+from chrys.service.llm.clients import _build_profile_http_client
 from chrys.service.profiles.models.env_bridge import (
     activate_model_profile,
     get_active_profile_id,
     get_global_default_profile_id,
     is_valid_no_proxy,
+    is_valid_proxy_url,
     sanitize_no_proxy_env,
+    sanitize_proxy_url_env,
     set_global_default_profile_id,
 )
+from chrys.service.profiles.models.schema import ModelProfile
 
 
 @pytest.fixture(autouse=True)
@@ -225,3 +231,154 @@ def test_sanitize_no_proxy_env_scrubs_both_when_both_bad(monkeypatch: pytest.Mon
     assert scrubbed == {"NO_PROXY": "U\tBAD", "no_proxy": "l\tbad"}
     assert "NO_PROXY" not in os.environ
     assert "no_proxy" not in os.environ
+
+
+# ── Proxy address validation / scrub ────────────────────────────────
+
+_PROXY_URL_ENV_VARS = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+
+
+def _clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop every ``*_proxy`` variable: urllib reads any of them, in either casing."""
+    for name in list(os.environ):
+        if name.lower().endswith("_proxy"):
+            monkeypatch.delenv(name)
+
+
+async def _constructs(build: Callable[[], httpx.Client | httpx.AsyncClient]) -> bool:
+    try:
+        client = build()
+    except httpx.InvalidURL, ValueError:
+        return False
+    if isinstance(client, httpx.Client):
+        client.close()
+    else:
+        await client.aclose()
+    return True
+
+
+def _profile(provider: str, *, bypass_proxy: bool) -> ModelProfile:
+    return ModelProfile(
+        id="p",
+        name="p",
+        provider=provider,
+        model_id="test-model",
+        api_key="sk-test",
+        base_url="https://provider.example",
+        bypass_proxy=bypass_proxy,
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "socks://127.0.0.1:7897",
+        "socks://127.0.0.1:7897/",
+        "socks4://127.0.0.1:1080",
+        "socks4a://127.0.0.1:1080",
+        "ftp://127.0.0.1:21",
+        "http://[::1",
+        "127.0.0.1:abc",
+        " http://127.0.0.1:8080",
+        "http://127.0.0.1:8080",
+        "https://127.0.0.1:8443",
+        "socks5://127.0.0.1:1080",
+        "socks5h://127.0.0.1:1080",
+        "SOCKS5H://127.0.0.1:1080",
+        "127.0.0.1:7897",
+        "http://user:pass@127.0.0.1:8080",
+    ],
+)
+async def test_is_valid_proxy_url_matches_client_construction(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """The verdict is exactly whether every client that reads the environment can be built.
+
+    Covers plain httpx (HTTP MCP servers, the update check) and the model
+    client builder for both SDKs, with and without the profile's proxy
+    bypass, whose mounts come too late to save a proxy httpx can't build.
+    """
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("ALL_PROXY", value)
+    builders: dict[str, Callable[[], httpx.Client | httpx.AsyncClient]] = {
+        "httpx.Client": httpx.Client,
+        "httpx.AsyncClient": httpx.AsyncClient,
+        **{
+            f"{provider} bypass={bypass}": (
+                lambda provider=provider, bypass=bypass: _build_profile_http_client(
+                    _profile(provider, bypass_proxy=bypass), httpx.Timeout(5.0)
+                )
+            )
+            for provider in ("anthropic", "openai")
+            for bypass in (False, True)
+        },
+    }
+
+    verdict = is_valid_proxy_url(value)
+
+    assert {name: await _constructs(build) for name, build in builders.items()} == dict.fromkeys(builders, verdict)
+
+
+def test_is_valid_proxy_url_accepts_empty() -> None:
+    """urllib skips an empty value, so httpx never sees it."""
+    assert is_valid_proxy_url("") is True
+
+
+def test_sanitize_proxy_url_env_noop_when_clean(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("ALL_PROXY", "")
+
+    assert sanitize_proxy_url_env() == {}
+    assert os.environ["HTTPS_PROXY"] == "http://127.0.0.1:7897"
+    assert os.environ["ALL_PROXY"] == ""
+
+
+def test_sanitize_proxy_url_env_scrubs_only_the_invalid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:7897")
+
+    assert sanitize_proxy_url_env() == {"ALL_PROXY": "socks://127.0.0.1:7897"}
+    assert "ALL_PROXY" not in os.environ
+    assert os.environ["HTTPS_PROXY"] == "http://127.0.0.1:7897"
+    assert httpx._utils.get_environment_proxies() == {"https://": "http://127.0.0.1:7897"}
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows env vars are case-insensitive: 'all_proxy' and 'ALL_PROXY' are the same key.",
+)
+def test_sanitize_proxy_url_env_checks_each_casing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """urllib prefers the lowercase name, so a bad lowercase value is the one httpx would read."""
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("all_proxy", "socks://127.0.0.1:7897")
+    monkeypatch.setenv("ALL_PROXY", "socks5h://127.0.0.1:7897")
+    monkeypatch.setenv("http_proxy", "socks4://127.0.0.1:1080")
+    monkeypatch.setenv("HTTP_PROXY", "socks://127.0.0.1:1080")
+
+    assert sanitize_proxy_url_env() == {
+        "HTTP_PROXY": "socks://127.0.0.1:1080",
+        "http_proxy": "socks4://127.0.0.1:1080",
+        "all_proxy": "socks://127.0.0.1:7897",
+    }
+    assert httpx._utils.get_environment_proxies() == {"all://": "socks5h://127.0.0.1:7897"}
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"),
+    [
+        ("socks://alice:s3cret@proxy.example:1080", "socks://***@proxy.example:1080"),
+        ("socks4://s3cret@proxy.example:1080/", "socks4://***@proxy.example:1080/"),
+        ("socks://alice:pa/s3cret@proxy.example:1080", "socks://***@proxy.example:1080"),
+        ("socks://alice:p@s3cret@proxy.example:1080", "socks://***@proxy.example:1080"),
+        ("alice:s3cret@proxy.example:abc", "***@proxy.example:abc"),
+        ("alice:s3cret://part@proxy.example:8080", "***@proxy.example:8080"),
+        ("socks://proxy.example:1080", "socks://proxy.example:1080"),
+    ],
+)
+def test_sanitize_proxy_url_env_masks_credentials(monkeypatch: pytest.MonkeyPatch, value: str, shown: str) -> None:
+    """The returned value feeds a warning, so a password in the address never leaves the environment."""
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("ALL_PROXY", value)
+
+    assert sanitize_proxy_url_env() == {"ALL_PROXY": shown}
+    assert "ALL_PROXY" not in os.environ

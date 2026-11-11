@@ -40,6 +40,7 @@ from chrys.foundation.trajectory.lease import WriterLease
 from chrys.foundation.trajectory.reader import last_event_of_type, read_trajectory
 from chrys.foundation.trajectory.segments import reassemble_array_slice
 from chrys.orchestration.engine.trajectory import (
+    ROLLBACK_REASON_FRESH_TURN_RETIRED,
     ROLLBACK_REASON_USER,
     ActiveTurnTrace,
     TrajectoryRecorder,
@@ -59,6 +60,7 @@ from chrys.service.trajectory.state import (
     TurnRecord,
     append_turn,
     confirm_resumed_turn,
+    discard_last_turn,
     fork_turn_registry,
     legacy_turn_records,
     mark_turn_sequence,
@@ -1083,6 +1085,44 @@ class TestRollback:
         assert {event.branch_id for event in events if event.sequence >= rollback.sequence} == {new_branch}
 
     @pytest.mark.asyncio
+    async def test_retirement_records_its_reason_and_the_same_paired_branch_transition(
+        self, bound: BoundRecorder
+    ) -> None:
+        await bound.start_turn(1)
+        await bound.recorder.turn_finished(end_reason=TurnEndReason.COMPLETED)
+        await bound.start_turn(2)
+        await bound.recorder.turn_finished(end_reason=TurnEndReason.INTERRUPTED)
+        superseded, kept = bound.rollback_to(1)
+        old_branch = bound.trajectory.branch_id
+
+        await bound.recorder.retire_turn(retired_turn=superseded[0], target_turns=kept)
+
+        retirement = bound.last(EventType.SESSION_ROLLBACK)
+        paired = bound.last(EventType.BRANCH_SUPERSEDED)
+        assert retirement.payload["reason_code"] == ROLLBACK_REASON_FRESH_TURN_RETIRED
+        assert all(event.payload.get("reason_code") != ROLLBACK_REASON_USER for event in bound.events())
+        assert retirement.payload["superseded_from_sequence"] == superseded[0].started_sequence
+        assert retirement.payload["superseded_to_sequence"] == retirement.sequence - 1
+        assert retirement.payload["target_turn_id"] == kept[0].turn_id
+        assert paired.sequence == retirement.sequence + 1
+        assert paired.payload == {"branch_id": old_branch, "superseded_by": retirement.branch_id}
+        assert_trajectory_accounted(read_trajectory(bound.events_path))
+
+    @pytest.mark.asyncio
+    async def test_retiring_a_turn_this_log_never_ran_records_nothing(self, bound: BoundRecorder) -> None:
+        # A fork inherits its parent's last turn without its events: there is no range to supersede.
+        await bound.start_turn(1)
+        await bound.recorder.turn_finished(end_reason=TurnEndReason.COMPLETED)
+        _, kept = bound.rollback_to(1)
+        before = bound.events()
+        branch = bound.trajectory.branch_id
+
+        await bound.recorder.retire_turn(retired_turn=TurnRecord(turn_number=2, turn_id="inherited"), target_turns=kept)
+
+        assert bound.events() == before
+        assert bound.trajectory.branch_id == branch
+
+    @pytest.mark.asyncio
     async def test_a_rollback_before_the_first_event_opens_the_branch_it_announces(self, bound: BoundRecorder) -> None:
         # The log is still cold: it opens inside the rollback itself, and the
         # branch that opening picks must not replace the one just announced.
@@ -1179,6 +1219,19 @@ class TestRollback:
         assert [(record.turn_number, record.turn_id) for record in records] == [(1, "aaa"), (1, "bbb")]
         assert records[0].started_sequence == 3
         assert records[1].started_sequence is None
+
+    def test_discard_empty_turn_ignores_a_malformed_registry_tail(self) -> None:
+        state: dict[str, Any] = {}
+        append_turn(state, TurnRecord(turn_number=1, turn_id="aaa"))
+        target = TurnRecord(turn_number=2, turn_id="bbb")
+        append_turn(state, target)
+        malformed = {"turn_id": "invalid-without-number"}
+        state[TRAJECTORY_STATE_KEY]["turn_log"].append(malformed)
+
+        assert discard_last_turn(state, turn_number=2) == target
+        assert turn_records(state) == [TurnRecord(turn_number=1, turn_id="aaa")]
+        assert state[TRAJECTORY_STATE_KEY]["turn_log"][-1] == malformed
+        assert discard_last_turn(state, turn_number=2) is None
 
     def test_mark_turn_sequence_only_fills_the_matching_turn_and_only_once(self) -> None:
         state: dict[str, Any] = {}

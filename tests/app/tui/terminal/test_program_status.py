@@ -380,7 +380,16 @@ async def test_live_error_reports_error_with_first_line(monkeypatch: pytest.Monk
     assert writes[-1] == _seq(f"state=error:app=iCode:{_msg('provider unreachable')}")
 
 
-@pytest.mark.parametrize("code", ["hook_blocked", "image_attachment_error", "vision_unsupported"])
+@pytest.mark.parametrize(
+    "code",
+    [
+        "manual_settings_reload_failed",
+        "manual_settings_reload_denied",
+        "hook_blocked",
+        "image_attachment_error",
+        "vision_unsupported",
+    ],
+)
 async def test_rejected_operation_error_keeps_the_run(monkeypatch: pytest.MonkeyPatch, code: str) -> None:
     bus, writes = await _make_reporter(monkeypatch)
 

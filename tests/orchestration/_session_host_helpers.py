@@ -21,7 +21,7 @@ from chrys.service.profiles.agents.schema import (
 )
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
-from chrys.service.tools.registry import ToolRegistry
+from tests.support.tool_packs import install_tools
 
 
 def _echo(message: Annotated[str, "Message to echo"]) -> str:
@@ -76,10 +76,5 @@ def _patch_runtime(monkeypatch: pytest.MonkeyPatch, clients: list[MockChatClient
         client._on_intermediate_text = kwargs.get("on_intermediate_text")
         return client
 
-    def _patched_load_builtins(self: ToolRegistry, _categories: Any, **_kwargs: Any) -> list[FunctionTool]:
-        for tool in tools:
-            self.register(tool)
-        return tools
-
     monkeypatch.setattr(builder_module, "create_client", _patched_create_client)
-    monkeypatch.setattr(ToolRegistry, "load_builtins", _patched_load_builtins)
+    install_tools(monkeypatch, tools)

@@ -101,7 +101,7 @@ _AGENT_ERROR_KINDS = frozenset({ErrorKind.CONTEXT_OVERFLOW, ErrorKind.PAYLOAD_TO
 def _cause_of(error: Error) -> CaseErrorCause:
     if error.code == "headless_interaction_required":
         return "agent"
-    if error.code == "executor_error" and error.reason in _AGENT_ERROR_KINDS:
+    if error.facts is not None and error.facts.kind in _AGENT_ERROR_KINDS:
         return "agent"
     return "environment"
 

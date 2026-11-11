@@ -28,7 +28,7 @@ from chrys.service.state.store import ChatSessionMeta, JsonFileStateStore, Sessi
 from chrys.service.state.workflow import WorkflowSessionState
 from chrys.service.trajectory.tombstone import INTENT_SUFFIX, DeleteOutcome, DeleteResult, tombstones_dir
 from chrys.service.workflows import history as history_module
-from chrys.service.workflows.history import WorkflowRunRead
+from chrys.service.workflows.history import WorkflowRunMeta, WorkflowRunRead
 from tests.service.state._store_helpers import write_legacy_envelope
 from tests.support.secure_files import plant_owner_only_bytes
 from tests.support.workflow_history import record_workflow_run, workflow_state
@@ -42,7 +42,16 @@ def _at(hour: int) -> str:
 
 
 def _entry(session_id: str, hour: int, surface: SessionSurface = SessionSurface.TUI) -> SessionListingEntry:
-    return SessionListingEntry(session_id, datetime(2026, 9, 1, hour, tzinfo=UTC), surface, Path(session_id))
+    at = datetime(2026, 9, 1, hour, tzinfo=UTC)
+    meta = ChatSessionMeta(
+        session_id=session_id,
+        created_at=at,
+        updated_at=at,
+        agent_profile="Code",
+        agent_display_name="Code",
+        message_count=1,
+    )
+    return SessionListingEntry(session_id, at, surface, Path(session_id), meta=meta)
 
 
 def _ids(listing: SessionListing, surfaces: frozenset[SessionSurface] = ALL) -> list[str]:
@@ -67,6 +76,7 @@ def _count_parses(monkeypatch: pytest.MonkeyPatch, store: JsonFileStateStore) ->
 
 
 def _count_run_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Reads of a run's files for its listing time (cached in the catalog under the run files' signatures)."""
     reads: list[Path] = []
     read_workflow_run = store_module.read_workflow_run
 
@@ -76,6 +86,24 @@ def _count_run_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 
     monkeypatch.setattr(store_module, "read_workflow_run", counting_read)
     return reads
+
+
+def _count_summary_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Live reads of a run's summary (title, input, status), never cached: the status depends on the active lock."""
+    reads: list[Path] = []
+    read_workflow_meta = store_module.read_workflow_meta
+
+    def counting_read(directory: Path, *, active: bool) -> WorkflowRunMeta | None:
+        reads.append(directory)
+        return read_workflow_meta(directory, active=active)
+
+    monkeypatch.setattr(store_module, "read_workflow_meta", counting_read)
+    return reads
+
+
+def _latest_run_id(store: JsonFileStateStore, session_id: str) -> str:
+    (run_id,) = (path.name for path in (store.session_dir(session_id) / "workflows").iterdir())
+    return run_id
 
 
 def _pinned_delete(session_dir: Path, *, sessions_root: Path, path_reused: bool = False) -> DeleteResult:
@@ -164,6 +192,10 @@ async def test_workflow_sessions_list_by_their_latest_run_and_only_with_one(tmp_
     assert [meta.session_id for meta in page.metas] == [run_last, saved_first]
     assert all(meta.latest_run is not None and meta.latest_run.status == "completed" for meta in page.metas)
     assert listing.entries[0].listed_at == page.metas[0].latest_run.updated_at
+    # The snapshot already knows what each row shows of its run, so the browser can search every session by it.
+    assert [entry.meta.latest_run for entry in listing.entries] == [meta.latest_run for meta in page.metas]
+    assert listing.entries[0].meta.latest_run.title == "Review"
+    assert listing.entries[0].meta.latest_run.input_text == "workflow input only"
 
 
 async def test_pages_measure_folder_size_only_for_their_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -202,6 +234,10 @@ async def test_a_page_shows_current_contents_in_snapshot_order(tmp_path: Path) -
 
     assert [meta.session_id for meta in page.metas] == ["new", "old"]
     assert page.metas[1].message_count == 2 and page.metas[1].last_surface is SessionSurface.CLI
+    # The entry keeps what the snapshot read, prompts included.
+    old_entry = next(entry for entry in listing.entries if entry.session_id == "old")
+    assert (old_entry.meta.message_count, old_entry.meta.user_prompt_search_text) == (1, "hi")
+    assert "now the newest" in page.metas[1].user_prompt_search_text
     assert page.total == 3
     assert (await store.load_session_page(listing.without("mid"), surfaces=ALL)).total == 2
 
@@ -216,12 +252,14 @@ async def test_legacy_flat_file_sessions_are_listed_and_paged(tmp_path: Path) ->
 
     assert _ids(listing) == ["folder", "legacy-id"]
     assert listing.entries[1].legacy and listing.entries[1].source == tmp_path / "flat.json"
+    assert listing.entries[1].meta.session_id == "legacy-id" and listing.entries[1].meta.message_count == 1
     assert [meta.session_id for meta in page.metas] == ["folder", "legacy-id"]
     assert "legacy-id" not in _catalog_ids(tmp_path)
 
 
 async def test_a_caller_editing_a_listed_meta_never_changes_later_listings(tmp_path: Path) -> None:
-    """The listing caches hand out copies: nested lists included, for folder, legacy and workflow sessions."""
+    """The listing caches hand out copies — to snapshot entries and pages alike —
+    nested lists included, for folder, legacy and workflow sessions."""
     write_legacy_envelope(tmp_path / "flat.json", "legacy-id", updated_at=_at(8), message_count=1)
     store = JsonFileStateStore(tmp_path)
     await _chat(store, "folder")
@@ -239,6 +277,7 @@ async def test_a_caller_editing_a_listed_meta_never_changes_later_listings(tmp_p
         edit(await store.list_sessions())
         for kind in ("chat", "workflow"):
             listing = await store.open_session_listing(kind=kind)
+            edit([entry.meta for entry in listing.entries])
             edit((await store.load_session_page(listing, surfaces=ALL)).metas)
 
     metas = await store.list_sessions()
@@ -294,10 +333,13 @@ async def test_another_process_lists_from_the_catalog_and_reparses_only_changes(
     reader = JsonFileStateStore(tmp_path)
     parsed = _count_parses(monkeypatch, reader)
     run_reads = _count_run_reads(monkeypatch)
+    summary_reads = _count_summary_reads(monkeypatch)
 
     assert await reader.open_session_listing(kind="chat") == first
     await reader.open_session_listing(kind="workflow")
     assert (parsed, run_reads) == ([], [])
+    # Only the summary each workflow row shows is read: once per workflow session, never for a chat listing.
+    assert summary_reads == [writer.session_dir(workflow) / "workflows" / _latest_run_id(writer, workflow)]
 
     await _chat(writer, "b", "hi", "changed")
     listing = await reader.open_session_listing(kind="chat")

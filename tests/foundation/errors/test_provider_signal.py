@@ -137,7 +137,10 @@ def test_provider_response_error_states_kind_and_retry(
         ("insufficient_quota", ErrorKind.QUOTA_EXHAUSTED, False),
         ("invalid_prompt", ErrorKind.REQUEST_REJECTED, False),
         ("invalid_image_url", ErrorKind.REQUEST_REJECTED, False),
+        ("credit_balance_exhausted", ErrorKind.QUOTA_EXHAUSTED, False),
+        ("model_max_prompt_tokens_exceeded", ErrorKind.CONTEXT_OVERFLOW, False),
         ("cyber_policy", ErrorKind.CONTENT_FILTERED, False),
+        ("bio_policy", ErrorKind.CONTENT_FILTERED, False),
         ("image_content_policy_violation", ErrorKind.CONTENT_FILTERED, False),
     ],
 )
@@ -156,6 +159,7 @@ def test_a_failure_a_response_reports_retries_only_when_its_code_may_pass(
         "insufficient_system_resource",
         "invalid_prompt",
         "cyber_policy",
+        "bio_policy",
         "misalignment_policy_violation",
         "image_content_policy_violation",
         "invalid_image_url",
@@ -173,12 +177,38 @@ async def test_an_http_error_carrying_a_code_only_responses_report_is_read_by_it
 
 
 @pytest.mark.parametrize(
+    ("status", "error_type", "kind", "retryable"),
+    [
+        (401, "authentication_error", ErrorKind.AUTH_FAILED, False),
+        (403, "permission_error", ErrorKind.AUTH_FAILED, False),
+        (413, "invalid_request_error", ErrorKind.PAYLOAD_TOO_LARGE, False),
+        (429, "rate_limit_error", ErrorKind.RATE_LIMITED, True),
+        (500, "server_error", ErrorKind.SERVER_ERROR, True),
+        (503, "server_error", ErrorKind.SERVER_ERROR, True),
+        (400, "invalid_request_error", ErrorKind.REQUEST_REJECTED, False),
+    ],
+)
+async def test_an_http_error_whose_code_repeats_a_broad_type_is_named_by_its_status(
+    status: int, error_type: str, kind: ErrorKind, retryable: bool
+) -> None:
+    # DeepSeek answers every error status with code `invalid_request_error`, a
+    # bad key's 401 included: that code says no more than a type would.
+    body = {"error": {"message": "It broke.", "type": error_type, "param": None, "code": "invalid_request_error"}}
+
+    result = classify_error(await openai_status(status, body))
+
+    assert (result.kind, result.retryable) == (kind, retryable)
+
+
+@pytest.mark.parametrize(
     ("code", "kind", "retryable"),
     [
         ("network_error", ErrorKind.STREAM_TRUNCATED, True),
         ("insufficient_system_resource", ErrorKind.OVERLOADED, True),
         ("invalid_prompt", ErrorKind.REQUEST_REJECTED, False),
         ("cyber_policy", ErrorKind.CONTENT_FILTERED, False),
+        ("bio_policy", ErrorKind.CONTENT_FILTERED, False),
+        ("organization_spend_limit_exceeded", ErrorKind.QUOTA_EXHAUSTED, False),
         ("image_content_policy_violation", ErrorKind.CONTENT_FILTERED, False),
         ("invalid_image_url", ErrorKind.REQUEST_REJECTED, False),
         ("invalid_request_error", ErrorKind.REQUEST_REJECTED, False),

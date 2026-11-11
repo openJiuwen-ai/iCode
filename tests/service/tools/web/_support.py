@@ -13,8 +13,11 @@ from unittest.mock import MagicMock, patch
 import httpx
 
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.service.profiles.agents.schema import ToolsConfig
 from chrys.service.tools.builtins.web.build import WebTools, assemble_web_tools
 from chrys.service.tools.builtins.web.config import WebFetchConfigPatch, WebSearchConfigPatch
+from chrys.service.tools.packs import AssembledTools, ToolBuild, assemble_tools
 
 
 class Chunks(httpx.AsyncByteStream):
@@ -83,4 +86,25 @@ def assemble(
         agent="Test",
         model_profile_id="model",
         session_id="s",
+    )
+
+
+async def assemble_agent_tools(
+    categories: list[str],
+    search: WebSearchConfigPatch | None = None,
+    fetch: WebFetchConfigPatch | None = None,
+    *,
+    chat_options: dict[str, Any] | None = None,
+) -> AssembledTools:
+    """Assemble every local tool of an agent build, for the same agent and model profile as :func:`assemble`."""
+    return await assemble_tools(
+        ToolBuild(
+            tools=ToolsConfig(builtins=categories, web_search=search, web_fetch=fetch),
+            agent_name="Test",
+            runtime=SessionEnvironment.capture(),
+            settings=Settings(),
+            session_id="s",
+            model_profile_id="model",
+            chat_options=chat_options,
+        )
     )

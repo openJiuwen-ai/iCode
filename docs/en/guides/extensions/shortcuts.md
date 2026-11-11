@@ -11,7 +11,7 @@ iCode reads shortcuts from two places:
 | Your shortcuts | `~/.chrys/shortcuts` | `%APPDATA%\chrys\shortcuts` |
 | The project's shortcuts | `.chrys/shortcuts` in the working directory and its parent directories up to the repository root | Same |
 
-New and changed files show the next time you type `/`.
+New and changed files show the next time you type `/`, or after `/reload`.
 
 A project's `.chrys/shortcuts` must stay inside the repository: if it is a link to a folder outside it, iCode skips it.
 
@@ -58,14 +58,16 @@ In the prompt you can use:
 
 1. Type `/` in the input field. Shortcuts are listed in the **Prompt Shortcuts** group.
 2. Choose one, or type its name, with or without arguments (`/review error handling`), and press **Tab** or **Enter**.
-3. The prompt fills the input field. Arguments you did not give are highlighted: press **Tab** to move between them and type to fill them in. If you press **Enter** while some are still empty, iCode asks once before sending. Stepping through your prompt history with **↑** and back with **↓** brings the prompt back as it was, highlights included; so does closing the full-screen editor without changing the text. If you change the text in the editor, the highlights go, but the prompt still belongs to its shortcut.
+3. The prompt fills the input field. Arguments you did not give are highlighted: press **Tab** to move between them and type to fill them in. Each unfilled argument is one unit: **Backspace** or **Delete** removes it in one go, and undo brings it back. If you press **Enter** while some are still empty, iCode asks once before sending. Stepping through your prompt history with **↑** and back with **↓** brings the prompt back as it was, highlights included. After confirming the full-screen editor, untouched arguments stay highlighted, and the prompt still belongs to its shortcut. In Vim mode, each unfilled argument counts as one character and as a word of its own for `w` / `b` / `e`.
 4. Edit the prompt if you like, then press **Enter** to send it.
 
 ### Commands in the prompt
 
-When you send the prompt, your [prompt hooks](hooks.md) check it first, as you typed it, commands included. Then each `` !`command` `` in it runs in the session's working directory, and its output replaces it in the message the model receives; the conversation shows the message with the output. A command may run for up to 10 seconds, and up to 16 KB of its output is kept. While the commands run, the status bar says so and other actions, such as switching the agent or starting a new session, wait; press **Esc** to cancel. If a hook blocks the prompt, a command fails to start, runs out of time or is cancelled, or the prompt cannot be sent for another reason, nothing is sent and the prompt comes back to the input field as it was, highlights included, unless you have typed something else there meanwhile.
+When you send the prompt, your [prompt hooks](hooks.md) check it first, as you typed it, commands included. Then each `` !`command` `` in it runs in the session's working directory, and its output replaces it in the message the model receives; the conversation shows the message with the output. A command may run for up to 10 seconds, and up to 16 KB of its output is kept. While the commands run, the status bar says so and other actions, such as switching the agent or starting a new session, wait; press **Esc** to cancel.
 
-The commands run only if the shortcut is still loaded from the same file for the session's working directory. If you have since changed the working directory, or moved or deleted the shortcut's file, they do not run: the prompt comes back as plain text, and sending it again sends it as typed.
+If a hook blocks the prompt, a command fails to start, times out or is cancelled, or iCode cannot send the prompt for another reason, the prompt returns to the input field with its highlights. As soon as it appears, you can edit it or press **Enter** to try again. If you typed something else in the meantime, iCode keeps what you typed.
+
+The commands run only if the shortcut is still loaded from the same file for the session's working directory. If that file has moved, was deleted, or is no longer loaded for the current working directory, iCode shows an error. When the prompt returns to the input field, press **Enter** to send it as plain text, including the command placeholders.
 
 Whenever sending will run commands, a card above the input field says how many, such as `2 commands in the input run when sent`.
 
@@ -73,7 +75,7 @@ While a task is running, a prompt that runs commands or switches the agent or mo
 
 Such a prompt always starts a new turn. After a task stopped or failed, press **Enter** to send it; the **Continue** button sends what is in the input field as a note, as typed, so it leaves such a prompt where it is.
 
-Once you choose a shortcut, the input field holds that shortcut's prompt until you clear it or replace it, however much you edit it. Every `` !`…` `` you can see in it when you press **Enter** runs, including any you typed or pasted. A message you type yourself without choosing a shortcut never runs commands.
+Once you choose a shortcut, the input field holds that shortcut's prompt until you clear it or replace it, however much you edit it. Every `` !`…` `` in it when you press **Enter** runs, including any you typed or pasted. That includes one inside a **[Pasted text #n]** label, which you see only when you click the label. One inside a **[Quote #n]** label does not run: a quote is sent as plain text. A message you type yourself without choosing a shortcut never runs commands.
 
 ### Agent and model
 

@@ -34,6 +34,7 @@ def assemble_openai_stack(
         parent_session_id=parent_session_id,
         use_route_session_context=use_route_session_context,
         on_intermediate_text=None,
+        connection={},
         max_iterations=7777,
         max_consecutive_errors=10,
         tool_result_ceiling_tokens=None,

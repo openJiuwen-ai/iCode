@@ -1052,3 +1052,33 @@ def test_message_roundtrip_keeps_contents_under_public_key() -> None:
     restored = kernel_types.Message.from_dict(data)
     assert type(restored.contents) is ContentList
     assert restored.to_dict() == data
+
+
+def test_message_takes_a_bare_string_as_one_text_content() -> None:
+    message = kernel_types.Message("user", "Hello")
+
+    assert [(content.type, content.text) for content in message.contents] == [("text", "Hello")]
+
+
+def test_merge_chat_options_adds_a_single_mapping_tool_whole() -> None:
+    spec = {"type": "function", "function": {"name": "lookup"}}
+
+    merged = kernel_types.merge_chat_options({"tools": ["base"]}, {"tools": spec})
+
+    assert merged["tools"] == ["base", spec]
+
+
+def test_merge_chat_options_takes_tool_tuples_and_single_base_tools() -> None:
+    single = object()
+
+    assert kernel_types.merge_chat_options({"model": "m"}, {"tools": ("a", "b")})["tools"] == ["a", "b"]
+    assert kernel_types.merge_chat_options({"tools": single}, {"tools": ["a"]})["tools"] == [single, "a"]
+
+
+def test_merge_chat_options_does_not_consume_a_tool_iterator() -> None:
+    for base in ({"model": "m"}, {"tools": ["base"]}):
+        tools = iter(["a"])
+
+        kernel_types.merge_chat_options(base, {"tools": tools})
+
+        assert list(tools) == ["a"]

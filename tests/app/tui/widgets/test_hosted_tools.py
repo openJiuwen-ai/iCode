@@ -26,6 +26,7 @@ from chrys.foundation.tool_result_metadata import (
 )
 from chrys.kernel import Content
 from chrys.service.agent_middleware.events.hosted_tools import adapt_hosted_tool
+from tests.support.oversized_int import oversized_integer_json
 from tests.support.waiting import wait_for
 
 _TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
@@ -145,6 +146,23 @@ def test_hosted_tool_name_remains_authoritative_over_family_title() -> None:
 
     assert isinstance(widget, HostedToolCall)
     assert widget._title_text() == "openai/remote_tool"
+
+
+def test_hosted_adapter_keeps_oversized_integer_arguments_as_raw_input() -> None:
+    """An integer past Python's conversion limit cannot be decoded; the raw text is exposed."""
+    arguments = oversized_integer_json()
+
+    view = adapt_hosted_tool(
+        Content.from_hosted_tool_call(
+            "hosted:big-int",
+            tool_name="search",
+            arguments=arguments,
+            hosted_family=HostedToolFamily.SEARCH,
+            hosted_provider="openai",
+        )
+    )
+
+    assert view.arguments == {"input": arguments}
 
 
 @pytest.mark.parametrize(

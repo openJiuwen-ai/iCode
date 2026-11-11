@@ -278,7 +278,7 @@ async def test_acp_panel_test_button_opens_ephemeral_session_and_force_closes(
     async with _PanelApp(panel).run_test() as pilot:
         panel.query_one("#acp-test").press()
         await wait_for(
-            lambda: isinstance(pilot.app.screen, ConnectionTestDialog),
+            lambda: isinstance(pilot.app.screen, ConnectionTestDialog) and pilot.app.screen.is_mounted,
             pilot=pilot,
             description="ACP test dialog",
         )
@@ -353,7 +353,7 @@ async def test_acp_panel_test_stderr_log_path_has_no_symlinked_parents(
     async with _PanelApp(panel).run_test() as pilot:
         panel.query_one("#acp-test").press()
         await wait_for(
-            lambda: isinstance(pilot.app.screen, ConnectionTestDialog),
+            lambda: isinstance(pilot.app.screen, ConnectionTestDialog) and pilot.app.screen.is_mounted,
             pilot=pilot,
             description="ACP test dialog",
         )
@@ -461,9 +461,9 @@ async def test_agent_type_switch_sanitizes_hidden_sections_and_mounts_only_acp_t
         instructions="model instructions",
         tools=ToolsConfig(
             builtins=["read_file"],
-            custom=["custom_tool"],
             mcp=[MCPServerConfig(name="remote", transport="http", url="https://example.test")],
         ),
+        extensions=["acme_release"],
         skills=SkillsConfig(paths=["skills"]),
         sub_agents=SubAgentsConfig(agents=[SubAgentRef(profile="Explore")]),
         memory=MemoryConfig(files=["README.md"]),
@@ -518,6 +518,7 @@ async def test_agent_type_switch_sanitizes_hidden_sections_and_mounts_only_acp_t
         assert draft.profile.sub_agent_only is True
         assert draft.profile.instructions == ""
         assert draft.profile.tools == ToolsConfig()
+        assert draft.profile.extensions == []
         assert draft.profile.skills.paths == []
         assert draft.profile.skills.inline == []
         assert draft.profile.sub_agents == SubAgentsConfig()

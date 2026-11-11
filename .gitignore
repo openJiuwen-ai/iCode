@@ -41,6 +41,9 @@ htmlcov/
 # Vendored data and binaries (downloaded at build time, not checked in)
 src/chrys/foundation/vendor/ripgrep/rg*
 
+# Compiled translations (built from locales/ by hatch_build.py, not checked in)
+src/chrys/foundation/i18n/_catalogs/
+
 # Ruff
 .ruff_cache/
 

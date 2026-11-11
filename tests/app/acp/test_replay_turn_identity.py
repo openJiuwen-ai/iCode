@@ -98,10 +98,11 @@ async def test_replay_marks_the_opening_message_with_its_turn_and_echoes_the_cli
     assert [chunk.content.text for chunk in user_chunks] == ["first", "an injection"]
     # Only the opener carries the id the client submitted; the injection is a
     # different message, so it belongs to the turn but names no client id.
+    # Each names its own history item, which chrys/user_messages_dropped uses.
     assert user_chunks[0].message_id == _CLIENT_MESSAGE_ID
-    assert user_chunks[0].field_meta == {"chrys": {"turnId": "turn-a", "turnNumber": 1}}
+    assert user_chunks[0].field_meta == {"chrys": {"turnId": "turn-a", "turnNumber": 1, "itemId": "item-1"}}
     assert user_chunks[1].message_id is None
-    assert user_chunks[1].field_meta == {"chrys": {"turnId": "turn-a", "turnNumber": 1}}
+    assert user_chunks[1].field_meta == {"chrys": {"turnId": "turn-a", "turnNumber": 1, "itemId": "item-2"}}
 
 
 @pytest.mark.asyncio
@@ -131,9 +132,9 @@ async def test_replay_sends_a_messages_images_under_its_id_and_turn(tmp_path) ->
         ("image", image_only_id),
     ]
     assert [chunk.field_meta for chunk in user_chunks] == [
-        {"chrys": {"turnId": "turn-a", "turnNumber": 1}},
-        {"chrys": {"turnId": "turn-a", "turnNumber": 1}},
-        {"chrys": {"turnId": "turn-b", "turnNumber": 2}},
+        {"chrys": {"turnId": "turn-a", "turnNumber": 1, "itemId": "item-1"}},
+        {"chrys": {"turnId": "turn-a", "turnNumber": 1, "itemId": "item-1"}},
+        {"chrys": {"turnId": "turn-b", "turnNumber": 2, "itemId": "item-2"}},
     ]
 
 
@@ -148,8 +149,8 @@ async def test_replay_leaves_a_turn_it_cannot_identify_unlabelled(tmp_path) -> N
 
     user_chunks = [update for update in updates if update.session_update == "user_message_chunk"]
     assert [chunk.field_meta for chunk in user_chunks] == [
-        {"chrys": {"turnId": "turn-a", "turnNumber": 1}},
-        None,
+        {"chrys": {"turnId": "turn-a", "turnNumber": 1, "itemId": "item-1"}},
+        {"chrys": {"itemId": "item-9"}},
     ]
 
 

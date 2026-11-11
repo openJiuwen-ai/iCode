@@ -18,6 +18,7 @@ from textual.message import Message
 from textual.widgets import Button, Static, TextArea
 from textual.widgets.option_list import OptionDoesNotExist
 
+from chrys.app.tui.util.message_gate import messages_disabled
 from chrys.app.tui.widgets import AskUserPrompt, AskUserResponseResized, PromptDraft
 from chrys.app.tui.widgets.ask_user_controls import (
     _CUSTOM_RESPONSE_PLACEHOLDER,
@@ -50,6 +51,7 @@ from chrys.foundation.models.ask_user import (
 from chrys.foundation.tool_kinds import KIND_ASK_USER
 from chrys.foundation.tool_result_metadata import TOOL_FAILED_METADATA_KEY, TOOL_INTERRUPTED_METADATA_KEY
 from chrys.service.session.message_metadata import TOOL_RESULT_METADATA_KEY
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import LocalizedApp, rich_plain, rich_segment_lines
 from tests.support.waiting import wait_for, wait_until, wait_until_quiet
 
@@ -1035,6 +1037,61 @@ async def test_chat_panel_inline_ask_user_card_follows_draft_height_without_rese
         assert input_area.outer_size.height < grown_input_height
         assert card_panel.region.height == initial_panel_height
         assert tool.region.height == initial_tool_height
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [pytest.param("", "\n\n", id="grow"), pytest.param("\n\n", "", id="shrink")],
+)
+async def test_inline_input_follows_an_edit_when_the_card_was_laid_out_between_the_edit_and_the_resize(
+    before: str, after: str
+) -> None:
+    """The input's own refresh lays the card out as soon as an edit lands; the footer sizes the
+    input only once the edit's Changed reaches it. On a loaded runner that layout came first and
+    recorded the card at the input's old height: its arrangements, and the box models of the boxes
+    around the input that are sized to their content. Growing, the input never grew; shrinking, it
+    did, but the card kept its old height."""
+
+    class PanelApp(App):
+        def compose(self) -> ComposeResult:
+            yield ChatPanel()
+
+    async with PanelApp().run_test(size=(120, 32)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_tool_start("c1", "ask_user", KIND_ASK_USER, args={"question": "What next?"})
+        await pilot.pause()
+        assert panel.show_ask_user_inline("c1", "req-1", _one_question())
+        await pilot.pause()
+        input_area = panel.query_one("#askuser-input", _AskUserTextArea)
+        footer = panel.query_one(AskUserResponseFooter)
+        card_panel = panel.query_one("#ask-panel")
+        if before:
+            input_area.insert(before)
+        rows_before = ASK_USER_INPUT_MIN_HEIGHT + before.count("\n")
+        await _wait_for_layout(
+            pilot,
+            lambda: input_area.outer_size.height == rows_before and screen_is_settled(pilot.app, pilot.app.screen),
+        )
+        initial_panel_height = card_panel.region.height
+
+        with messages_disabled(TextArea.Changed, input_area):
+            input_area.replace(after, (0, 0), input_area.document.end)
+        # The layout the edit asked for runs while the input still has its old height.
+        await _wait_for_layout(pilot, lambda: screen_is_settled(pilot.app, pilot.app.screen))
+        assert input_area.virtual_size.height == after.count("\n") + 1
+        assert input_area.outer_size.height == rows_before
+
+        footer.sync_response_state(input_area)
+        rows_after = ASK_USER_INPUT_MIN_HEIGHT + after.count("\n")
+        await wait_for(
+            lambda: (
+                input_area.outer_size.height == rows_after
+                and card_panel.region.height == initial_panel_height + rows_after - rows_before
+            ),
+            pilot=pilot,
+            description="the input and its card sized to the edited text",
+        )
 
 
 @pytest.mark.asyncio

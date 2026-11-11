@@ -39,7 +39,7 @@ from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.hosted_tools import HeldHostedEvidence, HostedToolPhase
 from chrys.foundation.reasoning_origin import ReasoningOrigin
 from chrys.kernel import ChatResponseUpdate, Content, UsageDetails, normalize_stream_usage
-from chrys.service.llm.chat_completions.decode import refused_calls_error
+from chrys.service.llm.refusals import refused_calls_error
 
 from .decode import (
     decode_blocks,
@@ -267,7 +267,10 @@ class StreamState:
                 raw_input = "".join(parts)
                 try:
                     arguments = json.loads(raw_input)
-                except json.JSONDecodeError:
+                # A bare ValueError is an integer literal past Python's
+                # integer-string conversion limit: keep the raw input, as for
+                # malformed JSON.
+                except ValueError:
                     arguments = raw_input
                 apply_streamed_input(call, arguments)
                 call.provider_phase = HostedToolPhase.DELTA

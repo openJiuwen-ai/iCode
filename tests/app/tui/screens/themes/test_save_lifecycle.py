@@ -26,8 +26,9 @@ from tests.support.waiting import wait_for
 from .helpers import _EditorScreen, make_app, open_editor, press_button, wait_for_save_dialog
 
 
-@pytest.mark.parametrize("name", ["custom", "CUSTOM"])
-@pytest.mark.parametrize("submit", ["button", "enter"])
+# Each spelling and each way to submit, once: the conflict is reached by the button either way,
+# and Enter and the button end in the same save handler, so the two do not interact.
+@pytest.mark.parametrize(("submit", "name"), [("button", "custom"), ("enter", "CUSTOM")])
 async def test_restoring_original_name_after_case_only_conflict_allows_overwrite(
     tmp_path: Path, name: str, submit: str
 ) -> None:

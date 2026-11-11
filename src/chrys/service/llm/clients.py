@@ -35,10 +35,11 @@ API styles) lives in ``chrys.service.llm.providers``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -58,8 +59,9 @@ from chrys.foundation.util.header_charset import (
     model_id_charset_error,
 )
 from chrys.foundation.util.httpx_helpers import BYPASS_PROXY_MOUNTS
+from chrys.foundation.util.imports import import_off_loop
 from chrys.foundation.util.once_close import OnceClose
-from chrys.service.llm.providers import PROVIDERS, ProviderSpec
+from chrys.service.llm.providers import PROVIDERS, ProviderSpec, SdkFamily
 from chrys.service.profiles.models.options import parse_chat_options, parse_http_headers
 from chrys.service.profiles.models.schema import ModelProfile
 
@@ -72,6 +74,14 @@ if TYPE_CHECKING:
     from chrys.service.llm.wire_client import WireClient
 
 _log = logging.getLogger(__name__)
+
+# Each SDK family's modules a client imports by its first request. The OpenAI
+# client imports its resources (some 500 modules) only when a request first
+# reaches ``client.chat`` or ``client.responses``, and the Responses ones apart.
+_SDK_MODULES: dict[SdkFamily, tuple[str, ...]] = {
+    "anthropic": ("anthropic",),
+    "openai": ("openai", "openai.resources", "openai.resources.responses"),
+}
 
 
 def _build_user_agent(sdk_user_agent: str | None = None) -> str:
@@ -141,6 +151,11 @@ def _resolve_profile_api_key(profile: ModelProfile) -> str:
     return resolve_env_templates(profile.api_key, location=f"model profile {profile.name!r} API Key")
 
 
+def _configured_connection_value(value: str, env_name: str, default: str = "") -> str:
+    """Apply the shared explicit value → provider environment → default order."""
+    return value or os.environ.get(env_name, "") or default
+
+
 async def _command_credential_auth(
     profile: ModelProfile, *, api_key: str, headers: dict[str, str]
 ) -> httpx.Auth | None:
@@ -175,7 +190,7 @@ def _validate_wire_charset(profile: ModelProfile, *, api_key: str, headers: dict
     """
     problems: list[str] = []
     spec = PROVIDERS.get(profile.provider)
-    effective_key = api_key or (os.environ.get(spec.api_key_env, "") if spec is not None else "")
+    effective_key = _configured_connection_value(api_key, spec.api_key_env) if spec is not None else api_key
     key_error = api_key_charset_error(effective_key)
     if key_error:
         problems.append(key_error)
@@ -209,6 +224,11 @@ def _validate_sdk_wire_charset(profile: ModelProfile, client: Any) -> None:
     pre-request charset gate as profile-owned values.  Non-string sentinels
     such as OpenAI's ``Omit`` are ignored because the SDK removes them before
     constructing ``httpx.Headers``.
+
+    Reading them can block, so it runs on a worker thread, as the SDKs learn
+    the OS for a request: their headers name it, and the OpenAI SDK first asks
+    ``platform.platform()``, which runs ``uname -p`` and ``file -b`` (on
+    Windows, ``platform.uname()``, which both read, queries WMI).
     """
     effective_headers = dict(client.auth_headers)
     effective_headers.update(client.default_headers)
@@ -243,7 +263,7 @@ def effective_model_base_url(profile: ModelProfile) -> str:
     spec = PROVIDERS.get(provider)
     if spec is None:
         raise _unknown_provider(provider)
-    return profile.base_url or os.environ.get(spec.base_url_env, "") or spec.default_base_url
+    return _configured_connection_value(profile.base_url, spec.base_url_env, spec.default_base_url)
 
 
 def _build_profile_http_client(
@@ -254,6 +274,8 @@ def _build_profile_http_client(
     session_id: str | None = None,
     auth: httpx.Auth | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    follow_redirects: bool = True,
+    enable_hooks: bool = True,
 ) -> httpx.AsyncClient:
     """Build the profile's ``httpx.AsyncClient``; Chrys, not the SDK, owns every pool.
 
@@ -269,6 +291,7 @@ def _build_profile_http_client(
 
     *transport* replaces the network transport and nothing else; production
     callers never pass it, the client contract tests answer through it.
+    Discovery disables redirects and all hooks while probing unfinished configurations.
     """
     spec = PROVIDERS.get(profile.provider)
     if spec is not None and spec.sdk == "anthropic":
@@ -276,32 +299,33 @@ def _build_profile_http_client(
     else:
         from openai import DefaultAsyncHttpxClient as HTTPClient
 
-    from chrys.service.llm.proxy_route import ProxyRouter
-    from chrys.service.llm.request_tracking import build_request_tracking_hooks
-    from chrys.service.llm.route_facts import build_route_hooks
-
     kwargs: dict[str, Any] = {
         "verify": profile.verify_ssl,
         "timeout": timeout,
-        "follow_redirects": True,
+        "follow_redirects": follow_redirects,
     }
     if profile.bypass_proxy:
         kwargs["mounts"] = dict(BYPASS_PROXY_MOUNTS)
-    event_hooks = build_route_hooks(ProxyRouter.from_client_config(bypass_proxy=profile.bypass_proxy))
-    tracking_hooks = build_request_tracking_hooks()
-    for event in ("request", "response"):
-        event_hooks[event].extend(tracking_hooks[event])
-    if raw_http_log_path is not None:
-        from chrys.service.llm.raw_http_log import build_raw_http_event_hooks
+    if enable_hooks:
+        from chrys.service.llm.proxy_route import ProxyRouter
+        from chrys.service.llm.request_tracking import build_request_tracking_hooks
+        from chrys.service.llm.route_facts import build_route_hooks
 
-        raw_hooks = build_raw_http_event_hooks(
-            log_path=raw_http_log_path,
-            profile=profile,
-            session_id=session_id,
-        )
+        event_hooks = build_route_hooks(ProxyRouter.from_client_config(bypass_proxy=profile.bypass_proxy))
+        tracking_hooks = build_request_tracking_hooks()
         for event in ("request", "response"):
-            event_hooks[event] = [*event_hooks[event], *raw_hooks.get(event, ())]
-    kwargs["event_hooks"] = event_hooks
+            event_hooks[event].extend(tracking_hooks[event])
+        if raw_http_log_path is not None:
+            from chrys.service.llm.raw_http_log import build_raw_http_event_hooks
+
+            raw_hooks = build_raw_http_event_hooks(
+                log_path=raw_http_log_path,
+                profile=profile,
+                session_id=session_id,
+            )
+            for event in ("request", "response"):
+                event_hooks[event] = [*event_hooks[event], *raw_hooks.get(event, ())]
+        kwargs["event_hooks"] = event_hooks
     if auth is not None:
         kwargs["auth"] = auth
     if transport is not None:
@@ -369,9 +393,9 @@ def _build_openai_sdk_client(
     # construction-time credential errors while preserving no-auth behavior
     # for unauthenticated OpenAI-compatible local/gateway endpoints.
     effective_key: str | Callable[[], Awaitable[str]] = (
-        api_key or os.environ.get(api_key_env) or _empty_openai_api_key_provider
+        _configured_connection_value(api_key, api_key_env) or _empty_openai_api_key_provider
     )
-    effective_base = base_url or os.environ.get(base_url_env) or default_base_url or None
+    effective_base = _configured_connection_value(base_url, base_url_env, default_base_url)
 
     kwargs: dict[str, Any] = {
         "api_key": effective_key,
@@ -427,12 +451,15 @@ async def create_client(
         A chat client stack compatible with Chrys' kernel runtime; closing it
         (``aclose``) closes the provider SDK client and its HTTP pool.
     """
+    from chrys.service.llm.observer import exchange_connection_facts
+
     provider = profile.provider
     # Tool-loop knobs for ToolLoopLayer. Intentional headroom on iterations:
     # long autonomous sessions can chain many tool calls.
     stack_kwargs: dict[str, Any] = {
         "on_intermediate_text": on_intermediate_text,
         "tool_result_ceiling_tokens": tool_result_ceiling_tokens,
+        "connection": exchange_connection_facts(profile),
     }
     if provider == "mock":
         from chrys.service.llm.mock import MockChatClient
@@ -441,6 +468,8 @@ async def create_client(
     spec = PROVIDERS.get(provider)
     if spec is None:
         raise _unknown_provider(provider)
+    # Hundreds to thousands of modules, which the first client of a run imports.
+    await import_off_loop(*_SDK_MODULES[spec.sdk])
 
     api_key = _resolve_profile_api_key(profile)
     headers = _build_default_headers(
@@ -479,7 +508,7 @@ async def create_client(
         max_consecutive_errors=10,
     )
     try:
-        return _build_client_stack(
+        return await _build_client_stack(
             profile,
             spec,
             api_key=api_key,
@@ -502,7 +531,7 @@ def _unknown_provider(provider: str) -> ValueError:
     )
 
 
-def _build_client_stack(
+async def _build_client_stack(
     profile: ModelProfile,
     spec: ProviderSpec,
     *,
@@ -531,7 +560,7 @@ def _build_client_stack(
             base_url_env=spec.base_url_env,
             default_base_url="" if spec.native_sdk else spec.default_base_url,
         )
-    _validate_sdk_wire_charset(profile, sdk_client)
+    await asyncio.to_thread(_validate_sdk_wire_charset, profile, sdk_client)
     client_cls = _wire_client_class(profile.provider, _api_style(profile, spec))
     return _assemble_stack(client_cls, sdk_client, **stack_kwargs)
 
@@ -589,6 +618,7 @@ def _assemble_stack(
     parent_session_id: str | None,
     use_route_session_context: bool,
     on_intermediate_text: Callable[[str], None] | None,
+    connection: Mapping[str, str],
     max_iterations: int,
     max_consecutive_errors: int,
     tool_result_ceiling_tokens: int | None,
@@ -608,7 +638,7 @@ def _assemble_stack(
     wire_client: Any = client_cls.from_sdk_client(
         sdk_client,
         model=model_id,
-        observer=WireCallObserver(on_intermediate_text=on_intermediate_text),
+        observer=WireCallObserver(on_intermediate_text=on_intermediate_text, connection=connection),
         request_headers=RequestHeaders(
             session_id=session_id,
             parent_session_id=parent_session_id,

@@ -24,6 +24,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import msg
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.platform.paths import resolve_workspace_path
+from chrys.foundation.tool_approval import declares_requires_approval
 from chrys.foundation.tool_kinds import (
     KIND_FILESYSTEM_READ,
     KIND_FILESYSTEM_WRITE,
@@ -76,6 +77,7 @@ if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.approval_reuse import ReuseChoice
     from chrys.kernel.middleware import FunctionInvocationContext
+    from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
     from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
     from chrys.service.approval.policy import ApprovalPolicy
     from chrys.service.approval.reuse import Candidate
@@ -244,10 +246,12 @@ class ApprovalMiddleware(FunctionMiddleware):
         session_archive_read_roots: list[Path] | None = None,
         turn_context: TurnContextHolder | None = None,
         reuse: ApprovalReuseBinding | None = None,
+        extension_hooks: ExtensionToolHooks | None = None,
     ) -> None:
         from chrys.service.approval.turn_context import TurnContextHolder
 
         self._policy = approval_policy
+        self._extension_hooks = extension_hooks
         self._reuse = reuse
         self._publisher: InvocationPublisher | None = None
         self._bus = event_bus
@@ -349,7 +353,9 @@ class ApprovalMiddleware(FunctionMiddleware):
         sensitive_filesystem_write = tool_kind == KIND_FILESYSTEM_WRITE and path_arg_may_access_sensitive_data(
             context.arguments
         )
-        policy_requires_approval = self._policy.should_require_approval(tool_name, tool_kind)
+        policy_requires_approval = self._policy.should_require_approval(
+            tool_name, tool_kind, tool_requires_approval=declares_requires_approval(context.function)
+        )
         if (
             not policy_requires_approval
             and not dev_sub_agent_review
@@ -670,6 +676,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                     # not to the exchange the call came in on.
                     target_operation_id=tool_operation_id(context.metadata),
                     origin=publisher.origin if publisher is not None else None,
+                    extension_hooks=self._extension_hooks,
                 )
                 # Hooks may have rewritten args further — capture the final form.
                 final_args = context.arguments if isinstance(context.arguments, dict) else modified_args

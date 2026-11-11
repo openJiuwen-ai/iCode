@@ -12,6 +12,7 @@ from chrys.foundation.util.env_templates import (
     blank_commands,
     command_handles_in,
     command_placeholder,
+    has_command_placeholder,
     resolve_env_template_values,
     resolve_env_templates,
 )
@@ -159,3 +160,24 @@ def test_a_command_placeholder_is_refused_where_commands_are_not_allowed() -> No
 def test_allow_commands_reaches_nested_values() -> None:
     with pytest.raises(EnvVarResolutionError):
         resolve_env_template_values({"a": [{"b": "{{!cmd}}"}]}, location="test", allow_commands=False)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("{{!cmd}}", True),
+        ("Bearer {{!tool get token}}", True),
+        ("{{! tool get token }}", True),
+        ("Bearer\n{{!tool get token}}\n", True),
+        ("{{!printf 'line one\nline two'}}", True),
+        ("{{{{!cmd}}}} {{!other}}", True),
+        ("{{{{!cmd}}}}", False),
+        ("Bearer {{{{!tool get token}}}}", False),
+        ("{{ENV_TOKEN}}", False),
+        ("Bearer {{ENV_TOKEN}}", False),
+        ("sk-plain", False),
+        ("", False),
+    ],
+)
+def test_has_command_placeholder_spots_only_unescaped_commands(value: str, expected: bool) -> None:
+    assert has_command_placeholder(value) is expected

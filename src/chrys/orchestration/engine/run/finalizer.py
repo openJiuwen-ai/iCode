@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +14,7 @@ from chrys.foundation.config.settings_store import SettingsHandle
 from chrys.foundation.events.types import UserInjectResult
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import EXECUTION_FAILED_MESSAGE, HistoryMarkerKind
+from chrys.foundation.recovery import RecoveryPersistOutcome
 from chrys.foundation.trajectory.context import trajectory_scope
 from chrys.foundation.trajectory.event_types import TurnEndReason
 from chrys.orchestration.engine.execution import CurrentRunScope
@@ -25,6 +26,7 @@ from chrys.service.trajectory.preparation import PreparationOutcome
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
+    from chrys.kernel import Content, Message
     from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
     from chrys.orchestration.engine.state.active_session import ActiveSession
     from chrys.orchestration.engine.state.current_agent import CurrentAgent
@@ -96,22 +98,8 @@ class TurnFinalizer:
         partial_answer, loaded.bindings.state.partial_answer = loaded.bindings.state.partial_answer, ()
 
         if failed:
-            # The pass-start boundary keeps a retried/resumed pass's recovered
-            # messages AFTER retained work from an earlier same-turn pass.
-            # A failed pass can finalize only after construction installs its recorder.
-            loop_recorder = loaded.loop_recorder
-            self._history.merge_loop_messages(
-                loop_recorder,
-                insert_index=metadata_start_index,
-            )
-            self._history.persist_approval_decisions(
-                approval_decisions,
-                start_index=metadata_start_index,
-            )
+            self._repair_ended_pass(approval_decisions, partial_answer, metadata_start_index)
             approval_decisions = []
-            self._history.trim_to_last_complete_tool_results()
-            # What the pass showed stays, also an answer cut off mid-stream.
-            self._history.keep_partial_answer(partial_answer)
 
         await self._drain_abandoned_injections()
         self._persist_history_metadata(
@@ -181,6 +169,69 @@ class TurnFinalizer:
                 )
 
         return PostRunOutcome(failed=failed, interrupted=interrupted, completed_scope=completed_scope)
+
+    async def settle_steered_pass(
+        self,
+        inputs: Sequence[Message],
+        *,
+        withdraw: Callable[[tuple[str, ...]], Awaitable[None]],
+    ) -> None:
+        """Settle a pass a steer aborted, so the next pass of the same turn goes on from what it committed.
+
+        History is repaired as for a failed pass, then the answer it was
+        writing is dropped, as a Continue drops it: *withdraw* hears the
+        segments it was shown in. The turn goes on, so nothing that ends it
+        runs: messages still queued wait for the next pass, and no marker,
+        state transition, save, hook or trajectory turn end follows.
+        """
+        loaded = self._current.require_loaded()
+        recorder = loaded.loop_recorder
+        committed = recorder.committed_count > 0
+        # One synchronous stretch, so no recovery checkpoint sees it half done.
+        # The pass's input first: its loop messages merge after it.
+        self._history.restore_unsent_input(inputs)
+        approval_decisions = loaded.bindings.approval.drain_decisions()
+        metadata_start_index = _post_compaction_history_start_index(self._turn_state, self._current)
+        partial_answer, loaded.bindings.state.partial_answer = loaded.bindings.state.partial_answer, ()
+        self._repair_ended_pass(approval_decisions, partial_answer, metadata_start_index)
+        self._persist_history_metadata(approval_decisions=[], metadata_start_index=metadata_start_index, failed=True)
+        withdrawn = self._history.remove_trailing_answer()
+        # History now holds the pass's loop messages: a checkpoint must not merge copies of them again.
+        recorder.reset()
+        self._clear_parent_sub_agent_state()
+        if self._fsm.is_awaiting_sub_agents():
+            self._fsm.try_transition(Trigger.SUB_AGENT_RESOLVED)
+        # The provider state the pass left is incomplete: the next pass sends local history.
+        loaded.bindings.backend.service_session_id = ""
+        # The next pass's recovered messages go after this one's settled work.
+        self._turn_state.history_start_index = len(self._history.messages)
+        if withdrawn:
+            await withdraw(withdrawn)
+        if committed:
+            # The recorder's own barrier no longer counts this work: persist it
+            # before the next request, as that barrier would.
+            outcome = await self._writer.persist_barrier()
+            if outcome is not RecoveryPersistOutcome.PERSISTED:
+                logger.debug("Steered pass's committed work not persisted before the next pass: %s", outcome)
+
+    def _repair_ended_pass(
+        self, approval_decisions: list[Any], partial_answer: Sequence[Content], metadata_start_index: int
+    ) -> None:
+        """Keep what a pass that ended early committed, and the answer it showed."""
+        # The pass-start boundary keeps a retried/resumed pass's recovered
+        # messages AFTER retained work from an earlier same-turn pass.
+        # A failed pass can finalize only after construction installs its recorder.
+        self._history.merge_loop_messages(
+            self._current.require_loaded().loop_recorder,
+            insert_index=metadata_start_index,
+        )
+        self._history.persist_approval_decisions(
+            approval_decisions,
+            start_index=metadata_start_index,
+        )
+        self._history.trim_to_last_complete_tool_results()
+        # What the pass showed stays, also an answer cut off mid-stream.
+        self._history.keep_partial_answer(partial_answer)
 
     async def _capture_workspace_baseline(self) -> tuple[bool, bool]:
         """Capture after the terminal transition and before the persisted save.

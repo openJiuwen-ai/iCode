@@ -85,8 +85,8 @@ DEFAULT_RESOURCE_EXTENSIONS: tuple[str, ...] = (
 )
 
 # How deep to scan resource/script files within an individual skill directory.
-# Depth 1 means the skill root only; depth 2 means root plus one subdirectory level.
-DEFAULT_SEARCH_DEPTH = 2
+# Depth 1 means the skill root only; depth 2 adds one subdirectory level, depth 3 two.
+DEFAULT_SEARCH_DEPTH = 3
 
 # Lowercase letters, numbers, hyphens; no leading/trailing/consecutive hyphens.
 VALID_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9]*-[a-z0-9])*[a-z0-9]*$")
@@ -315,7 +315,7 @@ def _scan_skill_files(
     """Recursively scan a skill directory for files matching *extensions*.
 
     ``search_depth=1`` scans only the skill root; ``2`` scans the root plus
-    one subdirectory level.  Candidates failing containment or symlink checks
+    one subdirectory level; ``3`` adds a second.  Candidates failing containment or symlink checks
     are skipped with a warning. Nested ``SKILL.md`` files do not create a new
     skill boundary during this per-skill scan: their sibling resources and
     scripts belong to the parent, while every ``SKILL.md`` remains excluded.

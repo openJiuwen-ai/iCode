@@ -40,7 +40,7 @@ from chrys.service.agent_middleware.system_reminder import wrap_system_reminder 
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
 
 
 @pytest.fixture(autouse=True)
@@ -119,6 +119,29 @@ class _Policy:
         self.before_retry_calls += 1
         if self.before_retry_hook is not None:
             self.before_retry_hook()
+
+
+_STALL_TIMEOUT = 0.01
+
+
+async def _silent_then_hung(
+    policy: _Policy, on_close: Callable[[], None] | None = None
+) -> AsyncIterator[ChatResponseUpdate]:
+    """One silent update, then a pull that never answers: the only pull the stall watchdog times.
+
+    The watchdog times idle wall-clock gaps, and a starved runner can hold a healthy pull longer
+    than a test-sized timeout; the stream the script meant to succeed then stalls, and the loop
+    asks the wire for a call the script never planned. Armed as this stream hands over its update,
+    for the pull that follows, and disarmed when the stream closes, it fires on that pull alone.
+    """
+    policy.stall_timeout_seconds = _STALL_TIMEOUT
+    try:
+        yield _silent_update()
+        await asyncio.Event().wait()
+    finally:
+        policy.stall_timeout_seconds = None
+        if on_close is not None:
+            on_close()
 
 
 class _ScriptedWire:
@@ -373,20 +396,17 @@ async def test_stall_fallback_closes_nested_stream_and_continues_tool_loop() -> 
     runs: list[str] = []
     closed = 0
     cleanups = 0
+    policy = _Policy()
 
-    async def _stalled_updates():
+    def _closed() -> None:
         nonlocal closed
-        try:
-            yield _silent_update()
-            await asyncio.Event().wait()
-        finally:
-            closed += 1
+        closed += 1
 
     async def _cleanup() -> None:
         nonlocal cleanups
         cleanups += 1
 
-    inner = ResponseStream(_stalled_updates(), finalizer=ChatResponse.from_updates)
+    inner = ResponseStream(_silent_then_hung(policy, _closed), finalizer=ChatResponse.from_updates)
     inner.with_cleanup_hook(_cleanup)
 
     async def _resolve_inner() -> ResponseStream[ChatResponseUpdate, ChatResponse]:
@@ -394,7 +414,6 @@ async def test_stall_fallback_closes_nested_stream_and_continues_tool_loop() -> 
 
     stalled = ResponseStream.from_awaitable(_resolve_inner())
     stalled.with_cleanup_hook(_cleanup)
-    policy = _Policy(stall_timeout_seconds=0.01)
     wire = _ScriptedWire(
         [
             [_call_update("c1", "echo", text="first")],
@@ -459,12 +478,10 @@ async def test_local_streaming_wire_lanes_compose_to_3n_plus_2_worst_case(budget
     the final success. The transient and stall lanes are independent counters,
     and the blocking fallback carries its own transient lane."""
 
-    def _stalled_stream() -> ResponseStream:
-        async def _updates():
-            yield _silent_update()
-            await asyncio.Event().wait()
+    policy = _Policy(max_retries=budget, stall_max_retries=budget)
 
-        return ResponseStream(_updates(), finalizer=ChatResponse.from_updates)
+    def _stalled_stream() -> ResponseStream:
+        return ResponseStream(_silent_then_hung(policy), finalizer=ChatResponse.from_updates)
 
     outcomes: list[Any] = []
     outcomes.extend(ConnectionError(f"stream transient {i}") for i in range(budget))
@@ -474,7 +491,6 @@ async def test_local_streaming_wire_lanes_compose_to_3n_plus_2_worst_case(budget
     outcomes.append(_text_response("done"))
 
     wire = _ScriptedWire(outcomes)
-    policy = _Policy(max_retries=budget, stall_timeout_seconds=0.01, stall_max_retries=budget)
     layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(wire))
 
     stream = layer.get_response(
@@ -523,13 +539,8 @@ async def test_stall_downgraded_exhaustion_final_is_stripped() -> None:
     response-level metadata being re-yielded as updates.
     """
     runs: list[str] = []
-
-    async def _stalled_updates():
-        yield _silent_update()
-        await asyncio.Event().wait()
-
-    stalled = ResponseStream(_stalled_updates(), finalizer=ChatResponse.from_updates)
-    policy = _Policy(stall_timeout_seconds=0.01)
+    policy = _Policy()
+    stalled = ResponseStream(_silent_then_hung(policy), finalizer=ChatResponse.from_updates)
     session = AgentSession()
     downgraded_final = ChatResponse(
         messages=[Message("assistant", [Content.from_function_call("c2", "echo", arguments={"text": "late"})])],

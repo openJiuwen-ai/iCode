@@ -179,6 +179,63 @@ def test_summary_preserves_specialized_hosted_calls_and_results(restored: bool) 
         assert fragment in summary
 
 
+@pytest.mark.parametrize(
+    ("items", "expected"),
+    [
+        pytest.param([Content.from_text("47 matches")], "47 matches", id="text"),
+        pytest.param([Content.from_data(b"\x89PNG", "image/png")], "[image/png image]", id="image-data"),
+        pytest.param(
+            [Content.from_data(b"%PDF-1.7", "application/pdf")],
+            "[application/pdf artifact]",
+            id="document-data",
+        ),
+        pytest.param(
+            [Content.from_uri("https://example.com/shot.png", media_type="image/png")],
+            "[image/png image]",
+            id="image-uri",
+        ),
+    ],
+)
+@pytest.mark.parametrize("restored", [False, True], ids=["live", "restored"])
+def test_summary_renders_function_result_items(items: list[Content], expected: str, restored: bool) -> None:
+    """A function result's non-text items render as placeholders, never as ``completed``."""
+    messages = [
+        _assistant_tool_call("c1", "view_image", args={"path": "shot.png"}),
+        Message("tool", [Content.from_function_result("c1", result=items)]),
+    ]
+    if restored:
+        messages = [Message.from_dict(message.to_dict()) for message in messages]
+
+    summary = _build_summary(messages)
+
+    assert expected in summary
+    assert "→ completed" not in summary
+
+
+def test_summary_renders_hosted_file_placeholder() -> None:
+    """Hosted file results keep their name instead of collapsing to their id."""
+    messages = [
+        Message("assistant", [Content.from_shell_tool_call(call_id="shell-1", commands=["ls"])]),
+        Message(
+            "tool",
+            [
+                Content.from_shell_tool_result(
+                    call_id="shell-1",
+                    outputs=[
+                        Content.from_hosted_file(file_id="file-1", name="report.pdf"),
+                        Content.from_shell_command_output(stdout="ok", exit_code=0),
+                    ],
+                )
+            ],
+        ),
+    ]
+
+    summary = _build_summary(messages)
+
+    assert "[file: report.pdf]" in summary
+    assert "ok" in summary
+
+
 def test_summary_preserves_absorbed_narration():
     """Fused groups may hold assistant narration between the call and its
     results; the summary carries that text in transcript order."""

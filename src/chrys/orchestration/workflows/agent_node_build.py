@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, Any
 from chrys.foundation.events.types import Warning
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, StreamStall
-from chrys.foundation.tool_kinds import KIND_ASK_USER, KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
-from chrys.kernel import RESPONSE_READY_KWARG, LoopRecorder, StallExhaustedAction
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
+from chrys.kernel import RESPONSE_READY_KWARG, LoopRecorder, ResponseReadyObserver, StallExhaustedAction
 from chrys.orchestration.invoker.acp import AcpConversation, AcpInvocationCounters
 from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker, AcpUpdateTranslator
 from chrys.orchestration.invoker.acp_spec import resolve_acp_spec
@@ -78,10 +78,8 @@ from chrys.service.profiles.models.schema import API_STYLE_RESPONSES
 from chrys.service.session.sub_agent_logs import SubAgentLogStats
 from chrys.service.skills.adapter import create_skills_provider
 from chrys.service.state.serializers import serialized_message_payload
-from chrys.service.tools.builtins.web.build import assemble_web_tools
+from chrys.service.tools import packs as tool_packs
 from chrys.service.tools.names import chrys_reserved_tool_names
-from chrys.service.tools.registry import ToolRegistry
-from chrys.service.vision import filter_image_tools
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -89,11 +87,12 @@ if TYPE_CHECKING:
     from chrys.foundation.config.settings import Settings
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.workspace import Workspace
-    from chrys.kernel import ChatResponse, Message
+    from chrys.kernel import Message
     from chrys.orchestration.invoker.content_projection import ContentProjector
     from chrys.orchestration.session_usage import SessionUsagePublisher
     from chrys.orchestration.workflows.agent_archive import AgentNodeArchive
     from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
+    from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.policy import ApprovalMode
     from chrys.service.context.compaction.spill import SpillQuota
@@ -147,7 +146,7 @@ class AgentNodeCallbacks:
     observer: KernelPassObserver
     content: Callable[[], ContentProjector | None]
     """The projector of the pass in flight, which publishes its model text."""
-    response_ready: Callable[[ChatResponse], Awaitable[None]]
+    response_ready: ResponseReadyObserver
     checkpoint: Callable[[], Coroutine[Any, Any, None]]
     usage: Callable[..., None]
     side_call_usage: Callable[[Mapping[str, Any]], None]
@@ -175,6 +174,8 @@ class KernelNodeParts:
     hosted_unkept: Callable[[Sequence[Message]], tuple[str, ...]]
     """Provider-hosted tool calls the newest model request executed that the given resumed history does not
     keep with that request's landed response: a resumed pass would send that request again."""
+    reminder: SystemReminderMiddleware
+    """The node's reminders; each attempt asks its extension contexts through it before its pass starts."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,33 +224,24 @@ async def build_kernel_node(
     )
     await conversation.own_or_release(client.aclose)
     environment = SessionEnvironment.capture(session_id=res.session_id, workspace=res.workspace)
-    registry = ToolRegistry(vision_enabled=model.vision)
-    builtin_categories = list(profile.tools.builtins or [])
-    web_tools = assemble_web_tools(
-        builtin_categories,
-        res.settings,
-        profile.tools.web_search,
-        profile.tools.web_fetch,
-        chat_options=chat_options,
-        agent=profile.name,
-        model_profile_id=model.id,
-        session_id=session_id,
-    )
-    registry.load_builtins(
-        builtin_categories,
+    tool_build = tool_packs.ToolBuild(
+        tools=profile.tools,
+        agent_name=profile.name,
         runtime=environment,
         settings=res.settings,
-        shell_filter_config=profile.tools.shell_filter,
         session_id=session_id,
         session_dir=res.session_dir,
-        web=web_tools,
+        model_profile_id=model.id,
+        chat_options=chat_options,
+        vision=model.vision,
+        allow_user_interaction=res.allow_user_interaction,
         background_tasks=res.background_tasks,
     )
-    for warning in web_tools.warnings:
+    assembled_tools = await tool_packs.assemble_tools(tool_build)
+    web_tools = assembled_tools.web
+    for warning in assembled_tools.warnings:
         await res.bus.publish(warning)
-    tools = filter_image_tools(registry.get_all(), vision_enabled=model.vision)
-    if not res.allow_user_interaction:
-        tools = [tool for tool in tools if get_tool_kind(tool) != KIND_ASK_USER]
+    tools = list(assembled_tools.tools)
     workspace_roots = [res.workspace.primary_cwd, *(wd.path for wd in res.workspace.working_dirs)]
     # Node inputs can be generated by earlier nodes; approval stays anchored to the user's run request.
     turn_context = TurnContextHolder()
@@ -282,6 +274,19 @@ async def build_kernel_node(
         conversation.own(mcp_adapter.disconnect_all)
         tools.extend(await mcp_adapter.connect_all(profile.tools.mcp))
         warn_if_tool_loading_unbinds_thinking(profile, model, chat_options, mcp_adapter.tool_names_by_server)
+    # Extensions come last: their tools yield every name the agent's other tools take.
+    extensions = await tool_packs.assemble_extensions(
+        tool_build,
+        profile.extensions,
+        taken=[
+            *(tool.name for tool in tools),
+            *web_tools.hosted,
+            *(mcp_adapter.tool_namespace if mcp_adapter is not None else ()),
+        ],
+    )
+    for warning in extensions.warnings:
+        await res.bus.publish(warning)
+    tools.extend(extensions.tools)
     web_tools.check_names(tools)
     skills_provider, skill_warnings = await create_skills_provider(
         profile.skills,
@@ -335,6 +340,7 @@ async def build_kernel_node(
         catalog_pointer_enabled=False,
         skill_catalog_provider=skills_provider.render_catalog_reminder if skills_provider is not None else None,
         mcp_instructions_provider=mcp_adapter.render_instructions_reminder if mcp_adapter is not None else None,
+        extension_contexts=extensions.contexts,
     )
     last_words_inputs = LastWordsInputs(
         profile=model,
@@ -396,6 +402,7 @@ async def build_kernel_node(
         tool_result_ceiling_tokens=res.settings.tool_result_ceiling_tokens,
         stats=stats,
         origin=callbacks.emitter().origin,
+        extension_hooks=extensions.tool_hooks,
     )
     middleware: list[Any] = [sub_event_mw]
     if res.allow_user_interaction:
@@ -428,6 +435,7 @@ async def build_kernel_node(
             profile_name=profile.name,
             session_archive_read_roots=[res.session_dir / COMPACTIONS_DIR_NAME],
             turn_context=turn_context,
+            extension_hooks=extensions.tool_hooks,
         ),
     )
     approval.bind_publisher(callbacks.emitter())
@@ -564,6 +572,7 @@ async def build_kernel_node(
         attempt_trace,
         sub_agent_tools,
         lambda kept: validation.hosted_commits_in_flight_unkept(kept, loop_recorder.landed_response),
+        runtime.reminder,
     )
 
 

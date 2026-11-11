@@ -92,6 +92,12 @@ def blank_commands(value: str) -> str:
     return _COMMAND_PLACEHOLDER_RE.sub(lambda match: "x" * len(match.group()), value)
 
 
+def has_command_placeholder(value: str) -> bool:
+    """Whether unresolved *value* holds a ``{{!command}}`` that resolving would run (escaped braces do not count)."""
+    unescaped = value.replace("{{{{", _ESCAPED_OPEN).replace("}}}}", _ESCAPED_CLOSE)
+    return _COMMAND_PLACEHOLDER_RE.search(unescaped) is not None
+
+
 def resolve_env_templates(value: str, *, location: str, allow_commands: bool = True) -> str:
     """Resolve ``{{ENV_VAR}}`` and ``{{!command}}`` placeholders in a string.
 

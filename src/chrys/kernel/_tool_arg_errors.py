@@ -870,7 +870,10 @@ def _matches_json_type(value: Any, schema_type: str) -> bool:
         case "string":
             return isinstance(value, str)
         case "integer":
-            return isinstance(value, int) and not isinstance(value, bool)
+            # As ``tools._matches_json_schema_type``: ``3.0`` is an integer.
+            return (isinstance(value, int) and not isinstance(value, bool)) or (
+                isinstance(value, float) and value.is_integer()
+            )
         case "number":
             return isinstance(value, int | float) and not isinstance(value, bool)
         case "boolean":
@@ -1627,5 +1630,15 @@ def _argument_validation_message(
     message = (
         f"Invalid arguments for {_quoted_identifier(tool_name)}: {issue_text}. "
         f"Expected: {_schema_type_text(display_schema, schema)}."
+    )
+    return _bounded_text(_sanitize_message_text(message), _MAX_MESSAGE_CHARS)
+
+
+def _integer_limit_argument_message(*, tool_name: str) -> str:
+    """Explain arguments whose integer literal is past Python's conversion limit."""
+    message = (
+        f"Invalid arguments for {_quoted_identifier(tool_name)}: an integer literal in the arguments is past "
+        "the integer-string conversion limit, so the arguments could not be parsed. Send the value as a "
+        "smaller integer or as a string."
     )
     return _bounded_text(_sanitize_message_text(message), _MAX_MESSAGE_CHARS)

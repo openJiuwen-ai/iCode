@@ -28,7 +28,7 @@ from chrys.service.vision import image_stub_middleware_for_model
 from .resources import Conversation
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
     from pathlib import Path
 
     from chrys.foundation.events.bus import EventBus
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from chrys.foundation.retry import RetryAttemptInfo
     from chrys.kernel.client import BaseChatClient
     from chrys.kernel.middleware import ChatMiddleware
+    from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
     from chrys.service.agent_middleware.injection import InjectionMiddleware
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from chrys.service.context.compaction.last_words import CompactionStatus
     from chrys.service.context.compaction.last_words_state import DropRoundBreakerState
     from chrys.service.context.compaction.spill import SpillQuota
+    from chrys.service.extensions import BoundContext
     from chrys.service.hooks.manager import HookManager
     from chrys.service.profiles.agents.schema import CompactionConfig
     from chrys.service.profiles.models.schema import ModelProfile
@@ -91,6 +93,7 @@ class ReminderInputs(TypedDict):
     background_tasks_provider: NotRequired[Callable[[], str | None] | None]
     mcp_instructions_provider: NotRequired[Callable[[], str | None] | None]
     file_change_provider: NotRequired[Callable[[], str | None] | None]
+    extension_contexts: NotRequired[Sequence[BoundContext]]
 
 
 class LastWordsInputs(TypedDict):
@@ -128,6 +131,7 @@ class ApprovalInputs(TypedDict):
     profile_name: NotRequired[str]
     session_archive_read_roots: NotRequired[list[Path] | None]
     turn_context: NotRequired[TurnContextHolder | None]
+    extension_hooks: NotRequired[ExtensionToolHooks | None]
 
 
 class AskUserInputs(TypedDict):

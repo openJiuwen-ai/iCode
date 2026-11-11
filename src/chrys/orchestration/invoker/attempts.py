@@ -669,6 +669,18 @@ class AttemptRunner:
             run_kwargs["options"] = resolution.options_without_handles
         run_kwargs["client_kwargs"] = resolution.client_kwargs_without_handles
 
+    def _raise_if_interrupted(self) -> None:
+        """End the attempt before its task starts when an interrupt is already latched.
+
+        An interrupt cancels the attempt task through its handle; one accepted
+        while the operation was being recorded found no task to cancel. The
+        kernel loop's wire policy makes the same check before each call, but a
+        run with none (service-side storage) would still send the request. Called
+        with no ``await`` before the task is created, so nothing can slip between.
+        """
+        if self._interrupt.is_interrupted:
+            raise asyncio.CancelledError
+
     async def _run_agent(self, input: list[Message], run_kwargs: AgentRunKwargs) -> AgentResponse[Any]:
         """Run agent.run() in a child task so interrupt() can cancel it.
 
@@ -686,6 +698,7 @@ class AttemptRunner:
             return await self._agent.run(input, stream=False, **run_kwargs)
 
         async with self.trace.run(run_kwargs, stream=False):
+            self._raise_if_interrupted()
             if self._blocking_call_timing is BlockingCallTiming.BEFORE_ATTEMPT_TASK:
                 # Preserve the child's original call timing, including sync
                 # exceptions from run(). Kernel telemetry binds its ContextVars
@@ -971,6 +984,7 @@ class AttemptRunner:
         # stream/tool — including long-running sub-agents.  (The blocking
         # path already does this in :meth:`_run_agent`.)
         async with self.trace.run(run_kwargs, stream=True):
+            self._raise_if_interrupted()
             self.handle.task = asyncio.create_task(_iterate_and_finalize())
             try:
                 return await self.handle.task

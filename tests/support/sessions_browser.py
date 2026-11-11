@@ -19,6 +19,7 @@ from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.sessions.screen import SessionsScreen
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.models.session_surface import SessionSurface
+from chrys.service.state._session_meta import copy_session_meta
 from chrys.service.state.session_listing import (
     SESSION_PAGE_SIZE,
     SessionListing,
@@ -40,9 +41,10 @@ class SessionsHostApp(App):
 class FakeSessionStore:
     """Chat sessions ``session-0`` (newest) … ``session-<count-1>``, listed and paged like the real store.
 
-    The listing is a snapshot of :attr:`sessions` when opened; each page
-    load returns the current meta objects of the snapshot's rows, dropping
-    those deleted since. *surfaces* gives each session's recorded surface
+    The listing is a snapshot of :attr:`sessions` when opened, each entry with
+    its own copy of the meta (editing :attr:`sessions` afterwards makes the
+    snapshot stale, as another process would); each page load returns the
+    current meta objects of the snapshot's rows, dropping those deleted since. *surfaces* gives each session's recorded surface
     (``None``: saved before surfaces were recorded); the rest are TUI.
     """
 
@@ -65,6 +67,8 @@ class FakeSessionStore:
         self.listings_opened: list[str] = []
         """The kind of each listing opened."""
         self.pages_requested: list[tuple[frozenset[SessionSurface], int]] = []
+        self.loaded_ids: list[tuple[str, ...]] = []
+        """The sessions each page load read, by id."""
 
     async def list_sessions(self) -> list[SessionMeta]:
         return list(self.sessions)
@@ -84,6 +88,7 @@ class FakeSessionStore:
                     meta.updated_at,
                     meta.last_surface or SessionSurface.TUI,
                     Path(meta.session_id),
+                    meta=copy_session_meta(meta),
                 )
                 for meta in listed
             ),
@@ -104,6 +109,7 @@ class FakeSessionStore:
         self, listing: SessionListing, surfaces: Collection[SessionSurface], page: int, page_size: int
     ) -> SessionPage:
         selected, current, page_count, total = page_slice(listing, surfaces, page, page_size=page_size)
+        self.loaded_ids.append(tuple(entry.session_id for entry in selected))
         live = {meta.session_id: meta for meta in self.sessions}
         metas = tuple(live[entry.session_id] for entry in selected if entry.session_id in live)
         return SessionPage(metas, current, page_count, total)
@@ -120,6 +126,9 @@ class GatedPageStore(FakeSessionStore):
         self._free_loads = free_loads
         self.gates: list[asyncio.Event] = []
         self.cancelled_loads = 0
+        self._loads_running = 0
+        self.most_loads_running = 0
+        """The most page loads that ever ran at once."""
 
     async def load_session_page(
         self,
@@ -130,15 +139,20 @@ class GatedPageStore(FakeSessionStore):
         page_size: int = SESSION_PAGE_SIZE,
     ) -> SessionPage:
         self.pages_requested.append((frozenset(surfaces), page))
-        if len(self.pages_requested) > self._free_loads:
-            gate = asyncio.Event()
-            self.gates.append(gate)
-            try:
-                await gate.wait()
-            except asyncio.CancelledError:
-                self.cancelled_loads += 1
-                raise
-        return self.page(listing, surfaces, page, page_size)
+        self._loads_running += 1
+        self.most_loads_running = max(self.most_loads_running, self._loads_running)
+        try:
+            if len(self.pages_requested) > self._free_loads:
+                gate = asyncio.Event()
+                self.gates.append(gate)
+                try:
+                    await gate.wait()
+                except asyncio.CancelledError:
+                    self.cancelled_loads += 1
+                    raise
+            return self.page(listing, surfaces, page, page_size)
+        finally:
+            self._loads_running -= 1
 
     def release_all(self) -> None:
         for gate in self.gates:
@@ -155,7 +169,8 @@ async def wait_for_row_count(table: DataTable, pilot: Pilot, count: int) -> None
 
 async def wait_for_load_idle(screen: SessionsScreen, pilot: Pilot) -> None:
     await wait_for(
-        lambda: not screen._loading,
+        # A load is asked for before its worker starts loading.
+        lambda: not screen._loading and screen._loading_request is None,
         pilot=pilot,
         description="Expected sessions load to become idle",
     )

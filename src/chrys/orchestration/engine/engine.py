@@ -36,6 +36,7 @@ from chrys.foundation.events.types import (
     InvocationResumed,
     InvocationRetryRequested,
     ProfileSwitched,
+    RetryWaitSkip,
     SessionClear,
     SessionDelete,
     SessionFork,
@@ -53,6 +54,7 @@ from chrys.foundation.events.types import (
     UserRollback,
     WorkspaceChange,
 )
+from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.tool_kinds import KIND_SUB_AGENT
 from chrys.foundation.trajectory.context import TrajectoryContext
@@ -95,6 +97,10 @@ if TYPE_CHECKING:
 _current_engines: dict[str, AgentEngine] = {}
 _foreground_engine_session_id: str | None = None
 logger = logging.getLogger(__name__)
+_WORKFLOW_ROLLBACK_ACTIVE = msg(
+    "engine.rollback.workflow_active",
+    fallback="Cannot discard while a workflow run is active. Cancel the workflow run first.",
+)
 
 
 def get_current_engine(session_id: str | None = None) -> AgentEngine | None:
@@ -525,6 +531,7 @@ class AgentEngine:
         await self._bus.subscribe(UserRetry, self._on_user_retry)
         await self._bus.subscribe(UserInject, self._on_user_inject)
         await self._bus.subscribe(UserInjectCancel, self._on_user_inject_cancel)
+        await self._bus.subscribe(RetryWaitSkip, self._on_retry_wait_skip)
         await self._bus.subscribe(UserRollback, self._on_user_rollback)
         await self._bus.subscribe(AgentProfileSwitch, self._on_profile_switch)
         await self._bus.subscribe(SessionNew, self._on_new_session)
@@ -595,7 +602,12 @@ class AgentEngine:
                 await self._hook_confirmations.close()
 
     async def _session_operation(
-        self, operation: str, run: Callable[[], Awaitable[None]], *, target_session_id: str | None = None
+        self,
+        operation: str,
+        run: Callable[[], Awaitable[None]],
+        *,
+        target_session_id: str | None = None,
+        workflow_active_display: MessageRef | None = None,
     ) -> None:
         """Session-family operations and workflow runs exclude each other, in both directions.
 
@@ -613,6 +625,7 @@ class AgentEngine:
                 Error(
                     code="workflow_active",
                     message=f"Cannot {operation} while a workflow run is active. Cancel the workflow run first.",
+                    display_message=workflow_active_display,
                     session_id=target_session_id or self._session.session_id,
                 )
             )
@@ -686,11 +699,8 @@ class AgentEngine:
         on session reload).  Equal to the last
         completed turn index while the engine is idle between turns.
 
-        Exposed so the TUI can label the "you are here" entry in the
-        rollback picker independently of which snapshots happen to
-        exist on disk — otherwise a session with all snapshots
-        deleted would show ``Turn 1 (Current)`` instead of the real
-        current-turn index.
+        The TUI uses this authoritative counter for discard range labels,
+        independently of which snapshots remain on disk.
         """
         return self._session.turn_number
 
@@ -703,6 +713,7 @@ class AgentEngine:
                 atomic_copy_file=atomic_copy_file,
                 lock_timeout_seconds=SESSION_WRITE_LOCK_TIMEOUT_SECONDS,
             ),
+            workflow_active_display=_WORKFLOW_ROLLBACK_ACTIVE.bind(),
         )
 
     async def reset_after_failed_startup_restore(self) -> None:
@@ -720,10 +731,10 @@ class AgentEngine:
         sub-agents resolve via the cascade-abort branch (otherwise their
         ``pending_decision`` future would keep their ``_invoke``
         coroutine pinned forever and the subsequent task cancel below
-        would leak).  Then sets the interrupt flag / cancels the parent
-        task. It then binds cancellation to the exact pre-executor run task
-        or interrupts the active executor; ``run_and_save`` detects
-        ``was_interrupted`` and rolls back history.
+        would leak). The interrupt is bound to the exact run task before that
+        cascade, so no pass starts after it; the active executor's pass is
+        then aborted. ``run_and_save`` detects ``was_interrupted`` and rolls
+        back history.
         """
         await self._turns.on_user_interrupt(_event)
 
@@ -781,6 +792,10 @@ class AgentEngine:
     async def _on_user_inject_cancel(self, event: UserInjectCancel) -> None:
         """Handle user cancellation of a still-pending mid-run injection."""
         await self._turns.on_user_inject_cancel(event)
+
+    async def _on_retry_wait_skip(self, event: RetryWaitSkip) -> None:
+        """Start the retry the user chose not to wait for."""
+        self._turns.on_retry_wait_skip(event)
 
     async def _on_background_task_stop(self, event: BackgroundTaskStop) -> None:
         """Start stopping the background command the user picked (task ids are random, never reused)."""

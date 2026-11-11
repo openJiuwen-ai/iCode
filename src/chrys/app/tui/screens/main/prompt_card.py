@@ -31,7 +31,7 @@ from chrys.foundation.i18n import MessageRef, msg
 from chrys.service.prompt_shortcuts.shell import shell_commands
 
 if TYPE_CHECKING:
-    from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
+    from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +182,8 @@ class PromptCardController:
         # commands a send runs; a draft with neither keeps its card unseen.
         # Every keystroke repaints: only a shortcut's draft is worth reading whole.
         owner = self._callbacks.draft_owner()
-        state = None if owner is None else self._view(owner, self._callbacks.draft().text)
+        # What the draft says is what its send carries: a folded paste's commands count.
+        state = None if owner is None else self._view(owner, self._callbacks.draft().sent_text())
         shown = state if state is not None and state.visible else None
         if shown == self._shown:
             return
@@ -213,7 +214,7 @@ class PromptCardController:
         owner = draft.owner
         if owner is None:
             return "plain"
-        view = self._view(owner, draft.text)
+        view = self._view(owner, draft.sent_text())
         switching = any(choice is not None and choice.value is not None for choice in (view.agent, view.model))
         if not switching and not view.commands:
             return "plain"

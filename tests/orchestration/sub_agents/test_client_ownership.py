@@ -5,17 +5,25 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import create_autospec
 
 import pytest
 
-import chrys.orchestration.sub_agents.tools as sub_agent_module
-from tests.support.llm_client_engines import ALT_MODEL, MAIN_MODEL, SUB_MODEL, start_client_engine, switch_model
+from chrys.service.tools import packs as tool_packs
+from tests.support.llm_client_engines import (
+    ALT_MODEL,
+    MAIN_MODEL,
+    SUB_AGENT,
+    SUB_MODEL,
+    start_client_engine,
+    switch_model,
+)
+from tests.support.tool_packs import install_tools
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from chrys.kernel import FunctionTool
     from tests.support.engines import AgentEngineFactory
     from tests.support.llm_http_clients import HttpClientLedger
 
@@ -40,12 +48,15 @@ async def test_sub_agent_acquire_failure_closes_its_client(
     http_client_ledger: HttpClientLedger,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    error = RuntimeError("sub-agent web tools failed")
-    monkeypatch.setattr(
-        sub_agent_module,
-        "assemble_web_tools",
-        create_autospec(sub_agent_module.assemble_web_tools, side_effect=error),
-    )
+    error = RuntimeError("sub-agent tools failed")
+    create_packs = tool_packs.create_packs
+
+    def fail_the_sub_agent(build: tool_packs.ToolBuild, pack_ids: list[str]) -> list[tuple[str, list[FunctionTool]]]:
+        if build.agent_name == SUB_AGENT:
+            raise error
+        return create_packs(build, pack_ids)
+
+    install_tools(monkeypatch, side_effect=fail_the_sub_agent)
 
     with pytest.raises(RuntimeError) as info:
         await start_client_engine(agent_engine, tmp_path)

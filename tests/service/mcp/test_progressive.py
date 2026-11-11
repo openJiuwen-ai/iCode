@@ -394,6 +394,21 @@ async def test_agent_connect_ignores_reserved_remote_name_excluded_from_permitte
     await adapter.disconnect_all()
 
 
+async def test_tool_namespace_holds_every_name_the_connected_servers_take() -> None:
+    """Extensions load after MCP and their tools yield all of these: deferred tools and loading controls included."""
+    adapter = MCPAdapter(reserved_tool_names=set())
+    fake = _FakeCatalogTool([_function("lookup"), _function("deferred")])
+    config = _config(always_load=["lookup"])
+
+    with patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake):
+        visible = {tool.name for tool in await adapter.connect_all([config])}
+
+    assert "deferred" not in visible
+    assert visible | {"lookup", "deferred"} <= adapter.tool_namespace
+    await adapter.disconnect_all()
+    assert adapter.tool_namespace == frozenset()
+
+
 async def test_connect_all_does_not_downgrade_chrys_name_collision_to_warning() -> None:
     warnings: list[Warning] = []
 
@@ -443,6 +458,44 @@ async def test_load_and_unload_mutate_only_the_current_live_list() -> None:
         "mcp_srv_load_tool",
         "mcp_srv_unload_tool",
     ]
+
+    await adapter.disconnect_all()
+
+
+async def test_tool_the_server_dropped_after_loading_still_unloads() -> None:
+    remote = _function("remote")
+    adapter, fake, initial = await _connected(remote)
+    _list_tool, load_tool, unload_tool = initial
+    live = list(initial)
+    await load_tool.func(FunctionInvocationContext(function=load_tool, arguments={}, tools=live), tool="remote")
+    # A list_changed refresh replaced the catalog without the loaded tool.
+    fake._functions = [_function("other")]
+
+    unload_ctx = FunctionInvocationContext(function=unload_tool, arguments={}, tools=live)
+    unloaded = await unload_tool.func(unload_ctx, tool="remote")
+    missing = await unload_tool.func(unload_ctx, tool="never_loaded")
+
+    assert "next model iteration" in unloaded
+    assert "remote" not in {tool.name for tool in live}
+    assert "'never_loaded' is not available" in missing
+
+    await adapter.disconnect_all()
+
+
+async def test_ambiguous_unload_leaves_the_loaded_tool_in_place() -> None:
+    # Remote ``gh_search`` is shown as ``gh_gh_search``; remote ``search`` as ``gh_search``.
+    catalog = (_function("gh_gh_search", remote_name="gh_search"), _function("gh_search", remote_name="search"))
+    adapter, _fake, initial = await _connected(*catalog, config=_config(tool_name_prefix="gh"))
+    _list_tool, load_tool, unload_tool = initial
+    live = list(initial)
+    await load_tool.func(FunctionInvocationContext(function=load_tool, arguments={}, tools=live), tool="gh_gh_search")
+
+    result = await unload_tool.func(
+        FunctionInvocationContext(function=unload_tool, arguments={}, tools=live), tool="gh_search"
+    )
+
+    assert "is ambiguous" in result
+    assert "gh_gh_search" in {tool.name for tool in live}
 
     await adapter.disconnect_all()
 

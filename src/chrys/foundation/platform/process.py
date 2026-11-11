@@ -15,6 +15,7 @@ import contextlib
 import ctypes
 import errno
 import functools
+import logging
 import ntpath
 import os
 import shutil
@@ -31,6 +32,8 @@ from chrys.foundation.platform.child_reap import install_stopped_child_reap_fix
 from chrys.foundation.platform.runtime_paths import is_windows_store_python_stub
 from chrys.foundation.text.encoding import decode_bytes, is_mostly_text
 from chrys.foundation.util.once_close import finish_close
+
+logger = logging.getLogger(__name__)
 
 # Every subprocess in the app is spawned through this module, and the shim has to
 # be in place before the first one starts, so install it on import.  See
@@ -222,6 +225,13 @@ _CREATE_NEW_CONSOLE = 0x00000010
 _CREATE_SUSPENDED = 0x00000004
 _ERROR_ACCESS_DENIED = 5
 _NTSTATUS_WIN32_ACCESS_DENIED = 0xC0070005
+_WINDOWS_SPAWN_DENIAL_BACKOFF_SECONDS: tuple[float, ...] = (0.25, 0.75)
+"""Waits before redoing a spawn whose every create Windows refused with an access denial.
+
+A denial that survives the job-attribute fallback is not the packaged-executable refusal
+(that one the fallback creates): it is transient, such as an antivirus holding the
+executable for a first-run scan, and lifts within moments.
+"""
 _RESUME_THREAD_FAILED = 0xFFFFFFFF
 _PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D
 _PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
@@ -722,6 +732,11 @@ type _WindowsAttribute = tuple[int, ctypes.Array[Any], str]
 """A process/thread attribute: its id, the array it points into, and the message if Windows rejects it."""
 
 
+def _is_windows_access_denial(error: int) -> bool:
+    """Whether *error* is ERROR_ACCESS_DENIED, which CreateProcessW may also report as its NTSTATUS."""
+    return (error & 0xFFFFFFFF) in (_ERROR_ACCESS_DENIED, _NTSTATUS_WIN32_ACCESS_DENIED)
+
+
 def _windows_create_process(
     api: _WindowsProcessAPI,
     application: str,
@@ -836,11 +851,6 @@ async def _spawn_windows_managed_stdio_process(
 
         # The child joins the job before it runs and inherits only its three stdio handles.
         stdio = (stdin_child, stdout_child, stderr_child)
-        job_attribute: _WindowsAttribute = (
-            _PROC_THREAD_ATTRIBUTE_JOB_LIST,
-            (wintypes.HANDLE * 1)(job_handle),
-            "Unable to attach the Windows Job Object atomically.",
-        )
         handle_attribute: _WindowsAttribute = (
             _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
             (wintypes.HANDLE * 3)(*stdio),
@@ -858,20 +868,43 @@ async def _spawn_windows_managed_stdio_process(
             stdio=stdio,
             process_info=process_info,
         )
-        error = create(flags=creation_flags, attributes=(job_attribute, handle_attribute))
-        # The denial can also come as NTSTATUS_FROM_WIN32(ERROR_ACCESS_DENIED), which ctypes reports signed.
-        suspended = error is not None and (error & 0xFFFFFFFF) in (
-            _ERROR_ACCESS_DENIED,
-            _NTSTATUS_WIN32_ACCESS_DENIED,
-        )
-        if suspended:
-            # Windows refuses the job attribute for a packaged (MSIX) executable, such as PowerShell
-            # installed from the Store: that child is created suspended and runs once a job holds it.
-            # The job the refused attempt named refuses the child too, so the child gets a new one;
-            # it is made before the old one closes, so a failure leaves one live handle to close.
-            refused_job, job_handle = job_handle, _windows_create_job(api)
-            _close_windows_handle(refused_job)
-            error = create(flags=creation_flags | _CREATE_SUSPENDED, attributes=(handle_attribute,))
+        # A sequence whose every create was denied is redone after a wait: each denial leaves a fresh
+        # empty job behind (the fallback's), which the next sequence's first create attaches again.
+        error: int | None = None
+        suspended = False
+        denial_retry_waits = (None, *_WINDOWS_SPAWN_DENIAL_BACKOFF_SECONDS)
+        for index, backoff in enumerate(denial_retry_waits):
+            if backoff is not None:
+                await asyncio.sleep(backoff)
+            job_attribute: _WindowsAttribute = (
+                _PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                (wintypes.HANDLE * 1)(job_handle),
+                "Unable to attach the Windows Job Object atomically.",
+            )
+            error = create(flags=creation_flags, attributes=(job_attribute, handle_attribute))
+            # The denial can also come as NTSTATUS_FROM_WIN32(ERROR_ACCESS_DENIED), which ctypes reports signed.
+            suspended = error is not None and _is_windows_access_denial(error)
+            if suspended:
+                # Windows refuses the job attribute for a packaged (MSIX) executable, such as PowerShell
+                # installed from the Store: that child is created suspended and runs once a job holds it.
+                # The job the refused attempt named refuses the child too, so the child gets a new one;
+                # it is made before the old one closes, so a failure leaves one live handle to close.
+                refused_job, job_handle = job_handle, _windows_create_job(api)
+                _close_windows_handle(refused_job)
+                error = create(flags=creation_flags | _CREATE_SUSPENDED, attributes=(handle_attribute,))
+            if error is None or not suspended or not _is_windows_access_denial(error):
+                break
+            if index + 1 < len(denial_retry_waits):
+                # What denies an ordinary executable is unconfirmed, so every retry is logged — error
+                # code, attempt, wait — to tune the waits on real denials rather than on a guess.
+                logger.warning(
+                    "Windows refused to create the subprocess %r with error %#x; retry %d of %d after %g s",
+                    application,
+                    error & 0xFFFFFFFF,
+                    index + 1,
+                    len(_WINDOWS_SPAWN_DENIAL_BACKOFF_SECONDS),
+                    denial_retry_waits[index + 1],
+                )
         if error is not None:
             # Says when the fallback ran too, so a report shows whether the job attribute was all it refused.
             detail = " even without the Job Object attribute" if suspended else ""

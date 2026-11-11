@@ -53,6 +53,12 @@ _DEFAULT_DETAIL_KEYS: tuple[str, ...] = ("reason", "description")
 # Keys to hide from the args body (always uninteresting or redundant)
 _HIDDEN_KEYS = {"reason", "max_tokens"}
 
+# Further keys hidden only for this host's own tools of a kind (keyed by the chrys
+# tool kind, never a bridged request's presentation_kind): the built-in shell's
+# output budget only trims what the model reads back, while an MCP or remote tool
+# may spend the same name on what it generates.
+_KIND_HIDDEN_KEYS: dict[str, frozenset[str]] = {KIND_SHELL: frozenset({"max_output_tokens"})}
+
 # Human header labels for bridged remote (ACP) requests, keyed by the
 # event's presentation_kind (``display_tool_kind`` values plus the broker's
 # "remote" fallback). Unknown values also land on "Remote tool".
@@ -128,9 +134,11 @@ def _build_args_lines(
     args: dict[str, Any],
     detail_key: str,
     hidden_keys: frozenset[str] | None = None,
+    *,
+    tool_kind: str = "",
 ) -> list[tuple[str, str]]:
     """Build displayable (label, value) pairs, skipping the detail key and hidden keys."""
-    extra_hidden = hidden_keys or frozenset()
+    extra_hidden = (hidden_keys or frozenset()) | _KIND_HIDDEN_KEYS.get(tool_kind, frozenset())
     skip = _HIDDEN_KEYS | extra_hidden | ({detail_key} if detail_key else set())
     lines: list[tuple[str, str]] = []
     for k, v in args.items():
@@ -238,7 +246,7 @@ class ApprovalDialog(
                     self._detail_key = k
                     break
         hidden_keys = approval_body.hidden_arg_keys if approval_body is not None else frozenset()
-        self._arg_lines = _build_args_lines(self._args, self._detail_key, hidden_keys)
+        self._arg_lines = _build_args_lines(self._args, self._detail_key, hidden_keys, tool_kind=tool_kind)
         self._dismissed = False
         self._dismiss_completed = False
         self._dismiss_result: tuple[bool, str, dict[str, Any] | None] | None = None

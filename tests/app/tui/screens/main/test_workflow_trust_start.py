@@ -18,7 +18,7 @@ from chrys.service.llm.mock import MockChatClient
 from tests.orchestration.workflows._hosting import make_host, make_project, patch_runtime, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
-from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, ENGINE_TURN_TIMEOUT, wait_for, with_wait_deadline
 from tests.support.workflow_workers import python_workflow
 
 from ._workflow_support import WorkflowEngine, confirm_workflow_cancel, open_workflow, select_workflow_view
@@ -82,9 +82,9 @@ async def test_trust_dialog_precedes_top_level_execution_and_cancel_has_no_side_
         assert preview.environment.python_version in [str(widget.content) for widget in info.query(Static)]
 
 
-@pytest.mark.parametrize("trigger", ["button", "ctrl+b", "escape"])
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
 async def test_starting_worker_can_be_cancelled_before_acceptance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trigger: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = make_project(tmp_path)
     monkeypatch.chdir(project)
@@ -114,29 +114,34 @@ async def test_starting_worker_can_be_cancelled_before_acceptance(
             await wait_for(lambda: not main._state.run.agent_loading and app.screen is main, pilot=pilot)
             await open_workflow(main, pilot, "slow")
             block.touch()
-            assert main._workflow.run_control.start("")
-            pending = main._workflow.run_control._pending_run
-            assert pending is not None
-            await wait_for(lambda: pid.exists() and bool(pid.read_text()), pilot=pilot, timeout=ENGINE_TURN_TIMEOUT)
-            worker = psutil.Process(int(pid.read_text()))
-            assert replies == [] and not main._workflow.session_view.run_ids
-            assert host.engine.execution().request_id == pending.request_id
-            stop = main._workflow_panel.query_one("#workflow-stop", Button)
-            await wait_for(lambda: not stop.disabled, pilot=pilot)
-            app.save_screenshot(f"starting-cancellable-{trigger.replace('+', '-')}.svg", path=str(tmp_path))
-            if trigger == "button":
-                await click_when_settled(pilot, stop)
-            else:
-                await pilot.press(trigger)
-            await confirm_workflow_cancel(pilot)
-            await wait_for(lambda: bool(replies) and not main._workflow.awaiting_engine, pilot=pilot)
-            await host.engine.workflows.wait_idle()
-            assert len(replies) == 1
-            assert isinstance(replies[0], events.WorkflowRunRejected) and replies[0].error == "cancelled"
-            assert replies[0].request_id == pending.request_id
-            assert host.engine.execution() == ExecutionSnapshot("idle")
-            assert not worker.is_running()
-            assert not main._workflow.session_view.run_ids
-            assert main._workflow.feedback.notice is None
+            # A start cancelled before acceptance leaves the draft idle with no run (asserted each time),
+            # so every trigger cancels its own start, on its own worker, from the same screen.
+            for trigger in ("button", "ctrl+b", "escape"):
+                pid.unlink(missing_ok=True)
+                replies.clear()
+                assert main._workflow.run_control.start("")
+                pending = main._workflow.run_control._pending_run
+                assert pending is not None
+                await wait_for(lambda: pid.exists() and bool(pid.read_text()), pilot=pilot, timeout=ENGINE_TURN_TIMEOUT)
+                worker = psutil.Process(int(pid.read_text()))
+                assert replies == [] and not main._workflow.session_view.run_ids
+                assert host.engine.execution().request_id == pending.request_id
+                stop = main._workflow_panel.query_one("#workflow-stop", Button)
+                await wait_for(lambda stop=stop: not stop.disabled, pilot=pilot)
+                app.save_screenshot(f"starting-cancellable-{trigger.replace('+', '-')}.svg", path=str(tmp_path))
+                if trigger == "button":
+                    await click_when_settled(pilot, stop)
+                else:
+                    await pilot.press(trigger)
+                await confirm_workflow_cancel(pilot)
+                await wait_for(lambda: bool(replies) and not main._workflow.awaiting_engine, pilot=pilot)
+                await host.engine.workflows.wait_idle()
+                assert len(replies) == 1, trigger
+                assert isinstance(replies[0], events.WorkflowRunRejected) and replies[0].error == "cancelled"
+                assert replies[0].request_id == pending.request_id
+                assert host.engine.execution() == ExecutionSnapshot("idle")
+                assert not worker.is_running()
+                assert not main._workflow.session_view.run_ids
+                assert main._workflow.feedback.notice is None
     finally:
         await host.shutdown()

@@ -16,6 +16,7 @@ from chrys.app.tui.binding_display import CLOSE_BINDING, localized_binding
 from chrys.app.tui.i18n import render_content, render_text, widget_localizer
 from chrys.app.tui.language import LANGUAGE_OPTIONS, LANGUAGE_PICKER_TITLE
 from chrys.app.tui.screens.dialogs.base import BaseDialog
+from chrys.app.tui.widgets.choice_list import ChoiceList
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -65,9 +66,11 @@ class LanguagesScreen(BaseDialog[str | None]):
 
     def compose(self) -> ComposeResult:
         with VerticalGroup(id="container"):
-            yield OptionList()
+            yield ChoiceList()
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         localizer = widget_localizer(self)
         container = self.query_one("#container", VerticalGroup)
         container.border_title = render_content(localizer, LANGUAGE_PICKER_TITLE.bind())
@@ -91,12 +94,8 @@ class LanguagesScreen(BaseDialog[str | None]):
             self._last_selected = requested_locale
             self._last_selected_time = now
 
-    def on_key(self, event) -> None:
+    def action_choose(self) -> None:
         """Enter confirms the highlighted locale exactly once."""
-        if event.key != "enter":
-            return
-        event.stop()
-        event.prevent_default()
         option = self.query_one(OptionList).highlighted_option
         if option is not None and option.id:
             self._safe_dismiss(option.id)

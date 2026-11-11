@@ -8,6 +8,8 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from textual.app import App, ComposeResult
+from textual.widgets import Static
 
 from chrys.app.tui.util.removal import finish_shielded, remove_all_shielded
 from tests.support.waiting import wait_for, wait_until
@@ -34,7 +36,9 @@ class _Operation:
 
 
 class _Removable:
-    """A widget whose removal is *operation*."""
+    """A detached widget whose removal is *operation*."""
+
+    parent = None
 
     def __init__(self, operation: _Operation) -> None:
         self._operation = operation
@@ -115,3 +119,35 @@ async def test_a_caller_cancelled_while_the_first_widget_goes_still_removes_ever
     with pytest.raises(asyncio.CancelledError):
         await caller
     assert (first.finished, second.finished) == (True, True)
+
+
+class _SlowToLeave(Static):
+    """A widget whose unmount waits for the test, as a busy machine makes every removal wait."""
+
+    def __init__(self, release: asyncio.Event) -> None:
+        super().__init__("row")
+        self.leaving = False
+        self._release = release
+
+    async def on_unmount(self) -> None:
+        self.leaving = True
+        await self._release.wait()
+
+
+@pytest.mark.asyncio
+async def test_siblings_leave_together_so_their_waits_do_not_add_up() -> None:
+    release = asyncio.Event()
+    rows = [_SlowToLeave(release) for _ in range(3)]
+
+    class _Rows(App[None]):
+        def compose(self) -> ComposeResult:
+            yield from rows
+
+    async with _Rows().run_test():
+        removal = asyncio.create_task(remove_all_shielded(rows))
+        try:
+            await wait_for(lambda: all(row.leaving for row in rows), description="every row leaves before any finishes")
+        finally:
+            release.set()
+            await removal
+        assert not any(row.is_attached for row in rows)

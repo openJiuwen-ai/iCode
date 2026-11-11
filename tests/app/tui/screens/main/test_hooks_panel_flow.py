@@ -17,6 +17,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from textual.geometry import Region
@@ -30,9 +31,12 @@ from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.widgets.chat.messages import AgentMessage
 from chrys.app.tui.widgets.chat.messages import UserMessage as UserMessageWidget
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chrome import hook_indicator as hook_indicator_module
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
 from chrys.app.tui.widgets.chrome.hook_indicator import HookIndicator
+from chrys.app.tui.widgets.hook_activity import HOOK_SHOW_AFTER_SECONDS
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
+from chrys.app.tui.widgets.sidebar import hooks as hook_list_module
 from chrys.app.tui.widgets.sidebar.hooks import HookRunList
 from chrys.app.tui.widgets.sidebar.panel import SIDEBAR_HOOKS_TAB, SidebarPanel
 from chrys.foundation.events.bus import EventBus
@@ -397,6 +401,21 @@ async def test_clicking_the_idle_indicator_while_the_sidebar_is_held_closed_show
         assert not sidebar.is_visible
 
 
+@pytest.fixture
+def aged_indicator_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The footer indicator reads every hook age one display threshold older than it is.
+
+    The real second before a run shows is pinned in ``test_hook_indicator_flow.py``; here a
+    run only has to show, so it shows as soon as it is reported.
+    """
+    real = time.monotonic
+    shadow = ModuleType("time")
+    shadow.__dict__.update(vars(time))
+    shadow.monotonic = lambda: real() + HOOK_SHOW_AFTER_SECONDS
+    monkeypatch.setattr(hook_indicator_module, "time", shadow)
+
+
+@pytest.mark.usefixtures("aged_indicator_clock")
 async def test_clicking_the_indicator_while_it_shows_a_run_opens_that_runs_details(tmp_path: Path) -> None:
     release = tmp_path / "release"
     manager = _manager(
@@ -417,7 +436,7 @@ async def test_clicking_the_indicator_while_it_shows_a_run_opens_that_runs_detai
         fire = asyncio.create_task(manager.fire(HookEvent.BEFORE_TOOL_CALL, _payload()))
         try:
             indicator = main.query_one(HookIndicator)
-            # The indicator names a waited-on run once it has lasted a second.
+            # The indicator names a waited-on run once it has lasted a second (the aged clock: at once).
             await wait_for(
                 lambda: "slow-gate" in str(indicator.render()) or fire.done(),
                 timeout=ENGINE_TURN_TIMEOUT,
@@ -582,7 +601,10 @@ async def test_a_hidden_tab_neither_reads_nor_renders_on_a_change(tmp_path: Path
         log.rows = (_record("e2"), _record("e1"))
         for _ in range(3):
             await bus.publish(HookRunsChanged(session_id=_SESSION), raise_handler_errors=True)
-        assert not await wait_until(lambda: log.reads > reads or rows.content is not painted, timeout=1.5, pilot=pilot)
+        # A shown list reads on its next pump (``call_later``): 0.3 s is many pumps. The live row's
+        # one-second timer is what else could paint it: hidden, it is parked.
+        assert not await wait_until(lambda: log.reads > reads or rows.content is not painted, timeout=0.3, pilot=pilot)
+        assert hooks._timer is not None and not hooks._timer._active.is_set(), "the hidden list's timer runs"
         main.query_one(SidebarPanel).focus_tab(SIDEBAR_HOOKS_TAB)
         await wait_for(
             lambda: len(_rows(main)) == 2 and _rows(main)[0].startswith("✓"), pilot=pilot, description="reread"
@@ -616,22 +638,57 @@ async def _close_modal(pilot: Pilot, app: ChrysApp, main: MainScreen) -> None:
     await wait_for(lambda: app.screen is main, pilot=pilot, description="back on MainScreen")
 
 
-async def test_the_running_time_stops_under_a_modal_and_catches_up_once_it_closes(tmp_path: Path) -> None:
+class _ListClock:
+    """The Hooks list's clock: real time, plus the seconds a test moves it on by."""
+
+    def __init__(self) -> None:
+        self.offset = 0.0
+        self._real = time.monotonic
+
+    def monotonic(self) -> float:
+        return self._real() + self.offset
+
+
+@pytest.fixture
+def list_clock(monkeypatch: pytest.MonkeyPatch) -> _ListClock:
+    # Only the list's reading of run times moves on. Its one-second timer, waits and the event
+    # loop keep the real clock, so the rows still change on real ticks.
+    clock = _ListClock()
+    shadow = ModuleType("time")
+    shadow.__dict__.update(vars(time))
+    shadow.monotonic = clock.monotonic
+    monkeypatch.setattr(hook_list_module, "time", shadow)
+    return clock
+
+
+async def test_the_running_time_stops_under_a_modal_and_catches_up_once_it_closes(
+    tmp_path: Path, list_clock: _ListClock
+) -> None:
     live = _record("live", state="running", age=5.0)
     assert live.started_at is not None
     log = _FixedLog((live, _record("e1")))
     app = _make_app(tmp_path, EventBus(), log)
     async with app.run_test(size=(160, 40)) as pilot:
         main = await _ready(pilot)
-        await _show_hooks_tab(pilot, main)
+        hooks = await _show_hooks_tab(pilot, main)
         await wait_for(lambda: _running_seconds(main) is not None, pilot=pilot, description="the running row")
         shown = _running_seconds(main)
+        # A second passes for the list: its next tick shows it.
+        list_clock.offset += 1.0
         await wait_for(lambda: _running_seconds(main) != shown, timeout=3.0, pilot=pilot, description="a tick")
 
         await _open_modal(pilot, app, main)
         covered = _running_seconds(main)
-        # Nothing sends the covered list a Hide: its own first tick parks the timer.
-        assert not await wait_until(lambda: _running_seconds(main) != covered, timeout=2.5, pilot=pilot), (
+        timer = hooks._timer
+        assert timer is not None
+        # Three seconds pass for the list while it is covered: any paint from now on would show them.
+        list_clock.offset += 3.0
+        # Nothing sends the covered list a Hide: its own first tick parks the timer, painting nothing.
+        await wait_for(
+            lambda: not timer._active.is_set(), timeout=3.0, pilot=pilot, description="the timer parked under the modal"
+        )
+        # Parked, the timer paints nothing; anything else would reach the list on its next pumps.
+        assert not await wait_until(lambda: _running_seconds(main) != covered, timeout=0.3, pilot=pilot), (
             "the running time kept counting under the modal"
         )
 
@@ -640,7 +697,7 @@ async def test_the_running_time_stops_under_a_modal_and_catches_up_once_it_close
         await wait_for(
             lambda: (
                 (seconds := _running_seconds(main)) is not None
-                and abs(seconds - int(time.monotonic() - live.started_at)) <= 1
+                and abs(seconds - int(list_clock.monotonic() - live.started_at)) <= 1
                 and seconds > (covered or 0) + 1
             ),
             timeout=0.5,
@@ -648,6 +705,7 @@ async def test_the_running_time_stops_under_a_modal_and_catches_up_once_it_close
             description="caught up",
         )
         caught_up = _running_seconds(main)
+        list_clock.offset += 1.0
         await wait_for(
             lambda: (_running_seconds(main) or 0) > (caught_up or 0),
             timeout=3.0,
@@ -668,11 +726,12 @@ async def test_a_change_under_a_modal_is_read_once_it_closes(tmp_path: Path) -> 
         rows = main.query_one("#hook-runs-rows", Static)
         reads = log.reads
         painted = rows.content
-        # The live run ends while the modal covers the list.
+        # The live run ends while the modal covers the list. A shown list would read on its next
+        # pump (``call_later``): 0.3 s is many pumps.
         log.rows = (_record("live", age=0.1), _record("e1"))
         for _ in range(3):
             await bus.publish(HookRunsChanged(session_id=_SESSION), raise_handler_errors=True)
-        assert not await wait_until(lambda: log.reads > reads or rows.content is not painted, timeout=1.5, pilot=pilot)
+        assert not await wait_until(lambda: log.reads > reads or rows.content is not painted, timeout=0.3, pilot=pilot)
         await _close_modal(pilot, app, main)
         await wait_for(lambda: _rows(main)[0].startswith("✓"), pilot=pilot, description="the ended run shown")
         assert log.reads == reads + 1

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Convert pasted or dropped image paths into chat ``@file`` mentions."""
+"""Recognize pasted or dropped image paths and clipboard bitmaps for the chat input."""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ from urllib.request import url2pathname
 from chrys.app.tui.terminal.title import running_under_textual_web_driver
 from chrys.foundation.platform import get_platform, safe_getcwd
 from chrys.foundation.text.images import IMAGE_MIME_BY_EXTENSION
-from chrys.foundation.text.mentions import format_file_mention
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -54,18 +53,15 @@ class _ClipboardImageGrab:
     source_path: Path
 
 
-def convert_pasted_image_paths_to_mentions(text: str, cwd: Path) -> str:
-    """Return ``@`` mentions when *text* is a paste/drop payload of image paths.
+def pasted_image_paths(text: str, cwd: Path) -> list[Path]:
+    """The image files *text* names when it is a paste/drop payload of image paths only.
 
     Terminal drag-and-drop generally arrives as bracketed paste text. File
     copy/paste can arrive the same way depending on the terminal and platform.
-    Only path-only payloads are rewritten; normal prose is left untouched.
+    Only path-only payloads count; normal prose yields no paths.
     """
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    paths = _parse_image_path_payload(normalized, cwd=cwd)
-    if not paths:
-        return text
-    return " ".join(format_file_mention(path) for path in paths) + " "
+    return _parse_image_path_payload(normalized, cwd=cwd)
 
 
 def clipboard_image_dir_for_session(state_store: StateStore | None, session_id: str | None) -> Path | None:
@@ -82,7 +78,7 @@ def save_clipboard_image_to_file(directory: Path | None) -> Path | None:
     data on the clipboard instead of a file path. Textual's terminal paste
     events only carry text, so the chat input uses this helper from its
     explicit paste action to bridge bitmap clipboard contents back into
-    Chrys' existing ``@file`` image attachment flow. Browser-host sessions
+    the draft's ``[Image #n]`` labels, which send as ``@file`` attachments. Browser-host sessions
     must not read the server machine's clipboard because it is unrelated to
     the browser client's clipboard and may belong to a different user.
     """

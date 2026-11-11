@@ -54,8 +54,8 @@ async def test_hook_await_invalidates_only_the_changed_owner(changed: str, route
         hook.release.set()
         await task
         assert host.session.session_id == "s1"
-        assert host._turn_state.lease.pending_retry.text == ""
-        assert host._turn_state.lease.pending_retry.created_at is None
+        assert host._turn_state.lease.pending_retry.retry.text == ""
+        assert host._turn_state.lease.pending_retry.retry.created_at is None
         assert host.run_texts == host.retry_texts == []
         assert host._fsm.transitions == []
         assert old_executor.injected == host.current.loaded.bindings.injected == []
@@ -107,7 +107,7 @@ async def test_retry_note_commit_rechecks_captured_owner_before_queue(
         assert old_executor.injected == host.current.loaded.bindings.injected == []
         assert old_executor.approval_context == host.current.loaded.bindings.approval_context == []
         assert host.run_texts == host.retry_texts == []
-        assert host._turn_state.lease.pending_retry.text == ""
+        assert host._turn_state.lease.pending_retry.retry.text == ""
     finally:
         release.set()
         if not task.done():

@@ -144,7 +144,10 @@ async def test_main_refresh_holds_real_rebuild_permit_until_run_finishes(
     )
     profile = replace(
         _PROFILE,
-        skills=SkillsConfig(inline=[SkillConfig(name="captured", description="A skill", instructions="A skill")]),
+        skills=SkillsConfig(
+            inline=[SkillConfig(name="captured", description="A skill", instructions="A skill")],
+            auto_load_user_agents_skills=False,
+        ),
     )
     engine = agent_engine(bus, settings=settings, model_registry=registry, state_store=JsonFileStateStore(tmp_path))
     await engine.start(profile)

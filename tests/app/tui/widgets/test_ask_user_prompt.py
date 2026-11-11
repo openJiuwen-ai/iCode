@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.content import Content
 from textual.geometry import Region, Size
@@ -292,6 +293,38 @@ async def test_keyboard_space_toggles_multi_select_options_in_place() -> None:
         await pilot.press("up", "space")
         await pilot.pause()
         assert options.selection == (2,)
+
+
+@pytest.mark.asyncio
+async def test_keys_typed_at_once_toggle_the_options_they_were_typed_on() -> None:
+    # Keys typed while the TUI lags reach the App back to back, as the driver
+    # posts them: the second Down moves the highlight before the first Space's
+    # toggle runs.
+    question = (_questions()[1],)
+    async with _PromptApp(question).run_test(size=(100, 30)) as pilot:
+        prompt = pilot.app.query_one(AskUserPrompt)
+        options = _options(pilot.app, 0)
+        assert await wait_until(lambda: pilot.app.screen.focused is options, pilot=pilot)
+        for key in ("down", "space", "down", "space"):
+            pilot.app.post_message(events.Key(key, " " if key == "space" else None))
+        await wait_for(lambda: options.highlighted == 2, pilot=pilot, description="burst handled")
+        await pilot.pause()
+        assert prompt.answers() == (AskUserAnswer(values=("Windows", "Linux")),)
+        assert options.selection == (1, 2)
+
+
+@pytest.mark.asyncio
+async def test_single_select_key_typed_at_once_submits_the_option_it_was_typed_on() -> None:
+    question = (_questions()[0],)
+    async with _PromptApp(question).run_test(size=(100, 30)) as pilot:
+        app = cast(_PromptApp, pilot.app)
+        options = _options(app, 0)
+        assert await wait_until(lambda: app.screen.focused is options, pilot=pilot)
+        assert options.highlighted == 0
+        for key in ("space", "down"):
+            app.post_message(events.Key(key, " " if key == "space" else None))
+        await wait_for(lambda: bool(app.submissions), pilot=pilot, description="Space submitted")
+        assert app.submissions == [(AskUserAnswer(values=("Backend",)),)]
 
 
 @pytest.mark.asyncio
