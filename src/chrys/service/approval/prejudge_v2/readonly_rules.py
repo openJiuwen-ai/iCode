@@ -24,11 +24,26 @@ def validate_match(raw: object, *, depth: int = 0) -> None:
         if not isinstance(value, dict) or not value or "command" not in value:
             raise ValueError("cli expects an object containing command")
         supported = {
-            "command", "subcommand", "subcommand_in", "global_flags", "global_values",
-            "require_globals", "flags", "value_flags", "flag_prefixes",
-            "short_patterns", "short_clusters", "subargs_in", "subargs_prefix",
-            "require_flags", "require_any_flags", "forbid_flags", "forbid_prefixes",
-            "forbid_short_cluster", "positionals_with_flag", "allow_any_options",
+            "command",
+            "subcommand",
+            "subcommand_in",
+            "global_flags",
+            "global_values",
+            "require_globals",
+            "flags",
+            "value_flags",
+            "flag_prefixes",
+            "short_patterns",
+            "short_clusters",
+            "subargs_in",
+            "subargs_prefix",
+            "require_flags",
+            "require_any_flags",
+            "forbid_flags",
+            "forbid_prefixes",
+            "forbid_short_cluster",
+            "positionals_with_flag",
+            "allow_any_options",
             "allow_positionals",
         }
         if set(value) - supported or type(value["command"]) is not str or not value["command"]:
@@ -43,7 +58,9 @@ def validate_match(raw: object, *, depth: int = 0) -> None:
                 if type(v) is not str or not v:
                     raise ValueError(f"{k} must be a string")
             elif k in {"subargs_in"}:
-                if not isinstance(v, list) or any(not isinstance(x, list) or any(type(y) is not str for y in x) for x in v):
+                if not isinstance(v, list) or any(
+                    not isinstance(x, list) or any(type(y) is not str for y in x) for x in v
+                ):
                     raise ValueError(f"{k} expects lists of strings")
             elif k in {"subargs_prefix"}:
                 if not isinstance(v, list) or any(type(x) is not str for x in v):
@@ -59,11 +76,20 @@ def validate_match(raw: object, *, depth: int = 0) -> None:
     if field == "argv_in":
         if not isinstance(value, list) or not 1 <= len(value) <= 1024:
             raise ValueError("argv_in expects a nonempty list of argv lists")
-        if any(not isinstance(seq, list) or not seq or any(type(t) is not str or not t for t in seq) for seq in value):
+        if any(
+            not isinstance(seq, list) or not seq or any(type(t) is not str or not t for t in seq)
+            for seq in value
+        ):
             raise ValueError("argv_in expects nonempty string vectors")
         return
     if field == "argument_at_regex":
-        if not isinstance(value, list) or len(value) != 2 or type(value[0]) is not int or value[0] < 1 or type(value[1]) is not str:
+        if (
+            not isinstance(value, list)
+            or len(value) != 2
+            or type(value[0]) is not int
+            or value[0] < 1
+            or type(value[1]) is not str
+        ):
             raise ValueError("argument_at_regex expects [one-based-index, pattern]")
         re.compile(value[1])
         return
@@ -77,7 +103,11 @@ def validate_match(raw: object, *, depth: int = 0) -> None:
             raise ValueError("args_max_positionals expects a nonnegative integer")
         return
     if field in {"command_in", "args_none_of", "args_prefix_none_of", "env_names_allowed"}:
-        if not isinstance(value, list) or not 1 <= len(value) <= 256 or any(type(x) is not str or not x for x in value):
+        if (
+            not isinstance(value, list)
+            or not 1 <= len(value) <= 256
+            or any(type(x) is not str or not x for x in value)
+        ):
             raise ValueError(f"{field} expects nonempty string tokens")
         return
     raise ValueError(f"Unsupported structured matcher: {field!r}")
@@ -117,24 +147,33 @@ def _cli_matches(rule: Mapping[str, Any], argv: Sequence[str]) -> bool:
     if "subargs_prefix" in rule and (not remaining or remaining[0] not in rule["subargs_prefix"]):
         return False
     if "subargs_in" in rule and not any(
-        k in rule for k in ("flags", "flag_prefixes", "value_flags", "short_patterns", "forbid_flags", "forbid_prefixes")
+        k in rule
+        for k in (
+            "flags", "flag_prefixes", "value_flags", "short_patterns",
+            "forbid_flags", "forbid_prefixes", "require_flags",
+            "require_any_flags", "allow_any_options", "positionals_with_flag",
+        )
     ):
         return True
     if rule.get("allow_any_options", False):
         options = []
-        for index, arg in enumerate(remaining):
+        for arg in remaining:
             if arg == "--":
                 break
             if arg.startswith("-"):
                 options.append(arg)
-        if any(arg in rule.get("forbid_flags", ()) or any(
-            arg.startswith(prefix) for prefix in rule.get("forbid_prefixes", ())
-        ) for arg in options):
+        if any(
+            arg in rule.get("forbid_flags", ())
+            or any(arg.startswith(prefix) for prefix in rule.get("forbid_prefixes", ()))
+            for arg in options
+        ):
             return False
         if rule.get("forbid_short_cluster") and any(
-            arg.startswith("-") and not arg.startswith("--") and any(
-                c in rule["forbid_short_cluster"] for c in arg[1:]
-            ) for arg in options):
+            arg.startswith("-")
+            and not arg.startswith("--")
+            and any(c in rule["forbid_short_cluster"] for c in arg[1:])
+            for arg in options
+        ):
             return False
     else:
         allowed = set(rule.get("flags", ()))
@@ -157,13 +196,20 @@ def _cli_matches(rule: Mapping[str, Any], argv: Sequence[str]) -> bool:
                 i += 1
             elif arg.startswith("-") and any(p.fullmatch(arg) for p in short_patterns):
                 i += 1
-            elif arg.startswith("-") and not arg.startswith("--") and len(arg) > 2 and short and all(c in short for c in arg[1:]):
+            elif (
+                arg.startswith("-")
+                and not arg.startswith("--")
+                and len(arg) > 2
+                and short
+                and all(c in short for c in arg[1:])
+            ):
                 i += 1
             elif arg.startswith("-"):
                 return False
             else:
                 i += 1
-    opts = [x for x in remaining[:remaining.index("--") if "--" in remaining else len(remaining)] if x.startswith("-")]
+    option_args = remaining[: remaining.index("--") if "--" in remaining else len(remaining)]
+    opts = [x for x in option_args if x.startswith("-")]
     if not set(rule.get("require_flags", ())).issubset(opts):
         return False
     if rule.get("require_any_flags") and not set(rule["require_any_flags"]).intersection(opts):
@@ -202,7 +248,10 @@ def matches(raw: Mapping[str, Any], argv: Sequence[str], *, env_names: Sequence[
     if field == "args_max_positionals":
         return sum(not arg.startswith("-") for arg in argv[1:]) <= value
     if field == "env_names_allowed":
-        return all(name in value or any(name.startswith(p[:-1]) for p in value if p.endswith("*")) for name in env_names)
+        return all(
+            name in value or any(name.startswith(p[:-1]) for p in value if p.endswith("*"))
+            for name in env_names
+        )
     if field == "cli":
         return _cli_matches(value, argv)
     raise ValueError(f"Unsupported matcher {field!r}")

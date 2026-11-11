@@ -304,7 +304,11 @@ def _readonly_word(raw: str) -> str | None:
     if (
         raw
         and any(x in raw for x in ("*", "?", "["))
-        and not any(x in raw for x in ('"', "'", "\\", "$", "\x60", "{", "}", "~", ";", "&", "|", "(", ")", "<", ">", "\n"))
+        and not any(
+            x in raw
+            for x in ('"', "'", "\\", "$", "`", "{", "}", "~", ";", "&", "|", "(", ")", "<", ">", "\n"
+            )
+        )
         and not any(ch.isspace() for ch in raw)
     ):
         return raw
@@ -473,7 +477,9 @@ def _load_builtin_readonly() -> tuple[tuple[Rule, ...], dict[str, Any]]:
     """Parse shipped YAML policy with the same closed structural grammar."""
     from chrys.service.approval.prejudge_v2.readonly_rules import validate_match
 
-    data = yaml.safe_load(importlib.resources.files(__package__).joinpath("readonly_policy.yaml").read_text(encoding="utf-8"))
+    data = yaml.safe_load(
+        importlib.resources.files("chrys.service.approval.prejudge_v2").joinpath("readonly_policy.yaml").read_text(encoding="utf-8")
+    )
     if not isinstance(data, dict) or set(data) != {"schema_version", "policy_id", "guard", "rules"}:
         raise ValueError("Invalid built-in readonly policy schema")
     if data["schema_version"] != 1 or not isinstance(data["rules"], list):
@@ -486,7 +492,13 @@ def _load_builtin_readonly() -> tuple[tuple[Rule, ...], dict[str, Any]]:
         if not isinstance(item, dict) or set(item) != {"id", "effect", "target", "match"}:
             raise ValueError("Malformed built-in readonly rule")
         rid = item["id"]
-        if type(rid) is not str or not rid or rid in seen or item["effect"] != "allow" or item["target"] != "command":
+        if (
+            type(rid) is not str
+            or not rid
+            or rid in seen
+            or item["effect"] != "allow"
+            or item["target"] != "command"
+        ):
             raise ValueError("Invalid built-in readonly rule identity or effect")
         validate_match(item["match"])
         seen.add(rid)
@@ -589,7 +601,9 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
         if not allowed:
             all_allowed = False
     if all_allowed:
-        return PreJudgeResult(Route.ALLOW, "all_units_allowed", tuple(matched), tuple(spans), policy.policy_id, digest)
+        return PreJudgeResult(
+            Route.ALLOW, "all_units_allowed", tuple(matched), tuple(spans), policy.policy_id, digest
+        )
     # Built-in rules share the exact same structured matcher evaluator used by
     # user policy. Never invoke the legacy readonly tokenizer or validators.
     if policy.readonly_rules and policy.readonly_guard and analysis.syntax_valid:
