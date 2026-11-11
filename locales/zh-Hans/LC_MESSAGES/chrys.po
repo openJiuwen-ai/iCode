@@ -1117,6 +1117,13 @@ msgstr "未找到模型配置：{model}"
 msgid "run.model_profile_not_found_with_available"
 msgstr "未找到模型配置：{model}。可用模型配置：{available}"
 
+#. English: Model profile not found: {model}. Could not read these profile
+#. files: {files}
+#. chrys-meta={"fingerprint":"264a7540b8c50bdf5637a5652622199067865b264f47adc003d6ad0686703f5a","multiline":false,"placeholders":["files","model"]}
+#: src/chrys/app/cli/run.py
+msgid "run.model_profile_unreadable"
+msgstr "未找到模型配置：{model}。以下配置文件无法读取：{files}"
+
 #. English: Pass -C <dir> to continue it in another directory.
 #. chrys-meta={"fingerprint":"cf403302bf53005778ba686af15e573154017a629880c6d102e3de389c674a5b","multiline":false,"placeholders":[]}
 #: src/chrys/app/cli/run.py
@@ -1134,6 +1141,13 @@ msgstr "未找到智能体配置：{name}"
 #: src/chrys/orchestration/session_host.py
 msgid "session_host.agent_profile_not_found_with_available"
 msgstr "未找到智能体配置：{name}。可用智能体配置：{available}"
+
+#. English: Agent profile not found: {name}. Could not read these profile
+#. files: {files}
+#. chrys-meta={"fingerprint":"984647473f2d11d3cd636181b209bfb226ca13558c9694dcd149ec6a3ef5aed1","multiline":false,"placeholders":["files","name"]}
+#: src/chrys/orchestration/session_host.py
+msgid "session_host.agent_profile_unreadable"
+msgstr "未找到智能体配置：{name}。以下配置文件无法读取：{files}"
 
 #. English: Agent requested user input in headless mode: {detail}
 #. chrys-meta={"fingerprint":"dc6ab80f7040708ecb8cdea4985cc926f3695b4b65fa3ef01ce0ceaf962ecd60","multiline":true,"placeholders":["detail"]}
@@ -17389,6 +17403,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "cli.profiles.models.empty"
 #~ msgstr "未找到模型配置。"
+
+#~ msgid "profiles.files_unreadable"
+#~ msgstr "以下配置文件无法读取：{files}"
 
 #~ msgid "retry.invalid_response"
 #~ msgstr "响应无效：{reason}"
