@@ -107,7 +107,7 @@ def describe_holder(lease_path: Path) -> str:
     Empty when nothing readable is recorded. Never raises: it decorates a
     refused activation's report, and a diagnostic must not become the failure.
     """
-    holder = _read_record(owner_record_path(lease_path))
+    holder = read_holder(lease_path)
     if holder is None:
         return ""
     try:
