@@ -45,7 +45,7 @@ from chrys.foundation.trajectory.finalizers import RecordingFinalizers
 from chrys.foundation.trajectory.fingerprint import DOMAIN_WORKSPACE, fingerprint_text
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.keys import ensure_owner_only_directory, load_or_create_fingerprint_key
-from chrys.foundation.trajectory.lease import WRITER_LEASE_FILE_NAME, WriterLease, read_holder
+from chrys.foundation.trajectory.lease import WRITER_LEASE_FILE_NAME, WriterLease, describe_holder
 from chrys.foundation.trajectory.recovery import (
     RecoveryScan,
     scan_for_recovery,
@@ -139,12 +139,6 @@ def trajectory_events_path(session_dir: Path) -> Path:
 
 def trajectory_lease_path(session_dir: Path) -> Path:
     return trajectory_dir(session_dir) / WRITER_LEASE_FILE_NAME
-
-
-def _lease_holder_detail(session_dir: Path) -> str:
-    """Who holds this session's writer lease, for the degraded record; "" when unknown."""
-    holder = read_holder(trajectory_lease_path(session_dir))
-    return holder.describe() if holder is not None else ""
 
 
 def runtime_environment() -> dict[str, str]:
@@ -606,7 +600,7 @@ class SessionTrajectory:
         ensure_owner_only_directory(directory)
         lease = WriterLease.try_acquire(trajectory_lease_path(session_dir))
         if lease is None:
-            detail = _lease_holder_detail(session_dir)
+            detail = describe_holder(trajectory_lease_path(session_dir))
             logger.info(
                 "Trajectory writer lease for session %s is held elsewhere (%s); recording disabled",
                 self._session_id,
@@ -615,8 +609,8 @@ class SessionTrajectory:
             self._disable(TrajectoryDisabledReason.LEASE_HELD, detail=detail)
             return
         self._lease = lease
-        # Only the holder writes the transient state: a refused activation must
-        # not mask the verdict of the writer that does hold the session.
+        # Only a run that holds the lease is recovering: a refused activation
+        # records its final verdict alone, never a transient state it is not in.
         self._record_health(TrajectoryHealthState.RECOVERING)
         try:
             self._key = self._load_key()

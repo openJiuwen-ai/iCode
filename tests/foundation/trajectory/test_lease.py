@@ -17,9 +17,11 @@ from chrys.foundation.trajectory import lease as lease_module
 from chrys.foundation.trajectory.lease import (
     WRITER_LEASE_FILE_NAME,
     WriterLease,
+    describe_holder,
     owner_record_path,
     read_holder,
 )
+from tests.support.secure_files import plant_owner_only_bytes
 
 
 def test_lease_is_exclusive_within_a_process_and_released_explicitly(tmp_path: Path) -> None:
@@ -174,7 +176,7 @@ def _dead_pid() -> int:
     return proc.pid
 
 
-def _record_for(pid: int, *, holding: bool) -> lease_module.LeaseHolder:
+def _record_for(pid: int) -> lease_module.LeaseHolder:
     host, boot_time = lease_module._host_facts()
     return lease_module.LeaseHolder(
         pid=pid,
@@ -183,7 +185,6 @@ def _record_for(pid: int, *, holding: bool) -> lease_module.LeaseHolder:
         start_time=0.0,
         host=host,
         boot_time=boot_time,
-        holding=holding,
         at="2026-01-01T00:00:00Z",
     )
 
@@ -216,65 +217,62 @@ def test_a_taken_lease_records_its_holder(tmp_path: Path) -> None:
     try:
         holder = read_holder(lock_path)
         assert holder is not None
-        assert (holder.pid, holder.holding) == (os.getpid(), True)
+        assert holder.pid == os.getpid()
         assert holder.host == lease_module._host_facts()[0]
         assert holder.at
+        assert describe_holder(lock_path).endswith("(running)")
         if not get_platform().is_windows:
             assert owner_record_path(lock_path).stat().st_mode & 0o777 == 0o600
     finally:
         lease.release()
 
 
-def test_a_live_holder_is_reported_and_not_reclaimed(tmp_path: Path) -> None:
-    """A refused probe names the holder and leaves its record byte-for-byte in charge."""
+def test_a_live_holder_is_reported_and_its_record_left_alone(tmp_path: Path) -> None:
+    """A refused attempt reports the holder, and never writes a record of its own."""
     lock_path = tmp_path / WRITER_LEASE_FILE_NAME
     proc = _spawn_holder(lock_path, tmp_path / "ready", hold_seconds=30.0)
     try:
         assert WriterLease.try_acquire(lock_path) is None
+        assert WriterLease.is_held_elsewhere(lock_path) is True
         holder = read_holder(lock_path)
         assert holder is not None
-        assert (holder.pid, holder.holding) == (proc.pid, True)
-        assert WriterLease.is_held_elsewhere(lock_path) is True
+        assert holder.pid == proc.pid
+        assert describe_holder(lock_path).endswith("(running)")
     finally:
         _stop(proc)
 
 
-def test_a_dead_holders_record_is_reclaimed(tmp_path: Path) -> None:
-    """A lock still held after its recorded owner died belongs to nobody: take it."""
+def test_a_dead_holders_record_is_reported_but_never_acts_on_the_lock(tmp_path: Path) -> None:
+    """A record cannot prove nobody holds the lock, so a held lock is never broken."""
     lock_path = tmp_path / WRITER_LEASE_FILE_NAME
     proc = _spawn_holder(lock_path, tmp_path / "ready", hold_seconds=30.0)
     try:
-        lease_module._write_record(owner_record_path(lock_path), _record_for(_dead_pid(), holding=True))
-        lease = WriterLease.try_acquire(lock_path)
-        assert lease is not None
-        holder = read_holder(lock_path)
-        assert holder is not None
-        assert (holder.pid, holder.holding) == (os.getpid(), True)
-        lease.release()
+        lease_module._write_record(owner_record_path(lock_path), _record_for(_dead_pid()))
+        assert WriterLease.try_acquire(lock_path) is None
+        assert WriterLease.is_held_elsewhere(lock_path) is True
+        assert describe_holder(lock_path).endswith("(no longer running)")
     finally:
         _stop(proc)
 
 
-def test_a_lock_without_a_holder_record_is_never_reclaimed(tmp_path: Path) -> None:
-    """A lock file whose holder never announced itself is not ours to break."""
+def test_a_lock_without_a_holder_record_stays_held(tmp_path: Path) -> None:
+    """A lock file whose holder never announced itself is still a held lock."""
     lock_path = tmp_path / WRITER_LEASE_FILE_NAME
     proc = _spawn(_RAW_HOLDER_SCRIPT, lock_path, tmp_path / "ready", hold_seconds=30.0)
     try:
         assert read_holder(lock_path) is None
+        assert describe_holder(lock_path) == ""
         assert WriterLease.try_acquire(lock_path) is None
     finally:
         _stop(proc)
 
 
-def test_a_record_that_never_held_the_lease_is_never_reclaimed(tmp_path: Path) -> None:
-    """A probe's own in-flight record (``holding`` false) proves nobody holds it."""
+def test_a_probe_leaves_no_record_of_itself(tmp_path: Path) -> None:
+    """Asking whether a free lease is free must not make the asker its holder."""
     lock_path = tmp_path / WRITER_LEASE_FILE_NAME
-    proc = _spawn(_RAW_HOLDER_SCRIPT, lock_path, tmp_path / "ready", hold_seconds=30.0)
-    try:
-        lease_module._write_record(owner_record_path(lock_path), _record_for(_dead_pid(), holding=False))
-        assert WriterLease.try_acquire(lock_path) is None
-    finally:
-        _stop(proc)
+    plant_owner_only_bytes(lock_path, b"")
+    assert WriterLease.is_held_elsewhere(lock_path) is False
+    assert read_holder(lock_path) is None
 
 
 def test_lease_is_reclaimed_by_os_when_holder_is_killed(tmp_path: Path) -> None:

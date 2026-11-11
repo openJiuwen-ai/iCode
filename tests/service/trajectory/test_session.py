@@ -39,7 +39,7 @@ from chrys.foundation.trajectory.lease import WriterLease
 from chrys.foundation.trajectory.reader import read_trajectory
 from chrys.foundation.trajectory.writer import EmitResult, FdWriteBackend, TrajectoryWriter, WriterState
 from chrys.service.trajectory import session as session_module
-from chrys.service.trajectory.health import TrajectoryHealthState, trajectory_health_path
+from chrys.service.trajectory.health import TrajectoryHealthState, trajectory_health_path, write_health
 from chrys.service.trajectory.session import (
     SessionStartInfo,
     SessionTrajectory,
@@ -1326,3 +1326,16 @@ async def test_second_live_recorder_is_disabled_while_the_lease_is_held(
     assert await third.emit(_draft(4)) is EmitResult.WRITTEN
     assert third.runtime_id != first.runtime_id
     assert _health(session_dir)["state"] == TrajectoryHealthState.HEALTHY
+
+
+def test_health_never_creates_the_folder_it_reports_on(tmp_path: Path) -> None:
+    """A record about a refused folder must not recreate the folder it refused."""
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    write_health(
+        session_dir,
+        session_id=SESSION_ID,
+        state=TrajectoryHealthState.DEGRADED,
+        reason=TrajectoryDisabledReason.PERMISSION,
+    )
+    assert not trajectory_dir(session_dir).exists()

@@ -14,11 +14,15 @@ machine-readable cause.
 bringing its writer up, ``healthy`` once that writer runs, and ``degraded`` for
 every reason recording was disabled (``reason`` then carries the same value the
 warning reports, and ``detail`` what is known about the cause — the process
-holding the session, say). Only the lease holder writes ``recovering``, so a
-refused run cannot mask the verdict of the writer that does hold the session;
-the last verdict nonetheless wins, and ``pid`` and ``updatedAt`` name the run
-that wrote it. The file says what that run decided, never whether its process
-is still alive.
+holding the session, say).
+
+The newest verdict wins, including one from a run that was refused the lease:
+such a run writes ``degraded``/``lease_held`` naming the holder, and the holder
+does not write again, so during a takeover the file says "this session is held
+elsewhere" rather than "it is recording". That is the answer a caller starting
+a prepared session needs, and ``pid`` and ``updatedAt`` name the run that
+wrote the verdict; the file says what that run decided, never whether its
+process is still alive.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ import os
 from pathlib import Path
 from typing import Final
 
-from chrys.foundation.platform.files import SecureFileError, atomic_write_owner_only_text
+from chrys.foundation.platform.files import SecureFileError, atomic_write_owner_only_bytes
 from chrys.foundation.trajectory.envelope import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -76,7 +80,13 @@ def write_health(session_dir: Path, *, session_id: str, state: str, reason: str 
         + "\n"
     )
     try:
-        atomic_write_owner_only_text(trajectory_health_path(session_dir), payload)
+        # ``create_parents=False``: the folder's absence is the ``permission``
+        # case, and recreating it here would undo the very refusal being recorded.
+        atomic_write_owner_only_bytes(
+            trajectory_health_path(session_dir),
+            payload.encode("utf-8", errors="backslashreplace"),
+            create_parents=False,
+        )
     except SecureFileError, OSError:
         # A health record nobody can write is not a reason to fail a session.
         logger.debug("Unable to record trajectory health for session %s", session_id, exc_info=True)

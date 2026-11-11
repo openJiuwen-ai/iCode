@@ -9,27 +9,22 @@ lease keeps following that worker until it exits (or the OS reclaims it when
 the process dies — at which point the stuck thread is gone too).
 
 Acquisition never blocks: a held lease means "this session already has a
-writer somewhere", and the caller opens the session trajectory-disabled.
+writer somewhere", and the caller opens the session trajectory-disabled. That
+refusal is what the *holder record* answers: ``writer.owner``, an owner-only
+JSON file next to the lock, written by a process only once it holds the lock
+and never by a refused attempt. It names the holder's pid, process start time,
+host, system boot time and acquisition time, so a caller can say which process
+holds this session and whether that process is still on this machine instead
+of reporting an anonymous "somebody has it".
 
-Next to the lock sits the *holder record* (``writer.owner``), an owner-only
-JSON file naming who took the lease: its pid, process start time, host name,
-system boot time and acquisition time. The record is written before the lock
-is attempted and flipped to ``holding`` once the lock is in hand, so the last
-record of a live holder always names a holder that announced itself first.
-A caller refused the lock reads that record and may *reclaim* the lease — but
-only when the record says it was held, the host and boot time are this
-machine's, and the recording process is gone or its pid has been reused. The
-OS itself frees the lock when a process dies; reclaiming exists for the cases
-where it does not (a lock server that outlived its client, a handle inherited
-by a child that the recording process no longer speaks for). Anything the
-record cannot prove — no record, a torn one, another host, a probe's own
-in-flight record — is never reclaimed.
-
-Reclaiming renames the stale lock aside and locks a freshly created file, so
-a lock is never truncated or rewritten under its holder; the stale inode keeps
-whatever holds it and is unlinked. A forked child never keeps the lease fd:
-the lock file is opened ``O_CLOEXEC`` on POSIX and not inheritable on Windows,
-and every iCode subprocess is exec'd, so no unrecorded process can be writing.
+The record is diagnostics only. No lock is ever broken on the strength of it:
+a refused attempt cannot see the holder's own acquisition, so "the record says
+a dead process" cannot prove that no live process holds the lock right now —
+between a crashed holder and the next one's record there is a window in which
+the record still names the dead one. Breaking the lock there would put two
+writers on one log. What actually ends a dead holder's lease is the OS: it
+drops the lock when the holder goes away, which is why a crashed iCode never
+blocks its session for good.
 """
 
 from __future__ import annotations
@@ -40,7 +35,6 @@ import logging
 import os
 import socket
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -84,18 +78,12 @@ def owner_record_path(lease_path: Path) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class LeaseHolder:
-    """Who took a writer lease, as recorded next to it.
-
-    ``holding`` is false only for the moment between a caller writing its own
-    record and taking the lock: while it stays false the record proves nothing
-    and no reclaim is ever based on it.
-    """
+    """Who took a writer lease, as recorded next to it."""
 
     pid: int
     start_time: float
     host: str
     boot_time: float
-    holding: bool
     at: str
 
     def describe(self) -> str:
@@ -106,10 +94,27 @@ class LeaseHolder:
 def read_holder(lease_path: Path) -> LeaseHolder | None:
     """The holder the last writer recorded next to *lease_path*; ``None`` when unknown.
 
-    Only diagnostics and the reclaim decision read this: anything unreadable,
-    torn or written under another schema is unknown, never "nobody".
+    Anything unreadable, torn or written under another schema is unknown. A
+    record left by a process that has since released the lease stays readable:
+    it is only ever consulted while somebody holds the lock.
     """
     return _read_record(owner_record_path(lease_path))
+
+
+def describe_holder(lease_path: Path) -> str:
+    """One line naming the recorded holder and whether this machine still sees it.
+
+    Empty when nothing readable is recorded. Never raises: it decorates a
+    refused activation's report, and a diagnostic must not become the failure.
+    """
+    holder = _read_record(owner_record_path(lease_path))
+    if holder is None:
+        return ""
+    try:
+        return f"{holder.describe()} ({_holder_liveness(holder)})"
+    except Exception:
+        logger.debug("Unable to judge whether a writer lease holder is alive", exc_info=True)
+        return holder.describe()
 
 
 def _host_facts() -> tuple[str, float]:
@@ -130,47 +135,45 @@ def _process_start_time() -> float:
     return _PROCESS_START_TIME
 
 
-def _new_record(*, holding: bool) -> LeaseHolder:
-    host, boot_time = _host_facts()
+def _new_record() -> LeaseHolder:
     from chrys.foundation.trajectory.envelope import utc_now_rfc3339
 
+    host, boot_time = _host_facts()
     return LeaseHolder(
         pid=os.getpid(),
         start_time=_process_start_time(),
         host=host,
         boot_time=boot_time,
-        holding=holding,
         at=utc_now_rfc3339(),
     )
 
 
-def _holder_is_dead(holder: LeaseHolder) -> bool:
-    """Whether *holder* provably no longer exists on this machine.
+def _holder_liveness(holder: LeaseHolder) -> str:
+    """Whether the recorded holder is still the process that wrote the record.
 
-    A record from another host or another boot of this host is never judged:
-    this machine cannot see that pid table, and a stale-looking pid there may
-    be the live writer. Within this boot, a missing pid or one whose creation
-    time does not match the record (the pid was reused) is dead.
+    A record from another host, or from another boot of this host, is not
+    judged at all: this machine cannot see that pid table, so it says so
+    rather than guessing.
     """
     import psutil
 
-    try:
-        host, boot_time = _host_facts()
-    except Exception:
-        logger.debug("Unable to read host facts for a writer lease record", exc_info=True)
-        return False
-    if holder.host != host or abs(boot_time - holder.boot_time) > _SAME_BOOT_TOLERANCE_SECONDS:
-        return False
+    host, boot_time = _host_facts()
+    if holder.host != host:
+        return "recorded on another host"
+    if abs(boot_time - holder.boot_time) > _SAME_BOOT_TOLERANCE_SECONDS:
+        return "recorded before this boot"
     try:
         process = psutil.Process(holder.pid)
     except psutil.NoSuchProcess:
-        return True
+        return "no longer running"
     except psutil.Error:
-        return False
+        return "liveness unknown"
     try:
-        return abs(process.create_time() - holder.start_time) > _PID_REUSE_TOLERANCE_SECONDS
+        if abs(process.create_time() - holder.start_time) > _PID_REUSE_TOLERANCE_SECONDS:
+            return "pid since reused"
     except psutil.Error:
-        return False
+        return "liveness unknown"
+    return "running"
 
 
 def _read_record(path: Path) -> LeaseHolder | None:
@@ -190,7 +193,6 @@ def _read_record(path: Path) -> LeaseHolder | None:
             start_time=float(data["startTime"]),
             host=str(data["host"]),
             boot_time=float(data["bootTime"]),
-            holding=bool(data["holding"]),
             at=str(data.get("at", "")),
         )
     except KeyError, TypeError, ValueError:
@@ -206,7 +208,6 @@ def _write_record(path: Path, holder: LeaseHolder) -> None:
                 "startTime": holder.start_time,
                 "host": holder.host,
                 "bootTime": holder.boot_time,
-                "holding": holder.holding,
                 "at": holder.at,
             },
             ensure_ascii=True,
@@ -214,19 +215,9 @@ def _write_record(path: Path, holder: LeaseHolder) -> None:
         )
         + "\n"
     )
-    # ``create_parents=False``: a record rewritten while handing the lease back
-    # must never resurrect a directory the tombstone sweep has just removed.
+    # ``create_parents=False``: a record written while a directory is being
+    # removed must never resurrect it.
     atomic_write_owner_only_bytes(path, payload.encode("utf-8"), create_parents=False)
-
-
-def _restore_record(path: Path, previous: LeaseHolder | None) -> None:
-    """Put the holder's own record back after a probe overwrote it."""
-    if previous is None:
-        return
-    try:
-        _write_record(path, previous)
-    except SecureFileError, OSError:
-        logger.debug("Unable to restore the writer lease holder record at %s", path, exc_info=True)
 
 
 def _try_lock_fd(fd: int) -> bool:
@@ -291,7 +282,7 @@ class WriterLease:
         return not self._released
 
     @classmethod
-    def try_acquire(cls, path: Path) -> WriterLease | None:
+    def try_acquire(cls, path: Path, *, record_holder: bool = True) -> WriterLease | None:
         """Acquire the lease at *path* without waiting; ``None`` when held elsewhere.
 
         The in-process registry is the fast path; the OS lock is the truth
@@ -300,79 +291,33 @@ class WriterLease:
         The parent directory must already exist; open failures other than
         contention propagate as ``SecureFileError``/``OSError``.
 
-        A lease whose record proves its holder dead is reclaimed here, so the
-        caller sees a free lease rather than one nobody holds any more. The
-        record of a live holder is left in place (a failed probe restores it),
-        because that record is what the caller reports as ``lease_held``'s
-        holder.
+        *record_holder* writes the holder record once the lock is in hand. A
+        refused attempt writes nothing: the record always belongs to whoever
+        holds the lock, which is what a caller reports as ``lease_held``'s
+        holder. Probes that only ask whether the lease is free pass
+        ``record_holder=False`` so they never appear as a holder themselves.
         """
         key = _lease_key(path)
         with _HELD_GUARD:
             if key in _HELD_LEASES:
                 return None
-            record_path = owner_record_path(path)
-            previous = _read_record(record_path)
-            _write_record(record_path, _new_record(holding=False))
-            try:
-                handle = secure_open_owner_only_append(path)
-            except BaseException:
-                _restore_record(record_path, previous)
-                raise
-            if _try_lock_fd(handle.fd):
+            handle = secure_open_owner_only_append(path)
+            if not _try_lock_fd(handle.fd):
+                os.close(handle.fd)
+                return None
+            if record_holder:
                 try:
-                    _write_record(record_path, _new_record(holding=True))
+                    _write_record(owner_record_path(path), _new_record())
                 except BaseException:
+                    # A holder nobody can name is a holder the next caller
+                    # would misreport; refuse the lease rather than hold it
+                    # silently.
                     _unlock_fd(handle.fd)
                     os.close(handle.fd)
                     raise
-                lease = cls(path, handle.fd)
-                _HELD_LEASES[key] = lease
-                return lease
-            os.close(handle.fd)
-            _restore_record(record_path, previous)
-            if previous is None or not previous.holding or not _holder_is_dead(previous):
-                return None
-            return cls._reclaim(path, key)
-
-    @classmethod
-    def _reclaim(cls, path: Path, key: str) -> WriterLease | None:
-        """Take the lease a dead holder left behind; ``None`` when that cannot be done safely.
-
-        Renaming the stale lock aside is the race breaker: exactly one caller
-        can move that name, so two reclaimers never end up holding two fresh
-        lock files. The stale inode keeps whatever still holds it and is
-        unlinked; nothing is written into it, so its holder's byte-range lock
-        is never disturbed.
-        """
-        stale = path.with_name(f"{path.name}.stale-{os.getpid()}-{time.monotonic_ns()}")
-        try:
-            os.rename(path, stale)
-        except FileNotFoundError:
-            # Somebody reclaimed between our failed lock and this rename.
-            return None
-        except OSError:
-            logger.debug("Unable to set a stale writer lease aside at %s", path, exc_info=True)
-            return None
-        with contextlib.suppress(OSError):
-            os.unlink(stale)
-        try:
-            handle = secure_open_owner_only_append(path)
-        except SecureFileError, OSError:
-            logger.debug("Unable to create a reclaimed writer lease at %s", path, exc_info=True)
-            return None
-        if not _try_lock_fd(handle.fd):
-            os.close(handle.fd)
-            return None
-        try:
-            _write_record(owner_record_path(path), _new_record(holding=True))
-        except BaseException:
-            _unlock_fd(handle.fd)
-            os.close(handle.fd)
-            raise
-        lease = cls(path, handle.fd)
-        _HELD_LEASES[key] = lease
-        logger.info("Reclaimed a stale trajectory writer lease at %s", path)
-        return lease
+            lease = cls(path, handle.fd)
+            _HELD_LEASES[key] = lease
+            return lease
 
     @classmethod
     def is_held_elsewhere(cls, path: Path) -> bool:
@@ -380,14 +325,13 @@ class WriterLease:
 
         Used by the tombstone sweep: a tombstone whose lease is still held may
         still be written by a stuck worker in another process and must be left
-        alone. A missing lock file means no holder. A lease whose record proves
-        its holder dead is reclaimed on the way, so this answers "someone is
-        writing *now*", not "someone once wrote".
+        alone. A missing lock file means no holder. The probe records nothing,
+        so it never displaces the current holder's record.
         """
         if not path.is_file():
             return False
         try:
-            probe = cls.try_acquire(path)
+            probe = cls.try_acquire(path, record_holder=False)
         except SecureFileError, OSError:
             # Cannot even open the lock file: fail closed, treat it as held.
             return True
@@ -417,8 +361,8 @@ class WriterLease:
     def release(self) -> None:
         """Release the lease (idempotent).
 
-        Nothing is written here: the holder record stays as the last holder
-        left it, and the directory it lives in may already be gone.
+        Nothing is written here: the record stays as the last holder left it,
+        and the directory it lives in may already be gone.
         """
         # Whole body under the registry guard: the key to remove is derived
         # from ``_path``, and ``relocate`` rewrites that field. Reading it
