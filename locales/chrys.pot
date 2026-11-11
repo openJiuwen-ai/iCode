@@ -4951,6 +4951,12 @@ msgstr ""
 msgid "tui.binding.trajectory"
 msgstr ""
 
+#. English: Answer
+#. chrys-meta={"fingerprint":"4a0af57df1047a39b77bfcd4c6c440fd72a7bd4fe7633d6b27867ce1a315e7dc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.answer"
+msgstr ""
+
 #. English: The side question was blocked by a hook. {reason}
 #. chrys-meta={"fingerprint":"df8d40213042ff7026f2f110cbf39c34e228db140572dfbf8ba7222f65a37d67","multiline":true,"placeholders":["reason"]}
 #: src/chrys/app/tui/widgets/btw.py
@@ -4999,6 +5005,12 @@ msgstr ""
 msgid "tui.btw.previous"
 msgstr ""
 
+#. English: Question
+#. chrys-meta={"fingerprint":"868d8746d7e4b42628701a19d6e690b87aba5774ee5f5dc5774b509ada6d57dd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.question"
+msgstr ""
+
 #. English: Side question history could not be read. Your saved file was kept.
 #. chrys-meta={"fingerprint":"a26d854d6bf7dbae8ba50b9e226f943c50d2a9353a5aae329043660fffc05cd5","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/btw.py
@@ -5022,18 +5034,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5c53a809d60b05f1916183b7107cdb107cabe7a7504aa532a82aefc2de32840d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
 msgid "tui.btw.send"
-msgstr ""
-
-#. English: Answer
-#. chrys-meta={"fingerprint":"4a0af57df1047a39b77bfcd4c6c440fd72a7bd4fe7633d6b27867ce1a315e7dc","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/btw.py
-msgid "tui.btw.tab.output"
-msgstr ""
-
-#. English: Question
-#. chrys-meta={"fingerprint":"868d8746d7e4b42628701a19d6e690b87aba5774ee5f5dc5774b509ada6d57dd","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/btw.py
-msgid "tui.btw.tab.question"
 msgstr ""
 
 #. English: Thinking...
@@ -8008,17 +8008,17 @@ msgstr ""
 #. and tool results. Use /btw alone to reopen this session's latest saved
 #. answer.  The main task continues separately. The side question cannot use
 #. tools and does not enter the main conversation. Its card appears below the
-#. chat, leaving the sidebar at full height.  The Answer tab opens by default,
-#. showing a thinking animation until the complete answer is ready. The
-#. Question tab keeps your full question. Long content scrolls within each tab.
-#. Previous/next buttons browse saved answers without changing your selected
-#. tab, and are disabled while generating.  Completed answers are kept with the
-#. session. Clearing, deleting, or rolling back to the starting screen removes
-#. them. Prompt-submission hooks also check side questions. Failed or cancelled
+#. chat, leaving the sidebar at full height.  The card shows your question,
+#. then a thinking animation until the complete answer is ready. Long content
+#. scrolls within the card. Previous/next buttons browse saved answers, and are
+#. hidden while generating. Select text in the card and click Quote to add it
+#. to your message.  Completed answers are kept with the session. Clearing,
+#. deleting, or rolling back to the starting screen removes them.
+#. Prompt-submission hooks also check side questions. Failed or cancelled
 #. questions are not saved. Escape or the close icon cancels a running question
 #. or hides the card, keeping saved answers. Only one side question can run at
 #. a time.
-#. chrys-meta={"fingerprint":"626194918c365b2d5eb3fe660e264720e2e33b4ba64ecec049e9d71afbbacb36","multiline":true,"placeholders":[]}
+#. chrys-meta={"fingerprint":"a230840bfda7f0f76d58cbece4e0774c1c12c8c1e126e94b0da5957ec146a477","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.btw.body"
 msgstr ""
