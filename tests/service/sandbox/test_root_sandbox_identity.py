@@ -252,8 +252,32 @@ def test_bundled_bwrap_argv_hides_host_runtime_dirs_and_session_env(
         },
     )
 
-    for path in _PRIVATE_TMPFS:
+    # ``/run`` and ``/tmp`` must exist before ``--remount-ro /``. bubblewrap
+    # mkdir's a later ``--tmpfs`` target, and that mkdir fails once ``/`` is
+    # read-only. ``/tmp`` is created by its earlier tmpfs; ``/run`` by ``--dir``.
+    remount_root = next(index for index, flag in enumerate(argv) if flag == "--remount-ro" and argv[index + 1] == "/")
+
+    def _has(flag: str, path: str, *, before: int | None = None, after: int | None = None) -> bool:
+        return any(
+            argv[index] == flag
+            and argv[index + 1] == path
+            and (before is None or index < before)
+            and (after is None or index > after)
+            for index in range(len(argv) - 1)
+        )
+
+    assert _has("--dir", "/run", before=remount_root)
+    assert _has("--tmpfs", "/run", after=remount_root)
+    assert _has("--tmpfs", "/tmp", before=remount_root) or _has("--dir", "/tmp", before=remount_root)
+    assert _has("--tmpfs", "/tmp", after=remount_root)
+    for path in ("/run", "/tmp"):
         assert _effective_mount(argv, path) == ("--tmpfs", path), argv
+    from jiuwenbox.server.runtime.process import _var_run_follows_private_run
+
+    if _var_run_follows_private_run():
+        assert not _has("--tmpfs", "/var/run")
+    else:
+        assert _effective_mount(argv, "/var/run") == ("--tmpfs", "/var/run"), argv
 
     values, unset = _explicit_env(argv)
     for key in _HOST_SESSION_ENV:

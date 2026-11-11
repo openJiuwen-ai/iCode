@@ -157,16 +157,43 @@ def _sandbox_process_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return process_env
 
 
+def _var_run_follows_private_run() -> bool:
+    """Whether ``/var/run`` is a symlink onto ``/run``.
+
+    The host bind of ``/var`` keeps that symlink. Once ``/run`` is a private
+    tmpfs, ``/var/run`` already lands there. Mounting another tmpfs on the
+    symlink fails with ``No such file or directory``.
+    """
+    path = Path("/var/run")
+    if not path.is_symlink():
+        return False
+    try:
+        target = path.resolve()
+        run = Path("/run").resolve()
+    except OSError:
+        return False
+    return target == run or target.is_relative_to(run)
+
+
 def _cover_host_runtime_directories(config: BwrapConfig) -> None:
     """Hide host socket directories behind a private tmpfs.
 
     ``BwrapConfig.to_args`` emits ``tmpfs_mounts`` before child binds, so a
     tmpfs recorded there is covered again by ``bind_root_entries`` of ``/``.
     ``extra_args`` are emitted after those binds and after ``--remount-ro``.
-    A read-only bind of ``/var`` still exposes ``/var/run`` to ``connect()``;
-    the ``/var/run`` tmpfs has to come later.
+    ``/run`` and ``/tmp`` are excluded from that bind, so they do not exist
+    in the new root. bubblewrap mkdir's a ``--tmpfs`` target, and doing that
+    only after ``--remount-ro`` fails with ``Can't mkdir /run: Read-only
+    file system``. ``--dir`` creates ``/run`` while the new root is still
+    writable. ``/tmp`` is on the policy read-only list, so its dir mount is
+    emitted as an earlier tmpfs, which also creates the directory. The later
+    ``--tmpfs`` then covers the host sockets.
     """
+    for path in ("/run", "/tmp"):
+        config.add_dir_mount(path)
     for path in _PRIVATE_RUNTIME_DIRS:
+        if path == "/var/run" and _var_run_follows_private_run():
+            continue
         config.extra_args.extend(("--tmpfs", path))
 
 
