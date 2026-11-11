@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -13,7 +14,10 @@ from chrys.app.cli.rsi import build_parser
 from chrys.app.cli.rsi_headless import build_candidate_runner_factory
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile
+from chrys.service.profiles.agents.serializer import save_profile
 from chrys.service.rsi import build_rsi_service_context
+from chrys.service.rsi.case_runner import CaseRunResult
+from chrys.service.rsi.dataset import RsiCase
 
 
 def test_optimize_parser_accepts_agent_and_optimizer_model() -> None:
@@ -147,6 +151,7 @@ def test_rsi_optimize_reports_install_candidate_and_install_flags(tmp_path: Path
 
     assert rsi_cli.main(["optimize", task_id, "--epochs", "1"]) == 0
     out = capsys.readouterr().out
+    assert "inconclusive=0" in out
     assert "best_json_updated=True" in out
     assert "install_kind=stub" in out
     assert rsi_cli.main(["get", task_id]) == 0
@@ -161,6 +166,51 @@ def test_rsi_optimize_reports_install_candidate_and_install_flags(tmp_path: Path
     assert rsi_cli.main(["install", task_id, "--out", str(target)]) == 1
     assert "--force" in capsys.readouterr().err
     assert rsi_cli.main(["install", task_id, "--out", str(target), "--force"]) == 0
+
+
+class _ReadyErrors:
+    """``need-ready`` cannot run; every other case answers without satisfying its checks."""
+
+    async def run_case(self, case: RsiCase, workdir: Path) -> CaseRunResult:
+        workdir.mkdir(parents=True, exist_ok=True)
+        if case.case_id == "need-ready":
+            return CaseRunResult(case_id=case.case_id, response_text="", workdir=workdir, error="provider timed out")
+        return CaseRunResult(case_id=case.case_id, response_text="no", workdir=workdir)
+
+
+def test_rsi_eval_runs_a_profile_yaml_and_reports_errored_cases(tmp_path: Path, monkeypatch, capsys) -> None:
+    fixture = Path(__file__).parents[2] / "service" / "rsi" / "fixtures" / "optimize_dataset.json"
+    _drive_cli(tmp_path, monkeypatch)
+    profile_path = save_profile(AgentProfile(name="Exported", instructions="be exact\n"), target_dir=tmp_path / "p")
+    built: list[AgentProfile] = []
+
+    def fake_factory(
+        *, loaded_settings: object, model_registry: object, timeout: float | None
+    ) -> Callable[[AgentProfile], _ReadyErrors]:
+        del loaded_settings, model_registry
+        assert timeout == 30.0
+
+        def make(candidate: AgentProfile) -> _ReadyErrors:
+            built.append(candidate)
+            return _ReadyErrors()
+
+        return make
+
+    monkeypatch.setattr(rsi_cli, "build_candidate_runner_factory", fake_factory)
+    argv = ["eval", "--dataset", str(fixture), "--profile", str(profile_path), "--timeout", "30"]
+    assert rsi_cli.main(argv) == 1
+    out = capsys.readouterr().out
+    assert [(item.name, item.instructions) for item in built] == [("Exported", "be exact\n")]
+    assert "passed=0/2" in out
+    assert "errored=1" in out
+    assert rsi_cli.main([*argv, "--json"]) == 1
+    assert json.loads(capsys.readouterr().out)["errored"] == 1
+
+    assert rsi_cli.main(["eval", "--dataset", str(fixture), "--profile", str(profile_path), "--stub"]) == 2
+    assert "without --agent or --stub" in capsys.readouterr().err
+    assert rsi_cli.main(["eval", "--dataset", str(fixture), "--profile", str(profile_path), "-a", "Code"]) == 2
+    assert rsi_cli.main(["eval", "--dataset", str(fixture)]) == 2
+    assert "requires --agent or --profile" in capsys.readouterr().err
 
 
 def test_rsi_eval_refuses_out_inside_git_repository(tmp_path: Path, monkeypatch, git_repo_factory, capsys) -> None:

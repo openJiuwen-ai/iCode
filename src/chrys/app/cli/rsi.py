@@ -30,7 +30,6 @@ from chrys.service.profiles.models.resolver import (
 from chrys.service.profiles.models.schema import ModelProfile, is_model_profile_selectable
 from chrys.service.rsi import RsiError, RsiServiceContext, build_rsi_service_context, validate_dataset_file
 from chrys.service.rsi.llm_optimizer import LlmOptimizer, complete_with_model_profile
-from chrys.service.rsi.models import TaskStatus
 from chrys.service.rsi.workdir_seed import enclosing_git_work_tree
 
 
@@ -95,7 +94,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_help(start)
     start.add_argument("task_id", help="Task id (rsi-…)")
     start.add_argument("--json", action="store_true", help="Emit JSON")
-    start.add_argument("--no-wait", action="store_true", help="Enqueue only; do not wait for completion")
 
     tree = commands.add_parser("tree", help="Show the evolution tree projection", add_help=False)
     _add_help(tree)
@@ -128,6 +126,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use case fixtures instead of a live agent (required unless --agent is set)",
     )
     eval_parser.add_argument("-a", "--agent", default=None, help="Agent profile for live headless case runs")
+    eval_parser.add_argument(
+        "--profile",
+        metavar="PATH",
+        default=None,
+        help="Live-run this agent profile YAML instead of --agent (e.g. an exported candidate)",
+    )
     eval_parser.add_argument("-m", "--model", default=None, help="Optional model profile for live runs")
     eval_parser.add_argument(
         "--out",
@@ -331,7 +335,7 @@ def _dispatch(args: argparse.Namespace, ctx: RsiServiceContext, prepared: headle
         )
         return 0
     if args.command == "start":
-        return asyncio.run(_start(ctx, args.task_id, as_json=args.json, wait=not args.no_wait))
+        return asyncio.run(_start(ctx, args.task_id, as_json=args.json))
     if args.command == "tree":
         tree_payload = ctx.get_tree(args.task_id)
         nodes = tree_payload.get("nodes") or []
@@ -371,13 +375,8 @@ def _dispatch(args: argparse.Namespace, ctx: RsiServiceContext, prepared: headle
     return 2
 
 
-async def _start(ctx: RsiServiceContext, task_id: str, *, as_json: bool, wait: bool) -> int:
-    result = ctx.start(task_id)
-    if wait:
-        await ctx.wait_idle()
-        result = {"task_id": task_id, "status": ctx.get_task(task_id)["status"]}
-    else:
-        result = {"task_id": task_id, "status": TaskStatus.QUEUED.value}
+async def _start(ctx: RsiServiceContext, task_id: str, *, as_json: bool) -> int:
+    result = {"task_id": task_id, "status": await ctx.run_mock(task_id)}
     _emit(
         result,
         as_json=as_json,
@@ -390,9 +389,19 @@ async def _eval(ctx: RsiServiceContext, args: argparse.Namespace, prepared: head
     if bool(args.dataset) == bool(args.task):
         _write_stderr("Error: provide exactly one of --dataset or --task")
         return 2
-    if not args.stub and not args.agent:
-        _write_stderr("Error: live evaluation requires --agent (or pass --stub)")
+    if args.profile and (args.agent or args.stub):
+        _write_stderr("Error: --profile runs that profile live; pass it without --agent or --stub")
         return 2
+    if not args.stub and not args.agent and not args.profile:
+        _write_stderr("Error: live evaluation requires --agent or --profile (or pass --stub)")
+        return 2
+    candidate: AgentProfile | None = None
+    if args.profile:
+        profile_path = _expanded_path(args.profile)
+        if profile_path is None:
+            _write_stderr("Error: --profile path is empty")
+            return 2
+        candidate = load_profile_from_yaml(profile_path)
 
     loaded = prepared.loaded
     model_registry = None
@@ -410,13 +419,20 @@ async def _eval(ctx: RsiServiceContext, args: argparse.Namespace, prepared: head
         loaded = loaded_with_active_model_profile(loaded, profile, Source.CLI)
         model_registry = registry
 
-    runner = build_case_runner(
-        stub=bool(args.stub),
-        agent=args.agent,
-        loaded_settings=None if args.stub else loaded,
-        model_registry=model_registry,
-        timeout=args.timeout,
-    )
+    if candidate is not None:
+        runner = build_candidate_runner_factory(
+            loaded_settings=loaded,
+            model_registry=model_registry,
+            timeout=args.timeout,
+        )(candidate)
+    else:
+        runner = build_case_runner(
+            stub=bool(args.stub),
+            agent=args.agent,
+            loaded_settings=None if args.stub else loaded,
+            model_registry=model_registry,
+            timeout=args.timeout,
+        )
     out_dir = _expanded_path(args.out)
     if out_dir is not None:
         enclosing = enclosing_git_work_tree(out_dir)
@@ -440,6 +456,7 @@ async def _eval(ctx: RsiServiceContext, args: argparse.Namespace, prepared: head
         "dataset_id": result.dataset_id,
         "passed": result.passed_count,
         "total": result.total_count,
+        "errored": result.errored_count,
         "score": result.score,
         "scorecard": str(result.scorecard_path),
         "cases": str(result.cases_path),
@@ -451,6 +468,7 @@ async def _eval(ctx: RsiServiceContext, args: argparse.Namespace, prepared: head
             f"run_id={result.run_id}",
             f"dataset_id={result.dataset_id}",
             f"passed={result.passed_count}/{result.total_count}",
+            f"errored={result.errored_count}",
             f"score={result.score}",
             f"scorecard={result.scorecard_path}",
         ],
@@ -498,6 +516,7 @@ async def _optimize(ctx: RsiServiceContext, args: argparse.Namespace, prepared: 
             f"best_candidate={result.best_candidate_id}",
             f"epochs={len(result.epochs)}",
             f"dropped={sum(1 for epoch in result.epochs if epoch.dropped)}",
+            f"inconclusive={sum(1 for epoch in result.epochs if epoch.inconclusive)}",
             f"perfect={result.perfect}",
             f"best_json_updated={result.best_json_updated}",
             f"install_candidate={result.installed_candidate_id}",

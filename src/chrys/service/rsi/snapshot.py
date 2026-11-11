@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -194,6 +195,11 @@ def export_profile_yaml(source: Path, destination: Path, *, overwrite: bool = Fa
     return destination
 
 
+def profile_fingerprint(profile_path: Path) -> str:
+    """Short content hash of a saved candidate profile YAML."""
+    return hashlib.sha256(profile_path.read_bytes()).hexdigest()[:16]
+
+
 def maybe_update_best_pointer(
     store: RsiTaskStore,
     task_id: str,
@@ -202,13 +208,18 @@ def maybe_update_best_pointer(
     score: float,
     profile_path: Path,
     kind: str,
+    base: str,
 ) -> bool:
     """Write ``best.json`` only when this run should replace the previous best.
 
-    Stub and live scores are not comparable: a live run always replaces a stub
-    pointer and a stub run never replaces a live one. Within one kind the new
-    score must be at least as high as the stored one (ties update the pointer).
-    Returns True when the pointer was written.
+    Scores are compared only between runs of the same kind that started from
+    the same base profile (*base*: :func:`profile_fingerprint` of the run's
+    baseline). A live run always replaces a stub pointer and a stub run never
+    replaces a live one; within one kind, a run from a different base replaces
+    the pointer (the latest base wins), and a run from the same base must score
+    at least as high (ties update the pointer). A pointer written before the
+    base was recorded counts as a different base. Returns True when the
+    pointer was written.
     """
     path = best_pointer_path(store, task_id)
     if path.is_file():
@@ -225,7 +236,7 @@ def maybe_update_best_pointer(
             if kind != existing_kind:
                 if existing_kind == "live":
                     return False
-            elif score < existing_score:
+            elif existing.get("base") == base and score < existing_score:
                 return False
     write_json_atomic(
         path,
@@ -234,6 +245,7 @@ def maybe_update_best_pointer(
             "score": score,
             "profile_path": str(profile_path),
             "kind": kind,
+            "base": base,
         },
     )
     return True

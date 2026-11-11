@@ -38,14 +38,26 @@ class RsiWorker:
         self.projector = projector
         self._push_callbacks = push_callbacks or {}
         self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._queued: set[str] = set()
         self._runner: asyncio.Task[None] | None = None
         self._running_task_id: str | None = None
         self._execution: dict[str, asyncio.Task[Any]] = {}
 
+    def holds(self, task_id: str) -> bool:
+        """True while this worker has *task_id* queued or running."""
+        return task_id in self._queued or task_id == self._running_task_id
+
     def enqueue(self, task_id: str) -> str:
-        """Transition CREATED→QUEUED and ensure the runner is alive."""
+        """Transition CREATED→QUEUED and ensure the runner is alive.
+
+        A task already QUEUED that this worker does not hold (left by a process
+        that exited) is queued again.
+        """
         task = self.store.get(task_id)
         if task.status == TaskStatus.QUEUED.value:
+            if not self.holds(task_id):
+                self._queued.add(task_id)
+                self._queue.put_nowait(task_id)
             self._ensure_runner()
             return TaskStatus.QUEUED.value
         if task.status != TaskStatus.CREATED.value:
@@ -56,6 +68,7 @@ class RsiWorker:
             TaskStatus.QUEUED.value,
             cause="enqueue",
         )
+        self._queued.add(task_id)
         self._queue.put_nowait(task_id)
         self._ensure_runner()
         return TaskStatus.QUEUED.value
@@ -117,6 +130,7 @@ class RsiWorker:
                 self._queue.task_done()
 
     async def _run_one(self, task_id: str) -> None:
+        self._queued.discard(task_id)
         task = self.store.get(task_id)
         if task.status != TaskStatus.QUEUED.value:
             return
@@ -193,6 +207,7 @@ class RsiWorker:
             await result
 
     def _dequeue(self, task_id: str) -> None:
+        self._queued.discard(task_id)
         pending: list[str] = []
         while True:
             try:

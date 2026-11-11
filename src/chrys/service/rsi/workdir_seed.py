@@ -6,10 +6,11 @@ The source path is never opened in-place for agent edits. Strategies:
 
 - ``copy`` — recursive copy (default; required for non-git trees)
 - ``git_clone`` — ``git clone --no-local`` into the destination
-- ``git_worktree`` — ``git worktree add --detach`` (fast; shares the source
-  ``.git``, so isolation is weaker — see module docs in the user guide)
+- ``git_worktree`` — accepted for older datasets and materialized exactly like
+  ``git_clone``: a linked worktree would share the caller's refs, config and
+  remotes with an agent that runs without approval prompts
 
-Isolation rules for ``copy`` and ``git_clone``:
+Isolation rules:
 
 - No source git metadata is copied. Every repository found in the source tree
   (root, nested, submodule or linked worktree; any ``.git`` dir, file or
@@ -27,8 +28,6 @@ Isolation rules for ``copy`` and ``git_clone``:
 
 from __future__ import annotations
 
-import json
-import logging
 import os
 import shutil
 import stat
@@ -41,14 +40,10 @@ from typing import Any, Literal
 from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 from chrys.service.rsi.errors import RsiBadRequest
 
-logger = logging.getLogger(__name__)
-
 WorkdirStrategy = Literal["copy", "git_clone", "git_worktree"]
 WORKDIR_STRATEGIES: frozenset[str] = frozenset({"copy", "git_clone", "git_worktree"})
-_SEED_MARKER = ".chrys_rsi_workdir_seed.json"
 RESPONSE_FILE_NAME = ".chrys_rsi_response.txt"
-SESSIONS_DIR_NAME = ".chrys_rsi_sessions"
-_RSI_PRIVATE_FILES = (_SEED_MARKER, RESPONSE_FILE_NAME, SESSIONS_DIR_NAME)
+_RSI_PRIVATE_FILES = (RESPONSE_FILE_NAME,)
 
 
 @dataclass(slots=True, frozen=True)
@@ -166,13 +161,10 @@ def materialize_workdir(
     strategy = seed.strategy
     if strategy == "copy":
         _copy_tree(source, dest)
-    elif strategy == "git_clone":
+    elif strategy in {"git_clone", "git_worktree"}:
         _git_clone(source, dest, ref=seed.ref)
-    elif strategy == "git_worktree":
-        _git_worktree(source, dest, ref=seed.ref)
     else:
         raise RsiBadRequest(f"unknown workdir.strategy: {strategy}")
-    _write_marker(dest, strategy=strategy, source=source)
     _exclude_rsi_files(dest)
     return dest
 
@@ -185,44 +177,22 @@ def snapshot_seed_for_task(
 ) -> WorkdirSeed:
     """Materialize a task-local seed and return a rewritten ``copy`` seed pointing at it.
 
-    ``git_worktree`` is upgraded to ``git_clone`` so the task ``input/`` tree does
-    not keep a live link into the caller's repository. Later case copies rebuild
-    the snapshot's private repositories again.
+    Later case copies rebuild the snapshot's private repositories again.
     """
-    strategy: WorkdirStrategy = seed.strategy
-    if strategy == "git_worktree":
-        strategy = "git_clone"
-    materialize_workdir(
-        WorkdirSeed(source=seed.source, strategy=strategy, ref=seed.ref),
-        dest=dest,
-        dataset_dir=dataset_dir,
-    )
+    materialize_workdir(seed, dest=dest, dataset_dir=dataset_dir)
     # Destination is absolute under the task; store as absolute so later loads
     # (dataset_dir = input/) still resolve even if relative layout shifts.
     return WorkdirSeed(source=str(dest.resolve()), strategy="copy", ref=None)
 
 
-def release_workdir_seeds_under(root: Path) -> None:
-    """Detach any ``git_worktree`` seeds under *root* before deleting the tree."""
-    if not root.is_dir():
-        return
-    for dirpath, _dirnames, filenames in os.walk(root, topdown=False, followlinks=False):
-        if _SEED_MARKER not in filenames:
-            continue
-        workdir = Path(dirpath)
-        try:
-            _release_one_workdir(workdir)
-        except RsiBadRequest as exc:
-            logger.warning("RSI workdir seed release failed for %s: %s", workdir, exc.message)
-
-
 def write_text_nofollow(path: Path, text: str, *, what: str) -> None:
-    """Write *text* to *path* without following a symlink planted there."""
+    """Write *text* to *path* byte for byte, without following a symlink planted there."""
     data = text.encode("utf-8")
     # unlink() on a symlink removes the link, never the target.
     if path.is_symlink():
         path.unlink(missing_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    # Without O_BINARY, Windows opens in text mode and rewrites every "\n" as "\r\n".
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     if nofollow:
         flags |= nofollow
@@ -232,53 +202,11 @@ def write_text_nofollow(path: Path, text: str, *, what: str) -> None:
         # ELOOP / EMLINK when a symlink raced back in; refuse rather than follow.
         raise RsiBadRequest(f"{what} refused (symlink or unwritable): {path}") from exc
     try:
-        os.write(fd, data)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view) :]
     finally:
         os.close(fd)
-
-
-def _release_one_workdir(workdir: Path) -> None:
-    marker_path = workdir / _SEED_MARKER
-    if marker_path.is_symlink() or not marker_path.is_file():
-        return
-    try:
-        payload = json.loads(marker_path.read_text(encoding="utf-8"))
-    except OSError, UnicodeError, json.JSONDecodeError:
-        return
-    if not isinstance(payload, dict):
-        return
-    if payload.get("strategy") != "git_worktree":
-        return
-    source = str(payload.get("source") or "").strip()
-    if not source:
-        return
-    source_path = Path(source)
-    resolved = str(workdir.resolve())
-    result = _run_git(
-        ["worktree", "remove", "--force", resolved],
-        cwd=source_path,
-        check=False,
-    )
-    if result.returncode == 0:
-        return
-    _run_git(["worktree", "prune"], cwd=source_path, check=False)
-
-
-def _write_marker(
-    dest: Path,
-    *,
-    strategy: str,
-    source: Path,
-) -> None:
-    payload: dict[str, Any] = {
-        "strategy": strategy,
-        "source": str(source),
-    }
-    write_text_nofollow(
-        dest / _SEED_MARKER,
-        json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
-        what="workdir marker",
-    )
 
 
 def _exclude_rsi_files(dest: Path) -> None:
@@ -304,7 +232,7 @@ def _exclude_rsi_files(dest: Path) -> None:
 
 
 def _copy_tree(source: Path, dest: Path) -> None:
-    _refuse_escaping_symlinks(source)
+    refuse_escaping_symlinks(source)
     repo_roots = _find_repo_roots(source)
     try:
         shutil.copytree(
@@ -316,7 +244,7 @@ def _copy_tree(source: Path, dest: Path) -> None:
         )
     except OSError as exc:
         raise RsiBadRequest(f"workdir copy failed: {exc}") from exc
-    _refuse_escaping_symlinks(dest, label="copied workdir")
+    refuse_escaping_symlinks(dest, label="copied workdir")
     for relative in repo_roots:
         _rebuild_private_repo(source / relative, dest / relative)
 
@@ -402,7 +330,8 @@ def _remove_tree(path: Path) -> None:
     shutil.rmtree(path, onexc=_on_error)
 
 
-def _refuse_escaping_symlinks(root: Path, *, label: str = "workdir.from") -> None:
+def refuse_escaping_symlinks(root: Path, *, label: str = "workdir.from") -> None:
+    """Raise when a symlink under *root* resolves outside it."""
     root_resolved = root.resolve()
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         for name in (*dirnames, *filenames):
@@ -426,16 +355,7 @@ def _git_clone(source: Path, dest: Path, *, ref: str | None) -> None:
     if ref:
         _run_git(["checkout", "--quiet", "--force", ref], cwd=dest_abs, check=True, ceiling=dest_abs.parent)
     _strip_git_remotes(dest_abs)
-    _refuse_escaping_symlinks(dest_abs, label="cloned workdir")
-
-
-def _git_worktree(source: Path, dest: Path, *, ref: str | None) -> None:
-    _require_git_repo(source)
-    # Always absolute: relative dest would resolve inside the source repo cwd.
-    dest_abs = dest if dest.is_absolute() else dest.resolve()
-    dest_abs.parent.mkdir(parents=True, exist_ok=True)
-    target = ref or "HEAD"
-    _run_git(["worktree", "add", "--detach", str(dest_abs), target], cwd=source, check=True)
+    refuse_escaping_symlinks(dest_abs, label="cloned workdir")
 
 
 def _require_git_repo(path: Path) -> None:

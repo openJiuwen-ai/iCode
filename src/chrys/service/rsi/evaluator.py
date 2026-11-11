@@ -13,7 +13,7 @@ from typing import Any
 
 from chrys.foundation.platform.files import atomic_write_text
 from chrys.service.rsi.case_runner import CaseRunner, CaseRunResult
-from chrys.service.rsi.dataset import RsiCase, RsiDataset
+from chrys.service.rsi.dataset import RsiCase, RsiDataset, stage_judge_inputs
 from chrys.service.rsi.engine_events import EngineEvent
 from chrys.service.rsi.errors import RsiBadRequest
 from chrys.service.rsi.models import utcnow_iso
@@ -37,10 +37,16 @@ class CaseEvalRecord:
     session_id: str | None
     prompt: str = ""
 
+    @property
+    def errored(self) -> bool:
+        """The case could not run (runner error, timeout, workdir setup); the judge never saw it."""
+        return self.error is not None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "case_id": self.case_id,
             "passed": self.passed,
+            "errored": self.errored,
             "score": self.score,
             "response_text": self.response_text,
             "findings": list(self.findings),
@@ -71,11 +77,16 @@ class EvalSuiteResult:
     def cases_path(self) -> Path:
         return self.output_dir / "cases.jsonl"
 
+    @property
+    def errored_count(self) -> int:
+        return sum(1 for record in self.records if record.errored)
+
     def to_scorecard(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
             "dataset_id": self.dataset_id,
             "passed": self.passed_count,
+            "errored": self.errored_count,
             "total": self.total_count,
             "score": self.score,
             "solved_threshold": 1.0,
@@ -83,6 +94,7 @@ class EvalSuiteResult:
                 {
                     "case_id": record.case_id,
                     "passed": record.passed,
+                    "errored": record.errored,
                     "score": record.score,
                     "error": record.error,
                 }
@@ -107,6 +119,7 @@ class ScriptBasedEvaluator:
     ) -> EvalSuiteResult:
         run_id = f"eval-{uuid.uuid4().hex[:8]}"
         out = Path(output_dir) / run_id
+        judge_dir = stage_judge_inputs(dataset, out / "judge")
         cases_dir = out / "case_workspaces"
         cases_dir.mkdir(parents=True, exist_ok=True)
         records: list[CaseEvalRecord] = []
@@ -158,7 +171,7 @@ class ScriptBasedEvaluator:
                     workdir=workdir,
                     error=exc.message,
                 )
-            record = _record_for(case, run, dataset_dir=dataset_dir)
+            record = _record_for(case, run, judge_dir=judge_dir)
             records.append(record)
             node_ref = f"case-{case.case_id}"
             await emit(
@@ -225,7 +238,7 @@ def merge_suite(previous: EvalSuiteResult, partial: EvalSuiteResult) -> EvalSuit
     )
 
 
-def _record_for(case: RsiCase, run: CaseRunResult, *, dataset_dir: Path) -> CaseEvalRecord:
+def _record_for(case: RsiCase, run: CaseRunResult, *, judge_dir: Path) -> CaseEvalRecord:
     if not run.ok:
         return CaseEvalRecord(
             case_id=case.case_id,
@@ -242,7 +255,7 @@ def _record_for(case: RsiCase, run: CaseRunResult, *, dataset_dir: Path) -> Case
         case,
         response_text=run.response_text,
         workdir=run.workdir,
-        dataset_dir=dataset_dir,
+        dataset_dir=judge_dir,
     )
     return CaseEvalRecord(
         case_id=case.case_id,

@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import shutil
 from collections.abc import Collection, Generator
 from pathlib import Path
 from typing import Any
@@ -14,8 +13,8 @@ from typing import Any
 from chrys.foundation.util.lock import FileLock
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.rsi.case_runner import CaseRunner, ProfileAwareStubRunner, StubCaseRunner
-from chrys.service.rsi.dataset import load_dataset, subset_dataset
-from chrys.service.rsi.errors import RsiBadRequest
+from chrys.service.rsi.dataset import load_dataset, stage_judge_inputs, subset_dataset
+from chrys.service.rsi.errors import RsiBadRequest, RsiTaskCorrupt
 from chrys.service.rsi.evaluator import EvalSuiteResult, ScriptBasedEvaluator
 from chrys.service.rsi.llm_optimizer import LlmOptimizer
 from chrys.service.rsi.models import (
@@ -33,7 +32,7 @@ from chrys.service.rsi.optimizer import (
     StubOptimizer,
     new_optimize_run_id,
 )
-from chrys.service.rsi.paths import resolve_rsi_tasks_root, safe_relpath_under, task_dir, write_json_atomic
+from chrys.service.rsi.paths import resolve_rsi_tasks_root, task_dir, write_json_atomic
 from chrys.service.rsi.projector import RsiProjector
 from chrys.service.rsi.provider import MockRsiProvider, RsiProvider
 from chrys.service.rsi.snapshot import (
@@ -93,18 +92,19 @@ class RsiServiceContext:
         return self.tasks_root / _BUSY_LOCK_DIR / f"{task_id}.lock"
 
     @contextlib.contextmanager
-    def _task_busy_lock(self, task_id: str) -> Generator[None]:
-        """Exclusive eval/optimize/delete lock; OS releases it if the process dies."""
+    def _task_busy_lock(self, task_id: str, *, check_task: bool = True) -> Generator[None]:
+        """Exclusive eval/optimize/start/delete lock; OS releases it if the process dies."""
         lock_path = self.busy_lock_path(task_id)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock = FileLock(lock_path, timeout=0)
         try:
             lock.acquire()
         except TimeoutError as exc:
-            raise RsiBadRequest(f"task {task_id} has an active eval/optimize; wait for it to finish") from exc
+            raise RsiBadRequest(f"task {task_id} has an active eval, optimize or start; wait for it to finish") from exc
         try:
-            # A delete that held the lock before us has removed the task.
-            self.store.get(task_id)
+            if check_task:
+                # A delete that held the lock before us has removed the task.
+                self.store.get(task_id)
             yield
         finally:
             lock.release()
@@ -148,18 +148,7 @@ class RsiServiceContext:
                 if not isinstance(cases_raw, list):
                     raise RsiBadRequest("dataset cases must be an array")
                 dataset_dir = dataset.source_path.parent
-                # Copy sibling check scripts under input/ using sanitized relative paths.
-                for case in dataset.cases:
-                    if not case.script:
-                        continue
-                    try:
-                        src = safe_relpath_under(dataset_dir, case.script, field="evaluation.script")
-                        dest = safe_relpath_under(input_dir, case.script, field="evaluation.script")
-                    except ValueError as exc:
-                        raise RsiBadRequest(f"case {case.case_id}: script path escapes sandbox") from exc
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    if src.is_file():
-                        shutil.copy2(src, dest)
+                stage_judge_inputs(dataset, input_dir)
                 # Snapshot workdir seeds into the task so later eval never opens the
                 # caller's original tree in-place; rewrite cases to copy from seeds/.
                 for case, case_raw in zip(dataset.cases, cases_raw, strict=True):
@@ -196,7 +185,12 @@ class RsiServiceContext:
         }
 
     def list_tasks(self) -> list[dict[str, Any]]:
-        return [task.list_projection() for task in self.store.list_tasks()]
+        tasks = [task.list_projection() for task in self.store.list_tasks()]
+        tasks.extend(
+            {"task_id": task_id, "name": "", "scenario": "", "status": "CORRUPT", "created_at": None}
+            for task_id in self.store.corrupt_task_ids()
+        )
+        return tasks
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         task = self.store.get(task_id)
@@ -204,16 +198,29 @@ class RsiServiceContext:
         return task.get_projection(progress=self.projector.derive_progress(task_id))
 
     def delete_task(self, task_id: str) -> None:
-        task = self.store.get(task_id)
-        if task.status in {TaskStatus.RUNNING.value, TaskStatus.QUEUED.value}:
-            raise RsiBadRequest(f"task {task_id} is {task.status}; terminate it before delete")
-        # Held across the removal so an eval/optimize cannot start in between.
-        with self._task_busy_lock(task_id):
-            self.store.delete(task_id)
+        # Held across the removal so no eval, optimize or start can begin in between.
+        with self._task_busy_lock(task_id, check_task=False):
+            try:
+                task: RsiTask | None = self.store.get(task_id)
+            except RsiTaskCorrupt:
+                task = None
+            if task is not None and self.worker.holds(task_id):
+                raise RsiBadRequest(f"task {task_id} is {task.status}; terminate it before delete")
+            # A run in another process holds the busy lock taken above and a run in
+            # this one is held by the worker, so any other RUNNING / QUEUED / PAUSED
+            # status is left over from a process that died.
+            self.store.delete(task_id, any_status=True)
 
     def start(self, task_id: str) -> dict[str, Any]:
         status = self.worker.enqueue(task_id)
         return {"task_id": task_id, "status": status}
+
+    async def run_mock(self, task_id: str) -> str:
+        """Run the mock provider for *task_id* to completion under the busy lock; return the final status."""
+        with self._task_busy_lock(task_id):
+            self.worker.enqueue(task_id)
+            await self.worker.drain()
+        return self.store.get(task_id).status
 
     def terminate(self, task_id: str) -> dict[str, Any]:
         status = self.worker.terminate(task_id)

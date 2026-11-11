@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -15,10 +16,9 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.profiles.models.registry import ModelProfileRegistry
-from chrys.service.rsi.case_runner import CaseRunner, CaseRunResult, StubCaseRunner
+from chrys.service.rsi.case_runner import CaseRunner, CaseRunResult, StubCaseRunner, case_sessions_dir
 from chrys.service.rsi.dataset import RsiCase
 from chrys.service.rsi.errors import RsiBadRequest, RsiNotReady
-from chrys.service.rsi.workdir_seed import SESSIONS_DIR_NAME
 from chrys.service.state.store import JsonFileStateStore
 
 
@@ -47,7 +47,7 @@ class HeadlessCaseRunner:
 
     async def run_case(self, case: RsiCase, workdir: Path) -> CaseRunResult:
         workdir.mkdir(parents=True, exist_ok=True)
-        sessions_root = workdir / SESSIONS_DIR_NAME
+        sessions_root = case_sessions_dir(workdir)
         sessions_root.mkdir(parents=True, exist_ok=True)
 
         host = ChrysSessionHost(
@@ -64,6 +64,7 @@ class HeadlessCaseRunner:
         )
         if self.model_registry is not None:
             host.engine.pin_model_profile()
+        started = time.monotonic()
         try:
             result = await host.run_until_final(case.prompt, timeout=self.timeout)
             return CaseRunResult(
@@ -72,6 +73,13 @@ class HeadlessCaseRunner:
                 workdir=workdir,
                 session_id=result.session_id or None,
             )
+        except TimeoutError as exc:
+            timeout = self.timeout
+            if timeout is not None and time.monotonic() - started >= timeout:
+                error = f"case run timed out after {timeout:g}s"
+            else:
+                error = str(exc) or type(exc).__name__
+            return CaseRunResult(case_id=case.case_id, response_text="", workdir=workdir, error=error)
         except Exception as exc:
             return CaseRunResult(
                 case_id=case.case_id,

@@ -5,15 +5,19 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+import types
 from pathlib import Path
 
 import pytest
 
 from chrys.service.rsi import RsiDatasetInvalid, build_rsi_service_context, load_dataset
+from chrys.service.rsi import workdir_seed as workdir_seed_module
 from chrys.service.rsi.case_runner import StubCaseRunner
 from chrys.service.rsi.errors import RsiBadRequest
-from chrys.service.rsi.workdir_seed import WorkdirSeed, materialize_workdir, release_workdir_seeds_under
+from chrys.service.rsi.workdir_seed import WorkdirSeed, materialize_workdir, write_text_nofollow
 from tests.support.symlinks import symlink_or_skip
 
 
@@ -120,43 +124,47 @@ def test_git_clone_seed_isolates_source(tmp_path: Path, git_repo_factory) -> Non
     assert (source / "app.py").read_text(encoding="utf-8") == "print('hi')\n"
 
 
-def test_git_worktree_seed_and_release(tmp_path: Path, git_repo_factory) -> None:
+def test_git_worktree_seed_is_a_private_clone(tmp_path: Path, git_repo_factory) -> None:
     source = git_repo_factory(tmp_path / "repo")
-    (source / "app.py").write_text("print('hi')\n", encoding="utf-8")
-    subprocess.run(
-        ["git", "add", "app.py"],
-        cwd=source,
-        check=True,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "commit", "-m", "app"],
-        cwd=source,
-        check=True,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-    )
+    _commit_file(source, "app.py", "print('hi')\n", "app")
+    _git(source, "remote", "add", "origin", "https://example.invalid/repo.git")
+    worktrees_before = _git(source, "worktree", "list", "--porcelain").stdout
     dest = tmp_path / "wt"
     materialize_workdir(
         WorkdirSeed(source=str(source), strategy="git_worktree"),
         dest=dest,
         dataset_dir=tmp_path,
     )
-    assert (dest / "app.py").is_file()
+    assert (dest / "app.py").read_text(encoding="utf-8") == "print('hi')\n"
+    assert (dest / ".git").is_dir()
+    assert _remotes(dest) == []
+    assert _git(source, "worktree", "list", "--porcelain").stdout == worktrees_before
+    _git(dest, "branch", "case-only")
+    assert "case-only" not in _git(source, "branch", "--list").stdout
     (dest / "app.py").write_text("print('wt')\n", encoding="utf-8")
     assert (source / "app.py").read_text(encoding="utf-8") == "print('hi')\n"
-    release_workdir_seeds_under(tmp_path)
-    listed = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"],
-        cwd=source,
-        check=True,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
+
+
+def test_delete_never_runs_git_against_a_repo_named_in_a_task_file(tmp_path: Path, git_repo_factory) -> None:
+    user_repo = git_repo_factory(tmp_path / "user-repo")
+    _commit_file(user_repo, "a.txt", "a\n", "a")
+    unmounted = tmp_path / "unmounted-disk" / "wt"
+    _git(user_repo, "worktree", "add", "--detach", str(unmounted))
+    shutil.rmtree(unmounted.parent)
+    worktrees_before = _git(user_repo, "worktree", "list", "--porcelain").stdout
+    assert str(unmounted) in worktrees_before or str(unmounted.resolve()) in worktrees_before
+
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    task_id = ctx.create_task(name="planted")["task_id"]
+    case_dir = tmp_path / "tasks" / task_id / "run" / "evaluations" / "x" / "eval-1" / "case_workspaces" / "c"
+    case_dir.mkdir(parents=True)
+    # What an agent running without approval prompts could write into its own case folder.
+    (case_dir / ".chrys_rsi_workdir_seed.json").write_text(
+        json.dumps({"strategy": "git_worktree", "source": str(user_repo)}), encoding="utf-8"
     )
-    assert str(dest.resolve()) not in listed.stdout
+    ctx.delete_task(task_id)
+    assert not (tmp_path / "tasks" / task_id).exists()
+    assert _git(user_repo, "worktree", "list", "--porcelain").stdout == worktrees_before
 
 
 @pytest.mark.asyncio
@@ -377,14 +385,13 @@ def test_git_clone_refuses_tracked_symlink_escaping_the_clone(tmp_path: Path, gi
 
 
 def test_rsi_files_do_not_show_in_case_git_status(tmp_path: Path, git_repo_factory) -> None:
-    from chrys.service.rsi.workdir_seed import RESPONSE_FILE_NAME, SESSIONS_DIR_NAME
+    from chrys.service.rsi.workdir_seed import RESPONSE_FILE_NAME
 
     source = git_repo_factory(tmp_path / "src")
     dest = _copy_seed(source, tmp_path / "dest", tmp_path)
     (dest / RESPONSE_FILE_NAME).write_text("answer", encoding="utf-8")
-    (dest / SESSIONS_DIR_NAME).mkdir()
-    (dest / SESSIONS_DIR_NAME / "s.json").write_text("{}", encoding="utf-8")
     assert _git(dest, "status", "--porcelain").stdout == ""
+    assert not list(dest.glob(".chrys_rsi_workdir_seed*"))
 
 
 def test_copy_refuses_destination_inside_source(tmp_path: Path) -> None:
@@ -412,30 +419,25 @@ def test_enclosing_git_work_tree(tmp_path: Path, git_repo_factory) -> None:
     assert enclosing_git_work_tree(plain / "out") is None
 
 
-def test_marker_write_does_not_follow_symlink(tmp_path: Path) -> None:
-    outside = tmp_path / "external.json"
-    outside.write_text('{"keep": true}\n', encoding="utf-8")
-    source = tmp_path / "src"
-    source.mkdir()
-    (source / "ok.txt").write_text("x\n", encoding="utf-8")
-    dest = tmp_path / "dest"
-    dest.mkdir()
-    # Pre-plant a symlink at the marker path; materialize requires dest absent,
-    # so plant the symlink on a nested path by calling _write_marker after copy.
-    from chrys.service.rsi.workdir_seed import _SEED_MARKER, _write_marker
+def test_write_text_nofollow_writes_exact_bytes(tmp_path: Path) -> None:
+    target = tmp_path / "response.txt"
+    write_text_nofollow(target, "a\nb\r\nc ✓", what="response file")
+    assert target.read_bytes() == "a\nb\r\nc ✓".encode()
 
-    materialize_workdir(
-        WorkdirSeed(source=str(source), strategy="copy"),
-        dest=dest / "tree",
-        dataset_dir=tmp_path,
-    )
-    marker = dest / "tree" / _SEED_MARKER
-    marker.unlink(missing_ok=True)
-    symlink_or_skip(marker, outside)
-    _write_marker(dest / "tree", strategy="copy", source=source)
-    assert outside.read_text(encoding="utf-8") == '{"keep": true}\n'
-    assert marker.is_file() and not marker.is_symlink()
-    assert "strategy" in marker.read_text(encoding="utf-8")
+
+def test_write_text_nofollow_finishes_a_short_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real_write = os.write
+    shadow = types.ModuleType("os")
+    shadow.__dict__.update(os.__dict__)
+
+    def one_byte_at_a_time(fd: int, data: bytes | memoryview) -> int:
+        return real_write(fd, bytes(data[:1]))
+
+    shadow.write = one_byte_at_a_time
+    monkeypatch.setattr(workdir_seed_module, "os", shadow)
+    target = tmp_path / "response.txt"
+    write_text_nofollow(target, "hello world", what="response file")
+    assert target.read_bytes() == b"hello world"
 
 
 def test_git_clone_removes_origin(tmp_path: Path, git_repo_factory) -> None:

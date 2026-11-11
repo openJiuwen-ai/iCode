@@ -4838,6 +4838,9 @@
       "RsiServiceContext.optimize_task.evaluate": [
         ["wrapper", "await self.evaluate_dataset(dataset_path, runner=runner, output_dir=out, task_id=task_id, project=False, case_ids=case_ids)", "unresolved", "chrys.service.rsi.context.RsiServiceContext.evaluate_dataset"]
       ],
+      "RsiServiceContext.run_mock": [
+        ["awaitable", "await self.worker.drain()", "unresolved"]
+      ],
       "RsiServiceContext.wait_idle": [
         ["awaitable", "await self.worker.drain()", "unresolved"]
       ]
@@ -4864,10 +4867,14 @@
     },
     "chrys.service.rsi.optimizer": {
       "OptimizeLoop.run": [
-        ["awaitable", "await evaluate(baseline_snap.profile, baseline_id, None)", "unresolved"],
-        ["awaitable", "await self.optimizer.propose(working_profile, failed, instruction=instruction, epoch=epoch)", "unresolved"],
-        ["awaitable", "await evaluate(snap.profile, candidate_id, failed_ids)", "unresolved"],
-        ["awaitable", "await evaluate(snap.profile, candidate_id, None)", "unresolved"]
+        ["wrapper", "await _evaluate_retrying_errors(evaluate, baseline_snap.profile, baseline_id, None)", "unresolved", "chrys.service.rsi.optimizer._evaluate_retrying_errors"],
+        ["awaitable", "await self.optimizer.propose(working_profile, failed, instruction=instruction, epoch=epoch, history=tuple(history))", "unresolved"],
+        ["wrapper", "await _evaluate_retrying_errors(evaluate, snap.profile, candidate_id, failed_ids)", "unresolved", "chrys.service.rsi.optimizer._evaluate_retrying_errors"],
+        ["wrapper", "await _evaluate_retrying_errors(evaluate, snap.profile, candidate_id, None)", "unresolved", "chrys.service.rsi.optimizer._evaluate_retrying_errors"]
+      ],
+      "_evaluate_retrying_errors": [
+        ["awaitable", "await evaluate(profile, label, case_ids)", "unresolved"],
+        ["awaitable", "await evaluate(profile, label, errored)", "unresolved"]
       ]
     },
     "chrys.service.rsi.provider": {

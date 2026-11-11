@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,7 +14,12 @@ from typing import Any, cast
 
 from chrys.service.rsi.errors import RsiBadRequest, RsiDatasetInvalid
 from chrys.service.rsi.paths import is_forbidden_absolute_relpath, safe_relpath_under, validate_case_id
-from chrys.service.rsi.workdir_seed import WORKDIR_STRATEGIES, WorkdirSeed, WorkdirStrategy
+from chrys.service.rsi.workdir_seed import (
+    WORKDIR_STRATEGIES,
+    WorkdirSeed,
+    WorkdirStrategy,
+    refuse_escaping_symlinks,
+)
 
 SCHEMA_VERSION = 1
 METHOD_SCRIPT_BASED = "script_based"
@@ -59,6 +66,8 @@ class RsiDataset:
     cases: tuple[RsiCase, ...]
     source_path: Path
     schema_version: int = SCHEMA_VERSION
+    # Files / folders next to the dataset that check scripts read; staged with them.
+    support_files: tuple[str, ...] = ()
 
     @property
     def sample_count(self) -> int:
@@ -118,6 +127,7 @@ def parse_dataset(payload: dict[str, Any], *, source_path: Path) -> RsiDataset:
         cases=tuple(cases),
         source_path=source_path,
         schema_version=version_i,
+        support_files=_parse_support_files(payload.get("support_files"), dataset_dir=source_path.parent),
     )
 
 
@@ -136,7 +146,38 @@ def subset_dataset(dataset: RsiDataset, case_ids: Collection[str]) -> RsiDataset
         cases=selected,
         source_path=dataset.source_path,
         schema_version=dataset.schema_version,
+        support_files=dataset.support_files,
     )
+
+
+def stage_judge_inputs(dataset: RsiDataset, dest: Path) -> Path:
+    """Copy every case ``script`` and the ``support_files`` into *dest* at the same relative paths.
+
+    Check scripts only ever see this staged copy (``CHRYS_RSI_DATASET_DIR``),
+    for an ad-hoc dataset and a task's ``input/`` alike, so a file the dataset
+    does not declare is missing in both and the two always score the same.
+    """
+    source_dir = dataset.source_path.parent
+    dest.mkdir(parents=True, exist_ok=True)
+    scripts = {case.script for case in dataset.cases if case.script}
+    for rel in (*sorted(scripts), *dataset.support_files):
+        try:
+            src = safe_relpath_under(source_dir, rel, field="dataset file")
+            target = safe_relpath_under(dest, rel, field="dataset file")
+        except ValueError as exc:
+            raise RsiBadRequest(f"dataset file escapes the dataset directory: {rel}") from exc
+        try:
+            if src.is_dir():
+                refuse_escaping_symlinks(src, label="support_files")
+                shutil.copytree(src, target, symlinks=True, dirs_exist_ok=True)
+            elif src.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, target)
+            else:
+                raise RsiBadRequest(f"dataset file not found: {rel}")
+        except OSError as exc:
+            raise RsiBadRequest(f"could not stage dataset file {rel}: {exc}") from exc
+    return dest
 
 
 def validate_dataset_file(path: str | Path) -> dict[str, Any]:
@@ -216,16 +257,52 @@ def _parse_case(item: dict[str, Any], *, index: int, dataset_dir: Path) -> RsiCa
 
 
 def _parse_expect(raw: dict[str, Any], *, case_id: str) -> ScriptExpect:
+    response_regex = _string_tuple(raw.get("response_regex"), field="response_regex", case_id=case_id)
+    for pattern in response_regex:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise RsiDatasetInvalid(f"case {case_id}: response_regex {pattern!r} is not a valid regex: {exc}") from exc
     return ScriptExpect(
         response_contains=_string_tuple(raw.get("response_contains"), field="response_contains", case_id=case_id),
         response_not_contains=_string_tuple(
             raw.get("response_not_contains"), field="response_not_contains", case_id=case_id
         ),
-        response_regex=_string_tuple(raw.get("response_regex"), field="response_regex", case_id=case_id),
+        response_regex=response_regex,
         files_exist=_string_tuple(raw.get("files_exist"), field="files_exist", case_id=case_id),
         file_contains=_string_map_tuple(raw.get("file_contains"), field="file_contains", case_id=case_id),
         file_equals=_string_map(raw.get("file_equals"), field="file_equals", case_id=case_id),
     )
+
+
+def _parse_support_files(raw: Any, *, dataset_dir: Path) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise RsiDatasetInvalid("support_files must be an array of relative paths")
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise RsiDatasetInvalid("support_files entries must be strings")
+        cleaned = item.strip().replace("\\", "/").rstrip("/")
+        if (
+            not cleaned
+            or is_forbidden_absolute_relpath(cleaned)
+            or any(part in {"", ".", ".."} for part in cleaned.split("/"))
+        ):
+            raise RsiDatasetInvalid(
+                f"support_files entry must name a file or folder inside the dataset folder: {item!r}"
+            )
+        try:
+            path = safe_relpath_under(dataset_dir, cleaned, field="support_files")
+        except ValueError as exc:
+            raise RsiDatasetInvalid(f"support_files entry escapes the dataset folder: {item!r}") from exc
+        if not path.exists():
+            raise RsiDatasetInvalid(f"support_files entry not found: {item!r}")
+        if cleaned in out:
+            raise RsiDatasetInvalid(f"duplicate support_files entry: {item!r}")
+        out.append(cleaned)
+    return tuple(out)
 
 
 def _parse_fixture(raw: Any, *, case_id: str) -> CaseFixture | None:
@@ -300,10 +377,13 @@ def _string_tuple(value: Any, *, field: str, case_id: str) -> tuple[str, ...]:
     for item in value:
         if not isinstance(item, str):
             raise RsiDatasetInvalid(f"case {case_id}: {field} entries must be strings")
-        if field == "files_exist":
-            out.append(_validate_workdir_relpath(item, field=field, case_id=case_id))
-        else:
-            out.append(item)
+        if not item:
+            # "" is in every response and matches everywhere, so the check could never fail (or never pass).
+            raise RsiDatasetInvalid(f"case {case_id}: {field} entries must not be empty")
+        entry = _validate_workdir_relpath(item, field=field, case_id=case_id) if field == "files_exist" else item
+        if field == "files_exist" and entry in out:
+            raise RsiDatasetInvalid(f"case {case_id}: {field} lists {item!r} twice (after '\\' → '/')")
+        out.append(entry)
     return tuple(out)
 
 
@@ -317,6 +397,8 @@ def _string_map(value: Any, *, field: str, case_id: str) -> dict[str, str]:
         rel = _validate_workdir_relpath(str(key), field=field, case_id=case_id)
         if not isinstance(item, str):
             raise RsiDatasetInvalid(f"case {case_id}: {field} values must be strings")
+        if rel in out:
+            raise RsiDatasetInvalid(f"case {case_id}: {field} lists {key!r} twice (after '\\' → '/')")
         out[rel] = item
     return out
 
@@ -329,5 +411,7 @@ def _string_map_tuple(value: Any, *, field: str, case_id: str) -> dict[str, tupl
     out: dict[str, tuple[str, ...]] = {}
     for key, item in value.items():
         rel = _validate_workdir_relpath(str(key), field=field, case_id=case_id)
+        if rel in out:
+            raise RsiDatasetInvalid(f"case {case_id}: {field} lists {key!r} twice (after '\\' → '/')")
         out[rel] = _string_tuple(item, field=f"{field}[{key}]", case_id=case_id)
     return out

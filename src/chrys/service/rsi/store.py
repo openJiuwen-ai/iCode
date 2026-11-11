@@ -13,10 +13,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from chrys.foundation.platform.files import atomic_write_text
-from chrys.service.rsi.errors import RsiTaskNotFound, RsiTaskStateConflict
+from chrys.service.rsi.errors import RsiTaskCorrupt, RsiTaskNotFound, RsiTaskStateConflict
 from chrys.service.rsi.models import RsiTask, TaskStatus, utcnow_iso
 from chrys.service.rsi.paths import task_dir
-from chrys.service.rsi.workdir_seed import release_workdir_seeds_under
 
 StatusHook = Callable[[RsiTask, str | None], None]
 
@@ -81,18 +80,43 @@ class RsiTaskStore:
                 tasks.append(task)
             return tasks
 
-    def delete(self, task_id: str) -> None:
+    def corrupt_task_ids(self) -> list[str]:
+        """Ids of task directories whose ``task.json`` exists but cannot be read."""
         with self._lock:
-            task = self._read_locked(task_id)
-            if task.status not in {
-                TaskStatus.CREATED.value,
-                TaskStatus.COMPLETED.value,
-                TaskStatus.FAILED.value,
-                TaskStatus.TERMINATED.value,
-            }:
-                raise RsiTaskStateConflict(f"cannot delete task in status {task.status}")
+            corrupt: list[str] = []
+            if not self.tasks_root.is_dir():
+                return corrupt
+            for entry in sorted(self.tasks_root.iterdir()):
+                if not entry.is_dir() or not (entry / "task.json").is_file():
+                    continue
+                try:
+                    self._read_locked(entry.name)
+                except RsiTaskCorrupt:
+                    corrupt.append(entry.name)
+                except RsiTaskNotFound, ValueError:
+                    continue
+            return corrupt
+
+    def delete(self, task_id: str, *, any_status: bool = False) -> None:
+        """Remove the task tree.
+
+        ``any_status`` skips the status check and also removes a task whose
+        ``task.json`` is corrupt; the caller must have proved nothing runs it.
+        """
+        with self._lock:
             directory = task_dir(self.tasks_root, task_id)
-            release_workdir_seeds_under(directory)
+            if any_status:
+                if not (directory / "task.json").is_file():
+                    raise RsiTaskNotFound(f"task not found: {task_id}")
+            else:
+                task = self._read_locked(task_id)
+                if task.status not in {
+                    TaskStatus.CREATED.value,
+                    TaskStatus.COMPLETED.value,
+                    TaskStatus.FAILED.value,
+                    TaskStatus.TERMINATED.value,
+                }:
+                    raise RsiTaskStateConflict(f"cannot delete task in status {task.status}")
             shutil.rmtree(directory, onexc=_force_remove)
 
     def update_status(
@@ -143,7 +167,7 @@ class RsiTaskStore:
         try:
             return self._load_path(path)
         except (OSError, ValueError, TypeError, json.JSONDecodeError, KeyError) as exc:
-            raise RsiTaskNotFound(f"task not found: {task_id}") from exc
+            raise RsiTaskCorrupt(f"task {task_id} has an unreadable task.json ({path}); `delete` removes it") from exc
 
     def _load_path(self, path: Path) -> RsiTask:
         data = json.loads(path.read_text(encoding="utf-8"))

@@ -18,6 +18,7 @@ from chrys.service.rsi.errors import (
     RsiDatasetInvalid,
     RsiError,
     RsiNotFound,
+    RsiTaskCorrupt,
     RsiTaskNotFound,
     RsiTaskStateConflict,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "RsiProvider",
     "RsiServiceContext",
     "RsiTask",
+    "RsiTaskCorrupt",
     "RsiTaskNotFound",
     "RsiTaskStateConflict",
     "RsiTaskView",

@@ -13,9 +13,9 @@ from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.rsi import build_rsi_service_context
 from chrys.service.rsi.evaluator import CaseEvalRecord
 from chrys.service.rsi.failure_summary import summarize_failures
-from chrys.service.rsi.llm_optimizer import LlmOptimizer, parse_optimizer_mutations
+from chrys.service.rsi.llm_optimizer import LlmOptimizer, parse_optimizer_mutations, render_optimizer_prompt
 from chrys.service.rsi.mutations import AppendInstructions, case_marker
-from chrys.service.rsi.optimizer import MutationProposal
+from chrys.service.rsi.optimizer import MutationProposal, ProposalOutcome
 
 _OPTIMIZE_FIXTURE = Path(__file__).parent / "fixtures" / "optimize_dataset.json"
 
@@ -54,6 +54,56 @@ def test_summarize_failures_clips_response_and_skips_passes() -> None:
     assert len(summaries[0].response_excerpt) < len(long)
     assert summaries[0].response_excerpt.endswith("[…truncated]")
     assert summaries[0].findings[0]["code"] == "files_exist"
+
+
+def test_optimizer_prompt_shows_appended_tail_and_run_history() -> None:
+    profile = AgentProfile(name="RsiCandidate", instructions="head " * 2_000 + "APPENDED-RULE")
+    summaries = summarize_failures(
+        [
+            CaseEvalRecord(
+                case_id="need-hello",
+                passed=False,
+                score=0.0,
+                response_text="",
+                findings=({"code": "files_exist", "message": "missing file: hello.txt"},),
+                error=None,
+                workdir="/tmp/fail",
+                session_id=None,
+                prompt="Write hello.txt",
+            )
+        ]
+    )
+    history = (
+        ProposalOutcome(
+            epoch=1,
+            verdict="adopted",
+            mutations=({"kind": "append_instructions", "text": "APPENDED-RULE"},),
+            score=0.5,
+        ),
+        ProposalOutcome(
+            epoch=2,
+            verdict="rejected",
+            mutations=({"kind": "append_instructions", "text": "x" * 2_000},),
+            score=0.5,
+        ),
+        ProposalOutcome(
+            epoch=3,
+            verdict="inconclusive",
+            mutations=({"kind": "remove_inline_skill", "name": "helper"},),
+            score=0.0,
+        ),
+    )
+    prompt = render_optimizer_prompt(profile, summaries, instruction=None, epoch=4, history=history)
+    body = json.loads(prompt.split("Failed cases:\n", 1)[1])
+    assert body["instructions_excerpt"].startswith("head head")
+    assert body["instructions_excerpt"].endswith("APPENDED-RULE")
+    assert "characters omitted" in body["instructions_excerpt"]
+    assert body["adopted_mutations"] == [{"kind": "append_instructions", "text": "APPENDED-RULE"}]
+    assert [(item["epoch"], item["verdict"]) for item in body["rejected_proposals"]] == [
+        (2, "rejected"),
+        (3, "inconclusive"),
+    ]
+    assert len(body["rejected_proposals"][0]["mutations"][0]["text"]) < 1_000
 
 
 def test_parse_optimizer_mutations_accepts_fenced_json_and_rejects_unknown_kind() -> None:
@@ -146,9 +196,20 @@ async def test_invalid_proposal_is_not_adopted(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_rejected_candidate_stays_off_the_best_pointer(tmp_path: Path) -> None:
+    histories: list[tuple[ProposalOutcome, ...]] = []
+
     class _Scripted:
-        async def propose(self, profile, failed, *, instruction, epoch):
+        async def propose(
+            self,
+            profile: AgentProfile,
+            failed: list[CaseEvalRecord],
+            *,
+            instruction: str | None,
+            epoch: int,
+            history: tuple[ProposalOutcome, ...],
+        ) -> MutationProposal:
             del profile, instruction
+            histories.append(history)
             if epoch == 1:
                 return MutationProposal.ready([AppendInstructions(text="this does not satisfy the checks")])
             return MutationProposal.ready(
@@ -159,6 +220,9 @@ async def test_rejected_candidate_stays_off_the_best_pointer(tmp_path: Path) -> 
     created = ctx.create_task(name="gate", max_iterations=2, dataset_path=_OPTIMIZE_FIXTURE)
     result = await ctx.optimize_task(created["task_id"], max_epochs=2, optimizer=_Scripted())
     assert [epoch.adopted for epoch in result.epochs] == [False, True]
+    assert histories[0] == ()
+    assert [(item.epoch, item.verdict) for item in histories[1]] == [(1, "rejected")]
+    assert histories[1][0].mutations[0]["text"] == "this does not satisfy the checks"
     nodes = ctx.get_tree(created["task_id"])["nodes"]
     assert any(node["type"] == "REJECTED" for node in nodes)
     assert any(node["type"] == "ADOPTED" and node["node_id"] != "ROOT" for node in nodes)

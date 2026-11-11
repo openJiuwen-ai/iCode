@@ -27,6 +27,12 @@ class RsiTaskNotFound(RsiError):
     code = "TASK_NOT_FOUND"
 
 
+class RsiTaskCorrupt(RsiError):
+    """The task directory exists but its ``task.json`` cannot be read."""
+
+    code = "TASK_CORRUPT"
+
+
 class RsiNotFound(RsiError):
     """A requested RSI artifact (candidate, export, pointer) is missing."""
 

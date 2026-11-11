@@ -39,6 +39,14 @@ class CaseRunner(Protocol):
     async def run_case(self, case: RsiCase, workdir: Path) -> CaseRunResult: ...
 
 
+def case_sessions_dir(workdir: Path) -> Path:
+    """Session store for a live case run: beside *workdir*, outside the agent's cwd.
+
+    Case ids start with a letter or digit, so the leading dot never names another case.
+    """
+    return workdir.parent / f".{workdir.name}.sessions"
+
+
 class StubCaseRunner:
     """Materialize optional ``fixture`` data without calling a model."""
 
@@ -75,8 +83,8 @@ class ProfileAwareStubRunner:
     """Stub runner that passes a case when the profile carries ``rsi:case:<id>``.
 
     Used by Phase 3 optimize tests so mutation markers improve the gate score
-    without calling a model. Without a marker, falls back to the case fixture
-    (or fails when no fixture is present).
+    without calling a model. Without a marker, falls back to the case fixture,
+    or answers nothing (a judged failure, not a run error) when there is none.
     """
 
     def __init__(self, profile: AgentProfile) -> None:
@@ -89,6 +97,8 @@ class ProfileAwareStubRunner:
         skill_blob = _inline_skill_text(self.profile)
         if case_marker(case.case_id) in instructions or case_marker(case.case_id) in skill_blob:
             return _synthesize_passing_case(case, workdir)
+        if case.fixture is None:
+            return CaseRunResult(case_id=case.case_id, response_text="", workdir=workdir)
         return await self._fallback.run_case(case, workdir)
 
 

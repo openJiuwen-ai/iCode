@@ -32,14 +32,19 @@ from chrys.service.rsi.mutations import (
     UpsertInlineSkill,
     parse_mutation,
 )
-from chrys.service.rsi.optimizer import MutationProposal
+from chrys.service.rsi.optimizer import MutationProposal, ProposalOutcome
 from chrys.service.rsi.paths import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
 _MAX_MUTATIONS = 4
 _MAX_FIELD_CHARS = 4_000
-_PROFILE_EXCERPT = 4_000
+# Appended instructions land at the end, so the excerpt keeps both ends.
+_EXCERPT_HEAD = 3_000
+_EXCERPT_TAIL = 1_000
+_HISTORY_FIELD_CHARS = 600
+_MAX_ADOPTED_SHOWN = 10
+_MAX_REJECTED_SHOWN = 6
 
 _CONTRACT = """\
 You propose edits to an agent profile that failed a fixed script_based evaluation.
@@ -52,6 +57,9 @@ Allowed mutation objects:
 Inline skill names are 1-64 characters: lowercase letters, digits, and single hyphens.
 Do not change approval, tools, MCP, or identity.
 At most 4 mutations. If you cannot propose a safe change, reply {"mutations": []}.
+adopted_mutations are already part of the profile: do not propose them again.
+rejected_proposals were tried earlier in this run and did not raise the score
+(verdict "inconclusive": some case could not run, so they were not judged): try something different.
 """
 
 CompleteFn = Callable[[str], Awaitable[str]]
@@ -80,12 +88,13 @@ class LlmOptimizer:
         *,
         instruction: str | None,
         epoch: int,
+        history: tuple[ProposalOutcome, ...],
     ) -> MutationProposal:
         summaries = summarize_failures(failed)
         if not summaries:
             return MutationProposal.none()
         self._write_analysis(epoch, summaries, proposal="pending", mutations=())
-        prompt = render_optimizer_prompt(profile, summaries, instruction=instruction, epoch=epoch)
+        prompt = render_optimizer_prompt(profile, summaries, instruction=instruction, epoch=epoch, history=history)
         try:
             raw = await self._complete(surrogate_safe_text(prompt))
         except Exception as exc:
@@ -130,21 +139,53 @@ def render_optimizer_prompt(
     *,
     instruction: str | None,
     epoch: int,
+    history: tuple[ProposalOutcome, ...] = (),
 ) -> str:
-    """Build the user message: current profile excerpt plus clipped failures."""
+    """Build the user message: profile excerpt, this run's earlier proposals, clipped failures."""
     skills = []
     if profile.skills is not None:
         skills = [skill.name for skill in profile.skills.inline]
+    adopted = [
+        _clip_mutation(item) for outcome in history if outcome.verdict == "adopted" for item in outcome.mutations
+    ]
+    rejected = [
+        {
+            "epoch": outcome.epoch,
+            "verdict": outcome.verdict,
+            "score": outcome.score,
+            "mutations": [_clip_mutation(item) for item in outcome.mutations],
+        }
+        for outcome in history
+        if outcome.verdict != "adopted"
+    ]
     body = {
         "epoch": epoch,
         "optimization_instruction": instruction or "",
         "profile_name": profile.name,
-        "instructions_excerpt": (profile.instructions or "")[:_PROFILE_EXCERPT],
+        "instructions_excerpt": _instructions_excerpt(profile.instructions or ""),
         "inline_skills": skills,
+        "adopted_mutations": adopted[-_MAX_ADOPTED_SHOWN:],
+        "rejected_proposals": rejected[-_MAX_REJECTED_SHOWN:],
         "failures": [item.to_dict() for item in summaries],
     }
     encoded = json.dumps(body, ensure_ascii=True, indent=2)
     return f"{_CONTRACT}\nFailed cases:\n{encoded}\n"
+
+
+def _instructions_excerpt(text: str) -> str:
+    if len(text) <= _EXCERPT_HEAD + _EXCERPT_TAIL:
+        return text
+    omitted = len(text) - _EXCERPT_HEAD - _EXCERPT_TAIL
+    return f"{text[:_EXCERPT_HEAD]}\n[... {omitted} characters omitted ...]\n{text[-_EXCERPT_TAIL:]}"
+
+
+def _clip_mutation(mutation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value[:_HISTORY_FIELD_CHARS] + "..."
+        if isinstance(value, str) and len(value) > _HISTORY_FIELD_CHARS
+        else value
+        for key, value in mutation.items()
+    }
 
 
 def parse_optimizer_mutations(text: str) -> list[Mutation]:

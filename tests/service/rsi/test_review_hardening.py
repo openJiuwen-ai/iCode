@@ -394,13 +394,16 @@ async def test_live_optimize_replaces_higher_scoring_stub_best(tmp_path: Path) -
 @pytest.mark.asyncio
 async def test_lower_score_reoptimize_keeps_previous_best(tmp_path: Path) -> None:
     from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.profiles.agents.serializer import save_profile
+    from chrys.service.rsi.case_runner import CaseRunResult
     from chrys.service.rsi.paths import write_json_atomic
-    from chrys.service.rsi.snapshot import best_pointer_path
+    from chrys.service.rsi.snapshot import best_pointer_path, profile_fingerprint
 
     fixture = Path(__file__).parent / "fixtures" / "optimize_dataset.json"
     ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
     created = ctx.create_task(name="score-guard", max_iterations=1, dataset_path=fixture)
     task_id = created["task_id"]
+    base = AgentProfile(name="RsiCandidate", instructions="")
     write_json_atomic(
         best_pointer_path(ctx.store, task_id),
         {
@@ -408,25 +411,20 @@ async def test_lower_score_reoptimize_keeps_previous_best(tmp_path: Path) -> Non
             "score": 1.0,
             "profile_path": "/tmp/high.yaml",
             "kind": "live",
+            "base": profile_fingerprint(save_profile(base, target_dir=tmp_path / "base")),
         },
     )
 
-    # A live run whose runner always fails scores 0.0; the planted live 1.0 stays.
-    def factory(profile: AgentProfile):
-        class _Fail:
-            async def run_case(self, case, workdir):
-                from chrys.service.rsi.case_runner import CaseRunResult
+    # A live run from the same base whose agent never answers scores 0.0; the planted live 1.0 stays.
+    class _Silent:
+        async def run_case(self, case, workdir: Path) -> CaseRunResult:
+            workdir.mkdir(parents=True, exist_ok=True)
+            return CaseRunResult(case_id=case.case_id, response_text="", workdir=workdir)
 
-                return CaseRunResult(case_id=case.case_id, response_text="", workdir=workdir, error="forced")
+    def factory(_profile: AgentProfile) -> _Silent:
+        return _Silent()
 
-        return _Fail()
-
-    result = await ctx.optimize_task(
-        task_id,
-        base_profile=AgentProfile(name="RsiCandidate", instructions=""),
-        max_epochs=1,
-        runner_factory=factory,
-    )
+    result = await ctx.optimize_task(task_id, base_profile=base, max_epochs=1, runner_factory=factory)
     pointer = read_best_pointer(ctx.store, task_id)
     assert pointer["candidate_id"] == "kept-high"
     assert float(pointer["score"]) == 1.0
@@ -485,9 +483,9 @@ def test_busy_lock_refuses_concurrent_optimize(tmp_path: Path) -> None:
     thread.start()
     assert held.wait(timeout=5)
     try:
-        with pytest.raises(RsiBadRequest, match="active eval/optimize"), ctx._task_busy_lock(task_id):
+        with pytest.raises(RsiBadRequest, match="active eval, optimize or start"), ctx._task_busy_lock(task_id):
             pass
-        with pytest.raises(RsiBadRequest, match="active eval/optimize"):
+        with pytest.raises(RsiBadRequest, match="active eval, optimize or start"):
             ctx.delete_task(task_id)
         assert ctx.store.get(task_id).task_id == task_id
     finally:

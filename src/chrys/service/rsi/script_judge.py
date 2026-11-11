@@ -12,7 +12,7 @@ from pathlib import Path
 
 from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 from chrys.service.rsi.dataset import RsiCase, ScriptExpect
-from chrys.service.rsi.errors import RsiBadRequest, RsiDatasetInvalid
+from chrys.service.rsi.errors import RsiBadRequest
 from chrys.service.rsi.paths import safe_relpath_under
 from chrys.service.rsi.workdir_seed import RESPONSE_FILE_NAME, isolated_git_env, write_text_nofollow
 
@@ -180,16 +180,3 @@ def _safe_under(root: Path, rel: str) -> Path | None:
         return safe_relpath_under(root, rel, field="path")
     except ValueError:
         return None
-
-
-def ensure_case_script_valid(case: RsiCase, dataset_dir: Path) -> None:
-    """Re-check script containment (for callers that build cases manually)."""
-    if not case.script:
-        return
-    root = dataset_dir.resolve()
-    try:
-        candidate = safe_relpath_under(root, case.script, field="evaluation.script")
-    except ValueError as exc:
-        raise RsiDatasetInvalid(f"case {case.case_id}: script escapes dataset directory") from exc
-    if not candidate.is_file():
-        raise RsiDatasetInvalid(f"case {case.case_id}: script not found: {case.script}")

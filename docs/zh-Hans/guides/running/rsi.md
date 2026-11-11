@@ -50,9 +50,9 @@ live 样例 **`playground/rsi/complex-calc/`**（Rust 复数计算器）在**源
 
 创建 JSON 文件（`chrys-rsi.dataset.v1`）。每个 case 需要 `prompt` 和 `evaluation.expect` 检查（和/或可信 `script`）。Live 跑法请**省略** `fixture`（fixture 是给 CI stub 用的罐头输出）。
 
-若题目是在**代码树**上加特性 / 修 bug，请加 `workdir` 种子。源路径按**只读**处理：RSI 会物化一份私有副本（或 git clone / worktree）到 case 目录，**不会**原地打开你的原目录。优先 `strategy: "copy"` 或 `"git_clone"`。`"git_worktree"` 更快，但与源仓共享 `.git`，隔离更弱。
+若题目是在**代码树**上加特性 / 修 bug，请加 `workdir` 种子。源路径按**只读**处理：RSI 会物化一份私有副本或 git clone 到 case 目录，**不会**原地打开你的原目录。请使用 `strategy: "copy"` 或 `"git_clone"`。旧数据集里的 `"git_worktree"` 仍然可用，现在的行为与 `"git_clone"` 完全相同，所以 case 不会和你的仓库共享分支、配置或 remote。
 
-使用 `copy` 和 `git_clone` 时，case 里的每个 git 仓库都是一个全新的私有仓库，包括顶层仓库、嵌套仓库、submodule，以及复制过来的 linked worktree。它们和你的源仓库有相同的提交，但没有任何 remote，也没有指回你仓库的链接，所以在 case 里 commit、checkout 或 `git push` 都改不到你自己的仓库。源目录里未提交的修改，在 case 里同样显示为未提交的修改。如果某个 `.git` 条目 git 打不开（例如主仓库已被移走的 worktree），运行会报错并指出它。
+case 里的每个 git 仓库都是一个全新的私有仓库，包括顶层仓库、嵌套仓库、submodule，以及复制过来的 linked worktree。它们和你的源仓库有相同的提交，但没有任何 remote，也没有指回你仓库的链接，所以在 case 里 commit、checkout 或 `git push` 都改不到你自己的仓库。源目录里未提交的修改，在 case 里同样显示为未提交的修改。如果某个 `.git` 条目 git 打不开（例如主仓库已被移走的 worktree），运行会报错并指出它。
 
 `create --dataset` 时，每个种子会快照到任务的 `input/seeds/<case_id>/`，并改写存盘数据集为从该快照 `copy`，之后的 eval/optimize 不再访问调用方原来的路径。
 
@@ -96,6 +96,14 @@ icode rsi eval --task rsi-<id> --stub
 
 结果默认放在任务目录下。若传 `--out DIR`，请选一个不在任何 git 仓库里、也不在任何 `workdir.from` 源目录里的目录。`eval` 会拒绝位于 git 仓库内的 `--out`，否则没有自带仓库的 case 会把 git 命令落到你的仓库上。
 
+要给不在 agents 目录里的 profile YAML 打分（例如用 `install` 导出的候选），用 `--profile` 代替 `-a`。可以用它在一份没参与优化的数据集上复测导出的候选：
+
+```bash
+icode rsi eval --dataset ./held-out.json --profile ./candidate.yaml -m <model>
+```
+
+Stdout 会显示 `passed=N/M` 和 `errored=K`。case 根本没能跑完时（模型或 provider 出错、case 超时、工作目录准备失败）记为 **errored**，它在 `cases.jsonl` 里的记录带 `"errored": true` 和错误信息。errored 的 case 在这个分数里算未通过，所以先看看它们，再把分数当作 agent 的水平。
+
 为什么：在烧 epoch 之前确认数据集与 headless 路径可用。若直接 `optimize` 可跳过（optimize 总会先打基线分）。
 
 ### 5. 跑带门控的 optimize
@@ -107,12 +115,20 @@ icode rsi optimize rsi-<id> --agent Code -m <model> --epochs 2 --timeout 180
 一次 `optimize` 内部会：
 
 1. **Baseline** — 用基线 profile（`Code`，除非 `--profile` 指向 YAML）跑完全部 case。
-2. **Propose** — optimizer 模型阅读失败摘要，只能发出白名单 mutation（`append_instructions`、`upsert_inline_skill`、`remove_inline_skill`）。
+2. **Propose** — optimizer 模型阅读失败摘要，只能发出白名单 mutation（`append_instructions`、`upsert_inline_skill`、`remove_inline_skill`）。它还能看到本次 run 里自己之前的提议哪些已被采纳（已经在 profile 里）、哪些被拒绝，避免重复提出。
 3. **Materialize** — 写入 `<task>/run/candidates/<run>-epoch-N/`（每次 optimize 有独立 run id，重跑不会覆盖上一次的 baseline）。
-4. **Gate** — 先**只重跑仍失败的 case**（快速拒绝）；合并分数看起来更好时，再**用完整套件确认**后才采纳。`perfect` / `best` 一律以完整套件结果为准。`best.json`（`install` 导出的就是它）只在本轮跑完后写入。stub 分数和 live 分数互不比较：live（`--agent`）结果总会取代 stub 的 best，stub 干跑永远不会取代 live 的 best；同一种跑法之间，新 best 的分数**不低于**旧的才会替换。
+4. **Gate** — 先**只重跑仍失败的 case**（快速拒绝）；合并分数看起来更好时，再**用完整套件确认**后才采纳。`perfect` / `best` 一律以完整套件结果为准。
 5. 直到 epoch 用尽、分数已完美，或模型返回空的 `{"mutations":[]}`（主动停止）。模型调用失败或非法 JSON 会 **drop** 该轮并继续；被丢弃的提议不会安装。
 
-Stdout 含本轮的 `baseline_score`、`best_score`、`best_candidate`、`epochs`、`dropped`、`perfect`，还有 `best_json_updated`，以及 `install` 实际会导出的 `install_candidate` / `install_score` / `install_kind`。`best_json_updated=False` 时，本轮的 `best_candidate` **不是** `install` 导出的那个；`icode rsi get` 里的 `last_optimize_install_*` 显示同样的信息。
+只有判分脚本实际判过的 case 才参与比较。没能跑完的 case（见第 4 步的 **errored**）会再跑一次。如果基线仍有这样的 case，optimize 会报错停止并列出它们，因为没有哪个候选能和这样的基线公平比较：请检查模型和 provider，或加大 `--timeout`。如果某个候选仍有这样的 case，这一轮记为 **inconclusive**：不采纳，下一轮从当前 best 继续。
+
+`best.json`（`install` 导出的就是它）只在本轮跑完后写入，而且只在可比的运行之间比较分数：
+
+- stub 分数和 live 分数互不比较：live（`--agent`）结果总会取代 stub 的 best，stub 干跑永远不会取代 live 的 best。
+- 从不同基线 profile 出发的运行（换了 `--agent`、换了 `--profile` YAML，或者同一个 agent 被你改过）也互不比较：以最近一次的基线为准，直接替换。
+- 同一种跑法、同一个基线之间，新 best 的分数**不低于**旧的才会替换。
+
+Stdout 含本轮的 `baseline_score`、`best_score`、`best_candidate`、`epochs`、`dropped`、`inconclusive`、`perfect`，还有 `best_json_updated`，以及 `install` 实际会导出的 `install_candidate` / `install_score` / `install_kind`。`best_json_updated=False` 时，本轮的 `best_candidate` **不是** `install` 导出的那个；`icode rsi get` 里的 `last_optimize_install_*` 显示同样的信息。
 
 为什么：这才是真正的 RSI 搜索。不传 `--agent` 的 stub optimize 用于 CI 与接线检查，不会调用模型。第一次 live 之前跑过的 stub 干跑不会挡住 live 结果写入 `best.json`；live 之后再跑 stub，也不会用只有 `rsi:case:` 标记的 stub profile 覆盖它。
 
@@ -146,7 +162,8 @@ icode rsi tree rsi-<id>
 | `run/best.json` | 指向最佳已采纳候选（`kind`：stub 或 live） |
 | `run/candidates/<run>-…/` | Profile YAML + `mutations.json`（按 optimize run 隔离） |
 | `run/analysis/<run>/epoch-N.json` | 失败摘要与提议的 mutation |
-| `run/evaluations/` | 各标签的 scorecard 与 `cases.jsonl` |
+| `run/evaluations/<label>/eval-<id>/` | `scorecard.json`、`cases.jsonl`，以及 `case_workspaces/<case_id>/` 下每个 case 的工作目录 |
+| `run/evaluations/<label>/eval-<id>/case_workspaces/.<case_id>.sessions/` | live case 的会话记录，放在 agent 工作目录的旁边（不在里面） |
 | `tree.json` | 演进树（`ADOPTED` / `REJECTED`） |
 
 为什么：导出前判断胜出改动是真改进，还是过拟合补丁。
@@ -178,6 +195,10 @@ icode rsi list
 icode rsi delete rsi-<id>
 ```
 
+只有在另一个 `eval`、`optimize` 或 `start` 正在使用该任务时，`delete` 才会拒绝。命令被强行结束后停在 `RUNNING` 或 `QUEUED` 的任务可以删除；`task.json` 损坏的任务也可以删除：`list` 会把它显示为 `CORRUPT`，`get` 会给出文件路径。
+
+任务目录会保留每次运行的全部候选、scorecard 和 case 工作目录，每跑一次 `eval` 或 `optimize` 都会变大（`workdir` 种子大时更明显）。不再需要的任务请删除。
+
 ## 命令一览
 
 | 命令 | 在 RSI 中的角色 | 做什么 |
@@ -185,12 +206,12 @@ icode rsi delete rsi-<id>
 | `dataset validate` | 准备 | 校验数据集 JSON；不建任务、不调模型 |
 | `create` | 准备 | 创建 `<config_dir>/rsi/tasks/<id>/`；可选把 `--dataset` 拷进 `input/` |
 | `list` / `get` | 查看 | 列出任务，或查看单个任务元数据 / 最近 optimize 摘要 |
-| `eval` | 度量 | 跑一次 `script_based` 打分（stub fixture 或 live `--agent`） |
+| `eval` | 度量 | 跑一次 `script_based` 打分（stub fixture、live `--agent` 或 live `--profile` YAML） |
 | `optimize` | 改进 | 完整门控环：基线、提议、门控、采纳/拒绝 |
 | `tree` | 查看 | 打印演进树（mock `start` 或 `optimize` 之后） |
 | `install` | 导出 | 拷出最佳候选 YAML；除非 `--user` + `--user-dir`（不能和 `--out` 同用），否则不写用户 agents；`--force` 覆盖已存在的文件 |
-| `delete` | 清理 | 删除 `CREATED` 或已结束任务的目录 |
-| `start` | **仅 mock** | 排队跑 mock provider（不是真 optimize） |
+| `delete` | 清理 | 删除任务目录，除非另一个命令正在使用该任务 |
+| `start` | **仅 mock** | 把 mock provider 跑完（不是真 optimize） |
 
 ## 数据集格式（chrys-rsi.dataset.v1）
 
@@ -198,6 +219,7 @@ icode rsi delete rsi-<id>
 {
   "schema_version": 1,
   "dataset_id": "demo",
+  "support_files": ["check_helpers.py", "expected/"],
   "cases": [
     {
       "case_id": "hello-file",
@@ -228,12 +250,15 @@ icode rsi delete rsi-<id>
 - **交给 agent 的输入**：`prompt`（用户消息）+ 物化后的 case 工作目录（以及 `--agent` / `--profile` 的基线 profile）。`evaluation.*` 只用于判分，不会发给模型。
 - **`workdir`**（可选）：从源目录为 case 播种私有 cwd。
   - `from` — 绝对路径，或相对数据集 JSON 所在目录的路径
-  - `strategy` — `copy`（默认；任意目录树）、`git_clone`（对 `from` 处仓库做私有 clone；不含未跟踪文件和 submodule 内容）、或 `git_worktree`（detach checkout；共享 `.git`，隔离较弱）
-  - `ref` — 可选；`git_clone` / `git_worktree` 的 commit/分支
+  - `strategy` — `copy`（默认；任意目录树，包括 git 忽略的文件，例如 `.env`、`node_modules`、`target`）或 `git_clone`（对 `from` 处仓库做私有 clone；不含未跟踪文件和 submodule 内容）。`git_worktree` 是 `git_clone` 的别名，仍然可用。
+  - `ref` — 可选；`git_clone` 的 commit/分支
   - 解析到源目录外（`copy`）或 clone 目录外（`git_clone`）的 symlink 会被拒绝
   - case 目录不能位于 `from` 之内（例如 `from: "."` 且 `--out` 指到数据集目录里）
 - `fixture` 为 `--stub` / CI 提供罐头 `response` 与文件；live `--agent` 请省略。
-- 可选 `script` 必须位于数据集目录内；以关闭的 `stdin` 运行，并接收 `CHRYS_RSI_WORKDIR` / `CHRYS_RSI_RESPONSE_PATH`。请将其视为可信本地代码。
+- 可选 `script` 必须位于数据集目录内；以关闭的 `stdin` 运行，并接收 `CHRYS_RSI_WORKDIR`（case 的工作目录）、`CHRYS_RSI_RESPONSE_PATH`（agent 最终回答所在的文件）和 `CHRYS_RSI_DATASET_DIR`。请将其视为可信本地代码。
+- **`support_files`**（可选，顶层字段）：判分脚本要读的、和数据集 JSON 放在一起的文件或目录，例如脚本 import 的辅助模块、期望输出。路径相对数据集所在目录。
+  - 判分前，RSI 会把每个 case 的 `script` 和每个 `support_files` 条目复制到一个单独的目录，保持相对路径不变。脚本从这份副本运行，`CHRYS_RSI_DATASET_DIR` 指向它。`eval --dataset` 和任务都这样做，所以同一份数据集两种跑法的分数一致。
+  - 脚本需要、但没列在 `support_files` 里的文件，两种跑法都找不到，case 在 `eval --dataset` 和 `optimize` 里会以同样的方式失败。把它列上，再校验一次。
 
 评测产物写入输出目录下的 `eval-<id>/scorecard.json` 与 `cases.jsonl`。
 
@@ -291,10 +316,15 @@ Optimize 的 stdout 类似：
 task_id=rsi-…
 baseline_score=0.0
 best_score=1.0
-best_candidate=epoch-2
+best_candidate=r1a2b3c4d-epoch-2
 epochs=2
 dropped=0
+inconclusive=0
 perfect=True
+best_json_updated=True
+install_candidate=r1a2b3c4d-epoch-2
+install_score=1.0
+install_kind=live
 ```
 
 含义：
@@ -302,6 +332,7 @@ perfect=True
 - **`baseline_score=0.0`** — 未改动的 Code 至少挂了一项判分（常见是 `2^3^2` 或 `1++2i`）。
 - **`best_candidate=<run>-epoch-N`** — 该轮 mutation 因套件分数**严格上升**而被 **ADOPT**。
 - **`best_score=1.0` / `perfect=True`** — 在这份数据集上，采纳候选通过了 case（构建 + 全部算式 + 非法退出）。分数满分时 RSI 会提前结束。
+- **`best_json_updated=True`** 和几行 `install_*` — `install` 会导出本轮的最佳候选。
 - 产物在 `<config_dir>/rsi/tasks/rsi-…/`：`run/best.json`、`run/candidates/<run>-epoch-N/Code.yaml`、`run/analysis/<run>/epoch-N.json`（提议的 mutation）、`run/evaluations/`（各轮 scorecard / `cases.jsonl`）。
 
 第一轮仍可能是 `0.0`（进树但未采纳，或增益不够）；真正 ADOPT 可能发生在更晚的 epoch。编程评测**非确定性**：同样命令不一定每次都到 `perfect=True`。若分数卡在 `0.0`，可再跑 `optimize` 或加大 `--epochs`。
@@ -346,3 +377,6 @@ Epoch-2 的父节点仍是 **baseline**，不是 epoch-1：被拒绝的 epoch �
 - 仅 CLI：RSI 没有 TUI 或 ACP 入口。
 - `icode rsi start` 仍是 mock 训练循环，不会执行 optimize。
 - Case 工作区在任务树下；会逛目录的 agent 可能读到 `input/dataset.json`。编写 prompt 与布局时，尽量让 expect 内容不容易从任务目录直接发现。
+- 每次评测里每个 case 只跑一次。live agent 每次的表现不完全一样，case 很少时，一次运气好或运气差的运行就可能决定候选是否被采纳。请为每种在意的行为准备多个 case，并在依赖导出的候选之前用 `eval --profile` 复测（最好用一份没参与优化的数据集）。
+- live case 使用你平时的配置：你的 hooks、MCP 服务器和 skills 对每个 case 都生效，所以不同机器或不同配置下的分数不能直接比较；带副作用的 hook 每个 case、每个 epoch 都会触发一次。
+- `strategy: "copy"` 会把源目录里的所有内容复制进每个 case，包括 `.env` 之类的文件。agent 在那里工作时不会弹审批，所以不要把密钥放在种子目录里（或者改用只复制已提交文件的 `git_clone`）。
