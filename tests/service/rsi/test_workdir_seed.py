@@ -152,7 +152,9 @@ def test_delete_never_runs_git_against_a_repo_named_in_a_task_file(tmp_path: Pat
     _git(user_repo, "worktree", "add", "--detach", str(unmounted))
     shutil.rmtree(unmounted.parent)
     worktrees_before = _git(user_repo, "worktree", "list", "--porcelain").stdout
-    assert str(unmounted) in worktrees_before or str(unmounted.resolve()) in worktrees_before
+    # Git for Windows lists paths with forward slashes.
+    listed = worktrees_before.replace("\\", "/")
+    assert unmounted.as_posix() in listed or unmounted.resolve().as_posix() in listed
 
     ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
     task_id = ctx.create_task(name="planted")["task_id"]
@@ -378,10 +380,18 @@ def test_git_clone_refuses_tracked_symlink_escaping_the_clone(tmp_path: Path, gi
     symlink_or_skip(source / "leak", outside)
     _git(source, "add", "leak")
     _git(source, "commit", "--quiet", "-m", "leak")
+    probe = tmp_path / "probe"
+    _git(tmp_path, "clone", "--quiet", str(source), str(probe))
+    seed = WorkdirSeed(source=str(source), strategy="git_clone")
+    if not (probe / "leak").is_symlink():
+        # This git checks tracked links out as plain files (core.symlinks=false,
+        # the Git for Windows default), so nothing in the clone can escape it.
+        dest = materialize_workdir(seed, dest=tmp_path / "clone", dataset_dir=tmp_path)
+        assert not (dest / "leak").is_symlink()
+        assert (dest / "leak").read_text(encoding="utf-8") != "secret\n"
+        return
     with pytest.raises(RsiBadRequest, match="symlink escaping"):
-        materialize_workdir(
-            WorkdirSeed(source=str(source), strategy="git_clone"), dest=tmp_path / "clone", dataset_dir=tmp_path
-        )
+        materialize_workdir(seed, dest=tmp_path / "clone", dataset_dir=tmp_path)
 
 
 def test_rsi_files_do_not_show_in_case_git_status(tmp_path: Path, git_repo_factory) -> None:
