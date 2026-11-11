@@ -5,7 +5,7 @@
 Written from ``.plan/model-list-fetch.md`` (when and how the list is fetched, the hints) and the
 interface contract ``.plan/model-list-interface.md``. ``ModelConfigScreen.discover_models`` is
 replaced by a recording fake, or by the real lookup over an ``httpx.MockTransport``, so no request
-leaves the process. The dropdown's own keyboard, mouse and filter rules are in
+leaves the process. The dropdown's own keyboard, mouse and ordering rules are in
 ``test_model_config_model_picker.py``.
 """
 

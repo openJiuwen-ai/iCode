@@ -21,7 +21,7 @@ While a task is running, the "Model Configuration" window opens in read-only mod
 1. Click "New".
 2. Enter a "Profile Name" of your choice, such as `My Model`.
 3. In the "Model Options" section, select the "Provider" and "API Style". Only OpenAI and DeepSeek (OpenAI) provide an API Style option. Before configuring it, check the model service's documentation for supported APIs and follow its recommendation when choosing "Chat Completions" or "Responses". If the service supports only one API, select its corresponding style; if it supports both, choose according to the service's recommendation or your needs. DeepSeek's Responses style is also used for the server-side `web_search`; see DeepSeek's documentation for supported models.
-4. Fill in "Base URL" and "API Key" as needed (leave them blank to use the address and environment variable shown in gray), then enter the model ID; click "Fetch" next to the "Model" input to choose from the service's model list. If the service address is incorrect, iCode tries to correct it and shows what changed.
+4. Fill in "Base URL" and "API Key" as needed (leave them blank to use the address and environment variable shown in gray), then enter the model ID; click "Fetch" next to the "Model" input to choose from the service's model list; it lists every model, with those containing the text you entered shown first. If the service address is incorrect, iCode tries to correct it and shows what changed.
 5. Set "Max Context Window" and the "Max Output Tokens" field according to the provider's documentation.
 6. Adjust "Streaming", "Vision Model", and "Connection Options" as needed. "Streaming" is on for a new profile.
 7. Click "Save".
