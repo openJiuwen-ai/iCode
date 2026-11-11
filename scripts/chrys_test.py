@@ -275,6 +275,38 @@ REGULAR_RULES = (
         "tests/service/sandbox/test_supervisor.py",
         ("src/chrys/**", "pyproject.toml", "uv.lock"),
     ),
+    # These tests import vendored runtime modules; third_party/ is not a module root.
+    TestRule(
+        "tests/service/sandbox/test_root_sandbox_identity.py",
+        (
+            "third_party/jiuwenbox/src/jiuwenbox/server/runtime/process.py",
+            "third_party/jiuwenbox/src/jiuwenbox/supervisor/sandbox_daemon.py",
+        ),
+    ),
+    TestRule(
+        "tests/service/sandbox/test_exec_cancel_closes_ipc.py",
+        ("third_party/jiuwenbox/src/jiuwenbox/server/runtime/process.py",),
+    ),
+    TestRule(
+        "tests/service/sandbox/test_daemon_cancel_and_timeout.py",
+        ("third_party/jiuwenbox/src/jiuwenbox/supervisor/sandbox_daemon.py",),
+    ),
+    TestRule(
+        "tests/service/sandbox/test_daemon_ipc_exec_retry.py",
+        (
+            "third_party/jiuwenbox/src/jiuwenbox/server/runtime/process.py",
+            "third_party/jiuwenbox/src/jiuwenbox/supervisor/sandbox_daemon.py",
+        ),
+    ),
+    # These tests import the vendored HTTP server; third_party/ is not a module root.
+    TestRule(
+        "tests/service/sandbox/test_server_auth.py",
+        ("third_party/jiuwenbox/src/jiuwenbox/server/auth.py",),
+    ),
+    TestRule(
+        "tests/service/sandbox/test_server_cors.py",
+        ("third_party/jiuwenbox/src/jiuwenbox/server/app.py",),
+    ),
 )
 
 # Include every pytest configuration filename, even when absent from this tree:

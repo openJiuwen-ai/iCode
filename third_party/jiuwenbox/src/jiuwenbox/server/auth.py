@@ -1,5 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Opt-in Bearer token authentication for the jiuwenbox HTTP API."""
+"""Bearer token authentication for the jiuwenbox HTTP API.
+
+Every request needs ``Authorization: Bearer <token>``. A missing token is
+rejected.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ _ENV_API_TOKEN_NAME = "JIUWENBOX_API_TOKEN"
 
 
 def get_configured_token() -> str | None:
-    """Return the configured API token, or ``None`` when auth is disabled."""
+    """Return the configured API token, or ``None`` when it is missing or blank."""
     raw = os.environ.get(_ENV_API_TOKEN_NAME)
     if raw is None:
         return None
@@ -42,18 +46,19 @@ def token_is_valid(provided: str | None, expected: str) -> bool:
 
 
 class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
-    """Require ``Authorization: Bearer <token>`` when the API token env is set."""
+    """Require ``Authorization: Bearer <token>`` on every request.
+
+    A missing token is rejected. An empty or whitespace-only configured token
+    is rejected the same way as a wrong bearer.
+    """
 
     async def dispatch(self, request: Request, call_next) -> Response:
         expected = get_configured_token()
-        if expected is None:
-            return await call_next(request)
-
         provided = extract_bearer_token(request.headers.get("Authorization"))
-        if not token_is_valid(provided, expected):
-            return JSONResponse(
-                status_code=401,
-                content={"error": "unauthorized"},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return await call_next(request)
+        if expected is not None and token_is_valid(provided, expected):
+            return await call_next(request)
+        return JSONResponse(
+            status_code=401,
+            content={"error": "unauthorized"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )

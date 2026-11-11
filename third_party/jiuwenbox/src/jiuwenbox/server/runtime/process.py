@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import dataclasses
 import errno
 import grp
@@ -27,7 +28,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,39 @@ SERVER_PROTECT_PORTS_ENV = "JIUWENBOX_SERVER_PROTECT_PORTS"
 LISTEN_URI_ENV = "JIUWENBOX_LISTEN"
 DEFAULT_SERVER_PROTECT_PORTS: tuple[int, ...] = (8321,)
 _API_TOKEN_ENV = "JIUWENBOX_API_TOKEN"
+# Host session buses name sockets under /run and /tmp. The sandbox must not
+# see them even when the mount table is also private.
+_HOST_SESSION_ENV_KEYS = ("TMUX", "DBUS_SESSION_BUS_ADDRESS")
+# The management listen URL is not a sandbox environment variable; the
+# server process keeps its own. It is stripped with the session keys so a
+# create-env or policy value cannot be restored by ``--setenv``.
+_SANDBOX_HIDDEN_ENV_KEYS = (*_HOST_SESSION_ENV_KEYS, LISTEN_URI_ENV)
+# Private tmpfs destinations. ``/var/run`` is listed after ``/run`` because
+# on many hosts ``/var/run`` is a symlink to ``/run`` and the target has to
+# exist before bubblewrap mounts over it.
+_PRIVATE_RUNTIME_DIRS = ("/run", "/tmp", "/var/run")
+# Host directories the sandbox replaces with a private tmpfs. A control
+# socket has to live under one of these: ``/home`` is bind-mounted, and so
+# is the rest of ``/var``, so a path there stays reachable with connect().
+_CONTROL_SOCKET_HIDDEN_ROOTS = (Path("/run"), Path("/tmp"))
+_ROOT_WITHOUT_USER_NAMESPACE = "Sandbox cannot start as root while user namespaces are off."
+_NO_CONTROL_SOCKET_PARENT = (
+    "No host directory covered by the sandbox private tmpfs is available for the control socket."
+)
+
+
+def _refuse_root_without_user_namespace(policy: SecurityPolicy) -> None:
+    """Fail closed before bubblewrap when host root would keep every capability.
+
+    With ``namespace.user`` false the sandbox stays in the host user
+    namespace, so uid 0 keeps the full capability set. Dropping capabilities
+    or switching to uid 65534 does not make that start safe.
+    """
+    if policy.namespace.user:
+        return
+    if os.geteuid() != 0:
+        return
+    raise RuntimeError(_ROOT_WITHOUT_USER_NAMESPACE)
 
 
 def _sandbox_process_env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -110,11 +144,138 @@ def _sandbox_process_env(extra: dict[str, str] | None = None) -> dict[str, str]:
 
     Starts from the server process env (plus optional per-sandbox overrides),
     then strips ``JIUWENBOX_API_TOKEN`` so the management Bearer credential
-    never becomes visible inside the sandbox.
+    never becomes visible inside the sandbox. Host session-bus variables and
+    the management listen URL are removed as well. The listen URL is not a
+    sandbox environment variable; the server process keeps its own.
+    ``_drop_host_session_env`` repeats the strip on the bwrap argv so an
+    inherited value cannot survive ``--setenv``.
     """
     process_env = {**os.environ, **(extra or {})}
     process_env.pop(_API_TOKEN_ENV, None)
+    for key in _SANDBOX_HIDDEN_ENV_KEYS:
+        process_env.pop(key, None)
     return process_env
+
+
+def _cover_host_runtime_directories(config: BwrapConfig) -> None:
+    """Hide host socket directories behind a private tmpfs.
+
+    ``BwrapConfig.to_args`` emits ``tmpfs_mounts`` before child binds, so a
+    tmpfs recorded there is covered again by ``bind_root_entries`` of ``/``.
+    ``extra_args`` are emitted after those binds and after ``--remount-ro``.
+    A read-only bind of ``/var`` still exposes ``/var/run`` to ``connect()``;
+    the ``/var/run`` tmpfs has to come later.
+    """
+    for path in _PRIVATE_RUNTIME_DIRS:
+        config.extra_args.extend(("--tmpfs", path))
+
+
+def _drop_host_session_env(config: BwrapConfig) -> None:
+    """Drop host session-bus variables and the management listen URL.
+
+    ``extra_args`` are placed before ``--setenv``, so the keys are removed
+    from ``config.env`` as well. Otherwise a later ``--setenv`` would put
+    them back. The management listen URL is not a sandbox environment
+    variable; the server process keeps its own.
+    """
+    for key in _SANDBOX_HIDDEN_ENV_KEYS:
+        config.env.pop(key, None)
+        config.extra_args.extend(("--unsetenv", key))
+
+
+def _control_socket_user_home() -> Path:
+    """Return the effective user's home directory without trusting ``$HOME``.
+
+    Same lookup as ``jiuwenbox.server.workspace._effective_user_home``: the
+    password database, then ``Path.home()`` when the account entry is missing
+    (the Windows import stub raises ``KeyError``).
+    """
+    try:
+        return Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    except KeyError:
+        return Path.home()
+
+
+def _resolved_path(path: Path) -> Path | None:
+    try:
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def _is_existing_directory(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _path_is_inside(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _covered_by_sandbox_tmpfs(path: Path) -> bool:
+    """Whether a private sandbox tmpfs hides this host path.
+
+    ``/run`` and ``/tmp`` are replaced inside the sandbox. ``XDG_RUNTIME_DIR``
+    is used only when its real path is under one of those trees. A value
+    under ``/var`` or the home directory stays reachable with ``connect()``.
+    """
+    for root in _CONTROL_SOCKET_HIDDEN_ROOTS:
+        resolved = _resolved_path(root)
+        if resolved is None:
+            continue
+        if path == resolved or _path_is_inside(path, resolved):
+            return True
+    return False
+
+
+def _control_socket_parent_candidates() -> list[Path]:
+    """Host directories a private sandbox tmpfs can hide, in preference order.
+
+    ``/home`` is bind-mounted, so a socket there stays visible to ``connect()``.
+    ``/run`` and ``/tmp`` are covered later by a private tmpfs. A candidate
+    outside those trees is dropped by ``_select_control_socket_parent``.
+    """
+    candidates: list[Path] = []
+    xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg_runtime_dir:
+        candidates.append(Path(xdg_runtime_dir))
+    if sys.platform != "win32":
+        candidates.append(Path("/run/user") / str(os.getuid()))
+        candidates.append(Path("/tmp"))
+        return candidates
+    # The sandbox never runs on Windows. Tests import this module there.
+    # The temp directory is only a candidate; selection still requires a
+    # path under ``/run`` or ``/tmp``, so a real Windows call raises.
+    candidates.append(Path(tempfile.gettempdir()))
+    return candidates
+
+
+def _select_control_socket_parent() -> Path:
+    """Return the first usable control-socket parent.
+
+    A candidate must already be a directory. Its real path must not sit
+    inside the resolved home directory, and it must be under ``/run`` or
+    ``/tmp`` so the sandbox's private tmpfs hides it. A symlink into the
+    home directory, or into a bind-mounted tree such as ``/var``, does not
+    win. There is no fallback under the home directory or the sandbox workspace.
+    """
+    home = _resolved_path(_control_socket_user_home())
+    if home is None:
+        raise RuntimeError(_NO_CONTROL_SOCKET_PARENT)
+    for candidate in _control_socket_parent_candidates():
+        resolved = _resolved_path(candidate)
+        if resolved is None or not _is_existing_directory(resolved):
+            continue
+        if _path_is_inside(resolved, home) or not _covered_by_sandbox_tmpfs(resolved):
+            continue
+        return resolved
+    raise RuntimeError(_NO_CONTROL_SOCKET_PARENT)
 
 
 def _derive_protect_ports_from_listen() -> tuple[int, ...]:
@@ -138,7 +299,7 @@ def _derive_protect_ports_from_listen() -> tuple[int, ...]:
         # ``http://0.0.0.0:8321`` -> ``("0.0.0.0", "8321")``. ``rsplit``
         # guards against IPv6 hosts like ``http://[::]:8321`` where ``:``
         # appears multiple times.
-        host_port = uri[len("http://"):]
+        host_port = uri[len("http://") :]
         try:
             _, port_str = host_port.rsplit(":", 1)
             port = int(port_str)
@@ -147,6 +308,7 @@ def _derive_protect_ports_from_listen() -> tuple[int, ...]:
         if 1 <= port <= 65535:
             return (port,)
     return DEFAULT_SERVER_PROTECT_PORTS
+
 
 _SUPERVISOR_DIR = Path(__file__).resolve().parents[2] / "supervisor"
 LANDLOCK_LAUNCHER_SOURCE = _SUPERVISOR_DIR / "landlock_launcher.py"
@@ -203,18 +365,10 @@ def _cgroup_allows_fastpath(cgroup: CgroupPolicy) -> bool:
     then takes the daemon and the client sees a closed IPC socket.
     """
     if cgroup.pids_max is not None:
-        needed = (
-            _FASTPATH_CGROUP_PIDS_BASE
-            + 1
-            + _fastpath_worker_count()
-            + 1
-        )
+        needed = _FASTPATH_CGROUP_PIDS_BASE + 1 + _fastpath_worker_count() + 1
         if cgroup.pids_max < needed:
             return False
-    if (
-        cgroup.memory_max is not None
-        and cgroup.memory_max < _FASTPATH_MIN_MEMORY_BYTES
-    ):
+    if cgroup.memory_max is not None and cgroup.memory_max < _FASTPATH_MIN_MEMORY_BYTES:
         return False
     return True
 
@@ -268,7 +422,8 @@ def _python_fastpath_enabled() -> bool:
         return False
     logger.warning(
         "unrecognised %s=%r; expected '0' or '1'; defaulting fast path OFF",
-        FASTPATH_ENV, raw,
+        FASTPATH_ENV,
+        raw,
     )
     return False
 
@@ -318,18 +473,18 @@ def _python_fastpath_candidate(command: list[str]) -> bool:
     return False
 
 
-# Per-sandbox control socket: box-server ``bind()``s a Unix socket on its
-# own host filesystem inside a per-sandbox control directory, then passes
-# the listener fd into bubblewrap via ``subprocess.Popen(pass_fds=...)``.
-# Bubblewrap forks twice (monitor → intermediate → user command) but the
-# user command path never closes arbitrary inherited fds, and Python's
-# ``pass_fds`` clears CLOEXEC, so the listener fd survives all the way to
-# the daemon. The daemon recovers the fd number from ``LISTENER_FD_ENV``
-# and ``accept()``s on it. Because the socket file never appears under any
-# sandbox-visible path, user code spawned by the daemon cannot reach the
-# listener (and the daemon's ``subprocess.Popen`` calls run with
-# ``close_fds=True`` so the inherited listener fd is not exposed to
-# children either).
+# Per-sandbox control socket: box-server ``bind()``s a Unix socket in a host
+# directory the sandbox replaces with a private tmpfs, never under the home
+# directory (``/home`` is bind-mounted), then passes the listener fd into
+# bubblewrap via ``subprocess.Popen(pass_fds=...)``. Bubblewrap forks twice
+# (monitor → intermediate → user command) but the user command path never
+# closes arbitrary inherited fds, and Python's ``pass_fds`` clears CLOEXEC,
+# so the listener fd survives all the way to the daemon. The daemon recovers
+# the fd number from ``LISTENER_FD_ENV`` and ``accept()``s on it. That
+# directory has no path inside the sandbox, so user code spawned by the
+# daemon cannot reach the listener (and the daemon's ``subprocess.Popen``
+# calls run with ``close_fds=True`` so the inherited listener fd is not
+# exposed to children either).
 DAEMON_CONNECT_TIMEOUT_SECONDS = 2.0
 DAEMON_SHUTDOWN_TIMEOUT_SECONDS = 3.0
 DAEMON_STARTUP_GRACE_SECONDS = 0.3
@@ -364,12 +519,12 @@ DEFAULT_EXEC_IPC_READ_TIMEOUT_SECONDS = 300.0 + EXEC_IPC_READ_MARGIN_SECONDS
 # dead socket.
 FATAL_DAEMON_ERRNOS: frozenset[int] = frozenset(
     (
-        errno.ECONNREFUSED,    # nothing listening → daemon crashed
-        errno.ECONNRESET,      # peer (daemon) closed mid-stream
-        errno.ENOENT,          # listener path vanished
-        errno.EPIPE,           # writing to a closed pipe/socket
-        errno.ETIMEDOUT,       # daemon never responded → hung
-        errno.EBADF,           # our fd was already closed → dead session
+        errno.ECONNREFUSED,  # nothing listening → daemon crashed
+        errno.ECONNRESET,  # peer (daemon) closed mid-stream
+        errno.ENOENT,  # listener path vanished
+        errno.EPIPE,  # writing to a closed pipe/socket
+        errno.ETIMEDOUT,  # daemon never responded → hung
+        errno.EBADF,  # our fd was already closed → dead session
     ),
 )
 
@@ -401,6 +556,90 @@ RECOVERABLE_DAEMON_ERRNOS: frozenset[int] = frozenset(
 )
 
 
+def _consume_abandoned_worker(worker: asyncio.Future[ExecResult | None]) -> None:
+    """Retrieve a worker failure that cancel will never await.
+
+    Closing the IPC socket wakes the worker. ``_run_daemon_exec`` turns
+    that failure into a ``None`` result when the call was cancelled. If an
+    exception still lands on this future after the awaiting task is gone,
+    retrieving it here keeps it off the "never retrieved" log and out of
+    the transport handlers that would mark the daemon unhealthy.
+    """
+
+    def _retrieve(done: asyncio.Future[ExecResult | None]) -> None:
+        if done.cancelled():
+            return
+        done.exception()
+
+    if worker.done():
+        _retrieve(worker)
+        return
+    worker.add_done_callback(_retrieve)
+
+
+class _ExecIpcSlot:
+    """One exec call's daemon socket, closed when that call is cancelled.
+
+    The worker publishes the connected socket under the lock. Cancel sets
+    a flag and ``close()``s that socket (not ``SHUT_WR``) so the daemon
+    sees a full disconnect and signal the process group of this command
+    only. A connect that loses the race closes the new socket and does
+    not send the command. Closing this socket does not mean the daemon
+    itself failed.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._sock: socket.socket | None = None
+        self._cancelled = False
+
+    def was_cancelled(self) -> bool:
+        with self._lock:
+            return self._cancelled
+
+    def cancel_and_close(self) -> None:
+        """Mark the call cancelled and fully close its socket, if connected."""
+        with self._lock:
+            self._cancelled = True
+            sock = self._sock
+            self._sock = None
+        if sock is None:
+            return
+        # ``close()`` drops the fd the daemon polls, which is the full
+        # disconnect (``POLLHUP``). It does not interrupt this process's
+        # other thread blocked in ``recv``. ``SHUT_RDWR`` does: unlike
+        # ``SHUT_WR``, which the daemon ignores, shutting both directions
+        # is a hangup and wakes that read. Then ``close()``.
+        with contextlib.suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
+        with contextlib.suppress(OSError):
+            sock.close()
+
+    def attach_or_close(self, sock: socket.socket) -> bool:
+        """Publish ``sock`` unless cancel already won.
+
+        Returns True when the caller may send the command. A lost race
+        closes ``sock`` so the command is never started. A second close
+        from the worker's ``finally`` is safe.
+        """
+        with self._lock:
+            if not self._cancelled:
+                self._sock = sock
+                return True
+        with contextlib.suppress(OSError):
+            sock.close()
+        return False
+
+    def release(self) -> None:
+        """Drop the socket reference without closing it.
+
+        The worker closes the socket itself. Cancel may already have
+        closed the same object.
+        """
+        with self._lock:
+            self._sock = None
+
+
 @dataclasses.dataclass(frozen=True)
 class _DaemonExecCall:
     """Inputs to one IPC ``exec`` request.
@@ -417,6 +656,7 @@ class _DaemonExecCall:
     workdir: str | None
     stdin_bytes: bytes | None
     timeout: float | None
+    ipc: _ExecIpcSlot
 
 
 @dataclasses.dataclass(frozen=True)
@@ -525,13 +765,11 @@ class BackgroundJob:
     command: list[str]
     pid: int | None
     workdir: str | None
-    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
     exit_code: int | None = None
     stdout: str = ""
     stderr: str = ""
-
-
 
 
 def _resolve_zombie_reaper_interval() -> float:
@@ -588,7 +826,7 @@ def enable_child_subreaper() -> bool:
     except OSError as exc:
         logger.warning("PR_SET_CHILD_SUBREAPER prctl failed: %s", exc)
         return False
-    except Exception:  # noqa: BLE001 - ctypes is permissive about errors
+    except Exception:
         logger.warning("PR_SET_CHILD_SUBREAPER prctl raised", exc_info=True)
         return False
     if ret != 0:
@@ -816,10 +1054,12 @@ class ProcessRuntime(RuntimeAdapter):
 
         sandbox_root = self._sandbox_root()
         sandbox_root.mkdir(parents=True, exist_ok=True)
-        launcher_dir = Path(tempfile.mkdtemp(
-            prefix=f"{sandbox_id}-launcher-",
-            dir=sandbox_root,
-        ))
+        launcher_dir = Path(
+            tempfile.mkdtemp(
+                prefix=f"{sandbox_id}-launcher-",
+                dir=sandbox_root,
+            )
+        )
         launcher_dst = launcher_dir / "landlock-launcher.py"
         daemon_dst = launcher_dir / "sandbox-daemon.py"
         launcher_dst.write_bytes(_LANDLOCK_LAUNCHER_BYTES)
@@ -832,21 +1072,22 @@ class ProcessRuntime(RuntimeAdapter):
     def _ensure_control_dir(self, sandbox_id: str) -> Path:
         """Return the per-sandbox host directory holding the control socket.
 
-        The directory is restricted to mode 0700 owned by the box-server
-        process; the listener socket is created here, but the directory is
-        **never** bind-mounted into the sandbox - box-server keeps exclusive
-        filesystem access to the IPC endpoint.
+        The socket lives on a host directory that the sandbox replaces with
+        a private tmpfs, and it is never under the home directory because
+        ``/home`` is bind-mounted. The directory is mode 0700. Launcher
+        scripts stay on the workspace root; cleanup removes this path.
         """
         existing = self._control_dirs.get(sandbox_id)
         if existing is not None and existing.exists():
             return existing
 
-        sandbox_root = self._sandbox_root()
-        sandbox_root.mkdir(parents=True, exist_ok=True)
-        control_dir = Path(tempfile.mkdtemp(
-            prefix=f"{sandbox_id}-control-",
-            dir=sandbox_root,
-        ))
+        parent = _select_control_socket_parent()
+        control_dir = Path(
+            tempfile.mkdtemp(
+                prefix=f"{sandbox_id}-control-",
+                dir=parent,
+            )
+        )
         try:
             os.chmod(control_dir, 0o700)
         except OSError:
@@ -882,7 +1123,7 @@ class ProcessRuntime(RuntimeAdapter):
         if exit_code is None or isinstance(exit_code, int):
             job.exit_code = exit_code
         if job.finished_at is None:
-            job.finished_at = datetime.now(timezone.utc)
+            job.finished_at = datetime.now(UTC)
 
     def _sync_background_job_blocking(
         self,
@@ -1061,14 +1302,10 @@ class ProcessRuntime(RuntimeAdapter):
         Caches populated during :meth:`create` (policy binds, launcher
         scripts, seccomp BPF, landlock payload) keep the per-call cost low.
         """
+        _refuse_root_without_user_namespace(policy)
         config = BwrapConfig.from_policy(policy, list(command))
         process_uid = config.uid
         process_gid = config.gid
-        if not policy.namespace.user and os.geteuid() == 0:
-            # Host root, user namespace off, a nobody drop cannot write the workspace bind.
-            process_uid, process_gid = self._resolve_backing_identity(policy)
-            config.uid = process_uid
-            config.gid = process_gid
         if sandbox_env:
             config.env.update(sandbox_env)
         if workdir:
@@ -1148,6 +1385,8 @@ class ProcessRuntime(RuntimeAdapter):
             ]
 
         config.seccomp_fd = seccomp_fd
+        _cover_host_runtime_directories(config)
+        _drop_host_session_env(config)
         if self._needs_privdrop_for_process_identity(
             process_uid,
             use_user_namespace=policy.namespace.user,
@@ -1223,13 +1462,13 @@ class ProcessRuntime(RuntimeAdapter):
     def _directory_spec(directory: object) -> tuple[str, str | None]:
         if isinstance(directory, str):
             return directory, None
-        return getattr(directory, "path"), getattr(directory, "permissions", None)
+        return directory.path, getattr(directory, "permissions", None)
 
     @staticmethod
     def _file_spec(file: object) -> tuple[str, str | None]:
         if isinstance(file, str):
             return file, None
-        return getattr(file, "path"), getattr(file, "permissions", None)
+        return file.path, getattr(file, "permissions", None)
 
     @staticmethod
     def _host_entry_name(sandbox_path: str) -> str:
@@ -1322,21 +1561,36 @@ class ProcessRuntime(RuntimeAdapter):
     @staticmethod
     def _host_firewall_insert_args(uid: int, port: int) -> list[str]:
         return [
-            "-I", "OUTPUT", "1",
-            "-p", "tcp",
-            "-m", "owner", "--uid-owner", str(uid),
-            "--dport", str(port),
-            "-j", "REJECT",
+            "-I",
+            "OUTPUT",
+            "1",
+            "-p",
+            "tcp",
+            "-m",
+            "owner",
+            "--uid-owner",
+            str(uid),
+            "--dport",
+            str(port),
+            "-j",
+            "REJECT",
         ]
 
     @staticmethod
     def _host_firewall_delete_args(uid: int, port: int) -> list[str]:
         return [
-            "-D", "OUTPUT",
-            "-p", "tcp",
-            "-m", "owner", "--uid-owner", str(uid),
-            "--dport", str(port),
-            "-j", "REJECT",
+            "-D",
+            "OUTPUT",
+            "-p",
+            "tcp",
+            "-m",
+            "owner",
+            "--uid-owner",
+            str(uid),
+            "--dport",
+            str(port),
+            "-j",
+            "REJECT",
         ]
 
     def _install_host_firewall_rule(self, uid: int, port: int) -> tuple[int, int]:
@@ -1476,11 +1730,7 @@ class ProcessRuntime(RuntimeAdapter):
         if permissions is None:
             return True
         mode = int(permissions, 8)
-        return (
-            bool(mode & 0o200)
-            and (mode & 0o005) == 0o005
-            and not bool(mode & 0o002)
-        )
+        return bool(mode & 0o200) and (mode & 0o005) == 0o005 and not bool(mode & 0o002)
 
     @staticmethod
     def _needs_userns_owner_access_fallback(
@@ -1570,15 +1820,17 @@ class ProcessRuntime(RuntimeAdapter):
         on the external ``setpriv(1)`` binary from util-linux.
         """
         encoded_command = json.dumps(command)
-        script = "; ".join([
-            "import json, os",
-            f"uid, gid = {uid}, {gid}",
-            f"cmd = json.loads({encoded_command!r})",
-            "exec('try:\\n os.setgroups([])\\nexcept OSError:\\n pass', globals())",
-            "os.setgid(gid)",
-            "os.setuid(uid)",
-            "os.execvp(cmd[0], cmd)",
-        ])
+        script = "; ".join(
+            [
+                "import json, os",
+                f"uid, gid = {uid}, {gid}",
+                f"cmd = json.loads({encoded_command!r})",
+                "exec('try:\\n os.setgroups([])\\nexcept OSError:\\n pass', globals())",
+                "os.setgid(gid)",
+                "os.setuid(uid)",
+                "os.execvp(cmd[0], cmd)",
+            ]
+        )
         return [PYTHON_EXECUTABLE, "-S", "-c", script]
 
     def _ensure_policy_directories(
@@ -1594,10 +1846,12 @@ class ProcessRuntime(RuntimeAdapter):
         sandbox_root.mkdir(parents=True, exist_ok=True)
         directory_root = self._directory_roots.get(sandbox_id)
         if directory_root is None:
-            directory_root = Path(tempfile.mkdtemp(
-                prefix=f"{sandbox_id}-dirs-",
-                dir=sandbox_root,
-            ))
+            directory_root = Path(
+                tempfile.mkdtemp(
+                    prefix=f"{sandbox_id}-dirs-",
+                    dir=sandbox_root,
+                )
+            )
             self._directory_roots[sandbox_id] = directory_root
         else:
             directory_root.mkdir(parents=True, exist_ok=True)
@@ -1613,10 +1867,12 @@ class ProcessRuntime(RuntimeAdapter):
             if self._needs_userns_write_fallback(policy, uid, permissions):
                 self._apply_userns_write_fallback(host_path)
             self._ensure_writable_when_chown_unavailable(host_path, owner_applied)
-            binds.append({
-                "host_path": str(host_path),
-                "sandbox_path": sandbox_path,
-            })
+            binds.append(
+                {
+                    "host_path": str(host_path),
+                    "sandbox_path": sandbox_path,
+                }
+            )
         return binds
 
     def _ensure_policy_files(
@@ -1632,10 +1888,12 @@ class ProcessRuntime(RuntimeAdapter):
         sandbox_root.mkdir(parents=True, exist_ok=True)
         file_root = self._file_roots.get(sandbox_id)
         if file_root is None:
-            file_root = Path(tempfile.mkdtemp(
-                prefix=f"{sandbox_id}-files-",
-                dir=sandbox_root,
-            ))
+            file_root = Path(
+                tempfile.mkdtemp(
+                    prefix=f"{sandbox_id}-files-",
+                    dir=sandbox_root,
+                )
+            )
             self._file_roots[sandbox_id] = file_root
         else:
             file_root.mkdir(parents=True, exist_ok=True)
@@ -1654,10 +1912,12 @@ class ProcessRuntime(RuntimeAdapter):
             if self._needs_userns_write_fallback(policy, uid, permissions):
                 self._apply_userns_write_fallback(host_path)
             self._ensure_writable_when_chown_unavailable(host_path, owner_applied)
-            binds.append({
-                "host_path": str(host_path),
-                "sandbox_path": sandbox_path,
-            })
+            binds.append(
+                {
+                    "host_path": str(host_path),
+                    "sandbox_path": sandbox_path,
+                }
+            )
         return binds
 
     @staticmethod
@@ -1730,7 +1990,8 @@ class ProcessRuntime(RuntimeAdapter):
                     proc.poll()
                 except OSError:
                     logger.debug(
-                        "Popen.poll() raised during reap", exc_info=True,
+                        "Popen.poll() raised during reap",
+                        exc_info=True,
                     )
 
         reaped_tracked: list[tuple[int, int]] = []
@@ -1815,8 +2076,7 @@ class ProcessRuntime(RuntimeAdapter):
         # Safe to call even when only one channel was installed.
         self._reap_zombies()
         logger.info(
-            "zombie reaper active on loop %s (pid=%d, sigchld=%s, "
-            "periodic=%.1fs)",
+            "zombie reaper active on loop %s (pid=%d, sigchld=%s, periodic=%.1fs)",
             id(loop),
             os.getpid(),
             "on" if sigchld_ok else "off",
@@ -1848,7 +2108,7 @@ class ProcessRuntime(RuntimeAdapter):
             self._reaper_loop = None
         try:
             self._reap_zombies()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug(
                 "final _reap_zombies pass raised during unregister",
                 exc_info=True,
@@ -1870,8 +2130,7 @@ class ProcessRuntime(RuntimeAdapter):
             # thread of the main interpreter" case. All of them are
             # benign here -- the periodic task picks up the slack.
             logger.info(
-                "SIGCHLD fast-path reaper unavailable (%s); relying on "
-                "periodic poll only",
+                "SIGCHLD fast-path reaper unavailable (%s); relying on periodic poll only",
                 exc,
             )
             return False
@@ -1879,7 +2138,8 @@ class ProcessRuntime(RuntimeAdapter):
         return True
 
     def _uninstall_sigchld_handler(
-        self, loop: asyncio.AbstractEventLoop,
+        self,
+        loop: asyncio.AbstractEventLoop,
     ) -> None:
         try:
             loop.remove_signal_handler(signal.SIGCHLD)
@@ -1909,7 +2169,7 @@ class ProcessRuntime(RuntimeAdapter):
                 await asyncio.sleep(interval)
                 try:
                     self._reap_zombies()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception(
                         "periodic zombie reaper iteration raised",
                     )
@@ -1919,14 +2179,15 @@ class ProcessRuntime(RuntimeAdapter):
             # before the event loop closes.
             try:
                 self._reap_zombies()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception(
                     "periodic zombie reaper final pass raised",
                 )
             raise
 
     def _install_periodic_reaper(
-        self, loop: asyncio.AbstractEventLoop,
+        self,
+        loop: asyncio.AbstractEventLoop,
     ) -> bool:
         if self._reaper_task is not None and not self._reaper_task.done():
             if self._reaper_loop is loop:
@@ -1940,7 +2201,8 @@ class ProcessRuntime(RuntimeAdapter):
             )
         except RuntimeError as exc:
             logger.warning(
-                "could not start periodic zombie reaper task: %s", exc,
+                "could not start periodic zombie reaper task: %s",
+                exc,
             )
             self._reaper_task = None
             return False
@@ -1966,9 +2228,7 @@ class ProcessRuntime(RuntimeAdapter):
             return
 
         loop = asyncio.get_running_loop()
-        running_jobs = [
-            job for job in jobs.values() if job.exit_code is None
-        ]
+        running_jobs = [job for job in jobs.values() if job.exit_code is None]
         for job in running_jobs:
             try:
                 await loop.run_in_executor(
@@ -2040,6 +2300,7 @@ class ProcessRuntime(RuntimeAdapter):
             self._processes.pop(sandbox_id, None)
 
         policy = self._load_policy(policy_path)
+        _refuse_root_without_user_namespace(policy)
         self._runtime_policies[sandbox_id] = policy
         self._network_modes[sandbox_id] = policy.network.mode
         self._policy_paths[sandbox_id] = Path(policy_path)
@@ -2074,8 +2335,7 @@ class ProcessRuntime(RuntimeAdapter):
         except OSError as exc:
             self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
             raise RuntimeError(
-                f"Failed to bind daemon control listener for sandbox "
-                f"{sandbox_id}: {exc}",
+                f"Failed to bind daemon control listener for sandbox {sandbox_id}: {exc}",
             ) from exc
         listener_fd = listener.fileno()
 
@@ -2152,8 +2412,7 @@ class ProcessRuntime(RuntimeAdapter):
                     pass
                 self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
                 raise RuntimeError(
-                    f"Failed to apply cgroup limits for sandbox "
-                    f"{sandbox_id}: {exc}"
+                    f"Failed to apply cgroup limits for sandbox {sandbox_id}: {exc}"
                 ) from exc
             cgroup_procs_paths = [
                 str(group_dir / "cgroup.procs") for group_dir in cgroup_handle.paths
@@ -2245,7 +2504,10 @@ class ProcessRuntime(RuntimeAdapter):
 
         try:
             await self._wait_daemon_ready(
-                sandbox_id, proc, netns_name, startup_log_file,
+                sandbox_id,
+                proc,
+                netns_name,
+                startup_log_file,
             )
         finally:
             # Parent no longer needs the fd; the daemon keeps writing into
@@ -2297,9 +2559,7 @@ class ProcessRuntime(RuntimeAdapter):
         self._processes.pop(sandbox_id, None)
         self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
         log_excerpt = self._read_daemon_startup_log(startup_log_file)
-        message = (
-            f"Sandbox daemon exited during startup with code {proc.returncode}."
-        )
+        message = f"Sandbox daemon exited during startup with code {proc.returncode}."
         if log_excerpt:
             message = (
                 f"{message} Captured daemon stdout/stderr (truncated to "
@@ -2310,10 +2570,7 @@ class ProcessRuntime(RuntimeAdapter):
             # is disabled"; we now always try to capture, so an empty log
             # really does mean the daemon died silently (e.g. via a fast
             # ``exit(1)`` before printing anything).
-            message = (
-                f"{message} No stdout/stderr was captured before the "
-                f"daemon exited."
-            )
+            message = f"{message} No stdout/stderr was captured before the daemon exited."
         raise RuntimeError(message)
 
     @staticmethod
@@ -2351,7 +2608,7 @@ class ProcessRuntime(RuntimeAdapter):
         for sandbox_id, handle in handles:
             try:
                 network_module.teardown_network_uplink(handle)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning(
                     "Failed to drop host uplink for sandbox %s during shutdown",
                     sandbox_id,
@@ -2421,7 +2678,9 @@ class ProcessRuntime(RuntimeAdapter):
         loop = asyncio.get_running_loop()
         try:
             await loop.run_in_executor(
-                None, proc.wait, DAEMON_SHUTDOWN_TIMEOUT_SECONDS,
+                None,
+                proc.wait,
+                DAEMON_SHUTDOWN_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired:
             try:
@@ -2531,9 +2790,7 @@ class ProcessRuntime(RuntimeAdapter):
         """
         proc = self._processes.get(sandbox_id)
         returncode = None if proc is None else proc.poll()
-        return (
-            f"Sandbox lifecycle process is not running; returncode={returncode}"
-        )
+        return f"Sandbox lifecycle process is not running; returncode={returncode}"
 
     def _daemon_ipc_available(self, sandbox_id: str) -> bool:
         if not self._daemon_socket_ready.get(sandbox_id, False):
@@ -2627,13 +2884,32 @@ class ProcessRuntime(RuntimeAdapter):
             return False
         return self._fastpath_admit(sandbox_id)
 
-    def _exec_via_daemon_blocking(self, call: _DaemonExecCall) -> ExecResult:
+    def _run_daemon_exec(self, call: _DaemonExecCall) -> ExecResult | None:
+        """Run one IPC exec on a worker thread.
+
+        Returns ``None`` when this call was cancelled. Closing the socket
+        wakes the blocked read with ``OSError`` (``EBADF``) or
+        ``ConnectionError``. That exception is handled on this thread so
+        the executor future completes with a result. Nothing is left
+        "never retrieved", and the transport handlers must not treat the
+        close as a dead daemon.
+        """
+        try:
+            return self._exec_via_daemon_blocking(call)
+        except Exception:
+            if call.ipc.was_cancelled():
+                return None
+            raise
+
+    def _exec_via_daemon_blocking(self, call: _DaemonExecCall) -> ExecResult | None:
         """Run one ``exec`` over the IPC channel and return an ``ExecResult``.
 
         Executed via a worker thread so the asyncio event loop does not block
         on the synchronous Unix-socket IO. The daemon ``communicate()``s the
         child entirely before responding, so we only have to handle the
-        request/response pair here.
+        request/response pair here. Returns ``None`` when cancel closed this
+        call's socket before the command could start, or while the read was
+        in flight. The daemon is still healthy in that case.
         """
         request_payload: dict[str, Any] = {
             "command": list(call.command),
@@ -2655,13 +2931,16 @@ class ProcessRuntime(RuntimeAdapter):
             return ExecResult(
                 exit_code=1,
                 stderr=(
-                    f"daemon request header too large "
-                    f"({len(header_blob)} > {MAX_HEADER_BYTES})"
+                    f"daemon request header too large ({len(header_blob)} > {MAX_HEADER_BYTES})"
                 ),
             )
 
         sock = self._connect_daemon_socket(call.socket_path)
         try:
+            # Cancel may have won before this thread connected. Close the
+            # new socket immediately so the command is never sent.
+            if not call.ipc.attach_or_close(sock):
+                return None
             # The daemon waits for the user command to finish, kills it,
             # then drains pipes before responding. The margin is strictly
             # longer than that post-kill drain, so this read is still open
@@ -2678,11 +2957,16 @@ class ProcessRuntime(RuntimeAdapter):
             except OSError:
                 pass
             response = self._read_response_blob(sock)
+        except OSError:
+            # A cancel closes this socket from the event-loop task while
+            # this thread is blocked in recv. That is not a daemon failure.
+            if call.ipc.was_cancelled():
+                return None
+            raise
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 sock.close()
-            except OSError:
-                pass
+            call.ipc.release()
 
         return ExecResult(
             exit_code=int(response.get("exit_code", 1)),
@@ -2712,8 +2996,7 @@ class ProcessRuntime(RuntimeAdapter):
                 "ok": False,
                 "started": False,
                 "stderr": (
-                    f"daemon request header too large "
-                    f"({len(header_blob)} > {MAX_HEADER_BYTES})"
+                    f"daemon request header too large ({len(header_blob)} > {MAX_HEADER_BYTES})"
                 ),
             }
 
@@ -2797,6 +3080,8 @@ class ProcessRuntime(RuntimeAdapter):
         value-shape regardless of whether the IPC roundtrip succeeded.
         Whenever transport fails the daemon is also flagged unhealthy so
         the next call short-circuits without attempting another connect.
+        Cancelling this call closes only its socket and does not flag the
+        daemon unhealthy.
         """
         socket_path = self._control_socket_host_path(sandbox_id)
         if socket_path is None or not self._daemon_ipc_available(sandbox_id):
@@ -2811,20 +3096,31 @@ class ProcessRuntime(RuntimeAdapter):
 
         loop = asyncio.get_running_loop()
         oom_before = self._cgroup_oom_kill_count(sandbox_id)
+        slot = _ExecIpcSlot()
+        worker = loop.run_in_executor(
+            None,
+            self._run_daemon_exec,
+            _DaemonExecCall(
+                socket_path=socket_path,
+                sandbox_id=sandbox_id,
+                command=list(request.command),
+                env=dict(request.env) if request.env else None,
+                workdir=request.workdir,
+                stdin_bytes=request.stdin_data,
+                timeout=request.timeout,
+                ipc=slot,
+            ),
+        )
         try:
-            return await loop.run_in_executor(
-                None,
-                self._exec_via_daemon_blocking,
-                _DaemonExecCall(
-                    socket_path=socket_path,
-                    sandbox_id=sandbox_id,
-                    command=list(request.command),
-                    env=dict(request.env) if request.env else None,
-                    workdir=request.workdir,
-                    stdin_bytes=request.stdin_data,
-                    timeout=request.timeout,
-                ),
-            )
+            result = await worker
+        except asyncio.CancelledError:
+            # Fully close this call's socket. The daemon killpg's only the
+            # command on this connection. Do not clear ``_daemon_socket_ready``:
+            # the daemon is still healthy, and the worker's EBADF must not
+            # reach the transport handlers below.
+            slot.cancel_and_close()
+            _consume_abandoned_worker(worker)
+            raise
         except (ConnectionError, ValueError) as exc:
             # ``ValueError`` already covers ``json.JSONDecodeError`` (G.ERR.09).
             self._daemon_socket_ready[sandbox_id] = False
@@ -2833,8 +3129,7 @@ class ProcessRuntime(RuntimeAdapter):
                 # daemon died with it, so no response frame was written.
                 # Report the kill instead of a transport error.
                 logger.warning(
-                    "Sandbox %s cgroup OOM-killed a process during exec; "
-                    "daemon IPC dropped: %s",
+                    "Sandbox %s cgroup OOM-killed a process during exec; daemon IPC dropped: %s",
                     sandbox_id,
                     exc,
                 )
@@ -2853,7 +3148,7 @@ class ProcessRuntime(RuntimeAdapter):
                 stdout="",
                 stderr=f"daemon IPC transport failure: {exc}",
             )
-        except socket.timeout as exc:
+        except TimeoutError as exc:
             self._daemon_socket_ready[sandbox_id] = False
             logger.warning(
                 "Daemon IPC timeout for sandbox %s: %s",
@@ -2897,6 +3192,11 @@ class ProcessRuntime(RuntimeAdapter):
                     stderr=f"daemon IPC transient failure: {exc}",
                 )
             raise
+        if result is None:
+            # Cancel won before this await observed it. Same rule: the
+            # daemon stays available, and this is not a transport failure.
+            raise asyncio.CancelledError
+        return result
 
     def _file_op_unavailable(self, sandbox_id: str) -> RuntimeFileOpResult:
         return RuntimeFileOpResult(
@@ -3008,7 +3308,8 @@ class ProcessRuntime(RuntimeAdapter):
                 pass
 
     def _list_dir_via_daemon_blocking(
-        self, call: _DaemonListDirCall,
+        self,
+        call: _DaemonListDirCall,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "path": call.sandbox_path,
@@ -3064,9 +3365,7 @@ class ProcessRuntime(RuntimeAdapter):
             return RuntimeFileOpResult(
                 ok=False,
                 error="too_large",
-                detail=(
-                    f"content size {len(content)} exceeds limit {MAX_FILE_BYTES}"
-                ),
+                detail=(f"content size {len(content)} exceeds limit {MAX_FILE_BYTES}"),
             )
 
         loop = asyncio.get_running_loop()
@@ -3083,7 +3382,7 @@ class ProcessRuntime(RuntimeAdapter):
         except (ConnectionError, ValueError) as exc:
             # ``ValueError`` already covers ``json.JSONDecodeError`` (G.ERR.09).
             return self._file_op_transport_failure(sandbox_id, exc)
-        except socket.timeout as exc:
+        except TimeoutError as exc:
             return self._file_op_transport_failure(sandbox_id, exc)
         except OSError as exc:
             if exc.errno in FATAL_DAEMON_ERRNOS:
@@ -3113,7 +3412,7 @@ class ProcessRuntime(RuntimeAdapter):
         except (ConnectionError, ValueError) as exc:
             # ``ValueError`` already covers ``json.JSONDecodeError`` (G.ERR.09).
             return self._file_op_transport_failure(sandbox_id, exc)
-        except socket.timeout as exc:
+        except TimeoutError as exc:
             return self._file_op_transport_failure(sandbox_id, exc)
         except OSError as exc:
             if exc.errno in FATAL_DAEMON_ERRNOS:
@@ -3157,7 +3456,7 @@ class ProcessRuntime(RuntimeAdapter):
         except (ConnectionError, ValueError) as exc:
             # ``ValueError`` already covers ``json.JSONDecodeError`` (G.ERR.09).
             return self._file_op_transport_failure(sandbox_id, exc)
-        except socket.timeout as exc:
+        except TimeoutError as exc:
             return self._file_op_transport_failure(sandbox_id, exc)
         except OSError as exc:
             if exc.errno in FATAL_DAEMON_ERRNOS:
@@ -3207,7 +3506,7 @@ class ProcessRuntime(RuntimeAdapter):
                 loop.run_in_executor(None, _ask_shutdown, socket_path),
                 timeout=DAEMON_SHUTDOWN_TIMEOUT_SECONDS,
             )
-        except (asyncio.TimeoutError, OSError) as exc:
+        except (TimeoutError, OSError) as exc:
             logger.debug(
                 "Failed to send daemon shutdown for %s: %s",
                 sandbox_id,
@@ -3301,7 +3600,7 @@ class ProcessRuntime(RuntimeAdapter):
                 command=list(request.command),
                 error_message=f"daemon IPC transport failure: {exc}",
             )
-        except socket.timeout as exc:
+        except TimeoutError as exc:
             self._daemon_socket_ready[sandbox_id] = False
             return BackgroundExecResult(
                 started=False,
@@ -3341,7 +3640,7 @@ class ProcessRuntime(RuntimeAdapter):
             exit_code=exit_code_int if not running_bool else None,
         )
         if not running_bool and job.finished_at is None:
-            job.finished_at = datetime.now(timezone.utc)
+            job.finished_at = datetime.now(UTC)
 
         jobs = self._background_jobs_for_sandbox(sandbox_id)
         jobs[request.job_id] = job

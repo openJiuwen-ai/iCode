@@ -4997,6 +4997,13 @@
         ["wrapper", "await _drop_acquire(lock, pending)", "unresolved", "chrys.service.sandbox.backend._drop_acquire"],
         ["wrapper", "await finish_close(asyncio.create_task(_drop_acquire(lock, pending)))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
       ],
+      "_cached_phase": [
+        ["queue", "await client.get(_sandbox_path(sandbox_id))", "unresolved"]
+      ],
+      "_create_ready": [
+        ["awaitable", "await client.post('/api/v1/sandboxes', json=body)", "unresolved"],
+        ["awaitable", "await client.post(f'{_sandbox_path(sandbox_id)}/start')", "unresolved"]
+      ],
       "_drop_acquire": [
         ["future", "await pending", "unresolved"]
       ],
@@ -5006,20 +5013,42 @@
       "_forget_cached_id": [
         ["sync_primitive", "await lock.acquire()", "unresolved"]
       ],
+      "_ready_keyed_writable": [
+        ["wrapper", "await _cached_phase(client, cached)", "unresolved", "chrys.service.sandbox.backend._cached_phase"],
+        ["wrapper", "await _create_ready(client, _bind_body(mounts, _READ_WRITE))", "unresolved", "chrys.service.sandbox.backend._create_ready"]
+      ],
+      "_ready_legacy_sandbox": [
+        ["wrapper", "await _cached_phase(client, current)", "unresolved", "chrys.service.sandbox.backend._cached_phase"],
+        ["wrapper", "await _create_ready(client, _create_body(cwd, mode))", "unresolved", "chrys.service.sandbox.backend._create_ready"],
+        ["wrapper", "await _replace_readonly(client, sandbox_id, cwd, physical=False)", "unresolved", "chrys.service.sandbox.backend._replace_readonly"]
+      ],
+      "_ready_physical_readonly": [
+        ["wrapper", "await _cached_phase(client, cached)", "unresolved", "chrys.service.sandbox.backend._cached_phase"],
+        ["wrapper", "await _create_ready(client, _bind_body((physical_cwd,), _READ_ONLY))", "unresolved", "chrys.service.sandbox.backend._create_ready"],
+        ["wrapper", "await _replace_readonly(client, sandbox_id, physical_cwd, physical=True)", "unresolved", "chrys.service.sandbox.backend._replace_readonly"]
+      ],
       "_ready_sandbox": [
-        ["queue", "await client.get(_sandbox_path(current))", "unresolved"],
-        ["awaitable", "await client.post('/api/v1/sandboxes', json=_create_body(cwd, mode))", "unresolved"],
-        ["awaitable", "await client.post(f'{_sandbox_path(sandbox_id)}/start')", "unresolved"]
+        ["wrapper", "await _ready_legacy_sandbox(client, cwd)", "unresolved", "chrys.service.sandbox.backend._ready_legacy_sandbox"],
+        ["wrapper", "await _ready_workspace_sandbox(client, cwd, workspace_root, workspace_dirs)", "unresolved", "chrys.service.sandbox.backend._ready_workspace_sandbox"]
+      ],
+      "_ready_workspace_sandbox": [
+        ["wrapper", "await _ready_keyed_writable(client, mounts[0], mounts)", "unresolved", "chrys.service.sandbox.backend._ready_keyed_writable"],
+        ["wrapper", "await _ready_physical_readonly(client, physical_cwd)", "unresolved", "chrys.service.sandbox.backend._ready_physical_readonly"]
+      ],
+      "_replace_readonly": [
+        ["wrapper", "await _retire_replaced_readonly(client, previous)", "unresolved", "chrys.service.sandbox.backend._retire_replaced_readonly"]
       ],
       "_require_health": [
         ["queue", "await client.get('/health')", "unresolved"]
       ],
+      "_retire_replaced_readonly": [
+        ["awaitable", "await client.delete(_sandbox_path(sandbox_id), timeout=_STOP_TIMEOUT_SECONDS)", "unresolved"]
+      ],
       "_sandbox_for_command": [
         ["wrapper", "await _acquire_cache_lock(float(timeout_seconds))", "unresolved", "chrys.service.sandbox.backend._acquire_cache_lock"],
-        ["wrapper", "await _ready_sandbox(client, cwd)", "unresolved", "chrys.service.sandbox.backend._ready_sandbox"]
+        ["wrapper", "await _ready_sandbox(client, cwd, workspace_root=workspace_root, workspace_dirs=workspace_dirs)", "unresolved", "chrys.service.sandbox.backend._ready_sandbox"]
       ],
       "_stop_and_forget": [
-        ["awaitable", "await client.post(f'{_sandbox_path(sandbox_id)}/stop', timeout=_STOP_TIMEOUT_SECONDS)", "unresolved"],
         ["wrapper", "await _forget_cached_id(sandbox_id)", "unresolved", "chrys.service.sandbox.backend._forget_cached_id"]
       ],
       "_stop_on_cancel": [
@@ -5027,16 +5056,16 @@
       ],
       "run_shell": [
         ["wrapper", "await ensure_started()", "unresolved", "chrys.service.sandbox.supervisor.ensure_started"],
-        ["wrapper", "async with connect(base_url, token, http_timeout)", "unresolved", "chrys.service.sandbox.client.connect"],
+        ["wrapper", "async with connect(base_url, token, http_timeout, trust_env=bool(configured))", "unresolved", "chrys.service.sandbox.client.connect"],
         ["wrapper", "await _require_health(client)", "unresolved", "chrys.service.sandbox.backend._require_health"],
-        ["wrapper", "await _sandbox_for_command(client, cwd, timeout_seconds)", "unresolved", "chrys.service.sandbox.backend._sandbox_for_command"],
+        ["wrapper", "await _sandbox_for_command(client, cwd, timeout_seconds, workspace_root=workspace_root, workspace_dirs=workspace_dirs)", "unresolved", "chrys.service.sandbox.backend._sandbox_for_command"],
         ["wrapper", "await _exec(client, sandbox_id, argv, cwd, timeout_seconds, remaining)", "unresolved", "chrys.service.sandbox.backend._exec"],
-        ["wrapper", "await _stop_on_cancel(client, sandbox_id)", "unresolved", "chrys.service.sandbox.backend._stop_on_cancel"]
+        ["wrapper", "await _stop_on_cancel(sandbox_id)", "unresolved", "chrys.service.sandbox.backend._stop_on_cancel"]
       ]
     },
     "chrys.service.sandbox.client": {
       "connect": [
-        ["wrapper", "async with open_client(base_url, token, timeout_seconds)", "unresolved", "chrys.service.sandbox.client.open_client"]
+        ["wrapper", "async with open_client(base_url, token, timeout_seconds, trust_env=trust_env)", "unresolved", "chrys.service.sandbox.client.open_client"]
       ],
       "open_client": [
         ["async_context", "async with _new_client(**kwargs)", "unresolved"]
@@ -5059,7 +5088,7 @@
         ["awaitable", "await proc.startup_output()", "unresolved"]
       ],
       "_health_ok": [
-        ["wrapper", "async with open_client(base_url, token, _PROBE_TIMEOUT_SECONDS)", "unresolved", "chrys.service.sandbox.client.open_client"],
+        ["wrapper", "async with open_client(base_url, token, _PROBE_TIMEOUT_SECONDS, trust_env=False)", "unresolved", "chrys.service.sandbox.client.open_client"],
         ["queue", "await client.get('/health')", "unresolved"]
       ],
       "_pump_stream": [
@@ -5388,7 +5417,7 @@
         ["wrapper", "await self._bound_result(partial, budget, exc.captures, lead=f'{message}\\n')", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"]
       ],
       "ShellTools._run_sandboxed": [
-        ["wrapper", "await run_shell(settings, argv=argv, cwd=cwd, timeout_seconds=timeout, linux=sys.platform == 'linux')", "unresolved", "chrys.service.sandbox.backend.run_shell"],
+        ["wrapper", "await run_shell(settings, argv=argv, cwd=cwd, timeout_seconds=timeout, linux=sys.platform == 'linux', workspace_root=self._runtime.cwd, workspace_dirs=workspace_dirs)", "unresolved", "chrys.service.sandbox.backend.run_shell"],
         ["wrapper", "await self._bound_result('\\n'.join(parts), budget, captures)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"]
       ],
       "ShellTools.execute": [

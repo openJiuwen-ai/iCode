@@ -32,17 +32,17 @@ SANDBOX_DAEMON_SANDBOX_PATH = f"{SANDBOX_RESERVED_DIR}/sandbox-daemon.py"
 SANDBOX_CONTROL_SOCKET_NAME = "control.sock"
 SANDBOX_LAUNCHER_PATH = f"{SANDBOX_RESERVED_DIR}/landlock-launcher.py"
 
-# Box-server binds the listener Unix socket on the host filesystem and
-# passes the listener fd into the sandbox via
+# Box-server binds the listener Unix socket on a host directory the sandbox
+# replaces with a private tmpfs, never under the home directory (``/home``
+# is bind-mounted). It passes the listener fd into the sandbox via
 # ``subprocess.Popen(pass_fds=...)``. Bubblewrap's user command path never
 # closes arbitrary inherited fds, so the listener flows untouched through
 # bwrap → launcher → daemon. The daemon recovers the fd number from this
-# environment variable and runs ``accept`` against it directly. This
-# keeps the IPC channel entirely outside the sandbox view: there is no
-# path inside the sandbox that points at the control socket, so user
-# code spawned by the daemon cannot reach it (and the daemon spawns user
-# children with ``close_fds=True`` so the inherited fd is not exposed
-# either).
+# environment variable and runs ``accept`` against it directly. That
+# directory has no path inside the sandbox that points at the control
+# socket, so user code spawned by the daemon cannot reach it (and the
+# daemon spawns user children with ``close_fds=True`` so the inherited fd
+# is not exposed either).
 LISTENER_FD_ENV = "JIUWENBOX_CONTROL_LISTENER_FD"
 SANDBOX_IP_ENV = "SANDBOX_IP"
 
@@ -82,11 +82,11 @@ REQUEST_TYPE_BG_STATUS = "bg_status"
 REQUEST_TYPE_BG_KILL = "bg_kill"
 
 PROTOCOL_VERSION = 1
-MAX_HEADER_BYTES = 1 * 1024 * 1024          # 1 MiB JSON header upper bound
-MAX_STDIN_BYTES = 64 * 1024 * 1024          # 64 MiB stdin upper bound
-MAX_STDOUT_BYTES = 64 * 1024 * 1024         # 64 MiB stdout upper bound
-MAX_STDERR_BYTES = 64 * 1024 * 1024         # 64 MiB stderr upper bound
-MAX_FILE_BYTES = 256 * 1024 * 1024          # 256 MiB read/write upper bound
+MAX_HEADER_BYTES = 1 * 1024 * 1024  # 1 MiB JSON header upper bound
+MAX_STDIN_BYTES = 64 * 1024 * 1024  # 64 MiB stdin upper bound
+MAX_STDOUT_BYTES = 64 * 1024 * 1024  # 64 MiB stdout upper bound
+MAX_STDERR_BYTES = 64 * 1024 * 1024  # 64 MiB stderr upper bound
+MAX_FILE_BYTES = 256 * 1024 * 1024  # 256 MiB read/write upper bound
 
 ACCEPT_BACKLOG = 128
 
@@ -132,6 +132,7 @@ def encode_request(
     payload: dict[str, Any] | None = None,
 ) -> bytes:
     import json
+
     body: dict[str, Any] = {
         "v": PROTOCOL_VERSION,
         "type": request_type,

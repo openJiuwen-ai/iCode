@@ -376,6 +376,7 @@ def test_bundled_policy_path_is_the_vendored_code_agent_file():
 
 async def test_health_probe_requires_status_ok(monkeypatch: pytest.MonkeyPatch):
     seen: list[str | None] = []
+    trust_env: list[object] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request.headers.get("authorization"))
@@ -384,6 +385,7 @@ async def test_health_probe_requires_status_ok(monkeypatch: pytest.MonkeyPatch):
         return httpx.Response(200, json={"status": "down"})
 
     def new_client(**kwargs: object) -> httpx.AsyncClient:
+        trust_env.append(kwargs["trust_env"])
         built = dict(kwargs)
         built["transport"] = httpx.MockTransport(handler)
         return httpx.AsyncClient(**built)
@@ -392,6 +394,8 @@ async def test_health_probe_requires_status_ok(monkeypatch: pytest.MonkeyPatch):
     assert await supervisor._health_ok("http://sandbox.test", "sekret") is True
     assert await supervisor._health_ok("http://sandbox.test", "") is False
     assert seen == ["Bearer sekret", None]
+    assert len(trust_env) == 2
+    assert all(value is False for value in trust_env)
 
 
 async def test_non_linux_does_not_spawn_the_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -462,6 +466,7 @@ async def test_bundled_server_sends_a_fresh_bearer_token(monkeypatch: pytest.Mon
     monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-server-token")
     captured: dict[str, object] = {}
     headers: list[str | None] = []
+    trust_env: list[object] = []
 
     @asynccontextmanager
     async def fake_managed(*args: object, **kwargs: object) -> AsyncIterator[_FakeProcess]:
@@ -481,6 +486,7 @@ async def test_bundled_server_sends_a_fresh_bearer_token(monkeypatch: pytest.Mon
         return httpx.Response(200, json={"status": "ok"})
 
     def new_client(**kwargs: object) -> httpx.AsyncClient:
+        trust_env.append(kwargs["trust_env"])
         built = dict(kwargs)
         built["transport"] = httpx.MockTransport(handler)
         return httpx.AsyncClient(**built)
@@ -503,9 +509,78 @@ async def test_bundled_server_sends_a_fresh_bearer_token(monkeypatch: pytest.Mon
     assert captured["stdout"] is subprocess.PIPE
     assert captured["stderr"] is subprocess.PIPE
     assert headers == ["Bearer fresh-server-token"]
+    assert len(trust_env) == 1
+    assert trust_env[0] is False
     running = supervisor._server
     assert running is not None
     assert token not in repr(running)
+
+
+async def test_run_shell_disables_trust_env_only_for_the_bundled_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty ``sandbox_url`` connects with ``trust_env=False``.
+
+    A configured URL does not. The kwargs are those ``connect`` passes to the
+    HTTP client constructor.
+    """
+    trust_env: list[object] = []
+    hosts: list[str] = []
+    started_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        if request.url.path != "/health":
+            raise AssertionError(request.url.path)
+        return httpx.Response(200, json={"status": "down"})
+
+    def new_client(**kwargs: object) -> httpx.AsyncClient:
+        trust_env.append(kwargs["trust_env"])
+        built = dict(kwargs)
+        built["transport"] = httpx.MockTransport(handler)
+        return httpx.AsyncClient(**built)
+
+    async def started() -> tuple[str, str]:
+        nonlocal started_calls
+        started_calls += 1
+        return "http://started.sandbox", "generated-token"
+
+    monkeypatch.setattr(client, "_new_client", new_client)
+    monkeypatch.setattr(supervisor, "ensure_started", started)
+
+    class _Settings:
+        def __init__(self, sandbox_url: str) -> None:
+            self.sandbox_enabled = True
+            self.sandbox_url = sandbox_url
+            self.sandbox_token = "user-token"
+
+    with pytest.raises(SandboxError, match="health is not ok"):
+        await run_shell(
+            _Settings(""),
+            argv=["echo"],
+            cwd="/work",
+            timeout_seconds=5,
+            linux=True,
+        )
+    assert started_calls == 1
+    assert hosts == ["started.sandbox"]
+    assert len(trust_env) == 1
+    assert trust_env[0] is False
+
+    trust_env.clear()
+    hosts.clear()
+    with pytest.raises(SandboxError, match="health is not ok"):
+        await run_shell(
+            _Settings("http://sandbox.test"),
+            argv=["echo"],
+            cwd="/work",
+            timeout_seconds=5,
+            linux=True,
+        )
+    assert started_calls == 1
+    assert hosts == ["sandbox.test"]
+    assert len(trust_env) == 1
+    assert trust_env[0] is True
 
 
 def test_jiuwenbox_appears_only_inside_supervisor_functions() -> None:

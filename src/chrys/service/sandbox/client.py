@@ -28,18 +28,26 @@ async def open_client(
     base_url: str,
     token: str,
     timeout_seconds: float,
+    *,
+    trust_env: bool = True,
 ) -> AsyncGenerator[httpx.AsyncClient]:
     """Yield a client for ``base_url``. The caller closes it by leaving the block.
 
     ``unix:///absolute/path`` uses an UDS transport and a placeholder HTTP
     base URL (the host is not dialed). Any other ``http`` or ``https`` URL
     is used as given. A non-empty token is sent as ``Authorization: Bearer``.
+
+    ``trust_env`` is passed to the HTTP client. It defaults to True, so a
+    configured ``sandbox.url`` keeps the process proxy environment. Pass
+    False only for the server this process started, so that client does not
+    send the bearer token through ``HTTP_PROXY``.
     """
     parsed = urlsplit(base_url)
     scheme = parsed.scheme.lower()
     kwargs: dict[str, Any] = {
         "timeout": httpx.Timeout(timeout_seconds),
         "headers": _authorization(token),
+        "trust_env": trust_env,
     }
     if scheme == "unix":
         if parsed.netloc or not parsed.path.startswith("/"):
@@ -66,10 +74,15 @@ async def connect(
     base_url: str,
     token: str,
     timeout_seconds: float,
+    *,
+    trust_env: bool = True,
 ) -> AsyncGenerator[httpx.AsyncClient]:
-    """Like ``open_client``, but transport failures become ``SandboxError``."""
+    """Like ``open_client``, but transport failures become ``SandboxError``.
+
+    ``trust_env`` is forwarded unchanged and defaults to True.
+    """
     try:
-        async with open_client(base_url, token, timeout_seconds) as client:
+        async with open_client(base_url, token, timeout_seconds, trust_env=trust_env) as client:
             yield client
     except SandboxError:
         raise

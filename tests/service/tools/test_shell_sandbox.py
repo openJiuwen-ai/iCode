@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import os
 import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -20,6 +21,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import load_settings
 from chrys.foundation.config.user_settings import user_settings_path
 from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.foundation.models.workspace import WorkingDir, Workspace
 from chrys.foundation.platform import ShellInfo
 from chrys.foundation.platform.output_capture import CapturedOutput
 from chrys.foundation.tool_result_metadata import (
@@ -56,12 +58,23 @@ _CHOSEN_SHELLS = (
 class _ShellCall:
     """One recorded ``run_shell`` invocation."""
 
-    def __init__(self, settings: object, argv: tuple[str, ...], cwd: str, timeout_seconds: int, linux: bool) -> None:
+    def __init__(
+        self,
+        settings: object,
+        argv: tuple[str, ...],
+        cwd: str,
+        timeout_seconds: int,
+        linux: bool,
+        workspace_root: str | None = None,
+        workspace_dirs: tuple[str, ...] = (),
+    ) -> None:
         self.settings = settings
         self.argv = argv
         self.cwd = cwd
         self.timeout_seconds = timeout_seconds
         self.linux = linux
+        self.workspace_root = workspace_root
+        self.workspace_dirs = workspace_dirs
 
 
 @pytest.fixture
@@ -341,8 +354,20 @@ def _patch_run_shell(
         cwd: str,
         timeout_seconds: int,
         linux: bool,
+        workspace_root: str | None = None,
+        workspace_dirs: Sequence[str] = (),
     ) -> SandboxExec:
-        calls.append(_ShellCall(settings, tuple(argv), cwd, timeout_seconds, linux))
+        calls.append(
+            _ShellCall(
+                settings,
+                tuple(argv),
+                cwd,
+                timeout_seconds,
+                linux,
+                workspace_root,
+                tuple(workspace_dirs),
+            )
+        )
         if isinstance(result, SandboxError):
             raise result
         return result
@@ -417,6 +442,47 @@ async def test_sandbox_exec_returns_output_without_host(
     assert call.timeout_seconds == 17
     assert call.cwd == runtime.cwd
     assert call.argv == _pipe_argv(shell.shell, "echo hello")
+
+
+async def test_sandbox_passes_session_workspace_not_command_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The writable mount is the session workspace; the command cwd stays the exec directory."""
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    nested = primary / "nested"
+    nested.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    runtime = SessionEnvironment.capture(
+        workspace=Workspace(
+            primary_cwd=str(primary),
+            working_dirs=[
+                WorkingDir(path=str(primary), label="main", is_primary=True),
+                WorkingDir(path=str(primary), label="same-as-cwd", is_primary=False),
+                WorkingDir(path=str(extra), label="extra", is_primary=False),
+            ],
+        )
+    )
+    shell, calls = _enabled_shell(runtime, monkeypatch)
+
+    inside = await shell.execute("echo hello", reason="test", workdir=str(nested))
+    outside_result = await shell.execute("echo hello", reason="test", workdir=str(outside))
+
+    assert inside.endswith("[exit_code: 0]")
+    assert outside_result.endswith("[exit_code: 0]")
+    assert len(calls) == 2
+    inside_call, outside_call = calls
+    assert inside_call.cwd == os.path.abspath(nested)
+    assert inside_call.cwd != runtime.cwd
+    assert inside_call.workspace_root == runtime.cwd
+    assert inside_call.workspace_dirs == (str(extra),)
+    assert outside_call.cwd == os.path.abspath(outside)
+    assert outside_call.cwd != runtime.cwd
+    assert outside_call.workspace_root == runtime.cwd
+    assert outside_call.workspace_dirs == (str(extra),)
 
 
 async def test_sandbox_error_is_unavailable_and_skips_host(

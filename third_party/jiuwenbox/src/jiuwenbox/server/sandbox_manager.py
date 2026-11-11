@@ -901,6 +901,11 @@ class SandboxManager:
                 )
                 await self.restart_sandbox(sandbox_id)
                 result = await runtime.exec(sandbox_id, runtime_request)
+        except asyncio.CancelledError:
+            # The HTTP client dropped, or this exec task was cancelled.
+            # Propagate so ProcessRuntime closes this call's daemon socket.
+            # Do not restart and do not audit the cancel as a failed command.
+            raise
         except Exception as exc:
             self.audit.log(
                 AuditEventType.EXEC_COMMAND,

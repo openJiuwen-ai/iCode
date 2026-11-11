@@ -29,7 +29,9 @@ sandbox:
 
 ## 仅在 Linux 上运行，以及 iCode 启动的沙箱
 
-沙箱只在 Linux 上运行。这台计算机必须是 Linux，并且必须已安装 bubblewrap。iCode 不会替你安装 bubblewrap。
+沙箱只在 Linux 上运行。这台计算机必须是 Linux，并且必须已安装 bubblewrap 和 python3。沙箱会运行 python3。iCode 不会替你安装 bubblewrap 或 python3。
+
+iCode 不会以 root 启动这个沙箱。如果以 root 启动 iCode，沙箱会拒绝运行命令。
 
 打开沙箱后，iCode 会启动随 iCode 一起提供的沙箱引擎。你不需要单独安装或部署另一套产品，也不需要自己启动这个引擎。此时请把 `sandbox.url` 留空。如果这个沙箱启动失败，错误信息会包含沙箱引擎自己的报错。
 

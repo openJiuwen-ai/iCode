@@ -73,6 +73,14 @@ filesystem_policy:
     - host_root: "/"
       sandbox_path: "/"
       mode: "ro"
+      # Host /run and /tmp hold sockets. A read-only bind still allows
+      # connect(). The runtime also mounts a private tmpfs on /run, /tmp,
+      # and /var/run after these binds, so excluding the children is not
+      # the only line of defense. /var itself stays mounted; /var/run is
+      # covered by that later tmpfs.
+      exclude:
+        - run
+        - tmp
 
   # Device nodes to expose inside the sandbox with bwrap --dev-bind.
   # Each item uses:
@@ -95,6 +103,12 @@ landlock:
 
 namespace:
   user: false
+
+# Extra defense only. Dropping capabilities does not make uid 0 safe while
+# user namespaces are off; the runtime refuses that start.
+capabilities:
+  drop:
+    - ALL
 
 network:
   mode: host

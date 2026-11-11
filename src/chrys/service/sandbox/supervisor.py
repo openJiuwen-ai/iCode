@@ -398,7 +398,7 @@ async def _health_ok(base_url: str, token: str) -> bool:
 
     payload: object = None
     try:
-        async with open_client(base_url, token, _PROBE_TIMEOUT_SECONDS) as client:
+        async with open_client(base_url, token, _PROBE_TIMEOUT_SECONDS, trust_env=False) as client:
             response = await client.get("/health")
             if response.status_code != 200:
                 return False

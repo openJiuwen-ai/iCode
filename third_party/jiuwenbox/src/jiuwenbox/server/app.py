@@ -446,10 +446,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Browsers must not receive a credentialed wildcard; the iCode client is httpx and does not use CORS.
     application.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

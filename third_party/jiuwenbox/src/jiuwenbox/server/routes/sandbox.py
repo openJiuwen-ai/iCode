@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Query, UploadFile
+from fastapi import APIRouter, File, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
@@ -23,12 +24,82 @@ from jiuwenbox.models.sandbox import (
     SandboxRef,
     SandboxSpec,
 )
-from jiuwenbox.server.sandbox_manager import SandboxBackgroundExecRequest, SandboxExecRequest, SandboxListRequest
+from jiuwenbox.server.sandbox_manager import (
+    SandboxBackgroundExecRequest,
+    SandboxExecRequest,
+    SandboxListRequest,
+)
 from jiuwenbox.supervisor.daemon_ipc import SANDBOX_IP_ENV
 
 router = APIRouter(tags=["sandboxes"])
 configure_logging()
 logger = logging.getLogger(__name__)
+
+# How long to wait between non-blocking ``is_disconnected`` checks.
+# Starlette sometimes returns immediately while the client is still
+# connected; a blocking implementation waits inside the call itself.
+_DISCONNECT_POLL_SECONDS = 0.05
+
+
+async def _discard_task(task: asyncio.Task[object]) -> None:
+    """Await ``task`` so its exception or cancellation is retrieved.
+
+    A cancellation of this task is re-raised. A cancellation of ``task``
+    is not.
+    """
+    if not task.done():
+        task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
+
+
+async def _cancel_exec_on_http_disconnect(
+    http_request: Request,
+    exec_task: asyncio.Task[ExecResult],
+) -> None:
+    """Cancel ``exec_task`` when the HTTP client drops.
+
+    FastAPI does not cancel the endpoint when the client disconnects.
+    ``Request.is_disconnected`` is the ASGI signal. This races that check
+    against the exec so a still-connected client does not delay the response.
+    """
+    while not exec_task.done():
+        probe = asyncio.create_task(http_request.is_disconnected())
+        client_gone = False
+        try:
+            await asyncio.wait(
+                {exec_task, probe},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if (
+                not exec_task.done()
+                and probe.done()
+                and not probe.cancelled()
+                and probe.exception() is None
+                and bool(probe.result())
+            ):
+                client_gone = True
+        finally:
+            if not probe.done():
+                probe.cancel()
+            await _discard_task(probe)
+        if exec_task.done():
+            return
+        if client_gone:
+            exec_task.cancel()
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(exec_task),
+                _DISCONNECT_POLL_SECONDS,
+            )
+        except TimeoutError:
+            continue
+        return
 
 
 def _mgr():
@@ -123,18 +194,67 @@ async def restart_sandbox(sandbox_id: str):
 
 
 @router.post("/sandboxes/{sandbox_id}/exec", response_model=ExecResult)
-async def exec_in_sandbox(sandbox_id: str, request: ExecRequest):
+async def exec_in_sandbox(
+    sandbox_id: str,
+    request: ExecRequest,
+    http_request: Request,
+):
     stdin_data = request.stdin.encode() if request.stdin else None
-    return await _mgr().exec_in_sandbox(
-        sandbox_id=sandbox_id,
-        request=SandboxExecRequest(
-            command=list(request.command),
-            workdir=request.workdir,
-            env=request.env,
-            stdin_data=stdin_data,
-            timeout=request.timeout_seconds,
-        ),
+    exec_task = asyncio.create_task(
+        _mgr().exec_in_sandbox(
+            sandbox_id=sandbox_id,
+            request=SandboxExecRequest(
+                command=list(request.command),
+                workdir=request.workdir,
+                env=request.env,
+                stdin_data=stdin_data,
+                timeout=request.timeout_seconds,
+            ),
+        )
     )
+    watch_task = asyncio.create_task(_cancel_exec_on_http_disconnect(http_request, exec_task))
+    try:
+        await asyncio.wait(
+            {exec_task, watch_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not exec_task.done():
+            watch_error = None
+            if watch_task.done() and not watch_task.cancelled():
+                watch_error = watch_task.exception()
+            exec_task.cancel()
+            if watch_error is not None:
+                raise watch_error
+        try:
+            return await exec_task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            # The client is gone. 499 is the conventional "client closed
+            # request" status; the body is not delivered.
+            return Response(status_code=499)
+    finally:
+        watch_task.cancel()
+        if not exec_task.done():
+            exec_task.cancel()
+        current = asyncio.current_task()
+        rearm_cancel = False
+        if current is not None and current.cancelling():
+            # Drop this task's cancellation count so the awaits below can
+            # drain the exec task (and close its socket) before we re-raise.
+            while current.uncancel():
+                pass
+            rearm_cancel = True
+        await _discard_task(watch_task)
+        if not exec_task.done():
+            await _discard_task(exec_task)
+        elif not exec_task.cancelled():
+            # The try block already awaited a finished exec. Retrieve again
+            # so a stored failure cannot be logged as never retrieved.
+            exec_task.exception()
+        if rearm_cancel:
+            raise asyncio.CancelledError
 
 
 class BackgroundJobListResponse(BaseModel):

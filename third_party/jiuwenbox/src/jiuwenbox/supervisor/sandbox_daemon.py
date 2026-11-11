@@ -25,16 +25,18 @@ process (PID 1 of the sandbox PID namespace). The directory is reserved
 by ``PolicyEngine`` so user policies cannot reference it; see
 ``_RESERVED_SANDBOX_PATHS`` in ``jiuwenbox/server/policy_engine.py``.
 
-The control socket itself lives on the **host** filesystem; box-server
-``bind()``s and ``listen()``s before spawning bubblewrap, then passes
-the listener file descriptor into the sandbox via
+The control socket itself lives on the **host** filesystem, in a directory
+the sandbox replaces with a private tmpfs and never under the home
+directory (``/home`` is bind-mounted, so a socket there would stay
+reachable). Box-server ``bind()``s and ``listen()``s before spawning
+bubblewrap, then passes the listener file descriptor into the sandbox via
 ``subprocess.Popen(pass_fds=...)``. Bubblewrap's user command path
 never closes arbitrary inherited fds (only its own monitor/PID-1 paths
 do), so the listener fd flows naturally through the bwrap → launcher
 chain. The daemon recovers the fd from ``JIUWENBOX_CONTROL_LISTENER_FD``
-and ``accept()``s against it. This keeps the IPC channel entirely
-outside any sandbox-visible path, so user code spawned by the daemon
-cannot reach (or delete) the listener.
+and ``accept()``s against it. That host directory has no path inside the
+sandbox, so user code spawned by the daemon cannot reach (or delete) the
+listener.
 
 Important security notes:
 
@@ -68,7 +70,9 @@ import errno
 import json
 import logging
 import os
+import select
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -196,6 +200,12 @@ def _normalize_env(env: Any) -> dict[str, str] | None:
     return {str(key): str(value) for key, value in env.items()}
 
 
+# The management listen URL is not a sandbox environment variable; the
+# server process keeps its own. A local string: this module stays
+# stdlib-only and is compile/exec'd inside the sandbox.
+_LISTEN_URI_ENV = "JIUWENBOX_LISTEN"
+
+
 def build_child_env(env_override: dict[str, str] | None) -> dict[str, str]:
     """Merge an exec environment while preserving runtime-owned metadata.
 
@@ -211,6 +221,10 @@ def build_child_env(env_override: dict[str, str] | None) -> dict[str, str]:
     merged_env.pop(LISTENER_FD_ENV, None)
     if env_override is not None:
         merged_env.update(env_override)
+    # The management listen URL is not a sandbox environment variable; the
+    # server process keeps its own. Drop the inherited value and any exec
+    # override that tries to put it back.
+    merged_env.pop(_LISTEN_URI_ENV, None)
     # The sandbox address is a lifecycle snapshot owned by the runtime.
     # Always remove a caller value, including when address discovery failed.
     merged_env.pop(SANDBOX_IP_ENV, None)
@@ -264,6 +278,242 @@ class DaemonState:
                     return False
                 self.completion.wait(timeout=remaining)
             return True
+
+
+# How often the exec wait checks the IPC socket and the command deadline.
+# A peer that has only shut down its write side stays readable, so the
+# check must block for this slice instead of spinning.
+_EXEC_POLL_SECONDS = 0.05
+_PIPE_READ_BYTES = 65536
+
+
+def _kill_command_group(pid: int) -> None:
+    """SIGKILL the session whose leader is ``pid``.
+
+    Foreground execs are started with ``start_new_session=True``, so
+    ``pid`` is that session's leader. ``killpg`` signals the command's
+    group and not the daemon. ``os.killpg`` and ``signal.SIGKILL`` are
+    POSIX-only and are resolved here so this module imports on Windows.
+    When ``SIGKILL`` is absent, the POSIX value 9 is used so a test can
+    patch ``os.killpg`` and observe the same signal.
+    """
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        return
+    sigkill = getattr(signal, "SIGKILL", 9)
+    try:
+        killpg(pid, sigkill)
+    except OSError:
+        logger.debug("killpg(%s) failed", pid, exc_info=True)
+
+
+def _snapshot_chunks(chunks: list[bytes], lock: threading.Lock) -> bytes:
+    with lock:
+        return b"".join(chunks)
+
+
+def _pump_pipe(
+    stream: Any,
+    chunks: list[bytes],
+    lock: threading.Lock,
+    finished: threading.Event,
+) -> None:
+    """Append bytes from ``stream`` until EOF. Never clears ``chunks``."""
+    try:
+        while True:
+            try:
+                read1 = getattr(stream, "read1", None)
+                if read1 is None:
+                    chunk = stream.read(_PIPE_READ_BYTES)
+                else:
+                    chunk = read1(_PIPE_READ_BYTES)
+            except (OSError, ValueError):
+                break
+            if not chunk:
+                break
+            with lock:
+                chunks.append(chunk)
+    finally:
+        finished.set()
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
+def _feed_stdin(stream: Any, payload: bytes) -> None:
+    try:
+        view = memoryview(payload)
+        offset = 0
+        while offset < len(view):
+            try:
+                written = stream.write(view[offset:])
+            except OSError:
+                break
+            if not written:
+                break
+            offset += written
+        try:
+            stream.flush()
+        except OSError:
+            pass
+    finally:
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
+def _ipc_peer_gone(conn: socket.socket, wait: float) -> bool:
+    """True when the IPC peer has dropped this exec's connection.
+
+    Box-server shuts down its write side after the request
+    (``shutdown(SHUT_WR)``). That half-close is a readable EOF while the
+    server is still waiting for the response, so an empty read is not a
+    cancel. A later full close is ``POLLHUP``/``POLLERR`` (or
+    ``ECONNRESET``). ``select.poll`` is POSIX-only; the ``select``
+    fallback exists so this module's tests can run on Windows.
+    """
+    if wait < 0:
+        wait = 0.0
+    poll_factory = getattr(select, "poll", None)
+    if poll_factory is None:
+        return _ipc_peer_gone_select(conn, wait)
+    started = time.monotonic()
+    poll = poll_factory()
+    try:
+        poll.register(conn, select.POLLIN | select.POLLERR | select.POLLHUP)
+        events = poll.poll(int(wait * 1000))
+    except (OSError, ValueError):
+        return True
+    if events:
+        flags = events[0][1]
+        if flags & (select.POLLHUP | select.POLLERR):
+            return True
+    remaining = wait - (time.monotonic() - started)
+    if remaining > 0:
+        time.sleep(remaining)
+    return False
+
+
+def _ipc_peer_gone_select(conn: socket.socket, wait: float) -> bool:
+    """Windows stand-in for :func:`_ipc_peer_gone`.
+
+    ``select`` cannot report a hangup separately from a readable EOF.
+    Closing the peer makes the socket readable and the peek empty, which
+    is the signal the Windows tests use. Production sandboxes are Linux
+    and take the ``poll`` path, which ignores the normal write shutdown.
+    """
+    try:
+        readable, _, _ = select.select([conn], [], [], wait)
+    except (OSError, ValueError):
+        return True
+    if not readable:
+        return False
+    try:
+        peeked = conn.recv(1, socket.MSG_PEEK)
+    except OSError:
+        return True
+    return peeked == b""
+
+
+def _collect_exec_output(
+    proc: subprocess.Popen[bytes],
+    conn: socket.socket,
+    stdin_bytes: bytes | None,
+    timeout: float | None,
+) -> tuple[str, bytes, bytes]:
+    """Read the command until it exits, times out, or the client drops.
+
+    Returns ``(reason, stdout, stderr)``. ``reason`` is ``"ok"``,
+    ``"timeout"``, or ``"client_gone"``. A timeout or a dropped IPC
+    connection SIGKILLs this command's process group only. Bytes already
+    read stay in the buffers when the post-kill drain ends, including
+    when descendants still hold the pipes.
+    """
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    lock = threading.Lock()
+    stdout_done = threading.Event()
+    stderr_done = threading.Event()
+
+    if proc.stdout is None:
+        stdout_done.set()
+    else:
+        threading.Thread(
+            target=_pump_pipe,
+            args=(proc.stdout, stdout_chunks, lock, stdout_done),
+            name="jiuwenbox-exec-stdout",
+            daemon=True,
+        ).start()
+    if proc.stderr is None:
+        stderr_done.set()
+    else:
+        threading.Thread(
+            target=_pump_pipe,
+            args=(proc.stderr, stderr_chunks, lock, stderr_done),
+            name="jiuwenbox-exec-stderr",
+            daemon=True,
+        ).start()
+    if proc.stdin is not None:
+        if stdin_bytes:
+            threading.Thread(
+                target=_feed_stdin,
+                args=(proc.stdin, stdin_bytes),
+                name="jiuwenbox-exec-stdin",
+                daemon=True,
+            ).start()
+        else:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+
+    deadline = None if timeout is None else time.monotonic() + timeout
+    reason = "ok"
+    drain_deadline: float | None = None
+
+    def _pipes_closed() -> bool:
+        return stdout_done.is_set() and stderr_done.is_set()
+
+    while True:
+        if reason == "ok" and _pipes_closed() and proc.poll() is not None:
+            break
+        if reason == "ok":
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                reason = "timeout"
+                if proc.poll() is None:
+                    _kill_command_group(proc.pid)
+                drain_deadline = time.monotonic() + _POST_KILL_DRAIN_SECONDS
+                continue
+            slice_wait = _EXEC_POLL_SECONDS
+            if deadline is not None:
+                slice_wait = min(slice_wait, max(0.0, deadline - now))
+            if _ipc_peer_gone(conn, slice_wait):
+                reason = "client_gone"
+                if proc.poll() is None:
+                    _kill_command_group(proc.pid)
+                drain_deadline = time.monotonic() + _POST_KILL_DRAIN_SECONDS
+            continue
+        if _pipes_closed():
+            proc.poll()
+            break
+        if drain_deadline is None:
+            proc.poll()
+            break
+        remaining = drain_deadline - time.monotonic()
+        if remaining <= 0:
+            proc.poll()
+            break
+        stdout_done.wait(min(_EXEC_POLL_SECONDS, remaining))
+
+    proc.poll()
+    return (
+        reason,
+        _snapshot_chunks(stdout_chunks, lock),
+        _snapshot_chunks(stderr_chunks, lock),
+    )
 
 
 def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState) -> None:
@@ -337,32 +587,16 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
             )
             return
 
-        try:
-            stdout_bytes, stderr_bytes = proc.communicate(
-                input=stdin_bytes if stdin_size else None,
-                timeout=timeout,
-            )
-            response = _exec_response(
-                exit_code=proc.returncode if proc.returncode is not None else 0,
-                stdout=stdout_bytes.decode("utf-8", errors="replace"),
-                stderr=stderr_bytes.decode("utf-8", errors="replace"),
-            )
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                stdout_bytes, stderr_bytes = proc.communicate(
-                    timeout=_POST_KILL_DRAIN_SECONDS,
-                )
-            except subprocess.TimeoutExpired:
-                stdout_bytes, stderr_bytes = b"", b""
+        reason, stdout_bytes, stderr_bytes = _collect_exec_output(
+            proc,
+            conn,
+            stdin_bytes if stdin_size else None,
+            float(timeout) if timeout is not None else None,
+        )
+        if reason == "timeout":
             stderr_text = stderr_bytes.decode("utf-8", errors="replace")
             stderr_text = (
-                f"{stderr_text}\nCommand timed out"
-                if stderr_text
-                else "Command timed out"
+                f"{stderr_text}\nCommand timed out" if stderr_text else "Command timed out"
             )
             response = _exec_response(
                 exit_code=124,
@@ -370,8 +604,19 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
                 stderr=stderr_text,
                 error="timeout",
             )
-
-        _send_response(conn, response)
+        else:
+            response = _exec_response(
+                exit_code=proc.returncode if proc.returncode is not None else 0,
+                stdout=stdout_bytes.decode("utf-8", errors="replace"),
+                stderr=stderr_bytes.decode("utf-8", errors="replace"),
+            )
+        try:
+            _send_response(conn, response)
+        except OSError:
+            # The client is gone. Do not turn that into a bad_request reply.
+            if reason == "client_gone":
+                return
+            raise
     except (ValueError, ConnectionError) as exc:
         try:
             _send_response(
@@ -441,18 +686,18 @@ _FASTPATH_MAX_FRAME = 256 * 1024 * 1024
 # --- lifecycle / resilience / resource knobs ----------------------------
 # Every knob is env-overridable but hard-clamped so a bad override can never
 # grow the worker pool without bound or defeat the circuit breaker.
-FASTPATH_MAX_WORKERS = 4            # per-sandbox hard ceiling
+FASTPATH_MAX_WORKERS = 4  # per-sandbox hard ceiling
 FASTPATH_DEFAULT_IDLE_TIMEOUT = 300.0  # recycle pool to 0 after this idle
-FASTPATH_BREAKER_THRESHOLD = 3      # consecutive failures -> breaker open
-FASTPATH_BREAKER_COOLDOWN = 30.0    # seconds before a half-open probe
-FASTPATH_MAX_SPINS = 3              # worker-selection retries per request
-FASTPATH_REAP_INTERVAL = 5.0        # idle-reaper wakeup interval
+FASTPATH_BREAKER_THRESHOLD = 3  # consecutive failures -> breaker open
+FASTPATH_BREAKER_COOLDOWN = 30.0  # seconds before a half-open probe
+FASTPATH_MAX_SPINS = 3  # worker-selection retries per request
+FASTPATH_REAP_INTERVAL = 5.0  # idle-reaper wakeup interval
 # Minimal observability: counters are mirrored (throttled) to a JSON
 # snapshot inside the sandbox so host-side tooling / perf scripts can read
 # them via the normal exec path without any new API surface. Purely
 # diagnostic; never used for control flow.
 FASTPATH_STATS_PATH = "/tmp/fastpath_stats.json"
-FASTPATH_STATS_THROTTLE = 1.0       # min seconds between snapshot writes
+FASTPATH_STATS_THROTTLE = 1.0  # min seconds between snapshot writes
 
 
 def _fastpath_enabled() -> bool:
@@ -486,7 +731,8 @@ def _fastpath_enabled() -> bool:
     # Unrecognised value: fail safe (off) and surface it.
     logger.warning(
         "unrecognised %s=%r; expected '0' or '1'; defaulting fast path OFF",
-        FASTPATH_ENV, raw,
+        FASTPATH_ENV,
+        raw,
     )
     return False
 
@@ -535,10 +781,7 @@ FASTPATH_SCRIPT_ENV = "JIUWENBOX_PYTHON_FASTPATH_SCRIPT"
 # Unquoted words may only contain these characters. Every shell metacharacter
 # is absent by construction, so a word that tokenises is a literal.
 _FASTPATH_SAFE_WORD_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789"
-    "._-/=+:,@%"
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/=+:,@%"
 )
 # Only these bare interpreter names are recognised. A path (``/usr/bin/python``)
 # or a versioned name is not accepted: it would have to be identity-checked
@@ -552,8 +795,23 @@ _FASTPATH_LOGIN_ENV_ALLOWED = frozenset(("PWD", "OLDPWD", "SHLVL", "_"))
 # shadows one of these would import differently under a warm fork worker than
 # under a fresh interpreter, so those requests fall back.
 _FASTPATH_RESIDENT_MODULES = frozenset(sys.modules) | frozenset(
-    ("json", "os", "select", "signal", "socket", "struct", "sys", "time",
-     "traceback", "builtins", "base64", "encodings", "codecs", "io", "abc")
+    (
+        "json",
+        "os",
+        "select",
+        "signal",
+        "socket",
+        "struct",
+        "sys",
+        "time",
+        "traceback",
+        "builtins",
+        "base64",
+        "encodings",
+        "codecs",
+        "io",
+        "abc",
+    )
 )
 
 _FASTPATH_PROBE_LOCK = threading.Lock()
@@ -599,7 +857,7 @@ def _fastpath_split_shell(payload: str) -> list[list[str]] | None:
             end = payload.find("'", i + 1)
             if end == -1:
                 return None
-            cur.append(payload[i + 1:end])
+            cur.append(payload[i + 1 : end])
             has_cur = True
             i = end + 1
             continue
@@ -607,7 +865,7 @@ def _fastpath_split_shell(payload: str) -> list[list[str]] | None:
             j = i + 1
             buf: list[str] = []
             while j < n and payload[j] != '"':
-                if payload[j] in '$`\\':
+                if payload[j] in "$`\\":
                     return None
                 buf.append(payload[j])
                 j += 1
@@ -682,7 +940,9 @@ def _fastpath_interp_path(name: str) -> str | None:
             logger.info(
                 "fastpath: %s resolves to %s which is not the worker "
                 "interpreter (%s); script fastpath disabled for it",
-                name, resolved, sys.executable,
+                name,
+                resolved,
+                sys.executable,
             )
     with _FASTPATH_PROBE_LOCK:
         _FASTPATH_PROBE_CACHE[name] = verdict
@@ -705,9 +965,12 @@ def _fastpath_login_env_safe() -> bool:
     safe = False
     try:
         probe = subprocess.run(
-            [_BASH_BIN, "-lc",
-             "exec python3 -c 'import json,os,sys;"
-             "sys.stdout.write(json.dumps(dict(os.environ)))'"],
+            [
+                _BASH_BIN,
+                "-lc",
+                "exec python3 -c 'import json,os,sys;"
+                "sys.stdout.write(json.dumps(dict(os.environ)))'",
+            ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -731,8 +994,8 @@ def _fastpath_login_env_safe() -> bool:
             safe = not unexpected
             if unexpected:
                 logger.info(
-                    "fastpath: login shell alters env %s; wrapper fastpath "
-                    "disabled in this image", sorted(unexpected),
+                    "fastpath: login shell alters env %s; wrapper fastpath disabled in this image",
+                    sorted(unexpected),
                 )
     except Exception:  # probe must never break exec handling
         logger.warning("fastpath: login-env probe failed", exc_info=True)
@@ -1497,7 +1760,7 @@ class ForkServerPool:
         self._workers: list[tuple[subprocess.Popen, socket.socket, threading.Lock]] = []
         self._next = 0
         self._lock = threading.Lock()
-        self._breaker_state = "closed"      # closed | open | half_open
+        self._breaker_state = "closed"  # closed | open | half_open
         self._breaker_failures = 0
         self._cooldown_until = 0.0
         self._last_activity = time.monotonic()
@@ -2117,10 +2380,7 @@ def _handle_read_file(conn: socket.socket, header: dict[str, Any]) -> None:
                     "v": PROTOCOL_VERSION,
                     "ok": False,
                     "error": "too_large",
-                    "stderr": (
-                        f"file size {stat.st_size} exceeds limit "
-                        f"{MAX_FILE_BYTES}"
-                    ),
+                    "stderr": (f"file size {stat.st_size} exceeds limit {MAX_FILE_BYTES}"),
                 },
             )
             return
@@ -2195,20 +2455,18 @@ def _list_dir_entries(
                     continue
                 if not is_dir and not include_files:
                     continue
-                items.append({
-                    "name": entry.name,
-                    "path": entry.path,
-                    "size": 0 if is_dir else stat.st_size,
-                    "is_directory": is_dir,
-                    "modified_time": datetime.datetime.fromtimestamp(
-                        stat.st_mtime,
-                    ).isoformat(),
-                    "type": (
-                        None
-                        if is_dir
-                        else (os.path.splitext(entry.name)[1] or None)
-                    ),
-                })
+                items.append(
+                    {
+                        "name": entry.name,
+                        "path": entry.path,
+                        "size": 0 if is_dir else stat.st_size,
+                        "is_directory": is_dir,
+                        "modified_time": datetime.datetime.fromtimestamp(
+                            stat.st_mtime,
+                        ).isoformat(),
+                        "type": (None if is_dir else (os.path.splitext(entry.name)[1] or None)),
+                    }
+                )
     items.sort(key=lambda item: item["path"])
     return items
 
@@ -2726,7 +2984,7 @@ def _accept_loop(listener: socket.socket, state: DaemonState) -> None:
     while not state.shutdown_event.is_set():
         try:
             conn, _ = listener.accept()
-        except socket.timeout:
+        except TimeoutError:
             continue
         except OSError as exc:
             if exc.errno == errno.EBADF:

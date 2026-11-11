@@ -29,7 +29,9 @@ The default is off. While it is off, Shell commands behave as they do today. iCo
 
 ## Linux, and the sandbox iCode starts
 
-The sandbox runs on Linux only. The computer must be Linux, and it must have bubblewrap installed. iCode does not install bubblewrap for you.
+The sandbox runs on Linux only. The computer must be Linux, and it must have bubblewrap and python3 installed. The sandbox runs python3. iCode does not install bubblewrap or python3 for you.
+
+iCode does not start this sandbox as root. If iCode itself is started as root, the sandbox refuses to run the command.
 
 With the sandbox on, iCode starts the sandbox engine that ships with iCode. You do not install or deploy a separate product, and you do not start that engine yourself. Leave `sandbox.url` empty for this. If that sandbox fails to start, the error includes the sandbox engine's own error.
 

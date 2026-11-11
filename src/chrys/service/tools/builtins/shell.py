@@ -1209,6 +1209,13 @@ class ShellTools:
         # That prefix is not in the sandbox image, so sending it fails the
         # command and adds an error line to stderr.
         argv = _bare_shell_argv(shell, prepared)
+        # The writable mount is the session workspace. ``cwd`` stays the command's
+        # exec directory, including when that directory is outside the workspace.
+        workspace_dirs = tuple(
+            working_dir.path
+            for working_dir in self._runtime.working_dirs
+            if not working_dir.is_primary and working_dir.path != self._runtime.cwd
+        )
         try:
             completed = await run_shell(
                 settings,
@@ -1216,6 +1223,8 @@ class ShellTools:
                 cwd=cwd,
                 timeout_seconds=timeout,
                 linux=sys.platform == "linux",
+                workspace_root=self._runtime.cwd,
+                workspace_dirs=workspace_dirs,
             )
         except SandboxError as exc:
             _record_shell_error()

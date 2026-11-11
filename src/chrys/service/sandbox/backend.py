@@ -23,19 +23,33 @@ the base value; this client does not send any.
 
 Append therefore does not replace ``filesystem_policy`` as a whole, and this
 client does not read the current policy back to build a merged document.
-The create body is ``policy_mode`` ``append`` plus one bind mount whose
-``host_path`` and ``sandbox_path`` are both the command cwd. The mount is
-``rw`` for the writable sandbox and ``ro`` when this cwd is outside that
-sandbox's writable root.
 
-The writable sandbox is cached with the cwd it mounted. A later command
-reuses that id while ``GET`` reports ``phase=ready`` and the new cwd is
-that root or a directory inside it. Paths are compared as normalized POSIX
-components, so ``/work`` does not contain ``/work-extra``. A cwd outside
-that root does not replace the writable sandbox and does not add a second
-``rw`` mount; it runs in a separate read-only sandbox. A 404 for either
-cached id drops that entry and creates one replacement. Any other HTTP
-error, and a second 404, still fail the call.
+Writable root
+-------------
+When ``workspace_root`` is provided, it is the session workspace. The
+read-write mount and the cache key are that root, resolved with
+``os.path.realpath`` before either use, not the command cwd. The process
+cwd stays the command cwd (exec ``workdir``). A cwd inside that root, or
+inside a ``workspace_dirs`` entry that is not already under it, reuses the
+writable sandbox. Those extra directories are further read-write binds on
+the same sandbox. The cache key is the physical primary root, so two
+workspaces do not share one mount. A cwd outside that set does not replace
+the writable sandbox and is not mounted read-write; it runs in a read-only
+sandbox. Binding ``/`` is not special: the base policy remounts ``/``
+read-only.
+
+Paths are compared as components after ``os.path.realpath``, so a sibling
+such as ``work-extra`` is not inside ``work``. Two symlink spellings of one
+directory are one sandbox and one read-write mount of the physical path.
+
+When ``workspace_root`` is omitted, the first command cwd remains the
+writable root of a single legacy slot. That slot is separate from the
+workspace-keyed cache.
+
+A 404 for a cached id drops that one entry and creates one replacement.
+Any other HTTP error, and a second 404, still fail the call. Replacing a
+read-only sandbox deletes the previous read-only sandbox. That delete is
+not cancellation.
 
 Lock and command budget
 -----------------------
@@ -51,21 +65,25 @@ an uncontended acquire.
 
 Cancellation
 ------------
-Cancelling the task that is awaiting an exec POSTs ``/stop`` for that
-sandbox id, drops the id from the cache, and reraises ``CancelledError``.
-The stop is shielded, so the cancellation does not skip it, and it is
-bounded. A stop failure does not replace the cancellation. A cancel before
-this call has started an exec, a ``SandboxError``, and a completed exec do
-not stop the sandbox.
+Cancelling the task that is awaiting an exec does not POST ``/stop``.
+Stopping the sandbox would kill every other command in it. ``CancelledError``
+is reraised. The writable cache entry is kept, so the next command reuses
+that workspace's sandbox instead of adopting a new cwd as the writable root.
+A read-only id for the cancelled command is forgotten. That forget is
+shielded, so a second cancellation does not skip it. A cancel before this
+call has started an exec, a ``SandboxError``, and a completed exec do not
+change the cache.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import posixpath
+import re
 import time
 from collections.abc import Sequence
-from pathlib import PurePosixPath
+from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.util.once_close import finish_close
@@ -77,21 +95,31 @@ if TYPE_CHECKING:
 _HTTP_TIMEOUT_SLACK_SECONDS = 15.0
 _STOP_TIMEOUT_SECONDS = 2.0
 _MAX_READY_ERROR_CHARS = 200
+# Scheme, "://", and the rest of the token, userinfo and path included.
+_READY_ERROR_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
 # create_task plus wait_for yields once even when the lock is free. A gap
 # smaller than this is that hop, not a command queued behind another.
 _LOCK_SCHEDULING_SLACK_SECONDS = 0.25
 _READY = "ready"
 _READ_WRITE = "rw"
 _READ_ONLY = "ro"
+_CACHE_MISSING = "missing"
+_CACHE_REPLACE = "replace"
 _LOCK_WAIT_EXPIRED = "Sandbox command timed out waiting for the sandbox."
 
-# Process cache. ``_sandbox_id`` mounts ``_writable_root`` read-write.
-# ``_readonly_id`` mounts ``_readonly_root`` read-only and never replaces
-# the writable entry.
+# Process cache.
+# ``_sandbox_id`` / ``_writable_root`` are the legacy slot used when the
+# caller omits ``workspace_root``: the first command cwd is the writable root.
+# ``_writable_by_root`` maps a physical workspace root to its read-write
+# sandbox. Cancel does not drop either writable entry.
+# ``_readonly_id`` mounts ``_readonly_root`` read-only and never replaces a
+# writable entry. Switching it deletes the sandbox being replaced.
 _sandbox_id: str | None = None
 _writable_root: str | None = None
+_writable_by_root: dict[str, str] = {}
 _readonly_id: str | None = None
 _readonly_root: str | None = None
+_readonly_physical: bool = False
 _lock: asyncio.Lock | None = None
 
 
@@ -139,6 +167,8 @@ async def run_shell(
     cwd: str,
     timeout_seconds: int,
     linux: bool,
+    workspace_root: str | None = None,
+    workspace_dirs: Sequence[str] = (),
 ) -> SandboxExec:
     """Run ``argv`` in the sandbox and return its exit code and output.
 
@@ -149,7 +179,12 @@ async def run_shell(
     memory; ``sandbox_token`` is not sent to it. A non-empty URL is used
     as-is, does not start a process, and is the only place ``sandbox_token``
     is sent. Waiting for the cache lock consumes ``timeout_seconds``.
-    Cancellation during exec stops that sandbox and then propagates.
+    Cancellation during exec does not stop the sandbox, and then propagates.
+    The writable cache is kept across that cancellation.
+
+    When ``workspace_root`` is provided, the read-write mount is that
+    session workspace (plus ``workspace_dirs`` outside it), not ``cwd``.
+    When it is omitted, the first command cwd remains the writable root.
     """
     if not linux:
         raise SandboxError("Sandbox execution is supported only on Linux.")
@@ -166,15 +201,22 @@ async def run_shell(
     else:
         base_url, token = await ensure_started()
     # Opened before the lock wait. Health and create use this budget; the exec
-    # request replaces it with the time left after the wait.
+    # request replaces it with the time left after the wait. trust_env stays on
+    # for a configured URL and is off for the bundled server this process started.
     http_timeout = float(timeout_seconds) + _HTTP_TIMEOUT_SLACK_SECONDS
-    async with connect(base_url, token, http_timeout) as client:
+    async with connect(base_url, token, http_timeout, trust_env=bool(configured)) as client:
         await _require_health(client)
-        sandbox_id, remaining = await _sandbox_for_command(client, cwd, timeout_seconds)
+        sandbox_id, remaining = await _sandbox_for_command(
+            client,
+            cwd,
+            timeout_seconds,
+            workspace_root=workspace_root,
+            workspace_dirs=workspace_dirs,
+        )
         try:
             return await _exec(client, sandbox_id, argv, cwd, timeout_seconds, remaining)
         except asyncio.CancelledError:
-            await _stop_on_cancel(client, sandbox_id)
+            await _stop_on_cancel(sandbox_id)
             raise
 
 
@@ -184,35 +226,13 @@ async def _require_health(client: httpx.AsyncClient) -> None:
         raise SandboxError("Sandbox server health is not ok.")
 
 
-async def _ready_sandbox(client: httpx.AsyncClient, cwd: str) -> str:
-    mode, current = _select_cache(cwd)
-    if current is not None:
-        try:
-            payload = _json_object(await client.get(_sandbox_path(current)))
-        except SandboxError as error:
-            if error.status_code != 404:
-                raise
-            # The cached id is gone after a server restart or a URL change.
-            # Drop that one entry and create a single replacement.
-            _drop_cache(mode)
-        else:
-            if payload.get("phase") == _READY:
-                return current
-    created = _json_object(await client.post("/api/v1/sandboxes", json=_create_body(cwd, mode)))
-    sandbox_id = _require_id(created)
-    if created.get("phase") != _READY:
-        started = _json_object(await client.post(f"{_sandbox_path(sandbox_id)}/start"))
-        sandbox_id = _require_id(started)
-        if started.get("phase") != _READY:
-            raise _not_ready(started)
-    _store_cache(mode, sandbox_id, cwd)
-    return sandbox_id
-
-
 async def _sandbox_for_command(
     client: httpx.AsyncClient,
     cwd: str,
     timeout_seconds: int,
+    *,
+    workspace_root: str | None,
+    workspace_dirs: Sequence[str],
 ) -> tuple[str, float]:
     """Return a ready sandbox id and the command budget left after the lock wait.
 
@@ -221,9 +241,162 @@ async def _sandbox_for_command(
     """
     remaining = await _acquire_cache_lock(float(timeout_seconds))
     try:
-        return await _ready_sandbox(client, cwd), remaining
+        sandbox_id = await _ready_sandbox(
+            client,
+            cwd,
+            workspace_root=workspace_root,
+            workspace_dirs=workspace_dirs,
+        )
+        return sandbox_id, remaining
     finally:
         _gate().release()
+
+
+async def _ready_sandbox(
+    client: httpx.AsyncClient,
+    cwd: str,
+    *,
+    workspace_root: str | None,
+    workspace_dirs: Sequence[str],
+) -> str:
+    if workspace_root is None:
+        return await _ready_legacy_sandbox(client, cwd)
+    return await _ready_workspace_sandbox(client, cwd, workspace_root, workspace_dirs)
+
+
+async def _ready_legacy_sandbox(client: httpx.AsyncClient, cwd: str) -> str:
+    """Writable root is the first command cwd. Used when no workspace is passed."""
+    mode, current = _select_cache(cwd)
+    if current is not None:
+        state = await _cached_phase(client, current)
+        if state == _READY:
+            return current
+        if state == _CACHE_MISSING:
+            _drop_cache(mode)
+    sandbox_id = await _create_ready(client, _create_body(cwd, mode))
+    if mode == _READ_ONLY:
+        await _replace_readonly(client, sandbox_id, cwd, physical=False)
+    else:
+        _store_cache(sandbox_id, cwd)
+    return sandbox_id
+
+
+async def _ready_workspace_sandbox(
+    client: httpx.AsyncClient,
+    cwd: str,
+    workspace_root: str,
+    workspace_dirs: Sequence[str],
+) -> str:
+    """Read-write mount is the physical workspace, not ``cwd``."""
+    mounts = _workspace_mounts(workspace_root, workspace_dirs)
+    physical_cwd = _physical_dir(cwd)
+    if _cwd_uses_writable(physical_cwd, mounts):
+        return await _ready_keyed_writable(client, mounts[0], mounts)
+    return await _ready_physical_readonly(client, physical_cwd)
+
+
+async def _ready_keyed_writable(
+    client: httpx.AsyncClient,
+    primary: str,
+    mounts: tuple[str, ...],
+) -> str:
+    """Reuse or create the read-write sandbox keyed by ``primary``.
+
+    A 404 drops only this root's id. Other workspace roots stay.
+    """
+    cached = _writable_by_root.get(primary)
+    if cached is not None:
+        state = await _cached_phase(client, cached)
+        if state == _READY:
+            return cached
+        if state == _CACHE_MISSING:
+            _writable_by_root.pop(primary, None)
+    sandbox_id = await _create_ready(client, _bind_body(mounts, _READ_WRITE))
+    _writable_by_root[primary] = sandbox_id
+    return sandbox_id
+
+
+async def _ready_physical_readonly(client: httpx.AsyncClient, physical_cwd: str) -> str:
+    """Run ``physical_cwd`` in a read-only sandbox without touching the writable one."""
+    cached = _readonly_id
+    if cached is not None and _readonly_covers(physical_cwd, physical=True):
+        state = await _cached_phase(client, cached)
+        if state == _READY:
+            return cached
+        if state == _CACHE_MISSING:
+            _drop_readonly()
+    sandbox_id = await _create_ready(client, _bind_body((physical_cwd,), _READ_ONLY))
+    await _replace_readonly(client, sandbox_id, physical_cwd, physical=True)
+    return sandbox_id
+
+
+def _readonly_covers(cwd_key: str, *, physical: bool) -> bool:
+    """Whether the cached read-only sandbox already contains ``cwd_key``."""
+    if _readonly_id is None or _readonly_root is None or _readonly_physical != physical:
+        return False
+    if physical:
+        return _same_or_inside_physical(_readonly_root, cwd_key)
+    return _same_or_inside(_readonly_root, cwd_key)
+
+
+async def _cached_phase(client: httpx.AsyncClient, sandbox_id: str) -> str:
+    """``ready``, ``missing`` (HTTP 404), or ``replace`` (any other phase).
+
+    Any HTTP error other than 404 propagates. The caller drops the one
+    cache entry that 404'd and creates a single replacement.
+    """
+    try:
+        payload = _json_object(await client.get(_sandbox_path(sandbox_id)))
+    except SandboxError as error:
+        if error.status_code != 404:
+            raise
+        return _CACHE_MISSING
+    if payload.get("phase") == _READY:
+        return _READY
+    return _CACHE_REPLACE
+
+
+async def _create_ready(client: httpx.AsyncClient, body: dict[str, Any]) -> str:
+    created = _json_object(await client.post("/api/v1/sandboxes", json=body))
+    sandbox_id = _require_id(created)
+    if created.get("phase") != _READY:
+        started = _json_object(await client.post(f"{_sandbox_path(sandbox_id)}/start"))
+        sandbox_id = _require_id(started)
+        if started.get("phase") != _READY:
+            raise _not_ready(started)
+    return sandbox_id
+
+
+async def _replace_readonly(
+    client: httpx.AsyncClient,
+    sandbox_id: str,
+    root: str,
+    *,
+    physical: bool,
+) -> None:
+    """Point the read-only cache at ``sandbox_id`` and delete a different previous id."""
+    previous = _readonly_id
+    if previous is not None and previous != sandbox_id:
+        await _retire_replaced_readonly(client, previous)
+    _store_readonly(sandbox_id, root, physical=physical)
+
+
+async def _retire_replaced_readonly(client: httpx.AsyncClient, sandbox_id: str) -> None:
+    """Delete a read-only sandbox that a different root is replacing.
+
+    This is not cancellation. Cancellation does not POST ``/stop`` and does
+    not delete the sandbox. It only forgets a read-only id and leaves the
+    writable cache in place. This function DELETEs
+    ``/api/v1/sandboxes/{id}`` and runs only when the read-only cache is
+    about to point at a different sandbox. A failed delete does not fail
+    the command; the caller still stores the replacement.
+    """
+    try:
+        await client.delete(_sandbox_path(sandbox_id), timeout=_STOP_TIMEOUT_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return
 
 
 async def _acquire_cache_lock(budget: float) -> float:
@@ -314,14 +487,15 @@ def _exec_timeout_seconds(timeout_seconds: int, remaining: float) -> int:
     return whole
 
 
-async def _stop_on_cancel(client: httpx.AsyncClient, sandbox_id: str) -> None:
-    """Stop ``sandbox_id`` after exec was cancelled, then forget that id.
+async def _stop_on_cancel(sandbox_id: str) -> None:
+    """After exec was cancelled, keep the writable cache.
 
-    ``finish_close`` keeps the stop running when the caller is cancelled
-    again. Failures inside the stop are discarded so they cannot replace the
-    caller's ``CancelledError``.
+    ``finish_close`` keeps the cache update running when the caller is
+    cancelled again. This does not POST ``/stop``: that would kill every
+    command in the sandbox. The writable root stays cached. A read-only id
+    is forgotten.
     """
-    task = asyncio.create_task(_stop_and_forget(client, sandbox_id))
+    task = asyncio.create_task(_stop_and_forget(sandbox_id))
     try:
         await finish_close(task)
     except asyncio.CancelledError:
@@ -330,21 +504,17 @@ async def _stop_on_cancel(client: httpx.AsyncClient, sandbox_id: str) -> None:
         return
 
 
-async def _stop_and_forget(client: httpx.AsyncClient, sandbox_id: str) -> None:
-    try:
-        await client.post(f"{_sandbox_path(sandbox_id)}/stop", timeout=_STOP_TIMEOUT_SECONDS)
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        pass
-    finally:
-        # Drop the id whether or not the stop request succeeded, so the next
-        # command does not reuse a sandbox this call tried to stop.
-        await _forget_cached_id(sandbox_id)
+async def _stop_and_forget(sandbox_id: str) -> None:
+    """Forget a cancelled read-only id. The writable cache stays.
+
+    Dropping the writable root would make the next command's cwd the new
+    writable root. This function does not POST ``/stop``.
+    """
+    await _forget_cached_id(sandbox_id)
 
 
 async def _forget_cached_id(sandbox_id: str) -> None:
-    """Drop ``sandbox_id`` from the cache if it is still the stored one."""
+    """Drop a cancelled read-only id. The writable cache is not touched."""
     lock = _gate()
     await lock.acquire()
     try:
@@ -354,13 +524,13 @@ async def _forget_cached_id(sandbox_id: str) -> None:
 
 
 def _clear_cached_id(sandbox_id: str) -> None:
-    global _sandbox_id, _writable_root, _readonly_id, _readonly_root
-    if _sandbox_id == sandbox_id:
-        _sandbox_id = None
-        _writable_root = None
+    """Forget a cancelled read-only sandbox id.
+
+    Writable entries are left in place. Clearing the writable root would
+    make the next command's cwd the new writable root.
+    """
     if _readonly_id == sandbox_id:
-        _readonly_id = None
-        _readonly_root = None
+        _drop_readonly()
 
 
 def _not_ready(payload: dict[str, Any]) -> SandboxError:
@@ -368,8 +538,10 @@ def _not_ready(payload: dict[str, Any]) -> SandboxError:
 
     A 2xx body is a sandbox ref. The engine failure is ``error_message`` on
     that ref. The ``error`` key belongs to the HTTP error envelope, which
-    this path does not receive. One short line of ``error_message`` is safe
-    to show. Anything else stays the generic sentence.
+    this path does not receive. The detail is the first usable line of
+    ``error_message``: URL tokens removed, a long line shortened, and a bad
+    first line does not hide a later usable line. When no line survives, the
+    message stays the generic sentence.
     """
     detail = _short_error_line(payload.get("error_message"))
     if detail is None:
@@ -378,43 +550,91 @@ def _not_ready(payload: dict[str, Any]) -> SandboxError:
 
 
 def _short_error_line(value: object) -> str | None:
-    """One short server error line, with URLs and control characters left out."""
+    """The first usable line, with URLs removed and a long line shortened.
+
+    Lines are walked in order. An empty line, a line that contains a
+    control character, and a line that is empty once URL tokens are removed
+    are skipped. A bad first line does not hide a later usable line. The
+    surviving line is the whole detail: later lines are not appended. A line
+    longer than ``_MAX_READY_ERROR_CHARS`` keeps a prefix of that limit and
+    ends with ``…``.
+    """
     if not isinstance(value, str):
         return None
-    line = value.strip()
-    if not line or len(line) > _MAX_READY_ERROR_CHARS:
-        return None
-    if any(ord(char) < 32 for char in line):
-        return None
-    if "://" in line:
-        return None
-    return line
+    for raw in value.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # A control character disqualifies the whole line. It is never copied.
+        if any(ord(char) < 32 for char in line):
+            continue
+        line = " ".join(_READY_ERROR_URL_RE.sub("", line).split())
+        if not line:
+            continue
+        if len(line) > _MAX_READY_ERROR_CHARS:
+            line = line[: _MAX_READY_ERROR_CHARS - 1] + "…"
+        return line
+    return None
 
 
-def _create_body(cwd: str, mode: str) -> dict[str, Any]:
+def _bind_body(mounts: Sequence[str], mode: str) -> dict[str, Any]:
+    """Append bind mounts. ``host_path`` and ``sandbox_path`` are the same path."""
     return {
         "policy_mode": "append",
         "policy": {
             "filesystem_policy": {
-                "bind_mounts": [
-                    {"host_path": cwd, "sandbox_path": cwd, "mode": mode},
-                ]
+                "bind_mounts": [{"host_path": path, "sandbox_path": path, "mode": mode} for path in mounts],
             }
         },
     }
 
 
+def _create_body(cwd: str, mode: str) -> dict[str, Any]:
+    """Legacy single mount. ``cwd`` is the command cwd, not a workspace root."""
+    return _bind_body((cwd,), mode)
+
+
+def _workspace_mounts(workspace_root: str, workspace_dirs: Sequence[str]) -> tuple[str, ...]:
+    """Physical read-write binds for one session workspace.
+
+    The primary root is first. ``workspace_dirs`` entries already inside it
+    are not repeated. The command cwd is not a mount.
+    """
+    primary = _physical_dir(workspace_root)
+    mounts = [primary]
+    for raw in workspace_dirs:
+        physical = _physical_dir(raw)
+        if _same_or_inside_physical(primary, physical) or physical in mounts:
+            continue
+        mounts.append(physical)
+    return tuple(mounts)
+
+
+def _cwd_uses_writable(physical_cwd: str, mounts: Sequence[str]) -> bool:
+    """Whether ``physical_cwd`` is one of the workspace mounts or inside it."""
+    return any(_same_or_inside_physical(mount, physical_cwd) for mount in mounts)
+
+
+def _physical_dir(path: str) -> str:
+    """Real directory path, not case-folded.
+
+    ``os.path.realpath`` before the path is a mount or a cache key.
+    """
+    return os.path.realpath(path)
+
+
 def _select_cache(cwd: str) -> tuple[str, str | None]:
-    """Return the mount mode and a cached id to reuse, if one covers ``cwd``.
+    """Return the legacy mount mode and a cached id to reuse, if one covers ``cwd``.
 
     The first sandbox is writable at the cwd of its create. A later cwd
     outside that root is read-only and must not replace the writable entry.
+    This slot is used only when the caller omits ``workspace_root``.
     """
     if _sandbox_id is not None and _writable_root is not None and _same_or_inside(_writable_root, cwd):
         return _READ_WRITE, _sandbox_id
     if _sandbox_id is None or _writable_root is None:
         return _READ_WRITE, None
-    if _readonly_id is not None and _readonly_root is not None and _same_or_inside(_readonly_root, cwd):
+    if _readonly_covers(cwd, physical=False):
         return _READ_ONLY, _readonly_id
     return _READ_ONLY, None
 
@@ -432,29 +652,53 @@ def _same_or_inside(root: str, cwd: str) -> bool:
     return cwd_parts[: len(root_parts)] == root_parts
 
 
+def _same_or_inside_physical(root: str, path: str) -> bool:
+    """Whether ``path`` is ``root`` or a directory inside it.
+
+    Both arguments are already ``os.path.realpath`` results. Compared as
+    native path components so ``work-extra`` is not inside ``work``.
+    """
+    root_parts = PurePath(root).parts
+    path_parts = PurePath(path).parts
+    if len(path_parts) < len(root_parts):
+        return False
+    return path_parts[: len(root_parts)] == root_parts
+
+
 def _posix_parts(path: str) -> tuple[str, ...]:
     return PurePosixPath(posixpath.normpath(path)).parts
 
 
 def _drop_cache(mode: str) -> None:
-    global _sandbox_id, _writable_root, _readonly_id, _readonly_root
+    """Drop the legacy writable slot or the read-only slot, not both."""
+    global _sandbox_id, _writable_root
     if mode == _READ_WRITE:
         _sandbox_id = None
         _writable_root = None
         return
+    _drop_readonly()
+
+
+def _drop_readonly() -> None:
+    global _readonly_id, _readonly_root, _readonly_physical
     _readonly_id = None
     _readonly_root = None
+    _readonly_physical = False
 
 
-def _store_cache(mode: str, sandbox_id: str, cwd: str) -> None:
-    """Remember the cwd this create mounted. That path is the cached root."""
-    global _sandbox_id, _writable_root, _readonly_id, _readonly_root
-    if mode == _READ_WRITE:
-        _sandbox_id = sandbox_id
-        _writable_root = cwd
-        return
+def _store_cache(sandbox_id: str, cwd: str) -> None:
+    """Legacy writable slot. The mounted root is this command cwd."""
+    global _sandbox_id, _writable_root
+    _sandbox_id = sandbox_id
+    _writable_root = cwd
+
+
+def _store_readonly(sandbox_id: str, root: str, *, physical: bool) -> None:
+    """Remember the read-only root. ``physical`` selects the comparison rule."""
+    global _readonly_id, _readonly_root, _readonly_physical
     _readonly_id = sandbox_id
-    _readonly_root = cwd
+    _readonly_root = root
+    _readonly_physical = physical
 
 
 def _sandbox_path(sandbox_id: str) -> str:
