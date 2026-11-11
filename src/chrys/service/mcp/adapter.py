@@ -1003,13 +1003,7 @@ class MCPAdapter:
 
     async def _publish_failure(self, err: MCPConnectionError) -> None:
         """Log and, if a bus is configured, publish a user-visible Warning."""
-        logger.error(
-            "MCP server '%s' (%s) failed to connect: %s",
-            err.server_name,
-            err.transport,
-            err.cause,
-            exc_info=err.cause,
-        )
+        logger.error("%s", err, exc_info=err.cause)
         # A refresh's own report names this failure, without the server's stderr.
         if self._bus is None or self._cache.refreshing:
             return

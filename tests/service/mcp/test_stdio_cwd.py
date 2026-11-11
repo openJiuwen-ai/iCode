@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import logging
 import ntpath
 import os
 import sys
@@ -518,6 +519,55 @@ async def test_the_stock_fallback_names_a_missing_cwd_before_spawning(tmp_path: 
 
 
 # ── Missing folder ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("problem", "detail"),
+    [
+        ("missing", "the server's working directory does not exist"),
+        ("not_directory", "the server's working directory is not a folder"),
+        pytest.param(
+            "inaccessible",
+            "the server's working directory cannot be entered",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32" or os.geteuid() == 0, reason="POSIX permission bits, not as root"
+            ),
+        ),
+    ],
+)
+async def test_loading_logs_the_unusable_cwd_and_keeps_the_traceback(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, problem: str, detail: str
+) -> None:
+    target = tmp_path / "server-folder"
+
+    def prepare() -> None:
+        if problem == "not_directory":
+            target.write_text("x", encoding="utf-8")
+        elif problem == "inaccessible":
+            target.mkdir()
+            target.chmod(0)
+
+    await asyncio.to_thread(prepare)
+    cache = MCPConnectionCache()
+    adapter = MCPAdapter(cache=cache, stdio_cwd=str(tmp_path))
+    try:
+        with caplog.at_level(logging.ERROR, logger="chrys.service.mcp.adapter"):
+            await asyncio.wait_for(
+                adapter.connect_all([_cwd_server_config(cwd=target.name)]), timeout=ENGINE_TURN_TIMEOUT
+            )
+        failure = adapter.failures["cwd"]
+        records = [record for record in caplog.records if record.name == "chrys.service.mcp.adapter"]
+        (record,) = records
+        assert f"MCP server 'cwd' (stdio) failed to connect: {detail}" in record.getMessage()
+        assert f"Working directory: {target}" in record.getMessage()
+        assert record.exc_info is not None
+        assert record.exc_info[1] is failure.cause
+        assert record.exc_info[2] is not None
+    finally:
+        if problem == "inaccessible":
+            await asyncio.to_thread(target.chmod, 0o700)
+        await adapter.disconnect_all()
+        await cache.close_all()
 
 
 async def test_a_missing_cwd_fails_that_server_only_and_says_why(tmp_path: Path) -> None:
