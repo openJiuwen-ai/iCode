@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -176,6 +177,20 @@ def _dead_pid() -> int:
     return proc.pid
 
 
+def _record_with(**fields: object) -> bytes:
+    """A well-formed record's bytes with *fields* overriding its numbers."""
+    record: dict[str, object] = {
+        "schemaVersion": lease_module.HOLDER_RECORD_SCHEMA,
+        "pid": 1,
+        "startTime": 1.0,
+        "host": "h",
+        "bootTime": 1.0,
+        "at": "2026-01-01T00:00:00Z",
+    }
+    record.update(fields)
+    return json.dumps(record).encode("utf-8")
+
+
 def _record_for(pid: int) -> lease_module.LeaseHolder:
     host, boot_time = lease_module._host_facts()
     return lease_module.LeaseHolder(
@@ -265,6 +280,29 @@ def test_a_lock_without_a_holder_record_stays_held(tmp_path: Path) -> None:
         assert WriterLease.try_acquire(lock_path) is None
     finally:
         _stop(proc)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        # JSON's ``Infinity`` literal: legal input, no int holds it.
+        {"pid": float("inf")},
+        # An integer literal Python parses exactly but no float can hold.
+        {"startTime": 10**400},
+    ],
+    ids=["infinite-pid", "start-time-beyond-float"],
+)
+def test_a_holder_record_with_an_unrepresentable_number_is_unknown(tmp_path: Path, fields: dict[str, object]) -> None:
+    """A number that cannot become pid/startTime leaves the whole record unknown.
+
+    ``describe_holder`` decorates a refused activation's report and promises
+    never to raise; a conversion overflow escaping here would replace the
+    refusal with an activation failure and lose who holds the session.
+    """
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    plant_owner_only_bytes(owner_record_path(lock_path), _record_with(**fields))
+    assert read_holder(lock_path) is None
+    assert describe_holder(lock_path) == ""
 
 
 def test_a_probe_leaves_no_record_of_itself(tmp_path: Path) -> None:

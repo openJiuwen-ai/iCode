@@ -94,7 +94,8 @@ class LeaseHolder:
 def read_holder(lease_path: Path) -> LeaseHolder | None:
     """The holder the last writer recorded next to *lease_path*; ``None`` when unknown.
 
-    Anything unreadable, torn or written under another schema is unknown. A
+    Anything unreadable, torn, written under another schema or holding a
+    number this platform cannot convert is unknown. A
     record left by a process that has since released the lease stays readable:
     it is only ever consulted while somebody holds the lock.
     """
@@ -105,9 +106,14 @@ def describe_holder(lease_path: Path) -> str:
     """One line naming the recorded holder and whether this machine still sees it.
 
     Empty when nothing readable is recorded. Never raises: it decorates a
-    refused activation's report, and a diagnostic must not become the failure.
+    refused activation's report, and a diagnostic must not become the failure,
+    so a failure to read the record itself is answered like an absent one.
     """
-    holder = read_holder(lease_path)
+    try:
+        holder = read_holder(lease_path)
+    except Exception:
+        logger.debug("Unable to read the recorded writer lease holder", exc_info=True)
+        return ""
     if holder is None:
         return ""
     try:
@@ -195,7 +201,10 @@ def _read_record(path: Path) -> LeaseHolder | None:
             boot_time=float(data["bootTime"]),
             at=str(data.get("at", "")),
         )
-    except KeyError, TypeError, ValueError:
+    except KeyError, TypeError, ValueError, OverflowError:
+        # A number JSON accepts but Python cannot convert — ``Infinity`` for the
+        # pid, an integer literal wider than any float for a time — makes the
+        # record as unreadable as a torn one.
         return None
 
 
