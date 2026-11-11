@@ -252,7 +252,6 @@ def test_enforce_requires_parser_at_load(tmp_path, monkeypatch):
         pj.load_policy(file)
 
 
-
 def test_built_in_readonly_policy_is_declarative(tmp_path, monkeypatch):
     monkeypatch.setattr(pj, "_ensure_bash_parser", lambda: None)
     path = tmp_path / "prejudge.yaml"
@@ -288,7 +287,8 @@ def test_structured_readonly_policy_on_ast_argv(monkeypatch, argv, allowed):
     rules, guard = pj._load_builtin_readonly()
     node = pj.CommandNode((0, 10), None, (), "example", tuple(argv))
     monkeypatch.setattr(
-        pj, "analyze",
+        pj,
+        "analyze",
         lambda *a, **kw: pj.Analysis(True, False, (node,), ("dynamic_word",)),
     )
     result = pj.route("example", "bash", pj.Policy("enforce", "test", (), rules, guard))
@@ -300,9 +300,7 @@ def test_structured_readonly_policy_on_ast_argv(monkeypatch, argv, allowed):
 def test_user_block_precedes_declarative_readonly(monkeypatch):
     rules, guard = pj._load_builtin_readonly()
     node = pj.CommandNode((0, 7), ("ls", "x"), ("ls", "x"), "ls x", ("ls", "x"))
-    monkeypatch.setattr(
-        pj, "analyze", lambda *a, **kw: pj.Analysis(True, True, (node,), ())
-    )
+    monkeypatch.setattr(pj, "analyze", lambda *a, **kw: pj.Analysis(True, True, (node,), ()))
     block = _rule("no-ls", pj.Route.BLOCK, "prefix_first", "ls")
     policy = pj.Policy("enforce", "test", (block,), rules, guard)
     assert pj.route("ls x", "bash", policy).route is pj.Route.BLOCK
@@ -314,9 +312,7 @@ def test_builtin_readonly_does_not_invoke_legacy_checker(monkeypatch):
     monkeypatch.setattr(old, "is_safe_readonly_command", lambda *a, **kw: pytest.fail("Legacy checker invoked"))
     rules, guard = pj._load_builtin_readonly()
     node = pj.CommandNode((0, 2), ("ls",), ("ls",), "ls", ("ls",))
-    monkeypatch.setattr(
-        pj, "analyze", lambda *a, **kw: pj.Analysis(True, True, (node,), ())
-    )
+    monkeypatch.setattr(pj, "analyze", lambda *a, **kw: pj.Analysis(True, True, (node,), ()))
     assert pj.route("ls", "bash", pj.Policy("enforce", "test", (), rules, guard)).route is pj.Route.ALLOW
 
 
@@ -334,9 +330,9 @@ def test_user_structured_matcher_is_supported(tmp_path, monkeypatch):
     path = tmp_path / "prejudge.yaml"
     path.write_text(
         'schema_version: 1\nmode: "enforce"\npolicy_id: pilot\n'
-        'rules:\n  - id: allow-inspection\n    effect: allow\n'
-        '    target: command\n    match:\n      all:\n'
-        '        - command_in: [git]\n        - args_none_of: [push]\n',
+        "rules:\n  - id: allow-inspection\n    effect: allow\n"
+        "    target: command\n    match:\n      all:\n"
+        "        - command_in: [git]\n        - args_none_of: [push]\n",
         encoding="utf-8",
     )
     policy = pj.load_policy(path)

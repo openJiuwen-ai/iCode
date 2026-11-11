@@ -144,9 +144,7 @@ def test_reliable_block_evidence_survives_quotes_and_trailing_syntax_errors(comm
 def test_quoted_tilde_remains_literal():
     from chrys.service.approval.prejudge_v2 import Matcher, Policy, Rule
 
-    policy = Policy(
-        "enforce", "regression", (Rule("allow", Route.ALLOW, Matcher("argv_exact", ("echo", "~"))),)
-    )
+    policy = Policy("enforce", "regression", (Rule("allow", Route.ALLOW, Matcher("argv_exact", ("echo", "~"))),))
     assert route("echo '~'", "bash", policy).route is Route.ALLOW
 
 

@@ -175,9 +175,19 @@ def _digest(command: str, dialect: str) -> str:
 def _ansi_c_literal(source: str) -> str | None:
     """Decode verified, locale-independent Bash ANSI-C escapes only."""
     escapes = {
-        "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b",
-        "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
-        "\\": "\\", "'": "'", '"': '"', "?": "?",
+        "a": "\a",
+        "b": "\b",
+        "e": "\x1b",
+        "E": "\x1b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "v": "\v",
+        "\\": "\\",
+        "'": "'",
+        '"': '"',
+        "?": "?",
     }
     result: list[str] = []
     i = 0
@@ -305,9 +315,7 @@ def _readonly_word(raw: str) -> str | None:
         raw
         and any(x in raw for x in ("*", "?", "["))
         and not any(
-            x in raw
-            for x in ('"', "'", "\\", "$", "`", "{", "}", "~", ";", "&", "|", "(", ")", "<", ">", "\n"
-            )
+            x in raw for x in ('"', "'", "\\", "$", "`", "{", "}", "~", ";", "&", "|", "(", ")", "<", ">", "\n")
         )
         and not any(ch.isspace() for ch in raw)
     ):
@@ -346,8 +354,11 @@ def _parse_command(node: Any, data: bytes) -> CommandNode:
         # policy; it is NEVER treated as a static argv_exact argument.
         if readonly_token is not None and (
             not _dynamic(word)
-            or (word.type in _QUOTED and any(ch in raw for ch in "*?[")
-                and not any(ch in raw for ch in ("$", "`", "{", "}", "~")))
+            or (
+                word.type in _QUOTED
+                and any(ch in raw for ch in "*?[")
+                and not any(ch in raw for ch in ("$", "`", "{", "}", "~"))
+            )
         ):
             readonly_words.append(readonly_token)
         else:
@@ -442,9 +453,7 @@ def analyze(command: str, *, dialect: str = "bash") -> Analysis:
             prefix_analysis = analyze(prefix_data.decode("utf-8"), dialect=dialect)
             if prefix_analysis.syntax_valid:
                 known_spans = {n.source_span for n in nodes}
-                nodes.extend(
-                    n for n in prefix_analysis.executable_nodes if n.source_span not in known_spans
-                )
+                nodes.extend(n for n in prefix_analysis.executable_nodes if n.source_span not in known_spans)
                 break
     nodes.sort(key=lambda item: item.source_span)
     if not nodes:
@@ -501,7 +510,9 @@ def _load_builtin_readonly() -> tuple[tuple[Rule, ...], dict[str, Any]]:
     from chrys.service.approval.prejudge_v2.readonly_rules import validate_match
 
     data = yaml.safe_load(
-        importlib.resources.files("chrys.service.approval.prejudge_v2").joinpath("readonly_policy.yaml").read_text(encoding="utf-8")
+        importlib.resources.files("chrys.service.approval.prejudge_v2")
+        .joinpath("readonly_policy.yaml")
+        .read_text(encoding="utf-8")
     )
     if not isinstance(data, dict) or set(data) != {"schema_version", "policy_id", "guard", "rules"}:
         raise ValueError("Invalid built-in readonly policy schema")
@@ -515,13 +526,7 @@ def _load_builtin_readonly() -> tuple[tuple[Rule, ...], dict[str, Any]]:
         if not isinstance(item, dict) or set(item) != {"id", "effect", "target", "match"}:
             raise ValueError("Malformed built-in readonly rule")
         rid = item["id"]
-        if (
-            type(rid) is not str
-            or not rid
-            or rid in seen
-            or item["effect"] != "allow"
-            or item["target"] != "command"
-        ):
+        if type(rid) is not str or not rid or rid in seen or item["effect"] != "allow" or item["target"] != "command":
             raise ValueError("Invalid built-in readonly rule identity or effect")
         validate_match(item["match"])
         seen.add(rid)
@@ -624,9 +629,7 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
         if not allowed:
             all_allowed = False
     if all_allowed:
-        return PreJudgeResult(
-            Route.ALLOW, "all_units_allowed", tuple(matched), tuple(spans), policy.policy_id, digest
-        )
+        return PreJudgeResult(Route.ALLOW, "all_units_allowed", tuple(matched), tuple(spans), policy.policy_id, digest)
     # Built-in rules share the exact same structured matcher evaluator used by
     # user policy. Never invoke the legacy readonly tokenizer or validators.
     if policy.readonly_rules and policy.readonly_guard and analysis.syntax_valid:
@@ -642,8 +645,11 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
                 if not argv or not matches(policy.readonly_guard, argv):
                     break
                 match = next(
-                    (rule for rule in policy.readonly_rules if rule.structured_match is not None
-                     and matches(rule.structured_match, argv)),
+                    (
+                        rule
+                        for rule in policy.readonly_rules
+                        if rule.structured_match is not None and matches(rule.structured_match, argv)
+                    ),
                     None,
                 )
                 if match is None:

@@ -57,12 +57,12 @@ def validate_match(raw: object, *, depth: int = 0) -> None:
             elif k in {"subcommand", "short_clusters", "forbid_short_cluster"}:
                 if type(v) is not str or not v:
                     raise ValueError(f"{k} must be a string")
-            elif k in {"subargs_in"}:
+            elif k == "subargs_in":
                 if not isinstance(v, list) or any(
                     not isinstance(x, list) or any(type(y) is not str for y in x) for x in v
                 ):
                     raise ValueError(f"{k} expects lists of strings")
-            elif k in {"subargs_prefix"}:
+            elif k == "subargs_prefix":
                 if not isinstance(v, list) or any(type(x) is not str for x in v):
                     raise ValueError(f"{k} expects strings")
             elif not isinstance(v, list) or len(v) > 256 or any(type(x) is not str or not x for x in v):
@@ -76,10 +76,7 @@ def validate_match(raw: object, *, depth: int = 0) -> None:
     if field == "argv_in":
         if not isinstance(value, list) or not 1 <= len(value) <= 1024:
             raise ValueError("argv_in expects a nonempty list of argv lists")
-        if any(
-            not isinstance(seq, list) or not seq or any(type(t) is not str or not t for t in seq)
-            for seq in value
-        ):
+        if any(not isinstance(seq, list) or not seq or any(type(t) is not str or not t for t in seq) for seq in value):
             raise ValueError("argv_in expects nonempty string vectors")
         return
     if field == "argument_at_regex":
@@ -103,11 +100,7 @@ def validate_match(raw: object, *, depth: int = 0) -> None:
             raise ValueError("args_max_positionals expects a nonnegative integer")
         return
     if field in {"command_in", "args_none_of", "args_prefix_none_of", "env_names_allowed"}:
-        if (
-            not isinstance(value, list)
-            or not 1 <= len(value) <= 256
-            or any(type(x) is not str or not x for x in value)
-        ):
+        if not isinstance(value, list) or not 1 <= len(value) <= 256 or any(type(x) is not str or not x for x in value):
             raise ValueError(f"{field} expects nonempty string tokens")
         return
     raise ValueError(f"Unsupported structured matcher: {field!r}")
@@ -149,9 +142,16 @@ def _cli_matches(rule: Mapping[str, Any], argv: Sequence[str]) -> bool:
     if "subargs_in" in rule and not any(
         k in rule
         for k in (
-            "flags", "flag_prefixes", "value_flags", "short_patterns",
-            "forbid_flags", "forbid_prefixes", "require_flags",
-            "require_any_flags", "allow_any_options", "positionals_with_flag",
+            "flags",
+            "flag_prefixes",
+            "value_flags",
+            "short_patterns",
+            "forbid_flags",
+            "forbid_prefixes",
+            "require_flags",
+            "require_any_flags",
+            "allow_any_options",
+            "positionals_with_flag",
         )
     ):
         return True
@@ -169,9 +169,7 @@ def _cli_matches(rule: Mapping[str, Any], argv: Sequence[str]) -> bool:
         ):
             return False
         if rule.get("forbid_short_cluster") and any(
-            arg.startswith("-")
-            and not arg.startswith("--")
-            and any(c in rule["forbid_short_cluster"] for c in arg[1:])
+            arg.startswith("-") and not arg.startswith("--") and any(c in rule["forbid_short_cluster"] for c in arg[1:])
             for arg in options
         ):
             return False
@@ -192,16 +190,15 @@ def _cli_matches(rule: Mapping[str, Any], argv: Sequence[str]) -> bool:
                 if i + 1 >= len(remaining):
                     return False
                 i += 2
-            elif arg.startswith("-") and prefixes and arg.startswith(prefixes):
-                i += 1
-            elif arg.startswith("-") and any(p.fullmatch(arg) for p in short_patterns):
-                i += 1
-            elif (
-                arg.startswith("-")
-                and not arg.startswith("--")
-                and len(arg) > 2
-                and short
-                and all(c in short for c in arg[1:])
+            elif arg.startswith("-") and (
+                (bool(prefixes) and arg.startswith(prefixes))
+                or any(p.fullmatch(arg) for p in short_patterns)
+                or (
+                    not arg.startswith("--")
+                    and len(arg) > 2
+                    and bool(short)
+                    and all(c in short for c in arg[1:])
+                )
             ):
                 i += 1
             elif arg.startswith("-"):
@@ -214,15 +211,17 @@ def _cli_matches(rule: Mapping[str, Any], argv: Sequence[str]) -> bool:
         return False
     if rule.get("require_any_flags") and not set(rule["require_any_flags"]).intersection(opts):
         return False
-    if "positionals_with_flag" in rule and not set(rule["positionals_with_flag"]).intersection(opts):
-        # Permit a no-positional read, e.g. 'git branch' or 'git tag'.
-        if any(x != "--" and not x.startswith("-") for x in remaining):
-            return False
-    if rule.get("allow_positionals", True) is False and any(
-        x != "--" and not x.startswith("-") for x in remaining
+    # Permit a no-positional read, e.g. 'git branch' or 'git tag'.
+    if (
+        "positionals_with_flag" in rule
+        and not set(rule["positionals_with_flag"]).intersection(opts)
+        and any(x != "--" and not x.startswith("-") for x in remaining)
     ):
         return False
-    return True
+    return not (
+        rule.get("allow_positionals", True) is False
+        and any(x != "--" and not x.startswith("-") for x in remaining)
+    )
 
 
 def matches(raw: Mapping[str, Any], argv: Sequence[str], *, env_names: Sequence[str] = ()) -> bool:
@@ -249,8 +248,7 @@ def matches(raw: Mapping[str, Any], argv: Sequence[str], *, env_names: Sequence[
         return sum(not arg.startswith("-") for arg in argv[1:]) <= value
     if field == "env_names_allowed":
         return all(
-            name in value or any(name.startswith(p[:-1]) for p in value if p.endswith("*"))
-            for name in env_names
+            name in value or any(name.startswith(p[:-1]) for p in value if p.endswith("*")) for name in env_names
         )
     if field == "cli":
         return _cli_matches(value, argv)

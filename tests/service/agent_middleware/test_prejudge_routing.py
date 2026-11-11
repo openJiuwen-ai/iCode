@@ -295,12 +295,12 @@ async def test_real_parser_yaml_policy_and_approval_integration(
     policy_file = tmp_path / "prejudge.yaml"
     policy_file.write_text(
         'schema_version: 1\nmode: "enforce"\npolicy_id: end-to-end\n'
-        'rules:\n'
-        '  - id: block-rm\n    effect: block\n    target: command\n'
-        '    match:\n      prefix_first: [rm]\n'
-        '  - id: allow-status\n    effect: allow\n    target: command\n'
-        '    match:\n      argv_exact: [git, status]\n'
-        '  - id: bad-static-glob\n    effect: allow\n    target: command\n'
+        "rules:\n"
+        "  - id: block-rm\n    effect: block\n    target: command\n"
+        "    match:\n      prefix_first: [rm]\n"
+        "  - id: allow-status\n    effect: allow\n    target: command\n"
+        "    match:\n      argv_exact: [git, status]\n"
+        "  - id: bad-static-glob\n    effect: allow\n    target: command\n"
         '    match:\n      argv_exact: [unsafe_tool, "-f", "pyproject.*"]\n',
         encoding="utf-8",
     )
