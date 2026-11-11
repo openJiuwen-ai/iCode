@@ -203,3 +203,47 @@ def test_builtin_ast_matches_legacy_for_supported_cases(tmp_path, command, expec
     file = tmp_path / "prejudge.yaml"
     file.write_text('schema_version: 1\nmode: "enforce"\npolicy_id: parity\nrules: []\n', encoding="utf-8")
     assert (route(command, "bash", load_policy(file)).route is Route.ALLOW) is expected
+
+
+def test_assignment_prefix_blocks_but_cannot_certify_complete_argv():
+    from chrys.service.approval.prejudge_v2 import Matcher, Policy, Rule
+
+    block = Policy(
+        "enforce",
+        "regression",
+        (Rule("block-rm", Route.BLOCK, Matcher("prefix_first", ("rm",))),),
+    )
+    allow = Policy(
+        "enforce",
+        "regression",
+        (Rule("allow-rm", Route.ALLOW, Matcher("argv_exact", ("rm", "fixture"))),),
+    )
+    result = analyze("FOO=1 rm fixture")
+    assert any(node.prefix[:1] == ("rm",) for node in result.executable_nodes)
+    assert route("FOO=1 rm fixture", "bash", block).route is Route.BLOCK
+    assert route("FOO=1 rm fixture", "bash", allow).route is Route.DEFER
+
+
+def test_numeric_pipeline_arguments_remain_static():
+    result = analyze("cat file.txt | head -20 | grep pattern")
+    assert result.syntax_valid
+    assert result.coverage_complete
+    assert [node.argv for node in result.executable_nodes] == [
+        ("cat", "file.txt"),
+        ("head", "-20"),
+        ("grep", "pattern"),
+    ]
+
+
+def test_error_recovery_never_allows_malformed_command():
+    from chrys.service.approval.prejudge_v2 import Matcher, Policy, Rule
+
+    policy = Policy(
+        "enforce",
+        "regression",
+        (Rule("allow-rm", Route.ALLOW, Matcher("argv_exact", ("rm", "x"))),),
+    )
+    result = analyze("rm x\n)")
+    assert not result.syntax_valid
+    assert not result.coverage_complete
+    assert route("rm x\n)", "bash", policy).route is Route.DEFER

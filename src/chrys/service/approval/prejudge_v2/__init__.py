@@ -165,7 +165,7 @@ _CONTAINERS = frozenset(
         "subshell",
     }
 )
-_QUOTED = frozenset({"string", "raw_string", "ansi_c_string", "word", "concatenation", "command_name"})
+_QUOTED = frozenset({"string", "raw_string", "ansi_c_string", "word", "number", "concatenation", "command_name"})
 
 
 def _digest(command: str, dialect: str) -> str:
@@ -334,7 +334,10 @@ def _parse_command(node: Any, data: bytes) -> CommandNode:
         if child.type in _QUOTED:
             words.append(child)
     prefix: list[str] = []
+    prefix_reliable = True
     readonly_words: list[str] = []
+    # Assignment prefixes and redirections make the *complete argv* unsafe
+    # to certify, but the executable name can still be trusted for BLOCK.
     complete = all(child.type in _QUOTED or child.id == head.id for child in node.named_children)
     for word in words:
         raw = data[word.start_byte : word.end_byte].decode("utf-8")
@@ -351,12 +354,14 @@ def _parse_command(node: Any, data: bytes) -> CommandNode:
             readonly_words.clear()
         if _dynamic(word):
             complete = False
+            prefix_reliable = False
             continue
         token = _literal_word(raw)
         if token is None:
             complete = False
+            prefix_reliable = False
             continue
-        if complete:
+        if prefix_reliable:
             prefix.append(token)
     return CommandNode(
         (node.start_byte, node.end_byte),
@@ -423,6 +428,24 @@ def analyze(command: str, *, dialect: str = "bash") -> Analysis:
             unsupported.append(node.type)
         # Descend into unsupported wrappers for reliable BLOCK evidence.
         pending.extend((child, depth + 1) for child in reversed(node.named_children))
+    # Tree-sitter may wrap an otherwise complete earlier statement inside an
+    # ERROR recovery node (e.g. "rm file\\n)").  Never trust arbitrary recovery
+    # descendants as BLOCK evidence.  Instead, try a bounded number of complete
+    # newline-delimited prefixes and independently parse each candidate.
+    if root.has_error:
+        line_ends = [i + 1 for i, value in enumerate(data) if value == 10]
+        for end in reversed(line_ends[-16:]):
+            prefix_data = data[:end]
+            prefix_tree = Parser(_language()).parse(prefix_data)
+            if prefix_tree.root_node.has_error:
+                continue
+            prefix_analysis = analyze(prefix_data.decode("utf-8"), dialect=dialect)
+            if prefix_analysis.syntax_valid:
+                known_spans = {n.source_span for n in nodes}
+                nodes.extend(
+                    n for n in prefix_analysis.executable_nodes if n.source_span not in known_spans
+                )
+                break
     nodes.sort(key=lambda item: item.source_span)
     if not nodes:
         unsupported.append("no_commands")
