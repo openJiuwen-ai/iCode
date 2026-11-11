@@ -83,11 +83,16 @@ class ConfigCard(Vertical):
         """Yield a standard card header with the subclass's existing classes."""
         with Horizontal(classes=f"{row_class} config-card-header-row"):
             yield self._make_title(title, classes=f"{title_class} config-card-title")
+            yield from self.compose_header_extras()
             delete_button = Button("✕", variant="error", id=self._delete_button_id, classes="config-card-delete-btn")
             if self._read_only:
                 delete_button.disabled = True
                 delete_button.display = False
             yield delete_button
+
+    def compose_header_extras(self) -> ComposeResult:
+        """Widgets after the header title, before the delete button; none by default."""
+        yield from ()
 
     def _make_title(self, title: str, *, classes: str) -> Widget:
         """Build the header title widget; ``title`` may carry markup."""
@@ -123,10 +128,14 @@ class CollapsibleConfigCard(ConfigCard):
     CollapsibleConfigCard .config-card-body {
         height: auto;
     }
+    /* One line: a title too long for it is cut short with "…", not wrapped onto a second line the
+       one-row header hides, where the ▶ would stay alone. An open card shows the full value in its fields. */
     CollapsibleConfigCard CollapsibleTitle.config-card-title {
         padding: 0 1;
         color: $secondary;
         text-style: bold;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
     CollapsibleConfigCard CollapsibleTitle.config-card-title:hover {
         background: $block-hover-background;
