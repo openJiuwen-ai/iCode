@@ -240,8 +240,18 @@ async def test_error_the_agent_caused_is_a_failure_and_is_not_run_again(tmp_path
         ([_TIMED_OUT, "hello"], True, False, None),
         ([_PROVIDER_DOWN], False, True, "runner_error"),
         ([_TIMED_OUT], False, False, "case_timeout"),
+        # A timeout is the agent's only when both runs reached the time limit.
+        ([_PROVIDER_DOWN, _TIMED_OUT], False, True, "runner_error"),
+        ([_TIMED_OUT, _PROVIDER_DOWN], False, True, "runner_error"),
     ],
-    ids=["provider-clears", "timeout-clears", "provider-stays-down", "timeout-repeats"],
+    ids=[
+        "provider-clears",
+        "timeout-clears",
+        "provider-stays-down",
+        "timeout-repeats",
+        "provider-then-timeout",
+        "timeout-then-provider",
+    ],
 )
 async def test_evaluation_keeps_the_second_run_of_an_errored_or_timed_out_case(
     tmp_path: Path, outcomes: list[str | _Fail], passed: bool, errored: bool, finding: str | None
