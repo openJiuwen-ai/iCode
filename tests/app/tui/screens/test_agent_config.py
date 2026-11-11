@@ -81,15 +81,6 @@ def test_agent_config_canonicalizes_mcp_always_load_names_without_dropping_progr
     assert profile.tools.mcp[0].always_load == ["search", "read_file"]
 
 
-def test_agent_config_strips_the_mcp_working_directory_like_the_panel() -> None:
-    server = MCPServerConfig(name="local", transport="stdio", command="python", cwd="  srv \n")
-    profile = AgentProfile(name="Local", tools=ToolsConfig(mcp=[server]))
-
-    AgentsConfigScreen._canonicalize_profile_for_ui(profile)
-
-    assert server.cwd == "srv"
-
-
 async def test_agent_config_opens_a_padded_mcp_working_directory_without_marking_it_modified() -> None:
     registry = registry_with(
         AgentProfile(

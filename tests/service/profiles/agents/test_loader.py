@@ -1472,12 +1472,11 @@ def test_stdio_mcp_cwd_is_read_as_written(tmp_path: Path) -> None:
     assert load_profile_from_yaml(path).tools.mcp[0].cwd == " ~/srv "
 
 
-def test_mcp_cwd_defaults_to_empty_when_absent_or_null(tmp_path: Path) -> None:
-    absent = _mcp_profile_yaml(tmp_path, "      transport: stdio\n      command: python\n")
-    null = _mcp_profile_yaml(tmp_path, "      transport: stdio\n      command: python\n      cwd:\n")
+@pytest.mark.parametrize("entry", ["", "      cwd:\n", '      cwd: ""\n'], ids=["absent", "null", "empty"])
+def test_mcp_cwd_defaults_to_empty(tmp_path: Path, entry: str) -> None:
+    path = _mcp_profile_yaml(tmp_path, f"      transport: stdio\n      command: python\n{entry}")
 
-    assert load_profile_from_yaml(absent).tools.mcp[0].cwd == ""
-    assert load_profile_from_yaml(null).tools.mcp[0].cwd == ""
+    assert load_profile_from_yaml(path).tools.mcp[0].cwd == ""
 
 
 def test_http_mcp_cwd_is_ignored(tmp_path: Path) -> None:

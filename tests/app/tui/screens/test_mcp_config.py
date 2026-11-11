@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from rich.cells import cell_len
 from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.widgets import Button, Checkbox, Input, Label, Select, Static, TextArea
@@ -1750,6 +1751,7 @@ async def test_an_unusable_working_directory_leads_the_test_report_with_the_fiel
         "The server's working directory cannot be used. Please check the Working Directory field.\n\n"
     )
     assert "failed to connect: the server's working directory does not exist" in shown
+    assert f"Working directory: {tmp_path / 'no-such-folder'}" in shown
     assert "(missing)" not in shown
 
 
@@ -1874,16 +1876,28 @@ async def test_guidance_hints_start_collapsed_for_seeded_false_config() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stdio_card_edits_adds_and_clears_the_working_directory() -> None:
+@pytest.mark.parametrize(
+    ("locale", "label", "placeholder"),
+    [
+        ("en", "Working Directory", "Blank uses the workspace directory"),
+        ("zh-Hans", "工作目录", "留空则使用工作区目录"),
+    ],
+)
+@pytest.mark.parametrize("width", [80, 120])
+async def test_stdio_card_edits_adds_and_clears_the_working_directory(
+    locale: str, label: str, placeholder: str, width: int
+) -> None:
     from chrys.service.profiles.agents.schema import MCPServerConfig
 
     app = _MCPPanelApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    app.locale_controller = LocaleController(Settings(locale=locale))
+    async with app.run_test(size=(width, 40)) as pilot:
         panel = MCPConfigPanel(
             [
                 MCPServerConfig(name="set", transport="stdio", command="python", cwd="~/srv"),
                 MCPServerConfig(name="unset", transport="stdio", command="python"),
-            ]
+            ],
+            card_folds=[False, False],
         )
         await app.mount(panel)
         set_card, unset_card = await _wait_for_mcp_cards(panel, pilot, 2)
@@ -1891,8 +1905,16 @@ async def test_stdio_card_edits_adds_and_clears_the_working_directory() -> None:
         set_input = set_card.query_one("#mcp-cwd-0", Input)
         unset_input = unset_card.query_one("#mcp-cwd-1", Input)
         assert set_input.value == "~/srv"
-        # An empty field still shows its hint, like the other fields.
-        assert unset_input.value == "" and unset_input.placeholder == "Blank uses the workspace directory"
+        assert unset_input.value == "" and unset_input.placeholder == placeholder
+        cwd_label = next(widget for widget in unset_card.query(Label) if str(widget.content) == label)
+        await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
+        panel.scroll_to_center(unset_input, animate=False, immediate=True)
+        await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
+        assert panel.scrollable_content_region.contains_region(cwd_label.region)
+        assert panel.scrollable_content_region.contains_region(unset_input.region)
+        assert cwd_label.content_size.width >= cell_len(label)
+        assert unset_input.content_size.width >= cell_len(placeholder)
+        assert cwd_label.region.bottom <= unset_input.region.y
 
         unset_input.value = "  tools/srv  "
         set_input.value = ""

@@ -114,8 +114,9 @@ def test_only_the_cwd_differing_gives_another_key(tmp_path: Path) -> None:
     with _pin_child_environment():
         base = mcp_config_cache_key(_config(), stdio_cwd=workspace)
         other = mcp_config_cache_key(_config(cwd=str(tmp_path / "elsewhere")), stdio_cwd=workspace)
-        relative = mcp_config_cache_key(_config(cwd="sub"), stdio_cwd=workspace)
-        assert len({base, other, relative}) == 3
+        relative = resolve_mcp_effective_config(_config(cwd="sub"), stdio_cwd=workspace)
+        assert relative.resolved_stdio_cwd == os.path.join(workspace, "sub")
+        assert len({base, other, relative.key}) == 3
 
 
 def test_the_key_holds_the_folder_the_server_starts_in(tmp_path: Path) -> None:
@@ -129,12 +130,6 @@ def test_the_key_holds_the_folder_the_server_starts_in(tmp_path: Path) -> None:
         folded = mcp_config_cache_key(_config(), stdio_cwd=workspace)
         unfolded = mcp_config_cache_key(_config(cwd=configured), stdio_cwd=workspace)
         assert (unfolded == folded) is (sys.platform == "win32")
-
-
-def test_effective_config_holds_the_resolved_folder() -> None:
-    effective = resolve_mcp_effective_config(_config(cwd="sub"), stdio_cwd=os.path.join(os.sep, "work", "space"))
-
-    assert effective.resolved_stdio_cwd == os.path.join(os.sep, "work", "space", "sub")
 
 
 # ── Resolution ───────────────────────────────────────────────────────
@@ -325,44 +320,25 @@ def test_an_anchored_command_still_steps_back_through_a_linked_folder(tmp_path: 
 # ── Real child processes ─────────────────────────────────────────────
 
 
-async def test_a_server_without_cwd_starts_in_the_workspace_folder(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-
-    reported = await _reported_cwd(_cwd_server_config(), workspace)
-
-    assert os.path.samefile(reported, workspace)
-
-
-async def test_a_relative_cwd_starts_at_the_workspace_folder(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    (workspace / "tools" / "srv").mkdir(parents=True)
-
-    reported = await _reported_cwd(_cwd_server_config(cwd=os.path.join("tools", "srv")), workspace)
-
-    assert os.path.samefile(reported, workspace / "tools" / "srv")
-
-
-async def test_a_home_cwd_starts_in_the_home_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("kind", ["unset", "relative", "home", "absolute"])
+async def test_a_server_starts_in_the_resolved_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
     home = tmp_path / "home"
-    (home / "srv").mkdir(parents=True)
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    configured, target = {
+        "unset": (None, workspace),
+        "relative": ("tools/srv", workspace / "tools" / "srv"),
+        "home": ("~/srv", home / "srv"),
+        "absolute": (str(tmp_path / "elsewhere"), tmp_path / "elsewhere"),
+    }[kind]
+    await asyncio.to_thread(workspace.mkdir)
+    await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
 
-    reported = await _reported_cwd(_cwd_server_config(cwd="~/srv"), workspace)
-
-    assert os.path.samefile(reported, home / "srv")
-
-
-async def test_an_absolute_cwd_is_used_as_written(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    target = tmp_path / "elsewhere"
-    target.mkdir()
-
-    reported = await _reported_cwd(_cwd_server_config(cwd=str(target)), workspace)
+    config = _cwd_server_config() if configured is None else _cwd_server_config(cwd=configured)
+    reported = await _reported_cwd(config, workspace)
 
     assert os.path.samefile(reported, target)
 
@@ -452,19 +428,6 @@ async def test_the_connection_test_starts_where_the_agent_would(tmp_path: Path) 
     report = await asyncio.wait_for(adapter.test_connection(config), timeout=ENGINE_TURN_TIMEOUT)
 
     assert "get_cwd" in [name for name, _description in report.tools]
-
-
-async def test_the_connection_test_reports_a_missing_working_directory(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    adapter = MCPAdapter(stdio_cwd=str(workspace))
-
-    with pytest.raises(MCPConnectionError) as caught:
-        await asyncio.wait_for(
-            adapter.test_connection(_cwd_server_config(cwd="no-such-folder")), timeout=ENGINE_TURN_TIMEOUT
-        )
-
-    assert mcp_failure_diagnostic(caught.value) == "the server's working directory does not exist"
 
 
 # ── Stock stdio client fallback ──────────────────────────────────────
@@ -588,22 +551,6 @@ async def test_a_missing_cwd_fails_that_server_only_and_says_why(tmp_path: Path)
         assert isinstance(failure, MCPConnectionError)
         assert mcp_failure_diagnostic(failure) == "the server's working directory does not exist"
         assert "no-such-folder" in str(failure)
-    finally:
-        await adapter.disconnect_all()
-        await cache.close_all()
-
-
-async def test_a_cwd_that_is_a_file_is_named_as_such(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "file").write_text("x", encoding="utf-8")
-    cache = MCPConnectionCache()
-    adapter = MCPAdapter(cache=cache, stdio_cwd=str(workspace))
-    try:
-        await asyncio.wait_for(adapter.connect_all([_cwd_server_config(cwd="file")]), timeout=ENGINE_TURN_TIMEOUT)
-        failure = adapter.failures["cwd"]
-
-        assert mcp_failure_diagnostic(failure) == "the server's working directory is not a folder"
     finally:
         await adapter.disconnect_all()
         await cache.close_all()

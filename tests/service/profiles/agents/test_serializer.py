@@ -324,11 +324,14 @@ def test_mcp_cwd_round_trips_and_is_omitted_when_empty(tmp_path: Path) -> None:
     )
 
     serialized = profile_to_dict(profile)["tools"]["mcp"]
-    loaded = load_profile_from_yaml(save_profile(profile, target_dir=tmp_path)).tools.mcp
+    first = save_profile(profile, target_dir=tmp_path / "one")
+    loaded = load_profile_from_yaml(first)
+    second = save_profile(loaded, target_dir=tmp_path / "two")
 
     assert serialized[0]["cwd"] == "~/srv"
     assert "cwd" not in serialized[1]
-    assert [config.cwd for config in loaded] == ["~/srv", ""]
+    assert [config.cwd for config in loaded.tools.mcp] == ["~/srv", ""]
+    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
 
 
 def test_http_mcp_never_writes_cwd() -> None:
@@ -338,15 +341,3 @@ def test_http_mcp_never_writes_cwd() -> None:
     )
 
     assert "cwd" not in profile_to_dict(profile)["tools"]["mcp"][0]
-
-
-def test_a_profile_saved_without_cwd_is_unchanged_by_a_reload_and_save(tmp_path: Path) -> None:
-    profile = AgentProfile(
-        name="stable",
-        tools=ToolsConfig(mcp=[MCPServerConfig(name="local", transport="stdio", command="python", args=["-m", "s"])]),
-    )
-    first = save_profile(profile, target_dir=tmp_path / "one")
-    second = save_profile(load_profile_from_yaml(first), target_dir=tmp_path / "two")
-
-    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
-    assert "cwd" not in first.read_text(encoding="utf-8")
