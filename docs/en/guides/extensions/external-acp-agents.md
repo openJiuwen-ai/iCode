@@ -86,7 +86,7 @@ For example, if an API key is stored in the `EXTERNAL_AGENT_API_KEY` environment
 {{EXTERNAL_AGENT_API_KEY}}
 ```
 
-iCode resolves these references when you save the profile, when you test the connection, and each time it starts the external agent. If a referenced variable does not exist or has an empty value, the profile cannot be saved, and the connection test or invocation fails.
+iCode reads the referenced environment variables when you save the profile, when you test the connection, and each time it starts the external agent. If a referenced variable does not exist or has an empty value, the profile cannot be saved, and the connection test or invocation fails.
 
 Arguments and environment variable values can also use what a command prints, with `{{!command}}`, such as `{{!tokenprovider gettoken}}`. See [Get an API key from a command](../configuration/models.md#get-an-api-key-from-a-command) for what the command has to do. The command runs each time iCode starts the external agent, and a running agent keeps the value it started with. If the command fails the first time, the external agent does not start. The executable and working directory cannot use a command.
 
@@ -94,7 +94,7 @@ While the agent runs, other users of this computer may be able to see its argume
 
 ## Set the working directory
 
-iCode ignores leading and trailing whitespace in "Working Directory", including in YAML, before expanding environment variables. If the field is empty or contains only whitespace, the external agent uses the current iCode session's working directory.
+iCode ignores leading and trailing whitespace in the text you enter for "Working Directory", including in YAML. If the field is empty or contains only whitespace, the external agent uses the current iCode session's working directory.
 
 "Working Directory" accepts a relative or absolute path. Relative paths are resolved against the current session's working directory.
 

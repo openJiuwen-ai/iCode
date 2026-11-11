@@ -73,11 +73,11 @@ For example, with the session's working directory at `/project`, set the server'
 
 Relative paths can use `..` to point outside the session's working directory, for example `../shared-mcp`.
 
-After you change the session's working directory with `/chdir`, servers with a blank or relative Working Directory setting connect using the new base directory. iCode reuses an available matching connection or starts a new process if none is available. Locations specified with `~/` or an absolute path do not change with the session's working directory.
+After you change the session's working directory with `/chdir`, a blank Working Directory setting uses the new directory, and relative paths start from it. For example, if you enter `tools/mcp` and switch from project A to project B, the server uses project B's `tools/mcp` folder. Locations specified with `~/` or an absolute path stay the same.
 
 If the command is a relative path such as `./bin/server`, iCode looks for the program in the server's working directory. If you enter only a program name such as `python`, iCode searches `PATH`.
 
-On Windows, include the slash after a drive letter: write `D:\server`, not `D:server`. The Working Directory field does not expand `{{ENV_VAR}}`, `$HOME`, or `%APPDATA%`; use `~/` for your home folder or enter the path directly.
+On Windows, include the slash after a drive letter: write `D:\server`, not `D:server`. Working Directory does not support environment variable references such as `{{ENV_VAR}}`, `$HOME`, or `%APPDATA%`; use `~/` for your home folder or enter the path directly.
 
 ## Configure instructions, tools, and request options
 
@@ -120,7 +120,7 @@ With Claude Opus 5.5, Fable 5.1 and Sonnet 5.5, on-demand loading has a cost. Th
 If the test fails:
 
 - For HTTP servers, check the URL, authentication headers, environment variables, and proxy and TLS settings.
-- For an STDIO working directory error, check that the path after `Working directory:` is an existing folder you can enter. If the field is blank, check the current session's working directory. Correct the path or permissions and retry. The server has not started when this check fails, so there is no exit code or standard error output.
+- For an STDIO working directory error, check that the path after `Working directory:` is an existing folder you can enter. If the field is blank, check the current session's working directory. Correct the path or permissions and retry.
 - For other STDIO connection errors, inspect the executable, process exit code, and standard error output when shown. Check the command, arguments, and environment variables, and confirm that the command runs in the indicated working directory.
 
 For failures while loading the agent, press **F6** to view iCode's connection error logs. iCode captures only a limited amount of the server's standard error output; for complete server logs, follow the server's own logging instructions. Remove tokens, credentials, and other sensitive information before sharing diagnostics.
