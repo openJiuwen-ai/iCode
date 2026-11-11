@@ -366,7 +366,7 @@ def test_format_message_created_at_uses_local_time() -> None:
 
 
 def test_message_headers_include_dim_timestamp_when_present() -> None:
-    user = _user_header_text(timestamp="- 10:16 PM")
+    user = _user_header_text(timestamp="- 10:16 PM", label="You")
     agent = AgentMessage("hi", profile_name="Code Agent", timestamp="- 10:17 PM", duration_ms=2345)
     instant_agent = AgentMessage("hi", profile_name="Code Agent", duration_ms=0)
 

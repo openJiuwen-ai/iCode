@@ -10,19 +10,14 @@ import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 
 import pytest
-from textual.containers import VerticalScroll
-from textual.widgets import Button, ContentSwitcher, Static, Tab, Tabs
+from textual.widgets import Button, Static
 
-from chrys.app.tui.widgets.btw import BtwPanel, BtwQuestion, BtwThinking, ChatColumn
-from chrys.app.tui.widgets.chat.messages import AgentMessage, UserMessage
+from chrys.app.tui.widgets.btw import BtwAnswer, BtwPage, BtwPanel, BtwQuestion, BtwThinking, ChatColumn
 from chrys.app.tui.widgets.chat.panel import ChatPanel
-from chrys.app.tui.widgets.chrome.footer import ChrysFooter
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
-from chrys.foundation.config.settings import Settings
 from chrys.foundation.events import types as ev
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.orchestration.engine import side_questions
@@ -41,9 +36,13 @@ from tests.app.tui.screens.test_prompt_shortcut_send import (
 )
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.secure_files import plant_owner_only_bytes
+from tests.support.side_question_card import CLOSE_GLYPH, shown_answer, shown_question
 from tests.support.toasts import shown_toasts
 from tests.support.tui_app_harness import make_chrys_app
-from tests.support.tui_helpers import click_when_settled, make_wheel
+from tests.support.tui_helpers import (
+    click_when_settled,
+    make_wheel,
+)
 from tests.support.waiting import (
     ENGINE_TEST_WAIT_TIMEOUT,
     ENGINE_TURN_TIMEOUT,
@@ -56,14 +55,13 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from textual.pilot import Pilot
+    from textual.await_complete import AwaitComplete
 
     from chrys.service.profiles.models.schema import ModelProfile
     from tests.support.engines import AgentEngineFactory
 
 pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
-_CLOSE_GLYPH = "✕"
 _SAVE_WARNING = ("warning", "This side answer could not be saved. It stays available until you leave this session.")
 _READ_WARNING = ("warning", "Side question history could not be read. Your saved file was kept.")
 
@@ -136,11 +134,11 @@ async def test_close_cancels_only_side_question_and_ignores_late_answer(
         assert panel.gc_freeze_block_reason() is not None
         assert panel.border_title == "Side Questions"
         assert not panel.border_subtitle
-        assert panel.query_one(BtwQuestion).question == question
-        assert panel.query_one(ContentSwitcher).current == "btw-output-page"
+        assert shown_question(panel) == question
+        assert shown_answer(panel) is None
         close = panel.query_one("#btw-close", Button)
         assert close.content_size.height == 1
-        assert _CLOSE_GLYPH in session.main._compositor.render_strips()[close.region.y].text
+        assert CLOSE_GLYPH in session.main._compositor.render_strips()[close.region.y].text
         assert str(close.tooltip) == "Close (Esc)"
         assert panel.region.y >= chat.region.bottom
         assert panel.region.right == chat.region.right
@@ -182,7 +180,7 @@ async def test_close_cancels_only_side_question_and_ignores_late_answer(
             ev.InvocationContentFinished(origin=origin, segment_id="late", channel="answer", status="completed")
         )
         assert not panel.display
-        assert panel.query_one(VirtualizedMarkdown).source == ""
+        assert shown_answer(panel) is None
         hold.release()
         await await_run_task_chain(session.engine, turn_state=session.engine.turns.turn_state)
 
@@ -227,7 +225,7 @@ async def test_closing_a_question_allows_another_while_cancelled_request_is_clea
             await asyncio.gather(first_task, return_exceptions=True)
             assert first_task.cancelled()
             assert panel.running
-            assert panel.query_one(BtwQuestion).question == "Second?"
+            assert shown_question(panel) == "Second?"
 
             side.release.set()
             await wait_for(
@@ -235,7 +233,7 @@ async def test_closing_a_question_allows_another_while_cancelled_request_is_clea
                 pilot=session.pilot,
                 description="replacement side answer shown",
             )
-            assert panel.query_one(VirtualizedMarkdown).source == "Second answer"
+            assert shown_answer(panel) == "Second answer"
             store = JsonFileStateStore(tmp_path / "sessions")
             await wait_for(
                 lambda: (
@@ -257,7 +255,7 @@ async def test_closing_a_question_allows_another_while_cancelled_request_is_clea
             )
 
 
-@pytest.mark.parametrize("target", ["answer", "question_tab", "previous"])
+@pytest.mark.parametrize("target", ["answer", "question", "page", "previous"])
 async def test_card_click_keeps_composer_typing_and_sending(
     agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
 ) -> None:
@@ -279,11 +277,12 @@ async def test_card_click_keeps_composer_typing_and_sending(
             owner = session.engine._side_questions
             await asyncio.gather(*tuple(owner._run_tasks | owner._commit_tasks))
 
-        if target == "answer":
-            await click_when_settled(session.pilot, panel.query_one(VirtualizedMarkdown), offset=(3, 0))
-        elif target == "question_tab":
-            await click_when_settled(session.pilot, "#btw-question-tab")
-            assert panel.query_one(ContentSwitcher).current == "btw-question-page"
+        if target in ("answer", "question"):
+            message = panel.query_one(BtwAnswer if target == "answer" else BtwQuestion)
+            await click_when_settled(session.pilot, message.query_one(VirtualizedMarkdown), offset=(3, 0))
+        elif target == "page":
+            page = panel.query_one(BtwPage)
+            await click_when_settled(session.pilot, page, offset=(3, page.content_size.height - 1))
         else:
             await click_when_settled(session.pilot, "#btw-previous")
             await wait_for(
@@ -291,7 +290,7 @@ async def test_card_click_keeps_composer_typing_and_sending(
                 pilot=session.pilot,
                 description="previous side answer shown",
             )
-            assert panel.query_one(VirtualizedMarkdown).source == "Answer one"
+            assert shown_answer(panel) == "Answer one"
 
         await session.pilot.press(*"fix it")
         assert session.chat.text == "fix it"
@@ -324,9 +323,8 @@ async def test_final_answer_stays_in_card_and_scrolls_without_shortening_sidebar
         sidebar_region = sidebar.region
         session.chat.load_text("/btw Explain retry.\nUse an example.")
         await session.pilot.press("enter")
-        markdown = panel.query_one(VirtualizedMarkdown)
         await wait_for(
-            lambda: panel.display and not panel.running and markdown.display,
+            lambda: panel.display and not panel.running and shown_answer(panel) == side.answer,
             pilot=session.pilot,
             description="final side answer shown",
         )
@@ -336,43 +334,30 @@ async def test_final_answer_stays_in_card_and_scrolls_without_shortening_sidebar
             pilot=session.pilot,
             description="final side answer laid out",
         )
-        assert markdown.source == side.answer
         assert panel.gc_freeze_block_reason() is None
-        assert panel.query_one(BtwQuestion).question == "Explain retry.\nUse an example."
+        assert shown_question(panel) == "Explain retry.\nUse an example."
         assert sidebar.region == sidebar_region
         column = session.main.query_one(ChatColumn)
         assert column.region.height == 34
         assert panel.region.height == 17
         assert session.main.query_one(ChatPanel).region.height == 17
-        output = panel.query_one("#btw-output-page")
-        assert output.max_scroll_y == 0
-        assert not output.show_vertical_scrollbar
-        pages = panel.query_one(ContentSwitcher)
-        assert markdown.region.height == pages.content_size.height
-        assert markdown.region.bottom == panel.content_region.bottom
+        page = panel.query_one(BtwPage)
+        assert page.region.bottom == panel.content_region.bottom
         assert session.seen.of(ev.UserMessage) == []
         if long_answer:
-            assert markdown.max_scroll_y > 0
-            assert markdown.vertical_scrollbar.region.right == panel.region.right - 1
-            assert markdown.vertical_scrollbar.region.height == pages.content_size.height
-            markdown.focus()
+            # The question and its answer scroll together, inside the card.
+            assert page.max_scroll_y > 0
+            assert page.vertical_scrollbar.region.right == panel.region.right - 1
+            assert page.vertical_scrollbar.region.height == page.region.height
+            page.focus()
             await session.pilot.press("down")
-            await wait_for(lambda: markdown.scroll_y > 0, pilot=session.pilot, description="side answer scrolls")
+            await wait_for(lambda: page.scroll_y > 0, pilot=session.pilot, description="side answer scrolls")
+        else:
+            assert page.max_scroll_y == 0
+            assert not page.show_vertical_scrollbar
         await click_when_settled(session.pilot, "#btw-close")
         await wait_for(lambda: not panel.display, pilot=session.pilot, description="completed side card closed")
         assert session.chat.has_focus
-
-
-async def test_thinking_card_takes_half_of_the_column(tmp_path: Path) -> None:
-    app = make_chrys_app(tmp_path)
-    async with app.run_test(size=(120, 40)) as pilot:
-        panel = app.screen.query_one(BtwPanel)
-        panel.begin("short", "Why?")
-        await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
-        assert panel.running
-        assert app.screen.query_one(ChatColumn).region.height == 34
-        assert panel.region.height == 17
-        assert app.screen.query_one(ChatPanel).region.height == 17
 
 
 async def test_browsing_long_and_short_saved_answers_keeps_card_height(
@@ -387,9 +372,7 @@ async def test_browsing_long_and_short_saved_answers_keeps_card_height(
             side.answer = answer
             session.chat.load_text(f"/btw {question}")
             session.bar.submit_input()
-            await wait_for(
-                lambda expected=answer: panel.query_one(VirtualizedMarkdown).source == expected, pilot=session.pilot
-            )
+            await wait_for(lambda expected=answer: shown_answer(panel) == expected, pilot=session.pilot)
             await asyncio.gather(*tuple(session.engine._side_questions._run_tasks))
             await asyncio.gather(*tuple(session.engine._side_questions._commit_tasks))
         await wait_for(lambda: screen_is_settled(session.app, session.main), pilot=session.pilot)
@@ -397,14 +380,14 @@ async def test_browsing_long_and_short_saved_answers_keeps_card_height(
         card_region, chat_region = panel.region, chat.region
         assert card_region.height == chat_region.height == 17
         await click_when_settled(session.pilot, "#btw-previous")
-        await wait_for(lambda: panel.query_one(BtwQuestion).question == "Short?", pilot=session.pilot)
+        await wait_for(lambda: shown_question(panel) == "Short?", pilot=session.pilot)
         await wait_for(lambda: screen_is_settled(session.app, session.main), pilot=session.pilot)
         assert (panel.region, chat.region) == (card_region, chat_region)
         await click_when_settled(session.pilot, "#btw-next")
-        await wait_for(lambda: panel.query_one(BtwQuestion).question == "Long?", pilot=session.pilot)
+        await wait_for(lambda: shown_question(panel) == "Long?", pilot=session.pilot)
         await wait_for(lambda: screen_is_settled(session.app, session.main), pilot=session.pilot)
         assert (panel.region, chat.region) == (card_region, chat_region)
-        assert panel.query_one(VirtualizedMarkdown).max_scroll_y > 0
+        assert panel.query_one(BtwPage).max_scroll_y > 0
 
 
 async def test_failure_and_session_change_do_not_keep_a_side_request_alive(
@@ -448,146 +431,6 @@ async def test_failure_and_session_change_do_not_keep_a_side_request_alive(
         assert not panel.display
 
 
-_BTW_THEMES = ("chrys", "monokai", "textual-light", "ansi-dark", "ansi-light")
-
-
-async def _assert_card_paints_in_theme(pilot: Pilot, panel: BtwPanel, theme: str) -> None:
-    """What the theme decides on the card: the close button's look, the underline the toolbar
-    continues, and the question page drawn on the card's own background."""
-    app = pilot.app
-    tabs = panel.query_one(Tabs)
-    close = panel.query_one("#btw-close", Button)
-    switcher = panel.query_one(ContentSwitcher)
-    assert switcher.current == "btw-output-page"
-    assert close.rich_style.bold
-    assert close.styles.background.a > 0
-    assert close.rich_style.bgcolor != panel.rich_style.bgcolor
-    underline = app.screen._compositor.render_strips()[close.region.bottom]
-    assert underline.crop(close.region.x, close.region.right).text == "━" * close.region.width
-    if not theme.startswith("ansi"):
-        # The native tab underline continues through the gap and under every toolbar control.
-        assert underline.crop(tabs.region.right - 1, close.region.right).text == "━" * (
-            close.region.right - tabs.region.right + 1
-        )
-        tab_style = next(iter(underline.crop(tabs.region.right - 1, tabs.region.right))).style
-        control_style = next(iter(underline.crop(close.region.x, close.region.right))).style
-        assert tab_style is not None and control_style is not None
-        assert tab_style.color == control_style.color
-    # The question page shown, as its tab shows it; only the pages switch, so the tab
-    # underline's highlight does not move under the strips read above for the next theme.
-    question_page = panel.query_one(VerticalScroll)
-    switcher.current = "btw-question-page"
-    await wait_for(lambda: question_page.visible, pilot=pilot, description="question page shown")
-    assert question_page.styles.background.a == 0
-    assert question_page.rich_style.bgcolor == panel.rich_style.bgcolor
-    switcher.current = "btw-output-page"
-    await wait_for(lambda: not question_page.visible, pilot=pilot, description="output page shown again")
-
-
-@pytest.mark.parametrize("size", [(60, 24), (120, 36)])
-async def test_tabs_separate_full_question_from_output_and_keep_close_visible(
-    tmp_path: Path, size: tuple[int, int]
-) -> None:
-    """Each theme only colors the card: its paints are checked under every theme in one app per size, and
-    the story the layout and the localized text decide runs once, under the last theme."""
-    app = make_chrys_app(tmp_path, settings=Settings(locale="zh-Hans"))
-    async with app.run_test(size=size) as pilot:
-        panel = app.screen.query_one(BtwPanel)
-        question = "这个仓库的 list[int] 是什么?\n" + "请结合 Python 类型声明解释。\n" * 20
-        panel.begin("question", question)
-        switcher = panel.query_one(ContentSwitcher)
-        tabs = panel.query_one(Tabs)
-        close = panel.query_one("#btw-close", Button)
-        await wait_for(
-            lambda: panel.display and close.content_size.height == 1,
-            pilot=pilot,
-            description="side question close button has a visible text row",
-        )
-        for theme in _BTW_THEMES:
-            app.theme = theme
-            await wait_for(
-                lambda theme=theme: app.current_theme.name == theme and screen_is_settled(app, app.screen),
-                pilot=pilot,
-                description=f"the card restyled for {theme}",
-            )
-            await _assert_card_paints_in_theme(pilot, panel, theme)
-        assert switcher.current == "btw-output-page"
-        assert _CLOSE_GLYPH in app.screen._compositor.render_strips()[close.region.y].text
-        assert panel.border_title == "顺便问"
-        assert not panel.border_subtitle
-        assert str(close.tooltip) == "关闭（Esc）"  # noqa: RUF001 - localized punctuation
-        assert close.region.width == 3
-        assert tabs.region.width >= 12
-        counter = panel.query_one("#btw-position", Static)
-        assert counter.content_region.x == panel.query_one("#btw-previous").region.right + 1
-        assert panel.query_one("#btw-next").region.x == counter.content_region.right + 1
-        assert str(panel.query_one("#btw-output-tab", Tab).label) == "回答"
-        assert "list[int]" not in "\n".join(strip.text for strip in app.screen._compositor.render_strips())
-        card_region = panel.region
-        close_region = close.region
-
-        await click_when_settled(pilot, "#btw-question-tab")
-        await wait_for(lambda: switcher.current == "btw-question-page", pilot=pilot)
-        question_page = panel.query_one(VerticalScroll)
-        assert panel.query_one(BtwQuestion).question == question
-        assert question_page.max_scroll_y > 0
-        assert question_page.region == switcher.content_region
-        assert question_page.vertical_scrollbar.region.right == panel.region.right - 1
-        assert question_page.vertical_scrollbar.region.height == switcher.content_size.height
-        assert "list[int]" in "\n".join(strip.text for strip in app.screen._compositor.render_strips())
-        assert panel.region == card_region
-        assert close.region == close_region
-        assert _CLOSE_GLYPH in app.screen._compositor.render_strips()[close.region.y].text
-
-        await panel.finish("question", "答案: 主要使用 **Python**。")
-        assert switcher.current == "btw-question-page"
-        tabs.focus()
-        await pilot.press("right")
-        await wait_for(lambda: switcher.current == "btw-output-page", pilot=pilot)
-        assert "答案: 主要使用 Python" in "\n".join(strip.text for strip in app.screen._compositor.render_strips())
-        assert panel.query_one(VirtualizedMarkdown).source == "答案: 主要使用 **Python**。"
-        assert panel.query_one(VirtualizedMarkdown).region.height == switcher.content_size.height
-        assert _CLOSE_GLYPH in app.screen._compositor.render_strips()[close.region.y].text
-
-        # A new question always opens Answer, even after reading the previous question.
-        tabs.active = "btw-question-tab"
-        panel.begin("next", "另一个问题")
-        await wait_for(lambda: switcher.current == "btw-output-page", pilot=pilot)
-        assert tabs.active == "btw-output-tab"
-        await click_when_settled(pilot, "#btw-close")
-        await wait_for(lambda: not panel.display, pilot=pilot, description="close works from the fixed tab bar")
-
-
-async def test_switching_btw_tabs_does_not_relayout_populated_main_screen(tmp_path: Path) -> None:
-    app = make_chrys_app(tmp_path)
-    async with app.run_test(size=(120, 36)) as pilot:
-        main = app.screen
-        chat = main.query_one(ChatPanel)
-        for index in range(24):
-            await chat.mount(UserMessage(f"Question {index}"), AgentMessage(f"Answer {index} with **emphasis**."))
-        panel = main.query_one(BtwPanel)
-        panel.begin("question", "A full question")
-        await panel.finish("question", "A complete answer")
-        await wait_for(
-            lambda: screen_is_settled(app, main),
-            pilot=pilot,
-            description="populated chat and side card settled",
-        )
-        footer = main.query_one(ChrysFooter)
-        with (
-            patch.object(main, "_refresh_layout", wraps=main._refresh_layout) as layouts,
-            patch.object(main, "update_node_styles", wraps=main.update_node_styles) as restyles,
-            patch.object(footer, "recompose", wraps=footer.recompose) as recomposes,
-        ):
-            await click_when_settled(pilot, "#btw-question-tab")
-            assert "A full question" in "\n".join(strip.text for strip in main._compositor.render_strips())
-            await click_when_settled(pilot, "#btw-output-tab")
-            assert "A complete answer" in "\n".join(strip.text for strip in main._compositor.render_strips())
-            layouts.assert_not_called()
-            restyles.assert_not_called()
-            recomposes.assert_not_called()
-
-
 @pytest.mark.parametrize("first_fails", [False, True])
 async def test_next_question_can_start_while_previous_result_is_being_delivered(
     agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_fails: bool
@@ -620,7 +463,7 @@ async def test_next_question_can_start_while_previous_result_is_being_delivered(
             if first_fails:
                 assert panel.query_one("#btw-error").display
             else:
-                assert panel.query_one(VirtualizedMarkdown).source == "First answer"
+                assert shown_answer(panel) == "First answer"
 
             side.answer = "Second answer"
             side.fail = False
@@ -642,8 +485,8 @@ async def test_next_question_can_start_while_previous_result_is_being_delivered(
             lambda: str(panel.query_one("#btw-position", Static).content) == ("1/1" if first_fails else "2/2"),
             pilot=session.pilot,
         )
-        assert panel.query_one(BtwQuestion).question == "Second?"
-        assert panel.query_one(VirtualizedMarkdown).source == "Second answer"
+        assert shown_question(panel) == "Second?"
+        assert shown_answer(panel) == "Second answer"
         assert not panel.query_one("#btw-error").display
 
 
@@ -656,8 +499,6 @@ async def test_saved_history_reopens_navigates_and_restores_a_btw_only_session(
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         panel = session.main.query_one(BtwPanel)
         counter = panel.query_one("#btw-position", Static)
-        tabs = panel.query_one(Tabs)
-        pages = panel.query_one(ContentSwitcher)
         for question, answer, position in (("First?", "First answer", "1/1"), ("Second?", "Second answer", "2/2")):
             side.answer = answer
             session.chat.load_text(f"/btw {question}")
@@ -692,33 +533,18 @@ async def test_saved_history_reopens_navigates_and_restores_a_btw_only_session(
             )
             session.bar.submit_input()
             await wait_for(lambda: panel.display and str(counter.content) == "2/2", pilot=session.pilot)
-        assert panel.query_one(VirtualizedMarkdown).source == "Second answer"
-        assert str(panel.query_one("#btw-output-tab", Tab).label) == "Answer"
+        assert shown_answer(panel) == "Second answer"
+        assert str(panel.query_one(BtwAnswer).query_one(".agent-header").render()).startswith("Answer")
         assert panel.query_one("#btw-next", Button).disabled
         assert counter.tooltip
         await click_when_settled(session.pilot, "#btw-previous")
         await wait_for(lambda: str(counter.content) == "1/2", pilot=session.pilot)
-        assert panel.query_one(VirtualizedMarkdown).source == "First answer"
-        assert panel.query_one(BtwQuestion).question == "First?"
+        assert shown_answer(panel) == "First answer"
+        assert shown_question(panel) == "First?"
         assert panel.query_one("#btw-previous", Button).disabled
-        assert tabs.active == "btw-output-tab"
-        assert pages.current == "btw-output-page"
-        await click_when_settled(session.pilot, "#btw-question-tab")
         await click_when_settled(session.pilot, "#btw-next")
         await wait_for(lambda: str(counter.content) == "2/2", pilot=session.pilot)
-        assert tabs.active == "btw-question-tab"
-        assert pages.current == "btw-question-page"
-        assert panel.query_one(BtwQuestion).question == "Second?"
-        await click_when_settled(session.pilot, "#btw-previous")
-        await wait_for(lambda: str(counter.content) == "1/2", pilot=session.pilot)
-        assert tabs.active == "btw-question-tab"
-        assert pages.current == "btw-question-page"
-        assert panel.query_one(BtwQuestion).question == "First?"
-        await click_when_settled(session.pilot, "#btw-output-tab")
-        await click_when_settled(session.pilot, "#btw-next")
-        await wait_for(lambda: str(counter.content) == "2/2", pilot=session.pilot)
-        assert tabs.active == "btw-output-tab"
-        assert pages.current == "btw-output-page"
+        assert (shown_question(panel), shown_answer(panel)) == ("Second?", "Second answer")
         assert len(side.calls) == 2
 
         await session.bus.publish(ev.SessionNew())
@@ -728,8 +554,7 @@ async def test_saved_history_reopens_navigates_and_restores_a_btw_only_session(
         session.chat.load_text("/btw")
         session.bar.submit_input()
         await wait_for(lambda: panel.display and str(counter.content) == "2/2", pilot=session.pilot)
-        assert tabs.active == "btw-output-tab"
-        assert pages.current == "btw-output-page"
+        assert (shown_question(panel), shown_answer(panel)) == ("Second?", "Second answer")
         assert len(side.calls) == 2
         assert [entry.answer for entry in load_side_questions(path.parent, original)] == [
             "First answer",
@@ -772,7 +597,7 @@ async def test_session_reset_does_not_wait_for_queued_side_write_or_resurrect_it
             await wait_for(entered.is_set, pilot=session.pilot, description="side write queued before lock")
             panel = session.main.query_one(BtwPanel)
             await wait_for(lambda: not panel.running, pilot=session.pilot)
-            assert panel.query_one(VirtualizedMarkdown).source == side.answer
+            assert shown_answer(panel) == side.answer
             event = (
                 ev.SessionClear(session_id=original_session) if operation == "clear" else ev.UserRollback(target_turn=0)
             )
@@ -813,7 +638,7 @@ async def test_answer_does_not_wait_for_saves_in_completion_order(
             session.bar.submit_input()
             await wait_for(entered.is_set, pilot=session.pilot)
             await wait_for(lambda: not panel.running, pilot=session.pilot)
-            assert panel.query_one(VirtualizedMarkdown).source == "First answer"
+            assert shown_answer(panel) == "First answer"
             await click_when_settled(session.pilot, "#btw-close")
             side.answer = "Second answer"
             session.chat.load_text("/btw Second?")
@@ -832,7 +657,7 @@ async def test_answer_does_not_wait_for_saves_in_completion_order(
         session.chat.load_text("/btw")
         session.bar.submit_input()
         await wait_for(lambda: str(panel.query_one("#btw-position", Static).content) == "2/2", pilot=session.pilot)
-        assert panel.query_one(BtwQuestion).question == "Second?"
+        assert shown_question(panel) == "Second?"
 
 
 async def test_cleanup_timeout_does_not_block_session_operations_or_new_questions(
@@ -899,7 +724,7 @@ async def test_save_failure_warns_and_keeps_answer_available_in_current_session(
             pilot=session.pilot,
         )
         await wait_for(lambda: not panel.running, pilot=session.pilot)
-        assert panel.query_one(VirtualizedMarkdown).source == side.answer
+        assert shown_answer(panel) == side.answer
         await click_when_settled(session.pilot, "#btw-close")
         original = session.session_id()
         if rebuild == "restore":
@@ -919,9 +744,8 @@ async def test_save_failure_warns_and_keeps_answer_available_in_current_session(
             assert session.session_id() == original
         session.chat.load_text("/btw")
         session.bar.submit_input()
-        await wait_for(lambda: panel.display, pilot=session.pilot)
-        assert panel.query_one(BtwQuestion).question == "Keep this answer"
-        assert panel.query_one(VirtualizedMarkdown).source == side.answer
+        await wait_for(lambda: panel.display and shown_answer(panel) == side.answer, pilot=session.pilot)
+        assert shown_question(panel) == "Keep this answer"
 
 
 @pytest.mark.parametrize("card_action", ["close", "navigate"])
@@ -964,7 +788,7 @@ async def test_save_failure_warns_after_card_moves_on(
                 await wait_for(
                     lambda: str(panel.query_one("#btw-position", Static).content) == "1/2", pilot=session.pilot
                 )
-                assert panel.query_one(VirtualizedMarkdown).source == "First answer"
+                assert shown_answer(panel) == "First answer"
             assert panel.request_id != first_request
             assert _SAVE_WARNING not in notices(session.app)
             release.set()
@@ -995,16 +819,27 @@ async def test_unreadable_history_still_reopens_memory_answer(
         session.bar.submit_input()
         await wait_for(lambda: _SAVE_WARNING in notices(session.app), pilot=session.pilot)
         await asyncio.gather(*tuple(session.engine._side_questions._run_tasks))
-        assert panel.query_one(VirtualizedMarkdown).source == side.answer
-        assert str(panel.query_one("#btw-position", Static).content) == "1/1"
+        await wait_for(
+            lambda: (
+                shown_answer(panel) == side.answer and str(panel.query_one("#btw-position", Static).content) == "1/1"
+            ),
+            pilot=session.pilot,
+        )
         assert _READ_WARNING not in notices(session.app)
         await click_when_settled(session.pilot, "#btw-close")
         session.chat.load_text("/btw")
         session.bar.submit_input()
         await wait_for(lambda: _READ_WARNING in notices(session.app), pilot=session.pilot)
-        await wait_for(lambda: panel.display and panel.query_one(VirtualizedMarkdown).display, pilot=session.pilot)
-        assert panel.query_one(BtwQuestion).question == "Keep this"
-        assert panel.query_one(VirtualizedMarkdown).source == side.answer
+        await wait_for(
+            lambda: (
+                panel.display
+                and shown_answer(panel) == side.answer
+                and str(panel.query_one("#btw-position", Static).content) == "1/1"
+            ),
+            pilot=session.pilot,
+        )
+        assert shown_question(panel) == "Keep this"
+        assert shown_answer(panel) == side.answer
         assert str(panel.query_one("#btw-position", Static).content) == "1/1"
         assert path.read_bytes() == b"{broken json"
 
@@ -1060,7 +895,7 @@ async def test_running_side_question_obeys_session_rebuild(
         side.release.set()
         await task
         await asyncio.gather(*tuple(session.engine._side_questions._commit_tasks))
-        assert panel.query_one(VirtualizedMarkdown).source == side.answer
+        assert shown_answer(panel) == side.answer
         assert not panel.running and panel.gc_freeze_block_reason() is None
         directory = session.engine.session.session_dir
         assert directory is not None
@@ -1121,7 +956,7 @@ async def test_side_question_spanning_rebuild_answers_and_records_usage(
             held.release()
             await task
             await asyncio.gather(*tuple(session.engine._side_questions._commit_tasks))
-            assert panel.query_one(VirtualizedMarkdown).source == "Recorded answer."
+            assert shown_answer(panel) == "Recorded answer."
             assert not panel.running
             await session.engine._trajectory_recorder.checkpoint()
             report = await asyncio.to_thread(
@@ -1201,8 +1036,8 @@ async def test_session_transition_preserves_pending_side_save(
             session.main._btw.close_question()
             session.chat.load_text("/btw")
             session.bar.submit_input()
-            await wait_for(lambda: panel.display and panel.query_one(VirtualizedMarkdown).display, pilot=session.pilot)
-            assert panel.query_one(VirtualizedMarkdown).source == side.answer
+            await wait_for(lambda: panel.display and shown_answer(panel) == side.answer, pilot=session.pilot)
+            assert shown_answer(panel) == side.answer
         finally:
             release.set()
             await asyncio.gather(*tuple(session.engine._side_questions._commit_tasks))
@@ -1263,7 +1098,7 @@ async def test_rollback_only_cancels_side_question_on_success(
             await task
             await asyncio.gather(*tuple(session.engine._side_questions._commit_tasks))
             assert not panel.running and panel.gc_freeze_block_reason() is None
-            assert panel.query_one(VirtualizedMarkdown).source == side.answer
+            assert shown_answer(panel) == side.answer
             directory = session.engine.session.session_dir
             assert directory is not None
             assert [entry.answer for entry in load_side_questions(directory, session.session_id())] == [side.answer]
@@ -1291,7 +1126,7 @@ async def test_refused_fork_leaves_side_question_running(
         side.release.set()
         await task
         await asyncio.gather(*tuple(session.engine._side_questions._commit_tasks))
-        assert panel.query_one(VirtualizedMarkdown).source == side.answer
+        assert shown_answer(panel) == side.answer
         assert not panel.running
 
 
@@ -1413,7 +1248,7 @@ async def test_fork_only_cancels_running_side_question_when_switching(
             await task
             await asyncio.gather(*tuple(session.engine._side_questions._commit_tasks))
             assert str(panel.query_one("#btw-position", Static).content) == "2/2"
-            assert panel.query_one(VirtualizedMarkdown).source == side.answer
+            assert shown_answer(panel) == side.answer
             assert not side.cancelled.is_set()
 
 
@@ -1466,7 +1301,7 @@ async def test_side_prompt_hooks_block_provider_and_keep_reminders_local(
         assert not panel.running
         assert "side rejected" in str(panel.query_one("#btw-error", Static).content)
         if long_reason:
-            output = panel.query_one("#btw-output-page")
+            output = panel.query_one(BtwPage)
             error = panel.query_one("#btw-error")
             await wait_for(lambda: screen_is_settled(session.app, session.main), pilot=session.pilot)
             assert output.max_scroll_y > 0
@@ -1510,27 +1345,29 @@ async def test_render_failure_releases_side_card_running_state(
     side = SideAnswer(answer="broken render")
     side.release.set()
     monkeypatch.setattr(side_questions, "answer_side_question", side)
+    update = VirtualizedMarkdown.update
+
+    def fail_answer(markdown: VirtualizedMarkdown, text: str) -> AwaitComplete:
+        if text == "broken render":
+            raise ValueError("render failed")
+        return update(markdown, text)
+
+    monkeypatch.setattr(VirtualizedMarkdown, "update", fail_answer)
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         panel = session.main.query_one(BtwPanel)
-        markdown = panel.query_one(VirtualizedMarkdown)
-        update = markdown.update
-
-        def fail_answer(text: str):
-            if text == "broken render":
-                raise ValueError("render failed")
-            return update(text)
-
-        monkeypatch.setattr(markdown, "update", fail_answer)
         session.chat.load_text("/btw first")
         session.bar.submit_input()
         await wait_for(lambda: panel.display and panel.query_one("#btw-error").display, pilot=session.pilot)
+        assert session.app.is_running
         assert not panel.running
         assert not panel.query_one(BtwThinking)._animating
         assert panel.gc_freeze_block_reason() is None
+        assert (shown_question(panel), shown_answer(panel)) == ("first", None)
         side.answer = "rendered answer"
         session.chat.load_text("/btw second")
         session.bar.submit_input()
-        await wait_for(lambda: markdown.display and markdown.source == "rendered answer", pilot=session.pilot)
+        await wait_for(lambda: shown_answer(panel) == "rendered answer", pilot=session.pilot)
+        assert not panel.query_one("#btw-error").display
         assert len(side.calls) == 2
 
 
@@ -1790,7 +1627,7 @@ async def test_hook_drain_fails_side_question_without_blocking_or_calling_model(
             await asyncio.gather(*tuple(owner._run_tasks | owner._commit_tasks))
             assert [question for question, _ in side.calls] == ["Ask again"]
             assert not panel.running and not error.display
-            assert panel.query_one(VirtualizedMarkdown).source == side.answer
+            assert shown_answer(panel) == side.answer
         finally:
             await asyncio.to_thread(release.touch)
             if transition_task is not None:
