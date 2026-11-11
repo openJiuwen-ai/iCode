@@ -116,6 +116,9 @@ class CollapsibleConfigCard(ConfigCard):
     """
 
     DEFAULT_CSS = """
+    CollapsibleConfigCard {
+        padding: 0 2 1 2;
+    }
     CollapsibleConfigCard.-collapsed {
         padding: 0 2;
     }
