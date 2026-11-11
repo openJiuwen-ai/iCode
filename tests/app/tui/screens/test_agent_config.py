@@ -81,6 +81,39 @@ def test_agent_config_canonicalizes_mcp_always_load_names_without_dropping_progr
     assert profile.tools.mcp[0].always_load == ["search", "read_file"]
 
 
+def test_agent_config_strips_the_mcp_working_directory_like_the_panel() -> None:
+    server = MCPServerConfig(name="local", transport="stdio", command="python", cwd="  srv \n")
+    profile = AgentProfile(name="Local", tools=ToolsConfig(mcp=[server]))
+
+    AgentsConfigScreen._canonicalize_profile_for_ui(profile)
+
+    assert server.cwd == "srv"
+
+
+async def test_agent_config_opens_a_padded_mcp_working_directory_without_marking_it_modified() -> None:
+    registry = registry_with(
+        AgentProfile(
+            name="Local",
+            display_name="Local",
+            tools=ToolsConfig(
+                mcp=[
+                    MCPServerConfig(name="spaces", transport="stdio", command="python", cwd=" srv "),
+                    MCPServerConfig(name="newline", transport="stdio", command="python", cwd="tools/srv\n"),
+                ]
+            ),
+        )
+    )
+
+    async with open_agent_config(registry, current_profile="Local", initial_tab="mcp") as (screen, _pilot):
+        panel = screen.query_one(MCPConfigPanel)
+        await wait_for(lambda: len(panel.query("MCPConnectionCard")) == 2, timeout=_DEFAULT_WAIT_TIMEOUT)
+        draft = _draft_for_original(screen, "Local")
+
+        assert [config.cwd for config in panel.get_config()] == ["srv", "tools/srv"]
+        assert draft.dirty is False
+        assert screen._build_profile_from_mounted_panels(draft) == draft.original_profile
+
+
 def test_agent_config_clears_initial_subset_for_full_or_empty_loading_policy() -> None:
     full = MCPServerConfig(
         name="full",

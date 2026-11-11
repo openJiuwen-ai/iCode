@@ -406,6 +406,10 @@ MCP_COMMAND_REQUIRED = msg(
     "tui.agent_config.validation.mcp.command_required",
     fallback="command is required for stdio transport.",
 )
+MCP_CWD_NUL = msg(
+    "tui.agent_config.validation.mcp.cwd_nul",
+    fallback="Working Directory cannot contain NUL characters.",
+)
 MCP_TRANSPORT = msg(
     "tui.agent_config.validation.mcp.transport",
     fallback="transport must be stdio or http.",

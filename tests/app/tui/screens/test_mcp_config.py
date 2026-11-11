@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -32,10 +33,15 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n import DisplayBlock, Localizer
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.util.env_templates import EnvVarResolutionError
-from chrys.service.mcp.adapter import MCPConnectionError, MCPToolNameCollisionError, MCPToolNameValidationError
+from chrys.service.mcp.adapter import (
+    MCPAdapter,
+    MCPConnectionError,
+    MCPToolNameCollisionError,
+    MCPToolNameValidationError,
+)
 from tests.app.tui.screens._agent_config_support import press_and_answer_confirm
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 def test_connection_subject_and_failure_keep_english_and_localize_chinese() -> None:
@@ -1730,6 +1736,23 @@ async def test_test_connect_button_shows_http_connect_failure_dialog() -> None:
         assert "Unable to reach MCP server." in message
 
 
+async def test_an_unusable_working_directory_leads_the_test_report_with_the_field_to_check(tmp_path: Path) -> None:
+    from chrys.service.profiles.agents.schema import MCPServerConfig
+
+    adapter = MCPAdapter(stdio_cwd=str(tmp_path))
+    config = MCPServerConfig(name="cwd", transport="stdio", command="python", cwd="no-such-folder")
+    with pytest.raises(MCPConnectionError) as caught:
+        await asyncio.wait_for(adapter.test_connection(config), timeout=ENGINE_TURN_TIMEOUT)
+
+    shown = MCPConfigPanel._format_connection_error(caught.value)
+
+    assert shown.startswith(
+        "The server's working directory cannot be used. Please check the Working Directory field.\n\n"
+    )
+    assert "failed to connect: the server's working directory does not exist" in shown
+    assert "(missing)" not in shown
+
+
 @pytest.mark.asyncio
 async def test_test_connect_cancelled_error_keeps_panel_and_shows_dialog() -> None:
     app = _MCPPanelApp()
@@ -1848,3 +1871,70 @@ async def test_guidance_hints_start_collapsed_for_seeded_false_config() -> None:
         config = card.get_config()
         assert config.expose_instructions is False
         assert config.load_prompts is False
+
+
+@pytest.mark.asyncio
+async def test_stdio_card_edits_adds_and_clears_the_working_directory() -> None:
+    from chrys.service.profiles.agents.schema import MCPServerConfig
+
+    app = _MCPPanelApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        panel = MCPConfigPanel(
+            [
+                MCPServerConfig(name="set", transport="stdio", command="python", cwd="~/srv"),
+                MCPServerConfig(name="unset", transport="stdio", command="python"),
+            ]
+        )
+        await app.mount(panel)
+        set_card, unset_card = await _wait_for_mcp_cards(panel, pilot, 2)
+
+        set_input = set_card.query_one("#mcp-cwd-0", Input)
+        unset_input = unset_card.query_one("#mcp-cwd-1", Input)
+        assert set_input.value == "~/srv"
+        # An empty field still shows its hint, like the other fields.
+        assert unset_input.value == "" and unset_input.placeholder == "Blank uses the workspace directory"
+
+        unset_input.value = "  tools/srv  "
+        set_input.value = ""
+
+        configs = panel.get_config()
+        assert [config.cwd for config in configs] == ["", "tools/srv"]
+
+
+@pytest.mark.asyncio
+async def test_working_directory_is_disabled_in_read_only_cards_and_rejects_nul() -> None:
+    from chrys.service.profiles.agents.schema import MCPServerConfig
+
+    app = _MCPPanelApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        read_only = MCPConfigPanel(
+            [MCPServerConfig(name="locked", transport="stdio", command="python", cwd="/srv")], read_only=True
+        )
+        await app.mount(read_only)
+        (locked_card,) = await _wait_for_mcp_cards(read_only, pilot, 1)
+        assert locked_card.query_one("#mcp-cwd-0", Input).disabled is True
+        assert locked_card.query_one("#mcp-cwd-0", Input).value == "/srv"
+
+    app = _MCPPanelApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        panel = MCPConfigPanel([MCPServerConfig(name="srv", transport="stdio", command="python")])
+        await app.mount(panel)
+        (card,) = await _wait_for_mcp_cards(panel, pilot, 1)
+        card.query_one("#mcp-cwd-0", Input).value = "a\0b"
+        assert any("NUL" in error for error in card.validate())
+
+
+@pytest.mark.asyncio
+async def test_http_card_has_no_working_directory_and_never_returns_one() -> None:
+    from chrys.service.profiles.agents.schema import MCPServerConfig
+
+    app = _MCPPanelApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        panel = MCPConfigPanel(
+            [MCPServerConfig(name="remote", transport="http", url="https://example.com/mcp", cwd="/srv")]
+        )
+        await app.mount(panel)
+        (card,) = await _wait_for_mcp_cards(panel, pilot, 1)
+
+        assert not card.query("#mcp-cwd-0")
+        assert panel.get_config()[0].cwd == ""

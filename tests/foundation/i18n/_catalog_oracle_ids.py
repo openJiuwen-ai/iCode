@@ -1093,6 +1093,7 @@ _message_ids.update(
         "tui.mcp.connection_test.error.request_failed",
         "tui.mcp.connection_test.error.timed_out",
         "tui.mcp.connection_test.error.unreachable",
+        "tui.mcp.connection_test.error.working_directory",
         "tui.mcp.connection_test.successful",
         "tui.model_config.api_style.chat_completions",
         "tui.model_config.api_style.responses",

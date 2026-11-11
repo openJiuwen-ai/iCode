@@ -3611,6 +3611,12 @@ msgstr ""
 msgid "tui.agent_config.validation.mcp.command_required"
 msgstr ""
 
+#. English: Working Directory cannot contain NUL characters.
+#. chrys-meta={"fingerprint":"65b6cb3a68d7eab8707bda10c43cb558d71aa114f7f07f73f7988baf3521d41d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/validation_messages.py
+msgid "tui.agent_config.validation.mcp.cwd_nul"
+msgstr ""
+
 #. English: Duplicate MCP server name: '{name}'.
 #. chrys-meta={"fingerprint":"9282c7f1a0d0158b16813182ee9bf3e23219ce546826c64689e783d427e4540d","multiline":true,"placeholders":["name"]}
 #: src/chrys/app/tui/screens/agents/validation_messages.py
@@ -8581,6 +8587,13 @@ msgstr ""
 msgid "tui.mcp.connection_test.error.unreachable"
 msgstr ""
 
+#. English: The server's working directory cannot be used. Please check the
+#. Working Directory field.
+#. chrys-meta={"fingerprint":"00b878952aa093e966fce8fc5fb228786bf91bff0b761568f4dbb30e98441c08","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.connection_test.error.working_directory"
+msgstr ""
+
 #. English: MCP Server
 #. chrys-meta={"fingerprint":"b4842c56fa280ad58067fad7da77fe4a286afbb89a3a25fcca0fa2b33a9de15f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/mcp.py
@@ -8770,6 +8783,12 @@ msgstr ""
 msgid "tui.mcp.placeholder.variable_name"
 msgstr ""
 
+#. English: Blank uses the workspace directory
+#. chrys-meta={"fingerprint":"029cc79f4d949160901b9fdab18152bdd91836373ced6085dd1c69774ccd0f68","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.placeholder.working_directory"
+msgstr ""
+
 #. English: When enabled, only loader controls and the optional initially
 #. visible tools are sent first. The model can load other tools from the
 #. available-tool scope during the current run.
@@ -8921,6 +8940,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"398f822f93521b5315473f0f278e29ee781d7c17d2e4a03239493c67b4515b0c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/mcp.py
 msgid "tui.mcp.wait_before_removing"
+msgstr ""
+
+#. English: Working Directory
+#. chrys-meta={"fingerprint":"4a14717bcceef1755551dfcabc0005d19a7f7bfc3b739c9b37cddca9e1a30f1d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.working_directory"
 msgstr ""
 
 #. English: Already added

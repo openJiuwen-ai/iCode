@@ -32,7 +32,7 @@ def comparable_mcp_config(config: MCPServerConfig) -> MCPServerConfig:
             verify_ssl=True,
             bypass_proxy=False,
         )
-    return replace(normalized, command="", args=[], encoding=None, env={})
+    return replace(normalized, command="", args=[], encoding=None, env={}, cwd="")
 
 
 @dataclass(frozen=True)
@@ -57,7 +57,8 @@ def _valid_source_shape(config: MCPServerConfig) -> bool:
         return False
     active = comparable_mcp_config(config)
     if not all(
-        isinstance(value, str) for value in (active.command, active.url, active.description, active.tool_name_prefix)
+        isinstance(value, str)
+        for value in (active.command, active.cwd, active.url, active.description, active.tool_name_prefix)
     ):
         return False
     if not all(
@@ -140,7 +141,14 @@ class MCPConflict:
 
 
 def mcp_choice_conflict(candidate: MCPServerConfig, current: Sequence[MCPServerConfig]) -> MCPConflict | None:
-    """Reject duplicate names and overlapping allowlists on the same connection, even when disabled."""
+    """Reject duplicate names and overlapping allowlists on the same connection, even when disabled.
+
+    "Same connection" means the same server program as written (command and arguments):
+    the check exists to stop two copies exposing the same tool names. It is deliberately
+    conservative: ``env`` and ``cwd`` are not compared, although they can make the same
+    command run a different server (``python server.py`` in two folders); such servers
+    are told apart with a ``tool_name_prefix``.
+    """
     normalized = comparable_mcp_config(candidate)
     for config in current:
         if mcp_name_key(config.name) == normalized.name:

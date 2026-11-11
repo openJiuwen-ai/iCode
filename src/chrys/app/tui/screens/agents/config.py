@@ -407,6 +407,8 @@ class AgentsConfigScreen(BaseDialog[str]):
             server.name = server.name.strip()
             server.description = server.description.strip()
             server.tool_name_prefix = server.tool_name_prefix.strip()
+            # The loader keeps ``cwd`` as written; the MCP panel saves it stripped.
+            server.cwd = server.cwd.strip()
             server.allowed_tools = (
                 [tool.strip() for tool in server.allowed_tools if tool.strip()]
                 if server.allowed_tools is not None
