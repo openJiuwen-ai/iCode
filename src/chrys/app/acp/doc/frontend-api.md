@@ -649,7 +649,10 @@ Notes:
   wrong owner or mode, an ACL, a link, or a read-only folder), `key_unavailable`,
   `schema_too_new`, `unreadable_tail`, `sequence_exhausted` or `activation_failed`
   (anything else). The session itself keeps working, so none of these calls for a
-  new session.
+  new session. A reader outside the process finds the same reason — with `detail`
+  naming the holding process for `lease_held` — in the session's
+  `trajectory/health.json`, which exists before any prompt and needs no warning
+  delivery at all.
 - `chrys/runtime_update` always uses the envelope `{ sessionId, runtime: {...} }`
   for every sender (`session/new`/`load`, model switch, settings reload,
   `set_config_option`, `set_workspace`, rollback, `SessionReady`,
@@ -818,6 +821,7 @@ Priority: P1 = high-value VS Code UX, P2 = can stay TUI-only for now.
   thing a session records comes before its first prompt (a session-start or
   session-restored hook, or a mode, model or agent switch), a recording that cannot
   start reports `trajectory_activation_failed` to no one, and does not report it again.
+  Read the session's `trajectory/health.json` for that case.
 - **[P2] Image attachment compression events**
   (`ImageAttachmentCompressionStarted/Finished`).
 - **[P2] Shell mode / terminal delegation** — use ACP's standard terminal client

@@ -14,7 +14,12 @@ import pytest
 
 from chrys.foundation.platform import get_platform
 from chrys.foundation.trajectory import lease as lease_module
-from chrys.foundation.trajectory.lease import WRITER_LEASE_FILE_NAME, WriterLease
+from chrys.foundation.trajectory.lease import (
+    WRITER_LEASE_FILE_NAME,
+    WriterLease,
+    owner_record_path,
+    read_holder,
+)
 
 
 def test_lease_is_exclusive_within_a_process_and_released_explicitly(tmp_path: Path) -> None:
@@ -120,8 +125,28 @@ _HOLDER_SCRIPT = textwrap.dedent(
 )
 
 
-def _spawn_holder(lock_path: Path, ready_path: Path, hold_seconds: float) -> subprocess.Popen:
-    proc = subprocess.Popen([sys.executable, "-c", _HOLDER_SCRIPT, str(lock_path), str(ready_path), str(hold_seconds)])
+_RAW_HOLDER_SCRIPT = textwrap.dedent(
+    """
+    import os, sys, time
+    from pathlib import Path
+    from chrys.foundation.platform import get_platform
+
+    fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+    if get_platform().is_windows:
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    Path(sys.argv[2]).write_text("held", encoding="utf-8")
+    time.sleep(float(sys.argv[3]))
+    """
+)
+
+
+def _spawn(script: str, lock_path: Path, ready_path: Path, hold_seconds: float) -> subprocess.Popen:
+    proc = subprocess.Popen([sys.executable, "-c", script, str(lock_path), str(ready_path), str(hold_seconds)])
     deadline = time.monotonic() + 15.0
     while not ready_path.exists():
         if proc.poll() is not None or time.monotonic() > deadline:
@@ -131,6 +156,36 @@ def _spawn_holder(lock_path: Path, ready_path: Path, hold_seconds: float) -> sub
             raise RuntimeError("holder subprocess never signalled readiness")
         time.sleep(0.02)
     return proc
+
+
+def _spawn_holder(lock_path: Path, ready_path: Path, hold_seconds: float) -> subprocess.Popen:
+    return _spawn(_HOLDER_SCRIPT, lock_path, ready_path, hold_seconds)
+
+
+def _stop(proc: subprocess.Popen) -> None:
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def _dead_pid() -> int:
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=30)
+    return proc.pid
+
+
+def _record_for(pid: int, *, holding: bool) -> lease_module.LeaseHolder:
+    host, boot_time = lease_module._host_facts()
+    return lease_module.LeaseHolder(
+        pid=pid,
+        # Any real process creation time differs from this by far more than the
+        # reuse tolerance, so a recycled pid still reads as the dead original.
+        start_time=0.0,
+        host=host,
+        boot_time=boot_time,
+        holding=holding,
+        at="2026-01-01T00:00:00Z",
+    )
 
 
 def test_lease_blocks_across_processes_without_waiting(tmp_path: Path) -> None:
@@ -151,6 +206,75 @@ def test_lease_blocks_across_processes_without_waiting(tmp_path: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def test_a_taken_lease_records_its_holder(tmp_path: Path) -> None:
+    """The lock file itself stays empty; who holds it lives in ``writer.owner``."""
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    lease = WriterLease.try_acquire(lock_path)
+    assert lease is not None
+    try:
+        holder = read_holder(lock_path)
+        assert holder is not None
+        assert (holder.pid, holder.holding) == (os.getpid(), True)
+        assert holder.host == lease_module._host_facts()[0]
+        assert holder.at
+        if not get_platform().is_windows:
+            assert owner_record_path(lock_path).stat().st_mode & 0o777 == 0o600
+    finally:
+        lease.release()
+
+
+def test_a_live_holder_is_reported_and_not_reclaimed(tmp_path: Path) -> None:
+    """A refused probe names the holder and leaves its record byte-for-byte in charge."""
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    proc = _spawn_holder(lock_path, tmp_path / "ready", hold_seconds=30.0)
+    try:
+        assert WriterLease.try_acquire(lock_path) is None
+        holder = read_holder(lock_path)
+        assert holder is not None
+        assert (holder.pid, holder.holding) == (proc.pid, True)
+        assert WriterLease.is_held_elsewhere(lock_path) is True
+    finally:
+        _stop(proc)
+
+
+def test_a_dead_holders_record_is_reclaimed(tmp_path: Path) -> None:
+    """A lock still held after its recorded owner died belongs to nobody: take it."""
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    proc = _spawn_holder(lock_path, tmp_path / "ready", hold_seconds=30.0)
+    try:
+        lease_module._write_record(owner_record_path(lock_path), _record_for(_dead_pid(), holding=True))
+        lease = WriterLease.try_acquire(lock_path)
+        assert lease is not None
+        holder = read_holder(lock_path)
+        assert holder is not None
+        assert (holder.pid, holder.holding) == (os.getpid(), True)
+        lease.release()
+    finally:
+        _stop(proc)
+
+
+def test_a_lock_without_a_holder_record_is_never_reclaimed(tmp_path: Path) -> None:
+    """A lock file whose holder never announced itself is not ours to break."""
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    proc = _spawn(_RAW_HOLDER_SCRIPT, lock_path, tmp_path / "ready", hold_seconds=30.0)
+    try:
+        assert read_holder(lock_path) is None
+        assert WriterLease.try_acquire(lock_path) is None
+    finally:
+        _stop(proc)
+
+
+def test_a_record_that_never_held_the_lease_is_never_reclaimed(tmp_path: Path) -> None:
+    """A probe's own in-flight record (``holding`` false) proves nobody holds it."""
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    proc = _spawn(_RAW_HOLDER_SCRIPT, lock_path, tmp_path / "ready", hold_seconds=30.0)
+    try:
+        lease_module._write_record(owner_record_path(lock_path), _record_for(_dead_pid(), holding=False))
+        assert WriterLease.try_acquire(lock_path) is None
+    finally:
+        _stop(proc)
 
 
 def test_lease_is_reclaimed_by_os_when_holder_is_killed(tmp_path: Path) -> None:

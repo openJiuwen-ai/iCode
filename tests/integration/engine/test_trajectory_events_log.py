@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -54,6 +55,7 @@ from chrys.service.hooks.schema import HookConfig, HookExecution, HookRun, Hooks
 from chrys.service.llm.mock import MockResponse
 from chrys.service.profiles.agents.schema import CompactionConfig
 from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.trajectory.health import trajectory_health_path
 from chrys.service.trajectory.session import (
     SessionTrajectory,
     TrajectoryDisabledReason,
@@ -210,6 +212,10 @@ async def test_a_session_another_writer_holds_warns_the_user_with_the_reason(tmp
 
     assert [(warning.code, warning.reason) for warning in warnings] == [("trajectory_activation_failed", "lease_held")]
     assert warnings[0].session_id == ctx.session_id
+    health = json.loads(trajectory_health_path(session_dir).read_text(encoding="utf-8"))
+    assert (health["state"], health["reason"]) == ("degraded", "lease_held")
+    assert health["sessionId"] == ctx.session_id
+    assert f"pid {os.getpid()} " in health["detail"]
 
 
 @pytest.mark.asyncio

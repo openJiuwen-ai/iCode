@@ -39,6 +39,7 @@ from chrys.foundation.trajectory.lease import WriterLease
 from chrys.foundation.trajectory.reader import read_trajectory
 from chrys.foundation.trajectory.writer import EmitResult, FdWriteBackend, TrajectoryWriter, WriterState
 from chrys.service.trajectory import session as session_module
+from chrys.service.trajectory.health import TrajectoryHealthState, trajectory_health_path
 from chrys.service.trajectory.session import (
     SessionStartInfo,
     SessionTrajectory,
@@ -108,6 +109,10 @@ def _types(events: list[TrajectoryEvent]) -> list[str]:
 
 def _line_count(session_dir: Path) -> int:
     return trajectory_events_path(session_dir).read_bytes().count(b"\n")
+
+
+def _health(session_dir: Path) -> dict[str, Any]:
+    return json.loads(trajectory_health_path(session_dir).read_text(encoding="utf-8"))
 
 
 # ------------------------------------------------------------------ disabled
@@ -263,6 +268,14 @@ async def test_files_that_refuse_this_user_are_reported_as_permission(
     assert trajectory.disabled_reason == TrajectoryDisabledReason.PERMISSION
     assert reports == [TrajectoryDisabledReason.PERMISSION]
     assert trajectory.writer is None
+    # Where the folder can still be written, the record says why recording is off;
+    # where it cannot, there is no record — never one claiming the session records.
+    if trajectory_health_path(session_dir).is_file():
+        health = _health(session_dir)
+        assert (health["state"], health["reason"]) == (
+            TrajectoryHealthState.DEGRADED,
+            TrajectoryDisabledReason.PERMISSION,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1283,12 +1296,19 @@ async def test_second_live_recorder_is_disabled_while_the_lease_is_held(
     first = make_trajectory(session_dir)
     await first.emit(_draft(1))
     raw = trajectory_events_path(session_dir).read_bytes()
+    health = _health(session_dir)
+    assert (health["state"], health["reason"], health["pid"]) == (TrajectoryHealthState.HEALTHY, "", os.getpid())
 
     reports: list[str] = []
     second = make_trajectory(session_dir, on_activation_failed=reports.append)
     assert await second.emit(_draft(2)) is EmitResult.DEGRADED
     assert second.disabled_reason == TrajectoryDisabledReason.LEASE_HELD
     assert reports == [TrajectoryDisabledReason.LEASE_HELD]
+    # The refused recorder records why, and names the process that holds it.
+    health = _health(session_dir)
+    assert (health["state"], health["reason"]) == (TrajectoryHealthState.DEGRADED, "lease_held")
+    assert health["sessionId"] == SESSION_ID
+    assert f"pid {os.getpid()}" in health["detail"]
     assert second.is_active is False
     assert second.writer is None
     assert second.runtime_id is None
@@ -1305,3 +1325,4 @@ async def test_second_live_recorder_is_disabled_while_the_lease_is_held(
     third = make_trajectory(session_dir)
     assert await third.emit(_draft(4)) is EmitResult.WRITTEN
     assert third.runtime_id != first.runtime_id
+    assert _health(session_dir)["state"] == TrajectoryHealthState.HEALTHY
