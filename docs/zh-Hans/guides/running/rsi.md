@@ -54,9 +54,11 @@ live 样例 **`playground/rsi/complex-calc/`**（Rust 复数计算器）在**源
 
 case 里的每个 git 仓库都是一个全新的私有仓库，包括顶层仓库、嵌套仓库、submodule，以及复制过来的 linked worktree。它们和你的源仓库有相同的提交，但没有任何 remote，也没有指回你仓库的链接，所以在 case 里 commit、checkout 或 `git push` 都改不到你自己的仓库。源目录里未提交的修改，在 case 里同样显示为未提交的修改。如果某个 `.git` 条目 git 打不开（例如主仓库已被移走的 worktree），运行会报错并指出它。
 
-agent 自己执行的 git 命令也只能作用于它的 case 目录。即使你是从 git hook 里、或者从设置了 `GIT_DIR`、`GIT_WORK_TREE` 的终端里启动 `icode rsi`，case 运行期间这些设置都会被清除。case 目录本身不是仓库时，git 会报告"不是 git 仓库"，而不会去上层目录里找一个仓库来用。
+agent 自己执行的 git 命令也碰不到你的仓库。即使你是从 git hook 里、或者从设置了 `GIT_DIR`、`GIT_WORK_TREE` 的终端里启动 `icode rsi`，case 运行期间这些设置都会被清除。git 不会去 case 目录上面的各级目录里找仓库：case 本身没有仓库时，git 会报告"不是 git 仓库"，agent 跑到上级目录里执行 git 也一样。
 
 `create --dataset` 时，每个种子会快照到任务的 `input/seeds/<case_id>/`，并改写存盘数据集为从该快照 `copy`，之后的 eval/optimize 不再访问调用方原来的路径。
+
+每个 case 都在系统临时目录里的一个新目录中运行，不在任务目录下，所以 agent 用 `../..` 这样的相对路径找不到任务的任何文件（数据集、种子或候选 profile）。case 判完分后，RSI 会把这个目录移到这次评测的 `case_workspaces/` 下（见[查看结果](#6-查看结果)）。想换一个临时目录，可以设置 `TMPDIR`（Windows 上是 `TEMP`），例如你的临时目录放在内存里、而种子又很大的时候。如果移动失败，目录会留在原来运行的位置，路径就是 `cases.jsonl` 里这个 case 的 `workdir`。
 
 Prompt 里不要直接写出将要检查的子串或文件内容。否则基线可能因「猜到答案」而通过，optimize 就没有真正可修的失败。
 
@@ -96,7 +98,7 @@ icode rsi eval --task rsi-<id> -a Code -m <model>
 icode rsi eval --task rsi-<id> --stub
 ```
 
-结果默认放在任务目录下。若传 `--out DIR`，请选一个不在任何 git 仓库里、也不在任何 `workdir.from` 源目录里的目录。`eval` 会拒绝位于 git 仓库内的 `--out`，否则没有自带仓库的 case 会把 git 命令落到你的仓库上。
+结果默认放在任务目录下。若传 `--out DIR`，请选一个不在任何 git 仓库里、也不在任何 `workdir.from` 源目录里的目录。`eval` 会拒绝位于 git 仓库内的 `--out`，否则判完分的 case 目录（连同里面的私有仓库）会落进你的仓库。
 
 要给不在 agents 目录里的 profile YAML 打分（例如用 `install` 导出的候选），用 `--profile` 代替 `-a`。可以用它在一份没参与优化的数据集上复测导出的候选：
 
@@ -171,7 +173,7 @@ icode rsi tree rsi-<id>
 | `run/best.json` | 指向最佳已采纳候选（`kind`：stub 或 live） |
 | `run/candidates/<run>-…/` | Profile YAML + `mutations.json`（按 optimize run 隔离） |
 | `run/analysis/<run>/epoch-N.json` | 失败摘要与提议的 mutation |
-| `run/evaluations/<label>/eval-<id>/` | `scorecard.json`、`cases.jsonl`，以及 `case_workspaces/<case_id>/` 下每个 case 的工作目录 |
+| `run/evaluations/<label>/eval-<id>/` | `scorecard.json`、`cases.jsonl`，以及每个 case 判完分后移到这里的工作目录：`case_workspaces/<case_id>/`（跑了第二次的 case 在 `retry_workspaces/<case_id>/`） |
 | `run/evaluations/<label>/eval-<id>/case_workspaces/.<case_id>.sessions/` | live case 的会话记录，放在 agent 工作目录的旁边（不在里面） |
 | `tree.json` | 演进树（`ADOPTED` / `REJECTED`） |
 
@@ -288,7 +290,7 @@ icode rsi delete rsi-<id>
 #### 为什么适合当演示
 
 - **难度够，基线经常是 `0.0`。** 普通四则运算可能过；判分还要求右结合 `2^3^2` → `512+0i`、倒数 `(2-i)^(-1)`、裸 `i` / `-i`、无括号优先级，以及畸形输入如 `1++2i` 必须**非零退出**（不能静默把 `++` 收成 `+`）。
-- **标准答案不在 workdir。** 空 seed 里没有期望表。**已知限制：** live case 跑时跳过工具审批（同 `icode run`），agent 若愿意可以读取任务 `input/` 下拷贝的可信 `check.py`——设计数据集时请考虑这一点。agent 如果改了它，RSI 会放回原文件，并判这个 case 失败（见[状态与边界](#状态与边界)）。
+- **标准答案不在 workdir。** 空 seed 里没有期望表。**已知限制：** live case 跑时跳过工具审批（同 `icode run`），agent 若愿意，按完整路径找到任务目录后可以读取任务 `input/` 下拷贝的可信 `check.py`——设计数据集时请考虑这一点。agent 如果改了它，RSI 会放回原文件，并判这个 case 失败（见[状态与边界](#状态与边界)）。
 - **Optimize 有明确可修点。** 典型失败是解析 / 优先级 / 非法退出。成功的 epoch 常是 `append_instructions` 和/或 `upsert_inline_skill`（例如简短的「严格词法 / 拒绝 `1++2i`」技能），而不是整段替换 profile。
 - **Live runner 先加载 builtins**，再叠候选 profile，因此 Code 声明的 Explore/General 会像普通 headless 会话一样解析到。
 
@@ -385,8 +387,8 @@ Epoch-2 的父节点仍是 **baseline**，不是 epoch-1：被拒绝的 epoch �
 - 实验性：人工审阅之前，不要把导出当作生产 agent 配置。
 - 仅 CLI：RSI 没有 TUI 或 ACP 入口。
 - `icode rsi start` 仍是 mock 训练循环，不会执行 optimize。
-- Case 工作区在任务树下；会逛目录的 agent 可能读到 `input/dataset.json`。编写 prompt 与布局时，尽量让 expect 内容不容易从任务目录直接发现。
-- agent 运行时没有审批提示，所以它也可能改动任务 `input/` 目录里的文件。每个 case 跑完，RSI 都会检查判分要读的文件（判分脚本、`support_files` 和 `dataset.json`）。agent 改了其中任何一个，RSI 都会放回原文件，并判这个 case 失败，发现项为 `judge_tampered`。如果这些文件是别的原因被改的（例如手动修改，或者某次运行被强行终止），`eval` 和 `optimize` 会报错停止并列出这些文件：请用你的数据集重新创建任务。`input/seeds/` 下的种子不做检查。`eval --dataset` 判分时用的是评测开始那一刻数据集里的文件，RSI 也从不改动你的数据集目录。这是一道防护，不是沙箱：一个存心作弊的 agent 仍然能碰到你这个用户账号能碰到的一切。
+- case 在任务目录之外运行，但按完整路径找到任务（默认在 `~/.chrys/rsi/tasks/` 下）的 agent 仍然能读到 `input/dataset.json`。编写 prompt 与布局时，尽量让 expect 内容不容易从任务目录直接发现。
+- agent 运行时没有审批提示，所以它也可能按完整路径改动任务目录里的文件。每个 case 跑完，RSI 都会检查判分要读的文件（判分脚本、`support_files` 和 `dataset.json`）。agent 改了其中任何一个，RSI 都会放回原文件，并判这个 case 失败，发现项为 `judge_tampered`。如果这些文件是别的原因被改的（例如手动修改，或者某次运行被强行终止），`eval` 和 `optimize` 会报错停止并列出这些文件：请用你的数据集重新创建任务。`input/seeds/` 下的种子和 `run/candidates/` 下的候选 profile 不做检查。`eval --dataset` 判分时用的是评测开始那一刻数据集里的文件，RSI 也从不改动你的数据集目录。这是一道防护，不是沙箱：一个存心作弊的 agent 仍然能碰到你这个用户账号能碰到的一切。
 - 每次评测里每个 case 只跑一次。live agent 每次的表现不完全一样，case 很少时，一次运气好或运气差的运行就可能决定候选是否被采纳。请为每种在意的行为准备多个 case，并在依赖导出的候选之前用 `eval --profile` 复测（最好用一份没参与优化的数据集）。
 - live case 使用你平时的配置：你的 hooks、MCP 服务器和 skills 对每个 case 都生效，所以不同机器或不同配置下的分数不能直接比较；带副作用的 hook 每个 case、每个 epoch 都会触发一次。
 - `strategy: "copy"` 会把源目录里的所有内容复制进每个 case，包括 `.env` 之类的文件。agent 在那里工作时不会弹审批，所以不要把密钥放在种子目录里（或者改用只复制已提交文件的 `git_clone`）。

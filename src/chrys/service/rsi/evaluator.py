@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import logging
+import shutil
 import tempfile
 import uuid
 from collections.abc import Awaitable, Callable
@@ -13,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from chrys.foundation.platform.files import atomic_write_text
-from chrys.service.rsi.case_runner import CaseRunner, CaseRunResult
+from chrys.service.rsi.case_runner import CaseRunner, CaseRunResult, case_sessions_dir
 from chrys.service.rsi.dataset import RsiCase, RsiDataset
 from chrys.service.rsi.engine_events import EngineEvent
 from chrys.service.rsi.errors import RsiBadRequest
@@ -23,6 +26,8 @@ from chrys.service.rsi.script_judge import JudgeResult, judge_case
 from chrys.service.rsi.workdir_seed import materialize_workdir
 
 EventSink = Callable[[EngineEvent], Awaitable[None]]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -115,11 +120,16 @@ class EvalSuiteResult:
 class ScriptBasedEvaluator:
     """Phase 2 evaluator: case runner + script_based judge + durable artifacts.
 
+    Every attempt runs in a new folder in the system temporary folder, so no
+    relative path from the agent leads into a task or the output folder. Once
+    the attempt is judged, its folder and the sessions beside it move into
+    ``case_workspaces/`` (``retry_workspaces/`` for a second attempt).
+
     A case that errors (the environment kept it from running, or it reached
-    its time limit) runs once more in ``retry_workspaces/<case_id>``, and its
-    record is the second attempt's, with the first attempt's error kept in
-    ``first_error``. A case that times out on both attempts counts as the
-    agent's: a judged failure, like any error the agent caused.
+    its time limit) runs once more, and its record is the second attempt's,
+    with the first attempt's error kept in ``first_error``. A case that times
+    out on both attempts counts as the agent's: a judged failure, like any
+    error the agent caused.
 
     Check scripts run from the files captured when the suite started (see
     :mod:`chrys.service.rsi.judge_inputs`). With ``guard_inputs``, the
@@ -183,12 +193,19 @@ class ScriptBasedEvaluator:
         total = len(dataset.cases)
         dataset_dir = dataset.source_path.parent
         for index, case in enumerate(dataset.cases, start=1):
-            first = await self._run_case(case, cases_dir / case.case_id, dataset_dir=dataset_dir)
-            record = _settle(case, first, inputs=inputs, guard_inputs=guard_inputs)
+            first, record = await self._attempt(
+                case, cases_dir, dataset_dir=dataset_dir, inputs=inputs, guard_inputs=guard_inputs
+            )
             if record.errored:
                 # One more run, in a fresh workdir: a passing hiccup must not decide the score.
-                retry = await self._run_case(case, out / "retry_workspaces" / case.case_id, dataset_dir=dataset_dir)
-                record = _settle(case, retry, inputs=inputs, guard_inputs=guard_inputs, first=first)
+                _, record = await self._attempt(
+                    case,
+                    out / "retry_workspaces",
+                    dataset_dir=dataset_dir,
+                    inputs=inputs,
+                    guard_inputs=guard_inputs,
+                    first=first,
+                )
             records.append(record)
             node_ref = f"case-{case.case_id}"
             await emit(
@@ -231,6 +248,25 @@ class ScriptBasedEvaluator:
         )
         _write_artifacts(result)
         return result
+
+    async def _attempt(
+        self,
+        case: RsiCase,
+        keep_in: Path,
+        *,
+        dataset_dir: Path,
+        inputs: JudgeInputs,
+        guard_inputs: bool,
+        first: CaseRunResult | None = None,
+    ) -> tuple[CaseRunResult, CaseEvalRecord]:
+        """Run and judge *case* in a new temporary folder, then keep that folder in *keep_in*."""
+        scratch = Path(tempfile.mkdtemp(prefix="icode-rsi-case-"))
+        try:
+            run = await self._run_case(case, scratch / case.case_id, dataset_dir=dataset_dir)
+            record = _settle(case, run, inputs=inputs, guard_inputs=guard_inputs, first=first)
+        finally:
+            kept = _keep_case_folder(scratch, keep_in, case.case_id)
+        return run, dataclasses.replace(record, workdir=str(kept))
 
     async def _run_case(self, case: RsiCase, workdir: Path, *, dataset_dir: Path) -> CaseRunResult:
         try:
@@ -354,6 +390,35 @@ def _judge(case: RsiCase, run: CaseRunResult, *, inputs: JudgeInputs) -> JudgeRe
             workdir=run.workdir,
             dataset_dir=inputs.stage(Path(staged)),
         )
+
+
+def _keep_case_folder(scratch: Path, keep_in: Path, case_id: str) -> Path:
+    """Move an attempt's case folder and its sessions from *scratch* into *keep_in*; return where the folder is.
+
+    Whatever cannot be moved stays in *scratch*, which is then left in place.
+    """
+    workdir = scratch / case_id
+    kept = keep_in / case_id
+    try:
+        keep_in.mkdir(parents=True, exist_ok=True)
+        if workdir.exists() or workdir.is_symlink():
+            shutil.move(workdir, kept)
+    except OSError:
+        logger.warning(
+            "RSI could not move case folder %s into %s; it stays where it ran", workdir, keep_in, exc_info=True
+        )
+        return workdir
+    sessions = case_sessions_dir(workdir)
+    try:
+        if sessions.exists():
+            shutil.move(sessions, case_sessions_dir(kept))
+    except OSError:
+        logger.warning(
+            "RSI could not move case sessions %s into %s; they stay where they ran", sessions, keep_in, exc_info=True
+        )
+        return kept
+    shutil.rmtree(scratch, ignore_errors=True)
+    return kept
 
 
 def _write_artifacts(result: EvalSuiteResult) -> None:

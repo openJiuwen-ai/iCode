@@ -70,12 +70,12 @@ def isolated_git_env(ceiling: Path | None) -> dict[str, str]:
     ``GIT_WORK_TREE``, ``GIT_INDEX_FILE``, ``GIT_COMMON_DIR``, config injection
     via ``GIT_CONFIG_PARAMETERS`` / ``GIT_CONFIG_COUNT`` …) plus discovery
     knobs; user-level settings such as ``GIT_CONFIG_GLOBAL`` or author identity
-    stay. With *ceiling* set, git run below it never discovers a repository
-    above it.
+    stay. With *ceiling* set, git never looks for a repository in *ceiling* or
+    any folder above it, unless it runs in that folder itself.
     """
     env = {key: value for key, value in os.environ.items() if not _is_repo_selecting_git_var(key)}
     if ceiling is not None:
-        env["GIT_CEILING_DIRECTORIES"] = str(ceiling)
+        env["GIT_CEILING_DIRECTORIES"] = _ceilings(ceiling)
     return env
 
 
@@ -91,7 +91,7 @@ def isolated_git_process_env(ceiling: Path) -> Generator[None]:
     saved = {key: value for key, value in os.environ.items() if _is_repo_selecting_git_var(key)}
     for key in saved:
         del os.environ[key]
-    os.environ["GIT_CEILING_DIRECTORIES"] = str(ceiling)
+    os.environ["GIT_CEILING_DIRECTORIES"] = _ceilings(ceiling)
     try:
         yield
     finally:
@@ -129,11 +129,16 @@ def _is_repo_selecting_git_var(name: str) -> bool:
     return upper in _REPO_SELECTING_GIT_VARS or upper.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
 
 
+def _ceilings(ceiling: Path) -> str:
+    # Git ignores a ceiling it runs in, so a lone one stops nothing after a single `cd ..`.
+    return os.pathsep.join(str(folder) for folder in (ceiling, *ceiling.parents))
+
+
 def enclosing_git_work_tree(path: Path) -> Path | None:
     """Top level of the git work tree holding *path* (or its nearest existing parent), if any.
 
-    Case workdirs without their own repository would let git fall through to
-    that enclosing repository.
+    Judged case folders, with the private repositories in them, must not land
+    inside a user's repository.
     """
     probe = path.expanduser().absolute()
     while not probe.is_dir():

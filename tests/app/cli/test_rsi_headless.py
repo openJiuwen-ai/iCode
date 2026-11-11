@@ -160,14 +160,15 @@ async def test_failed_case_run_reports_what_failed_and_who_caused_it(
     assert fake_host.created[0].shut_down is True
 
 
-# What an agent's shell command does with git in its case folder.
+# What an agent's shell command does with git in the folder argv[2] names, relative to its case folder.
 _AGENT_GIT = """\
-import json, subprocess, sys
+import json, os, subprocess, sys
 from pathlib import Path
 
 def git(*args):
     return subprocess.run(["git", *args], capture_output=True, text=True, stdin=subprocess.DEVNULL)
 
+os.chdir(sys.argv[2])
 found = git("rev-parse", "--show-toplevel")
 Path("agent.txt").write_text("agent", encoding="utf-8")
 git("add", "-A")
@@ -191,9 +192,10 @@ def _git_out(repo: Path, *args: str) -> str:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("where", [".", ".."], ids=["in its case folder", "from the folder above"])
 @pytest.mark.parametrize("caller", ["exports GIT_DIR and GIT_WORK_TREE", "runs inside a repository"])
-async def test_agent_git_reaches_only_its_own_case_folder(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_repo_factory: Callable[[Path], Path], caller: str
+async def test_agent_git_reaches_no_repository_of_the_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_repo_factory: Callable[[Path], Path], caller: str, where: str
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
@@ -211,7 +213,7 @@ async def test_agent_git_reaches_only_its_own_case_folder(
     script, report = tmp_path / "agent_git.py", tmp_path / "agent_git.json"
     script.write_text(_AGENT_GIT, encoding="utf-8")
     prefix = "& " if sys.platform == "win32" else ""
-    command = f'{prefix}"{sys.executable}" "{script}" "{report}"'
+    command = f'{prefix}"{sys.executable}" "{script}" "{report}" "{where}"'
     client = MockChatClient(
         responses=[
             MockResponse(tool_calls=[(get_platform().shell.name, "c1", {"command": command, "reason": "git"})]),
@@ -246,7 +248,7 @@ async def test_agent_git_reaches_only_its_own_case_folder(
 
     assert result.ok, result.error
     assert json.loads(report.read_text(encoding="utf-8")) == {"found": False, "toplevel": ""}
-    assert (workdir / "agent.txt").is_file()
+    assert (workdir / where / "agent.txt").is_file()
     assert _git_out(user_repo, "rev-parse", "HEAD") == head
     assert (user_repo / "README.md").read_text(encoding="utf-8") == "unsaved work"
     assert {key: os.environ.get(key) for key in exported} == exported

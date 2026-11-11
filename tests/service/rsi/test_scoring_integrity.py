@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import types
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +16,8 @@ import pytest
 
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.rsi import RsiDatasetInvalid, build_rsi_service_context, load_dataset
-from chrys.service.rsi.case_runner import CaseErrorCause, CaseRunResult, StubCaseRunner
+from chrys.service.rsi import evaluator as evaluator_module
+from chrys.service.rsi.case_runner import CaseErrorCause, CaseRunResult, StubCaseRunner, case_sessions_dir
 from chrys.service.rsi.context import RsiServiceContext
 from chrys.service.rsi.dataset import RsiCase
 from chrys.service.rsi.errors import RsiBadRequest
@@ -79,23 +81,16 @@ async def test_adhoc_and_task_eval_score_a_dataset_with_helper_files_the_same(
     assert adhoc.errored_count == task.errored_count == 0
 
 
-def _task_input(workdir: Path) -> Path:
-    """The task's ``input/``, found the way an agent looking around above its folder finds it."""
-    for parent in workdir.parents:
-        if (parent / "input" / "dataset.json").is_file():
-            return parent / "input"
-    raise AssertionError(f"no task input/ above {workdir}")
-
-
 class _Tamperer:
-    """Changes the task's judge files, then answers wrong."""
+    """Changes the task's judge files by their absolute paths, then answers wrong."""
 
-    def __init__(self, tamper: Callable[[Path], None]) -> None:
+    def __init__(self, tamper: Callable[[Path], None], input_dir: Path) -> None:
         self._tamper = tamper
+        self._input_dir = input_dir
 
     async def run_case(self, case: RsiCase, workdir: Path) -> CaseRunResult:
         workdir.mkdir(parents=True, exist_ok=True)
-        self._tamper(_task_input(workdir))
+        self._tamper(self._input_dir)
         return CaseRunResult(case_id=case.case_id, response_text="wrong", workdir=workdir)
 
 
@@ -151,7 +146,7 @@ async def test_agent_that_changes_the_task_judge_files_fails_and_they_are_put_ba
     task_id = ctx.create_task(name="tamper", dataset_path=dataset)["task_id"]
     recorded = ctx.store.get(task_id).config["judge_files"]
 
-    result = await ctx.evaluate_task(task_id, runner=_Tamperer(tamper))
+    result = await ctx.evaluate_task(task_id, runner=_Tamperer(tamper, tmp_path / "tasks" / task_id / "input"))
 
     (record,) = result.records
     assert (record.passed, record.errored, record.attempts) == (False, False, 1)
@@ -171,6 +166,7 @@ async def test_candidate_that_changes_the_judge_is_not_adopted(tmp_path: Path) -
     ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
     task_id = ctx.create_task(name="tamper", max_iterations=1, dataset_path=dataset)["task_id"]
     recorded = ctx.store.get(task_id).config["judge_files"]
+    input_dir = tmp_path / "tasks" / task_id / "input"
     optimizer = _AppendFix()
 
     class _Honest:
@@ -183,7 +179,9 @@ async def test_candidate_that_changes_the_judge_is_not_adopted(tmp_path: Path) -
         base_profile=AgentProfile(name="RsiCandidate", instructions=""),
         max_epochs=1,
         optimizer=optimizer,
-        runner_factory=lambda p: _Tamperer(_pass_everything) if "FIX" in (p.instructions or "") else _Honest(),
+        runner_factory=lambda p: (
+            _Tamperer(_pass_everything, input_dir) if "FIX" in (p.instructions or "") else _Honest()
+        ),
     )
 
     (epoch,) = result.epochs
@@ -214,6 +212,120 @@ async def test_adhoc_eval_judges_with_the_files_it_started_with(tmp_path: Path) 
     assert (record.passed, [item["code"] for item in record.findings]) == (False, ["script"])
     # A user's own dataset folder is theirs: the evaluation never rewrites it.
     assert (dataset.parent / "check.py").read_text(encoding="utf-8") == "import sys\nsys.exit(0)\n"
+
+
+def _write_seeded_dataset(tmp_path: Path) -> Path:
+    seed = tmp_path / "project"
+    seed.mkdir()
+    (seed / "notes.txt").write_text("todo\n", encoding="utf-8")
+    case = {
+        "case_id": "notes",
+        "prompt": "Finish the notes",
+        "workdir": {"from": str(seed), "strategy": "copy"},
+        "evaluation": {"method": "script_based", "expect": {"file_contains": {"notes.txt": ["done"]}}},
+    }
+    path = tmp_path / "dataset.json"
+    path.write_text(json.dumps({"schema_version": 1, "dataset_id": "notes", "cases": [case]}), encoding="utf-8")
+    return path
+
+
+def _task_files_above(workdir: Path) -> list[Path]:
+    """The task's seeds and candidate profiles, as an agent looking in the folders above its own finds them."""
+    return [
+        path
+        for parent in workdir.parents
+        for path in (parent / "input" / "seeds", parent / "run" / "candidates")
+        if path.exists()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_looking_above_its_folder_cannot_change_the_seeds_or_candidates(tmp_path: Path) -> None:
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    task_id = ctx.create_task(name="snoop", max_iterations=1, dataset_path=_write_seeded_dataset(tmp_path))["task_id"]
+    found: list[Path] = []
+
+    class _Snooper:
+        """Finishes the notes in every seed it finds above its folder, never its own."""
+
+        async def run_case(self, case: RsiCase, workdir: Path) -> CaseRunResult:
+            for path in _task_files_above(workdir):
+                found.append(path)
+                for notes in path.rglob("notes.txt"):
+                    notes.write_text("done\n", encoding="utf-8")
+            return CaseRunResult(case_id=case.case_id, response_text="nothing", workdir=workdir)
+
+    result = await ctx.optimize_task(
+        task_id,
+        base_profile=AgentProfile(name="RsiCandidate", instructions=""),
+        max_epochs=1,
+        optimizer=_AppendFix(),
+        runner_factory=lambda _profile: _Snooper(),
+    )
+
+    assert found == []
+    assert result.best_score == result.baseline_score == 0.0
+
+
+class _LeavesWork:
+    """Finishes its notes, leaves a session beside its folder and remembers where it ran."""
+
+    def __init__(self) -> None:
+        self.ran_in: list[Path] = []
+
+    async def run_case(self, case: RsiCase, workdir: Path) -> CaseRunResult:
+        self.ran_in.append(workdir)
+        (workdir / "notes.txt").write_text("done\n", encoding="utf-8")
+        sessions = case_sessions_dir(workdir)
+        sessions.mkdir()
+        (sessions / "session.json").write_text("{}", encoding="utf-8")
+        return CaseRunResult(case_id=case.case_id, response_text="done", workdir=workdir)
+
+
+@pytest.mark.asyncio
+async def test_case_runs_outside_the_task_and_is_kept_with_its_evaluation(tmp_path: Path) -> None:
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    task_id = ctx.create_task(name="kept", dataset_path=_write_seeded_dataset(tmp_path))["task_id"]
+    runner = _LeavesWork()
+
+    result = await ctx.evaluate_task(task_id, runner=runner)
+
+    (ran_in,) = runner.ran_in
+    assert not ran_in.resolve().is_relative_to((tmp_path / "tasks").resolve())
+    kept = result.output_dir / "case_workspaces" / "notes"
+    (record,) = result.records
+    assert (Path(record.workdir), record.passed) == (kept, True)
+    assert (kept / "notes.txt").read_text(encoding="utf-8") == "done\n"
+    assert (case_sessions_dir(kept) / "session.json").is_file()
+    assert not ran_in.parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_case_folder_that_cannot_be_moved_stays_where_it_ran(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(src: Path, dst: Path) -> None:
+        raise PermissionError(f"cannot move {src} to {dst}")
+
+    shadow = types.ModuleType("shutil")
+    shadow.__dict__.update(shutil.__dict__)
+    shadow.move = refuse
+    monkeypatch.setattr(evaluator_module, "shutil", shadow)
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    task_id = ctx.create_task(name="stays", dataset_path=_write_seeded_dataset(tmp_path))["task_id"]
+    runner = _LeavesWork()
+
+    result = await ctx.evaluate_task(task_id, runner=runner)
+
+    (ran_in,) = runner.ran_in
+    try:
+        (record,) = result.records
+        assert (Path(record.workdir), record.passed) == (ran_in, True)
+        assert (ran_in / "notes.txt").read_text(encoding="utf-8") == "done\n"
+        assert (case_sessions_dir(ran_in) / "session.json").is_file()
+        assert not (result.output_dir / "case_workspaces" / "notes").exists()
+    finally:
+        shutil.rmtree(ran_in.parent)
 
 
 @pytest.mark.asyncio

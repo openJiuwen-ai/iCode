@@ -54,9 +54,11 @@ To work on a **code tree** (add a feature, fix a bug), add a `workdir` seed. The
 
 Every git repository in the case is a fresh private repository. That includes the top-level one, nested ones, submodules and a copied linked worktree. Each has the same commits as your source, but no remotes and no link back to your repositories, so a commit, checkout or `git push` in a case cannot change your own repositories. Uncommitted edits in your source show up as uncommitted edits in the case. A `.git` entry that git cannot open (for example a worktree whose main repository was moved) stops the run with an error naming it.
 
-The agent's own git commands reach only its case folder. Even if you start `icode rsi` from a git hook, or from a terminal that sets `GIT_DIR` or `GIT_WORK_TREE`, those settings are cleared while a case runs. In a case folder that has no repository of its own, git reports that there is no repository instead of finding one in a folder above it.
+The agent's own git commands never reach your repositories. Even if you start `icode rsi` from a git hook, or from a terminal that sets `GIT_DIR` or `GIT_WORK_TREE`, those settings are cleared while a case runs. Git never looks for a repository in the folders above the case folder: in a case that has no repository of its own, git reports that there is none, even when the agent runs git from one of those folders.
 
 When you `create --dataset`, each seed is snapshotted under the task’s `input/seeds/<case_id>/` and the stored dataset is rewritten to `copy` from that snapshot, so later eval/optimize never touch the caller’s original path again.
+
+Each case runs in a new folder inside your system's temporary folder, outside the task, so a relative path such as `../..` leads the agent to none of the task's files (its dataset, seeds or candidate profiles). Once the case is judged, RSI moves the folder into the evaluation's `case_workspaces/` (see [Inspect results](#6-inspect-results)). To put the temporary folder elsewhere, set `TMPDIR` (on Windows, `TEMP`), for example when your temporary folder is kept in memory and your seeds are large. If the move fails, the folder stays where it ran, and its path is the case's `workdir` in `cases.jsonl`.
 
 Keep prompts from already containing the strings or files you will check for. Otherwise the baseline may pass for the wrong reason, and optimize has nothing useful to fix.
 
@@ -96,7 +98,7 @@ Or dry-run without a model (requires `fixture` on each case):
 icode rsi eval --task rsi-<id> --stub
 ```
 
-Results go under the task by default. If you pass `--out DIR`, choose a directory outside any git repository and outside every `workdir.from` source. `eval` refuses an `--out` inside a git repository, because a case without its own repository would otherwise run git against yours.
+Results go under the task by default. If you pass `--out DIR`, choose a directory outside any git repository and outside every `workdir.from` source. `eval` refuses an `--out` inside a git repository, because the judged case folders, with the private repositories in them, would otherwise land inside yours.
 
 To score a profile YAML that is not in your agents directory, such as a candidate you exported with `install`, pass `--profile` instead of `-a`. This is how you check an exported candidate on a second dataset it was not optimized on:
 
@@ -171,7 +173,7 @@ Also open on disk (under `~/.chrys/rsi/tasks/rsi-<id>/` by default):
 | `run/best.json` | Pointer to the best adopted candidate (`kind`: stub or live) |
 | `run/candidates/<run>-…/` | Profile YAML + `mutations.json` (per optimize run) |
 | `run/analysis/<run>/epoch-N.json` | Failure summary and proposed mutations |
-| `run/evaluations/<label>/eval-<id>/` | `scorecard.json`, `cases.jsonl`, and each case's working folder under `case_workspaces/<case_id>/` |
+| `run/evaluations/<label>/eval-<id>/` | `scorecard.json`, `cases.jsonl`, and each case's working folder, moved here once the case is judged: `case_workspaces/<case_id>/` (`retry_workspaces/<case_id>/` for a case that ran a second time) |
 | `run/evaluations/<label>/eval-<id>/case_workspaces/.<case_id>.sessions/` | The live case run's session, kept next to (not inside) the folder the agent worked in |
 | `tree.json` | Evolution tree (`ADOPTED` / `REJECTED`) |
 
@@ -288,7 +290,7 @@ Requires `cargo` on `PATH`. Trusted script timeout is 300s (cold builds). Case-r
 #### Why this suite is a good demo
 
 - **Hard enough that baseline often scores `0.0`.** Soft arithmetic can pass; the judge also requires right-associative `2^3^2` → `512+0i`, reciprocal `(2-i)^(-1)`, bare `i` / `-i`, precedence without parentheses, and **non-zero exit** on malformed input such as `1++2i` (must not silently collapse `++`).
-- **Ground truth is not in the workdir.** The empty seed does not contain expected answers. **Known limit:** live case runs skip tool approval (like `icode run`), so an agent can read trusted `check.py` under the task `input/` if it chooses — keep sensitive scoring logic in mind when you design datasets. If an agent changes it, RSI puts it back and fails that case (see [Status and limits](#status-and-limits)).
+- **Ground truth is not in the workdir.** The empty seed does not contain expected answers. **Known limit:** live case runs skip tool approval (like `icode run`), so an agent that looks up the task folder by its full path can read trusted `check.py` under the task `input/` if it chooses — keep sensitive scoring logic in mind when you design datasets. If an agent changes it, RSI puts it back and fails that case (see [Status and limits](#status-and-limits)).
 - **Optimize has something to fix.** Typical failures are parser/precedence/invalid-exit bugs. Successful epochs often `append_instructions` and/or `upsert_inline_skill` (for example a short “strict lexer / reject `1++2i`” skill) rather than rewriting the whole profile.
 - **Live runners load builtins first**, then overlay the candidate, so Code’s Explore/General sub-agents resolve like a normal headless session.
 
@@ -385,8 +387,8 @@ After the baseline, each later epoch first re-runs only cases that are still fai
 - Experimental: do not treat exports as production agent configuration until you have reviewed them.
 - CLI only: no TUI or ACP entry points for RSI.
 - `icode rsi start` remains a mock training loop and does not run optimize.
-- Case workspaces sit under the task tree; a browsing agent may be able to read `input/dataset.json`. Prefer prompts and layouts that do not make the expect strings trivial to discover from the task directory.
-- Agents run without approval prompts, so one can also change files in the task's `input/` folder. RSI checks the files the judge reads (check scripts, `support_files` and `dataset.json`) after every case run. If the agent changed any of them, RSI puts the originals back, and that case fails with the finding `judge_tampered`. If those files were changed some other way, for example by hand or by a run that was killed, `eval` and `optimize` stop with an error naming them: create the task again from your dataset. Seeds under `input/seeds/` are not checked. With `eval --dataset`, the checks use your dataset's files as they were when the evaluation started, and RSI never changes your dataset folder. This is a safeguard, not a sandbox: an agent determined to cheat can still reach anything your user account can.
+- Cases run outside the task folder, but an agent that looks up the task by its full path (under `~/.chrys/rsi/tasks/` by default) can still read `input/dataset.json`. Prefer prompts and layouts that do not make the expect strings trivial to discover from the task directory.
+- Agents run without approval prompts, so one can also change files in the task folder by their full paths. RSI checks the files the judge reads (check scripts, `support_files` and `dataset.json`) after every case run. If the agent changed any of them, RSI puts the originals back, and that case fails with the finding `judge_tampered`. If those files were changed some other way, for example by hand or by a run that was killed, `eval` and `optimize` stop with an error naming them: create the task again from your dataset. Seeds under `input/seeds/` and candidate profiles under `run/candidates/` are not checked. With `eval --dataset`, the checks use your dataset's files as they were when the evaluation started, and RSI never changes your dataset folder. This is a safeguard, not a sandbox: an agent determined to cheat can still reach anything your user account can.
 - Each case runs once per evaluation. Live agents do not behave the same way every time, so with only a few cases a single lucky or unlucky run can decide whether a candidate is adopted. Use several cases per behavior you care about, and re-check an exported candidate with `eval --profile` (ideally on a dataset it was not optimized on) before you rely on it.
 - Live case runs use your normal setup: your hooks, MCP servers and skills apply to every case, so scores from different machines or setups are not directly comparable, and a hook with side effects runs once per case and epoch.
 - With `strategy: "copy"`, everything in the source folder is copied into each case, including files such as `.env`. The agent works there without approval prompts, so keep secrets out of seed folders (or use `git_clone`, which copies only committed files).

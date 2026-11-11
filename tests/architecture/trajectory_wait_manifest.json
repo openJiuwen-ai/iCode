@@ -5038,13 +5038,16 @@
       ]
     },
     "chrys.service.rsi.evaluator": {
+      "ScriptBasedEvaluator._attempt": [
+        ["wrapper", "await self._run_case(case, scratch / case.case_id, dataset_dir=dataset_dir)", "unresolved", "chrys.service.rsi.evaluator.ScriptBasedEvaluator._run_case"]
+      ],
       "ScriptBasedEvaluator._run_case": [
         ["awaitable", "await self.runner.run_case(case, workdir)", "unresolved"]
       ],
       "ScriptBasedEvaluator.run_suite": [
         ["awaitable", "await emit('node', 'created', {'node': {'ref': 'root', 'parent_ref': None, 'type': 'ROOT', 'accepted': True, 'score': None, 'summary': f'dataset {dataset.dataset_id}'}})", "unresolved"],
-        ["wrapper", "await self._run_case(case, cases_dir / case.case_id, dataset_dir=dataset_dir)", "unresolved", "chrys.service.rsi.evaluator.ScriptBasedEvaluator._run_case"],
-        ["wrapper", "await self._run_case(case, out / 'retry_workspaces' / case.case_id, dataset_dir=dataset_dir)", "unresolved", "chrys.service.rsi.evaluator.ScriptBasedEvaluator._run_case"],
+        ["wrapper", "await self._attempt(case, cases_dir, dataset_dir=dataset_dir, inputs=inputs, guard_inputs=guard_inputs)", "unresolved", "chrys.service.rsi.evaluator.ScriptBasedEvaluator._attempt"],
+        ["wrapper", "await self._attempt(case, out / 'retry_workspaces', dataset_dir=dataset_dir, inputs=inputs, guard_inputs=guard_inputs, first=first)", "unresolved", "chrys.service.rsi.evaluator.ScriptBasedEvaluator._attempt"],
         ["awaitable", "await emit('node', 'created', {'node': {'ref': node_ref, 'parent_ref': 'root', 'type': 'ADOPTED' if record.passed else 'REJECTED', 'accepted': record.passed, 'score': record.score, 'summary': case.case_id, 'failure_reason': record.error or (record.findings[0]['message'] if record.findings else None)}})", "unresolved"],
         ["awaitable", "await emit('progress', 'metric', {'iteration': index, 'total_iterations': total, 'score': passed_so_far / total if total else 0.0, 'baseline': None})", "unresolved"]
       ],
