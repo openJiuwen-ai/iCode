@@ -250,3 +250,53 @@ def test_enforce_requires_parser_at_load(tmp_path, monkeypatch):
     monkeypatch.setattr(pj, "_ensure_bash_parser", bad_parser)
     with pytest.raises(RuntimeError, match="tree-sitter"):
         pj.load_policy(file)
+
+
+@pytest.mark.parametrize(
+    ("dialect", "command"),
+    [
+        ("bash", "ls *.py"),
+        ("bash", "cat pyproject.toml"),
+        ("bash", "git status --short"),
+        ("bash", "git push"),
+        ("bash", "find . -delete"),
+        ("bash", "ls > output.txt"),
+        ("bash", "echo rm"),
+        ("bash", "ruff check --fix"),
+        ("zsh", "ls *.py"),
+        ("pwsh", "Get-Content foo"),
+    ],
+)
+def test_builtin_policy_exactly_preserves_legacy_readonly(monkeypatch, dialect, command):
+    from chrys.service.tools.builtins.shell_filter import is_safe_readonly_command
+
+    monkeypatch.setattr(
+        pj,
+        "analyze",
+        lambda *args, **kwargs: pj.Analysis(False, False, (), ("unsupported_construct",)),
+    )
+    policy = _policy(pj._BUILTIN_READONLY_RULE)
+    expected = is_safe_readonly_command(command, shell_name=dialect)
+    actual = pj.route(command, dialect, policy)
+    assert (actual.route is pj.Route.ALLOW) == expected
+    if expected:
+        assert actual.reason_code == "builtin_readonly"
+        assert actual.matched_rule_ids == ("__builtin_readonly__",)
+
+
+def test_explicit_block_precedes_builtin_readonly(monkeypatch):
+    monkeypatch.setattr(
+        pj,
+        "analyze",
+        lambda *a, **kw: pj.Analysis(True, True, (_command(["ls", "x"]),), ()),
+    )
+    policy = _policy(_rule("no-ls", pj.Route.BLOCK, "prefix_first", "ls"), pj._BUILTIN_READONLY_RULE)
+    assert pj.route("ls x", "bash", policy).route is pj.Route.BLOCK
+
+
+def test_policy_includes_readonly_without_user_configuration(tmp_path, monkeypatch):
+    monkeypatch.setattr(pj, "_ensure_bash_parser", lambda: None)
+    path = tmp_path / "prejudge.yaml"
+    path.write_text('schema_version: 1\nmode: "enforce"\npolicy_id: test\nrules: []\n', encoding="utf-8")
+    policy = pj.load_policy(path)
+    assert policy.rules == (pj._BUILTIN_READONLY_RULE,)

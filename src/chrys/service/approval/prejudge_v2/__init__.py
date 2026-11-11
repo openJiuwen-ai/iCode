@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import shlex
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -74,7 +73,7 @@ class PreJudgeResult:
     analysis_digest: str
 
 
-MatcherField = Literal["argv_exact", "argv_first", "prefix_first"]
+MatcherField = Literal["argv_exact", "argv_first", "prefix_first", "readonly_safe"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +96,20 @@ class Policy:
     mode: str
     policy_id: str
     rules: tuple[Rule, ...]
+
+
+# An enabled policy implicitly contains this whole-command built-in rule. It
+# reuses the original read-only validator instead of approximating it by argv.
+_BUILTIN_READONLY_RULE = Rule("__builtin_readonly__", Route.ALLOW, Matcher("readonly_safe", ()))
+
+
+@lru_cache(maxsize=32)
+def _warn_unsupported_dialect(dialect: str) -> None:
+    logger.warning(
+        "Structured Pre-Judge rules do not support %r; "
+        "the built-in legacy readonly policy may still auto-approve it",
+        dialect,
+    )
 
 
 _OPAQUE = frozenset(
@@ -159,6 +172,123 @@ def _digest(command: str, dialect: str) -> str:
     return hashlib.sha256((dialect + "\x00" + command).encode("utf-8", errors="surrogatepass")).hexdigest()
 
 
+def _ansi_c_literal(source: str) -> str | None:
+    """Decode verified, locale-independent Bash ANSI-C escapes only."""
+    escapes = {
+        "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b",
+        "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+        "\\": "\\", "'": "'", '"': '"', "?": "?",
+    }
+    result: list[str] = []
+    i = 0
+    while i < len(source):
+        if source[i] != "\\":
+            result.append(source[i])
+            i += 1
+            continue
+        if i + 1 >= len(source):
+            return None
+        kind = source[i + 1]
+        if kind in escapes:
+            result.append(escapes[kind])
+            i += 2
+            continue
+        if kind in "01234567":
+            j = i + 1
+            while j < min(len(source), i + 4) and source[j] in "01234567":
+                j += 1
+            value = int(source[i + 1 : j], 8)
+        elif kind == "x":
+            j = i + 2
+            while j < min(len(source), i + 4) and source[j] in "0123456789abcdefABCDEF":
+                j += 1
+            if j == i + 2:
+                return None
+            value = int(source[i + 2 : j], 16)
+        else:
+            return None
+        if not 0 < value < 128:
+            return None
+        result.append(chr(value))
+        i = j
+    return "".join(result)
+
+
+def _literal_word(raw: str) -> str | None:
+    """Certify static Bash words; never interpret shlex output as Bash argv.
+
+    Quoted concatenation and escapes are recognized, but globs, braces,
+    unquoted tildes, parameter substitution and unknown syntax remain dynamic.
+    """
+    result: list[str] = []
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if raw.startswith("$'", i):
+            j = i + 2
+            while j < len(raw):
+                if raw[j] == "\\":
+                    j += 2
+                elif raw[j] == "'":
+                    break
+                else:
+                    j += 1
+            if j >= len(raw):
+                return None
+            decoded = _ansi_c_literal(raw[i + 2 : j])
+            if decoded is None:
+                return None
+            result.append(decoded)
+            i = j + 1
+            continue
+        if ch == "'":
+            j = raw.find("'", i + 1)
+            if j < 0:
+                return None
+            result.append(raw[i + 1 : j])
+            i = j + 1
+            continue
+        if ch == '"':
+            i += 1
+            while i < len(raw) and raw[i] != '"':
+                if raw[i] in ("$", chr(96)):
+                    return None
+                if raw[i] == "\\":
+                    if i + 1 >= len(raw):
+                        return None
+                    following = raw[i + 1]
+                    if following in ("$", chr(96), '"', "\\"):
+                        result.append(following)
+                        i += 2
+                        continue
+                    if following == "\n":
+                        i += 2
+                        continue
+                    result.append("\\")
+                    i += 1
+                    continue
+                result.append(raw[i])
+                i += 1
+            if i >= len(raw):
+                return None
+            i += 1
+            continue
+        if ch == "\\":
+            if i + 1 >= len(raw):
+                return None
+            if raw[i + 1] != "\n":
+                result.append(raw[i + 1])
+            i += 2
+            continue
+        if ch in ("$", chr(96), "*", "?", "[", "{", "}", "~", ";", "&", "|", "(", ")", "<", ">"):
+            return None
+        if ch.isspace():
+            return None
+        result.append(ch)
+        i += 1
+    return "".join(result)
+
+
 def _dynamic(node: Any) -> bool:
     if node.type in _DYNAMIC or node.type in {"ERROR", "MISSING"} or node.is_missing:
         return True
@@ -171,8 +301,7 @@ def _parse_command(node: Any, data: bytes) -> CommandNode:
     if head is None:
         return CommandNode((node.start_byte, node.end_byte), None, (), text)
     words = [head]
-    # Collect only ordered literal arguments. Assignment/redirect nodes are
-    # not argv, but a reliable head can still trigger a block.
+    # Assignments and redirects are not argv, but a known head can BLOCK.
     for child in node.named_children:
         if child.id == head.id:
             continue
@@ -185,18 +314,11 @@ def _parse_command(node: Any, data: bytes) -> CommandNode:
             complete = False
             break
         raw = data[word.start_byte : word.end_byte].decode("utf-8")
-        if any(ch in raw for ch in "*?[") and word.type in {"word", "command_name"}:
+        token = _literal_word(raw)
+        if token is None:
             complete = False
             break
-        try:
-            token = shlex.split(raw, posix=True)
-        except ValueError:
-            complete = False
-            break
-        if len(token) != 1:
-            complete = False
-            break
-        prefix.append(token[0])
+        prefix.append(token)
     return CommandNode(
         (node.start_byte, node.end_byte),
         tuple(prefix) if complete else None,
@@ -228,10 +350,8 @@ def analyze(command: str, *, dialect: str = "bash") -> Analysis:
         raise RuntimeError("Enable the optional pre-judge dependencies first") from exc
     tree = Parser(_language()).parse(data)
     root = tree.root_node
-    if root.has_error:
-        return Analysis(False, False, (), ("parse_error",))
     nodes: list[CommandNode] = []
-    unsupported: list[str] = []
+    unsupported: list[str] = ["parse_error"] if root.has_error else []
     pending = [(root, 0)]
     count = 0
     while pending:
@@ -239,7 +359,13 @@ def analyze(command: str, *, dialect: str = "bash") -> Analysis:
         count += 1
         if count > 20000 or depth > 128:
             return Analysis(True, False, tuple(nodes), ("limit_exceeded",))
+        if node.type in {"ERROR", "MISSING"} or node.is_missing:
+            # Recovered syntax is not reliable executable evidence.
+            continue
         if node.type == "command":
+            if node.has_error:
+                unsupported.append("parse_error")
+                continue
             nodes.append(_parse_command(node, data))
             if any(c.type not in _QUOTED and c.type != "command_name" for c in node.named_children):
                 unsupported.append("unsupported_construct")
@@ -261,7 +387,7 @@ def analyze(command: str, *, dialect: str = "bash") -> Analysis:
         unsupported.append("dynamic_word")
     if any(n.prefix and n.prefix[0] in _OPAQUE for n in nodes):
         unsupported.append("opaque_carrier")
-    return Analysis(True, not unsupported, tuple(nodes), tuple(dict.fromkeys(unsupported)))
+    return Analysis(not root.has_error, not unsupported, tuple(nodes), tuple(dict.fromkeys(unsupported)))
 
 
 def _ensure_bash_parser() -> None:
@@ -310,7 +436,7 @@ def _compile_enabled_policy(content: dict[str, Any], mode: str) -> Policy:
         if not isinstance(raw, dict) or set(raw) != {"id", "effect", "target", "match"}:
             raise ValueError("Invalid pre-judge rule fields; expected id, effect, target, match")
         rid, effect, target = (raw[key] for key in ("id", "effect", "target"))
-        if not isinstance(rid, str) or not rid or rid in seen:
+        if not isinstance(rid, str) or not rid or rid in seen or rid == _BUILTIN_READONLY_RULE.id:
             raise ValueError("Duplicate or invalid pre-judge rule ID")
         if effect not in ("allow", "block") or target != "command":
             raise ValueError("Invalid pre-judge effect or target")
@@ -318,11 +444,13 @@ def _compile_enabled_policy(content: dict[str, Any], mode: str) -> Policy:
         matcher = _compile_matcher(raw["match"], effect=decision)
         seen.add(rid)
         rules.append(Rule(rid, decision, matcher))
-    return Policy(mode, ident, tuple(rules))
+    return Policy(mode, ident, (*rules, _BUILTIN_READONLY_RULE))
 
 
 def _matches(matcher: Matcher, node: CommandNode) -> bool:
     """No expansions, expression interpreter or implicit prefix matching."""
+    if matcher.field == "readonly_safe":
+        return False  # evaluated against the complete command after YAML BLOCK
     if matcher.field == "prefix_first":
         return bool(node.prefix) and node.prefix[0] == matcher.tokens[0]
     if node.argv is None:
@@ -364,12 +492,16 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
     if policy.mode == "off":
         return PreJudgeResult(Route.DEFER, "off", (), (), policy.policy_id, digest)
     analysis = analyze(command, dialect=dialect)
+    if dialect not in {"bash", "git_bash"}:
+        _warn_unsupported_dialect(dialect)
     matched: list[str] = []
     spans: list[tuple[int, int]] = []
     all_allowed = analysis.coverage_complete
     for node in analysis.executable_nodes:
         allowed = False
         for rule in policy.rules:
+            if rule.match.field == "readonly_safe":
+                continue
             # ALLOW can never be justified by only a static prefix.
             match = _matches(rule.match, node)
             if match:
@@ -384,6 +516,25 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
             all_allowed = False
     if all_allowed:
         return PreJudgeResult(Route.ALLOW, "all_units_allowed", tuple(matched), tuple(spans), policy.policy_id, digest)
+    if _BUILTIN_READONLY_RULE in policy.rules:
+        # Whole-command legacy behavior, including globs, redirections,
+        # specialized Git/ruff/find checks and supported non-Bash dialects.
+        try:
+            from chrys.service.tools.builtins.shell_filter import is_safe_readonly_command
+
+            readonly = is_safe_readonly_command(command, shell_name=dialect)
+        except Exception:
+            logger.exception("Built-in read-only policy failed; deferring")
+            readonly = False
+        if readonly:
+            return PreJudgeResult(
+                Route.ALLOW,
+                "builtin_readonly",
+                (_BUILTIN_READONLY_RULE.id,),
+                ((0, len(command.encode("utf-8", errors="surrogatepass"))),),
+                policy.policy_id,
+                digest,
+            )
     return PreJudgeResult(
         Route.DEFER,
         analysis.unsupported[0] if analysis.unsupported else "unmatched_unit",

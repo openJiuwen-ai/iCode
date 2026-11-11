@@ -273,3 +273,65 @@ async def test_enforce_without_command_text_logs_defer_and_asks(monkeypatch, cap
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, approve)
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_executions", "expected_requests"),
+    [
+        ("git status", 1, 0),
+        ("ls *.py", 1, 0),  # Legacy readonly approval, now a built-in policy
+        ("rm x", 0, 0),  # Explicit YAML BLOCK
+        ("git\\\nstatus", 0, 1),  # Escaped newline is not static argv [git, status]
+        ('unsafe_tool -f "pyproject."*', 0, 1),  # Concatenated glob is dynamic
+    ],
+)
+async def test_real_parser_yaml_policy_and_approval_integration(
+    tmp_path, monkeypatch, command, expected_executions, expected_requests
+):
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_bash")
+    from chrys.service.approval.prejudge_v2 import load_policy
+
+    policy_file = tmp_path / "prejudge.yaml"
+    policy_file.write_text(
+        'schema_version: 1\nmode: "enforce"\npolicy_id: end-to-end\n'
+        'rules:\n'
+        '  - id: block-rm\n    effect: block\n    target: command\n'
+        '    match:\n      prefix_first: [rm]\n'
+        '  - id: allow-status\n    effect: allow\n    target: command\n'
+        '    match:\n      argv_exact: [git, status]\n'
+        '  - id: bad-static-glob\n    effect: allow\n    target: command\n'
+        '    match:\n      argv_exact: [unsafe_tool, "-f", "pyproject.*"]\n',
+        encoding="utf-8",
+    )
+    policy = load_policy(policy_file)
+    monkeypatch.setattr(approval_module, "load_policy", lambda _: policy)
+    tool = FunctionTool(name="bash")
+    set_tool_kind(tool, KIND_SHELL)
+    bus = EventBus()
+    requests: list[ApprovalRequest] = []
+
+    async def reject(request: ApprovalRequest) -> None:
+        requests.append(request)
+        await bus.publish(ApprovalResponse(request_id=request.request_id, approved=False))
+
+    await bus.subscribe(ApprovalRequest, reject)
+    middleware = ApprovalMiddleware(
+        ApprovalPolicy(ApprovalConfig(default="require"), tools=[tool]),
+        bus,
+        approval_mode=ApprovalMode.MANUAL,
+    )
+    context = FunctionInvocationContext(tool, {"command": command})
+    executions = 0
+
+    async def execute() -> None:
+        nonlocal executions
+        executions += 1
+
+    try:
+        await middleware.process(context, execute)
+        assert executions == expected_executions
+        assert len(requests) == expected_requests
+    finally:
+        await middleware.close()
+        await bus.unsubscribe(ApprovalRequest, reject)

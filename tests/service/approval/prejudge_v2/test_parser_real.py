@@ -106,3 +106,45 @@ def test_yaml_matchers_with_real_bash_ast(tmp_path):
     for command, expected in cases:
         result = route(command, "bash", policy)
         assert result.route is expected, (command, expected, result)
+
+
+@pytest.mark.parametrize(
+    ("command", "argv"),
+    [
+        ("git\\\nstatus", ("git", "status")),
+        ('rm -f "pyproject."*', ("rm", "-f", "pyproject.*")),
+        ("rm -f {a,b}.txt", ("rm", "-f", "{a,b}.txt")),
+        ("echo ~", ("echo", "~")),
+    ],
+)
+def test_expansions_never_mistaken_for_static_exact_argv(command, argv):
+    from chrys.service.approval.prejudge_v2 import Matcher, Policy, Rule
+
+    # Isolate explicit static-argv matching from built-in readonly parity.
+    policy = Policy("enforce", "regression", (Rule("allow", Route.ALLOW, Matcher("argv_exact", argv)),))
+    assert route(command, "bash", policy).route is not Route.ALLOW
+
+
+@pytest.mark.parametrize("command", ["$'rm' x", r"$'\x72m' x", "rm x\n)"])
+def test_reliable_block_evidence_survives_quotes_and_trailing_syntax_errors(command):
+    from chrys.service.approval.prejudge_v2 import Matcher, Policy, Rule
+
+    policy = Policy(
+        "enforce",
+        "regression",
+        (Rule("block-rm", Route.BLOCK, Matcher("prefix_first", ("rm",))),),
+    )
+    result = route(command, "bash", policy)
+    assert result.route is Route.BLOCK, (command, result)
+    if ")" in command:
+        assert not analyze(command).syntax_valid
+        assert not analyze(command).coverage_complete
+
+
+def test_quoted_tilde_remains_literal():
+    from chrys.service.approval.prejudge_v2 import Matcher, Policy, Rule
+
+    policy = Policy(
+        "enforce", "regression", (Rule("allow", Route.ALLOW, Matcher("argv_exact", ("echo", "~"))),)
+    )
+    assert route("echo '~'", "bash", policy).route is Route.ALLOW

@@ -1,6 +1,6 @@
 # 结构化 Shell Pre-Judge
 
-iCode 可以使用 Tree-sitter 和**固定结构的 YAML 匹配规则**分析 Bash 指令，再进入原有工具审批。功能**默认关闭**，不替换旧 regex/readonly Pre-Judge、DAA、Hook、授权复用或后置 Shell Command Filter。
+iCode 可以使用 Tree-sitter 和**固定结构的 YAML 匹配规则**分析 Bash 指令，再进入原有工具审批。功能**默认关闭**，保留原有 Hook、审批流程、DAA（已有授权复用机制）和**执行前** Shell Command Filter 的行为。`enforce` 模式下由等价的内置策略规则保留原 readonly 快捷批准功能。
 
 将配置存放在受信任的用户级目录中（macOS/Linux 通常为 `~/.chrys/prejudge.yaml`），不会从项目工作目录加载策略。
 
@@ -40,10 +40,12 @@ rules:
 
 ### 鉴权语义
 
-BLOCK 优先于 ALLOW。要自动 ALLOW，必须所有可执行 AST 节点匹配 ALLOW、命令 `argv` 完整且语法覆盖完整；否则 DEFER，走常规审批（`enforce` 不再使用旧 readonly 快捷批准）。**静态前缀只能用于 BLOCK**。例如 `echo "rm"` 里的 `rm` 是参数，不是另一个可执行命令。
+BLOCK 优先于 ALLOW。要自动 ALLOW，必须所有可执行 AST 节点匹配 ALLOW、命令 `argv` 完整且语法覆盖完整；否则结构化规则 DEFER，随后会评估**隐式内置 readonly ALLOW 规则**（`__builtin_readonly__`）：它调用原有 `is_safe_readonly_command()` 对**整条命令**判断，保留 Git 等命令专用验证、通配符和已支持的 Shell 方言。用户 YAML BLOCK 优先于内置 readonly 规则。若内置规则不匹配，继续原有审批流程；无需手工将旧 readonly 规则写入 YAML。**静态前缀只能用于 BLOCK**。例如 `echo "rm"` 里的 `rm` 是参数，不是另一个可执行命令。
 
-`mode` 必须加引号，避免 YAML 将 `off` 转成布尔值。`off` 保留旧行为；`shadow` 只记录观察结果；`enforce` 执行明确的 BLOCK 和完全覆盖的 ALLOW。enforce 配置无效时初始化失败；shadow 配置错误会记录警告并停止观察。显式 BYPASS 不执行新 BLOCK 规则；无交互的 `icode run` 和 `icode workflow run` 使用 BYPASS。
+`mode` 必须加引号，避免 YAML 将 `off` 转成布尔值。`off` 保留旧行为；`shadow` 只记录观察结果；`enforce` 执行明确的 BLOCK 和完全覆盖的 ALLOW。enforce 配置无效时初始化失败；**可解析且明确声明 `shadow`** 的配置若规则无效或缺少依赖，会记录警告并关闭观察。YAML 语法损坏或模式无效时无法可靠确定 `shadow`，配置加载失败。显式 BYPASS 不执行新 BLOCK 规则；无交互的 `icode run` 和 `icode workflow run` 使用 BYPASS。
 
-当前只支持 Bash/Git Bash。zsh、sh、dash、PowerShell、cmd.exe、动态展开、重定向、通配符及多数控制流构造不允许自动 ALLOW；内部可靠识别的静态命令仍有机会触发 BLOCK。匹配采用字面量命令名，不自动规范化可执行文件路径。例如 `prefix_first: [rm]` 不会命中 `/bin/rm -rf x`，而是进入 DEFER（不会自动允许）。像 `command rm`、`env rm`、`time rm` 这样的包装命令按 opaque 处理并 DEFER，不能假设 `prefix_first: [rm]` 会命中包装命令里的 `rm`。本功能不能取代完整的 Shell 安全边界。
+新 AST Matcher 当前只支持 Bash/Git Bash。zsh、sh、dash、PowerShell、cmd.exe、动态展开、重定向、通配符及多数控制流构造不能通过 AST 规则自动 ALLOW；可靠识别的静态命令仍可触发 BLOCK。不支持的 Shell 方言会记录警告，但内置 readonly 规则仍沿用原有判断行为。匹配采用字面量命令名，不自动规范化可执行文件路径。例如 `prefix_first: [rm]` 不会命中 `/bin/rm -rf x`，而是进入 DEFER（不会自动允许）。像 `command rm`、`env rm`、`time rm` 这样的包装命令按 opaque 处理并 DEFER，不能假设 `prefix_first: [rm]` 会命中包装命令里的 `rm`。本功能不能取代完整的 Shell 安全边界。
 
 **依赖：**启用该功能需要 `tree-sitter==0.25.1` 与 `tree-sitter-bash==0.25.1`。默认 `off` 不会加载 Tree-sitter。依赖锁定和 Linux 离线发行的完整验证仍属于独立发行验收项。
+
+**原有审批流程：**首次 Pre-Judge 在 `before_tool_call` Hook 之后执行。用户在审批窗口主动编辑并批准命令后，会再次运行 Hook，但不会重新进入 Pre-Judge 或 LLM Judge；显式 BYPASS 同样保留原有行为，不运行 YAML BLOCK。这里的 BLOCK 是审批阶段的判定，不是全局不可覆盖的禁止名单。
