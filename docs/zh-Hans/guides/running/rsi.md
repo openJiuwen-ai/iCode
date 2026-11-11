@@ -102,7 +102,13 @@ icode rsi eval --task rsi-<id> --stub
 icode rsi eval --dataset ./held-out.json --profile ./candidate.yaml -m <model>
 ```
 
-Stdout 会显示 `passed=N/M` 和 `errored=K`。case 根本没能跑完时（模型或 provider 出错、case 超时、工作目录准备失败）记为 **errored**，它在 `cases.jsonl` 里的记录带 `"errored": true` 和错误信息。errored 的 case 在这个分数里算未通过，所以先看看它们，再把分数当作 agent 的水平。
+Stdout 会显示 `passed=N/M` 和 `errored=K`。case 因 agent 以外的原因没能跑，或者撞上了 `--timeout`，会在新的工作目录里再跑一次（记录里显示 `"attempts": 2`），以第二次的结果为准：
+
+- **errored**：仍有 agent 控制不了的原因让它没能跑：模型或 provider 出错（iCode 自己的重试之后仍然失败），或者工作目录准备失败。它在 `cases.jsonl` 里的记录带 `"errored": true` 和错误信息。
+- **未通过**，发现项为 `case_timeout`：两次都撞上了 `--timeout`。agent 陷入循环或者做得太慢，是要改进的地方，不是环境坏了。
+- **未通过**，发现项为 `agent_error`，不再重跑：是 agent 自己让这次运行结束的。它的对话超出了模型的上下文窗口、请求大到 provider 不接受、被 provider 的内容过滤拒绝，或者在无人值守的运行里向用户提问。
+
+errored 的 case 在这个分数里算未通过，所以先看看它们，再把分数当作 agent 的水平。
 
 为什么：在烧 epoch 之前确认数据集与 headless 路径可用。若直接 `optimize` 可跳过（optimize 总会先打基线分）。
 
@@ -120,7 +126,7 @@ icode rsi optimize rsi-<id> --agent Code -m <model> --epochs 2 --timeout 180
 4. **Gate** — 先**只重跑仍失败的 case**（快速拒绝）；合并分数看起来更好时，再**用完整套件确认**后才采纳。`perfect` / `best` 一律以完整套件结果为准。
 5. 直到 epoch 用尽、分数已完美，或模型返回空的 `{"mutations":[]}`（主动停止）。模型调用失败或非法 JSON 会 **drop** 该轮并继续；被丢弃的提议不会安装。
 
-只有判分脚本实际判过的 case 才参与比较。没能跑完的 case（见第 4 步的 **errored**）会再跑一次。如果基线仍有这样的 case，optimize 会报错停止并列出它们，因为没有哪个候选能和这样的基线公平比较：请检查模型和 provider，或加大 `--timeout`。如果某个候选仍有这样的 case，这一轮记为 **inconclusive**：不采纳，下一轮从当前 best 继续。
+只有判分脚本实际判过的 case 才参与比较；每次评测都会像第 4 步那样，给 errored 或超时的 case 再跑一次。如果基线仍有 **errored** 的 case，optimize 会报错停止并列出它们，因为没有哪个候选能和这样的基线公平比较：请检查模型、provider 和 case 的准备步骤。如果某个候选仍有 errored 的 case，这一轮记为 **inconclusive**：不采纳，下一轮从当前 best 继续。超时和 agent 自己结束的运行和其他失败一样：优化器能看到它们（`case_timeout`、`agent_error`），可以提出修改。
 
 `best.json`（`install` 导出的就是它）只在本轮跑完后写入，而且只在可比的运行之间比较分数：
 

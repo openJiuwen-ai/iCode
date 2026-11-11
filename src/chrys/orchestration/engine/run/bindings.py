@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from chrys.foundation.errors import clean_error_message
+from chrys.foundation.errors import classify_error, clean_error_message
 from chrys.foundation.errors.display import display_fields
 from chrys.foundation.events.types import (
     AgentThinking,
@@ -678,6 +678,7 @@ class TurnBindings:
                 session_id=self._session_id,
                 display_message=display_message,
                 display_hint=display_hint,
+                reason=classify_error(e).kind.value,
             )
         )
         logger.debug("Turn traceback:\n%s", tb)

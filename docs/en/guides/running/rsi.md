@@ -102,7 +102,13 @@ To score a profile YAML that is not in your agents directory, such as a candidat
 icode rsi eval --dataset ./held-out.json --profile ./candidate.yaml -m <model>
 ```
 
-Stdout shows `passed=N/M` and `errored=K`. A case counts as **errored** when it could not run at all (the model or provider failed, the case timed out, or its workdir could not be prepared); its record in `cases.jsonl` has `"errored": true` and the error. Errored cases count as not passed in this score, so look at them before reading the score as the agent's quality.
+Stdout shows `passed=N/M` and `errored=K`. A case that something outside the agent kept from running, or that hit `--timeout`, is run once more in a fresh workdir (its record shows `"attempts": 2`), and the second run is what counts:
+
+- **Errored**: something the agent does not control still kept it from running. The model or provider failed (after iCode's own retries), or its workdir could not be prepared. Its record in `cases.jsonl` has `"errored": true` and the error.
+- **Failed**, with the finding `case_timeout`: it hit `--timeout` on both runs. An agent that loops or works too slowly is something to improve, not a broken setup.
+- **Failed**, with the finding `agent_error` and no second run: the agent itself ended the run. Its conversation outgrew the model's context window, a request grew too large for the provider, the provider's content filter refused it, or it asked a question no one can answer in a headless run.
+
+Errored cases count as not passed in this score, so look at them before reading the score as the agent's quality.
 
 Why: useful to confirm the dataset and headless path before spending optimize epochs. Skip this if you will go straight to `optimize` (optimize always scores a baseline first).
 
@@ -120,7 +126,7 @@ What happens inside one `optimize`:
 4. **Gate** — first re-run **only cases that are still failing** (fast reject). If the merged score looks better, **confirm on the full suite** before adopting. `perfect` and `best` always reflect a full-suite result.
 5. Repeat until epochs are exhausted, the score is perfect, or the optimizer returns an empty `{"mutations":[]}` (deliberate stop). A bad model call or invalid JSON **drops** that epoch and continues; nothing from a dropped proposal is installed.
 
-Only cases the checks actually judged are compared. A case that could not run (see **errored** in step 4) is run once more. If the baseline still has such cases, optimize stops with an error that names them, because no candidate can be compared fairly against it: check the model and provider, or raise `--timeout`. If a candidate still has such cases, its epoch is **inconclusive**: it is not adopted, and the next epoch carries on from the current best.
+Only cases the checks actually judged are compared, and every evaluation gives an errored or timed-out case its second run, as in step 4. If the baseline still has **errored** cases, optimize stops with an error that names them, because no candidate can be compared fairly against it: check the model, the provider and the case setup. If a candidate still has errored cases, its epoch is **inconclusive**: it is not adopted, and the next epoch carries on from the current best. Timeouts and runs the agent ended are failures like any other: the optimizer sees them (`case_timeout`, `agent_error`) and can propose a fix.
 
 `best.json` (what `install` exports) is written only when the run finishes, and only scores from comparable runs are weighed against each other:
 

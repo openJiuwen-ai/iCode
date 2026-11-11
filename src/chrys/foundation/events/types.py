@@ -1195,6 +1195,11 @@ class Error(Event):
     request that brought them; ``injection`` (a message sent into a running turn) refuses
     only itself, and the turn it was sent into goes on.
     """
+    reason: str = ""
+    """Machine-readable cause within ``code``, for callers that act on it; empty when ``code`` says it all.
+
+    A failed turn (``executor_error``) names the failure's ``ErrorKind`` value.
+    """
 
 
 @dataclass

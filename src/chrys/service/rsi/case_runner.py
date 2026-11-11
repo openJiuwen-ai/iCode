@@ -10,12 +10,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.rsi.dataset import RsiCase
 from chrys.service.rsi.mutations import case_marker
 from chrys.service.rsi.paths import safe_relpath_under
+
+CaseErrorCause = Literal["environment", "timeout", "agent"]
+"""What ended a case run with an error.
+
+``environment``: something the agent does not control (the model service, the
+network, the case setup). ``timeout``: the case's time limit, which a slow
+environment and a stuck agent both reach. ``agent``: the agent's own run, e.g.
+its conversation outgrew the model's context window.
+"""
 
 
 @dataclass(slots=True, frozen=True)
@@ -27,6 +36,8 @@ class CaseRunResult:
     workdir: Path
     error: str | None = None
     session_id: str | None = None
+    error_cause: CaseErrorCause = "environment"
+    """Meaningful only when ``error`` is set."""
 
     @property
     def ok(self) -> bool:

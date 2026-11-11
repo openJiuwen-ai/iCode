@@ -10,13 +10,21 @@ from pathlib import Path
 
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings
+from chrys.foundation.errors import ErrorKind
+from chrys.foundation.events.types import Error
 from chrys.foundation.models.session_surface import SessionSurface
-from chrys.orchestration.session_host import ChrysSessionHost
+from chrys.orchestration.session_host import ChrysSessionHost, HeadlessRunError
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.profiles.models.registry import ModelProfileRegistry
-from chrys.service.rsi.case_runner import CaseRunner, CaseRunResult, StubCaseRunner, case_sessions_dir
+from chrys.service.rsi.case_runner import (
+    CaseErrorCause,
+    CaseRunner,
+    CaseRunResult,
+    StubCaseRunner,
+    case_sessions_dir,
+)
 from chrys.service.rsi.dataset import RsiCase
 from chrys.service.rsi.errors import RsiBadRequest, RsiNotReady
 from chrys.service.state.store import JsonFileStateStore
@@ -76,19 +84,30 @@ class HeadlessCaseRunner:
         except TimeoutError as exc:
             timeout = self.timeout
             if timeout is not None and time.monotonic() - started >= timeout:
-                error = f"case run timed out after {timeout:g}s"
-            else:
-                error = str(exc) or type(exc).__name__
-            return CaseRunResult(case_id=case.case_id, response_text="", workdir=workdir, error=error)
+                return _failed(case, workdir, f"case run timed out after {timeout:g}s", cause="timeout")
+            return _failed(case, workdir, str(exc) or type(exc).__name__, cause="environment")
+        except HeadlessRunError as exc:
+            return _failed(case, workdir, str(exc) or type(exc).__name__, cause=_cause_of(exc.event))
         except Exception as exc:
-            return CaseRunResult(
-                case_id=case.case_id,
-                response_text="",
-                workdir=workdir,
-                error=str(exc) or type(exc).__name__,
-            )
+            return _failed(case, workdir, str(exc) or type(exc).__name__, cause="environment")
         finally:
             await host.shutdown()
+
+
+# Failures the agent's own conversation causes: what it sent, not where it ran.
+_AGENT_ERROR_KINDS = frozenset({ErrorKind.CONTEXT_OVERFLOW, ErrorKind.PAYLOAD_TOO_LARGE, ErrorKind.CONTENT_FILTERED})
+
+
+def _cause_of(error: Error) -> CaseErrorCause:
+    if error.code == "headless_interaction_required":
+        return "agent"
+    if error.code == "executor_error" and error.reason in _AGENT_ERROR_KINDS:
+        return "agent"
+    return "environment"
+
+
+def _failed(case: RsiCase, workdir: Path, error: str, *, cause: CaseErrorCause) -> CaseRunResult:
+    return CaseRunResult(case_id=case.case_id, response_text="", workdir=workdir, error=error, error_cause=cause)
 
 
 def build_case_runner(

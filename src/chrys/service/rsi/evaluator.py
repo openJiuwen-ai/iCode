@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -36,10 +36,11 @@ class CaseEvalRecord:
     workdir: str
     session_id: str | None
     prompt: str = ""
+    attempts: int = 1
 
     @property
     def errored(self) -> bool:
-        """The case could not run (runner error, timeout, workdir setup); the judge never saw it."""
+        """The case could not run for a reason outside the agent; the judge never saw it."""
         return self.error is not None
 
     def to_dict(self) -> dict[str, Any]:
@@ -54,6 +55,7 @@ class CaseEvalRecord:
             "workdir": self.workdir,
             "session_id": self.session_id,
             "prompt": self.prompt,
+            "attempts": self.attempts,
         }
 
 
@@ -97,6 +99,7 @@ class EvalSuiteResult:
                     "errored": record.errored,
                     "score": record.score,
                     "error": record.error,
+                    "attempts": record.attempts,
                 }
                 for record in self.records
             ],
@@ -104,7 +107,13 @@ class EvalSuiteResult:
 
 
 class ScriptBasedEvaluator:
-    """Phase 2 evaluator: case runner + script_based judge + durable artifacts."""
+    """Phase 2 evaluator: case runner + script_based judge + durable artifacts.
+
+    A case that errors (the environment kept it from running, or it reached
+    its time limit) runs once more in ``retry_workspaces/<case_id>``, and its
+    record is the second attempt's. A timeout on that second attempt counts
+    as the agent's: a judged failure, like any error the agent caused.
+    """
 
     def __init__(self, runner: CaseRunner) -> None:
         self.runner = runner
@@ -159,19 +168,12 @@ class ScriptBasedEvaluator:
         total = len(dataset.cases)
         dataset_dir = dataset.source_path.parent
         for index, case in enumerate(dataset.cases, start=1):
-            workdir = cases_dir / case.case_id
-            try:
-                if case.workdir is not None:
-                    materialize_workdir(case.workdir, dest=workdir, dataset_dir=dataset_dir)
-                run = await self.runner.run_case(case, workdir)
-            except RsiBadRequest as exc:
-                run = CaseRunResult(
-                    case_id=case.case_id,
-                    response_text="",
-                    workdir=workdir,
-                    error=exc.message,
-                )
-            record = _record_for(case, run, judge_dir=judge_dir)
+            run = await self._run_case(case, cases_dir / case.case_id, dataset_dir=dataset_dir)
+            record = _record_for(case, run, judge_dir=judge_dir, last_attempt=False)
+            if record.errored:
+                # One more run, in a fresh workdir: a passing hiccup must not decide the score.
+                run = await self._run_case(case, out / "retry_workspaces" / case.case_id, dataset_dir=dataset_dir)
+                record = replace(_record_for(case, run, judge_dir=judge_dir, last_attempt=True), attempts=2)
             records.append(record)
             node_ref = f"case-{case.case_id}"
             await emit(
@@ -215,6 +217,14 @@ class ScriptBasedEvaluator:
         _write_artifacts(result)
         return result
 
+    async def _run_case(self, case: RsiCase, workdir: Path, *, dataset_dir: Path) -> CaseRunResult:
+        try:
+            if case.workdir is not None:
+                materialize_workdir(case.workdir, dest=workdir, dataset_dir=dataset_dir)
+            return await self.runner.run_case(case, workdir)
+        except RsiBadRequest as exc:
+            return CaseRunResult(case_id=case.case_id, response_text="", workdir=workdir, error=exc.message)
+
 
 def merge_suite(previous: EvalSuiteResult, partial: EvalSuiteResult) -> EvalSuiteResult:
     """Overlay *partial* case records onto *previous* and recompute the suite score.
@@ -238,15 +248,28 @@ def merge_suite(previous: EvalSuiteResult, partial: EvalSuiteResult) -> EvalSuit
     )
 
 
-def _record_for(case: RsiCase, run: CaseRunResult, *, judge_dir: Path) -> CaseEvalRecord:
+def _record_for(case: RsiCase, run: CaseRunResult, *, judge_dir: Path, last_attempt: bool) -> CaseEvalRecord:
+    """Judge *run*, or record why it could not be judged.
+
+    What the agent caused is a judged failure the optimizer sees. A timeout is
+    the agent's only when it repeats on the last attempt. Anything else stays
+    errored, kept out of every score comparison.
+    """
     if not run.ok:
+        message = run.error or "runner failed"
+        if run.error_cause == "agent":
+            code = "agent_error"
+        elif run.error_cause == "timeout" and last_attempt:
+            code = "case_timeout"
+        else:
+            code = "runner_error"
         return CaseEvalRecord(
             case_id=case.case_id,
             passed=False,
             score=0.0,
             response_text=run.response_text,
-            findings=({"code": "runner_error", "message": run.error or "runner failed"},),
-            error=run.error,
+            findings=({"code": code, "message": message},),
+            error=message if code == "runner_error" else None,
             workdir=str(run.workdir),
             session_id=run.session_id,
             prompt=case.prompt,

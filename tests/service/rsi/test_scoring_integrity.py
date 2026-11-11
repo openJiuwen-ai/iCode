@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.rsi import RsiDatasetInvalid, build_rsi_service_context, load_dataset
-from chrys.service.rsi.case_runner import CaseRunResult, StubCaseRunner
+from chrys.service.rsi.case_runner import CaseErrorCause, CaseRunResult, StubCaseRunner
 from chrys.service.rsi.dataset import RsiCase
 from chrys.service.rsi.errors import RsiBadRequest
 from chrys.service.rsi.evaluator import CaseEvalRecord
@@ -103,10 +104,23 @@ def _write_response_dataset(path: Path, needles: dict[str, str]) -> Path:
     return path
 
 
+@dataclass(frozen=True)
+class _Fail:
+    error: str
+    cause: CaseErrorCause
+
+
+_PROVIDER_DOWN = _Fail("provider unavailable", "environment")
+_TIMED_OUT = _Fail("case run timed out after 1s", "timeout")
+_OVERFLOWED = _Fail("context window exceeded", "agent")
+
+type _Plan = dict[tuple[str, bool], list[str | _Fail]]
+
+
 class _ScriptedRunner:
     """Answers or fails per (case, whether the profile carries ``FIX``); counts calls."""
 
-    def __init__(self, profile: AgentProfile, plan: dict[tuple[str, bool], list[str | None]], calls: list[str]):
+    def __init__(self, profile: AgentProfile, plan: _Plan, calls: list[str]):
         self._fixed = "FIX" in (profile.instructions or "")
         self._plan = plan
         self._calls = calls
@@ -116,14 +130,21 @@ class _ScriptedRunner:
         self._calls.append(f"{case.case_id}:{'fixed' if self._fixed else 'base'}")
         outcomes = self._plan[(case.case_id, self._fixed)]
         outcome = outcomes.pop(0) if len(outcomes) > 1 else outcomes[0]
-        if outcome is None:
-            return CaseRunResult(case_id=case.case_id, response_text="", workdir=workdir, error="provider timed out")
+        if isinstance(outcome, _Fail):
+            return CaseRunResult(
+                case_id=case.case_id,
+                response_text="",
+                workdir=workdir,
+                error=outcome.error,
+                error_cause=outcome.cause,
+            )
         return CaseRunResult(case_id=case.case_id, response_text=outcome, workdir=workdir)
 
 
 class _AppendFix:
     def __init__(self) -> None:
         self.histories: list[tuple[ProposalOutcome, ...]] = []
+        self.failures: list[list[CaseEvalRecord]] = []
 
     async def propose(
         self,
@@ -137,10 +158,11 @@ class _AppendFix:
         del profile, instruction, epoch
         assert all(not record.errored for record in failed)
         self.histories.append(history)
+        self.failures.append(failed)
         return MutationProposal.ready([AppendInstructions(text="FIX")])
 
 
-async def _optimize(tmp_path: Path, needles: dict[str, str], plan, *, epochs: int = 1):
+async def _optimize(tmp_path: Path, needles: dict[str, str], plan: _Plan, *, epochs: int = 1):
     dataset = _write_response_dataset(tmp_path / "dataset.json", needles)
     ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
     task_id = ctx.create_task(name="errors", max_iterations=epochs, dataset_path=dataset)["task_id"]
@@ -157,9 +179,10 @@ async def _optimize(tmp_path: Path, needles: dict[str, str], plan, *, epochs: in
 
 
 @pytest.mark.asyncio
-async def test_baseline_error_that_clears_on_retry_does_not_adopt_a_no_op(tmp_path: Path) -> None:
-    # The agent always answers correctly; only its very first run hits a provider timeout.
-    plan = {("hello", False): [None, "hello"], ("hello", True): ["hello"]}
+@pytest.mark.parametrize("hiccup", [_PROVIDER_DOWN, _TIMED_OUT], ids=["provider-down", "timed-out"])
+async def test_baseline_hiccup_that_clears_on_retry_does_not_adopt_a_no_op(tmp_path: Path, hiccup: _Fail) -> None:
+    # The agent always answers correctly; only its very first run fails.
+    plan: _Plan = {("hello", False): [hiccup, "hello"], ("hello", True): ["hello"]}
     _ctx, _task_id, result, calls, optimizer = await _optimize(tmp_path, {"hello": "hello"}, plan)
     assert calls == ["hello:base", "hello:base"]
     assert result.baseline_score == result.best_score == 1.0
@@ -170,14 +193,80 @@ async def test_baseline_error_that_clears_on_retry_does_not_adopt_a_no_op(tmp_pa
 
 @pytest.mark.asyncio
 async def test_baseline_that_keeps_erroring_stops_optimize(tmp_path: Path) -> None:
-    plan = {("hello", False): [None], ("hello", True): ["hello"]}
-    with pytest.raises(RsiBadRequest, match=r"baseline could not run 1 of 1 case.*hello: provider timed out"):
+    plan: _Plan = {("hello", False): [_PROVIDER_DOWN], ("hello", True): ["hello"]}
+    with pytest.raises(RsiBadRequest, match=r"baseline could not run 1 of 1 case.*hello: provider unavailable"):
         await _optimize(tmp_path, {"hello": "hello"}, plan)
 
 
 @pytest.mark.asyncio
+async def test_baseline_case_that_always_times_out_is_a_failure_a_candidate_can_fix(tmp_path: Path) -> None:
+    # The base agent loops on "build" until the time limit, every time; the candidate stops looping.
+    plan: _Plan = {
+        ("build", False): [_TIMED_OUT],
+        ("hello", False): ["hello"],
+        ("build", True): ["built"],
+        ("hello", True): ["hello"],
+    }
+    _ctx, _task_id, result, calls, optimizer = await _optimize(
+        tmp_path, {"build": "built", "hello": "hello"}, plan, epochs=1
+    )
+    assert calls.count("build:base") == 2
+    assert result.baseline_score == 0.5
+    ([seen],) = optimizer.failures
+    assert (seen.case_id, seen.errored, seen.attempts) == ("build", False, 2)
+    assert seen.findings == ({"code": "case_timeout", "message": "case run timed out after 1s"},)
+    (epoch,) = result.epochs
+    assert (epoch.adopted, epoch.inconclusive) == (True, False)
+    assert result.best_score == 1.0
+
+
+@pytest.mark.asyncio
+async def test_error_the_agent_caused_is_a_failure_and_is_not_run_again(tmp_path: Path) -> None:
+    plan: _Plan = {("hello", False): [_OVERFLOWED], ("hello", True): ["hello"]}
+    _ctx, _task_id, result, calls, optimizer = await _optimize(tmp_path, {"hello": "hello"}, plan)
+    assert calls.count("hello:base") == 1
+    assert result.baseline_score == 0.0
+    ([seen],) = optimizer.failures
+    assert (seen.errored, seen.attempts) == (False, 1)
+    assert seen.findings == ({"code": "agent_error", "message": "context window exceeded"},)
+    assert result.best_score == 1.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcomes", "passed", "errored", "finding"),
+    [
+        ([_PROVIDER_DOWN, "hello"], True, False, None),
+        ([_TIMED_OUT, "hello"], True, False, None),
+        ([_PROVIDER_DOWN], False, True, "runner_error"),
+        ([_TIMED_OUT], False, False, "case_timeout"),
+    ],
+    ids=["provider-clears", "timeout-clears", "provider-stays-down", "timeout-repeats"],
+)
+async def test_evaluation_keeps_the_second_run_of_an_errored_or_timed_out_case(
+    tmp_path: Path, outcomes: list[str | _Fail], passed: bool, errored: bool, finding: str | None
+) -> None:
+    dataset = _write_response_dataset(tmp_path / "dataset.json", {"hello": "hello"})
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    calls: list[str] = []
+    runner = _ScriptedRunner(AgentProfile(name="Agent", instructions=""), {("hello", False): outcomes}, calls)
+    result = await ctx.evaluate_dataset(dataset, runner=runner, output_dir=tmp_path / "out")
+    assert calls == ["hello:base", "hello:base"]
+    (record,) = result.records
+    assert (record.passed, record.errored, record.attempts) == (passed, errored, 2)
+    assert [item["code"] for item in record.findings][:1] == ([finding] if finding else [])
+    assert Path(record.workdir) == result.output_dir / "retry_workspaces" / "hello"
+    scorecard = json.loads(result.scorecard_path.read_text(encoding="utf-8"))
+    assert (scorecard["passed"], scorecard["errored"], scorecard["cases"][0]["attempts"]) == (
+        int(passed),
+        int(errored),
+        2,
+    )
+
+
+@pytest.mark.asyncio
 async def test_candidate_erroring_in_the_gate_is_inconclusive(tmp_path: Path) -> None:
-    plan = {("alpha", False): ["nothing"], ("alpha", True): [None]}
+    plan: _Plan = {("alpha", False): ["nothing"], ("alpha", True): [_PROVIDER_DOWN]}
     ctx, task_id, result, calls, optimizer = await _optimize(tmp_path, {"alpha": "alpha"}, plan, epochs=2)
     assert calls.count("alpha:fixed") == 4  # one gate run plus its retry, per epoch
     assert [(epoch.inconclusive, epoch.adopted) for epoch in result.epochs] == [(True, False), (True, False)]
@@ -190,11 +279,11 @@ async def test_candidate_erroring_in_the_gate_is_inconclusive(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_candidate_erroring_in_the_confirm_run_is_not_adopted(tmp_path: Path) -> None:
     # The candidate fixes alpha (the gate re-runs only alpha), but beta errors in the full confirm run.
-    plan = {
+    plan: _Plan = {
         ("alpha", False): ["beta only"],
         ("beta", False): ["beta"],
         ("alpha", True): ["alpha"],
-        ("beta", True): [None],
+        ("beta", True): [_PROVIDER_DOWN],
     }
     _ctx, _task_id, result, calls, _optimizer = await _optimize(
         tmp_path, {"alpha": "alpha", "beta": "beta"}, plan, epochs=1

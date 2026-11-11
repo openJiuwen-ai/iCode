@@ -1059,7 +1059,7 @@
       "TurnBindings.failed": [
         ["wrapper", "await self._finish_content('failed')", "unresolved", "chrys.orchestration.engine.run.bindings.TurnBindings._finish_content"],
         ["awaitable", "await self._hosted_bridge.attempt_rejected(err_msg)", "unresolved"],
-        ["awaitable", "await self._emitter.publish(Error(code='executor_error', message=err_msg, recoverable=True, session_id=self._session_id, display_message=display_message, display_hint=display_hint))", "unresolved"]
+        ["awaitable", "await self._emitter.publish(Error(code='executor_error', message=err_msg, recoverable=True, session_id=self._session_id, display_message=display_message, display_hint=display_hint, reason=classify_error(e).kind.value))", "unresolved"]
       ],
       "TurnBindings.finished": [
         ["wrapper", "await self._finish_content('interrupted' if interrupted else 'completed')", "unresolved", "chrys.orchestration.engine.run.bindings.TurnBindings._finish_content"],
@@ -4846,9 +4846,13 @@
       ]
     },
     "chrys.service.rsi.evaluator": {
+      "ScriptBasedEvaluator._run_case": [
+        ["awaitable", "await self.runner.run_case(case, workdir)", "unresolved"]
+      ],
       "ScriptBasedEvaluator.run_suite": [
         ["awaitable", "await emit('node', 'created', {'node': {'ref': 'root', 'parent_ref': None, 'type': 'ROOT', 'accepted': True, 'score': None, 'summary': f'dataset {dataset.dataset_id}'}})", "unresolved"],
-        ["awaitable", "await self.runner.run_case(case, workdir)", "unresolved"],
+        ["wrapper", "await self._run_case(case, cases_dir / case.case_id, dataset_dir=dataset_dir)", "unresolved", "chrys.service.rsi.evaluator.ScriptBasedEvaluator._run_case"],
+        ["wrapper", "await self._run_case(case, out / 'retry_workspaces' / case.case_id, dataset_dir=dataset_dir)", "unresolved", "chrys.service.rsi.evaluator.ScriptBasedEvaluator._run_case"],
         ["awaitable", "await emit('node', 'created', {'node': {'ref': node_ref, 'parent_ref': 'root', 'type': 'ADOPTED' if record.passed else 'REJECTED', 'accepted': record.passed, 'score': record.score, 'summary': case.case_id, 'failure_reason': record.error or (record.findings[0]['message'] if record.findings else None)}})", "unresolved"],
         ["awaitable", "await emit('progress', 'metric', {'iteration': index, 'total_iterations': total, 'score': passed_so_far / total if total else 0.0, 'baseline': None})", "unresolved"]
       ],
@@ -4867,14 +4871,10 @@
     },
     "chrys.service.rsi.optimizer": {
       "OptimizeLoop.run": [
-        ["wrapper", "await _evaluate_retrying_errors(evaluate, baseline_snap.profile, baseline_id, None)", "unresolved", "chrys.service.rsi.optimizer._evaluate_retrying_errors"],
+        ["awaitable", "await evaluate(baseline_snap.profile, baseline_id, None)", "unresolved"],
         ["awaitable", "await self.optimizer.propose(working_profile, failed, instruction=instruction, epoch=epoch, history=tuple(history))", "unresolved"],
-        ["wrapper", "await _evaluate_retrying_errors(evaluate, snap.profile, candidate_id, failed_ids)", "unresolved", "chrys.service.rsi.optimizer._evaluate_retrying_errors"],
-        ["wrapper", "await _evaluate_retrying_errors(evaluate, snap.profile, candidate_id, None)", "unresolved", "chrys.service.rsi.optimizer._evaluate_retrying_errors"]
-      ],
-      "_evaluate_retrying_errors": [
-        ["awaitable", "await evaluate(profile, label, case_ids)", "unresolved"],
-        ["awaitable", "await evaluate(profile, label, errored)", "unresolved"]
+        ["awaitable", "await evaluate(snap.profile, candidate_id, failed_ids)", "unresolved"],
+        ["awaitable", "await evaluate(snap.profile, candidate_id, None)", "unresolved"]
       ]
     },
     "chrys.service.rsi.provider": {

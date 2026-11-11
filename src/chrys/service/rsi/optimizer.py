@@ -260,12 +260,14 @@ class OptimizeLoop:
         only still-failing ids (fast reject), then a candidate that looks better
         is confirmed on the full suite before adoption.
 
-        Only judged outcomes are compared. Every evaluation re-runs the cases
-        that could not run (runner error, timeout, workdir setup) once; a
-        baseline that still has such cases stops the run, and a candidate that
-        does is recorded as inconclusive and never adopted. So ``best_eval`` is
-        always a complete full-suite result, and no run error reaches the
-        optimizer.
+        Only judged outcomes are compared. The evaluation itself re-runs once
+        every errored case (one the environment kept from running, or a first
+        timeout; see :class:`ScriptBasedEvaluator`); a baseline that still has
+        such cases stops the run, and a candidate that does is recorded as
+        inconclusive and never adopted. So ``best_eval`` is always a complete
+        full-suite result, and no environment error reaches the optimizer,
+        while what the agent caused (a repeated timeout, an overflowing
+        conversation) is a judged failure it can work on.
 
         ``best.json`` is written only after this run finishes successfully (see
         :func:`maybe_update_best_pointer` for when it is replaced). Candidate ids
@@ -286,7 +288,7 @@ class OptimizeLoop:
             mutations=(),
             epoch=0,
         )
-        baseline_eval = await _evaluate_retrying_errors(evaluate, baseline_snap.profile, baseline_id, None)
+        baseline_eval = await evaluate(baseline_snap.profile, baseline_id, None)
         if baseline_eval.errored_count:
             raise RsiBadRequest(_incomplete_baseline_message(baseline_eval))
         best_score = baseline_eval.score
@@ -363,7 +365,7 @@ class OptimizeLoop:
             mutation_dicts = tuple(m.to_dict() for m in mutations)
             kinds = ", ".join(mutation.kind for mutation in mutations)
             failed_ids = [record.case_id for record in failed]
-            gated_partial = await _evaluate_retrying_errors(evaluate, snap.profile, candidate_id, failed_ids)
+            gated_partial = await evaluate(snap.profile, candidate_id, failed_ids)
             gated = merge_suite(best_eval, gated_partial)
             if gated_partial.errored_count:
                 settle(
@@ -392,7 +394,7 @@ class OptimizeLoop:
                 continue
 
             # Full-suite confirm before adopting (guards regressions on prior passes).
-            confirmed = await _evaluate_retrying_errors(evaluate, snap.profile, candidate_id, None)
+            confirmed = await evaluate(snap.profile, candidate_id, None)
             if confirmed.errored_count:
                 settle(
                     _inconclusive_epoch(epoch, candidate_id, confirmed, mutation_dicts),
@@ -461,28 +463,14 @@ class OptimizeLoop:
         )
 
 
-async def _evaluate_retrying_errors(
-    evaluate: EvaluateFn,
-    profile: AgentProfile,
-    label: str,
-    case_ids: Collection[str] | None,
-) -> EvalSuiteResult:
-    """Evaluate, then re-run once every case that could not run and merge its new outcome."""
-    result = await evaluate(profile, label, case_ids)
-    errored = [record.case_id for record in result.records if record.errored]
-    if not errored:
-        return result
-    return merge_suite(result, await evaluate(profile, label, errored))
-
-
 def _incomplete_baseline_message(baseline: EvalSuiteResult) -> str:
     errored = [record for record in baseline.records if record.errored]
     shown = "; ".join(f"{record.case_id}: {record.error}" for record in errored[:3])
     more = f"; and {len(errored) - 3} more" if len(errored) > 3 else ""
     return (
         f"baseline could not run {len(errored)} of {baseline.total_count} case(s), even after a retry ({shown}{more}). "
-        "Candidates are only compared against a baseline that ran every case: check the model and provider, "
-        "or allow more time per case."
+        "Candidates are only compared against a baseline that ran every case: check the model, the provider "
+        "and the case setup."
     )
 
 
