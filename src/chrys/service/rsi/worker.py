@@ -122,10 +122,13 @@ class RsiWorker:
         self._runner = loop.create_task(self._run_loop(), name="chrys-rsi-worker")
 
     async def _run_loop(self) -> None:
+        # One task's failure must not strand the tasks queued behind it.
         while True:
             task_id = await self._queue.get()
             try:
                 await self._run_one(task_id)
+            except Exception:
+                logger.exception("RSI worker could not run %s", task_id)
             finally:
                 self._queue.task_done()
 
@@ -135,6 +138,13 @@ class RsiWorker:
         if task.status != TaskStatus.QUEUED.value:
             return
         self._running_task_id = task_id
+        try:
+            await self._execute(task_id)
+        finally:
+            self._execution.pop(task_id, None)
+            self._running_task_id = None
+
+    async def _execute(self, task_id: str) -> None:
         self.store.update_status(
             task_id,
             [TaskStatus.QUEUED.value],
@@ -159,7 +169,10 @@ class RsiWorker:
                 TaskStatus.TERMINATED.value,
                 cause="cancelled",
             )
-            raise
+            current = asyncio.current_task()
+            # terminate() cancels only the run task; the worker goes on to the next one.
+            if current is not None and current.cancelling():
+                raise
         except Exception as exc:
             logger.exception("RSI provider failed for %s", task_id)
             self.store.update_status(
@@ -178,9 +191,6 @@ class RsiWorker:
                     TaskStatus.COMPLETED.value,
                     cause="provider_done",
                 )
-        finally:
-            self._execution.pop(task_id, None)
-            self._running_task_id = None
 
     async def _consume_event(self, event: EngineEvent) -> None:
         task_id = event.task_id

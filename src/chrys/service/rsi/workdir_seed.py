@@ -28,11 +28,13 @@ Isolation rules:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import stat
 import subprocess
 import tempfile
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -75,6 +77,27 @@ def isolated_git_env(ceiling: Path | None) -> dict[str, str]:
     if ceiling is not None:
         env["GIT_CEILING_DIRECTORIES"] = str(ceiling)
     return env
+
+
+@contextlib.contextmanager
+def isolated_git_process_env(ceiling: Path) -> Generator[None]:
+    """Limit this process's own env as :func:`isolated_git_env` limits a child's, for the block.
+
+    For an agent session: its shell commands, hooks and MCP servers copy
+    ``os.environ`` when they start, so a ``GIT_DIR`` the caller exported would
+    point the agent's git at the caller's repository. The process env is
+    shared, so only one block may be open at a time.
+    """
+    saved = {key: value for key, value in os.environ.items() if _is_repo_selecting_git_var(key)}
+    for key in saved:
+        del os.environ[key]
+    os.environ["GIT_CEILING_DIRECTORIES"] = str(ceiling)
+    try:
+        yield
+    finally:
+        for key in [key for key in os.environ if _is_repo_selecting_git_var(key)]:
+            del os.environ[key]
+        os.environ.update(saved)
 
 
 _REPO_SELECTING_GIT_VARS = frozenset(

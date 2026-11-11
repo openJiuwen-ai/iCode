@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,12 +16,15 @@ import pytest
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.rsi import RsiDatasetInvalid, build_rsi_service_context, load_dataset
 from chrys.service.rsi.case_runner import CaseErrorCause, CaseRunResult, StubCaseRunner
+from chrys.service.rsi.context import RsiServiceContext
 from chrys.service.rsi.dataset import RsiCase
 from chrys.service.rsi.errors import RsiBadRequest
 from chrys.service.rsi.evaluator import CaseEvalRecord
+from chrys.service.rsi.judge_inputs import JudgeInputs
 from chrys.service.rsi.mutations import AppendInstructions
 from chrys.service.rsi.optimizer import MutationProposal, ProposalOutcome
 from chrys.service.rsi.snapshot import maybe_update_best_pointer, read_best_pointer
+from tests.support.symlinks import symlink_or_skip
 
 _CHECK_WITH_HELPER = """\
 import os
@@ -72,6 +77,170 @@ async def test_adhoc_and_task_eval_score_a_dataset_with_helper_files_the_same(
     task = await ctx.evaluate_task(task_id, runner=StubCaseRunner())
     assert adhoc.score == task.score == expected_score
     assert adhoc.errored_count == task.errored_count == 0
+
+
+def _task_input(workdir: Path) -> Path:
+    """The task's ``input/``, found the way an agent looking around above its folder finds it."""
+    for parent in workdir.parents:
+        if (parent / "input" / "dataset.json").is_file():
+            return parent / "input"
+    raise AssertionError(f"no task input/ above {workdir}")
+
+
+class _Tamperer:
+    """Changes the task's judge files, then answers wrong."""
+
+    def __init__(self, tamper: Callable[[Path], None]) -> None:
+        self._tamper = tamper
+
+    async def run_case(self, case: RsiCase, workdir: Path) -> CaseRunResult:
+        workdir.mkdir(parents=True, exist_ok=True)
+        self._tamper(_task_input(workdir))
+        return CaseRunResult(case_id=case.case_id, response_text="wrong", workdir=workdir)
+
+
+def _pass_everything(input_dir: Path) -> None:
+    (input_dir / "check.py").write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
+
+
+def _match_anything(input_dir: Path) -> None:
+    (input_dir / "helper.py").write_text("def matches(text, needle):\n    return True\n", encoding="utf-8")
+
+
+def _expect_wrong(input_dir: Path) -> None:
+    (input_dir / "expected" / "answer.txt").write_text("wrong\n", encoding="utf-8")
+
+
+def _drop_the_script(input_dir: Path) -> None:
+    payload = json.loads((input_dir / "dataset.json").read_text(encoding="utf-8"))
+    payload["cases"][0]["evaluation"] = {"method": "script_based", "expect": {"response_contains": ["wrong"]}}
+    (input_dir / "dataset.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _link_expected_outside(input_dir: Path) -> None:
+    outside = input_dir.parents[2] / "outside-expected"
+    outside.mkdir()
+    (outside / "answer.txt").write_text("wrong\n", encoding="utf-8")
+    shutil.rmtree(input_dir / "expected")
+    symlink_or_skip(input_dir / "expected", outside, target_is_directory=True)
+
+
+def _judge_files_now(ctx: RsiServiceContext, task_id: str) -> dict[str, str]:
+    input_file = ctx.store.get(task_id).input_file
+    assert input_file is not None
+    return JudgeInputs.capture(load_dataset(input_file)).fingerprints()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tamper", "changed"),
+    [
+        (_pass_everything, "check.py"),
+        (_match_anything, "helper.py"),
+        (_expect_wrong, "expected/answer.txt"),
+        (_drop_the_script, "dataset.json"),
+        (_link_expected_outside, "expected"),
+    ],
+    ids=["check-script", "helper", "expected-answer", "dataset-file", "support-folder-link"],
+)
+async def test_agent_that_changes_the_task_judge_files_fails_and_they_are_put_back(
+    tmp_path: Path, tamper: Callable[[Path], None], changed: str
+) -> None:
+    dataset = _write_helper_dataset(tmp_path / "suite", support_files=["helper.py", "expected/"])
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    task_id = ctx.create_task(name="tamper", dataset_path=dataset)["task_id"]
+    recorded = ctx.store.get(task_id).config["judge_files"]
+
+    result = await ctx.evaluate_task(task_id, runner=_Tamperer(tamper))
+
+    (record,) = result.records
+    assert (record.passed, record.errored, record.attempts) == (False, False, 1)
+    (finding,) = record.findings
+    assert finding["code"] == "judge_tampered"
+    assert changed in finding["message"].split(": ", 1)[1].split(", ")
+    assert _judge_files_now(ctx, task_id) == recorded
+    if tamper is _link_expected_outside:
+        assert (tmp_path / "outside-expected" / "answer.txt").read_text(encoding="utf-8") == "wrong\n"
+    honest = await ctx.evaluate_task(task_id, runner=StubCaseRunner())
+    assert (honest.score, honest.records[0].findings) == (1.0, ())
+
+
+@pytest.mark.asyncio
+async def test_candidate_that_changes_the_judge_is_not_adopted(tmp_path: Path) -> None:
+    dataset = _write_helper_dataset(tmp_path / "suite", support_files=["helper.py", "expected/"])
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    task_id = ctx.create_task(name="tamper", max_iterations=1, dataset_path=dataset)["task_id"]
+    recorded = ctx.store.get(task_id).config["judge_files"]
+    optimizer = _AppendFix()
+
+    class _Honest:
+        async def run_case(self, case: RsiCase, workdir: Path) -> CaseRunResult:
+            workdir.mkdir(parents=True, exist_ok=True)
+            return CaseRunResult(case_id=case.case_id, response_text="wrong", workdir=workdir)
+
+    result = await ctx.optimize_task(
+        task_id,
+        base_profile=AgentProfile(name="RsiCandidate", instructions=""),
+        max_epochs=1,
+        optimizer=optimizer,
+        runner_factory=lambda p: _Tamperer(_pass_everything) if "FIX" in (p.instructions or "") else _Honest(),
+    )
+
+    (epoch,) = result.epochs
+    assert (epoch.adopted, epoch.inconclusive) == (False, False)
+    assert result.best_score == result.baseline_score == 0.0
+    assert result.best_candidate_id.endswith("-baseline")
+    assert _judge_files_now(ctx, task_id) == recorded
+
+
+@pytest.mark.asyncio
+async def test_adhoc_eval_judges_with_the_files_it_started_with(tmp_path: Path) -> None:
+    dataset = _write_helper_dataset(tmp_path / "suite", support_files=["helper.py", "expected/"])
+    out = tmp_path / "adhoc"
+    seen_in_eval_folder: list[str] = []
+
+    class _EditsTheDataset:
+        async def run_case(self, case: RsiCase, workdir: Path) -> CaseRunResult:
+            workdir.mkdir(parents=True, exist_ok=True)
+            seen_in_eval_folder.extend(p.name for p in out.rglob("*") if p.name in {"check.py", "helper.py"})
+            _pass_everything(dataset.parent)
+            return CaseRunResult(case_id=case.case_id, response_text="wrong", workdir=workdir)
+
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    result = await ctx.evaluate_dataset(dataset, runner=_EditsTheDataset(), output_dir=out)
+
+    assert seen_in_eval_folder == []
+    (record,) = result.records
+    assert (record.passed, [item["code"] for item in record.findings]) == (False, ["script"])
+    # A user's own dataset folder is theirs: the evaluation never rewrites it.
+    assert (dataset.parent / "check.py").read_text(encoding="utf-8") == "import sys\nsys.exit(0)\n"
+
+
+@pytest.mark.asyncio
+async def test_task_whose_judge_files_changed_between_evaluations_is_refused(tmp_path: Path) -> None:
+    dataset = _write_helper_dataset(tmp_path / "suite", support_files=["helper.py", "expected/"])
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    task_id = ctx.create_task(name="changed", dataset_path=dataset)["task_id"]
+    input_dir = tmp_path / "tasks" / task_id / "input"
+    _expect_wrong(input_dir)
+    with pytest.raises(RsiBadRequest, match=r"changed since the task was created \(expected/answer\.txt\)"):
+        await ctx.evaluate_task(task_id, runner=StubCaseRunner())
+    with pytest.raises(RsiBadRequest, match=r"changed since the task was created"):
+        await ctx.optimize_task(task_id, max_epochs=1)
+    assert (input_dir / "expected" / "answer.txt").read_text(encoding="utf-8") == "wrong\n"
+
+
+@pytest.mark.asyncio
+async def test_task_created_before_judge_fingerprints_still_evaluates(tmp_path: Path) -> None:
+    dataset = _write_helper_dataset(tmp_path / "suite", support_files=["helper.py", "expected/"])
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    task_id = ctx.create_task(name="older", dataset_path=dataset)["task_id"]
+    task = ctx.store.get(task_id)
+    task.config = {key: value for key, value in task.config.items() if key != "judge_files"}
+    ctx.store.save(task)
+    result = await ctx.evaluate_task(task_id, runner=StubCaseRunner())
+    assert result.score == 1.0
+    assert "judge_files" not in ctx.store.get(task_id).config
 
 
 def test_support_files_must_exist_inside_the_dataset_folder(tmp_path: Path) -> None:

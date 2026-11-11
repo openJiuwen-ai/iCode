@@ -5019,7 +5019,7 @@
     },
     "chrys.service.rsi.context": {
       "RsiServiceContext.evaluate_dataset": [
-        ["awaitable", "await evaluator.run_suite(dataset, output_dir=out, on_event=on_event if project_task else None, task_id=project_task)", "unresolved"]
+        ["awaitable", "await evaluator.run_suite(dataset, output_dir=out, on_event=on_event if project_task else None, task_id=project_task, judge_inputs=inputs, guard_inputs=guard_inputs)", "unresolved"]
       ],
       "RsiServiceContext.evaluate_task": [
         ["wrapper", "await self.evaluate_dataset(dataset_path, runner=runner, output_dir=out, task_id=task_id)", "unresolved", "chrys.service.rsi.context.RsiServiceContext.evaluate_dataset"]
@@ -5093,6 +5093,12 @@
         ["wrapper", "await self._push('rsi.training.progress', task_id, progress)", "unresolved", "chrys.service.rsi.worker.RsiWorker._push"],
         ["wrapper", "await self._push('rsi.training.tree.delta', task_id, {'stage': event.payload})", "unresolved", "chrys.service.rsi.worker.RsiWorker._push"]
       ],
+      "RsiWorker._execute": [
+        ["future", "await run_task", "unresolved"]
+      ],
+      "RsiWorker._execute.on_event": [
+        ["wrapper", "await self._consume_event(event)", "unresolved", "chrys.service.rsi.worker.RsiWorker._consume_event"]
+      ],
       "RsiWorker._push": [
         ["awaitable", "await result", "unresolved"]
       ],
@@ -5101,10 +5107,7 @@
         ["wrapper", "await self._run_one(task_id)", "unresolved", "chrys.service.rsi.worker.RsiWorker._run_one"]
       ],
       "RsiWorker._run_one": [
-        ["future", "await run_task", "unresolved"]
-      ],
-      "RsiWorker._run_one.on_event": [
-        ["wrapper", "await self._consume_event(event)", "unresolved", "chrys.service.rsi.worker.RsiWorker._consume_event"]
+        ["wrapper", "await self._execute(task_id)", "unresolved", "chrys.service.rsi.worker.RsiWorker._execute"]
       ],
       "RsiWorker.drain": [
         ["awaitable", "await self._queue.join()", "unresolved"],

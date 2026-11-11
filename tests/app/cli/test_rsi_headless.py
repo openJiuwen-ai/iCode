@@ -4,18 +4,33 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 
+import chrys.orchestration.engine.build.builder as builder_module
 from chrys.app.cli import rsi_headless
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.errors import ErrorKind
 from chrys.foundation.events.types import Error
 from chrys.foundation.models.failures import FailureFacts
+from chrys.foundation.platform import get_platform
 from chrys.orchestration.session_host import HeadlessRunError, HeadlessRunResult
+from chrys.service.llm.mock import MockChatClient, MockResponse
+from chrys.service.profiles.agents.registry import AgentProfileRegistry
+from chrys.service.profiles.agents.schema import AgentProfile, CompactionConfig, ToolsConfig
+from chrys.service.profiles.models.registry import ModelProfileRegistry
+from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.rsi.case_runner import case_sessions_dir
 from chrys.service.rsi.dataset import RsiCase, ScriptExpect
+from chrys.service.rsi.workdir_seed import isolated_git_env
+from tests.support.waiting import ENGINE_TURN_TIMEOUT
 
 
 class _FakeEngine:
@@ -143,3 +158,95 @@ async def test_failed_case_run_reports_what_failed_and_who_caused_it(
     result = await runner.run_case(_case(), tmp_path / "case_workspaces" / "c1")
     assert (result.error, result.error_cause) == (error, cause)
     assert fake_host.created[0].shut_down is True
+
+
+# What an agent's shell command does with git in its case folder.
+_AGENT_GIT = """\
+import json, subprocess, sys
+from pathlib import Path
+
+def git(*args):
+    return subprocess.run(["git", *args], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+
+found = git("rev-parse", "--show-toplevel")
+Path("agent.txt").write_text("agent", encoding="utf-8")
+git("add", "-A")
+git("commit", "-q", "-m", "agent")
+git("reset", "-q", "--hard")
+Path(sys.argv[1]).write_text(json.dumps({"found": found.returncode == 0, "toplevel": found.stdout.strip()}))
+"""
+
+
+def _git_out(repo: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        env=isolated_git_env(None),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return completed.stdout.strip()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["exports GIT_DIR and GIT_WORK_TREE", "runs inside a repository"])
+async def test_agent_git_reaches_only_its_own_case_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_repo_factory: Callable[[Path], Path], caller: str
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    user_repo = git_repo_factory(tmp_path / "user-repo")
+    (user_repo / "README.md").write_text("unsaved work", encoding="utf-8")
+    if caller == "runs inside a repository":
+        workdir = user_repo / "rsi-out" / "case_workspaces" / "c1"
+    else:
+        workdir = tmp_path / "rsi-out" / "case_workspaces" / "c1"
+        monkeypatch.setenv("GIT_DIR", str(user_repo / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(user_repo))
+    exported = {key: os.environ.get(key) for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES")}
+    head = _git_out(user_repo, "rev-parse", "HEAD")
+
+    script, report = tmp_path / "agent_git.py", tmp_path / "agent_git.json"
+    script.write_text(_AGENT_GIT, encoding="utf-8")
+    prefix = "& " if sys.platform == "win32" else ""
+    command = f'{prefix}"{sys.executable}" "{script}" "{report}"'
+    client = MockChatClient(
+        responses=[
+            MockResponse(tool_calls=[(get_platform().shell.name, "c1", {"command": command, "reason": "git"})]),
+            MockResponse(text="ok"),
+        ]
+    )
+
+    async def create_client(_profile: Any = None, **_kwargs: Any) -> MockChatClient:
+        return client
+
+    monkeypatch.setattr(builder_module, "create_client", create_client)
+    models = ModelProfileRegistry()
+    models.register(ModelProfile(id="mock", name="mock", provider="mock", model_id="mock", stream=False))
+    agents = AgentProfileRegistry()
+    agents.register(
+        AgentProfile(
+            name="Probe",
+            instructions="Use git.",
+            tools=ToolsConfig(builtins=["shell"]),
+            compaction=CompactionConfig(enabled=False),
+        )
+    )
+    runner = rsi_headless.HeadlessCaseRunner(
+        agent="Probe",
+        settings=Settings(model_profile="mock"),
+        model_registry=models,
+        agent_registry=agents,
+        timeout=ENGINE_TURN_TIMEOUT,
+    )
+
+    result = await runner.run_case(_case(), workdir)
+
+    assert result.ok, result.error
+    assert json.loads(report.read_text(encoding="utf-8")) == {"found": False, "toplevel": ""}
+    assert (workdir / "agent.txt").is_file()
+    assert _git_out(user_repo, "rev-parse", "HEAD") == head
+    assert (user_repo / "README.md").read_text(encoding="utf-8") == "unsaved work"
+    assert {key: os.environ.get(key) for key in exported} == exported

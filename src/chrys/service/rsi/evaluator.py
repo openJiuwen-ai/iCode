@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -13,9 +14,10 @@ from typing import Any
 
 from chrys.foundation.platform.files import atomic_write_text
 from chrys.service.rsi.case_runner import CaseRunner, CaseRunResult
-from chrys.service.rsi.dataset import RsiCase, RsiDataset, stage_judge_inputs
+from chrys.service.rsi.dataset import RsiCase, RsiDataset
 from chrys.service.rsi.engine_events import EngineEvent
 from chrys.service.rsi.errors import RsiBadRequest
+from chrys.service.rsi.judge_inputs import JudgeInputs
 from chrys.service.rsi.models import utcnow_iso
 from chrys.service.rsi.script_judge import JudgeResult, judge_case
 from chrys.service.rsi.workdir_seed import materialize_workdir
@@ -118,6 +120,12 @@ class ScriptBasedEvaluator:
     record is the second attempt's, with the first attempt's error kept in
     ``first_error``. A case that times out on both attempts counts as the
     agent's: a judged failure, like any error the agent caused.
+
+    Check scripts run from the files captured when the suite started (see
+    :mod:`chrys.service.rsi.judge_inputs`). With ``guard_inputs``, the
+    dataset's own folder belongs to RSI: after every case run it is compared
+    with that capture, and a case whose agent changed it is put back and
+    fails with ``judge_tampered``.
     """
 
     def __init__(self, runner: CaseRunner) -> None:
@@ -130,10 +138,12 @@ class ScriptBasedEvaluator:
         output_dir: Path,
         on_event: EventSink | None = None,
         task_id: str = "",
+        judge_inputs: JudgeInputs | None = None,
+        guard_inputs: bool = False,
     ) -> EvalSuiteResult:
         run_id = f"eval-{uuid.uuid4().hex[:8]}"
         out = Path(output_dir) / run_id
-        judge_dir = stage_judge_inputs(dataset, out / "judge")
+        inputs = judge_inputs if judge_inputs is not None else JudgeInputs.capture(dataset)
         cases_dir = out / "case_workspaces"
         cases_dir.mkdir(parents=True, exist_ok=True)
         records: list[CaseEvalRecord] = []
@@ -174,11 +184,11 @@ class ScriptBasedEvaluator:
         dataset_dir = dataset.source_path.parent
         for index, case in enumerate(dataset.cases, start=1):
             first = await self._run_case(case, cases_dir / case.case_id, dataset_dir=dataset_dir)
-            record = _record_for(case, first, judge_dir=judge_dir)
+            record = _settle(case, first, inputs=inputs, guard_inputs=guard_inputs)
             if record.errored:
                 # One more run, in a fresh workdir: a passing hiccup must not decide the score.
                 retry = await self._run_case(case, out / "retry_workspaces" / case.case_id, dataset_dir=dataset_dir)
-                record = _record_for(case, retry, judge_dir=judge_dir, first=first)
+                record = _settle(case, retry, inputs=inputs, guard_inputs=guard_inputs, first=first)
             records.append(record)
             node_ref = f"case-{case.case_id}"
             await emit(
@@ -253,8 +263,37 @@ def merge_suite(previous: EvalSuiteResult, partial: EvalSuiteResult) -> EvalSuit
     )
 
 
+def _settle(
+    case: RsiCase,
+    run: CaseRunResult,
+    *,
+    inputs: JudgeInputs,
+    guard_inputs: bool,
+    first: CaseRunResult | None = None,
+) -> CaseEvalRecord:
+    """Record *run*: a failure if its agent changed the judge's files (put back first), else as judged."""
+    changed = inputs.changed() if guard_inputs else ()
+    if not changed:
+        return _record_for(case, run, inputs=inputs, first=first)
+    inputs.restore()
+    message = f"the agent changed files the judge reads, which were put back: {', '.join(changed)}"
+    return CaseEvalRecord(
+        case_id=case.case_id,
+        passed=False,
+        score=0.0,
+        response_text=run.response_text,
+        findings=({"code": "judge_tampered", "message": message},),
+        error=None,
+        workdir=str(run.workdir),
+        session_id=run.session_id,
+        prompt=case.prompt,
+        attempts=1 if first is None else 2,
+        first_error=first.error if first is not None else None,
+    )
+
+
 def _record_for(
-    case: RsiCase, run: CaseRunResult, *, judge_dir: Path, first: CaseRunResult | None = None
+    case: RsiCase, run: CaseRunResult, *, inputs: JudgeInputs, first: CaseRunResult | None = None
 ) -> CaseEvalRecord:
     """Judge *run*, or record why it could not be judged.
 
@@ -288,12 +327,7 @@ def _record_for(
             attempts=attempts,
             first_error=first_error,
         )
-    judged: JudgeResult = judge_case(
-        case,
-        response_text=run.response_text,
-        workdir=run.workdir,
-        dataset_dir=judge_dir,
-    )
+    judged = _judge(case, run, inputs=inputs)
     return CaseEvalRecord(
         case_id=case.case_id,
         passed=judged.passed,
@@ -307,6 +341,19 @@ def _record_for(
         attempts=attempts,
         first_error=first_error,
     )
+
+
+def _judge(case: RsiCase, run: CaseRunResult, *, inputs: JudgeInputs) -> JudgeResult:
+    if not case.script:
+        return judge_case(case, response_text=run.response_text, workdir=run.workdir, dataset_dir=inputs.source_dir)
+    # Written only now that the agent is done, and outside every case folder.
+    with tempfile.TemporaryDirectory(prefix="icode-rsi-judge-", ignore_cleanup_errors=True) as staged:
+        return judge_case(
+            case,
+            response_text=run.response_text,
+            workdir=run.workdir,
+            dataset_dir=inputs.stage(Path(staged)),
+        )
 
 
 def _write_artifacts(result: EvalSuiteResult) -> None:

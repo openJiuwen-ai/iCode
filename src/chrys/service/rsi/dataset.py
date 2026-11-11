@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,7 +17,6 @@ from chrys.service.rsi.workdir_seed import (
     WORKDIR_STRATEGIES,
     WorkdirSeed,
     WorkdirStrategy,
-    refuse_escaping_symlinks,
 )
 
 SCHEMA_VERSION = 1
@@ -148,36 +146,6 @@ def subset_dataset(dataset: RsiDataset, case_ids: Collection[str]) -> RsiDataset
         schema_version=dataset.schema_version,
         support_files=dataset.support_files,
     )
-
-
-def stage_judge_inputs(dataset: RsiDataset, dest: Path) -> Path:
-    """Copy every case ``script`` and the ``support_files`` into *dest* at the same relative paths.
-
-    Check scripts only ever see this staged copy (``CHRYS_RSI_DATASET_DIR``),
-    for an ad-hoc dataset and a task's ``input/`` alike, so a file the dataset
-    does not declare is missing in both and the two always score the same.
-    """
-    source_dir = dataset.source_path.parent
-    dest.mkdir(parents=True, exist_ok=True)
-    scripts = {case.script for case in dataset.cases if case.script}
-    for rel in (*sorted(scripts), *dataset.support_files):
-        try:
-            src = safe_relpath_under(source_dir, rel, field="dataset file")
-            target = safe_relpath_under(dest, rel, field="dataset file")
-        except ValueError as exc:
-            raise RsiBadRequest(f"dataset file escapes the dataset directory: {rel}") from exc
-        try:
-            if src.is_dir():
-                refuse_escaping_symlinks(src, label="support_files")
-                shutil.copytree(src, target, symlinks=True, dirs_exist_ok=True)
-            elif src.is_file():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, target)
-            else:
-                raise RsiBadRequest(f"dataset file not found: {rel}")
-        except OSError as exc:
-            raise RsiBadRequest(f"could not stage dataset file {rel}: {exc}") from exc
-    return dest
 
 
 def validate_dataset_file(path: str | Path) -> dict[str, Any]:

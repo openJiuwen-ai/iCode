@@ -13,9 +13,10 @@ from typing import Any
 from chrys.foundation.util.lock import FileLock
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.rsi.case_runner import CaseRunner, ProfileAwareStubRunner, StubCaseRunner
-from chrys.service.rsi.dataset import load_dataset, stage_judge_inputs, subset_dataset
+from chrys.service.rsi.dataset import load_dataset, subset_dataset
 from chrys.service.rsi.errors import RsiBadRequest, RsiTaskCorrupt
 from chrys.service.rsi.evaluator import EvalSuiteResult, ScriptBasedEvaluator
+from chrys.service.rsi.judge_inputs import JudgeInputs
 from chrys.service.rsi.llm_optimizer import LlmOptimizer
 from chrys.service.rsi.models import (
     RsiTask,
@@ -47,6 +48,8 @@ from chrys.service.rsi.workdir_seed import snapshot_seed_for_task
 from chrys.service.rsi.worker import PushCallback, RsiWorker
 
 _BUSY_LOCK_DIR = ".locks"
+# Fingerprint of every file the judge reads in a task's input/, recorded when the task is created.
+_JUDGE_FILES_KEY = "judge_files"
 
 
 class RsiServiceContext:
@@ -148,7 +151,7 @@ class RsiServiceContext:
                 if not isinstance(cases_raw, list):
                     raise RsiBadRequest("dataset cases must be an array")
                 dataset_dir = dataset.source_path.parent
-                stage_judge_inputs(dataset, input_dir)
+                JudgeInputs.capture(dataset).stage(input_dir)
                 # Snapshot workdir seeds into the task so later eval never opens the
                 # caller's original tree in-place; rewrite cases to copy from seeds/.
                 for case, case_raw in zip(dataset.cases, cases_raw, strict=True):
@@ -169,6 +172,7 @@ class RsiServiceContext:
                     **dict(created.config or {}),
                     "dataset_id": dataset.dataset_id,
                     "sample_count": dataset.sample_count,
+                    _JUDGE_FILES_KEY: JudgeInputs.capture(load_dataset(target)).fingerprints(),
                 }
                 created = self.store.save(created)
             self.projector.register_root(created.task_id)
@@ -245,8 +249,13 @@ class RsiServiceContext:
 
         ``project=False`` still writes the scorecard but does not add per-case
         nodes. Optimize uses that so the tree stays candidate adopt/reject.
+
+        A task's own ``input/`` must still hold what the task was created
+        with, and is guarded for the whole run (see :class:`ScriptBasedEvaluator`).
         """
         dataset = load_dataset(dataset_path)
+        inputs = JudgeInputs.capture(dataset)
+        guard_inputs = bool(task_id) and self._check_task_inputs(task_id, inputs)
         if case_ids is not None:
             dataset = subset_dataset(dataset, case_ids)
         out = Path(output_dir) if output_dir is not None else self.tasks_root / "_evals"
@@ -266,7 +275,24 @@ class RsiServiceContext:
             output_dir=out,
             on_event=on_event if project_task else None,
             task_id=project_task,
+            judge_inputs=inputs,
+            guard_inputs=guard_inputs,
         )
+
+    def _check_task_inputs(self, task_id: str, inputs: JudgeInputs) -> bool:
+        """Whether *inputs* come from *task_id*'s own ``input/``; refuse one changed since the task was created."""
+        if inputs.source_dir != (task_dir(self.tasks_root, task_id) / "input").resolve():
+            return False
+        recorded = self.store.get(task_id).config.get(_JUDGE_FILES_KEY)
+        # Tasks created before fingerprints were recorded have nothing to compare.
+        if isinstance(recorded, dict):
+            changed = inputs.differs_from({str(rel): str(value) for rel, value in recorded.items()})
+            if changed:
+                raise RsiBadRequest(
+                    f"task {task_id}: files the judge reads changed since the task was created "
+                    f"({', '.join(changed)}); create the task again from the dataset"
+                )
+        return True
 
     async def evaluate_task(
         self,

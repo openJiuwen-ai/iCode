@@ -54,6 +54,8 @@ live 样例 **`playground/rsi/complex-calc/`**（Rust 复数计算器）在**源
 
 case 里的每个 git 仓库都是一个全新的私有仓库，包括顶层仓库、嵌套仓库、submodule，以及复制过来的 linked worktree。它们和你的源仓库有相同的提交，但没有任何 remote，也没有指回你仓库的链接，所以在 case 里 commit、checkout 或 `git push` 都改不到你自己的仓库。源目录里未提交的修改，在 case 里同样显示为未提交的修改。如果某个 `.git` 条目 git 打不开（例如主仓库已被移走的 worktree），运行会报错并指出它。
 
+agent 自己执行的 git 命令也只能作用于它的 case 目录。即使你是从 git hook 里、或者从设置了 `GIT_DIR`、`GIT_WORK_TREE` 的终端里启动 `icode rsi`，case 运行期间这些设置都会被清除。case 目录本身不是仓库时，git 会报告"不是 git 仓库"，而不会去上层目录里找一个仓库来用。
+
 `create --dataset` 时，每个种子会快照到任务的 `input/seeds/<case_id>/`，并改写存盘数据集为从该快照 `copy`，之后的 eval/optimize 不再访问调用方原来的路径。
 
 Prompt 里不要直接写出将要检查的子串或文件内容。否则基线可能因「猜到答案」而通过，optimize 就没有真正可修的失败。
@@ -107,6 +109,7 @@ Stdout 会显示 `passed=N/M` 和 `errored=K`。case 因 agent 以外的原因�
 - **errored**：仍有 agent 控制不了的原因让它没能跑：模型或 provider 出错（iCode 自己的重试之后仍然失败），或者工作目录准备失败。它在 `cases.jsonl` 里的记录带 `"errored": true` 和错误信息；两次失败原因不同时，错误信息会把两次都写上（`first run: …; second run: …`）。
 - **未通过**，发现项为 `case_timeout`：两次都撞上了 `--timeout`。agent 陷入循环或者做得太慢，是要改进的地方，不是环境坏了。
 - **未通过**，发现项为 `agent_error`，不再重跑：是 agent 自己让这次运行结束的。它的对话超出了模型的上下文窗口、请求大到 provider 不接受、被 provider 的内容过滤拒绝，或者在无人值守的运行里向用户提问。
+- **未通过**，发现项为 `judge_tampered`（只出现在任务评测里）：agent 改动了任务 `input/` 目录里判分要读的文件。RSI 已经把原文件放回去了，这次改动不会让分数变高（见[状态与边界](#状态与边界)）。
 
 errored 的 case 在这个分数里算未通过，所以先看看它们，再把分数当作 agent 的水平。
 
@@ -263,7 +266,7 @@ icode rsi delete rsi-<id>
 - `fixture` 为 `--stub` / CI 提供罐头 `response` 与文件；live `--agent` 请省略。
 - 可选 `script` 必须位于数据集目录内；以关闭的 `stdin` 运行，并接收 `CHRYS_RSI_WORKDIR`（case 的工作目录）、`CHRYS_RSI_RESPONSE_PATH`（agent 最终回答所在的文件）和 `CHRYS_RSI_DATASET_DIR`。请将其视为可信本地代码。
 - **`support_files`**（可选，顶层字段）：判分脚本要读的、和数据集 JSON 放在一起的文件或目录，例如脚本 import 的辅助模块、期望输出。路径相对数据集所在目录。
-  - 判分前，RSI 会把每个 case 的 `script` 和每个 `support_files` 条目复制到一个单独的目录，保持相对路径不变。脚本从这份副本运行，`CHRYS_RSI_DATASET_DIR` 指向它。`eval --dataset` 和任务都这样做，所以同一份数据集两种跑法的分数一致。
+  - 判一个 case 之前，RSI 会把每个 case 的 `script` 和每个 `support_files` 条目复制到一个新的临时目录（不在任何 case 目录下），保持相对路径不变。脚本从这份副本运行，`CHRYS_RSI_DATASET_DIR` 指向它。这份副本要等这个 case 的 agent 跑完才生成，内容是评测开始时那一刻的文件。`eval --dataset` 和任务都这样做，所以同一份数据集两种跑法的分数一致。
   - 脚本需要、但没列在 `support_files` 里的文件，两种跑法都找不到，case 在 `eval --dataset` 和 `optimize` 里会以同样的方式失败。把它列上，再校验一次。
 
 评测产物写入输出目录下的 `eval-<id>/scorecard.json` 与 `cases.jsonl`。
@@ -285,7 +288,7 @@ icode rsi delete rsi-<id>
 #### 为什么适合当演示
 
 - **难度够，基线经常是 `0.0`。** 普通四则运算可能过；判分还要求右结合 `2^3^2` → `512+0i`、倒数 `(2-i)^(-1)`、裸 `i` / `-i`、无括号优先级，以及畸形输入如 `1++2i` 必须**非零退出**（不能静默把 `++` 收成 `+`）。
-- **标准答案不在 workdir。** 空 seed 里没有期望表。**已知限制：** live case 跑时跳过工具审批（同 `icode run`），agent 若愿意可以读取任务 `input/` 下拷贝的可信 `check.py`——设计数据集时请考虑这一点。
+- **标准答案不在 workdir。** 空 seed 里没有期望表。**已知限制：** live case 跑时跳过工具审批（同 `icode run`），agent 若愿意可以读取任务 `input/` 下拷贝的可信 `check.py`——设计数据集时请考虑这一点。agent 如果改了它，RSI 会放回原文件，并判这个 case 失败（见[状态与边界](#状态与边界)）。
 - **Optimize 有明确可修点。** 典型失败是解析 / 优先级 / 非法退出。成功的 epoch 常是 `append_instructions` 和/或 `upsert_inline_skill`（例如简短的「严格词法 / 拒绝 `1++2i`」技能），而不是整段替换 profile。
 - **Live runner 先加载 builtins**，再叠候选 profile，因此 Code 声明的 Explore/General 会像普通 headless 会话一样解析到。
 
@@ -383,6 +386,7 @@ Epoch-2 的父节点仍是 **baseline**，不是 epoch-1：被拒绝的 epoch �
 - 仅 CLI：RSI 没有 TUI 或 ACP 入口。
 - `icode rsi start` 仍是 mock 训练循环，不会执行 optimize。
 - Case 工作区在任务树下；会逛目录的 agent 可能读到 `input/dataset.json`。编写 prompt 与布局时，尽量让 expect 内容不容易从任务目录直接发现。
+- agent 运行时没有审批提示，所以它也可能改动任务 `input/` 目录里的文件。每个 case 跑完，RSI 都会检查判分要读的文件（判分脚本、`support_files` 和 `dataset.json`）。agent 改了其中任何一个，RSI 都会放回原文件，并判这个 case 失败，发现项为 `judge_tampered`。如果这些文件是别的原因被改的（例如手动修改，或者某次运行被强行终止），`eval` 和 `optimize` 会报错停止并列出这些文件：请用你的数据集重新创建任务。`input/seeds/` 下的种子不做检查。`eval --dataset` 判分时用的是评测开始那一刻数据集里的文件，RSI 也从不改动你的数据集目录。这是一道防护，不是沙箱：一个存心作弊的 agent 仍然能碰到你这个用户账号能碰到的一切。
 - 每次评测里每个 case 只跑一次。live agent 每次的表现不完全一样，case 很少时，一次运气好或运气差的运行就可能决定候选是否被采纳。请为每种在意的行为准备多个 case，并在依赖导出的候选之前用 `eval --profile` 复测（最好用一份没参与优化的数据集）。
 - live case 使用你平时的配置：你的 hooks、MCP 服务器和 skills 对每个 case 都生效，所以不同机器或不同配置下的分数不能直接比较；带副作用的 hook 每个 case、每个 epoch 都会触发一次。
 - `strategy: "copy"` 会把源目录里的所有内容复制进每个 case，包括 `.env` 之类的文件。agent 在那里工作时不会弹审批，所以不要把密钥放在种子目录里（或者改用只复制已提交文件的 `git_clone`）。

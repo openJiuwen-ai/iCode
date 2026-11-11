@@ -27,6 +27,7 @@ from chrys.service.rsi.case_runner import (
 )
 from chrys.service.rsi.dataset import RsiCase
 from chrys.service.rsi.errors import RsiBadRequest, RsiNotReady
+from chrys.service.rsi.workdir_seed import isolated_git_process_env
 from chrys.service.state.store import JsonFileStateStore
 
 
@@ -57,7 +58,11 @@ class HeadlessCaseRunner:
         workdir.mkdir(parents=True, exist_ok=True)
         sessions_root = case_sessions_dir(workdir)
         sessions_root.mkdir(parents=True, exist_ok=True)
+        # The agent runs without approval prompts: its git must reach only the case's own repository.
+        with isolated_git_process_env(workdir.resolve().parent):
+            return await self._run_session(case, workdir, sessions_root)
 
+    async def _run_session(self, case: RsiCase, workdir: Path, sessions_root: Path) -> CaseRunResult:
         host = ChrysSessionHost(
             profile_name=self.agent,
             settings=self.settings,
