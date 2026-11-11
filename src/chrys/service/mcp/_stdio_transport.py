@@ -28,7 +28,6 @@ from typing import Any, TextIO, cast
 
 from chrys.foundation.i18n.formatting import sanitize_legacy_block, sanitize_legacy_scalar
 from chrys.foundation.platform.files import surrogate_safe_text
-from chrys.foundation.platform.paths import is_absolute_path
 from chrys.foundation.platform.runtime_paths import (
     is_windows_store_python_stub,
     path_env_key,
@@ -235,7 +234,7 @@ def _anchor_relative_command(command: str, cwd: str | os.PathLike[str] | None) -
     The parts are joined, never collapsed: on POSIX ``link/..`` follows the link,
     which a lexical ``normpath`` would not.
     """
-    if cwd is None or cwd == "" or not os.path.dirname(command) or is_absolute_path(command):
+    if cwd is None or cwd == "" or not os.path.dirname(command) or os.path.isabs(command):
         return command
     return os.path.join(cwd, command)
 

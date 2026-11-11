@@ -60,6 +60,8 @@ An STDIO connection starts the specified program on the local machine. If the st
 
 #### Choose a working directory
 
+iCode ignores leading and trailing whitespace in this field, including in YAML. A value containing only whitespace is treated as blank.
+
 | What you enter | Where the server starts |
 | --- | --- |
 | Blank | The current session's working directory |

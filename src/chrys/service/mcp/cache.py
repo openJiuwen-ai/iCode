@@ -149,12 +149,12 @@ def _resolved_http_headers(config: MCPServerConfig) -> dict[str, str]:
 def resolve_stdio_cwd(configured: str, workspace_cwd: str | None) -> str:
     """The folder a stdio server starts in: *configured* resolved against the workspace folder.
 
+    Surrounding whitespace is stripped from *configured*, matching the editor.
     Empty *configured* is the workspace folder itself, untouched (the fallback when
     the caller names none is the process folder). Otherwise ``~`` expands to the home
     folder and a relative path starts at the workspace folder; an absolute one never
     reads either folder, so it holds even when the process folder is gone. There is
-    no symlink resolution and no case folding, so what the user wrote is what the
-    server gets.
+    no symlink resolution and no case folding.
     On POSIX the parts are joined, never collapsed: ``link/..`` follows the link, which
     a lexical ``normpath`` would not. Windows resolves ``..`` lexically itself, so there
     the result is normalized, which also unifies the separators. A drive-relative
@@ -163,6 +163,7 @@ def resolve_stdio_cwd(configured: str, workspace_cwd: str | None) -> str:
     stays relative and the spawn-time folder check refuses it. ``{{ENV_VAR}}`` and
     ``%VAR%`` are not expanded.
     """
+    configured = configured.strip()
     if not configured:
         return workspace_cwd or os.getcwd()
     written = os.path.expanduser(configured)

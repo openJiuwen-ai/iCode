@@ -94,7 +94,7 @@ While the agent runs, other users of this computer may be able to see its argume
 
 ## Set the working directory
 
-When "Working Directory" is blank, the external agent uses the current iCode session's working directory.
+iCode ignores leading and trailing whitespace in "Working Directory", including in YAML, before expanding environment variables. If the field is empty or contains only whitespace, the external agent uses the current iCode session's working directory.
 
 "Working Directory" accepts a relative or absolute path. Relative paths are resolved against the current session's working directory.
 

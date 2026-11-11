@@ -119,6 +119,18 @@ def test_only_the_cwd_differing_gives_another_key(tmp_path: Path) -> None:
         assert len({base, other, relative.key}) == 3
 
 
+@pytest.mark.parametrize("configured", ["", "tools/my server"])
+def test_cwd_whitespace_does_not_change_the_directory_or_cache_key(tmp_path: Path, configured: str) -> None:
+    workspace = str(tmp_path / "workspace ")
+    padded = f" \t{configured}\n "
+    expected = os.path.join(workspace, configured) if configured else workspace
+    assert resolve_stdio_cwd(padded, workspace) == expected
+    with _pin_child_environment():
+        assert mcp_config_cache_key(_config(cwd=padded), stdio_cwd=workspace) == mcp_config_cache_key(
+            _config(cwd=configured), stdio_cwd=workspace
+        )
+
+
 def test_the_key_holds_the_folder_the_server_starts_in(tmp_path: Path) -> None:
     workspace = str(tmp_path / "workspace")
     configured = os.path.join("link", "..")
@@ -302,6 +314,24 @@ def test_a_relative_command_with_a_folder_part_is_read_from_the_cwd(tmp_path: Pa
     assert _anchor_relative_command(os.path.join("bin", "srv"), None) == os.path.join("bin", "srv")
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("/bin/server.exe", "D:/bin/server.exe"),
+        (r"\bin\server.exe", r"D:\bin\server.exe"),
+        (r".\bin\server.exe", r"D:\work\.\bin\server.exe"),
+        (r"C:\bin\server.exe", r"C:\bin\server.exe"),
+        ("C:/bin/server.exe", "C:/bin/server.exe"),
+        ("server.exe", "server.exe"),
+    ],
+)
+def test_windows_command_paths_use_the_server_drive(command: str, expected: str) -> None:
+    windows_os = ModuleType("os")
+    windows_os.path = ntpath  # type: ignore[attr-defined]
+    with patch("chrys.service.mcp._stdio_transport.os", windows_os):
+        assert _anchor_relative_command(command, r"D:\work") == expected
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows resolves `..` lexically, before any link")
 def test_an_anchored_command_still_steps_back_through_a_linked_folder(tmp_path: Path) -> None:
     package = tmp_path / "package"
@@ -320,7 +350,7 @@ def test_an_anchored_command_still_steps_back_through_a_linked_folder(tmp_path: 
 # ── Real child processes ─────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("kind", ["unset", "relative", "home", "absolute"])
+@pytest.mark.parametrize("kind", ["unset", "blank", "relative", "home", "absolute"])
 async def test_a_server_starts_in_the_resolved_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
@@ -330,9 +360,10 @@ async def test_a_server_starts_in_the_resolved_folder(
     monkeypatch.setenv("USERPROFILE", str(home))
     configured, target = {
         "unset": (None, workspace),
-        "relative": ("tools/srv", workspace / "tools" / "srv"),
-        "home": ("~/srv", home / "srv"),
-        "absolute": (str(tmp_path / "elsewhere"), tmp_path / "elsewhere"),
+        "blank": (" \t\n ", workspace),
+        "relative": (" tools/srv \n", workspace / "tools" / "srv"),
+        "home": (" ~/srv \n", home / "srv"),
+        "absolute": (f" {tmp_path / 'elsewhere'} \n", tmp_path / "elsewhere"),
     }[kind]
     await asyncio.to_thread(workspace.mkdir)
     await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
@@ -356,22 +387,31 @@ async def test_a_cwd_through_a_linked_folder_starts_where_the_link_leads(tmp_pat
     assert os.path.samefile(reported, external)
 
 
-async def test_servers_differing_only_in_cwd_do_not_share_a_connection(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    (workspace / "a").mkdir(parents=True)
-    (workspace / "b").mkdir()
+@pytest.mark.parametrize("absolute", [False, True], ids=["relative", "absolute"])
+async def test_workspace_changes_start_or_reuse_the_matching_connection(tmp_path: Path, absolute: bool) -> None:
+    first_workspace, second_workspace = tmp_path / "a", tmp_path / "b"
+    for workspace in (first_workspace, second_workspace):
+        await asyncio.to_thread((workspace / "srv").mkdir, parents=True)
+    config = _cwd_server_config(cwd=str(first_workspace / "srv") if absolute else "srv")
     cache = MCPConnectionCache()
-    first = MCPAdapter(cache=cache, stdio_cwd=str(workspace))
-    second = MCPAdapter(cache=cache, stdio_cwd=str(workspace))
+    connections = []
     try:
-        await asyncio.wait_for(first.connect(_cwd_server_config(cwd="a")), timeout=ENGINE_TURN_TIMEOUT)
-        await asyncio.wait_for(second.connect(_cwd_server_config(cwd="b")), timeout=ENGINE_TURN_TIMEOUT)
+        for workspace in (first_workspace, second_workspace, first_workspace):
+            adapter = MCPAdapter(cache=cache, stdio_cwd=str(workspace))
+            try:
+                tools = await asyncio.wait_for(adapter.connect(config), timeout=ENGINE_TURN_TIMEOUT)
+                connections.append(adapter._leases["cwd"].mcp_tool)
+                tool = next(tool for tool in tools if tool.name == "get_cwd")
+                result = await asyncio.wait_for(tool.invoke(arguments={}), timeout=ENGINE_TURN_TIMEOUT)
+                reported = "\n".join(content.text for content in result)
+                target = (first_workspace if absolute else workspace) / "srv"
+                assert os.path.samefile(reported, target)
+            finally:
+                await adapter.disconnect_all()
 
-        assert first._leases["cwd"].key != second._leases["cwd"].key
-        assert first._leases["cwd"].mcp_tool is not second._leases["cwd"].mcp_tool
+        assert (connections[0] is connections[1]) is absolute
+        assert connections[0] is connections[2]
     finally:
-        await first.disconnect_all()
-        await second.disconnect_all()
         await cache.close_all()
 
 
@@ -421,7 +461,7 @@ async def test_the_connection_test_starts_where_the_agent_would(tmp_path: Path) 
         transport="stdio",
         command=os.path.join(".", launcher.name),
         args=[str(CWD_SERVER)],
-        cwd="srv",
+        cwd=" srv \n",
     )
     adapter = MCPAdapter(stdio_cwd=str(workspace))
 

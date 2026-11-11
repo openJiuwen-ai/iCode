@@ -1466,13 +1466,17 @@ def _mcp_profile_yaml(tmp_path: Path, entry: str) -> Path:
     return path
 
 
-def test_stdio_mcp_cwd_is_read_as_written(tmp_path: Path) -> None:
+def test_stdio_mcp_cwd_trims_surrounding_whitespace(tmp_path: Path) -> None:
     path = _mcp_profile_yaml(tmp_path, '      transport: stdio\n      command: python\n      cwd: " ~/srv "\n')
 
-    assert load_profile_from_yaml(path).tools.mcp[0].cwd == " ~/srv "
+    assert load_profile_from_yaml(path).tools.mcp[0].cwd == "~/srv"
 
 
-@pytest.mark.parametrize("entry", ["", "      cwd:\n", '      cwd: ""\n'], ids=["absent", "null", "empty"])
+@pytest.mark.parametrize(
+    "entry",
+    ["", "      cwd:\n", '      cwd: ""\n', '      cwd: " \\t\\n "\n'],
+    ids=["absent", "null", "empty", "blank"],
+)
 def test_mcp_cwd_defaults_to_empty(tmp_path: Path, entry: str) -> None:
     path = _mcp_profile_yaml(tmp_path, f"      transport: stdio\n      command: python\n{entry}")
 

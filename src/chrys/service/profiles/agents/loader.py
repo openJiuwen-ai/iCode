@@ -175,7 +175,7 @@ def _parse_acp(raw: object) -> AcpAgentConfig:
     defaults = AcpAgentConfig()
 
     command = _acp_string(raw_map.get("command", defaults.command), "command", reject_nul=True)
-    cwd = _acp_string(raw_map.get("cwd", defaults.cwd), "cwd", reject_nul=True)
+    cwd = _acp_string(raw_map.get("cwd", defaults.cwd), "cwd", reject_nul=True).strip()
     session_mode = _acp_string(raw_map.get("session_mode", defaults.session_mode), "session_mode")
     model_id = _acp_string(raw_map.get("model_id", defaults.model_id), "model_id")
 
@@ -342,7 +342,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
 
 
 def _mcp_cwd(raw: object) -> str:
-    """The raw ``cwd`` text: kept exactly as written, since only the editor trims what it saves."""
+    """Validate and trim the configured directory, matching the editor and runtime."""
     if raw is None:
         return ""
     if type(raw) is not str:
@@ -351,7 +351,7 @@ def _mcp_cwd(raw: object) -> str:
     if "\0" in raw:
         msg = "MCP server field 'cwd' must not contain an embedded NUL"
         raise AgentProfileLoadError(msg, field="tools.mcp.cwd")
-    return raw
+    return raw.strip()
 
 
 def _mcp_string_mapping(raw: object, field: str) -> dict[str, str]:
