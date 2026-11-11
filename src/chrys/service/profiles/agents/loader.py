@@ -317,6 +317,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 args=entry.get("args", []),
                 env=_mcp_string_mapping(entry.get("env"), "tools.mcp.env") if transport == "stdio" else {},
                 encoding=entry.get("encoding"),
+                cwd=_mcp_cwd(entry.get("cwd")) if transport == "stdio" else "",
                 # http
                 url=entry.get("url", ""),
                 headers=_mcp_string_mapping(entry.get("headers"), "tools.mcp.headers") if transport == "http" else {},
@@ -338,6 +339,19 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
             )
         )
     return configs
+
+
+def _mcp_cwd(raw: object) -> str:
+    """The raw ``cwd`` text: kept exactly as written, since only the editor trims what it saves."""
+    if raw is None:
+        return ""
+    if type(raw) is not str:
+        msg = f"MCP server field 'cwd' must be a string; got {raw!r}"
+        raise AgentProfileLoadError(msg, field="tools.mcp.cwd")
+    if "\0" in raw:
+        msg = "MCP server field 'cwd' must not contain an embedded NUL"
+        raise AgentProfileLoadError(msg, field="tools.mcp.cwd")
+    return raw
 
 
 def _mcp_string_mapping(raw: object, field: str) -> dict[str, str]:

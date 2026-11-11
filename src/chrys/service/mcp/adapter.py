@@ -42,7 +42,12 @@ from chrys.service.mcp._stdio_transport import MAX_STDIO_STDERR_BYTES_CAPTURED a
 from chrys.service.mcp._stdio_transport import MAX_STDIO_STDERR_PREVIEW_LINES as MAX_STDIO_STDERR_PREVIEW_LINES
 from chrys.service.mcp._stdio_transport import _StdioFailureDiagnostics
 from chrys.service.mcp._stdio_transport import tolerant_stdio_client as tolerant_stdio_client
-from chrys.service.mcp.cache import MCPConnectionCache, MCPConnectionLease, clone_mcp_function_tool
+from chrys.service.mcp.cache import (
+    MCPConnectionCache,
+    MCPConnectionLease,
+    clone_mcp_function_tool,
+    resolve_stdio_cwd,
+)
 from chrys.service.mcp.errors import (
     MCPConnectionError,
     MCPToolConfigurationError,
@@ -257,9 +262,11 @@ class MCPAdapter:
         self._reserved_tool_names = frozenset(reserved_tool_names)
 
     @staticmethod
-    def _create_tool_with_timeout_floor(config: MCPServerConfig, default_timeout: int) -> Any:
+    def _create_tool_with_timeout_floor(
+        config: MCPServerConfig, default_timeout: int, *, stdio_cwd: str | None = None
+    ) -> Any:
         """Build the MCP tool, injecting the timeout floor when none is configured."""
-        return _connection._create_tool_with_timeout_floor(config, default_timeout)
+        return _connection._create_tool_with_timeout_floor(config, default_timeout, stdio_cwd=stdio_cwd)
 
     @staticmethod
     def _banner_lines_from(tool: Any) -> list[str]:
@@ -732,7 +739,12 @@ class MCPAdapter:
         mcp_tool: Any | None = None
         try:
             try:
-                mcp_tool = self._create_tool_with_timeout_floor(config, DEFAULT_TEST_TIMEOUT_SECONDS)
+                # The folder a real connection would start in (``MCPConnectionCache.acquire``), so a
+                # test passes or fails for the same reason the agent's connection would.
+                stdio_cwd = resolve_stdio_cwd(config.cwd, self._stdio_cwd) if config.transport == "stdio" else None
+                mcp_tool = self._create_tool_with_timeout_floor(
+                    config, DEFAULT_TEST_TIMEOUT_SECONDS, stdio_cwd=stdio_cwd
+                )
                 await mcp_tool.__aenter__()
                 catalog = [tool for tool in mcp_tool.functions if isinstance(tool, FunctionTool)]
                 initial_tool_names: tuple[str, ...] | None = None

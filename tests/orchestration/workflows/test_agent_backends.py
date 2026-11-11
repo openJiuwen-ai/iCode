@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from unittest.mock import create_autospec
@@ -527,3 +528,32 @@ async def test_an_acp_node_retries_a_silent_agent_in_a_fresh_session_but_not_a_l
         assert not [event for event in events if isinstance(event, InvocationResumed)]
     finally:
         await host.shutdown()
+
+
+async def test_workflow_agent_hands_its_servers_cwd_and_the_session_folder_to_the_mcp_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The node build passes the session folder; ``cwd`` is resolved against it in the connection cache."""
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[MockResponse(text="done")])])
+    profile = make_profile("MCP")
+    profile.tools.mcp = [MCPServerConfig(name="own", transport="stdio", command="unused", cwd="tools/srv")]
+    seen: list[tuple[str, str | None]] = []
+
+    async def connect(adapter: MCPAdapter, config: MCPServerConfig) -> list[object]:
+        seen.append((config.cwd, adapter._stdio_cwd))
+        return []
+
+    monkeypatch.setattr(MCPAdapter, "connect", create_autospec(MCPAdapter.connect, side_effect=connect))
+    project = make_project(tmp_path)
+    write_workflow(project, "mcp", _workflow("MCP"))
+    host = make_host(tmp_path, project=project, profiles=[make_profile(), profile])
+    try:
+        await confirm(host, "mcp")
+        result, _events = await run(host, "mcp")
+        assert result.outcome.value == "completed"
+    finally:
+        await host.shutdown()
+
+    [(configured, base)] = seen
+    assert configured == "tools/srv"
+    assert base is not None and os.path.samefile(base, project)

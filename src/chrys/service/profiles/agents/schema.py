@@ -49,6 +49,13 @@ class MCPServerConfig:
     command: str = ""
     args: list[str] = field(default_factory=list)
     encoding: str | None = None
+    cwd: str = ""
+    """stdio only — folder the server starts in; empty means the workspace folder.
+
+    Resolved by ``service/mcp/cache.py::resolve_stdio_cwd``: ``~`` names the home
+    folder, a relative path starts at the workspace folder. No ``{{ENV_VAR}}``
+    templates, like ``command``.
+    """
 
     # http transport
     url: str = ""

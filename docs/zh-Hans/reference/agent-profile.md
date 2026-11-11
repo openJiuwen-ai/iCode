@@ -175,6 +175,7 @@ tools:
 | `max_tool_result_tokens` | 整数或 `null` | `null` | 通用 | 单次远程工具文本结果上限。`null` 使用默认上限 `8000` 个词元，`0` 仅取消此项上限，正整数至少为 `100`；其他值会导致整个智能体配置被跳过。 |
 | `command` | 字符串 | 空 | STDIO | 启动服务器的可执行文件名称或路径。YAML 中不要在此字段拼接参数。 |
 | `args` | 字符串列表 | `[]` | STDIO | 传给服务器进程的参数。 |
+| `cwd` | 字符串 | 空 | STDIO | 服务器启动时所在的文件夹。留空则使用工作区目录；相对路径从工作区目录算起，`~/` 表示你的用户主目录，绝对路径按填写的内容使用。在 Windows 上，以盘符开头的路径要写完整（写 `D:\server`，不要写 `D:server`）。`./bin/server` 这样的相对路径 `command` 会从这个目录查找。不展开 `{{ENV_VAR}}`、`$HOME` 和 `%APPDATA%`。不能包含 NUL。目录不存在时连接失败，错误信息会说明这一点。参阅[使用 STDIO 连接](../guides/extensions/mcp.md#使用-stdio-连接)。 |
 | `env` | 字符串对象 | `{}` | STDIO | 传给服务器进程的环境变量。HTTP 配置会忽略此字段。 |
 | `encoding` | 字符串或 `null` | `null` | STDIO | 服务器标准输入输出编码；通常留空。 |
 | `url` | 字符串 | 空 | HTTP | 以 `http://` 或 `https://` 开头的服务器 URL。 |

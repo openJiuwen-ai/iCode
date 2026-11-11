@@ -1458,3 +1458,39 @@ def test_unrecognized_shell_filter_preset_names_the_field(tmp_path: Path) -> Non
         load_profile_from_yaml(path)
 
     assert excinfo.value.field == "tools.shell_filter.preset"
+
+
+def _mcp_profile_yaml(tmp_path: Path, entry: str) -> Path:
+    path = tmp_path / "Cwd.yaml"
+    path.write_text(f"name: Cwd\ninstructions: x\ntools:\n  mcp:\n    - name: srv\n{entry}", encoding="utf-8")
+    return path
+
+
+def test_stdio_mcp_cwd_is_read_as_written(tmp_path: Path) -> None:
+    path = _mcp_profile_yaml(tmp_path, '      transport: stdio\n      command: python\n      cwd: " ~/srv "\n')
+
+    assert load_profile_from_yaml(path).tools.mcp[0].cwd == " ~/srv "
+
+
+def test_mcp_cwd_defaults_to_empty_when_absent_or_null(tmp_path: Path) -> None:
+    absent = _mcp_profile_yaml(tmp_path, "      transport: stdio\n      command: python\n")
+    null = _mcp_profile_yaml(tmp_path, "      transport: stdio\n      command: python\n      cwd:\n")
+
+    assert load_profile_from_yaml(absent).tools.mcp[0].cwd == ""
+    assert load_profile_from_yaml(null).tools.mcp[0].cwd == ""
+
+
+def test_http_mcp_cwd_is_ignored(tmp_path: Path) -> None:
+    path = _mcp_profile_yaml(tmp_path, "      transport: http\n      url: http://localhost/mcp\n      cwd: /srv\n")
+
+    assert load_profile_from_yaml(path).tools.mcp[0].cwd == ""
+
+
+@pytest.mark.parametrize("value", ["[a]", "5", '"a\\0b"'])
+def test_invalid_mcp_cwd_names_its_field(tmp_path: Path, value: str) -> None:
+    path = _mcp_profile_yaml(tmp_path, f"      transport: stdio\n      command: python\n      cwd: {value}\n")
+
+    with pytest.raises(AgentProfileLoadError) as caught:
+        load_profile_from_yaml(path)
+
+    assert caught.value.field == "tools.mcp.cwd"

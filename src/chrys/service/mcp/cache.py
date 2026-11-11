@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.config.process_env import canonical_env_name
 from chrys.foundation.config.runtime_pointer import MODEL_POINTER_ENV
+from chrys.foundation.platform import get_platform
 from chrys.foundation.tool_call_context import get_tool_context, set_tool_context
 from chrys.foundation.tool_kinds import KIND_MCP, get_tool_kind, set_tool_kind
 from chrys.foundation.util.env_templates import resolve_env_template_mapping
@@ -145,11 +146,40 @@ def _resolved_http_headers(config: MCPServerConfig) -> dict[str, str]:
     return resolve_env_template_mapping(config.headers, location=f"MCP server {config.name!r} headers")
 
 
+def resolve_stdio_cwd(configured: str, workspace_cwd: str | None) -> str:
+    """The folder a stdio server starts in: *configured* resolved against the workspace folder.
+
+    Empty *configured* is the workspace folder itself, untouched (the fallback when
+    the caller names none is the process folder). Otherwise ``~`` expands to the home
+    folder and a relative path starts at the workspace folder; an absolute one never
+    reads either folder, so it holds even when the process folder is gone. There is
+    no symlink resolution and no case folding, so what the user wrote is what the
+    server gets.
+    On POSIX the parts are joined, never collapsed: ``link/..`` follows the link, which
+    a lexical ``normpath`` would not. Windows resolves ``..`` lexically itself, so there
+    the result is normalized, which also unifies the separators. A drive-relative
+    Windows path (``D:server``) counts from that drive's current folder, which nothing
+    here controls, so it is never joined, even onto a workspace on the same drive: it
+    stays relative and the spawn-time folder check refuses it. ``{{ENV_VAR}}`` and
+    ``%VAR%`` are not expanded.
+    """
+    if not configured:
+        return workspace_cwd or os.getcwd()
+    written = os.path.expanduser(configured)
+    windows = get_platform().is_windows
+    if windows and os.path.splitdrive(written)[0] and not os.path.isabs(written):
+        return os.path.normpath(written)
+    if not os.path.isabs(written):
+        written = os.path.join(workspace_cwd or os.getcwd(), written)
+    return os.path.normpath(written) if windows else written
+
+
 def resolve_mcp_effective_config(config: MCPServerConfig, *, stdio_cwd: str | None = None) -> MCPEffectiveConfig:
     """Resolve the effective config used for keying and connection creation.
 
-    Stdio MCP child processes inherit the supplied session cwd and process
-    environment at spawn time, so both are part of the key.
+    Stdio MCP child processes start in the folder ``resolve_stdio_cwd`` names
+    (the supplied session cwd unless the server configures its own) and inherit
+    the process environment at spawn time, so both are part of the key.
 
     The key is intentionally independent of parent/sub-agent identity today:
     identical configs share one live MCP session.  If a future
@@ -174,7 +204,7 @@ def resolve_mcp_effective_config(config: MCPServerConfig, *, stdio_cwd: str | No
         for name, value in stdio_env.items():
             if canonical_env_name(name) == MODEL_POINTER_ENV:
                 key_env[MODEL_POINTER_ENV] = value
-        resolved_stdio_cwd = stdio_cwd or os.getcwd()
+        resolved_stdio_cwd = resolve_stdio_cwd(config.cwd, stdio_cwd)
         payload["stdio"] = {
             "command": config.command,
             "args": list(config.args),

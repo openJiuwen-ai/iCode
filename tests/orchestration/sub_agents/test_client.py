@@ -365,3 +365,45 @@ async def test_sub_agent_warns_once_when_its_on_demand_mcp_tools_can_unbind_its_
         )
     else:
         assert messages == []
+
+
+async def test_sub_agent_hands_its_servers_cwd_and_the_session_folder_to_the_mcp_adapter() -> None:
+    """The sub-agent shell passes the session folder; ``cwd`` is resolved against it in the connection cache."""
+    profile = AgentProfile(
+        name="Explore",
+        instructions="Investigate.",
+        tools=ToolsConfig(
+            builtins=[], mcp=[MCPServerConfig(name="own", transport="stdio", command="unused", cwd="tools/srv")]
+        ),
+    )
+    parent_profile = ModelProfile(id="parent-model", name="parent", provider="mock", model_id="mock")
+    model_registry = ModelProfileRegistry()
+    agent_mock = MagicMock()
+    agent_mock.__aenter__ = AsyncMock(return_value=agent_mock)
+    agent_mock.__aexit__ = AsyncMock()
+    seen: list[tuple[str, str | None]] = []
+
+    async def connect(adapter: MCPAdapter, config: MCPServerConfig) -> list[Any]:
+        seen.append((config.cwd, adapter._stdio_cwd))
+        return []
+
+    environment = SessionEnvironment.capture(session_id="sess-123")
+    tools = SubAgentTools(session_id="sess-123")
+    try:
+        with (
+            patch("chrys.orchestration.invoker.runtime.Agent", return_value=agent_mock),
+            patch("chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock(aclose=AsyncMock())),
+            patch.object(MCPAdapter, "connect", new=create_autospec(MCPAdapter.connect, side_effect=connect)),
+        ):
+            await tools.register(
+                SubAgentRef(profile="Explore", tool_name="explore"),
+                profile,
+                environment,
+                settings=Settings(model_profile="parent-model"),
+                fallback_profile=parent_profile,
+                model_registry=model_registry,
+            )
+    finally:
+        await tools.cleanup()
+
+    assert seen == [("tools/srv", environment.cwd)]

@@ -10,6 +10,8 @@ from chrys.foundation.errors import ErrorKind, classify_error, clean_error_messa
 from chrys.service.mcp._stdio_transport import (
     MAX_BANNER_LINE_CHARS,
     MAX_STDIO_STDERR_BYTES_CAPTURED,
+    WORKING_DIRECTORY_PROBLEMS,
+    StdioWorkingDirectoryError,
     _clean_stdio_stderr,
     _display_path,
     _stderr_preview,
@@ -49,7 +51,12 @@ def mcp_failure_diagnostic(error: BaseException) -> str:
     cause = error.cause if isinstance(error, MCPConnectionError) else error
     if cause is None:
         return _FAILED_TO_CONNECT
-    if (
+    directory_error = next(
+        (node for node in iter_explicit_graph(cause) if isinstance(node, StdioWorkingDirectoryError)), None
+    )
+    if directory_error is not None:
+        text = WORKING_DIRECTORY_PROBLEMS.get(directory_error.reason, _FAILED_TO_CONNECT)
+    elif (
         isinstance(error, MCPConnectionError)
         and error.transport == "stdio"
         and any(isinstance(node, FileNotFoundError | PermissionError) for node in iter_explicit_graph(cause))
