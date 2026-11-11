@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import sys
@@ -13,8 +12,9 @@ from pathlib import Path
 
 from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 from chrys.service.rsi.dataset import RsiCase, ScriptExpect
-from chrys.service.rsi.errors import RsiDatasetInvalid
+from chrys.service.rsi.errors import RsiBadRequest, RsiDatasetInvalid
 from chrys.service.rsi.paths import safe_relpath_under
+from chrys.service.rsi.workdir_seed import RESPONSE_FILE_NAME, isolated_git_env, write_text_nofollow
 
 # Trusted check scripts may build toolchains (e.g. cargo); keep parity with the
 # default per-case headless timeout rather than failing healthy cold builds.
@@ -136,14 +136,15 @@ def _run_check_script(
     if not script_path.is_file():
         return [JudgeFinding("script", f"script not found: {script_rel}")]
 
-    response_file = workdir / ".chrys_rsi_response.txt"
+    response_file = workdir / RESPONSE_FILE_NAME
     try:
-        response_file.write_text(response_text, encoding="utf-8")
-    except OSError as exc:
-        return [JudgeFinding("script", f"could not write response file: {exc}")]
+        write_text_nofollow(response_file, response_text, what="response file")
+    except RsiBadRequest as exc:
+        return [JudgeFinding("script", f"could not write response file: {exc.message}")]
 
+    workdir_resolved = workdir.resolve()
     env = {
-        **os.environ,
+        **isolated_git_env(workdir_resolved.parent),
         "CHRYS_RSI_CASE_ID": case.case_id,
         "CHRYS_RSI_WORKDIR": str(workdir.resolve()),
         "CHRYS_RSI_RESPONSE_PATH": str(response_file.resolve()),

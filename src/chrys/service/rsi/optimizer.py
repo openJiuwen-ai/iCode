@@ -20,6 +20,7 @@ from chrys.service.rsi.snapshot import (
     CandidateSnapshot,
     materialize_candidate,
     maybe_update_best_pointer,
+    read_best_pointer,
 )
 from chrys.service.rsi.store import RsiTaskStore
 
@@ -148,6 +149,12 @@ class OptimizeResult:
     epochs: tuple[EpochResult, ...]
     perfect: bool
     run_id: str = ""
+    # What ``best.json`` (the candidate ``install`` exports) holds after this run;
+    # it differs from ``best_candidate_id`` when the run did not replace it.
+    best_json_updated: bool = False
+    installed_candidate_id: str = ""
+    installed_score: float | None = None
+    installed_kind: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -157,6 +164,10 @@ class OptimizeResult:
             "best_score": self.best_score,
             "best_candidate_id": self.best_candidate_id,
             "perfect": self.perfect,
+            "best_json_updated": self.best_json_updated,
+            "installed_candidate_id": self.installed_candidate_id,
+            "installed_score": self.installed_score,
+            "installed_kind": self.installed_kind,
             "epochs": [
                 {
                     "epoch": e.epoch,
@@ -370,6 +381,7 @@ class OptimizeLoop:
             best=updated,
         )
 
+        pointer = read_best_pointer(self.store, task_id)
         # best_eval is always from a full-suite evaluate (baseline or confirmed adopt).
         perfect = best_eval.passed_count == best_eval.total_count and best_eval.total_count > 0
         return OptimizeResult(
@@ -380,7 +392,21 @@ class OptimizeLoop:
             epochs=tuple(epochs),
             perfect=perfect,
             run_id=opt_run,
+            best_json_updated=updated,
+            installed_candidate_id=str(pointer.get("candidate_id") or ""),
+            installed_score=_pointer_score(pointer),
+            installed_kind=str(pointer.get("kind") or "stub"),
         )
+
+
+def _pointer_score(pointer: dict[str, Any]) -> float | None:
+    score = pointer.get("score")
+    if score is None:
+        return None
+    try:
+        return float(score)
+    except TypeError, ValueError:
+        return None
 
 
 def _write_candidate_score_meta(

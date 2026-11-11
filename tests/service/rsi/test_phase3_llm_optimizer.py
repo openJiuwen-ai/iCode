@@ -136,9 +136,7 @@ async def test_invalid_proposal_is_not_adopted(tmp_path: Path) -> None:
         (Path(task.run_dir) / "analysis" / result.run_id / "epoch-1.json").read_text(encoding="utf-8")
     )
     assert analysis["proposal"] == "invalid_proposal"
-    later = json.loads(
-        (Path(task.run_dir) / "analysis" / result.run_id / "epoch-2.json").read_text(encoding="utf-8")
-    )
+    later = json.loads((Path(task.run_dir) / "analysis" / result.run_id / "epoch-2.json").read_text(encoding="utf-8"))
     assert later["proposal"] == "invalid_proposal"
     descriptions = [node.get("description") for node in ctx.get_tree(task_id)["nodes"]]
     assert "scored baseline" in descriptions

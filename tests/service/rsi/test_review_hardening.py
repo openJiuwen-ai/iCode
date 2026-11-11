@@ -171,6 +171,49 @@ def test_create_copies_script_under_input_not_escape(tmp_path: Path) -> None:
     assert input_dir.resolve().is_relative_to((tmp_path / "tasks").resolve())
 
 
+def test_judge_response_file_does_not_follow_planted_symlink(tmp_path: Path) -> None:
+    from chrys.service.rsi.script_judge import judge_case
+    from chrys.service.rsi.workdir_seed import RESPONSE_FILE_NAME
+    from tests.support.symlinks import symlink_or_skip
+
+    ds_dir = tmp_path / "dataset"
+    ds_dir.mkdir()
+    (ds_dir / "check.py").write_text(
+        "import os, pathlib, sys\n"
+        "sys.exit(0 if pathlib.Path(os.environ['CHRYS_RSI_RESPONSE_PATH']).read_text() == 'answer' else 1)\n",
+        encoding="utf-8",
+    )
+    dataset = ds_dir / "dataset.json"
+    dataset.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dataset_id": "judge-symlink",
+                "cases": [
+                    {
+                        "case_id": "c1",
+                        "prompt": "hi",
+                        "evaluation": {"method": "script_based", "script": "check.py"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    case = load_dataset(dataset).cases[0]
+    outside = tmp_path / "user-file.txt"
+    outside.write_text("keep me\n", encoding="utf-8")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    symlink_or_skip(workdir / RESPONSE_FILE_NAME, outside)
+
+    result = judge_case(case, response_text="answer", workdir=workdir, dataset_dir=ds_dir)
+
+    assert result.passed, result.findings
+    assert outside.read_text(encoding="utf-8") == "keep me\n"
+    assert not (workdir / RESPONSE_FILE_NAME).is_symlink()
+
+
 def test_export_profile_yaml_owner_only_refuses_overwrite(tmp_path: Path) -> None:
     source = tmp_path / "src.yaml"
     source.write_text("name: X\n", encoding="utf-8")
@@ -212,20 +255,18 @@ async def test_optimize_run_scoped_candidates_and_deferred_best(tmp_path: Path) 
     assert second_best.startswith(f"{second.run_id}-")
 
 
-def test_copy_linked_gitfile_is_detached(tmp_path: Path) -> None:
+def test_copy_refuses_gitfile_git_cannot_open(tmp_path: Path) -> None:
     source = tmp_path / "linked"
     source.mkdir()
     (source / "hello.txt").write_text("hi\n", encoding="utf-8")
-    # Simulate a linked worktree gitfile pointing outside.
-    (source / ".git").write_text("gitdir: /tmp/real-repo/.git/worktrees/x\n", encoding="utf-8")
+    (source / ".git").write_text(f"gitdir: {tmp_path / 'missing-repo' / '.git'}\n", encoding="utf-8")
     dest = tmp_path / "private"
-    materialize_workdir(
-        WorkdirSeed(source=str(source), strategy="copy"),
-        dest=dest,
-        dataset_dir=tmp_path,
-    )
-    assert (dest / "hello.txt").is_file()
-    assert not (dest / ".git").exists()
+    with pytest.raises(RsiBadRequest, match="git cannot open"):
+        materialize_workdir(
+            WorkdirSeed(source=str(source), strategy="copy"),
+            dest=dest,
+            dataset_dir=tmp_path,
+        )
 
 
 def test_upsert_rejects_non_ascii_skill_name_like_loader() -> None:
@@ -242,11 +283,11 @@ def test_upsert_rejects_non_ascii_skill_name_like_loader() -> None:
 
 
 def test_create_refuses_script_that_escapes_via_dotdot(tmp_path: Path) -> None:
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "evil.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    # Resolves back inside the dataset dir, so a resolve-then-contain check
+    # accepts it; copied to ``input/<script>`` it would land beside ``input/``.
     ds_dir = tmp_path / "dataset"
     ds_dir.mkdir()
+    (ds_dir / "check.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
     dataset = ds_dir / "dataset.json"
     dataset.write_text(
         json.dumps(
@@ -259,7 +300,7 @@ def test_create_refuses_script_that_escapes_via_dotdot(tmp_path: Path) -> None:
                         "prompt": "hi",
                         "evaluation": {
                             "method": "script_based",
-                            "script": "../outside/evil.py",
+                            "script": "../dataset/check.py",
                             "expect": {"response_contains": ["ok"]},
                         },
                         "fixture": {"response": "ok"},
@@ -269,7 +310,7 @@ def test_create_refuses_script_that_escapes_via_dotdot(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    with pytest.raises((RsiDatasetInvalid, RsiBadRequest)):
+    with pytest.raises(RsiDatasetInvalid, match="script"):
         load_dataset(dataset)
 
 
@@ -305,6 +346,52 @@ async def test_stub_optimize_does_not_replace_live_best(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_optimize_replaces_higher_scoring_stub_best(tmp_path: Path) -> None:
+    from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.rsi.case_runner import CaseRunResult
+
+    fixture = Path(__file__).parent / "fixtures" / "optimize_dataset.json"
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    task_id = ctx.create_task(name="stub-then-live", max_iterations=1, dataset_path=fixture)["task_id"]
+    stub = await ctx.optimize_task(
+        task_id,
+        base_profile=AgentProfile(name="RsiCandidate", instructions=""),
+        max_epochs=1,
+    )
+    assert stub.best_score == 1.0
+    assert read_best_pointer(ctx.store, task_id)["kind"] == "stub"
+
+    class _HalfRunner:
+        async def run_case(self, case, workdir: Path) -> CaseRunResult:
+            workdir.mkdir(parents=True, exist_ok=True)
+            return CaseRunResult(case_id=case.case_id, response_text="ready", workdir=workdir)
+
+    def factory(_profile: AgentProfile) -> _HalfRunner:
+        return _HalfRunner()
+
+    live = await ctx.optimize_task(
+        task_id,
+        base_profile=AgentProfile(name="RsiCandidate", instructions=""),
+        max_epochs=1,
+        runner_factory=factory,
+    )
+    assert live.best_score == 0.5
+    pointer = read_best_pointer(ctx.store, task_id)
+    assert pointer["kind"] == "live"
+    assert pointer["candidate_id"] == live.best_candidate_id
+    assert str(pointer["candidate_id"]).startswith(f"{live.run_id}-")
+    assert live.best_json_updated is True
+    assert live.installed_candidate_id == live.best_candidate_id
+    assert live.installed_kind == "live"
+
+    exported = ctx.install_best(task_id, destination=tmp_path / "out.yaml")
+    assert exported["candidate_id"] == live.best_candidate_id
+    assert Path(exported["export_path"]).read_text(encoding="utf-8") == Path(str(pointer["profile_path"])).read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.asyncio
 async def test_lower_score_reoptimize_keeps_previous_best(tmp_path: Path) -> None:
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.rsi.paths import write_json_atomic
@@ -320,14 +407,11 @@ async def test_lower_score_reoptimize_keeps_previous_best(tmp_path: Path) -> Non
             "candidate_id": "kept-high",
             "score": 1.0,
             "profile_path": "/tmp/high.yaml",
-            "kind": "stub",
+            "kind": "live",
         },
     )
 
-    # Force a 0-score baseline-only outcome by evaluating with an empty profile
-    # and zero epochs of useful mutations: max_epochs=1 still can improve via stub.
-    # Plant score 1.0 stub; a failed-only baseline (0.0) must not replace it.
-    # Use a runner that always fails so best stays 0 within the run, then policy keeps 1.0.
+    # A live run whose runner always fails scores 0.0; the planted live 1.0 stays.
     def factory(profile: AgentProfile):
         class _Fail:
             async def run_case(self, case, workdir):
@@ -337,7 +421,7 @@ async def test_lower_score_reoptimize_keeps_previous_best(tmp_path: Path) -> Non
 
         return _Fail()
 
-    await ctx.optimize_task(
+    result = await ctx.optimize_task(
         task_id,
         base_profile=AgentProfile(name="RsiCandidate", instructions=""),
         max_epochs=1,
@@ -346,6 +430,12 @@ async def test_lower_score_reoptimize_keeps_previous_best(tmp_path: Path) -> Non
     pointer = read_best_pointer(ctx.store, task_id)
     assert pointer["candidate_id"] == "kept-high"
     assert float(pointer["score"]) == 1.0
+    assert result.best_json_updated is False
+    assert result.installed_candidate_id == "kept-high"
+    assert result.best_candidate_id != "kept-high"
+    config = ctx.store.get(task_id).config
+    assert config["last_optimize_best_json_updated"] is False
+    assert config["last_optimize_install_candidate"] == "kept-high"
 
 
 def test_rsi_main_keyboard_interrupt_returns_130(tmp_path: Path, monkeypatch) -> None:
@@ -358,15 +448,18 @@ def test_rsi_main_keyboard_interrupt_returns_130(tmp_path: Path, monkeypatch) ->
     def _prepared() -> _Prepared:
         return _Prepared()
 
-    def _ctx() -> object:
-        return build_rsi_service_context(tasks_root=tmp_path)
+    ctx = build_rsi_service_context(tasks_root=tmp_path)
 
-    def _interrupt(*_args: object, **_kwargs: object) -> int:
+    def _ctx() -> object:
+        return ctx
+
+    def _interrupt() -> list[dict[str, object]]:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(rsi_cli, "_prepare_runtime", _prepared)
     monkeypatch.setattr(rsi_cli, "build_rsi_service_context", _ctx)
-    monkeypatch.setattr(rsi_cli, "_dispatch", _interrupt)
+    # Ctrl-C from inside the command body, not a patched dispatcher seam.
+    monkeypatch.setattr(ctx, "list_tasks", _interrupt)
     assert rsi_cli.main(["list"]) == 130
 
 
@@ -374,12 +467,11 @@ def test_busy_lock_refuses_concurrent_optimize(tmp_path: Path) -> None:
     import threading
 
     from chrys.foundation.util.lock import FileLock
-    from chrys.service.rsi.context import _BUSY_LOCK_NAME
 
     ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
     created = ctx.create_task(name="busy")
     task_id = created["task_id"]
-    lock_path = Path(ctx.store.get(task_id).run_dir) / _BUSY_LOCK_NAME
+    lock_path = ctx.busy_lock_path(task_id)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     held = threading.Event()
     release = threading.Event()
@@ -395,6 +487,30 @@ def test_busy_lock_refuses_concurrent_optimize(tmp_path: Path) -> None:
     try:
         with pytest.raises(RsiBadRequest, match="active eval/optimize"), ctx._task_busy_lock(task_id):
             pass
+        with pytest.raises(RsiBadRequest, match="active eval/optimize"):
+            ctx.delete_task(task_id)
+        assert ctx.store.get(task_id).task_id == task_id
     finally:
         release.set()
         thread.join(timeout=5)
+
+
+def test_busy_lock_body_timeout_is_not_reported_as_busy(tmp_path: Path) -> None:
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    task_id = ctx.create_task(name="busy-body")["task_id"]
+    with pytest.raises(TimeoutError, match="from the body"), ctx._task_busy_lock(task_id):
+        raise TimeoutError("from the body")
+    # The lock was released: taking it again succeeds.
+    with ctx._task_busy_lock(task_id):
+        pass
+
+
+def test_busy_lock_after_delete_refuses_the_removed_task(tmp_path: Path) -> None:
+    from chrys.service.rsi.errors import RsiTaskNotFound
+
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    task_id = ctx.create_task(name="gone")["task_id"]
+    ctx.delete_task(task_id)
+    with pytest.raises(RsiTaskNotFound), ctx._task_busy_lock(task_id):
+        pass
+    assert not (tmp_path / "tasks" / task_id).exists()

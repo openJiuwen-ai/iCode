@@ -5,14 +5,24 @@
 The source path is never opened in-place for agent edits. Strategies:
 
 - ``copy`` — recursive copy (default; required for non-git trees)
-- ``git_clone`` — ``git clone --local --no-hardlinks`` into the destination
+- ``git_clone`` — ``git clone --no-local`` into the destination
 - ``git_worktree`` — ``git worktree add --detach`` (fast; shares the source
   ``.git``, so isolation is weaker — see module docs in the user guide)
 
-Symlinks in a ``copy`` source that resolve outside the source tree are refused.
-After copy/clone, real ``.git`` directories are kept; gitfiles that point outside
-the private tree are disconnected; remotes are stripped so ``git push`` cannot
-reach the caller's origin.
+Isolation rules for ``copy`` and ``git_clone``:
+
+- No source git metadata is copied. Every repository found in the source tree
+  (root, nested, submodule or linked worktree; any ``.git`` dir, file or
+  symlink) is rebuilt in the copy as a fresh private repository with
+  ``git clone --no-local``, so no ``core.worktree``, ``commondir``,
+  ``worktrees/``, ``modules/``, ``include.path`` or gitfile can point back at
+  the caller's repositories.
+- Every rebuilt repository has its remotes removed; one left behind fails the
+  materialization.
+- Symlinks resolving outside the source or the copy are refused.
+- Git runs without inherited repository-selecting ``GIT_*`` variables and
+  with ``GIT_CEILING_DIRECTORIES`` set, so neither the caller's environment
+  nor an enclosing repository is picked up.
 """
 
 from __future__ import annotations
@@ -23,6 +33,7 @@ import os
 import shutil
 import stat
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -35,6 +46,9 @@ logger = logging.getLogger(__name__)
 WorkdirStrategy = Literal["copy", "git_clone", "git_worktree"]
 WORKDIR_STRATEGIES: frozenset[str] = frozenset({"copy", "git_clone", "git_worktree"})
 _SEED_MARKER = ".chrys_rsi_workdir_seed.json"
+RESPONSE_FILE_NAME = ".chrys_rsi_response.txt"
+SESSIONS_DIR_NAME = ".chrys_rsi_sessions"
+_RSI_PRIVATE_FILES = (_SEED_MARKER, RESPONSE_FILE_NAME, SESSIONS_DIR_NAME)
 
 
 @dataclass(slots=True, frozen=True)
@@ -50,6 +64,72 @@ class WorkdirSeed:
         if self.ref:
             payload["ref"] = self.ref
         return payload
+
+
+def isolated_git_env(ceiling: Path | None) -> dict[str, str]:
+    """Process env without inherited repository-selecting git variables, bounded at *ceiling*.
+
+    Drops what ``git rev-parse --local-env-vars`` lists (``GIT_DIR``,
+    ``GIT_WORK_TREE``, ``GIT_INDEX_FILE``, ``GIT_COMMON_DIR``, config injection
+    via ``GIT_CONFIG_PARAMETERS`` / ``GIT_CONFIG_COUNT`` …) plus discovery
+    knobs; user-level settings such as ``GIT_CONFIG_GLOBAL`` or author identity
+    stay. With *ceiling* set, git run below it never discovers a repository
+    above it.
+    """
+    env = {key: value for key, value in os.environ.items() if not _is_repo_selecting_git_var(key)}
+    if ceiling is not None:
+        env["GIT_CEILING_DIRECTORIES"] = str(ceiling)
+    return env
+
+
+_REPO_SELECTING_GIT_VARS = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_GRAFT_FILE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_WORK_TREE",
+    }
+)
+
+
+def _is_repo_selecting_git_var(name: str) -> bool:
+    upper = name.upper()
+    return upper in _REPO_SELECTING_GIT_VARS or upper.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+
+
+def enclosing_git_work_tree(path: Path) -> Path | None:
+    """Top level of the git work tree holding *path* (or its nearest existing parent), if any.
+
+    Case workdirs without their own repository would let git fall through to
+    that enclosing repository.
+    """
+    probe = path.expanduser().absolute()
+    while not probe.is_dir():
+        if probe.parent == probe:
+            return None
+        probe = probe.parent
+    try:
+        result = _run_git(["rev-parse", "--show-toplevel"], cwd=probe, check=False)
+    except RsiBadRequest:
+        return None
+    top = result.stdout.strip()
+    if result.returncode != 0 or not top:
+        return None
+    return Path(top)
 
 
 def resolve_seed_source(seed: WorkdirSeed, *, dataset_dir: Path) -> Path:
@@ -71,27 +151,30 @@ def materialize_workdir(
     dataset_dir: Path,
 ) -> Path:
     """Materialize *seed* into *dest* (must not already exist). Returns *dest*."""
-    if dest.exists():
+    if dest.exists() or dest.is_symlink():
         raise RsiBadRequest(f"workdir destination already exists: {dest}")
     source = resolve_seed_source(seed, dataset_dir=dataset_dir)
     if not source.is_dir():
         raise RsiBadRequest(f"workdir.from must be a directory: {seed.source}")
+    dest_resolved = dest.resolve()
+    if dest_resolved == source or dest_resolved.is_relative_to(source):
+        raise RsiBadRequest(
+            f"workdir destination {dest} is inside workdir.from {source}; choose an output directory outside it"
+        )
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     strategy = seed.strategy
     if strategy == "copy":
         _copy_tree(source, dest)
-        _write_marker(dest, strategy=strategy, source=source)
-        return dest
-    if strategy == "git_clone":
+    elif strategy == "git_clone":
         _git_clone(source, dest, ref=seed.ref)
-        _write_marker(dest, strategy=strategy, source=source)
-        return dest
-    if strategy == "git_worktree":
+    elif strategy == "git_worktree":
         _git_worktree(source, dest, ref=seed.ref)
-        _write_marker(dest, strategy=strategy, source=source)
-        return dest
-    raise RsiBadRequest(f"unknown workdir.strategy: {strategy}")
+    else:
+        raise RsiBadRequest(f"unknown workdir.strategy: {strategy}")
+    _write_marker(dest, strategy=strategy, source=source)
+    _exclude_rsi_files(dest)
+    return dest
 
 
 def snapshot_seed_for_task(
@@ -103,8 +186,8 @@ def snapshot_seed_for_task(
     """Materialize a task-local seed and return a rewritten ``copy`` seed pointing at it.
 
     ``git_worktree`` is upgraded to ``git_clone`` so the task ``input/`` tree does
-    not keep a live link into the caller's repository. Real ``.git`` directories from
-    clone are kept so later task-path copies still have a private git history.
+    not keep a live link into the caller's repository. Later case copies rebuild
+    the snapshot's private repositories again.
     """
     strategy: WorkdirStrategy = seed.strategy
     if strategy == "git_worktree":
@@ -131,6 +214,27 @@ def release_workdir_seeds_under(root: Path) -> None:
             _release_one_workdir(workdir)
         except RsiBadRequest as exc:
             logger.warning("RSI workdir seed release failed for %s: %s", workdir, exc.message)
+
+
+def write_text_nofollow(path: Path, text: str, *, what: str) -> None:
+    """Write *text* to *path* without following a symlink planted there."""
+    data = text.encode("utf-8")
+    # unlink() on a symlink removes the link, never the target.
+    if path.is_symlink():
+        path.unlink(missing_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow:
+        flags |= nofollow
+    try:
+        fd = os.open(os.fspath(path), flags, 0o644)
+    except OSError as exc:
+        # ELOOP / EMLINK when a symlink raced back in; refuse rather than follow.
+        raise RsiBadRequest(f"{what} refused (symlink or unwritable): {path}") from exc
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
 
 
 def _release_one_workdir(workdir: Path) -> None:
@@ -170,124 +274,132 @@ def _write_marker(
         "strategy": strategy,
         "source": str(source),
     }
-    _write_text_nofollow(
+    write_text_nofollow(
         dest / _SEED_MARKER,
         json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
+        what="workdir marker",
     )
 
 
-def _write_text_nofollow(path: Path, text: str) -> None:
-    """Write *text* without following a pre-existing symlink at *path*."""
-    data = text.encode("utf-8")
-    # unlink() on a symlink removes the link, never the target.
-    if path.is_symlink():
-        path.unlink(missing_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    if nofollow:
-        flags |= nofollow
+def _exclude_rsi_files(dest: Path) -> None:
+    """Keep RSI's own files out of ``git status`` in a private root repository."""
+    git_dir = dest / ".git"
+    if git_dir.is_symlink() or not git_dir.is_dir():
+        return
+    info = git_dir / "info"
+    exclude = info / "exclude"
+    if info.is_symlink() or exclude.is_symlink():
+        raise RsiBadRequest(f"workdir git metadata has a symlinked info/exclude: {exclude}")
     try:
-        fd = os.open(os.fspath(path), flags, 0o644)
+        info.mkdir(exist_ok=True)
+        existing = exclude.read_text(encoding="utf-8") if exclude.is_file() else ""
     except OSError as exc:
-        # ELOOP / EMLINK when a symlink raced back in; refuse rather than follow.
-        raise RsiBadRequest(f"workdir marker refused (symlink or unwritable): {path}") from exc
-    try:
-        os.write(fd, data)
-    finally:
-        os.close(fd)
+        raise RsiBadRequest(f"workdir git exclude unreadable: {exc}") from exc
+    lines = existing.splitlines()
+    missing = [f"/{name}" for name in _RSI_PRIVATE_FILES if f"/{name}" not in lines]
+    if not missing:
+        return
+    prefix = existing if not existing or existing.endswith("\n") else existing + "\n"
+    write_text_nofollow(exclude, prefix + "\n".join(missing) + "\n", what="workdir git exclude")
 
 
 def _copy_tree(source: Path, dest: Path) -> None:
     _refuse_escaping_symlinks(source)
+    repo_roots = _find_repo_roots(source)
     try:
-        shutil.copytree(source, dest, symlinks=True, ignore_dangling_symlinks=True)
+        shutil.copytree(
+            source,
+            dest,
+            symlinks=True,
+            ignore_dangling_symlinks=True,
+            ignore=_ignore_git_metadata,
+        )
     except OSError as exc:
         raise RsiBadRequest(f"workdir copy failed: {exc}") from exc
-    _sanitize_copied_git_metadata(dest)
     _refuse_escaping_symlinks(dest, label="copied workdir")
+    for relative in repo_roots:
+        _rebuild_private_repo(source / relative, dest / relative)
 
 
-def _sanitize_copied_git_metadata(dest: Path) -> None:
-    """Keep real ``.git`` dirs; disconnect gitfiles / symlinks that escape *dest*.
+def _ignore_git_metadata(_directory: str, names: list[str]) -> list[str]:
+    return [".git"] if ".git" in names else []
 
-    Linked worktrees store a gitfile (``gitdir: …``) or symlink that points at
-    the caller's repository. Leaving those in a private copy lets BYPASS agents
-    ``commit`` / ``checkout`` against the user's real branch. Nested gitfiles
-    (for example under ``.worktrees/``) are walked too. Directory ``.git``
-    object stores are preserved so task-path ``git_clone`` seeds still have git
-    after being rewritten to ``copy``.
-    """
-    root_resolved = dest.resolve()
-    for dirpath, dirnames, _filenames in os.walk(dest, topdown=True, followlinks=False):
-        git_path = Path(dirpath) / ".git"
+
+def _find_repo_roots(source: Path) -> list[Path]:
+    """Relative paths of every directory holding a ``.git`` entry, outermost first."""
+    roots: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(source, topdown=True, followlinks=False):
+        if ".git" in dirnames or ".git" in filenames:
+            roots.append(Path(dirpath).relative_to(source))
         if ".git" in dirnames:
-            # Never walk into object stores; handle the entry itself below.
             dirnames.remove(".git")
-        if not git_path.exists() and not git_path.is_symlink():
-            continue
-        if git_path.is_dir() and not git_path.is_symlink():
-            # Real repository metadata — keep it.
-            continue
-        _disconnect_external_git_pointer(git_path, root_resolved)
-    _strip_git_remotes(dest)
+    return roots
 
 
-def _disconnect_external_git_pointer(git_path: Path, root_resolved: Path) -> None:
-    """Unlink a gitfile/symlink whose target lies outside *root_resolved*."""
-    try:
-        if git_path.is_symlink():
-            try:
-                target = git_path.resolve()
-            except OSError:
-                _unlink_path(git_path)
-                return
-            try:
-                target.relative_to(root_resolved)
-            except ValueError:
-                _unlink_path(git_path)
-            return
+def _rebuild_private_repo(source_repo: Path, dest_repo: Path) -> None:
+    """Give *dest_repo* (copied files, no metadata) a fresh clone of *source_repo*'s history.
 
-        text = git_path.read_text(encoding="utf-8", errors="replace").strip()
-        if not text.lower().startswith("gitdir:"):
-            # Unknown non-directory .git — refuse to leave an opaque pointer.
-            _unlink_path(git_path)
-            return
-        raw = text.split(":", 1)[1].strip()
-        target = Path(raw)
-        target = (git_path.parent / target).resolve() if not target.is_absolute() else target.resolve()
-        try:
-            target.relative_to(root_resolved)
-        except ValueError:
-            _unlink_path(git_path)
-    except OSError as exc:
-        raise RsiBadRequest(f"workdir copy could not detach external git pointer: {exc}") from exc
-
-
-def _unlink_path(path: Path) -> None:
-    """Remove a file or symlink; clear the Windows read-only bit when needed.
-
-    Never ``chmod`` through a symlink (that would change the link target).
+    The index is reset to the source's HEAD, so uncommitted source edits show up
+    as modifications, as they do in the source.
     """
-    if path.is_symlink():
-        path.unlink(missing_ok=True)
+    if not _is_work_tree_root(source_repo):
+        raise RsiBadRequest(
+            f"workdir.from contains a .git entry git cannot open: {source_repo / '.git'}; "
+            "fix or remove it, or use a git_clone seed"
+        )
+    head = _run_git(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=source_repo, check=False)
+    if head.returncode != 0:
+        _run_git(["init", "--quiet"], cwd=dest_repo, check=True, ceiling=dest_repo.parent)
         return
+    scratch = Path(tempfile.mkdtemp(prefix=".rsi-clone-", dir=dest_repo.parent))
     try:
-        path.unlink(missing_ok=True)
-    except PermissionError:
-        os.chmod(path, stat.S_IWRITE)
-        path.unlink(missing_ok=True)
+        clone = scratch / "repo"
+        _run_git(
+            ["clone", "--quiet", "--no-local", "--no-checkout", str(source_repo), str(clone)],
+            cwd=None,
+            check=True,
+        )
+        os.replace(clone / ".git", dest_repo / ".git")
+    except OSError as exc:
+        raise RsiBadRequest(f"workdir git rebuild failed for {source_repo}: {exc}") from exc
+    finally:
+        _remove_tree(scratch)
+    _run_git(["reset", "--quiet", "--mixed", "HEAD"], cwd=dest_repo, check=True, ceiling=dest_repo.parent)
+    _strip_git_remotes(dest_repo)
+
+
+def _is_work_tree_root(path: Path) -> bool:
+    result = _run_git(["rev-parse", "--show-toplevel"], cwd=path, check=False, ceiling=path.parent)
+    if result.returncode != 0:
+        return False
+    try:
+        return Path(result.stdout.strip()).resolve() == path.resolve()
+    except OSError:
+        return False
 
 
 def _strip_git_remotes(repo: Path) -> None:
-    """Remove every remote so ``git push`` cannot rewrite the caller's branches."""
+    """Remove every remote; fail closed if any survives."""
     git_dir = repo / ".git"
-    if not git_dir.is_dir() or git_dir.is_symlink():
-        return
-    listed = _run_git(["remote"], cwd=repo, check=False)
-    if listed.returncode != 0:
-        return
+    if git_dir.is_symlink() or not git_dir.is_dir() or (git_dir / "config").is_symlink():
+        raise RsiBadRequest(f"workdir git metadata is not a private directory: {git_dir}")
+    listed = _run_git(["remote"], cwd=repo, check=True, ceiling=repo.parent)
     for name in listed.stdout.split():
-        _run_git(["remote", "remove", name], cwd=repo, check=False)
+        _run_git(["remote", "remove", name], cwd=repo, check=False, ceiling=repo.parent)
+    remaining = _run_git(["remote"], cwd=repo, check=True, ceiling=repo.parent).stdout.split()
+    if remaining:
+        raise RsiBadRequest(f"workdir git remotes could not be removed in {repo}: {', '.join(remaining)}")
+
+
+def _remove_tree(path: Path) -> None:
+    def _on_error(func: Any, failed: str, _exc: BaseException) -> None:
+        failed_path = Path(failed)
+        if failed_path.is_symlink():
+            return
+        os.chmod(failed_path, stat.S_IWRITE)
+        func(failed)
+
+    shutil.rmtree(path, onexc=_on_error)
 
 
 def _refuse_escaping_symlinks(root: Path, *, label: str = "workdir.from") -> None:
@@ -310,12 +422,11 @@ def _refuse_escaping_symlinks(root: Path, *, label: str = "workdir.from") -> Non
 def _git_clone(source: Path, dest: Path, *, ref: str | None) -> None:
     _require_git_repo(source)
     dest_abs = dest.resolve()
-    args = ["clone", "--local", "--no-hardlinks", str(source.resolve()), str(dest_abs)]
-    _run_git(args, cwd=None, check=True)
+    _run_git(["clone", "--quiet", "--no-local", str(source.resolve()), str(dest_abs)], cwd=None, check=True)
     if ref:
-        _run_git(["checkout", "--force", ref], cwd=dest_abs, check=True)
+        _run_git(["checkout", "--quiet", "--force", ref], cwd=dest_abs, check=True, ceiling=dest_abs.parent)
     _strip_git_remotes(dest_abs)
-    _sanitize_copied_git_metadata(dest_abs)
+    _refuse_escaping_symlinks(dest_abs, label="cloned workdir")
 
 
 def _git_worktree(source: Path, dest: Path, *, ref: str | None) -> None:
@@ -342,12 +453,14 @@ def _run_git(
     *,
     cwd: Path | None,
     check: bool,
+    ceiling: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     command = ["git", *args]
     try:
         result = subprocess.run(  # noqa: S603
             command,
             cwd=str(cwd) if cwd is not None else None,
+            env=isolated_git_env(ceiling),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -357,7 +470,7 @@ def _run_git(
             **windows_hidden_subprocess_kwargs(),
         )
     except FileNotFoundError as exc:
-        raise RsiBadRequest("git is required for workdir strategy git_clone/git_worktree") from exc
+        raise RsiBadRequest("git is required for workdir seeds that hold git repositories") from exc
     except OSError as exc:
         raise RsiBadRequest(f"git invocation failed: {exc}") from exc
     if check and result.returncode != 0:

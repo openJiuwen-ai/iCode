@@ -31,6 +31,7 @@ from chrys.service.profiles.models.schema import ModelProfile, is_model_profile_
 from chrys.service.rsi import RsiError, RsiServiceContext, build_rsi_service_context, validate_dataset_file
 from chrys.service.rsi.llm_optimizer import LlmOptimizer, complete_with_model_profile
 from chrys.service.rsi.models import TaskStatus
+from chrys.service.rsi.workdir_seed import enclosing_git_work_tree
 
 
 def _write_stderr(message: str) -> None:
@@ -417,6 +418,14 @@ async def _eval(ctx: RsiServiceContext, args: argparse.Namespace, prepared: head
         timeout=args.timeout,
     )
     out_dir = _expanded_path(args.out)
+    if out_dir is not None:
+        enclosing = enclosing_git_work_tree(out_dir)
+        if enclosing is not None:
+            _write_stderr(
+                f"Error: --out {out_dir} is inside the git repository {enclosing}; "
+                "choose a directory outside any git repository"
+            )
+            return 2
     if args.task:
         result = await ctx.evaluate_task(args.task, runner=runner, output_dir=out_dir)
     else:
@@ -490,6 +499,10 @@ async def _optimize(ctx: RsiServiceContext, args: argparse.Namespace, prepared: 
             f"epochs={len(result.epochs)}",
             f"dropped={sum(1 for epoch in result.epochs if epoch.dropped)}",
             f"perfect={result.perfect}",
+            f"best_json_updated={result.best_json_updated}",
+            f"install_candidate={result.installed_candidate_id}",
+            f"install_score={result.installed_score}",
+            f"install_kind={result.installed_kind}",
         ],
     )
     return 0 if result.perfect or result.best_score > result.baseline_score else 1

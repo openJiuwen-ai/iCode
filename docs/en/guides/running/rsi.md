@@ -52,6 +52,8 @@ Create a JSON file (`chrys-rsi.dataset.v1`). Each case needs a `prompt` and `eva
 
 To work on a **code tree** (add a feature, fix a bug), add a `workdir` seed. The source is treated as **read-only**: RSI materializes a private copy (or git clone / worktree) into the case directory; it does not open your original tree in-place. Prefer `strategy: "copy"` or `"git_clone"`. `"git_worktree"` is faster but shares the source `.git` (weaker isolation).
 
+With `copy` and `git_clone`, every git repository in the case is a fresh private repository. That includes the top-level one, nested ones, submodules and a copied linked worktree. Each has the same commits as your source, but no remotes and no link back to your repositories, so a commit, checkout or `git push` in a case cannot change your own repositories. Uncommitted edits in your source show up as uncommitted edits in the case. A `.git` entry that git cannot open (for example a worktree whose main repository was moved) stops the run with an error naming it.
+
 When you `create --dataset`, each seed is snapshotted under the task’s `input/seeds/<case_id>/` and the stored dataset is rewritten to `copy` from that snapshot, so later eval/optimize never touch the caller’s original path again.
 
 Keep prompts from already containing the strings or files you will check for. Otherwise the baseline may pass for the wrong reason, and optimize has nothing useful to fix.
@@ -92,6 +94,8 @@ Or dry-run without a model (requires `fixture` on each case):
 icode rsi eval --task rsi-<id> --stub
 ```
 
+Results go under the task by default. If you pass `--out DIR`, choose a directory outside any git repository and outside every `workdir.from` source. `eval` refuses an `--out` inside a git repository, because a case without its own repository would otherwise run git against yours.
+
 Why: useful to confirm the dataset and headless path before spending optimize epochs. Skip this if you will go straight to `optimize` (optimize always scores a baseline first).
 
 ### 5. Run gated optimize
@@ -105,12 +109,12 @@ What happens inside one `optimize`:
 1. **Baseline** — run every case with the base profile (`Code`, unless `--profile` points at a YAML).
 2. **Propose** — an optimizer model reads failure summaries and may emit only whitelisted mutations (`append_instructions`, `upsert_inline_skill`, `remove_inline_skill`).
 3. **Materialize** — write a candidate under `<task>/run/candidates/<run>-epoch-N/` (each optimize run gets its own id so a re-run never overwrites an earlier baseline).
-4. **Gate** — first re-run **only cases that are still failing** (fast reject). If the merged score looks better, **confirm on the full suite** before adopting. `perfect` and `best` always reflect a full-suite result; `best.json` is written only when the run finishes, and only when the new score is **not worse** than the previous best. A stub dry-run never replaces a live (`--agent`) best.
+4. **Gate** — first re-run **only cases that are still failing** (fast reject). If the merged score looks better, **confirm on the full suite** before adopting. `perfect` and `best` always reflect a full-suite result. `best.json` (what `install` exports) is written only when the run finishes. Stub and live scores are never compared with each other: a live (`--agent`) run always replaces a stub best, and a stub dry-run never replaces a live best. Between two runs of the same kind, the new best replaces the old one only when its score is **not worse**.
 5. Repeat until epochs are exhausted, the score is perfect, or the optimizer returns an empty `{"mutations":[]}` (deliberate stop). A bad model call or invalid JSON **drops** that epoch and continues; nothing from a dropped proposal is installed.
 
-Stdout includes `baseline_score`, `best_score`, `best_candidate`, `epochs`, `dropped`, and `perfect`.
+Stdout includes `baseline_score`, `best_score`, `best_candidate`, `epochs`, `dropped` and `perfect` for this run. It also includes `best_json_updated`, and `install_candidate` / `install_score` / `install_kind` for what `install` will export. When `best_json_updated=False`, this run's `best_candidate` is **not** what `install` exports; `icode rsi get` shows the same `last_optimize_install_*` values.
 
-Why: this is the actual RSI search. Stub mode (`optimize` without `--agent`) is for CI and wiring checks; it does not call a model. After a live optimize, a later stub run on the same task will not overwrite `best.json` with marker-only stub instructions.
+Why: this is the actual RSI search. Stub mode (`optimize` without `--agent`) is for CI and wiring checks; it does not call a model. A stub dry-run before your first live run does not block the live result from `best.json`, and a stub run after it does not overwrite it with marker-only stub instructions.
 
 Useful variants:
 
@@ -158,7 +162,12 @@ icode rsi install rsi-<id> --out ./candidate.yaml
 
 # Opt-in write into a user agents directory (both flags required)
 icode rsi install rsi-<id> --user --user-dir ~/.chrys/agents
+
+# Replace a file that already exists at --out or in --user-dir
+icode rsi install rsi-<id> --out ./candidate.yaml --force
 ```
+
+`--out` and `--user` are mutually exclusive: pass one or the other. The default `<task>/export/` file is refreshed on every `install`; any other destination that already exists is left alone unless you add `--force`.
 
 Why: RSI ends at **export**. It does not hot-load into a running chat session. You choose whether and how to use the YAML afterward.
 
@@ -179,7 +188,7 @@ icode rsi delete rsi-<id>
 | `eval` | Measure | Run `script_based` scoring once (stub fixtures or live `--agent`) |
 | `optimize` | Improve | Full gated loop: baseline, propose, gate, adopt/reject |
 | `tree` | Inspect | Print the evolution tree projection after mock `start` or `optimize` |
-| `install` | Export | Copy best candidate YAML out; never auto-writes user agents unless `--user` + `--user-dir` |
+| `install` | Export | Copy best candidate YAML out; never auto-writes user agents unless `--user` + `--user-dir` (not with `--out`); `--force` overwrites an existing file |
 | `delete` | Housekeeping | Remove a `CREATED` or terminal task directory |
 | `start` | **Mock only** | Queue the Phase 1 mock provider (not real optimize) |
 
@@ -219,9 +228,10 @@ icode rsi delete rsi-<id>
 - **Inputs to the agent**: `prompt` (user message) plus the materialized case workdir (and the base profile from `--agent` / `--profile`). `evaluation.*` is judge-only and is not passed to the model.
 - **`workdir`** (optional): seed a private case cwd from a source directory.
   - `from` — absolute path, or path relative to the dataset JSON’s directory
-  - `strategy` — `copy` (default; any tree), `git_clone` (local clone with `--no-hardlinks`), or `git_worktree` (detach checkout; shares `.git`, weaker isolation)
+  - `strategy` — `copy` (default; any tree), `git_clone` (a private clone of the repository at `from`; untracked files and submodule contents are not included), or `git_worktree` (detach checkout; shares `.git`, weaker isolation)
   - `ref` — optional git commit/branch for `git_clone` / `git_worktree`
-  - Symlinks in a `copy` source that resolve outside that source are refused
+  - Symlinks that resolve outside the source (for `copy`) or outside the clone (for `git_clone`) are refused
+  - The case directory must not be inside `from` (for example `from: "."` with an `--out` inside the dataset folder)
 - `fixture` supplies a canned `response` and files for `--stub` / CI. Omit it for live `--agent` runs.
 - Optional `script` paths must stay inside the dataset directory; they run with `stdin` closed and receive `CHRYS_RSI_WORKDIR` / `CHRYS_RSI_RESPONSE_PATH`. Treat them as trusted local code.
 

@@ -205,8 +205,9 @@ def maybe_update_best_pointer(
 ) -> bool:
     """Write ``best.json`` only when this run should replace the previous best.
 
-    Stub runs never replace a live best. Otherwise the new score must be at
-    least as high as the stored one (equal scores may update the pointer).
+    Stub and live scores are not comparable: a live run always replaces a stub
+    pointer and a stub run never replaces a live one. Within one kind the new
+    score must be at least as high as the stored one (ties update the pointer).
     Returns True when the pointer was written.
     """
     path = best_pointer_path(store, task_id)
@@ -221,9 +222,10 @@ def maybe_update_best_pointer(
                 existing_score = float(existing.get("score"))
             except TypeError, ValueError:
                 existing_score = float("-inf")
-            if kind == "stub" and existing_kind == "live":
-                return False
-            if score < existing_score:
+            if kind != existing_kind:
+                if existing_kind == "live":
+                    return False
+            elif score < existing_score:
                 return False
     write_json_atomic(
         path,

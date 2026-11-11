@@ -52,6 +52,8 @@ live 样例 **`playground/rsi/complex-calc/`**（Rust 复数计算器）在**源
 
 若题目是在**代码树**上加特性 / 修 bug，请加 `workdir` 种子。源路径按**只读**处理：RSI 会物化一份私有副本（或 git clone / worktree）到 case 目录，**不会**原地打开你的原目录。优先 `strategy: "copy"` 或 `"git_clone"`。`"git_worktree"` 更快，但与源仓共享 `.git`，隔离更弱。
 
+使用 `copy` 和 `git_clone` 时，case 里的每个 git 仓库都是一个全新的私有仓库，包括顶层仓库、嵌套仓库、submodule，以及复制过来的 linked worktree。它们和你的源仓库有相同的提交，但没有任何 remote，也没有指回你仓库的链接，所以在 case 里 commit、checkout 或 `git push` 都改不到你自己的仓库。源目录里未提交的修改，在 case 里同样显示为未提交的修改。如果某个 `.git` 条目 git 打不开（例如主仓库已被移走的 worktree），运行会报错并指出它。
+
 `create --dataset` 时，每个种子会快照到任务的 `input/seeds/<case_id>/`，并改写存盘数据集为从该快照 `copy`，之后的 eval/optimize 不再访问调用方原来的路径。
 
 Prompt 里不要直接写出将要检查的子串或文件内容。否则基线可能因「猜到答案」而通过，optimize 就没有真正可修的失败。
@@ -92,6 +94,8 @@ icode rsi eval --task rsi-<id> -a Code -m <model>
 icode rsi eval --task rsi-<id> --stub
 ```
 
+结果默认放在任务目录下。若传 `--out DIR`，请选一个不在任何 git 仓库里、也不在任何 `workdir.from` 源目录里的目录。`eval` 会拒绝位于 git 仓库内的 `--out`，否则没有自带仓库的 case 会把 git 命令落到你的仓库上。
+
 为什么：在烧 epoch 之前确认数据集与 headless 路径可用。若直接 `optimize` 可跳过（optimize 总会先打基线分）。
 
 ### 5. 跑带门控的 optimize
@@ -105,12 +109,12 @@ icode rsi optimize rsi-<id> --agent Code -m <model> --epochs 2 --timeout 180
 1. **Baseline** — 用基线 profile（`Code`，除非 `--profile` 指向 YAML）跑完全部 case。
 2. **Propose** — optimizer 模型阅读失败摘要，只能发出白名单 mutation（`append_instructions`、`upsert_inline_skill`、`remove_inline_skill`）。
 3. **Materialize** — 写入 `<task>/run/candidates/<run>-epoch-N/`（每次 optimize 有独立 run id，重跑不会覆盖上一次的 baseline）。
-4. **Gate** — 先**只重跑仍失败的 case**（快速拒绝）；合并分数看起来更好时，再**用完整套件确认**后才采纳。`perfect` / `best` 一律以完整套件结果为准；`best.json` 只在本轮跑完后写入，且新分数**不能低于**已有 best。stub 干跑不会替换 live（`--agent`）的 best。
+4. **Gate** — 先**只重跑仍失败的 case**（快速拒绝）；合并分数看起来更好时，再**用完整套件确认**后才采纳。`perfect` / `best` 一律以完整套件结果为准。`best.json`（`install` 导出的就是它）只在本轮跑完后写入。stub 分数和 live 分数互不比较：live（`--agent`）结果总会取代 stub 的 best，stub 干跑永远不会取代 live 的 best；同一种跑法之间，新 best 的分数**不低于**旧的才会替换。
 5. 直到 epoch 用尽、分数已完美，或模型返回空的 `{"mutations":[]}`（主动停止）。模型调用失败或非法 JSON 会 **drop** 该轮并继续；被丢弃的提议不会安装。
 
-Stdout 含 `baseline_score`、`best_score`、`best_candidate`、`epochs`、`dropped`、`perfect`。
+Stdout 含本轮的 `baseline_score`、`best_score`、`best_candidate`、`epochs`、`dropped`、`perfect`，还有 `best_json_updated`，以及 `install` 实际会导出的 `install_candidate` / `install_score` / `install_kind`。`best_json_updated=False` 时，本轮的 `best_candidate` **不是** `install` 导出的那个；`icode rsi get` 里的 `last_optimize_install_*` 显示同样的信息。
 
-为什么：这才是真正的 RSI 搜索。不传 `--agent` 的 stub optimize 用于 CI 与接线检查，不会调用模型。live optimize 之后再在同一任务上跑 stub，不会用只有 `rsi:case:` 标记的 stub profile 覆盖 `best.json`。
+为什么：这才是真正的 RSI 搜索。不传 `--agent` 的 stub optimize 用于 CI 与接线检查，不会调用模型。第一次 live 之前跑过的 stub 干跑不会挡住 live 结果写入 `best.json`；live 之后再跑 stub，也不会用只有 `rsi:case:` 标记的 stub profile 覆盖它。
 
 常用变体：
 
@@ -158,7 +162,12 @@ icode rsi install rsi-<id> --out ./candidate.yaml
 
 # 显式写入用户 agents 目录（两个开关都要）
 icode rsi install rsi-<id> --user --user-dir ~/.chrys/agents
+
+# 覆盖 --out 或 --user-dir 下已存在的文件
+icode rsi install rsi-<id> --out ./candidate.yaml --force
 ```
+
+`--out` 与 `--user` 互斥，只能二选一。默认的 `<task>/export/` 文件每次 `install` 都会刷新；其他已存在的目标文件不会被覆盖，除非加 `--force`。
 
 为什么：RSI 止于**导出**，不会热加载进正在跑的聊天会话。是否使用这份 YAML 由你决定。
 
@@ -179,7 +188,7 @@ icode rsi delete rsi-<id>
 | `eval` | 度量 | 跑一次 `script_based` 打分（stub fixture 或 live `--agent`） |
 | `optimize` | 改进 | 完整门控环：基线、提议、门控、采纳/拒绝 |
 | `tree` | 查看 | 打印演进树（mock `start` 或 `optimize` 之后） |
-| `install` | 导出 | 拷出最佳候选 YAML；除非 `--user` + `--user-dir`，否则不写用户 agents |
+| `install` | 导出 | 拷出最佳候选 YAML；除非 `--user` + `--user-dir`（不能和 `--out` 同用），否则不写用户 agents；`--force` 覆盖已存在的文件 |
 | `delete` | 清理 | 删除 `CREATED` 或已结束任务的目录 |
 | `start` | **仅 mock** | 排队跑 mock provider（不是真 optimize） |
 
@@ -219,9 +228,10 @@ icode rsi delete rsi-<id>
 - **交给 agent 的输入**：`prompt`（用户消息）+ 物化后的 case 工作目录（以及 `--agent` / `--profile` 的基线 profile）。`evaluation.*` 只用于判分，不会发给模型。
 - **`workdir`**（可选）：从源目录为 case 播种私有 cwd。
   - `from` — 绝对路径，或相对数据集 JSON 所在目录的路径
-  - `strategy` — `copy`（默认；任意目录树）、`git_clone`（本地 `--no-hardlinks` clone）、或 `git_worktree`（detach checkout；共享 `.git`，隔离较弱）
+  - `strategy` — `copy`（默认；任意目录树）、`git_clone`（对 `from` 处仓库做私有 clone；不含未跟踪文件和 submodule 内容）、或 `git_worktree`（detach checkout；共享 `.git`，隔离较弱）
   - `ref` — 可选；`git_clone` / `git_worktree` 的 commit/分支
-  - `copy` 源中解析到源树外的 symlink 会被拒绝
+  - 解析到源目录外（`copy`）或 clone 目录外（`git_clone`）的 symlink 会被拒绝
+  - case 目录不能位于 `from` 之内（例如 `from: "."` 且 `--out` 指到数据集目录里）
 - `fixture` 为 `--stub` / CI 提供罐头 `response` 与文件；live `--agent` 请省略。
 - 可选 `script` 必须位于数据集目录内；以关闭的 `stdin` 运行，并接收 `CHRYS_RSI_WORKDIR` / `CHRYS_RSI_RESPONSE_PATH`。请将其视为可信本地代码。
 

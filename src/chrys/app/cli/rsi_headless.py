@@ -18,6 +18,7 @@ from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.rsi.case_runner import CaseRunner, CaseRunResult, StubCaseRunner
 from chrys.service.rsi.dataset import RsiCase
 from chrys.service.rsi.errors import RsiBadRequest, RsiNotReady
+from chrys.service.rsi.workdir_seed import SESSIONS_DIR_NAME
 from chrys.service.state.store import JsonFileStateStore
 
 
@@ -46,7 +47,7 @@ class HeadlessCaseRunner:
 
     async def run_case(self, case: RsiCase, workdir: Path) -> CaseRunResult:
         workdir.mkdir(parents=True, exist_ok=True)
-        sessions_root = workdir / ".chrys_rsi_sessions"
+        sessions_root = workdir / SESSIONS_DIR_NAME
         sessions_root.mkdir(parents=True, exist_ok=True)
 
         host = ChrysSessionHost(

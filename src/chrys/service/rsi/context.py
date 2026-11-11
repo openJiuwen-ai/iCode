@@ -47,7 +47,7 @@ from chrys.service.rsi.store import RsiTaskStore
 from chrys.service.rsi.workdir_seed import snapshot_seed_for_task
 from chrys.service.rsi.worker import PushCallback, RsiWorker
 
-_BUSY_LOCK_NAME = ".rsi_busy.lock"
+_BUSY_LOCK_DIR = ".locks"
 
 
 class RsiServiceContext:
@@ -87,16 +87,27 @@ class RsiServiceContext:
 
             self.store.add_status_hook(_hook)
 
+    def busy_lock_path(self, task_id: str) -> Path:
+        """Per-task lock file, outside the task dir so ``delete`` can hold it while removing the tree."""
+        task_dir(self.tasks_root, task_id)  # validates the id
+        return self.tasks_root / _BUSY_LOCK_DIR / f"{task_id}.lock"
+
     @contextlib.contextmanager
     def _task_busy_lock(self, task_id: str) -> Generator[None]:
-        """Exclusive eval/optimize lock; OS releases it if the process dies."""
-        lock_path = task_dir(self.tasks_root, task_id) / "run" / _BUSY_LOCK_NAME
+        """Exclusive eval/optimize/delete lock; OS releases it if the process dies."""
+        lock_path = self.busy_lock_path(task_id)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(lock_path, timeout=0)
         try:
-            with FileLock(lock_path, timeout=0):
-                yield
+            lock.acquire()
         except TimeoutError as exc:
             raise RsiBadRequest(f"task {task_id} has an active eval/optimize; wait for it to finish") from exc
+        try:
+            # A delete that held the lock before us has removed the task.
+            self.store.get(task_id)
+            yield
+        finally:
+            lock.release()
 
     def create_task(
         self,
@@ -196,16 +207,9 @@ class RsiServiceContext:
         task = self.store.get(task_id)
         if task.status in {TaskStatus.RUNNING.value, TaskStatus.QUEUED.value}:
             raise RsiBadRequest(f"task {task_id} is {task.status}; terminate it before delete")
-        # Refuse only while another process currently holds the busy lock.
-        # A leftover lock file after a hard kill is fine — FileLock acquires it.
-        lock_path = task_dir(self.tasks_root, task_id) / "run" / _BUSY_LOCK_NAME
-        if lock_path.parent.is_dir():
-            try:
-                with FileLock(lock_path, timeout=0):
-                    pass
-            except TimeoutError as exc:
-                raise RsiBadRequest(f"task {task_id} has an active eval/optimize; wait for it to finish") from exc
-        self.store.delete(task_id)
+        # Held across the removal so an eval/optimize cannot start in between.
+        with self._task_busy_lock(task_id):
+            self.store.delete(task_id)
 
     def start(self, task_id: str) -> dict[str, Any]:
         status = self.worker.enqueue(task_id)
@@ -351,6 +355,10 @@ class RsiServiceContext:
                 "last_optimize_best_score": result.best_score,
                 "last_optimize_baseline_score": result.baseline_score,
                 "last_optimize_perfect": result.perfect,
+                "last_optimize_best_json_updated": result.best_json_updated,
+                "last_optimize_install_candidate": result.installed_candidate_id,
+                "last_optimize_install_score": result.installed_score,
+                "last_optimize_install_kind": result.installed_kind,
             }
             self.store.save(task)
         return result

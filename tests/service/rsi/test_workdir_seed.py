@@ -259,21 +259,157 @@ async def test_task_path_git_clone_keeps_private_git(tmp_path: Path, git_repo_fa
     assert case_remotes.stdout.strip() == ""
 
 
-def test_nested_gitfile_disconnected_on_copy(tmp_path: Path) -> None:
-    source = tmp_path / "src"
-    nested = source / ".worktrees" / "feature"
-    nested.mkdir(parents=True)
-    (source / "root.txt").write_text("r\n", encoding="utf-8")
-    (nested / "leaf.txt").write_text("l\n", encoding="utf-8")
-    (nested / ".git").write_text("gitdir: /tmp/user-repo/.git/worktrees/feature\n", encoding="utf-8")
-    dest = tmp_path / "dest"
-    materialize_workdir(
-        WorkdirSeed(source=str(source), strategy="copy"),
-        dest=dest,
-        dataset_dir=tmp_path,
+def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-c", "protocol.file.allow=always", *args],
+        cwd=cwd,
+        check=check,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
-    assert (dest / ".worktrees" / "feature" / "leaf.txt").is_file()
-    assert not (dest / ".worktrees" / "feature" / ".git").exists()
+
+
+def _remotes(repo: Path) -> list[str]:
+    return _git(repo, "remote").stdout.split()
+
+
+def _copy_seed(source: Path, dest: Path, tmp_path: Path) -> Path:
+    return materialize_workdir(WorkdirSeed(source=str(source), strategy="copy"), dest=dest, dataset_dir=tmp_path)
+
+
+def test_copy_rebuilds_nested_repo_without_remotes(tmp_path: Path, git_repo_factory) -> None:
+    upstream = git_repo_factory(tmp_path / "userlib-upstream")
+    source = git_repo_factory(tmp_path / "src")
+    nested = source / "deps" / "userlib"
+    nested.parent.mkdir()
+    _git(tmp_path, "clone", "--quiet", str(upstream), str(nested))
+    assert _remotes(nested) == ["origin"]
+    upstream_head = _git(upstream, "rev-parse", "HEAD").stdout.strip()
+
+    dest = _copy_seed(source, tmp_path / "dest", tmp_path)
+
+    copied = dest / "deps" / "userlib"
+    assert (copied / ".git").is_dir()
+    assert _remotes(copied) == []
+    assert _remotes(dest) == []
+    assert _git(copied, "rev-parse", "HEAD").stdout.strip() == upstream_head
+    assert _git(copied, "push", "--force", "origin", "HEAD:main", check=False).returncode != 0
+    assert _git(upstream, "rev-parse", "HEAD").stdout.strip() == upstream_head
+
+
+def test_copy_rebuilds_submodule_as_private_repo(tmp_path: Path, git_repo_factory) -> None:
+    lib = git_repo_factory(tmp_path / "lib")
+    source = git_repo_factory(tmp_path / "src")
+    _git(source, "submodule", "--quiet", "add", str(lib), "deps/lib")
+    _git(source, "commit", "--quiet", "-m", "add submodule")
+    assert (source / "deps" / "lib" / ".git").is_file()
+
+    dest = _copy_seed(source, tmp_path / "dest", tmp_path)
+
+    sub = dest / "deps" / "lib"
+    assert (sub / ".git").is_dir()
+    assert _remotes(sub) == []
+    assert not (dest / ".git" / "modules").exists()
+    assert _git(dest, "status", "--porcelain").stdout == ""
+
+
+def test_copy_of_linked_worktree_keeps_its_git_history(tmp_path: Path, git_repo_factory) -> None:
+    source = git_repo_factory(tmp_path / "repo")
+    worktree = tmp_path / "wt"
+    _git(source, "worktree", "add", "--quiet", "--detach", str(worktree))
+    _commit_file(worktree, "wt.txt", "wt\n", "worktree only")
+    worktree_head = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+    source_head = _git(source, "rev-parse", "HEAD").stdout.strip()
+
+    dest = _copy_seed(worktree, tmp_path / "dest", tmp_path)
+
+    assert (dest / ".git").is_dir()
+    assert _git(dest, "rev-parse", "HEAD").stdout.strip() == worktree_head
+    _git(dest, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "case")
+    assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == worktree_head
+    assert _git(source, "rev-parse", "HEAD").stdout.strip() == source_head
+    assert str(dest.resolve()) not in _git(source, "worktree", "list", "--porcelain").stdout
+
+
+def test_copy_drops_core_worktree_pointing_at_source(tmp_path: Path, git_repo_factory) -> None:
+    source = git_repo_factory(tmp_path / "src")
+    _git(source, "config", "core.worktree", str(source.resolve()))
+    (source / "README.md").write_text("user's uncommitted edit", encoding="utf-8")
+
+    dest = _copy_seed(source, tmp_path / "dest", tmp_path)
+
+    assert _git(dest, "config", "--get", "core.worktree", check=False).returncode == 1
+    assert _git(dest, "status", "--porcelain").stdout == " M README.md\n"
+    _git(dest, "restore", "README.md")
+    assert (source / "README.md").read_text(encoding="utf-8") == "user's uncommitted edit"
+    assert (dest / "README.md").read_text(encoding="utf-8") == "committed content"
+
+
+def test_git_clone_ignores_inherited_git_dir(tmp_path: Path, git_repo_factory, monkeypatch) -> None:
+    source = git_repo_factory(tmp_path / "repo")
+    _git(source, "remote", "add", "origin", "https://example.invalid/repo.git")
+    monkeypatch.setenv("GIT_DIR", str(source / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(source))
+
+    materialize_workdir(
+        WorkdirSeed(source=str(source), strategy="git_clone"), dest=tmp_path / "clone", dataset_dir=tmp_path
+    )
+
+    monkeypatch.delenv("GIT_DIR")
+    monkeypatch.delenv("GIT_WORK_TREE")
+    assert _remotes(source) == ["origin"]
+    assert _remotes(tmp_path / "clone") == []
+
+
+def test_git_clone_refuses_tracked_symlink_escaping_the_clone(tmp_path: Path, git_repo_factory) -> None:
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    source = git_repo_factory(tmp_path / "repo")
+    symlink_or_skip(source / "leak", outside)
+    _git(source, "add", "leak")
+    _git(source, "commit", "--quiet", "-m", "leak")
+    with pytest.raises(RsiBadRequest, match="symlink escaping"):
+        materialize_workdir(
+            WorkdirSeed(source=str(source), strategy="git_clone"), dest=tmp_path / "clone", dataset_dir=tmp_path
+        )
+
+
+def test_rsi_files_do_not_show_in_case_git_status(tmp_path: Path, git_repo_factory) -> None:
+    from chrys.service.rsi.workdir_seed import RESPONSE_FILE_NAME, SESSIONS_DIR_NAME
+
+    source = git_repo_factory(tmp_path / "src")
+    dest = _copy_seed(source, tmp_path / "dest", tmp_path)
+    (dest / RESPONSE_FILE_NAME).write_text("answer", encoding="utf-8")
+    (dest / SESSIONS_DIR_NAME).mkdir()
+    (dest / SESSIONS_DIR_NAME / "s.json").write_text("{}", encoding="utf-8")
+    assert _git(dest, "status", "--porcelain").stdout == ""
+
+
+def test_copy_refuses_destination_inside_source(tmp_path: Path) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "a.txt").write_text("a\n", encoding="utf-8")
+    with pytest.raises(RsiBadRequest, match=r"inside workdir\.from"):
+        materialize_workdir(
+            WorkdirSeed(source=".", strategy="copy"),
+            dest=source / "out" / "case",
+            dataset_dir=source,
+        )
+    assert not (source / "out").exists()
+
+
+def test_enclosing_git_work_tree(tmp_path: Path, git_repo_factory) -> None:
+    from chrys.service.rsi.workdir_seed import enclosing_git_work_tree
+
+    repo = git_repo_factory(tmp_path / "repo")
+    found = enclosing_git_work_tree(repo / "not-yet" / "out")
+    assert found is not None
+    assert found.resolve() == repo.resolve()
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert enclosing_git_work_tree(plain / "out") is None
 
 
 def test_marker_write_does_not_follow_symlink(tmp_path: Path) -> None:

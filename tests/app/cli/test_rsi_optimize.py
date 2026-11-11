@@ -118,3 +118,58 @@ def test_rsi_main_create_get_list_and_stub_optimize(tmp_path: Path, monkeypatch)
     detail = ctx.get_task(task_id)
     assert detail["config"].get("last_optimize_best_candidate")
     assert rsi_cli.main(["tree", task_id, "--json"]) == 0
+
+
+def _drive_cli(tmp_path: Path, monkeypatch) -> object:
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+
+    class _Prepared:
+        loaded = object()
+        settings = object()
+
+    def _prepared() -> _Prepared:
+        return _Prepared()
+
+    def _ctx() -> object:
+        return ctx
+
+    monkeypatch.setattr(rsi_cli, "_prepare_runtime", _prepared)
+    monkeypatch.setattr(rsi_cli, "build_rsi_service_context", _ctx)
+    return ctx
+
+
+def test_rsi_optimize_reports_install_candidate_and_install_flags(tmp_path: Path, monkeypatch, capsys) -> None:
+    fixture = Path(__file__).parents[2] / "service" / "rsi" / "fixtures" / "optimize_dataset.json"
+    ctx = _drive_cli(tmp_path, monkeypatch)
+    assert rsi_cli.main(["create", "--name", "flags", "--dataset", str(fixture), "--json"]) == 0
+    task_id = ctx.list_tasks()[0]["task_id"]
+    capsys.readouterr()
+
+    assert rsi_cli.main(["optimize", task_id, "--epochs", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "best_json_updated=True" in out
+    assert "install_kind=stub" in out
+    assert rsi_cli.main(["get", task_id]) == 0
+    assert "last_optimize_install_candidate=" in capsys.readouterr().out
+
+    target = tmp_path / "exported.yaml"
+    user_dir = tmp_path / "agents"
+    assert rsi_cli.main(["install", task_id, "--out", str(target), "--user", "--user-dir", str(user_dir)]) == 2
+    assert "only one of --out or --user" in capsys.readouterr().err
+    assert not target.exists()
+    assert rsi_cli.main(["install", task_id, "--out", str(target)]) == 0
+    assert rsi_cli.main(["install", task_id, "--out", str(target)]) == 1
+    assert "--force" in capsys.readouterr().err
+    assert rsi_cli.main(["install", task_id, "--out", str(target), "--force"]) == 0
+
+
+def test_rsi_eval_refuses_out_inside_git_repository(tmp_path: Path, monkeypatch, git_repo_factory, capsys) -> None:
+    fixture = Path(__file__).parents[2] / "service" / "rsi" / "fixtures" / "optimize_dataset.json"
+    repo = git_repo_factory(tmp_path / "repo")
+    _drive_cli(tmp_path, monkeypatch)
+    assert rsi_cli.main(["eval", "--dataset", str(fixture), "--stub", "--out", str(repo / "rsi-out")]) == 2
+    assert "inside the git repository" in capsys.readouterr().err
+    assert not (repo / "rsi-out").exists()
+    outside = tmp_path / "outside"
+    assert rsi_cli.main(["eval", "--dataset", str(fixture), "--stub", "--out", str(outside)]) in {0, 1}
+    assert outside.is_dir()
