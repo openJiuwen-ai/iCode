@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -51,6 +52,7 @@ from chrys.app.tui.widgets.chat.tool_call import (
 )
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.i18n import MessageRef
 from chrys.kernel import Content
 from tests.support.images import image_bytes
 from tests.support.pilot_barrier import screen_is_settled
@@ -353,16 +355,28 @@ async def test_replay_history_decodes_tool_result_images_from_base64_items() -> 
 def test_format_message_created_at_uses_local_time() -> None:
     created_at = datetime.now(UTC).replace(second=0, microsecond=0)
     local = created_at.astimezone()
-    hour = local.hour % 12 or 12
-    suffix = "AM" if local.hour < 12 else "PM"
-    expected = f"- {hour}:{local.minute:02d} {suffix}"
+    expected = f"- {local.hour:02d}:{local.minute:02d}"
 
-    assert format_message_created_at(created_at) == expected
+    result = format_message_created_at(created_at)
+    assert result == expected
+    assert re.fullmatch(r"- \d{2}:\d{2}", result) is not None
     assert format_message_created_at(created_at.isoformat()) == expected
     assert format_message_created_at("") == ""
     assert format_message_created_at("not-a-time") == ""
     assert format_message_created_at(123) == ""
     assert format_message_created_at({}) == ""
+
+
+def test_format_message_created_at_resolves_through_the_timestamp_message() -> None:
+    created_at = datetime(2026, 8, 19, 1, 2, 3, tzinfo=UTC)
+    seen: list[MessageRef] = []
+
+    def resolver(reference: MessageRef) -> str:
+        seen.append(reference)
+        return "- STAMP"
+
+    assert format_message_created_at(created_at, resolver) == "- STAMP"
+    assert [reference.definition.key for reference in seen] == ["tui.chat.message_timestamp"]
 
 
 def test_message_headers_include_dim_timestamp_when_present() -> None:

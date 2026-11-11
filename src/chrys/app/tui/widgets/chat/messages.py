@@ -135,6 +135,7 @@ _RETRY_MESSAGE = msg(
 _RETRY_COUNTDOWN = msg("tui.chat.retry_countdown", fallback="Retrying in {seconds}s ({attempt}/{max_attempts})")
 _RETRY_STARTED = msg("tui.chat.retry_started", fallback="Retrying ({attempt}/{max_attempts})...")
 _RETRY_NOW = msg("tui.chat.retry_now", fallback="Retry Now")
+MESSAGE_TIMESTAMP = msg("tui.chat.message_timestamp", fallback="- {hour}:{minute}")
 _RETRY_COUNTDOWN_TICK_SLACK_SECONDS = 0.02
 """How long after the remaining time crosses a whole second the countdown repaints, so it reads the new second."""
 _RETRY_NOW_GAP_CELLS = 2
@@ -181,16 +182,14 @@ def _aware_created_at(value: Any) -> datetime | None:
     return dt
 
 
-def format_message_created_at(value: Any) -> str:
-    """Format a persisted message timestamp in the user's local time."""
+def format_message_created_at(value: Any, resolve_message: Callable[[MessageRef], str] = format_message) -> str:
+    """Format a persisted message timestamp in the user's local time, on a 24-hour clock."""
     dt = _aware_created_at(value)
     if dt is None:
         return ""
 
     local = dt.astimezone()
-    hour = local.hour % 12 or 12
-    suffix = "AM" if local.hour < 12 else "PM"
-    return f"- {hour}:{local.minute:02d} {suffix}"
+    return resolve_message(MESSAGE_TIMESTAMP.bind(hour=f"{local.hour:02d}", minute=f"{local.minute:02d}"))
 
 
 def turn_duration_ms(started_at: Any, finished_at: Any) -> int | None:
