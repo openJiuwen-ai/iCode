@@ -184,6 +184,8 @@ Both `env` and `headers` are key-value mappings: enter the variable or header na
 | `bypass_proxy` | Boolean | `false` | HTTP | Whether to bypass HTTP/HTTPS proxies configured through environment variables and connect directly to the server. |
 | `terminate_on_close` | Boolean or `null` | `null` | HTTP | Whether to request termination of the remote session when closing the connection. `null` uses the default of `true`. |
 
+`enabled` and `load_prompts` are read with the usual profile boolean words: `false`, `no`, `off`, and `0` turn them off, in any letter case and quoted or not; any other non-empty text counts as `true`, and empty or whitespace-only text counts as `false`. Leaving the key out, or writing it with no value at all, keeps the default `true`.
+
 Use the server's original tool names in `allowed_tools` and `always_load`. `tool_name_prefix` changes the name the agent uses to call a tool; `approval.overrides` uses that same name. See [MCP tool names](./tool-kinds-and-names.md#mcp-tool-names) for naming rules. If a name you list could mean two tools — for example, with prefix `gh`, a server tool `search` becomes `gh_search`, the original name of another tool — the agent fails to load. The error names that entry and, for each tool it matches, a name that selects only that tool: here `search` for the server's `search` and `gh_gh_search` for the server's `gh_search`. Replace the entry with the names of only the tools you want the agent to use. If the error says no name selects a tool by itself, choose a different `tool_name_prefix`.
 
 When loading on demand is enabled, iCode also adds control tools for listing, loading, and unloading MCP tools. Their naming rules are described in [MCP tool names](./tool-kinds-and-names.md#mcp-tool-names). In this case, `tool_name_prefix` cannot exceed 49 characters.
@@ -429,7 +431,7 @@ skills:
 | --- | --- | --- | --- |
 | `paths` | List of strings | `[]` | Additional skill search roots. iCode searches each directory and up to two levels of subdirectories for `SKILL.md`. Once found, it does not search inside that skill directory. Relative paths are resolved against the current [working directory](../guides/daily-use/workspaces.md). iCode expands a leading `~` to the current user's home directory. |
 | `inline` | List of objects | `[]` | Skills written directly in the profile. See below. |
-| `script_timeout` | Positive integer | `300` | Maximum runtime for a skill script, in seconds. |
+| `script_timeout` | Positive integer | `300` | Maximum runtime for a skill script, in seconds. Leaving it out, or writing it with no value, keeps the default; a value that is not a positive integer causes the entire agent profile to be skipped. |
 | `script_extensions` | List of strings | `[.py, .sh, .ps1]` | Extensions allowed for skill scripts. The required interpreters must already be installed. |
 | `auto_load_user_agents_skills` | Boolean | `true` | Whether to load the user-level shared Agent Skills directory. |
 | `auto_load_cwd_agents_skills` | Boolean | `true` | Whether to load `.agents/skills` in the current working directory; “Load project skills” (`project.skills_enabled`) must also be on in settings. Reloaded when switching working directories. |
@@ -472,8 +474,8 @@ memory:
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `files` | List of strings | `[]` | Individual `.md` or `.txt` files. |
-| `folders` | List of strings | `[]` | Directories to scan for `.md` and `.txt` files. |
+| `files` | List of strings or `null` | `[]` | Individual `.md` or `.txt` files. `null` loads none; a single string, or a list holding a non-string, causes the entire agent profile to be skipped. |
+| `folders` | List of strings or `null` | `[]` | Directories to scan for `.md` and `.txt` files. `null` loads none; a single string, or a list holding a non-string, causes the entire agent profile to be skipped. |
 
 Paths can be absolute or relative to the current working directory; relative paths cannot point outside the working directory. Memory is loaded by the main agent and by workflow agent nodes; sub-agents load neither their own memory nor their parent's memory. For directory scan depth, file count, and total token limits, see [Configure memory](../guides/configuration/memory.md).
 
