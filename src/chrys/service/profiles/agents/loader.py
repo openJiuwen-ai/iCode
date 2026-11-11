@@ -443,15 +443,34 @@ def _parse_skills(raw: object) -> SkillsConfig:
     )
 
 
+def _shell_filter_preset(raw: object) -> str:
+    """Parse the preset name; an unrecognized one must never load as "no policy".
+
+    The builder ignores a name it does not know and, with no custom commands,
+    returns no filter at all, which allows every command. A blank or absent value
+    is the documented default of naming no preset.
+    """
+    if raw is None or raw == "":
+        return ""
+    from chrys.service.tools.builtins.shell_filter import preset_names
+
+    names = preset_names()
+    if isinstance(raw, str) and raw in names:
+        return raw
+    allowed = ", ".join(names)
+    msg = f"Agent profile field 'tools.shell_filter.preset' must be one of: {allowed}, or empty; got {raw!r}"
+    raise AgentProfileLoadError(msg, field="tools.shell_filter.preset")
+
+
 def _parse_shell_filter(raw: object) -> ShellFilterConfig | None:
     if raw is None:
         return None
     if isinstance(raw, str):
         # Shorthand: shell_filter: read_only
-        return ShellFilterConfig(preset=raw)
+        return ShellFilterConfig(preset=_shell_filter_preset(raw))
     raw_map = _mapping_section(raw, "tools.shell_filter")
     return ShellFilterConfig(
-        preset=raw_map.get("preset", ""),
+        preset=_shell_filter_preset(raw_map.get("preset", "")),
         mode=raw_map.get("mode", "whitelist"),
         commands=raw_map.get("commands", []),
         allow_redirections=raw_map.get("allow_redirections", True),

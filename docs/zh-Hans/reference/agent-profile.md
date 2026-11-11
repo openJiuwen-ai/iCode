@@ -216,7 +216,7 @@ tools:
 | `read_only` | 只允许内置命令名单中的命令，并阻止未被引号包围的重定向和命令替换。例如：`ls`、`cat`、`rg`、`git`、`python`、`curl` 和 PowerShell 的 `Get-Content` 等。不检查命令参数、子命令或脚本内容，因此不保证命令只读，也不是安全沙箱。 |
 | `unrestricted` | 不进行 Shell 过滤。通常直接省略 `shell_filter` 即可。 |
 
-只有上表中的名称会启用预设。无法识别的预设不会生效：使用标量写法时不进行 Shell 过滤；使用对象写法时，iCode 会尝试使用同一对象中的自定义规则，若 `commands` 为空，同样不进行 Shell 过滤。
+只有上表中的名称有效。无论使用哪种写法，写成其他名称都会让整个 profile 无效：iCode 会跳过该文件，而不是在关闭 Shell 过滤的情况下加载，并会报出需要修改的字段 `tools.shell_filter.preset`。要关闭过滤，请写 `unrestricted` 或省略 `shell_filter`。
 
 需要自行指定允许或阻止的命令时，使用对象形式。例如：
 
@@ -233,7 +233,7 @@ tools:
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `preset` | `read_only`、`unrestricted` 或空 | 空 | 选择预设。设置为可用预设后，忽略其他自定义过滤字段。 |
+| `preset` | `read_only`、`unrestricted` 或空 | 空 | 选择预设。设置为可用预设后，忽略其他自定义过滤字段。写成其他值会导致加载失败。 |
 | `mode` | `whitelist` 或 `blacklist` | `whitelist` | `whitelist` 只允许 `commands` 中的命令；`blacklist` 阻止 `commands` 中的命令，允许其他命令。 |
 | `commands` | 字符串列表 | `[]` | 命令名名单。`whitelist` 模式下为允许名单，`blacklist` 模式下为阻止名单；必须至少包含一个命令，自定义过滤才会生效。为空时不进行 Shell 过滤。 |
 | `allow_redirections` | 布尔值 | `true` | 是否允许未被引号包围的 `>`、`>>` 和 `<`。 |

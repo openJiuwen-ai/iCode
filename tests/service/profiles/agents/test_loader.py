@@ -16,6 +16,7 @@ from chrys.service.profiles.agents.loader import (
     load_profile_from_yaml,
     load_profiles_from_dir,
 )
+from chrys.service.profiles.agents.schema import ShellFilterConfig
 from chrys.service.profiles.agents.serializer import save_profile
 from tests.support.paths import SRC_ROOT
 
@@ -1410,3 +1411,50 @@ tools:
     mcps = profile.tools.mcp
     assert mcps[0].expose_instructions is False
     assert mcps[1].expose_instructions is True
+
+
+@pytest.mark.parametrize(
+    ("shell_filter", "expected"),
+    [
+        ("read_only", ShellFilterConfig(preset="read_only")),
+        ("{preset: read_only}", ShellFilterConfig(preset="read_only")),
+        ("{preset: unrestricted}", ShellFilterConfig(preset="unrestricted")),
+        ("{preset: null}", ShellFilterConfig()),
+        ("{mode: blacklist, commands: [rm]}", ShellFilterConfig(mode="blacklist", commands=["rm"])),
+    ],
+)
+def test_load_accepts_shell_filter_presets(tmp_path: Path, shell_filter: str, expected: ShellFilterConfig) -> None:
+    """A documented preset name loads in either form; leaving it empty names none."""
+    path = tmp_path / "filter.yaml"
+    path.write_text(f"name: filtered\ntools:\n  shell_filter: {shell_filter}\n", encoding="utf-8")
+
+    profile = load_profile_from_yaml(path)
+
+    assert profile.tools.shell_filter == expected
+
+
+@pytest.mark.parametrize(
+    "shell_filter",
+    ["Whitelist", "{preset: Whitelist}", "{preset: 3}", "{preset: true}", "{preset: [read_only]}"],
+)
+def test_load_rejects_unrecognized_shell_filter_preset(tmp_path: Path, shell_filter: str) -> None:
+    """An unknown name would otherwise build no filter at all and allow every command."""
+    path = tmp_path / "filter-bad.yaml"
+    path.write_text(f"name: filtered\ntools:\n  shell_filter: {shell_filter}\n", encoding="utf-8")
+
+    with pytest.raises(
+        AgentProfileLoadError,
+        match=r"shell_filter\.preset' must be one of: read_only, unrestricted, or empty",
+    ):
+        load_profile_from_yaml(path)
+
+
+def test_unrecognized_shell_filter_preset_names_the_field(tmp_path: Path) -> None:
+    """The error carries the field so the reload report and config screen can point at it."""
+    path = tmp_path / "filter-bad.yaml"
+    path.write_text("name: filtered\ntools:\n  shell_filter: Whitelist\n", encoding="utf-8")
+
+    with pytest.raises(AgentProfileLoadError) as excinfo:
+        load_profile_from_yaml(path)
+
+    assert excinfo.value.field == "tools.shell_filter.preset"

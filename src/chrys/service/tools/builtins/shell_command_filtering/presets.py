@@ -150,3 +150,12 @@ _PRESETS: dict[str, ShellCommandFilter] = {
 def get_preset(name: str) -> ShellCommandFilter | None:
     """Look up a predefined filter by name."""
     return _PRESETS.get(name)
+
+
+def preset_names() -> tuple[str, ...]:
+    """Return every name :func:`get_preset` recognizes, in declaration order.
+
+    A profile naming anything else must be rejected where it is read: the
+    builder ignores an unknown name, which leaves every command allowed.
+    """
+    return tuple(_PRESETS)
