@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from chrys.service.mcp._stdio_transport import (
+    StdioCommandPathError,
     StdioWorkingDirectoryError,
     _anchor_relative_command,
     _check_working_directory,
@@ -207,12 +208,43 @@ def test_absolute_cwd_is_used_as_written(tmp_path: Path) -> None:
     assert resolve_stdio_cwd(str(target), str(tmp_path / "workspace")) == str(target)
 
 
-def test_variable_syntaxes_are_not_expanded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SRV_HOME", "/expanded")
-    workspace = str(tmp_path)
+def test_env_placeholders_are_filled_in_but_shell_syntaxes_are_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "expanded"
+    monkeypatch.setenv("SRV_HOME", str(target))
+    monkeypatch.setenv("SRV_SUB", "sub")
+    workspace = str(tmp_path / "workspace")
 
-    for literal in ("{{SRV_HOME}}", "$SRV_HOME", "%SRV_HOME%"):
+    assert resolve_stdio_cwd("{{SRV_HOME}}", workspace) == str(target)
+    assert resolve_stdio_cwd(" {{SRV_HOME}}/srv ", workspace) == os.path.normpath(os.path.join(target, "srv"))
+    # A filled-in relative path starts at the workspace folder like a written one.
+    assert resolve_stdio_cwd("{{SRV_SUB}}", workspace) == os.path.normpath(os.path.join(workspace, "sub"))
+    for literal in ("$SRV_HOME", "%SRV_HOME%"):
         assert resolve_stdio_cwd(literal, workspace) == os.path.normpath(os.path.join(workspace, literal))
+
+
+def test_an_unusable_env_placeholder_is_an_error_naming_the_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SRV_MISSING", raising=False)
+    monkeypatch.setenv("SRV_EMPTY", "")
+
+    for configured in ("{{SRV_MISSING}}", "{{SRV_EMPTY}}/srv", "{{!echo /tmp}}"):
+        with pytest.raises(ValueError, match="MCP server 'srv' cwd"):
+            resolve_stdio_cwd(configured, "/workspace", location="MCP server 'srv' cwd")
+
+
+def test_the_key_follows_the_variable_a_cwd_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _config(cwd="{{SRV_HOME}}")
+    workspace = str(tmp_path)
+    with _pin_child_environment():
+        monkeypatch.setenv("SRV_HOME", str(tmp_path / "one"))
+        first = resolve_mcp_effective_config(config, stdio_cwd=workspace)
+        monkeypatch.setenv("SRV_HOME", str(tmp_path / "two"))
+        second = resolve_mcp_effective_config(config, stdio_cwd=workspace)
+
+    assert first.resolved_stdio_cwd == str(tmp_path / "one")
+    assert second.resolved_stdio_cwd == str(tmp_path / "two")
+    assert first.key != second.key
 
 
 def test_the_written_case_is_kept(tmp_path: Path) -> None:
@@ -332,6 +364,57 @@ def test_windows_command_paths_use_the_server_drive(command: str, expected: str)
         assert _anchor_relative_command(command, r"D:\work") == expected
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        r"\\host\share\bin\server.exe",
+        "//host/share/bin/server.exe",
+        r"\\?\C:\bin\server.exe",
+        r"\\?\UNC\host\share\server.exe",
+        r"\\.\C:\bin\server.exe",
+    ],
+)
+def test_full_windows_command_paths_are_kept(command: str) -> None:
+    # Only a drive with no root after it is refused: UNC and device paths are full paths.
+    windows_os = ModuleType("os")
+    windows_os.path = ntpath  # type: ignore[attr-defined]
+    with patch("chrys.service.mcp._stdio_transport.os", windows_os):
+        assert _anchor_relative_command(command, r"D:\work") == command
+
+
+@pytest.mark.parametrize("command", [r"D:bin\server.exe", "D:bin/server.exe", r"C:bin\server.exe", "c:server.exe"])
+@pytest.mark.parametrize("cwd", [r"D:\work", r"\\host\share\work", None])
+def test_a_windows_command_relative_to_a_drive_is_refused(command: str, cwd: str | None) -> None:
+    # `D:bin\server.exe` counts from drive D's own current folder, so it is refused rather
+    # than anchored, on the working directory's drive as well (like a `D:server` cwd).
+    windows_os = ModuleType("os")
+    windows_os.path = ntpath  # type: ignore[attr-defined]
+    with (
+        patch("chrys.service.mcp._stdio_transport.os", windows_os),
+        pytest.raises(StdioCommandPathError) as caught,
+    ):
+        _anchor_relative_command(command, cwd)
+
+    assert mcp_failure_diagnostic(MCPConnectionError("cmd", "stdio", cause=caught.value)) == (
+        "the server command starts with a drive letter and must be a full path, such as D:\\server\\server.exe"
+    )
+
+
+async def test_a_drive_relative_command_fails_before_spawning(tmp_path: Path) -> None:
+    from mcp.client.stdio import StdioServerParameters
+
+    windows_os = ModuleType("os")
+    windows_os.path = ntpath  # type: ignore[attr-defined]
+    server = StdioServerParameters(command=r"D:bin\server.exe", cwd=str(tmp_path))
+    with (
+        patch("chrys.service.mcp._stdio_transport._check_working_directory"),
+        patch("chrys.service.mcp._stdio_transport.os", windows_os),
+        pytest.raises(StdioCommandPathError),
+    ):
+        async with tolerant_stdio_client(server):
+            pytest.fail("the server must not start")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows resolves `..` lexically, before any link")
 def test_an_anchored_command_still_steps_back_through_a_linked_folder(tmp_path: Path) -> None:
     package = tmp_path / "package"
@@ -412,6 +495,38 @@ async def test_workspace_changes_start_or_reuse_the_matching_connection(tmp_path
         assert (connections[0] is connections[1]) is absolute
         assert connections[0] is connections[2]
     finally:
+        await cache.close_all()
+
+
+async def test_a_server_starts_in_the_folder_a_variable_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "from-env"
+    await asyncio.to_thread((target / "srv").mkdir, parents=True)
+    monkeypatch.setenv("SRV_HOME", str(target))
+
+    reported = await _reported_cwd(_cwd_server_config(cwd="{{SRV_HOME}}/srv"), tmp_path / "workspace")
+
+    assert os.path.samefile(reported, target / "srv")
+
+
+async def test_a_missing_cwd_variable_fails_that_server_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SRV_MISSING", raising=False)
+    cache = MCPConnectionCache()
+    adapter = MCPAdapter(cache=cache, stdio_cwd=str(tmp_path))
+    good = _cwd_server_config()
+    good.name = "good"
+    bad = _cwd_server_config(cwd="{{SRV_MISSING}}")
+    bad.name = "bad"
+    try:
+        tools = await asyncio.wait_for(adapter.connect_all([bad, good]), timeout=ENGINE_TURN_TIMEOUT)
+        failure = adapter.failures["bad"]
+
+        assert set(adapter.failures) == {"bad"}
+        assert any(tool.name == "get_cwd" for tool in tools)
+        assert isinstance(failure, MCPConnectionError)
+        assert "SRV_MISSING" in str(failure)
+        assert "MCP server 'bad' cwd" in str(failure)
+    finally:
+        await adapter.disconnect_all()
         await cache.close_all()
 
 

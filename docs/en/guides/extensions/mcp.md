@@ -77,7 +77,9 @@ After you change the session's working directory with `/chdir`, a blank Working 
 
 If the command is a relative path such as `./bin/server`, iCode looks for the program in the server's working directory. If you enter only a program name such as `python`, iCode searches `PATH`.
 
-On Windows, include the slash after a drive letter: write `D:\server`, not `D:server`. Working Directory does not support environment variable references such as `{{ENV_VAR}}`, `$HOME`, or `%APPDATA%`; use `~/` for your home folder or enter the path directly.
+On Windows, include the slash after a drive letter in both Working Directory and the command: write `D:\server` and `D:\server\server.exe`, not `D:server` or `D:server\server.exe`.
+
+Working Directory can use `{{ENV_VAR}}` to reference environment variables set before starting iCode, for example `{{MCP_HOME}}/weather`. A missing or empty variable fails that server's connection. `{{!command}}` and shell syntaxes such as `$HOME` or `%APPDATA%` are not supported; use `~/` for your home folder.
 
 ## Configure instructions, tools, and request options
 

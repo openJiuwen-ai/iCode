@@ -77,7 +77,9 @@ iCode 会忽略此字段首尾的空白字符，YAML 中的配置也一样；仅
 
 命令填写为 `./bin/server` 这样的相对路径时，会从服务器的工作目录查找程序；只填写 `python` 这样的程序名称时，会从 `PATH` 中查找。
 
-在 Windows 上，盘符后要带斜杠：写 `D:\server`，不要写 `D:server`。“工作目录”不支持通过 `{{ENV_VAR}}`、`$HOME` 或 `%APPDATA%` 引用环境变量；用户主目录可以用 `~/`，其他目录请直接填写路径。
+在 Windows 上，“工作目录”和命令中的盘符后都要带斜杠：写 `D:\server` 和 `D:\server\server.exe`，不要写 `D:server` 或 `D:server\server.exe`。
+
+“工作目录”可以用 `{{ENV_VAR}}` 引用启动 iCode 前已经设置的环境变量，例如 `{{MCP_HOME}}/weather`。变量不存在或值为空时，该服务器连接失败。不支持 `{{!command}}`，也不支持 `$HOME`、`%APPDATA%` 这类 shell 写法；用户主目录可以用 `~/`。
 
 ## 配置说明、工具和请求选项
 

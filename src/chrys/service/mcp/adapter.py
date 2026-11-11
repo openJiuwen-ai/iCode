@@ -741,7 +741,11 @@ class MCPAdapter:
             try:
                 # The folder a real connection would start in (``MCPConnectionCache.acquire``), so a
                 # test passes or fails for the same reason the agent's connection would.
-                stdio_cwd = resolve_stdio_cwd(config.cwd, self._stdio_cwd) if config.transport == "stdio" else None
+                stdio_cwd = (
+                    resolve_stdio_cwd(config.cwd, self._stdio_cwd, location=f"MCP server {config.name!r} cwd")
+                    if config.transport == "stdio"
+                    else None
+                )
                 mcp_tool = self._create_tool_with_timeout_floor(
                     config, DEFAULT_TEST_TIMEOUT_SECONDS, stdio_cwd=stdio_cwd
                 )

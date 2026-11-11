@@ -46,7 +46,7 @@ from chrys.foundation.config.runtime_pointer import MODEL_POINTER_ENV
 from chrys.foundation.platform import get_platform
 from chrys.foundation.tool_call_context import get_tool_context, set_tool_context
 from chrys.foundation.tool_kinds import KIND_MCP, get_tool_kind, set_tool_kind
-from chrys.foundation.util.env_templates import resolve_env_template_mapping
+from chrys.foundation.util.env_templates import resolve_env_template_mapping, resolve_env_templates
 from chrys.kernel import FunctionTool
 from chrys.service.mcp import _connection
 from chrys.service.mcp._stdio_transport import _inherited_stdio_environment
@@ -146,12 +146,14 @@ def _resolved_http_headers(config: MCPServerConfig) -> dict[str, str]:
     return resolve_env_template_mapping(config.headers, location=f"MCP server {config.name!r} headers")
 
 
-def resolve_stdio_cwd(configured: str, workspace_cwd: str | None) -> str:
+def resolve_stdio_cwd(configured: str, workspace_cwd: str | None, *, location: str = "MCP server cwd") -> str:
     """The folder a stdio server starts in: *configured* resolved against the workspace folder.
 
     Surrounding whitespace is stripped from *configured*, matching the editor.
     Empty *configured* is the workspace folder itself, untouched (the fallback when
-    the caller names none is the process folder). Otherwise ``~`` expands to the home
+    the caller names none is the process folder). Otherwise ``{{ENV_VAR}}`` placeholders
+    are filled in first, like an ACP agent's ``cwd`` (a missing or empty variable, or a
+    ``{{!command}}``, raises ``ValueError`` naming *location*), then ``~`` expands to the home
     folder and a relative path starts at the workspace folder; an absolute one never
     reads either folder, so it holds even when the process folder is gone. There is
     no symlink resolution and no case folding.
@@ -160,13 +162,14 @@ def resolve_stdio_cwd(configured: str, workspace_cwd: str | None) -> str:
     the result is normalized, which also unifies the separators. A drive-relative
     Windows path (``D:server``) counts from that drive's current folder, which nothing
     here controls, so it is never joined, even onto a workspace on the same drive: it
-    stays relative and the spawn-time folder check refuses it. ``{{ENV_VAR}}`` and
-    ``%VAR%`` are not expanded.
+    stays relative and the spawn-time folder check refuses it. Shell syntaxes such as
+    ``$VAR`` and ``%VAR%`` are not expanded.
     """
     configured = configured.strip()
     if not configured:
         return workspace_cwd or os.getcwd()
-    written = os.path.expanduser(configured)
+    filled = resolve_env_templates(configured, location=location, allow_commands=False)
+    written = os.path.expanduser(filled)
     windows = get_platform().is_windows
     if windows and os.path.splitdrive(written)[0] and not os.path.isabs(written):
         return os.path.normpath(written)
@@ -205,7 +208,7 @@ def resolve_mcp_effective_config(config: MCPServerConfig, *, stdio_cwd: str | No
         for name, value in stdio_env.items():
             if canonical_env_name(name) == MODEL_POINTER_ENV:
                 key_env[MODEL_POINTER_ENV] = value
-        resolved_stdio_cwd = resolve_stdio_cwd(config.cwd, stdio_cwd)
+        resolved_stdio_cwd = resolve_stdio_cwd(config.cwd, stdio_cwd, location=f"MCP server {config.name!r} cwd")
         payload["stdio"] = {
             "command": config.command,
             "args": list(config.args),

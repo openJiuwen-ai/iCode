@@ -225,6 +225,19 @@ def _check_working_directory(cwd: str | os.PathLike[str]) -> None:
         raise StdioWorkingDirectoryError("inaccessible")
 
 
+COMMAND_DRIVE_RELATIVE = (
+    "the server command starts with a drive letter and must be a full path, such as D:\\server\\server.exe"
+)
+"""The message of :class:`StdioCommandPathError`, and what failure reports say for it."""
+
+
+class StdioCommandPathError(OSError):
+    """A Windows stdio command is relative to a drive (``D:bin\\server.exe``), so no folder anchors it."""
+
+    def __init__(self) -> None:
+        super().__init__(COMMAND_DRIVE_RELATIVE)
+
+
 def _anchor_relative_command(command: str, cwd: str | os.PathLike[str] | None) -> str:
     """*command* made absolute under *cwd* when it is a relative path with a folder part.
 
@@ -233,7 +246,14 @@ def _anchor_relative_command(command: str, cwd: str | os.PathLike[str] | None) -
     A bare name (searched on ``PATH``) and an absolute path are returned unchanged.
     The parts are joined, never collapsed: on POSIX ``link/..`` follows the link,
     which a lexical ``normpath`` would not.
+
+    A drive-relative Windows command (``D:bin\\server.exe``) counts from that drive's
+    process-wide current folder, which nothing here controls, so it raises
+    :class:`StdioCommandPathError` instead, on the working directory's drive as well,
+    as a drive-relative working directory is refused.
     """
+    if os.path.splitdrive(command)[0] and not os.path.isabs(command):
+        raise StdioCommandPathError
     if cwd is None or cwd == "" or not os.path.dirname(command) or os.path.isabs(command):
         return command
     return os.path.join(cwd, command)
@@ -436,14 +456,19 @@ async def tolerant_stdio_client(
     diagnostics.reset()
 
     # Before either reader is chosen, so the stock fallback below gets both: a
-    # missing folder is named as such, and a relative command is read from it.
+    # missing folder is named as such, and a relative command is read from it
+    # (or, relative to a drive, refused).
     if server.cwd is not None and server.cwd != "":
         try:
             _check_working_directory(server.cwd)
         except StdioWorkingDirectoryError:
             diagnostics.record_spawn(resolved_executable="", cwd=server.cwd)
             raise
-    anchored_command = _anchor_relative_command(server.command, server.cwd)
+    try:
+        anchored_command = _anchor_relative_command(server.command, server.cwd)
+    except StdioCommandPathError:
+        diagnostics.record_spawn(resolved_executable="", cwd=server.cwd)
+        raise
     if anchored_command != server.command:
         server = server.model_copy(update={"command": anchored_command})
 

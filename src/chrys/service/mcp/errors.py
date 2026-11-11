@@ -8,9 +8,11 @@ from collections.abc import Collection, Mapping
 
 from chrys.foundation.errors import ErrorKind, classify_error, clean_error_message, iter_explicit_graph
 from chrys.service.mcp._stdio_transport import (
+    COMMAND_DRIVE_RELATIVE,
     MAX_BANNER_LINE_CHARS,
     MAX_STDIO_STDERR_BYTES_CAPTURED,
     WORKING_DIRECTORY_PROBLEMS,
+    StdioCommandPathError,
     StdioWorkingDirectoryError,
     _clean_stdio_stderr,
     _display_path,
@@ -56,6 +58,8 @@ def mcp_failure_diagnostic(error: BaseException) -> str:
     )
     if directory_error is not None:
         text = WORKING_DIRECTORY_PROBLEMS.get(directory_error.reason, _FAILED_TO_CONNECT)
+    elif any(isinstance(node, StdioCommandPathError) for node in iter_explicit_graph(cause)):
+        text = COMMAND_DRIVE_RELATIVE
     elif (
         isinstance(error, MCPConnectionError)
         and error.transport == "stdio"
