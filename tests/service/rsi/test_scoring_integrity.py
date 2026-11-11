@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -232,17 +233,32 @@ async def test_error_the_agent_caused_is_a_failure_and_is_not_run_again(tmp_path
     assert result.best_score == 1.0
 
 
+_BOTH_RUNS = "first run: provider unavailable; second run: case run timed out after 1s"
+
+
+@pytest.mark.asyncio
+async def test_baseline_stop_names_both_runs_errors_when_they_differ(tmp_path: Path) -> None:
+    plan: _Plan = {("hello", False): [_PROVIDER_DOWN, _TIMED_OUT], ("hello", True): ["hello"]}
+    with pytest.raises(RsiBadRequest, match=re.escape(f"hello: {_BOTH_RUNS}")):
+        await _optimize(tmp_path, {"hello": "hello"}, plan)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("outcomes", "passed", "errored", "finding"),
+    ("outcomes", "passed", "finding", "error"),
     [
-        ([_PROVIDER_DOWN, "hello"], True, False, None),
-        ([_TIMED_OUT, "hello"], True, False, None),
-        ([_PROVIDER_DOWN], False, True, "runner_error"),
-        ([_TIMED_OUT], False, False, "case_timeout"),
+        ([_PROVIDER_DOWN, "hello"], True, None, None),
+        ([_TIMED_OUT, "hello"], True, None, None),
+        ([_PROVIDER_DOWN], False, "runner_error", "provider unavailable"),
+        ([_TIMED_OUT], False, "case_timeout", None),
         # A timeout is the agent's only when both runs reached the time limit.
-        ([_PROVIDER_DOWN, _TIMED_OUT], False, True, "runner_error"),
-        ([_TIMED_OUT, _PROVIDER_DOWN], False, True, "runner_error"),
+        ([_PROVIDER_DOWN, _TIMED_OUT], False, "runner_error", _BOTH_RUNS),
+        (
+            [_TIMED_OUT, _PROVIDER_DOWN],
+            False,
+            "runner_error",
+            "first run: case run timed out after 1s; second run: provider unavailable",
+        ),
     ],
     ids=[
         "provider-clears",
@@ -254,24 +270,24 @@ async def test_error_the_agent_caused_is_a_failure_and_is_not_run_again(tmp_path
     ],
 )
 async def test_evaluation_keeps_the_second_run_of_an_errored_or_timed_out_case(
-    tmp_path: Path, outcomes: list[str | _Fail], passed: bool, errored: bool, finding: str | None
+    tmp_path: Path, outcomes: list[str | _Fail], passed: bool, finding: str | None, error: str | None
 ) -> None:
     dataset = _write_response_dataset(tmp_path / "dataset.json", {"hello": "hello"})
     ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
     calls: list[str] = []
+    first = outcomes[0]
+    assert isinstance(first, _Fail)
     runner = _ScriptedRunner(AgentProfile(name="Agent", instructions=""), {("hello", False): outcomes}, calls)
     result = await ctx.evaluate_dataset(dataset, runner=runner, output_dir=tmp_path / "out")
     assert calls == ["hello:base", "hello:base"]
     (record,) = result.records
-    assert (record.passed, record.errored, record.attempts) == (passed, errored, 2)
+    assert (record.passed, record.error, record.attempts, record.first_error) == (passed, error, 2, first.error)
     assert [item["code"] for item in record.findings][:1] == ([finding] if finding else [])
     assert Path(record.workdir) == result.output_dir / "retry_workspaces" / "hello"
     scorecard = json.loads(result.scorecard_path.read_text(encoding="utf-8"))
-    assert (scorecard["passed"], scorecard["errored"], scorecard["cases"][0]["attempts"]) == (
-        int(passed),
-        int(errored),
-        2,
-    )
+    (card,) = scorecard["cases"]
+    assert (scorecard["passed"], scorecard["errored"]) == (int(passed), int(error is not None))
+    assert (card["error"], card["attempts"], card["first_error"]) == (error, 2, first.error)
 
 
 @pytest.mark.asyncio

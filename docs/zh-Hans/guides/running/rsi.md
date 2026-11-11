@@ -102,9 +102,9 @@ icode rsi eval --task rsi-<id> --stub
 icode rsi eval --dataset ./held-out.json --profile ./candidate.yaml -m <model>
 ```
 
-Stdout 会显示 `passed=N/M` 和 `errored=K`。case 因 agent 以外的原因没能跑，或者撞上了 `--timeout`，会在新的工作目录里再跑一次（记录里显示 `"attempts": 2`），以第二次的结果为准：
+Stdout 会显示 `passed=N/M` 和 `errored=K`。case 因 agent 以外的原因没能跑，或者撞上了 `--timeout`，会在新的工作目录里再跑一次，以第二次的结果为准。记录里显示 `"attempts": 2`，`first_error` 写明第一次失败的原因：
 
-- **errored**：仍有 agent 控制不了的原因让它没能跑：模型或 provider 出错（iCode 自己的重试之后仍然失败），或者工作目录准备失败。它在 `cases.jsonl` 里的记录带 `"errored": true` 和错误信息。
+- **errored**：仍有 agent 控制不了的原因让它没能跑：模型或 provider 出错（iCode 自己的重试之后仍然失败），或者工作目录准备失败。它在 `cases.jsonl` 里的记录带 `"errored": true` 和错误信息；两次失败原因不同时，错误信息会把两次都写上（`first run: …; second run: …`）。
 - **未通过**，发现项为 `case_timeout`：两次都撞上了 `--timeout`。agent 陷入循环或者做得太慢，是要改进的地方，不是环境坏了。
 - **未通过**，发现项为 `agent_error`，不再重跑：是 agent 自己让这次运行结束的。它的对话超出了模型的上下文窗口、请求大到 provider 不接受、被 provider 的内容过滤拒绝，或者在无人值守的运行里向用户提问。
 

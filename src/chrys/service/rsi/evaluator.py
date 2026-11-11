@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,8 @@ class CaseEvalRecord:
     session_id: str | None
     prompt: str = ""
     attempts: int = 1
+    first_error: str | None = None
+    """Why the first attempt failed, when the case ran a second time."""
 
     @property
     def errored(self) -> bool:
@@ -56,6 +58,7 @@ class CaseEvalRecord:
             "session_id": self.session_id,
             "prompt": self.prompt,
             "attempts": self.attempts,
+            "first_error": self.first_error,
         }
 
 
@@ -100,6 +103,7 @@ class EvalSuiteResult:
                     "score": record.score,
                     "error": record.error,
                     "attempts": record.attempts,
+                    "first_error": record.first_error,
                 }
                 for record in self.records
             ],
@@ -111,8 +115,9 @@ class ScriptBasedEvaluator:
 
     A case that errors (the environment kept it from running, or it reached
     its time limit) runs once more in ``retry_workspaces/<case_id>``, and its
-    record is the second attempt's. A case that times out on both attempts
-    counts as the agent's: a judged failure, like any error the agent caused.
+    record is the second attempt's, with the first attempt's error kept in
+    ``first_error``. A case that times out on both attempts counts as the
+    agent's: a judged failure, like any error the agent caused.
     """
 
     def __init__(self, runner: CaseRunner) -> None:
@@ -169,14 +174,11 @@ class ScriptBasedEvaluator:
         dataset_dir = dataset.source_path.parent
         for index, case in enumerate(dataset.cases, start=1):
             first = await self._run_case(case, cases_dir / case.case_id, dataset_dir=dataset_dir)
-            record = _record_for(case, first, judge_dir=judge_dir, timed_out_before=False)
+            record = _record_for(case, first, judge_dir=judge_dir)
             if record.errored:
                 # One more run, in a fresh workdir: a passing hiccup must not decide the score.
-                run = await self._run_case(case, out / "retry_workspaces" / case.case_id, dataset_dir=dataset_dir)
-                timed_out_before = not first.ok and first.error_cause == "timeout"
-                record = replace(
-                    _record_for(case, run, judge_dir=judge_dir, timed_out_before=timed_out_before), attempts=2
-                )
+                retry = await self._run_case(case, out / "retry_workspaces" / case.case_id, dataset_dir=dataset_dir)
+                record = _record_for(case, retry, judge_dir=judge_dir, first=first)
             records.append(record)
             node_ref = f"case-{case.case_id}"
             await emit(
@@ -251,21 +253,28 @@ def merge_suite(previous: EvalSuiteResult, partial: EvalSuiteResult) -> EvalSuit
     )
 
 
-def _record_for(case: RsiCase, run: CaseRunResult, *, judge_dir: Path, timed_out_before: bool) -> CaseEvalRecord:
+def _record_for(
+    case: RsiCase, run: CaseRunResult, *, judge_dir: Path, first: CaseRunResult | None = None
+) -> CaseEvalRecord:
     """Judge *run*, or record why it could not be judged.
 
-    What the agent caused is a judged failure the optimizer sees. A timeout is
-    the agent's only when the attempt before it timed out too. Anything else
-    stays errored, kept out of every score comparison.
+    *first* is the errored attempt *run* retried, if any. What the agent caused
+    is a judged failure the optimizer sees. A timeout is the agent's only when
+    *first* timed out too. Anything else stays errored, kept out of every score
+    comparison, and names both attempts' errors when they differ.
     """
+    first_error = first.error if first is not None else None
+    attempts = 1 if first is None else 2
     if not run.ok:
         message = run.error or "runner failed"
         if run.error_cause == "agent":
             code = "agent_error"
-        elif run.error_cause == "timeout" and timed_out_before:
+        elif run.error_cause == "timeout" and first is not None and first.error_cause == "timeout":
             code = "case_timeout"
         else:
             code = "runner_error"
+            if first_error is not None and first_error != message:
+                message = f"first run: {first_error}; second run: {message}"
         return CaseEvalRecord(
             case_id=case.case_id,
             passed=False,
@@ -276,6 +285,8 @@ def _record_for(case: RsiCase, run: CaseRunResult, *, judge_dir: Path, timed_out
             workdir=str(run.workdir),
             session_id=run.session_id,
             prompt=case.prompt,
+            attempts=attempts,
+            first_error=first_error,
         )
     judged: JudgeResult = judge_case(
         case,
@@ -293,6 +304,8 @@ def _record_for(case: RsiCase, run: CaseRunResult, *, judge_dir: Path, timed_out
         workdir=str(run.workdir),
         session_id=run.session_id,
         prompt=case.prompt,
+        attempts=attempts,
+        first_error=first_error,
     )
 
 

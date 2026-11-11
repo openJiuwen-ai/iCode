@@ -102,9 +102,9 @@ To score a profile YAML that is not in your agents directory, such as a candidat
 icode rsi eval --dataset ./held-out.json --profile ./candidate.yaml -m <model>
 ```
 
-Stdout shows `passed=N/M` and `errored=K`. A case that something outside the agent kept from running, or that hit `--timeout`, is run once more in a fresh workdir (its record shows `"attempts": 2`), and the second run is what counts:
+Stdout shows `passed=N/M` and `errored=K`. A case that something outside the agent kept from running, or that hit `--timeout`, is run once more in a fresh workdir, and the second run is what counts. Its record shows `"attempts": 2` and, in `first_error`, why the first run failed:
 
-- **Errored**: something the agent does not control still kept it from running. The model or provider failed (after iCode's own retries), or its workdir could not be prepared. Its record in `cases.jsonl` has `"errored": true` and the error.
+- **Errored**: something the agent does not control still kept it from running. The model or provider failed (after iCode's own retries), or its workdir could not be prepared. Its record in `cases.jsonl` has `"errored": true` and the error; when the two runs failed differently, the error names both (`first run: …; second run: …`).
 - **Failed**, with the finding `case_timeout`: it hit `--timeout` on both runs. An agent that loops or works too slowly is something to improve, not a broken setup.
 - **Failed**, with the finding `agent_error` and no second run: the agent itself ended the run. Its conversation outgrew the model's context window, a request grew too large for the provider, the provider's content filter refused it, or it asked a question no one can answer in a headless run.
 
