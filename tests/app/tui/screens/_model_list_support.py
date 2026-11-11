@@ -362,7 +362,7 @@ async def fetch_and_settle(screen: ModelConfigScreen, fake: FakeDiscover, pilot:
 async def listed(screen: ModelConfigScreen, pilot: Pilot) -> list[str]:
     """The ids the dropdown offers, read with the list open.
 
-    The list filters by the model input (§3.1): callers keep that input empty or an exact id.
+    The model input reorders the list (§3.1); with it empty this is the service order.
     """
     was_open = overlay_expanded(screen)
     if not was_open:

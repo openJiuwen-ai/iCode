@@ -2,7 +2,7 @@
 
 """Spec tests for the model-name dropdown once Fetch has found a list.
 
-Written from ``.plan/model-list-fetch.md`` §3.1 (overlay, filter, highlight, keyboard and mouse);
+Written from ``.plan/model-list-fetch.md`` §3.1 (overlay, ordering, highlight, keyboard and mouse);
 the list comes from a recording fake installed as ``ModelConfigScreen.discover_models``.
 """
 
@@ -34,7 +34,6 @@ from tests.app.tui.screens._model_list_support import (
     model_input,
     models,
     no_new_query,
-    open_model_config_zh,
     overlay,
     overlay_expanded,
     overlay_texts,
@@ -46,7 +45,7 @@ from tests.support.waiting import wait_for, wait_until, wait_until_quiet
 pytestmark = pytest.mark.usefixtures("isolated_model_config_dir", "clear_model_profile_env", "clear_provider_env")
 
 
-# ── Opening, filtering and choosing (§3.1) ───────────────────────────
+# ── Opening, ordering and choosing (§3.1) ───────────────────────────
 
 
 LIST = tuple(
@@ -62,7 +61,12 @@ LIST = tuple(
     )
 )
 CLAUDE = [i for i in LIST if "claude" in i.casefold()]
-GPT = [i for i in LIST if "gpt" in i.casefold()]
+
+
+def ordered(text: str) -> list[str]:
+    """Every item, those containing *text* (case-insensitive) first, each part in list order."""
+    needle = text.casefold()
+    return [i for i in LIST if needle in i.casefold()] + [i for i in LIST if needle not in i.casefold()]
 
 
 @contextlib.asynccontextmanager
@@ -87,8 +91,8 @@ async def opened_list(
 @pytest.mark.parametrize("by", ["fetch", "arrow", "down"])
 async def test_exact_id_opens_everything_with_it_highlighted(fake_discover: FakeDiscover, by: str) -> None:
     async with opened_list(fake_discover, "openai/gpt-5.5", by=by) as (screen, _pilot):
-        assert overlay_texts(screen) == list(LIST)
-        assert overlay(screen).highlighted == LIST.index("openai/gpt-5.5")
+        assert overlay_texts(screen) == ordered("openai/gpt-5.5")
+        assert overlay(screen).highlighted == 0
         assert overlay(screen).has_focus
         assert_overlay_visible(screen)
 
@@ -105,9 +109,9 @@ async def test_empty_input_opens_everything_with_the_first_highlighted(fake_disc
         assert model_input(screen).value == LIST[0]
 
 
-async def test_other_text_filters_by_case_insensitive_substring(fake_discover: FakeDiscover) -> None:
+async def test_other_text_lists_case_insensitive_matches_first_and_hides_nothing(fake_discover: FakeDiscover) -> None:
     async with opened_list(fake_discover, "Claude") as (screen, _pilot):
-        assert overlay_texts(screen) == CLAUDE
+        assert overlay_texts(screen) == [*CLAUDE, "openai/gpt-5.5", "openai/gpt-5.5-mini", "zeta/model"]
         assert overlay(screen).highlighted == 0
         assert model_input(screen).value == "Claude"
 
@@ -117,25 +121,27 @@ async def test_substring_must_be_contiguous(fake_discover: FakeDiscover) -> None
         await pilot.press(*"gpt5")
 
         await wait_for(lambda: model_input(screen).value == "gpt5", pilot=pilot)
-        await wait_for(lambda: overlay_texts(screen) == ["No results"], pilot=pilot)
+        await wait_for(lambda: overlay(screen).highlighted is None, pilot=pilot)
+        assert overlay_texts(screen) == list(LIST)
 
 
-async def test_typing_while_open_edits_the_input_and_refilters(fake_discover: FakeDiscover) -> None:
+async def test_typing_while_open_edits_the_input_and_reorders(fake_discover: FakeDiscover) -> None:
     async with opened_list(fake_discover, "") as (screen, pilot):
         await pilot.press(*"gpt")
 
         await wait_for(lambda: model_input(screen).value == "gpt", pilot=pilot)
-        await wait_for(lambda: overlay_texts(screen) == GPT, pilot=pilot)
+        await wait_for(lambda: overlay_texts(screen) == ordered("gpt"), pilot=pilot)
         assert overlay(screen).highlighted == 0
         assert overlay_expanded(screen)
 
         await pilot.press(*"-5.5-")
-        await wait_for(lambda: overlay_texts(screen) == ["openai/gpt-5.5-mini"], pilot=pilot)
+        await wait_for(lambda: overlay_texts(screen) == ordered("gpt-5.5-"), pilot=pilot)
+        assert overlay_texts(screen)[0] == "openai/gpt-5.5-mini"
         assert model_input(screen).value == "gpt-5.5-"
 
 
 @pytest.mark.parametrize("pasted", ["gpt-5", "gpt-5\ndef"], ids=["one-line", "multi-line"])
-async def test_pasting_while_open_edits_the_input_and_refilters(fake_discover: FakeDiscover, pasted: str) -> None:
+async def test_pasting_while_open_edits_the_input_and_reorders(fake_discover: FakeDiscover, pasted: str) -> None:
     """A paste into the open list appends to the input like typing; only its first line, as Input does (§3.1)."""
     async with opened_list(fake_discover, "openai/") as (screen, pilot):
         assert overlay(screen).has_focus
@@ -145,9 +151,9 @@ async def test_pasting_while_open_edits_the_input_and_refilters(fake_discover: F
 
         model = model_input(screen)
         await wait_for(lambda: model.value == "openai/gpt-5", pilot=pilot, description="paste appended")
-        expected = [i for i in LIST if "openai/gpt-5" in i.casefold()]
-        assert len(expected) == 2
-        await wait_for(lambda: overlay_texts(screen) == expected, pilot=pilot, description="list refiltered")
+        await wait_for(
+            lambda: overlay_texts(screen) == ordered("openai/gpt-5"), pilot=pilot, description="list reordered"
+        )
         assert overlay(screen).highlighted == 0
         assert overlay_expanded(screen)
         assert_overlay_visible(screen)
@@ -155,13 +161,13 @@ async def test_pasting_while_open_edits_the_input_and_refilters(fake_discover: F
         assert model.cursor_position == len(model.value)
 
 
-async def test_backspace_while_open_edits_the_input_and_refilters(fake_discover: FakeDiscover) -> None:
+async def test_backspace_while_open_edits_the_input_and_reorders(fake_discover: FakeDiscover) -> None:
     async with opened_list(fake_discover, "claude-o") as (screen, pilot):
-        assert overlay_texts(screen) == ["anthropic/Claude-Opus-5"]
+        assert overlay_texts(screen) == ordered("claude-o")
 
         await pilot.press("backspace", "backspace")
         await wait_for(lambda: model_input(screen).value == "claude", pilot=pilot)
-        await wait_for(lambda: overlay_texts(screen) == CLAUDE, pilot=pilot)
+        await wait_for(lambda: overlay_texts(screen) == ordered("claude"), pilot=pilot)
         assert overlay(screen).highlighted == 0
 
         await pilot.press(*["backspace"] * 6)
@@ -171,67 +177,98 @@ async def test_backspace_while_open_edits_the_input_and_refilters(fake_discover:
         assert overlay_expanded(screen)
 
 
-async def test_leftover_value_matching_nothing_opens_everything_unhighlighted(fake_discover: FakeDiscover) -> None:
-    """A value left from another service, before the user types: all items, none highlighted (§3.1)."""
-    async with opened_list(fake_discover, "my-deployment") as (screen, pilot):
-        assert overlay_texts(screen) == list(LIST)
+@pytest.mark.parametrize("by", ["fetch", "arrow", "down", "typing"])
+async def test_text_matching_nothing_opens_everything_unhighlighted(fake_discover: FakeDiscover, by: str) -> None:
+    """Text no model contains, loaded or typed: every item, none highlighted, Enter keeps the text (§3.1)."""
+    async with opened_list(fake_discover, "my-deployment", by="fetch" if by == "typing" else by) as (screen, pilot):
+        text = "my-deployment"
+        if by == "typing":
+            await pilot.press("x")
+            text += "x"
+            await wait_for(lambda: model_input(screen).value == text, pilot=pilot)
+        await wait_for(lambda: overlay_texts(screen) == list(LIST), pilot=pilot)
         assert overlay(screen).highlighted is None
 
         await pilot.press("enter")
-        changed = await wait_until(
-            lambda: model_input(screen).value != "my-deployment", timeout=QUIET_WINDOW, pilot=pilot
-        )
+        changed = await wait_until(lambda: model_input(screen).value != text, timeout=QUIET_WINDOW, pilot=pilot)
 
         assert not changed, model_input(screen).value
 
 
-@pytest.mark.parametrize("by", ["fetch", "arrow", "down"])
-async def test_leftover_value_opens_everything_by_any_way(fake_discover: FakeDiscover, by: str) -> None:
-    async with opened_list(fake_discover, "other-service/model-x", by=by) as (screen, _pilot):
-        assert overlay_texts(screen) == list(LIST)
+async def test_down_from_no_highlight_starts_at_the_first_item_and_enter_picks_it(fake_discover: FakeDiscover) -> None:
+    """With nothing matching, ↓ highlights the first item (§3.1); Enter then picks it like any highlighted item."""
+    async with opened_list(fake_discover, "my-deployment") as (screen, pilot):
+        await wait_for(lambda: overlay(screen).has_focus, pilot=pilot)
         assert overlay(screen).highlighted is None
 
-
-async def test_no_match_after_typing_shows_one_disabled_row_and_enter_keeps_the_input(
-    fake_discover: FakeDiscover,
-) -> None:
-    async with opened_list(fake_discover, "my-deployment") as (screen, pilot):
-        await pilot.press("x")
-
-        await wait_for(lambda: model_input(screen).value == "my-deploymentx", pilot=pilot)
-        await wait_for(lambda: overlay_texts(screen) == ["No results"], pilot=pilot)
-        assert overlay(screen).get_option_at_index(0).disabled is True
-
+        await pilot.press("down")
+        await wait_for(lambda: overlay(screen).highlighted == 0, pilot=pilot)
         await pilot.press("enter")
-        changed = await wait_until(
-            lambda: model_input(screen).value != "my-deploymentx", timeout=QUIET_WINDOW, pilot=pilot
-        )
 
-        assert not changed, model_input(screen).value
+        await wait_for(lambda: not overlay_expanded(screen), pilot=pilot)
+        assert model_input(screen).value == LIST[0]
 
 
-async def test_typing_after_a_leftover_value_filters_strictly(fake_discover: FakeDiscover) -> None:
-    async with opened_list(fake_discover, "my-deployment") as (screen, pilot):
-        await pilot.press(*["backspace"] * len("my-deployment"), *"mini")
+async def test_both_parts_keep_the_order_the_list_arrived_in(fake_discover: FakeDiscover) -> None:
+    """Matching first, never re-sorted: each part keeps the delivered order, here not alphabetical (§3.1)."""
+    fake_discover.respond = lambda _s: models("zeta/model-b", "openai/gpt-5.5", "anthropic/model-a", "beta/gpt-4")
+    registry, profile = single_profile_registry(base_url=URL, api_key="sk-a", model_id="gpt")
 
-        await wait_for(lambda: model_input(screen).value == "mini", pilot=pilot)
-        await wait_for(lambda: overlay_texts(screen) == ["openai/gpt-5.5-mini"], pilot=pilot)
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, pilot):
+        await fetch_list(screen, pilot)
+
+        assert overlay_texts(screen) == ["openai/gpt-5.5", "beta/gpt-4", "zeta/model-b", "anthropic/model-a"]
         assert overlay(screen).highlighted == 0
 
 
-async def test_no_results_row_is_localized(fake_discover: FakeDiscover) -> None:
-    fake_discover.respond = lambda _s: models(*LIST)
-    registry, profile = single_profile_registry(base_url=URL, api_key="sk-a", model_id="my-deployment")
-
-    async with open_model_config_zh(registry, global_default_profile_id=profile.id) as (screen, pilot):
+async def test_case_folded_text_orders_and_emboldens_the_same_match(fake_discover: FakeDiscover) -> None:
+    """IDs are ASCII but typed text is not: "ß" folds to "ss", which both orders and bolds the match."""
+    fake_discover.respond = lambda _s: models("a/other", "b/strasse-model")
+    registry, profile = single_profile_registry(base_url=URL, api_key="sk-a", model_id="STRAẞE")
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, pilot):
         await fetch_list(screen, pilot)
         await wait_for(lambda: overlay(screen).has_focus, pilot=pilot)
-        await pilot.press("z")
 
-        await wait_for(lambda: overlay_texts(screen) == ["无结果"], pilot=pilot)
+        assert overlay_texts(screen) == ["b/strasse-model", "a/other"]
+        assert overlay(screen).highlighted == 0
+        plain, bold = _prompt_plain_and_bold(overlay(screen).get_option_at_index(0).prompt)
+        assert _bold_chars(plain, bold) == "strasse"
 
 
-async def test_choosing_a_filtered_item_fills_the_input_and_returns_focus(fake_discover: FakeDiscover) -> None:
+async def test_reopening_without_editing_does_not_rebuild_the_options(
+    fake_discover: FakeDiscover, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Opening only rebuilds when the text or the list changed (§3.1), so long lists open at once."""
+    async with opened_list(fake_discover, "Claude") as (screen, pilot):
+        menu = overlay(screen)
+        builds: list[str] = []
+        original = menu.set_choices
+        monkeypatch.setattr(menu, "set_choices", lambda ids, bold: (builds.append(bold), original(ids, bold)))
+
+        await _close_list(screen, pilot)
+        await _open_by_arrow(screen, pilot)
+        await wait_for(lambda: menu.has_focus, pilot=pilot)
+        assert builds == []
+
+        await pilot.press("x")
+        await wait_for(lambda: model_input(screen).value == "Claudex", pilot=pilot)
+        await wait_until_quiet(lambda: list(builds), description="rebuilds settled", pilot=pilot)
+        assert builds == [""]  # one rebuild for the new text, and no bold scan when nothing matches
+
+
+async def test_a_new_list_shows_even_when_the_text_is_unchanged(fake_discover: FakeDiscover) -> None:
+    """Every fetch rebuilds the options (§3.1); the same text must not keep the old list on screen."""
+    async with opened_list(fake_discover, "Claude") as (screen, pilot):
+        await _close_list(screen, pilot)
+        fake_discover.respond = lambda _s: models("x/other", "x/claude-next")
+
+        await fetch_list(screen, pilot)
+
+        assert overlay_texts(screen) == ["x/claude-next", "x/other"]
+        assert overlay(screen).highlighted == 0
+
+
+async def test_choosing_a_matching_item_fills_the_input_and_returns_focus(fake_discover: FakeDiscover) -> None:
     async with opened_list(fake_discover, "Claude") as (screen, pilot):
         await pilot.press("down", "enter")
 
@@ -249,19 +286,6 @@ async def test_choosing_from_the_full_list(fake_discover: FakeDiscover) -> None:
         await wait_for(lambda: not overlay_expanded(screen), pilot=pilot)
         assert model_input(screen).value == "openai/gpt-5.5-mini"
         await wait_for(lambda: model_input(screen).has_focus, pilot=pilot)
-
-
-async def test_clicking_an_item_fills_the_input(fake_discover: FakeDiscover) -> None:
-    async with opened_list(fake_discover, "") as (screen, pilot):
-        menu = overlay(screen)
-        row = LIST.index("zeta/model")
-        target_y = menu.content_region.y + row - menu.scroll_offset.y
-        offset = (menu.content_region.x - menu.region.x + 1, target_y - menu.region.y)
-
-        await click_when_settled(pilot, menu, offset=offset)
-
-        await wait_for(lambda: not overlay_expanded(screen), pilot=pilot)
-        assert model_input(screen).value == "zeta/model"
 
 
 async def test_clicking_outside_collapses_without_changing_the_value(fake_discover: FakeDiscover) -> None:
@@ -353,7 +377,7 @@ async def test_clicking_the_input_keeps_the_list_open(fake_discover: FakeDiscove
         assert model_input(screen).has_focus
 
 
-async def test_editing_anywhere_in_the_input_refilters_live(fake_discover: FakeDiscover) -> None:
+async def test_editing_anywhere_in_the_input_reorders_live(fake_discover: FakeDiscover) -> None:
     async with opened_list(fake_discover, "") as (screen, pilot):
         await _click_input_keeping_list(screen, pilot)
 
@@ -361,13 +385,13 @@ async def test_editing_anywhere_in_the_input_refilters_live(fake_discover: FakeD
         await pilot.press("end")
         await pilot.press("5")
         await wait_for(lambda: model_input(screen).value == "5", pilot=pilot)
-        await wait_for(lambda: overlay_texts(screen) == [i for i in LIST if "5" in i], pilot=pilot)
+        await wait_for(lambda: overlay_texts(screen) == ordered("5"), pilot=pilot)
 
         await pilot.press("home")
         await wait_for(lambda: model_input(screen).cursor_position == 0, pilot=pilot)
         await pilot.press(*"opus-")
         await wait_for(lambda: model_input(screen).value == "opus-5", pilot=pilot)
-        await wait_for(lambda: overlay_texts(screen) == ["anthropic/Claude-Opus-5"], pilot=pilot)
+        await wait_for(lambda: overlay_texts(screen) == ordered("opus-5"), pilot=pilot)
         assert overlay_expanded(screen)
         assert model_input(screen).has_focus
 
@@ -462,7 +486,7 @@ async def _long_list_open(fake: FakeDiscover, model_id: str) -> AsyncIterator[tu
 async def test_long_id_is_middle_elided_with_bold_on_the_visible_match(fake_discover: FakeDiscover) -> None:
     async with _long_list_open(fake_discover, "-TAIL") as (screen, pilot):
         menu = overlay(screen)
-        assert menu.option_count == 1
+        assert overlay_texts(screen)[1:] == list(LIST)  # the only match comes first; nothing is hidden
         plain, bold = _prompt_plain_and_bold(menu.get_option_at_index(0).prompt)
 
         assert "…" in plain
@@ -482,7 +506,7 @@ async def test_long_id_is_middle_elided_with_bold_on_the_visible_match(fake_disc
 async def test_match_inside_the_elided_middle_is_not_bold(fake_discover: FakeDiscover) -> None:
     async with _long_list_open(fake_discover, "-match-") as (screen, _pilot):
         menu = overlay(screen)
-        assert menu.option_count == 1
+        assert overlay_texts(screen)[1:] == list(LIST)  # the only match comes first; nothing is hidden
         plain, bold = _prompt_plain_and_bold(menu.get_option_at_index(0).prompt)
 
         assert "…" in plain
@@ -493,7 +517,7 @@ async def test_match_inside_the_elided_middle_is_not_bold(fake_discover: FakeDis
 async def test_match_at_the_visible_start_is_bold(fake_discover: FakeDiscover) -> None:
     async with _long_list_open(fake_discover, "VENDOR/") as (screen, _pilot):
         menu = overlay(screen)
-        assert menu.option_count == 1
+        assert overlay_texts(screen)[1:] == list(LIST)  # the only match comes first; nothing is hidden
         plain, bold = _prompt_plain_and_bold(menu.get_option_at_index(0).prompt)
 
         assert _bold_chars(plain, bold) == "vendor/"
@@ -505,11 +529,12 @@ async def test_short_ids_keep_their_full_text_and_bold_match(fake_discover: Fake
         menu = overlay(screen)
         rows = [_prompt_plain_and_bold(menu.get_option_at_index(i).prompt) for i in range(menu.option_count)]
 
-        assert [plain for plain, _bold in rows] == CLAUDE
-        assert [_bold_chars(plain, bold).casefold() for plain, bold in rows] == ["claude", "claude"]
+        assert len(rows) == len(LIST) + 1
+        assert [plain for plain, _bold in rows[: len(CLAUDE)]] == CLAUDE
+        assert [_bold_chars(plain, bold).casefold() for plain, bold in rows] == ["claude", "claude", "", "", "", ""]
 
 
-# ── Typed text versus a leftover value (§3.1) ────────────────────────
+# ── Reopening and refetching (§3.1) ──────────────────────────────────
 
 
 async def _type_model_closed(screen: ModelConfigScreen, pilot: Pilot, text: str) -> None:
@@ -526,49 +551,54 @@ async def _type_model_closed(screen: ModelConfigScreen, pilot: Pilot, text: str)
     assert not overlay_expanded(screen)
 
 
-async def test_text_typed_while_closed_filters_strictly_on_every_open(fake_discover: FakeDiscover) -> None:
-    async with opened_list(fake_discover, "openai/gpt-5.5") as (screen, pilot):
-        await _close_list(screen, pilot)
-        await _type_model_closed(screen, pilot, "zzz")
-
-        await pilot.press("down")
-        await wait_for(lambda: overlay_expanded(screen), pilot=pilot)
-        assert overlay_texts(screen) == ["No results"]
-
-        await _close_list(screen, pilot)
-        await _open_by_arrow(screen, pilot)
-        assert overlay_texts(screen) == ["No results"]
-        assert model_input(screen).value == "zzz"
-
-
-async def test_picked_item_reopens_the_full_list_highlighted(fake_discover: FakeDiscover) -> None:
+@pytest.mark.parametrize("by", ["arrow", "down"])
+async def test_text_typed_while_closed_orders_the_list_on_opening(fake_discover: FakeDiscover, by: str) -> None:
     async with opened_list(fake_discover, "") as (screen, pilot):
         await _close_list(screen, pilot)
         await _type_model_closed(screen, pilot, "mini")
-        await pilot.press("down")
-        await wait_for(lambda: overlay_texts(screen) == ["openai/gpt-5.5-mini"], pilot=pilot)
-        await pilot.press("enter")
+
+        if by == "arrow":
+            await _open_by_arrow(screen, pilot)
+        else:
+            await _open_by_down(screen, pilot)
+
+        await wait_for(lambda: overlay(screen).has_focus, pilot=pilot)
+        assert overlay_texts(screen) == ["openai/gpt-5.5-mini", *(i for i in LIST if i != "openai/gpt-5.5-mini")]
+        assert overlay(screen).highlighted == 0
+
+
+async def test_exact_id_is_highlighted_even_after_other_matches(fake_discover: FakeDiscover) -> None:
+    fake_discover.respond = lambda _s: models("a/target", "b/other", "target")
+    registry, profile = single_profile_registry(base_url=URL, api_key="sk-a", model_id="target")
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, pilot):
+        await fetch_list(screen, pilot)
+        await wait_for(lambda: overlay(screen).has_focus, pilot=pilot)
+
+        assert overlay_texts(screen) == ["a/target", "target", "b/other"]
+        assert overlay(screen).highlighted == 1
+
+
+async def test_clicking_an_item_that_does_not_match_picks_it_and_reopens_ordered_by_it(
+    fake_discover: FakeDiscover,
+) -> None:
+    picked = "anthropic/Claude-Opus-5"
+    async with opened_list(fake_discover, "gpt") as (screen, pilot):
+        menu = overlay(screen)
+        row = overlay_texts(screen).index(picked)
+        assert row != LIST.index(picked)  # the click lands on a row the reorder moved
+        target_y = menu.content_region.y + row - menu.scroll_offset.y
+        offset = (menu.content_region.x - menu.region.x + 1, target_y - menu.region.y)
+
+        await click_when_settled(pilot, menu, offset=offset)
+
         await wait_for(lambda: not overlay_expanded(screen), pilot=pilot)
-        assert model_input(screen).value == "openai/gpt-5.5-mini"
+        assert model_input(screen).value == picked
 
         await _open_by_arrow(screen, pilot)
 
-        assert overlay_texts(screen) == list(LIST)
-        assert overlay(screen).highlighted == LIST.index("openai/gpt-5.5-mini")
-
-
-async def test_typed_text_becomes_a_leftover_after_a_new_fetch(fake_discover: FakeDiscover) -> None:
-    """Any completed fetch makes earlier typed text a leftover, even one returning an identical list."""
-    async with opened_list(fake_discover, "openai/gpt-5.5") as (screen, pilot):
-        await _close_list(screen, pilot)
-        await _type_model_closed(screen, pilot, "zzz")
-
-        await fetch_list(screen, pilot)
-
-        assert len(fake_discover.calls) == 2
-        assert overlay_texts(screen) == list(LIST)
-        assert overlay(screen).highlighted is None
-        assert model_input(screen).value == "zzz"
+        await wait_for(lambda: overlay(screen).has_focus, pilot=pilot)
+        assert overlay_texts(screen) == [picked, *(i for i in LIST if i != picked)]
+        assert overlay(screen).highlighted == 0
 
 
 async def test_refetch_highlights_the_current_value(fake_discover: FakeDiscover) -> None:
@@ -578,8 +608,8 @@ async def test_refetch_highlights_the_current_value(fake_discover: FakeDiscover)
 
         await fetch_list(screen, pilot)
 
-        assert overlay_texts(screen) == list(LIST)
-        assert overlay(screen).highlighted == LIST.index("zeta/model")
+        assert overlay_texts(screen) == ordered("zeta/model")
+        assert overlay(screen).highlighted == 0
         await wait_for(lambda: overlay(screen).has_focus, pilot=pilot)
 
 
