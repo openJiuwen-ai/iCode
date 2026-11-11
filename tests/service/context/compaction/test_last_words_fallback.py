@@ -687,6 +687,17 @@ def test_fallback_admission_counter_is_utf8_byte_conservative() -> None:
     )
 
 
+def test_fallback_admission_counter_counts_a_lone_surrogate_as_its_escape() -> None:
+    from chrys.service.context.compaction.last_words import _fallback_admission_tokens
+
+    raw = (Message("user", [Content.from_text("bad \udcff byte")]),)
+    plain = (Message("user", [Content.from_text("bad x byte")]),)
+
+    # The byte is counted as the six-character ``\udcff`` escape the wire body
+    # carries, not as one character, and the strict encode cannot fail here.
+    assert _fallback_admission_tokens(raw, output_reserve=0) == _fallback_admission_tokens(plain, output_reserve=0) + 5
+
+
 async def test_fallback_shrinks_timeline_without_truncating_fixed_guidance(tmp_path):
     from chrys.service.context.compaction.last_words import (
         _FALLBACK_TEMPLATE_COMPACT_CHARS,

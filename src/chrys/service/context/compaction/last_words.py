@@ -55,6 +55,7 @@ from chrys.foundation.errors import (
     may_be_context_overflow,
 )
 from chrys.foundation.models.turns import is_continuation_message
+from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, RetryAttemptInfo
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.trajectory.context import side_call_scope
@@ -1834,7 +1835,12 @@ def _render_fallback_candidate(
 
 
 def _fallback_admission_tokens(messages: tuple[Message, ...], *, output_reserve: int) -> int:
-    """Conservative whole-request counter for the terminal fallback."""
+    """Conservative whole-request counter for the terminal fallback.
+
+    Counted on the text the request will actually carry: a lone surrogate is
+    spelled as its ``\\udcXX`` escape exactly as the wire body spells it, so the
+    estimate grows with it and the strict encode cannot fail here either.
+    """
     total = max(0, output_reserve)
     for message in messages:
         serialized = json.dumps(
@@ -1844,7 +1850,7 @@ def _fallback_admission_tokens(messages: tuple[Message, ...], *, output_reserve:
             separators=(",", ":"),
             default=str,
         )
-        total += len(serialized.encode("utf-8")) + _FALLBACK_FRAMING_TOKENS_PER_MESSAGE
+        total += len(surrogate_safe_text(serialized).encode("utf-8")) + _FALLBACK_FRAMING_TOKENS_PER_MESSAGE
     return total
 
 
