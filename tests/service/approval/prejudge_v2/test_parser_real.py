@@ -148,3 +148,58 @@ def test_quoted_tilde_remains_literal():
         "enforce", "regression", (Rule("allow", Route.ALLOW, Matcher("argv_exact", ("echo", "~"))),)
     )
     assert route("echo '~'", "bash", policy).route is Route.ALLOW
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("ls -la", Route.ALLOW),
+        ("ls *.py", Route.ALLOW),
+        ("cat file.txt | head -20 | grep pattern", Route.ALLOW),
+        ("git --no-optional-locks status --short", Route.ALLOW),
+        ("git status --short", Route.DEFER),
+        ("git push origin main", Route.DEFER),
+        ("find . -delete", Route.DEFER),
+        ("echo rm", Route.DEFER),
+        ("echo 'find -delete is dangerous'", Route.ALLOW),
+        ("python3 --version", Route.ALLOW),
+        ("python3 script.py", Route.DEFER),
+        ("pip list", Route.ALLOW),
+        ("pip install package", Route.DEFER),
+        ("ruff check --no-cache --no-fix src tests", Route.ALLOW),
+        ("ruff check --fix src", Route.DEFER),
+        ("ls > output.txt", Route.DEFER),
+        ("echo $(rm fixture)", Route.DEFER),
+    ],
+)
+def test_builtin_yaml_readonly_real_ast(tmp_path, command, expected):
+    """Built-in rules are data interpreted by the real Bash AST engine."""
+    file = tmp_path / "prejudge.yaml"
+    file.write_text('schema_version: 1\nmode: "enforce"\npolicy_id: builtin-smoke\nrules: []\n', encoding="utf-8")
+    policy = load_policy(file)
+    assert policy.readonly_rules
+    result = route(command, "bash", policy)
+    assert result.route is expected, (command, expected, result)
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("ls -la", True),
+        ("ls *.py", True),
+        ("git --no-optional-locks status --short", True),
+        ("git status --short", False),
+        ("git push origin main", False),
+        ("echo rm", False),
+        ("python3 --version", True),
+        ("pip install package", False),
+    ],
+)
+def test_builtin_ast_matches_legacy_for_supported_cases(tmp_path, command, expected):
+    """Compare a documented supported slice; old checker is a test oracle ONLY."""
+    from chrys.service.tools.builtins.shell_filter import is_safe_readonly_command
+
+    assert is_safe_readonly_command(command, shell_name="bash") is expected
+    file = tmp_path / "prejudge.yaml"
+    file.write_text('schema_version: 1\nmode: "enforce"\npolicy_id: parity\nrules: []\n', encoding="utf-8")
+    assert (route(command, "bash", load_policy(file)).route is Route.ALLOW) is expected

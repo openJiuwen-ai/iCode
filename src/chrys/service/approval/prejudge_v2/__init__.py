@@ -8,6 +8,7 @@ syntax cannot yield ALLOW. Only Tree-sitter is an optional runtime dependency.
 from __future__ import annotations
 
 import hashlib
+import importlib.resources
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
@@ -53,6 +54,7 @@ class CommandNode:
     argv: tuple[str, ...] | None
     prefix: tuple[str, ...]
     text: str
+    readonly_argv: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +75,7 @@ class PreJudgeResult:
     analysis_digest: str
 
 
-MatcherField = Literal["argv_exact", "argv_first", "prefix_first", "readonly_safe"]
+MatcherField = Literal["argv_exact", "argv_first", "prefix_first"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +91,7 @@ class Rule:
     id: str
     effect: Route
     match: Matcher
+    structured_match: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,18 +99,15 @@ class Policy:
     mode: str
     policy_id: str
     rules: tuple[Rule, ...]
-
-
-# An enabled policy implicitly contains this whole-command built-in rule. It
-# reuses the original read-only validator instead of approximating it by argv.
-_BUILTIN_READONLY_RULE = Rule("__builtin_readonly__", Route.ALLOW, Matcher("readonly_safe", ()))
+    readonly_rules: tuple[Rule, ...] = ()
+    readonly_guard: dict[str, Any] | None = None
 
 
 @lru_cache(maxsize=32)
 def _warn_unsupported_dialect(dialect: str) -> None:
     logger.warning(
         "Structured Pre-Judge rules do not support %r; "
-        "the built-in legacy readonly policy may still auto-approve it",
+        "AST policy cannot evaluate it; retaining ordinary approval behavior",
         dialect,
     )
 
@@ -289,6 +289,28 @@ def _literal_word(raw: str) -> str | None:
     return "".join(result)
 
 
+def _readonly_word(raw: str) -> str | None:
+    """Conservative AST-derived word for read-only policy matching.
+
+    Literal globs may be inspected by a read-only rule without pretending
+    that their expanded value is a static argv for argv_exact decisions.
+    Parameter/command expansion, braces, tilde and unknown syntax still defer.
+    """
+    literal = _literal_word(raw)
+    if literal is not None:
+        return literal
+    # Only unquoted, ordinary path globs. No quotes, escapes, assignments,
+    # shell operators or substitutions; the AST must also be syntactically sound.
+    if (
+        raw
+        and any(x in raw for x in ("*", "?", "["))
+        and not any(x in raw for x in ('"', "'", "\\", "$", "\x60", "{", "}", "~", ";", "&", "|", "(", ")", "<", ">", "\n"))
+        and not any(ch.isspace() for ch in raw)
+    ):
+        return raw
+    return None
+
+
 def _dynamic(node: Any) -> bool:
     if node.type in _DYNAMIC or node.type in {"ERROR", "MISSING"} or node.is_missing:
         return True
@@ -308,22 +330,36 @@ def _parse_command(node: Any, data: bytes) -> CommandNode:
         if child.type in _QUOTED:
             words.append(child)
     prefix: list[str] = []
+    readonly_words: list[str] = []
     complete = all(child.type in _QUOTED or child.id == head.id for child in node.named_children)
     for word in words:
+        raw = data[word.start_byte : word.end_byte].decode("utf-8")
+        readonly_token = _readonly_word(raw)
+        # A glob may be inspected symbolically by the built-in readonly
+        # policy; it is NEVER treated as a static argv_exact argument.
+        if readonly_token is not None and (
+            not _dynamic(word)
+            or (word.type in _QUOTED and any(ch in raw for ch in "*?[")
+                and not any(ch in raw for ch in ("$", "`", "{", "}", "~")))
+        ):
+            readonly_words.append(readonly_token)
+        else:
+            readonly_words.clear()
         if _dynamic(word):
             complete = False
-            break
-        raw = data[word.start_byte : word.end_byte].decode("utf-8")
+            continue
         token = _literal_word(raw)
         if token is None:
             complete = False
-            break
-        prefix.append(token)
+            continue
+        if complete:
+            prefix.append(token)
     return CommandNode(
         (node.start_byte, node.end_byte),
         tuple(prefix) if complete else None,
         tuple(prefix),
         text,
+        tuple(readonly_words) if len(readonly_words) == len(words) else None,
     )
 
 
@@ -344,6 +380,7 @@ def analyze(command: str, *, dialect: str = "bash") -> Analysis:
         return Analysis(False, False, (), ("parse_error",))
     if len(data) > 65536:
         return Analysis(False, False, (), ("limit_exceeded",))
+    contains_line_continuation = b"\\\n" in data
     try:
         from tree_sitter import Parser
     except ImportError as exc:
@@ -352,6 +389,8 @@ def analyze(command: str, *, dialect: str = "bash") -> Analysis:
     root = tree.root_node
     nodes: list[CommandNode] = []
     unsupported: list[str] = ["parse_error"] if root.has_error else []
+    if contains_line_continuation:
+        unsupported.append("line_continuation")
     pending = [(root, 0)]
     count = 0
     while pending:
@@ -407,7 +446,12 @@ def _compile_matcher(raw: object, *, effect: Route) -> Matcher:
         raise ValueError("Each match must have exactly one matcher field")
     field, tokens = next(iter(raw.items()))
     if field not in {"argv_exact", "argv_first", "prefix_first"}:
-        raise ValueError(f"Unsupported Pre-Judge matcher: {field!r}")
+        from chrys.service.approval.prejudge_v2.readonly_rules import validate_match
+
+        validate_match(raw)
+        if effect is Route.BLOCK:
+            raise ValueError("Structured matchers require complete argv and cannot BLOCK incomplete commands")
+        return Matcher("argv_exact", ())  # structured_match is carried by Rule
     if (
         not isinstance(tokens, list)
         or not tokens
@@ -424,6 +468,32 @@ def _compile_matcher(raw: object, *, effect: Route) -> Matcher:
     return Matcher(field, tuple(tokens))
 
 
+@lru_cache(maxsize=1)
+def _load_builtin_readonly() -> tuple[tuple[Rule, ...], dict[str, Any]]:
+    """Parse shipped YAML policy with the same closed structural grammar."""
+    from chrys.service.approval.prejudge_v2.readonly_rules import validate_match
+
+    data = yaml.safe_load(importlib.resources.files(__package__).joinpath("readonly_policy.yaml").read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or set(data) != {"schema_version", "policy_id", "guard", "rules"}:
+        raise ValueError("Invalid built-in readonly policy schema")
+    if data["schema_version"] != 1 or not isinstance(data["rules"], list):
+        raise ValueError("Invalid built-in readonly policy version or rules")
+    guard = data["guard"]
+    validate_match(guard)
+    rules: list[Rule] = []
+    seen: set[str] = set()
+    for item in data["rules"]:
+        if not isinstance(item, dict) or set(item) != {"id", "effect", "target", "match"}:
+            raise ValueError("Malformed built-in readonly rule")
+        rid = item["id"]
+        if type(rid) is not str or not rid or rid in seen or item["effect"] != "allow" or item["target"] != "command":
+            raise ValueError("Invalid built-in readonly rule identity or effect")
+        validate_match(item["match"])
+        seen.add(rid)
+        rules.append(Rule(rid, Route.ALLOW, Matcher("argv_exact", ()), item["match"]))
+    return tuple(rules), guard
+
+
 def _compile_enabled_policy(content: dict[str, Any], mode: str) -> Policy:
     ident = content.get("policy_id")
     raw_rules = content.get("rules")
@@ -436,21 +506,22 @@ def _compile_enabled_policy(content: dict[str, Any], mode: str) -> Policy:
         if not isinstance(raw, dict) or set(raw) != {"id", "effect", "target", "match"}:
             raise ValueError("Invalid pre-judge rule fields; expected id, effect, target, match")
         rid, effect, target = (raw[key] for key in ("id", "effect", "target"))
-        if not isinstance(rid, str) or not rid or rid in seen or rid == _BUILTIN_READONLY_RULE.id:
+        if not isinstance(rid, str) or not rid or rid in seen:
             raise ValueError("Duplicate or invalid pre-judge rule ID")
         if effect not in ("allow", "block") or target != "command":
             raise ValueError("Invalid pre-judge effect or target")
         decision = Route(effect)
-        matcher = _compile_matcher(raw["match"], effect=decision)
+        raw_match = raw["match"]
+        matcher = _compile_matcher(raw_match, effect=decision)
+        structured = raw_match if next(iter(raw_match)) not in {"argv_exact", "argv_first", "prefix_first"} else None
         seen.add(rid)
-        rules.append(Rule(rid, decision, matcher))
-    return Policy(mode, ident, (*rules, _BUILTIN_READONLY_RULE))
+        rules.append(Rule(rid, decision, matcher, structured))
+    builtin_rules, builtin_guard = _load_builtin_readonly()
+    return Policy(mode, ident, tuple(rules), builtin_rules, builtin_guard)
 
 
 def _matches(matcher: Matcher, node: CommandNode) -> bool:
     """No expansions, expression interpreter or implicit prefix matching."""
-    if matcher.field == "readonly_safe":
-        return False  # evaluated against the complete command after YAML BLOCK
     if matcher.field == "prefix_first":
         return bool(node.prefix) and node.prefix[0] == matcher.tokens[0]
     if node.argv is None:
@@ -500,10 +571,13 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
     for node in analysis.executable_nodes:
         allowed = False
         for rule in policy.rules:
-            if rule.match.field == "readonly_safe":
-                continue
             # ALLOW can never be justified by only a static prefix.
-            match = _matches(rule.match, node)
+            if rule.structured_match is not None:
+                from chrys.service.approval.prejudge_v2.readonly_rules import matches
+
+                match = node.argv is not None and matches(rule.structured_match, node.argv)
+            else:
+                match = _matches(rule.match, node)
             if match:
                 matched.append(rule.id)
                 spans.append(node.source_span)
@@ -516,25 +590,37 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
             all_allowed = False
     if all_allowed:
         return PreJudgeResult(Route.ALLOW, "all_units_allowed", tuple(matched), tuple(spans), policy.policy_id, digest)
-    if _BUILTIN_READONLY_RULE in policy.rules:
-        # Whole-command legacy behavior, including globs, redirections,
-        # specialized Git/ruff/find checks and supported non-Bash dialects.
-        try:
-            from chrys.service.tools.builtins.shell_filter import is_safe_readonly_command
+    # Built-in rules share the exact same structured matcher evaluator used by
+    # user policy. Never invoke the legacy readonly tokenizer or validators.
+    if policy.readonly_rules and policy.readonly_guard and analysis.syntax_valid:
+        from chrys.service.approval.prejudge_v2.readonly_rules import matches
 
-            readonly = is_safe_readonly_command(command, shell_name=dialect)
-        except Exception:
-            logger.exception("Built-in read-only policy failed; deferring")
-            readonly = False
-        if readonly:
-            return PreJudgeResult(
-                Route.ALLOW,
-                "builtin_readonly",
-                (_BUILTIN_READONLY_RULE.id,),
-                ((0, len(command.encode("utf-8", errors="surrogatepass"))),),
-                policy.policy_id,
-                digest,
-            )
+        # Until the AST coverage is proved sound for each construct, never
+        # auto-approve redirections, substitutions, assignments or wrappers.
+        permitted_unsupported = {"dynamic_word", "glob_pattern", "opaque_carrier"}
+        if set(analysis.unsupported).issubset(permitted_unsupported) and analysis.executable_nodes:
+            chosen: list[tuple[Rule, CommandNode]] = []
+            for node in analysis.executable_nodes:
+                argv = node.readonly_argv
+                if not argv or not matches(policy.readonly_guard, argv):
+                    break
+                match = next(
+                    (rule for rule in policy.readonly_rules if rule.structured_match is not None
+                     and matches(rule.structured_match, argv)),
+                    None,
+                )
+                if match is None:
+                    break
+                chosen.append((match, node))
+            if len(chosen) == len(analysis.executable_nodes):
+                return PreJudgeResult(
+                    Route.ALLOW,
+                    "builtin_readonly",
+                    tuple(rule.id for rule, _ in chosen),
+                    tuple(node.source_span for _, node in chosen),
+                    policy.policy_id,
+                    digest,
+                )
     return PreJudgeResult(
         Route.DEFER,
         analysis.unsupported[0] if analysis.unsupported else "unmatched_unit",
