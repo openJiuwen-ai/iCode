@@ -17,7 +17,7 @@ from textual.message import Message
 from chrys.app.tui.binding_display import CANCEL_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
-from chrys.app.tui.util.diff_comments import DiffComment, DiffDraft
+from chrys.app.tui.util.diff_comments import QUOTED_AFTER, QUOTED_BEFORE, DiffComment, DiffDraft
 from chrys.app.tui.util.formatting import elide_middle
 from chrys.app.tui.util.placement import pin_fixed_placement
 from chrys.app.tui.widgets import EnhancedTextArea
@@ -45,8 +45,6 @@ COMMENT_CHANGED = msg(
     fallback="This comment has changed in the message input. Please edit it there.",
 )
 _MIN_PATH_CELLS = 12
-_BEFORE = msg("tui.diff_quote.before", fallback="Before · Line {line}")
-_AFTER = msg("tui.diff_quote.after", fallback="After · Line {line}")
 
 
 class DiffCommentInput(EnhancedTextArea):
@@ -125,7 +123,9 @@ class DiffCommentBar(BaseDialog[None]):
         localizer = widget_localizer(self)
         # The same version and line number the quote gives the model; the tab bar already names the turn.
         version, number = quote.line
-        suffix = " · " + render_str(localizer, (_BEFORE if version == "before" else _AFTER).bind(line=number))
+        suffix = " · " + render_str(
+            localizer, (QUOTED_BEFORE if version == "before" else QUOTED_AFTER).bind(line=number)
+        )
         path = sanitize_legacy_scalar(surrogate_safe_text(quote.path))
         # A narrow split column still shows the whole version and line: the bar reaches past the column instead,
         # sideways within the diff, never over its frame.

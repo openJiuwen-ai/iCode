@@ -758,6 +758,7 @@ class MainScreenViewAdapter:
         focus: DiffFocus | None = None,
         draft: DiffDraft | None = None,
         comments: list[DiffComment] | None = None,
+        turn_prompt: Callable[[int], str | None] | None = None,
     ) -> None:
         from chrys.app.tui.screens.diff import DiffScreen
 
@@ -772,6 +773,7 @@ class MainScreenViewAdapter:
                 focus=focus,
                 draft=draft,
                 comments=comments,
+                turn_prompt=turn_prompt,
                 locale_controller=self._locale_controller,
             )
         )

@@ -22,6 +22,7 @@ from chrys.app.tui.widgets.diff_view import CodeColumn, DiffView
 from chrys.app.tui.widgets.diff_view.gutter import GutterColumn
 from chrys.app.tui.widgets.diff_view.rows import RowKind, Side
 from chrys.service.mutations.types import MutationOp
+from tests.support.diff_quote_text import diff_quote_text
 from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
 
@@ -51,6 +52,7 @@ class _App(_Host):
         self.cwd = cwd
         self.entries = entries or {1: [_entry(), _entry("/repo/sub/b.py")], 2: [_entry()]}
         self.comments = []
+        self.turn_prompt = None
         self.diff: DiffScreen
 
     def compose(self) -> ComposeResult:
@@ -66,6 +68,7 @@ class _App(_Host):
             all_entries=[_entry("/repo/sub/session.py")],
             draft=self.query_one(InputBar) if self.enabled else None,
             comments=self.comments,
+            turn_prompt=self.turn_prompt,
         )
         self.push_screen(self.diff)
 
@@ -103,19 +106,21 @@ async def _add(app: _App, pilot, column: CodeColumn, y: int = 0, text: str = "fi
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("split", "side", "y", "position", "body"),
+    ("split", "side", "y", "version", "quoted"),
     [
-        (True, Side.BEFORE, 0, "1", "- \told"),
-        (True, Side.AFTER, 0, "1", "+ \tnew"),
-        (True, Side.BEFORE, 1, "2", "  same"),
-        (True, Side.AFTER, 1, "2", "  same"),
-        (False, Side.BEFORE, 0, "1", "- \told"),
-        (False, Side.AFTER, 1, "1", "+ \tnew"),
-        (False, Side.BEFORE, 2, "2", "  same"),
-        (False, Side.AFTER, 2, "2", "  same"),
+        (True, Side.BEFORE, 0, "before", 1),
+        (True, Side.AFTER, 0, "after", 1),
+        (True, Side.BEFORE, 1, "after", 2),
+        (True, Side.AFTER, 1, "after", 2),
+        (False, Side.BEFORE, 0, "before", 1),
+        (False, Side.AFTER, 1, "after", 1),
+        (False, Side.BEFORE, 2, "after", 2),
+        (False, Side.AFTER, 2, "after", 2),
     ],
 )
-async def test_number_click_quotes_exactly_one_raw_line_without_selection(split, side, y, position, body) -> None:
+async def test_number_click_quotes_the_raw_line_and_its_neighbours_without_selection(
+    split, side, y, version, quoted
+) -> None:
     app = _App()
     async with app.run_test(size=(100, 30)) as pilot:
         columns = await _ready(app, pilot)
@@ -132,9 +137,9 @@ async def test_number_click_quotes_exactly_one_raw_line_without_selection(split,
         dialog = await _open(app, pilot, column, y, side)
         assert app.diff.get_selected_text() is None
         assert column.current_comment_row == y
-        assert (
-            dialog._quote.content
-            == f"File: a.py ({'before' if body.startswith('-') else 'after'}) | Source: turn 2\n```\n{position} {body}\n```"
+        first = (1, "-", "\told") if version == "before" else (1, "+", "\tnew")
+        assert dialog._quote.content == diff_quote_text(
+            "a.py", version, "turn 2", quoted, [first, (2, " ", "same")] + ([(3, " ", "same")] if quoted == 2 else [])
         )
 
 
@@ -153,7 +158,9 @@ async def test_scrolled_number_uses_rounded_code_position_and_hover_only_changes
         await wait_for(lambda: gutter._hover_row == 11, pilot=pilot, description="number hovered")
         assert gutter.render_line(1) != before
         dialog = await _open(app, pilot, left, 1)
-        assert dialog._quote.content == "File: a.py (before) | Source: turn 1\n```\n12 - old 11\n```"
+        assert dialog._quote.content == diff_quote_text(
+            "a.py", "before", "turn 1", 12, [(11, "-", "old 10"), (12, "-", "old 11"), (13, "-", "old 12")]
+        )
         assert left.current_comment_row == 11
         await pilot.press("escape")
         assert left.current_comment_row is None
@@ -427,13 +434,13 @@ async def test_bubbles_require_same_tab_file_identity_and_raw_text() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("tab", "cwd", "expected"),
+    ("tab", "cwd", "path", "scope"),
     [
-        ("turn-all", "/repo/sub", "File: session.py (before) | Source: session"),
-        ("turn-2", "/different", "File: /repo/sub/a.py (before) | Source: turn 2"),
+        ("turn-all", "/repo/sub", "session.py", "this session"),
+        ("turn-2", "/different", "/repo/sub/a.py", "turn 2"),
     ],
 )
-async def test_path_is_from_absolute_comparison_relative_to_chat_directory(tab, cwd, expected) -> None:
+async def test_path_is_from_absolute_comparison_relative_to_chat_directory(tab, cwd, path, scope) -> None:
     app = _App(cwd=cwd)
     async with app.run_test(size=(100, 30)) as pilot:
         await _ready(app, pilot)
@@ -445,7 +452,7 @@ async def test_path_is_from_absolute_comparison_relative_to_chat_directory(tab, 
         )
         column = app.diff.query_one(f"#{tab}", TabPane).query_one(CodeColumn)
         dialog = await _open(app, pilot, column)
-        assert dialog._quote.content == expected + "\n```\n1 - \told\n```"
+        assert dialog._quote.content == diff_quote_text(path, "before", scope, 1, [(1, "-", "\told"), (2, " ", "same")])
 
 
 @pytest.mark.asyncio
@@ -603,7 +610,15 @@ async def test_real_main_draft_focus_and_transcript_quote_placement_regression(m
         assert main.focused is original_focus
         assert area.cursor_location == (3, 0)
         assert bar.draft().sent_text() == (
-            "keep this\n> File: a.py (before) | Source: turn 1\n> ```\n> 1 - \told\n> ```\n\nfix"
+            "keep this\n"
+            "> File: a.py (as it was before the changes made in turn 1; line numbers count in that version)\n"
+            '> Quoted line: 1, marked with ">"; the lines around it are context\n'
+            "> ```\n"
+            "> > 1 - \told\n"
+            ">   2   same\n"
+            "> ```\n"
+            "\n"
+            "fix"
         )
         # Restored MainScreen arrangement pins the conversation button on its target cells.
         popup = main.query_one(QuoteSelectionPopup)
@@ -731,7 +746,9 @@ async def test_short_terminal_retains_both_key_hints_and_comment_on_resize(local
         await wait_for(lambda: app.screen is app.diff, pilot=pilot, description="narrow comment added")
         label = "[引用 #1]" if locale == "zh-Hans" else "[Quote #1]"
         assert app.query_one(InputBar).value == f"{label}\n{field.text}\n"
-        assert app.comments[0].handle().content == "File: a.py (after) | Source: turn 2\n```\n1 + \tnew\n```"
+        assert app.comments[0].handle().content == diff_quote_text(
+            "a.py", "after", "turn 2", 1, [(1, "+", "\tnew"), (2, " ", "same")]
+        )
 
 
 @pytest.mark.asyncio
@@ -940,8 +957,8 @@ async def test_truncation_toast_and_hash_record_are_created_through_number_click
     app = _App(entries={1: [entry]})
     original = build_diff_quote
 
-    def bounded(row, lines, path, source):
-        return original(row, lines, path, source, max_tokens=80)
+    def bounded(row, lines, path, scope, **options):
+        return original(row, lines, path, scope, **options, max_tokens=80)
 
     monkeypatch.setattr(module, "build_diff_quote", bounded)
     monkeypatch.setattr(module, "MESSAGE_EDITOR_PASTE_MAX_TOKENS", 80)
@@ -951,7 +968,10 @@ async def test_truncation_toast_and_hash_record_are_created_through_number_click
         quote = dialog._quote
         assert quote.truncated is True
         assert MixedLanguageTokenizer().count_tokens(quote.content) <= 80
-        assert quote.content == "File: a.py (after) | Source: turn 1\n```\n1 + " + "word " * 54 + "word…\n```"
+        shortened = quote.content.split("\n")[3].removeprefix("> 1 + ")
+        assert shortened.endswith("…") and raw.startswith(shortened[:-1]) and len(shortened) > 100
+        assert quote.content == diff_quote_text("a.py", "after", "turn 1", 1, [(1, "+", shortened)])
+        assert not quote.context_omitted
         notices = [n for n in app._notifications if n.title == "Quote truncated"]
         assert [(str(n.message), n.severity) for n in notices] == [
             (f"Quote truncated: {quote.original_tokens:,} tokens exceeds the 80-token limit.", "warning")
@@ -1127,7 +1147,9 @@ async def test_all_tab_comment_title_names_the_file_and_line(locale) -> None:
         dialog = await _open(app, pilot, pane.query_one(CodeColumn))
         title = str(dialog.query_one("#diff-comment-bar").border_title)
         assert title == ("session.py · Before · Line 1" if locale == "en" else "session.py · 修改前 · 第 1 行")
-        assert dialog._quote.content == "File: session.py (before) | Source: session\n```\n1 - \told\n```"
+        assert dialog._quote.content == diff_quote_text(
+            "session.py", "before", "this session", 1, [(1, "-", "\told"), (2, " ", "same")]
+        )
 
 
 _LONG_FILE = "".join(f"line {i}\n" for i in range(1, 10_010))
@@ -1242,3 +1264,86 @@ async def test_reopening_a_diff_with_comments_splits_its_lines_off_the_event_loo
         _left, right = await _ready(app, pilot)
         assert _number_gutter(right).comment_rows == frozenset({0})
         assert on_event_loop == [False, False]
+
+
+async def test_a_turn_quote_names_the_user_message_and_an_all_turns_quote_asks_for_none() -> None:
+    asked: list[int] = []
+
+    def turn_prompt(turn: int) -> str | None:
+        asked.append(turn)
+        return {2: "  fix the\n bug  "}.get(turn)
+
+    app = _App()
+    app.turn_prompt = turn_prompt
+    async with app.run_test(size=(100, 30)) as pilot:
+        left, _ = await _ready(app, pilot)
+        dialog = await _open(app, pilot, left)
+        assert dialog._quote.content.startswith(
+            'File: a.py (as it was before the changes made in turn 2, the reply to the user message "fix the bug"; '
+        )
+        await pilot.press("escape")
+        app.diff.query_one(TabbedContent).active = "turn-all"
+        pane = app.diff.query_one("#turn-all", TabPane)
+        await wait_for(lambda: bool(pane.query(CodeColumn)), pilot=pilot, description="All diff ready")
+        dialog = await _open(app, pilot, pane.query_one(CodeColumn))
+        assert "(as it was before the changes made in this session;" in dialog._quote.content
+        assert asked == [2]
+
+
+async def test_left_out_neighbours_are_told_once_and_the_quoted_line_is_whole(monkeypatch) -> None:
+    import chrys.app.tui.screens.diff.screen as module
+    from chrys.app.tui.widgets.diff_view.quote import build_diff_quote
+
+    original = build_diff_quote
+
+    def bounded(row, lines, path, scope, **options):
+        return original(row, lines, path, scope, **options, max_tokens=80)
+
+    monkeypatch.setattr(module, "build_diff_quote", bounded)
+    entry = replace(_entry(), after_text="\tnew\n" + "word " * 100 + "\n")
+    app = _App(entries={1: [entry]})
+    async with app.run_test(size=(100, 30)) as pilot:
+        _left, right = await _ready(app, pilot)
+        dialog = await _open(app, pilot, right)
+        assert dialog._quote.content == diff_quote_text("a.py", "after", "turn 1", 1, [(1, "+", "\tnew")])
+        assert [(str(n.message), n.severity) for n in app._notifications] == [
+            ("The lines around this one are too long, so only this line is quoted.", "warning")
+        ]
+
+
+async def test_a_changed_neighbour_keeps_the_bubble_and_the_comment_editable() -> None:
+    app = _App()
+    async with app.run_test(size=(100, 30)) as pilot:
+        left, _ = await _ready(app, pilot)
+        await _add(app, pilot, left, text="fix")
+        quoted = app.comments[0].handle().content
+        await pilot.press("escape")
+        app.entries[2] = [replace(_entry(), before_text="\told\nchanged\n" + "same\n" * 29)]
+        app.open_diff()
+        left, _ = await _ready(app, pilot)
+        assert _number_gutter(left).comment_rows == frozenset({0})
+        dialog = await _open(app, pilot, left)
+        assert dialog.query_one(DiffCommentInput).text == "fix"
+        dialog.query_one(DiffCommentInput).load_text("fix it")
+        await pilot.press("enter")
+        await wait_for(lambda: app.screen is app.diff, pilot=pilot, description="comment edited")
+        assert len(app.comments) == 1
+        assert app.query_one(InputBar).value == "[Quote #1]\nfix it\n"
+        assert app.comments[0].handle().content == quoted
+
+
+async def test_the_comment_field_scrollbar_is_one_cell_wide_against_the_border() -> None:
+    app = _App()
+    async with app.run_test(size=(100, 30)) as pilot:
+        left, _ = await _ready(app, pilot)
+        dialog = await _open(app, pilot, left)
+        field = dialog.query_one(DiffCommentInput)
+        field.load_text("\n".join(f"line {n}" for n in range(30)))
+        await wait_for(
+            lambda: field.show_vertical_scrollbar and field.vertical_scrollbar.size.width > 0,
+            pilot=pilot,
+            description="comment field scrolls",
+        )
+        assert field.vertical_scrollbar.size.width == 1
+        # Against the box's border, with no cell between.
+        assert field.vertical_scrollbar.region.right == dialog.query_one("#diff-comment-bar").region.right - 1

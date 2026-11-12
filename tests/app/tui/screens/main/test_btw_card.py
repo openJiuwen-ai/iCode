@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 import pytest
 import textual._compositor as compositor_module
-from textual.scrollbar import ScrollBar
 from textual.selection import Selection
 from textual.widget import Widget
 from textual.widgets import Button, Static, TextArea
@@ -122,23 +121,22 @@ async def test_one_page_shows_question_over_answer_as_chat_messages_and_keeps_cl
         counter = panel.query_one("#btw-position", Static)
         assert counter.region.x == panel.query_one("#btw-previous").region.right
         assert panel.query_one("#btw-next").region.x == counter.region.right
-        # The controls sit over the page's first row, beside the question's header: no row of their own.
-        assert close.region.y == page.region.y == panel.content_region.y
-        assert page.region.height == panel.content_region.height
-        # One blank row between the card's title and the question, as between the question and the answer.
-        assert page.region.y == panel.region.y + 2
-        gap = app.screen._compositor.render_strips()[panel.region.y + 1].text
-        assert gap[panel.region.x + 1 : panel.region.right - 1].strip() == ""
+        # The controls sit on the row under the card's title, above the page: the question's header keeps its row.
+        assert close.region.y == panel.content_region.y == panel.region.y + 1
+        assert page.region.y == close.region.y + 1
+        assert page.region.bottom == panel.content_region.bottom
+        controls = panel.query_one("#btw-history-controls")
+        row = app.screen._compositor.render_strips()[close.region.y].text
+        # Nothing else on that row: it is the blank between the title and the question.
+        assert row[panel.region.x + 1 : controls.region.x].strip() == ""
 
         # A question too long for the page leaves the thinking row under it in view.
         thinking = panel.query_one(BtwThinking)
         await wait_for(lambda: page.scroll_y > 0 and _in_view(page, thinking), pilot=pilot)
-        # Scrolled, the controls stay where they were, over the page's first visible row.
+        # Scrolled, the controls stay where they were, above the page.
         await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
-        assert close.region.y == page.region.y
+        assert close.region.y == page.region.y - 1
         assert CLOSE_GLYPH in app.screen._compositor.render_strips()[close.region.y].text
-        # The page's scrollbar still shows beside them.
-        assert isinstance(app.screen.get_widget_at(page.region.right - 1, close.region.y)[0], ScrollBar)
         message = panel.query_one(BtwQuestion)
         page.scroll_home(animate=False)
         await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
@@ -341,10 +339,13 @@ async def test_cancelled_finish_leaves_card_responsive_and_no_orphan_messages(
         await assert_app_handles_messages(app)
 
 
-@pytest.mark.parametrize("move_on", ["ask", "close"])
+@pytest.mark.parametrize("parse", ["ends", "fails"])
+@pytest.mark.parametrize("move_on", ["ask", "close", "answer again"])
 async def test_content_replacement_retires_an_answer_still_parsing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, move_on: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, move_on: str, parse: str
 ) -> None:
+    """What replaces the answer shows at once, not after the old answer's parse; that parse then changes nothing.
+    Closing stops it: whoever waits on it no longer does."""
     app = make_chrys_app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:
         panel = app.screen.query_one(BtwPanel)
@@ -353,31 +354,332 @@ async def test_content_replacement_retires_an_answer_still_parsing(
         show_text = BtwAnswer.show_text
 
         async def hold_parse(reply: BtwAnswer, text: str) -> None:
+            if text != "Old answer":
+                await show_text(reply, text)
+                return
             entered.set()
             await release.wait()
+            if parse == "fails":
+                raise ValueError("parse failed")
             await show_text(reply, text)
 
         monkeypatch.setattr(BtwAnswer, "show_text", hold_parse)
         task = asyncio.create_task(panel.finish("old", "Old answer"))
+        expected = {
+            "ask": ("New question", None),
+            "close": ("", None),
+            "answer again": ("Old question", "New answer"),
+        }[move_on]
         try:
             await wait_for(lambda: entered.is_set() or task.done(), pilot=pilot)
             assert entered.is_set() and not task.done()
             if move_on == "ask":
                 panel.begin("next", "New question")
-            else:
+            elif move_on == "close":
                 panel.close_question()
+            else:
+                await panel.finish("old", "New answer")
+            await wait_for(
+                lambda: (shown_question(panel), shown_answer(panel)) == expected,
+                pilot=pilot,
+                description="the replacement shows while the old answer still parses",
+            )
+            assert task.done() == (move_on == "close")
         finally:
             release.set()
             await task
-        await wait_for(
-            lambda: (
-                shown_question(panel) == ("New question" if move_on == "ask" else "") and shown_answer(panel) is None
-            ),
-            pilot=pilot,
-        )
+        await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
+        assert (shown_question(panel), shown_answer(panel)) == expected
         assert panel.running == (move_on == "ask")
         assert not panel.query_one("#btw-error").display
         await assert_app_handles_messages(app)
+
+
+async def test_an_old_parse_failing_while_its_answer_is_removed_does_not_fail_the_new_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repeated completion replaces the answer; the old parse failing during that removal is not this record's failure."""
+    import chrys.app.tui.widgets.btw as btw_module
+
+    app = make_chrys_app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        panel = app.screen.query_one(BtwPanel)
+        panel.begin("same", "Why?")
+        entered, release = asyncio.Event(), asyncio.Event()
+        show_text = BtwAnswer.show_text
+
+        async def fail_old_parse(reply: BtwAnswer, text: str) -> None:
+            if text != "Old answer":
+                await show_text(reply, text)
+                return
+            entered.set()
+            await release.wait()
+            raise ValueError("parse failed")
+
+        old_finish: asyncio.Task[None] | None = None
+        window: list[bool] = []
+        remove = btw_module.remove_all_shielded
+
+        async def fail_during_removal(messages) -> None:
+            # Runs inside the card's own update, so it polls the loop rather than waiting through the pilot.
+            removal = asyncio.ensure_future(remove(messages))
+            if not window:  # Once only: the old parse may itself remove its answer after failing.
+                async with asyncio.timeout(5):
+                    # Nothing signals the removal starting: give the loop turns until it has.
+                    while not all(message._pruning for message in messages):  # noqa: ASYNC110
+                        await asyncio.sleep(0)
+                window.append(all(message._pruning and message.is_attached for message in messages))
+                release.set()
+                await asyncio.wait_for(asyncio.shield(old_finish), timeout=5)
+            await removal
+
+        failures: list[str] = []
+        fail = BtwPanel.fail
+
+        def record_fail(card: BtwPanel, request_id: str, **kwargs) -> None:
+            failures.append(request_id)
+            fail(card, request_id, **kwargs)
+
+        monkeypatch.setattr(BtwAnswer, "show_text", fail_old_parse)
+        monkeypatch.setattr(btw_module, "remove_all_shielded", fail_during_removal)
+        monkeypatch.setattr(BtwPanel, "fail", record_fail)
+        old_finish = asyncio.create_task(panel.finish("same", "Old answer"))
+        await wait_for(entered.is_set, pilot=pilot)
+
+        await panel.finish("same", "New answer")
+        await old_finish
+        await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
+
+        assert window == [True]  # The old parse failed while its answer was being removed, still attached.
+        assert failures == []
+        assert (shown_question(panel), shown_answer(panel)) == ("Why?", "New answer")
+        assert not panel.query_one("#btw-error").display
+        await assert_app_handles_messages(app)
+
+
+async def test_a_failed_answer_cleaned_up_after_a_newer_answer_showed_does_not_fail_the_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other order: the old parse fails first, and its cleanup returns only after a repeated completion showed."""
+    import chrys.app.tui.widgets.btw as btw_module
+
+    app = make_chrys_app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        panel = app.screen.query_one(BtwPanel)
+        panel.begin("same", "Why?")
+        show_text = BtwAnswer.show_text
+
+        async def fail_old_parse(reply: BtwAnswer, text: str) -> None:
+            if text == "Old answer":
+                raise ValueError("parse failed")
+            await show_text(reply, text)
+
+        held, release = asyncio.Event(), asyncio.Event()
+        remove = btw_module.remove_all_shielded
+
+        async def hold_old_cleanup(messages) -> None:
+            await remove(messages)
+            if not held.is_set():  # The failed answer's removal: hold its return.
+                held.set()
+                await release.wait()
+
+        failures: list[str] = []
+        fail = BtwPanel.fail
+
+        def record_fail(card: BtwPanel, request_id: str, **kwargs) -> None:
+            failures.append(request_id)
+            fail(card, request_id, **kwargs)
+
+        monkeypatch.setattr(BtwAnswer, "show_text", fail_old_parse)
+        monkeypatch.setattr(btw_module, "remove_all_shielded", hold_old_cleanup)
+        monkeypatch.setattr(BtwPanel, "fail", record_fail)
+        old_finish = asyncio.create_task(panel.finish("same", "Old answer"))
+        await wait_for(held.is_set, pilot=pilot, description="the failed answer's cleanup is held")
+
+        await panel.finish("same", "New answer")
+        await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
+        assert (shown_question(panel), shown_answer(panel)) == ("Why?", "New answer")
+        assert not panel.query_one("#btw-error").display
+
+        release.set()
+        await old_finish
+        await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
+        assert failures == []
+        assert (shown_question(panel), shown_answer(panel)) == ("Why?", "New answer")
+        assert not panel.query_one("#btw-error").display
+        await assert_app_handles_messages(app)
+
+
+async def test_card_leaving_lets_every_finish_return_even_one_whose_answer_was_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unmounting stops every update still running, not only the newest, so no earlier caller waits on an old parse."""
+    app = make_chrys_app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        panel = app.screen.query_one(BtwPanel)
+        panel.begin("old", "Old question")
+        entered = asyncio.Event()
+        show_text = BtwAnswer.show_text
+
+        async def hold_old_parse(reply: BtwAnswer, text: str) -> None:
+            if text != "Old answer":
+                await show_text(reply, text)
+                return
+            entered.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(BtwAnswer, "show_text", hold_old_parse)
+        old_finish = asyncio.create_task(panel.finish("old", "Old answer"))
+        await wait_for(entered.is_set, pilot=pilot)
+        panel.begin("next", "New question")
+        await wait_for(lambda: shown_question(panel) == "New question", pilot=pilot)
+
+        panel.on_unmount()
+
+        await asyncio.wait_for(old_finish, timeout=5)
+        assert old_finish.exception() is None
+
+
+async def test_closing_the_card_lets_every_finish_return_and_empties_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing by its button stops every update still parsing, a replaced one included, as leaving does."""
+    app = make_chrys_app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        panel = app.screen.query_one(BtwPanel)
+        entered: list[str] = []
+
+        async def hold_parse(_reply: BtwAnswer, text: str) -> None:
+            entered.append(text)
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(BtwAnswer, "show_text", hold_parse)
+        panel.begin("old", "Old question")
+        old_finish = asyncio.create_task(panel.finish("old", "Old answer"))
+        await wait_for(lambda: entered == ["Old answer"], pilot=pilot)
+        panel.begin("next", "New question")
+        new_finish = asyncio.create_task(panel.finish("next", "New answer"))
+        await wait_for(lambda: entered == ["Old answer", "New answer"], pilot=pilot)
+
+        await click_when_settled(pilot, "#btw-close")
+
+        _done, waiting = await asyncio.wait({old_finish, new_finish}, timeout=5)
+        assert not waiting
+        assert not any(task.cancelled() or task.exception() for task in (old_finish, new_finish))
+        await wait_for(
+            lambda: not panel.display and not panel.query(BtwQuestion) and not panel.query(BtwAnswer), pilot=pilot
+        )
+
+
+@pytest.mark.parametrize("update", ["finish", "show_record"])
+async def test_closing_before_an_update_starts_lets_its_caller_return(tmp_path: Path, update: str) -> None:
+    """The card cancelling an update it has only queued ends the caller's wait as well: no cancellation reaches it."""
+    app = make_chrys_app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        panel = app.screen.query_one(BtwPanel)
+        panel.begin("queued", "Why?")
+        await wait_for(lambda: shown_question(panel) == "Why?", pilot=pilot)
+        if update == "finish":
+            caller = asyncio.create_task(panel.finish("queued", "Answer"))
+        else:
+            entry = SideQuestionEntry("2026-11-10T10:00:00+00:00", "Why?", "Answer")
+            caller = asyncio.create_task(panel.show_record("queued", entry))
+        # One turn: the caller queues the update and waits on it, which has not run yet.
+        await asyncio.sleep(0)
+        assert not caller.done()
+
+        panel.close_question()
+
+        _done, waiting = await asyncio.wait({caller}, timeout=5)
+        assert not waiting
+        assert not caller.cancelled() and caller.exception() is None
+        await wait_for(
+            lambda: not panel.display and not panel.query(BtwQuestion) and not panel.query(BtwAnswer), pilot=pilot
+        )
+
+
+async def test_closing_while_an_answer_is_mounted_lets_its_finish_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing while the page still mounts the answer stops that update too; the card is left empty and works on."""
+    app = make_chrys_app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        panel = app.screen.query_one(BtwPanel)
+        panel.begin("mounting", "Why?")
+        await wait_for(lambda: shown_question(panel) == "Why?", pilot=pilot)
+        entered, release = asyncio.Event(), asyncio.Event()
+        mount = BtwPage.mount
+
+        def held_mount(page: BtwPage, *widgets: Widget, **options):
+            mounted = mount(page, *widgets, **options)
+            if not any(isinstance(widget, BtwAnswer) for widget in widgets):
+                return mounted
+
+            async def held() -> None:
+                entered.set()
+                await release.wait()
+                await mounted
+
+            return held()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(BtwPage, "mount", held_mount)
+            finish = asyncio.create_task(panel.finish("mounting", "Answer"))
+            await wait_for(entered.is_set, pilot=pilot)
+
+            panel.close_question()
+
+            # The mount is still held: the caller no longer waits on it.
+            _done, waiting = await asyncio.wait({finish}, timeout=5)
+            assert not waiting
+            assert not finish.cancelled() and finish.exception() is None
+            release.set()
+            await wait_for(
+                lambda: not panel.display and not panel.query(BtwQuestion) and not panel.query(BtwAnswer), pilot=pilot
+            )
+        panel.begin("next", "Next?")
+        await panel.finish("next", "Next answer")
+        await wait_for(lambda: (shown_question(panel), shown_answer(panel)) == ("Next?", "Next answer"), pilot=pilot)
+        assert len(panel.query(BtwAnswer)) == 1
+
+
+async def test_closing_while_a_failed_answer_is_taken_away_lets_its_finish_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The card closing stops the update in its cleanup too: whoever waits on it returns, not cancelled."""
+    import chrys.app.tui.widgets.btw as btw_module
+
+    app = make_chrys_app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        panel = app.screen.query_one(BtwPanel)
+        panel.begin("failing", "Why?")
+        cleanup, release = asyncio.Event(), asyncio.Event()
+
+        async def failing_parse(_reply: BtwAnswer, _text: str) -> None:
+            raise ValueError("parse failed")
+
+        remove = btw_module.remove_all_shielded
+
+        async def held_removal(messages) -> None:
+            if any(isinstance(message, BtwAnswer) for message in messages):
+                cleanup.set()
+                await release.wait()
+            await remove(messages)
+
+        monkeypatch.setattr(BtwAnswer, "show_text", failing_parse)
+        monkeypatch.setattr(btw_module, "remove_all_shielded", held_removal)
+        finish = asyncio.create_task(panel.finish("failing", "Answer"))
+        await wait_for(cleanup.is_set, pilot=pilot)
+
+        panel.close_question()
+        release.set()
+
+        _done, waiting = await asyncio.wait({finish}, timeout=5)
+        assert not waiting
+        assert not finish.cancelled() and finish.exception() is None
+        await wait_for(
+            lambda: not panel.display and not panel.query(BtwQuestion) and not panel.query(BtwAnswer), pilot=pilot
+        )
 
 
 @pytest.mark.parametrize("size", [(60, 24), (80, 24)])
@@ -528,20 +830,22 @@ async def test_labels_switched_to_a_wider_language_paint_whole(tmp_path: Path, m
         ((60, 24), "zh-Hans", (0, 1), ["问题", "复制"]),
     ],
 )
-async def test_the_question_header_paints_whole_beside_the_controls(
+async def test_the_question_header_paints_whole_under_the_controls(
     tmp_path: Path, size: tuple[int, int], locale: str, position: tuple[int, int], labels: list[str]
 ) -> None:
-    """The controls sit at the right of the question's header row; the header keeps out from under them."""
+    """The controls sit at the right of the row above the question's header, which keeps its whole row."""
     app = make_chrys_app(tmp_path, settings=Settings(locale=locale))
     async with app.run_test(size=size) as pilot:
         panel = app.screen.query_one(BtwPanel)
         await panel.show_record("shown", SideQuestionEntry("2026-11-10T10:00:00+00:00", "Why?", "Because."))
         panel.set_history_position(*position, "2026-11-10T10:00:00+00:00")
         await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
-        row = app.screen._compositor.render_strips()[panel.query_one(BtwQuestion).region.y].text
-        assert row.split("█", 1)[1].split()[:2] == labels
-        assert f"{position[0] + 1}/{position[1]}" in row
-        assert CLOSE_GLYPH in row
+        strips = app.screen._compositor.render_strips()
+        y = panel.query_one(BtwQuestion).region.y
+        assert strips[y].text.split("█", 1)[1].split()[:2] == labels
+        assert CLOSE_GLYPH not in strips[y].text
+        assert f"{position[0] + 1}/{position[1]}" in strips[y - 1].text
+        assert CLOSE_GLYPH in strips[y - 1].text
 
 
 @pytest.mark.parametrize(("height", "draft_lines"), [(12, 1), (18, 7)])
@@ -569,7 +873,8 @@ async def test_a_card_of_one_row_gives_up_the_blank_row_and_keeps_its_controls(
         await resize_when_settled(pilot, 80, height + 12)
         await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
         assert panel.region.height >= 4
-        assert close.region.y == page.region.y == panel.region.y + 2
+        assert close.region.y == panel.region.y + 1
+        assert page.region.y == panel.region.y + 2
 
         await resize_when_settled(pilot, 80, height)
         await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
@@ -665,3 +970,43 @@ async def test_tab_reaches_the_card_controls_and_clicking_its_text_keeps_typing_
 
         await click_when_settled(pilot, panel.query_one(BtwAnswer).query_one(VirtualizedMarkdown), offset=(1, 0))
         await wait_for(lambda: app.focused is chat_input, pilot=pilot, description="typing stays in the input")
+
+
+@pytest.mark.parametrize("position", [(None, 0), (0, 1), (122, 456)])
+async def test_a_card_of_one_row_keeps_its_text_clear_of_the_controls(
+    tmp_path: Path, position: tuple[int | None, int]
+) -> None:
+    """Every line of a card one row tall passes that row: none of it may sit under the controls, however wide."""
+    app = make_chrys_app(tmp_path)
+    async with app.run_test(size=(80, 12)) as pilot:
+        panel = app.screen.query_one(BtwPanel)
+        page = panel.query_one(BtwPage)
+        controls = panel.query_one("#btw-history-controls")
+        answer = " ".join(f"word{index}" for index in range(40))
+        await panel.show_record("shown", SideQuestionEntry("2026-11-10T10:00:00+00:00", "Why?", answer))
+        panel.set_history_position(*position, "2026-11-10T10:00:00+00:00")
+        await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
+        assert panel.has_class("-cramped")
+        assert page.content_region.right <= controls.region.x
+        # The page's scrollbar still shows, beside them.
+        assert page.show_vertical_scrollbar
+        assert page.vertical_scrollbar.region.right == controls.region.x
+        # Each word shows whole at some scroll position.
+        seen = ""
+        for y in range(int(page.max_scroll_y) + 1):
+            page.scroll_to(y=y, animate=False)
+            await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
+            seen += app.screen._compositor.render_strips()[page.region.y].text + "\n"
+        assert all(f"word{index}" in seen for index in range(40))
+
+        # Grown, the controls take the row above the page again and the text takes the card's width.
+        await resize_when_settled(pilot, 80, 30)
+        await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
+        assert not panel.has_class("-cramped")
+        assert page.region.y == controls.region.bottom
+        assert page.content_region.right > controls.region.x
+        # And shrunk back, clear of them again.
+        await resize_when_settled(pilot, 80, 12)
+        await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
+        assert panel.has_class("-cramped")
+        assert page.content_region.right <= controls.region.x
