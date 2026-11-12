@@ -4,8 +4,10 @@
 
 The daemon killpg's a command when its IPC connection fully closes. These
 tests drive ``ProcessRuntime`` with ``socket.socketpair`` and never start
-bubblewrap or a process group, so they run on Windows. A regression that
-leaves the cancelled call's socket open fails the wait for that close.
+bubblewrap or a process group. The two tests that wait out a blocked read
+after the socket closes run on Linux only. The sandbox runs only on Linux,
+and macOS does not wake that read the same way. A regression that leaves the
+cancelled call's socket open fails the wait for that close.
 """
 
 from __future__ import annotations
@@ -28,6 +30,10 @@ _SANDBOX_ID = "sb-cancel"
 _CANCELLED = ("sleep", "one")
 _KEPT = ("sleep", "two")
 _ROUTE = ("sleep", "route")
+_LINUX_ONLY = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="blocked-read socket close is only asserted on Linux",
+)
 
 
 @pytest.fixture
@@ -218,6 +224,7 @@ def _exec_request(command: tuple[str, ...]) -> object:
     return RuntimeExecRequest(command=list(command), timeout=30)
 
 
+@_LINUX_ONLY
 async def test_cancel_closes_only_that_exec_socket(
     jiuwenbox_importable: None,
     tmp_path: Path,
@@ -283,6 +290,7 @@ async def test_cancel_before_connect_closes_the_new_socket(
         await _shutdown(harness, [task], 1)
 
 
+@_LINUX_ONLY
 async def test_http_disconnect_closes_only_that_exec_socket(
     jiuwenbox_importable: None,
     tmp_path: Path,
