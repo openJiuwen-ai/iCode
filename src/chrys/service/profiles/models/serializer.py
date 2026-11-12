@@ -9,6 +9,7 @@ from dataclasses import MISSING, fields
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.text.yaml_io import dump_yaml
+from chrys.service.profiles.agents.loader import is_filename_safe_profile_name
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -48,11 +49,22 @@ def _user_profiles_dir() -> Path:
     return get_platform().config_dir / "models"
 
 
+def _require_filename_safe_id(profile_id: str) -> None:
+    """Refuse ids that would resolve ``<id>.yaml`` outside the models directory."""
+    if not is_filename_safe_profile_name(profile_id):
+        msg = f"Model profile id {profile_id!r} is not filename-safe; use a bare id, not a path"
+        raise ValueError(msg)
+
+
 def save_profile(profile: ModelProfile) -> Path:
     """Serialize *profile* to YAML and write to ``~/.chrys/models/{id}.yaml``.
 
     Returns the path written.
+
+    Raises:
+        ValueError: If ``profile.id`` is not filename-safe.
     """
+    _require_filename_safe_id(profile.id)
     target_dir = _user_profiles_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     path = target_dir / f"{profile.id}.yaml"
@@ -67,7 +79,11 @@ def delete_profile(profile_id: str) -> bool:
     """Delete the model profile YAML file for *profile_id*.
 
     Returns True if the file existed and was removed, False otherwise.
+
+    Raises:
+        ValueError: If ``profile_id`` is not filename-safe.
     """
+    _require_filename_safe_id(profile_id)
     path = _user_profiles_dir() / f"{profile_id}.yaml"
     if path.is_file():
         path.unlink()
