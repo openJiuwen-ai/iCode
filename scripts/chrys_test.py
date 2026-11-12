@@ -22,8 +22,8 @@ import subprocess
 import sys
 import tempfile
 import zlib
-from collections import defaultdict, deque
-from collections.abc import Iterator, Sequence
+from collections import Counter, defaultdict, deque
+from collections.abc import Iterable, Iterator, Sequence
 from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,7 +41,8 @@ _MAX_TARGET_CHARACTERS = 20_000
 _MAX_RENDERED_REASONS = 3
 _PYTEST_NO_TESTS_COLLECTED = 5
 _PYTEST_FILE_PATTERNS = ("test_*.py", "*_test.py")
-_MAX_SOURCE_IMPORT_HOPS = 2
+_MAX_SOURCE_IMPORT_HOPS = 1
+_MAX_TEST_IMPORT_HOPS = 1
 _BELOW_NORMAL_NICENESS = 10
 
 
@@ -81,6 +82,13 @@ class ImportGraph:
     collected: tuple[str, ...] = ()
     change_seeds: dict[str, set[str]] = field(default_factory=dict)
     facades: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Changed paths whose AST equals the branch baseline (comments, blank lines, formatting).
+    runtime_noop: frozenset[str] = frozenset()
+    # Fixture definitions in conftests, plugins and helpers: the scopes whose
+    # pytest-resolved consumers the import graph cannot see.
+    fixture_scopes: frozenset[str] = frozenset()
+    # Plain test modules defining fixtures; importing one is a free test hop.
+    fixture_modules: frozenset[str] = frozenset()
 
 
 @dataclass(slots=True)
@@ -91,6 +99,8 @@ class Selection:
     architecture: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     full_reason: str | None = None
     notes: set[str] = field(default_factory=set)
+    # Every graph node the changed paths reach within the hop budgets.
+    reached: set[str] = field(default_factory=set)
 
     def add(self, target: str, reason: str) -> None:
         """Add a pytest target to its execution group."""
@@ -112,6 +122,7 @@ ARCHITECTURE_RULES = (
         "tests/architecture/test_chrys_test.py",
         ("AGENTS.md", "README.md", "scripts/chrys_test.py", "tests/architecture/**", ".github/workflows/**"),
     ),
+    TestRule("tests/architecture/test_chrys_test_scope.py", ("scripts/chrys_test.py",)),
     TestRule("tests/architecture/test_chrys_test_summary.py", ("scripts/chrys_test.py",)),
     TestRule("tests/architecture/test_ci_test_partitions.py", (".github/workflows/ci.yml", "tests/**")),
     TestRule("tests/architecture/test_copy_freshness.py"),
@@ -395,9 +406,10 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     Path(destination).write_text(json.dumps(records, ensure_ascii=True), encoding="utf-8")
 
 
-def _collect_fixture_consumers(graph: ImportGraph) -> None:
-    """Collect the complete candidate set once, without setting up any fixture."""
-    _write("Collecting the complete non-integration candidate set to resolve fixture consumers (no tests executed).")
+def _collect_fixture_consumers(graph: ImportGraph, roots: Sequence[str] = ("tests",)) -> None:
+    """Collect the candidate set below ``roots`` once, without setting up any fixture."""
+    scope = "complete" if tuple(roots) == ("tests",) else ", ".join(roots)
+    _write(f"Collecting the {scope} non-integration candidate set to resolve fixture consumers (no tests executed).")
     with tempfile.TemporaryDirectory(prefix="chrys-pytest-collection-") as directory:
         report = Path(directory) / "fixtures.json"
         result = _run_process(
@@ -415,7 +427,7 @@ def _collect_fixture_consumers(graph: ImportGraph) -> None:
                 "scripts.chrys_test",
                 "--chrys-smart-collection",
                 str(report),
-                "tests",
+                *roots,
             ],
             capture=True,
         )
@@ -809,7 +821,9 @@ def _module_dependencies(
     package: bool,
     known_modules: set[str],
     facades: dict[str, dict[str, str]] | None = None,
+    routed: frozenset[int] = frozenset(),
 ) -> set[str]:
+    """Module-level dependencies; ``routed`` import nodes were already resolved to symbol scopes."""
     facades = facades or {}
     references: set[str] = set()
     package_name = module if package else module.rpartition(".")[0]
@@ -822,7 +836,7 @@ def _module_dependencies(
         if isinstance(node, ast.Import):
             for alias in node.names:
                 add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
+        elif isinstance(node, ast.ImportFrom) and id(node) not in routed:
             base = (
                 _relative_import(module, package=package, level=node.level, imported=node.module)
                 if node.level
@@ -878,7 +892,7 @@ def _assigned_names(node: ast.AST) -> set[str]:
 def _plugin_values(tree: ast.Module) -> list[ast.expr]:
     return [
         node.value
-        for node in ast.walk(tree)
+        for node in _all_nodes(tree)
         if isinstance(node, ast.Assign | ast.AnnAssign)
         and node.value is not None
         and "pytest_plugins" in _assigned_names(node)
@@ -955,7 +969,74 @@ def _python_module_argument(arguments: list[ast.AST], aliases: dict[str, str]) -
     return None
 
 
+# One graph build walks each module tree many times; it registers the trees it
+# parsed here for the build's duration. Entries keep their tree alive, so an id
+# is never reused while cached.
+_WALK_CACHE: dict[int, tuple[ast.AST, list[ast.AST], list[ast.AST]]] = {}
+
+
+def _all_nodes(tree: ast.AST) -> list[ast.AST]:
+    cached = _WALK_CACHE.get(id(tree))
+    return cached[2] if cached is not None and cached[0] is tree else list(ast.walk(tree))
+
+
 def _runtime_nodes(tree: ast.AST) -> Iterator[ast.AST]:
+    cached = _WALK_CACHE.get(id(tree))
+    if cached is not None and cached[0] is tree:
+        return iter(cached[1])
+    return _walk_runtime_nodes(tree)
+
+
+def _side_effect_import(node: ast.Import | ast.ImportFrom, tree: ast.Module) -> bool:
+    """A production or third-party import binding a name the module never reads.
+
+    Unused imports from test modules are fixture or hook re-exports, which
+    collection and the scoped-provider edges already follow.
+    """
+    if isinstance(node, ast.ImportFrom) and (node.level or node.module in {None, "__future__"}):
+        return False
+    modules = [alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module or ""]
+    if any(name == "tests" or name.startswith("tests.") for name in modules):
+        return False
+    names = {n.id for n in _all_nodes(tree) if isinstance(n, ast.Name)}
+    if isinstance(node, ast.ImportFrom):
+        return any((alias.asname or alias.name) not in names for alias in node.names)
+    # ``import a.b`` binds ``a``; it is read only through ``a.b`` itself, not
+    # through another ``import a.c`` that shares the top-level name.
+    dotted = {_dotted_name(n) for n in _all_nodes(tree) if isinstance(n, ast.Attribute | ast.Name)}
+    return any(
+        alias.asname not in names
+        if alias.asname
+        else not any(d == alias.name or d.startswith(f"{alias.name}.") for d in dotted)
+        for alias in node.names
+    )
+
+
+def _index_tree(tree: ast.AST) -> tuple[list[ast.AST], list[ast.AST]]:
+    """Return ``(runtime nodes, all nodes)`` from one traversal.
+
+    Runtime nodes keep ``_walk_runtime_nodes``' exact order: alias resolution
+    such as ``_string_module_references`` lets a later binding win. All nodes
+    are only filtered, so their order is unspecified.
+    """
+    runtime: list[ast.AST] = []
+    everything: list[ast.AST] = []
+    pending: list[tuple[ast.AST, bool]] = [(tree, True)]
+    while pending:
+        node, live = pending.pop()
+        everything.append(node)
+        if live:
+            runtime.append(node)
+        if live and isinstance(node, ast.If) and _dotted_name(node.test) in {"TYPE_CHECKING", "typing.TYPE_CHECKING"}:
+            children = [(child, False) for child in (node.test, *node.body)]
+            children.extend((child, True) for child in node.orelse)
+        else:
+            children = [(child, live) for child in ast.iter_child_nodes(node)]
+        pending.extend(reversed(children))
+    return runtime, everything
+
+
+def _walk_runtime_nodes(tree: ast.AST) -> Iterator[ast.AST]:
     """Skip conventional type-only branches; type checking remains a separate gate."""
     pending = [tree]
     while pending:
@@ -993,7 +1074,7 @@ def _definition_nodes(tree: ast.Module) -> dict[str, list[ast.AST]]:
     return definitions
 
 
-def _initialization_nodes(nodes: list[ast.stmt]) -> list[ast.AST]:
+def _initialization_nodes(nodes: list[ast.stmt], *, members: frozenset[str] = frozenset()) -> list[ast.AST]:
     """Separate executed expressions from deferred bodies and annotations.
 
     Imports execute their providers' initialization, so they remain global
@@ -1010,19 +1091,17 @@ def _initialization_nodes(nodes: list[ast.stmt]) -> list[ast.AST]:
             result.extend(node.decorator_list)
             result.extend(node.args.defaults)
             result.extend(n for n in node.args.kw_defaults if n is not None)
-            # Unknown decorators may invoke the function while registering it.
-            if any(
-                _dotted_name(d.func if isinstance(d, ast.Call) else d).rsplit(".", 1)[-1] not in {"fixture", "hookimpl"}
-                for d in node.decorator_list
-            ):
+            # Unknown decorators may invoke the function while registering it;
+            # fixtures, hooks and descriptors only wrap it.
+            if not all(_inert_decorator(d, members) for d in node.decorator_list):
                 result.append(node)
         elif isinstance(node, ast.ClassDef):
             result.extend(node.bases)
             result.extend(node.decorator_list)
             result.extend(kw.value for kw in node.keywords)
-            result.extend(_initialization_nodes(node.body))
+            result.extend(_initialization_nodes(node.body, members=_member_names(node)))
             if any(
-                _dotted_name(d.func if isinstance(d, ast.Call) else d).rsplit(".", 1)[-1] != "dataclass"
+                _dotted_name(d.func if isinstance(d, ast.Call) else d) not in _INERT_CLASS_DECORATORS
                 for d in node.decorator_list
             ):
                 result.append(node)  # an unknown decorator can invoke class methods during import
@@ -1126,8 +1205,55 @@ def _scope_dependencies(
     return dependencies, uncertain
 
 
+def _import_bound_names(tree: ast.Module) -> set[str]:
+    return {
+        alias.asname or alias.name.split(".", 1)[0]
+        for node in _module_scope_nodes(tree)
+        if isinstance(node, ast.Import | ast.ImportFrom)
+        for alias in node.names
+    }
+
+
+def _symbol_import_routes(
+    tree: ast.Module, *, module: str, package: bool, scoped: set[str], symbols: dict[str, str]
+) -> tuple[frozenset[int], set[str]]:
+    """Resolve named imports from test helper modules to the imported definitions.
+
+    ``from tests.support.x import helper`` depends on ``helper`` and on the
+    helper module's import-time behavior, not on every other helper beside it.
+    Namespace, wildcard and re-exported (not locally defined) names stay
+    module-wide.
+    """
+    routed: set[int] = set()
+    dependencies: set[str] = set()
+    for node in _runtime_nodes(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        base = (
+            _relative_import(module, package=package, level=node.level, imported=node.module)
+            if node.level
+            else node.module
+        )
+        if base not in scoped or any(alias.name == "*" for alias in node.names):
+            continue
+        keys = [symbols.get(f"{base}.{alias.name}") for alias in node.names]
+        if any(key is None for key in keys):
+            continue
+        routed.add(id(node))
+        dependencies.update(key for key in keys if key is not None)
+        dependencies.add(f"{base}::<global>")
+    return frozenset(routed), dependencies
+
+
 def build_import_graph(root: Path = REPO_ROOT) -> ImportGraph:
     """Build a conservative current-tree reverse module dependency graph."""
+    try:
+        return _build_import_graph(root)
+    finally:
+        _WALK_CACHE.clear()
+
+
+def _build_import_graph(root: Path) -> ImportGraph:
 
     path_to_module: dict[str, str] = {}
     module_to_path: dict[str, str] = {}
@@ -1153,6 +1279,7 @@ def build_import_graph(root: Path = REPO_ROOT) -> ImportGraph:
             parse_errors.append(f"{path.relative_to(root).as_posix()}: {error}")
             continue
         trees[module] = tree
+        _WALK_CACHE[id(tree)] = (tree, *_index_tree(tree))
 
     facades = {
         module: exports
@@ -1161,19 +1288,8 @@ def build_import_graph(root: Path = REPO_ROOT) -> ImportGraph:
         and (exports := _static_facade_exports(tree, module, package=absolute_paths[module].name == "__init__.py"))
         is not None
     }
-    for module, tree in trees.items():
-        dependencies[module].update(
-            _module_dependencies(
-                tree,
-                module=module,
-                package=absolute_paths[module].name == "__init__.py",
-                known_modules=known_modules,
-                facades=facades,
-            )
-        )
-
     # Keep ordinary explicit imports conservative. Only pytest's implicit
-    # loading edges use global scopes instead of every deferred fixture body.
+    # loading edges and named helper imports use scopes instead of modules.
     conftests = {
         path: module
         for path, module in path_to_module.items()
@@ -1195,6 +1311,26 @@ def build_import_graph(root: Path = REPO_ROOT) -> ImportGraph:
         if module in trees
         for name in _definition_nodes(trees[module])
     }
+    # A name a helper module both defines and imports (say, per platform) may be
+    # the imported implementation at run time: keep its importers module-wide.
+    routable = {
+        reference: key
+        for reference, key in symbols.items()
+        if reference.rsplit(".", 1)[1] not in _import_bound_names(trees[key.split("::", 1)[0]])
+    }
+    for module, tree in trees.items():
+        package = absolute_paths[module].name == "__init__.py"
+        routed: frozenset[int] = frozenset()
+        if module.startswith("tests.") and module not in scoped_modules:
+            routed, routes = _symbol_import_routes(
+                tree, module=module, package=package, scoped=scoped_modules, symbols=routable
+            )
+            dependencies[module].update(routes)
+        dependencies[module].update(
+            _module_dependencies(
+                tree, module=module, package=package, known_modules=known_modules, facades=facades, routed=routed
+            )
+        )
     scopes: dict[str, str] = {}
     uncertain: dict[str, str] = {}
     for module in sorted(scoped_modules & trees.keys()):
@@ -1217,7 +1353,16 @@ def build_import_graph(root: Path = REPO_ROOT) -> ImportGraph:
             if unknown:
                 uncertain[key] = unknown
         global_key = f"{module}::<global>"
-        nodes = _initialization_nodes(tree.body)
+        # Executed initialization and hooks keep their dependencies through the
+        # names they use. An import whose name the module uses is reached that
+        # way (or only inside fixture and helper bodies, which their own scopes
+        # cover); only an import nothing uses is kept global, since it exists
+        # for its import-time side effect (a registry, a patch).
+        nodes = [
+            n
+            for n in _initialization_nodes(tree.body)
+            if not isinstance(n, ast.Import | ast.ImportFrom) or _side_effect_import(n, tree)
+        ]
         nodes.extend(
             n
             for name, definition_nodes in _definition_nodes(tree).items()
@@ -1242,7 +1387,7 @@ def build_import_graph(root: Path = REPO_ROOT) -> ImportGraph:
         if unknown:
             # An unresolvable global operation may affect every loaded test.
             uncertain[global_key] = unknown
-        for node in ast.walk(tree):
+        for node in _all_nodes(tree):
             if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
                 uncertain[global_key] = f"unresolved wildcard helper import in {module}"
         for declaration in _plugin_values(tree):
@@ -1258,7 +1403,7 @@ def build_import_graph(root: Path = REPO_ROOT) -> ImportGraph:
             module not in scoped_modules
             and module_to_path[module].startswith("tests/")
             and any(
-                isinstance(n, ast.Call) and _dotted_name(n.func).endswith("getfixturevalue") for n in ast.walk(tree)
+                isinstance(n, ast.Call) and _dotted_name(n.func).endswith("getfixturevalue") for n in _all_nodes(tree)
             )
         ):
             uncertain[module] = f"unresolved dynamic fixture request in {module}"
@@ -1279,9 +1424,120 @@ def build_import_graph(root: Path = REPO_ROOT) -> ImportGraph:
     for owner, imported_modules in dependencies.items():
         for imported in imported_modules:
             reverse[imported].add(owner)
-    return ImportGraph(
-        path_to_module, module_to_path, dict(reverse), tuple(parse_errors), scopes, uncertain, facades=facades
+    fixture_scopes = {
+        symbols[f"{module}.{node.name}"]
+        for module in scoped_modules & trees.keys()
+        for node in _module_scope_nodes(trees[module])
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _is_fixture(node)
+    }
+    fixture_modules = (
+        _fixture_providing_modules(
+            {module: tree for module, tree in trees.items() if module.startswith("tests.")},
+            packages={module for module, path in absolute_paths.items() if path.name == "__init__.py"},
+        )
+        - scoped_modules
     )
+    return ImportGraph(
+        path_to_module,
+        module_to_path,
+        dict(reverse),
+        tuple(parse_errors),
+        scopes,
+        uncertain,
+        facades=facades,
+        fixture_scopes=frozenset(fixture_scopes),
+        fixture_modules=frozenset(fixture_modules),
+    )
+
+
+def _fixture_providing_modules(trees: dict[str, ast.Module], *, packages: set[str]) -> set[str]:
+    """Test modules that define a fixture or re-export one from a module that provides it.
+
+    Importing a fixture makes the importer a consumer, so a chain of re-exports
+    must stay as free as the defining module's own import. Conftest and helper
+    fixtures seed the chain too; callers drop those scoped modules themselves.
+    """
+    names: dict[str, set[str]] = {
+        module: {
+            node.name
+            for node in _all_nodes(tree)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _is_fixture(node)
+        }
+        for module, tree in trees.items()
+    }
+    changed = True
+    while changed:
+        changed = False
+        for module, tree in trees.items():
+            for node in _runtime_nodes(tree):
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                base = (
+                    _relative_import(module, package=module in packages, level=node.level, imported=node.module)
+                    if node.level
+                    else node.module
+                )
+                provided = names.get(base or "")
+                if not provided:
+                    continue
+                for alias in node.names:
+                    if alias.name == "*":
+                        exported = provided
+                    elif alias.name in provided:
+                        exported = {alias.asname or alias.name}
+                    else:
+                        continue
+                    if not exported <= names[module]:
+                        names[module] |= exported
+                        changed = True
+    return {module for module, provided in names.items() if provided}
+
+
+def _is_fixture(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return any(
+        _dotted_name(d.func if isinstance(d, ast.Call) else d).rsplit(".", 1)[-1] == "fixture"
+        for d in node.decorator_list
+    )
+
+
+def fixture_collection_roots(graph: ImportGraph, selection: Selection) -> tuple[str, ...]:
+    """Directories whose pytest collection can reveal consumers of the fixtures a change reaches.
+
+    Consumers hang off fixture scopes, so reaching a conftest's globals or helpers alone adds none.
+    A nested conftest's fixtures are visible only below its directory; plugin and helper fixtures
+    anywhere. A fixture is also visible wherever a conftest imports it, so each reached provider's
+    importers widen the roots: a conftest adds its directory (and is followed further), a plain
+    test module already runs whole, and any other importer may be a plugin. An empty result skips
+    collection, and with it the import check of unselected tests, which CI still performs.
+    """
+    if graph.uncertain:
+        return ("tests",)
+    roots: set[str] = set()
+    pending = deque(sorted((graph.fixture_scopes | graph.fixture_modules) & selection.reached))
+    visited = set(pending)
+    while pending:
+        node = pending.popleft()
+        module = node.split("::", 1)[0]
+        path = graph.module_to_path.get(module, "")
+        if path.endswith("/conftest.py"):
+            roots.add(Path(path).parent.as_posix())
+        elif node in graph.fixture_scopes:
+            return ("tests",)  # a plugin or helper fixture is visible everywhere
+        # Scoped modules import each other by module, not by symbol.
+        for owner in sorted(graph.reverse.get(node, set()) | graph.reverse.get(module, set())):
+            importer = owner.split("::", 1)[0]
+            importer_path = graph.module_to_path.get(importer, "")
+            if importer == module or owner in visited:
+                continue
+            if importer_path.endswith("/conftest.py") or _is_test_file(importer_path):
+                # A test module runs whole, but may pass the fixture on to a conftest.
+                visited.add(owner)
+                pending.append(owner)
+            else:
+                return ("tests",)  # a helper or plugin, possibly outside tests/
+    if "tests" in roots:
+        return ("tests",)
+    return tuple(sorted(r for r in roots if not any(r.startswith(f"{other}/") for other in roots)))
 
 
 def _reverse_closure(graph: ImportGraph, seeds: set[str]) -> set[str]:
@@ -1304,8 +1560,122 @@ def _seed_nodes(graph: ImportGraph, module: str) -> set[str]:
     return {module, *scopes, f"{module}::<global>", f"{module}::<exports>"}
 
 
-def _changed_function_names(before: str, after: str) -> set[str] | None:
-    """Narrow ordinary function-body edits; structural edits retain module scope."""
+# Decorators that only wrap a definition (a descriptor, a cache, a context
+# manager, a typing marker) and never call it. Names must match exactly: a
+# ``registry.getter`` that shares a suffix may register the method. Any other
+# decorator may expose or invoke the definition at import time.
+_INERT_DECORATORS = frozenset(
+    {
+        *("property", "functools.cached_property", "cached_property", "staticmethod", "classmethod"),
+        *("abc.abstractmethod", "abstractmethod", "typing.override", "typing_extensions.override", "override"),
+        *("typing.overload", "overload", "typing.final", "final"),
+        *("functools.cache", "cache", "functools.lru_cache", "lru_cache"),
+        *("contextlib.contextmanager", "contextmanager", "contextlib.asynccontextmanager", "asynccontextmanager"),
+    }
+)
+_DATACLASS_DECORATORS = frozenset({"dataclass", "dataclasses.dataclass"})
+# Class decorators that never call the class's methods while decorating it.
+_INERT_CLASS_DECORATORS = _DATACLASS_DECORATORS | {
+    "typing.final",
+    "final",
+    "typing.runtime_checkable",
+    "runtime_checkable",
+}
+
+
+def _member_names(node: ast.ClassDef) -> frozenset[str]:
+    return frozenset(m.name for m in node.body if isinstance(m, ast.FunctionDef | ast.AsyncFunctionDef))
+
+
+def _inert_decorator(decorator: ast.expr, members: frozenset[str] = frozenset()) -> bool:
+    """Whether a decorator only wraps the definition; ``members`` names the enclosing class's methods."""
+    name = _dotted_name(decorator.func if isinstance(decorator, ast.Call) else decorator)
+    if name in _INERT_DECORATORS or name in {"pytest.fixture", "fixture", "pytest.hookimpl", "hookimpl"}:
+        return True
+    owner, _, accessor = name.rpartition(".")
+    # ``@size.setter`` extends the property ``size`` defined in the same class.
+    return not isinstance(decorator, ast.Call) and accessor in {"setter", "getter", "deleter"} and owner in members
+
+
+def _same_header(old: ast.stmt, new: ast.stmt) -> bool:
+    """Name, arguments, bases, decorators and annotations match; only the body may differ."""
+    old_header, new_header = copy(old), copy(new)
+    old_header.body = new_header.body = []
+    return ast.dump(old_header) == ast.dump(new_header)
+
+
+def _method_body_edit(old: ast.stmt, new: ast.stmt) -> bool:
+    """A class edit confined to method bodies, under descriptor decorators only."""
+    if not isinstance(old, ast.ClassDef) or not isinstance(new, ast.ClassDef):
+        return False
+    if (
+        not _same_header(old, new)
+        or any(
+            _dotted_name(d.func if isinstance(d, ast.Call) else d) not in _DATACLASS_DECORATORS
+            for d in new.decorator_list
+        )
+        or len(old.body) != len(new.body)
+    ):
+        return False
+    members = _member_names(new)
+    for old_member, new_member in zip(old.body, new.body, strict=True):
+        if ast.dump(old_member) == ast.dump(new_member):
+            continue
+        if not isinstance(old_member, ast.FunctionDef | ast.AsyncFunctionDef) or not isinstance(
+            new_member, ast.FunctionDef | ast.AsyncFunctionDef
+        ):
+            return False
+        if not _same_header(old_member, new_member) or not all(
+            _inert_decorator(d, members) for d in new_member.decorator_list
+        ):
+            return False
+    return True
+
+
+def _reflects_on_module(tree: ast.Module) -> bool:
+    """Whether code can reach this module's functions without naming them.
+
+    Namespace dictionaries, ``eval``/``exec``, ``sys.modules`` and a module
+    ``__getattr__`` can. ``getattr(obj, name)``, ``obj.__dict__`` and
+    ``logging.getLogger(__name__)`` act on another object, so they do not block
+    narrowing; a dynamic dispatch on ``self`` stays inside its class, the
+    narrowed unit.
+    """
+    nodes = list(ast.walk(tree))
+    sys_names = {"sys"} | {
+        alias.asname or alias.name
+        for n in nodes
+        if isinstance(n, ast.Import)
+        for alias in n.names
+        if alias.name == "sys"
+    }
+    loaders = {"import_module", "__import__"} | {
+        alias.asname or alias.name
+        for n in nodes
+        if isinstance(n, ast.ImportFrom) and n.module == "importlib"
+        for alias in n.names
+        if alias.name == "import_module"
+    }
+    for node in nodes:
+        if _dotted_name(node) in {"globals", "locals", "vars", "eval", "exec"}:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == "modules" and _dotted_name(node.value) in sys_names:
+            return True
+        if isinstance(node, ast.ImportFrom) and node.module == "sys" and any(a.name == "modules" for a in node.names):
+            return True
+        if (
+            isinstance(node, ast.Call)
+            and _dotted_name(node.func).rsplit(".", 1)[-1] in loaders
+            and any(isinstance(arg, ast.Name) and arg.id == "__name__" for arg in node.args)
+        ):
+            return True
+    return any(
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "__getattr__" for node in tree.body
+    )
+
+
+def _changed_function_names(before: str | bytes, after: str | bytes) -> set[str] | None:
+    """Narrow function-body and method-body edits; structural edits retain module scope."""
     try:
         previous, current = ast.parse(before), ast.parse(after)
     except SyntaxError, ValueError:
@@ -1316,20 +1686,19 @@ def _changed_function_names(before: str, after: str) -> set[str] | None:
     for old, new in zip(previous.body, current.body, strict=True):
         if ast.dump(old) == ast.dump(new):
             continue
+        if isinstance(new, ast.ClassDef) and _method_body_edit(old, new):
+            changed.add(new.name)
+            continue
         if not isinstance(old, ast.FunctionDef | ast.AsyncFunctionDef) or not isinstance(
             new, ast.FunctionDef | ast.AsyncFunctionDef
         ):
             return None
-        old_header, new_header = copy(old), copy(new)
-        old_header.body = new_header.body = []
-        if new.decorator_list or ast.dump(old_header) != ast.dump(new_header):
+        if new.decorator_list or not _same_header(old, new):
             return None
         changed.add(new.name)
     if not changed:
         return None
-    # Reflection can invoke a changed function without naming its binding.
-    reflective = {"globals", "locals", "vars", "eval", "exec", "getattr", "__getattr__", "__dict__", "__name__"}
-    if any(_dotted_name(node).rsplit(".", 1)[-1] in reflective for node in ast.walk(current)):
+    if _reflects_on_module(current):
         return None
     definitions = _definition_nodes(current)
     affected = set(changed)
@@ -1342,19 +1711,95 @@ def _changed_function_names(before: str, after: str) -> set[str] | None:
         if callers <= affected:
             break
         affected.update(callers)
-    initialization = ast.Module(body=_initialization_nodes(current.body))
-    if any(isinstance(node, ast.Name) and node.id in affected for node in ast.walk(initialization)):
+    if _initialization_executes(current, affected):
         return None
     return affected
 
 
-def _narrow_source_imports(graph: ImportGraph, path: str, before: str, *, root: Path = REPO_ROOT) -> None:
+def _initialization_executes(tree: ast.Module, affected: set[str]) -> bool:
+    """Whether import-time code may run an affected definition.
+
+    Calls (an argument may be invoked too), class bases and keywords (subclass
+    hooks) and decorators execute it. A definition under an unknown decorator
+    may be registered and called later, so it must neither be affected nor
+    name an affected definition; an affected class must not carry such a
+    method. Creating an affected subclass runs ``__init_subclass__`` hooks and
+    metaclasses, which may call its methods (hooks on imported bases are not
+    seen). A plain reference such as a type alias only binds another name,
+    which the caller walk already marks as affected.
+    """
+
+    def uses(node: ast.AST) -> bool:
+        return any(isinstance(inner, ast.Name) and inner.id in affected for inner in ast.walk(node))
+
+    for node in _initialization_nodes(tree.body):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) and (
+            node.name in affected or uses(node)
+        ):
+            return True  # included whole: it carries an unknown decorator
+        if any(isinstance(inner, ast.Call) and uses(inner) for inner in ast.walk(node)):
+            return True
+
+    # A local hook or metaclass may run for any subclass, inherited through bases.
+    # Other class keywords (``total=False``, ``can_focus=False``) are arguments to
+    # such a hook: a local one is found here, an imported one is the accepted miss.
+    def has_metaclass(node: ast.ClassDef) -> bool:
+        # ``**options`` (arg None) may carry a metaclass too.
+        return any(keyword.arg in {"metaclass", None} for keyword in node.keywords)
+
+    subclass_hooks = any(
+        (isinstance(node, ast.FunctionDef) and node.name == "__init_subclass__")
+        or (isinstance(node, ast.ClassDef) and has_metaclass(node))
+        for node in ast.walk(tree)
+    )
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef) or node.name not in affected:
+            continue
+        if has_metaclass(node) or (node.bases and subclass_hooks):
+            return True
+        members = _member_names(node)
+        if any(
+            not _inert_decorator(d, members)
+            for member in node.body
+            if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef)
+            for d in member.decorator_list
+        ):
+            return True
+    for node in _module_scope_nodes(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) and any(
+            uses(expression) for expression in node.decorator_list
+        ):
+            return True
+        if isinstance(node, ast.ClassDef) and any(
+            uses(base) for base in (*node.bases, *(k.value for k in node.keywords))
+        ):
+            return True
+    return False
+
+
+def _resolve_export(reference: str, known: set[str], facades: dict[str, dict[str, str]]) -> str:
+    """Follow named re-exports to the defining module's member reference."""
+    visited: set[tuple[str, str]] = set()
+    while True:
+        provider = _longest_known_reference(reference, known)
+        if provider is None:
+            return reference
+        name, _, tail = reference.removeprefix(provider).lstrip(".").partition(".")
+        exported = facades.get(provider, {}).get(name)
+        if exported is None or (provider, name) in visited:
+            return reference
+        visited.add((provider, name))
+        reference = exported + (f".{tail}" if tail else "")
+
+
+def _narrow_source_imports(graph: ImportGraph, path: str, before: str | bytes, *, root: Path = REPO_ROOT) -> None:
     module = graph.path_to_module.get(path)
     if module is None or path.endswith("/__init__.py"):
         return
     try:
-        names = _changed_function_names(before, (root / path).read_text(encoding="utf-8"))
-    except OSError, UnicodeError:
+        # Raw bytes keep encoding-cookie semantics, as the runtime no-op check does.
+        names = _changed_function_names(before, (root / path).read_bytes())
+    except OSError:
         return
     if not names:
         return
@@ -1370,8 +1815,10 @@ def _narrow_source_imports(graph: ImportGraph, path: str, before: str, *, root: 
             if tree is not None:
                 imports: set[str] = set()
                 other_imports: list[ast.stmt] = []
-                # Only prune explicit named imports. Namespace access, dynamic
-                # references, re-export routes and fixture scopes stay included.
+                known = set(graph.module_to_path)
+                # Only prune explicit named imports, directly or through named
+                # re-exports. Namespace access, dynamic references, wildcard
+                # facades and fixture scopes stay included.
                 package = owner_path.endswith("/__init__.py")
                 for node in _runtime_nodes(tree):
                     if isinstance(node, ast.ImportFrom):
@@ -1382,8 +1829,19 @@ def _narrow_source_imports(graph: ImportGraph, path: str, before: str, *, root: 
                         )
                         if base == module:
                             imports.update(alias.name for alias in node.names)
-                        else:
+                            continue
+                        if not base or any(alias.name == "*" for alias in node.names):
                             other_imports.append(node)
+                            continue
+                        kept: list[ast.alias] = []
+                        for alias in node.names:
+                            target = _resolve_export(f"{base}.{alias.name}", known, graph.facades)
+                            if target.startswith(f"{module}."):
+                                imports.add(target.removeprefix(f"{module}.").split(".", 1)[0])
+                            else:
+                                kept.append(alias)
+                        if kept:
+                            other_imports.append(ast.ImportFrom(module=node.module, names=kept, level=node.level))
                     elif isinstance(node, ast.Import):
                         other_imports.append(node)
                 # Reuse the graph resolver so relative and facade routes cannot
@@ -1395,7 +1853,15 @@ def _narrow_source_imports(graph: ImportGraph, path: str, before: str, *, root: 
                     known_modules=set(graph.module_to_path),
                     facades=graph.facades,
                 )
-                if imports and module not in other_dependencies and not _string_module_references(tree):
+                owner_package = owner if package else owner.rpartition(".")[0]
+                if (
+                    imports
+                    and module not in other_dependencies
+                    and not any(
+                        _string_reaches(reference, module, owner_package, known, graph.facades)
+                        for reference in _string_module_references(tree)
+                    )
+                ):
                     relevant = "*" in imports or bool(imports & names)
         if relevant:
             for seed in seeds:
@@ -1403,55 +1869,141 @@ def _narrow_source_imports(graph: ImportGraph, path: str, before: str, *, root: 
     graph.change_seeds[module] = seeds
 
 
+def _string_reaches(
+    reference: str, module: str, package: str, known: set[str], facades: dict[str, dict[str, str]]
+) -> bool:
+    """Whether a patch/import/plugin string may name ``module``, a member of it, or a package holding it."""
+    if reference.startswith("."):
+        return True
+    for candidate in (reference, f"{package}.{reference}" if package else reference):
+        target = _resolve_export(candidate, known, facades)
+        if target == module or target.startswith(f"{module}.") or module.startswith(f"{target}."):
+            return True
+    return False
+
+
+def _baseline_revision() -> str | None:
+    """Return the branch merge base, or None when the baseline cannot be told apart from HEAD."""
+    branch = _resolve_default_branch()
+    if branch == "refs/heads/main" and _local_main_is_head():
+        # Local main alone cannot distinguish committed task changes from
+        # the baseline, even when dirty edits remain in the same file.
+        return None
+    base = _git_output("merge-base", "HEAD", branch, allow_failure=True) if branch else None
+    return base.decode("ascii").strip() if base else None
+
+
+def _is_runtime_noop(before: bytes, after: bytes) -> bool:
+    """Equal ASTs differ only in comments, blank lines or formatting; docstrings stay semantic.
+
+    Parse the raw bytes: an encoding cookie or BOM changes how string literals decode.
+    """
+    try:
+        return ast.dump(ast.parse(before)) == ast.dump(ast.parse(after))
+    except SyntaxError, ValueError:
+        return False
+
+
+def runtime_noop_paths(changes: tuple[Change, ...], *, root: Path = REPO_ROOT) -> frozenset[str]:
+    """Changed Python files whose AST equals the branch baseline.
+
+    New, deleted and renamed paths, and any missing baseline, never qualify.
+    """
+    paths = [
+        c.path
+        for c in changes
+        if c.path.endswith(".py")
+        and c.path.startswith(("src/chrys/", "tests/", "scripts/"))
+        and not c.deleted_or_renamed
+        and (root / c.path).is_file()
+    ]
+    if not paths:
+        return frozenset()
+    noop: set[str] = set()
+    try:
+        revision = _baseline_revision()
+        if revision is None:
+            return frozenset()
+        for path in paths:
+            before = _git_output("show", f"{revision}:{path}", allow_failure=True)
+            if before is not None and _is_runtime_noop(before, (root / path).read_bytes()):
+                noop.add(path)
+    except SmartTestError, OSError:
+        return frozenset()
+    return frozenset(noop)
+
+
 def _refine_source_changes(graph: ImportGraph, changes: tuple[Change, ...]) -> None:
     """Use the branch baseline when available; missing Git data keeps module scope."""
     paths = [
         c.path
         for c in changes
-        if c.path.startswith("src/chrys/") and c.path.endswith(".py") and not c.deleted_or_renamed
+        if c.path.startswith("src/chrys/")
+        and c.path.endswith(".py")
+        and not c.deleted_or_renamed
+        and c.path not in graph.runtime_noop
     ]
     if not paths:
         return
     try:
-        branch = _resolve_default_branch()
-        if branch == "refs/heads/main" and _local_main_is_head():
-            # Local main alone cannot distinguish committed task changes from
-            # the baseline, even when dirty edits remain in the same file.
+        revision = _baseline_revision()
+        if revision is None:
             return
-        base = _git_output("merge-base", "HEAD", branch, allow_failure=True) if branch else None
-        if not base:
-            return
-        revision = base.decode("ascii").strip()
         for path in paths:
             before = _git_output("show", f"{revision}:{path}", allow_failure=True)
             if before is not None:
-                _narrow_source_imports(graph, path, before.decode("utf-8"), root=REPO_ROOT)
+                _narrow_source_imports(graph, path, before, root=REPO_ROOT)
     except SmartTestError, UnicodeError:
         return
 
 
 def _dependency_chains(graph: ImportGraph, module: str) -> dict[str, str]:
-    paths = {seed: [module] if seed == module else [module, seed] for seed in sorted(_seed_nodes(graph, module))}
-    distances = dict.fromkeys(paths, 0)
-    pending = deque(paths)
+    """Reach owners within both hop budgets, keeping each node's shortest explanation.
+
+    A source hop enters another production module; a test hop is one test file
+    importing another. Helper, conftest and fixture scope edges stay free: they
+    are the precise routes fixture consumers depend on. A node can be reached
+    through incomparable budget states, so every non-dominated state is kept.
+    """
+    seeds = sorted(_seed_nodes(graph, module))
+    paths = {seed: [module] if seed == module else [module, seed] for seed in seeds}
+    costs = dict.fromkeys(paths, 0)
+    states: dict[str, list[tuple[int, int]]] = {seed: [(0, 0)] for seed in seeds}
+    pending = deque((seed, 0, 0, paths[seed]) for seed in seeds)
     while pending:
-        dependency = pending.popleft()
+        dependency, source_hops, test_hops, path = pending.popleft()
+        dependency_module = dependency.split("::", 1)[0]
+        # Scope nodes (helpers, fixtures, ``<global>``) are free routes even in a test-named module.
+        dependency_is_test = "::" not in dependency and _is_test_file(graph.module_to_path.get(dependency_module, ""))
         for owner in sorted(graph.reverse.get(dependency, ())):
             owner_module = owner.split("::", 1)[0]
-            source_hop = int(
-                graph.module_to_path.get(owner_module, "").startswith("src/chrys/")
-                and owner_module != dependency.split("::", 1)[0]
+            crossing = owner_module != dependency_module
+            owner_path = graph.module_to_path.get(owner_module, "")
+            sources = source_hops + int(crossing and owner_path.startswith("src/chrys/"))
+            tests = test_hops + int(
+                crossing
+                and dependency_is_test
+                and "::" not in owner
+                and _is_test_file(owner_path)
+                # Importing a test module's fixtures makes its importer a consumer.
+                and dependency_module not in graph.fixture_modules
             )
-            distance = distances[dependency] + source_hop
-            if distance > _MAX_SOURCE_IMPORT_HOPS:
+            if sources > _MAX_SOURCE_IMPORT_HOPS or tests > _MAX_TEST_IMPORT_HOPS:
                 continue
-            if owner not in paths or distance < distances[owner]:
-                distances[owner] = distance
-                paths[owner] = [*paths[dependency], owner]
-                if source_hop:
-                    pending.append(owner)
-                else:
-                    pending.appendleft(owner)
+            known = states.setdefault(owner, [])
+            if any(s <= sources and t <= tests for s, t in known):
+                continue
+            known[:] = [(s, t) for s, t in known if not (sources <= s and tests <= t)]
+            known.append((sources, tests))
+            chain = [*path, owner]
+            if owner not in paths or (sources + tests, len(chain)) < (costs[owner], len(paths[owner])):
+                costs[owner] = sources + tests
+                paths[owner] = chain
+            entry = (owner, sources, tests, chain)
+            if sources + tests == source_hops + test_hops:
+                pending.appendleft(entry)
+            else:
+                pending.append(entry)
     return {node: " -> ".join(path) for node, path in paths.items()}
 
 
@@ -1502,6 +2054,15 @@ def _add_rule_targets(
             matched_paths.update(matches)
             selection.add(rule.target, f"{kind} watch matched {_display(matches[0])}")
     return matched_paths
+
+
+def _mirror_tests(path: str) -> list[str]:
+    """Candidate direct tests for a source module; a private ``_x.py`` is also tested as ``test_x.py``."""
+    mirrored = Path("tests") / Path(path).relative_to("src/chrys")
+    names = [mirrored.name]
+    if mirrored.name.startswith("_") and not mirrored.name.startswith("__"):
+        names.append(mirrored.name.lstrip("_"))
+    return [mirrored.with_name(f"test_{name}").as_posix() for name in names]
 
 
 def _subsystem_test_directory(path: str, *, root: Path = REPO_ROOT) -> str | None:
@@ -1678,7 +2239,8 @@ def select_smart_tests(
     for error in graph.parse_errors:
         if any(error.startswith(f"{path}: ") for path in changed_paths):
             raise SmartTestError(f"Cannot analyze changed Python file: {error}")
-    full_trigger = sorted(changed_paths & _FULL_TRIGGER_PATHS)
+    noop = graph.runtime_noop
+    full_trigger = sorted((changed_paths & _FULL_TRIGGER_PATHS) - noop)
     if full_trigger:
         selection.full_reason = (
             f"global test environment or configuration changed: {', '.join(_display(path) for path in full_trigger)}"
@@ -1697,9 +2259,14 @@ def select_smart_tests(
             continue
         _add_local_fallback(selection, path, "test module, helper, or conftest was deleted or renamed", root=root)
 
+    for path in sorted(noop & changed_paths):
+        selection.notes.add(f"No runtime change (comments or formatting only): {path}")
+
     seed_paths: dict[str, set[str]] = defaultdict(set)
     known_modules = set(graph.module_to_path)
     for change in changes:
+        if change.path in noop:
+            continue
         module = graph.path_to_module.get(change.path) or _module_for_path(change.path)
         if module is None:
             continue
@@ -1717,6 +2284,7 @@ def select_smart_tests(
     for seed_module, changed_seed_paths in sorted(seed_paths.items()):
         chains = _dependency_chains(graph, seed_module)
         affected_modules.update(node.split("::", 1)[0] for node in chains)
+        selection.reached.update(chains)
         for affected_module in sorted(chains):
             path = graph.module_to_path.get(affected_module)
             for changed_path in sorted(changed_seed_paths):
@@ -1759,6 +2327,7 @@ def select_smart_tests(
             or not path.endswith(".py")
             or _is_test_file(path)
             or change.deleted_or_renamed
+            or path in noop
         ):
             continue
         module = graph.path_to_module.get(path) or _module_for_path(path)
@@ -1772,13 +2341,13 @@ def select_smart_tests(
     for change in changes:
         path = change.path
         if path.startswith("src/chrys/") and path.endswith(".py"):
-            module = graph.path_to_module.get(path) or _module_for_path(path)
-            dependent_regular_tests = _regular_test_dependents(graph, module, root=root)
-            mirrored = Path("tests") / Path(path).relative_to("src/chrys")
-            direct_test = mirrored.with_name(f"test_{mirrored.name}").as_posix()
-            if (root / direct_test).is_file():
+            mirrors = [test for test in _mirror_tests(path) if (root / test).is_file()]
+            for direct_test in mirrors:
                 selection.add(direct_test, f"mirrors changed source module {path}")
-                dependent_regular_tests.add(direct_test)
+            if path in noop:
+                continue  # no runtime consumers to find, so no fallback either
+            module = graph.path_to_module.get(path) or _module_for_path(path)
+            dependent_regular_tests = _regular_test_dependents(graph, module, root=root) | set(mirrors)
             if change.deleted_or_renamed or (not dependent_regular_tests and not defer_fixture_fallbacks):
                 subsystem = _subsystem_test_directory(path, root=root)
                 if subsystem is not None:
@@ -1827,25 +2396,97 @@ def _print_targets(selection: Selection) -> None:
             rendered_reasons.append(f"+{hidden_count} more")
         _write(f"  {target}")
         _write(f"    <- {'; '.join(rendered_reasons)}")
+    sources = Counter(_selection_source(reasons) for reasons in targets.values())
+    _write(
+        f"Targets by source: {', '.join(f'{name} {sources[name]}' for name, _ in _SELECTION_SOURCES if sources[name])}."
+    )
+
+
+# Most specific first: a target selected for several reasons counts once, under the first match.
+_SELECTION_SOURCES = (
+    ("direct", "test file changed directly"),
+    ("mirror", "mirrors changed source module"),
+    ("watch", " watch matched "),
+    ("import", "reverse import dependency"),
+    ("fixture", "fixture dependency"),
+    ("fallback", "local fallback"),
+    ("rule", ""),
+)
+
+
+def _selection_source(reasons: set[str]) -> str:
+    return next(name for name, marker in _SELECTION_SOURCES if any(marker in reason for reason in reasons))
+
+
+def _parameters_start(nodeid: str) -> int:
+    """Index of a node id's parameter part (``[...]`` after the first ``::``), or -1.
+
+    Parameter ids are opaque text: ``]::`` or ``/`` inside them is not structure.
+    """
+    separator = nodeid.find("::")
+    return -1 if separator < 0 else nodeid.find("[", separator)
 
 
 def _target_covers(target: str, nodeid: str) -> bool:
-    return nodeid == target or nodeid.startswith((f"{target}/", f"{target}::", f"{target}["))
+    if nodeid == target or _parameters_start(target) >= 0:
+        return nodeid == target
+    return _covered_by(nodeid, {target})
 
 
-def _print_selection_counts(initial: Selection, final: Selection, graph: ImportGraph) -> None:
+def _covered_by(nodeid: str, targets: set[str] | frozenset[str]) -> bool:
+    """``_target_covers`` against a target set, by looking up each prefix a target could be."""
+    if nodeid in targets:
+        return True
+    parameters = _parameters_start(nodeid)
+    structure = nodeid if parameters < 0 else nodeid[: parameters + 1]
+    for index, character in enumerate(structure):
+        if (character in "/[" or nodeid.startswith("::", index)) and nodeid[:index] in targets:
+            return True
+    return False
+
+
+def _covered_nodeids(targets: Iterable[str], nodeids: Iterable[str]) -> set[str]:
+    index = frozenset(targets)
+    return {nodeid for nodeid in nodeids if _covered_by(nodeid, index)}
+
+
+def _collapse_complete_files(selection: Selection, collected: Sequence[str]) -> None:
+    """Replace a file's node targets with the file when they cover every collected test in it.
+
+    The execution scope is unchanged (pytest's marker filter still excludes
+    what collection excluded); a fixture used across a large directory would
+    otherwise pass thousands of node ids to pytest and to the target listing.
+    """
+    by_file: dict[str, list[str]] = defaultdict(list)
+    for nodeid in collected:
+        by_file[nodeid.split("::", 1)[0]].append(nodeid)
+    for group in (selection.regular, selection.architecture):
+        node_targets: dict[str, list[str]] = defaultdict(list)
+        for target in group:
+            if "::" in target:
+                node_targets[target.split("::", 1)[0]].append(target)
+        for file, targets in node_targets.items():
+            nodeids = by_file.get(file)
+            if not nodeids or file in group:
+                continue  # an uncollected file, or one already selected whole
+            index = frozenset(targets)
+            if all(_covered_by(nodeid, index) for nodeid in nodeids):
+                group[file] = set().union(*(group.pop(target) for target in targets))
+
+
+def _print_selection_counts(
+    initial: Selection, final: Selection, graph: ImportGraph, roots: Sequence[str] = ("tests",)
+) -> None:
     initial_targets = _prune_covered_targets(sorted({**initial.regular, **initial.architecture}))
     final_targets = _prune_covered_targets(sorted({**final.regular, **final.architecture}))
-    initially_covered = {n for n in graph.collected if any(_target_covers(t, n) for t in initial_targets)}
-    finally_covered = {n for n in graph.collected if any(_target_covers(t, n) for t in final_targets)}
+    initially_covered = _covered_nodeids(initial_targets, graph.collected)
+    finally_covered = _covered_nodeids(final_targets, graph.collected)
     fixture_targets = {
         target
         for target, reasons in {**final.regular, **final.architecture}.items()
         if any(reason.startswith(("fixture dependency", "local fallback")) for reason in reasons)
     }
-    fixture_added = {
-        n for n in finally_covered - initially_covered if any(_target_covers(t, n) for t in fixture_targets)
-    }
+    fixture_added = _covered_nodeids(fixture_targets, finally_covered - initially_covered)
     other_added = finally_covered - initially_covered - fixture_added
     final_files = {nodeid.split("::", 1)[0] for nodeid in finally_covered}
     _write(f"Initial selection: {len(initial_targets)} targets / {len(initially_covered)} collected tests.")
@@ -1854,13 +2495,13 @@ def _print_selection_counts(initial: Selection, final: Selection, graph: ImportG
         f"Final execution scope: {len(final_targets)} targets / {len(finally_covered)} of "
         f"{len(graph.collected)} collected non-integration tests; {len(final_files)} files."
     )
+    if tuple(roots) != ("tests",):
+        _write(f"Counts cover only the collected directories: {', '.join(roots)}.")
 
 
-def _execute_targets(
-    targets: list[str], *, architecture: bool, report: Path | None = None
-) -> subprocess.CompletedProcess[bytes]:
+def _execute_targets(targets: list[str], *, report: Path | None = None) -> subprocess.CompletedProcess[bytes]:
     """Transport exact targets, keeping the argument file alive through worker shutdown."""
-    command = _pytest_command(targets, architecture=architecture, report=report)
+    command = _pytest_command(targets, report=report)
     if len(targets) <= _MAX_TARGET_ARGUMENTS and sum(len(target) + 1 for target in targets) <= _MAX_TARGET_CHARACTERS:
         return _run_process(command)
     # pytest/argparse reads one argument per physical line. Never silently
@@ -1894,10 +2535,11 @@ def _prune_covered_targets(targets: list[str]) -> list[str]:
     return pruned
 
 
-def _pytest_command(targets: list[str], *, architecture: bool, report: Path | None = None) -> list[str]:
+def _pytest_command(targets: list[str], *, report: Path | None = None) -> list[str]:
+    """Smart runs parallelize architecture targets too: each whole-repo guard is seconds of serial work."""
     command = [sys.executable, "-m", "pytest", "-q", "--tb=short", *_report_options(report), "-m", _EXCLUDED_MARKERS]
     directory_selected = any("::" not in target and not target.endswith(".py") for target in targets)
-    if architecture or (len(targets) <= 2 and not directory_selected):
+    if len(targets) <= 2 and not directory_selected:
         command.extend(("-n", "0"))
     elif directory_selected:
         # Explicit subsystem fallbacks can represent almost the complete
@@ -1957,7 +2599,7 @@ def _run_pytest_targets(selection: Selection) -> int:
     with tempfile.TemporaryDirectory(prefix="chrys-pytest-reports-") as directory:
         reports = Path(directory)
         if regular:
-            result = _execute_targets(regular, architecture=False, report=reports / "tests.txt")
+            result = _execute_targets(regular, report=reports / "tests.txt")
             outcomes.append(_suite_outcome("tests", result.returncode, reports / "tests.txt"))
             if result.returncode == _PYTEST_NO_TESTS_COLLECTED:
                 _write(
@@ -1970,7 +2612,7 @@ def _run_pytest_targets(selection: Selection) -> int:
             if returncode != 0:
                 outcomes.append(SuiteOutcome("architecture", None))
             else:
-                result = _execute_targets(architecture, architecture=True, report=reports / "architecture.txt")
+                result = _execute_targets(architecture, report=reports / "architecture.txt")
                 outcomes.append(_suite_outcome("architecture", result.returncode, reports / "architecture.txt"))
                 returncode = result.returncode
     _print_summary(outcomes, returncode)
@@ -2040,10 +2682,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         _print_changes(changes)
         _write(
-            f"Local feedback scope: up to {_MAX_SOURCE_IMPORT_HOPS} source import hops, "
-            "plus direct tests, fixture consumers and file watches. CI retains complete coverage."
+            f"Local feedback scope: up to {_MAX_SOURCE_IMPORT_HOPS} source import hop(s) and "
+            f"{_MAX_TEST_IMPORT_HOPS} test-to-test import hop(s), plus direct tests, fixture consumers "
+            "and file watches. Accepts some misses for speed; CI retains complete coverage."
         )
-        graph = build_import_graph()
+        noop = runtime_noop_paths(changes)
+        runtime_python = any(change.path.endswith(".py") and change.path not in noop for change in changes)
+        # Nothing importable changed at runtime: watches and asset rules need no import graph.
+        graph = build_import_graph() if runtime_python else ImportGraph({}, {}, {}, ())
+        graph.runtime_noop = noop
         _refine_source_changes(graph, changes)
         for module, seeds in sorted(graph.change_seeds.items()):
             _write(f"Function-body scope for {module}: {', '.join(sorted(seed.split('::', 1)[1] for seed in seeds))}")
@@ -2052,13 +2699,21 @@ def main(argv: list[str] | None = None) -> int:
         if selection.full_reason is not None:
             _write(f"Smart Test escalated to --full: {selection.full_reason}")
             return _run_full()
-        if any(change.path.endswith(".py") for change in changes):
-            _collect_fixture_consumers(graph)
+        roots = fixture_collection_roots(graph, initial) if runtime_python else ()
+        if roots:
+            _collect_fixture_consumers(graph, roots)
             selection = select_smart_tests(changes, graph)
             if selection.full_reason is not None:
                 _write(f"Smart Test escalated to --full: {selection.full_reason}")
                 return _run_full()
-            _print_selection_counts(initial, selection, graph)
+            _collapse_complete_files(selection, graph.collected)
+            _print_selection_counts(initial, selection, graph, roots)
+        elif runtime_python:
+            _write(
+                "Skipped fixture collection: no change reaches a conftest, plugin or shared fixture "
+                "(unselected tests' import errors are left to CI)."
+            )
+            selection = select_smart_tests(changes, graph)
         for note in sorted(selection.notes):
             _write(note)
         if not selection.regular and not selection.architecture:
