@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import socket
 import struct
 import sys
 import threading
@@ -69,8 +70,6 @@ class _Alive:
 
 class _Pair:
     def __init__(self) -> None:
-        import socket
-
         self.local, self.peer = socket.socketpair()
         self.peer.setblocking(False)
         self.buf = bytearray()
@@ -102,13 +101,17 @@ class _Pair:
         return tuple(command)
 
     def closed(self) -> bool:
-        # ``shutdown(SHUT_WR)`` already makes the peer read empty. Only
-        # ``close()`` drops this end's fd, which is what the daemon treats
-        # as a full disconnect.
+        # ``SHUT_WR`` only half-closes. ``SHUT_RDWR`` wakes a blocked recv
+        # the way production cancel does. Only ``close()`` drops the fd,
+        # which is what this check reads.
         return self.local.fileno() == -1
 
     def close(self) -> None:
+        # Match ``_ExecIpcSlot.cancel_and_close``: wake a blocked recv,
+        # then drop the fd. ``SHUT_RDWR`` alone does not count as closed.
         for sock in (self.local, self.peer):
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
             with contextlib.suppress(OSError):
                 sock.close()
 

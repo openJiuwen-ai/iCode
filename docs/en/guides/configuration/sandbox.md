@@ -49,15 +49,23 @@ Sandbox mode does not stream terminal output live. The tool result shows the com
 
 Sandbox mode does not move a command to the background. A command that reaches its time limit ends in the sandbox. It does not become a background task, **Ctrl+T** does not move it to the background, and it does not appear under **Background Tasks**.
 
+Stopping the command, or the command reaching its time limit, stops that command only. Other commands still running in the same sandbox keep going.
+
+A command that detaches into its own session is not stopped by that. A command that daemonizes, or that starts a new session with `setsid` and keeps running in the background, can keep running until you quit iCode. It can still write the workspace and use the network after the tool has already reported the command as finished or stopped.
+
 ## Files the command writes
 
 The workspace is mounted writable inside the sandbox, so the command can read and change files there. Those changes are written in the workspace on your computer. Stopping the sandbox does not undo files the command wrote there.
+
+The writable area is the workspace of this session: the directory where iCode was started. Starting iCode in your home directory makes the whole home directory writable inside the sandbox, including shell startup files and other files that live there. The sandbox's limit is where the command can write.
 
 The sandbox limits the command's process. It is not a restore point for the workspace.
 
 ## Network access
 
 The policy bundled with iCode allows host networking. A command in the sandbox can use this computer's network. This is not a network-disconnected sandbox.
+
+This is not a read-isolated sandbox. A command can read files this user account can already read anywhere on the computer, and send what it read out over this computer's network.
 
 ## When a change takes effect
 

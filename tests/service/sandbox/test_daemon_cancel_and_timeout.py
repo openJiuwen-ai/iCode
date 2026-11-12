@@ -14,11 +14,11 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import select
 import signal
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -327,8 +327,8 @@ def test_completed_exec_returns_stdout_without_a_group_signal(
 
 
 @pytest.mark.skipif(
-    not hasattr(select, "poll"),
-    reason="write shutdown is only distinct from close where poll reports POLLHUP",
+    sys.platform != "linux",
+    reason="write shutdown stays distinct from a full close only on Linux poll",
 )
 def test_write_shutdown_does_not_kill_the_command(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _ExecSession(monkeypatch, on_signal=_HoldingProc.release_group)
