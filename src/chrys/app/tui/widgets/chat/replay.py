@@ -1135,7 +1135,7 @@ class HistoryReplayRenderer:
                     turn_id, _item = self._toc.add_injection(entry.text)
                     widget = UserMessage(
                         entry.text,
-                        timestamp=format_message_created_at(entry.created_at),
+                        timestamp=format_message_created_at(entry.created_at, self._resolve_message),
                         is_injection=True,
                         contents=entry.contents,
                         history_item_id=entry.item_id,
@@ -1144,7 +1144,7 @@ class HistoryReplayRenderer:
                     turn_id, _item = self._toc.begin_replayed_turn(entry.text)
                     widget = UserMessage(
                         entry.text,
-                        timestamp=format_message_created_at(entry.created_at),
+                        timestamp=format_message_created_at(entry.created_at, self._resolve_message),
                         contents=entry.contents,
                         turn_number=_item.turn_index,
                         rollback_available=UserMessage.undo_link_available(_item.turn_index, self._rollback_targets()),
@@ -1189,7 +1189,11 @@ class HistoryReplayRenderer:
                 continue
 
             if isinstance(entry, ReplayStructuredCompletion):
-                widgets.append(_structured_completion_message(entry, replay_profile, is_compressed=False))
+                widgets.append(
+                    _structured_completion_message(
+                        entry, replay_profile, is_compressed=False, resolve_message=self._resolve_message
+                    )
+                )
 
         if widgets:
             await self._mount.mount_transcript_widgets(widgets, process_failures_after=tuple(process_failures_after))
@@ -1271,7 +1275,7 @@ class HistoryReplayRenderer:
                     turn_id, _item = self._toc.add_injection(entry.text, compressed=True)
                     widget = UserMessage(
                         entry.text,
-                        timestamp=format_message_created_at(entry.created_at),
+                        timestamp=format_message_created_at(entry.created_at, self._resolve_message),
                         compressed=True,
                         is_injection=True,
                         contents=entry.contents,
@@ -1281,7 +1285,7 @@ class HistoryReplayRenderer:
                     turn_id, _item = self._toc.begin_replayed_turn(entry.text, compressed=True)
                     widget = UserMessage(
                         entry.text,
-                        timestamp=format_message_created_at(entry.created_at),
+                        timestamp=format_message_created_at(entry.created_at, self._resolve_message),
                         compressed=True,
                         contents=entry.contents,
                         turn_number=_item.turn_index,
@@ -1321,7 +1325,11 @@ class HistoryReplayRenderer:
                 continue
 
             if isinstance(entry, ReplayStructuredCompletion):
-                replay_widgets.append(_structured_completion_message(entry, replay_profile, is_compressed=True))
+                replay_widgets.append(
+                    _structured_completion_message(
+                        entry, replay_profile, is_compressed=True, resolve_message=self._resolve_message
+                    )
+                )
 
         if widgets is None:
             await self._mount.mount_transcript_widgets(replay_widgets, process_failures_after=tuple(failure_anchors))
@@ -1349,7 +1357,7 @@ class HistoryReplayRenderer:
         thinking_channel: ContentChannel | None = None
         # An answer bubble thinking followed, as (index, text, segment ids): live, a later answer settled it.
         before_thinking: tuple[int, str, tuple[str, ...]] | None = None
-        timestamp = "" if is_intermediate else format_message_created_at(created_at)
+        timestamp = "" if is_intermediate else format_message_created_at(created_at, self._resolve_message)
 
         def answer_message(text: str, segment_ids: tuple[str, ...], *, intermediate: bool) -> AgentMessage:
             return AgentMessage(
@@ -1495,7 +1503,7 @@ class HistoryReplayRenderer:
                     canonical_status=canonical_status,
                     duration_ms=replay_duration_ms or 0,
                     duration_known=replay_duration_ms is not None,
-                    timestamp=format_message_created_at(replay_started_at),
+                    timestamp=format_message_created_at(replay_started_at, self._resolve_message),
                     lazy=True,
                 )
             replay_widgets.append(group)
@@ -1552,7 +1560,11 @@ class HistoryReplayRenderer:
 
 
 def _structured_completion_message(
-    entry: ReplayStructuredCompletion, profile_name: str, *, is_compressed: bool
+    entry: ReplayStructuredCompletion,
+    profile_name: str,
+    *,
+    is_compressed: bool,
+    resolve_message: Callable[[MessageRef], str] = format_message,
 ) -> AgentMessage:
     return AgentMessage(
         "✓",
@@ -1560,7 +1572,7 @@ def _structured_completion_message(
         profile_name=profile_name,
         is_compressed=is_compressed,
         is_structured_completion=True,
-        timestamp=format_message_created_at(entry.created_at),
+        timestamp=format_message_created_at(entry.created_at, resolve_message),
         duration_ms=entry.duration_ms,
     )
 
@@ -1615,12 +1627,6 @@ def _recognized_status_code(extra: dict[str, Any]) -> str | None:
 def _status_count(extra: dict[str, Any]) -> int:
     invocation_ids = extra.get("_invocation_ids")
     return len(invocation_ids) if isinstance(invocation_ids, list) else 0
-
-
-def _message_timestamp(extra: dict[str, Any] | None) -> str:
-    if not extra:
-        return ""
-    return format_message_created_at(extra.get(MESSAGE_CREATED_AT_KEY))
 
 
 def _is_tool_call(content: Any) -> bool:

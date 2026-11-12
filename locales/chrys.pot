@@ -3611,6 +3611,12 @@ msgstr ""
 msgid "tui.agent_config.validation.mcp.command_required"
 msgstr ""
 
+#. English: Working Directory cannot contain NUL characters.
+#. chrys-meta={"fingerprint":"65b6cb3a68d7eab8707bda10c43cb558d71aa114f7f07f73f7988baf3521d41d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/validation_messages.py
+msgid "tui.agent_config.validation.mcp.cwd_nul"
+msgstr ""
+
 #. English: Duplicate MCP server name: '{name}'.
 #. chrys-meta={"fingerprint":"9282c7f1a0d0158b16813182ee9bf3e23219ce546826c64689e783d427e4540d","multiline":true,"placeholders":["name"]}
 #: src/chrys/app/tui/screens/agents/validation_messages.py
@@ -4951,6 +4957,12 @@ msgstr ""
 msgid "tui.binding.trajectory"
 msgstr ""
 
+#. English: Answer
+#. chrys-meta={"fingerprint":"4a0af57df1047a39b77bfcd4c6c440fd72a7bd4fe7633d6b27867ce1a315e7dc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.answer"
+msgstr ""
+
 #. English: The side question was blocked by a hook. {reason}
 #. chrys-meta={"fingerprint":"df8d40213042ff7026f2f110cbf39c34e228db140572dfbf8ba7222f65a37d67","multiline":true,"placeholders":["reason"]}
 #: src/chrys/app/tui/widgets/btw.py
@@ -4999,6 +5011,12 @@ msgstr ""
 msgid "tui.btw.previous"
 msgstr ""
 
+#. English: Question
+#. chrys-meta={"fingerprint":"868d8746d7e4b42628701a19d6e690b87aba5774ee5f5dc5774b509ada6d57dd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/btw.py
+msgid "tui.btw.question"
+msgstr ""
+
 #. English: Side question history could not be read. Your saved file was kept.
 #. chrys-meta={"fingerprint":"a26d854d6bf7dbae8ba50b9e226f943c50d2a9353a5aae329043660fffc05cd5","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/btw.py
@@ -5022,18 +5040,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5c53a809d60b05f1916183b7107cdb107cabe7a7504aa532a82aefc2de32840d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
 msgid "tui.btw.send"
-msgstr ""
-
-#. English: Answer
-#. chrys-meta={"fingerprint":"4a0af57df1047a39b77bfcd4c6c440fd72a7bd4fe7633d6b27867ce1a315e7dc","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/btw.py
-msgid "tui.btw.tab.output"
-msgstr ""
-
-#. English: Question
-#. chrys-meta={"fingerprint":"868d8746d7e4b42628701a19d6e690b87aba5774ee5f5dc5774b509ada6d57dd","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/btw.py
-msgid "tui.btw.tab.question"
 msgstr ""
 
 #. English: Thinking...
@@ -5341,6 +5347,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"00af528dab63a2db16529ae9ff025a4b9e52a55bb05efdb505cb63eab4fa1ea9","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.interrupted_rollback_button"
+msgstr ""
+
+#. English: - {hour}:{minute}
+#. chrys-meta={"fingerprint":"5fd0cfff3be0c94710043cb0666108d69884d88cd47b7dfc4212b5a7101c3441","multiline":false,"placeholders":["hour","minute"]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.message_timestamp"
 msgstr ""
 
 #. English: Activity
@@ -6443,6 +6455,62 @@ msgstr ""
 #. chrys-meta={"fingerprint":"2e936946842e8d12e27df53239eaa80748b8a13eb8f457a17f06f2e499c9df59","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/screen.py
 msgid "tui.diff.title"
+msgstr ""
+
+#. English: Added to the message input: {label}
+#. chrys-meta={"fingerprint":"80e9e8a7b8f9e55e091e9cccf750cf55bca3170cbbeeeec099b9b29acbbb5f8f","multiline":false,"placeholders":["label"]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.added"
+msgstr ""
+
+#. English: After · Line {line}
+#. chrys-meta={"fingerprint":"b55fafb2275085f5cc8b13b6e124d150a0ae78c265265cf1af83d703cb4e2f7a","multiline":false,"placeholders":["line"]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.after"
+msgstr ""
+
+#. English: Before · Line {line}
+#. chrys-meta={"fingerprint":"dbdca3b9937e6a4bf25205d57b3c517c7ea348607a256f95c917ce0e86bbdac3","multiline":false,"placeholders":["line"]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.before"
+msgstr ""
+
+#. English: Comment on this line. It goes into the message input; send it from
+#. the chat.
+#. chrys-meta={"fingerprint":"d702dd6ebd458915e5e029767623306ff24a140c7fe3918b100c0e0266c46637","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/diff_view/gutter.py
+msgid "tui.diff_quote.bubble_add"
+msgstr ""
+
+#. English: Edit this comment
+#. chrys-meta={"fingerprint":"0368e8e8a22a4988378ebf109d352c442da748fdc7addcc6f6dae183613dca75","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/diff_view/gutter.py
+msgid "tui.diff_quote.bubble_edit"
+msgstr ""
+
+#. English: This comment has changed in the message input. Please edit it
+#. there.
+#. chrys-meta={"fingerprint":"6b8551f54169a2914b07c7729a34074ace921fcd7920b4992518c0164c72db49","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.changed"
+msgstr ""
+
+#. English: Enter Add to input · Esc Cancel
+#. chrys-meta={"fingerprint":"3684c040645c37799fedc579f4f82ff9c2be1a7f9aeef679dfe5c663f1cc6dbc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.keys"
+msgstr ""
+
+#. English: ↵/Esc
+#. chrys-meta={"fingerprint":"dbbd605270852ad25109974948d0345b4f16b13bf4e949c4776ffaa59bfdbfc9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.keys_compact"
+msgstr ""
+
+#. English: Comment (optional)
+#. chrys-meta={"fingerprint":"55dbf38be8fb0ff0c358a9283d3a8ee503ba832c7496b8e675d6089a7567916e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.placeholder"
 msgstr ""
 
 #. English: Image #{number}
@@ -8008,17 +8076,17 @@ msgstr ""
 #. and tool results. Use /btw alone to reopen this session's latest saved
 #. answer.  The main task continues separately. The side question cannot use
 #. tools and does not enter the main conversation. Its card appears below the
-#. chat, leaving the sidebar at full height.  The Answer tab opens by default,
-#. showing a thinking animation until the complete answer is ready. The
-#. Question tab keeps your full question. Long content scrolls within each tab.
-#. Previous/next buttons browse saved answers without changing your selected
-#. tab, and are disabled while generating.  Completed answers are kept with the
-#. session. Clearing, deleting, or rolling back to the starting screen removes
-#. them. Prompt-submission hooks also check side questions. Failed or cancelled
+#. chat, leaving the sidebar at full height.  The card shows your question,
+#. then a thinking animation until the complete answer is ready. Long content
+#. scrolls within the card. Previous/next buttons browse saved answers, and are
+#. hidden while generating. Select text in the card and click Quote to add it
+#. to your message.  Completed answers are kept with the session. Clearing,
+#. deleting, or rolling back to the starting screen removes them.
+#. Prompt-submission hooks also check side questions. Failed or cancelled
 #. questions are not saved. Escape or the close icon cancels a running question
 #. or hides the card, keeping saved answers. Only one side question can run at
 #. a time.
-#. chrys-meta={"fingerprint":"626194918c365b2d5eb3fe660e264720e2e33b4ba64ecec049e9d71afbbacb36","multiline":true,"placeholders":[]}
+#. chrys-meta={"fingerprint":"a230840bfda7f0f76d58cbece4e0774c1c12c8c1e126e94b0da5957ec146a477","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.btw.body"
 msgstr ""
@@ -8575,6 +8643,13 @@ msgstr ""
 msgid "tui.mcp.connection_test.error.unreachable"
 msgstr ""
 
+#. English: The server's working directory cannot be used. Please check the
+#. Working Directory field.
+#. chrys-meta={"fingerprint":"00b878952aa093e966fce8fc5fb228786bf91bff0b761568f4dbb30e98441c08","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.connection_test.error.working_directory"
+msgstr ""
+
 #. English: MCP Server
 #. chrys-meta={"fingerprint":"b4842c56fa280ad58067fad7da77fe4a286afbb89a3a25fcca0fa2b33a9de15f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/mcp.py
@@ -9016,6 +9091,12 @@ msgstr ""
 msgid "tui.mcp.placeholder.variable_name"
 msgstr ""
 
+#. English: Blank uses the workspace directory
+#. chrys-meta={"fingerprint":"029cc79f4d949160901b9fdab18152bdd91836373ced6085dd1c69774ccd0f68","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.placeholder.working_directory"
+msgstr ""
+
 #. English: When enabled, only loader controls and the optional initially
 #. visible tools are sent first. The model can load other tools from the
 #. available-tool scope during the current run.
@@ -9173,6 +9254,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"398f822f93521b5315473f0f278e29ee781d7c17d2e4a03239493c67b4515b0c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/mcp.py
 msgid "tui.mcp.wait_before_removing"
+msgstr ""
+
+#. English: Working Directory
+#. chrys-meta={"fingerprint":"4a14717bcceef1755551dfcabc0005d19a7f7bfc3b739c9b37cddca9e1a30f1d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.working_directory"
 msgstr ""
 
 #. English: Already added
@@ -10348,7 +10435,7 @@ msgstr ""
 
 #. English: The message input cannot take a quote right now.
 #. chrys-meta={"fingerprint":"d18638da52c62272e849df046bafd5ad2e2ca44d608529bf3fcdd2a63ad7366b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/screen.py
+#: src/chrys/app/tui/widgets/chat/quote_popup.py
 msgid "tui.quote.input_unavailable"
 msgstr ""
 

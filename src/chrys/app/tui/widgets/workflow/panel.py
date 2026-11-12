@@ -21,6 +21,7 @@ from textual.widgets import Button, Static, Tab, TabbedContent, TabPane, Tabs
 from chrys.app.tui.clipboard import copy_text_to_clipboards
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.util.formatting import format_elapsed
+from chrys.app.tui.util.git_branch import format_workspace_subtitle
 from chrys.app.tui.util.logo import WORKFLOW_LOGO
 from chrys.app.tui.util.message_gate import messages_disabled
 from chrys.app.tui.util.removal import finish_shielded
@@ -174,6 +175,8 @@ class WorkflowPanel(Vertical):
         self._painted_header = ""
         self._painted_input: str | None = None
         self._start_label = text.START
+        self._subtitle_cwd: str | None = None
+        self._subtitle_width: int | None = None
 
     @property
     def empty(self) -> bool:
@@ -313,6 +316,21 @@ class WorkflowPanel(Vertical):
     def watch_workspace_cwd(self, cwd: str) -> None:
         """Keep the empty state's directory current, including while hidden."""
         self._welcome.update_info(cwd=cwd)
+        self._update_border_subtitle()
+
+    def on_resize(self) -> None:
+        """Refit the subtitle only when the border's cell budget changes."""
+        if self.region.width != self._subtitle_width:
+            self._update_border_subtitle()
+
+    def _update_border_subtitle(self) -> None:
+        cwd, width = self.workspace_cwd, self.region.width
+        if cwd == self._subtitle_cwd and width == self._subtitle_width:
+            return
+        subtitle = format_workspace_subtitle(text.shown(cwd), branch="", width=max(0, width - 6) if width else None)
+        self._subtitle_cwd = cwd
+        self._subtitle_width = width
+        self.border_subtitle = subtitle or None
 
     def begin_preview(self) -> None:
         self.previewing = True
@@ -549,7 +567,7 @@ class WorkflowPanel(Vertical):
             )
         self.border_title = Text(text.shown(title))
         self.workspace_cwd = cwd
-        self.border_subtitle = Text(text.shown(cwd))
+        self._update_border_subtitle()
 
     def _update_header(self, run: ObservedRun | None) -> None:
         if not self.definition.manifest:

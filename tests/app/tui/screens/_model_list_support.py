@@ -362,7 +362,7 @@ async def fetch_and_settle(screen: ModelConfigScreen, fake: FakeDiscover, pilot:
 async def listed(screen: ModelConfigScreen, pilot: Pilot) -> list[str]:
     """The ids the dropdown offers, read with the list open.
 
-    The list filters by the model input (§3.1): callers keep that input empty or an exact id.
+    The model input reorders the list (§3.1); with it empty this is the service order.
     """
     was_open = overlay_expanded(screen)
     if not was_open:
@@ -387,10 +387,20 @@ async def focus_handled(widget: Widget, pilot: Pilot) -> None:
 
 
 async def type_into(pilot: Pilot, widget: Input, text: str) -> None:
+    """Focus *widget* and type *text* after its value.
+
+    End goes in a press of its own. Keys one press sends can reach the App back to back on a
+    starved runner, and an Input runs its End binding only once the key has bubbled up to the
+    App, while it inserts a typed character as soon as it reads it: the text would replace the
+    value that focus selected. Each press returns once the App and the screen have handled its
+    keys.
+    """
     widget.focus()
     await wait_for(lambda: widget.has_focus, pilot=pilot)
     await focus_handled(widget, pilot)
-    await pilot.press("end", *text)
+    await pilot.press("end")
+    await wait_for(lambda: widget.selection.is_empty and widget.cursor_position == len(widget.value), pilot=pilot)
+    await pilot.press(*text)
 
 
 async def _open_by_arrow(screen: ModelConfigScreen, pilot: Pilot) -> None:

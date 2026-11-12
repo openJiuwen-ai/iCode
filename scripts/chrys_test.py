@@ -219,6 +219,7 @@ REGULAR_RULES = (
         ),
     ),
     TestRule("tests/app/tui/screens/test_reload_mcp.py", ("tests/support/mcp_reload_probe_server.py",)),
+    TestRule("tests/service/mcp/test_stdio_cwd.py", ("tests/service/mcp/mcp_cwd_server.py",)),
     TestRule("tests/orchestration/engine/test_settings_reload.py", ("tests/support/mcp_reload_probe_server.py",)),
     TestRule("tests/orchestration/sub_agents/test_acp_engine.py", ("tests/support/acp_stub_agent.py",)),
     TestRule("tests/service/workflows/test_protocol.py", _WORKFLOW_WORKER_HOST),

@@ -1215,7 +1215,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 raw,
                 size_bytes=_dir_size(directory),
             )
-        except KeyError, OSError:
+        except KeyError, OSError, ValueError:
             return None
 
     async def load_recovery_session_meta(self, session_id: str) -> SessionMeta | None:
@@ -1500,9 +1500,9 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """Best-effort SessionMeta for a title patch's return value.
 
         The patch itself has already succeeded (or been skipped as a no-op)
-        by the time this runs, so malformed meta must degrade to ``None``
-        rather than escape as a false failure.  ``TypeError`` covers
-        ``datetime.fromisoformat`` on non-string timestamps.
+        by the time this runs, so malformed meta — including timestamps no
+        reader can parse — must degrade to ``None`` rather than escape as a
+        false failure.
         """
         try:
             directory = self._session_dir(session_id)

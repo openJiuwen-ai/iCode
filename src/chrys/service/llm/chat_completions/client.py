@@ -192,7 +192,7 @@ class ChatCompletionsClient(WireClient):
         request = build_request(
             messages, options, model=self.model, variant=self.VARIANT, origin=self.reasoning_origin()
         )
-        self._stamp_request_headers(request)
+        self._finalize_request(request)
         return request
 
     @override

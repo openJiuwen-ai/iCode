@@ -41,6 +41,7 @@ from chrys.app.tui.screens.main.ports import (
 from chrys.app.tui.screens.main.runtime_info import with_background_count
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
+from chrys.app.tui.util.diff_comments import DiffComment, DiffDraft
 from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.widgets import PromptDraft
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
@@ -742,6 +743,9 @@ class MainScreenViewAdapter:
     # Diff and rollback
     # -------------------------------------------------------------- #
 
+    def diff_draft(self) -> DiffDraft:
+        return self._screen.query_one(InputBar)
+
     def open_diff_screen(
         self,
         periods_data: dict[int, list[DiffFileEntry]],
@@ -752,6 +756,8 @@ class MainScreenViewAdapter:
         all_entries: list[DiffFileEntry],
         load_data: Callable[[], Awaitable[DiffLoadResult]] | None = None,
         focus: DiffFocus | None = None,
+        draft: DiffDraft | None = None,
+        comments: list[DiffComment] | None = None,
     ) -> None:
         from chrys.app.tui.screens.diff import DiffScreen
 
@@ -764,6 +770,8 @@ class MainScreenViewAdapter:
                 all_entries=all_entries,
                 load_data=load_data,
                 focus=focus,
+                draft=draft,
+                comments=comments,
                 locale_controller=self._locale_controller,
             )
         )

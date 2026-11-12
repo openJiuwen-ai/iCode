@@ -104,6 +104,7 @@ def profile_to_dict(profile: AgentProfile) -> dict[str, Any]:
     for mcp in d.get("tools", {}).get("mcp", []):
         if mcp.get("transport") == "http":
             mcp.pop("env", None)
+            mcp.pop("cwd", None)
         for src, dst in _MCP_KEY_MAP.items():
             if src in mcp:
                 mcp[dst] = mcp.pop(src)

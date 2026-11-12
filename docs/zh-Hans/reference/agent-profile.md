@@ -175,6 +175,7 @@ tools:
 | `max_tool_result_tokens` | 整数或 `null` | `null` | 通用 | 单次远程工具文本结果上限。`null` 使用默认上限 `8000` 个词元，`0` 仅取消此项上限，正整数至少为 `100`；其他值会导致整个智能体配置被跳过。 |
 | `command` | 字符串 | 空 | STDIO | 启动服务器的可执行文件名称或路径。YAML 中不要在此字段拼接参数。 |
 | `args` | 字符串列表 | `[]` | STDIO | 传给服务器进程的参数。 |
+| `cwd` | 字符串 | 空 | STDIO | 服务器的启动目录；忽略首尾空白，留空使用当前会话的工作目录。相对路径以该目录为基准，可用 `..` 指向其外部；也支持 `~/` 和绝对路径。支持用 `{{ENV_VAR}}` 引用环境变量，不支持 `{{!command}}`。不能包含 NUL。路径示例见[选择工作目录](../guides/extensions/mcp.md#选择工作目录)，排错方法见[测试并保存](../guides/extensions/mcp.md#测试并保存)。 |
 | `env` | 字符串对象 | `{}` | STDIO | 传给服务器进程的环境变量。HTTP 配置会忽略此字段。 |
 | `encoding` | 字符串或 `null` | `null` | STDIO | 服务器标准输入输出编码；通常留空。 |
 | `url` | 字符串 | 空 | HTTP | 以 `http://` 或 `https://` 开头的服务器 URL。 |
@@ -183,6 +184,8 @@ tools:
 | `verify_ssl` | 布尔值 | `true` | HTTP | 是否验证 HTTPS 证书。关闭会降低连接安全性。 |
 | `bypass_proxy` | 布尔值 | `false` | HTTP | 是否绕过环境变量配置的 HTTP/HTTPS 代理，直接连接服务器。 |
 | `terminate_on_close` | 布尔值或 `null` | `null` | HTTP | 关闭连接时是否请求终止远程会话；`null` 使用默认值 `true`。 |
+
+`enabled` 和 `load_prompts` 按 profile 的布尔写法读取：`false`、`no`、`off`、`0` 按假处理，不区分大小写，带不带引号都行；其余非空文本按真，空文本（含只有空白）按假。省略该字段、或只写字段名不给值，取默认 `true`。
 
 `allowed_tools` 和 `always_load` 填写服务器提供的原始工具名称。`tool_name_prefix` 会改变智能体调用工具时使用的名称；`approval.overrides` 也使用这个名称。名称生成规则见 [MCP 工具名称](./tool-kinds-and-names.md#mcp-工具名称)。如果填写的某个名称可能指两个工具（例如前缀为 `gh` 时，服务器的 `search` 工具会变成 `gh_search`，恰好是另一个工具的原始名称），智能体会加载失败。错误信息会指出这个名称，并为它匹配到的每个工具给出一个只对应该工具的名称：本例中服务器的 `search` 写 `search`，服务器的 `gh_search` 写 `gh_gh_search`。把这个名称换成你想让智能体使用的那些工具对应的名称。如果错误信息说没有名称能单独对应某个工具，请换一个 `tool_name_prefix`。
 
@@ -216,7 +219,7 @@ tools:
 | `read_only` | 只允许内置命令名单中的命令，并阻止未被引号包围的重定向和命令替换。例如：`ls`、`cat`、`rg`、`git`、`python`、`curl` 和 PowerShell 的 `Get-Content` 等。不检查命令参数、子命令或脚本内容，因此不保证命令只读，也不是安全沙箱。 |
 | `unrestricted` | 不进行 Shell 过滤。通常直接省略 `shell_filter` 即可。 |
 
-只有上表中的名称会启用预设。无法识别的预设不会生效：使用标量写法时不进行 Shell 过滤；使用对象写法时，iCode 会尝试使用同一对象中的自定义规则，若 `commands` 为空，同样不进行 Shell 过滤。
+只有上表中的名称有效。无论使用哪种写法，写成其他名称都会让整个 profile 无效：iCode 会跳过该文件，而不是在关闭 Shell 过滤的情况下加载，并会报出需要修改的字段 `tools.shell_filter.preset`。要关闭过滤，请写 `unrestricted` 或省略 `shell_filter`。
 
 需要自行指定允许或阻止的命令时，使用对象形式。例如：
 
@@ -233,7 +236,7 @@ tools:
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `preset` | `read_only`、`unrestricted` 或空 | 空 | 选择预设。设置为可用预设后，忽略其他自定义过滤字段。 |
+| `preset` | `read_only`、`unrestricted` 或空 | 空 | 选择预设。设置为可用预设后，忽略其他自定义过滤字段。写成其他值会导致加载失败。 |
 | `mode` | `whitelist` 或 `blacklist` | `whitelist` | `whitelist` 只允许 `commands` 中的命令；`blacklist` 阻止 `commands` 中的命令，允许其他命令。 |
 | `commands` | 字符串列表 | `[]` | 命令名名单。`whitelist` 模式下为允许名单，`blacklist` 模式下为阻止名单；必须至少包含一个命令，自定义过滤才会生效。为空时不进行 Shell 过滤。 |
 | `allow_redirections` | 布尔值 | `true` | 是否允许未被引号包围的 `>`、`>>` 和 `<`。 |
@@ -429,7 +432,7 @@ skills:
 | --- | --- | --- | --- |
 | `paths` | 字符串列表 | `[]` | 额外的 Skill 搜索根目录。iCode 在每个目录及其最多两层子目录中查找 `SKILL.md`；找到后不再搜索该 Skill 目录的内部。相对路径按当前[工作目录](../guides/daily-use/workspaces.md)解析；路径开头的 `~` 由 iCode 展开为当前用户主目录。 |
 | `inline` | 对象列表 | `[]` | 直接写在配置中的 Skill，见下文。 |
-| `script_timeout` | 正整数 | `300` | Skill 脚本最长运行秒数。 |
+| `script_timeout` | 正整数 | `300` | Skill 脚本最长运行秒数。省略或只写字段名不给值时取默认 `300`；写成非正整数的具体值会导致整个 agent profile 被跳过。 |
 | `script_extensions` | 字符串列表 | `[.py, .sh, .ps1]` | 允许作为 Skill 脚本运行的扩展名；所需解释器必须已经安装。 |
 | `auto_load_user_agents_skills` | 布尔值 | `true` | 是否加载 Agent Skills 用户级共享目录。 |
 | `auto_load_cwd_agents_skills` | 布尔值 | `true` | 是否加载当前工作目录的 `.agents/skills`；还需在设置中开启“加载项目 Skills”（`project.skills_enabled`）。切换工作目录后重新加载。 |
@@ -472,8 +475,8 @@ memory:
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `files` | 字符串列表 | `[]` | 单个 `.md` 或 `.txt` 文件。 |
-| `folders` | 字符串列表 | `[]` | 扫描其中 `.md` 和 `.txt` 文件的目录。 |
+| `files` | 字符串列表或 `null` | `[]` | 单个 `.md` 或 `.txt` 文件。`null` 表示不加载；写成单个字符串、或列表里混入非字符串，会导致整个 agent profile 被跳过。 |
+| `folders` | 字符串列表或 `null` | `[]` | 扫描其中 `.md` 和 `.txt` 文件的目录。`null` 表示不加载；写成单个字符串、或列表里混入非字符串，会导致整个 agent profile 被跳过。 |
 
 路径可以是绝对路径，也可以相对于当前工作目录；相对路径不能指向工作目录以外的位置。主智能体和工作流中的智能体节点会加载记忆；子智能体不会加载自身或父智能体的记忆。目录扫描深度、文件数和总词元上限参阅[配置记忆](../guides/configuration/memory.md)。
 
@@ -553,7 +556,7 @@ acp:
 | `command` | 字符串 | 空 | 可执行文件名称或路径。启动外部智能体时必填；空值可以被加载，但无法启动。不能包含 NUL，也不要把参数拼入此字段。 |
 | `args` | 字符串列表 | `[]` | 逐项传给进程的参数；不能包含 NUL。 |
 | `env` | 字符串对象 | `{}` | 传给进程的环境变量。名称须符合环境变量命名规则，忽略大小写后不得重复；`CHRYS_ACP_SUBAGENT_DEPTH` 保留给 iCode。 |
-| `cwd` | 字符串 | 空 | 外部智能体的工作目录；留空时使用 iCode 当前会话的工作目录，相对路径也以该会话目录为基准解析。 |
+| `cwd` | 字符串 | 空 | 外部智能体的工作目录；忽略配置文本的首尾空白，留空时使用 iCode 当前会话的工作目录，相对路径也以该会话目录为基准。支持用 `{{ENV_VAR}}` 引用环境变量。 |
 | `allow_external_cwd` | 布尔值 | `false` | 是否允许外部智能体在当前会话的工作目录及其子目录之外运行。默认为 `false`，指定范围外的 `cwd` 会报错并拒绝启动，不会回退到默认目录。此选项只控制启动目录校验，不限制外部智能体的文件访问权限。 |
 | `session_mode` | 字符串 | 空 | 请求外部智能体使用的会话模式 ID。 |
 | `model_id` | 字符串 | 空 | 尽力请求外部智能体使用的模型 ID。 |

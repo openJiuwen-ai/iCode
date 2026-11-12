@@ -416,8 +416,8 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.btw.save_failed",
     "tui.btw.send",
     "tui.btw.title",
-    "tui.btw.tab.output",
-    "tui.btw.tab.question",
+    "tui.btw.answer",
+    "tui.btw.question",
     "tui.btw.thinking",
     "tui.btw.unavailable",
     "tui.commands.description.btw",
@@ -1094,6 +1094,7 @@ _message_ids.update(
         "tui.mcp.connection_test.error.request_failed",
         "tui.mcp.connection_test.error.timed_out",
         "tui.mcp.connection_test.error.unreachable",
+        "tui.mcp.connection_test.error.working_directory",
         "tui.mcp.connection_test.successful",
         "tui.model_config.api_style.chat_completions",
         "tui.model_config.api_style.responses",
@@ -1162,6 +1163,7 @@ _message_ids.update(
         ("tui.chat.thinking_speed", "tui.chat.thinking_speed#plural"),
         "tui.chat.thought_label",
         "tui.chat.fold_row.folded_label",
+        "tui.chat.message_timestamp",
         "tui.chat.process.activity",
         ("tui.chat.process.tool_calls", "tui.chat.process.tool_calls#plural"),
         "tui.chat.thinking_summary_label",
@@ -1233,6 +1235,20 @@ _message_ids.update(
         "tui.diagram.title",
         "tui.diagram.view_hint",
         "tui.markdown.diagram.open",
+    }
+)
+
+_message_ids.update(
+    {
+        "tui.diff_quote.placeholder",
+        "tui.diff_quote.added",
+        "tui.diff_quote.before",
+        "tui.diff_quote.after",
+        "tui.diff_quote.keys",
+        "tui.diff_quote.keys_compact",
+        "tui.diff_quote.changed",
+        "tui.diff_quote.bubble_add",
+        "tui.diff_quote.bubble_edit",
     }
 )
 

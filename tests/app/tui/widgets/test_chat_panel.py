@@ -28,13 +28,15 @@ from chrys.app.tui.widgets.chat.messages import (
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel, _ScrollToBottomButton
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserToolCall
+from chrys.app.tui.widgets.chat.replay import ReplayStructuredCompletion, _structured_completion_message
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chat.tool_call import (
     ToolCall,
     ToolGroup,
 )
 from chrys.foundation.config.settings import Settings
-from chrys.foundation.i18n import Localizer
+from chrys.foundation.i18n import Localizer, MessageRef
+from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY, HistoryMarkerKind
 from chrys.foundation.tool_kinds import (
     KIND_ASK_USER,
@@ -175,6 +177,78 @@ async def test_chat_panel_replay_uses_created_at_metadata() -> None:
         assert agent._ts == expected
         assert agent._duration_ms == 2345
         assert agent._header_text().plain == f"▾ Code Agent {expected} (2s)"
+
+
+class _SentinelTimestampLocalization:
+    """Localization port that renders the timestamp entry as a sentinel, so a missing resolver shows."""
+
+    def render(self, reference: MessageRef) -> str:
+        if reference.definition.key == "tui.chat.message_timestamp":
+            return "- STAMP"
+        return format_message(reference)
+
+
+async def test_chat_panel_resolves_timestamps_through_localization() -> None:
+    created_at = datetime.now(UTC).replace(second=0, microsecond=0)
+    raw_messages = [
+        {
+            "role": "user",
+            "contents": [{"type": "text", "text": "hello"}],
+            "additional_properties": {MESSAGE_CREATED_AT_KEY: created_at.isoformat()},
+        },
+        {
+            "role": "assistant",
+            "contents": [{"type": "text", "text": "hi"}],
+            "additional_properties": {MESSAGE_CREATED_AT_KEY: created_at.isoformat()},
+        },
+        {
+            "role": "assistant",
+            "contents": [
+                {
+                    "type": "function_call",
+                    "name": "read_file",
+                    "call_id": "call-1",
+                    "arguments": {"path": "/tmp/file"},
+                    "additional_properties": {
+                        TRAJECTORY_TIMING_KEY: {
+                            "started_at": created_at.isoformat(),
+                            "finished_at": created_at.isoformat(),
+                            "duration_ms": 5,
+                        }
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "contents": [{"type": "function_result", "call_id": "call-1", "result": "ok"}]},
+    ]
+
+    async with ChatPanelApp(localization=_SentinelTimestampLocalization()).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        panel.set_profile("Code Agent")
+        await panel.add_user_message("live hello", created_at=created_at)
+        await panel.add_agent_message("live hi", created_at=created_at)
+        await pilot.pause()
+
+        assert panel.query(UserMessage).last()._ts == "- STAMP"
+        assert panel.query(AgentMessage).last()._ts == "- STAMP"
+
+        await panel.clear()
+        await panel.replay_history(raw_messages, initial_profile="Code Agent")
+        await pilot.pause()
+
+        assert panel.query(UserMessage).last()._ts == "- STAMP"
+        assert panel.query(AgentMessage).last()._ts == "- STAMP"
+        assert panel.query_one(ToolGroup)._tool_records["call-1#0"].timestamp == "- STAMP"
+
+
+def test_structured_completion_message_uses_the_given_timestamp_resolver() -> None:
+    entry = ReplayStructuredCompletion(created_at=datetime.now(UTC).isoformat())
+
+    message = _structured_completion_message(
+        entry, "Code Agent", is_compressed=False, resolve_message=lambda _ref: "- STAMP"
+    )
+
+    assert message._ts == "- STAMP"
 
 
 async def test_chat_panel_replay_adds_action_only_for_trailing_interruption() -> None:

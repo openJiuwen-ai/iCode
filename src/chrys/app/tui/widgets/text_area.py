@@ -159,6 +159,30 @@ class EnhancedTextArea(TextArea):
             return False
         return super().check_action(action, parameters)
 
+    def _runs_own_bindings_on_arrival(self) -> bool:
+        """Whether ``handle_key`` runs this area's own binding for a key at once (subclasses may defer)."""
+        return True
+
+    async def handle_key(self, event: events.Key) -> bool:
+        """Run this area's own binding for a key no handler took, at once and in the order keys arrive.
+
+        Textual runs a non-priority binding only once the key has bubbled up to
+        the App (Textual 8.2.7 ``App._on_key``), but takes what this area handles
+        itself (a character, Enter, Tab) as soon as it is read. Keys a busy loop
+        hands over at once all reach this area first, so a character or an Enter
+        would otherwise land before the Backspace, Delete or undo typed ahead of
+        it took effect. ``Widget._on_key`` calls this only for a key no handler
+        above prevented, so keymaps that consume a key keep it. The App would pick
+        this same binding first, as the focused widget leads its binding chain.
+        """
+        if self._runs_own_bindings_on_arrival():
+            for binding in self._bindings.key_to_bindings.get(event.key, ()):
+                if not binding.priority and await self.app.run_action(binding.action, self):
+                    event.stop()
+                    event.prevent_default()
+                    return True
+        return await super().handle_key(event)
+
     async def _on_key(self, event: events.Key) -> None:
         if event.key == "shift+enter":
             event.stop()

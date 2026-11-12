@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from rich.text import Text
 
 from chrys.app.tui.notifications import NotificationEvent
+from chrys.app.tui.util.diff_comments import DiffComment, DiffDraft
 from chrys.app.tui.util.diff_entries import DiffFocus, DiffLoadResult
 from chrys.app.tui.widgets.chat.messages import ERROR_RETRY_ACTION
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
@@ -277,6 +278,10 @@ class DiffView(Protocol):
     """UI operations required by diff actions."""
 
     def current_chat_session_id(self) -> str: ...
+    def diff_draft(self) -> DiffDraft:
+        """The live chat draft used by Diff comments."""
+        ...
+
     def open_diff_screen(
         self,
         periods_data: dict[int, list[DiffFileEntry]],
@@ -287,6 +292,8 @@ class DiffView(Protocol):
         all_entries: list[DiffFileEntry],
         load_data: Callable[[], Awaitable[DiffLoadResult]] | None = None,
         focus: DiffFocus | None = None,
+        draft: DiffDraft | None = None,
+        comments: list[DiffComment] | None = None,
     ) -> None: ...
 
 

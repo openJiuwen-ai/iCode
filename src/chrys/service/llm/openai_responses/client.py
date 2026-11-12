@@ -154,7 +154,7 @@ class ResponsesApiClient(WireClient):
             messages, options, model=self.model, variant=self.VARIANT, origin=self.reasoning_origin()
         )
         set_prompt_cache_key(request, options, session_id=self._prompt_cache_session())
-        self._stamp_request_headers(request)
+        self._finalize_request(request)
         return request
 
     def _prompt_cache_session(self) -> str | None:

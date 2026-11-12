@@ -227,7 +227,8 @@ def shown_code(code: str) -> str:
     return mark_hidden_format(sanitize_source_text(code, tab_size=8))
 
 
-def _compared_lines(code: str) -> list[str]:
+def compared_lines(code: str) -> list[str]:
+    """Split original text exactly as the diff comparison does."""
     lines = _LINE_BREAK.split(code)
     if lines[-1] == "":
         lines.pop()
@@ -240,8 +241,12 @@ def compute_hunks(code_before: str, code_after: str) -> list[Hunk]:
     The texts are compared as given, since `shown_code` shows different characters alike and a
     change between two of them would go missing, in lines that are the lines it shows.
     """
-    matcher = difflib.SequenceMatcher(None, _compared_lines(code_before), _compared_lines(code_after))
-    return list(matcher.get_grouped_opcodes())
+    return hunks_between(compared_lines(code_before), compared_lines(code_after))
+
+
+def hunks_between(lines_before: list[str], lines_after: list[str]) -> list[Hunk]:
+    """`compute_hunks` for texts already split by `compared_lines`."""
+    return list(difflib.SequenceMatcher(None, lines_before, lines_after).get_grouped_opcodes())
 
 
 def emphasize_changes(removed: Sequence[Content], added: Sequence[Content]) -> tuple[list[Content], list[Content]]:

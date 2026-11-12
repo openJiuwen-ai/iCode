@@ -32,17 +32,20 @@ itself (Textual reads both only from widget classes).
 from __future__ import annotations
 
 from bisect import bisect_right
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
 from itertools import accumulate
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from rich.text import Text
+from textual import events
 from textual.message import Message
 from textual.widgets.text_area import Document, Edit, EditResult, Location, Selection, TextAreaTheme
 
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.util.diff_comments import CommentProbe, CommentReplacement
 from chrys.app.tui.widgets.chrome.image_paste import pasted_image_paths, save_clipboard_image_to_file
 from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft, PromptField, ShortcutIntent, shift_prompt_fields
 from chrys.foundation.i18n import msg
@@ -60,8 +63,6 @@ from chrys.foundation.text.draft_references import (
 from chrys.foundation.text.lines import normalize_line_endings
 
 if TYPE_CHECKING:
-    from textual import events
-
     from chrys.app.tui.widgets import EnhancedTextArea
 
     _DraftTextAreaBase = EnhancedTextArea
@@ -75,8 +76,8 @@ _LABEL_IMAGE = msg("tui.draft.label.image", fallback="Image #{number}")
 _LABEL_QUOTE = msg("tui.draft.label.quote", fallback="Quote #{number}")
 _LABEL_PASTE = msg("tui.draft.label.paste", fallback="Pasted text #{number}")
 _LABEL_PASTE_LINES = msg("tui.draft.label.paste_lines", fallback="Pasted text #{number} +{lines} lines")
-_QUOTE_TRUNCATED_TITLE = msg("tui.draft.title.quote_truncated", fallback="Quote truncated")
-_QUOTE_TRUNCATED = msg(
+QUOTE_TRUNCATED_TITLE = msg("tui.draft.title.quote_truncated", fallback="Quote truncated")
+QUOTE_TRUNCATED = msg(
     "tui.draft.quote_truncated",
     fallback="Quote truncated: {original_tokens} tokens exceeds the {limit}-token limit.",
 )
@@ -188,6 +189,8 @@ class DraftTextArea(_DraftTextAreaBase):
         self._draft_owner: ShortcutIntent | None = None
         # Set while a whole draft is written: its own clearing must not end the owner it brings.
         self._writing_draft = False
+        self._user_cursor_placed = False
+        self._cursor_intent_epoch = 0
         self._prompt_field_columns_of: tuple[PromptField, ...] | None = None
         self._prompt_field_columns_cache: dict[int, list[tuple[int, int]]] = {}
         self._field_mouse_down: Location | None = None
@@ -201,6 +204,35 @@ class DraftTextArea(_DraftTextAreaBase):
         # A snapshot of the initial setting: prompt fields turn the line highlight
         # off while they show and restore this value, not one set later.
         self._highlights_cursor_line = self.highlight_cursor_line
+
+    @contextmanager
+    def programmatic_cursor(self) -> Generator[None]:
+        """Exclude internal cursor changes from the user gesture currently being dispatched."""
+        # The epoch survives the context: even a whole write back to identical text
+        # must not turn the surrounding key/click into an intentional cursor move.
+        self._cursor_intent_epoch += 1
+        yield
+
+    def _forget_cursor_placement(self) -> None:
+        self._user_cursor_placed = False
+        self._cursor_intent_epoch += 1
+
+    async def on_event(self, event: events.Event) -> None:
+        """Recognise cursor-only user gestures across all key and mouse handlers."""
+        if not isinstance(event, (events.Key, events.MouseDown, events.MouseMove, events.MouseUp, events.Click)):
+            await super().on_event(event)
+            return
+        text, selection, epoch = self.text, self.selection, self._cursor_intent_epoch
+        if isinstance(event, (events.MouseDown, events.Click)):
+            location = self.get_target_document_location(event)
+            index = self.document.get_index_from_location(location)
+            if any(label.start <= index < label.end for label in iter_reference_labels(text, self._references)):
+                with self.programmatic_cursor():
+                    await super().on_event(event)
+                return
+        await super().on_event(event)
+        if epoch == self._cursor_intent_epoch and self.text == text and self.selection != selection:
+            self._user_cursor_placed = True
 
     class ReferenceClicked(Message):
         """Posted when a live draft label is clicked: *reference* is what it stands for."""
@@ -264,6 +296,7 @@ class DraftTextArea(_DraftTextAreaBase):
 
         With *select_field* the first field is selected instead.
         """
+        self._forget_cursor_placement()
         self._writing_draft = True
         try:
             self._drop_prompt_fields()
@@ -279,6 +312,7 @@ class DraftTextArea(_DraftTextAreaBase):
     def _end_owner_if_emptied(self) -> None:
         # An edit that empties the draft ends what it belonged to; a whole write states its own.
         if not self._writing_draft and not self.text:
+            self._forget_cursor_placement()
             self._drop_prompt_fields()
             self.set_draft_owner(None)
 
@@ -288,6 +322,7 @@ class DraftTextArea(_DraftTextAreaBase):
         Other whole-draft writers keep their existing semantics. This step
         owns both reference tables, so switching them cannot discard history.
         """
+        self._forget_cursor_placement()
         before = self.chat_draft()
         self._drop_prompt_fields()
         self._references = draft.references if draft.text else EMPTY_REFERENCES
@@ -338,7 +373,51 @@ class DraftTextArea(_DraftTextAreaBase):
         earlier = sum(1 for label in same if label.start < start)
         cursor = start + earlier * (len(replacement) - len(entry.label)) + len(replacement)
         self.replace_draft(ChatDraft(text, fields, draft.owner, references))
-        self.move_cursor(Document(text).get_location_from_index(cursor))
+        with self.programmatic_cursor():
+            self.move_cursor(Document(text).get_location_from_index(cursor))
+
+    def probe_comment(self, entry: DraftReference) -> CommentProbe:
+        """Presence follows the actual reference object; its recorded comment must follow the label exactly once."""
+        references = self._references
+        if not any(candidate is entry for candidate in references.entries) or entry.label not in self.text:
+            return "absent"
+        comment = references.following_text(entry)
+        if comment is None:
+            return "changed"
+        paragraph = entry.label + "\n" + (comment + "\n" if comment else "")
+        return "original" if self.text.count(entry.label) == 1 and self.text.count(paragraph) == 1 else "changed"
+
+    def comment(self, entry: DraftReference) -> str | None:
+        """The comment last written after *entry*'s label, as undo and redo left it."""
+        return self._references.following_text(entry)
+
+    def replace_comment(self, entry: DraftReference, old: str, new: str) -> CommentReplacement:
+        """Replace *old*, the recorded comment, by *new* in one undo step that records *new* in the table."""
+        if self.read_only:
+            return "unavailable"
+        if self.comment(entry) != old or self.probe_comment(entry) != "original":
+            return "changed"
+        if old == new:
+            return "success"
+        draft = self.chat_draft()
+        start = draft.text.index(entry.label) + len(entry.label) + 1
+        end = start + (len(old) + 1 if old else 0)
+        replacement = new + "\n" if new else ""
+        text = draft.text[:start] + replacement + draft.text[end:]
+        fields = shift_prompt_fields(draft.fields, start, end, len(replacement))
+        # The cursor stays where the user left it, so the next Diff quote still lands after the last one.
+        cursor = self.document.get_index_from_location(self.cursor_location)
+        if cursor >= end:
+            cursor += len(replacement) - (end - start)
+        elif cursor > start:
+            cursor = start + len(replacement)
+        # A local edit of one comment is not a new draft: a cursor the user placed stays theirs.
+        placed = self._user_cursor_placed
+        self.replace_draft(ChatDraft(text, fields, draft.owner, draft.references.with_following_text(entry, new)))
+        with self.programmatic_cursor():
+            self.move_cursor(Document(text).get_location_from_index(cursor))
+        self._user_cursor_placed = placed
+        return "success"
 
     def clear(self) -> EditResult:
         """Empty the composer and end what its labels stand for.
@@ -348,6 +427,7 @@ class DraftTextArea(_DraftTextAreaBase):
         through :meth:`leave_draft` instead, which keeps it for undo. A whole
         write sets its own table once its text is in.
         """
+        self._forget_cursor_placement()
         result = super().clear()
         if not self._writing_draft:
             self._set_references(EMPTY_REFERENCES)
@@ -361,6 +441,7 @@ class DraftTextArea(_DraftTextAreaBase):
         next draft still numbers from 1: the step, not the composer, keeps the
         table. Nothing leaves an empty composer.
         """
+        self._forget_cursor_placement()
         if not self.text:
             return
         draft = self.chat_draft()
@@ -444,6 +525,7 @@ class DraftTextArea(_DraftTextAreaBase):
         return True
 
     def edit(self, edit: Edit) -> EditResult:
+        self._cursor_intent_epoch += 1
         self._keep_units_whole(edit)
         if not self._prompt_fields:
             result = super().edit(edit)
@@ -479,6 +561,7 @@ class DraftTextArea(_DraftTextAreaBase):
     # text was undone, kept for the redo.
 
     def _undo_batch(self, edits: Sequence[Edit]) -> None:
+        self._cursor_intent_epoch += 1
         left = _left_draft(edits)
         replacement = edits[0] if len(edits) == 1 and isinstance(edits[0], _DraftReplaced) else None
         if replacement is not None:
@@ -487,7 +570,8 @@ class DraftTextArea(_DraftTextAreaBase):
             self._references = EMPTY_REFERENCES
             # Textual refreshes scrollbars before restoring the recorded cursor.
             # Their watcher must see a location valid on either side of a whole replacement.
-            self.move_cursor((0, 0))
+            with self.programmatic_cursor():
+                self.move_cursor((0, 0))
         elif left is not None:
             left.table_after = self._references
         elif edits and (self._prompt_fields or any(getattr(edit, "_removed_prompt_fields", ()) for edit in edits)):
@@ -515,12 +599,14 @@ class DraftTextArea(_DraftTextAreaBase):
         self._end_owner_if_emptied()
 
     def _redo_batch(self, edits: Sequence[Edit]) -> None:
+        self._cursor_intent_epoch += 1
         left = _left_draft(edits)
         replacement = edits[0] if len(edits) == 1 and isinstance(edits[0], _DraftReplaced) else None
         if replacement is not None:
             self._drop_prompt_fields()
             self._references = EMPTY_REFERENCES
-            self.move_cursor((0, 0))
+            with self.programmatic_cursor():
+                self.move_cursor((0, 0))
         elif left is None and self._prompt_fields and edits:
             self._replay_prompt_fields([(recorded.top, recorded.bottom, recorded.text, ()) for recorded in edits])
         super()._redo_batch(edits)
@@ -563,6 +649,7 @@ class DraftTextArea(_DraftTextAreaBase):
         self._repaint_prompt_fields()
 
     def load_text(self, text: str) -> None:
+        self._forget_cursor_placement()
         # A plain whole write: no fields, no owner, no references.
         self._drop_prompt_fields()
         self._set_references(EMPTY_REFERENCES)
@@ -664,10 +751,12 @@ class DraftTextArea(_DraftTextAreaBase):
             message = _LABEL_PASTE.bind(number=str(number))
         return f"[{render_str(widget_localizer(self), message)}]"
 
-    def _spaced_for_insert(self, text: str, *, trailing_space: bool = True) -> str:
+    def _spaced_for_insert(
+        self, text: str, *, trailing_space: bool = True, selection: tuple[Location, Location] | None = None
+    ) -> str:
         """Set *text* apart at the selection, optionally leaving a space at the draft's end for more input."""
         document = self.document
-        first, last = sorted(self.selection)
+        first, last = sorted(self.selection if selection is None else selection)
         start = document.get_index_from_location(first)
         end = document.get_index_from_location(last)
         draft = self.text
@@ -675,21 +764,33 @@ class DraftTextArea(_DraftTextAreaBase):
         after = " " if (end >= len(draft) and trailing_space) or (end < len(draft) and not draft[end].isspace()) else ""
         return f"{before}{text}{after}"
 
-    def insert_reference(self, kind: ReferenceKind, content: str) -> bool:
-        """Insert a new label for *content* at the selection, set apart by spaces; False when the draft cannot take it."""
+    def insert_reference(self, kind: ReferenceKind, content: str, *, following_text: str | None = None) -> str | None:
+        """Insert a label, returning it on success; optionally add a comment as one edit."""
         if self.read_only:
-            return False
+            return None
         if kind == "quote":
             # A quote holds what a paste of the same text would: the same cap.
-            content = self._cap_to_paste_tokens(content, notice=_QUOTE_TRUNCATED, title=_QUOTE_TRUNCATED_TITLE)
+            content = self._cap_to_paste_tokens(content, notice=QUOTE_TRUNCATED, title=QUOTE_TRUNCATED_TITLE)
         before = self._references
         label = self._register(kind, [content])
-        result = self._replace_via_keyboard(self._spaced_for_insert(label), *self.selection)
+        if following_text is not None:
+            # Recorded with the table, so undo and redo keep it matching the text after the label.
+            self._set_references(self._references.with_following_text(self._references.entries[-1], following_text))
+        if following_text is None:
+            selection = self.selection
+            text = self._spaced_for_insert(label, selection=selection)
+        else:
+            position = self.cursor_location if self._user_cursor_placed else self.document.end
+            selection = (position, position)
+            prefix = "\n" if selection[0][1] else ""
+            text = prefix + label + "\n" + (following_text + "\n" if following_text else "")
+        result = self._replace_via_keyboard(text, *selection)
         if not result:
             self._restore_references(before)
-            return False
-        self.move_cursor(result.end_location)
-        return True
+            return None
+        with self.programmatic_cursor():
+            self.move_cursor(result.end_location)
+        return label
 
     def _sanitize_paste_text(self, text: str) -> str:
         """Turn a paste of images into image labels, else fold a long paste into a ``[Pasted text #n]`` label.
@@ -843,7 +944,8 @@ class DraftTextArea(_DraftTextAreaBase):
     def _insert_paste_text(self, text: str) -> bool:
         text = self._sanitize_paste_text(text)
         if result := self._replace_via_keyboard(text, *self.selection):
-            self.move_cursor(result.end_location)
+            with self.programmatic_cursor():
+                self.move_cursor(result.end_location)
             return True
         return False
 

@@ -15,7 +15,7 @@ for every protocol: it drops the loop's trajectory handle from the call
 keywords, lets its :class:`~chrys.service.llm.observer.WireCallObserver`
 report the request, and dispatches to the protocol's ``_send`` or
 ``_open_stream``. :class:`RequestHeaders` holds the Chrys metadata each
-protocol stamps on the request it builds.
+protocol stamps on the request it builds, at the end of :meth:`WireClient._finalize_request`.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Self, final, override
 
+from chrys.foundation.text.wire_text import surrogate_safe_value
 from chrys.foundation.trajectory.context import TRAJECTORY_EXCHANGE_KWARG
 from chrys.foundation.util.chrys_headers import (
     MODEL_ID_HEADER,
@@ -150,7 +151,7 @@ class WireClient(ChatTelemetryLayer, BaseChatClient):
     itself, after the observer reported the request as started.
     ``_open_stream`` returns its stream without consuming any of it. Every
     protocol builds its request through one method that ends with
-    :meth:`_stamp_request_headers`.
+    :meth:`_finalize_request`.
 
     The observer and request headers are optional: a client built without
     them is the bare codec, which the codec tests drive directly.
@@ -248,8 +249,25 @@ class WireClient(ChatTelemetryLayer, BaseChatClient):
     ) -> ResponseStream[ChatResponseUpdate, ChatResponse[Any]]:
         """Return the stream of one request; nothing is sent until it is consumed."""
 
-    def _stamp_request_headers(self, request: dict[str, Any]) -> None:
-        """Last step of building a request: add this client's Chrys metadata headers.
+    def _finalize_request(self, request: dict[str, Any]) -> None:
+        """Last step of building a request: add the Chrys metadata headers, then make the body encodable.
+
+        The headers go on first, so their charset gate judges the value the
+        caller asked for: a model id or an ``extra_headers`` value carrying an
+        undecodable byte still fails locally with the error naming the field,
+        instead of being rewritten and reaching the provider as a wrong model
+        or a mangled header.
+
+        The body then leaves as JSON with ``ensure_ascii=False`` encoded as
+        UTF-8, so a lone surrogate anywhere in it — an MCP server's decoded JSON
+        text, an undecodable argv prompt, a file read with
+        ``surrogateescape`` — would fail the whole request before a byte of it
+        was sent.
+        :func:`~chrys.foundation.text.wire_text.surrogate_safe_value` spells it as
+        its ``\\udcXX`` escape in this copy alone, leaving the conversation's own
+        text as it was. The repair replaces the built body rather than mutating
+        anything another holder may share, and keeps this dict's identity, which
+        Anthropic's ``BuiltRequest`` relies on.
 
         ``Chrys-Request-Attempt-Id`` is not added here: SDK retries and redirects
         resend this one request, so the profile HTTP client's request hook
@@ -257,3 +275,7 @@ class WireClient(ChatTelemetryLayer, BaseChatClient):
         """
         if self._request_headers is not None:
             self._request_headers.stamp(request)
+        safe = surrogate_safe_value(request)
+        if safe is not request:
+            request.clear()
+            request.update(safe)

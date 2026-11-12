@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from textual.await_complete import AwaitComplete
     from textual.timer import Timer
 
+    from chrys.foundation.i18n import MessageDef
     from chrys.foundation.models.invocations import ContentChannel
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,7 @@ _RETRY_MESSAGE = msg(
 _RETRY_COUNTDOWN = msg("tui.chat.retry_countdown", fallback="Retrying in {seconds}s ({attempt}/{max_attempts})")
 _RETRY_STARTED = msg("tui.chat.retry_started", fallback="Retrying ({attempt}/{max_attempts})...")
 _RETRY_NOW = msg("tui.chat.retry_now", fallback="Retry Now")
+MESSAGE_TIMESTAMP = msg("tui.chat.message_timestamp", fallback="- {hour}:{minute}")
 _RETRY_COUNTDOWN_TICK_SLACK_SECONDS = 0.02
 """How long after the remaining time crosses a whole second the countdown repaints, so it reads the new second."""
 _RETRY_NOW_GAP_CELLS = 2
@@ -180,16 +182,14 @@ def _aware_created_at(value: Any) -> datetime | None:
     return dt
 
 
-def format_message_created_at(value: Any) -> str:
-    """Format a persisted message timestamp in the user's local time."""
+def format_message_created_at(value: Any, resolve_message: Callable[[MessageRef], str] = format_message) -> str:
+    """Format a persisted message timestamp in the user's local time, on a 24-hour clock."""
     dt = _aware_created_at(value)
     if dt is None:
         return ""
 
     local = dt.astimezone()
-    hour = local.hour % 12 or 12
-    suffix = "AM" if local.hour < 12 else "PM"
-    return f"- {hour}:{local.minute:02d} {suffix}"
+    return resolve_message(MESSAGE_TIMESTAMP.bind(hour=f"{local.hour:02d}", minute=f"{local.minute:02d}"))
 
 
 def turn_duration_ms(started_at: Any, finished_at: Any) -> int | None:
@@ -208,10 +208,10 @@ def format_chat_copy_payload(messages: list[tuple[str, str]]) -> str:
     return "\n\n".join(f"[{name}]\n{text}" for name, text in messages)
 
 
-def _user_header_text(*, timestamp: str) -> Text:
-    """The user message header: the ``You`` label and its timestamp."""
+def _user_header_text(*, timestamp: str, label: str) -> Text:
+    """The user message header: its label and its timestamp."""
     header = Text()
-    header.append("\u276f You", style="bold cyan")
+    header.append(f"\u276f {label}", style="bold cyan")
     if timestamp:
         header.append(f" {timestamp}", style="dim")
     return header
@@ -220,13 +220,20 @@ def _user_header_text(*, timestamp: str) -> Text:
 class _UserHeader(Static):
     """Header of a user message."""
 
-    def __init__(self, content: Text) -> None:
+    def __init__(self, content: Text, label: str) -> None:
+        self._copy_label = label
         super().__init__(content, classes="message-header")
+
+    def show(self, content: Text, label: str) -> None:
+        """Refresh both the visible header and its selection label; a new label takes a new width."""
+        relabelled = label != self._copy_label
+        self._copy_label = label
+        self.update(content, layout=relabelled)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Copy the user header as a transcript label, not decorative chrome."""
         _ = selection
-        return "[You]", "\n"
+        return f"[{self._copy_label}]", "\n"
 
 
 class _UserImagePreview(TerminalImages):
@@ -299,6 +306,14 @@ class MessageCopyButton(ClickAffordance):
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         _ = selection
         return None
+
+
+def _relabel_copy_buttons(message: Widget, tooltip: MessageDef) -> None:
+    """Show *message*'s copy action and its *tooltip* in the current language."""
+    localizer = widget_localizer(message)
+    for button in message.query(MessageCopyButton):
+        button.update(Text(render_str(localizer, COPY_MESSAGE_BUTTON.bind())))
+        button.tooltip = render_str(localizer, tooltip.bind())
 
 
 class MessageRollbackButton(ClickAffordance):
@@ -411,7 +426,7 @@ class UserMessage(Widget):
 
     def compose(self) -> ComposeResult:
         with MessageHeaderRow():
-            yield _UserHeader(_user_header_text(timestamp=self._ts))
+            yield _UserHeader(self._header_text(), self._copy_label())
             copy_button = MessageCopyButton(
                 tooltip=self._render_message(_USER_MESSAGE_COPY_TOOLTIP.bind()),
                 text=self._render_message(COPY_MESSAGE_BUTTON.bind()),
@@ -432,6 +447,23 @@ class UserMessage(Widget):
     def text(self) -> str:
         """The message as the user wrote it."""
         return self._text
+
+    def _copy_label(self) -> str:
+        """The label a selection copies."""
+        return "You"
+
+    def _header_text(self) -> Text:
+        """The header it shows: its label and when it was sent."""
+        return _user_header_text(timestamp=self._ts, label=self._copy_label())
+
+    def _refresh_header(self) -> None:
+        with contextlib.suppress(NoMatches):
+            self.query_one(_UserHeader).show(self._header_text(), self._copy_label())
+
+    def refresh_labels(self) -> None:
+        """Show its header and copy action in the current language, in place."""
+        self._refresh_header()
+        _relabel_copy_buttons(self, _USER_MESSAGE_COPY_TOOLTIP)
 
     @property
     def is_injection(self) -> bool:
@@ -676,10 +708,12 @@ class _AgentReplyHeader(_FoldRowHeader):
         """The reply header shown, or None for the fold row."""
         self.set_class(reply is None, "fold-row-header", update=False)
 
-    def show_reply(self, reply: Text) -> None:
-        """Show *reply* as the reply's header; one row, so no layout."""
+    def show_reply(self, reply: Text, label: str) -> None:
+        """Show *reply* as the reply's header; one row, so no layout unless a new label takes a new width."""
+        relabelled = label != self._copy_label
+        self._copy_label = label
         self._reply = reply
-        self.refresh(layout=False)
+        self.refresh(layout=relabelled)
 
     def show(
         self, *, collapsed: bool, text: str, label: MessageRef | None = None, detail: MessageRef | None = None
@@ -1230,7 +1264,12 @@ class AgentMessage(StreamedMarkdownMessage):
             if self._is_intermediate:
                 header.show(collapsed=self.collapsed, text=self._source_text)
             else:
-                header.show_reply(self._header_text())
+                header.show_reply(self._header_text(), self._copy_label())
+
+    def refresh_labels(self) -> None:
+        """Show its header and copy action in the current language, in place."""
+        self._refresh_header()
+        _relabel_copy_buttons(self, _AGENT_RESPONSE_COPY_TOOLTIP)
 
     def _on_final(self) -> None:
         self._show_copy_button_if_ready()
