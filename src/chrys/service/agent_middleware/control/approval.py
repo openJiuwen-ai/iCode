@@ -75,20 +75,27 @@ _REMEMBER_FAILED = msg(
 _GITDIR_POINTER_PREFIX = "gitdir:"
 _prejudge_logger = logging.getLogger(__name__ + ".prejudge")
 
-# An EventBus belongs to one live session. Main, sub-agent and workflow
-# ApprovalMiddleware instances sharing the bus use one immutable policy
-# snapshot. Weak keys release it when the session host shuts down.
-_session_prejudge_policies: WeakKeyDictionary[EventBus, Policy] = WeakKeyDictionary()
+
+@dataclass(frozen=True, slots=True)
+class _PrejudgeSnapshot:
+    policy: Policy
+    available: bool = True
 
 
-def _session_prejudge_policy(event_bus: EventBus, mode: ApprovalMode) -> Policy:
+# Main, sub-agent and workflow middleware sharing an EventBus use one
+# snapshot. The TUI retains its bus across /new; weak keys release the
+# snapshot when the owning application/session host is gone.
+_session_prejudge_policies: WeakKeyDictionary[EventBus, _PrejudgeSnapshot] = WeakKeyDictionary()
+
+
+def _session_prejudge_policy(event_bus: EventBus, mode: ApprovalMode) -> _PrejudgeSnapshot:
     if mode is ApprovalMode.BYPASS:
         # No policy validation, imports or shadow observation in BYPASS.
         # Delay the first snapshot until the session enters MANUAL/AUTO.
-        return Policy("off", "", ())
+        return _PrejudgeSnapshot(Policy("off", "", ()))
     cached = _session_prejudge_policies.get(event_bus)
     if cached is None:
-        cached = load_policy(get_platform().config_dir / "prejudge.yaml")
+        cached = _PrejudgeSnapshot(load_policy(get_platform().config_dir / "prejudge.yaml"))
         _session_prejudge_policies[event_bus] = cached
     return cached
 
@@ -294,9 +301,9 @@ class ApprovalMiddleware(FunctionMiddleware):
     ) -> None:
         from chrys.service.approval.turn_context import TurnContextHolder
 
-        # Share the trusted policy snapshot across middleware instances in
-        # the same session. BYPASS does not need to load or validate it.
-        self._prejudge = _session_prejudge_policy(event_bus, approval_mode)
+        # Share the trusted snapshot for this EventBus, including /new in
+        # the TUI. BYPASS does not need to load or validate the policy.
+        self._prejudge_snapshot = _session_prejudge_policy(event_bus, approval_mode)
         self._policy = approval_policy
         self._extension_hooks = extension_hooks
         self._reuse = reuse
@@ -370,10 +377,25 @@ class ApprovalMiddleware(FunctionMiddleware):
         Only affects subsequent tool calls — in-flight requests keep the
         mode they were created with.
         """
-        if self._approval_mode is ApprovalMode.BYPASS and mode is not ApprovalMode.BYPASS:
-            # First non-BYPASS use takes the shared session snapshot.
-            self._prejudge = _session_prejudge_policy(self._bus, mode)
+        previous = self._approval_mode
         self._approval_mode = mode
+        if previous is ApprovalMode.BYPASS and mode is not ApprovalMode.BYPASS:
+            # A policy error must never retain BYPASS or prevent propagation
+            # to child/workflow middleware. Cache the failed snapshot too,
+            # so later middleware uses ordinary approval without shortcuts.
+            try:
+                self._prejudge_snapshot = _session_prejudge_policy(self._bus, mode)
+            except Exception:
+                self._prejudge_snapshot = _PrejudgeSnapshot(Policy("off", "", ()), available=False)
+                _session_prejudge_policies[self._bus] = self._prejudge_snapshot
+                _prejudge_logger.exception(
+                    "Cannot load structured Pre-Judge while leaving BYPASS; "
+                    "ordinary approval applies with structured and readonly shortcuts disabled"
+                )
+
+    @property
+    def _prejudge(self) -> Policy:
+        return self._prejudge_snapshot.policy
 
     @property
     def approval_mode(self) -> ApprovalMode:
@@ -413,9 +435,8 @@ class ApprovalMiddleware(FunctionMiddleware):
         if prejudge_scoped:
             cmd = _shell_command_text(context.arguments)
             if not cmd and self._prejudge.mode == "enforce":
-                # No command text means no BLOCK evidence either; say so
-                # instead of skipping the rules silently. Ordinary approval
-                # (without the readonly shortcut) still decides the call.
+                # Without command text no structured ALLOW is possible;
+                # record the deferral to ordinary approval.
                 _prejudge_logger.info(
                     "enforce route=defer reason=no_command_text policy=%s",
                     self._prejudge.policy_id,
@@ -456,21 +477,6 @@ class ApprovalMiddleware(FunctionMiddleware):
                             pre_route.analysis_digest,
                             pre_route.matched_rule_ids,
                         )
-                        if pre_route.route is Route.BLOCK:
-                            context.metadata[_APPROVAL_REJECTED_KEY] = True
-                            context.metadata[_REJECTION_SOURCE_KEY] = "prejudge"
-                            context.metadata[_REJECTION_MESSAGE_KEY] = "Command blocked by structured pre-judge."
-                            context.result = "Error: Command blocked by structured pre-judge."
-                            self._decisions.append(
-                                _decision(
-                                    request_id="",
-                                    tool_name=tool_name,
-                                    status="prejudge_blocked",
-                                    call_id=call_id,
-                                    tool_order=tool_order,
-                                )
-                            )
-                            return
         if (
             not policy_requires_approval
             and not dev_sub_agent_review
@@ -481,9 +487,8 @@ class ApprovalMiddleware(FunctionMiddleware):
             await call_next()
             return
 
-        # The new ALLOW shortcut takes the place of the legacy readonly
-        # shortcut, *after* ordinary policy/mandatory context checks, never
-        # before the initial BLOCK evaluation.
+        # Structured ALLOW is an additional shortcut after ordinary policy
+        # and mandatory context checks. DEFER retains the existing flow.
         if (
             pre_route is not None
             and pre_route.route is Route.ALLOW
@@ -509,7 +514,7 @@ class ApprovalMiddleware(FunctionMiddleware):
 
         # Auto-approve safe read-only shell commands (e.g. ls, cat, grep)
         # without showing the approval dialog.
-        if tool_kind == KIND_SHELL and not (prejudge_scoped and self._prejudge.mode == "enforce"):
+        if tool_kind == KIND_SHELL and self._prejudge_snapshot.available:
             raw = context.arguments
             cmd = raw.get("command", "") if isinstance(raw, dict) else ""
             if cmd:

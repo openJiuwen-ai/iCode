@@ -13,8 +13,8 @@ def _policy(*rules: pj.Rule) -> pj.Policy:
     return pj.Policy("enforce", "pilot", tuple(rules))
 
 
-def _rule(rid: str, effect: pj.Route, field: pj.MatcherField, *tokens: str) -> pj.Rule:
-    return pj.Rule(rid, effect, pj.Matcher(field, tuple(tokens)))
+def _rule(rid: str, field: pj.MatcherField, *tokens: str) -> pj.Rule:
+    return pj.Rule(rid, pj.Route.ALLOW, pj.Matcher(field, tuple(tokens)))
 
 
 def _command(argv: list[str] | None, prefix: list[str] | None = None) -> pj.CommandNode:
@@ -26,7 +26,34 @@ def _command(argv: list[str] | None, prefix: list[str] | None = None) -> pj.Comm
     )
 
 
-def test_block_precedes_allow_and_targets_actual_executable(monkeypatch):
+def test_prejudge_exposes_only_allow_and_defer() -> None:
+    assert {route.value for route in pj.Route} == {"allow", "defer"}
+
+
+@pytest.mark.parametrize("mode", ["enforce", "shadow"])
+def test_block_rules_are_rejected_instead_of_silently_ignored(tmp_path, monkeypatch, caplog, mode):
+    monkeypatch.setattr(pj, "_ensure_bash_parser", lambda: None)
+    path = tmp_path / "prejudge.yaml"
+    path.write_text(
+        f'schema_version: 1\nmode: "{mode}"\npolicy_id: old-config\n'
+        "rules:\n  - id: old-block\n    effect: block\n    target: command\n"
+        "    match:\n      argv_exact: [rm]\n",
+        encoding="utf-8",
+    )
+    if mode == "enforce":
+        with pytest.raises(ValueError, match="effect: allow") as failure:
+            pj.load_policy(path)
+        assert str(path) in str(failure.value)
+        assert "old-block" in str(failure.value)
+    else:
+        with caplog.at_level("WARNING"):
+            assert pj.load_policy(path).mode == "off"
+        assert str(path) in caplog.text
+        assert "old-block" in caplog.text
+        assert "effect: allow" in caplog.text
+
+
+def test_every_executable_must_match_an_allow_rule(monkeypatch):
     monkeypatch.setattr(
         pj,
         "analyze",
@@ -37,13 +64,12 @@ def test_block_precedes_allow_and_targets_actual_executable(monkeypatch):
             (),
         ),
     )
-    rules = _policy(
-        _rule("A-echo", pj.Route.ALLOW, "argv_first", "echo"),
-        _rule("B-rm", pj.Route.BLOCK, "prefix_first", "rm"),
-    )
+    rules = _policy(_rule("A-echo", "argv_first", "echo"))
     result = pj.route("echo rm; rm file", "bash", rules)
-    assert result.route is pj.Route.BLOCK
-    assert result.matched_rule_ids[-1] == "B-rm"
+    assert result.route is pj.Route.DEFER
+    assert result.matched_rule_ids == ("A-echo",)
+    complete = _policy(*rules.rules, _rule("A-rm", "argv_exact", "rm", "file"))
+    assert pj.route("echo rm; rm file", "bash", complete).route is pj.Route.ALLOW
 
 
 def test_unknown_command_must_defer(monkeypatch):
@@ -57,30 +83,29 @@ def test_unknown_command_must_defer(monkeypatch):
             (),
         ),
     )
-    rules = _policy(_rule("status", pj.Route.ALLOW, "argv_exact", "git", "status"))
+    rules = _policy(_rule("status", "argv_exact", "git", "status"))
     assert pj.route("git status && unknown", "bash", rules).route is pj.Route.DEFER
 
 
-def test_incomplete_argv_cannot_allow_but_static_head_can_block(monkeypatch):
+def test_incomplete_argv_defers_even_when_the_static_head_matches(monkeypatch):
     monkeypatch.setattr(
         pj,
         "analyze",
         lambda *a, **kw: pj.Analysis(True, False, (_command(None, ["rm"]),), ("dynamic_word",)),
     )
-    allow = _rule("A", pj.Route.ALLOW, "argv_first", "rm")
-    block = _rule("B", pj.Route.BLOCK, "prefix_first", "rm")
+    allow = _rule("A", "argv_first", "rm")
     assert pj.route('rm "$X"', "bash", _policy(allow)).route is pj.Route.DEFER
-    assert pj.route('rm "$X"', "bash", _policy(block)).route is pj.Route.BLOCK
 
 
-def test_quoted_dangerous_word_does_not_block(monkeypatch):
+def test_quoted_argument_is_not_an_executable(monkeypatch):
     monkeypatch.setattr(
         pj,
         "analyze",
         lambda *a, **kw: pj.Analysis(True, True, (_command(["echo", "rm"]),), ()),
     )
-    policy = _policy(_rule("B", pj.Route.BLOCK, "prefix_first", "rm"))
-    assert pj.route('echo "rm"', "bash", policy).route is pj.Route.DEFER
+    policy = _policy(_rule("echo", "argv_exact", "echo", "rm"))
+    assert pj.route('echo "rm"', "bash", policy).route is pj.Route.ALLOW
+    assert pj.route('echo "rm"', "bash", _policy(_rule("rm", "argv_first", "rm"))).route is pj.Route.DEFER
 
 
 def test_unsupported_syntax_never_auto_allows(monkeypatch):
@@ -94,7 +119,7 @@ def test_unsupported_syntax_never_auto_allows(monkeypatch):
             ("command_substitution",),
         ),
     )
-    rules = _policy(_rule("echo", pj.Route.ALLOW, "argv_first", "echo"))
+    rules = _policy(_rule("echo", "argv_first", "echo"))
     assert pj.route('echo "$(rm f)"', "bash", rules).route is pj.Route.DEFER
 
 
@@ -113,10 +138,22 @@ def test_off_and_missing_config(tmp_path):
         {"argv_first": ["git", "status"]},
         {"argv_first": []},
         {"prefix_first": [""]},
+        {"prefix_first": ["rm"]},
         {"argv_exact": ["git"], "argv_first": ["git"]},
         {"unknown": ["git"]},
         {"argv_exact": [True]},
         {"argv_exact": [None]},
+        {"command_in": ["ls"]},
+        {"argv_in": [["ls"]]},
+        {"args_none_of": ["--delete"]},
+        {"args_prefix_none_of": ["--output"]},
+        {"all": [{"command_in": ["ls"]}]},
+        {"any": [{"command_in": ["ls"]}]},
+        {"cli": {"command": "git", "subcommand": "status"}},
+        {"args_regex": "safe"},
+        {"argument_at_regex": [1, "safe"]},
+        {"args_max_positionals": 1},
+        {"env_names_allowed": ["LANG"]},
     ],
 )
 def test_invalid_match_schema_fails_closed(match, tmp_path, monkeypatch):
@@ -148,20 +185,21 @@ def test_prefix_match_cannot_allow(tmp_path, monkeypatch):
         "    match:\n      prefix_first: [git]\n",
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="cannot be used to ALLOW"):
+    with pytest.raises(ValueError, match="Unsupported matcher field"):
         pj.load_policy(path)
 
 
-def test_argv_first_block_is_rejected_at_policy_load(tmp_path, monkeypatch):
+@pytest.mark.parametrize("effect", ["block", "defer", "deny"])
+def test_rule_effect_must_be_allow(tmp_path, monkeypatch, effect):
     monkeypatch.setattr(pj, "_ensure_bash_parser", lambda: None)
     path = tmp_path / "prejudge.yaml"
     path.write_text(
         'schema_version: 1\nmode: "enforce"\npolicy_id: pilot\n'
-        "rules:\n  - id: B\n    effect: block\n    target: command\n"
+        f"rules:\n  - id: invalid-effect\n    effect: {effect}\n    target: command\n"
         "    match:\n      argv_first: [rm]\n",
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="use prefix_first"):
+    with pytest.raises(ValueError, match="effect: allow"):
         pj.load_policy(path)
 
 
@@ -229,7 +267,7 @@ def test_shadow_invalid_policy_disables_observation(tmp_path, monkeypatch):
     file = tmp_path / "prejudge.yaml"
     file.write_text(
         'schema_version: 1\nmode: "shadow"\npolicy_id: pilot\n'
-        "rules:\n  - id: B\n    effect: block\n    target: command\n"
+        "rules:\n  - id: invalid-match\n    effect: allow\n    target: command\n"
         "    match:\n      unsupported: [rm]\n",
         encoding="utf-8",
     )
@@ -251,91 +289,14 @@ def test_enforce_requires_parser_at_load(tmp_path, monkeypatch):
         pj.load_policy(file)
 
 
-def test_built_in_readonly_policy_is_declarative(tmp_path, monkeypatch):
-    monkeypatch.setattr(pj, "_ensure_bash_parser", lambda: None)
-    path = tmp_path / "prejudge.yaml"
-    path.write_text('schema_version: 1\nmode: "enforce"\npolicy_id: test\nrules: []\n', encoding="utf-8")
-    policy = pj.load_policy(path)
-    assert policy.rules == ()
-    assert policy.readonly_rules
-    assert policy.readonly_guard
-    assert any(r.id == "readonly-command-set" for r in policy.readonly_rules)
-    assert all(r.structured_match is not None for r in policy.readonly_rules)
-
-
-@pytest.mark.parametrize(
-    ("argv", "allowed"),
-    [
-        (["ls", "*.py"], True),
-        (["cat", "file.txt"], True),
-        (["git", "--no-optional-locks", "status", "--short"], True),
-        (["git", "status", "--short"], False),
-        (["git", "push", "origin", "main"], False),
-        (["find", ".", "-delete"], False),
-        (["echo", "rm"], False),
-        (["ruff", "check", "--fix"], False),
-        (["python3", "--version"], True),
-        (["python3", "script.py"], False),
-        (["pip", "list"], True),
-        (["pip", "install", "package"], False),
-    ],
-)
-def test_structured_readonly_policy_on_ast_argv(monkeypatch, argv, allowed):
-    from chrys.service.approval.prejudge_v2.readonly_rules import matches
-
-    rules, guard = pj._load_builtin_readonly()
-    node = pj.CommandNode((0, 10), None, (), "example", tuple(argv))
-    monkeypatch.setattr(
-        pj,
-        "analyze",
-        lambda *a, **kw: pj.Analysis(True, False, (node,), ("dynamic_word",)),
-    )
-    result = pj.route("example", "bash", pj.Policy("enforce", "test", (), rules, guard))
-    assert (result.route is pj.Route.ALLOW) is allowed
-    assert all(r.structured_match is not None for r in rules)
-    assert isinstance(matches(guard, argv), bool)
-
-
-def test_user_block_precedes_declarative_readonly(monkeypatch):
-    rules, guard = pj._load_builtin_readonly()
-    node = pj.CommandNode((0, 7), ("ls", "x"), ("ls", "x"), "ls x", ("ls", "x"))
-    monkeypatch.setattr(pj, "analyze", lambda *a, **kw: pj.Analysis(True, True, (node,), ()))
-    block = _rule("no-ls", pj.Route.BLOCK, "prefix_first", "ls")
-    policy = pj.Policy("enforce", "test", (block,), rules, guard)
-    assert pj.route("ls x", "bash", policy).route is pj.Route.BLOCK
-
-
-def test_builtin_readonly_does_not_invoke_legacy_checker(monkeypatch):
+def test_structured_route_does_not_invoke_legacy_checker(monkeypatch):
     import chrys.service.tools.builtins.shell_filter as old
 
     monkeypatch.setattr(old, "is_safe_readonly_command", lambda *a, **kw: pytest.fail("Legacy checker invoked"))
-    rules, guard = pj._load_builtin_readonly()
-    node = pj.CommandNode((0, 2), ("ls",), ("ls",), "ls", ("ls",))
+    node = pj.CommandNode((0, 2), ("ls",), ("ls",), "ls")
     monkeypatch.setattr(pj, "analyze", lambda *a, **kw: pj.Analysis(True, True, (node,), ()))
-    assert pj.route("ls", "bash", pj.Policy("enforce", "test", (), rules, guard)).route is pj.Route.ALLOW
-
-
-def test_builtin_structured_policy_rejects_unknown_matcher(monkeypatch):
-    from chrys.service.approval.prejudge_v2.readonly_rules import validate_match
-
-    with pytest.raises(ValueError):
-        validate_match({"unknown": ["foo"]})
-    with pytest.raises(ValueError):
-        validate_match({"all": [{"command_in": ["ls"]}, {"unexpected": ["x"]}]})
-
-
-def test_user_structured_matcher_is_supported(tmp_path, monkeypatch):
-    monkeypatch.setattr(pj, "_ensure_bash_parser", lambda: None)
-    path = tmp_path / "prejudge.yaml"
-    path.write_text(
-        'schema_version: 1\nmode: "enforce"\npolicy_id: pilot\n'
-        "rules:\n  - id: allow-inspection\n    effect: allow\n"
-        "    target: command\n    match:\n      all:\n"
-        "        - command_in: [git]\n        - args_none_of: [push]\n",
-        encoding="utf-8",
-    )
-    policy = pj.load_policy(path)
-    assert policy.rules[0].structured_match is not None
+    assert pj.route("ls", "bash", _policy()).route is pj.Route.DEFER
+    assert pj.route("ls", "bash", _policy(_rule("ls", "argv_exact", "ls"))).route is pj.Route.ALLOW
 
 
 @pytest.mark.parametrize(
@@ -363,7 +324,7 @@ def test_invalid_enforce_rule_reports_file_and_id(tmp_path, monkeypatch):
     path.write_text(
         'schema_version: 1\nmode: "enforce"\npolicy_id: pilot\n'
         "rules:\n  - id: typo-deny\n    effect: deny\n"
-        "    target: command\n    match:\n      prefix_first: [rm]\n",
+        "    target: command\n    match:\n      argv_first: [rm]\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError) as failure:
@@ -385,7 +346,7 @@ def test_invalid_shadow_rule_warns_with_rule_context(tmp_path, monkeypatch, capl
     path.write_text(
         'schema_version: 1\nmode: "shadow"\npolicy_id: pilot\n'
         "rules:\n  - id: bad-shadow\n    effect: deny\n"
-        "    target: command\n    match:\n      prefix_first: [rm]\n",
+        "    target: command\n    match:\n      argv_first: [rm]\n",
         encoding="utf-8",
     )
     with caplog.at_level("WARNING"):
@@ -394,10 +355,11 @@ def test_invalid_shadow_rule_warns_with_rule_context(tmp_path, monkeypatch, capl
     assert "bad-shadow" in caplog.text
 
 
-def test_unsupported_dialect_warns_block_is_inactive(caplog):
-    policy = pj.Policy("enforce", "pilot", (_rule("block", pj.Route.BLOCK, "prefix_first", "rm"),))
+def test_unsupported_dialect_warns_allow_is_inactive(caplog):
+    policy = _policy(_rule("allow", "argv_first", "rm"))
     with caplog.at_level("WARNING"):
         result = pj.route("rm x", "fish", policy)
     assert result.route is pj.Route.DEFER
-    assert "BLOCK rules are inactive" in caplog.text
+    assert "ALLOW rules are inactive" in caplog.text
     assert "fish" in caplog.text
+    assert "legacy readonly shortcut" in caplog.text

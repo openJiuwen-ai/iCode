@@ -468,6 +468,7 @@ async def test_tool_event_middleware_user_rejection_public_metadata_is_persisted
 @pytest.mark.parametrize(
     ("source", "expected_kind"),
     [
+        # Keep historical Pre-Judge rejection records readable.
         ("prejudge", "prejudge_blocked"),
         ("approval_invalidated", "approval_invalidated"),
     ],

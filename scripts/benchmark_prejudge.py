@@ -5,6 +5,7 @@ Measures the synchronous decision functions only; does not execute commands,
 perform Hooks or LLM review, or measure end-to-end tool authorization.
 Only the optional Tree-sitter parser dependencies are needed.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -45,11 +46,6 @@ POLICY_YAML = """schema_version: 1
 mode: "enforce"
 policy_id: benchmark-pilot-v1
 rules:
-  - id: block-rm
-    effect: block
-    target: command
-    match:
-      prefix_first: [rm]
   - id: allow-git-status
     effect: allow
     target: command
@@ -110,28 +106,30 @@ def main() -> None:
     comparisons = []
     for name, command in CASES:
         parsed = analyze(command, dialect="bash")
-        comparisons.append({
-            "case": name,
-            "command": command,
-            "legacy_auto_allow": old(command),
-            "new_syntax_valid": parsed.syntax_valid,
-            "new_coverage_complete": parsed.coverage_complete,
-            "new_executable_argv": [list(node.argv) if node.argv is not None else None
-                                    for node in parsed.executable_nodes],
-            "new_unsupported": list(parsed.unsupported),
-            "new_route": new(command),
-        })
+        comparisons.append(
+            {
+                "case": name,
+                "command": command,
+                "legacy_auto_allow": old(command),
+                "new_syntax_valid": parsed.syntax_valid,
+                "new_coverage_complete": parsed.coverage_complete,
+                "new_executable_argv": [
+                    list(node.argv) if node.argv is not None else None for node in parsed.executable_nodes
+                ],
+                "new_unsupported": list(parsed.unsupported),
+                "new_route": new(command),
+            }
+        )
 
     samples = list(CASES) * args.iterations
-    random.Random(20261028).shuffle(samples)
+    # A fixed seed makes benchmark sample ordering reproducible.
+    random.Random(20261028).shuffle(samples)  # noqa: S311
     for _ in range(args.warmup):
         for _, command in CASES:
             old(command)
             new(command)
 
-    readings: dict[str, dict[str, list[int]]] = {
-        name: {"old": [], "new": []} for name, _ in CASES
-    }
+    readings: dict[str, dict[str, list[int]]] = {name: {"old": [], "new": []} for name, _ in CASES}
     # Alternate method order for each sample, eliminating the systematic
     # first/second method cache bias.
     for index, (name, command) in enumerate(samples):
@@ -144,9 +142,7 @@ def main() -> None:
             readings[name][method_name].append(time.perf_counter_ns() - start)
 
     overall = {
-        method: _summarize([
-            elapsed for pair in readings.values() for elapsed in pair[method]
-        ])
+        method: _summarize([elapsed for pair in readings.values() for elapsed in pair[method]])
         for method in ("old", "new")
     }
     overhead = {
@@ -165,11 +161,10 @@ def main() -> None:
         "overall": overall,
         "overhead": overhead,
         "by_case": {
-            name: {method: _summarize(data[method]) for method in ("old", "new")}
-            for name, data in readings.items()
+            name: {method: _summarize(data[method]) for method in ("old", "new")} for name, data in readings.items()
         },
     }
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
 
 
 if __name__ == "__main__":

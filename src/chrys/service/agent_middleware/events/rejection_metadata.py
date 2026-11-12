@@ -30,6 +30,8 @@ def rejection_result_metadata(metadata: Any) -> dict[str, Any]:
     if source == "hook":
         result[TOOL_ERROR_KIND_METADATA_KEY] = "hook_denied"
     elif source in {"prejudge", "approval_invalidated"}:
+        # Saved/replayed calls may carry legacy Pre-Judge rejections.
+        # The current Pre-Judge emits only ALLOW or DEFER.
         result[TOOL_ERROR_KIND_METADATA_KEY] = "prejudge_blocked" if source == "prejudge" else "approval_invalidated"
     else:
         result[RESULT_APPROVAL_METADATA_KEY] = "user_rejected"

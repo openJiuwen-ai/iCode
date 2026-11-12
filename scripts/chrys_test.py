@@ -209,14 +209,6 @@ REGULAR_RULES = (
     TestRule("tests/app/tui/behaviors/test_startup_imports.py", ("src/chrys/**",)),
     TestRule("tests/service/approval/test_formal_core.py", ("src/chrys/service/approval/principles.json",)),
     TestRule("tests/app/tui/screens/test_approval_review_reason.py", ("src/chrys/service/approval/principles.json",)),
-    TestRule(
-        "tests/service/approval/prejudge_v2",
-        ("src/chrys/service/approval/prejudge_v2/readonly_policy.yaml",),
-    ),
-    TestRule(
-        "tests/service/agent_middleware/test_prejudge_routing.py",
-        ("src/chrys/service/approval/prejudge_v2/readonly_policy.yaml",),
-    ),
     TestRule("tests/foundation/test_documentation.py", ("pyproject.toml", "docs/index.yaml")),
     # Builds a wheel in a subprocess: the build hook compiles the PO into it.
     TestRule(

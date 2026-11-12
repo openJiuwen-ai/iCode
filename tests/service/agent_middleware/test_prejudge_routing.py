@@ -28,13 +28,13 @@ from tests.support.event_capture import capture_events
 @pytest.mark.parametrize(
     ("mode", "suggestion", "expected_executions", "expected_requests"),
     [
-        ("enforce", Route.BLOCK, 0, 0),
         ("enforce", Route.ALLOW, 1, 0),
         ("enforce", Route.DEFER, 1, 1),
-        ("shadow", Route.BLOCK, 1, 0),
+        ("shadow", Route.ALLOW, 1, 1),
+        ("shadow", Route.DEFER, 1, 1),
     ],
 )
-async def test_shell_routes_do_not_bypass_or_mutate_legacy(
+async def test_shell_allow_and_defer_follow_existing_approval(
     monkeypatch, mode, suggestion, expected_executions, expected_requests
 ):
     monkeypatch.setattr(approval_module, "load_policy", lambda _: Policy(mode, "pilot", ()))
@@ -58,7 +58,7 @@ async def test_shell_routes_do_not_bypass_or_mutate_legacy(
         bus,
         approval_mode=ApprovalMode.MANUAL,
     )
-    context = FunctionInvocationContext(tool, {"command": "ls"})
+    context = FunctionInvocationContext(tool, {"command": "unknown_tool"})
     executed = 0
 
     async def execute():
@@ -69,8 +69,6 @@ async def test_shell_routes_do_not_bypass_or_mutate_legacy(
         await middleware.process(context, execute)
         assert executed == expected_executions
         assert len(requests) == expected_requests
-        if suggestion is Route.BLOCK and mode == "enforce":
-            assert context.result.startswith("Error:")
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, approve)
@@ -103,14 +101,7 @@ async def test_non_shell_tool_never_invokes_prejudge(monkeypatch):
         await middleware.close()
 
 
-@pytest.mark.parametrize(
-    ("source", "expected_kind"),
-    [
-        ("prejudge", "prejudge_blocked"),
-        ("approval_invalidated", "approval_invalidated"),
-    ],
-)
-async def test_middleware_rejection_source_is_persisted(monkeypatch, source, expected_kind):
+async def test_approval_invalidation_source_is_persisted(monkeypatch):
     """Exercise real ApprovalMiddleware before ToolEventMiddleware persistence."""
     monkeypatch.setattr(approval_module, "load_policy", lambda _: Policy("enforce", "pilot", ()))
     bus = EventBus()
@@ -134,48 +125,38 @@ async def test_middleware_rejection_source_is_persisted(monkeypatch, source, exp
         nonlocal executed
         executed = True
 
-    if source == "prejudge":
-        monkeypatch.setattr(
-            approval_module,
-            "route",
-            lambda cmd, dialect, policy: PreJudgeResult(
-                Route.BLOCK, "matched_block", (), (), policy.policy_id, "digest"
-            ),
-        )
-    else:
-        monkeypatch.setattr(
-            approval_module,
-            "route",
-            lambda cmd, dialect, policy: PreJudgeResult(
-                Route.DEFER, "unmatched_unit", (), (), policy.policy_id, "digest"
-            ),
-        )
+    monkeypatch.setattr(
+        approval_module,
+        "route",
+        lambda cmd, dialect, policy: PreJudgeResult(Route.DEFER, "unmatched_unit", (), (), policy.policy_id, "digest"),
+    )
 
-        async def reply(request: ApprovalRequest) -> None:
-            await bus.publish(
-                ApprovalResponse(
-                    request_id=request.request_id,
-                    approved=True,
-                    modified_args={"command": "echo approved"},
-                )
+    async def reply(request: ApprovalRequest) -> None:
+        await bus.publish(
+            ApprovalResponse(
+                request_id=request.request_id,
+                approved=True,
+                modified_args={"command": "echo approved"},
             )
+        )
 
-        await bus.subscribe(ApprovalRequest, reply)
+    await bus.subscribe(ApprovalRequest, reply)
 
-        async def rewrite_edited_command(**kwargs) -> bool:
-            kwargs["context"].arguments["command"] = "echo rewritten"
-            return False
+    async def rewrite_edited_command(**kwargs) -> bool:
+        kwargs["context"].arguments["command"] = "echo rewritten"
+        return False
 
-        monkeypatch.setattr(approval_module, "apply_before_tool_hooks", rewrite_edited_command)
+    monkeypatch.setattr(approval_module, "apply_before_tool_hooks", rewrite_edited_command)
 
     try:
         await event_mw.process(context, lambda: approval.process(context, execute))
         assert not executed
         assert len(results) == 1
-        assert results[0].metadata[TOOL_ERROR_KIND_METADATA_KEY] == expected_kind
+        assert results[0].metadata[TOOL_ERROR_KIND_METADATA_KEY] == "approval_invalidated"
         assert "approval" not in results[0].metadata
     finally:
         await approval.close()
+        await bus.unsubscribe(ApprovalRequest, reply)
 
 
 class _ShellArgs(BaseModel):
@@ -185,29 +166,28 @@ class _ShellArgs(BaseModel):
 @pytest.mark.parametrize(
     "arguments",
     [
-        _ShellArgs(command="rm fixture"),
-        MappingProxyType({"command": "rm fixture"}),
-        '{"command": "rm fixture"}',
+        _ShellArgs(command="unknown_tool fixture"),
+        MappingProxyType({"command": "unknown_tool fixture"}),
+        '{"command": "unknown_tool fixture"}',
     ],
     ids=["pydantic_model", "read_only_mapping", "json_string"],
 )
-async def test_enforce_block_reads_non_dict_shell_arguments(monkeypatch, arguments):
-    """BLOCK rules see the same command text the approval request would show."""
+async def test_enforce_defer_reads_non_dict_shell_arguments(monkeypatch, arguments):
+    """The route and ordinary approval request see the same command text."""
     monkeypatch.setattr(approval_module, "load_policy", lambda _: Policy("enforce", "pilot", ()))
     routed: list[str] = []
 
-    def block(cmd, dialect, policy):
+    def defer(cmd, dialect, policy):
         routed.append(cmd)
-        return PreJudgeResult(Route.BLOCK, "matched_block", (), (), policy.policy_id, "digest")
+        return PreJudgeResult(Route.DEFER, "unmatched_unit", (), (), policy.policy_id, "digest")
 
-    monkeypatch.setattr(approval_module, "route", block)
+    monkeypatch.setattr(approval_module, "route", defer)
     tool = FunctionTool(name="bash")
     set_tool_kind(tool, KIND_SHELL)
     bus = EventBus()
     requests: list[ApprovalRequest] = []
 
     async def reject(req: ApprovalRequest):
-        # Answer instead of hanging if the BLOCK rule was skipped.
         requests.append(req)
         await bus.publish(ApprovalResponse(request_id=req.request_id, approved=False))
 
@@ -226,10 +206,11 @@ async def test_enforce_block_reads_non_dict_shell_arguments(monkeypatch, argumen
 
     try:
         await middleware.process(context, execute)
-        assert routed == ["rm fixture"]
-        assert requests == []
+        assert routed == ["unknown_tool fixture"]
+        assert len(requests) == 1
+        assert requests[0].args == {"command": "unknown_tool fixture"}
         assert not executed
-        assert context.result == "Error: Command blocked by structured pre-judge."
+        assert context.metadata[approval_module._REJECTION_SOURCE_KEY] == "user"
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, reject)
@@ -280,15 +261,15 @@ async def test_enforce_without_command_text_logs_defer_and_asks(monkeypatch, cap
     [
         ("git status", 1, 0),
         ("git 'status'", 1, 0),  # Valid quoted literal still ALLOWs
-        ("ls *.py", 1, 0),  # Legacy readonly approval, now a built-in policy
-        ("rm x", 0, 0),  # Explicit YAML BLOCK
-        ("$'rm' x", 0, 0),
-        ("$'\\x72m' x", 0, 0),
-        ("rm x\n)", 0, 0),
+        ("ls *.py", 1, 0),  # DEFER retains the existing readonly shortcut
+        ("rm x", 0, 1),  # Unmatched commands enter ordinary approval
+        ("$'rm' x", 0, 1),
+        ("$'\\x72m' x", 0, 1),
+        ("rm x\n)", 0, 1),
         ("git\\\nstatus", 0, 1),  # Escaped newline is not static argv [git, status]
         ('unsafe_tool -f "pyproject."*', 0, 1),  # Concatenated glob is dynamic
         ("unsafe_tool -f {a,b}.txt", 0, 1),  # Brace expansion is dynamic
-        ("echo ~", 0, 1),  # Unquoted tilde expansion
+        ("echo ~", 1, 0),  # Structured DEFER; legacy readonly approval still applies
     ],
 )
 async def test_real_parser_yaml_policy_and_approval_integration(
@@ -302,8 +283,6 @@ async def test_real_parser_yaml_policy_and_approval_integration(
     policy_file.write_text(
         'schema_version: 1\nmode: "enforce"\npolicy_id: end-to-end\n'
         "rules:\n"
-        "  - id: block-rm\n    effect: block\n    target: command\n"
-        "    match:\n      prefix_first: [rm]\n"
         "  - id: allow-status\n    effect: allow\n    target: command\n"
         "    match:\n      argv_exact: [git, status]\n"
         "  - id: bad-static-glob\n    effect: allow\n    target: command\n"
@@ -342,35 +321,35 @@ async def test_real_parser_yaml_policy_and_approval_integration(
         await middleware.process(context, execute)
         assert executions == expected_executions
         assert len(requests) == expected_requests
+        if command in ("ls *.py", "echo ~"):
+            assert middleware._decisions[-1]["status"] == "auto_approved"
+        if expected_requests:
+            assert context.metadata[approval_module._REJECTION_SOURCE_KEY] == "user"
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, reject)
 
 
 @pytest.mark.parametrize(
-    ("blocked_name", "command", "should_execute"),
+    "command",
     [
-        ("rm", "ls *.py", True),
-        ("ls", "ls *.py", False),
+        "ls *.py",
+        "ls 2>/dev/null",
+        "sort f",
     ],
 )
-async def test_real_parser_block_only_keeps_readonly_and_block_precedence(
-    tmp_path, monkeypatch, blocked_name, command, should_execute
-):
+async def test_real_parser_empty_policy_keeps_readonly_approval(tmp_path, monkeypatch, command):
     pytest.importorskip("tree_sitter")
     pytest.importorskip("tree_sitter_bash")
     from chrys.service.approval.prejudge_v2 import load_policy
 
     path = tmp_path / "prejudge.yaml"
     path.write_text(
-        'schema_version: 1\nmode: "enforce"\npolicy_id: only-block\n'
-        "rules:\n  - id: block-command\n    effect: block\n    target: command\n"
-        f"    match:\n      prefix_first: [{blocked_name}]\n",
+        'schema_version: 1\nmode: "enforce"\npolicy_id: empty\nrules: []\n',
         encoding="utf-8",
     )
     loaded = load_policy(path)
-    assert len(loaded.rules) == 1
-    assert loaded.readonly_rules
+    assert loaded.rules == ()
     monkeypatch.setattr(approval_module, "load_policy", lambda _: loaded)
     tool = FunctionTool(name="bash")
     set_tool_kind(tool, KIND_SHELL)
@@ -389,7 +368,8 @@ async def test_real_parser_block_only_keeps_readonly_and_block_precedence(
 
     try:
         await middleware.process(context, execute)
-        assert executed is should_execute
+        assert executed
+        assert middleware._decisions[-1]["status"] == "auto_approved"
     finally:
         await middleware.close()
 
@@ -520,8 +500,8 @@ async def test_human_edited_command_does_not_reenter_prejudge(monkeypatch):
     def fake_route(command, dialect, policy):
         routed.append(command)
         return PreJudgeResult(
-            Route.BLOCK if command == "rm x" else Route.DEFER,
-            "matched_block" if command == "rm x" else "unmatched_unit",
+            Route.DEFER,
+            "unmatched_unit",
             (),
             (),
             policy.policy_id,
