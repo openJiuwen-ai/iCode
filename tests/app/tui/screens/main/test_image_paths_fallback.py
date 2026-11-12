@@ -16,7 +16,8 @@ def test_every_image_a_draft_sends_becomes_a_plain_path(tmp_path: Path) -> None:
     for name in ("label.png", "typed.png", "pasted.png"):
         (tmp_path / name).write_bytes(png_bytes((1, 2, 3)))
     references, _ = EMPTY_REFERENCES.with_new("image", str(tmp_path / "label.png"))
-    references, _ = references.with_new("quote", "see @pasted.png")
+    references, quote = references.with_new("quote", "see @pasted.png")
+    references = references.with_following_text(quote, "a comment")
     references, _ = references.with_new("paste", "look at @pasted.png\nand [Image #1]\n.\n.")
     owner = ShortcutIntent("look", "", "")
     draft = ChatDraft("[Image #1] @typed.png [Quote #1] [Pasted text #1 +3 lines]", owner=owner, references=references)
@@ -29,7 +30,9 @@ def test_every_image_a_draft_sends_becomes_a_plain_path(tmp_path: Path) -> None:
     # Label text in a paste is just text (one level); its typed image mention attaches, so it becomes a path.
     assert paste.content == f"look at {tmp_path / 'pasted.png'}\nand [Image #1]\n.\n."
     # A quote attaches nothing, so it is left as it was; the owner stays.
-    assert converted.references.get("quote", 1) == references.get("quote", 1)
+    assert converted.references.get("quote", 1) is quote
+    # The comment written after the quote's label stays with that same quote.
+    assert converted.references.following_text(quote) == "a comment"
     assert converted.owner == owner
     assert "@" not in converted.sent_text().replace("\\@", "")
     assert converted.references.get("paste", 1).label == references.get("paste", 1).label  # type: ignore[union-attr]

@@ -375,7 +375,7 @@ def test_session_restore_moves_shell_panel_to_existing_restored_cwd(tmp_path: Pa
     restored_cwd.mkdir()
 
     class _FakePanel:
-        border_subtitle = None
+        workspace_cwd = ""
 
         def update_welcome(self, *, profile: str = "", cwd: str = "") -> None:
             self.welcome_info = (profile, cwd)
@@ -388,7 +388,7 @@ def test_session_restore_moves_shell_panel_to_existing_restored_cwd(tmp_path: Pa
 
         def set_workspace_cwd(self, cwd: str) -> None:
             calls.append(("workspace_cwd", cwd))
-            self.border_subtitle = Text(cwd)
+            self.workspace_cwd = cwd
 
         def update_usage(self, tokens: int, total_session_tokens: int = 0) -> None:
             calls.append(("usage", (tokens, total_session_tokens)))
@@ -468,7 +468,7 @@ def test_session_restore_moves_shell_panel_to_existing_restored_cwd(tmp_path: Pa
     assert ("shell_cwd", str(restored_cwd)) in calls
     assert ("paste_cwd", str(restored_cwd)) in calls
     assert ("workspace_cwd", str(restored_cwd)) in calls
-    assert panel.border_subtitle.plain == str(restored_cwd)
+    assert panel.workspace_cwd == str(restored_cwd)
 
 
 def test_workspace_update_with_messages_updates_terminal_title_and_chdir_marker(tmp_path: Path) -> None:
@@ -483,7 +483,7 @@ def test_workspace_update_with_messages_updates_terminal_title_and_chdir_marker(
     next_cwd.mkdir()
 
     class _FakePanel:
-        border_subtitle = None
+        workspace_cwd = ""
 
         async def add_system(self, text: str, *, key: str | None = None) -> None:
             calls.append(("add_system_key", key))
@@ -497,7 +497,7 @@ def test_workspace_update_with_messages_updates_terminal_title_and_chdir_marker(
 
         def set_workspace_cwd(self, cwd: str) -> None:
             calls.append(("workspace_cwd", cwd))
-            self.border_subtitle = Text(cwd)
+            self.workspace_cwd = cwd
 
     class _FakeShellPanel:
         async def change_directory(self, cwd: str) -> None:
@@ -539,7 +539,7 @@ def test_workspace_update_with_messages_updates_terminal_title_and_chdir_marker(
 
     assert state.workspace_marker.current_cwd == str(next_cwd)
     assert workspace_cwds == [str(next_cwd)]
-    assert panel.border_subtitle.plain == str(next_cwd)
+    assert panel.workspace_cwd == str(next_cwd)
     assert ("paste_cwd", str(next_cwd)) in calls
     assert ("shell_cwd", str(next_cwd)) in calls
     assert ("remove_system", "chdir") in calls
@@ -555,14 +555,14 @@ def test_workspace_update_with_missing_cwd_does_not_change_shell_directory(tmp_p
     missing_cwd = tmp_path / "deleted-workspace"
 
     class _FakePanel:
-        border_subtitle = None
+        workspace_cwd = ""
 
         def update_welcome(self, *, profile: str = "", cwd: str = "") -> None:
             calls.append(("welcome", (profile, cwd)))
 
         def set_workspace_cwd(self, cwd: str) -> None:
             calls.append(("workspace_cwd", cwd))
-            self.border_subtitle = Text(cwd)
+            self.workspace_cwd = cwd
 
     class _FakeShellPanel:
         async def change_directory(self, cwd: str) -> None:
@@ -604,7 +604,7 @@ def test_workspace_update_with_missing_cwd_does_not_change_shell_directory(tmp_p
 
     assert state.workspace_marker.current_cwd == str(missing_cwd)
     assert workspace_cwds == [str(missing_cwd)]
-    assert panel.border_subtitle.plain == str(missing_cwd)
+    assert panel.workspace_cwd == str(missing_cwd)
     assert ("paste_cwd", str(missing_cwd)) in calls
     assert ("welcome", ("Code Agent", str(missing_cwd))) in calls
     assert terminal_title_cwds == [str(missing_cwd)]

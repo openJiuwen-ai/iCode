@@ -8,8 +8,14 @@ import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+
+from rich.cells import cell_len
+from rich.text import Text
+
+from chrys.app.tui.util.paths import middle_cut_path
+from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +53,25 @@ class _WatchTarget:
     non_git_cwd: Path | None = None
 
 
-def format_workspace_subtitle(cwd: str, branch: str) -> str:
-    """Return the chat border subtitle for *cwd* and an optional git branch."""
+def format_workspace_subtitle(cwd: str, branch: str, *, width: int | None) -> Text:
+    """Fit the workspace path to the border while retaining its final directory and branch."""
     if not cwd:
-        return ""
-    if not branch:
-        return cwd
-    return f"{cwd} ({branch})"
+        return Text()
+    cwd = sanitize_legacy_scalar(cwd)
+    windows_path = PureWindowsPath(cwd)
+    windows_style = bool(windows_path.drive) or ("\\" in cwd and "/" not in cwd)
+    path = windows_path if windows_style else PurePosixPath(cwd)
+    if not path.anchor or len(path.parts) > 1:
+        cwd = cwd.rstrip("/\\" if windows_style else "/")
+    branch = sanitize_legacy_scalar(branch)
+    suffix = f" ({branch})" if branch else ""
+    if width is None:
+        return Text(cwd + suffix)
+    separator = "\\" if "\\" in cwd and "/" not in cwd else "/"
+    name = cwd.rsplit(separator, 1)[-1]
+    minimum = min(cell_len(cwd), cell_len(name) + 2) if name else cell_len(cwd)
+    path_width = max(min(minimum, max(0, width)), width - cell_len(suffix))
+    return Text(middle_cut_path(cwd, path_width) + suffix)
 
 
 def read_git_branch_snapshot(cwd: str) -> GitBranchSnapshot:

@@ -14,8 +14,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from itertools import zip_longest
+from typing import TYPE_CHECKING
 
 from textual.content import Content
+
+if TYPE_CHECKING:
+    from chrys.app.tui.util.diff_comments import LineIdentity
 
 type Opcode = tuple[str, int, int, int, int]
 """One `difflib` opcode: what happened to lines ``[i1, i2)`` of the old text and ``[j1, j2)`` of the new."""
@@ -60,6 +64,19 @@ class DiffRow:
     def is_placeholder(self) -> bool:
         """Whether the row stands where no line is. Every column draws such a row as hatching."""
         return self.kind in _PLACEHOLDERS
+
+
+def line_identity(row: DiffRow) -> LineIdentity | None:
+    if row.is_placeholder:
+        return None
+    if row.kind is RowKind.REMOVED:
+        return ("before", row.before) if row.before is not None else None
+    return ("after", row.after) if row.after is not None else None
+
+
+def comment_side(row: DiffRow) -> Side:
+    """The number column a comment on ``row`` shows in: the old one for a removed line, else the new one."""
+    return Side.BEFORE if row.kind is RowKind.REMOVED else Side.AFTER
 
 
 _PLACEHOLDERS = frozenset({RowKind.FILLER, RowKind.BREAK})
@@ -111,8 +128,14 @@ def split_rows(
             right.append(BREAK_ROW)
         for tag, i1, i2, j1, j2 in hunk:
             if tag == "equal":
-                left.extend(DiffRow(RowKind.CONTEXT, before[index], before=index + 1) for index in range(i1, i2))
-                right.extend(DiffRow(RowKind.CONTEXT, after[index], after=index + 1) for index in range(j1, j2))
+                left.extend(
+                    DiffRow(RowKind.CONTEXT, before[i1 + offset], i1 + offset + 1, j1 + offset + 1)
+                    for offset in range(i2 - i1)
+                )
+                right.extend(
+                    DiffRow(RowKind.CONTEXT, after[j1 + offset], i1 + offset + 1, j1 + offset + 1)
+                    for offset in range(j2 - j1)
+                )
             else:
                 pairs = zip_longest(_removed_rows(before, i1, i2), _added_rows(after, j1, j2), fillvalue=FILLER_ROW)
                 for removed, added in pairs:

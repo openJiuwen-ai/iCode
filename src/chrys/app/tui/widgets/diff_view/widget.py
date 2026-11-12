@@ -14,9 +14,10 @@ from textual import containers
 from textual.reactive import reactive, var
 from textual.widgets import Static
 
+from chrys.app.tui.util.diff_comments import LineIdentity
 from chrys.app.tui.widgets.diff_view.cells import ANNOTATION_WIDTH, annotation_cell, number_cell, number_cell_width
 from chrys.app.tui.widgets.diff_view.code import CodeColumn
-from chrys.app.tui.widgets.diff_view.compute import compute_highlighted_lines, compute_hunks, shown_code
+from chrys.app.tui.widgets.diff_view.compute import compared_lines, compute_highlighted_lines, hunks_between, shown_code
 from chrys.app.tui.widgets.diff_view.gutter import GutterColumn
 from chrys.app.tui.widgets.diff_view.rows import (
     DiffRow,
@@ -24,6 +25,8 @@ from chrys.app.tui.widgets.diff_view.rows import (
     Side,
     change_counts,
     code_width,
+    comment_side,
+    line_identity,
     number_width,
     split_rows,
     unified_rows,
@@ -105,9 +108,13 @@ class DiffView(containers.VerticalGroup):
         """Show at most this many rows, and scroll within them."""
         self.auto_height = False
         """Be as tall as the diff. ``max_display_lines`` takes precedence."""
+        self.comments_enabled = False
+        """Allow number clicks and the comment icon in the number columns. Only the chat Diff pane opts in."""
+        self._comment_lines: frozenset[LineIdentity] = frozenset()
         self.show_scrollbars = True
         """Without scrollbars, a unified diff is drawn by a single `UnifiedDiffLines`."""
         self._shown_code: tuple[str, str] | None = None
+        self._lines: tuple[list[str], list[str]] | None = None
         self._hunks: list[Hunk] | None = None
         self._highlighted_lines: tuple[list[Content], list[Content]] | None = None
         self._layouts: dict[bool, _Layout] = {}
@@ -116,7 +123,20 @@ class DiffView(containers.VerticalGroup):
 
     async def prepare(self) -> None:
         """Work the diff out off the event loop, for the layout that ``split`` selects."""
-        await asyncio.to_thread(self._layout, self.split)
+        await asyncio.to_thread(self._prepare)
+
+    def _prepare(self) -> None:
+        if self.comments_enabled:
+            # A comment looks its line up on the click: split a large file here, off the event loop.
+            _ = self.lines
+        self._layout(self.split)
+
+    @property
+    def lines(self) -> tuple[list[str], list[str]]:
+        """The old and the new text split into lines as the diff compares them."""
+        if self._lines is None:
+            self._lines = (compared_lines(self.code_before), compared_lines(self.code_after))
+        return self._lines
 
     @property
     def shown_code(self) -> tuple[str, str]:
@@ -128,7 +148,10 @@ class DiffView(containers.VerticalGroup):
     @property
     def hunks(self) -> list[Hunk]:
         if self._hunks is None:
-            self._hunks = compute_hunks(self.code_before, self.code_after)
+            # Compare the lines comments keep rather than splitting both texts a second time.
+            self._hunks = hunks_between(
+                *(self._lines or (compared_lines(self.code_before), compared_lines(self.code_after)))
+            )
         return self._hunks
 
     @property
@@ -202,24 +225,50 @@ class DiffView(containers.VerticalGroup):
         text first and under the edge bar, then the new.
         """
         code = CodeColumn(rows, layout.code_width, classes=classes)
+        code.comments_enabled = self.comments_enabled
         if not self.show_scrollbars:
             code.styles.overflow_x = "hidden"
             code.styles.overflow_y = "hidden"
         digits = layout.number_digits
-        if side is None:
-            numbers = [
-                partial(number_cell, side=Side.BEFORE, digits=digits, edge=True),
-                partial(number_cell, side=Side.AFTER, digits=digits, edge=False),
-            ]
-        else:
-            numbers = [partial(number_cell, side=side, digits=digits, edge=True)]
+        sides = (Side.BEFORE, Side.AFTER) if side is None else (side,)
         code.gutters = [
-            *(GutterColumn(rows, cell, number_cell_width(digits), code) for cell in numbers),
+            *(
+                GutterColumn(
+                    rows,
+                    partial(number_cell, side=number_side, digits=digits, edge=index == 0),
+                    number_cell_width(digits),
+                    code,
+                    side=number_side,
+                )
+                for index, number_side in enumerate(sides)
+            ),
             GutterColumn(rows, annotation_cell, ANNOTATION_WIDTH, code, classes="annotations"),
         ]
+        if self.comments_enabled:
+            for gutter in code.gutters:
+                if gutter.side is not None:
+                    gutter.styles.pointer = "pointer"
+                    gutter.comment_rows = self._comment_rows(gutter)
         yield from code.gutters
         yield code
         return code
+
+    def _comment_rows(self, gutter: GutterColumn) -> frozenset[int]:
+        """The rows whose number *gutter* shows as the comment icon."""
+        if not self.comments_enabled or not self._comment_lines:
+            return frozenset()
+        return frozenset(
+            index
+            for index, row in enumerate(gutter.rows)
+            if line_identity(row) in self._comment_lines and comment_side(row) is gutter.side
+        )
+
+    def set_comment_lines(self, lines: frozenset[LineIdentity]) -> None:
+        """Redraw the icons now and keep the lines across split/unified recomposition."""
+        self._comment_lines = lines
+        for gutter in self.query(GutterColumn):
+            if gutter.side is not None:
+                gutter.set_comment_rows(self._comment_rows(gutter))
 
     def _set_height(self, widget: UnifiedDiffLines | containers.HorizontalGroup, natural_height: int) -> None:
         if self.max_display_lines is not None:

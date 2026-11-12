@@ -6509,6 +6509,62 @@ msgstr "第 {turn_id} 轮"
 msgid "tui.diff.title"
 msgstr "文件变更查看器"
 
+#. English: Added to the message input: {label}
+#. chrys-meta={"fingerprint":"80e9e8a7b8f9e55e091e9cccf750cf55bca3170cbbeeeec099b9b29acbbb5f8f","multiline":false,"placeholders":["label"]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.added"
+msgstr "已放进输入框：{label}"
+
+#. English: After · Line {line}
+#. chrys-meta={"fingerprint":"b55fafb2275085f5cc8b13b6e124d150a0ae78c265265cf1af83d703cb4e2f7a","multiline":false,"placeholders":["line"]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.after"
+msgstr "修改后 · 第 {line} 行"
+
+#. English: Before · Line {line}
+#. chrys-meta={"fingerprint":"dbdca3b9937e6a4bf25205d57b3c517c7ea348607a256f95c917ce0e86bbdac3","multiline":false,"placeholders":["line"]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.before"
+msgstr "修改前 · 第 {line} 行"
+
+#. English: Comment on this line. It goes into the message input; send it from
+#. the chat.
+#. chrys-meta={"fingerprint":"d702dd6ebd458915e5e029767623306ff24a140c7fe3918b100c0e0266c46637","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/diff_view/gutter.py
+msgid "tui.diff_quote.bubble_add"
+msgstr "评论这一行。写好后放进输入框，回到聊天再发送"
+
+#. English: Edit this comment
+#. chrys-meta={"fingerprint":"0368e8e8a22a4988378ebf109d352c442da748fdc7addcc6f6dae183613dca75","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/diff_view/gutter.py
+msgid "tui.diff_quote.bubble_edit"
+msgstr "修改这条评论"
+
+#. English: This comment has changed in the message input. Please edit it
+#. there.
+#. chrys-meta={"fingerprint":"6b8551f54169a2914b07c7729a34074ace921fcd7920b4992518c0164c72db49","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.changed"
+msgstr "这条评论已在输入框中修改，请在输入框里编辑"
+
+#. English: Enter Add to input · Esc Cancel
+#. chrys-meta={"fingerprint":"3684c040645c37799fedc579f4f82ff9c2be1a7f9aeef679dfe5c663f1cc6dbc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.keys"
+msgstr "Enter 放进输入框 · Esc 取消"
+
+#. English: ↵/Esc
+#. chrys-meta={"fingerprint":"dbbd605270852ad25109974948d0345b4f16b13bf4e949c4776ffaa59bfdbfc9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.keys_compact"
+msgstr "↵/Esc"
+
+#. English: Comment (optional)
+#. chrys-meta={"fingerprint":"55dbf38be8fb0ff0c358a9283d3a8ee503ba832c7496b8e675d6089a7567916e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/diff/comment_bar.py
+msgid "tui.diff_quote.placeholder"
+msgstr "修改意见（可留空）"
+
 #. English: Image #{number}
 #. chrys-meta={"fingerprint":"3ccbb7b3b7d5a3d2972da8c90ec05727248326e41d0ee0adaccd7b067e9a725a","multiline":false,"placeholders":["number"]}
 #: src/chrys/app/tui/widgets/chrome/draft_text_area.py
@@ -10345,7 +10401,7 @@ msgstr "引用"
 
 #. English: The message input cannot take a quote right now.
 #. chrys-meta={"fingerprint":"d18638da52c62272e849df046bafd5ad2e2ca44d608529bf3fcdd2a63ad7366b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/screen.py
+#: src/chrys/app/tui/widgets/chat/quote_popup.py
 msgid "tui.quote.input_unavailable"
 msgstr "输入框现在无法插入引用。"
 

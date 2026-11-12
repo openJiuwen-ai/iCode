@@ -125,7 +125,7 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
-from chrys.foundation.text.draft_references import DraftReferences, image_labels_to_paths
+from chrys.foundation.text.draft_references import image_labels_to_paths
 from chrys.foundation.tool_result_metadata import canonical_tool_result_status
 from chrys.orchestration.engine.run.attachments import replace_image_mentions_with_paths
 from chrys.service.approval.policy import ApprovalMode
@@ -2286,13 +2286,15 @@ def _with_image_paths(draft: ChatDraft, cwd: Path) -> ChatDraft:
     mentions inside its folded pastes (which send as the user's own text),
     become paths; quotes attach nothing anyway.
     """
-    references = DraftReferences(
-        tuple(
+    # Only pastes are rebuilt; what follows a quote's label stays with that same quote.
+    references = replace(
+        draft.references,
+        entries=tuple(
             replace(entry, content=replace_image_mentions_with_paths(entry.content, cwd))
             if entry.kind == "paste"
             else entry
             for entry in draft.references.entries
-        )
+        ),
     )
     text = replace_image_mentions_with_paths(image_labels_to_paths(draft.text, draft.references), cwd)
     return replace(draft, text=text, references=references)

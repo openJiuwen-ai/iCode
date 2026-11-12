@@ -1237,6 +1237,20 @@ _message_ids.update(
     }
 )
 
+_message_ids.update(
+    {
+        "tui.diff_quote.placeholder",
+        "tui.diff_quote.added",
+        "tui.diff_quote.before",
+        "tui.diff_quote.after",
+        "tui.diff_quote.keys",
+        "tui.diff_quote.keys_compact",
+        "tui.diff_quote.changed",
+        "tui.diff_quote.bubble_add",
+        "tui.diff_quote.bubble_edit",
+    }
+)
+
 EXPECTED_MESSAGE_IDS: frozenset[str | tuple[str, str]] = (
     frozenset(_message_ids)
     | APPROVAL_MESSAGE_IDS

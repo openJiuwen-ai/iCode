@@ -18,6 +18,7 @@ from chrys.app.tui.screens.main.live_diff import (
     merge_live_mutation,
 )
 from chrys.app.tui.screens.main.state import MainScreenServices
+from chrys.app.tui.util.diff_comments import DiffComment
 from chrys.app.tui.util.diff_content import PreviewCountCache, count_preview_entry
 from chrys.app.tui.util.diff_entries import DiffFocus
 from chrys.foundation.models.mutation_scope import MutationScope
@@ -280,6 +281,8 @@ class DiffController:
         self._services = services
         self._live_diff = live_diff
         self._view = view
+        self._comments: list[DiffComment] = []
+        self._comments_session_id: str | None = None
         self._workspace_cwd = workspace_cwd
         self._is_agent_running = is_agent_running
         self._run_generation = run_generation
@@ -303,13 +306,22 @@ class DiffController:
             all_entries=[],
             load_data=load_data,
             focus=focus,
+            draft=self._view.diff_draft(),
+            comments=self._comments,
         )
+
+    def chat_session_changed(self, session_id: str) -> None:
+        """Release comments only at a session boundary, preserving send/undo handles."""
+        if session_id != self._comments_session_id:
+            self._comments.clear()
+            self._comments_session_id = session_id
 
     def _capture_request(self) -> DiffRequest:
         engine_provider = self._services.engine_provider
         engine = cast("DiffEngine", engine_provider()) if engine_provider is not None else None
         cwd = self._workspace_cwd()
         session_id = self._view.current_chat_session_id()
+        self.chat_session_changed(session_id)
         live_mutations: dict[str, LiveFileMutation] = {}
         live_tracker_turn_count: int | None = None
         live_scope: MutationScope | None = None
@@ -417,7 +429,12 @@ class DiffController:
             return await asyncio.to_thread(load_diff_entries_by_period, store, session_id, cwd, mutations_data=snapshot)
 
         self._view.open_diff_screen(
-            {}, cwd=cwd, subtitle_parts=(), session_id=session_id, all_entries=[], load_data=load_data
+            {},
+            cwd=cwd,
+            subtitle_parts=(),
+            session_id=session_id,
+            all_entries=[],
+            load_data=load_data,
         )
 
     def preview_entries(self, data: DiffLoadResult, session_id: str) -> tuple[DiffFileEntry, ...]:
