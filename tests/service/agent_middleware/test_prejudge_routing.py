@@ -307,7 +307,7 @@ async def test_real_parser_yaml_policy_and_approval_integration(
         "  - id: allow-status\n    effect: allow\n    target: command\n"
         "    match:\n      argv_exact: [git, status]\n"
         "  - id: bad-static-glob\n    effect: allow\n    target: command\n"
-        '    match:\n      argv_exact: [unsafe_tool, "-f", "pyproject.*"]\n',
+        '    match:\n      argv_exact: [unsafe_tool, "-f", "pyproject.*"]\n'
         "  - id: bad-brace\n    effect: allow\n    target: command\n"
         '    match:\n      argv_exact: [unsafe_tool, "-f", "{a,b}.txt"]\n'
         "  - id: bad-tilde\n    effect: allow\n    target: command\n"
