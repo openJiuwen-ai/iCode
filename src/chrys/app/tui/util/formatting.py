@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from rich.cells import cell_len
+from rich.cells import cell_len, split_graphemes
 
 if TYPE_CHECKING:
     from rich.text import Text
@@ -154,3 +154,25 @@ def elide_middle(text: str, max_width: int) -> str:
             break
         tail.append(char)
     return f"{''.join(head)}…{''.join(reversed(tail))}"
+
+
+def grapheme_clusters(text: str) -> list[tuple[str, int]]:
+    """Split *text* into the renderer's grapheme clusters and their cell widths.
+
+    A pair of regional indicators (a flag emoji) counts as one two-cell cluster:
+    rich splits the pair into two one-cell spans, while a terminal draws them as
+    a single glyph, and cutting between them shows two stray letters instead.
+    """
+    spans, _ = split_graphemes(text)
+    clusters: list[tuple[str, int]] = []
+    index = 0
+    while index < len(spans):
+        start, end, cells = spans[index]
+        if end == start + 1 and 0x1F1E6 <= ord(text[start]) <= 0x1F1FF and index + 1 < len(spans):
+            next_start, next_end, next_cells = spans[index + 1]
+            if next_end == next_start + 1 and 0x1F1E6 <= ord(text[next_start]) <= 0x1F1FF:
+                end, cells = next_end, cells + next_cells
+                index += 1
+        clusters.append((text[start:end], cells))
+        index += 1
+    return clusters
