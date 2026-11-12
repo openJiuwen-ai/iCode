@@ -73,11 +73,6 @@ ImportMcpServersDialog {
     text-overflow: clip;
 }
 
-/* An open card's title sits a line lower, under the card's top padding. */
-#mcp-import-servers .mcp-import-item.-open > .mcp-import-tick {
-    margin: 2 1 0 0;
-}
-
 #mcp-import-servers .mcp-import-tick:focus {
     background: $foreground 8%;
 }

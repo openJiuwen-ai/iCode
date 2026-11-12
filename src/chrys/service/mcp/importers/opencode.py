@@ -18,7 +18,7 @@ Git root and the folders below it. ``OPENCODE_CONFIG_CONTENT`` and managed
 settings are not read.
 
 Files are JSON with comments and trailing commas. ``{env:NAME}`` in
-``environment`` and ``headers`` values becomes an iCode reference, with a
+``environment``, ``headers`` and ``cwd`` values becomes an iCode reference, with a
 warning to set it: opencode reads an unset variable as empty, iCode refuses
 to start the server. A value
 read from a file (``{file:path}``) or a variable anywhere else can't be
@@ -32,15 +32,22 @@ turns off a server an earlier file defines. A server's file is the last one
 that sets its ``type``.
 
 Checked against https://github.com/anomalyco/opencode tag ``v1.19.5``
-(commit 810c0eba1a), read 2026-11-10 unless noted: the files read
+(commit 810c0eba1a), latest V1 tag checked 2026-11-12: the files read
 (``packages/opencode/src/config/config.ts:272-274, 415-445``,
-``packages/opencode/src/config/paths.ts``, read 2026-11-11), each checked on its
+``packages/opencode/src/config/paths.ts``), each checked on its
 own, then folded with remeda's ``mergeDeep``
 (``packages/opencode/src/config/config.ts:42, 188-198``); an ``mcp``
 entry is a full server or ``{enabled}`` only, and ``experimental.mcp_timeout``
 is in milliseconds (``packages/core/src/v1/config/config.ts:113-115, 182-184``,
 ``packages/core/src/v1/config/mcp.ts``); the 60-second default
-(``packages/opencode/src/mcp/index.ts:661-684``), read 2026-11-04. opencode 2
+(``packages/opencode/src/mcp/index.ts:661-684``). Local ``cwd``
+uses ``path.resolve(baseDir, mcp.cwd)`` when nonempty, otherwise ``baseDir``
+(``packages/opencode/src/mcp/index.ts:346``); static paths are normalized
+lexically on import but stay relative to the session, and ``~`` stays literal.
+Variable cwd values stay deferred with a warning: future values can introduce
+literal tildes, POSIX symlink traversal or Windows drive-relative paths that
+iCode resolves differently or refuses. Import never reads those values.
+opencode 2
 (``v2.x`` tags, npm ``@opencode/cli``) is not followed.
 """
 
@@ -50,6 +57,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.platform import get_platform
 from chrys.service.mcp.importers.base import (
     ImportContext,
     ImportWarning,
@@ -66,6 +74,7 @@ from chrys.service.mcp.importers.base import (
     git_root,
     is_str_list,
     is_str_mapping,
+    lexical_cwd,
     merge_entries,
     missing_fields,
     parse_json_object,
@@ -83,7 +92,7 @@ _ENV_RE = re.compile(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
 _REFERENCE_RE = re.compile(r"\{(?:env|file):[^}]*\}")
 _FILE_RE = re.compile(r"\{file:[^}]*\}")
 _DEFAULT_TIMEOUT_SECONDS = 60.0
-_LOCAL_FIELDS = ("type", "command", "environment", "enabled", "timeout")
+_LOCAL_FIELDS = ("type", "command", "environment", "enabled", "timeout", "cwd")
 _REMOTE_FIELDS = ("type", "url", "headers", "enabled", "timeout", "oauth")
 
 # A string, or a comment, in JSONC; and a comma before a closing bracket, outside strings. An unclosed
@@ -190,10 +199,28 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
         command, env = entry.get("command"), entry.get("environment", {})
         if not is_str_list(command) or not command or not command[0] or not is_str_mapping(env):
             return None
+        if "cwd" in entry and not isinstance(entry["cwd"], str):
+            return None
         values, value_refusal = _values(env, f"{prefix}.environment")
+        cwd_values, cwd_refusal = _values({"cwd": entry["cwd"]}, prefix) if entry.get("cwd") else ({}, None)
+        cwd = cwd_values.get("cwd")
+        if cwd is not None:
+            if not variables(cwd):
+                cwd = (lexical_cwd(entry["cwd"]),)
+            elif any(part == ".." for part in re.split(r"[/\\]" if get_platform().is_windows else "/", entry["cwd"])):
+                # A variable can span path components; normalizing across it now
+                # or leaving link/.. to POSIX later would change the source path.
+                cwd_refusal = (f"{prefix}.cwd", Problem.VALUE_NOT_REPRESENTABLE)
         fields = [(prefix, name), *((f"{prefix}.command[{i}]", part) for i, part in enumerate(command))]
-        field, problem = _first_refusal(fields) or value_refusal or ("", Problem.VALUE_NOT_REPRESENTABLE)
-        warnings = [missing_fields(entry, _LOCAL_FIELDS, prefix), _variables_required(values)]
+        field, problem = _first_refusal(fields) or value_refusal or cwd_refusal or ("", Problem.VALUE_NOT_REPRESENTABLE)
+        warnings = [
+            missing_fields(entry, _LOCAL_FIELDS, prefix),
+            _variables_required(values),
+            _variables_required(cwd_values),
+            ImportWarning(WarningKind.OPENCODE_VARIABLE_CWD, (f"{prefix}.cwd",))
+            if cwd is not None and variables(cwd)
+            else None,
+        ]
         return SourceServer(
             name,
             path,
@@ -207,6 +234,8 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
             blocked_field=field,
             blocked_problem=problem,
             env_path=f"{prefix}.environment",
+            cwd=cwd,
+            cwd_path=f"{prefix}.cwd",
         )
     if entry.get("type") == "remote":
         url, headers = entry.get("url"), entry.get("headers", {})

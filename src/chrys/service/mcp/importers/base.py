@@ -16,7 +16,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import ntpath
 import os
+import posixpath
 import re
 import unicodedata
 from dataclasses import dataclass, field, replace
@@ -25,9 +27,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import secure_open_regular_binary
 from chrys.foundation.util.header_charset import header_name_charset_error, header_value_charset_error
-from chrys.service.mcp.validation import MCP_PROGRESSIVE_CONTROL_TOOL_NAMES, validate_mcp_tool_name_prefix
+from chrys.service.mcp.validation import (
+    MCP_PROGRESSIVE_CONTROL_TOOL_NAMES,
+    is_windows_drive_relative_path,
+    validate_mcp_tool_name_prefix,
+)
 from chrys.service.profiles.agents.schema import MCPServerConfig
 
 if TYPE_CHECKING:
@@ -52,6 +59,10 @@ class WarningKind(StrEnum):
     """Referenced variables that must be set and nonempty in iCode; ``items`` names them."""
     TOOLS_RESTRICTED = "tools_restricted"
     """Tool rules iCode can't express, so the server is imported with no tools."""
+    CODEX_RELATIVE_CWD = "codex_relative_cwd"
+    """An explicit relative cwd, anchored at Codex's launch folder rather than its workspace."""
+    OPENCODE_VARIABLE_CWD = "opencode_variable_cwd"
+    """A cwd whose future variable values can change path semantics; ``items`` names the field."""
 
 
 class Problem(StrEnum):
@@ -133,6 +144,9 @@ class SourceServer:
     blocked_problem: Problem = Problem.VALUE_NOT_REPRESENTABLE
     env_path: str = ""
     headers_path: str = ""
+    cwd: Value | None = None
+    """None means absent; an explicit empty path must not become iCode's session default."""
+    cwd_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,6 +461,40 @@ def literal(text: str) -> Value:
     return (text,)
 
 
+def shield_tilde(value: Value) -> Value:
+    """Keep a source's leading literal tilde from becoming an iCode home reference."""
+    if value and isinstance(value[0], str) and value[0].startswith("~"):
+        return ("./", *value)
+    return value
+
+
+def _unsafe_cwd(text: str) -> bool:
+    # These paths go into a single-line editor. Refuse instead of replacing
+    # controls or bidi marks, since replacing them would name another folder.
+    return any(
+        unicodedata.category(char) in {"Cc", "Zl", "Zp"}
+        or char in "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+        for char in text
+    )
+
+
+def lexical_cwd(text: str) -> str:
+    """Normalize a static Node path.resolve input without binding it to an import-time folder.
+
+    Node collapses POSIX's double leading slash too. No filesystem lookup is
+    allowed here: in particular, ``link/..`` collapses before following a link.
+    Keep unsafe input intact for conversion to refuse, even if normalization
+    would otherwise remove the component containing it.
+    """
+    if _unsafe_cwd(text):
+        return text
+    path = ntpath if get_platform().is_windows else posixpath
+    normalized = path.normpath(text)
+    if path is posixpath and normalized.startswith("//"):
+        normalized = "/" + normalized.lstrip("/")
+    return normalized
+
+
 def convert(server: SourceServer) -> McpImportCandidate:
     """*server* as an importable candidate, or a refusal naming the first value iCode can't hold."""
 
@@ -460,7 +508,16 @@ def convert(server: SourceServer) -> McpImportCandidate:
     stdio = server.transport == "stdio"
     env: dict[str, str] = {}
     headers: dict[str, str] = {}
+    cwd = ""
     if stdio:
+        if server.cwd is not None:
+            text = render(shield_tilde(server.cwd))
+            if text is None or not text.strip() or text != text.strip() or _unsafe_cwd(text):
+                return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.cwd_path)
+            if get_platform().is_windows and not variables(server.cwd) and is_windows_drive_relative_path(text):
+                # The runtime refuses drive-relative paths even on the workspace's drive.
+                return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.cwd_path)
+            cwd = text
         for key, value in server.env.items():
             text = render(value)
             # The configuration editor trims values and refuses empty ones.
@@ -484,6 +541,7 @@ def convert(server: SourceServer) -> McpImportCandidate:
         command=server.command if stdio else "",
         args=list(server.args) if stdio else [],
         env=env,
+        cwd=cwd,
         url="" if stdio else server.url,
         headers=headers,
         enabled=server.enabled,

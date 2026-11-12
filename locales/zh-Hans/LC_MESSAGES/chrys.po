@@ -9166,12 +9166,29 @@ msgstr "从其他应用导入"
 msgid "tui.mcp.import.warning.auth_not_imported"
 msgstr "{agent} 中的登录状态不会导入。如果服务器需要认证，请在导入后添加服务器要求的请求头。"
 
+#. English: Codex resolves this relative Working Directory from the folder
+#. where Codex was started; {app} resolves it from the current session folder.
+#. Check Working Directory after import and use an absolute path if it must
+#. stay fixed. An explicit "." is different from leaving it unset in Codex.
+#. chrys-meta={"fingerprint":"27f14a92711decce1d38dea7fd1b7aecc5706aee23806387c2b468e2b2674772","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.codex_relative_cwd"
+msgstr "Codex 从启动 Codex 的目录计算此相对工作目录；{app} 从当前会话目录计算。请在导入后检查“工作目录”，需要固定位置时改用绝对路径。在 Codex 中，显式填写“.”与不配置工作目录不同。"
+
 #. English: These {agent} settings are not imported. Set up any the server
 #. needs in {app} by hand:
 #. chrys-meta={"fingerprint":"2105bed342763e0ae116ab18fc3f5bc71aa4af3551a69dafc48463f061f1fc4b","multiline":false,"placeholders":["agent","app"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.not_imported"
 msgstr "以下 {agent} 配置项不会导入。如服务器需要，请在 {app} 中手动设置："
+
+#. English: OpenCode and {app} can resolve a variable's path differently. Check
+#. the expanded Working Directory with Test; use a full absolute path without
+#. '~' or '..'. The User Guide (F8) has examples. The setting:
+#. chrys-meta={"fingerprint":"e56055c708f23993b7c9bd349a170983412d9f27ba9c2221d49803439772acfa","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.opencode_variable_cwd"
+msgstr "OpenCode 和 {app} 对变量路径的解析可能不同。请点击“测试”检查展开后的工作目录；需要保持相同目录时，使用不含 '~' 或 '..' 的完整绝对路径。用户指南（F8）中有具体示例。设置项："
 
 #. English: {agent} limits this server's tools in a way {app} can't express, so
 #. it is imported with no tools. Choose its tools in “Available Tool Scope”

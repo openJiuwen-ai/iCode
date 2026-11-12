@@ -25,18 +25,34 @@ names variables Codex passes on from its own environment; iCode passes on its
 whole environment except ``PYTHONHOME`` and ``PYTHONPATH``, so those two
 become references the user must set.
 
-Checked against https://github.com/openai/codex tag ``rust-v0.166.0``
-(commit 6ff1e1ca3b), read 2026-11-04; paths are under ``codex-rs``: the files
-read and trust (``config/src/loader/mod.rs``, read again 2026-11-11), how they merge
-(``config/src/merge.rs``, read again 2026-11-10), the server fields
+An omitted ``cwd`` uses the session folder. An explicit relative ``cwd``
+(including ``.``) instead starts at Codex's process launch folder, even when
+its workspace is elsewhere; import preserves the path with a warning to
+check that change of base. ``~`` and shell variables are literal paths.
+
+Checked against https://github.com/openai/codex tag ``rust-v0.167.2``
+(commit ce21072c90), read 2026-11-12; paths are under ``codex-rs``: the files
+read and trust (``config/src/loader/mod.rs``), how they merge
+(``config/src/merge.rs``), the server fields
 (``config/src/mcp_types.rs``), header variables and bearer tokens
 (``rmcp-client/src/utils.rs``) and the 300-second default
 (``codex-mcp/src/rmcp_client.rs:122``).
+The explicit ``cwd`` is passed to the subprocess unchanged; only its absence
+gets the launcher's session-folder fallback
+(``rmcp-client/src/stdio_server_launcher.rs:453-472`` and
+``codex-mcp/src/rmcp_client.rs``). Local Codex 0.167.2 probes on
+2026-11-12, through app-server threads with different ``cwd`` values and
+``codex exec -C`` with different workspaces, confirmed: absent uses the
+workspace, ``.`` and other relative paths use the launch folder, and an
+absolute path stays fixed. Neither the config folder nor the importer's
+current process folder establishes the original Codex launch folder.
 """
 
 from __future__ import annotations
 
+import ntpath
 import os
+import posixpath
 import re
 import tomllib
 from pathlib import Path
@@ -245,14 +261,20 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
     prefix = f"mcp_servers.{name}"
     if not _shape_is_valid(entry):
         return None
-    warnings: list[ImportWarning | None] = [missing_fields(entry, (*_READ, _TIMEOUT), prefix)]
     stdio = "command" in entry
+    known = (*_READ, _TIMEOUT, "cwd") if stdio else (*_READ, _TIMEOUT)
+    warnings: list[ImportWarning | None] = [missing_fields(entry, known, prefix)]
     headers, blocked = ({}, "") if stdio else _headers(entry, prefix)
     problem = Problem.VALUE_NOT_REPRESENTABLE
     if remote := _remote_setting(entry, prefix):
         blocked, problem = remote, Problem.REMOTE_ENVIRONMENT
     env: dict[str, Value] = {key: literal(text) for key, text in entry.get("env", {}).items()}
     if stdio:
+        # Codex anchors explicit relative paths at launch, iCode at the session;
+        # even "." is explicit and must not collapse into the absent-cwd default.
+        cwd_paths = ntpath if get_platform().is_windows else posixpath
+        if "cwd" in entry and entry["cwd"] and not cwd_paths.isabs(entry["cwd"]):
+            warnings.append(ImportWarning(WarningKind.CODEX_RELATIVE_CWD))
         passed = [name for name in _passed_variables(entry) if name.upper() in _NOT_INHERITED]
         passed = [name for name in passed if not any(key.upper() == name.upper() for key in env)]
         env |= {name: (Var(name),) for name in passed}
@@ -293,6 +315,8 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         blocked_problem=problem,
         env_path=f"{prefix}.env",
         headers_path=f"{prefix}.http_headers",
+        cwd=literal(entry["cwd"]) if stdio and "cwd" in entry else None,
+        cwd_path=f"{prefix}.cwd",
     )
 
 
@@ -320,7 +344,7 @@ def _shape_is_valid(entry: dict[str, Any]) -> bool:
     """Codex's own checks on the settings the import reads."""
     if ("command" in entry) == ("url" in entry):
         return False
-    strings = ("command", "url", "bearer_token_env_var", "environment_id")
+    strings = ("command", "url", "bearer_token_env_var", "environment_id", "cwd")
     if any(key in entry and not isinstance(entry[key], str) for key in strings):
         return False
     if any(key in entry and not is_str_list(entry[key]) for key in ("args", "enabled_tools", "disabled_tools")):

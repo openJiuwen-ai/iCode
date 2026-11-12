@@ -23,13 +23,19 @@ for manual setup. ``~`` in ``command`` and ``args`` is expanded, as pi does.
 can; a rule hiding tools iCode can't express imports the server with no tools.
 ``timeout`` is in seconds, default 60.
 
-Checked against https://github.com/earendil-works/pi tag ``v1.5.0`` (commit
-f9a263655), read 2026-11-04; paths are under ``packages/coding-agent/src``:
-the files and project overrides (``extensions/mcp/config.ts:92-157``), trust
-(``core/trust-manager.ts``, ``core/project-trust.ts``, read 2026-11-11), the
+Checked against https://github.com/earendil-works/pi tag ``v1.5.2`` (commit
+b4afdddf44), read 2026-11-12; paths are under ``packages/coding-agent/src``:
+the files and project overrides (``extensions/mcp/config.ts``), trust
+(``core/trust-manager.ts``, ``core/project-trust.ts``), the
 variables and ``!`` commands (``core/resolve-config-value.ts``), the server
-fields and exposure (``core/mcp-servers.ts:260-317``) and ``~`` expansion
-(``extensions/mcp/runtime.ts:89-121``).
+fields and exposure (``core/mcp-servers.ts``, delegating shared validation to
+``packages/mcp/src/config.ts:165-173``) and ``~`` expansion
+(``extensions/mcp/runtime.ts:91-123``).
+``cwd`` must be a string: null and false are invalid, not defaults.
+It is a literal path (no variable or command expansion): runtime.ts:120
+expands its home prefix, then resolves it lexically from the session folder.
+Import keeps ordinary paths relative; an empty string, like absence, means
+that session folder. Remaining tildes are shielded from iCode's expansion.
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.platform import get_platform
 from chrys.service.mcp.importers.base import (
     ImportContext,
     ImportWarning,
@@ -56,6 +63,8 @@ from chrys.service.mcp.importers.base import (
     folders_down_to,
     is_str_list,
     is_str_mapping,
+    lexical_cwd,
+    literal,
     missing_fields,
     path_matches,
     positive_number,
@@ -69,7 +78,19 @@ _NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 _VARIABLE_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*)|([$!]))")
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 _OVERRIDE_KEYS = frozenset({"enabled", "exposure", "toolExposure"})
-_READ = ("type", "command", "args", "env", "url", "headers", "enabled", "description", "timeout", "oauth", "auth")
+_READ = (
+    "type",
+    "command",
+    "args",
+    "env",
+    "url",
+    "headers",
+    "enabled",
+    "description",
+    "timeout",
+    "oauth",
+    "auth",
+)
 _READ_EXPOSURE = (*_READ, "exposure", "toolExposure")
 
 _FULL, _ON_DEMAND, _HIDDEN = "full", "on_demand", "hidden"
@@ -159,7 +180,9 @@ def _trusted(workspace_cwd: str, agent: Path, read: Callable[[Path], dict[str, A
 
 
 def _expand_home(text: str, home: Path) -> str:
-    return str(home) + text[1:] if text == "~" or text.startswith(("~/", "~\\")) else text
+    if text == "~" or text.startswith("~/") or (get_platform().is_windows and text.startswith("~\\")):
+        return str(home) + text[1:]
+    return text
 
 
 def _is_exposure(value: object) -> bool:
@@ -190,6 +213,8 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
         transport = "stdio"
         if not is_str_list(entry.get("args", [])) or not is_str_mapping(entry.get("env", {})):
             return None
+        if "cwd" in entry and not isinstance(entry["cwd"], str):
+            return None
     else:
         return None
     texts: Mapping[str, str] = entry.get("env" if transport == "stdio" else "headers", {})
@@ -197,7 +222,8 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
     values = {key: _value(text) for key, text in texts.items()}
     blocked = next((f"{group}.{key}" for key, text in texts.items() if text.startswith("!")), "")
     access = _tool_access(exposure, rules, prefix)
-    warnings: list[ImportWarning | None] = [*access.warnings, _unread(entry, prefix)]
+    known = (*_READ_EXPOSURE, "cwd") if transport == "stdio" else _READ_EXPOSURE
+    warnings: list[ImportWarning | None] = [*access.warnings, missing_fields(entry, known, prefix)]
     authorized = any(key.lower() == "authorization" for key in texts)
     if transport == "http" and (entry.get("auth") or ("oauth" in entry and not authorized)):
         warnings.append(ImportWarning(WarningKind.AUTH_NOT_IMPORTED))
@@ -221,13 +247,13 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
         blocked_problem=Problem.VALUE_FROM_FILE_OR_COMMAND,
         env_path=group,
         headers_path=group,
+        cwd=literal(_cwd(entry["cwd"], home)) if transport == "stdio" and entry.get("cwd") else None,
+        cwd_path=f"{prefix}.cwd",
     )
 
 
-def _unread(entry: dict[str, Any], prefix: str) -> ImportWarning | None:
-    # The default working folder is pi's start folder, as iCode starts servers in its workspace.
-    known = (*_READ_EXPOSURE, "cwd") if entry.get("cwd") in ("", ".") else _READ_EXPOSURE
-    return missing_fields(entry, known, prefix)
+def _cwd(text: str, home: Path) -> str:
+    return lexical_cwd(_expand_home(text, home))
 
 
 def _value(text: str) -> Value:

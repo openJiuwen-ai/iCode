@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ntpath
 import re
 from collections.abc import Collection
 
@@ -12,6 +13,11 @@ MCP_PROGRESSIVE_CONTROL_TOOL_NAMES = ("list_mcp_tools", "load_tool", "unload_too
 
 _PROVIDER_SAFE_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _TOOL_NAME_PREFIX_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$")
+
+
+def is_windows_drive_relative_path(path: str) -> bool:
+    """Whether Windows resolves *path* from a drive's current folder (for example ``C:tools``)."""
+    return bool(ntpath.splitdrive(path)[0]) and not ntpath.isabs(path)
 
 
 def validate_mcp_exposed_tool_name(value: object) -> str | None:

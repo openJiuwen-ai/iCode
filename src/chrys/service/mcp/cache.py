@@ -52,6 +52,7 @@ from chrys.service.mcp import _connection
 from chrys.service.mcp._stdio_transport import _inherited_stdio_environment
 from chrys.service.mcp.errors import MCPConnectionError, mcp_failure_diagnostic
 from chrys.service.mcp.result_limits import _MCP_PROMPT_TOOL_KEY, truncate_mcp_result
+from chrys.service.mcp.validation import is_windows_drive_relative_path
 
 if TYPE_CHECKING:
     from chrys.service.mcp.owned import MCPTool
@@ -171,7 +172,7 @@ def resolve_stdio_cwd(configured: str, workspace_cwd: str | None, *, location: s
     filled = resolve_env_templates(configured, location=location, allow_commands=False)
     written = os.path.expanduser(filled)
     windows = get_platform().is_windows
-    if windows and os.path.splitdrive(written)[0] and not os.path.isabs(written):
+    if windows and is_windows_drive_relative_path(written):
         return os.path.normpath(written)
     if not os.path.isabs(written):
         written = os.path.join(workspace_cwd or os.getcwd(), written)

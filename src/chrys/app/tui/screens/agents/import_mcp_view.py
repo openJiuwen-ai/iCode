@@ -39,6 +39,14 @@ _TOOLS_RESTRICTED = msg(
     "tui.mcp.import.warning.tools_restricted",
     fallback="{agent} limits this server's tools in a way {app} can't express, so it is imported with no tools. Choose its tools in “Available Tool Scope” after import.",
 )
+_CODEX_RELATIVE_CWD = msg(
+    "tui.mcp.import.warning.codex_relative_cwd",
+    fallback='Codex resolves this relative Working Directory from the folder where Codex was started; {app} resolves it from the current session folder. Check Working Directory after import and use an absolute path if it must stay fixed. An explicit "." is different from leaving it unset in Codex.',
+)
+_OPENCODE_VARIABLE_CWD = msg(
+    "tui.mcp.import.warning.opencode_variable_cwd",
+    fallback="OpenCode and {app} can resolve a variable's path differently. Check the expanded Working Directory with Test; use a full absolute path without '~' or '..'. The User Guide (F8) has examples. The setting:",
+)
 _UNSUPPORTED_CONNECTION = msg(
     "tui.mcp.import.problem.unsupported_connection",
     fallback="This server connects over {transport}; {app} supports only STDIO and Streamable HTTP. If the server also offers one of these, add it manually.",
@@ -85,6 +93,10 @@ def warning_text(warning: ImportWarning, agent: str) -> MessageRef:
             return _VARIABLE_REQUIRED.bind(app=APP_DISPLAY_NAME)
         case Kind.TOOLS_RESTRICTED:
             return _TOOLS_RESTRICTED.bind(agent=agent, app=APP_DISPLAY_NAME)
+        case Kind.CODEX_RELATIVE_CWD:
+            return _CODEX_RELATIVE_CWD.bind(app=APP_DISPLAY_NAME)
+        case Kind.OPENCODE_VARIABLE_CWD:
+            return _OPENCODE_VARIABLE_CWD.bind(app=APP_DISPLAY_NAME)
 
 
 def problem_text(candidate: McpImportCandidate, agent: str) -> MessageRef:

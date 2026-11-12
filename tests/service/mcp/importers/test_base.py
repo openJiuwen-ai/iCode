@@ -70,6 +70,8 @@ def test_convert_builds_the_server_with_a_tool_prefix_and_rounded_timeout() -> N
         allowed_tools=("a",),
         progressive=True,
         always_load=("a",),
+        cwd=(Var("ROOT"), "/server"),
+        cwd_path="servers.srv.cwd",
     )
 
     candidate = convert(server)
@@ -81,6 +83,7 @@ def test_convert_builds_the_server_with_a_tool_prefix_and_rounded_timeout() -> N
     assert (config.enabled, config.description, config.request_timeout) == (False, "from source", 2)
     assert (config.allowed_tools, config.use_progressive_disclosure, config.always_load) == (["a"], True, ["a"])
     assert config.tool_name_prefix == "srv"
+    assert config.cwd == "{{ROOT}}/server"
 
 
 def test_convert_caps_an_unbounded_timeout() -> None:
@@ -138,11 +141,12 @@ def test_convert_trims_header_whitespace_and_ignores_env_of_http_servers() -> No
 
 
 def test_convert_keeps_only_the_settings_of_the_servers_own_transport() -> None:
-    http = convert(_http(command="run", args=("-x",))).config
+    http = convert(_http(command="run", args=("-x",), cwd=("bad\0path",))).config
     stdio = convert(_stdio(args=("-x",), url="https://x")).config
 
     assert http is not None and stdio is not None
     assert (http.command, http.args, http.url) == ("", [], "https://x")
+    assert http.cwd == ""
     assert (stdio.command, stdio.args, stdio.url) == ("run", ["-x"], "")
 
 

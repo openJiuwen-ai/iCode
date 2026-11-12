@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +36,13 @@ def _only(home: Path, body: str) -> McpImportCandidate:
     _write(home / ".codex" / "config.toml", "[mcp_servers.srv]\n" + body)
     (candidate,) = _discover(home).candidates
     return candidate
+
+
+def test_http_cwd_is_reported_as_not_imported(tmp_path: Path) -> None:
+    candidate = _only(tmp_path, 'url = "https://x/mcp"\ncwd = "/unused"\nhttp_headers = { Authorization = "token" }\n')
+    assert candidate.config is not None
+    assert candidate.config.cwd == ""
+    assert candidate.warnings == (ImportWarning(Kind.NOT_IMPORTED, ("mcp_servers.srv.cwd",)),)
 
 
 @pytest.mark.parametrize(
@@ -102,18 +111,17 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, body: str, expected: d
             {"request_timeout": None},
         ),
         (
-            'command = "run"\ncwd = "/x"\nstartup_timeout_sec = 5\ndefault_tools_approval_mode = "approve"\n',
+            f'command = "run"\ncwd = {json.dumps(os.path.abspath("/x"))}\nstartup_timeout_sec = 5\ndefault_tools_approval_mode = "approve"\n',
             (
                 ImportWarning(
                     Kind.NOT_IMPORTED,
                     (
-                        "mcp_servers.srv.cwd",
                         "mcp_servers.srv.startup_timeout_sec",
                         "mcp_servers.srv.default_tools_approval_mode",
                     ),
                 ),
             ),
-            {},
+            {"cwd": os.path.abspath("/x")},
         ),
     ],
     ids=[
@@ -196,12 +204,12 @@ def test_project_files_merge_into_same_named_user_servers(tmp_path: Path) -> Non
     workspace = repo / "pkg"
     workspace.mkdir()
     user = (
-        '[mcp_servers.a]\ncommand = "user"\nargs = ["x", "y"]\nenv = { A = "1", B = "1" }\n'
+        '[mcp_servers.a]\ncommand = "user"\nargs = ["x", "y"]\ncwd = "user-dir"\nenv = { A = "1", B = "1" }\n'
         '[mcp_servers.off]\ncommand = "user"\n'
         '[mcp_servers.web]\nurl = "https://user"\nhttp_headers = { X = "1" }\n'
     ) + _trust(repo)
     _write(home / ".codex" / "config.toml", user)
-    root = '[mcp_servers.a]\ncommand = "root"\nargs = ["z"]\nenv = { B = "2" }\n[mcp_servers.off]\nenabled = false\n'
+    root = '[mcp_servers.a]\ncommand = "root"\nargs = ["z"]\ncwd = "root-dir"\nenv = { B = "2" }\n[mcp_servers.off]\nenabled = false\n'
     _write(repo / ".codex" / "config.toml", root)
     _write(workspace / ".codex" / "config.toml", '[mcp_servers.web]\nurl = "https://workspace"\n')
 
@@ -211,6 +219,8 @@ def test_project_files_merge_into_same_named_user_servers(tmp_path: Path) -> Non
     assert a is not None and off is not None and web is not None
     # Tables merge key by key; a list or a value replaces the earlier one.
     assert (a.command, a.args, a.env) == ("root", ["z"], {"A": "1", "B": "2"})
+    assert a.cwd == "root-dir"
+    assert candidates["a"].warnings == (ImportWarning(Kind.CODEX_RELATIVE_CWD),)
     assert off.enabled is False
     assert (web.url, web.headers) == ("https://workspace", {"X": "1"})
     # The file shown is the last one that sets the connection.

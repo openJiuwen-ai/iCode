@@ -8947,11 +8947,28 @@ msgstr ""
 msgid "tui.mcp.import.warning.auth_not_imported"
 msgstr ""
 
+#. English: Codex resolves this relative Working Directory from the folder
+#. where Codex was started; {app} resolves it from the current session folder.
+#. Check Working Directory after import and use an absolute path if it must
+#. stay fixed. An explicit "." is different from leaving it unset in Codex.
+#. chrys-meta={"fingerprint":"27f14a92711decce1d38dea7fd1b7aecc5706aee23806387c2b468e2b2674772","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.codex_relative_cwd"
+msgstr ""
+
 #. English: These {agent} settings are not imported. Set up any the server
 #. needs in {app} by hand:
 #. chrys-meta={"fingerprint":"2105bed342763e0ae116ab18fc3f5bc71aa4af3551a69dafc48463f061f1fc4b","multiline":false,"placeholders":["agent","app"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.not_imported"
+msgstr ""
+
+#. English: OpenCode and {app} can resolve a variable's path differently. Check
+#. the expanded Working Directory with Test; use a full absolute path without
+#. '~' or '..'. The User Guide (F8) has examples. The setting:
+#. chrys-meta={"fingerprint":"e56055c708f23993b7c9bd349a170983412d9f27ba9c2221d49803439772acfa","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.opencode_variable_cwd"
 msgstr ""
 
 #. English: {agent} limits this server's tools in a way {app} can't express, so

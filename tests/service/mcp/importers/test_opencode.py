@@ -114,7 +114,7 @@ def test_the_experimental_timeout_applies_to_servers_without_their_own(tmp_path:
         ({"type": "remote", "url": "https://x", "oauth": False}, ()),
         (
             {"type": "local", "command": ["run"], "cwd": "/x"},
-            (ImportWarning(Kind.NOT_IMPORTED, ("mcp.srv.cwd",)),),
+            (),
         ),
         (
             {"type": "local", "command": ["run"], "environment": {"A": "{env:T}", "B": "{env:U}-{env:T}"}},
@@ -125,7 +125,7 @@ def test_the_experimental_timeout_applies_to_servers_without_their_own(tmp_path:
             (ImportWarning(Kind.VARIABLE_REQUIRED, ("KEY",)),),
         ),
     ],
-    ids=["oauth", "oauth-by-default", "oauth-off", "unread-setting", "environment-variables", "header-variable"],
+    ids=["oauth", "oauth-by-default", "oauth-off", "cwd-imported", "environment-variables", "header-variable"],
 )
 def test_what_the_import_leaves_out_is_reported(
     tmp_path: Path, entry: dict[str, Any], warnings: tuple[ImportWarning, ...]
@@ -254,10 +254,16 @@ def test_the_config_dir_variable_spelling_the_global_folder_reads_it_first(
 
 def test_later_files_merge_into_same_named_servers(tmp_path: Path) -> None:
     home, workspace = tmp_path / "home", tmp_path / "ws"
-    full = {"type": "local", "command": ["global", "-x"], "environment": {"A": "1", "B": "1"}, "enabled": False}
+    full = {
+        "type": "local",
+        "command": ["global", "-x"],
+        "environment": {"A": "1", "B": "1"},
+        "enabled": False,
+        "cwd": "global-dir",
+    }
     _write(_global(home), {"mcp": {"srv": full, "off": {"type": "local", "command": ["run"]}}})
     project = {
-        "srv": {"type": "local", "command": ["project"], "environment": {"B": "2"}},
+        "srv": {"type": "local", "command": ["project"], "environment": {"B": "2"}, "cwd": "project-dir"},
         "off": {"enabled": False},
         "unknown": {"enabled": False},
     }
@@ -269,6 +275,7 @@ def test_later_files_merge_into_same_named_servers(tmp_path: Path) -> None:
     srv, off = candidates["srv"].config, candidates["off"].config
     assert srv is not None and off is not None
     assert (srv.command, srv.args, srv.env, srv.enabled) == ("project", [], {"A": "1", "B": "2"}, False)
+    assert srv.cwd == "project-dir"
     assert candidates["srv"].source_path == str(workspace / "opencode.json")
     assert not off.enabled
     assert candidates["off"].source_path == str(_global(home))

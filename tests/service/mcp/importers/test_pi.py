@@ -100,7 +100,7 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, entry: dict[str, Any],
         ),
         ({"url": "https://x", "oauth": {}}, (ImportWarning(Kind.AUTH_NOT_IMPORTED),), None),
         ({"url": "https://x", "auth": {"provider": "github"}}, (ImportWarning(Kind.AUTH_NOT_IMPORTED),), None),
-        ({"command": "run", "cwd": "/srv"}, (ImportWarning(Kind.NOT_IMPORTED, ("mcpServers.srv.cwd",)),), None),
+        ({"command": "run", "cwd": "/srv"}, (), None),
     ],
     ids=["hidden-tool", "pattern", "oauth", "provider", "cwd"],
 )
@@ -118,6 +118,20 @@ def test_oauth_metadata_beside_an_authorization_header_needs_no_warning(tmp_path
     candidate = _only(tmp_path, {"url": "https://x", "oauth": {}, "headers": {"authorization": "Bearer $T"}})
 
     assert candidate.warnings == ()
+
+
+@pytest.mark.parametrize("cwd", [None, False, 0, True, [], {}])
+def test_non_string_cwd_is_rejected_as_in_pi_1_5_2(tmp_path: Path, cwd: object) -> None:
+    # pi-mcp's validateStdioFields rejects these before runtime's nullish default.
+    _write(_global(tmp_path), {"mcpServers": {"srv": {"command": "run", "cwd": cwd}}})
+    assert _discover(tmp_path).candidates == ()
+
+
+def test_http_cwd_is_reported_as_not_imported(tmp_path: Path) -> None:
+    candidate = _only(tmp_path, {"url": "https://x", "cwd": "/unused", "headers": {"Authorization": "token"}})
+    assert candidate.config is not None
+    assert candidate.config.cwd == ""
+    assert candidate.warnings == (ImportWarning(Kind.NOT_IMPORTED, ("mcpServers.srv.cwd",)),)
 
 
 def test_a_value_from_a_command_is_listed_for_manual_setup(tmp_path: Path) -> None:
@@ -165,7 +179,12 @@ def test_project_servers_replace_global_ones_and_overrides_only_change_exposure(
     workspace = tmp_path / "ws"
     _write(
         _global(tmp_path),
-        {"mcpServers": {"a": {"command": "global"}, "b": {"command": "global", "env": {"K": "v"}}}},
+        {
+            "mcpServers": {
+                "a": {"command": "global", "cwd": "a-dir"},
+                "b": {"command": "global", "env": {"K": "v"}, "cwd": "b-dir"},
+            }
+        },
     )
     _write(
         workspace / ".pi" / "mcp.json",
@@ -185,7 +204,8 @@ def test_project_servers_replace_global_ones_and_overrides_only_change_exposure(
     assert set(candidates) == {"a", "b"}
     assert a is not None and b is not None
     assert (a.command, a.enabled, a.use_progressive_disclosure) == ("global", False, False)
-    assert (b.command, b.env) == ("project", {})
+    assert (b.command, b.env, b.cwd) == ("project", {}, "")
+    assert a.cwd == "a-dir"
 
 
 @pytest.mark.parametrize(

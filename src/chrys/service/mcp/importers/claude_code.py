@@ -38,6 +38,11 @@ https://code.claude.com/docs/en/settings-reference: the scopes and variables
 on 2026-11-04 (Claude Code 2.1.318), turning servers off and approvals on
 2026-11-11. The project key, the credential variables and trust were read
 from the Claude Code 2.1.318 bundle, as the docs name only examples of them.
+The public repository was checked again on 2026-11-12: latest tag v2.1.322
+(commit 6e1e44f643), main at 927b66497b. Its changelog reports MCP OAuth
+redirect hardening, but it does not contain the full configuration loader.
+The bundle checks above remain
+the basis for project keys, credential variables and trust.
 Recheck those when Claude Code changes where it keeps servers or how it turns
 them off.
 """

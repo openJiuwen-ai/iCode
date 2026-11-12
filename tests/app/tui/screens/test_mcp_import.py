@@ -8,7 +8,7 @@ from dataclasses import replace
 
 from rich.text import Text
 from textual.containers import VerticalScroll
-from textual.widgets import Button, OptionList, Static, TextArea
+from textual.widgets import Button, Input, OptionList, Static, TextArea
 from textual.widgets.collapsible import CollapsibleTitle
 
 from chrys.app.tui.i18n import LocaleController
@@ -49,6 +49,8 @@ from tests.app.tui.screens._mcp_import_support import (
     stdio,
     wait_for_items,
 )
+from tests.support.pilot_barrier import screen_is_settled
+from tests.support.tui_helpers import resize_when_settled
 from tests.support.waiting import wait_for
 
 _NEEDS_TOKEN = ImportWarning(WarningKind.VARIABLE_REQUIRED, ("TOKEN",))
@@ -141,12 +143,17 @@ def test_imported_server_keeps_its_description_origin_and_warnings() -> None:
 
 
 async def test_import_button_adds_ticked_servers_as_unsaved_cards(monkeypatch) -> None:
-    source = FakeSource("fake", "Fake", McpImportResult((candidate(stdio("github"), warnings=(_NEEDS_TOKEN,)),)))
+    imported = replace(stdio("github"), cwd="{{ROOT}}/server")
+    cwd_warning = ImportWarning(WarningKind.OPENCODE_VARIABLE_CWD, ("mcp.github.cwd",))
+    source = FakeSource(
+        "fake", "OpenCode", McpImportResult((candidate(imported, warnings=(_NEEDS_TOKEN, cwd_warning)),))
+    )
     monkeypatch.setattr(import_mcp_dialog, "IMPORT_SOURCES", (source,))
-    app = PanelApp(MCPConfigPanel([stdio("existing", "node")]))
+    app = PanelApp(MCPConfigPanel([replace(stdio("existing", "node"), cwd="existing-dir")]))
     description = [
-        "Imported from Fake (/src/config.json).",
+        "Imported from OpenCode (/src/config.json).",
         "⚠ Set these environment variables to nonempty values before starting iCode: TOKEN",
+        f"⚠ {format_message(warning_text(cwd_warning, 'OpenCode'))} mcp.github.cwd",
     ]
     async with app.run_test(size=(120, 50)) as pilot:
         app.panel.query_one("#mcp-import-btn", Button).press()
@@ -158,10 +165,11 @@ async def test_import_button_adds_ticked_servers_as_unsaved_cards(monkeypatch) -
         dialog = app.screen
         assert isinstance(dialog, ImportMcpServersDialog)
         (item,) = await wait_for_items(dialog, pilot, 1)
-        assert badge_text(item) == "⚠ 1"
+        assert badge_text(item) == "⚠ 2"
         # A folded card mounts its header only; its fields arrive when it is first opened, once.
         assert isinstance(item.card, MCPConnectionCard)
         assert not item.card.query(".config-card-body")
+        assert item.tick.region.y == item.card.query_one(".config-card-title").region.y
         item.card.set_collapsed(False, scroll_visible=False)
         await wait_for(lambda: bool(item.card.query("#mcp-desc-0")), pilot=pilot, description="fields mounted")
         item.card.set_collapsed(True)
@@ -172,6 +180,12 @@ async def test_import_button_adds_ticked_servers_as_unsaved_cards(monkeypatch) -
             description="reopened",
         )
         assert len(item.card.query(".config-card-body")) == 1
+        cwd_input = item.card.query_one("#mcp-cwd-0", Input)
+        assert (cwd_input.value, cwd_input.disabled) == ("{{ROOT}}/server", True)
+        await wait_for(lambda: screen_is_settled(app, dialog), pilot=pilot, description="expanded layout settled")
+        assert item.tick.region.y == item.card.query_one(".config-card-title").region.y
+        await resize_when_settled(pilot, 80, 40)
+        assert item.tick.region.y == item.card.query_one(".config-card-title").region.y
         # The preview's Description shows what Import saves, warnings included.
         assert item.card.query_one("#mcp-desc-0", TextArea).text.splitlines() == description
         confirm = dialog.query_one("#mcp-import-confirm", Button)
@@ -183,6 +197,7 @@ async def test_import_button_adds_ticked_servers_as_unsaved_cards(monkeypatch) -
         await wait_for(lambda: len(app.panel.query(MCPConnectionCard)) == 2, pilot=pilot, description="card added")
         rows = app.panel._snapshot_rows()
         assert [row.config.name for row in rows] == ["github", "existing"]
+        assert [row.config.cwd for row in rows] == ["{{ROOT}}/server", "existing-dir"]
         assert rows[0].config.description.splitlines() == description
         # Closing the window would drop the unsaved server: the user is told to save.
         await wait_for(
@@ -190,6 +205,53 @@ async def test_import_button_adds_ticked_servers_as_unsaved_cards(monkeypatch) -
             pilot=pilot,
             description="told to save",
         )
+
+
+async def test_an_unopened_preview_keeps_cwd_on_import(monkeypatch) -> None:
+    source = FakeSource("fake", "Fake", McpImportResult((candidate(replace(stdio("github"), cwd=".")),)))
+    monkeypatch.setattr(import_mcp_dialog, "IMPORT_SOURCES", (source,))
+    app = PanelApp(MCPConfigPanel([]))
+    async with app.run_test(size=(100, 40)) as pilot:
+        dialog = await open_dialog(app, pilot, [source])
+        (item,) = await wait_for_items(dialog, pilot, 1)
+        assert not item.card.query("#mcp-cwd-0")
+        item.tick.value = True
+        await import_ticked(dialog, pilot)
+        await wait_for(lambda: len(app.panel.query(MCPConnectionCard)) == 1, pilot=pilot, description="card added")
+        assert app.panel._snapshot_rows()[0].config.cwd == "."
+
+
+def test_codex_relative_cwd_warning_survives_import_in_both_languages() -> None:
+    warning = ImportWarning(WarningKind.CODEX_RELATIVE_CWD)
+    for locale in ("en", "zh-Hans"):
+        localizer = Localizer(locale)
+        config = imported_config(
+            candidate(replace(stdio("srv"), cwd="."), warnings=(warning,)), "Codex", localizer.render
+        )
+        assert config is not None
+        assert config.cwd == "."
+        assert localizer.render(warning_text(warning, "Codex")) in config.description
+        assert "/src" not in localizer.render(warning_text(warning, "Codex"))
+        assert "Codex" in config.description
+
+
+def test_opencode_variable_cwd_warning_survives_import_in_both_languages() -> None:
+    warning = ImportWarning(WarningKind.OPENCODE_VARIABLE_CWD, ("mcp.srv.cwd",))
+    for locale in ("en", "zh-Hans"):
+        localizer = Localizer(locale)
+        text = localizer.render(warning_text(warning, "OpenCode"))
+        config = imported_config(
+            candidate(replace(stdio("srv"), cwd="{{ROOT}}"), warnings=(_NEEDS_TOKEN, warning)),
+            "OpenCode",
+            localizer.render,
+        )
+        assert config is not None
+        assert config.cwd == "{{ROOT}}"
+        assert text in config.description
+        assert "mcp.srv.cwd" in config.description
+        assert "OpenCode" in text and "iCode" in text and "F8" in text
+        assert ("Check the expanded Working Directory with Test" if locale == "en" else "测试") in text
+        assert config.description.count("⚠") == 2
 
 
 async def test_pressing_import_twice_opens_one_dialog_and_one_confirmation(monkeypatch) -> None:
