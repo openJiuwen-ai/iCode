@@ -189,3 +189,44 @@ async def test_optimize_reruns_only_failing_cases(tmp_path: Path) -> None:
     assert calls[0] == ["already-ok", "need-hello"]  # baseline full suite
     assert calls[1] == ["need-hello"]  # gate: only still-failing ids
     assert calls[2] == ["already-ok", "need-hello"]  # full-suite confirm before adopt
+
+
+@pytest.mark.asyncio
+async def test_optimize_stub_synthesizes_regex_response(tmp_path: Path) -> None:
+    dataset = tmp_path / "suite.json"
+    dataset.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dataset_id": "regex-stub",
+                "cases": [
+                    {
+                        "case_id": "regex-only",
+                        "prompt": "Announce the deployment",
+                        "evaluation": {
+                            "method": "script_based",
+                            "expect": {"response_regex": ["deployed successfully"]},
+                        },
+                    },
+                    {
+                        "case_id": "mixed-checks",
+                        "prompt": "Confirm the rollout",
+                        "evaluation": {
+                            "method": "script_based",
+                            "expect": {
+                                "response_contains": ["rollout complete"],
+                                "response_regex": ["zero downtime"],
+                            },
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    created = ctx.create_task(name="regex-opt", max_iterations=1, dataset_path=dataset)
+    result = await ctx.optimize_task(created["task_id"], max_epochs=1)
+    assert result.baseline_score == 0.0
+    assert result.best_score == 1.0
+    assert result.perfect is True

@@ -125,7 +125,11 @@ def _inline_skill_text(profile: AgentProfile) -> str:
 
 
 def _synthesize_passing_case(case: RsiCase, workdir: Path) -> CaseRunResult:
-    """Write files / response that satisfy declarative expect checks."""
+    """Write files / response that satisfy declarative expect checks.
+
+    Regex patterns join the response literally, so only self-matching
+    patterns are guaranteed to satisfy the judge.
+    """
     expect = case.expect
     try:
         for rel, content in expect.file_equals.items():
@@ -152,7 +156,7 @@ def _synthesize_passing_case(case: RsiCase, workdir: Path) -> CaseRunResult:
             workdir=workdir,
             error=f"expect path escapes workdir: {exc}",
         )
-    response_parts = list(expect.response_contains) or ["ok"]
+    response_parts = [*expect.response_contains, *expect.response_regex] or ["ok"]
     return CaseRunResult(
         case_id=case.case_id,
         response_text=" ".join(response_parts),
