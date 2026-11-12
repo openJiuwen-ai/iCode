@@ -192,7 +192,6 @@ def test_actual_yaml_rule_load_and_route(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "config",
     [
-        "schema_version: 1\nmode: off\npolicy_id: pilot\nrules: []",
         'schema_version: 1\nmode: "enfroce"\npolicy_id: pilot\nrules: []',
         'schema_version: 1\nmode: "off"\nunknown: true',
         (
@@ -337,3 +336,68 @@ def test_user_structured_matcher_is_supported(tmp_path, monkeypatch):
     )
     policy = pj.load_policy(path)
     assert policy.rules[0].structured_match is not None
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        "",
+        "mode: off\n",
+        "mode: false\n",
+        'schema_version: 1\nmode: "off"\n',
+    ],
+)
+def test_off_config_never_requires_parser(tmp_path, monkeypatch, config):
+    def forbidden_parser():
+        pytest.fail("Turning the policy off must not load Tree-sitter")
+
+    monkeypatch.setattr(pj, "_ensure_bash_parser", forbidden_parser)
+    path = tmp_path / "prejudge.yaml"
+    path.write_text(config, encoding="utf-8")
+    assert pj.load_policy(path).mode == "off"
+
+
+def test_invalid_enforce_rule_reports_file_and_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(pj, "_ensure_bash_parser", lambda: None)
+    path = tmp_path / "prejudge.yaml"
+    path.write_text(
+        'schema_version: 1\nmode: "enforce"\npolicy_id: pilot\n'
+        'rules:\n  - id: typo-deny\n    effect: deny\n'
+        '    target: command\n    match:\n      prefix_first: [rm]\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError) as failure:
+        pj.load_policy(path)
+    assert str(path) in str(failure.value)
+    assert "typo-deny" in str(failure.value)
+
+
+def test_invalid_shadow_yaml_parse_error_is_not_suppressed(tmp_path):
+    path = tmp_path / "prejudge.yaml"
+    path.write_text('mode: "shadow"\nrules: [\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="prejudge.yaml"):
+        pj.load_policy(path)
+
+
+def test_invalid_shadow_rule_warns_with_rule_context(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(pj, "_ensure_bash_parser", lambda: None)
+    path = tmp_path / "prejudge.yaml"
+    path.write_text(
+        'schema_version: 1\nmode: "shadow"\npolicy_id: pilot\n'
+        'rules:\n  - id: bad-shadow\n    effect: deny\n'
+        '    target: command\n    match:\n      prefix_first: [rm]\n',
+        encoding="utf-8",
+    )
+    with caplog.at_level("WARNING"):
+        assert pj.load_policy(path).mode == "off"
+    assert str(path) in caplog.text
+    assert "bad-shadow" in caplog.text
+
+
+def test_unsupported_dialect_warns_block_is_inactive(caplog):
+    policy = pj.Policy("enforce", "pilot", (_rule("block", pj.Route.BLOCK, "prefix_first", "rm"),))
+    with caplog.at_level("WARNING"):
+        result = pj.route("rm x", "fish", policy)
+    assert result.route is pj.Route.DEFER
+    assert "BLOCK rules are inactive" in caplog.text
+    assert "fish" in caplog.text

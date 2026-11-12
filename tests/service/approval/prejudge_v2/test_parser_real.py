@@ -3,10 +3,19 @@
 
 from __future__ import annotations
 
+import importlib.util
+import os
+
 import pytest
 
 from chrys.service.approval.prejudge_v2 import Route, analyze, load_policy, route
 
+# These tests are a release gate, not an optional smoke test, on CI.
+# Local development without native parser packages may still skip the module.
+if os.environ.get("CI") and (
+    importlib.util.find_spec("tree_sitter") is None or importlib.util.find_spec("tree_sitter_bash") is None
+):
+    raise RuntimeError("CI requires the pinned Tree-sitter dependencies; real-parser tests must not skip")
 pytest.importorskip("tree_sitter")
 pytest.importorskip("tree_sitter_bash")
 

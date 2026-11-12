@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
+from weakref import WeakKeyDictionary
 
 from chrys.foundation.events.types import (
     ApprovalCancelled,
@@ -54,7 +55,7 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
 from chrys.service.approval.arbitration import ApprovalDecisionArbiter, ApprovalJudgeInput
 from chrys.service.approval.correlation import OneShotCorrelation
 from chrys.service.approval.policy import ApprovalMode
-from chrys.service.approval.prejudge_v2 import Route, load_policy, route
+from chrys.service.approval.prejudge_v2 import Policy, Route, load_policy, route
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding, PreparedReuse
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
@@ -73,6 +74,28 @@ _REMEMBER_FAILED = msg(
 
 _GITDIR_POINTER_PREFIX = "gitdir:"
 _prejudge_logger = logging.getLogger(__name__ + ".prejudge")
+
+# An EventBus belongs to one live session. Main, sub-agent and workflow
+# ApprovalMiddleware instances sharing the bus use one immutable policy
+# snapshot. Weak keys release it when the session host shuts down.
+_session_prejudge_policies: WeakKeyDictionary[EventBus, Policy] = WeakKeyDictionary()
+
+
+def _session_prejudge_policy(event_bus: EventBus, mode: ApprovalMode) -> Policy:
+    if mode is ApprovalMode.BYPASS:
+        # No policy validation, imports or shadow observation in BYPASS.
+        # Delay the first snapshot until the session enters MANUAL/AUTO.
+        return Policy("off", "", ())
+    cached = _session_prejudge_policies.get(event_bus)
+    if cached is None:
+        cached = load_policy(get_platform().config_dir / "prejudge.yaml")
+        _session_prejudge_policies[event_bus] = cached
+    return cached
+
+
+def _shadow_command_preview(command: str) -> str:
+    """One-line, bounded command text for local shadow diagnostics."""
+    return repr(command[:512]) + (" [truncated]" if len(command) > 512 else "")
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -270,8 +293,9 @@ class ApprovalMiddleware(FunctionMiddleware):
     ) -> None:
         from chrys.service.approval.turn_context import TurnContextHolder
 
-        # Load the trusted user policy once per approval middleware instance.
-        self._prejudge = load_policy(get_platform().config_dir / "prejudge.yaml")
+        # Share the trusted policy snapshot across middleware instances in
+        # the same session. BYPASS does not need to load or validate it.
+        self._prejudge = _session_prejudge_policy(event_bus, approval_mode)
         self._policy = approval_policy
         self._extension_hooks = extension_hooks
         self._reuse = reuse
@@ -345,6 +369,9 @@ class ApprovalMiddleware(FunctionMiddleware):
         Only affects subsequent tool calls — in-flight requests keep the
         mode they were created with.
         """
+        if self._approval_mode is ApprovalMode.BYPASS and mode is not ApprovalMode.BYPASS:
+            # First non-BYPASS use takes the shared session snapshot.
+            self._prejudge = _session_prejudge_policy(self._bus, mode)
         self._approval_mode = mode
 
     @property
@@ -400,12 +427,14 @@ class ApprovalMiddleware(FunctionMiddleware):
                     try:
                         observed = route(cmd, tool_name, self._prejudge)
                         _prejudge_logger.info(
-                            "shadow route=%s reason=%s policy=%s digest=%s rules=%s",
+                            "shadow route=%s reason=%s policy=%s digest=%s rules=%s spans=%s command=%s",
                             observed.route,
                             observed.reason_code,
                             observed.policy_id,
                             observed.analysis_digest,
                             observed.matched_rule_ids,
+                            observed.matched_node_spans,
+                            _shadow_command_preview(cmd),
                         )
                     except Exception:
                         _prejudge_logger.exception("shadow pre-judge evaluation failed")

@@ -106,8 +106,8 @@ class Policy:
 @lru_cache(maxsize=32)
 def _warn_unsupported_dialect(dialect: str) -> None:
     logger.warning(
-        "Structured Pre-Judge rules do not support %r; "
-        "AST policy cannot evaluate it; retaining ordinary approval behavior",
+        "Structured Pre-Judge BLOCK rules are inactive for unsupported shell %r; "
+        "AST rules cannot evaluate this dialect and ordinary approval applies",
         dialect,
     )
 
@@ -543,17 +543,23 @@ def _compile_enabled_policy(content: dict[str, Any], mode: str) -> Policy:
     rules: list[Rule] = []
     seen: set[str] = set()
     for raw in raw_rules:
-        if not isinstance(raw, dict) or set(raw) != {"id", "effect", "target", "match"}:
-            raise ValueError("Invalid pre-judge rule fields; expected id, effect, target, match")
-        rid, effect, target = (raw[key] for key in ("id", "effect", "target"))
-        if not isinstance(rid, str) or not rid or rid in seen:
-            raise ValueError("Duplicate or invalid pre-judge rule ID")
-        if effect not in ("allow", "block") or target != "command":
-            raise ValueError("Invalid pre-judge effect or target")
-        decision = Route(effect)
-        raw_match = raw["match"]
-        matcher = _compile_matcher(raw_match, effect=decision)
-        structured = raw_match if next(iter(raw_match)) not in {"argv_exact", "argv_first", "prefix_first"} else None
+        # A policy author needs to know which rule failed, including rules
+        # whose match expression is not well formed.
+        rid = raw.get("id", "<missing>") if isinstance(raw, dict) else "<invalid>"
+        try:
+            if not isinstance(raw, dict) or set(raw) != {"id", "effect", "target", "match"}:
+                raise ValueError("Invalid pre-judge rule fields; expected id, effect, target, match")
+            rid, effect, target = (raw[key] for key in ("id", "effect", "target"))
+            if not isinstance(rid, str) or not rid or rid in seen:
+                raise ValueError("Duplicate or invalid pre-judge rule ID")
+            if effect not in ("allow", "block") or target != "command":
+                raise ValueError("Invalid pre-judge effect or target")
+            decision = Route(effect)
+            raw_match = raw["match"]
+            matcher = _compile_matcher(raw_match, effect=decision)
+            structured = raw_match if next(iter(raw_match)) not in {"argv_exact", "argv_first", "prefix_first"} else None
+        except (ValueError, KeyError, TypeError, StopIteration) as exc:
+            raise ValueError(f"rule {rid!r}: {exc}") from exc
         seen.add(rid)
         rules.append(Rule(rid, decision, matcher, structured))
     builtin_rules, builtin_guard = _load_builtin_readonly()
@@ -572,30 +578,34 @@ def _matches(matcher: Matcher, node: CommandNode) -> bool:
 
 
 def load_policy(path: Path) -> Policy:
+    """Load the trusted policy; never require a parser to turn it off."""
     if not path.exists():
         return Policy("off", "", ())
     content: Any = None
     try:
         # _UniqueKeyLoader derives from SafeLoader and rejects duplicate keys.
         content = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)  # noqa: S506
+        # PyYAML's YAML 1.1 resolver turns unquoted 'off' into False.
+        if content is None or content is False:
+            return Policy("off", "", ())
         if not isinstance(content, dict) or set(content) - {"schema_version", "mode", "policy_id", "rules"}:
             raise ValueError("Invalid pre-judge configuration")
+        mode = content.get("mode")
+        if mode is False or mode == "off":
+            return Policy("off", "", ())
+        if not isinstance(mode, str) or mode not in ("shadow", "enforce"):
+            raise ValueError("mode must be 'off', 'shadow', or 'enforce'")
         if type(content.get("schema_version")) is not int or content["schema_version"] != 1:
             raise ValueError("Invalid pre-judge schema_version")
-        mode = content.get("mode")
-        if mode not in ("off", "shadow", "enforce"):
-            raise ValueError("mode must be quoted 'off', 'shadow', or 'enforce'")
-        if mode == "off":
-            return Policy("off", "", ())
         return _compile_enabled_policy(content, mode)
-    except Exception:
-        # A *declared* shadow policy has no enforcement authority. Bad
-        # rules/missing optional deps must not prevent iCode from starting.
-        # Unknown or malformed mode is NOT silently interpreted as shadow.
+    except Exception as exc:
+        message = f"Pre-Judge policy {path}: {exc}"
         if isinstance(content, dict) and content.get("mode") == "shadow":
-            logger.warning("Invalid shadow pre-judge policy; disabling observation", exc_info=True)
+            logger.warning("%s; disabling shadow observation", message, exc_info=True)
             return Policy("off", "", ())
-        raise
+        if isinstance(exc, RuntimeError):
+            raise RuntimeError(message) from exc
+        raise ValueError(message) from exc
 
 
 def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:

@@ -46,13 +46,25 @@ rules:
 
 BLOCK 优先于 ALLOW。要自动 ALLOW，必须所有可执行 AST 节点匹配 ALLOW、命令 `argv` 完整且语法覆盖完整；否则结构化规则 DEFER，随后会评估 `prejudge_v2/readonly_policy.yaml` 内的**内置 YAML ALLOW 规则**，由**新 AST Parser 与结构化 Matcher**完成判断；生产路径不调用旧 `is_safe_readonly_command()`。内置规则覆盖普通只读命令、危险参数守卫，以及部分 Git、pip、ruff 等命令的选项限制。用户 YAML BLOCK 优先；遇到尚未支持或无法证明安全的语法则 DEFER，进入原有审批流程。用户不需要手动复制内置规则。**静态前缀只能用于 BLOCK**。例如 `echo "rm"` 里的 `rm` 是参数，不是另一个可执行命令。
 
-`mode` 必须加引号，避免 YAML 将 `off` 转成布尔值。`off` 保留旧行为；`shadow` 只记录观察结果；`enforce` 执行明确的 BLOCK 和完全覆盖的 ALLOW。enforce 配置无效时初始化失败；**可解析且明确声明 `shadow`** 的配置若规则无效或缺少依赖，会记录警告并关闭观察。YAML 语法损坏或模式无效时无法可靠确定 `shadow`，配置加载失败。显式 BYPASS 不执行新 BLOCK 规则；无交互的 `icode run` 和 `icode workflow run` 使用 BYPASS。
+推荐使用 `mode: "off"`、`mode: "shadow"` 或 `mode: "enforce"`。未加引号的 `mode: off`（YAML 将其解析为布尔值 `False`）、`mode: false` 和空文件也会关闭功能，且不会加载 Tree-sitter。`shadow` 只记录观察，不执行规则；`enforce` 执行符合条件的 ALLOW/BLOCK。**YAML 语法本身损坏**时，正常审批启动会报包含文件路径的错误，即使原本意图声明 `shadow`。可正常解析且明确声明 `shadow` 的配置，若规则或依赖无效，会记录含文件路径（和适用时规则 ID）的警告并停止观察；无效的 `enforce` 规则会报包含文件路径和规则 ID 的错误。BYPASS 不会加载或验证 `prejudge.yaml`；如果此会话随后切换到 MANUAL/AUTO，届时才加载配置。
 
-新 AST Matcher 当前只支持 Bash/Git Bash。zsh、sh、dash、PowerShell、cmd.exe、动态展开、重定向、通配符及多数控制流构造不能通过 AST 规则自动 ALLOW；可靠识别的静态命令仍可触发 BLOCK。不支持的 Shell 方言会记录警告并由新 AST 策略 DEFER；旧 readonly Checker 不再作为兜底调用。匹配采用字面量命令名，不自动规范化可执行文件路径。例如 `prefix_first: [rm]` 不会命中 `/bin/rm -rf x`，而是进入 DEFER（不会自动允许）。像 `command rm`、`env rm`、`time rm` 这样的包装命令按 opaque 处理并 DEFER，不能假设 `prefix_first: [rm]` 会命中包装命令里的 `rm`。本功能不能取代完整的 Shell 安全边界。
+新 AST Matcher 当前只支持 Bash/Git Bash。zsh、sh、dash、PowerShell、cmd.exe、动态展开、重定向、通配符及多数控制流构造不能通过 AST 规则自动 ALLOW；可靠识别的静态命令仍可触发 BLOCK。不支持的 Shell 方言会发出明确说明 **BLOCK 规则在该 Shell 中不生效** 的警告，并由新 AST 策略 DEFER；旧 readonly Checker 不再作为兜底调用。匹配采用字面量命令名，不自动规范化可执行文件路径。例如 `prefix_first: [rm]` 不会命中 `/bin/rm -rf x`，而是进入 DEFER（不会自动允许）。像 `command rm`、`env rm`、`time rm` 这样的包装命令按 opaque 处理并 DEFER，不能假设 `prefix_first: [rm]` 会命中包装命令里的 `rm`。本功能不能取代完整的 Shell 安全边界。
 
 **依赖：**启用该功能需要 `tree-sitter==0.25.1` 与 `tree-sitter-bash==0.25.1`。默认 `off` 不会加载 Tree-sitter。依赖锁定和 Linux 离线发行的完整验证仍属于独立发行验收项。
 
-**原有审批流程：**首次 Pre-Judge 在 `before_tool_call` Hook 之后执行。用户在审批窗口主动编辑并批准命令后，会再次运行 Hook，但不会重新进入 Pre-Judge 或 LLM Judge；显式 BYPASS 同样保留原有行为，不运行 YAML BLOCK。这里的 BLOCK 是审批阶段的判定，不是全局不可覆盖的禁止名单。
+### 审批及执行边界
+
+- **BLOCK 是审批阶段的规则，而非全局禁止。** 仅在 `enforce` 模式下，针对实际进入 Structured Pre-Judge 的非 BYPASS Shell ToolCall 生效；其他审批路径仍遵守 iCode 原有语义。
+- **BYPASS 完全跳过 Structured Pre-Judge，包括 BLOCK 和 shadow 日志。** `icode run` 与 `icode workflow run` 都使用 BYPASS，`prejudge.yaml` 不能限制无人值守运行；BYPASS 也不验证这份配置。
+- **用户编辑并批准后的命令不会重新鉴权。** 编辑后的命令不会再次经过 Pre-Judge 或 LLM Judge，即使命中 YAML BLOCK 也可能执行，但仍须经过 `before_tool_call` Hook 和已配置的 Shell Command Filter。
+- **Shell Command Filter 在人工审批之后、实际进程启动之前检查最终命令。** BYPASS 或人工批准都不能覆盖这项检查。但该过滤器仅匹配可识别的字面量命令名，**不是沙箱**：黑名单 `[rm]` 不能拦截所有 `rm` 调用方式，例如 `$'rm'`、`/bin/rm`、`env rm`。
+- **DEFER 不保证弹出人工审批窗口。** Profile override、已有授权复用及 AUTO 模式的 LLM Judge 仍可能批准命令并执行。
+
+**策略生命周期：** 同一会话首次进入非 BYPASS 审批时加载一次可信 Policy 快照；使用同一会话 EventBus 的主 Agent、Sub-Agent 和 Workflow Middleware 共享该快照。会话中修改 `prejudge.yaml` 不会改变已加载策略，需要重新启动会话才能应用。若会话以 BYPASS 开始，在首次切换到 MANUAL/AUTO 时才加载快照。
+
+**Shadow 日志：** INFO 日志包括判定、原因、Policy/Rule ID、匹配 span，以及转义换行、最多 512 个字符的命令文本。命令可能含有敏感 Token；应限制日志访问，并避免在命令中放入明文凭据。
+
+**后台任务停止命令：** Shell Command Filter 对 iCode 自己的 `touch <stop-file>` 停止命令有例外，但 Structured Pre-Judge 的 `touch` BLOCK 可能导致 Agent 无法停止后台任务。请避免对这些停止命令设置宽泛的 BLOCK，或在运行流程中考虑该限制。
 
 ### 兼容性与当前限制
 
