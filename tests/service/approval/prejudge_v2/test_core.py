@@ -362,8 +362,8 @@ def test_invalid_enforce_rule_reports_file_and_id(tmp_path, monkeypatch):
     path = tmp_path / "prejudge.yaml"
     path.write_text(
         'schema_version: 1\nmode: "enforce"\npolicy_id: pilot\n'
-        'rules:\n  - id: typo-deny\n    effect: deny\n'
-        '    target: command\n    match:\n      prefix_first: [rm]\n',
+        "rules:\n  - id: typo-deny\n    effect: deny\n"
+        "    target: command\n    match:\n      prefix_first: [rm]\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError) as failure:
@@ -375,7 +375,7 @@ def test_invalid_enforce_rule_reports_file_and_id(tmp_path, monkeypatch):
 def test_invalid_shadow_yaml_parse_error_is_not_suppressed(tmp_path):
     path = tmp_path / "prejudge.yaml"
     path.write_text('mode: "shadow"\nrules: [\n', encoding="utf-8")
-    with pytest.raises(ValueError, match="prejudge.yaml"):
+    with pytest.raises(ValueError, match=r"prejudge\.yaml"):
         pj.load_policy(path)
 
 
@@ -384,8 +384,8 @@ def test_invalid_shadow_rule_warns_with_rule_context(tmp_path, monkeypatch, capl
     path = tmp_path / "prejudge.yaml"
     path.write_text(
         'schema_version: 1\nmode: "shadow"\npolicy_id: pilot\n'
-        'rules:\n  - id: bad-shadow\n    effect: deny\n'
-        '    target: command\n    match:\n      prefix_first: [rm]\n',
+        "rules:\n  - id: bad-shadow\n    effect: deny\n"
+        "    target: command\n    match:\n      prefix_first: [rm]\n",
         encoding="utf-8",
     )
     with caplog.at_level("WARNING"):

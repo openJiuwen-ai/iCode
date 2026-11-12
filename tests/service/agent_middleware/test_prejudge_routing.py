@@ -347,7 +347,6 @@ async def test_real_parser_yaml_policy_and_approval_integration(
         await bus.unsubscribe(ApprovalRequest, reject)
 
 
-
 @pytest.mark.parametrize(
     ("blocked_name", "command", "should_execute"),
     [
@@ -523,7 +522,10 @@ async def test_human_edited_command_does_not_reenter_prejudge(monkeypatch):
         return PreJudgeResult(
             Route.BLOCK if command == "rm x" else Route.DEFER,
             "matched_block" if command == "rm x" else "unmatched_unit",
-            (), (), policy.policy_id, "digest",
+            (),
+            (),
+            policy.policy_id,
+            "digest",
         )
 
     monkeypatch.setattr(approval_module, "route", fake_route)
@@ -532,9 +534,7 @@ async def test_human_edited_command_does_not_reenter_prejudge(monkeypatch):
     bus = EventBus()
 
     async def approve(req: ApprovalRequest):
-        await bus.publish(
-            ApprovalResponse(request_id=req.request_id, approved=True, modified_args={"command": "rm x"})
-        )
+        await bus.publish(ApprovalResponse(request_id=req.request_id, approved=True, modified_args={"command": "rm x"}))
 
     await bus.subscribe(ApprovalRequest, approve)
     middleware = ApprovalMiddleware(

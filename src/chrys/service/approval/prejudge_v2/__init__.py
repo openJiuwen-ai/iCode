@@ -557,7 +557,9 @@ def _compile_enabled_policy(content: dict[str, Any], mode: str) -> Policy:
             decision = Route(effect)
             raw_match = raw["match"]
             matcher = _compile_matcher(raw_match, effect=decision)
-            structured = raw_match if next(iter(raw_match)) not in {"argv_exact", "argv_first", "prefix_first"} else None
+            structured = (
+                raw_match if next(iter(raw_match)) not in {"argv_exact", "argv_first", "prefix_first"} else None
+            )
         except (ValueError, KeyError, TypeError, StopIteration) as exc:
             raise ValueError(f"rule {rid!r}: {exc}") from exc
         seen.add(rid)

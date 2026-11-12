@@ -97,6 +97,7 @@ def _shadow_command_preview(command: str) -> str:
     """One-line, bounded command text for local shadow diagnostics."""
     return repr(command[:512]) + (" [truncated]" if len(command) > 512 else "")
 
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from pathlib import Path
