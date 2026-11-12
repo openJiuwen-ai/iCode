@@ -124,7 +124,8 @@ def test_only_the_cwd_differing_gives_another_key(tmp_path: Path) -> None:
 def test_cwd_whitespace_does_not_change_the_directory_or_cache_key(tmp_path: Path, configured: str) -> None:
     workspace = str(tmp_path / "workspace ")
     padded = f" \t{configured}\n "
-    expected = os.path.join(workspace, configured) if configured else workspace
+    # Windows normalizes the separators of a joined path.
+    expected = os.path.join(workspace, os.path.normpath(configured)) if configured else workspace
     assert resolve_stdio_cwd(padded, workspace) == expected
     with _pin_child_environment():
         assert mcp_config_cache_key(_config(cwd=padded), stdio_cwd=workspace) == mcp_config_cache_key(
@@ -301,7 +302,9 @@ def test_check_working_directory_names_what_is_wrong(tmp_path: Path) -> None:
     file.write_text("x", encoding="utf-8")
 
     _check_working_directory(folder)
-    for path, reason in ((tmp_path / "missing", "missing"), (file, "not_directory"), (file / "below", "not_directory")):
+    # Below a file, POSIX reports ENOTDIR; Windows reports the path as not found.
+    below_a_file = "missing" if sys.platform == "win32" else "not_directory"
+    for path, reason in ((tmp_path / "missing", "missing"), (file, "not_directory"), (file / "below", below_a_file)):
         with pytest.raises(StdioWorkingDirectoryError) as caught:
             _check_working_directory(path)
         assert caught.value.reason == reason
