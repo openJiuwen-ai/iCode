@@ -448,6 +448,10 @@ class SyscallPolicy(BaseModel):
 class NetworkMode(str, enum.Enum):
     ISOLATED = "isolated"
     HOST = "host"
+    # Own loopback only (bwrap --unshare-net). No named netns, veth, or NAT.
+    OFFLINE = "offline"
+    # Own loopback plus an HTTP proxy that dials public addresses only.
+    GUARDED = "guarded"
 
 
 class NetworkRulePolicy(BaseModel):

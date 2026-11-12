@@ -6,18 +6,21 @@ operations consumed by :mod:`jiuwenbox.server.runtime.process`:
 
 - :func:`detect_backend` - probe the host once for the preferred backend.
 - :func:`setup` - create a per-sandbox cgroup and write the limit files.
-- :func:`attach` - place the bwrap host-side PID into ``cgroup.procs``.
-- :func:`teardown` - kill stragglers, then rmdir the cgroup.
+- :func:`attach` - place the bwrap host-side PID into the ``supervisor`` child.
+- :func:`create_command_cgroup` - one ``cmd-<id>`` under ``supervisor/commands``.
+- :func:`kill_cgroup_processes` - stop every pid in one cgroup directory.
+- :func:`teardown` - kill stragglers, then rmdir the whole sandbox cgroup.
 
 When neither cgroup v2 nor v1 is writable but :class:`CgroupPolicy` is
 non-empty, :func:`setup` raises :class:`CgroupSetupError` so the runtime
 can abort sandbox creation rather than silently dropping the limits.
 
-Cgroup writes are performed by the box-server process (typically root) on
-the host; the sandbox itself never touches the cgroup tree. PID attachment
-happens *after* the bwrap process is spawned, which is sufficient for
-cgroup v2 (the migration applies to the existing process and is inherited
-by all subsequent forks).
+The limit parent stays empty. The daemon joins ``supervisor``. Each command
+joins ``supervisor/commands/cmd-<id>``, which is inside the daemon's cgroup
+namespace. ``/sys`` is read-only inside the sandbox, so that ``commands``
+directory is bind-mounted read-write at :data:`SANDBOX_COMMAND_CGROUP_ROOT`
+and the command writes its own pid there before exec. The host still kills
+and removes command cgroups through the host path.
 """
 
 from __future__ import annotations
@@ -50,6 +53,15 @@ _REQUIRED_CONTROLLERS: tuple[str, ...] = ("memory", "cpu", "pids")
 
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _JIUWENBOX_ROOT_NAME = "jiuwenbox"
+# The limit-holding parent stays empty of processes.
+# The daemon joins ``supervisor``. Commands join children of
+# ``supervisor/commands``, which stays inside the cgroup namespace whose
+# root is ``supervisor``. ``/sys`` is read-only in the sandbox, so this
+# directory is bind-mounted at ``SANDBOX_COMMAND_CGROUP_ROOT``.
+_SUPERVISOR_CHILD_NAME = "supervisor"
+_COMMANDS_CHILD_NAME = "commands"
+_COMMAND_CHILD_PREFIX = "cmd-"
+SANDBOX_COMMAND_CGROUP_ROOT = "/run/jiuwenbox-cgroup"
 
 # Maximum number of attempts when rmdir-ing a cgroup that still has
 # transient processes attached.
@@ -59,17 +71,50 @@ _TEARDOWN_BACKOFF_SECONDS = 0.1
 
 @dataclass
 class CgroupHandle:
-    """Bookkeeping handed back from :func:`setup` and consumed by
-    :func:`attach` / :func:`teardown`.
+    """Bookkeeping handed back from :func:`setup`.
 
-    For v2 ``paths`` contains exactly one entry (the unified group dir).
-    For v1 it contains one entry per controller in ``_REQUIRED_CONTROLLERS``
-    that was actually used by the policy.
+    ``paths`` are the limit-holding parents: one unified directory on v2,
+    one directory per controller the policy actually set on v1. Those
+    parents stay empty of processes. ``supervisor_paths`` are the children
+    the daemon joins. ``command_parent_paths`` are ``supervisor/commands``
+    directories. Command children are created later and are not stored here.
     """
 
     backend: CgroupBackend
     sandbox_id: str
     paths: list[Path] = field(default_factory=list)
+    supervisor_paths: list[Path] = field(default_factory=list)
+    command_parent_paths: list[Path] = field(default_factory=list)
+
+
+@dataclass
+class CommandCgroup:
+    """One command's cgroup directories, siblings of ``supervisor``.
+
+    v2 has one directory. v1 has one directory per controller the sandbox
+    cgroup uses. Releasing this object does not touch the supervisor child
+    or any other command.
+    """
+
+    backend: CgroupBackend
+    paths: list[Path]
+
+    def procs_paths(self) -> list[str]:
+        """Host ``cgroup.procs`` paths the command must join before exec."""
+        return [str(path / "cgroup.procs") for path in self.paths]
+
+    def sandbox_procs_paths(self) -> list[str]:
+        """In-sandbox ``cgroup.procs`` paths corresponding to :meth:`procs_paths`.
+
+        The host path sits on a read-only ``/sys`` bind. The command writes
+        the sandbox path, which is the read-write bind of ``commands``.
+        """
+        if len(self.paths) == 1:
+            return [f"{SANDBOX_COMMAND_CGROUP_ROOT}/{self.paths[0].name}/cgroup.procs"]
+        return [
+            f"{SANDBOX_COMMAND_CGROUP_ROOT}/{index}/{path.name}/cgroup.procs"
+            for index, path in enumerate(self.paths)
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -159,47 +204,115 @@ def _try_write_file(path: Path, content: str, *, what: str) -> None:
         ) from exc
 
 
-def _ensure_jiuwenbox_root_v2() -> Path:
-    """Create ``/sys/fs/cgroup/jiuwenbox/`` and enable required controllers.
+def _mkdir_cgroup(parent: Path, name: str) -> Path:
+    child = parent / name
+    try:
+        child.mkdir(parents=False, exist_ok=False)
+    except OSError as exc:
+        raise CgroupSetupError(
+            f"failed to create {child}: {exc.strerror or exc}"
+        ) from exc
+    return child
 
-    On cgroup v2 controllers must be enabled in every ancestor's
-    ``cgroup.subtree_control`` before the leaf can use them. We enable
-    ``+memory +cpu +pids`` at the unified root, then mkdir
-    ``/sys/fs/cgroup/jiuwenbox/`` if it doesn't already exist.
+
+def _enable_v2_subtree(group_dir: Path) -> None:
+    """Let children use the controllers the parent is allowed to delegate.
+
+    cgroup v2 forbids member processes in a cgroup that enables domain
+    controllers in ``cgroup.subtree_control``. The parent stays empty.
+    The daemon and each command live in children underneath it. An
+    unprivileged process often cannot enable every controller; the ones
+    that are refused are skipped so the directory can still be used for
+    ``cgroup.kill``.
     """
-    enable_line = " ".join(f"+{c}" for c in _REQUIRED_CONTROLLERS)
-    subtree_control = _CGROUP_ROOT / "cgroup.subtree_control"
+    available = _v2_controllers_enabled_at(group_dir)
+    wanted = [name for name in _REQUIRED_CONTROLLERS if name in available]
+    if not wanted:
+        return
+    enable_line = " ".join(f"+{name}" for name in wanted)
     try:
-        _write_file(subtree_control, enable_line)
+        _write_file(group_dir / "cgroup.subtree_control", enable_line)
     except OSError as exc:
-        raise CgroupSetupError(
-            f"failed to enable controllers {enable_line!r} in {subtree_control}: "
-            f"{exc.strerror or exc}"
-        ) from exc
+        logger.warning(
+            "cgroup v2: controllers %s not enabled on %s: %s",
+            enable_line,
+            group_dir,
+            exc.strerror or exc,
+        )
 
-    jiuwenbox_root = _CGROUP_ROOT / _JIUWENBOX_ROOT_NAME
+
+def _write_limit(path: Path, content: str, *, what: str) -> None:
+    """Write a limit file. A missing file or a refusal is not fatal.
+
+    Delegated cgroups often expose ``cgroup.kill`` without ``memory.max``.
+    The sandbox still starts; that one limit is absent.
+    """
+    if not path.exists():
+        logger.warning("cgroup: %s is not available at %s", what, path)
+        return
     try:
-        jiuwenbox_root.mkdir(parents=False, exist_ok=True)
+        _write_file(path, content)
     except OSError as exc:
-        raise CgroupSetupError(
-            f"failed to create {jiuwenbox_root}: {exc.strerror or exc}"
-        ) from exc
+        logger.warning(
+            "cgroup: failed to write %s (%s): %s",
+            what,
+            path,
+            exc.strerror or exc,
+        )
 
-    # Enable controllers on the jiuwenbox subtree as well so per-sandbox
-    # children can read/write the limit files.
+
+def _rmdir_quiet(path: Path) -> None:
     try:
-        _write_file(jiuwenbox_root / "cgroup.subtree_control", enable_line)
-    except OSError as exc:
-        # If the jiuwenbox root already has the controllers enabled, this
-        # write either succeeds or returns EBUSY; treat any other failure
-        # as a real error.
-        if getattr(exc, "errno", None) not in (0, None):
-            raise CgroupSetupError(
-                f"failed to enable controllers in {jiuwenbox_root}: "
-                f"{exc.strerror or exc}"
-            ) from exc
+        path.rmdir()
+    except OSError:
+        logger.warning("cgroup: failed to remove %s", path)
 
-    return jiuwenbox_root
+
+def _process_cgroup_v2() -> Path | None:
+    """Return this process's cgroup v2 directory, if the file names one."""
+    try:
+        text = Path("/proc/self/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3 or parts[0] != "0" or parts[1] != "":
+            continue
+        relative = parts[2].strip()
+        if relative in {"", "/"}:
+            return _CGROUP_ROOT
+        return _CGROUP_ROOT / relative.lstrip("/")
+    return None
+
+
+def _ensure_jiuwenbox_root_v2() -> Path:
+    """Create a ``jiuwenbox`` directory the current user can write.
+
+    Root may enable controllers on the unified hierarchy. An unprivileged
+    process cannot write ``/sys/fs/cgroup/cgroup.subtree_control`` and must
+    use its own cgroup instead. The first directory that accepts the mkdir
+    wins. Controller delegation is best-effort after that.
+    """
+    bases: list[Path] = []
+    own = _process_cgroup_v2()
+    if own is not None:
+        bases.append(own)
+    if _CGROUP_ROOT not in bases:
+        bases.append(_CGROUP_ROOT)
+    errors: list[str] = []
+    for base in bases:
+        if base == _CGROUP_ROOT and os.geteuid() == 0:
+            _enable_v2_subtree(_CGROUP_ROOT)
+        root = base / _JIUWENBOX_ROOT_NAME
+        try:
+            root.mkdir(parents=False, exist_ok=True)
+        except OSError as exc:
+            errors.append(f"{root}: {exc.strerror or exc}")
+            continue
+        _enable_v2_subtree(root)
+        return root
+    detail = "; ".join(errors) if errors else "no cgroup directory to try"
+    raise CgroupSetupError(f"failed to create a writable cgroup directory: {detail}")
 
 
 def _setup_v2(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
@@ -216,9 +329,11 @@ def _setup_v2(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
             f"failed to create {group_dir}: {exc.strerror or exc}"
         ) from exc
 
+    supervisor_dir: Path | None = None
+    command_parent: Path | None = None
     try:
         if policy.memory_max is not None:
-            _try_write_file(
+            _write_limit(
                 group_dir / "memory.max",
                 str(policy.memory_max),
                 what="memory.max",
@@ -262,19 +377,28 @@ def _setup_v2(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
                     )
         if policy.cpu_max is not None:
             quota, period = policy.cpu_max
-            _try_write_file(
+            _write_limit(
                 group_dir / "cpu.max",
                 f"{quota} {period}",
                 what="cpu.max",
             )
         if policy.pids_max is not None:
-            _try_write_file(
+            _write_limit(
                 group_dir / "pids.max",
                 str(policy.pids_max),
                 what="pids.max",
             )
+        # Delegate after the limits are written, while the parent is still
+        # empty, so the supervisor child can exist under it.
+        _enable_v2_subtree(group_dir)
+        supervisor_dir = _mkdir_cgroup(group_dir, _SUPERVISOR_CHILD_NAME)
+        command_parent = _mkdir_cgroup(supervisor_dir, _COMMANDS_CHILD_NAME)
     except CgroupSetupError:
         # Roll back the empty cgroup so we don't leak it on failure.
+        if command_parent is not None:
+            _rmdir_quiet(command_parent)
+        if supervisor_dir is not None:
+            _rmdir_quiet(supervisor_dir)
         try:
             group_dir.rmdir()
         except OSError:
@@ -284,10 +408,16 @@ def _setup_v2(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
             )
         raise
 
+    if supervisor_dir is None or command_parent is None:
+        raise CgroupSetupError(
+            f"cgroup v2 setup for {sandbox_id} did not create the supervisor child"
+        )
     return CgroupHandle(
         backend=CgroupBackend.V2,
         sandbox_id=sandbox_id,
         paths=[group_dir],
+        supervisor_paths=[supervisor_dir],
+        command_parent_paths=[command_parent],
     )
 
 
@@ -301,6 +431,8 @@ def _setup_v1(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
     set, e.g., ``pids_max``.
     """
     created_paths: list[Path] = []
+    supervisor_paths: list[Path] = []
+    command_parents: list[Path] = []
     try:
         if policy.memory_max is not None:
             path = _create_v1_group("memory", sandbox_id)
@@ -354,7 +486,15 @@ def _setup_v1(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
                 str(policy.pids_max),
                 what="pids.max",
             )
+        for path in created_paths:
+            supervisor = _mkdir_cgroup(path, _SUPERVISOR_CHILD_NAME)
+            supervisor_paths.append(supervisor)
+            command_parents.append(_mkdir_cgroup(supervisor, _COMMANDS_CHILD_NAME))
     except CgroupSetupError:
+        for path in reversed(command_parents):
+            _rmdir_quiet(path)
+        for path in reversed(supervisor_paths):
+            _rmdir_quiet(path)
         for path in created_paths:
             try:
                 path.rmdir()
@@ -368,6 +508,8 @@ def _setup_v1(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
         backend=CgroupBackend.V1,
         sandbox_id=sandbox_id,
         paths=created_paths,
+        supervisor_paths=supervisor_paths,
+        command_parent_paths=command_parents,
     )
 
 
@@ -460,16 +602,17 @@ def _counter_in_file(path: Path, key: str) -> int:
 
 
 def attach(handle: CgroupHandle, pid: int) -> None:
-    """Migrate ``pid`` into every cgroup directory associated with ``handle``.
+    """Migrate ``pid`` into the sandbox's supervisor cgroup.
 
     Writing the PID into ``cgroup.procs`` moves both the process and its
-    threads; future forks automatically inherit the cgroup, so attaching
-    the freshly-spawned bwrap PID is sufficient to constrain the entire
-    sandbox subtree.
+    threads; future forks automatically inherit the cgroup. The parent
+    that holds the limits stays empty so command children can be created
+    beside the daemon.
     """
-    if not handle.paths:
+    dirs = handle.supervisor_paths or handle.paths
+    if not dirs:
         return
-    for group_dir in handle.paths:
+    for group_dir in dirs:
         procs_file = group_dir / "cgroup.procs"
         try:
             _write_file(procs_file, str(pid))
@@ -485,14 +628,15 @@ def attach(handle: CgroupHandle, pid: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _kill_cgroup_processes(group_dir: Path, backend: CgroupBackend) -> None:
-    """Best-effort: ask the kernel to kill anything still in the cgroup.
+def kill_cgroup_processes(group_dir: Path, backend: CgroupBackend) -> None:
+    """Kill every process in one cgroup directory.
 
-    On v2 ``cgroup.kill`` does this atomically with a single write of
-    ``"1"``. On v1 the controller hierarchies don't have ``cgroup.kill``;
-    we read ``cgroup.procs`` and ``kill(SIGKILL)`` each PID individually.
-    Both paths swallow ``OSError`` since teardown should never block
-    sandbox deletion.
+    On v2 a write of ``"1"`` to ``cgroup.kill`` stops the directory's
+    members, including processes that called ``setsid``. On v1 the
+    controller hierarchies have no ``cgroup.kill``; every pid in
+    ``cgroup.procs`` is signalled with SIGKILL. Sibling directories,
+    including the supervisor child, are left alone. ``OSError`` is
+    swallowed so a kill cannot block sandbox deletion or the exec result.
     """
     if backend is CgroupBackend.V2:
         kill_file = group_dir / "cgroup.kill"
@@ -549,23 +693,129 @@ def _rmdir_with_retry(group_dir: Path) -> bool:
     return False
 
 
+def _valid_command_id(command_id: str) -> bool:
+    if not command_id or command_id in {".", ".."}:
+        return False
+    if "/" in command_id or "\\" in command_id:
+        return False
+    return True
+
+
+def sandbox_mounts(handle: CgroupHandle) -> list[tuple[str, str]]:
+    """Host ``commands`` directories and the sandbox paths they bind onto."""
+    parents = handle.command_parent_paths
+    if len(parents) == 1:
+        return [(str(parents[0]), SANDBOX_COMMAND_CGROUP_ROOT)]
+    return [
+        (str(parent), f"{SANDBOX_COMMAND_CGROUP_ROOT}/{index}")
+        for index, parent in enumerate(parents)
+    ]
+
+
+def sandbox_cgroup_bind_args(handle: CgroupHandle) -> list[str]:
+    """bwrap arguments that expose command cgroups inside the sandbox.
+
+    Emitted after the private ``/run`` tmpfs, which would otherwise hide a
+    bind made earlier. ``--dir`` creates the mount point on that tmpfs.
+    """
+    mounts = sandbox_mounts(handle)
+    if not mounts:
+        return []
+    args = ["--dir", SANDBOX_COMMAND_CGROUP_ROOT]
+    for host_path, sandbox_path in mounts:
+        if sandbox_path != SANDBOX_COMMAND_CGROUP_ROOT:
+            args.extend(("--dir", sandbox_path))
+        args.extend(("--bind", host_path, sandbox_path))
+    return args
+
+
+def create_command_cgroup(handle: CgroupHandle, command_id: str) -> CommandCgroup:
+    """Create ``cmd-<id>`` under each ``supervisor/commands`` directory.
+
+    Raises :class:`CgroupSetupError` when the child cannot be created.
+    Callers must fail that exec rather than run it outside the cgroup.
+    A handle recorded before ``command_parent_paths`` existed uses ``paths``.
+    """
+    if not _valid_command_id(command_id):
+        raise CgroupSetupError(f"invalid command cgroup id {command_id!r}")
+    parents = handle.command_parent_paths or handle.paths
+    if not parents:
+        raise CgroupSetupError(
+            f"sandbox {handle.sandbox_id} cgroup has no parent directory"
+        )
+    name = f"{_COMMAND_CHILD_PREFIX}{command_id}"
+    created: list[Path] = []
+    try:
+        for parent in parents:
+            created.append(_mkdir_cgroup(parent, name))
+    except CgroupSetupError:
+        for path in created:
+            _rmdir_quiet(path)
+        raise
+    return CommandCgroup(backend=handle.backend, paths=created)
+
+
+def kill_live_commands(handle: CgroupHandle) -> None:
+    """SIGKILL every ``cmd-*`` child under the command parents.
+
+    The supervisor child is not a command parent, so the daemon stays up.
+    Directories are left in place; the exec that owns a child removes it.
+    """
+    for parent in handle.command_parent_paths:
+        if not parent.is_dir():
+            continue
+        try:
+            children = list(parent.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.is_dir() and child.name.startswith(_COMMAND_CHILD_PREFIX):
+                kill_cgroup_processes(child, handle.backend)
+
+
+def release_command_cgroup(command: CommandCgroup) -> None:
+    """Kill one command cgroup, then remove its empty directories.
+
+    Does not kill the supervisor child or any other command.
+    """
+    for group_dir in command.paths:
+        if not group_dir.exists():
+            continue
+        kill_cgroup_processes(group_dir, command.backend)
+        _rmdir_with_retry(group_dir)
+
+
+def _child_directories(group_dir: Path) -> list[Path]:
+    try:
+        entries = list(group_dir.iterdir())
+    except OSError:
+        return []
+    return [entry for entry in entries if entry.is_dir()]
+
+
 def teardown(handle: CgroupHandle) -> None:
     """Remove the cgroup(s) associated with ``handle``.
 
-    First nudges out any straggler processes (via ``cgroup.kill`` on v2 or
-    a manual SIGKILL loop on v1), then rmdir-s each directory with a
-    short retry loop. Failures only emit a warning and never propagate -
-    sandbox deletion must remain idempotent and side-effect-free for the
-    caller's perspective.
+    Kills processes in every child (the supervisor and any command
+    cgroups) and then in the parent, then rmdir-s children before the
+    parent. Failures only emit a warning and never propagate - sandbox
+    deletion must remain idempotent.
     """
     for group_dir in handle.paths:
         if not group_dir.exists():
             continue
-        _kill_cgroup_processes(group_dir, handle.backend)
+        children = _child_directories(group_dir)
+        for child in children:
+            kill_cgroup_processes(child, handle.backend)
+        # v1 parents have an empty cgroup.procs once every process lives
+        # in a child. v2 cgroup.kill on the parent also covers descendants.
+        kill_cgroup_processes(group_dir, handle.backend)
         # Give the kernel a brief moment to flush the killed processes
         # before we attempt rmdir; the retry loop in _rmdir_with_retry
         # handles the still-EBUSY case.
         time.sleep(_TEARDOWN_BACKOFF_SECONDS)
+        for child in children:
+            _rmdir_with_retry(child)
         if not _rmdir_with_retry(group_dir):
             # Last-ditch effort: try a non-recursive rmtree to clean up
             # if rmdir keeps failing (e.g. leftover sub-cgroups created

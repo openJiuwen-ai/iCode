@@ -49,6 +49,11 @@ def _path_depth(path: str) -> int:
     return len([part for part in path.split("/") if part])
 
 
+def _non_root_bind_key(bind: tuple[str, str, str]) -> tuple[int, bool]:
+    """Shallower destinations first, then read-write before read-only."""
+    return (_path_depth(bind[1]), bind[2] == "--ro-bind")
+
+
 def _append_unique(paths: list[str], path: str) -> None:
     if path not in paths:
         paths.append(path)
@@ -333,6 +338,11 @@ class BwrapConfig:
         are read-only inside this method so the same ``BwrapConfig`` instance
         can be serialised multiple times without losing or duplicating
         entries.
+
+        Non-root binds are emitted shallowest destination first, so a parent
+        mount cannot hide a deeper bind. Read-only follows read-write at the
+        same depth. Root binds stay before ``--proc`` and ``--dev``. Device
+        binds stay after the path binds.
         """
         args: list[str] = [BWRAP_BINARY]
         bwrap_managed_mounts: set[str] = {
@@ -467,13 +477,14 @@ class BwrapConfig:
             else:
                 args.extend(["--tmpfs", path])
 
-        # read-only binds
-        for src, dst in ro_binds:
-            args.extend(["--ro-bind", src, dst])
-
-        # read-write binds
-        for src, dst in rw_binds:
-            args.extend(["--bind", src, dst])
+        # Shallower destinations first. A later mount hides an earlier one,
+        # so a parent --bind has to precede a child --ro-bind or the read-only
+        # cover never takes effect. Same depth keeps read-write before read-only.
+        ordered_binds: list[tuple[str, str, str]] = [(src, dst, "--bind") for src, dst in rw_binds]
+        ordered_binds.extend((src, dst, "--ro-bind") for src, dst in ro_binds)
+        ordered_binds.sort(key=_non_root_bind_key)
+        for src, dst, flag in ordered_binds:
+            args.extend([flag, src, dst])
 
         for src, dst in self.device_binds:
             args.extend(["--dev-bind", src, dst])

@@ -16,7 +16,7 @@ from chrys.foundation.config.coercion import CoerceReason
 from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import load_settings
-from chrys.foundation.config.spec import Apply, InvalidPolicy, Source, specs_by_field
+from chrys.foundation.config.spec import Apply, InvalidPolicy, ProjectMerge, Risk, Source, specs_by_field
 
 
 @pytest.fixture
@@ -74,6 +74,7 @@ def test_a_fresh_load_leaves_the_sandbox_off_with_blank_url_and_token(config_dir
     assert loaded.settings.sandbox_enabled_was_rejected() is False
     assert loaded.settings.sandbox_url == ""
     assert loaded.settings.sandbox_token == ""
+    assert loaded.settings.sandbox_network == "guarded"
     assert loaded.source_for("sandbox.enabled").layer is Source.DEFAULT
     assert loaded.source_for("sandbox.url").layer is Source.DEFAULT
     assert loaded.source_for("sandbox.token").layer is Source.DEFAULT
@@ -253,6 +254,7 @@ def test_a_loaded_sandbox_enabled_does_not_reread_the_environment(
     assert specs["sandbox_enabled"].apply is Apply.RELOAD
     assert specs["sandbox_url"].apply is Apply.RELOAD
     assert specs["sandbox_token"].apply is Apply.RELOAD
+    assert specs["sandbox_network"].apply is Apply.RELOAD
     assert not (config_dir / "settings.yaml").is_file()
     monkeypatch.setenv("CHRYS_SANDBOX_ENABLED", "true")
 
@@ -270,3 +272,67 @@ def test_a_loaded_sandbox_enabled_does_not_reread_the_environment(
     assert again.settings.sandbox_enabled is False
     assert again.source_for("sandbox.enabled").layer is Source.ENV
     assert held.sandbox_enabled is True
+
+
+def test_sandbox_network_defaults_to_guarded_and_accepts_offline(config_dir: Path) -> None:
+    spec = specs_by_field(Settings)["sandbox_network"]
+    assert spec.key == "sandbox.network"
+    assert spec.env == "CHRYS_SANDBOX_NETWORK"
+    assert spec.group == "sandbox"
+    assert spec.project_merge is ProjectMerge.DENY
+    assert spec.risk is Risk.DANGEROUS
+    assert spec.invalid_policy is InvalidPolicy.SAFE_DEFAULT
+    assert spec.choices == ("guarded", "host", "offline")
+    freeze_process_env()
+    _write_user_yaml(config_dir, "sandbox:\n  network: offline\n")
+
+    loaded = load_settings()
+
+    assert loaded.settings.sandbox_network == "offline"
+    assert loaded.source_for("sandbox.network").layer is Source.USER
+    assert loaded.warnings == ()
+
+
+def test_sandbox_network_env_overrides_user_yaml(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHRYS_SANDBOX_NETWORK", "offline")
+    freeze_process_env()
+    _write_user_yaml(config_dir, "sandbox:\n  network: host\n")
+
+    loaded = load_settings()
+
+    assert loaded.settings.sandbox_network == "offline"
+    assert loaded.source_for("sandbox.network").layer is Source.ENV
+
+
+def test_an_invalid_sandbox_network_seals_to_guarded(config_dir: Path) -> None:
+    freeze_process_env()
+    path = _write_user_yaml(config_dir, "sandbox:\n  network: isolated\n")
+
+    loaded = load_settings()
+
+    assert loaded.settings.sandbox_network == "guarded"
+    assert "sandbox.network" in loaded.sealed_keys
+    assert loaded.source_for("sandbox.network").layer is Source.DEFAULT
+    (warning,) = loaded.warnings
+    assert warning.key == "sandbox.network"
+    assert warning.origin.layer is Source.USER
+    assert warning.origin.path == path
+    assert warning.outcome.reason is CoerceReason.NOT_A_CHOICE
+
+
+def test_a_project_cannot_set_sandbox_network(config_dir: Path, project_root: Path) -> None:
+    freeze_process_env()
+    _enable_gate(config_dir)
+    path = _write_project_yaml(project_root, "sandbox:\n  network: offline\n")
+
+    loaded = load_settings(project_root=project_root)
+
+    assert loaded.settings.sandbox_network == "guarded"
+    assert loaded.source_for("sandbox.network").layer is Source.DEFAULT
+    (warning,) = loaded.warnings
+    assert warning.key == "sandbox.network"
+    assert warning.origin.layer is Source.PROJECT
+    assert warning.origin.path == path
+    assert warning.outcome.reason is CoerceReason.NOT_ALLOWED_IN_PROJECT

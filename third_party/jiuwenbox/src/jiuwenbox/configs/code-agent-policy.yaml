@@ -78,9 +78,14 @@ filesystem_policy:
       # and /var/run after these binds, so excluding the children is not
       # the only line of defense. /var itself stays mounted; /var/run is
       # covered by that later tmpfs.
+      # /home and /root are not mounted by this bind. The session workspace
+      # is a separate read-write bind. Leaving /home mounted read-only
+      # exposed ~/.ssh, ~/.aws, and the rest of the account.
       exclude:
         - run
         - tmp
+        - home
+        - root
 
   # Device nodes to expose inside the sandbox with bwrap --dev-bind.
   # Each item uses:
@@ -99,7 +104,8 @@ landlock:
   #   disabled: do not apply Landlock
   #   best_effort: apply Landlock when supported, otherwise continue
   #   hard_requirement: fail sandbox startup if Landlock is unavailable
-  compatibility: best_effort
+  # This policy fails closed: startup fails when Landlock is unavailable.
+  compatibility: hard_requirement
 
 namespace:
   user: false
@@ -110,5 +116,76 @@ capabilities:
   drop:
     - ALL
 
+# Block syscalls a code agent does not need and that enlarge the shared-kernel
+# attack surface. The filter fails the sandbox start when it cannot be built.
+syscall:
+  x86_64:
+    blocked:
+      - "kexec_load"
+      - "kexec_file_load"
+      - "reboot"
+      - "pivot_root"
+      - "swapon"
+      - "swapoff"
+      - "nfsservctl"
+      - "lookup_dcookie"
+      - "ptrace"
+      - "mount"
+      - "umount2"
+      - "unshare"
+      - "setns"
+      - "userfaultfd"
+      - "perf_event_open"
+      - "bpf"
+      - "add_key"
+      - "request_key"
+      - "keyctl"
+      - "io_uring_setup"
+      - "io_uring_enter"
+      - "io_uring_register"
+      - "open_by_handle_at"
+      - "name_to_handle_at"
+      - "init_module"
+      - "finit_module"
+      - "delete_module"
+      - "acct"
+  arm64:
+    blocked:
+      - "kexec_load"
+      - "kexec_file_load"
+      - "reboot"
+      - "pivot_root"
+      - "swapon"
+      - "swapoff"
+      - "nfsservctl"
+      - "lookup_dcookie"
+      - "ptrace"
+      - "mount"
+      - "umount2"
+      - "unshare"
+      - "setns"
+      - "userfaultfd"
+      - "perf_event_open"
+      - "bpf"
+      - "add_key"
+      - "request_key"
+      - "keyctl"
+      - "io_uring_setup"
+      - "io_uring_enter"
+      - "io_uring_register"
+      - "open_by_handle_at"
+      - "name_to_handle_at"
+      - "init_module"
+      - "finit_module"
+      - "delete_module"
+      - "acct"
+
 network:
   mode: host
+
+# Per-sandbox cgroup limits. Omitting this block is a no-op: the runtime
+# skips cgroup setup. memory_max is the hard process-group cap. pids_max
+# caps processes and threads. cpu_max is unset.
+cgroup:
+  memory_max: "4GiB"
+  pids_max: 1024

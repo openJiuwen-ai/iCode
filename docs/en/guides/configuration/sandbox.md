@@ -15,13 +15,15 @@ sandbox:
   enabled: true
   url: ""
   token: ""
+  network: guarded
 ```
 
 - `sandbox.enabled`: `true` turns the sandbox on. `false` leaves it off.
 - `sandbox.url`: Leave this empty to let iCode start its own sandbox on this computer. Set a URL only if you already have a sandbox service to connect to. When a URL is set, iCode connects to that service and does not start a sandbox itself.
 - `sandbox.token`: Optional. Leave it empty when `sandbox.url` is empty. iCode then starts its own sandbox and sends a token it creates for that sandbox. Set `sandbox.token` only when `sandbox.url` points at a sandbox service that requires a token. iCode sends that token to the service.
+- `sandbox.network`: `guarded`, `host`, or `offline`. `guarded` is the default. See [Network access](#network-access).
 
-Write these keys in the user settings file. A project's `.chrys/settings.yaml` cannot turn the sandbox on, or change the URL or token.
+Write these keys in the user settings file. A project's `.chrys/settings.yaml` cannot turn the sandbox on, or change the URL, token, or network.
 
 ## While the sandbox is off
 
@@ -49,23 +51,33 @@ Sandbox mode does not stream terminal output live. The tool result shows the com
 
 Sandbox mode does not move a command to the background. A command that reaches its time limit ends in the sandbox. It does not become a background task, **Ctrl+T** does not move it to the background, and it does not appear under **Background Tasks**.
 
-Stopping the command, or the command reaching its time limit, stops that command only. Other commands still running in the same sandbox keep going.
-
-A command that detaches into its own session is not stopped by that. A command that daemonizes, or that starts a new session with `setsid` and keeps running in the background, can keep running until you quit iCode. It can still write the workspace and use the network after the tool has already reported the command as finished or stopped.
+Stopping the command, or the command reaching its time limit, stops that command only. That includes a process the command started in its own session. Other commands still running in the same sandbox keep going.
 
 ## Files the command writes
 
 The workspace is mounted writable inside the sandbox, so the command can read and change files there. Those changes are written in the workspace on your computer. Stopping the sandbox does not undo files the command wrote there.
 
-The writable area is the workspace of this session: the directory where iCode was started. Starting iCode in your home directory makes the whole home directory writable inside the sandbox, including shell startup files and other files that live there. The sandbox's limit is where the command can write.
+The writable area is the workspace of this session: the directory where iCode was started. Starting iCode in your home directory makes the rest of that directory writable. These paths stay read-only when they are real files or directories inside that writable area: `.ssh`, `.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, `.zprofile`, `.zshenv`, `.zlogin`, `.gitconfig`, `.git-credentials`, `.gnupg`, `.pypirc`, `.npmrc`, `.wgetrc`, `.curlrc`, `.azure`, `.config/gh`, `.config/git`, `.config/gcloud`, `.config/glab`, `.config/configstore`, `.local/share/keyrings`, `.aws`, `.kube`, `.docker`, and `.netrc`. A symbolic link with one of those names is left as it is. The sandbox's limit is where the command can write.
 
 The sandbox limits the command's process. It is not a restore point for the workspace.
 
 ## Network access
 
-The policy bundled with iCode allows host networking. A command in the sandbox can use this computer's network. This is not a network-disconnected sandbox.
+`sandbox.network` chooses what network the command has.
 
-This is not a read-isolated sandbox. A command can read files this user account can already read anywhere on the computer, and send what it read out over this computer's network.
+- `guarded`, the default: the command is not on this computer's network. Programs that use `HTTP_PROXY` can reach public addresses, so package installs still work. The proxy refuses this computer, private networks, and the cloud metadata address `169.254.169.254`. A program that ignores the proxy has no network.
+- `host`: the command uses this computer's network. It can reach services on this computer and addresses on the internet, including a cloud instance's metadata address.
+- `offline`: the command has no network. It cannot reach services on this computer, the internet, or the proxy.
+
+With `host`, this is not a read-isolated sandbox. The sandbox does not mount the rest of your home directory or `/root`. A command can still read other files this account can already read, such as files under `/usr` and `/etc`, and send what it read out over this computer's network.
+
+## Memory and processes
+
+When this computer lets the sandbox create a cgroup, a command is limited to 4 GiB of memory and 1024 processes. Reaching either limit stops that command. If it cannot create that cgroup, the command still runs, and those limits are not applied.
+
+One file the command creates cannot grow past 4 GiB. If the filesystem that holds the workspace has less than 1 GiB free, the sandbox stops commands and does not start another until space is free. A write that is already in flight can still cross that line.
+
+Commands also cannot call system calls that only change the kernel, mount filesystems, or trace other processes.
 
 ## When a change takes effect
 

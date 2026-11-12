@@ -347,6 +347,53 @@ def test_child_env_sets_policy_listen_and_token(monkeypatch: pytest.MonkeyPatch)
     assert "JIUWENBOX_API_TOKEN" not in empty
 
 
+def test_configured_network_mode_reads_the_loaded_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Settings:
+        sandbox_network = "offline"
+
+    class _Loaded:
+        settings = _Settings()
+
+    monkeypatch.setattr(
+        "chrys.foundation.config.settings_store.load_settings",
+        lambda: _Loaded(),
+    )
+    assert supervisor._configured_network_mode() == "offline"
+
+
+async def test_ensure_started_exports_offline_network_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    proc = _FakeProcess()
+    seen = _patch_spawn(monkeypatch, proc)
+    monkeypatch.setattr(supervisor, "_configured_network_mode", lambda: "offline")
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-secret")
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        return True
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    await supervisor._shutdown()
+    try:
+        await supervisor.ensure_started()
+        assert seen[0]["JIUWENBOX_NETWORK_MODE"] == "offline"
+    finally:
+        proc.returncode = 1
+        await supervisor._shutdown()
+
+
+def test_child_env_offline_sets_network_mode_and_host_clears_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    offline = supervisor._child_env(
+        "C:/policy.yaml",
+        "http://127.0.0.1:9",
+        "next-token",
+        network_mode="offline",
+    )
+    assert offline["JIUWENBOX_NETWORK_MODE"] == "offline"
+
+    monkeypatch.setenv("JIUWENBOX_NETWORK_MODE", "offline")
+    host = supervisor._child_env("C:/policy.yaml", "http://127.0.0.1:9", "next-token")
+    assert "JIUWENBOX_NETWORK_MODE" not in host
+
+
 def test_launcher_argv_detaches_stdin_and_captures_output():
     argv = supervisor._launcher_argv()
     assert argv == [sys.executable, "-P", "-m", "jiuwenbox.server.launcher"]

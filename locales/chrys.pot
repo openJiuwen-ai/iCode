@@ -1558,6 +1558,12 @@ msgstr ""
 msgid "settings.sandbox.url.label"
 msgstr ""
 
+#. English: Sandbox network
+#. chrys-meta={"fingerprint":"1e8683a7a0b48c600e821be0b086e79289fc50cbaabb94d13e2ce9e24c6b112e","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.network.label"
+msgstr ""
+
 #. English: Auto-generate session titles
 #. chrys-meta={"fingerprint":"cd2486f2b154cb5b2fd8d6f71b221150a4099c93a305280eb5e73b2ea8bae622","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py

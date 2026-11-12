@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -77,12 +78,17 @@ from jiuwenbox.supervisor.daemon_ipc import (
     recv_frame,
     send_frame,
 )
+from jiuwenbox.supervisor.disk_floor import any_below_floor
+from jiuwenbox.supervisor.guarded_proxy import GuardedProxy
 from jiuwenbox.supervisor.landlock import encode_landlock_payload
-from jiuwenbox.supervisor.seccomp import build_seccomp_filter
+from jiuwenbox.supervisor.seccomp import build_seccomp_filter, policy_requests_blocklist
 
 configure_logging()
 logger = logging.getLogger(__name__)
 SERVER_PROTECT_PORTS_ENV = "JIUWENBOX_SERVER_PROTECT_PORTS"
+# Set by iCode when sandbox.network is offline. The bundled policy file
+# stays host; this process-local switch selects the runtime mode.
+_NETWORK_MODE_ENV = "JIUWENBOX_NETWORK_MODE"
 # Host-level firewall protection: for ``network.mode: host`` sandboxes we
 # attempt to install an iptables OUTPUT block by-sandbox-uid against the
 # box-server's own HTTP port, so untrusted code running inside the sandbox
@@ -116,13 +122,99 @@ _SANDBOX_HIDDEN_ENV_KEYS = (*_HOST_SESSION_ENV_KEYS, LISTEN_URI_ENV)
 # exist before bubblewrap mounts over it.
 _PRIVATE_RUNTIME_DIRS = ("/run", "/tmp", "/var/run")
 # Host directories the sandbox replaces with a private tmpfs. A control
-# socket has to live under one of these: ``/home`` is bind-mounted, and so
-# is the rest of ``/var``, so a path there stays reachable with connect().
+# socket has to live under one of these. ``/home`` is not mounted by the
+# bundled policy. The rest of ``/var`` stays mounted, so a socket there
+# stays reachable with connect().
 _CONTROL_SOCKET_HIDDEN_ROOTS = (Path("/run"), Path("/tmp"))
 _ROOT_WITHOUT_USER_NAMESPACE = "Sandbox cannot start as root while user namespaces are off."
 _NO_CONTROL_SOCKET_PARENT = (
     "No host directory covered by the sandbox private tmpfs is available for the control socket."
 )
+
+
+def _apply_operator_network_mode(policy: SecurityPolicy) -> SecurityPolicy:
+    """Force offline or guarded when this process was started with that switch.
+
+    ``JIUWENBOX_NETWORK_MODE`` is the operator switch. Any other value leaves
+    the policy file's mode unchanged, so host and isolated keep their setup.
+    """
+    raw = os.environ.get(_NETWORK_MODE_ENV, "").strip().lower()
+    if raw == NetworkMode.OFFLINE.value:
+        mode = NetworkMode.OFFLINE
+    elif raw == NetworkMode.GUARDED.value:
+        mode = NetworkMode.GUARDED
+    else:
+        return policy
+    if policy.network.mode == mode:
+        return policy
+    return policy.model_copy(
+        update={
+            "network": policy.network.model_copy(update={"mode": mode}),
+        }
+    )
+
+
+# Cached unshare(CLONE_NEWUSER) result for this process. None until probed.
+_USER_NAMESPACE_WORKS: bool | None = None
+_CLONE_NEWUSER = 0x10000000
+
+
+def unprivileged_user_namespace_works() -> bool:
+    """Whether a non-root process on this kernel can create a user namespace.
+
+    The probe runs in a child so the server process itself stays in the host
+    user namespace. Root skips the probe: turning user namespaces on would
+    bypass the refusal to start the sandbox as host root. A kernel or
+    AppArmor policy that rejects the probe leaves the sandbox on the host uid.
+    """
+    global _USER_NAMESPACE_WORKS
+    if _USER_NAMESPACE_WORKS is not None:
+        return _USER_NAMESPACE_WORKS
+    _USER_NAMESPACE_WORKS = _probe_user_namespace()
+    return _USER_NAMESPACE_WORKS
+
+
+def _probe_user_namespace() -> bool:
+    if sys.platform != "linux" or os.geteuid() == 0:
+        return False
+    fork = getattr(os, "fork", None)
+    waitpid = getattr(os, "waitpid", None)
+    if fork is None or waitpid is None:
+        return False
+    try:
+        import ctypes
+    except ImportError:
+        return False
+    pid = fork()
+    if pid == 0:
+        code = 1
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.unshare(_CLONE_NEWUSER) == 0:
+                code = 0
+        except Exception:
+            code = 1
+        os._exit(code)
+    try:
+        _pid, status = waitpid(pid, 0)
+    except OSError:
+        return False
+    return os.waitstatus_to_exitcode(status) == 0
+
+
+def _apply_user_namespace(policy: SecurityPolicy) -> SecurityPolicy:
+    """Turn on ``namespace.user`` when this kernel allows it.
+
+    The bundled policy leaves the flag off so a machine that rejects
+    unprivileged user namespaces can still start. A successful probe maps
+    the command into a user namespace, which drops host setuid and
+    capability gains. It does not hide the caller's own files.
+    """
+    if policy.namespace.user or not unprivileged_user_namespace_works():
+        return policy
+    return policy.model_copy(
+        update={"namespace": policy.namespace.model_copy(update={"user": True})}
+    )
 
 
 def _refuse_root_without_user_namespace(policy: SecurityPolicy) -> None:
@@ -684,6 +776,7 @@ class _DaemonExecCall:
     stdin_bytes: bytes | None
     timeout: float | None
     ipc: _ExecIpcSlot
+    cgroup_procs: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -708,6 +801,7 @@ class _DaemonBgExecCall:
     env: dict[str, str] | None
     workdir: str | None
     stdin_bytes: bytes | None
+    cgroup_procs: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1025,6 +1119,13 @@ class ProcessRuntime(RuntimeAdapter):
         self._host_firewall_refcounts: dict[tuple[int, int], int] = {}
         self._sandbox_host_firewall_rules: dict[str, list[tuple[int, int]]] = {}
         self._cgroup_handles: dict[str, cgroup_module.CgroupHandle] = {}
+        self._guarded_proxies: dict[str, GuardedProxy] = {}
+        self._disk_stop = threading.Event()
+        self._disk_thread: threading.Thread | None = None
+        # Background commands only. Foreground cgroups live on the exec call
+        # and are released when that call ends, so one stop cannot kill
+        # another command or the supervisor child.
+        self._command_cgroups: dict[tuple[str, str], cgroup_module.CommandCgroup] = {}
         # Admission-control semaphore for ``exec``. Lazy-initialized in
         # ``_ensure_exec_semaphore`` because ``asyncio.Semaphore`` binds to
         # the running loop on first use, and ``ProcessRuntime`` is built
@@ -1146,6 +1247,9 @@ class ProcessRuntime(RuntimeAdapter):
             job.exit_code = None
             job.finished_at = None
             return
+        # The leader has exited. Drop its cgroup so a setsid child cannot
+        # keep the sandbox's access after the job is reported stopped.
+        self._release_remembered_cgroup(job.sandbox_id, job.job_id)
         exit_code = response.get("exit_code")
         if exit_code is None or isinstance(exit_code, int):
             job.exit_code = exit_code
@@ -1331,6 +1435,26 @@ class ProcessRuntime(RuntimeAdapter):
         """
         _refuse_root_without_user_namespace(policy)
         config = BwrapConfig.from_policy(policy, list(command))
+        if policy.network.mode in {NetworkMode.OFFLINE, NetworkMode.GUARDED}:
+            # Isolated mode builds a named netns. Offline and guarded only
+            # need the sandbox's own loopback, which ``--unshare-net``
+            # provides without CAP_NET_ADMIN. ``from_policy`` sets this flag
+            # only for isolated mode. Guarded reaches public hosts through
+            # the proxy socket bound below, not through the host netns.
+            config.unshare_net = True
+        if policy.network.mode == NetworkMode.GUARDED:
+            proxy = self._guarded_proxies.get(sandbox_id)
+            if proxy is None or proxy.path is None:
+                raise RuntimeError(
+                    f"Sandbox {sandbox_id} guarded proxy is not listening"
+                )
+            config.env["JIUWENBOX_GUARDED_PROXY"] = "1"
+            config.env["HTTP_PROXY"] = "http://127.0.0.1:3128"
+            config.env["HTTPS_PROXY"] = "http://127.0.0.1:3128"
+            config.env["http_proxy"] = "http://127.0.0.1:3128"
+            config.env["https_proxy"] = "http://127.0.0.1:3128"
+            config.env["NO_PROXY"] = ""
+            config.env["no_proxy"] = ""
         process_uid = config.uid
         process_gid = config.gid
         if sandbox_env:
@@ -1413,6 +1537,18 @@ class ProcessRuntime(RuntimeAdapter):
 
         config.seccomp_fd = seccomp_fd
         _cover_host_runtime_directories(config)
+        cgroup_handle = self._cgroup_handles.get(sandbox_id)
+        if cgroup_handle is not None:
+            # After the private /run tmpfs. An earlier bind would be hidden.
+            config.extra_args.extend(cgroup_module.sandbox_cgroup_bind_args(cgroup_handle))
+        if policy.network.mode == NetworkMode.GUARDED:
+            proxy = self._guarded_proxies.get(sandbox_id)
+            if proxy is not None and proxy.path is not None:
+                # Same reason as the cgroup bind: the private /run tmpfs
+                # would cover a socket mounted earlier.
+                config.extra_args.extend(
+                    ("--bind", str(proxy.path), "/run/guarded-proxy.sock")
+                )
         _drop_host_session_env(config)
         if self._needs_privdrop_for_process_identity(
             process_uid,
@@ -1441,6 +1577,8 @@ class ProcessRuntime(RuntimeAdapter):
         )
 
     def _ensure_named_netns(self, sandbox_id: str, policy: SecurityPolicy) -> str | None:
+        # HOST and OFFLINE do not create a named netns, veth, or iptables
+        # NAT. OFFLINE still unshares net inside bwrap.
         if policy.network.mode != NetworkMode.ISOLATED:
             return None
 
@@ -2326,7 +2464,7 @@ class ProcessRuntime(RuntimeAdapter):
                 raise RuntimeError(f"Sandbox {sandbox_id} already has a running process")
             self._processes.pop(sandbox_id, None)
 
-        policy = self._load_policy(policy_path)
+        policy = _apply_user_namespace(_apply_operator_network_mode(self._load_policy(policy_path)))
         _refuse_root_without_user_namespace(policy)
         self._runtime_policies[sandbox_id] = policy
         self._network_modes[sandbox_id] = policy.network.mode
@@ -2345,6 +2483,8 @@ class ProcessRuntime(RuntimeAdapter):
                 network_module.resolve_host_egress_ipv4,
             )
         else:
+            # OFFLINE and GUARDED have no uplink address. GUARDED dials
+            # public hosts through its proxy, not through a sandbox address.
             sandbox_ip = None
         self._sandbox_ip_addresses[sandbox_id] = sandbox_ip
         self._policy_binds_for_sandbox(sandbox_id, policy)
@@ -2354,41 +2494,91 @@ class ProcessRuntime(RuntimeAdapter):
         # calls only have to allocate a fresh seccomp memfd and assemble the
         # bwrap argv list.
         self._ensure_launcher_dir(sandbox_id)
+        self._prepare_cgroup(sandbox_id, policy)
+        if policy.network.mode == NetworkMode.GUARDED:
+            # The forwarder connects to this socket. Landlock anchors a file
+            # rule on its parent, so /run (a private tmpfs) is writable.
+            socket_path = "/run/guarded-proxy.sock"
+            if socket_path not in policy.filesystem_policy.read_write:
+                policy.filesystem_policy.read_write.append(socket_path)
         self._ensure_landlock_payload(sandbox_id, policy)
         self._daemon_socket_ready[sandbox_id] = False
 
         try:
             listener = self._create_daemon_listener(sandbox_id, policy)
         except OSError as exc:
+            self._teardown_cgroup(sandbox_id)
             self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
             raise RuntimeError(
                 f"Failed to bind daemon control listener for sandbox {sandbox_id}: {exc}",
             ) from exc
         listener_fd = listener.fileno()
+        self._ensure_disk_watcher()
+        if policy.network.mode == NetworkMode.GUARDED:
+            try:
+                self._start_guarded_proxy(sandbox_id)
+            except OSError as exc:
+                self._teardown_cgroup(sandbox_id)
+                try:
+                    listener.close()
+                except OSError:
+                    pass
+                self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
+                raise RuntimeError(
+                    f"Failed to start guarded proxy for sandbox {sandbox_id}: {exc}"
+                ) from exc
 
         seccomp_fd: int | None = None
         try:
             seccomp_fd = self._open_seccomp_fd_from_bytes(
                 self._ensure_seccomp_bpf(sandbox_id, policy),
             )
-        except Exception:
+        except Exception as exc:
+            if policy_requests_blocklist(policy.syscall):
+                logger.error(
+                    "Failed to build seccomp filter for sandbox %s",
+                    sandbox_id,
+                    exc_info=True,
+                )
+                self._teardown_cgroup(sandbox_id)
+                self._close_guarded_proxy(sandbox_id)
+                try:
+                    listener.close()
+                except OSError:
+                    pass
+                self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
+                raise RuntimeError(
+                    f"Failed to build seccomp filter for sandbox {sandbox_id}"
+                ) from exc
             logger.warning(
                 "Failed to build seccomp filter for sandbox %s; continuing without seccomp",
                 sandbox_id,
                 exc_info=True,
             )
 
-        bwrap_args = self._build_sandbox_bwrap_args(
-            sandbox_id,
-            policy,
-            list(SANDBOX_DAEMON_COMMAND),
-            workdir=None,
-            sandbox_env=env,
-            netns_attached=netns_name is not None,
-            seccomp_fd=seccomp_fd,
-            listener_fd=listener_fd,
-            sandbox_ip=sandbox_ip,
-        )
+        try:
+            bwrap_args = self._build_sandbox_bwrap_args(
+                sandbox_id,
+                policy,
+                list(SANDBOX_DAEMON_COMMAND),
+                workdir=None,
+                sandbox_env=env,
+                netns_attached=netns_name is not None,
+                seccomp_fd=seccomp_fd,
+                listener_fd=listener_fd,
+                sandbox_ip=sandbox_ip,
+            )
+        except Exception:
+            self._teardown_cgroup(sandbox_id)
+            self._close_guarded_proxy(sandbox_id)
+            if seccomp_fd is not None:
+                _safe_close_fd(seccomp_fd)
+            try:
+                listener.close()
+            except OSError:
+                pass
+            self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
+            raise
         daemon_cmd = self._wrap_command_in_namespace(bwrap_args, netns_name)
 
         process_env = _sandbox_process_env(env)
@@ -2420,37 +2610,20 @@ class ProcessRuntime(RuntimeAdapter):
         # ``ProcessRuntime`` does not even probe for a writable cgroup
         # backend, which keeps existing behavior unchanged on hosts without
         # cgroup support.
-        cgroup_handle: cgroup_module.CgroupHandle | None = None
-        cgroup_procs_paths: list[str] = []
-        if not policy.cgroup.is_empty():
-            try:
-                cgroup_handle = cgroup_module.setup(sandbox_id, policy.cgroup)
-            except cgroup_module.CgroupSetupError as exc:
-                logger.error(
-                    "Failed to apply cgroup limits for sandbox %s: %s",
-                    sandbox_id,
-                    exc,
-                )
-                if seccomp_fd is not None:
-                    _safe_close_fd(seccomp_fd)
-                try:
-                    listener.close()
-                except OSError:
-                    pass
-                self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
-                raise RuntimeError(
-                    f"Failed to apply cgroup limits for sandbox {sandbox_id}: {exc}"
-                ) from exc
-            cgroup_procs_paths = [
-                str(group_dir / "cgroup.procs") for group_dir in cgroup_handle.paths
-            ]
+        cgroup_handle = self._cgroup_handles.get(sandbox_id)
+        cgroup_procs_paths = [
+            str(group_dir / "cgroup.procs")
+            for group_dir in (cgroup_handle.supervisor_paths if cgroup_handle is not None else [])
+        ]
         protect_oom = policy.cgroup.memory_max is not None
 
         def _preexec_attach_to_cgroup() -> None:
             # Runs in the child after fork, before execve. Writing our own
-            # PID into each cgroup.procs migrates this process (and so
-            # bwrap, and every descendant bwrap spawns) into the per-sandbox
-            # cgroup before any user-controlled code starts. Any OSError
+            # PID into the supervisor child's cgroup.procs migrates this
+            # process (and so bwrap, and every descendant bwrap spawns)
+            # before any user-controlled code starts. The limit parent stays
+            # empty. Each command joins a child of this supervisor cgroup,
+            # which is the cgroup namespace root. Any OSError
             # here propagates as a nonzero child exit, which the daemon
             # readiness probe surfaces to the caller -- silently leaving
             # the sandbox unconstrained would defeat the policy.
@@ -2505,14 +2678,8 @@ class ProcessRuntime(RuntimeAdapter):
             if cgroup_handle is not None:
                 # The cgroup was created but never populated; tear it down
                 # so we don't leak an empty per-sandbox group on the host.
-                try:
-                    cgroup_module.teardown(cgroup_handle)
-                except Exception:
-                    logger.warning(
-                        "cgroup teardown failed after Popen error for %s",
-                        sandbox_id,
-                        exc_info=True,
-                    )
+                self._teardown_cgroup(sandbox_id)
+            self._close_guarded_proxy(sandbox_id)
             self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
             raise
 
@@ -2738,6 +2905,100 @@ class ProcessRuntime(RuntimeAdapter):
         self._remove_sandbox_host_firewall_rules(sandbox_id)
         self._teardown_cgroup(sandbox_id)
 
+    def _prepare_cgroup(self, sandbox_id: str, policy: SecurityPolicy) -> None:
+        """Create the sandbox cgroup before the mount and Landlock payload.
+
+        The command cgroup directory has to be a read-write bind inside the
+        sandbox, and Landlock has to allow writes there. Both are fixed when
+        the daemon starts, so the cgroup exists before either is built.
+        An empty policy skips this. When this user cannot create a cgroup,
+        the sandbox still starts. Memory and process limits are absent, and
+        stopping a detached command falls back to the process group.
+        """
+        if policy.cgroup.is_empty():
+            return
+        try:
+            handle = cgroup_module.setup(sandbox_id, policy.cgroup)
+        except cgroup_module.CgroupSetupError as exc:
+            logger.warning(
+                "Sandbox %s has no cgroup limits: %s",
+                sandbox_id,
+                exc,
+            )
+            return
+        if not handle.supervisor_paths or not handle.command_parent_paths:
+            try:
+                cgroup_module.teardown(handle)
+            except Exception:
+                logger.warning(
+                    "cgroup teardown failed after missing supervisor child for %s",
+                    sandbox_id,
+                    exc_info=True,
+                )
+            raise RuntimeError(
+                f"Failed to apply cgroup limits for sandbox {sandbox_id}: "
+                "supervisor child was not created"
+            )
+        root = cgroup_module.SANDBOX_COMMAND_CGROUP_ROOT
+        if root not in policy.filesystem_policy.read_write:
+            policy.filesystem_policy.read_write.append(root)
+        self._cgroup_handles[sandbox_id] = handle
+
+    def _open_command_cgroup(
+        self, sandbox_id: str
+    ) -> tuple[cgroup_module.CommandCgroup | None, ExecResult | None]:
+        """Create the command cgroup, or an error result when that fails.
+
+        No handle means this sandbox has no cgroup and exec keeps the
+        killpg-only path. A sandbox that has a cgroup must not exec when
+        the command child cannot be created.
+        """
+        handle = self._cgroup_handles.get(sandbox_id)
+        if handle is None:
+            return None, None
+        try:
+            command = cgroup_module.create_command_cgroup(handle, uuid.uuid4().hex)
+        except cgroup_module.CgroupSetupError as exc:
+            logger.error(
+                "Failed to create command cgroup for sandbox %s: %s",
+                sandbox_id,
+                exc,
+            )
+            return None, ExecResult(
+                exit_code=1,
+                stdout="",
+                stderr=f"failed to create command cgroup: {exc}",
+            )
+        return command, None
+
+    @staticmethod
+    def _release_command_cgroup(command: cgroup_module.CommandCgroup | None) -> None:
+        if command is None:
+            return
+        try:
+            cgroup_module.release_command_cgroup(command)
+        except Exception:
+            logger.warning("command cgroup release failed", exc_info=True)
+
+    def _remember_command_cgroup(
+        self,
+        sandbox_id: str,
+        command_key: str,
+        command: cgroup_module.CommandCgroup | None,
+    ) -> None:
+        if command is None:
+            return
+        self._command_cgroups[(sandbox_id, command_key)] = command
+
+    def _release_remembered_cgroup(self, sandbox_id: str, command_key: str) -> None:
+        command = self._command_cgroups.pop((sandbox_id, command_key), None)
+        self._release_command_cgroup(command)
+
+    def _release_sandbox_command_cgroups(self, sandbox_id: str) -> None:
+        keys = [key for key in self._command_cgroups if key[0] == sandbox_id]
+        for key in keys:
+            self._release_command_cgroup(self._command_cgroups.pop(key, None))
+
     def _teardown_cgroup(self, sandbox_id: str) -> None:
         """Drop the per-sandbox cgroup (if any) created during ``create``.
 
@@ -2747,6 +3008,7 @@ class ProcessRuntime(RuntimeAdapter):
         deletion - any retained directory only wastes a few inodes in
         ``/sys/fs/cgroup`` and gets noticed via the warning log.
         """
+        self._release_sandbox_command_cgroups(sandbox_id)
         handle = self._cgroup_handles.pop(sandbox_id, None)
         if handle is None:
             return
@@ -2950,6 +3212,8 @@ class ProcessRuntime(RuntimeAdapter):
             request_payload["workdir"] = call.workdir
         if call.timeout is not None:
             request_payload["timeout"] = call.timeout
+        if call.cgroup_procs:
+            request_payload["cgroup_procs"] = list(call.cgroup_procs)
         header_blob = encode_request(
             request_type=REQUEST_TYPE_EXEC,
             payload=request_payload,
@@ -3014,6 +3278,8 @@ class ProcessRuntime(RuntimeAdapter):
             request_payload["env"] = dict(call.env)
         if call.workdir:
             request_payload["workdir"] = call.workdir
+        if call.cgroup_procs:
+            request_payload["cgroup_procs"] = list(call.cgroup_procs)
         header_blob = encode_request(
             request_type=REQUEST_TYPE_EXEC_BACKGROUND,
             payload=request_payload,
@@ -3110,6 +3376,9 @@ class ProcessRuntime(RuntimeAdapter):
         Cancelling this call closes only its socket and does not flag the
         daemon unhealthy.
         """
+        low_disk = self._disk_floor_result(sandbox_id)
+        if low_disk is not None:
+            return low_disk
         socket_path = self._control_socket_host_path(sandbox_id)
         if socket_path is None or not self._daemon_ipc_available(sandbox_id):
             return ExecResult(
@@ -3123,6 +3392,9 @@ class ProcessRuntime(RuntimeAdapter):
 
         loop = asyncio.get_running_loop()
         oom_before = self._cgroup_oom_kill_count(sandbox_id)
+        command_cgroup, failure = self._open_command_cgroup(sandbox_id)
+        if failure is not None:
+            return failure
         slot = _ExecIpcSlot()
         worker = loop.run_in_executor(
             None,
@@ -3136,18 +3408,32 @@ class ProcessRuntime(RuntimeAdapter):
                 stdin_bytes=request.stdin_data,
                 timeout=request.timeout,
                 ipc=slot,
+                cgroup_procs=(
+                    ()
+                    if command_cgroup is None
+                    else tuple(command_cgroup.sandbox_procs_paths())
+                ),
             ),
         )
         try:
-            result = await worker
-        except asyncio.CancelledError:
-            # Fully close this call's socket. The daemon killpg's only the
-            # command on this connection. Do not clear ``_daemon_socket_ready``:
-            # the daemon is still healthy, and the worker's EBADF must not
-            # reach the transport handlers below.
-            slot.cancel_and_close()
-            _consume_abandoned_worker(worker)
-            raise
+            try:
+                result = await worker
+            except asyncio.CancelledError:
+                # Fully close this call's socket. The daemon killpg's only the
+                # command on this connection. The command cgroup kill stops
+                # setsid children the process group no longer contains. Do not
+                # clear ``_daemon_socket_ready``: the daemon is still healthy,
+                # and the worker's EBADF must not reach the transport handlers.
+                slot.cancel_and_close()
+                self._release_command_cgroup(command_cgroup)
+                command_cgroup = None
+                _consume_abandoned_worker(worker)
+                raise
+            if result is None:
+                # Cancel won before this await observed it. Same rule: the
+                # daemon stays available, and this is not a transport failure.
+                raise asyncio.CancelledError
+            return result
         except (ConnectionError, ValueError) as exc:
             # ``ValueError`` already covers ``json.JSONDecodeError`` (G.ERR.09).
             self._daemon_socket_ready[sandbox_id] = False
@@ -3219,11 +3505,11 @@ class ProcessRuntime(RuntimeAdapter):
                     stderr=f"daemon IPC transient failure: {exc}",
                 )
             raise
-        if result is None:
-            # Cancel won before this await observed it. Same rule: the
-            # daemon stays available, and this is not a transport failure.
-            raise asyncio.CancelledError
-        return result
+        finally:
+            # Timeout, success, and transport failure all end the command.
+            # Releasing here kills setsid children and removes only this
+            # command's cgroup.
+            self._release_command_cgroup(command_cgroup)
 
     def _file_op_unavailable(self, sandbox_id: str) -> RuntimeFileOpResult:
         return RuntimeFileOpResult(
@@ -3593,6 +3879,15 @@ class ProcessRuntime(RuntimeAdapter):
         sandbox_id: str,
         request: RuntimeBackgroundExecRequest,
     ) -> BackgroundExecResult:
+        if self._writable_binds_are_low(sandbox_id):
+            return BackgroundExecResult(
+                started=False,
+                command=list(request.command),
+                error_message=(
+                    "sandbox stopped the command because less than 1 GiB is free "
+                    "on the workspace filesystem"
+                ),
+            )
         self._reap_background_processes(sandbox_id)
 
         socket_path = self._control_socket_host_path(sandbox_id)
@@ -3606,6 +3901,14 @@ class ProcessRuntime(RuntimeAdapter):
                 ),
             )
 
+        command_cgroup, failure = self._open_command_cgroup(sandbox_id)
+        if failure is not None:
+            return BackgroundExecResult(
+                started=False,
+                command=list(request.command),
+                error_message=failure.stderr,
+            )
+        procs = () if command_cgroup is None else tuple(command_cgroup.sandbox_procs_paths())
         loop = asyncio.get_running_loop()
         try:
             response = await loop.run_in_executor(
@@ -3618,9 +3921,11 @@ class ProcessRuntime(RuntimeAdapter):
                     env=dict(request.env) if request.env else None,
                     workdir=request.workdir,
                     stdin_bytes=request.stdin_data,
+                    cgroup_procs=procs,
                 ),
             )
         except (ConnectionError, ValueError) as exc:
+            self._release_command_cgroup(command_cgroup)
             self._daemon_socket_ready[sandbox_id] = False
             return BackgroundExecResult(
                 started=False,
@@ -3628,6 +3933,7 @@ class ProcessRuntime(RuntimeAdapter):
                 error_message=f"daemon IPC transport failure: {exc}",
             )
         except TimeoutError as exc:
+            self._release_command_cgroup(command_cgroup)
             self._daemon_socket_ready[sandbox_id] = False
             return BackgroundExecResult(
                 started=False,
@@ -3635,6 +3941,7 @@ class ProcessRuntime(RuntimeAdapter):
                 error_message=f"daemon IPC timeout: {exc}",
             )
         except OSError as exc:
+            self._release_command_cgroup(command_cgroup)
             if exc.errno in FATAL_DAEMON_ERRNOS:
                 self._daemon_socket_ready[sandbox_id] = False
             return BackgroundExecResult(
@@ -3644,6 +3951,7 @@ class ProcessRuntime(RuntimeAdapter):
             )
 
         if not response.get("ok") or not response.get("started", False):
+            self._release_command_cgroup(command_cgroup)
             error = response.get("stderr") or response.get("error") or "unknown error"
             return BackgroundExecResult(
                 started=False,
@@ -3671,6 +3979,10 @@ class ProcessRuntime(RuntimeAdapter):
 
         jobs = self._background_jobs_for_sandbox(sandbox_id)
         jobs[request.job_id] = job
+        if running_bool:
+            self._remember_command_cgroup(sandbox_id, request.job_id, command_cgroup)
+        else:
+            self._release_command_cgroup(command_cgroup)
 
         logger.info(
             "Started background command in sandbox %s (job=%s pid=%s): %s",
@@ -3739,6 +4051,7 @@ class ProcessRuntime(RuntimeAdapter):
             job,
         )
         if job.exit_code is not None:
+            self._release_remembered_cgroup(sandbox_id, job_id)
             return KillBackgroundJobResult(
                 job_id=job_id,
                 killed=False,
@@ -3748,6 +4061,7 @@ class ProcessRuntime(RuntimeAdapter):
 
         socket_path = self._control_socket_host_path(sandbox_id)
         if socket_path is None or not self._daemon_ipc_available(sandbox_id):
+            self._release_remembered_cgroup(sandbox_id, job_id)
             return KillBackgroundJobResult(
                 job_id=job_id,
                 killed=False,
@@ -3767,6 +4081,7 @@ class ProcessRuntime(RuntimeAdapter):
             )
         except (OSError, ValueError):
             # ``OSError`` already covers ``ConnectionError`` and ``socket.timeout`` (G.ERR.09).
+            self._release_remembered_cgroup(sandbox_id, job_id)
             return KillBackgroundJobResult(
                 job_id=job_id,
                 killed=False,
@@ -3774,6 +4089,7 @@ class ProcessRuntime(RuntimeAdapter):
                 exit_code=job.exit_code,
             )
 
+        self._release_remembered_cgroup(sandbox_id, job_id)
         reason = str(response.get("reason", "permission_denied"))
         killed = bool(response.get("killed", False))
         exit_code = response.get("exit_code")
@@ -3791,7 +4107,72 @@ class ProcessRuntime(RuntimeAdapter):
             exit_code=exit_code_int,
         )
 
+    def _disk_floor_result(self, sandbox_id: str) -> ExecResult | None:
+        if not self._writable_binds_are_low(sandbox_id):
+            return None
+        return ExecResult(
+            exit_code=1,
+            stdout="",
+            stderr=(
+                "sandbox stopped the command because less than 1 GiB is free "
+                "on the workspace filesystem"
+            ),
+        )
+
+    def _writable_host_paths(self, sandbox_id: str) -> list[str]:
+        paths: list[str] = []
+        policy = self._runtime_policies.get(sandbox_id)
+        if policy is not None:
+            for mount in policy.filesystem_policy.bind_mounts:
+                if mount.mode != "ro":
+                    paths.append(mount.host_path)
+        for entry in self._policy_binds.get(sandbox_id, []):
+            host_path = entry.get("host_path")
+            if isinstance(host_path, str) and host_path not in paths:
+                paths.append(host_path)
+        return paths
+
+    def _writable_binds_are_low(self, sandbox_id: str) -> bool:
+        return any_below_floor(self._writable_host_paths(sandbox_id))
+
+    def _ensure_disk_watcher(self) -> None:
+        """Watch writable binds until this process exits.
+
+        The thread is a daemon of the sandbox server, not of the TUI. It
+        starts once, on the first sandbox create.
+        """
+        if sys.platform == "win32" or self._disk_thread is not None:
+            return
+        self._disk_thread = threading.Thread(
+            target=self._watch_disk_floor,
+            name="jiuwenbox-disk-floor",
+            daemon=True,
+        )
+        self._disk_thread.start()
+
+    def _watch_disk_floor(self) -> None:
+        while not self._disk_stop.wait(0.2):
+            for sandbox_id in list(self._policy_binds):
+                if self._writable_binds_are_low(sandbox_id):
+                    handle = self._cgroup_handles.get(sandbox_id)
+                    if handle is not None:
+                        cgroup_module.kill_live_commands(handle)
+
+    def _start_guarded_proxy(self, sandbox_id: str) -> None:
+        control_dir = self._control_dirs.get(sandbox_id)
+        if control_dir is None:
+            raise OSError("sandbox control directory is missing")
+        proxy = GuardedProxy()
+        proxy.serve(control_dir / "guarded-proxy.sock")
+        self._guarded_proxies[sandbox_id] = proxy
+
+    def _close_guarded_proxy(self, sandbox_id: str) -> None:
+        proxy = self._guarded_proxies.pop(sandbox_id, None)
+        if proxy is not None:
+            proxy.close()
+
     async def cleanup(self, sandbox_id: str) -> None:
+        self._close_guarded_proxy(sandbox_id)
         await self.stop(sandbox_id)
         self._processes.pop(sandbox_id, None)
         policy_path = self._policy_paths.pop(sandbox_id, None)

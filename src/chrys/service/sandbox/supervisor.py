@@ -263,7 +263,28 @@ async def _drain_launcher_output(
     )
 
 
-def _child_env(policy_path: str, listen: str, token: str) -> dict[str, str]:
+def _configured_network_mode() -> str:
+    """Return the loaded sandbox network mode for the bundled server.
+
+    The caller starts the server without a settings argument. ``guarded`` is
+    the default. ``host`` does not set a child variable. ``offline`` and
+    ``guarded`` do.
+    """
+    from chrys.foundation.config.settings_store import load_settings
+
+    mode = load_settings().settings.sandbox_network
+    if mode in {"offline", "guarded", "host"}:
+        return mode
+    return "guarded"
+
+
+def _child_env(
+    policy_path: str,
+    listen: str,
+    token: str,
+    *,
+    network_mode: str = "host",
+) -> dict[str, str]:
     env = dict(os.environ)
     env["JIUWENBOX_POLICY_PATH"] = policy_path
     env["JIUWENBOX_LISTEN"] = listen
@@ -271,6 +292,10 @@ def _child_env(policy_path: str, listen: str, token: str) -> dict[str, str]:
         env["JIUWENBOX_API_TOKEN"] = token
     else:
         env.pop("JIUWENBOX_API_TOKEN", None)
+    if network_mode in {"offline", "guarded"}:
+        env["JIUWENBOX_NETWORK_MODE"] = network_mode
+    else:
+        env.pop("JIUWENBOX_NETWORK_MODE", None)
     return env
 
 
@@ -352,7 +377,12 @@ async def ensure_started(*, health_timeout: float = _HEALTH_TIMEOUT_SECONDS) -> 
         # Fresh credential for this child. Not the user's sandbox.token, and
         # not placed in argv, a policy file, or the listen URL.
         token = secrets.token_urlsafe()
-        env = _child_env(_bundled_policy_path(), listen, token)
+        env = _child_env(
+            _bundled_policy_path(),
+            listen,
+            token,
+            network_mode=_configured_network_mode(),
+        )
         stack = contextlib.AsyncExitStack()
         try:
             proc = await stack.enter_async_context(_spawn_launcher(env))

@@ -203,6 +203,15 @@ def _get_syscall_numbers() -> dict[str, int]:
     return _fallback_syscall_numbers()
 
 
+def policy_requests_blocklist(policy: SyscallPolicy) -> bool:
+    """Whether either architecture list asks for syscall blocking.
+
+    An empty policy may continue if the filter cannot be built. A policy
+    that names blocked syscalls must not start without the filter.
+    """
+    return bool(policy.x86_64.blocked or policy.arm64.blocked)
+
+
 def _blocked_syscalls_for_current_arch(policy: SyscallPolicy) -> list[str]:
     """Return the syscall block list for the current architecture."""
     for key in _arch_aliases():

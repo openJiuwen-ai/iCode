@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from collections.abc import Callable
 
 import pytest
@@ -152,6 +153,7 @@ class _ExecSession:
         stdout: bytes,
         running: bool,
         timeout: float | None,
+        cgroup_procs: list[str] | None = None,
     ) -> tuple[socket.socket, threading.Event]:
         key = tuple(command)
         self._specs[key] = (pid, stdout, running)
@@ -161,6 +163,8 @@ class _ExecSession:
         header: dict[str, object] = {"command": list(command)}
         if timeout is not None:
             header["timeout"] = timeout
+        if cgroup_procs is not None:
+            header["cgroup_procs"] = list(cgroup_procs)
         done = threading.Event()
 
         def run() -> None:
@@ -349,3 +353,136 @@ def test_write_shutdown_does_not_kill_the_command(monkeypatch: pytest.MonkeyPatc
         assert session.errors == []
     finally:
         session.close()
+
+
+def test_timeout_writes_v2_cgroup_kill_for_a_setsid_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A double-fork is a pid in the command cgroup and not in the process group.
+
+    Timeout still killpg's the session leader, and writes ``cgroup.kill`` so
+    the setsid pid is stopped too. No real cgroup filesystem is required.
+    """
+    from jiuwenbox.supervisor import sandbox_daemon
+
+    group = tmp_path / "cmd-timeout"
+    group.mkdir()
+    leader = 71041
+    stranger = 71042
+    (group / "cgroup.procs").write_text(f"{leader}\n{stranger}\n", encoding="utf-8")
+    (group / "cgroup.kill").write_text("", encoding="utf-8")
+    direct_kills: list[tuple[int, int]] = []
+
+    def kill(pid: int, sig: int) -> None:
+        direct_kills.append((pid, sig))
+
+    monkeypatch.setattr(sandbox_daemon, "_POST_KILL_DRAIN_SECONDS", 0.2)
+    monkeypatch.setattr(sandbox_daemon.os, "kill", kill, raising=False)
+    session = _ExecSession(monkeypatch, on_signal=_HoldingProc.note_group_signal)
+    try:
+        client, done = session.start(
+            ["hold-setsid"],
+            pid=leader,
+            stdout=_KEPT_STDOUT,
+            running=True,
+            timeout=0.4,
+            cgroup_procs=[str(group / "cgroup.procs")],
+        )
+        session.wait_ready(["hold-setsid"])
+        assert done.wait(3), "timed-out exec did not finish"
+        response = _read_response(client)
+        _assert_group_signal(session.calls, leader)
+        assert [pid for pid, _sig in session.calls] == [leader]
+        assert stranger not in {pid for pid, _sig in session.calls}
+        assert (group / "cgroup.kill").read_text(encoding="utf-8") == "1"
+        assert direct_kills == []
+        assert response["error"] == "timeout"
+        assert session.errors == []
+    finally:
+        session.close()
+
+
+def test_cancel_kills_v1_cgroup_pids_outside_the_process_group(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    group = tmp_path / "cmd-cancel"
+    group.mkdir()
+    leader = 71051
+    stranger = 71052
+    (group / "cgroup.procs").write_text(f"{leader}\n{stranger}\n", encoding="utf-8")
+    direct_kills: list[tuple[int, int]] = []
+
+    def kill(pid: int, sig: int) -> None:
+        direct_kills.append((pid, sig))
+
+    monkeypatch.setattr("jiuwenbox.supervisor.sandbox_daemon.os.kill", kill, raising=False)
+    session = _ExecSession(monkeypatch, on_signal=_HoldingProc.release_group)
+    try:
+        client, done = session.start(
+            ["hold-setsid"],
+            pid=leader,
+            stdout=b"running\n",
+            running=True,
+            timeout=None,
+            cgroup_procs=[str(group / "cgroup.procs")],
+        )
+        session.wait_ready(["hold-setsid"])
+        client.close()
+        assert done.wait(3), "cancelled exec did not finish"
+        _assert_group_signal(session.calls, leader)
+        assert [pid for pid, _sig in session.calls] == [leader]
+        assert (leader, _SIGKILL) in direct_kills
+        assert (stranger, _SIGKILL) in direct_kills
+        assert not (group / "cgroup.kill").exists()
+        assert session.errors == []
+    finally:
+        session.close()
+
+
+def test_release_command_cgroup_removes_only_that_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from jiuwenbox.supervisor.cgroup import CgroupBackend, CommandCgroup, release_command_cgroup
+
+    parent = tmp_path / "sandbox"
+    supervisor_dir = parent / "supervisor"
+    supervisor_dir.mkdir(parents=True)
+    (supervisor_dir / "cgroup.procs").write_text("11\n", encoding="utf-8")
+    command_dir = parent / "cmd-one"
+    command_dir.mkdir()
+    (command_dir / "cgroup.procs").write_text("21\n22\n", encoding="utf-8")
+    (command_dir / "cgroup.kill").write_text("", encoding="utf-8")
+    removed: list[Path] = []
+
+    def rmdir(path: Path) -> None:
+        # A real cgroup directory rmdirs while its interface files still
+        # exist. A normal temp directory does not, so record the call.
+        removed.append(Path(path))
+
+    monkeypatch.setattr(Path, "rmdir", rmdir)
+    release_command_cgroup(CommandCgroup(backend=CgroupBackend.V2, paths=[command_dir]))
+
+    assert (command_dir / "cgroup.kill").read_text(encoding="utf-8") == "1"
+    assert command_dir in removed
+    assert supervisor_dir not in removed
+    assert (supervisor_dir / "cgroup.procs").read_text(encoding="utf-8") == "11\n"
+
+
+def test_v1_kill_cgroup_processes_signals_every_recorded_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from jiuwenbox.supervisor import cgroup as cgroup_module
+
+    group = tmp_path / "cmd-v1"
+    group.mkdir()
+    (group / "cgroup.procs").write_text("71061\n71062\n", encoding="utf-8")
+    seen: list[tuple[int, int]] = []
+
+    def kill(pid: int, sig: int) -> None:
+        seen.append((pid, sig))
+
+    monkeypatch.setattr(cgroup_module.os, "kill", kill)
+    cgroup_module.kill_cgroup_processes(group, cgroup_module.CgroupBackend.V1)
+
+    assert seen == [(71061, 9), (71062, 9)]
+    assert group.is_dir()

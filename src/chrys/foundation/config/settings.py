@@ -812,6 +812,8 @@ _WEB_LABEL_WEB_FETCH_DENIED_ORIGINS = msg(
 _LABEL_SANDBOX_ENABLED = msg("settings.sandbox.enabled.label", fallback="Run shell in a sandbox")
 _LABEL_SANDBOX_URL = msg("settings.sandbox.url.label", fallback="Sandbox URL")
 _LABEL_SANDBOX_TOKEN = msg("settings.sandbox.token.label", fallback="Sandbox token")
+_LABEL_SANDBOX_NETWORK = msg("settings.sandbox.network.label", fallback="Sandbox network")
+_SANDBOX_NETWORK_MODES = ("guarded", "host", "offline")
 
 
 @dataclass(frozen=True)
@@ -2092,6 +2094,26 @@ class Settings:
             # A project must not plant a credential the process would send.
             project_merge=ProjectMerge.DENY,
             risk=Risk.CAUTION,
+        ),
+    )
+
+    # ``guarded`` is the default: the sandbox has no host network, and an
+    # HTTP proxy dials public addresses only. ``host`` keeps the host
+    # network. ``offline`` gives the sandbox only its own loopback.
+    sandbox_network: str = field(
+        default="guarded",
+        metadata=spec(
+            key="sandbox.network",
+            label=_LABEL_SANDBOX_NETWORK,
+            env="CHRYS_SANDBOX_NETWORK",
+            coerce=choice_coercer(choices=_SANDBOX_NETWORK_MODES),
+            apply=Apply.RELOAD,
+            group="sandbox",
+            kind=Kind.ENUM,
+            choices=_SANDBOX_NETWORK_MODES,
+            project_merge=ProjectMerge.DENY,
+            risk=Risk.DANGEROUS,
+            invalid_policy=InvalidPolicy.SAFE_DEFAULT,
         ),
     )
 

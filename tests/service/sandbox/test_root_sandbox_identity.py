@@ -4,7 +4,8 @@
 
 Root with user namespaces off must fail inside the bwrap argv builder.
 The mount and environment checks read that same argv (``to_args``), not a
-filtered dict. Nothing starts bubblewrap.
+filtered dict. Nothing starts bubblewrap. The bundled policy also hides
+account homes, requires Landlock, and sets cgroup limits.
 """
 
 from __future__ import annotations
@@ -197,6 +198,41 @@ def _argv_keeps_host_root(argv: list[str]) -> bool:
     if "os.setuid(0)" in command:
         return True
     return "os.setuid(" not in command
+
+
+def test_bundled_policy_excludes_account_homes_and_applies_limits(
+    jiuwenbox_importable: None,
+) -> None:
+    """Account homes stay unmounted, Landlock is required, and cgroups apply.
+
+    ``memory_max`` is parsed to an int byte count (4GiB is 4294967296).
+    ``pids_max`` stays an int. ``cpu_max`` stays unset, so only the two
+    configured limits are applied. ``namespace.user`` stays off and the
+    ``/`` bind itself stays, skipping ``home`` and ``root`` with ``run``
+    and ``tmp``.
+    """
+    policy = _load_bundled_policy()
+    assert policy.namespace.user is False
+    assert policy.network.mode == "host"
+    assert "ptrace" in policy.syscall.x86_64.blocked
+    assert "userfaultfd" in policy.syscall.x86_64.blocked
+    assert "bpf" in policy.syscall.x86_64.blocked
+    assert "mount" in policy.syscall.arm64.blocked
+    assert "kexec_load" in policy.syscall.arm64.blocked
+    assert policy.landlock.compatibility == "hard_requirement"
+    assert policy.cgroup.memory_max == 4294967296
+    assert isinstance(policy.cgroup.memory_max, int)
+    assert policy.cgroup.pids_max == 1024
+    assert policy.cgroup.cpu_max is None
+    assert policy.cgroup.is_empty() is False
+
+    entries = policy.filesystem_policy.bind_root_entries
+    assert len(entries) == 1
+    root = entries[0]
+    assert Path(root.host_root) == Path("/")
+    assert Path(root.sandbox_path) == Path("/")
+    assert root.mode == "ro"
+    assert root.exclude == ["run", "tmp", "home", "root"]
 
 
 def test_root_without_user_namespace_fails_closed(

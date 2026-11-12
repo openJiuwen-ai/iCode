@@ -42,6 +42,22 @@ Paths are compared as components after ``os.path.realpath``, so a sibling
 such as ``work-extra`` is not inside ``work``. Two symlink spellings of one
 directory are one sandbox and one read-write mount of the physical path.
 
+A writable mount stays read-write, including when that mount is the home
+directory. The fragment also appends a read-only bind for each account path
+that exists inside the mount and is not a symlink: ``.ssh``, ``.bashrc``,
+``.bash_profile``, ``.profile``, ``.zshrc``, ``.zprofile``, ``.zshenv``,
+``.zlogin``, ``.gitconfig``, ``.git-credentials``, ``.gnupg``, ``.pypirc``,
+``.npmrc``, ``.wgetrc``, ``.curlrc``, ``.azure``, ``.config/gh``,
+``.config/git``, ``.config/gcloud``, ``.config/glab``,
+``.config/configstore``, ``.local/share/keyrings``, ``.aws``, ``.kube``,
+``.docker``, and ``.netrc``. ``host_path`` and ``sandbox_path`` are that path under the
+mount, not another spelling of its real path. A symlink is not followed. A
+path whose real location falls outside the mount is not bound; the
+comparison is ``os.path.realpath`` components, so ``work-extra`` is not
+inside ``work``. ``.config`` as a whole stays writable, and so does a
+project ``.git/hooks``. A read-only sandbox does not add these covers. The
+legacy single-cwd writable create uses the same covers.
+
 When ``workspace_root`` is omitted, the first command cwd remains the
 writable root of a single legacy slot. That slot is separate from the
 workspace-keyed cache.
@@ -577,20 +593,99 @@ def _short_error_line(value: object) -> str | None:
     return None
 
 
+# Account paths covered read-only when they exist inside a writable mount.
+# The ``.config`` directory itself stays writable; only the named children
+# are covered. Project ``.git/hooks`` is ordinary workspace write and is
+# not listed.
+_SENSITIVE_RELATIVE_PARTS: tuple[tuple[str, ...], ...] = (
+    (".ssh",),
+    (".bashrc",),
+    (".bash_profile",),
+    (".profile",),
+    (".zshrc",),
+    (".zprofile",),
+    (".zshenv",),
+    (".zlogin",),
+    (".gitconfig",),
+    (".git-credentials",),
+    (".gnupg",),
+    (".pypirc",),
+    (".npmrc",),
+    (".wgetrc",),
+    (".curlrc",),
+    (".azure",),
+    (".config", "gh"),
+    (".config", "git"),
+    (".config", "gcloud"),
+    (".config", "glab"),
+    (".config", "configstore"),
+    (".local", "share", "keyrings"),
+    (".aws",),
+    (".kube",),
+    (".docker",),
+    (".netrc",),
+)
+
+
 def _bind_body(mounts: Sequence[str], mode: str) -> dict[str, Any]:
-    """Append bind mounts. ``host_path`` and ``sandbox_path`` are the same path."""
+    """Append bind mounts. ``host_path`` and ``sandbox_path`` are the same path.
+
+    Writable mounts stay read-write. Account paths that exist inside them are
+    appended afterwards as read-only binds of that same path. Read-only mounts
+    are left as the caller passed them.
+    """
+    binds: list[dict[str, str]] = [{"host_path": path, "sandbox_path": path, "mode": mode} for path in mounts]
+    if mode == _READ_WRITE:
+        binds.extend(_sensitive_readonly_binds(mounts))
     return {
         "policy_mode": "append",
         "policy": {
             "filesystem_policy": {
-                "bind_mounts": [{"host_path": path, "sandbox_path": path, "mode": mode} for path in mounts],
+                "bind_mounts": binds,
             }
         },
     }
 
 
+def _sensitive_readonly_binds(mounts: Sequence[str]) -> list[dict[str, str]]:
+    """Read-only covers for account paths that exist inside ``mounts``."""
+    covers: list[dict[str, str]] = []
+    for mount in mounts:
+        physical_mount = os.path.realpath(mount)
+        for parts in _SENSITIVE_RELATIVE_PARTS:
+            candidate = _sensitive_cover_path(mount, physical_mount, parts)
+            if candidate is None:
+                continue
+            covers.append({"host_path": candidate, "sandbox_path": candidate, "mode": _READ_ONLY})
+    return covers
+
+
+def _sensitive_cover_path(mount: str, physical_mount: str, parts: tuple[str, ...]) -> str | None:
+    """Path under ``mount`` to bind read-only, or None when it must stay uncovered.
+
+    ``physical_mount`` is ``os.path.realpath`` of ``mount``. A missing path is
+    skipped. A symlink component is skipped without following it, so the
+    outside target is not bound. A real file or directory is bound at the
+    path under ``mount``, not at a different realpath spelling. That real
+    location must still be the mount or a directory inside it.
+    """
+    candidate = mount
+    for part in parts:
+        candidate = os.path.join(candidate, part)
+        if os.path.islink(candidate):
+            return None
+    if not os.path.lexists(candidate):
+        return None
+    if not _same_or_inside_physical(physical_mount, os.path.realpath(candidate)):
+        return None
+    return candidate
+
+
 def _create_body(cwd: str, mode: str) -> dict[str, Any]:
-    """Legacy single mount. ``cwd`` is the command cwd, not a workspace root."""
+    """Legacy single mount. ``cwd`` is the command cwd, not a workspace root.
+
+    Writable mode appends the same read-only account covers as a workspace mount.
+    """
     return _bind_body((cwd,), mode)
 
 

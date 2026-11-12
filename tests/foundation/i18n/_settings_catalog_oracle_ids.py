@@ -69,6 +69,7 @@ SETTINGS_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "settings.sandbox.enabled.label",
         "settings.sandbox.token.label",
         "settings.sandbox.url.label",
+        "settings.sandbox.network.label",
         "settings.session.title.auto.label",
         "settings.storage.session_root_dir.label",
         "settings.tools.ask_user.inline.label",

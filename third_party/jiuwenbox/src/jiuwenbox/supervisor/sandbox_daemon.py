@@ -27,8 +27,7 @@ by ``PolicyEngine`` so user policies cannot reference it; see
 
 The control socket itself lives on the **host** filesystem, in a directory
 the sandbox replaces with a private tmpfs and never under the home
-directory (``/home`` is bind-mounted, so a socket there would stay
-reachable). Box-server ``bind()``s and ``listen()``s before spawning
+directory (the bundled policy does not mount ``/home``). Box-server ``bind()``s and ``listen()``s before spawning
 bubblewrap, then passes the listener file descriptor into the sandbox via
 ``subprocess.Popen(pass_fds=...)``. Bubblewrap's user command path
 never closes arbitrary inherited fds (only its own monitor/PID-1 paths
@@ -79,7 +78,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -307,6 +306,188 @@ def _kill_command_group(pid: int) -> None:
         logger.debug("killpg(%s) failed", pid, exc_info=True)
 
 
+def _parse_cgroup_procs(header: dict[str, Any]) -> list[str]:
+    """Return host ``cgroup.procs`` paths from an exec request.
+
+    Absent means this sandbox has no cgroup. A present value must be a
+    list of paths; older peers that do not know the field ignore it.
+    """
+    raw = header.get("cgroup_procs")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("cgroup_procs must be a list of paths")
+    paths: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item:
+            raise ValueError("cgroup_procs must be a list of paths")
+        paths.append(item)
+    return paths
+
+
+def _join_cgroup_procs(procs_paths: list[str]) -> None:
+    """Move this process into each command cgroup before exec.
+
+    ``setsid`` descendants stay in the cgroup they inherited. A failed
+    write leaves the command in the supervisor cgroup, so the caller
+    must fail the exec.
+    """
+    if not procs_paths:
+        return
+    pid = str(os.getpid())
+    for path in procs_paths:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(pid)
+
+
+# One file the command creates cannot grow past this. The host also stops
+# commands when the workspace filesystem has less than 1 GiB free.
+_OUTPUT_FILE_BYTES = 4 * 1024 * 1024 * 1024
+_GUARDED_PROXY_SOCKET = "/run/guarded-proxy.sock"
+_GUARDED_PROXY_PORT = 3128
+
+
+def _limit_output_file_size() -> None:
+    """Cap a single created file so one write cannot fill the disk."""
+    if sys.platform == "win32":
+        return
+    import resource
+
+    try:
+        _soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+        limit = _OUTPUT_FILE_BYTES
+        infinity = resource.RLIM_INFINITY
+        if hard != infinity:
+            limit = min(limit, hard)
+        ceiling = hard if hard != infinity else limit
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, ceiling))
+    except (OSError, ValueError):
+        return
+
+
+def _make_command_preexec(procs_paths: list[str]) -> Callable[[], None]:
+    def _preexec() -> None:
+        _join_cgroup_procs(procs_paths)
+        _limit_output_file_size()
+        _prefer_oom_kill_self()
+
+    return _preexec
+
+
+def _bridge_guarded_client(client: socket.socket) -> None:
+    remote = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        remote.connect(_GUARDED_PROXY_SOCKET)
+    except OSError:
+        client.close()
+        return
+    try:
+        def pump(src: socket.socket, dst: socket.socket) -> None:
+            try:
+                while True:
+                    chunk = src.recv(65536)
+                    if not chunk:
+                        break
+                    dst.sendall(chunk)
+            except OSError:
+                pass
+            finally:
+                try:
+                    dst.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+
+        worker = threading.Thread(target=pump, args=(remote, client), daemon=True)
+        worker.start()
+        pump(client, remote)
+        worker.join(timeout=2)
+    finally:
+        remote.close()
+        client.close()
+
+
+def _start_guarded_forwarder() -> None:
+    """Listen on the sandbox loopback and forward to the host proxy socket.
+
+    The sandbox network namespace has no route to the host. The proxy socket
+    is a file bind, so this forwarder is what pip and curl can use as
+    ``HTTP_PROXY``.
+    """
+    if os.environ.get("JIUWENBOX_GUARDED_PROXY") != "1":
+        return
+    if not os.path.exists(_GUARDED_PROXY_SOCKET):
+        logger.error("guarded proxy socket is missing")
+        return
+    try:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", _GUARDED_PROXY_PORT))
+        listener.listen(128)
+    except OSError:
+        logger.error("guarded proxy forwarder failed to listen", exc_info=True)
+        return
+
+    def accept_loop() -> None:
+        while True:
+            try:
+                client, _addr = listener.accept()
+            except OSError:
+                return
+            threading.Thread(
+                target=_bridge_guarded_client,
+                args=(client,),
+                name="jiuwenbox-guarded-forward",
+                daemon=True,
+            ).start()
+
+    threading.Thread(
+        target=accept_loop,
+        name="jiuwenbox-guarded-forward-accept",
+        daemon=True,
+    ).start()
+
+
+def _kill_command_cgroup(procs_paths: list[str]) -> None:
+    """Stop setsid descendants that left the command's process group.
+
+    v2 writes ``cgroup.kill`` next to each ``cgroup.procs`` path. v1
+    SIGKILLs every pid recorded there. The host repeats this kill and
+    removes the directory; a failure here is not fatal.
+    """
+    if not procs_paths:
+        return
+    sigkill = getattr(signal, "SIGKILL", 9)
+    for procs_path in procs_paths:
+        group_dir = os.path.dirname(procs_path)
+        kill_file = os.path.join(group_dir, "cgroup.kill")
+        if os.path.exists(kill_file):
+            try:
+                with open(kill_file, "w", encoding="utf-8") as fh:
+                    fh.write("1")
+            except OSError:
+                logger.debug("failed to write %s", kill_file, exc_info=True)
+            continue
+        try:
+            with open(procs_path, encoding="utf-8") as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        for line in raw.splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                pid = int(text)
+            except ValueError:
+                continue
+            if pid <= 1:
+                continue
+            try:
+                os.kill(pid, sigkill)
+            except OSError:
+                pass
+
+
 def _snapshot_chunks(chunks: list[bytes], lock: threading.Lock) -> bytes:
     with lock:
         return b"".join(chunks)
@@ -422,6 +603,7 @@ def _collect_exec_output(
     conn: socket.socket,
     stdin_bytes: bytes | None,
     timeout: float | None,
+    cgroup_procs: list[str] | None = None,
 ) -> tuple[str, bytes, bytes]:
     """Read the command until it exits, times out, or the client drops.
 
@@ -472,6 +654,7 @@ def _collect_exec_output(
     deadline = None if timeout is None else time.monotonic() + timeout
     reason = "ok"
     drain_deadline: float | None = None
+    procs_paths = list(cgroup_procs or ())
 
     def _pipes_closed() -> bool:
         return stdout_done.is_set() and stderr_done.is_set()
@@ -485,6 +668,7 @@ def _collect_exec_output(
                 reason = "timeout"
                 if proc.poll() is None:
                     _kill_command_group(proc.pid)
+                _kill_command_cgroup(procs_paths)
                 drain_deadline = time.monotonic() + _POST_KILL_DRAIN_SECONDS
                 continue
             slice_wait = _EXEC_POLL_SECONDS
@@ -494,6 +678,7 @@ def _collect_exec_output(
                 reason = "client_gone"
                 if proc.poll() is None:
                     _kill_command_group(proc.pid)
+                _kill_command_cgroup(procs_paths)
                 drain_deadline = time.monotonic() + _POST_KILL_DRAIN_SECONDS
             continue
         if _pipes_closed():
@@ -545,13 +730,16 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
             raise ValueError(f"invalid stdin_size {stdin_size}")
 
         stdin_bytes = _recv_exact(conn, stdin_size) if stdin_size else b""
+        cgroup_procs = _parse_cgroup_procs(header)
 
         # Python ForkServer fast path (default ON -- a transparent optimisation,
         # no env var required). Activated when BOTH
         # the server marked the request (``python_fastpath``) and the fast path
         # is enabled (it is, unless ``JIUWENBOX_PYTHON_FASTPATH=0`` opts out).
+        # A command cgroup must be joined in preexec, which the resident
+        # worker does not do, so that request stays on the Popen path.
         # Falls back to the normal ``subprocess.Popen`` path below otherwise.
-        if header.get("python_fastpath") and _fastpath_enabled():
+        if not cgroup_procs and header.get("python_fastpath") and _fastpath_enabled():
             if _try_fastpath_exec(conn, command, header, stdin_bytes):
                 return
 
@@ -569,7 +757,7 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
         }
         if workdir:
             proc_kwargs["cwd"] = workdir
-        proc_kwargs["preexec_fn"] = _prefer_oom_kill_self
+        proc_kwargs["preexec_fn"] = _make_command_preexec(cgroup_procs)
 
         try:
             proc = subprocess.Popen(command, **proc_kwargs)
@@ -592,6 +780,7 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
             conn,
             stdin_bytes if stdin_size else None,
             float(timeout) if timeout is not None else None,
+            cgroup_procs,
         )
         if reason == "timeout":
             stderr_text = stderr_bytes.decode("utf-8", errors="replace")
@@ -2557,6 +2746,7 @@ class _BgJob:
     job_id: str
     command: list[str]
     proc: subprocess.Popen
+    cgroup_procs: tuple[str, ...] = ()
 
 
 _bg_jobs: dict[str, _BgJob | object] = {}
@@ -2636,6 +2826,7 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
             raise ValueError(f"invalid stdin_size {stdin_size}")
 
         stdin_bytes = _recv_exact(conn, stdin_size) if stdin_size else b""
+        cgroup_procs = _parse_cgroup_procs(header)
 
         if not _try_reserve_bg_job(job_id):
             _send_response(
@@ -2666,7 +2857,7 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
             }
             if workdir:
                 proc_kwargs["cwd"] = workdir
-            proc_kwargs["preexec_fn"] = _prefer_oom_kill_self
+            proc_kwargs["preexec_fn"] = _make_command_preexec(cgroup_procs)
 
             try:
                 proc = subprocess.Popen(command, **proc_kwargs)
@@ -2690,6 +2881,7 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
                 job_id=job_id,
                 command=command,
                 proc=proc,
+                cgroup_procs=tuple(cgroup_procs),
             )
             _commit_bg_job(job_id, job)
             reserved = False
@@ -2784,7 +2976,7 @@ def _handle_bg_kill(conn: socket.socket, header: dict[str, Any]) -> None:
 
     with _bg_jobs_lock:
         job = _bg_jobs.get(job_id)
-    if job is None or job is _BG_JOB_RESERVED:
+    if not isinstance(job, _BgJob):
         _send_response(
             conn,
             {
@@ -2798,6 +2990,9 @@ def _handle_bg_kill(conn: socket.socket, header: dict[str, Any]) -> None:
         return
 
     _sync_bg_job(job)
+    # setsid children are not in the leader's process group. The cgroup
+    # kill reaches them; send_signal below remains the session leader's signal.
+    _kill_command_cgroup(list(job.cgroup_procs))
     if job.proc.returncode is not None:
         _send_response(
             conn,
@@ -3007,6 +3202,7 @@ def main() -> int:
         stream=sys.stderr,
     )
     state = DaemonState()
+    _start_guarded_forwarder()
     if _fastpath_enabled():
         # Idle-recycle background thread; runs only when the feature is on.
         _FORK_POOL.start_reaper()
