@@ -68,4 +68,6 @@ The **new AST matchers** support only Bash / Git Bash. They do not automatically
 
 ### Compatibility and limitations
 
+The built-in rules support numeric Git log limits such as `git log --oneline -5` and simple awk field reads such as `awk '{print $1}' file.txt`. Patch output still requires `--no-ext-diff --no-textconv`; awk options that can load more code, such as `-f` and `--source`, DEFER.
+
 The built-in policy **reimplements** common legacy read-only decisions; it does not yet achieve full behavioral parity. In particular, safe file-descriptor redirections, certain environment-assignment prefixes, complex `find -exec`/`xargs`/`sed`/`awk` cases, POSIX `for` loops, and non-Bash dialects may now DEFER instead of auto-approving. These conservatively preserve the ordinary approval path rather than granting an unproven ALLOW. The old checker remains an independent regression oracle in tests only; do not describe this as full parity until the complete historical corpus passes. A static `argv_exact` rule never treats a glob as a fully resolved argument vector; built-in read-only rules may inspect limited literal glob patterns symbolically.

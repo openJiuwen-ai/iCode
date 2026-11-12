@@ -254,3 +254,26 @@ def test_error_recovery_never_allows_malformed_command():
     assert not result.syntax_valid
     assert not result.coverage_complete
     assert route("rm x\n)", "bash", policy).route is Route.DEFER
+
+
+@pytest.mark.parametrize(
+    ("command", "allowed"),
+    [
+        ("git log --oneline -5", True),
+        ("git log --no-ext-diff --no-textconv -p -1", True),
+        ("git log -p -1", False),
+        ("git log --oneline --output=history.txt -5", False),
+        ("awk '{print $1}' file.txt", True),
+        ("awk '{ print $12 }'", True),
+        ("awk '{print $1}' -f script.awk", False),
+        ("awk '{print $1}' --source='BEGIN {system(\"unsafe_tool\")}'", False),
+    ],
+)
+def test_builtin_numeric_log_and_field_print_match_legacy(tmp_path, command, allowed):
+    from chrys.service.tools.builtins.shell_filter import is_safe_readonly_command
+
+    assert is_safe_readonly_command(command, shell_name="bash") is allowed
+    file = tmp_path / "prejudge.yaml"
+    file.write_text('schema_version: 1\nmode: "enforce"\npolicy_id: regression\nrules: []\n', encoding="utf-8")
+    result = route(command, "bash", load_policy(file))
+    assert (result.route is Route.ALLOW) is allowed, result

@@ -37,12 +37,12 @@ rules:
     effect: allow
     target: command
     match:
-      cli: {"global_flags":["--no-pager","--no-optional-locks","--literal-pathspecs","--glob-pathspecs","--noglob-pathspecs","--icase-pathspecs"],"global_values":["-C","--git-dir","--work-tree","--namespace"],"command":"git","subcommand":"log","flags":["--oneline","--graph","--decorate","--no-decorate","--stat","--numstat","--shortstat","--name-only","--name-status","--no-ext-diff","--no-textconv"],"short_patterns":["-\\\\d+"]}
+      cli: {"global_flags":["--no-pager","--no-optional-locks","--literal-pathspecs","--glob-pathspecs","--noglob-pathspecs","--icase-pathspecs"],"global_values":["-C","--git-dir","--work-tree","--namespace"],"command":"git","subcommand":"log","flags":["--oneline","--graph","--decorate","--no-decorate","--stat","--numstat","--shortstat","--name-only","--name-status","--no-ext-diff","--no-textconv"],"short_patterns":["-\\d+"]}
   - id: git-log-patch
     effect: allow
     target: command
     match:
-      cli: {"global_flags":["--no-pager","--no-optional-locks","--literal-pathspecs","--glob-pathspecs","--noglob-pathspecs","--icase-pathspecs"],"global_values":["-C","--git-dir","--work-tree","--namespace"],"command":"git","subcommand":"log","flags":["--oneline","--graph","--decorate","--no-decorate","--stat","--numstat","--shortstat","--name-only","--name-status","--no-ext-diff","--no-textconv","--no-ext-diff","--no-textconv","-p","-u","--patch","--patch-with-raw","--patch-with-stat","--cc","-c","--combined","--stat","--numstat","--shortstat","--name-only","--name-status","--cached","--staged","--exit-code","--quiet"],"flag_prefixes":["--patch=","-U","--unified="],"short_patterns":["-\\\\d+"],"require_flags":["--no-ext-diff","--no-textconv"]}
+      cli: {"global_flags":["--no-pager","--no-optional-locks","--literal-pathspecs","--glob-pathspecs","--noglob-pathspecs","--icase-pathspecs"],"global_values":["-C","--git-dir","--work-tree","--namespace"],"command":"git","subcommand":"log","flags":["--oneline","--graph","--decorate","--no-decorate","--stat","--numstat","--shortstat","--name-only","--name-status","--no-ext-diff","--no-textconv","--no-ext-diff","--no-textconv","-p","-u","--patch","--patch-with-raw","--patch-with-stat","--cc","-c","--combined","--stat","--numstat","--shortstat","--name-only","--name-status","--cached","--staged","--exit-code","--quiet"],"flag_prefixes":["--patch=","-U","--unified="],"short_patterns":["-\\d+"],"require_flags":["--no-ext-diff","--no-textconv"]}
   - id: git-grep
     effect: allow
     target: command
@@ -157,4 +157,4 @@ rules:
     effect: allow
     target: command
     match:
-      all: [{"command_in":["awk"]},{"argument_at_regex":[1,"^\\\\{\\\\s*print\\\\s+\\\\$[0-9]+\\\\s*\\\\}$"]}]
+      all: [{"command_in":["awk"]},{"argument_at_regex":[1,"^\\{\\s*print\\s+\\$[0-9]+\\s*\\}$"]},{"args_prefix_none_of":["-"]}]

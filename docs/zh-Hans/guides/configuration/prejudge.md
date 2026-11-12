@@ -68,4 +68,6 @@ BLOCK 优先于 ALLOW。要自动 ALLOW，必须所有可执行 AST 节点匹配
 
 ### 兼容性与当前限制
 
+内置规则支持 `git log --oneline -5` 这样的数字条数限制，以及 `awk '{print $1}' file.txt` 这样的简单字段读取。输出 Git 补丁仍须提供 `--no-ext-diff --no-textconv`；`-f`、`--source` 等可加载额外代码的 awk 选项会 DEFER。
+
 内置 YAML Policy **重新实现**了部分原 readonly 自动批准能力，但目前尚未达到完整行为等价。安全文件描述符重定向、某些环境变量前缀、复杂的 `find -exec`/`xargs`/`sed`/`awk`、POSIX `for` 循环和非 Bash 方言等，可能从旧版自动 ALLOW 变为 DEFER；这类命令仍走原有审批流程，绝不会因为模型不能确定就自动批准。旧 Checker 只可在测试中作为独立对照，不参与新实现运行。完整历史测试集通过前，不应宣称与旧版完全等价。`argv_exact` 不会把未展开的 glob 当成确定的完整 argv；内置只读规则可以在受控范围内将字面 glob 作为符号参数判断。
