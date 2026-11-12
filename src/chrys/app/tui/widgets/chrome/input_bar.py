@@ -21,7 +21,6 @@ from time import monotonic, time
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from rich.text import Text
-from textual import events
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.css.scalar import Scalar
@@ -43,6 +42,7 @@ from chrys.app.tui.support.prompt_history import (
     prompt_history_enabled,
 )
 from chrys.app.tui.toasts import dismiss_toast
+from chrys.app.tui.util.diff_comments import CommentProbe, CommentReplacement
 from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.util.visibility import resync_compositor_regions
 from chrys.app.tui.widgets import EnhancedTextArea
@@ -497,25 +497,9 @@ class _ChatTextArea(DraftTextArea, EnhancedTextArea):
         elif event.character in ("$", "\uff04") and self.text in ("$", "\uff04") and self.cursor_location == (0, 1):
             self.post_message(self.ModelTrigger())
 
-    async def handle_key(self, event: events.Key) -> bool:
-        """Run this area's own binding for a key no handler took, at once and in the order keys arrive.
-
-        Textual runs a non-priority binding only once the key has bubbled up to
-        the App (Textual 8.2.7 ``App._on_key``), but takes what this area handles
-        itself (a character, Tab to a field, Enter) as soon as it is read. Keys a
-        busy loop hands over at once all reach this area first, so an Enter
-        would otherwise send the text before the Backspace typed ahead of it
-        took effect. ``Widget._on_key`` calls this only for a key no handler
-        above prevented. While a suggestion list is open the keys still go up:
-        the input bar steers the list with them.
-        """
-        if not self._suggestions_active:
-            for binding in self._bindings.key_to_bindings.get(event.key, ()):
-                if not binding.priority and await self.app.run_action(binding.action, self):
-                    event.stop()
-                    event.prevent_default()
-                    return True
-        return await super().handle_key(event)
+    def _runs_own_bindings_on_arrival(self) -> bool:
+        # While a suggestion list is open the keys still go up: the input bar steers the list with them.
+        return not self._suggestions_active
 
     def add_to_history(self, text: str, *, session_id: str | None = None) -> None:
         """Append *text* to input history (deduplicates consecutive)."""
@@ -1364,16 +1348,49 @@ class InputBar(Widget):
         else:
             self.post_message(self.ReferenceOpened(event.reference))
 
-    def insert_reference(self, kind: ReferenceKind, content: str) -> bool:
-        """Insert a new label for *content* at the cursor and focus the composer; False when it cannot."""
+    def insert_reference(
+        self,
+        kind: ReferenceKind,
+        content: str,
+        *,
+        following_text: str | None = None,
+        focus: bool = True,
+    ) -> str | None:
+        """Insert a reference, optionally followed by a comment as one edit."""
         if self.shell_mode or not self.display:
-            return False
+            return None
         ta = self.query_one("#chat-input", _ChatTextArea)
-        if not ta.insert_reference(kind, content):
-            return False
-        self.focus_input()
+        label = ta.insert_reference(kind, content, following_text=following_text)
+        if label is None:
+            return None
+        if focus:
+            self.focus_input()
         self._refresh_interaction_state()
-        return True
+        return label
+
+    def add_diff_quote(self, content: str, comment: str) -> DraftReference | None:
+        """Add one Diff quote, returning the reference actually owned by the composer."""
+        label = self.insert_reference("quote", content, following_text=comment, focus=False)
+        if label is None:
+            return None
+        return next(entry for entry in reversed(self.draft().references.entries) if entry.label == label)
+
+    def probe_diff_comment(self, handle: DraftReference) -> CommentProbe:
+        return self.query_one("#chat-input", _ChatTextArea).probe_comment(handle)
+
+    def diff_comment(self, handle: DraftReference) -> str | None:
+        return self.query_one("#chat-input", _ChatTextArea).comment(handle)
+
+    def replace_diff_comment(self, handle: DraftReference, old: str, new: str) -> CommentReplacement:
+        if self.locked or self.shell_mode or not self.display:
+            return "unavailable"
+        area = self.query_one("#chat-input", _ChatTextArea)
+        result = area.replace_comment(handle, old, new)
+        if result == "success" and old != new:
+            self._draft_revision += 1
+            area._reset_history_browsing()
+            self._refresh_interaction_state()
+        return result
 
     def expand_prompt(self, draft: ChatDraft) -> None:
         """Replace the draft with an expanded prompt shortcut, its first unfilled field selected.
@@ -1429,7 +1446,8 @@ class InputBar(Widget):
         if self.display:
             text_area = self.query_one("#chat-input", _ChatTextArea)
             if cursor_at_end:
-                text_area.move_cursor(text_area.document.end)
+                with text_area.programmatic_cursor():
+                    text_area.move_cursor(text_area.document.end)
             text_area.focus()
 
     def snapshot_draft(self) -> InputDraftSnapshot:
@@ -1503,7 +1521,8 @@ class InputBar(Widget):
         text_area._reset_history_browsing()
         text_area.write_draft(draft, select_field=select_field)
         if cursor_location is not None:
-            text_area.move_cursor(cursor_location)
+            with text_area.programmatic_cursor():
+                text_area.move_cursor(cursor_location)
         self._refresh_interaction_state()
 
     def replace_editor_draft(self, draft: ChatDraft, *, cursor_location: tuple[int, int]) -> None:
@@ -1512,7 +1531,8 @@ class InputBar(Widget):
         text_area = self.query_one("#chat-input", _ChatTextArea)
         text_area._reset_history_browsing()
         text_area.replace_draft(draft)
-        text_area.move_cursor(cursor_location)
+        with text_area.programmatic_cursor():
+            text_area.move_cursor(cursor_location)
         self._refresh_interaction_state()
 
     def edit_paste(self, entry: DraftReference, content: str, *, start: int) -> None:
@@ -1527,7 +1547,9 @@ class InputBar(Widget):
 
     def move_draft_cursor(self, location: tuple[int, int]) -> None:
         """Move the composer cursor without changing its draft or undo history."""
-        self.query_one("#chat-input", _ChatTextArea).move_cursor(location)
+        text_area = self.query_one("#chat-input", _ChatTextArea)
+        with text_area.programmatic_cursor():
+            text_area.move_cursor(location)
 
     def can_commit_editor_draft(self) -> bool:
         """Return whether an open editor may currently replace this draft."""
@@ -1558,7 +1580,8 @@ class InputBar(Widget):
         if not result:
             ta._restore_references(before)
             return False
-        ta.move_cursor(result.end_location)
+        with ta.programmatic_cursor():
+            ta.move_cursor(result.end_location)
         self.focus_input()
         self._refresh_interaction_state()
         return True
@@ -1591,7 +1614,8 @@ class InputBar(Widget):
             return
         # One edit, so the prompt fields shift with it (``_ChatTextArea.edit``).
         result = ta.replace(replacement, document.get_location_from_index(start), document.end)
-        ta.move_cursor(result.end_location)
+        with ta.programmatic_cursor():
+            ta.move_cursor(result.end_location)
 
     @property
     def draft_has_focus(self) -> bool:

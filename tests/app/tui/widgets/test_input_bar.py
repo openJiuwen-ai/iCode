@@ -584,7 +584,7 @@ async def test_main_screen_binds_one_way_child_flags() -> None:
         assert chat_panel.agent_running is True
         assert chat_panel._profile_name == "Code"
         assert chat_panel.session_id == "12345678-1234-1234-1234-123456789abc"
-        assert str(chat_panel.border_subtitle) == "/repo/chrys"
+        assert chat_panel.workspace_cwd == "/repo/chrys"
         assert str(chat_panel.border_title) == "Session: 123456781234 \u00b7 Fix login bug"
         assert context_panel._current_used == 57_700
         assert context_panel._current_max == 200_000

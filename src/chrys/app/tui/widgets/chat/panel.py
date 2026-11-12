@@ -670,6 +670,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def on_resize(self, _event: object | None = None) -> None:
         """Refresh the bottom-jump affordance when viewport height changes."""
+        self._chrome.resize()
         self._scroll_controller.on_resize()
         viewport_height = self.size.height
         for widget in tuple(self._ask_user_tool_widgets):

@@ -33,6 +33,11 @@ if TYPE_CHECKING:
 
 _QUOTE_ACTION = msg("tui.quote.action", fallback="Quote")
 
+QUOTE_INPUT_UNAVAILABLE = msg(
+    "tui.quote.input_unavailable",
+    fallback="The message input cannot take a quote right now.",
+)
+
 
 class QuoteSelectionPopup(ClickAffordance):
     """Single-action pill offering to quote the finished drag selection."""

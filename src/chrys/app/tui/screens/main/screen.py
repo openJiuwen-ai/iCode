@@ -109,7 +109,7 @@ from chrys.app.tui.widgets.chat.messages import (
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
-from chrys.app.tui.widgets.chat.quote_popup import QuoteSelectionPopup
+from chrys.app.tui.widgets.chat.quote_popup import QUOTE_INPUT_UNAVAILABLE, QuoteSelectionPopup
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserInlineSubmitted
 from chrys.app.tui.widgets.chat.renderers.sleep import SleepSkipClicked
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentAbortClicked, SubAgentRetryClicked
@@ -211,10 +211,6 @@ _SHORTCUTS_LOADING = msg(
 _SHORTCUTS_LOADING_TAB = msg(
     "tui.prompt_shortcuts.loading_tab",
     fallback="Prompt shortcuts are still being read; press Tab again in a moment.",
-)
-_QUOTE_INPUT_UNAVAILABLE = msg(
-    "tui.quote.input_unavailable",
-    fallback="The message input cannot take a quote right now.",
 )
 _SESSIONS_BINDING = msg("tui.binding.sessions", fallback="Sessions")
 _AGENTS_BINDING = msg("tui.binding.agents", fallback="Agents")
@@ -987,6 +983,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             self._diff_preview.request_refresh(reread=reread)
 
     def watch_chat_session_id(self) -> None:
+        self._diff_controller.chat_session_changed(self.chat_session_id)
         self._refresh_diff_preview()
 
     @on(DiffPreview.RefreshRequested)
@@ -1531,7 +1528,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return
         if not self.query_one(InputBar).insert_reference("quote", text):
             self.notify(
-                render_str(self._language_localizer(), _QUOTE_INPUT_UNAVAILABLE.bind()),
+                render_str(self._language_localizer(), QUOTE_INPUT_UNAVAILABLE.bind()),
                 severity="warning",
                 markup=False,
             )

@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from rich.text import Text
 from textual.color import Color
 from textual.widgets import Button, OptionList, Static
 
@@ -261,7 +260,7 @@ async def test_directory_change_updates_preview_outer_path_and_submitted_workspa
                     app.screen is dialog
                     and str(dialog.query_one("#workflow-input-directory", Static).content) == str(other)
                     # The panel behind the dialog follows on the controller's next refresh.
-                    and Text.from_markup(str(main._workflow_panel.border_subtitle)).plain == str(other)
+                    and main._workflow_panel.workspace_cwd == str(other)
                 ),
                 pilot=pilot,
                 timeout=ENGINE_TURN_TIMEOUT,
@@ -342,7 +341,7 @@ async def test_directory_change_rejects_shadowed_workflow_before_loading_it(
             await wait_for(lambda: isinstance(app.screen, NoticeDialog) and app.screen.is_mounted, pilot=pilot)
         assert main._workflow.session_view.selection is target and not marker.exists()
         assert main._workflow.browser.loaded.preview is prepared and main._workflow.browser.catalog is catalog
-        assert str(main._workflow_panel.border_subtitle) == str(project)
+        assert main._workflow_panel.workspace_cwd == str(project)
 
 
 @pytest.mark.parametrize("entry", ["input", "footer"])
@@ -380,7 +379,7 @@ async def test_cancel_during_directory_preview_keeps_original_target(
             await switch_mode(main, pilot)
         await wait_for(lambda: app.screen is main and cancelled.is_set(), pilot=pilot)
         assert main._workflow.session_view.selection is target
-        assert str(main._workflow_panel.border_subtitle) == str(project)
+        assert main._workflow_panel.workspace_cwd == str(project)
 
 
 # The Run input shows the directory it ends on, so it runs both answers; the footer adds only where the
@@ -472,7 +471,7 @@ async def test_newer_directory_change_drains_old_preparation_before_committing(
             and controller.browser.loaded.preview.source.workflow_id == main._workflow_panel.definition.workflow_id
         )
         # The panel header follows on the controller's next refresh.
-        await wait_for(lambda: str(main._workflow_panel.border_subtitle) == str(second), pilot=pilot)
+        await wait_for(lambda: main._workflow_panel.workspace_cwd == str(second), pilot=pilot)
 
 
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)

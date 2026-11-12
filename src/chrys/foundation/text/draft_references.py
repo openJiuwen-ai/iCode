@@ -77,7 +77,7 @@ def paste_folds(text: str, *, screen_rows: int) -> bool:
     return len(text) > PASTE_FOLD_MIN_CHARS or newlines > max(0, min(screen_rows - 10, 4))
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class DraftReference:
     """One thing a draft label stands for: the same fields for every kind.
 
@@ -102,9 +102,13 @@ class DraftReferences:
     Grows while the draft lives, so undo and a paste back find what a label
     stood for; the next message starts over, numbering from 1. Saving an
     edited paste replaces its entry in one undo step that keeps both tables.
+    *following* is the text a writer put right after an entry's label (a Diff
+    comment), keyed by the entry object, so that writer can later rewrite
+    exactly that text; undo and redo bring it back with the rest of the table.
     """
 
     entries: tuple[DraftReference, ...] = ()
+    following: tuple[tuple[DraftReference, str], ...] = ()
 
     def __bool__(self) -> bool:
         return bool(self.entries)
@@ -119,13 +123,22 @@ class DraftReferences:
         """These references plus a new entry of *kind*, numbered after the last one of its kind, labelled by *label*."""
         number = max((entry.number for entry in self.entries if entry.kind == kind), default=0) + 1
         entry = DraftReference(kind, number, content, label(kind, number, content))
-        return DraftReferences((*self.entries, entry)), entry
+        return DraftReferences((*self.entries, entry), self.following), entry
 
     def with_replaced(self, entry: DraftReference) -> DraftReferences:
         """These references with the entry of *entry*'s kind and number replaced by *entry*."""
-        return DraftReferences(
-            tuple(entry if (old.kind, old.number) == (entry.kind, entry.number) else old for old in self.entries)
-        )
+        entries = tuple(entry if (old.kind, old.number) == (entry.kind, entry.number) else old for old in self.entries)
+        kept = {id(kept_entry) for kept_entry in entries}  # By object: a replaced entry may equal its successor.
+        return DraftReferences(entries, tuple(pair for pair in self.following if id(pair[0]) in kept))
+
+    def following_text(self, entry: DraftReference) -> str | None:
+        """The text last written right after *entry*'s label by its writer, if any."""
+        return next((text for owner, text in self.following if owner is entry), None)
+
+    def with_following_text(self, entry: DraftReference, text: str) -> DraftReferences:
+        """These references with *text* recorded as what follows *entry*'s label."""
+        following = tuple(pair for pair in self.following if pair[0] is not entry)
+        return DraftReferences(self.entries, (*following, (entry, text)))
 
 
 EMPTY_REFERENCES = DraftReferences()

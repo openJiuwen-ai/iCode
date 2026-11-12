@@ -1,0 +1,26 @@
+DiffCommentBar {
+    background: transparent;
+    align: left top;
+}
+
+DiffCommentBar > #diff-comment-bar {
+    overlay: screen;
+    width: 1fr;
+    height: 5;
+    border: round $tui-border-accent $border-opacity;
+    background: $surface;
+    border-title-color: $text;
+    border-subtitle-color: $text-muted;
+}
+
+DiffCommentBar > #diff-comment-bar.-error {
+    border-subtitle-color: $error;
+}
+
+DiffCommentBar #diff-comment-input {
+    width: 1fr;
+    height: 3;
+    padding: 0 1;
+    border: none;
+    background: $surface;
+}
