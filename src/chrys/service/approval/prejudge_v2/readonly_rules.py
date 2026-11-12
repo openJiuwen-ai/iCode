@@ -193,12 +193,7 @@ def _cli_matches(rule: Mapping[str, Any], argv: Sequence[str]) -> bool:
             elif arg.startswith("-") and (
                 (bool(prefixes) and arg.startswith(prefixes))
                 or any(p.fullmatch(arg) for p in short_patterns)
-                or (
-                    not arg.startswith("--")
-                    and len(arg) > 2
-                    and bool(short)
-                    and all(c in short for c in arg[1:])
-                )
+                or (not arg.startswith("--") and len(arg) > 2 and bool(short) and all(c in short for c in arg[1:]))
             ):
                 i += 1
             elif arg.startswith("-"):
@@ -219,8 +214,7 @@ def _cli_matches(rule: Mapping[str, Any], argv: Sequence[str]) -> bool:
     ):
         return False
     return not (
-        rule.get("allow_positionals", True) is False
-        and any(x != "--" and not x.startswith("-") for x in remaining)
+        rule.get("allow_positionals", True) is False and any(x != "--" and not x.startswith("-") for x in remaining)
     )
 
 
