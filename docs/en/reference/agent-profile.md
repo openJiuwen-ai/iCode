@@ -175,6 +175,7 @@ Both `env` and `headers` are key-value mappings: enter the variable or header na
 | `max_tool_result_tokens` | Integer or `null` | `null` | All | Text result limit for a single remote tool call. `null` uses the default limit of `8000` tokens; `0` disables only this limit; a positive integer must be at least `100`. Other values cause the entire agent profile to be skipped. |
 | `command` | String | Empty | STDIO | Executable name or path used to start the server. Do not append arguments to this YAML field. |
 | `args` | List of strings | `[]` | STDIO | Arguments passed to the server process. |
+| `cwd` | String | Empty | STDIO | Folder the server starts in; leading and trailing whitespace is ignored, and an empty value uses the current session's working directory. Relative paths start from that directory and can use `..` to point outside it. Also supports `~/` and absolute paths. Supports `{{ENV_VAR}}` references but not `{{!command}}`. Cannot contain NUL. See [Choose a working directory](../guides/extensions/mcp.md#choose-a-working-directory) for examples and [Test and save](../guides/extensions/mcp.md#test-and-save) for troubleshooting. |
 | `env` | String-valued object | `{}` | STDIO | Environment variables passed to the server process. Ignored for HTTP configurations. |
 | `encoding` | String or `null` | `null` | STDIO | Encoding for the server's standard input and output. Usually left empty. |
 | `url` | String | Empty | HTTP | Server URL beginning with `http://` or `https://`. |
@@ -555,7 +556,7 @@ acp:
 | `command` | String | Empty | Executable name or path. Required to start the external agent. An empty value can be loaded but cannot be started. Cannot contain NUL. Do not append arguments to this field. |
 | `args` | List of strings | `[]` | Arguments passed individually to the process. Cannot contain NUL. |
 | `env` | String-valued object | `{}` | Environment variables passed to the process. Names must follow environment variable naming rules and be unique ignoring case. `CHRYS_ACP_SUBAGENT_DEPTH` is reserved for iCode. |
-| `cwd` | String | Empty | The external agent's working directory. If empty, uses the current iCode session's working directory. Relative paths are resolved against that session directory. |
+| `cwd` | String | Empty | The external agent's working directory. Leading and trailing whitespace in the configured text is ignored. If empty, uses the current iCode session's working directory. Relative paths start from that directory. Supports `{{ENV_VAR}}` references. |
 | `allow_external_cwd` | Boolean | `false` | Whether to allow the external agent to run outside the current session's working directory and its subdirectories. Defaults to `false`: a `cwd` outside the allowed directory scope causes an error and prevents startup; iCode does not fall back to the default directory. This option only controls startup directory validation, not the external agent's file access permissions. |
 | `session_mode` | String | Empty | Session mode ID to request from the external agent. |
 | `model_id` | String | Empty | Model ID to request from the external agent on a best-effort basis. |

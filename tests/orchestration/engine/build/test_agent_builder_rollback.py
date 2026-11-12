@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import os
 import sys
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager, nullcontext
@@ -1364,3 +1365,34 @@ async def test_build_warns_once_when_on_demand_mcp_tools_can_unbind_thinking(
         )
     else:
         assert messages == []
+
+
+async def test_build_hands_the_servers_own_cwd_and_the_workspace_folder_to_the_mcp_adapter() -> None:
+    """The build passes the workspace folder; ``cwd`` is resolved against it in the connection cache."""
+    servers = [
+        MCPServerConfig(name="plain", transport="stdio", command="python"),
+        MCPServerConfig(name="own", transport="stdio", command="python", cwd="~/srv"),
+    ]
+    profile = AgentProfile(name="test", tools=ToolsConfig(mcp=servers))
+    adapter = MCPAdapter()
+    seen: list[tuple[str, str]] = []
+
+    async def connect(_adapter: MCPAdapter, config: MCPServerConfig) -> list[Any]:
+        seen.append((config.name, config.cwd))
+        return []
+
+    try:
+        with (
+            _build_agent_env(mcp_mock=adapter, agent_mock=_agent_mock()) as env,
+            patch.object(MCPAdapter, "connect", new=create_autospec(MCPAdapter.connect, side_effect=connect)),
+            patch.object(ab, "TurnBindings", return_value=MagicMock()),
+            patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
+            patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
+            patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
+        ):
+            await _invoke_build_agent(profile)
+    finally:
+        await adapter.disconnect_all()
+
+    assert env["mcp_cls"].call_args.kwargs["stdio_cwd"] == os.getcwd()
+    assert seen == [("plain", ""), ("own", "~/srv")]

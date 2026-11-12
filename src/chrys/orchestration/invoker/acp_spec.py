@@ -32,8 +32,11 @@ def resolve_acp_spec(
         env = {
             key: resolve_env_templates(value, location=f"ACP environment {key!r}") for key, value in config.env.items()
         }
+        configured_cwd = config.cwd.strip()
         cwd_raw = (
-            resolve_env_templates(config.cwd, location="ACP cwd", allow_commands=False) if config.cwd else runtime.cwd
+            resolve_env_templates(configured_cwd, location="ACP cwd", allow_commands=False)
+            if configured_cwd
+            else runtime.cwd
         )
     except ValueError as exc:
         raise AcpConfigError(str(exc), cause=exc) from exc

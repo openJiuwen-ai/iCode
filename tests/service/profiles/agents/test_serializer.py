@@ -310,3 +310,34 @@ def test_a_search_provider_preset_is_saved_as_its_shorthand(tmp_path: Path) -> N
     }
     loaded = load_profile_from_yaml(save_profile(profile, target_dir=tmp_path))
     assert loaded.tools.web_search == search
+
+
+def test_mcp_cwd_round_trips_and_is_omitted_when_empty(tmp_path: Path) -> None:
+    profile = AgentProfile(
+        name="cwd-round-trip",
+        tools=ToolsConfig(
+            mcp=[
+                MCPServerConfig(name="set", transport="stdio", command="python", cwd="~/srv"),
+                MCPServerConfig(name="unset", transport="stdio", command="python"),
+            ]
+        ),
+    )
+
+    serialized = profile_to_dict(profile)["tools"]["mcp"]
+    first = save_profile(profile, target_dir=tmp_path / "one")
+    loaded = load_profile_from_yaml(first)
+    second = save_profile(loaded, target_dir=tmp_path / "two")
+
+    assert serialized[0]["cwd"] == "~/srv"
+    assert "cwd" not in serialized[1]
+    assert [config.cwd for config in loaded.tools.mcp] == ["~/srv", ""]
+    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
+
+
+def test_http_mcp_never_writes_cwd() -> None:
+    profile = AgentProfile(
+        name="http-cwd",
+        tools=ToolsConfig(mcp=[MCPServerConfig(name="remote", transport="http", url="http://x/mcp", cwd="/srv")]),
+    )
+
+    assert "cwd" not in profile_to_dict(profile)["tools"]["mcp"][0]

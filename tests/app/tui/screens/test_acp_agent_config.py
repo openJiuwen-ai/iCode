@@ -28,6 +28,9 @@ from chrys.app.tui.screens.dialogs.connection_test import ConnectionTestDialog
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.i18n import Localizer
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.foundation.platform import get_platform
+from chrys.orchestration.invoker.acp_spec import resolve_acp_spec
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import (
     AcpAgentConfig,
@@ -420,6 +423,25 @@ def test_acp_panel_test_leaves_commands_in_arguments_and_environment_to_the_laun
 
     assert spec.args[0].startswith("chrys-cmd-")
     assert spec.env["TOKEN"] == spec.args[0]
+
+
+@pytest.mark.parametrize("kind", ["blank", "relative", "absolute", "template"])
+def test_acp_connection_test_and_runtime_trim_only_configured_cwd(tmp_path, monkeypatch, kind: str) -> None:
+    workspace = tmp_path / "workspace "
+    target = workspace / "my agent "
+    monkeypatch.setenv("CHRYS_ACP_TEST_CWD", str(target))
+    configured, expected = {
+        "blank": (" \t\n ", workspace),
+        "relative": (" my agent \n", workspace / "my agent"),
+        "absolute": (f" {workspace / 'my agent'} \n", workspace / "my agent"),
+        "template": (" {{CHRYS_ACP_TEST_CWD}} \n", target),
+    }[kind]
+    config = AcpAgentConfig(command="agent", cwd=configured)
+    panel = AcpConfigPanel(config, workspace_cwd=str(workspace))
+    runtime = SessionEnvironment(cwd=str(workspace), platform=get_platform())
+    spec = resolve_acp_spec(config, runtime, tmp_path / "stderr.log", workspace_roots=[str(workspace)])
+
+    assert panel._test_spec(config, tmp_path / "test-stderr.log").cwd == spec.cwd == os.path.realpath(expected)
 
 
 def test_canonicalize_profile_matches_acp_panel_harvest_normalization() -> None:

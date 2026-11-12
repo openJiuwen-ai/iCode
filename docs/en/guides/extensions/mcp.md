@@ -53,9 +53,33 @@ HTTP redirects must keep the request method and stay on the same origin (scheme,
 
 1. Set "Transport" to `STDIO`.
 2. In "Command", enter the program name or path used to start the server, along with any required arguments. The TUI splits this line and saves it into the `command` and `args` fields in the agent YAML. When editing YAML by hand, put the executable in `command` and each argument in `args` as a separate item. On Windows, if `command` is `python` or `python3`, iCode skips the placeholder that only offers Python from the Microsoft Store and runs the next program of that name on `PATH`. python.org's traditional installer adds no `python3`, and puts `python` on `PATH` only if you choose that when installing: otherwise write the full path of its `python.exe`.
-3. Add any environment variables the process needs. Enter values directly or use `{{ENV_VAR}}` to reference environment variables set before starting iCode.
+3. Leave "Working Directory" blank to start the server in the [current session's working directory](../daily-use/workspaces.md). If the server needs to start in another folder to find its scripts or configuration, enter that folder here (`cwd` in the agent YAML).
+4. Add any environment variables the process needs. Enter values directly or use `{{ENV_VAR}}` to reference environment variables set before starting iCode.
 
 An STDIO connection starts the specified program on the local machine. If the startup command downloads or runs third-party packages or scripts, confirm that their sources are trustworthy and review the relevant content first.
+
+#### Choose a working directory
+
+iCode ignores leading and trailing whitespace in this field, including in YAML. A value containing only whitespace is treated as blank.
+
+| What you enter | Where the server starts |
+| --- | --- |
+| Blank | The current session's working directory |
+| `tools/mcp` | The `tools/mcp` folder inside the session's working directory |
+| `~/mcp-server` | The `mcp-server` folder inside your home folder |
+| An absolute path, such as `/opt/mcp-server` or `D:\mcp-server` | The specified folder |
+
+For example, with the session's working directory at `/project`, set the server's "Working Directory" to `tools/mcp` and "Command" to `python server.py` to run `/project/tools/mcp/server.py` from `/project/tools/mcp`. That folder and script must already exist, and `python` must be available on `PATH`.
+
+Relative paths can use `..` to point outside the session's working directory, for example `../shared-mcp`.
+
+After you change the session's working directory with `/chdir`, a blank Working Directory setting uses the new directory, and relative paths start from it. For example, if you enter `tools/mcp` and switch from project A to project B, the server uses project B's `tools/mcp` folder. Locations specified with `~/` or an absolute path stay the same.
+
+If the command is a relative path such as `./bin/server`, iCode looks for the program in the server's working directory. If you enter only a program name such as `python`, iCode searches `PATH`.
+
+On Windows, include the slash after a drive letter in both Working Directory and the command: write `D:\server` and `D:\server\server.exe`, not `D:server` or `D:server\server.exe`.
+
+Working Directory can use `{{ENV_VAR}}` to reference environment variables set before starting iCode, for example `{{MCP_HOME}}/weather`. A missing or empty variable fails that server's connection. `{{!command}}` and shell syntaxes such as `$HOME` or `%APPDATA%` are not supported; use `~/` for your home folder.
 
 ## Configure instructions, tools, and request options
 
@@ -98,7 +122,10 @@ With Claude Opus 5.5, Fable 5.1 and Sonnet 5.5, on-demand loading has a cost. Th
 If the test fails:
 
 - For HTTP servers, check the URL, authentication headers, environment variables, and proxy and TLS settings.
-- For STDIO servers, first inspect the executable, working directory, process exit code, and tail of standard error shown in the connection error. Then check the command, arguments, and environment variables, and confirm that the command can start in the indicated working directory. iCode shows only a limited amount of standard error output. For complete logs, enable logging as described in the server's documentation. Remove sensitive information such as tokens and credentials before sharing diagnostics.
+- For an STDIO working directory error, check that the path after `Working directory:` is an existing folder you can enter. If the field is blank, check the current session's working directory. Correct the path or permissions and retry.
+- For other STDIO connection errors, inspect the executable, process exit code, and standard error output when shown. Check the command, arguments, and environment variables, and confirm that the command runs in the indicated working directory.
+
+For failures while loading the agent, press **F6** to view iCode's connection error logs. iCode captures only a limited amount of the server's standard error output; for complete server logs, follow the server's own logging instructions. Remove tokens, credentials, and other sensitive information before sharing diagnostics.
 
 ## Reconnect with /reload
 

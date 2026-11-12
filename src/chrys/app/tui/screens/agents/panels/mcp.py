@@ -40,6 +40,7 @@ from chrys.app.tui.screens.agents.validation_messages import (
     DUPLICATE_KEY_ROW,
     FIELD_REQUIRED,
     MCP_COMMAND_REQUIRED,
+    MCP_CWD_NUL,
     MCP_DUPLICATE_SERVER,
     MCP_INITIAL_TOOLS_PERMITTED,
     MCP_INITIALLY_VISIBLE_TOOLS_VALIDATION,
@@ -90,6 +91,7 @@ from chrys.service.mcp.adapter import (
     MCPAdapter,
     MCPToolConfigurationError,
 )
+from chrys.service.mcp.errors import StdioWorkingDirectoryError
 from chrys.service.mcp.validation import MCP_PROGRESSIVE_CONTROL_TOOL_NAMES, validate_mcp_tool_name_prefix
 from chrys.service.tools.names import chrys_reserved_tool_names
 
@@ -223,6 +225,11 @@ _COMMAND_PLACEHOLDER = msg(
     "tui.mcp.placeholder.command",
     fallback="e.g. npx -y @modelcontextprotocol/server-filesystem /path",
 )
+_WORKING_DIRECTORY = msg("tui.mcp.working_directory", fallback="Working Directory")
+_WORKING_DIRECTORY_PLACEHOLDER = msg(
+    "tui.mcp.placeholder.working_directory",
+    fallback="Blank uses the workspace directory",
+)
 _HTTP_OPTIONS = msg("tui.mcp.http_options", fallback="HTTP Options")
 _STDIO_OPTIONS = msg("tui.mcp.stdio_options", fallback="STDIO Options")
 _ADD = msg("tui.mcp.add", fallback="+ Add")
@@ -252,6 +259,10 @@ _CONNECTION_UNREACHABLE = msg(
 _CONNECTION_REQUEST_FAILED = msg(
     "tui.mcp.connection_test.error.request_failed",
     fallback="MCP HTTP request failed. Please verify endpoint and authentication.",
+)
+_CONNECTION_WORKING_DIRECTORY = msg(
+    "tui.mcp.connection_test.error.working_directory",
+    fallback="The server's working directory cannot be used. Please check the Working Directory field.",
 )
 _CONNECTION_FAILED = msg(
     "tui.mcp.connection_test.error.failed",
@@ -1067,6 +1078,14 @@ class MCPConnectionCard(CollapsibleConfigCard):
         )
         command.read_only = self._read_only
         yield command
+        yield Label(render_str(localizer, _WORKING_DIRECTORY.bind()), classes="mcp-label")
+        cwd_input = Input(
+            value=cfg.cwd,
+            placeholder=render_str(localizer, _WORKING_DIRECTORY_PLACEHOLDER.bind()),
+            id=f"mcp-cwd-{self._index}",
+        )
+        cwd_input.disabled = self._read_only
+        yield cwd_input
         yield Label(render_str(localizer, _ENVIRONMENT_VARIABLES.bind()), classes="mcp-label")
         with Vertical(classes="mcp-list", id=f"mcp-env-{self._index}"):
             env_rows = self._key_value_drafts.env
@@ -1310,6 +1329,11 @@ class MCPConnectionCard(CollapsibleConfigCard):
                         id=f"mcp-cmd-{self._index}",
                         placeholder=render_str(localizer, _COMMAND_PLACEHOLDER.bind()),
                     ),
+                    Label(render_str(localizer, _WORKING_DIRECTORY.bind()), classes="mcp-label"),
+                    Input(
+                        placeholder=render_str(localizer, _WORKING_DIRECTORY_PLACEHOLDER.bind()),
+                        id=f"mcp-cwd-{self._index}",
+                    ),
                     Label(render_str(localizer, _ENVIRONMENT_VARIABLES.bind()), classes="mcp-label"),
                     env_container,
                 ]
@@ -1402,6 +1426,7 @@ class MCPConnectionCard(CollapsibleConfigCard):
         url = self._config.url if transport == "http" else ""
         command = self._config.command if transport == "stdio" else ""
         args = list(self._config.args) if transport == "stdio" else []
+        cwd = self._config.cwd.strip() if transport == "stdio" else ""
         headers = dict(self._config.headers) if transport == "http" else {}
         env = dict(self._config.env) if transport == "stdio" else {}
         verify_ssl = self._config.verify_ssl if transport == "http" else True
@@ -1434,6 +1459,8 @@ class MCPConnectionCard(CollapsibleConfigCard):
                 except ValueError:
                     if not allow_invalid_command:
                         raise
+            with contextlib.suppress(NoMatches):
+                cwd = self.query_one(f"#mcp-cwd-{self._index}", Input).value.strip()
             # Keep seeded env unless the mounted rows can be read as a complete set.
             try:
                 parsed_env = self._parse_key_value_rows(
@@ -1471,6 +1498,7 @@ class MCPConnectionCard(CollapsibleConfigCard):
             command=command,
             args=args,
             encoding=self._config.encoding if transport == "stdio" else None,
+            cwd=cwd,
             env=env,
             url=url,
             headers=headers,
@@ -1525,6 +1553,9 @@ class MCPConnectionCard(CollapsibleConfigCard):
                             errors.append(self._render_server_error(display_name, MCP_COMMAND_REQUIRED.bind()))
                     except ValueError as exc:
                         errors.append(self._render_server_message(display_name, str(exc)))
+            with contextlib.suppress(NoMatches):
+                if "\0" in self.query_one(f"#mcp-cwd-{self._index}", Input).value:
+                    errors.append(self._render_server_error(display_name, MCP_CWD_NUL.bind()))
 
         timeout_text = self.query_one(f"#mcp-timeout-{self._index}", Input).value.strip()
         if timeout_text:
@@ -1983,6 +2014,9 @@ class MCPConfigPanel(VerticalScroll):
         if any(isinstance(err, MCPToolConfigurationError) for err in chain):
             return "configuration"
 
+        if any(isinstance(err, StdioWorkingDirectoryError) for err in chain):
+            return "working_directory"
+
         if any(isinstance(err, asyncio.CancelledError) for err in chain):
             return "cancelled"
 
@@ -2037,6 +2071,8 @@ class MCPConfigPanel(VerticalScroll):
             friendly = render_message(_CONNECTION_UNREACHABLE.bind())
         elif kind == "request_failed":
             friendly = render_message(_CONNECTION_REQUEST_FAILED.bind())
+        elif kind == "working_directory":
+            friendly = render_message(_CONNECTION_WORKING_DIRECTORY.bind())
         else:
             friendly = render_message(_CONNECTION_FAILED.bind())
 

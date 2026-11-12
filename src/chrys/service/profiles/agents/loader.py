@@ -189,7 +189,7 @@ def _parse_acp(raw: object) -> AcpAgentConfig:
     defaults = AcpAgentConfig()
 
     command = _acp_string(raw_map.get("command", defaults.command), "command", reject_nul=True)
-    cwd = _acp_string(raw_map.get("cwd", defaults.cwd), "cwd", reject_nul=True)
+    cwd = _acp_string(raw_map.get("cwd", defaults.cwd), "cwd", reject_nul=True).strip()
     session_mode = _acp_string(raw_map.get("session_mode", defaults.session_mode), "session_mode")
     model_id = _acp_string(raw_map.get("model_id", defaults.model_id), "model_id")
 
@@ -331,6 +331,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 args=entry.get("args", []),
                 env=_mcp_string_mapping(entry.get("env"), "tools.mcp.env") if transport == "stdio" else {},
                 encoding=entry.get("encoding"),
+                cwd=_mcp_cwd(entry.get("cwd")) if transport == "stdio" else "",
                 # http
                 url=entry.get("url", ""),
                 headers=_mcp_string_mapping(entry.get("headers"), "tools.mcp.headers") if transport == "http" else {},
@@ -352,6 +353,19 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
             )
         )
     return configs
+
+
+def _mcp_cwd(raw: object) -> str:
+    """Validate and trim the configured directory, matching the editor and runtime."""
+    if raw is None:
+        return ""
+    if type(raw) is not str:
+        msg = f"MCP server field 'cwd' must be a string; got {raw!r}"
+        raise AgentProfileLoadError(msg, field="tools.mcp.cwd")
+    if "\0" in raw:
+        msg = "MCP server field 'cwd' must not contain an embedded NUL"
+        raise AgentProfileLoadError(msg, field="tools.mcp.cwd")
+    return raw.strip()
 
 
 def _mcp_string_mapping(raw: object, field: str) -> dict[str, str]:
