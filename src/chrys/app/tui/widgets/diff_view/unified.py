@@ -21,7 +21,10 @@ from chrys.app.tui.widgets import HATCH_GLYPH, normalize_selection_rich_style
 from chrys.app.tui.widgets.diff_view.cells import (
     ANNOTATION_WIDTH,
     COLLAPSED_ANNOTATION_WIDTH,
+    COMMENT_ICON,
+    MARKER_WIDTH,
     annotation_cell,
+    marker_cell,
     number_cell,
     number_cell_width,
 )
@@ -59,15 +62,21 @@ class UnifiedDiffLines(Widget):
         number_digits: int,
         code_width: int,
         annotations: bool = True,
+        number_side: Side | None = None,
+        marked_row: int | None = None,
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
     ) -> None:
+        """*number_side* shows only that side's numbers, for rows from one text; *marked_row* gets the comment
+        icon ahead of its number, with room for it on every row."""
         super().__init__(name=name, id=id, classes=classes)
         self._rows = rows
         self._number_digits = number_digits
         self._code_width = code_width
         self._annotations = annotations
+        self._number_side = number_side
+        self._marked_row = marked_row
         self._strip_cache: LRUCache[int, Strip] = LRUCache(maxsize=2000)
         self._strips_valid_for: int | None = None
         self._look_key: tuple[str, str | None] | None = None
@@ -106,7 +115,16 @@ class UnifiedDiffLines(Widget):
 
     @property
     def _gutter_width(self) -> int:
-        return 2 * number_cell_width(self._number_digits) + self._annotation_width
+        numbers = 1 if self._number_side is not None else 2
+        marker = MARKER_WIDTH if self._marked_row is not None else 0
+        return marker + numbers * number_cell_width(self._number_digits) + self._annotation_width
+
+    def _gutter_characters(self, y: int) -> int:
+        """The characters of row ``y``'s gutter, which selections count: the comment icon is one character in
+        two cells."""
+        if y == self._marked_row:
+            return self._gutter_width - MARKER_WIDTH + len(COMMENT_ICON)
+        return self._gutter_width
 
     # -- caches ------------------------------------------------------------------------------------
 
@@ -214,12 +232,16 @@ class UnifiedDiffLines(Widget):
         row = self._rows[y]
         look = self._current_look()
         digits = self._number_digits
-        gutter = (
-            number_cell(row, look, side=Side.BEFORE, digits=digits, edge=True)
-            + number_cell(row, look, side=Side.AFTER, digits=digits, edge=False)
-            # The cell opens with a space. Cut down to it, the annotation is off and the code keeps its distance.
-            + annotation_cell(row, look)[: self._annotation_width]
-        )
+        if self._number_side is None:
+            numbers = number_cell(row, look, side=Side.BEFORE, digits=digits, edge=True) + number_cell(
+                row, look, side=Side.AFTER, digits=digits, edge=False
+            )
+        else:
+            numbers = number_cell(row, look, side=self._number_side, digits=digits, edge=True)
+        if self._marked_row is not None:
+            numbers = marker_cell(row, look, marked=y == self._marked_row) + numbers
+        # The cell opens with a space. Cut down to it, the annotation is off and the code keeps its distance.
+        gutter = numbers + annotation_cell(row, look)[: self._annotation_width]
         room = max(1, width - gutter.cell_length)
         if row.code is None:
             # A break between hunks: with its cells, hatching from edge to edge.
@@ -247,10 +269,10 @@ class UnifiedDiffLines(Widget):
         if span is None:
             return None
         start, end = span
-        gutter_width = self._gutter_width
-        if end != -1 and end <= gutter_width:
+        gutter = self._gutter_characters(y)
+        if end != -1 and end <= gutter:
             return None
-        return max(start, gutter_width), end
+        return max(start, gutter), end
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """The selected code. A break counts as an empty line, which keeps rows and lines in step."""
@@ -259,9 +281,8 @@ class UnifiedDiffLines(Widget):
 
     def _code_selection(self, selection: Selection) -> Selection:
         """``selection``, which counts from the left edge of the widget, counted from where the code begins."""
-        gutter_width = self._gutter_width
 
         def in_code(offset: Offset | None) -> Offset | None:
-            return None if offset is None else Offset(max(0, offset.x - gutter_width), offset.y)
+            return None if offset is None else Offset(max(0, offset.x - self._gutter_characters(offset.y)), offset.y)
 
         return Selection(in_code(selection.start), in_code(selection.end))

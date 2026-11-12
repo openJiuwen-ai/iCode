@@ -6465,13 +6465,13 @@ msgstr ""
 
 #. English: After · Line {line}
 #. chrys-meta={"fingerprint":"b55fafb2275085f5cc8b13b6e124d150a0ae78c265265cf1af83d703cb4e2f7a","multiline":false,"placeholders":["line"]}
-#: src/chrys/app/tui/screens/diff/comment_bar.py
+#: src/chrys/app/tui/util/diff_comments.py
 msgid "tui.diff_quote.after"
 msgstr ""
 
 #. English: Before · Line {line}
 #. chrys-meta={"fingerprint":"dbdca3b9937e6a4bf25205d57b3c517c7ea348607a256f95c917ce0e86bbdac3","multiline":false,"placeholders":["line"]}
-#: src/chrys/app/tui/screens/diff/comment_bar.py
+#: src/chrys/app/tui/util/diff_comments.py
 msgid "tui.diff_quote.before"
 msgstr ""
 
@@ -6495,6 +6495,13 @@ msgstr ""
 msgid "tui.diff_quote.changed"
 msgstr ""
 
+#. English: The lines around this one are too long, so only this line is
+#. quoted.
+#. chrys-meta={"fingerprint":"92a7b8dd50d7b57595c8fcd62b775d782318a46620186afb87b59402f2a79a76","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/util/diff_comments.py
+msgid "tui.diff_quote.context_omitted"
+msgstr ""
+
 #. English: Enter Add to input · Esc Cancel
 #. chrys-meta={"fingerprint":"3684c040645c37799fedc579f4f82ff9c2be1a7f9aeef679dfe5c663f1cc6dbc","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/comment_bar.py
@@ -6511,6 +6518,18 @@ msgstr ""
 #. chrys-meta={"fingerprint":"55dbf38be8fb0ff0c358a9283d3a8ee503ba832c7496b8e675d6089a7567916e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/diff/comment_bar.py
 msgid "tui.diff_quote.placeholder"
+msgstr ""
+
+#. English: All turns
+#. chrys-meta={"fingerprint":"928ae0675c4b02a1e629d6d526544e62cd36f0254aa567e3ac619bfe54219b16","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/util/diff_comments.py
+msgid "tui.diff_quote.source.session"
+msgstr ""
+
+#. English: Turn {turn}
+#. chrys-meta={"fingerprint":"11385e9dd3f32a82cce844426e3a1855f16e77d5767a065fdbe090a8aadfe70e","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/util/diff_comments.py
+msgid "tui.diff_quote.source.turn"
 msgstr ""
 
 #. English: Image #{number}

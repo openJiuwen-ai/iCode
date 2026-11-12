@@ -1248,6 +1248,9 @@ _message_ids.update(
         "tui.diff_quote.changed",
         "tui.diff_quote.bubble_add",
         "tui.diff_quote.bubble_edit",
+        "tui.diff_quote.source.turn",
+        "tui.diff_quote.source.session",
+        "tui.diff_quote.context_omitted",
     }
 )
 

@@ -46,7 +46,7 @@ from textual.widgets import Static, TabbedContent, TabPane, Tree
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.binding_display import localized_binding
 from chrys.app.tui.i18n import LocaleController, render_str, widget_localizer
-from chrys.app.tui.util.diff_comments import DiffComment, DiffDraft, LineIdentity, line_hash
+from chrys.app.tui.util.diff_comments import CONTEXT_OMITTED, DiffComment, DiffDraft, LineIdentity, line_hash
 from chrys.app.tui.util.diff_content import DiffContent, read_diff_content
 from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffFocus, DiffLoadResult, entry_has_visible_change
 from chrys.app.tui.util.diff_labels import (
@@ -64,7 +64,7 @@ from chrys.app.tui.widgets import ChrysLoadingIndicator
 from chrys.app.tui.widgets.chrome.draft_text_area import QUOTE_TRUNCATED, QUOTE_TRUNCATED_TITLE
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
 from chrys.app.tui.widgets.diff_view import CodeColumn
-from chrys.app.tui.widgets.diff_view.quote import build_diff_quote, raw_line
+from chrys.app.tui.widgets.diff_view.quote import build_diff_quote, quote_scope, raw_line
 from chrys.app.tui.widgets.diff_view.rows import line_identity
 from chrys.app.tui.widgets.text_area import MESSAGE_EDITOR_PASTE_MAX_TOKENS
 from chrys.foundation.i18n import DisplayPath, MessageDef, MessageRef, msg
@@ -1330,6 +1330,7 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         focus: DiffFocus | None = None,
         draft: DiffDraft | None = None,
         comments: list[DiffComment] | None = None,
+        turn_prompt: Callable[[int], str | None] | None = None,
     ) -> None:
         super().__init__()
         self._periods_data = periods_data
@@ -1347,6 +1348,7 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         self._focus = focus
         self._draft = draft
         self._comments = comments if comments is not None else []
+        self._turn_prompt = turn_prompt
 
     def _screen_resized(self, size: Size) -> None:
         """Like MainScreen, ignore unchanged resize broadcasts from an overlay."""
@@ -1630,13 +1632,14 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
             self.notify(self._render_toast(COMMENT_CHANGED.bind()), severity="warning", markup=False)
             return
         comment = (draft.diff_comment(handle) or "") if handle is not None else ""
-        source = "session" if tab == "turn-all" else f"turn {tab.removeprefix('turn-')}"
+        turn = None if tab == "turn-all" else int(tab.removeprefix("turn-"))
+        scope = quote_scope(turn, self._turn_prompt(turn) if turn is not None and self._turn_prompt else None)
         path = Path(view.path_after)
         try:
             quote_path = path.relative_to(Path(self._cwd)).as_posix()
         except ValueError:
             quote_path = path.as_posix()
-        quote = build_diff_quote(row, view.lines, quote_path, source)
+        quote = build_diff_quote(row, view.lines, quote_path, scope, hunks=view.hunks)
         if quote is None:
             return
         if quote.truncated:
@@ -1650,6 +1653,8 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
                 severity="warning",
                 markup=False,
             )
+        elif quote.context_omitted:
+            self.notify(self._render_toast(CONTEXT_OMITTED.bind()), severity="warning", markup=False)
 
         def added(handle: DraftReference) -> None:
             self._comments.append(DiffComment(ref(handle), tab, view.path_after, identity, raw_hash))

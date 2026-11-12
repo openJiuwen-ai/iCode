@@ -20,6 +20,10 @@ if TYPE_CHECKING:
     from chrys.app.tui.widgets.diff_view.rows import DiffRow, Side
 
 EDGE = "▎"
+COMMENT_ICON = "💬"
+"""Marks a line that has a comment, in place of its number or, in a quote, ahead of it."""
+MARKER_WIDTH = 2
+"""The cells ahead of a line's number where a quote marks its quoted line."""
 ANNOTATIONS = {RowKind.ADDED: "+", RowKind.REMOVED: "-"}
 ANNOTATION_WIDTH = 3
 """A ``+`` or ``-`` with a space on either side."""
@@ -47,6 +51,11 @@ def number_cell(row: DiffRow, look: DiffLook, *, side: Side, digits: int, edge: 
     if edge:
         cell = cell.stylize(look.palette.edge[row.kind], 0, 1)
     return cell
+
+
+def marker_cell(row: DiffRow, look: DiffLook, *, marked: bool) -> Content:
+    """The comment icon ahead of a quoted line, or blank, on the background of the line."""
+    return Content(COMMENT_ICON if marked else " " * MARKER_WIDTH).stylize_before(look.line_style(row.kind))
 
 
 def annotation_cell(row: DiffRow, look: DiffLook) -> Content:

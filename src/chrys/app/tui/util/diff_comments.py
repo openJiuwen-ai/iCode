@@ -9,11 +9,21 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 from weakref import ReferenceType
 
+from chrys.foundation.i18n import msg
 from chrys.foundation.text.draft_references import DraftReference
 
 type LineIdentity = tuple[Literal["before", "after"], int]
 type CommentProbe = Literal["absent", "original", "changed"]
 type CommentReplacement = Literal["success", "changed", "unavailable"]
+
+# A quoted line as the comment bar and the quote preview name it.
+QUOTED_BEFORE = msg("tui.diff_quote.before", fallback="Before · Line {line}")
+QUOTED_AFTER = msg("tui.diff_quote.after", fallback="After · Line {line}")
+QUOTED_IN_TURN = msg("tui.diff_quote.source.turn", fallback="Turn {turn}")
+QUOTED_IN_SESSION = msg("tui.diff_quote.source.session", fallback="All turns")
+CONTEXT_OMITTED = msg(
+    "tui.diff_quote.context_omitted", fallback="The lines around this one are too long, so only this line is quoted."
+)
 
 
 def line_hash(raw: str) -> str:

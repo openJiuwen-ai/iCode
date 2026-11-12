@@ -20,7 +20,9 @@ DiffCommentBar > #diff-comment-bar.-error {
 DiffCommentBar #diff-comment-input {
     width: 1fr;
     height: 3;
-    padding: 0 1;
+    /* No right padding: the scrollbar meets the border, as in the chat input. */
+    padding: 0 0 0 1;
     border: none;
     background: $surface;
+    scrollbar-size-vertical: 1;
 }

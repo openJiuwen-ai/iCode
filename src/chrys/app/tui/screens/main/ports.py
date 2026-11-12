@@ -294,6 +294,7 @@ class DiffView(Protocol):
         focus: DiffFocus | None = None,
         draft: DiffDraft | None = None,
         comments: list[DiffComment] | None = None,
+        turn_prompt: Callable[[int], str | None] | None = None,
     ) -> None: ...
 
 

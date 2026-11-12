@@ -970,7 +970,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _on_btw_scrolled(self, event: BtwPanel.Scrolled) -> None:
         """The side answer's text moved away from a quote offer for it; its selection stays, as the chat's does."""
         event.stop()
-        self._withdraw_quote_offer_from(self.query_one(BtwPage))
+        self._withdraw_quote_offer_from(event.page)
 
     def _diff_preview_visible(self) -> bool:
         if not self.is_mounted:
@@ -1504,7 +1504,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         # The selected words, not the blank lines a drag across messages picks up around them. The card's
         # messages it came from are kept too: a repeated completion replaces the answer within the same page.
         if isinstance(area, BtwPage):
-            self._pending_quote_pick = (text.strip(), area, area.content_generation, tuple(self.selections))
+            # Only the card's own: the sidebar beside it rebuilds, and its widgets going must not void the quote.
+            sources = tuple(widget for widget in self.selections if area in widget.ancestors_with_self)
+            self._pending_quote_pick = (text.strip(), area, area.content_generation, sources)
         else:
             self._pending_quote_pick = (text.strip(), area, None, ())
         # Inside the transcript it quotes from, never over its border or the sidebar.
