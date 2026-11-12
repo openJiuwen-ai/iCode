@@ -720,6 +720,11 @@ class UnifiedContextStrategy:
         return self._calibration.restore(system_overhead_tokens, calibration_ratio)
 
     @property
+    def compaction_enabled(self) -> bool:
+        """Whether passes run on their own; off, only folds the model asks for happen."""
+        return self._compaction_enabled
+
+    @property
     def tokenizer(self) -> TokenizerProtocol:
         """Tokenizer shared by compaction and per-call budget estimation."""
         return self._tokenizer

@@ -16,6 +16,8 @@ iCode does not compact a little after every turn. Each compaction changes the ea
 
 During compaction, iCode first summarizes older tool results, keeping the start and the end of each result; a result that was saved to a file keeps its file path, and results that are already short stay as they are. If that does not free enough space, iCode removes older tool calls together with their results, and then replaces completed turns in the current context with a compaction summary. If these steps are still insufficient, iCode generates Last Words for the current task to preserve the information needed to continue, then removes the current turn's tool calls, tool results, and intermediate content from the context supplied to the model, keeping the user's messages.
 
+A compaction summary keeps, for each turn it replaces, your messages, the agent's final answer, the files the turn changed, and the tools it used. In a very long session the summaries themselves add up, so iCode keeps the recent ones in full and replaces older ones with a single archive index that lists each compacted block by its ID, its turns, and the start of your request.
+
 These three steps serve different purposes: trimming older tool calls and results only reduces the space taken up by tool use; compaction summaries replace completed turns; Last Words help continue the current unfinished task.
 
 In the TUI, you can observe the following changes:
@@ -24,7 +26,7 @@ In the TUI, you can observe the following changes:
 - After compaction, compacted turns appear in gray in the sidebar's **Chat** tab. The conversation area shows a gray "Compressed" marker and a compaction summary at the corresponding position.
 - If Last Words were generated, you can expand the completed compaction card to view them.
 
-Compacted historical turns remain in the session. The agent can look up specific information from them when needed, without adding the entire conversation back to the current context.
+Compacted historical turns remain in the session, including those the archive index lists. The agent can list them page by page, find them by turn number, and look up specific information from them when needed, without adding the entire conversation back to the current context.
 
 Compaction reduces context usage, but summaries cannot guarantee that every original detail is preserved. Put project rules that must be retained over time without omissions in [memory files](./memory.md), and write important work results to files in the working directory instead of leaving them only in the conversation.
 

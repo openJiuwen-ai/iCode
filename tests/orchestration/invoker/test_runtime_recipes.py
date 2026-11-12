@@ -11,7 +11,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from chrys.foundation.events.types import ApprovalRequest, ApprovalResponse, SetModelProfile, UserMessage
-from chrys.kernel import AgentSession, Content, Message, SessionContext
+from chrys.kernel import AgentSession, Content, Message, SessionContext, UsageDetails
 from chrys.kernel.compaction import _token_count
 from chrys.kernel.middleware import ChatMiddleware
 from chrys.orchestration.engine.build import builder
@@ -210,6 +210,9 @@ async def test_real_build_preserves_main_child_model_context_approval_and_chat_i
         assert "iCode documentation" in root_options["instructions"]
         assert "Product documentation could not be found" in root_options["instructions"]
         assert "ROOT-MEMORY-SENTINEL" in root_options["instructions"]
+        # The recipe profiles turn automatic compaction off: the model is told that folding is up to it.
+        assert "Automatic compaction is turned off for this agent" in root_options["instructions"]
+        assert "platform compacts on its own" not in root_options["instructions"]
         assert child_options["instructions"].startswith("CHILD-INSTRUCTION")
         assert "iCode documentation" not in child_options["instructions"]
         assert "ROOT-MEMORY-SENTINEL" not in child_options["instructions"]
@@ -245,6 +248,33 @@ async def test_real_build_preserves_main_child_model_context_approval_and_chat_i
         await engine.event_bus.unsubscribe(ApprovalRequest, reject)
         await engine.shutdown()
     assert main.exits == child.exits == 1
+
+
+async def test_real_build_warns_a_model_without_automatic_compaction_to_fold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine: AgentEngineFactory
+) -> None:
+    """Where nothing compacts on its own, the high-usage warning must not say that the platform will."""
+    window = ModelProfile(id="any", name="any", provider="mock", model_id="any").max_context_tokens
+    usage = UsageDetails(input_token_count=window * 3 // 4, output_token_count=10)
+    engine, main, _child = await build_recipe_engine(
+        agent_engine,
+        monkeypatch,
+        tmp_path,
+        main=[MockResponse(text="first answer", usage_details=usage), MockResponse(text="second answer")],
+        child=[],
+    )
+    try:
+        for text in ("first question", "second question"):
+            await engine.event_bus.publish(UserMessage(text=text))
+            await await_run_task_chain(engine, turn_state=engine.turns.turn_state, expect_installed=True)
+        second_request, _options = main.call_history[1]
+        reminder = second_request[-1].text
+        assert reminder.startswith("second question <system-reminder>")
+        assert "automatic compaction is turned off for this agent" in reminder
+        assert "`compress_context` with a marker_id" in reminder
+        assert "no action is needed" not in reminder
+    finally:
+        await engine.shutdown()
 
 
 @pytest.mark.parametrize("stream", [False, True])

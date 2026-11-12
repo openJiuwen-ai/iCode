@@ -1022,6 +1022,41 @@ def test_planner_context_fold_extracts_summary_text() -> None:
     assert plan.entries == [ReplayContextFold(context_id="ctx-1", summary="condensed")]
 
 
+def test_planner_shows_a_card_per_fold_and_none_for_the_archive_index() -> None:
+    """The index only lists folds; each fold, archived or not, keeps the card of its own summary."""
+    messages = [
+        _assistant(
+            [_text("[Archive index]\nOlder compressed blocks, oldest first.\nctx-1 · turns 1-1 · first question")],
+            **{
+                HistoryMarkerKind.KEY: HistoryMarkerKind.SUMMARY,
+                HistoryMarkerKind.ARCHIVE_INDEX_KEY: [
+                    {"first_id": "ctx-1", "last_id": "ctx-1", "turn_from": 1, "turn_to": 1, "blocks": 1, "label": ""}
+                ],
+            },
+        ),
+        _assistant(
+            [_text("[Compressed context: ctx-1]\nSummary: archived fold")],
+            **{
+                HistoryMarkerKind.KEY: HistoryMarkerKind.SUMMARY,
+                "_block_id": "ctx-1",
+                "_excluded": True,
+                "_exclude_reason": "archive_index",
+            },
+        ),
+        _assistant(
+            [_text("[Compressed context: ctx-2]\nSummary: newest fold")],
+            **{HistoryMarkerKind.KEY: HistoryMarkerKind.SUMMARY, "_block_id": "ctx-2"},
+        ),
+    ]
+
+    plan = HistoryReplayPlanner().build_plan(messages)
+
+    assert plan.entries == [
+        ReplayContextFold(context_id="ctx-1", summary="archived fold"),
+        ReplayContextFold(context_id="ctx-2", summary="newest fold"),
+    ]
+
+
 def test_planner_context_fold_fallback_keeps_last_text() -> None:
     messages = [
         _assistant(

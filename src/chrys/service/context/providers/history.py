@@ -19,7 +19,6 @@ from chrys.foundation.trajectory.metadata import ensure_analytics_item_id
 from chrys.foundation.util.time import utc_iso
 from chrys.kernel import EXCLUDED_KEY as _EXCLUDED_KEY
 from chrys.kernel import (
-    TOOL_CALL_CONTENT_TYPES,
     AgentSession,
     HistoryProvider,
     Message,
@@ -28,7 +27,7 @@ from chrys.kernel import (
     strip_invalidated_conversation_handles,
 )
 from chrys.service.context.middleware.usage import contains_provider_hosted_content, resolve_hosted_context_input_tokens
-from chrys.service.context.tool_content import tool_call_name
+from chrys.service.context.providers.fold_summary import build_fold_summary, first_user_text, fold_summary_turn_chars
 from chrys.service.session.message_metadata import (
     LAST_ASSISTANT_CREATED_AT_STATE_KEY,
     MESSAGE_CREATED_AT_KEY,
@@ -73,6 +72,8 @@ _TURN_KEY = TURN_INDEX_KEY
 TURN_STARTED_AT_KEY = "_turn_started_at"
 """On a turn marker: when the pass it closes began, as the user sent its message or pressed Continue or Retry."""
 _BLOCK_ID_KEY = "_block_id"
+_BLOCK_LABEL_CHARS = 80
+"""How much of a block's first user message a listing shows to tell blocks apart."""
 PRE_OUTPUT_HISTORY_LEN_STATE_KEY = "_chrys_pre_output_history_len"
 
 
@@ -496,7 +497,7 @@ class CompressibleHistoryProvider(HistoryProvider):
             return False
 
         marker_id = markers[0]["marker_id"]
-        summary = _auto_summary(state, markers[0].get("position", 0))
+        summary = _auto_summary(state, markers[0].get("position", 0), max_context_tokens=self._max_context_tokens)
         try:
             self.compress(state, marker_id, summary)
         except ValueError:
@@ -573,6 +574,7 @@ class CompressibleHistoryProvider(HistoryProvider):
                 "turn_range": b.turn_range,
                 "num_messages": len(b.messages),
                 "created_at": b.created_at,
+                "first_user_text": first_user_text(b.messages, _BLOCK_LABEL_CHARS),
             }
             for b in compressed
         ]
@@ -604,14 +606,12 @@ class CompressibleHistoryProvider(HistoryProvider):
 # Deterministic summary of a turn folded without the model
 # ---------------------------------------------------------------------------
 
-_AUTO_SUMMARY_USER_MAX = 100
-"""Max characters for user message text in auto-generated summaries."""
 
+def _auto_summary(state: dict[str, Any], marker_position: int, *, max_context_tokens: int = 0) -> str:
+    """Summarise the fold range ending at *marker_position* without a model call.
 
-def _auto_summary(state: dict[str, Any], marker_position: int) -> str:
-    """Generate a summary from messages up to marker_position for auto-compression.
-
-    Extracts user message snippets and tool names from the fold range.
+    *max_context_tokens* sizes each turn's share of the summary; unknown
+    (``0``) gives a turn the largest share.
     """
     messages: list[Message] = state.get("messages", [])
 
@@ -621,32 +621,7 @@ def _auto_summary(state: dict[str, Any], marker_position: int) -> str:
         if _is_compressed_summary(msg):
             fold_start = i + 1
 
-    fold_range = messages[fold_start : marker_position + 1]
-    if not fold_range:
-        return "Earlier conversation"
-
-    user_snippets: list[str] = []
-    tool_names: set[str] = set()
-
-    for msg in fold_range:
-        # Skip synthetic ``continue`` nudges so a fold summary never opens
-        # with "User: continue"; injections are real user input and stay.
-        if msg.role == "user" and not is_continuation_message(msg):
-            text = msg.text or ""
-            if text:
-                if len(text) > _AUTO_SUMMARY_USER_MAX:
-                    text = text[:_AUTO_SUMMARY_USER_MAX] + "..."
-                user_snippets.append(text)
-        for c in msg.contents:
-            if c.type in TOOL_CALL_CONTENT_TYPES and (name := tool_call_name(c)):
-                tool_names.add(name)
-
-    parts: list[str] = []
-    if user_snippets:
-        parts.append(f"User: {user_snippets[0]}")
-        if len(user_snippets) > 1:
-            parts.append(f"(+{len(user_snippets) - 1} more messages)")
-    if tool_names:
-        parts.append(f"Tools: {', '.join(sorted(tool_names))}")
-
-    return "; ".join(parts) if parts else "Earlier conversation"
+    return build_fold_summary(
+        messages[fold_start : marker_position + 1],
+        turn_chars=fold_summary_turn_chars(max_context_tokens),
+    )

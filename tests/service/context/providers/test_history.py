@@ -135,7 +135,9 @@ def test_auto_summary_includes_every_specialized_hosted_call_name() -> None:
 
     summary = _auto_summary(state, 1)
 
-    assert summary == "Tools: code_interpreter, image_generation, lookup, remote_task, shell, web_search"
+    assert summary == (
+        "Tools: code_interpreter x1, image_generation x1, lookup x1, remote_task x1, shell x1, web_search x1"
+    )
 
 
 @pytest.mark.asyncio

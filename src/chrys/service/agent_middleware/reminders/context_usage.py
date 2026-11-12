@@ -30,6 +30,14 @@ It reports the state and leaves the decision with the model: telling it to fold
 now makes an obedient model rewrite the prompt head while nothing is short.
 """
 
+CONTEXT_USAGE_WARNING_MANUAL = (
+    "[Context Usage] WARNING: Context usage is high, and automatic compaction is turned off "
+    "for this agent. Use `list_compressed_contexts` to see available fold markers, then "
+    "`compress_context` with a marker_id to compress older turns into a summary. Use "
+    "`recall_context` to query compressed blocks if you need specific details later."
+)
+"""The warning where nothing compacts on its own: only a fold by the model frees context."""
+
 
 def context_usage_percent(usage: Mapping[str, Any], *, max_context_tokens: int) -> float:
     """The share of the context window *usage* fills, in percent (one decimal)."""
@@ -51,9 +59,12 @@ def _total_tokens(usage: Mapping[str, Any]) -> int:
 class ContextWarningSource:
     """The context-usage warning one middleware offers, and whether it is armed."""
 
-    def __init__(self, *, max_context_tokens: int, warn_threshold_pct: float) -> None:
+    def __init__(
+        self, *, max_context_tokens: int, warn_threshold_pct: float, automatic_compaction: bool = True
+    ) -> None:
         self._max_context_tokens = max_context_tokens
         self._warn_threshold_pct = warn_threshold_pct
+        self._warning = CONTEXT_USAGE_WARNING if automatic_compaction else CONTEXT_USAGE_WARNING_MANUAL
         # Whether the next turn at or above the warning threshold warns: a
         # request carrying the warning disarms it, a turn below re-arms it.
         # A new middleware (rebuild, restart) warns again at most once.
@@ -72,7 +83,7 @@ class ContextWarningSource:
         if usage_pct < self._warn_threshold_pct * 100:
             self._armed = True
             return None
-        return CONTEXT_USAGE_WARNING if self._armed else None
+        return self._warning if self._armed else None
 
     def delivered(self, _messages: Sequence[Message]) -> None:
         """Request observer: a request carried the warning, which disarms it."""

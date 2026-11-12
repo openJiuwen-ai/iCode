@@ -51,8 +51,6 @@ _EXCHANGE_WALKER_ALLOWLIST = {
     (Path("src/chrys/service/context/compaction/scoped.py"), "_tool_group_integrity"),
     (Path("src/chrys/service/context/compaction/last_words.py"), "_format_tool_group"),
     (Path("src/chrys/service/context/compaction/summaries.py"), "_build_summary"),
-    # Display-metadata fold-range scan; renders summary chrome, pairs nothing.
-    (Path("src/chrys/service/context/providers/history.py"), "_auto_summary"),
     # Positional current-turn slot bucketing for batch-id stamping — a
     # (call_id, name) presentation scan, not an exchange walk.
     (Path("src/chrys/service/session/history.py"), "SessionHistoryManager.persist_batch_ids"),

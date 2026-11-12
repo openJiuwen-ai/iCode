@@ -509,6 +509,7 @@ async def build_agent(
             session_dir=effective_session_dir,
             skip_local_history_for_service_context=uses_responses_service_history,
             service_context_default_options=chat_options,
+            tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
         )
 
         ctx = create_context(context_inputs)
@@ -844,6 +845,7 @@ async def build_agent(
             runtime=runtime,
             max_context_tokens=active_profile.max_context_tokens,
             warn_threshold_pct=settings.warn_threshold_pct,
+            automatic_compaction=profile.compaction.enabled,
             sub_agent_names=[t.name for t in sub_agent_tools.get_tools()] if sub_agent_tools else None,
             shell_tool_enabled=KIND_SHELL in tool_kinds.values(),
             tool_names=[*tool_names, *context_tool_names, *skill_tool_names],

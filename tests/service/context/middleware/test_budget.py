@@ -793,6 +793,25 @@ def test_context_usage_warning_reports_the_state_without_telling_the_model_to_fo
     assert "you may fold" in CONTEXT_USAGE_WARNING
 
 
+def test_context_usage_warning_tells_the_model_to_fold_where_nothing_compacts_on_its_own() -> None:
+    """With automatic compaction off, only a fold by the model keeps the conversation inside the window."""
+    from chrys.service.agent_middleware.reminders.context_usage import (
+        CONTEXT_USAGE_WARNING,
+        CONTEXT_USAGE_WARNING_MANUAL,
+    )
+    from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
+
+    middleware = SystemReminderMiddleware(max_context_tokens=1_000, warn_threshold_pct=0.5, automatic_compaction=False)
+    middleware.prepare_turn(usage={"total_token_count": 600})
+    reminders = middleware._build_reminders()
+
+    assert CONTEXT_USAGE_WARNING_MANUAL in reminders
+    assert CONTEXT_USAGE_WARNING not in reminders
+    assert "automatic compaction is turned off" in CONTEXT_USAGE_WARNING_MANUAL
+    assert "`compress_context` with a marker_id" in CONTEXT_USAGE_WARNING_MANUAL
+    assert "no action is needed" not in CONTEXT_USAGE_WARNING_MANUAL
+
+
 def test_sub_agent_tip_lists_sub_agents_only_when_available() -> None:
     from chrys.service.agent_middleware.reminders.sub_agents import SubAgentsSource
 

@@ -114,6 +114,72 @@ async def test_load_kernel_sub_agent_transcript_restores_compacted_messages_in_o
     assert transcript.includes_final_message is True
 
 
+@pytest.mark.parametrize("identified", [False, True], ids=["legacy", "identified"])
+async def test_load_kernel_sub_agent_transcript_leaves_the_archive_index_out(tmp_path: Path, identified: bool) -> None:
+    """The index lists blocks whose messages the transcript restores anyway: it is no message of the run."""
+    path = sessions_dir(tmp_path) / "Explore_archived.json"
+    path.parent.mkdir(parents=True)
+
+    def message(role: str, text: str, item: int, **properties: object) -> dict:
+        extra = {ANALYTICS_ITEM_ID_KEY: f"{item:032x}", **properties} if identified else dict(properties)
+        return {"role": role, "contents": [{"type": "text", "text": text}], "additional_properties": extra}
+
+    first_block = [message("user", "first question", 1), message("assistant", "first answer", 2)]
+    second_block = [message("user", "second question", 3), message("assistant", "second answer", 4)]
+    index = message(
+        "assistant",
+        "[Archive index]\nctx-1 · turns 1-1 · first question",
+        5,
+        **{
+            HistoryMarkerKind.KEY: HistoryMarkerKind.SUMMARY,
+            HistoryMarkerKind.ARCHIVE_INDEX_KEY: [
+                {"first_id": "ctx-1", "last_id": "ctx-1", "turn_from": 1, "turn_to": 1, "blocks": 1, "label": ""}
+            ],
+        },
+    )
+    archived_summary = message(
+        "assistant",
+        "[Compressed context: ctx-1]\nSummary: first",
+        6,
+        **{
+            HistoryMarkerKind.KEY: HistoryMarkerKind.SUMMARY,
+            "_block_id": "ctx-1",
+            "_excluded": True,
+            "_exclude_reason": "archive_index",
+        },
+    )
+    summary = message(
+        "assistant",
+        "[Compressed context: ctx-2]\nSummary: second",
+        7,
+        **{HistoryMarkerKind.KEY: HistoryMarkerKind.SUMMARY, "_block_id": "ctx-2"},
+    )
+    final = message("assistant", "Done.", 8)
+    meta: dict[str, object] = {"record_type": "sub_agent_session", "runner": "kernel", "status": "completed"}
+    if identified:
+        meta["transcript_occurrence_identity"] = SUB_AGENT_TRANSCRIPT_OCCURRENCE_IDENTITY
+    atomic_write_owner_only_text(
+        path,
+        json.dumps(
+            {
+                "meta": meta,
+                "state": {
+                    "compressed_msgs": [
+                        {"compressed_context_id": "ctx-1", "messages": first_block},
+                        {"compressed_context_id": "ctx-2", "messages": second_block},
+                    ],
+                    "messages": [index, archived_summary, summary, final],
+                },
+            }
+        ),
+    )
+
+    transcript = await load_persisted_sub_agent_transcript(tmp_path, path.name)
+
+    assert transcript is not None
+    assert transcript.messages == [*first_block, *second_block, final]
+
+
 async def test_load_kernel_sub_agent_transcript_deduplicates_only_twins_replaced_by_summary(tmp_path: Path) -> None:
     path = sessions_dir(tmp_path) / "Explore_twins.json"
     path.parent.mkdir(parents=True)

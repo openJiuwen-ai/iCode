@@ -61,6 +61,7 @@ def build_sources(
     runtime: SessionEnvironment | None,
     max_context_tokens: int,
     warn_threshold_pct: float,
+    automatic_compaction: bool,
     shell_tool_enabled: bool,
     sub_agent_names: Sequence[str] | None,
     todo_state_provider: Callable[[], str | None] | None,
@@ -81,6 +82,7 @@ def build_sources(
         context_warning=ContextWarningSource(
             max_context_tokens=max_context_tokens,
             warn_threshold_pct=warn_threshold_pct,
+            automatic_compaction=automatic_compaction,
         ),
         runtime_env=RuntimeEnvSource(runtime, shell_tool_enabled=shell_tool_enabled),
         sub_agents=SubAgentsSource(sub_agent_names),

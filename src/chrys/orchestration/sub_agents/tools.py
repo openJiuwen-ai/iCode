@@ -556,6 +556,7 @@ class SubAgentTools:
                     sub_active_profile.provider == "openai" and sub_active_profile.api_style == API_STYLE_RESPONSES
                 ),
                 service_context_default_options=chat_options,
+                tool_result_ceiling_tokens=self._tool_result_ceiling_tokens,
             )
 
             # Load skills from the sub-agent's profile
@@ -582,6 +583,7 @@ class SubAgentTools:
             shell_tool_enabled = any(get_tool_kind(t) == KIND_SHELL for t in tools)
             reminder_inputs = ReminderInputs(
                 runtime=runtime,
+                automatic_compaction=profile.compaction.enabled,
                 shell_tool_enabled=shell_tool_enabled,
                 session_root=self._session_dir,
                 file_read_available=any(get_tool_kind(tool) == KIND_FILESYSTEM_READ for tool in tools),
@@ -739,9 +741,11 @@ class SubAgentTools:
                         sub_active_profile.provider == "openai" and sub_active_profile.api_style == API_STYLE_RESPONSES
                     ),
                     service_context_default_options=chat_options,
+                    tool_result_ceiling_tokens=self._tool_result_ceiling_tokens,
                 )
                 reminder_inputs = ReminderInputs(
                     runtime=runtime,
+                    automatic_compaction=profile.compaction.enabled,
                     shell_tool_enabled=shell_tool_enabled,
                     session_root=self._session_dir,
                     file_read_available=any(get_tool_kind(tool) == KIND_FILESYSTEM_READ for tool in tools),

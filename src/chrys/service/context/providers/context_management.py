@@ -35,6 +35,14 @@ from chrys.kernel import (
     SessionContext,
 )
 from chrys.service.context.compaction.groups import _tool_call_name, _tool_result_text
+from chrys.service.context.providers.archive_index import is_archived_summary
+from chrys.service.context.providers.archive_listing import (
+    ListingError,
+    block_for_turn,
+    marker_hint,
+    page_budget_tokens,
+    render_listing,
+)
 from chrys.service.context.providers.history import CompressibleHistoryProvider
 from chrys.service.llm.one_shot import get_final_response
 from chrys.service.tools.result_metadata import tool_error
@@ -53,7 +61,7 @@ _HISTORY_SOURCE_ID = CompressibleHistoryProvider.DEFAULT_SOURCE_ID
 # paths, URLs or credentials.
 _RECALL_OVERFLOW_TEXT = (
     "recall failed — the compressed block is too large for this model's context window. "
-    "Use its summary from list_compressed_contexts instead."
+    "Read its full summary instead: list_compressed_contexts with its compressed_context_id."
 )
 _RECALL_FAILED_TEXT = "recall failed — the model request for this block did not complete."
 
@@ -78,6 +86,22 @@ or environment, answer naturally as if you simply know the answer.
 ## Context self-management
 
 ### Compaction and compression
+{compaction}
+`list_compressed_contexts` shows available fold markers and existing blocks,
+one line each and a page at a time (give a `compressed_context_id` for a
+block's full summary, or `turn_from`/`turn_to` for a turn range), and
+`recall_context` queries a compressed block, named by its id or by a turn it
+holds, without restoring it.
+
+### Important
+Perform all context operations silently during ordinary tasks. When the user
+explicitly asks about iCode's context management, compression, compaction, token
+budgets, or fold markers, explain the documented behavior and distinguish it from
+the current agent's configuration. Consult the product documentation rather than
+treating these operating instructions as a complete implementation reference.
+Say which details are not documented."""
+
+_AUTOMATIC_COMPACTION = """\
 Tool-call results are automatically compressed when context usage is high —
 old turn results and tool-call groups are trimmed first, and under heavy
 pressure completed text turns may be compressed before the current turn's
@@ -94,17 +118,26 @@ manage context yourself. Every fold rewrites the start of the prompt, which
 costs more than it frees when done often: use `compress_context` only after
 a large piece of work is finished, its details are no longer needed, and the
 `[Context Usage]` line is already high — and then fold once, up to the newest
-marker that fits, not in several small steps.
-`list_compressed_contexts` shows available fold markers and existing blocks,
-and `recall_context` queries a compressed block without restoring it.
+marker that fits, not in several small steps."""
 
-### Important
-Perform all context operations silently during ordinary tasks. When the user
-explicitly asks about iCode's context management, compression, compaction, token
-budgets, or fold markers, explain the documented behavior and distinguish it from
-the current agent's configuration. Consult the product documentation rather than
-treating these operating instructions as a complete implementation reference.
-Say which details are not documented."""
+_MANUAL_COMPACTION = """\
+Automatic compaction is turned off for this agent: nothing is trimmed or
+folded unless you do it, and a conversation that outgrows the context window
+fails. Use `compress_context` to fold completed work once the
+`[Context Usage]` line exceeds 50% or after finishing a multi-step task. If
+your work is context-heavy (broad searches, multi-file analysis, batch
+edits), consider delegating it to a sub-agent if one is available, to
+preserve your own context window."""
+
+
+def context_instructions(*, automatic_compaction: bool) -> str:
+    """The context-management instructions for an agent whose automatic compaction is on or off.
+
+    With it off the platform frees nothing on its own, so the model is told
+    to fold; with it on, telling it so would have it rewrite the prompt head
+    for space a pass would have freed anyway.
+    """
+    return _INSTRUCTIONS.format(compaction=_AUTOMATIC_COMPACTION if automatic_compaction else _MANUAL_COMPACTION)
 
 
 def _format_messages_as_text(messages: list[Any]) -> str:
@@ -177,16 +210,20 @@ class ContextManagementProvider(ContextProvider):
         session_id: str | None = None,
         parent_session_id: str | None = None,
         session_dir: Path | None = None,
+        tool_result_ceiling_tokens: int | None = None,
     ) -> None:
         super().__init__(source_id)
         self._profile = profile
+        # A listing page has to pass the kernel's tool-result ceiling whole:
+        # cut there, it would lose items its cursor already counted.
+        self._listing_budget_tokens = page_budget_tokens(tool_result_ceiling_tokens)
         self._session_id = session_id
         self._parent_session_id = parent_session_id
         self._session_dir = session_dir
         self._session: AgentSession | None = None
         self._strategy = strategy
         self._on_compress = on_compress
-        self._instructions = _INSTRUCTIONS
+        self._instructions = context_instructions(automatic_compaction=strategy.compaction_enabled)
         self._tools = self._create_tools()
 
     @property
@@ -260,7 +297,8 @@ class ContextManagementProvider(ContextProvider):
                     "The LLM is given the original messages from the compressed block as "
                     "context and answers your question directly. Use this to retrieve "
                     "specific details from earlier conversation turns without restoring "
-                    "them to the active history."
+                    "them to the active history. Name the block by its compressed_context_id "
+                    "or by a turn number it holds."
                 ),
                 func=self._recall_context,
                 input_model={
@@ -270,6 +308,12 @@ class ContextManagementProvider(ContextProvider):
                             "type": "string",
                             "description": "The compressed_context_id of the block to query.",
                         },
+                        "turn": {
+                            "type": "integer",
+                            "description": (
+                                "A turn number instead of compressed_context_id: the block holding that turn is queried."
+                            ),
+                        },
                         "question": {
                             "type": "string",
                             "description": (
@@ -278,21 +322,48 @@ class ContextManagementProvider(ContextProvider):
                             ),
                         },
                     },
-                    "required": ["compressed_context_id", "question"],
+                    "required": ["question"],
                     "additionalProperties": False,
                 },
             ),
             FunctionTool(
                 name="list_compressed_contexts",
                 description=(
-                    "List all compressed context blocks and available fold markers. "
+                    "List compressed context blocks and available fold markers, one line each. "
                     "Use this to see which blocks can be queried with recall_context "
-                    "and which markers can be used with compress_context."
+                    "and which markers can be used with compress_context. A long list comes in "
+                    "pages: the first lines give the totals and the cursor of the next page."
                 ),
                 func=self._list_compressed_contexts,
                 input_model={
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "compressed_context_id": {
+                            "type": "string",
+                            "description": "Show this block alone, with its full summary.",
+                        },
+                        "turn_from": {
+                            "type": "integer",
+                            "description": "Only blocks and markers at or after this turn.",
+                        },
+                        "turn_to": {
+                            "type": "integer",
+                            "description": "Only blocks and markers at or before this turn.",
+                        },
+                        "full_summaries": {
+                            "type": "boolean",
+                            "description": (
+                                "Write every listed block's full summary instead of one line. "
+                                "Long: prefer a compressed_context_id or a turn range."
+                            ),
+                        },
+                        "cursor": {
+                            "type": "string",
+                            "description": (
+                                "The cursor the previous page gave, with the same other arguments, for the next page."
+                            ),
+                        },
+                    },
                     "additionalProperties": False,
                 },
             ),
@@ -318,16 +389,9 @@ class ContextManagementProvider(ContextProvider):
         except (ValueError, RuntimeError) as e:
             # Include available markers so the agent can retry with a valid one
             available = self._strategy.list_compressed()
-            markers = available.get("markers", [])
-            if markers:
-                hint = "\n\nAvailable fold markers (use the marker_id value exactly as shown):\n" + "\n".join(
-                    f'  - marker_id="{m["marker_id"]}" (turn {m["turn_index"]})' for m in markers
-                )
-            else:
-                hint = "\n\nNo fold markers available — markers are inserted after each agent turn."
             return tool_error(
                 "context_compression_failed",
-                f"{e}{hint}",
+                f"{e}\n\n{marker_hint(available.get('markers', []))}",
                 details={"marker_id": marker_id},
             )
 
@@ -345,6 +409,8 @@ class ContextManagementProvider(ContextProvider):
             1
             for message in messages
             if message.additional_properties.get(HistoryMarkerKind.KEY) != HistoryMarkerKind.TURN
+            # A summary the archive index lists instead stays in state, out of the request.
+            and not is_archived_summary(message)
         )
         visible = visible_before - folded_visible + 1  # replacement summary
         num_blocks = len(state.get("compressed_msgs", [])) + 1  # +1 for pending
@@ -355,9 +421,28 @@ class ContextManagementProvider(ContextProvider):
             f"History now has {visible} visible message(s) and {num_blocks} compressed block(s)."
         )
 
-    async def _recall_context(self, compressed_context_id: str, question: str) -> str:
+    async def _recall_context(
+        self, question: str, compressed_context_id: str | None = None, turn: int | None = None
+    ) -> str:
         state = self._get_history_state()
         blocks = state.get("compressed_msgs", [])
+        if compressed_context_id is None:
+            if turn is None:
+                return tool_error(
+                    "compressed_context_not_found",
+                    "give the block's compressed_context_id or a turn number it holds.",
+                )
+            listed = block_for_turn(self._strategy.list_compressed()["blocks"], turn)
+            if listed is None:
+                return tool_error(
+                    "compressed_context_not_found",
+                    (
+                        f"no compressed block holds turn {turn}. "
+                        "Use list_compressed_contexts to see which turns are compressed."
+                    ),
+                    details={"turn": turn},
+                )
+            compressed_context_id = listed["compressed_context_id"]
         block = next(
             (b for b in blocks if b.compressed_context_id == compressed_context_id),
             None,
@@ -423,27 +508,23 @@ class ContextManagementProvider(ContextProvider):
                 details={"compressed_context_id": compressed_context_id},
             )
 
-    def _list_compressed_contexts(self) -> str:
-        info = self._strategy.list_compressed()
-
-        lines: list[str] = []
-
-        blocks = info["blocks"]
-        if blocks:
-            lines.append("Compressed blocks:")
-            lines.extend(
-                f"  - {b['compressed_context_id']}: turns {b['turn_range'][0]}-{b['turn_range'][1]}, "
-                f"{b['num_messages']} messages. Summary: {b['summary']}"
-                for b in blocks
+    def _list_compressed_contexts(
+        self,
+        compressed_context_id: str | None = None,
+        turn_from: int | None = None,
+        turn_to: int | None = None,
+        full_summaries: bool = False,
+        cursor: str | None = None,
+    ) -> str:
+        try:
+            return render_listing(
+                self._strategy.list_compressed(),
+                budget_tokens=self._listing_budget_tokens,
+                compressed_context_id=compressed_context_id,
+                turn_from=turn_from,
+                turn_to=turn_to,
+                full_summaries=full_summaries,
+                cursor=cursor,
             )
-        else:
-            lines.append("No compressed blocks yet.")
-
-        markers = info["markers"]
-        if markers:
-            lines.append("\nAvailable fold markers (use the marker_id value exactly as shown):")
-            lines.extend(f'  - marker_id="{m["marker_id"]}" (turn {m["turn_index"]})' for m in markers)
-        else:
-            lines.append("\nNo fold markers available — markers are inserted after each agent turn.")
-
-        return "\n".join(lines)
+        except ListingError as e:
+            return tool_error("compressed_context_listing_failed", str(e))

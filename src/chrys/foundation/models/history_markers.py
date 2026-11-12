@@ -103,6 +103,10 @@ class HistoryMarkerKind:
     # prompt shortcut's ``!`command``` placeholders replaced by their output).
     # The approval judge reads it as the user's request; command output is data.
     TYPED_TEXT_KEY: Final[str] = "_chrys_typed_text"
+    # On the one summary message that lists archived fold blocks instead of
+    # summarising a block of its own: its lines as JSON-ready dicts, oldest
+    # first.  Consumers that show one card per fold skip the message.
+    ARCHIVE_INDEX_KEY: Final[str] = "_archive_index"
 
     TURN: Final[str] = "turn"
     SUMMARY: Final[str] = "summary"

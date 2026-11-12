@@ -13,6 +13,7 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.kernel import EXCLUDED_KEY, Message, set_excluded
 from chrys.kernel.compaction import _token_count, included_token_count
 from chrys.kernel.identity import WeakIdentityRegistry
+from chrys.service.context.providers.archive_index import merge_fold_summaries, project_archive
 from chrys.service.context.providers.history import PRE_OUTPUT_HISTORY_LEN_STATE_KEY
 
 from .events import (
@@ -345,6 +346,8 @@ class CompressionEngine:
                 )
                 self._record_published_fold(pending.compressed_context_id)
             self._pending_compressions.clear()
+            if compressions_processed:
+                self._merge_archive(messages)
 
         return compressions_processed
 
@@ -380,6 +383,8 @@ class CompressionEngine:
             )
             self._record_published_fold(pending.compressed_context_id)
         self._pending_compressions.clear()
+        if any_processed:
+            self._merge_archive(None)
         return any_processed
 
     async def emergency_compress_oldest_turn(
@@ -478,7 +483,7 @@ class CompressionEngine:
         if marker is None:
             return False, False
 
-        summary = _auto_summary(self._state, marker_position)
+        summary = _auto_summary(self._state, marker_position, max_context_tokens=self._strategy.max_context_tokens)
 
         try:
             await self._strategy._fire_pre_compact("phase3", usage_pct=usage_pct, tokens_before=tokens_before)
@@ -508,6 +513,7 @@ class CompressionEngine:
             set_excluded(message, excluded=True, reason=_REASON_COMPRESSION)
 
         self._ledger.invalidate_for_fold(fold_range)
+        self._merge_archive(messages)
 
         await self._strategy._notify_compress(
             CompressInfo(
@@ -524,6 +530,29 @@ class CompressionEngine:
         self._record_published_fold(compressed_context_id)
 
         return True, True
+
+    def _merge_archive(self, messages: list[Message] | None) -> None:
+        """Keep the fold summaries within their share of the window, right after a fold.
+
+        Only here: the fold has just rewritten the request from the last
+        summary on, so moving the oldest summaries into the archive index
+        costs the cached summaries before it and no second rewrite later.
+        *messages* is the live request list, or None after a run, where
+        only provider state is left to change.
+        """
+        if self._state is None:
+            return
+        merge = merge_fold_summaries(
+            self._state,
+            max_context_tokens=self._strategy.max_context_tokens,
+            count_tokens=self._strategy.tokenizer.count_tokens,
+        )
+        if merge is None or messages is None:
+            return
+        # A summary the index now lists is flagged excluded on the object the
+        # request shares with state, so only the index itself is missing here.
+        self._record_pre_output_history_len()
+        project_archive(self._state, messages)
 
     def _record_pre_output_history_len(self) -> None:
         """Remember the provider-state length after request-time compression."""
@@ -643,6 +672,12 @@ class CompressionEngine:
 
     def reinject_summaries(self, messages: list[Message]) -> None:
         """Re-inject emergency compressed summaries into per-call copies."""
+        self._reinject_cached_summaries(messages)
+        if self._state is not None:
+            # After the summaries: the archive index goes in front of them.
+            project_archive(self._state, messages)
+
+    def _reinject_cached_summaries(self, messages: list[Message]) -> None:
         if not self._compressed_context_cache:
             return
         self._prune_stale_compressed_context_cache()

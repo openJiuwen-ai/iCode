@@ -799,6 +799,9 @@ class HistoryReplayPlanner:
                 continue
 
             if marker == HistoryMarkerKind.SUMMARY:
+                if HistoryMarkerKind.ARCHIVE_INDEX_KEY in extra:
+                    # The list of archived blocks is no fold: each of them has its own card.
+                    continue
                 entries.append(
                     ReplayContextFold(
                         context_id=str(extra.get("_block_id", "")),

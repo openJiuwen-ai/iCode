@@ -49,8 +49,12 @@ def _build_state(num_turns: int) -> dict:
     return state
 
 
-def _make_provider() -> ContextManagementProvider:
-    return ContextManagementProvider(default_profile(), strategy=UnifiedContextStrategy())
+def _make_provider(*, tool_result_ceiling_tokens: int | None = None) -> ContextManagementProvider:
+    return ContextManagementProvider(
+        default_profile(),
+        strategy=UnifiedContextStrategy(),
+        tool_result_ceiling_tokens=tool_result_ceiling_tokens,
+    )
 
 
 def _bind_session(provider: ContextManagementProvider, history_state: dict | None = None) -> AgentSession:
@@ -97,6 +101,26 @@ class TestBeforeRun:
         assert "platform compacts on its own" in text
         assert "50%" not in text
         assert "proactively" not in text
+
+    @pytest.mark.asyncio
+    async def test_instructions_say_to_fold_where_nothing_compacts_on_its_own(self) -> None:
+        """With automatic compaction off only the model's own folds free context, so it is told to fold."""
+        provider = ContextManagementProvider(
+            default_profile(), strategy=UnifiedContextStrategy(compaction_enabled=False)
+        )
+        context = SessionContext(input_messages=[])
+
+        await provider.before_run(agent=None, session=AgentSession(), context=context, state={})
+
+        text = context.instructions[0]
+        assert "Automatic compaction is turned off" in text
+        assert "Use `compress_context` to fold completed work" in text
+        assert "50%" in text
+        assert "platform compacts on its own" not in text
+        assert "automatically compressed" not in text
+        # The rest of the instructions is the same.
+        assert "`list_compressed_contexts` shows available fold markers" in text
+        assert "silently" in text
 
     @pytest.mark.asyncio
     async def test_injects_three_tools(self) -> None:
@@ -201,7 +225,7 @@ async def test_list_tool_rejects_extra_arguments_before_execution_and_accepts_re
 
     initial, bad_call, bad_note, retry = _result_contents(response)
     for result, field in ((bad_call, "_call"), (bad_note, "note")):
-        message = _assert_actionable_argument_error(result, name, f"unknown '{field}'", "Expected: {}.")
+        message = _assert_actionable_argument_error(result, name, f"unknown '{field}'", "Expected: {")
         assert "check before compressing" not in message
     assert initial.exception is retry.exception is None
     assert initial.result == retry.result
@@ -241,8 +265,9 @@ class TestListCompressedContexts:
 
         result = provider._list_compressed_contexts()
 
-        assert "No compressed blocks yet." in result
-        assert "No fold markers available" in result
+        assert result == (
+            "No compressed blocks yet; no fold markers available — markers are inserted after each agent turn."
+        )
 
     def test_lists_markers(self) -> None:
         provider = _make_provider()
@@ -266,11 +291,70 @@ class TestListCompressedContexts:
 
         result = provider._list_compressed_contexts()
 
-        assert "Summary A" in result
-        assert "turn_3" in result
+        # One line for the block, told apart by what the user asked; its summary only on request.
+        assert f"  - {block.compressed_context_id} · turns 1-2 · {len(block.messages)} messages · " in result
+        assert "Summary A" not in result
+        assert 'marker_id="turn_3"' in result
         # Folded markers should not appear
-        assert "turn_1 " not in result
-        assert "turn_2 " not in result
+        assert 'marker_id="turn_1"' not in result
+        assert 'marker_id="turn_2"' not in result
+
+        full = provider._list_compressed_contexts(compressed_context_id=block.compressed_context_id)
+
+        assert "Summary: Summary A" in full
+        assert "marker_id=" not in full.split("\n", 2)[2]
+
+    def test_filters_by_turn_range(self) -> None:
+        provider = _make_provider()
+        state = _build_state(6)
+        _bind_session(provider, state)
+        first = CompressibleHistoryProvider.compress(state, "turn_2", "Summary A")
+        second = CompressibleHistoryProvider.compress(state, "turn_4", "Summary B")
+
+        result = provider._list_compressed_contexts(turn_from=3, turn_to=5)
+
+        assert second in result
+        assert first not in result
+        assert 'marker_id="turn_5"' in result
+        assert 'marker_id="turn_6"' not in result
+        assert "Matching this request: 1 block(s), 1 marker(s)." in result
+
+    def test_a_request_the_caller_must_correct_is_a_tool_error(self) -> None:
+        provider = _make_provider()
+        _bind_session(provider, _build_state(3))
+
+        for arguments in (
+            {"compressed_context_id": "ctx_missing"},
+            {"cursor": "not-a-cursor"},
+            {"cursor": "99"},
+            {"turn_from": 3, "turn_to": 1},
+        ):
+            result = provider._list_compressed_contexts(**arguments)
+            assert result.startswith("Error: "), arguments
+
+    def test_pages_fit_the_tool_result_ceiling(self) -> None:
+        from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
+
+        provider = _make_provider(tool_result_ceiling_tokens=2_000)
+        state = _build_state(400)
+        _bind_session(provider, state)
+        counter = MixedLanguageTokenizer()
+
+        pages: list[str] = []
+        cursor: str | None = None
+        while True:
+            page = provider._list_compressed_contexts(cursor=cursor)
+            pages.append(page)
+            assert counter.count_tokens(page) <= 2_000
+            if "End of list." in page.split("\n")[1]:
+                break
+            cursor = page.split('cursor="', 1)[1].split('"', 1)[0]
+
+        assert len(pages) > 2
+        listed = [
+            line for page in pages for line in page.split("\n") if "marker_id=" in line and line.startswith("  - ")
+        ]
+        assert listed == [f'  - marker_id="turn_{turn}" (turn {turn})' for turn in range(1, 401)]
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +462,48 @@ class TestRecallContext:
         assert "no readable messages" in result
 
     @pytest.mark.asyncio
+    async def test_recall_finds_the_block_by_a_turn_it_holds(self) -> None:
+        prompts: list[str] = []
+
+        class _Response:
+            text = "remembered"
+
+        class _Client:
+            async def get_response(self, messages: list[Any], **_kwargs: Any) -> _Response:
+                prompts.append(messages[-1].text)
+                return _Response()
+
+            async def aclose(self) -> None:
+                pass
+
+        provider = _make_provider()
+        state = _build_state(5)
+        _bind_session(provider, state)
+        CompressibleHistoryProvider.compress(state, "turn_2", "Summary A")
+        CompressibleHistoryProvider.compress(state, "turn_4", "Summary B")
+
+        with patch("chrys.service.llm.clients.create_client", return_value=_Client()):
+            result = await provider._recall_context(question="what happened?", turn=3)
+
+        assert result == "remembered"
+        assert "User message turn 3" in prompts[0]
+        assert "User message turn 4" in prompts[0]
+        assert "User message turn 2" not in prompts[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("arguments", [{}, {"turn": 5}, {"turn": 99}])
+    async def test_recall_without_a_block_to_query_says_what_to_give(self, arguments: dict[str, int]) -> None:
+        provider = _make_provider()
+        state = _build_state(5)
+        _bind_session(provider, state)
+        CompressibleHistoryProvider.compress(state, "turn_2", "Summary A")
+
+        result = await provider._recall_context(question="what happened?", **arguments)
+
+        assert result.startswith("Error: ")
+        assert ("no compressed block holds turn" in result) is bool(arguments)
+
+    @pytest.mark.asyncio
     async def test_recall_passes_session_id_to_client(self) -> None:
         class _Response:
             text = "remembered"
@@ -470,6 +596,8 @@ class TestRecallContext:
         expected = "too large for this model's context window" if overflow else "did not complete"
         assert result.startswith("Error: recall failed — ")
         assert expected in result
+        # An overflow points at the block's full summary, which no longer comes with the default listing.
+        assert ("list_compressed_contexts with its compressed_context_id" in result) is overflow
         assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == "context_recall_failed"
         for leaked in ("131072", "gateway.internal", "sk-test-secret", "/Users/me"):
             assert leaked not in result
@@ -492,8 +620,8 @@ class TestSessionNotBound:
         provider = _make_provider()
         result = provider._list_compressed_contexts()
 
-        assert "No compressed blocks yet." in result
-        assert "No fold markers available" in result
+        assert "No compressed blocks yet" in result
+        assert "no fold markers available" in result
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +655,18 @@ class TestContextManagerWiring:
 
         assert ctx.context_mgmt_provider is not None
         assert ctx.context_mgmt_provider._session_id == "sess-context"
+
+    def test_context_manager_sizes_listing_pages_by_the_tool_result_ceiling(self) -> None:
+        from chrys.service.context.manager import ContextManager
+        from chrys.service.context.providers.archive_listing import page_budget_tokens
+
+        default = ContextManager(default_profile()).context_mgmt_provider
+        capped = ContextManager(default_profile(), tool_result_ceiling_tokens=2_000).context_mgmt_provider
+
+        assert default is not None
+        assert capped is not None
+        assert default._listing_budget_tokens == page_budget_tokens(None)
+        assert capped._listing_budget_tokens == page_budget_tokens(2_000) < default._listing_budget_tokens
 
     def test_context_manager_wires_derived_budgets_everywhere(self) -> None:
         from chrys.service.context.manager import ContextManager
