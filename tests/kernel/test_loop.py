@@ -22,6 +22,7 @@ from pydantic import BaseModel, model_validator
 from chrys.foundation.tool_execution_stamp import EXECUTION_STAMP_KEY
 from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY
 from chrys.foundation.tool_result_metadata import (
+    COMMITTED_ERROR_TEXT_KEY,
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_ERROR_MESSAGE_METADATA_KEY,
     TOOL_FAILED_METADATA_KEY,
@@ -531,6 +532,115 @@ class TestNonStreamingLoop:
         assert result.exception is not None and "/home/me/.secret" in result.exception
         (sent,) = [c for m in wire.calls[1]["messages"] for c in m.contents if c.type == "function_result"]
         assert sent.result == model_reads
+
+    @pytest.mark.asyncio
+    async def test_a_middleware_replacement_survives_a_raise_and_reaches_the_model(self) -> None:
+        """A middleware that cleaned the error owns the text the model reads.
+
+        The middleware commits its replacement under ``COMMITTED_ERROR_TEXT_KEY``
+        and lets the exception through. The exception branch must not rebuild the
+        result from the exception alone: the original text is exactly what the
+        cleaning hook was there to remove. ``context.result`` alone is not enough
+        — it already holds the tool's own output when the tool succeeded and a
+        later middleware raised, so the mark is what says the text is a replacement.
+        """
+
+        @tool(name="boom")
+        async def boom(text: str) -> str:
+            raise ModelVisibleToolError("SECRET ORIGINAL")
+
+        class _CleanTheError(FunctionMiddleware):
+            async def process(
+                self,
+                context: FunctionInvocationContext,
+                call_next: Callable[[], Awaitable[None]],
+            ) -> None:
+                try:
+                    await call_next()
+                except ModelVisibleToolError:
+                    context.result = "REDACTED"
+                    context.metadata[COMMITTED_ERROR_TEXT_KEY] = "REDACTED"
+                    raise
+
+        layer, wire = _stack([_call_response(("c1", "boom", {"text": "x"})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [boom]}, middleware=[_CleanTheError()])
+
+        (result,) = _result_contents(response)
+        assert result.result == "REDACTED"
+        # Still a failed result: the failure record keeps naming the exception, so
+        # the consecutive-error count and the providers' error flag are unchanged.
+        assert result.exception is not None and "ModelVisibleToolError" in result.exception
+        (sent,) = [c for m in wire.calls[1]["messages"] for c in m.contents if c.type == "function_result"]
+        assert sent.result == "REDACTED"
+
+    @pytest.mark.asyncio
+    async def test_an_unreplaced_raise_still_shows_the_original_error(self) -> None:
+        """With no middleware replacement, the exception's own text is what the model reads."""
+
+        @tool(name="boom")
+        async def boom(text: str) -> str:
+            raise ModelVisibleToolError("owner is required")
+
+        layer, _wire = _stack([_call_response(("c1", "boom", {"text": "x"})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [boom]})
+
+        (result,) = _result_contents(response)
+        assert result.result == "Error: owner is required"
+
+    @pytest.mark.asyncio
+    async def test_a_middleware_left_with_an_empty_result_does_not_blank_the_error(self) -> None:
+        """An empty committed result must fall back to the exception text, never to nothing."""
+
+        @tool(name="boom")
+        async def boom(text: str) -> str:
+            raise ModelVisibleToolError("owner is required")
+
+        class _LeavesItEmpty(FunctionMiddleware):
+            async def process(
+                self,
+                context: FunctionInvocationContext,
+                call_next: Callable[[], Awaitable[None]],
+            ) -> None:
+                try:
+                    await call_next()
+                except ModelVisibleToolError:
+                    context.result = ""
+                    raise
+
+        layer, _wire = _stack([_call_response(("c1", "boom", {"text": "x"})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [boom]}, middleware=[_LeavesItEmpty()])
+
+        (result,) = _result_contents(response)
+        assert result.result == "Error: owner is required"
+
+    @pytest.mark.asyncio
+    async def test_a_late_middleware_raise_does_not_hand_on_the_tools_success_text(self) -> None:
+        """The tool returned, then a later middleware raised: the model must still read the failure.
+
+        ``context.result`` already holds the tool's own successful output by then,
+        so reading it as the committed error text would hand the model the success
+        text while the failure record says the call failed.
+        """
+
+        @tool(name="works")
+        async def works(text: str) -> str:
+            return "TOOL SUCCEEDED"
+
+        class _FailsAfterTheTool(FunctionMiddleware):
+            async def process(
+                self,
+                context: FunctionInvocationContext,
+                call_next: Callable[[], Awaitable[None]],
+            ) -> None:
+                await call_next()
+                raise RuntimeError("the cleanup middleware broke")
+
+        layer, _wire = _stack([_call_response(("c1", "works", {"text": "x"})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [works]}, middleware=[_FailsAfterTheTool()])
+
+        (result,) = _result_contents(response)
+        assert "TOOL SUCCEEDED" not in result.result, "a success result was handed on as the error text"
+        assert result.result.startswith("Error: ")
 
     @pytest.mark.asyncio
     async def test_model_visible_tool_error_counts_toward_the_consecutive_error_cap(self) -> None:

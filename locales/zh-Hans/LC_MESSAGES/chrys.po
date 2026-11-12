@@ -7240,6 +7240,12 @@ msgstr "无"
 msgid "tui.hook_run.applied.reminder"
 msgstr "为模型添加了提醒："
 
+#. English: Replaced the tool result with:
+#. chrys-meta={"fingerprint":"d4ead39120d4af457497b233ebd1bb776e85166049ec5195650ce7d5ed9338e0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.replaced"
+msgstr "替换了工具结果："
+
 #. English: Arguments cut at 64 KB of {size}
 #. chrys-meta={"fingerprint":"0cafa06fa41ccdf2c41021edd0e75336bec1bf36b9b9e6932a47fc6904901760","multiline":false,"placeholders":["size"]}
 #: src/chrys/app/tui/screens/dialogs/hook_run.py
@@ -12716,6 +12722,12 @@ msgstr "修改了参数"
 #: src/chrys/app/tui/widgets/sidebar/hooks.py
 msgid "tui.sidebar.hooks.outcome.queued"
 msgstr "排队中"
+
+#. English: replaced result
+#. chrys-meta={"fingerprint":"8b4ccd2eb9f5a651a0a3f789e36922e7db64e36e9283abb45210ae985c50e1fe","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.replaced_result"
+msgstr "替换了结果"
 
 #. English: running
 #. chrys-meta={"fingerprint":"30a70ec2e1543266fdf8c3d3507853a36b54e6a70feed23c5ae22fd78476fa4a","multiline":false,"placeholders":[]}

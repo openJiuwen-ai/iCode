@@ -13,12 +13,9 @@ does not duplicate into concurrent sub-agent contexts.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from chrys.kernel import AgentSession, ContextProvider, SessionContext
-
-if TYPE_CHECKING:
-    pass
 
 
 class MemoryProvider(ContextProvider):
@@ -37,6 +34,10 @@ class MemoryProvider(ContextProvider):
     def __init__(self, rendered_text: str, source_id: str = DEFAULT_SOURCE_ID) -> None:
         super().__init__(source_id)
         self._instructions = rendered_text
+
+    def contributed_instructions(self) -> str:
+        """The instructions this provider adds before every run."""
+        return self._instructions
 
     async def before_run(
         self,

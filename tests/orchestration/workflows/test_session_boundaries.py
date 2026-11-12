@@ -106,8 +106,11 @@ async def test_session_hooks_outlive_runs_and_history_browsing_is_passive(
         await restored.load_workflow_session(session_id)
         assert len(calls) == before
         await run(restored, "review")
+        # ``session_restored`` alone says the session came back; a resume fires no
+        # ``session_start``, so an existing hook sees the same events it always did.
         assert calls[before][0] is HookEvent.SESSION_RESTORED
         assert calls[before][1]["restored_session_id"] == session_id
+        assert calls[before + 1][0] is HookEvent.WORKFLOW_RUN_START
     finally:
         await restored.shutdown()
     assert calls[-1][0] is HookEvent.SESSION_END

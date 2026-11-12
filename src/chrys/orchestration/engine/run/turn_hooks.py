@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import Error
 from chrys.foundation.i18n import msg
@@ -95,6 +95,7 @@ class TurnHookDispatcher:
                 "turn": self._session.turn_number,
                 "status": status,
                 "failed": failed,
+                "usage": usage_payload(self._session),
             },
         )
 
@@ -209,10 +210,31 @@ class PromptSubmitGate:
                 "cwd": _workspace_cwd(self._session),
                 "text": operation.input_text,
                 "injected": is_injected,
+                "usage": usage_payload(self._session),
+                "system_prompt": self.system_prompt(),
             },
             target_operation_id=target_operation_id,
             trajectory_context=trajectory_context,
         )
+
+    def system_prompt(self) -> str:
+        """The text the installed build puts at the top of every model call.
+
+        A prompt-injection guard checks what the model will read as its own instructions.
+        The order matches the model's actual call: the profile's own instructions, then
+        every context provider on the live agent (memory files, skills, context management,
+        documentation) in the order they run.
+
+        Using ``manifest.instructions`` as the base would duplicate memory and skills because
+        that string is already assembled from them; using ``profile.instructions`` alone would
+        miss invoker-added providers. The live agent's list is the authoritative one.
+        """
+        loaded = self._current.loaded
+        if loaded is None:
+            return ""
+        profile_instructions = self._current.manifest.profile_instructions
+        appended = [text for p in loaded.agent.context_providers for text in [p.contributed_instructions()] if text]
+        return "\n".join([text for text in (profile_instructions, *appended) if text])
 
     async def handle_decision(
         self,
@@ -264,3 +286,38 @@ def _workspace_cwd(session: ActiveSession) -> str:
     if session.workspace is not None:
         return session.workspace.primary_cwd
     return safe_getcwd()
+
+
+def usage_payload(session: ActiveSession) -> dict[str, Any]:
+    """What a hook measures a turn's spend with: the last call's own counts, and the session's totals.
+
+    The last call's numbers are what a context-budget hook needs (its window occupancy), the
+    totals what a spend hook needs. Both are the engine's own accounting, so a hook does not
+    have to re-tokenize text it was handed or keep its own running total.
+    """
+    meta = getattr(session, "runtime_meta", None)
+    if meta is None:
+        # A session that has not started accounting yet: zeros, not a crash in the hook path.
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cache_hit_tokens": None,
+            "total_session_tokens": 0,
+            "total_session_input_tokens": 0,
+            "total_session_output_tokens": 0,
+            "total_session_cache_hit_tokens": None,
+        }
+    last = meta.last_usage_details or {}
+    return {
+        "input_tokens": int(last.get("input_token_count", 0)),
+        "output_tokens": int(last.get("output_token_count", 0)),
+        "total_tokens": int(last.get("total_token_count", 0)),
+        "cache_hit_tokens": last.get("cache_hit_tokens"),
+        "total_session_tokens": meta.total_session_tokens,
+        "total_session_input_tokens": meta.total_session_input_tokens,
+        "total_session_output_tokens": meta.total_session_output_tokens,
+        # The one figure that survives a call reporting no cache information: the per-call
+        # field above goes back to None there, and this keeps what the session has seen.
+        "total_session_cache_hit_tokens": meta.total_session_cache_hit_tokens,
+    }

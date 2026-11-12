@@ -350,6 +350,41 @@ async def test_the_payload_says_whether_confirmation_is_available(
     assert (blocking, nonblocking, blocking_headless) == (True, False, False)
 
 
+@pytest.mark.asyncio
+async def test_the_payload_says_whether_extra_context_reaches_the_model(
+    hooks_dir: Path,
+    bus: EventBus,
+    confirmations: HookConfirmationService,
+) -> None:
+    """Unlike asking, a note needs nobody to answer: a blocking hook can add one even headless."""
+    seen = hooks_dir / "seen"
+    copy_payload = textwrap.dedent(
+        f"""
+        import json, os, sys
+        mode = sys.argv[1]
+        with open(os.environ["CHRYS_HOOK_PAYLOAD_FILE"]) as f:
+            payload = json.load(f)
+        with open({str(seen)!r} + "-" + mode, "w") as f:
+            json.dump(payload.get("extra_context_available"), f)
+        """,
+    )
+
+    def copier(mode: str) -> HookConfig:
+        hook = _hook(f"copy-{mode}", script=copy_payload, mode=mode)
+        hook.run.argv.append(mode)
+        return hook
+
+    manager = _manager(hooks_dir, copier("blocking"), copier("async"))
+    disabled = HookConfirmationService(bus=bus, enabled=False)
+    await disabled.start()
+
+    await _check(manager, _operation(), disabled)
+    await manager.drain_turn()
+    blocking, nonblocking = (json.loads(Path(f"{seen}-{m}").read_text()) for m in ("blocking", "async"))
+
+    assert (blocking, nonblocking) == (True, False)
+
+
 # ── an argument change after an approval ─────────────────────────────
 
 
@@ -811,3 +846,73 @@ async def test_a_durable_job_written_for_an_operation_that_ends_before_its_hook_
     assert len(_outbox_jobs(hooks_dir, "pending")) == (1 if kept else 0)
     assert len(_outbox_jobs(hooks_dir, "failed")) == (0 if kept else 1)
     assert _outbox_jobs(hooks_dir, "done") == []
+
+
+# ---------------------------------------------------------------------------
+# A recheck inside one dispatch reports itself as one
+# ---------------------------------------------------------------------------
+
+
+def _recording_operation_script(out: Path, result: dict[str, Any] | None = None) -> str:
+    """A hook that appends the ``operation`` it was handed, then answers ``result`` (pass when None)."""
+    answer = (
+        textwrap.dedent(
+            f"""
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as f:
+            json.dump({result!r}, f)
+        """,
+        )
+        if result is not None
+        else ""
+    )
+    return (
+        textwrap.dedent(
+            f"""
+        import json, os
+        with open(os.environ["CHRYS_HOOK_PAYLOAD_FILE"], encoding="utf-8") as f:
+            payload = json.load(f)
+        with open(r"{out}", "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload.get("operation")) + "\\n")
+        """,
+        )
+        + answer
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_recheck_tells_the_hooks_it_is_a_later_check(
+    hooks_dir: Path,
+    bus: EventBus,
+    confirmations: HookConfirmationService,
+) -> None:
+    """A hook re-run after an approved change must see the new check number, not the first one.
+
+    ``ask`` about x, then ``normalize`` turns x into y. The change ends the pass
+    and the chain starts over, so ``normalize``'s second run is a check of the
+    operation's second version: a hook that de-duplicates by ``check`` would skip
+    it if the payload still said ``check: 1``.
+    """
+    seen = hooks_dir / "seen.jsonl"
+    await _frontend(bus, answer_inline="approved")
+    manager = _manager(
+        hooks_dir,
+        _hook("guard", {"action": "ask"}),
+        _hook(
+            "normalize",
+            path="x",
+            script=_recording_operation_script(seen, {"action": "modify", "args_override": {"path": "y"}}),
+        ),
+        _hook("watch", script=_recording_operation_script(seen)),
+    )
+    operation = _operation("x")
+
+    decision = await _check(manager, operation, confirmations)
+
+    assert decision.blocked is False
+    rows = [json.loads(line) for line in seen.read_text(encoding="utf-8").splitlines()]
+    # Two passes over the chain: the first checks x, the second checks y.
+    watch_checks = [row["check"] for row in rows if row is not None]
+    assert 1 in watch_checks, "the first pass must report the first check"
+    assert max(watch_checks) > 1, f"the recheck must report a later check, got {watch_checks}"
+    assert len({row["id"] for row in rows}) == 1, "every pass names the same operation"
+    assert operation.check_count > 1

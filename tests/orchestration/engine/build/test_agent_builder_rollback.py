@@ -1367,6 +1367,54 @@ async def test_build_warns_once_when_on_demand_mcp_tools_can_unbind_thinking(
         assert messages == []
 
 
+def test_system_prompt_is_instructions_then_memory_in_model_order() -> None:
+    from chrys.orchestration.engine.build.builder import _system_prompt
+
+    profile = AgentProfile(name="test", instructions="You are Code.")
+    assert _system_prompt(profile, "# Project rules") == "You are Code.\n# Project rules"
+    # A missing half leaves no stray separator.
+    assert _system_prompt(profile, "") == "You are Code."
+    assert _system_prompt(AgentProfile(name="test"), "# Project rules") == "# Project rules"
+
+
+def test_system_prompt_carries_what_each_context_provider_appends() -> None:
+    """A guard reading ``system_prompt`` must see the whole text the model treats as instructions.
+
+    The model receives the profile's instructions, the memory block, and whatever
+    the context providers append on every call (skills, context management,
+    documentation). Leaving the providers out shows a guard a fraction of it.
+    """
+    from chrys.orchestration.engine.build.builder import _system_prompt
+
+    class _Provider:
+        def __init__(self, instructions: str) -> None:
+            self._instructions = instructions
+
+        def contributed_instructions(self) -> str:
+            return self._instructions
+
+    profile = AgentProfile(name="test", instructions="You are Code.")
+    prompt = _system_prompt(
+        profile,
+        "# Project rules",
+        [_Provider("## Context management"), _Provider("## Skills"), _Provider("## Docs")],
+    )
+
+    assert prompt == "You are Code.\n# Project rules\n## Context management\n## Skills\n## Docs"
+
+
+def test_system_prompt_skips_providers_that_contribute_nothing() -> None:
+    from chrys.orchestration.engine.build.builder import _system_prompt
+
+    class _Silent:
+        def contributed_instructions(self) -> str:
+            return ""
+
+    prompt = _system_prompt(AgentProfile(name="test", instructions="You are Code."), "", [_Silent()])
+
+    assert prompt == "You are Code."
+
+
 async def test_build_hands_the_servers_own_cwd_and_the_workspace_folder_to_the_mcp_adapter() -> None:
     """The build passes the workspace folder; ``cwd`` is resolved against it in the connection cache."""
     servers = [

@@ -202,7 +202,10 @@ class _HostPermits:
 
 class _Host:
     def __init__(self, *, executor_running: bool = False) -> None:
-        self.current = make_current(loaded=SimpleNamespace(), manifest=make_manifest())
+        self.current = make_current(
+            loaded=SimpleNamespace(agent=SimpleNamespace(context_providers=[])),
+            manifest=make_manifest(),
+        )
         self._current = self.current
         self.permits = _HostPermits()
         self.session = SimpleNamespace()

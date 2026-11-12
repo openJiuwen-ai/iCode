@@ -110,10 +110,18 @@ class HookEvent(StrEnum):
     Runs before ``ToolCallStart``, mutation tracking, file locks, and
     approval so blocking hooks can deny early and modifying hooks can
     rewrite args before the rest of the tool pipeline observes them.
-    Cannot grant approval; it can only deny or modify args.  Payload:
+    Cannot grant approval; it can only deny or modify args, or add
+    ``extra_context`` that reaches the model with the call's result once
+    the call has run (a note, not a decision).  Payload:
     base envelope plus ``tool`` (``name`` / ``kind`` / ``call_id`` /
-    ``args``).  Denied calls still publish rejected tool events with the
-    final call id for UI and history consistency.
+    ``args``) and ``origin``: the calling invocation (``kind`` of
+    ``"turn"`` | ``"sub_agent"`` | ``"workflow_node"``, ``session_id``,
+    ``invocation_id``, ``attempt``) with its bound ancestry nested under
+    ``parent`` (``null`` at the root), or ``null`` when the call has no
+    bound invocation.  A sub-agent's tool calls carry the ``invocation_id``
+    its ``sub_agent_start`` announced, so concurrent instances of one
+    profile stay distinguishable.  Denied calls still publish rejected tool
+    events with the final call id for UI and history consistency.
     """
 
     AFTER_TOOL_CALL = "after_tool_call"
@@ -122,8 +130,9 @@ class HookEvent(StrEnum):
     Fires regardless of success / approval rejection / cancellation, as
     long as the inner ``call_next()`` returned (cancellations short-
     circuit).  Use for linting, post-write checks, telemetry.  Payload:
-    base envelope plus ``tool`` and ``result`` (``text`` / ``duration_ms``
-    / ``error`` / ``approval_rejected``).
+    base envelope plus ``tool``, ``origin`` (as :data:`BEFORE_TOOL_CALL`)
+    and ``result`` (``text`` / ``duration_ms`` / ``error`` /
+    ``approval_rejected``).
     """
 
     TOOL_ERROR = "tool_error"

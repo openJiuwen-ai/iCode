@@ -104,33 +104,47 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 | --- | --- | --- |
 | `session_start` | 智能体准备就绪后。启动 iCode、新建会话或将当前会话撤回到开始处时会触发；切换智能体或模型不会触发。 | 无 |
 | `session_restored` | 已保存的会话恢复后。启动 iCode 后立即恢复会话时，`session_start` 和 `session_restored` 都可能触发。 | `restored_session_id`：本次恢复的已保存会话 ID |
-| `session_end` | 当前会话结束时：退出 iCode、切换会话、新建会话、删除或清空当前会话，或将当前会话撤回到开始处。 | 无 |
+| `session_end` | 当前会话结束时：退出 iCode、切换会话、新建会话、删除或清空当前会话，或将当前会话回滚到开始处。 | 无 |
 
 ### 轮次事件
 
 | 事件 | 运行时机 | 额外字段 |
 | --- | --- | --- |
 | `before_turn` | 一轮开始前。 | `turn`：从 `1` 开始的轮次编号<br>`user_text`：当前轮使用的用户文本<br>`is_retry`：是否正在重试同一轮 |
-| `after_turn` | 一轮结束后，包括正常完成、用户中断和运行失败。 | `turn`：从 `1` 开始的轮次编号<br>`status`：`ok`、`interrupted` 或 `failed`<br>`failed`：本轮是否未正常完成，运行失败或被中断时均为 `true` |
+| `after_turn` | 一轮结束后，包括正常完成、用户中断和运行失败。 | `turn`：从 `1` 开始的轮次编号<br>`status`：`ok`、`interrupted` 或 `failed`<br>`failed`：本轮是否未正常完成，运行失败或被中断时均为 `true`<br>`usage`：token 用量，见下 |
 
 ### 用户操作事件
 
 | 事件 | 运行时机 | 额外字段 |
 | --- | --- | --- |
-| `user_prompt_submit` | 用户提交开始新一轮的消息、在智能体运行期间提交补充消息，或提交 `/btw` 顺便问时。 | `text`：用户提交的文本；顺便问为不带 `/btw` 前缀的问题<br>`injected`：`true` 表示发送给运行中主轮次的补充消息；`false` 表示开始主对话新一轮的消息或顺便问<br>`side_question`：顺便问为 `true`；主对话消息省略该字段（缺失时按 `false` 处理） |
+| `user_prompt_submit` | 用户提交开始新一轮的消息、在智能体运行期间提交补充消息，或提交 `/btw` 顺便问时。 | `text`：用户提交的文本；顺便问为不带 `/btw` 前缀的问题<br>`injected`：`true` 表示发送给运行中主轮次的补充消息；`false` 表示开始主对话新一轮的消息或顺便问<br>`side_question`：顺便问为 `true`；主对话消息省略该字段（缺失时按 `false` 处理）<br>`usage`：token 用量，见下<br>`system_prompt`：本轮模型调用最前面的系统提示：智能体的指令，加上 `AGENTS.md` 等记忆文件渲染出的内容，顺序与模型收到的一致；智能体还未加载时为空字符串。顺便问给出的是这次顺便问自己的调用所用的提示，因为它不带工具、也不以主智能体的身份回答 |
 | `user_interrupt` | 用户中断当前轮后。 | 无 |
 
 判断消息是否开始主对话的新一轮时，应同时检查 `not payload.get("injected", False)` 和 `not payload.get("side_question", False)`。顺便问发送 `injected: false` 和 `side_question: true`，不会开始主对话轮次，也不会触发 `before_turn` / `after_turn`。仅输入 `/btw` 查看已保存的顺便问不会触发 `user_prompt_submit`。
 
+`after_turn` 和 `user_prompt_submit` 的 `usage` 给出 iCode 自己记的 token 用量。`input_tokens` 和 `total_tokens` 通常是服务商报告的数值；当服务商没有报告上下文窗口用量时，iCode 会用本地估算替代，以保持预算判断有效——此时这两个字段是估算值。`output_tokens` 和所有会话累计值始终反映服务商数据。
+
+| 字段 | 含义 |
+| --- | --- |
+| `input_tokens`、`output_tokens`、`total_tokens` | 最近一次完成的模型调用各自的用量。会话刚开始、还没有调用完成时都是 `0`。 |
+| `cache_hit_tokens` | 最近一次调用的缓存命中 token 数；该次调用没有报告缓存信息时为 `null`，服务商首次报告之前的所有调用都属此类。它描述的是单次调用，之后遇到不报告缓存信息的调用仍会是 `null`；需要持久的会话级数字请用 `total_session_cache_hit_tokens`。 |
+| `total_session_tokens`、`total_session_input_tokens`、`total_session_output_tokens` | 本次会话到此刻的累计用量。 |
+| `total_session_cache_hit_tokens` | 本次会话到此刻的缓存命中累计 token 数；会话中所有没有报告缓存信息的调用按 `0` 计入。 |
+
+需要按上下文窗口判断预算的钩子应使用最近一次调用的数值，而不是重新对文本分词：模型的 tokenizer 与钩子的估算很难一致。`output_tokens` 和所有会话累计值始终是服务商报告的数值；`input_tokens` 和 `total_tokens` 通常也是，但服务商没有报告上下文窗口用量时，iCode 会用本地估算替代，以保持预算判断有效。
 ### 工具事件
 
 `tool` 和 `result` 对象的字段见[工具事件字段](#工具事件字段)。
 
 | 事件 | 运行时机 | 额外字段 |
 | --- | --- | --- |
-| `before_tool_call` | 工具进入审批和执行流程前。如果用户在审批时编辑了参数，该钩子会在工具运行前使用编辑后的参数再次运行。 | `tool`：工具名称、类别、调用 ID 和参数 |
-| `after_tool_call` | 工具调用返回后。工具正常返回结果、返回失败结果、因审批未通过而未执行，或被 `before_tool_call` 钩子拒绝时都会触发。 | `tool`：工具调用<br>`result`：运行结果 |
-| `tool_error` | 工具调用抛出运行错误后。同一次调用会先触发 `after_tool_call`，再触发 `tool_error`。 | `tool`：工具调用<br>`result`：运行结果，其中 `result.error` 为 `true` |
+| `before_tool_call` | 工具进入审批和执行流程前。如果用户在审批时编辑了参数，该钩子会在工具运行前使用编辑后的参数再次运行。 | `tool`：工具名称、类别、调用 ID 和参数<br>`origin`：发起这次调用的调用（见下） |
+| `after_tool_call` | 工具调用返回后。工具正常返回结果、返回失败结果、因审批未通过而未执行，或被 `before_tool_call` 钩子拒绝时都会触发。 | `tool`：工具调用<br>`origin`：同上<br>`result`：运行结果 |
+| `tool_error` | 工具调用抛出运行错误后。同一次调用会先触发 `after_tool_call`，再触发 `tool_error`。 | `tool`：工具调用<br>`origin`：同上<br>`result`：运行结果，其中 `result.error` 为 `true` |
+
+`origin` 描述发起这次工具调用的调用本身：`kind`（`turn`、`sub_agent` 或 `workflow_node`）、`session_id`、`invocation_id`、`attempt`，以及递归向外的 `parent`（最外层为 `null`）。子智能体的工具调用携带它 `sub_agent_start` 事件里公布的 `invocation_id`，因此同一个 profile 的多个并发子智能体可以区分开；`parent` 一路指回这次调用最终所属的对话轮次或工作流节点。调用没有绑定调用时 `origin` 为 `null`。该字段是新增的，既有钩子不受影响。
+
+并发执行的多个子智能体可能读写同一份状态文件。钩子需要按子智能体区分状态时，应使用 `origin.invocation_id` 而不是 `session_id`。
 
 ### 审批事件
 
@@ -185,8 +199,8 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 | --- | --- |
 | `user_prompt_submit` | 拒绝消息、[请你确认](#请你确认)或添加系统提醒。被拒绝的主对话消息会留在输入框中；如果是在智能体运行期间提交的，智能体会继续工作。顺便问被拒绝时会在卡片中显示原因；顺便问的系统提醒仅用于该顺便问。 |
 | `before_tool_call` | 拒绝工具调用、[请你确认](#请你确认)或修改参数，但不能批准调用或绕过审批。 |
-| `after_tool_call` | 向工具结果追加上下文，但不能撤销已经发生的调用。 |
-| `tool_error` | 向工具错误追加上下文，但不能撤销已经发生的调用。 |
+| `after_tool_call` | 向工具结果追加上下文或替换结果文本，但不能撤销已经发生的调用。 |
+| `tool_error` | 向工具错误追加上下文或替换结果文本，但不能撤销已经发生的调用。 |
 
 ### 异步钩子的等待时机
 
@@ -409,7 +423,7 @@ iCode 会按字面量替换 `env` 值和 `cwd` 中出现的上述模板。其他
 | `timeout_seconds` | 大于 `0` 的数值 | `30.0` | 钩子的最长运行时间，单位为秒；启用 `detach` 时忽略。 |
 | `on_error` | `block`、`warn` 或 `ignore` | `warn` | 钩子失败后的处理方式，具体行为见下表。 |
 
-`on_error` 决定钩子无法启动、运行超时或返回非零退出码时，iCode 如何继续：
+`on_error` 决定钩子无法启动、运行超时、返回非零退出码，或在闸门事件上留下的结果文件无法采用时，iCode 如何继续：
 
 | 值 | 行为 |
 | --- | --- |
@@ -486,6 +500,8 @@ execution:
 | `profile` | 当前智能体的名称，例如 `Code`。对于子智能体事件，以及子智能体内部的工具、审批和上下文压缩事件，此字段是子智能体的配置名称。 |
 | `cwd` | 当前会话的工作目录。`run.cwd` 设置的是钩子进程的工作目录，不会改变此字段。 |
 | `confirmation_available` | 仅用于 `user_prompt_submit` 和 `before_tool_call`。此钩子能[请你确认](#请你确认)时为 `true`：它是阻塞式钩子，并且有人能回答（`icode run` 和从命令行运行的工作流中没有）。可据此决定无人可问时怎么处理。 |
+| `extra_context_available` | 仅用于 `before_tool_call`。此钩子返回的 `extra_context` 会随调用结果交给模型时为 `true`：它是阻塞式钩子。旧版 iCode 不发送此字段，也会忽略 `before_tool_call` 的 `extra_context`；需要确保提示送达的钩子可以检查它是否为 `true`，否则改用 `ask` 或 `block`。 |
+| `operation` | 仅用于 `user_prompt_submit` 和 `before_tool_call`。同一次操作（工具调用或用户输入）的身份：`id`、当前参数版本 `revision`、以及这是第几次检查 `check`。参数被审批编辑或被钩子修改后，iCode 从头重新检查，同一次操作会出现多次，`check` 从 1 递增而 `id` 不变。需要按调用计数的钩子应据此去重，而不是把每次检查当成新的调用。 |
 
 例如，一次工具调用前的输入包含以下基础字段：
 
@@ -538,6 +554,7 @@ execution:
 | `rejection_source` | 仅在调用被拒绝时出现；`user` 表示用户拒绝，`hook` 表示钩子拒绝。 |
 | `hook_denied` | 仅在调用被拒绝时出现；钩子拒绝时为 `true`，用户拒绝时为 `false`。 |
 | `hook_confirmation` | 仅当钩子[请你确认](#请你确认)后调用没有继续时出现，说明原因：`declined`（你选择了取消）、`timed_out`（未及时回答）或 `unavailable`（无人可问）。此时 `rejection_source` 为 `hook`。 |
+| `outcome` | 这次调用是怎么结束的，取 `rejected`（被拒绝，没有执行）、`errored`（抛出异常）、`failed`（返回了失败结果，没有抛异常）或 `ok`（执行并返回）。同一次调用的 `after_tool_call` 和 `tool_error` 带着同一个值。它说明的是这次调用怎么结束，不是哪一次调用，所以按调用计数请用 `tool.call_id`，或者只监听 `after_tool_call`（每次调用都触发，包括后面还会触发 `tool_error` 的那些）。 |
 
 `error: true` 时，`failed` 也为 `true`，但 `failed: true` 不一定表示抛出了异常。`tool_error` 只在抛出异常时触发；需要检查各类失败时，应监听 `after_tool_call` 并检查 `result.failed`。
 
@@ -582,16 +599,18 @@ execution:
 
 | 字段 | 类型 | 生效事件与条件 | 说明 |
 | --- | --- | --- | --- |
-| `action` | `allow`、`block`、`modify` 或 `ask` | `user_prompt_submit`、`before_tool_call` | 默认为 `allow`。两种事件都接受 `block` 和 `ask`；只有 `before_tool_call` 接受 `modify`。 |
+| `action` | `allow`、`block`、`modify`、`ask` 或 `warn` | `user_prompt_submit`、`before_tool_call` | 默认为 `allow`。两种事件都接受 `block` 和 `ask`；只有 `before_tool_call` 接受 `modify`。`warn` 放行调用并保留钩子提供的文本。 |
 | `reason` | 字符串 | `user_prompt_submit`、`before_tool_call`，且 `action: block` 或 `ask` | 用于 `block` 时，是向用户显示的拒绝原因，工具调用被拒绝时也会提供给模型；用于 `ask` 时，是 iCode 请你确认时显示的内容。 |
 | `args_override` | 对象 | `before_tool_call` 且 `action: modify` | 将其中的顶层字段加入现有 `tool.args`。同名字段会替换原值；如果值是对象，该对象也会被整体替换。 |
 | `system_reminder` | 字符串 | `user_prompt_submit` | 作为系统提醒加入当前轮的每一次模型调用。 |
-| `extra_context` | 字符串 | `after_tool_call`、`tool_error` | 追加到工具结果文本，不能撤销已经发生的调用。 |
+| `extra_context` | 字符串 | `before_tool_call`、`after_tool_call`、`tool_error` | 追加到工具结果文本，不能撤销已经发生的调用。来自 `before_tool_call` 时不影响调用是否执行：调用执行后，这段文本排在 `after_tool_call` 的内容之前，钩子可以借此放行调用、同时提醒模型。被拒绝的调用不会带上它；调用参数被重新检查时（见[请你确认](#请你确认)），只保留最后一次检查的文本。 |
+| `result_override` | 字符串 | `after_tool_call`、`tool_error` | 替换模型读到的工具结果文本，不能撤销已经发生的调用。多个钩子都给出时，按执行顺序后一个覆盖前一个。带图片的结果保留图片，只替换文本；非文本结果保持不变。`extra_context` 排在替换后的文本之后。 |
 
 结果文件按以下规则读取：
 
 - 空文件或未写入结果等同于 `{"action": "allow"}`。
-- JSON 无效、顶层不是对象或文件超过 1 MiB 时，iCode 会记录警告并忽略结果，按无决定处理。
+- JSON 无效、顶层不是对象或文件超过 1 MiB 时，iCode 会记录警告并忽略结果。在 `user_prompt_submit` 和 `before_tool_call` 上，这按钩子失败处理：即使退出码为 `0`，也应用 `on_error`。
+- `action` 不是 `allow`、`block`、`modify`、`ask` 或 `warn` 时同样按钩子失败处理，写错的动作不会静默放行当前操作。丢掉的只有这个动作：结果文件里的其他字段（`reason`、`system_reminder`、`extra_context`、`result_override`）照常生效，所以写了本版本不认识的 action 的钩子，它写的其他内容都还在。
 - 未知字段会被忽略。
 
 多个钩子的决定如何组合，见[多个钩子的执行顺序与配置合并](#多个钩子的执行顺序与配置合并)。
@@ -627,6 +646,7 @@ iCode 随即暂停这次操作并询问你，显示钩子、原因，以及工�
 | --- | --- |
 | `args_override` | 立即修改工具参数。后续钩子使用修改后的参数进行匹配和检查；多个钩子修改同一参数时，后运行的钩子覆盖先运行的钩子。 |
 | `system_reminder`、`extra_context` | 按钩子的执行顺序累积。 |
+| `result_override` | 按钩子的执行顺序覆盖，后运行的钩子给出即生效。 |
 | `action: block` | 对 `user_prompt_submit` 和 `before_tool_call`，第一个拒绝决定会停止当前事件的剩余钩子，包括尚未启动的非阻塞钩子。 |
 | `action: ask` | iCode 在下一个钩子运行前询问你。你选择继续时，其余钩子接着运行；否则按拒绝处理。多个钩子都询问时，会逐个询问。 |
 

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from chrys.foundation.io.result_content import extract_result_images, extract_result_text
+from chrys.foundation.io.result_content import extract_result_attachments, extract_result_images, extract_result_text
 from chrys.kernel import Content
 
 
@@ -77,6 +77,38 @@ def test_extract_result_images_ignores_unknown_uri_without_media_type() -> None:
     unknown = Content.from_uri("https://example.com/blob")
 
     assert extract_result_images([unknown]) == []
+
+
+def test_extract_result_attachments_keeps_every_media_item() -> None:
+    image = Content.from_uri("data:image/png;base64,AAA", media_type="image/png")
+    audio = Content.from_uri("data:audio/wav;base64,AAA", media_type="audio/wav")
+    document = Content.from_uri("file:///tmp/report.pdf", media_type="application/pdf")
+
+    assert extract_result_attachments([Content.from_text("caption"), image, audio, document]) == [
+        image,
+        audio,
+        document,
+    ]
+
+
+def test_extract_result_attachments_reaches_inside_each_kind_of_result_content() -> None:
+    """Each kind keeps what it holds in its own slot: ``items``, ``outputs`` or ``output``."""
+    image = Content.from_uri("data:image/png;base64,AAA", media_type="image/png")
+
+    hosted = Content.from_hosted_tool_result("call_1", tool_name="web", items=[image])
+    search = Content.from_search_tool_result("call_1", tool_name="search", items=[image])
+    shell = Content.from_shell_tool_result(call_id="call_1", outputs=[image])
+    mcp = Content.from_mcp_server_tool_result(call_id="call_1", output=[image])
+
+    for result in (hosted, search, shell, mcp):
+        assert extract_result_attachments(result) == [image], result.type
+
+
+def test_extract_result_attachments_from_function_result_items() -> None:
+    audio = Content.from_uri("data:audio/wav;base64,AAA", media_type="audio/wav")
+    result = Content.from_function_result("call_1", result=[Content.from_text("caption"), audio])
+
+    assert extract_result_attachments(result) == [audio]
 
 
 # Same shapes again, but constructed via real Chrys ``Content`` factories —

@@ -71,6 +71,17 @@ result's identity is unambiguous.
 TOOL_ERRORED_METADATA_KEY = "errored"
 """True when the tool invocation failed outside normal tool-result semantics."""
 
+COMMITTED_ERROR_TEXT_KEY = "_chrys_committed_error_text"
+"""The error text a middleware committed in place of the exception's, for the model to read.
+
+``FunctionInvocationContext.result`` already holds the tool's own output by the
+time a later middleware runs, so a set ``result`` alone cannot tell "this
+middleware replaced the error text" from "the tool succeeded and something
+after it raised". A middleware that cleaned, redacted or withheld the error
+puts it here; the kernel's exception branch reads only this key, and an empty
+string is a replacement too (the text is withheld, not restored).
+"""
+
 TOOL_FAILED_METADATA_KEY = "failed"
 """True when a tool returned a normal, structured failure result."""
 

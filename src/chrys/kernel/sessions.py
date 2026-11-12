@@ -301,6 +301,16 @@ class ContextProvider:
             state: The provider-scoped mutable state dict for this provider.
         """
 
+    def contributed_instructions(self) -> str:
+        """The instructions this provider adds before every run, or "" when it adds none.
+
+        A provider that fixes its instruction text when it is built returns it here,
+        so a reader that needs to know what the model is told does not have to run
+        ``before_run`` — which would re-enter the session for what is only a read —
+        nor reach into the provider's private fields.
+        """
+        return ""
+
 
 class HistoryProvider(ContextProvider):
     """Load and store conversation history through configurable provider hooks.

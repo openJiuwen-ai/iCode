@@ -10,7 +10,7 @@ import copy
 import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.errors import ConfigError
@@ -165,6 +165,21 @@ def _preserved_history_state(raw: dict | None) -> dict | None:
     objects. Falsy/empty history returns ``None`` — no carryover to preserve.
     """
     return copy.deepcopy(raw) if raw else None
+
+
+SESSION_START_OPERATIONS: Final = frozenset({"startup", "new_session", "reset"})
+"""The loads that start a session, as opposed to replacing one under it.
+
+A restore is not one of them: ``session_restored`` already says the session came
+back, and firing ``session_start`` too would change what an existing hook sees
+then, including a rollback to an earlier turn. Profile switches and rebuilds are
+not either: the session was already running.
+"""
+
+
+def fires_session_start(operation: str) -> bool:
+    """Whether a load of *operation* starts a session, so its hooks fire."""
+    return operation in SESSION_START_OPERATIONS
 
 
 class AgentLoader:
@@ -557,7 +572,11 @@ class AgentLoader:
         # blocking hook still runs inline at this post-ready boundary.
         # Profile-switch/rebuild operations skip this so users don't see a
         # hook fire every time the same session reloads infrastructure.
-        if self._session.hook_manager is not None and operation in {"startup", "new_session", "reset"}:
+        # A restore does not fire it: ``session_restored`` already tells a hook
+        # the session came back, and firing this too would change what an
+        # existing ``session_start`` hook sees on a restore, including a
+        # rollback to an earlier turn.
+        if self._session.hook_manager is not None and fires_session_start(operation):
             from chrys.service.hooks.events import HookEvent
 
             await self._session.hook_manager.fire(

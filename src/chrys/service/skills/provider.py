@@ -462,6 +462,10 @@ class ChrysSkillsProvider(ContextProvider):
     # ContextProvider hook                                                #
     # ------------------------------------------------------------------ #
 
+    def contributed_instructions(self) -> str:
+        """The instructions this provider adds before every run."""
+        return self._static_instructions or ""
+
     async def before_run(
         self,
         *,

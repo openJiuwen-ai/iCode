@@ -222,17 +222,22 @@ Recognized top-level keys:
 
 | Key | Type | Honoured when | Meaning |
 |---|---|---|---|
-| `action` | `"block"` / `"modify"` / `"allow"` (default) | Blocking hooks on gated events only | Gate the action. |
+| `action` | `"block"` / `"modify"` / `"ask"` / `"warn"` / `"allow"` (default) | Blocking hooks on gated events only | Gate the action. `"ask"` puts it to the user; `"warn"` lets it through and keeps the text it carries. |
 | `reason` | string | `action: block` | Surfaced to the user (and the model for tool blocks). |
 | `args_override` | object | Blocking `before_tool_call` only | Merged over `tool.args` before the tool runs. |
 | `system_reminder` | string | Blocking `user_prompt_submit` only | Wrapped in `<system-reminder>` and appended to the next LLM call. |
-| `extra_context` | string | Blocking `after_tool_call` / `tool_error` only | Appended to the tool's result text. |
+| `extra_context` | string | Blocking `before_tool_call` / `after_tool_call` / `tool_error` | Appended to the tool's result text. From `before_tool_call` it does not change whether the call runs. |
 
 Notes:
 
 - An empty or missing result file means "no opinion" — equivalent to
   `{ "action": "allow" }`.
-- Invalid JSON logs a warning and is treated as "no opinion".
+- Invalid JSON logs a warning. On a gating event that counts as a failed hook:
+  `on_error` applies, so `on_error: block` refuses the operation. Off a gating
+  event it is still "no opinion", and so is a failed hook there.
+- An action this version does not know is a failed hook the same way, but only
+  the action is dropped: `reason`, `system_reminder`, `extra_context` and
+  `result_override` beside it still apply.
 - Unknown keys are ignored. Future Chrys versions may add new keys.
 - Async and `fire_and_forget` hooks may still write the file, but their
   decisions are **discarded** — by the time the subprocess exits, the gated

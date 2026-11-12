@@ -75,6 +75,7 @@ class HookOperation:
         "_arguments",
         "_arguments_key",
         "_checked_revision",
+        "_checks",
         "_confirmed_arguments",
         "_end_reason",
         "_ended",
@@ -117,6 +118,7 @@ class HookOperation:
         self._input_text = input_text
         self._revision = 1
         self._checked_revision: int | None = None
+        self._checks = 0
         self._confirmed_arguments: dict[str, Any] | None = None
         self._state: OperationState = "pending"
         self._end_reason = ""
@@ -131,6 +133,11 @@ class HookOperation:
     def checked_revision(self) -> int | None:
         """The version the event's hooks checked through to the end; None until they did."""
         return self._checked_revision
+
+    @property
+    def check_count(self) -> int:
+        """How many checks of this operation have started; 2 and up are re-checks of the same call."""
+        return self._checks
 
     @property
     def state(self) -> OperationState:
@@ -196,6 +203,7 @@ class HookOperation:
 
     def begin_check(self) -> None:
         """A check of the current version starts: what an earlier check passed no longer counts."""
+        self._checks += 1
         self._checked_revision = None
 
     def mark_checked(self, revision: int) -> bool:
