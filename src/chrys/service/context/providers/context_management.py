@@ -84,12 +84,17 @@ pressure completed text turns may be compressed before the current turn's
 tool calls are dropped entirely and replaced with a `[LAST_WORDS]` summary
 in a `<system-reminder>`; treat that as your progress note and continue from
 there without redoing the dropped work. This is platform-managed — if you
-need details from a compacted result, just call the tool again. If tool
+need details from a compacted result, read the file its summary names as
+`[full output: …]` when there is one, or call the tool again. If tool
 results keep getting compacted, consider delegating context-heavy subtasks
 (broad searches, multi-file analysis, batch edits) to a sub-agent if one is
 available, to preserve your own context window.
-Across turns, use `compress_context` proactively to fold completed work once
-the `[Context Usage]` line exceeds 50% or after finishing a multi-step task;
+Across turns the platform compacts on its own as well, so you rarely need to
+manage context yourself. Every fold rewrites the start of the prompt, which
+costs more than it frees when done often: use `compress_context` only after
+a large piece of work is finished, its details are no longer needed, and the
+`[Context Usage]` line is already high — and then fold once, up to the newest
+marker that fits, not in several small steps.
 `list_compressed_contexts` shows available fold markers and existing blocks,
 and `recall_context` queries a compressed block without restoring it.
 

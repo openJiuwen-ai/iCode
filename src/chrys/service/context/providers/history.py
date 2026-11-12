@@ -424,25 +424,30 @@ class CompressibleHistoryProvider(HistoryProvider):
             self._compaction_strategy.persist_exclusions_to_state(messages)
             state_rewritten_after_output |= len(messages) != previous_length
 
-        # Force-compress: if context usage still exceeds force_compress_pct
-        # after compaction, auto-compress the oldest uncompressed turn.
+        # A turn that ended above the force line books a turn-boundary pass on
+        # the strategy (history is not rewritten here); a provider without a
+        # strategy folds its oldest turn instead.
         state_rewritten_after_output = (
-            await self._check_force_compress(state, context, session.invalidated_service_session_ids)
+            await self._check_turn_end_usage(state, context, session.invalidated_service_session_ids)
             or state_rewritten_after_output
         )
         if state_rewritten_after_output:
             _refresh_pre_output_history_len_from_anchors(state, current_turn_anchors)
 
-    async def _check_force_compress(
+    async def _check_turn_end_usage(
         self,
         state: dict[str, Any],
         context: SessionContext,
         invalidated_handles: Collection[str] | None = None,
     ) -> bool:
-        """Auto-compress the oldest turn if context usage exceeds force_compress_pct.
+        """Act on a turn that ended above ``force_compress_pct``; return whether history was rewritten.
 
-        Delegates to the strategy's ``force_compress`` if available, falling
-        back to the static ``compress()`` for strategy-less providers.
+        With a strategy this only books a turn-boundary pass: the next request
+        compacts down to the target in one pass, oldest tool output first.
+        Folding one turn here instead would rewrite the prompt head after
+        nearly every turn while freeing about as much as the turn added.  A
+        strategy-less provider folds its oldest turn with the static
+        ``compress()``.
         """
         if self._max_context_tokens <= 0 or self._force_compress_pct >= 1.0:
             return False
@@ -457,7 +462,7 @@ class CompressibleHistoryProvider(HistoryProvider):
             return False
 
         # ``usage_details`` is the billable aggregate across every model call
-        # in a tool loop.  Force-compression needs the final call's input size,
+        # in a tool loop.  This check needs the final call's input size,
         # which represents the actual context occupancy.
         if not context.response or not context.response.latest_usage_details:
             return False
@@ -479,24 +484,19 @@ class CompressibleHistoryProvider(HistoryProvider):
         if pct <= self._force_compress_pct:
             return False
 
-        # Find the oldest available fold marker
+        # The turn that just ended has no marker yet, so every marker here is
+        # an older turn: the ones a turn-boundary pass may work on.
         info = self.list_compressed(state)
         markers = info.get("markers", [])
         if not markers:
             return False
 
+        if self._compaction_strategy is not None:
+            self._compaction_strategy.request_turn_boundary_pass()
+            return False
+
         marker_id = markers[0]["marker_id"]
         summary = _auto_summary(state, markers[0].get("position", 0))
-
-        if self._compaction_strategy is not None:
-            compressed_context_id = await self._compaction_strategy.force_compress(
-                marker_id,
-                summary,
-                source="auto",
-                usage_pct=pct,
-                tokens_before=input_tokens,
-            )
-            return compressed_context_id is not None
         try:
             self.compress(state, marker_id, summary)
         except ValueError:
@@ -543,7 +543,7 @@ class CompressibleHistoryProvider(HistoryProvider):
         """Compress messages from the last summary up to (inclusive) the target marker.
 
         Thin wrapper around :func:`_compress_state`.  Use the unified
-        strategy's ``queue_compression`` / ``force_compress`` for
+        strategy's ``queue_compression`` for
         tool-loop-aware compression.
 
         Returns:
@@ -601,7 +601,7 @@ class CompressibleHistoryProvider(HistoryProvider):
 
 
 # ---------------------------------------------------------------------------
-# Auto-summary for force-compress
+# Deterministic summary of a turn folded without the model
 # ---------------------------------------------------------------------------
 
 _AUTO_SUMMARY_USER_MAX = 100

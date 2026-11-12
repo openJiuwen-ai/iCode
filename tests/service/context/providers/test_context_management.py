@@ -93,6 +93,10 @@ class TestBeforeRun:
         assert "sub-agent" in text
         # Must not leak context management details to the user
         assert "silently" in text
+        # The platform compacts by itself: no usage figure tells the model to fold.
+        assert "platform compacts on its own" in text
+        assert "50%" not in text
+        assert "proactively" not in text
 
     @pytest.mark.asyncio
     async def test_injects_three_tools(self) -> None:
@@ -531,6 +535,8 @@ class TestContextManagerWiring:
 
         assert ctx.compaction_strategy.trigger_pct == ctx.budgets.trigger_pct
         assert ctx.compaction_strategy.target_pct == ctx.budgets.target_pct
+        assert ctx.compaction_strategy.satisfied_pct == ctx.budgets.satisfied_pct
+        assert ctx.compaction_strategy.force_pct == ctx.budgets.force_compress_pct
         assert ctx.history_provider._force_compress_pct == ctx.budgets.force_compress_pct
         assert ctx.usage_middleware._compaction_strategy is ctx.compaction_strategy
 
@@ -568,7 +574,7 @@ class TestContextManagerWiring:
         assert not openai_stored.use_local_context_estimate_for_hosted_usage
         assert not chat.use_local_context_estimate_for_hosted_usage
 
-    def test_internal_disable_also_disables_force_compress(self) -> None:
+    def test_internal_disable_also_disables_the_turn_end_check(self) -> None:
         from chrys.service.context.manager import ContextManager
         from chrys.service.profiles.agents.schema import CompactionConfig
 

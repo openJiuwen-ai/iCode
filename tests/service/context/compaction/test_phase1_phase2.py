@@ -199,7 +199,7 @@ def test_compact_group_does_not_build_summary_from_excluded_call(monkeypatch: py
 
 def test_compact_group_counts_only_its_summary() -> None:
     """The messages after an inserted summary keep their contents; counting them again per group was quadratic."""
-    messages = _build_single_turn(4, result_size=500)
+    messages = _build_single_turn(4, result_size=3000)
     _estimate_tokens(messages)
     counted: list[str] = []
 
@@ -215,8 +215,9 @@ def test_compact_group_counts_only_its_summary() -> None:
     assert strategy._compact_group(messages, group_id, grouped[group_id])
 
     [summary] = [message for message in messages if message.message_id.startswith("tool_summary_")]
-    assert len(counted) == 1
-    assert summary.text in counted[0]
+    # Once to weigh the saving, once for the inserted message; never a later message.
+    assert len(counted) == 2
+    assert all(summary.text in text for text in counted)
     stored = [_token_count(message) for message in messages]
     assert None not in stored
     annotate_token_counts(messages, tokenizer=MixedLanguageTokenizer(), force_retokenize=True)
@@ -254,6 +255,28 @@ def test_compact_group_never_raises_included_tokens_for_partially_excluded_group
     assert result is None
 
 
+@pytest.mark.parametrize(("result_size", "summarised"), [(600, False), (3000, True)], ids=["small", "large"])
+def test_compact_group_leaves_a_group_whose_summary_saves_little(result_size: int, summarised: bool) -> None:
+    """Each summary rewrites one more place in the prompt: a small saving costs more cache than it frees."""
+    messages = _build_tool_group("c1", "read_file", "x" * result_size)
+    before = _estimate_tokens(messages)
+    grouped = _group_messages_by_id(messages)
+    group_id = _tool_group_id_of(messages, "c1")
+    strategy = _make_strategy()
+
+    result = strategy._compact_group(messages, group_id, grouped[group_id])
+
+    saved = before - included_token_count(messages)
+    if summarised:
+        assert result == ["read_file"]
+        assert saved >= 200
+    else:
+        assert result is None
+        assert saved == 0
+        assert strategy._summary_cache == {}
+        assert not any(message.additional_properties.get(EXCLUDED_KEY, False) for message in messages)
+
+
 def test_compact_group_skips_group_already_removed_by_phase2() -> None:
     call = _assistant_tool_call("c1", "read_file", args={"path": "secret.txt"})
     narration = _assistant_text("checking secret payload")
@@ -282,8 +305,8 @@ def test_compact_group_skips_group_already_removed_by_phase2() -> None:
 
 async def test_phase2_removes_old_turn_groups():
     """Phase 2 removes old turn tool-call groups entirely when Phase 1 can't reach target."""
-    # 3 turns, small tool results so summaries barely save tokens
-    messages = _build_multi_turn(3, groups_per_turn=2, result_size=500)
+    # 3 turns whose summaries cannot reach the unreachable target on their own
+    messages = _build_multi_turn(3, groups_per_turn=2, result_size=3000)
 
     received: list[CompactionInfo] = []
     strategy = _forced_phase4(

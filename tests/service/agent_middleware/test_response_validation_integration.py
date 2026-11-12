@@ -359,7 +359,7 @@ class TestOutputTruncationCompaction:
             await ctx.send_retry()
 
             assert ctx.mock_client.call_count == 4
-            assert [event.phase for event in compacted] == ["phase1"]
+            assert [event.phase for event in compacted] == ["phase1", "phase2"]
             assert extract_final_messages(ctx.events) == ["first answer", "recovered answer"]
         finally:
             await ctx.cleanup()

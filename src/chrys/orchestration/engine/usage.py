@@ -90,7 +90,7 @@ class UsagePublisher(SessionUsagePublisher):
         self.enqueue_usage_event(self.make_usage_event())
 
     async def publish_compress(self, info: CompressInfo) -> None:
-        """Callback from ContextManagementProvider or force-compress — publish ContextCompressed event."""
+        """Callback from ContextManagementProvider or a Phase 3 fold — publish ContextCompressed event."""
         await self._bus.publish(
             ContextCompressed(
                 compressed_context_id=info.compressed_context_id,

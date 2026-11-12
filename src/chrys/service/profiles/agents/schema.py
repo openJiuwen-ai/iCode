@@ -269,15 +269,23 @@ class CompactionConfig:
     **Trigger**: compaction thresholds are derived from the active model's
     context window and maximum output-token budget, with a safety margin.
 
+    A pass runs before a request in one of three modes: usage reached the
+    trigger, the previous turn ended above the force line (a turn-boundary
+    pass, which leaves the newest completed turn alone and never runs
+    Phase 4), or the provider rejected the request as too large.  Every pass
+    aims for the derived target; a later phase starts only while usage is
+    still above the satisfied line, so a pass never does a little work on
+    every request.
+
     **Phase 1** (old turns): tool-call results from completed turns are
-    summarised oldest-turn-first (keeping call args), stopping when usage
-    drops to the derived target.
+    summarised oldest-turn-first (keeping call args and both ends of the
+    result), stopping when usage drops to the derived target.
 
     **Phase 2** (old turns): completed-turn tool-call groups are removed
     entirely oldest-first.
 
     **Phase 3** (old turns): completed text-heavy turns are auto-compressed
-    oldest-first when Phase 1/2 cannot reach the request budget because
+    oldest-first when Phase 1/2 leave usage above the satisfied line because
     there are no old tool-call groups left to trim.
 
     **Phase 4** (current turn): all current-turn tool-call + inline
@@ -292,9 +300,8 @@ class CompactionConfig:
     previous reminder + newly dropped work as a delta, so the note accumulates
     insight without re-summarising from scratch.
 
-    **Force-compress**: after a turn completes, if usage exceeds the derived
-    force threshold, the oldest uncompressed turn is auto-compressed
-    (cross-turn fold) as a safety net.
+    Phase 4 starts only when the earlier phases leave usage above the force
+    line.
     """
 
     enabled: bool = True

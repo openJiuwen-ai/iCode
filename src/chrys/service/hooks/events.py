@@ -159,7 +159,7 @@ class HookEvent(StrEnum):
     PRE_COMPACT = "pre_compact"
     """Compaction is about to fire.  Payload: base envelope plus
     ``trigger`` (``"phase1"`` | ``"phase2"`` | ``"phase3"`` |
-    ``"phase4"`` | ``"force"``), ``usage_pct``, and ``tokens_before``.
+    ``"phase4"``), ``usage_pct``, and ``tokens_before``.
     """
 
     # ── Interrupt ────────────────────────────────────────────────────

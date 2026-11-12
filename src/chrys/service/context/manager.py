@@ -105,6 +105,8 @@ class ContextManager:
             # reported against the model's real threshold.
             trigger_pct=budgets.trigger_pct,
             target_pct=budgets.target_pct,
+            satisfied_pct=budgets.satisfied_pct,
+            force_pct=budgets.force_compress_pct,
             on_compaction=on_compaction,
             on_pre_compact=on_pre_compact,
             on_compress=on_compress,

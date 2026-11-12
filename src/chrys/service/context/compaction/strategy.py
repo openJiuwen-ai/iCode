@@ -2,6 +2,13 @@
 
 """Turn-aware four-phase compaction strategy.
 
+A pass runs in one of three modes, fixed when it starts (strongest first):
+overflow recovery (the provider rejected a request as too large), a hard pass
+(the estimate reached the trigger) and a turn-boundary pass (the previous turn
+ended above the force line).  The mode decides which phases may run, when a
+pass escalates to the next one and where it stops; see
+:class:`CompactionMode`.
+
 Progressive compaction with escalating aggressiveness:
 
 **Phase 1** — Old turn tool results are summarised oldest-turn-first (keeping
@@ -38,6 +45,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -101,6 +109,43 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Strategy
 # ---------------------------------------------------------------------------
+
+
+class CompactionMode(StrEnum):
+    """Why a pass runs; the value is the trajectory run's ``trigger``.
+
+    ``OVERFLOW`` — the provider found the window full, so the local estimate
+    is too low: no escalation gate, and the stop point is scaled down by how
+    far below the trigger the estimate was.
+
+    ``HARD`` — the estimate reached the trigger.  Phase 1 always runs; Phases
+    2 and 3 start only above the satisfied line, Phase 4 only above the force
+    line; every phase that starts runs down to the target.
+
+    ``BOUNDARY`` — booked by a turn that ended above the force line, run
+    before the next request while still below the trigger.  As ``HARD``, but
+    never Phase 4 and never the newest completed turn, which the user is
+    likely following up on.
+    """
+
+    OVERFLOW = "context_overflow"
+    HARD = "usage_threshold"
+    BOUNDARY = "turn_boundary"
+
+
+@dataclass(frozen=True, slots=True)
+class _PassPlan:
+    """The thresholds one pass runs under (usage fractions of the window)."""
+
+    mode: CompactionMode
+    stop_pct: float
+    """Where every phase that started stops."""
+    escalate_pct: float
+    """Phases 2 and 3 start only above this."""
+    phase4_pct: float | None
+    """Phase 4 starts only above this; ``None`` keeps it out of the pass."""
+    protect_newest_turn: bool
+    """Leave the newest completed turn untouched in Phases 1 to 3."""
 
 
 class LastWordsGeneratorLike(Protocol):
@@ -171,7 +216,13 @@ class UnifiedContextStrategy:
        start a pass (compaction disabled, no resolvable turn) logs and records
        ``compaction.skipped`` once per stretch above the trigger.
     3. **Phase 1-4**: trim old tools, compress old text turns, then drop
-       current-turn tool work only as the final fallback.
+       current-turn tool work only as the final fallback.  The pass's
+       :class:`CompactionMode` gates each escalation.
+    4. A turn that ends above the force line books a turn-boundary pass
+       (:meth:`request_turn_boundary_pass`) instead of rewriting history
+       after the run: the next request compacts down to the target in one
+       pass, and no further one is booked until usage has been at or below
+       the satisfied line.
 
     **Compression** (agent-requested via ``compress_context`` tool):
 
@@ -183,6 +234,12 @@ class UnifiedContextStrategy:
         max_context_tokens: Maximum context window size (e.g. 200_000).
         trigger_pct: Usage fraction that triggers compaction (e.g. 0.85).
         target_pct: Usage fraction to compact down to (e.g. 0.50).
+        satisfied_pct: Usage fraction at or below which a pass stops
+            escalating and turn-boundary passes may be booked again.  Defaults
+            to a third of the way from the target to the trigger.
+        force_pct: Usage fraction above which Phase 4 may start in a hard
+            pass.  Defaults to two thirds of the way from the target to the
+            trigger.
         tokenizer: Token estimator.  Defaults to ``MixedLanguageTokenizer``.
         on_compaction: Async callback fired after compaction phases.
         on_compress: Async callback fired after compression.
@@ -196,6 +253,8 @@ class UnifiedContextStrategy:
         max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
         trigger_pct: float = 0.85,
         target_pct: float = 0.50,
+        satisfied_pct: float | None = None,
+        force_pct: float | None = None,
         tokenizer: TokenizerProtocol | None = None,
         on_compaction: Callable[[CompactionInfo], Awaitable[None]] | None = None,
         on_pre_compact: Callable[[PreCompactInfo], Awaitable[None]] | None = None,
@@ -216,9 +275,16 @@ class UnifiedContextStrategy:
                 raise ValueError("trigger_pct must be in (0.0, 1.0]")
             if not 0.0 < target_pct < trigger_pct:
                 raise ValueError("target_pct must be in (0.0, trigger_pct)")
+        span = trigger_pct - target_pct
+        satisfied_pct = target_pct + span / 3 if satisfied_pct is None else satisfied_pct
+        force_pct = target_pct + 2 * span / 3 if force_pct is None else force_pct
+        if compaction_enabled and not target_pct <= satisfied_pct <= force_pct <= trigger_pct:
+            raise ValueError("satisfied_pct and force_pct must lie in order between target_pct and trigger_pct")
         self.max_context_tokens = max_context_tokens
         self.trigger_pct = trigger_pct
         self.target_pct = target_pct
+        self.satisfied_pct = satisfied_pct
+        self.force_pct = force_pct
         self._compaction_enabled = compaction_enabled
         self._tokenizer: TokenizerProtocol = tokenizer or MixedLanguageTokenizer()
         self._on_compaction = on_compaction
@@ -236,6 +302,18 @@ class UnifiedContextStrategy:
         # only when one completes. Per instance on purpose: retry rollback
         # keeps it, and it is never persisted.
         self._context_overflow_pending = False
+        # Booked by a turn that ended above the force line; the next request
+        # runs a turn-boundary pass even below the trigger.  Its own field,
+        # never the overflow note: a pass that is cancelled or fails keeps
+        # both as they were, so the retry runs in the same mode.  Per instance
+        # and never persisted, like the overflow note.
+        self._turn_boundary_pending = False
+        # Set when a pass ended above the satisfied line: another boundary
+        # pass would free too little to be worth a rewritten prefix, so none
+        # is booked until usage is at or below that line again.
+        self._boundary_suspended = False
+        # The plan of the pass in flight; phases read it through ``_plan``.
+        self._active_plan: _PassPlan | None = None
         self._on_context_pressure = on_context_pressure
         self._spill_quota = spill_quota
         self._spill_root = spill_root
@@ -504,27 +582,6 @@ class UnifiedContextStrategy:
         """Return compressed blocks and available markers, accounting for pending compressions."""
         return self._compression.list_compressed()
 
-    async def force_compress(
-        self,
-        marker_id: str,
-        summary: str,
-        source: str = "auto",
-        *,
-        usage_pct: float = 0.0,
-        tokens_before: int = 0,
-    ) -> str | None:
-        """Execute compression immediately (for force-compress in after_run).
-
-        No tool loop is active, so ``_excluded`` flags are not needed.
-        """
-        return await self._compression.force_compress(
-            marker_id,
-            summary,
-            source,
-            usage_pct=usage_pct,
-            tokens_before=tokens_before,
-        )
-
     # ------------------------------------------------------------------
     # After-run persistence (called by CompressibleHistoryProvider.after_run)
     # ------------------------------------------------------------------
@@ -710,6 +767,38 @@ class UnifiedContextStrategy:
         limit = context_overflow_limit(exc) if exc is not None else None
         return limit is None or limit >= self.max_context_tokens
 
+    def request_turn_boundary_pass(self) -> bool:
+        """Book a turn-boundary pass for the next request; the turn just ended above the force line.
+
+        Refused while compaction is off, and while suspended: the last pass
+        ended above the satisfied line, so the trigger is the backstop until
+        usage is at or below that line again.
+        """
+        if not self._compaction_enabled or self._boundary_suspended:
+            return False
+        self._turn_boundary_pending = True
+        return True
+
+    @property
+    def _plan(self) -> _PassPlan:
+        """The plan of the pass in flight, or a hard pass's for a phase run on its own."""
+        return self._active_plan or self._plan_for(CompactionMode.HARD, self.trigger_pct)
+
+    def _plan_for(self, mode: CompactionMode, entry_usage: float) -> _PassPlan:
+        if mode is CompactionMode.OVERFLOW:
+            # The provider counted more than the estimate: assume real usage
+            # was at least at the trigger and scale the stop point to match.
+            stop = self.target_pct * min(1.0, entry_usage / self.trigger_pct)
+            return _PassPlan(mode, stop_pct=stop, escalate_pct=stop, phase4_pct=stop, protect_newest_turn=False)
+        boundary = mode is CompactionMode.BOUNDARY
+        return _PassPlan(
+            mode,
+            stop_pct=self.target_pct,
+            escalate_pct=self.satisfied_pct,
+            phase4_pct=None if boundary else self.force_pct,
+            protect_newest_turn=boundary,
+        )
+
     async def __call__(self, messages: list[Message], context: CompactionCallContext | None = None) -> bool:
         # max() folds the retained legacy ``tool_definition_tokens`` spelling:
         # external constructors of CompactionCallContext may populate only it.
@@ -727,8 +816,15 @@ class UnifiedContextStrategy:
         usage = self._usage_pct(current)
         below_trigger = usage < self.trigger_pct
         overflow_forced = self._context_overflow_pending
+        if usage <= self.satisfied_pct:
+            # Room to grow again, whatever made it (a pass, a fold the model
+            # asked for, a shorter history): boundary passes may be booked,
+            # and one already booked has nothing left to do.
+            self._boundary_suspended = False
+            self._turn_boundary_pending = False
+        boundary_booked = self._turn_boundary_pending
 
-        if below_trigger and not overflow_forced:
+        if below_trigger and not overflow_forced and not boundary_booked:
             self._reported_skip = None
             return compressions_processed
 
@@ -757,6 +853,16 @@ class UnifiedContextStrategy:
         # snapshots is safe.
         previous_count = len(resolved.spans) - 1
 
+        # Strongest mode wins, and is fixed for the pass: an overflow or a
+        # usage at the trigger lifts the boundary pass's limits.
+        if overflow_forced:
+            mode = CompactionMode.OVERFLOW
+        elif not below_trigger:
+            mode = CompactionMode.HARD
+        else:
+            mode = CompactionMode.BOUNDARY
+        self._active_plan = self._plan_for(mode, usage)
+
         run = CompactionRunTrace.open(
             next_exchange_operation_id=context.next_exchange_operation_id if context is not None else None
         )
@@ -764,10 +870,7 @@ class UnifiedContextStrategy:
         compaction_token = bind_compaction_operation(run.run_id if run is not None else None)
         try:
             if run is not None:
-                await run.started(
-                    trigger="context_overflow" if overflow_forced else "usage_threshold",
-                    tokens_before=tokens_before,
-                )
+                await run.started(trigger=mode.value, tokens_before=tokens_before)
             changed = await self._run_phase1(
                 messages,
                 previous_count=previous_count,
@@ -780,15 +883,20 @@ class UnifiedContextStrategy:
         except BaseException:
             # Interrupted (or failed) mid-pass: only this path can close the
             # run, and a started run with no terminal marker reads as one that
-            # is still going.
+            # is still going.  The overflow note and the boundary booking stay
+            # as they were, so the retry runs this pass's mode again.
             if run is not None:
                 run.finished_soon()
             raise
         finally:
             reset_compaction_operation(compaction_token)
             self._trajectory_run = None
+            self._active_plan = None
         self._finalize_pass(messages, changed, entry_tokens=current)
+        # A completed pass answers every reason at or below its own mode.
         self._context_overflow_pending = False
+        self._turn_boundary_pending = False
+        self._boundary_suspended = self._usage_pct(self._last_included_tokens) > self.satisfied_pct
         if run is not None:
             await run.finished(tokens_before=tokens_before, tokens_after=self._last_included_tokens)
         return changed or compressions_processed
@@ -887,7 +995,7 @@ class UnifiedContextStrategy:
                 compacted_count += 1
                 tool_names.extend(result)
 
-                if self._usage_pct(included_token_count(messages)) <= self.target_pct:
+                if self._usage_pct(included_token_count(messages)) <= self._plan.stop_pct:
                     break
 
         return changed, compacted_count, tool_names
@@ -901,6 +1009,9 @@ class UnifiedContextStrategy:
         tokens_before: int,
     ) -> bool:
         changed = False
+        plan = self._plan
+        if plan.protect_newest_turn:
+            previous_count = max(0, previous_count - 1)
 
         # ---- Phase 1: Summarise previous turns' tool results ----
         if previous_count:
@@ -939,7 +1050,7 @@ class UnifiedContextStrategy:
             if turn_compacted:
                 p1_turn_numbers.append(span.absolute_number)
 
-            if self._usage_pct(included_token_count(messages)) <= self.target_pct:
+            if self._usage_pct(included_token_count(messages)) <= plan.stop_pct:
                 break
 
         if p1_count > 0:
@@ -963,12 +1074,16 @@ class UnifiedContextStrategy:
         p2_count = 0
         p2_tool_names: list[str] = []
         p2_turn_numbers: list[int] = []
+        plan = self._plan
 
-        if self._usage_pct(included_token_count(messages)) > self.target_pct:
+        # Escalate only above the plan's gate: once an earlier phase left
+        # enough room, removing the calls themselves buys little.
+        if self._usage_pct(included_token_count(messages)) > plan.escalate_pct:
             p2_tokens_before = included_token_count(messages)
             # Re-resolve at phase entry — Phase 1 insertions may have shifted indices
             resolved = _resolve_turns(messages, self._state)
-            if len(resolved.spans) > 1:
+            previous_spans = resolved.previous[:-1] if plan.protect_newest_turn else resolved.previous
+            if previous_spans:
                 await self._fire_pre_compact(
                     "phase2",
                     usage_pct=self._usage_pct(p2_tokens_before),
@@ -979,7 +1094,7 @@ class UnifiedContextStrategy:
 
                 # _remove_group does not insert messages, so the phase-entry
                 # spans stay valid across iterations.
-                for span in resolved.previous:
+                for span in previous_spans:
                     grouped = _group_messages_by_id(messages)
                     starts = _group_start_indices(messages)
                     # Use _any_ variant: Phase 1 already excluded originals,
@@ -1000,7 +1115,7 @@ class UnifiedContextStrategy:
                     if turn_removed:
                         p2_turn_numbers.append(span.absolute_number)
 
-                    if self._usage_pct(included_token_count(messages)) <= self.target_pct:
+                    if self._usage_pct(included_token_count(messages)) <= plan.stop_pct:
                         break
 
             if p2_count > 0:
@@ -1028,8 +1143,9 @@ class UnifiedContextStrategy:
         # Fold completed turns by marker here, before Phase 4 considers
         # dropping current-turn tool work.
         p3_count = 0
-        if self._usage_pct(included_token_count(messages)) > self.target_pct:
-            while self._usage_pct(included_token_count(messages)) > self.target_pct:
+        plan = self._plan
+        if self._usage_pct(included_token_count(messages)) > plan.escalate_pct:
+            while self._usage_pct(included_token_count(messages)) > plan.stop_pct:
                 p3_tokens_before = included_token_count(messages)
                 progressed, compressed = await self._emergency_compress_oldest_turn(
                     messages,
@@ -1083,6 +1199,7 @@ class UnifiedContextStrategy:
             messages,
             usage_pct=usage_pct,
             tokens_before=tokens_before,
+            protect_newest_turn=self._plan.protect_newest_turn,
         )
 
     def _reinject_compressed_context_summaries(self, messages: list[Message]) -> None:

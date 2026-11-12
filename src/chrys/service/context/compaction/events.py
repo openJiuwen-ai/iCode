@@ -65,7 +65,7 @@ class PreCompactInfo:
     """Details about a compaction phase before it mutates context."""
 
     trigger: str
-    """Which phase is about to run: ``"phase1"`` to ``"phase4"``, or ``"force"``."""
+    """Which phase is about to run: ``"phase1"`` to ``"phase4"``."""
 
     usage_pct: float
     """Estimated context usage fraction at the phase boundary."""

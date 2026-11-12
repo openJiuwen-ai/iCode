@@ -220,7 +220,11 @@ class CurrentTurnDropRound:
         p4_last_words_generated = False
         p4_tokens_before = included_token_count(messages)
 
-        if self._strategy._usage_pct(p4_tokens_before) > self._strategy.target_pct:
+        # The pass's plan decides whether dropping current-turn work is on the
+        # table at all: never in a turn-boundary pass, and in a hard pass only
+        # while usage is still above the force line.
+        phase4_pct = self._strategy._plan.phase4_pct
+        if phase4_pct is not None and self._strategy._usage_pct(p4_tokens_before) > phase4_pct:
             # Resolve fresh at this call site against the post-P3 lists.
             resolved = _resolve_turns(messages, self._strategy._state)
             current_span = resolved.current

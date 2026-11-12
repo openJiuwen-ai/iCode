@@ -488,6 +488,8 @@ async def test_p3_clamp_skips_interior_marker_protects_current_work(status_kind:
         max_context_tokens=total + 100,
         trigger_pct=0.85,
         target_pct=0.01,  # unreachable: forces P3 to attempt every marker
+        satisfied_pct=0.01,
+        force_pct=0.01,
         on_compress=_async_appender(compressed_events),
     )
     strategy.bind_state(state)

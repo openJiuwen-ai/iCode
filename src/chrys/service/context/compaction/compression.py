@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
-from chrys.foundation.trajectory.envelope import MeasurementSource
 from chrys.kernel import EXCLUDED_KEY, Message, set_excluded
 from chrys.kernel.compaction import _token_count, included_token_count
 from chrys.kernel.identity import WeakIdentityRegistry
@@ -383,52 +382,18 @@ class CompressionEngine:
         self._pending_compressions.clear()
         return any_processed
 
-    async def force_compress(
-        self,
-        marker_id: str,
-        summary: str,
-        source: str = "auto",
-        *,
-        usage_pct: float = 0.0,
-        tokens_before: int = 0,
-    ) -> str | None:
-        """Execute a fold after-run without wire exclusion or invalidation."""
-        if self._state is None:
-            return None
-
-        try:
-            await self._strategy._fire_pre_compact("force", usage_pct=usage_pct, tokens_before=tokens_before)
-            ctx_id, fold_range = self.execute_fold(marker_id, summary)
-        except ValueError:
-            return None
-        # ``tokens_before`` is the provider-reported occupancy that tripped
-        # the force threshold; the fold's own size is the local estimate.
-        await self._strategy._notify_compress(
-            CompressInfo(
-                compressed_context_id=ctx_id,
-                summary=summary,
-                freed_messages=len(fold_range),
-                turn_range=_compressed_turn_range(self._state, ctx_id),
-                source=source,
-            ),
-            trigger="force",
-            tokens_before=tokens_before,
-            tokens_after=max(0, tokens_before - _fold_tokens(fold_range)),
-            token_source=MeasurementSource.PROVIDER,
-        )
-        self._record_published_fold(ctx_id)
-        return ctx_id
-
     async def emergency_compress_oldest_turn(
         self,
         messages: list[Message],
         *,
         usage_pct: float,
         tokens_before: int,
+        protect_newest_turn: bool = False,
     ) -> tuple[bool, bool]:
-        """Fold the oldest eligible completed turn into a visible summary.
+        """Fold the oldest eligible completed turn into a visible summary (Phase 3).
 
-        This is the Phase 3 pre-request counterpart to ``force_compress``.
+        With *protect_newest_turn* the newest completed turn's marker is never
+        the fold point, so that turn stays as it is.
 
         Returns ``(progressed, compressed)``.  Empty markers can be consumed
         without creating a summary, so ``progressed`` may be true while
@@ -464,6 +429,17 @@ class CompressionEngine:
         current_span = resolved.current
         state_boundary = current_span.state_boundary if current_span is not None else None
 
+        protected_marker_id: str | None = None
+        if protect_newest_turn:
+            completed = [
+                candidate
+                for candidate in markers
+                if state_boundary is None
+                or (isinstance(position := candidate.get("position"), int) and position < state_boundary)
+            ]
+            if completed:
+                protected_marker_id = completed[-1].get("marker_id")
+
         marker: dict[str, Any] | None = None
         marker_id = ""
         marker_position = 0
@@ -479,6 +455,8 @@ class CompressionEngine:
             if state_boundary is not None and candidate_position >= state_boundary:
                 # Folding up to this marker would swallow the current real
                 # turn's work (fold ranges are inclusive of the marker).
+                continue
+            if protected_marker_id is not None and candidate_id == protected_marker_id:
                 continue
 
             fold_range = self._state_fold_range(candidate_position)

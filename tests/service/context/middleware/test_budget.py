@@ -785,6 +785,14 @@ def test_context_usage_warning_starts_at_the_threshold() -> None:
     assert warns(501)
 
 
+def test_context_usage_warning_reports_the_state_without_telling_the_model_to_fold() -> None:
+    """An instruction to fold makes an obedient model rewrite the prompt head while nothing is short."""
+    from chrys.service.agent_middleware.reminders.context_usage import CONTEXT_USAGE_WARNING
+
+    assert "no action is needed" in CONTEXT_USAGE_WARNING
+    assert "you may fold" in CONTEXT_USAGE_WARNING
+
+
 def test_sub_agent_tip_lists_sub_agents_only_when_available() -> None:
     from chrys.service.agent_middleware.reminders.sub_agents import SubAgentsSource
 

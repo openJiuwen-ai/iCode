@@ -480,7 +480,7 @@ async def test_real_phase4_emission_closes_analytics_fan_in(tmp_path: Path) -> N
     # request necessarily reaches Phase 4 and drops the just-finished result
     # before the successor revision is recorded.
     strategy.trigger_pct = 0.0
-    strategy.target_pct = 0.0
+    strategy.target_pct = strategy.satisfied_pct = strategy.force_pct = 0.0
 
     await ctx.send_message("hello")
     session_dir = await _finish(ctx)

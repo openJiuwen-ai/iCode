@@ -18,12 +18,17 @@ if TYPE_CHECKING:
 
 
 CONTEXT_USAGE_WARNING = (
-    "[Context Usage] WARNING: Context usage is high. Use `list_compressed_contexts` to see "
-    "available fold markers, then `compress_context` with a marker_id to "
-    "compress older turns into a summary. Use `recall_context` to query "
-    "compressed blocks if you need specific details later."
+    "[Context Usage] WARNING: Context usage is high. The platform compacts older content "
+    "on its own, so no action is needed. If a large piece of finished work no longer needs "
+    "its details, you may fold it with one `compress_context` call up to the newest marker "
+    "that fits (`list_compressed_contexts` lists them); `recall_context` queries a "
+    "compressed block later."
 )
-"""Sent once when context usage reaches the warning threshold."""
+"""Sent once when context usage reaches the warning threshold.
+
+It reports the state and leaves the decision with the model: telling it to fold
+now makes an obedient model rewrite the prompt head while nothing is short.
+"""
 
 
 def context_usage_percent(usage: Mapping[str, Any], *, max_context_tokens: int) -> float:

@@ -480,7 +480,7 @@ async def test_retry_after_restored_first_turn_compacts_its_tool_work(
     # Only a current turn exists, so an unreachable target leaves Phase 4 as
     # the one phase that can act.
     strategy.trigger_pct = 0.00001
-    strategy.target_pct = 0.000005
+    strategy.target_pct = strategy.satisfied_pct = strategy.force_pct = 0.000005
 
     events.clear()
     await bus.publish(UserRetry())
@@ -692,7 +692,7 @@ async def test_stored_retry_preserves_published_auto_phase3_fold(
     # The first turn completed under normal thresholds. Force Phase 3 only
     # for the next request's first wire build, where the transient lands.
     strategy.trigger_pct = 0.00001
-    strategy.target_pct = 0.000005
+    strategy.target_pct = strategy.satisfied_pct = strategy.force_pct = 0.000005
     events.clear()
 
     second_input = "second turn"

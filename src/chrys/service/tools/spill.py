@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import stat
 from collections.abc import Callable, Sequence
 from contextlib import suppress
@@ -87,6 +88,22 @@ def format_spill_notice(path: Path, text: str, *, kept_only: bool = False) -> st
         f"[{saved} saved to: {surrogate_safe_text(str(path))}\n"
         f"{line_count} lines, ~{token_count} tokens. Use read_file or shell tools to inspect it.]"
     )
+
+
+_SPILL_NOTICE_PATTERN = re.compile(r"\[(?:Full|Kept) output saved to: (?P<path>[^\n]+)\n[^\n\]]*\]")
+
+
+def split_spill_notice(text: str) -> tuple[str, str | None]:
+    """Split a bounded result into its text without the spill notice and the spill path, if it has one.
+
+    Inverse of :func:`format_spill_notice`, for callers that shorten a result
+    further and must keep the pointer to the full output.
+    """
+    matches = list(_SPILL_NOTICE_PATTERN.finditer(text))
+    if not matches:
+        return text, None
+    match = matches[-1]
+    return (text[: match.start()] + text[match.end() :]).rstrip(), match.group("path")
 
 
 def _spill_fit_marker(text: str) -> str:
