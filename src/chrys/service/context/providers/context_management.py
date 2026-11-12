@@ -140,14 +140,15 @@ def context_instructions(*, automatic_compaction: bool) -> str:
     return _INSTRUCTIONS.format(compaction=_AUTOMATIC_COMPACTION if automatic_compaction else _MANUAL_COMPACTION)
 
 
-def _format_messages_as_text(messages: list[Any]) -> str:
+def _format_messages_as_text(messages: list[Any], session_dir: Path | None = None) -> str:
     """Format a list of Message objects as human-readable text for recall context.
 
     A user message that carried a progress note is followed by the note as
     it was sent, todo list and dropped-call manifest included: the note is
     recorded in the message's properties, not its contents, and is all that
-    tells what the tool calls dropped from that turn did.  Other reminders
-    (environment, catalogs) are left out.
+    tells what the tool calls dropped from that turn did.  The manifest
+    names the records under *session_dir*, the session's own copies.  Other
+    reminders (environment, catalogs) are left out.
     """
     parts: list[str] = []
     for msg in messages:
@@ -156,7 +157,7 @@ def _format_messages_as_text(messages: list[Any]) -> str:
             parts.append(f"[{msg.role}]: {''.join(text_parts)}")
         record = read_last_words_record(msg.additional_properties) if msg.role == "user" else None
         if record is not None:
-            parts.append(f"[progress note of this turn]: {record.text}")
+            parts.append(f"[progress note of this turn]: {record.text_in(session_dir)}")
     return "\n".join(parts)
 
 
@@ -467,7 +468,7 @@ class ContextManagementProvider(ContextProvider):
                 details={"compressed_context_id": compressed_context_id},
             )
 
-        context_text = _format_messages_as_text(block.messages)
+        context_text = _format_messages_as_text(block.messages, self._session_dir)
         if not context_text:
             return tool_error(
                 "compressed_context_empty",

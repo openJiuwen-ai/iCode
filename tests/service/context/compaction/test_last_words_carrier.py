@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -266,6 +267,39 @@ async def test_a_reloaded_session_sends_the_carrier_byte_for_byte(
     assert _TODO in _note_blocks(after[0])[0]
     assert "--- Dropped this turn (records under " in _note_blocks(after[0])[0]
     assert [message.role for message in after] == ["user", "assistant", "tool", "assistant", "user"]
+
+
+async def test_a_copy_of_the_session_sends_the_note_with_its_own_copy_of_the_records(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A fork copies the records and the recorded note alike; the note it sends names the copies it owns."""
+    parent_root, fork_root = tmp_path / "parent", tmp_path / "fork"
+    parent_root.mkdir()
+    opener = _user("Refactor the parser")
+    parent = _Session(monkeypatch, parent_root, [opener, *_work(0)])
+    parent.middleware.prepare_turn()
+    during = await parent.request()
+    parent.history.append(_assistant_text("The parser is refactored."))
+    record = read_last_words_record(opener.additional_properties)
+    assert record is not None
+    assert record.records_dir
+    parent_records = (parent_root / record.records_dir).absolute().as_posix()
+    assert f"(records under {parent_records}/)" in _note_blocks(during[0])[0]
+
+    shutil.copytree(parent_root, fork_root)
+    forked_history = deserialize_state(serialize_state({"messages": parent.history}))["messages"]
+    fork = _Session(monkeypatch, fork_root, [*forked_history, _user("Now the lexer")])
+    fork.middleware.prepare_turn()
+    after = await fork.request()
+
+    fork_records = (fork_root / record.records_dir).absolute().as_posix()
+    assert _note_blocks(after[0]) == [_note_blocks(during[0])[0].replace(parent_records, fork_records)]
+    assert parent_root.as_posix() not in "".join(_texts(after[0]))
+    assert list((fork_root / record.records_dir).iterdir())
+    # The parent goes on sending what it sent.
+    parent.history.append(_user("Now the lexer"))
+    parent.middleware.prepare_turn()
+    assert _note_blocks((await parent.request())[0]) == _note_blocks(during[0])
 
 
 async def test_a_rolled_back_attempt_takes_its_note_and_its_drop_back_together(

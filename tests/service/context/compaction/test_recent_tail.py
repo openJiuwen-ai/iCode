@@ -136,6 +136,7 @@ async def test_a_drop_that_would_free_under_five_points_starts_no_round() -> Non
 async def test_an_overflow_pass_drops_even_what_would_free_under_five_points() -> None:
     """The provider refused the request: a little room may be all the resend needs."""
     generator = StubLastWordsGenerator(text="[note]")
+    reminder = StubReminderMiddleware()
     messages = [_user("Refactor the parser"), *_build_tool_group("call_0", "read_file", "word " * _GROUP_WORDS)]
     window = 80_000
     # All the tool work of the turn is under five points of the window.
@@ -143,6 +144,7 @@ async def test_an_overflow_pass_drops_even_what_would_free_under_five_points() -
     strategy = _make_strategy(
         max_context_tokens=window,
         last_words_generator=generator,
+        reminder_middleware=reminder,
         trigger_pct=0.90,
         target_pct=0.20,
         satisfied_pct=0.60,
@@ -154,6 +156,34 @@ async def test_an_overflow_pass_drops_even_what_would_free_under_five_points() -
 
     assert len(generator.calls) == 1
     assert _dropped_calls(messages) == ["call_0"]
+    # A round the pass was allowed to run for little is not a failed one: two
+    # of them must not leave the turn without the drop its next overflow needs.
+    assert reminder.last_words.get_drop_round_breaker() == DropRoundBreakerState(attempts=1)
+
+
+async def test_an_overflow_drop_that_frees_little_still_ends_a_run_of_failed_rounds() -> None:
+    """A failed round, a committed drop, a failed round: the two failures are not in a row."""
+    reminder = StubReminderMiddleware()
+    reminder.last_words.set_drop_round_breaker(DropRoundBreakerState(attempts=1, consecutive_no_progress=1))
+    messages = [_user("Refactor the parser"), *_build_tool_group("call_0", "read_file", "word " * _GROUP_WORDS)]
+    window = 80_000
+    assert _estimate_tokens(messages) < 0.05 * window
+    strategy = _make_strategy(
+        max_context_tokens=window,
+        last_words_generator=StubLastWordsGenerator(text="[note]"),
+        reminder_middleware=reminder,
+        trigger_pct=0.90,
+        target_pct=0.20,
+        satisfied_pct=0.60,
+        force_pct=0.70,
+    )
+    assert strategy.note_context_overflow()
+
+    assert await strategy(messages)
+
+    assert _dropped_calls(messages) == ["call_0"]
+    breaker = reminder.last_words.get_drop_round_breaker()
+    assert (breaker.attempts, breaker.consecutive_no_progress, breaker.disabled) == (2, 0, False)
 
 
 async def test_an_overflow_pass_gives_up_kept_work_until_the_stop_point() -> None:
@@ -173,6 +203,29 @@ async def test_an_overflow_pass_gives_up_kept_work_until_the_stop_point() -> Non
     assert strategy._usage_pct(strategy.last_included_tokens) <= stop
     # The two groups the allowance holds would have left the pass above it.
     assert strategy._usage_pct(2 * _GROUP_TOKENS) > stop
+
+
+async def test_an_overflow_pass_makes_room_for_the_note_it_writes_too() -> None:
+    """The stop point is for the request that goes out, and the note goes out with it."""
+    note = "progress " * (_GROUP_WORDS // 2)
+    messages = _turn(6)
+    strategy = _strategy(
+        _window_keeping(2.5),
+        last_words_generator=StubLastWordsGenerator(text=note),
+        trigger_pct=0.90,
+        target_pct=0.20,
+        satisfied_pct=0.60,
+        force_pct=0.70,
+    )
+    stop = 0.20 * strategy._usage_pct(_estimate_tokens(messages)) / 0.90
+    note_tokens = strategy.tokenizer.count_tokens(note)
+    # The one group a short note leaves (the test above) no longer fits beside this one.
+    assert strategy._usage_pct(_GROUP_TOKENS) < stop < strategy._usage_pct(_GROUP_TOKENS + note_tokens)
+    assert strategy.note_context_overflow()
+
+    assert await strategy(messages)
+
+    assert _dropped_calls(messages) == [f"call_{index}" for index in range(6)]
 
 
 async def test_the_same_turn_in_a_hard_pass_keeps_what_the_overflow_pass_gave_up() -> None:

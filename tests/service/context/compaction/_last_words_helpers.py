@@ -186,6 +186,7 @@ async def generate(
     degraded_opener: bool = False,
     completer=None,  # type: ignore[no-untyped-def]
     spend_side_call_tokens=None,  # type: ignore[no-untyped-def]
+    affords_side_call_tokens=None,  # type: ignore[no-untyped-def]
     entry_messages: list[Message] | None = None,
 ):
     """Build a compact scoped timeline for generator-focused tests."""
@@ -213,5 +214,6 @@ async def generate(
         has_continuation_nudges=has_continuation_nudges,
         completer=completer,
         spend_side_call_tokens=spend_side_call_tokens,
+        affords_side_call_tokens=affords_side_call_tokens,
         entry_messages=entry_messages,
     )

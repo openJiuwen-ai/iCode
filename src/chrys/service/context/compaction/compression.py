@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
-from chrys.kernel import EXCLUDED_KEY, Message, set_excluded
+from chrys.kernel import EXCLUDED_KEY, Message, annotate_token_counts, set_excluded
 from chrys.kernel.compaction import _token_count, included_token_count
 from chrys.kernel.identity import WeakIdentityRegistry
 from chrys.service.context.providers.archive_index import merge_fold_summaries, project_archive
@@ -308,6 +308,10 @@ class CompressionEngine:
                     )
                 except ValueError:
                     continue
+                # Both figures of the fold's event are counts of this list,
+                # like every phase's: the newest messages get theirs first.
+                annotate_token_counts(messages, tokenizer=self._strategy.tokenizer)
+                tokens_before = included_token_count(messages)
                 self._record_pre_output_history_len()
                 fold_summary_ids = _fold_summary_ids(fold_range)
                 insertion_index = self.exclude_wire_matches(
@@ -326,12 +330,15 @@ class CompressionEngine:
                 )
                 # The state-side fold range is re-flagged even when absent
                 # from the wire projection.
-                freed_tokens = _fold_tokens(fold_range)
                 for message in fold_range:
                     set_excluded(message, excluded=True, reason=_REASON_COMPRESSION)
                 self._ledger.invalidate_for_fold(fold_range)
+                self._strategy._note_prefix_rewrite(head=True)
                 compressions_processed = True
-                tokens_before = self._strategy.last_included_tokens
+                # Before the fold is reported: what the merge moves into the
+                # index is part of what this fold freed.
+                self._merge_archive(messages)
+                annotate_token_counts(messages, tokenizer=self._strategy.tokenizer)
                 await self._strategy._notify_compress(
                     CompressInfo(
                         compressed_context_id=pending.compressed_context_id,
@@ -342,12 +349,10 @@ class CompressionEngine:
                     ),
                     trigger="agent_request",
                     tokens_before=tokens_before,
-                    tokens_after=max(0, tokens_before - freed_tokens),
+                    tokens_after=included_token_count(messages),
                 )
                 self._record_published_fold(pending.compressed_context_id)
             self._pending_compressions.clear()
-            if compressions_processed:
-                self._merge_archive(messages)
 
         return compressions_processed
 
@@ -368,6 +373,9 @@ class CompressionEngine:
                 continue
             any_processed = True
             self._ledger.invalidate_for_fold(fold_range)
+            self._strategy._note_prefix_rewrite(head=True, before_next_request=True)
+            # No request list to count here: the last request's count, less
+            # what the same tokenizer counted for the folded messages.
             tokens_before = self._strategy.last_included_tokens
             await self._strategy._notify_compress(
                 CompressInfo(
@@ -514,6 +522,7 @@ class CompressionEngine:
 
         self._ledger.invalidate_for_fold(fold_range)
         self._merge_archive(messages)
+        self._strategy._note_prefix_rewrite(head=True)
 
         await self._strategy._notify_compress(
             CompressInfo(

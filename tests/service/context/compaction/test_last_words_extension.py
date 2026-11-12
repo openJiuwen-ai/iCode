@@ -35,7 +35,7 @@ from tests.service.context.compaction._last_words_helpers import (
     structured_note,
     user,
 )
-from tests.support.phase4_stubs import StubLastWordsGenerator
+from tests.support.phase4_stubs import StubLastWordsGenerator, StubReminderMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -206,6 +206,47 @@ async def test_an_extension_is_charged_its_whole_request_and_a_refused_one_is_ne
     assert [call["keep_tool_choice"] for call in completer.calls] == [False]
     assert len(asked) == 2
     assert asked[0] > asked[1]
+
+
+async def test_an_extension_the_budget_cannot_take_leaves_the_slice_its_budget(tmp_path: Path) -> None:
+    """The real breaker charges what it refuses: an extension asked for and refused would starve the slice."""
+    entry = _entry_request()
+    sizes: list[int] = []
+
+    def _measure(tokens: int) -> bool:
+        sizes.append(tokens)
+        return len(sizes) > 1
+
+    await generate(
+        make_generator(tmp_path),
+        user_request=_OPENER,
+        previous_last_words=None,
+        dropped_messages=_current_task_work(entry),
+        completer=FakeCompleter([structured_note()]),
+        spend_side_call_tokens=_measure,
+        entry_messages=entry,
+    )
+    extension_tokens, slice_tokens = sizes
+    assert slice_tokens < extension_tokens
+    reminder = StubReminderMiddleware()
+    # Room for the slice, and for the extension alone not quite.
+    strategy = _make_strategy(reminder_middleware=reminder, phase4_side_call_token_budget=extension_tokens)
+    completer = FakeCompleter([structured_note()])
+
+    note = await generate(
+        make_generator(tmp_path),
+        user_request=_OPENER,
+        previous_last_words=None,
+        dropped_messages=_current_task_work(entry),
+        completer=completer,
+        spend_side_call_tokens=strategy._breaker.spend_side_call_tokens,
+        affords_side_call_tokens=strategy._breaker.affords_side_call_tokens,
+        entry_messages=entry,
+    )
+
+    assert note
+    assert [call["keep_tool_choice"] for call in completer.calls] == [False]
+    assert reminder.last_words.get_drop_round_breaker().side_call_tokens == slice_tokens
 
 
 async def test_a_task_resumed_without_its_request_is_never_asked_for_as_an_extension(tmp_path: Path) -> None:

@@ -52,8 +52,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from chrys.foundation.errors import context_overflow_limit, iter_explicit_graph
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
-from chrys.foundation.trajectory.context import current_trajectory
-from chrys.foundation.trajectory.event_types import CompactionSkipReason
+from chrys.foundation.trajectory.context import ExchangeTrace, current_trajectory
+from chrys.foundation.trajectory.event_types import CompactionSkipReason, PromptCacheMissCause
 from chrys.kernel import (
     Message,
     annotate_message_groups,
@@ -64,14 +64,16 @@ from chrys.kernel import (
 )
 from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
 from chrys.service.trajectory.compaction import (
-    TOKEN_MEASUREMENT_SOURCE,
     CompactionRunTrace,
     bind_compaction_operation,
     record_compaction_skipped,
+    record_compaction_thrash,
+    record_prompt_cache_miss,
     reset_compaction_operation,
 )
 
 from .breaker import DropBreakerController
+from .cache_telemetry import THRASH_WINDOW_TURNS, PromptCacheTelemetry
 from .calibration import TokenCalibration
 from .compression import CompressionEngine
 from .current_turn_drop import CurrentTurnDropRound
@@ -169,6 +171,7 @@ class LastWordsGeneratorLike(Protocol):
         request_overhead_tokens: int = 0,
         calibration_ratio: float = 1.0,
         spend_side_call_tokens: Callable[[int], bool] | None = None,
+        affords_side_call_tokens: Callable[[int], bool] | None = None,
         entry_messages: Sequence[Message] | None = None,
     ) -> str: ...
 
@@ -345,6 +348,7 @@ class UnifiedContextStrategy:
         # holds only weak references to tasks.
         self._detached_deliveries: set[asyncio.Future] = set()
         self._calibration = TokenCalibration(self)
+        self._cache_telemetry = PromptCacheTelemetry()
         self._exclusions = ExclusionLedger()
         self._compression = CompressionEngine(self, self._exclusions)
         self._breaker = DropBreakerController(self)
@@ -522,7 +526,6 @@ class UnifiedContextStrategy:
         trigger: str,
         tokens_before: int,
         tokens_after: int,
-        token_source: str = TOKEN_MEASUREMENT_SOURCE,
     ) -> None:
         """Record a cross-turn fold on the trajectory, then deliver the UI callback.
 
@@ -549,7 +552,6 @@ class UnifiedContextStrategy:
                 messages_freed=info.freed_messages,
                 tokens_before=tokens_before,
                 tokens_after=tokens_after,
-                token_source=token_source,
             )
         if self._on_compress is not None:
             await self._on_compress(info)
@@ -708,6 +710,69 @@ class UnifiedContextStrategy:
         local = local_included if local_included > 0 else self._last_included_tokens
         self._calibration.calibrate(api_input_tokens, local_included=local)
 
+    def observe_response_usage(
+        self, *, input_tokens: int, cache_read_tokens: int, exchange: ExchangeTrace | None = None
+    ) -> None:
+        """Judge a response's cache read against the request before it and report a miss.
+
+        Called with the provider's own counts for every response of the
+        conversation this strategy compacts, and with the *exchange* that
+        produced them, which the miss is recorded under.  A miss right after
+        a compaction is that compaction's price; one after a long pause is
+        the cache expiring; any other is unexplained, and is logged as a
+        warning.
+        """
+        miss = self._cache_telemetry.observe_response(input_tokens=input_tokens, cache_read_tokens=cache_read_tokens)
+        if miss is None:
+            return
+        _log.log(
+            logging.WARNING if miss.cause == PromptCacheMissCause.UNKNOWN else logging.INFO,
+            "Prompt cache miss: cause=%s, missed_tokens=%d, input_tokens=%d, previous_input_tokens=%d, "
+            "cache_read_tokens=%d",
+            miss.cause,
+            miss.missed_tokens,
+            miss.input_tokens,
+            miss.previous_input_tokens,
+            miss.cache_read_tokens,
+        )
+        record_prompt_cache_miss(
+            cause=miss.cause,
+            missed_tokens=miss.missed_tokens,
+            input_tokens=miss.input_tokens,
+            previous_input_tokens=miss.previous_input_tokens,
+            cache_read_tokens=miss.cache_read_tokens,
+            exchange=exchange,
+        )
+
+    def _note_prefix_rewrite(self, *, head: bool, before_next_request: bool = False) -> None:
+        """Tell the cache telemetry the next request's prefix changed, and report thrash.
+
+        Called where the change lands, before anything the caller awaits: the
+        notifications that follow a change can be cancelled, and the change
+        stays.  *head* is a rewrite of what precedes the current turn (phases
+        1 to 3 and folds).  A current-turn drop rewrites only that turn's own
+        tail, as a long task has to now and then, and is not counted as
+        thrash.  *before_next_request* is a rewrite made outside a request's
+        preparation (a fold after the run).
+        """
+        state = self._state
+        completed_turns = state.get("turn_counter") if state is not None else None
+        turns = self._cache_telemetry.note_rewrite(
+            head=head,
+            turn=completed_turns if isinstance(completed_turns, int) else None,
+            before_next_request=before_next_request,
+        )
+        if turns is None:
+            return
+        _log.warning(
+            "Compaction thrash: the head of the request was rewritten %d times within %d turns (after turns %s); "
+            "each rewrite makes the provider read the whole context again at full price",
+            len(turns),
+            THRASH_WINDOW_TURNS,
+            ", ".join(str(turn) for turn in turns),
+        )
+        record_compaction_thrash(rewrites=len(turns), window_turns=THRASH_WINDOW_TURNS, turn_numbers=turns)
+
     @property
     def calibration_ratio(self) -> float:
         """Tokenizer accuracy ratio (should be close to 1.0).
@@ -820,6 +885,15 @@ class UnifiedContextStrategy:
         )
 
     async def __call__(self, messages: list[Message], context: CompactionCallContext | None = None) -> bool:
+        self._cache_telemetry.begin_request()
+        try:
+            return await self._compact(messages, context)
+        finally:
+            # Also when the pass was interrupted: what it changed stays, and
+            # the next request is another one.
+            self._cache_telemetry.request_prepared()
+
+    async def _compact(self, messages: list[Message], context: CompactionCallContext | None) -> bool:
         # max() folds the retained legacy ``tool_definition_tokens`` spelling:
         # external constructors of CompactionCallContext may populate only it.
         self._request_overhead_floor = (
@@ -863,7 +937,6 @@ class UnifiedContextStrategy:
             else:
                 self._report_skip(CompactionSkipReason.TURNS_UNRESOLVED, current)
             return compressions_processed
-        self._reported_skip = None
 
         # Only REAL previous turns are eligible for P1/P2 mechanical
         # truncation — mid-turn user messages (injections, nudges) no longer
@@ -891,6 +964,7 @@ class UnifiedContextStrategy:
         )
         self._trajectory_run = run
         compaction_token = bind_compaction_operation(run.run_id if run is not None else None)
+        changed = False
         try:
             if run is not None:
                 await run.started(trigger=mode.value, tokens_before=tokens_before)
@@ -916,6 +990,11 @@ class UnifiedContextStrategy:
             self._trajectory_run = None
             self._active_plan = None
             self._entry_request = None
+        if not changed and mode is not CompactionMode.BOUNDARY:
+            # The request still needs the room the pass was run for.
+            self._report_skip(CompactionSkipReason.NOTHING_FREED, current)
+        else:
+            self._reported_skip = None
         self._finalize_pass(messages, changed, entry_tokens=current)
         # A completed pass answers every reason at or below its own mode.
         self._context_overflow_pending = False
@@ -959,7 +1038,7 @@ class UnifiedContextStrategy:
         return tuple(views)
 
     def _report_skip(self, reason_code: str, included: int) -> None:
-        """Say why usage past the trigger started no pass, once per stretch above it."""
+        """Say why a request that needed room got none, once per stretch of such requests."""
         # Per session too: a restore that keeps this strategy starts a
         # session whose trajectory has not been told yet.
         trajectory = current_trajectory()
@@ -973,7 +1052,9 @@ class UnifiedContextStrategy:
         trigger_tokens = round(self.trigger_pct * self.max_context_tokens)
         _log.log(
             logging.INFO if reason_code == CompactionSkipReason.DISABLED else logging.WARNING,
-            "Compaction skipped past its trigger: reason=%s, estimated_input_tokens=%d, trigger_tokens=%d, "
+            "Compaction freed nothing: reason=%s, estimated_input_tokens=%d, trigger_tokens=%d, max_context_tokens=%d"
+            if reason_code == CompactionSkipReason.NOTHING_FREED
+            else "Compaction skipped past its trigger: reason=%s, estimated_input_tokens=%d, trigger_tokens=%d, "
             "max_context_tokens=%d",
             reason_code,
             estimated,
@@ -1101,6 +1182,7 @@ class UnifiedContextStrategy:
             )
             if turn_compacted:
                 changed = True
+                self._note_prefix_rewrite(head=True)
                 p1_count += turn_count
                 p1_tool_names.extend(turn_tool_names)
 
@@ -1166,6 +1248,7 @@ class UnifiedContextStrategy:
                     )
                     if turn_removed:
                         changed = True
+                        self._note_prefix_rewrite(head=True)
                         p2_count += turn_count
                         p2_tool_names.extend(turn_tool_names)
 

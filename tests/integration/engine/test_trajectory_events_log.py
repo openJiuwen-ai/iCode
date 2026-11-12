@@ -35,7 +35,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.trajectory.envelope import TrajectoryEvent
-from chrys.foundation.trajectory.event_types import EventType, ProfileKind, TurnEndReason
+from chrys.foundation.trajectory.event_types import EventType, ProfileKind, PromptCacheMissCause, TurnEndReason
 from chrys.foundation.trajectory.ids import is_valid_analytics_id
 from chrys.foundation.trajectory.keys import ensure_owner_only_directory
 from chrys.foundation.trajectory.lease import WriterLease
@@ -44,6 +44,7 @@ from chrys.foundation.trajectory.reader import read_trajectory
 from chrys.foundation.trajectory.segments import reassemble_array_slice
 from chrys.foundation.trajectory.writer import DEFAULT_WRITE_ACK_TIMEOUT_SECONDS, FdWriteBackend, WriterState
 from chrys.kernel import ChatResponse, Message
+from chrys.kernel.types import UsageDetails
 from chrys.service.analytics import Precision
 from chrys.service.analytics.aggregation import analyze_trajectory
 from chrys.service.approval import judge as judge_module
@@ -1205,3 +1206,45 @@ async def test_session_started_names_the_profiles_the_switch_says_it_left(tmp_pa
     # The chain connects: what the session opened with is what the switch left.
     assert started.payload["model_profile_fingerprint"] == switched.payload["from_fingerprint"]
     assert started.payload["model_profile_fingerprint"] != switched.payload["to_fingerprint"]
+
+
+@pytest.mark.asyncio
+async def test_a_request_that_misses_the_prompt_cache_is_recorded_under_its_exchange(tmp_path: Path) -> None:
+    """Each response's provider usage reaches the cache telemetry through the real middleware chain."""
+
+    def _usage(input_tokens: int, cache_read: int) -> UsageDetails:
+        return {
+            "input_token_count": input_tokens,
+            "output_token_count": 10,
+            "total_token_count": input_tokens + 10,
+            "cache_read_input_token_count": cache_read,
+        }
+
+    ctx = await create_test_engine(
+        [
+            MockResponse(tool_calls=[("echo", "call-1", {"message": "one"})], usage_details=_usage(20_000, 0)),
+            MockResponse(tool_calls=[("echo", "call-2", {"message": "two"})], usage_details=_usage(21_000, 20_000)),
+            # The provider read none of the 21,000 tokens the request before it sent.
+            MockResponse(text="done", usage_details=_usage(22_000, 0)),
+        ],
+        tmp_path,
+        compaction=CompactionConfig(),
+    )
+
+    await ctx.send_message("hello")
+    session_dir = await _finish(ctx)
+
+    events = _events(session_dir)
+    miss = _one(events, EventType.PROMPT_CACHE_MISSED)
+    assert miss.payload == {
+        "cause": PromptCacheMissCause.UNKNOWN,
+        "missed_tokens": 21_000,
+        "input_tokens": 22_000,
+        "previous_input_tokens": 21_000,
+        "cache_read_tokens": 0,
+    }
+    exchanges = _of_type(events, EventType.MODEL_EXCHANGE_STARTED)
+    assert len(exchanges) == 3
+    # Under the request that missed, not the run the three requests share.
+    assert miss.parent_operation_id == exchanges[-1].operation_id
+    assert miss.sequence > exchanges[-1].sequence

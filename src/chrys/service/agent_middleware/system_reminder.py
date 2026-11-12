@@ -349,6 +349,14 @@ class LastWordsPort(Protocol):
         """The current note alone."""
         ...
 
+    def manifest_records_dir(self) -> str:
+        """The session-relative directory the rendered block's dropped-call list points at; empty with no list."""
+        ...
+
+    def recorded_block(self, record: LastWordsRecord) -> str:
+        """A recorded block as this session sends it, its dropped-call records being the session's own copies."""
+        ...
+
 
 class ReminderTurns:
     """Where one middleware keeps its per-turn reminder container.
@@ -731,8 +739,8 @@ class SystemReminderMiddleware(ChatMiddleware):
             message.additional_properties.pop(HistoryMarkerKind.LAST_WORDS_RECORD_KEY, None)
             messages[idx] = self._rebuild(message, kept)
             return idx
-        message.additional_properties[HistoryMarkerKind.LAST_WORDS_RECORD_KEY] = LastWordsRecord(
-            text, self._last_words_note() or ""
+        message.additional_properties[HistoryMarkerKind.LAST_WORDS_RECORD_KEY] = self._last_words_record(
+            text
         ).to_record()
         messages[idx] = self._rebuild(message, [*kept, wrap_system_reminder(text)])
         return idx
@@ -925,7 +933,7 @@ class SystemReminderMiddleware(ChatMiddleware):
                 continue
             reminders = [item.text for item in records[msg_idx]]
             last_words_record = read_last_words_record(message.additional_properties)
-            last_words = [last_words_record.text] if last_words_record is not None else []
+            last_words = [self._recorded_last_words(last_words_record)] if last_words_record is not None else []
             if msg_idx == target_idx:
                 reminders.extend(item.text for item in new_items)
                 if unrecorded_last_words:
@@ -937,7 +945,7 @@ class SystemReminderMiddleware(ChatMiddleware):
                 context.request_message_observers.append(
                     self._record_last_words_on_delivery(
                         target.additional_properties,
-                        LastWordsRecord(unrecorded_last_words, self._last_words_note() or ""),
+                        self._last_words_record(unrecorded_last_words),
                         self._hidden_last_words_carriers(messages, target_idx),
                     )
                 )
@@ -1221,6 +1229,15 @@ class SystemReminderMiddleware(ChatMiddleware):
 
     def _last_words_note(self) -> str | None:
         return self._last_words.get_last_words() if self._last_words is not None else None
+
+    def _last_words_record(self, text: str) -> LastWordsRecord:
+        """The record of *text*, the LAST_WORDS block the state renders now."""
+        records_dir = self._last_words.manifest_records_dir() if self._last_words is not None else ""
+        return LastWordsRecord(text, self._last_words_note() or "", records_dir)
+
+    def _recorded_last_words(self, record: LastWordsRecord) -> str:
+        """The recorded block as this session sends it: its dropped-call records are the session's own copies."""
+        return self._last_words.recorded_block(record) if self._last_words is not None else record.text
 
     @staticmethod
     def _find_user_message(messages: list[Any]) -> tuple[Message | None, int]:

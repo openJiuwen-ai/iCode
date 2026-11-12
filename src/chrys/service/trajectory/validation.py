@@ -12,7 +12,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-from chrys.foundation.trajectory.context import TRAJECTORY_EXCHANGE_KWARG, ExchangeTrace
+from chrys.foundation.trajectory.context import ExchangeTrace, forwarded_exchange_trace
 from chrys.foundation.trajectory.envelope import Link, LinkRelation
 from chrys.foundation.trajectory.event_types import EventType, ValidationOutcome
 from chrys.foundation.trajectory.ids import new_analytics_id
@@ -31,11 +31,8 @@ class ValidationTrace:
     @classmethod
     def open(cls, kwargs: Mapping[str, Any]) -> ValidationTrace | None:
         """Pick the kernel's exchange trace out of the middleware context kwargs."""
-        nested = kwargs.get("client_kwargs")
-        trace = nested.get(TRAJECTORY_EXCHANGE_KWARG) if isinstance(nested, Mapping) else None
-        if not isinstance(trace, ExchangeTrace):
-            return None
-        return cls(trace)
+        trace = forwarded_exchange_trace(kwargs)
+        return cls(trace) if trace is not None else None
 
     @property
     def exchange_operation_id(self) -> str:

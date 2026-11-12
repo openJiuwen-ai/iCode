@@ -11,6 +11,7 @@ from chrys.foundation.i18n import msg
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
 # Persisted status-marker writer audit (closed set): fixed semantic statuses are
 # interruption/failure fallbacks, checkpoint closure, and reload discard; dynamic
@@ -134,10 +135,55 @@ class LastWordsRecord:
     """The LAST_WORDS block as the message is sent with it, without the reminder tags."""
     note: str
     """The note alone: what the next note of the turn merges, and what a fold of the turn keeps."""
+    records_dir: str = ""
+    """The directory of dropped-call records *text* points at, relative to the session's own; empty when it names none.
+
+    *text* names it under the directory the session had when the note was
+    written.  A copy of the session lives in another, so the block is sent
+    with the directory of the session that sends it.
+    """
 
     def to_record(self) -> dict[str, str]:
         """A fresh JSON-ready dict; a stored record is replaced, never changed in place."""
-        return {"text": self.text, "note": self.note}
+        record = {"text": self.text, "note": self.note}
+        if self.records_dir:
+            record["records_dir"] = self.records_dir
+        return record
+
+    def text_in(self, session_root: Path | None) -> str:
+        """The block as the session at *session_root* shows it: its dropped-call records are that session's copies.
+
+        Everything that shows the block to a model goes through here, the
+        request and a recall of the folded turn alike.  Without a session
+        directory, or a list of records, the text stands as recorded.
+        """
+        if session_root is None or not self.records_dir:
+            return self.text
+        heading = dropped_records_heading(self.records_dir, session_root)
+        if heading in self.text:
+            return self.text
+        lines = self.text.split("\n")
+        stale_end = f"/{self.records_dir.rstrip('/')}{_DROPPED_RECORDS_HEADING_END}"
+        for index in range(len(lines) - 1, -1, -1):
+            line = lines[index]
+            if line.startswith(_DROPPED_RECORDS_HEADING_START) and line.endswith(stale_end):
+                lines[index] = heading
+                return "\n".join(lines)
+        return self.text
+
+
+_DROPPED_RECORDS_HEADING_START = "--- Dropped this turn (records under "
+_DROPPED_RECORDS_HEADING_END = "/) ---"
+
+
+def dropped_records_heading(records_dir: str, session_root: Path | None) -> str:
+    """The line of a progress-note block that says where the turn's dropped-call records are.
+
+    The one line of the block that names a place on disk, and so the one
+    line that differs between a session and a fork of it.
+    """
+    directory = (session_root / records_dir).absolute().as_posix() if session_root is not None else records_dir
+    return f"{_DROPPED_RECORDS_HEADING_START}{directory.rstrip('/')}{_DROPPED_RECORDS_HEADING_END}"
 
 
 def read_last_words_record(properties: Mapping[str, Any] | None) -> LastWordsRecord | None:
@@ -149,7 +195,12 @@ def read_last_words_record(properties: Mapping[str, Any] | None) -> LastWordsRec
     note = raw.get("note")
     if not isinstance(text, str) or not text:
         return None
-    return LastWordsRecord(text, note if isinstance(note, str) else "")
+    records_dir = raw.get("records_dir")
+    return LastWordsRecord(
+        text,
+        note if isinstance(note, str) else "",
+        records_dir if isinstance(records_dir, str) else "",
+    )
 
 
 def copy_reminder_record(source: Mapping[str, Any] | None, target: dict[str, Any]) -> None:

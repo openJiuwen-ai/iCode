@@ -832,6 +832,7 @@ class LastWordsGenerator:
         request_overhead_tokens: int = 0,
         calibration_ratio: float = 1.0,
         spend_side_call_tokens: Callable[[int], bool] | None = None,
+        affords_side_call_tokens: Callable[[int], bool] | None = None,
         entry_messages: Sequence[Message] | None = None,
     ) -> str:
         """Produce an updated LAST_WORDS note, publishing UX status signals.
@@ -848,6 +849,9 @@ class LastWordsGenerator:
         every provider attempt. Returning false raises
         :class:`LastWordsSpendBudgetExceeded` before that request starts unless
         a fresh malformed note is already available for safe acceptance.
+        ``affords_side_call_tokens`` answers the same question without
+        charging: the extension, which the slice can stand in for, asks it
+        first, so a refused extension leaves the slice its budget.
 
         Wraps :meth:`_generate` (the actual side-call/fallback machinery)
         with a started/finished :class:`CompactionStatus` pair through
@@ -888,6 +892,7 @@ class LastWordsGenerator:
                 request_overhead_tokens=request_overhead_tokens,
                 calibration_ratio=calibration_ratio,
                 spend_side_call_tokens=spend_side_call_tokens,
+                affords_side_call_tokens=affords_side_call_tokens,
                 entry_messages=entry_messages,
             )
             note = generated.text
@@ -1007,6 +1012,7 @@ class LastWordsGenerator:
         request_overhead_tokens: int,
         calibration_ratio: float,
         spend_side_call_tokens: Callable[[int], bool] | None,
+        affords_side_call_tokens: Callable[[int], bool] | None = None,
         entry_messages: Sequence[Message] | None = None,
     ) -> _GeneratedNote:
         """Generate from one scoped timeline, with the bounded reconstruction as terminal path."""
@@ -1026,6 +1032,7 @@ class LastWordsGenerator:
                 ),
                 calibration_ratio=calibration_ratio,
                 spend_side_call_tokens=spend_side_call_tokens,
+                affords_side_call_tokens=affords_side_call_tokens,
             )
             if extended_note is not None:
                 return extended_note
@@ -1381,6 +1388,7 @@ class LastWordsGenerator:
         fixed_request_overhead_tokens: int,
         calibration_ratio: float,
         spend_side_call_tokens: Callable[[int], bool] | None,
+        affords_side_call_tokens: Callable[[int], bool] | None,
     ) -> _GeneratedNote | None:
         """Ask for the note once as an extension of the live request; ``None`` falls back to the slice.
 
@@ -1415,7 +1423,12 @@ class LastWordsGenerator:
         if estimated_input_tokens > usable_raw:
             _log.debug("LAST_WORDS extension does not fit the window (%d > %d)", estimated_input_tokens, usable_raw)
             return None
-        if spend_side_call_tokens is not None and not spend_side_call_tokens(estimated_input_tokens):
+        # Asked before it is charged: a refused charge still counts against
+        # the budget, and the slice that takes over needs what is left of it.
+        affordable = affords_side_call_tokens is None or affords_side_call_tokens(estimated_input_tokens)
+        if not affordable or (
+            spend_side_call_tokens is not None and not spend_side_call_tokens(estimated_input_tokens)
+        ):
             _log.warning("LAST_WORDS extension refused by the side-call spend budget; using the scoped slice")
             return None
         try:

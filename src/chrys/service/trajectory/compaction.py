@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from contextvars import ContextVar, Token
 from typing import Any
 
-from chrys.foundation.trajectory.context import TrajectoryContext, current_trajectory
+from chrys.foundation.trajectory.context import ExchangeTrace, TrajectoryContext, current_trajectory
 from chrys.foundation.trajectory.envelope import MeasurementSource, measurement
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.ids import new_analytics_id
@@ -55,17 +55,9 @@ def _token_measurements(*pointers: str, source: str = TOKEN_MEASUREMENT_SOURCE) 
     return dict.fromkeys(pointers, token)
 
 
-def _before_after_measurements(source: str) -> dict[str, Any]:
-    """Provenance for one phase's token pair.
-
-    Only the before-figure can come from the provider. Every after-figure is
-    the local estimate of what the fold removed subtracted from it, so it is
-    labelled for the estimator it depends on however the run started.
-    """
-    return {
-        **_token_measurements("/payload/tokens_before", source=source),
-        **_token_measurements("/payload/tokens_after", source=TOKEN_MEASUREMENT_SOURCE),
-    }
+def _before_after_measurements() -> dict[str, Any]:
+    """Provenance for a token pair: both figures are the same local count, so their difference means something."""
+    return _token_measurements("/payload/tokens_before", "/payload/tokens_after")
 
 
 def record_compaction_skipped(
@@ -97,6 +89,70 @@ def record_compaction_skipped(
         logger.debug("Trajectory compaction.skipped emit failed", exc_info=True)
 
 
+def record_compaction_thrash(*, rewrites: int, window_turns: int, turn_numbers: Sequence[int]) -> None:
+    """Queue ``compaction.thrash.detected``: the head of the request was rewritten *rewrites* times in few turns."""
+    context = current_trajectory()
+    if context is None:
+        return
+    try:
+        context.sink.emit_soon(
+            context.draft(
+                EventType.COMPACTION_THRASH_DETECTED,
+                parent_operation_id=context.innermost_model_operation_id,
+                payload={
+                    "rewrites": rewrites,
+                    "window_turns": window_turns,
+                    "turn_numbers": list(turn_numbers),
+                },
+            )
+        )
+    except Exception:
+        logger.debug("Trajectory compaction.thrash.detected emit failed", exc_info=True)
+
+
+def record_prompt_cache_miss(
+    *,
+    cause: str,
+    missed_tokens: int,
+    input_tokens: int,
+    previous_input_tokens: int,
+    cache_read_tokens: int,
+    exchange: ExchangeTrace | None = None,
+) -> None:
+    """Queue ``prompt_cache.missed``: a request re-read at full price what the one before it had sent.
+
+    Recorded in the scope of *exchange*, the request that missed.  The
+    ambient scope is the model run's, which several requests share, so
+    without the exchange the event only says which run it happened in.
+    """
+    context = exchange.context if exchange is not None else current_trajectory()
+    if context is None:
+        return
+    try:
+        context.sink.emit_soon(
+            context.draft(
+                EventType.PROMPT_CACHE_MISSED,
+                parent_operation_id=context.innermost_model_operation_id,
+                payload={
+                    "cause": cause,
+                    "missed_tokens": missed_tokens,
+                    "input_tokens": input_tokens,
+                    "previous_input_tokens": previous_input_tokens,
+                    "cache_read_tokens": cache_read_tokens,
+                },
+                measurements=_token_measurements(
+                    "/payload/missed_tokens",
+                    "/payload/input_tokens",
+                    "/payload/previous_input_tokens",
+                    "/payload/cache_read_tokens",
+                    source=MeasurementSource.PROVIDER,
+                ),
+            )
+        )
+    except Exception:
+        logger.debug("Trajectory prompt_cache.missed emit failed", exc_info=True)
+
+
 class CompactionRunTrace:
     """One compaction run under the ambient trajectory scope."""
 
@@ -108,7 +164,6 @@ class CompactionRunTrace:
         "_phase_started_ns",
         "_run_id",
         "_started_ns",
-        "_token_source",
         "_tokens_after",
         "_tokens_before",
     )
@@ -117,7 +172,6 @@ class CompactionRunTrace:
         self,
         context: TrajectoryContext,
         *,
-        token_source: str = TOKEN_MEASUREMENT_SOURCE,
         next_exchange_operation_id: str | None = None,
     ) -> None:
         self._context = context
@@ -127,7 +181,6 @@ class CompactionRunTrace:
         self._last_words_generated = False
         self._next_exchange_operation_id = next_exchange_operation_id
         self._finished = False
-        self._token_source = token_source
         self._tokens_before = 0
         self._tokens_after = 0
 
@@ -135,18 +188,13 @@ class CompactionRunTrace:
     def open(
         cls,
         *,
-        token_source: str = TOKEN_MEASUREMENT_SOURCE,
         next_exchange_operation_id: str | None = None,
     ) -> CompactionRunTrace | None:
-        """Bind to the ambient scope; *token_source* labels every token figure of the run."""
+        """Bind to the ambient scope; ``None`` without one."""
         context = current_trajectory()
         if context is None:
             return None
-        return cls(
-            context,
-            token_source=token_source,
-            next_exchange_operation_id=next_exchange_operation_id,
-        )
+        return cls(context, next_exchange_operation_id=next_exchange_operation_id)
 
     @classmethod
     async def record_compression(
@@ -157,10 +205,9 @@ class CompactionRunTrace:
         messages_freed: int,
         tokens_before: int,
         tokens_after: int,
-        token_source: str = TOKEN_MEASUREMENT_SOURCE,
     ) -> None:
         """Record a standalone cross-turn fold (agent-requested or forced) as one run."""
-        run = cls.open(token_source=token_source)
+        run = cls.open()
         if run is None:
             return
         try:
@@ -202,9 +249,9 @@ class CompactionRunTrace:
                         "compaction_run_id": self._run_id,
                         "trigger": trigger,
                         "tokens_before": tokens_before,
-                        "token_measurement_source": self._token_source,
+                        "token_measurement_source": TOKEN_MEASUREMENT_SOURCE,
                     },
-                    measurements=_token_measurements("/payload/tokens_before", source=self._token_source),
+                    measurements=_token_measurements("/payload/tokens_before"),
                 )
             )
         except Exception:
@@ -235,7 +282,7 @@ class CompactionRunTrace:
         self._phase_started_ns = now
         self._tokens_after = tokens_after
         self._last_words_generated = self._last_words_generated or last_words_generated
-        measurements = _before_after_measurements(self._token_source)
+        measurements = _before_after_measurements()
         measurements["/payload/duration_ms"] = measurement(MeasurementSource.MONOTONIC_CLOCK, method_version=1)
         payload: dict[str, Any] = {
             "compaction_run_id": self._run_id,
@@ -357,7 +404,7 @@ class CompactionRunTrace:
             payload["compressed_context_id"] = compressed_context_id
         if messages_freed is not None:
             payload["messages_freed"] = messages_freed
-        measurements = _before_after_measurements(self._token_source)
+        measurements = _before_after_measurements()
         measurements["/payload/duration_ms"] = measurement(MeasurementSource.MONOTONIC_CLOCK, method_version=1)
         return self._context.draft(
             EventType.COMPACTION_FINISHED,

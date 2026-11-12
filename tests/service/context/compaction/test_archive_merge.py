@@ -8,6 +8,8 @@ from typing import Any
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.retry import restore_message_properties, snapshot_message_properties
+from chrys.foundation.trajectory.context import trajectory_scope
+from chrys.foundation.trajectory.event_types import EventType
 from chrys.kernel import EXCLUDED_KEY, Message, project_included_messages
 from chrys.service.context.compaction import UnifiedContextStrategy
 from chrys.service.context.providers.archive_index import archive_entries, is_archive_index, is_archived_summary
@@ -18,6 +20,7 @@ from tests.service.context.compaction._compaction_helpers import (
     _user,
     _wire_view,
 )
+from tests.service.trajectory._fakes import FakeSink, make_context
 
 _WINDOW = 30_000
 """Summaries may take 2,400 tokens of it together; a turn's summary takes about 150."""
@@ -217,3 +220,29 @@ async def test_a_rolled_back_attempt_leaves_a_head_the_next_pass_merges_again() 
         await _run_turn(strategy, state, turn)
     assert is_archive_index(state["messages"][0])
     assert len(_indexes(state["messages"])) == 1
+
+
+async def test_a_fold_that_makes_the_summaries_merge_reports_the_request_the_merge_left() -> None:
+    """What the merge moves into the index is part of what the fold freed, and no later event counts it."""
+    strategy = _make_strategy(max_context_tokens=_WINDOW)
+    state = _new_state()
+    for turn in range(1, 5):
+        state["messages"].extend([_user(f"Turn {turn} request"), _assistant_text(f"Turn {turn} answer")])
+        CompressibleHistoryProvider.insert_marker(state, turn)
+    strategy.bind_state(state)
+    long_summary = "The model's own account of the work. " + "detail " * 1_200
+    wire = [*_wire_view(state), _user("Current request")]
+    sink = FakeSink()
+
+    with trajectory_scope(make_context(sink)):
+        strategy.queue_compression("turn_1", long_summary)
+        await strategy(wire)
+        strategy.queue_compression("turn_2", long_summary)
+        await strategy(wire)
+
+    assert is_archive_index(state["messages"][0])
+    _first, merged = sink.of_type(EventType.COMPACTION_FINISHED)
+    assert merged.payload["tokens_after"] == strategy.last_included_tokens
+    # The first summary left the request with this fold: its own summary is not all on top.
+    summary_tokens = strategy.tokenizer.count_tokens(long_summary)
+    assert merged.payload["tokens_after"] < merged.payload["tokens_before"] + summary_tokens // 2

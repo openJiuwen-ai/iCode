@@ -21,7 +21,7 @@ from chrys.foundation.trajectory.envelope import (
 from chrys.foundation.trajectory.event_types import CompactionSkipReason, EventType
 from chrys.foundation.trajectory.ids import is_valid_analytics_id, new_analytics_id
 from chrys.foundation.trajectory.segments import ENCODING_ARRAY_SLICE, reassemble_array_slice
-from chrys.kernel import Message
+from chrys.kernel import Content, Message
 from chrys.service.context.compaction.events import CompactionInfo
 from chrys.service.context.compaction.strategy import UnifiedContextStrategy
 from chrys.service.context.manager import ContextManager
@@ -353,22 +353,6 @@ async def test_every_token_figure_is_labelled_with_its_measurement_source() -> N
 
 
 @pytest.mark.asyncio
-async def test_a_provider_measured_run_says_so_only_where_the_provider_measured() -> None:
-    sink = FakeSink()
-    run = CompactionRunTrace(make_context(sink), token_source=MeasurementSource.PROVIDER)
-
-    await run.started(trigger="force", tokens_before=10)
-    await run.finished(tokens_before=10, tokens_after=3)
-
-    assert sink.only(EventType.COMPACTION_STARTED).payload["token_measurement_source"] == MeasurementSource.PROVIDER
-    finished = sink.only(EventType.COMPACTION_FINISHED)
-    assert finished.measurements["/payload/tokens_before"]["source"] == MeasurementSource.PROVIDER
-    # The after-figure is that provider count minus a locally estimated fold,
-    # so calling it provider-measured would overstate what it is.
-    assert finished.measurements["/payload/tokens_after"]["source"] == TOKEN_MEASUREMENT_SOURCE
-
-
-@pytest.mark.asyncio
 async def test_a_fold_names_the_block_it_produced_and_what_it_freed() -> None:
     sink = FakeSink()
     run = CompactionRunTrace(make_context(sink))
@@ -561,17 +545,47 @@ async def test_a_session_restored_onto_the_same_strategy_is_told_why_again() -> 
 
 
 @pytest.mark.asyncio
-async def test_a_pass_that_starts_ends_the_stretch_a_skip_was_reported_for() -> None:
+async def test_a_pass_that_frees_nothing_says_so_once_per_stretch(caplog: pytest.LogCaptureFixture) -> None:
+    """One turn of plain text holds nothing a phase can take: the request stays as large as it came."""
     strategy = _skip_strategy()
     sink = FakeSink()
 
-    with trajectory_scope(make_context(sink)):
+    with caplog.at_level(logging.WARNING), trajectory_scope(make_context(sink)):
         await strategy(_no_turn())
-        await strategy(_one_turn())
+        assert not await strategy(_one_turn())
+        assert not await strategy(_one_turn())
         await strategy(_no_turn())
 
-    assert len(sink.of_type(EventType.COMPACTION_STARTED)) == 1
-    assert len(sink.of_type(EventType.COMPACTION_SKIPPED)) == 2
+    assert len(sink.of_type(EventType.COMPACTION_STARTED)) == 2
+    assert [event.payload["reason_code"] for event in sink.of_type(EventType.COMPACTION_SKIPPED)] == [
+        CompactionSkipReason.TURNS_UNRESOLVED,
+        CompactionSkipReason.NOTHING_FREED,
+        CompactionSkipReason.TURNS_UNRESOLVED,
+    ]
+    assert caplog.text.count("Compaction freed nothing: reason=nothing_freed") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_pass_that_frees_something_ends_the_stretch_a_skip_was_reported_for() -> None:
+    strategy = _skip_strategy()
+    sink = FakeSink()
+    reclaimable = [
+        Message("user", ["first"]),
+        Message("assistant", [Content.from_function_call("call-1", "read_file", arguments={"path": "a.py"})]),
+        Message("tool", [Content.from_function_result("call-1", result="source " * 2000)]),
+        Message("assistant", ["done"]),
+        Message("user", ["second"]),
+    ]
+
+    with trajectory_scope(make_context(sink)):
+        await strategy(_no_turn())
+        assert await strategy(reclaimable)
+        await strategy(_no_turn())
+
+    assert [event.payload["reason_code"] for event in sink.of_type(EventType.COMPACTION_SKIPPED)] == [
+        CompactionSkipReason.TURNS_UNRESOLVED,
+        CompactionSkipReason.TURNS_UNRESOLVED,
+    ]
 
 
 @pytest.mark.asyncio

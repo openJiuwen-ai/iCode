@@ -33,6 +33,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.models.history_markers import dropped_records_heading
 from chrys.foundation.platform.files import is_utf8_encodable
 from chrys.service.agent_middleware.reminders.todo import TodoSource
 from chrys.service.agent_middleware.system_reminder import LAST_WORDS_PREFIX, wrap_system_reminder
@@ -51,6 +52,7 @@ from .spill import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from chrys.foundation.models.history_markers import LastWordsRecord
     from chrys.service.agent_middleware.system_reminder import ReminderTurns, TurnReminderState
 
     from .spill import SpillQuota
@@ -686,13 +688,23 @@ class LastWordsState:
             entry for value in self.get_last_words_manifest() if (entry := ManifestEntry.from_state(value)) is not None
         ]
 
+    def manifest_records_dir(self) -> str:
+        """The directory the rendered dropped-call list points at, relative to the session's; empty with no list."""
+        entries = self._current_manifest_entries()
+        return entries[-1].record_dir if entries else ""
+
+    def recorded_block(self, record: LastWordsRecord) -> str:
+        """A recorded block as this session sends it.
+
+        The block was rendered by the session that wrote the note.  A fork
+        copies the records and the block alike, and the block still names the
+        parent's copy, which the fork neither owns nor can count on.
+        """
+        return record.text_in(self._session_root)
+
     def _render_manifest(self, entries: list[ManifestEntry]) -> str:
         """Render the bounded dropped-call appendix without filesystem access."""
-        record_dir = entries[-1].record_dir
-        absolute_dir = (
-            (self._session_root / record_dir).absolute().as_posix() if self._session_root is not None else record_dir
-        )
-        heading = f"--- Dropped this turn (records under {absolute_dir.rstrip('/')}/) ---"
+        heading = dropped_records_heading(entries[-1].record_dir, self._session_root)
         rendered_entries = [self._render_manifest_entry(entry) for entry in entries]
         omitted = 0
 

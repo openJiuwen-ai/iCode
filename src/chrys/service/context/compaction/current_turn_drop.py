@@ -182,6 +182,7 @@ class CurrentTurnDropRound:
                 request_overhead_tokens=request_overhead_tokens,
                 calibration_ratio=self._strategy.calibration_ratio,
                 spend_side_call_tokens=self._breaker.spend_side_call_tokens,
+                affords_side_call_tokens=self._breaker.affords_side_call_tokens,
                 entry_messages=self._strategy._entry_request,
             )
         except LastWordsSpendBudgetExceeded:
@@ -238,13 +239,15 @@ class CurrentTurnDropRound:
                 _log.warning("Phase 4 spill I/O failure was not durably checkpointed; retaining groups")
         return spill_result, spill_permitted
 
-    def _plan_drop(self, groups: list[ScopedGroup], *, tokens_before: int) -> _DropPlan:
+    def _plan_drop(self, groups: list[ScopedGroup], *, tokens_before: int, note_tokens: int = 0) -> _DropPlan:
         """Split the turn's work into what this round drops and the recent tail that stays.
 
         The tail is whole groups, newest first, while they fit what may stay,
         and starts at a tool group: assistant text ahead of the first kept
         call belongs to the dropped work.  An overflow pass gives the tail up
-        group by group, oldest first, until the pass's stop point is reached.
+        group by group, oldest first, until the pass's stop point is reached;
+        *note_tokens* is what the round's note adds to the request, known
+        once the note is written.
         """
         strategy = self._strategy
         keep_budget = min(_KEEP_RECENT_MAX_TOKENS, int(strategy.max_context_tokens * _KEEP_RECENT_WINDOW_SHARE))
@@ -264,7 +267,8 @@ class CurrentTurnDropRound:
         plan = strategy._plan
         if plan.spend_recent_tail:
             while (
-                kept_from < len(groups) and strategy._usage_pct(tokens_before - sum(sizes[:kept_from])) > plan.stop_pct
+                kept_from < len(groups)
+                and strategy._usage_pct(tokens_before + note_tokens - sum(sizes[:kept_from])) > plan.stop_pct
             ):
                 kept_from = start_at_tool_group(kept_from + 1)
         oversized: ScopedGroup | None = None
@@ -312,10 +316,8 @@ class CurrentTurnDropRound:
                 span_end=current_turn[1],
                 degraded=resolved.degraded,
             )
-            drop_plan = self._plan_drop(
-                [group for group in timeline.groups if group.kind not in ("user", "system")],
-                tokens_before=p4_tokens_before,
-            )
+            turn_work = [group for group in timeline.groups if group.kind not in ("user", "system")]
+            drop_plan = self._plan_drop(turn_work, tokens_before=p4_tokens_before)
             drop_groups = list(drop_plan.drop)
 
             # Phase 4 only fires when there is at least one tool-call group
@@ -357,16 +359,6 @@ class CurrentTurnDropRound:
                             usage_pct=entry_usage_pct,
                             tokens_before=p4_tokens_before,
                         )
-                        p4_consumed_item_ids = _consumed_item_ids(drop_groups)
-                        for group in drop_groups:
-                            if group.kind == "tool_call":
-                                p4_tool_names.extend(
-                                    tool_name
-                                    for message in group.messages
-                                    for content in message.contents
-                                    if (tool_name := _tool_call_name(content))
-                                )
-
                         # Step 2: only a non-empty note produced by THIS round
                         # authorizes the later drop. A stale note is inherited
                         # input, never authorization for a new delta.
@@ -383,6 +375,37 @@ class CurrentTurnDropRound:
                             generator=last_words_generator,
                             last_words=last_words_state,
                         )
+
+                        if new_last_words and self._strategy._plan.spend_recent_tail:
+                            # The stop point is for the request that goes
+                            # out, note included: the plan made before the
+                            # note existed left room for the work alone.  The
+                            # note was written from the whole turn, so the
+                            # groups given up here are in it too.  What the
+                            # reminder adds around the note (its opening lines
+                            # and the list of dropped records, a bounded
+                            # couple of thousand tokens) is not counted: the
+                            # stop point is a target, not the window's limit.
+                            tokenizer = self._strategy.tokenizer
+                            drop_plan = self._plan_drop(
+                                turn_work,
+                                tokens_before=p4_tokens_before,
+                                note_tokens=max(
+                                    0,
+                                    tokenizer.count_tokens(new_last_words)
+                                    - (tokenizer.count_tokens(previous) if previous else 0),
+                                ),
+                            )
+                            drop_groups = list(drop_plan.drop)
+                        p4_consumed_item_ids = _consumed_item_ids(drop_groups)
+                        for group in drop_groups:
+                            if group.kind == "tool_call":
+                                p4_tool_names.extend(
+                                    tool_name
+                                    for message in group.messages
+                                    for content in message.contents
+                                    if (tool_name := _tool_call_name(content))
+                                )
 
                         if new_last_words:
                             # Step 3: worker-thread spill, including catalog
@@ -431,6 +454,7 @@ class CurrentTurnDropRound:
                                 self._breaker.record_progress(
                                     entry_usage_pct,
                                     self._strategy._usage_pct(post_p4_tokens),
+                                    low_yield_counts=not self._strategy._plan.spend_recent_tail,
                                 )
                                 # Anchor/token bookkeeping must also land
                                 # inside the synchronous commit: the awaits
@@ -441,6 +465,7 @@ class CurrentTurnDropRound:
                                 # original history and the note.
                                 self._strategy._last_included_tokens = post_p4_tokens
                                 self._ledger.snapshot_excluded_anchors(messages)
+                                self._strategy._note_prefix_rewrite(head=False)
                                 # The round is now durably applied; tell
                                 # observers that count real compactions
                                 # (the finished-ok signal fired pre-commit

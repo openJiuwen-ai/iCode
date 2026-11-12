@@ -8,12 +8,12 @@ the three tool method wrappers, and ContextManager wiring.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
 
-from chrys.foundation.models.history_markers import HistoryMarkerKind, LastWordsRecord
+from chrys.foundation.models.history_markers import HistoryMarkerKind, LastWordsRecord, dropped_records_heading
 from chrys.foundation.tool_result_metadata import TOOL_ERROR_KIND_METADATA_KEY
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.kernel import AgentSession, Content, Message, SessionContext
@@ -38,6 +38,9 @@ from tests.support.provider_errors import openai_context_overflow
 # ---------------------------------------------------------------------------
 
 _HISTORY_SOURCE_ID = CompressibleHistoryProvider.DEFAULT_SOURCE_ID
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _build_state(num_turns: int) -> dict:
@@ -456,6 +459,27 @@ class TestRecallContext:
             f"[user]: Port the parser\n[progress note of this turn]: {block}\n"
             "[assistant]: The parser is ported.\n[user]: Thanks"
         )
+
+    def test_recall_formatter_names_the_sessions_own_copy_of_the_dropped_records(self, tmp_path: Path) -> None:
+        """A fork holds copies of the records; the note it recalls must not send it to the parent's."""
+        records_dir = "compactions/dropped/turn001"
+        parent, fork = tmp_path / "parent", tmp_path / "fork"
+        block = (
+            "[LAST_WORDS]\n## Progress\nRewrote the tokenizer\n\n"
+            f"{dropped_records_heading(records_dir, parent)}\nr1 001 shell(make test)"
+        )
+        opener = Message("user", ["Port the parser"])
+        opener.additional_properties[HistoryMarkerKind.LAST_WORDS_RECORD_KEY] = LastWordsRecord(
+            block, "## Progress\nRewrote the tokenizer", records_dir
+        ).to_record()
+
+        in_fork = _format_messages_as_text([opener], fork)
+
+        assert f"(records under {(fork / records_dir).absolute().as_posix()}/)" in in_fork
+        assert parent.as_posix() not in in_fork
+        in_parent = _format_messages_as_text([opener], parent)
+        assert in_parent == f"[user]: Port the parser\n[progress note of this turn]: {block}"
+        assert in_fork == in_parent.replace(parent.absolute().as_posix(), fork.absolute().as_posix())
 
     @pytest.mark.asyncio
     async def test_recall_invalid_id(self) -> None:
