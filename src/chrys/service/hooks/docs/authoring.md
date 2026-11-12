@@ -141,10 +141,11 @@ only for that path. `result.failed` is the structured tool-result failure
 status, so normal tool returns such as validation failures or rejected calls
 can report `failed: true` while keeping `error: false`.
 
-`result.approval_rejected` remains a compatibility flag for calls blocked
-before execution by either user rejection or a hook. Use
-`result.rejection_source` (`user` or `hook`) or `result.hook_denied` when
-you need to distinguish those cases.
+`result.approval_rejected` remains a compatibility flag for calls rejected
+before execution: by the user, a hook, a structured Pre-Judge policy, or
+an approval invalidated by a subsequent argument rewrite. Use
+`result.rejection_source` (`user`, `hook`, `prejudge`, or `approval_invalidated`)
+to distinguish these cases; `result.hook_denied` is true only for hook denial.
 
 ### `approval_requested` / `approval_resolved`
 

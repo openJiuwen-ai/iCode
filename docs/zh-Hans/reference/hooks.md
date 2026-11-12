@@ -534,9 +534,9 @@ execution:
 | --- | --- |
 | `error` | 工具调用抛出异常时为 `true`；正常返回失败结果或调用被拒绝时为 `false`。 |
 | `failed` | 调用被判定为失败时为 `true`，包括抛出异常、返回可识别的失败结果（例如 Shell 命令返回非零退出码），或调用被拒绝。 |
-| `approval_rejected` | 始终存在；调用被用户或钩子拒绝时为 `true`，否则为 `false`。 |
-| `rejection_source` | 仅在调用被拒绝时出现；`user` 表示用户拒绝，`hook` 表示钩子拒绝。 |
-| `hook_denied` | 仅在调用被拒绝时出现；钩子拒绝时为 `true`，用户拒绝时为 `false`。 |
+| `approval_rejected` | 始终存在；调用被用户、Hook、Pre-Judge 策略阻止，或因参数改写使原授权失效时为 `true`，否则为 `false`。 |
+| `rejection_source` | 仅在调用被拒绝时出现；`user` 表示用户拒绝，`hook` 表示钩子拒绝，`prejudge` 表示结构化策略阻断，`approval_invalidated` 表示审批后参数改写使原授权失效。 |
+| `hook_denied` | 仅在调用被拒绝时出现；仅钩子拒绝时为 `true`，其他拒绝来源均为 `false`。 |
 | `hook_confirmation` | 仅当钩子[请你确认](#请你确认)后调用没有继续时出现，说明原因：`declined`（你选择了取消）、`timed_out`（未及时回答）或 `unavailable`（无人可问）。此时 `rejection_source` 为 `hook`。 |
 
 `error: true` 时，`failed` 也为 `true`，但 `failed: true` 不一定表示抛出了异常。`tool_error` 只在抛出异常时触发；需要检查各类失败时，应监听 `after_tool_call` 并检查 `result.failed`。

@@ -193,7 +193,7 @@ LEGACY_ERROR_TEXT_TOOL_NAMES = frozenset(
 )
 """Known Chrys-owned tool names kept for old session replay compatibility."""
 
-REJECTION_ERROR_KINDS = frozenset({"approval_rejected", "hook_denied"})
+REJECTION_ERROR_KINDS = frozenset({"approval_rejected", "hook_denied", "prejudge_blocked", "approval_invalidated"})
 """Structured failure kinds that represent rejected tool execution."""
 
 

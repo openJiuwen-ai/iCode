@@ -119,6 +119,12 @@ dev = [
     "ty==0.0.89",
     "pre-commit>=4.7.0",
     "pytest-cov>=7.1.0",
+    # Optional at runtime: an enabled Structured Shell Pre-Judge policy imports
+    # them lazily (service/approval/prejudge_v2). Listed here so CI type-checks
+    # those imports and runs the real-parser tests; keep in step with the
+    # versions docs/*/guides/configuration/prejudge.md tells users to install.
+    "tree-sitter==0.25.1",
+    "tree-sitter-bash==0.25.1",
 ]
 
 [tool.hatch.build.targets.wheel]

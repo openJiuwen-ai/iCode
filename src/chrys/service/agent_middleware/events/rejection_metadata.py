@@ -29,6 +29,8 @@ def rejection_result_metadata(metadata: Any) -> dict[str, Any]:
     }
     if source == "hook":
         result[TOOL_ERROR_KIND_METADATA_KEY] = "hook_denied"
+    elif source in {"prejudge", "approval_invalidated"}:
+        result[TOOL_ERROR_KIND_METADATA_KEY] = "prejudge_blocked" if source == "prejudge" else "approval_invalidated"
     else:
         result[RESULT_APPROVAL_METADATA_KEY] = "user_rejected"
         result[TOOL_ERROR_KIND_METADATA_KEY] = "approval_rejected"
@@ -40,7 +42,7 @@ def rejection_source(metadata: Any) -> str:
     if not isinstance(metadata, dict):
         return ""
     source = metadata.get(_REJECTION_SOURCE_KEY)
-    return source if source in {"user", "hook"} else ""
+    return source if source in {"user", "hook", "prejudge", "approval_invalidated"} else ""
 
 
 def hook_confirmation(metadata: Any) -> str:
@@ -60,4 +62,8 @@ def rejection_message(metadata: Any, source: str) -> str:
             return message
     if source == "hook":
         return "Tool execution was blocked by hook."
+    if source == "prejudge":
+        return "Tool execution was blocked by structured pre-judge."
+    if source == "approval_invalidated":
+        return "Tool arguments changed after approval."
     return "Tool execution was rejected by user."
