@@ -146,8 +146,6 @@ before execution: by the user, a hook, or
 an approval invalidated by a subsequent argument rewrite. Use
 `result.rejection_source` (`user`, `hook`, or `approval_invalidated`)
 to distinguish these cases; `result.hook_denied` is true only for hook denial.
-Older stored results may contain the legacy source `prejudge`; the current
-Pre-Judge produces only ALLOW or DEFER.
 
 ### `approval_requested` / `approval_resolved`
 

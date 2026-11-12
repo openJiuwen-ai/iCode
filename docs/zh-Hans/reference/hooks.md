@@ -535,7 +535,7 @@ execution:
 | `error` | 工具调用抛出异常时为 `true`；正常返回失败结果或调用被拒绝时为 `false`。 |
 | `failed` | 调用被判定为失败时为 `true`，包括抛出异常、返回可识别的失败结果（例如 Shell 命令返回非零退出码），或调用被拒绝。 |
 | `approval_rejected` | 始终存在；调用被用户、Hook 拒绝，或因参数改写使原授权失效时为 `true`，否则为 `false`。 |
-| `rejection_source` | 仅在调用被拒绝时出现；`user` 表示用户拒绝，`hook` 表示钩子拒绝，`approval_invalidated` 表示审批后参数改写使原授权失效。旧存储结果可能含有历史来源 `prejudge`；当前 Pre-Judge 只返回 ALLOW 或 DEFER。 |
+| `rejection_source` | 仅在调用被拒绝时出现；`user` 表示用户拒绝，`hook` 表示钩子拒绝，`approval_invalidated` 表示审批后参数改写使原授权失效。 |
 | `hook_denied` | 仅在调用被拒绝时出现；仅钩子拒绝时为 `true`，其他拒绝来源均为 `false`。 |
 | `hook_confirmation` | 仅当钩子[请你确认](#请你确认)后调用没有继续时出现，说明原因：`declined`（你选择了取消）、`timed_out`（未及时回答）或 `unavailable`（无人可问）。此时 `rejection_source` 为 `hook`。 |
 
