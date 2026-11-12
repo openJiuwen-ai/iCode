@@ -169,6 +169,12 @@ class LastWordsCompleter(Protocol):
     text. Tool-call markup in plain text is additionally suppressed by the
     instruction itself. Never persists anything into history and never
     mutates the live call's options.
+
+    With ``keep_tool_choice`` the live call's ``tool_choice`` is sent as it
+    is: the side call then extends the live request, whose prefix the
+    provider has cached, and a changed ``tool_choice`` would forfeit that
+    cache. Only for a request ``CompactionCallContext.last_words_extends_request``
+    allows; an answer that calls a tool is still refused.
     """
 
     async def complete_last_words(
@@ -178,6 +184,7 @@ class LastWordsCompleter(Protocol):
         *,
         max_output_tokens: int,
         on_usage: Callable[[Mapping[str, Any]], None] | None = None,
+        keep_tool_choice: bool = False,
     ) -> str:
         """Run the side call over ``base_messages`` and return the note text.
 
@@ -199,6 +206,14 @@ class CompactionCallContext:
     """
 
     last_words_completer: LastWordsCompleter | None = None
+    last_words_extends_request: bool = False
+    """Whether the completer may be given the request's own messages and tool choice.
+
+    True only when every tool the request carries runs on the client: a tool
+    call in the side call's answer is then data nothing executes, and the
+    completer refuses the answer.  A tool the provider runs has already run
+    by the time its answer arrives, so such a request never extends.
+    """
     tool_definition_tokens: int = 0
     """Deprecated tools-only estimate retained for public API compatibility."""
     request_overhead_tokens: int = 0

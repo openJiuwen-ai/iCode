@@ -266,16 +266,15 @@ def test_a_request_list_drops_the_index_a_later_merge_replaced() -> None:
     assert sum(is_archive_index(message) for message in included) == 1
 
 
-def test_a_request_list_without_any_summary_still_opens_with_the_index() -> None:
+def test_a_request_list_that_replays_no_history_gets_no_index() -> None:
+    """A provider that holds the conversation is sent the new messages only, every request."""
     state = _state_with_folds(6)
-    merge = _merge(state)
-    assert merge is not None
+    assert _merge(state) is not None
     wire = [Message("system", ["You are an agent."]), Message("user", ["Request of turn 7"])]
 
-    project_archive(state, wire)
+    assert not project_archive(state, wire)
 
-    assert [message.role for message in wire] == ["system", "assistant", "user"]
-    assert wire[1] is merge.index
+    assert [message.role for message in wire] == ["system", "user"]
 
 
 def test_a_copy_of_the_current_index_counts_as_the_index() -> None:

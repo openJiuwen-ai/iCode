@@ -257,8 +257,10 @@ class SubAgentsConfig:
 # with the generator's constructor default and the TUI compaction panel.
 DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS = 20000
 
-# Phase-4 side-call spend is unlimited by default; the per-turn round limit
-# (``_MAX_DROP_ROUNDS_PER_TURN`` in the compaction strategy) is the safety guard.
+# The explicit "no spend cap" value of ``phase4_side_call_token_budget``; the
+# per-turn round limit (``MAX_DROP_ROUNDS_PER_TURN`` in the compaction
+# strategy) is then the only guard.  Left unset, the budget follows the
+# model's context window.
 PHASE4_SIDE_CALL_TOKEN_BUDGET_UNLIMITED = -1
 
 
@@ -327,11 +329,13 @@ class CompactionConfig:
     ``max_output_tokens`` at generation time when that is lower.
     """
 
-    phase4_side_call_token_budget: int = PHASE4_SIDE_CALL_TOKEN_BUDGET_UNLIMITED
+    phase4_side_call_token_budget: int | None = None
     """Aggregate estimated Phase-4 input-token budget per logical turn.
 
-    ``-1`` (the default) means unlimited — Phase 4 is bounded by the per-turn
-    compaction round limit instead of a spend cap.  ``0`` disables Phase-4
+    ``None`` (the default) sizes the budget from the model: one context
+    window for each round the per-turn round limit allows, so it only binds
+    when retries multiply what a round spends.  ``-1`` means unlimited —
+    Phase 4 is then bounded by the round limit alone.  ``0`` disables Phase-4
     side calls outright; a positive integer is an absolute per-turn cap on
     estimated side-call input tokens.
     """

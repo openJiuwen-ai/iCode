@@ -4,7 +4,10 @@
 
 A fold made without the model (Phase 3, or a provider without a strategy)
 keeps, per turn and in order of worth: the assistant's final answer, every
-real user message, the files the turn changed and the tools it called.  The
+real user message, the files the turn changed, the tools it called and, of a
+turn whose tool history was dropped mid-turn, what its progress note says was
+done.  A turn that never got to a final answer has only that note to say how
+far it came, so the note then takes the answer's place.  The
 summary is extracted, never generated, so the same history always folds into
 the same text and a fold costs no model call.
 """
@@ -12,9 +15,10 @@ the same text and a fold costs no model call.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.history_markers import HistoryMarkerKind, read_last_words_record
 from chrys.foundation.models.turns import is_continuation_message
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE, TOOL_CALL_KIND_METADATA_KEY
 from chrys.kernel import GROUP_ANNOTATION_KEY, SUMMARY_OF_GROUP_IDS_KEY, TOOL_CALL_CONTENT_TYPES
@@ -44,6 +48,8 @@ _USER_LABEL = "User: "
 _ANSWER_LABEL = "Assistant: "
 _FILES_LABEL = "Files changed: "
 _TOOLS_LABEL = "Tools: "
+_NOTE_LABEL = "Progress note: "
+_NOTE_PROGRESS_HEADING = "## progress"
 
 
 def fold_summary_turn_chars(max_context_tokens: int) -> int:
@@ -104,14 +110,43 @@ def _final_answer(turn: list[Message]) -> str:
     tool_work.extend(index for index, message in enumerate(turn) if _is_tool_summary(message))
     last_tool_work = max(tool_work, default=-1)
     last_user = max((index for index, message in enumerate(turn) if _is_real_user(message)), default=-1)
-    parts = [
+    start = max(last_tool_work, last_user) + 1
+    parts: list[str] = []
+    if last_tool_work > last_user and turn[last_tool_work].role == "assistant":
+        # A provider that runs a tool itself can answer in the message that
+        # holds the call and its result: the text after them is the answer.
+        contents = turn[last_tool_work].contents
+        after_tools = max((index for index, content in enumerate(contents) if content.type != "text"), default=-1) + 1
+        parts.extend(text for content in contents[after_tools:] if (text := (content.text or "").strip()))
+    parts.extend(
         text
-        for message in turn[max(last_tool_work, last_user) + 1 :]
+        for message in turn[start:]
         if message.role == "assistant" and not _is_marker(message)
         for content in message.contents
         if content.type == "text" and (text := (content.text or "").strip())
-    ]
+    )
     return "\n".join(parts)
+
+
+def _progress_note(turn: list[Message]) -> str:
+    """What the turn's progress note says was done: its Progress section, or all of a note without one.
+
+    The note is the one recorded on the turn's carrier message; the todo
+    list and the dropped-call manifest sent with it are not part of it.
+    """
+    for message in reversed(turn):
+        if message.role != "user":
+            continue
+        record = read_last_words_record(message.additional_properties)
+        if record is None or not record.note.strip():
+            continue
+        lines = record.note.strip().splitlines()
+        start = next((i for i, line in enumerate(lines) if line.strip().lower() == _NOTE_PROGRESS_HEADING), None)
+        if start is None:
+            return "\n".join(lines)
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+        return "\n".join(lines[start + 1 : end]).strip() or "\n".join(lines)
+    return ""
 
 
 def _changed_files(turn: list[Message]) -> list[str]:
@@ -123,8 +158,9 @@ def _changed_files(turn: list[Message]) -> list[str]:
                 continue
             if content.additional_properties.get(TOOL_CALL_KIND_METADATA_KEY) != KIND_FILESYSTEM_WRITE:
                 continue
+            # A call the kernel refused for its arguments stays in the transcript, whatever shape they had.
             arguments = content.parse_arguments()
-            path = arguments.get("path") if arguments is not None else None
+            path = arguments.get("path") if isinstance(arguments, Mapping) else None
             if isinstance(path, str) and path:
                 paths.setdefault(path)
     return list(paths)
@@ -193,16 +229,21 @@ def _summarise_turn(turn: list[Message], turn_chars: int) -> str:
     room = turn_chars - sum(len(line) + 1 for line in (files_line, tools_line) if line)
 
     answer = _final_answer(turn)
+    note = _progress_note(turn)
+    # A turn without a final answer is told by its progress note instead.
+    answer_label = _ANSWER_LABEL
+    if not answer and note:
+        answer, answer_label, note = note, _NOTE_LABEL, ""
     user_texts = [text for message in turn if _is_real_user(message) and (text := (message.text or "").strip())]
-    answer_want = len(_ANSWER_LABEL) + min(len(answer), _ANSWER_CHARS_MAX) + 1 if answer else 0
+    answer_want = len(answer_label) + min(len(answer), _ANSWER_CHARS_MAX) + 1 if answer else 0
     user_want = sum(len(_USER_LABEL) + min(len(text), _USER_CHARS_MAX) + 1 for text in user_texts)
 
     # The answer is worth most, but never everything: the request is what
     # gives it meaning, so it keeps two fifths of the room when both are long.
     answer_room = min(answer_want, max(room * 3 // 5, room - user_want))
     answer_line = ""
-    if answer and (answer_room >= answer_want or answer_room > len(_ANSWER_LABEL) + _EXCERPT_CHARS_MIN):
-        answer_line = _ANSWER_LABEL + _clip_middle(answer, answer_room - len(_ANSWER_LABEL) - 1)
+    if answer and (answer_room >= answer_want or answer_room > len(answer_label) + _EXCERPT_CHARS_MIN):
+        answer_line = answer_label + _clip_middle(answer, answer_room - len(answer_label) - 1)
         room -= len(answer_line) + 1
 
     user_lines: list[str] = []
@@ -213,7 +254,12 @@ def _summarise_turn(turn: list[Message], turn_chars: int) -> str:
     wants = [len(_USER_LABEL) + min(len(text), _USER_CHARS_MAX) + 1 for text in user_texts[:shown]]
     for text, share in zip(user_texts[:shown], _shares(wants, room), strict=True):
         user_lines.append(_USER_LABEL + _clip(text, max(_EXCERPT_CHARS_MIN, share - len(_USER_LABEL) - 1)))
+    # Beside a final answer the note is worth least: it gets what the rest left.
+    room -= sum(len(line) + 1 for line in user_lines)
     if more:
         user_lines.append(more)
+    note_line = ""
+    if note and room > len(_NOTE_LABEL) + _EXCERPT_CHARS_MIN:
+        note_line = _NOTE_LABEL + _clip(note, room - len(_NOTE_LABEL) - 1)
 
-    return "\n".join(line for line in (*user_lines, answer_line, files_line, tools_line) if line)
+    return "\n".join(line for line in (*user_lines, answer_line, files_line, tools_line, note_line) if line)

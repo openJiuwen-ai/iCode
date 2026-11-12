@@ -489,14 +489,14 @@ compaction:
   last_words_template: |
     Prioritize reproduction steps, key logs, and hypotheses that still need verification.
   last_words_max_output_tokens: 20000
-  phase4_side_call_token_budget: -1
+  phase4_side_call_token_budget: null
 ```
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `last_words_template` | String | Empty | Additional instructions appended to iCode's fixed Last Words requirements, emphasizing information to preserve from the current task. Does not replace the fixed format. |
 | `last_words_max_output_tokens` | Integer | `20000` | Maximum output tokens for Last Words. At runtime, this cannot exceed the model profile's output limit. |
-| `phase4_side_call_token_budget` | Integer or `null` | `-1` | Total estimated input token budget for additional model requests that generate Last Words, from the user's message submission until the agent completes its reply. `-1` or `null` means unlimited; `0` disables Last Words requests; a positive integer sets the cumulative limit. Cannot be less than `-1`. |
+| `phase4_side_call_token_budget` | Integer or `null` | `null` | Total estimated input token budget for additional model requests that generate Last Words, from the user's message submission until the agent completes its reply. `null` sets the budget to eight times the model's context window; `-1` means unlimited; `0` disables Last Words requests; a positive integer sets the cumulative limit. Cannot be less than `-1`. |
 
 `last_words_max_output_tokens` limits output, while `phase4_side_call_token_budget` limits cumulative input. The latter is mainly intended for strict control of additional model usage and can usually be left at its default. If the budget is insufficient, iCode preserves the current task's content. If the context is still too large, the task may be unable to continue.
 

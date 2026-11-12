@@ -4119,7 +4119,7 @@
     },
     "chrys.service.context.compaction.current_turn_drop": {
       "CurrentTurnDropRound._generate_last_words": [
-        ["awaitable", "await generator.generate(timeline_groups, previous, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, completer=context.last_words_completer if context is not None else None, tokenizer=self._strategy.tokenizer, system_overhead_tokens=self._strategy.system_overhead_tokens, request_overhead_tokens=request_overhead_tokens, calibration_ratio=self._strategy.calibration_ratio, spend_side_call_tokens=self._breaker.spend_side_call_tokens)", "unresolved"]
+        ["awaitable", "await generator.generate(timeline_groups, previous, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, completer=context.last_words_completer if context is not None else None, tokenizer=self._strategy.tokenizer, system_overhead_tokens=self._strategy.system_overhead_tokens, request_overhead_tokens=request_overhead_tokens, calibration_ratio=self._strategy.calibration_ratio, spend_side_call_tokens=self._breaker.spend_side_call_tokens, entry_messages=self._strategy._entry_request)", "unresolved"]
       ],
       "CurrentTurnDropRound._spill_drop_groups": [
         ["wrapper", "await _write_spill_batch_in_worker(self._strategy._spill_root, self._strategy._spill_quota, drop_groups, record_dir=record_dir, absolute_turn=absolute_turn, round_number=round_number, session_id=self._strategy._spill_session_id, superseded_note=previous or None)", "unresolved", "chrys.service.context.compaction.current_turn_drop._write_spill_batch_in_worker"],
@@ -4141,6 +4141,7 @@
     },
     "chrys.service.context.compaction.last_words": {
       "LastWordsGenerator._generate": [
+        ["wrapper", "await self._generate_via_extension(completer, entry_messages, tokenizer=tokenizer, opener=_timeline_opener(scoped_groups, degraded_opener=degraded_opener), has_continuation_nudges=has_continuation_nudges, fixed_request_overhead_tokens=max(0, system_overhead_tokens, request_overhead_tokens, tool_definition_tokens), calibration_ratio=calibration_ratio, spend_side_call_tokens=spend_side_call_tokens)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_extension"],
         ["wrapper", "await self._generate_via_completer(completer, scoped_groups, tokenizer=tokenizer, has_continuation_nudges=has_continuation_nudges, system_overhead_tokens=system_overhead_tokens, tool_definition_tokens=tool_definition_tokens, request_overhead_tokens=request_overhead_tokens, calibration_ratio=calibration_ratio, spend_side_call_tokens=spend_side_call_tokens, format_state=format_state)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_completer"],
         ["wrapper", "await self._generate_via_fallback(scoped_groups, previous_last_words, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, spend_side_call_tokens=spend_side_call_tokens, format_state=format_state)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_fallback"]
       ],
@@ -4156,6 +4157,9 @@
         ["wrapper", "await self._sleep_for_retry(delay, reason_code=RetryReason.VALIDATION_REJECTED)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"],
         ["wrapper", "await self._publish_retry_attempt(shortfall, attempt + 1, _COMPLETER_MAX_RETRIES, delay)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"],
         ["wrapper", "await self._sleep_for_retry(delay, reason_code=RetryReason.VALIDATION_REJECTED)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"]
+      ],
+      "LastWordsGenerator._generate_via_extension": [
+        ["awaitable", "await completer.complete_last_words(entry_messages, instruction, max_output_tokens=wire_max_tokens, on_usage=self._report_side_call_usage, keep_tool_choice=True)", "unresolved"]
       ],
       "LastWordsGenerator._generate_via_fallback": [
         ["wrapper", "await self._generate_once(list(candidate.messages), max_tokens=send_max_tokens)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_once"],
@@ -4187,7 +4191,7 @@
       ],
       "LastWordsGenerator.generate": [
         ["wrapper", "await self._publish_status_cancellable(CompactionStatus(compaction_id=compaction_id, stage='started'))", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"],
-        ["wrapper", "await self._generate(scoped_groups, previous_last_words, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, completer=completer, tokenizer=tokenizer or MixedLanguageTokenizer(), system_overhead_tokens=system_overhead_tokens, tool_definition_tokens=tool_definition_tokens, request_overhead_tokens=request_overhead_tokens, calibration_ratio=calibration_ratio, spend_side_call_tokens=spend_side_call_tokens)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate"],
+        ["wrapper", "await self._generate(scoped_groups, previous_last_words, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, completer=completer, tokenizer=tokenizer or MixedLanguageTokenizer(), system_overhead_tokens=system_overhead_tokens, tool_definition_tokens=tool_definition_tokens, request_overhead_tokens=request_overhead_tokens, calibration_ratio=calibration_ratio, spend_side_call_tokens=spend_side_call_tokens, entry_messages=entry_messages)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate"],
         ["wrapper", "await self._publish_status_cancellable(finished)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"]
       ],
       "LastWordsGenerator.publish_breaker_trip": [

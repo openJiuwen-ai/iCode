@@ -70,6 +70,7 @@ MANIFEST_DISPLAY_ARGUMENT_MAX_CHARS = max(
     DISPLAY_ARGUMENT_DEFAULT_MAX_CHARS + 2 + DISPLAY_ARGUMENT_REASON_MAX_CHARS,
 )
 _MANIFEST_STATUS_MAX_CHARS = 128
+_MANIFEST_EXCERPT_MAX_CHARS = 1_024
 _MANIFEST_STRING_FIELD_LIMITS = {
     "record_id": _MANIFEST_STATUS_MAX_CHARS,
     "group_id": _MANIFEST_FIELD_MAX_CHARS,
@@ -79,6 +80,7 @@ _MANIFEST_STRING_FIELD_LIMITS = {
     "display_argument": MANIFEST_DISPLAY_ARGUMENT_MAX_CHARS,
     "outcome": _MANIFEST_STATUS_MAX_CHARS,
     "no_record_reason": _MANIFEST_STATUS_MAX_CHARS,
+    "excerpt": _MANIFEST_EXCERPT_MAX_CHARS,
 }
 _STATE_INTEGER_MAX = (1 << 63) - 1
 _BREAKER_STATE_VERSION = 1
@@ -102,10 +104,12 @@ class ManifestEntry:
     assistant_text: bool = False
     available: bool = True
     no_record_reason: str = ""
+    excerpt: str = ""
+    """Both ends of the result, for a call dropped although it was the newest work: too large to keep whole."""
 
     def to_state(self) -> dict[str, Any]:
         """Return a JSON-compatible representation (never a dataclass instance)."""
-        return {
+        state: dict[str, Any] = {
             "record_id": _manifest_state_text(self.record_id, _MANIFEST_STATUS_MAX_CHARS),
             "group_id": _manifest_state_text(self.group_id, _MANIFEST_FIELD_MAX_CHARS),
             "record_dir": _manifest_state_text(self.record_dir, _MANIFEST_FIELD_MAX_CHARS),
@@ -121,6 +125,9 @@ class ManifestEntry:
             "available": self.available,
             "no_record_reason": _manifest_state_text(self.no_record_reason, _MANIFEST_STATUS_MAX_CHARS),
         }
+        if self.excerpt:
+            state["excerpt"] = _manifest_state_text(self.excerpt, _MANIFEST_EXCERPT_MAX_CHARS)
+        return state
 
     @classmethod
     def from_state(cls, value: object) -> ManifestEntry | None:
@@ -190,6 +197,7 @@ class ManifestEntry:
             assistant_text=assistant_text,
             available=available,
             no_record_reason=strings["no_record_reason"],
+            excerpt=strings["excerpt"],
         )
 
 
@@ -566,24 +574,7 @@ class LastWordsState:
         restored: list[dict[str, Any]] = []
         for entry in entries:
             available = not entry.relative_path or entry.relative_path in available_relative_paths
-            restored.append(
-                ManifestEntry(
-                    record_id=entry.record_id,
-                    group_id=entry.group_id,
-                    record_dir=entry.record_dir,
-                    relative_path=entry.relative_path,
-                    turn=entry.turn,
-                    round=entry.round,
-                    sequence=entry.sequence,
-                    tool=entry.tool,
-                    display_argument=entry.display_argument,
-                    outcome=entry.outcome,
-                    size_chars=entry.size_chars,
-                    assistant_text=entry.assistant_text,
-                    available=entry.available and available,
-                    no_record_reason=entry.no_record_reason,
-                ).to_state()
-            )
+            restored.append(replace(entry, available=entry.available and available).to_state())
         self._restored_last_words_manifest = restored or None
 
     def restore_last_words_breaker(self, value: object) -> None:
@@ -604,6 +595,10 @@ class LastWordsState:
         (``refresh_last_words_reminder`` strips only ``[LAST_WORDS]``-prefixed
         contents — a separately wrapped block would accumulate stale copies
         across refreshes).
+
+        The middleware records this text on the message that carries it when
+        a drop commits and sends the record from then on, so what is rendered
+        here reaches the wire once per note, not once per call.
         """
         reminders: list[str] = []
         last_words = self.get_last_words()
@@ -736,13 +731,15 @@ class LastWordsState:
         else:
             argument = f"{entry.display_argument}" if entry.display_argument else "…"
             body = f"r{entry.round} {entry.sequence:03d} {entry.tool}({argument}) → {entry.outcome}, {size} chars"
+        # One line, like the entry it belongs to: the manifest is bounded by lines.
+        excerpt = f"\n    excerpt: {' '.join(entry.excerpt.split())}" if entry.excerpt else ""
         if entry.no_record_reason:
-            return f"{body} — (no record: {entry.no_record_reason})"
+            return f"{body} — (no record: {entry.no_record_reason}){excerpt}"
         filename = Path(entry.relative_path).name
         suffix = f" — {filename}"
         if not entry.available:
             suffix += " (record missing)"
-        return body + suffix
+        return body + suffix + excerpt
 
     def _current_last_words_todo(self) -> str | None:
         """Todo text captured with the active LAST_WORDS note, if any."""

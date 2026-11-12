@@ -489,14 +489,14 @@ compaction:
   last_words_template: |
     优先保留复现步骤、关键日志和仍待验证的假设。
   last_words_max_output_tokens: 20000
-  phase4_side_call_token_budget: -1
+  phase4_side_call_token_budget: null
 ```
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `last_words_template` | 字符串 | 空 | 附加到 iCode 固定 Last Words 要求后的补充说明，用于强调当前任务中需要保留的信息，不会替换固定格式。 |
 | `last_words_max_output_tokens` | 整数 | `20000` | Last Words 的最大输出词元数；运行时不会超过模型配置的输出上限。 |
-| `phase4_side_call_token_budget` | 整数或 `null` | `-1` | 从用户提交消息到智能体完成本次回复期间，生成 Last Words 的额外模型请求可使用的估算输入词元总预算。`-1` 或 `null` 表示不限预算，`0` 表示不发起 Last Words 请求，正整数设置累计上限；不能小于 `-1`。 |
+| `phase4_side_call_token_budget` | 整数或 `null` | `null` | 从用户提交消息到智能体完成本次回复期间，生成 Last Words 的额外模型请求可使用的估算输入词元总预算。`null` 表示预算为模型上下文窗口的八倍，`-1` 表示不限预算，`0` 表示不发起 Last Words 请求，正整数设置累计上限；不能小于 `-1`。 |
 
 `last_words_max_output_tokens` 限制输出，`phase4_side_call_token_budget` 限制累计输入。后者主要用于严格控制额外模型用量，通常保留默认值。预算不足时，iCode 会保留当前任务内容；如果上下文仍然过大，本次任务可能无法继续。
 

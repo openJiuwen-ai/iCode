@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.history_markers import HistoryMarkerKind, LastWordsRecord
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE, TOOL_CALL_KIND_METADATA_KEY
 from chrys.kernel import Content, Message
 from chrys.service.context.providers.fold_summary import (
@@ -71,6 +71,24 @@ def test_the_final_answer_is_the_text_after_the_last_tool_work() -> None:
     assert "Let me look at the code first" not in summary
 
 
+def test_an_answer_in_the_message_of_a_provider_run_tool_is_kept() -> None:
+    """A provider that runs a tool itself returns the call, its result and the answer as one message."""
+    hosted = Message(
+        "assistant",
+        [
+            Content.from_text("Searching."),
+            Content.from_hosted_tool_call("h1", tool_name="web_search", arguments={"query": "release date"}),
+            Content.from_hosted_tool_result("h1", tool_name="web_search", result="It shipped in March."),
+            Content.from_text("It was released in March."),
+        ],
+    )
+
+    summary = build_fold_summary([_user("When was it released?"), hosted])
+
+    assert "Assistant: It was released in March." in summary.splitlines()
+    assert "Searching." not in summary
+
+
 def test_a_turn_that_ended_on_tool_work_has_no_answer_line() -> None:
     turn = [_user("Run it"), _assistant("Starting."), _call("c1", "shell", {"command": "make"}), _result("c1")]
 
@@ -117,6 +135,16 @@ def test_write_call_arguments_sent_as_json_text_name_the_file_too() -> None:
     ]
 
     assert "Files changed: notes.md" in build_fold_summary(turn)
+
+
+@pytest.mark.parametrize("arguments", [["src/a.py"], 7, "not json", "[1, 2]"])
+def test_a_write_call_whose_arguments_are_no_object_names_no_file(arguments: object) -> None:
+    """A call refused for its arguments stays in the transcript and must still fold."""
+    content = Content.from_function_call("w1", "write_file", arguments=arguments)
+    content.additional_properties[TOOL_CALL_KIND_METADATA_KEY] = KIND_FILESYSTEM_WRITE
+    turn = [_user("Write it"), Message("assistant", [content]), _result("w1", "invalid arguments")]
+
+    assert build_fold_summary(turn).splitlines() == ["User: Write it", "Tools: write_file x1"]
 
 
 def test_at_most_twenty_changed_files_are_named_and_the_rest_counted() -> None:
@@ -230,3 +258,76 @@ def test_first_user_text_is_one_clipped_line_of_the_first_real_user_message() ->
     assert len(label) == 80
     assert label.endswith("…")
     assert first_user_text([_assistant("only an answer")], 80) == ""
+
+
+_NOTE = (
+    "## Task\nPort the parser\n\n"
+    "## Progress\nRewrote the tokenizer; three parser tests still fail\n\n"
+    "## Next\nFix the precedence table"
+)
+
+
+def _noted(text: str, note: str = _NOTE) -> Message:
+    """A user message whose turn had tool history dropped: it carries the turn's progress note."""
+    message = _user(text)
+    block = f"[LAST_WORDS]\n{note}\n\nTodo list:\n- [ ] precedence table\n\nDropped tool calls:\n- shell(make test)"
+    message.additional_properties[HistoryMarkerKind.LAST_WORDS_RECORD_KEY] = LastWordsRecord(block, note).to_record()
+    return message
+
+
+def test_a_turn_that_never_answered_is_told_by_what_its_progress_note_says_was_done() -> None:
+    turn = [_noted("Port the parser"), _call("c1", "shell", {"command": "make test"}), _result("c1")]
+
+    summary = build_fold_summary(turn)
+
+    assert summary.splitlines() == [
+        "User: Port the parser",
+        "Progress note: Rewrote the tokenizer; three parser tests still fail",
+        "Tools: shell x1",
+    ]
+
+
+def test_a_finished_turn_keeps_its_answer_first_and_the_progress_note_with_what_room_is_left() -> None:
+    turn = [_noted("Port the parser"), *_write("c1", "parser.py"), _assistant("The parser is ported.")]
+
+    assert build_fold_summary(turn).splitlines() == [
+        "User: Port the parser",
+        "Assistant: The parser is ported.",
+        "Files changed: parser.py",
+        "Tools: edit_file x1",
+        "Progress note: Rewrote the tokenizer; three parser tests still fail",
+    ]
+
+    # A long answer takes the room: the note, worth least beside it, is what goes.
+    long_answer = [*turn[:-1], _assistant("The parser is ported. " * 200)]
+    cramped = build_fold_summary(long_answer, turn_chars=600)
+    assert len(cramped) <= 600
+    assert "Assistant: The parser is ported." in cramped
+    assert "Progress note:" not in cramped
+
+
+def test_a_progress_note_without_a_progress_section_is_kept_whole_and_only_the_note_is_read() -> None:
+    turn = [_noted("Port the parser", note="Tokenizer rewritten; parser tests pending")]
+
+    summary = build_fold_summary(turn)
+
+    assert summary.splitlines() == ["User: Port the parser", "Progress note: Tokenizer rewritten; parser tests pending"]
+    # The todo list and the dropped-call manifest sent with the note are not the note.
+    assert "precedence table" not in summary
+    assert "Dropped tool calls" not in summary
+
+
+def test_the_progress_note_of_each_turn_stays_with_its_own_turn() -> None:
+    history = [
+        _noted("Port the parser"),
+        _assistant("Ported."),
+        _marker(1),
+        _user("Now the lexer"),
+        _assistant("Done too."),
+        _marker(2),
+    ]
+
+    first, second = build_fold_summary(history).split("\nUser: Now the lexer")
+
+    assert "Progress note: Rewrote the tokenizer" in first
+    assert "Progress note:" not in second

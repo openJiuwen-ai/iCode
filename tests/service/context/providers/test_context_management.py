@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+from chrys.foundation.models.history_markers import HistoryMarkerKind, LastWordsRecord
 from chrys.foundation.tool_result_metadata import TOOL_ERROR_KIND_METADATA_KEY
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.kernel import AgentSession, Content, Message, SessionContext
@@ -435,6 +436,27 @@ class TestRecallContext:
         assert "[Tool result: [image/png image]]" in formatted
         assert "completed" not in formatted
 
+    def test_recall_formatter_follows_a_user_message_with_the_progress_note_it_carried(self) -> None:
+        """The note is recorded beside the message, not in it, and is all that tells what dropped calls did."""
+        block = "[LAST_WORDS]\n## Progress\nRewrote the tokenizer\n\nDropped tool calls:\n- shell(make test)"
+        opener = Message("user", ["Port the parser"])
+        opener.additional_properties[HistoryMarkerKind.LAST_WORDS_RECORD_KEY] = LastWordsRecord(
+            block, "## Progress\nRewrote the tokenizer"
+        ).to_record()
+        opener.additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] = [
+            {"kind": "catalog", "text": "Available skills: none", "name": "skills"}
+        ]
+        # A record on anything but a user message is not a progress note.
+        answer = Message("assistant", ["The parser is ported."])
+        answer.additional_properties[HistoryMarkerKind.LAST_WORDS_RECORD_KEY] = LastWordsRecord("stray", "").to_record()
+
+        formatted = _format_messages_as_text([opener, answer, Message("user", ["Thanks"])])
+
+        assert formatted == (
+            f"[user]: Port the parser\n[progress note of this turn]: {block}\n"
+            "[assistant]: The parser is ported.\n[user]: Thanks"
+        )
+
     @pytest.mark.asyncio
     async def test_recall_invalid_id(self) -> None:
         provider = _make_provider()
@@ -727,3 +749,25 @@ class TestContextManagerWiring:
         assert ctx.history_provider._force_compress_pct == 1.0
         assert ctx.context_mgmt_provider is not None
         assert "compress_context" in ctx.context_mgmt_provider.tool_names
+
+    @pytest.mark.parametrize(
+        ("configured", "windows"),
+        [(None, 8), (-1, None), (0, 0), (50_000, None)],
+        ids=["unset", "unlimited", "disabled", "explicit"],
+    )
+    def test_an_unset_last_words_budget_is_one_window_per_round_a_turn_may_run(
+        self, configured: int | None, windows: int | None
+    ) -> None:
+        from chrys.service.context.compaction import MAX_DROP_ROUNDS_PER_TURN
+        from chrys.service.context.manager import ContextManager
+        from chrys.service.profiles.agents.schema import CompactionConfig
+
+        profile = default_profile()
+        config = (
+            CompactionConfig() if configured is None else CompactionConfig(phase4_side_call_token_budget=configured)
+        )
+
+        budget = ContextManager(profile, compaction_config=config).compaction_strategy._phase4_side_call_token_budget
+
+        assert MAX_DROP_ROUNDS_PER_TURN == 8
+        assert budget == (configured if windows is None else windows * profile.max_context_tokens)

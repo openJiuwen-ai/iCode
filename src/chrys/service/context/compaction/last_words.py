@@ -67,6 +67,7 @@ from chrys.kernel import (
     LastWordsToolCallError,
     Message,
     TokenizerProtocol,
+    estimate_message_tokens,
     messages_contain_tool_calls,
     raise_if_context_window_filled,
     report_wire_progress,
@@ -87,7 +88,7 @@ from .groups import _render_tool_result_value
 from .scoped import DEGRADED_SCOPED_PREAMBLE, ScopedGroup, prepare_scoped_slice
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from typing import Any
 
     from chrys.foundation.models.failures import FailureFacts
@@ -333,7 +334,9 @@ _MIN_NOTE_TOKENS = 500
 # insufficient (models still attempted typed tool calls), and the cache
 # argument for inheriting the live value died with the physically scoped
 # slice — the side call's message prefix already diverges from the live call,
-# so the options delta forfeits nothing.  These no-tools directives stay on
+# so the options delta forfeits nothing.  (The one side call that does share
+# the live prefix, the extension of the live request, keeps the live value.)
+# These no-tools directives stay on
 # top: stated once before and twice after the guidance, because
 # ``tool_choice`` cannot stop tool-call MARKUP emitted as plain text (live
 # DeepSeek did exactly that in 7/9 side calls).  The client-side response
@@ -406,7 +409,7 @@ def _completer_instruction(
     body = (
         "Everything in this conversation is the current, in-progress task.\n"
         "Summarize ALL of it — your note replaces this conversation's tool history.\n"
-        "A [LAST_WORDS] block in the last user message is your own previous progress\n"
+        "A [LAST_WORDS] block in a user message is your own previous progress\n"
         "note (inherited state, not user input): merge it with the new work."
     )
     if has_continuation_nudges:
@@ -420,6 +423,36 @@ def _completer_instruction(
         max_output_tokens=max_output_tokens,
         format_correction=format_correction,
     )
+
+
+def _extension_instruction(
+    template: str,
+    *,
+    opener: str,
+    has_continuation_nudges: bool,
+    max_output_tokens: int,
+) -> str:
+    """The note contract for a side call that extends the live request.
+
+    That request holds the whole conversation, so the instruction names the
+    task the note is for by the request that opened it; everything else is
+    the contract of ``_completer_instruction``.
+    """
+    body = (
+        "The conversation above holds earlier, finished tasks and then the current, in-progress task.\n"
+        "The current task starts at the user request quoted in <current_task_request> below and runs\n"
+        "to the end of the conversation.  Summarize ALL of the current task and ONLY the current task —\n"
+        "your note replaces that task's tool history; earlier tasks stay as they are.\n"
+        "A [LAST_WORDS] block in a user message of the current task is your own previous progress\n"
+        "note (inherited state, not user input): merge it with the new work.  [LAST_WORDS] blocks\n"
+        "in earlier tasks are history: leave them out.\n\n" + _prompt_block("current_task_request", opener)
+    )
+    if has_continuation_nudges:
+        body += (
+            '\nUser messages that just say "continue" are automatic resume nudges after an interruption — '
+            "they are not user input; ignore them as content."
+        )
+    return _assemble_instruction(body, template, max_output_tokens=max_output_tokens, format_correction="")
 
 
 def _fallback_instruction(
@@ -799,8 +832,16 @@ class LastWordsGenerator:
         request_overhead_tokens: int = 0,
         calibration_ratio: float = 1.0,
         spend_side_call_tokens: Callable[[int], bool] | None = None,
+        entry_messages: Sequence[Message] | None = None,
     ) -> str:
         """Produce an updated LAST_WORDS note, publishing UX status signals.
+
+        ``entry_messages`` is the request as it stood when the compaction
+        pass began — what the provider has cached — given only when the side
+        call may extend it (``CompactionCallContext.last_words_extends_request``).
+        The note is then first asked for once as an extension of that
+        request, read from the cache; anything short of a good note falls
+        back to the scoped slice.
 
         ``spend_side_call_tokens`` is the narrow Phase-4 admission hook: it is
         called synchronously with the estimated input size immediately before
@@ -847,6 +888,7 @@ class LastWordsGenerator:
                 request_overhead_tokens=request_overhead_tokens,
                 calibration_ratio=calibration_ratio,
                 spend_side_call_tokens=spend_side_call_tokens,
+                entry_messages=entry_messages,
             )
             note = generated.text
             format_violation = generated.format_violation
@@ -965,9 +1007,28 @@ class LastWordsGenerator:
         request_overhead_tokens: int,
         calibration_ratio: float,
         spend_side_call_tokens: Callable[[int], bool] | None,
+        entry_messages: Sequence[Message] | None = None,
     ) -> _GeneratedNote:
         """Generate from one scoped timeline, with the bounded reconstruction as terminal path."""
         format_state = _FormatRetryState([])
+        # A task resumed without its opening request cannot be named to a
+        # side call that sees the whole conversation: only the slice, which
+        # holds nothing but the task, can summarize it.
+        if completer is not None and entry_messages is not None and not degraded_opener:
+            extended_note = await self._generate_via_extension(
+                completer,
+                entry_messages,
+                tokenizer=tokenizer,
+                opener=_timeline_opener(scoped_groups, degraded_opener=degraded_opener),
+                has_continuation_nudges=has_continuation_nudges,
+                fixed_request_overhead_tokens=max(
+                    0, system_overhead_tokens, request_overhead_tokens, tool_definition_tokens
+                ),
+                calibration_ratio=calibration_ratio,
+                spend_side_call_tokens=spend_side_call_tokens,
+            )
+            if extended_note is not None:
+                return extended_note
         if completer is not None:
             side_call_note = await self._generate_via_completer(
                 completer,
@@ -1308,6 +1369,87 @@ class LastWordsGenerator:
             )
             corrective_attempt += 1
             await self._sleep_for_retry(delay, reason_code=RetryReason.VALIDATION_REJECTED)
+
+    async def _generate_via_extension(
+        self,
+        completer: LastWordsCompleter,
+        entry_messages: Sequence[Message],
+        *,
+        tokenizer: TokenizerProtocol,
+        opener: str,
+        has_continuation_nudges: bool,
+        fixed_request_overhead_tokens: int,
+        calibration_ratio: float,
+        spend_side_call_tokens: Callable[[int], bool] | None,
+    ) -> _GeneratedNote | None:
+        """Ask for the note once as an extension of the live request; ``None`` falls back to the slice.
+
+        The request the provider has cached is sent again with one
+        instruction after it and the live ``tool_choice``, so all but its
+        newest messages are read from the cache.  One attempt only: a request
+        that does not fit, a refused spend, a provider error, an answer that
+        calls a tool, and a note that is too short or breaks the format all
+        return ``None``, and the scoped slice, with its own retries, takes
+        over.  A second attempt here would only repeat the most expensive
+        request the turn can make.
+        """
+        note_budget, wire_max_tokens = self._output_budgets()
+        instruction = _extension_instruction(
+            self._template,
+            opener=opener,
+            has_continuation_nudges=has_continuation_nudges,
+            max_output_tokens=note_budget,
+        )
+        estimated_input_tokens = (
+            sum(estimate_message_tokens(message, tokenizer) for message in entry_messages)
+            + tokenizer.count_tokens(instruction)
+            + fixed_request_overhead_tokens
+        )
+        usable_raw = math.floor(
+            (self._profile.max_context_tokens - wire_max_tokens - _SLICE_SAFETY_MARGIN_TOKENS) / calibration_ratio
+        )
+        prompt_note = (
+            f"(side call extending the live request: {len(entry_messages)} messages, "
+            f"{estimated_input_tokens} estimated input tokens)"
+        )
+        if estimated_input_tokens > usable_raw:
+            _log.debug("LAST_WORDS extension does not fit the window (%d > %d)", estimated_input_tokens, usable_raw)
+            return None
+        if spend_side_call_tokens is not None and not spend_side_call_tokens(estimated_input_tokens):
+            _log.warning("LAST_WORDS extension refused by the side-call spend budget; using the scoped slice")
+            return None
+        try:
+            output_text = _normalize_note_response(
+                await completer.complete_last_words(
+                    entry_messages,
+                    instruction,
+                    max_output_tokens=wire_max_tokens,
+                    on_usage=self._report_side_call_usage,
+                    keep_tool_choice=True,
+                )
+            )
+        except Exception as exc:
+            _log.warning("LAST_WORDS extension failed, using the scoped slice: %s", clean_error_message(exc))
+            self._write_log(
+                instruction, "", "", error=f"extension failed, using the scoped slice: {exc}", request_note=prompt_note
+            )
+            return None
+        violation, canonical_text = _validate_note_format(output_text) if output_text else (None, output_text)
+        rejection = (
+            _bounded_format_violation(violation) if violation is not None else self._note_shortfall(canonical_text)
+        )
+        if rejection is not None:
+            _log.warning("LAST_WORDS extension returned %s, using the scoped slice", rejection)
+            self._write_log(
+                instruction,
+                output_text,
+                "",
+                error=f"extension returned {rejection}, using the scoped slice",
+                request_note=prompt_note,
+            )
+            return None
+        self._write_log(instruction, output_text, canonical_text, request_note=prompt_note)
+        return _GeneratedNote(canonical_text)
 
     async def _generate_via_completer(
         self,

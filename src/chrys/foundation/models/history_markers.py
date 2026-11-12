@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from chrys.foundation.i18n import msg
@@ -99,6 +100,13 @@ class HistoryMarkerKind:
     # re-renders them on every later call so the conversation prefix stays
     # byte-identical across turns; the message's own contents never hold them.
     SYSTEM_REMINDERS_KEY: Final[str] = "_chrys_system_reminders"
+    # The progress note a user message carries for the work of its turn that
+    # compaction dropped, as ``{"text": ..., "note": ...}``: ``text`` is the
+    # whole LAST_WORDS block the message is sent with (note, todo list and
+    # dropped-call manifest), ``note`` the note alone.  Written whenever a
+    # drop commits, on the one message of the turn that carries the note, and
+    # re-rendered from here on every later call, in later turns too.
+    LAST_WORDS_RECORD_KEY: Final[str] = "_chrys_last_words"
     # What the user typed, on a user message whose text was sent otherwise (a
     # prompt shortcut's ``!`command``` placeholders replaced by their output).
     # The approval judge reads it as the user's request; command output is data.
@@ -118,24 +126,54 @@ class HistoryMarkerKind:
     LAST_WORDS_EXCLUDED: Final[frozenset[str]] = frozenset({TURN, SUMMARY, INTERRUPTED})
 
 
+@dataclass(frozen=True, slots=True)
+class LastWordsRecord:
+    """The progress note recorded on a user message (``LAST_WORDS_RECORD_KEY``)."""
+
+    text: str
+    """The LAST_WORDS block as the message is sent with it, without the reminder tags."""
+    note: str
+    """The note alone: what the next note of the turn merges, and what a fold of the turn keeps."""
+
+    def to_record(self) -> dict[str, str]:
+        """A fresh JSON-ready dict; a stored record is replaced, never changed in place."""
+        return {"text": self.text, "note": self.note}
+
+
+def read_last_words_record(properties: Mapping[str, Any] | None) -> LastWordsRecord | None:
+    """The progress note recorded in a user message's *properties*, if a well-formed one is."""
+    raw = properties.get(HistoryMarkerKind.LAST_WORDS_RECORD_KEY) if properties is not None else None
+    if not isinstance(raw, dict):
+        return None
+    text = raw.get("text")
+    note = raw.get("note")
+    if not isinstance(text, str) or not text:
+        return None
+    return LastWordsRecord(text, note if isinstance(note, str) else "")
+
+
 def copy_reminder_record(source: Mapping[str, Any] | None, target: dict[str, Any]) -> None:
     """Carry *source*'s per-message record onto *target*, another copy of the same user message.
 
     The record is what the message carried on its established request (its
-    reminders) and what the user typed when that differs from its text
-    (``TYPED_TEXT_KEY``). A rebuilt copy that lost the reminders would render
-    bare on later requests and change the cached prefix from there on, and one
-    that lost the typed text would show the approval judge command output as
-    the user's request, so every site that rebuilds a user message calls this:
-    the persisted injection copy, retry replay and its failure fallback, the
-    crash-recovery checkpoint and a child's retry seed.  Entries are copied
-    fresh: the source dict may still be live.
+    reminders and the progress note of its turn) and what the user typed when
+    that differs from its text (``TYPED_TEXT_KEY``). A rebuilt copy that lost
+    the reminders or the note would render bare on later requests and change
+    the cached prefix from there on, and one that lost the typed text would
+    show the approval judge command output as the user's request, so every
+    site that rebuilds a user message calls this: the persisted injection
+    copy, retry replay and its failure fallback, the crash-recovery
+    checkpoint and a child's retry seed.  Entries are copied fresh: the
+    source dict may still be live.
     """
     if source is None:
         return
     record = source.get(HistoryMarkerKind.SYSTEM_REMINDERS_KEY)
     if isinstance(record, list) and record:
         target[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] = [dict(entry) for entry in record if isinstance(entry, dict)]
+    last_words = read_last_words_record(source)
+    if last_words is not None:
+        target[HistoryMarkerKind.LAST_WORDS_RECORD_KEY] = last_words.to_record()
     typed = source.get(HistoryMarkerKind.TYPED_TEXT_KEY)
     if isinstance(typed, str) and typed:
         target[HistoryMarkerKind.TYPED_TEXT_KEY] = typed

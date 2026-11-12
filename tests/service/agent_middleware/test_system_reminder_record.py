@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.history_markers import HistoryMarkerKind, read_last_words_record
 from chrys.kernel import EXCLUDED_KEY, ChatResponse, ChatResponseUpdate, Content, Message, ResponseStream
 from chrys.kernel.middleware import ChatContext
 from chrys.service.agent_middleware.injection import InjectionMiddleware
@@ -193,16 +193,28 @@ async def test_record_write_assigns_a_new_list(monkeypatch: pytest.MonkeyPatch) 
     assert _record(opener)[-1] == {"kind": "event", "text": "late hook"}
 
 
-async def test_last_words_stays_dynamic_and_unrecorded(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("requests", [1, 0], ids=["established", "never-sent"])
+async def test_last_words_has_a_record_of_its_own_written_once_its_request_is_established(
+    monkeypatch: pytest.MonkeyPatch, requests: int
+) -> None:
+    """A note no compaction commit recorded (one restored from an older session) is recorded as it is sent."""
     middleware, last_words = _middleware_pair(monkeypatch)
     opener = _user("first")
     middleware.prepare_turn()
     last_words.set_last_words("progress note")
 
-    wire = await enrich_call(middleware, [opener])
+    wire = await enrich_call(middleware, [opener], requests=requests)
 
     assert _texts(wire[0])[-1].startswith(_LAST_WORDS_PREFIX)
-    assert all("[LAST_WORDS]" not in entry["text"] for entry in _record(opener))
+    # The note replaces itself during a turn, so it is no entry of the append-only reminder record.
+    assert all("[LAST_WORDS]" not in entry["text"] for entry in opener.additional_properties.get(_RECORD, []))
+    record = read_last_words_record(opener.additional_properties)
+    if requests:
+        assert record is not None
+        assert record.note == "progress note"
+        assert _wrap(record.text) == _texts(wire[0])[-1]
+    else:
+        assert record is None
 
 
 # ---------------------------------------------------------------------------

@@ -261,7 +261,10 @@ def project_archive(state: dict[str, Any], messages: list[Message]) -> bool:
     A request list built before a merge still carries the summaries the
     index now lists and, possibly, an older index: those are flagged
     excluded and the current index is put where the head starts.  A list
-    that already matches is left alone.
+    that already matches is left alone, and so is one that carries no
+    summary at all: it replays no local history (the provider holds the
+    conversation), and an index added to every such request would pile up
+    there.
     """
     state_messages: list[Message] = state.get("messages", [])
     index = next((m for m in state_messages if is_archive_index(m) and _visible(m)), None)
@@ -290,10 +293,7 @@ def project_archive(state: dict[str, Any], messages: list[Message]) -> bool:
         elif message.additional_properties.get(_BLOCK_ID_KEY) not in archived_block_ids:
             continue
         changed |= set_excluded(message, excluded=True, reason=REASON_ARCHIVED)
-    if not present:
-        if head_start is None:
-            # No summary in this list: the index still opens the history.
-            head_start = next((position for position, m in enumerate(messages) if m.role != "system"), len(messages))
+    if not present and head_start is not None:
         messages.insert(head_start, index)
         changed = True
     return changed

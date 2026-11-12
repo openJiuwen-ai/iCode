@@ -1175,3 +1175,104 @@ async def test_wire_preparation_reports_progress_once_compaction_finishes() -> N
     )
 
     assert observed == [("compaction", 0), ("dispatch", 1)]
+
+
+# ---------------------------------------------------------------------------
+# A side call that extends the live request
+# ---------------------------------------------------------------------------
+
+
+def _local_tool(name: str = "read_file") -> Any:
+    from chrys.kernel import FunctionTool
+
+    return FunctionTool(name=name, description="Read a file.", func=lambda **_: "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("live_options", "expected"),
+    [
+        ({"model": "m", "tools": [{"name": "t"}], "tool_choice": "auto"}, "auto"),
+        ({"model": "m", "tools": [{"name": "t"}]}, None),
+        ({"model": "m"}, None),
+    ],
+    ids=["auto", "tools-without-choice", "no-tools"],
+)
+async def test_completer_keeps_the_live_tool_choice_when_the_side_call_extends_the_request(
+    live_options: dict[str, Any], expected: str | None
+) -> None:
+    """The provider has the live request cached under its own ``tool_choice``: "none" would miss that cache."""
+    client = _RecordingClient()
+    completer = _ClientLastWordsCompleter(client, stream=False, options=live_options, client_kwargs={})
+
+    await completer.complete_last_words([Message("user", ["q"])], "I", max_output_tokens=10, keep_tool_choice=True)
+
+    assert client.inner_calls[-1]["options"].get("tool_choice") == expected
+    assert ("tool_choice" in client.inner_calls[-1]["options"]) is (expected is not None)
+
+
+@pytest.mark.asyncio
+async def test_completer_refuses_a_tool_call_in_an_answer_that_kept_the_live_tool_choice() -> None:
+    response = ChatResponse(
+        messages=[Message("assistant", [Content.from_function_call(call_id="c1", name="read_file", arguments="{}")])]
+    )
+    client = _RecordingClient(response=response)
+    completer = _ClientLastWordsCompleter(
+        client, stream=False, options={"model": "m", "tools": [_local_tool()]}, client_kwargs={}
+    )
+
+    with pytest.raises(LastWordsToolCallError):
+        await completer.complete_last_words([Message("user", ["q"])], "I", max_output_tokens=10, keep_tool_choice=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tools", "extends"),
+    [
+        ("absent", True),
+        ([], True),
+        ("local", True),
+        ("hosted", False),
+        ("mixed", False),
+    ],
+    ids=["no-tools-key", "empty", "local-only", "hosted-only", "local-and-hosted"],
+)
+async def test_request_extends_only_when_every_tool_runs_on_the_client(tools: object, extends: bool) -> None:
+    """A hosted tool the side call's answer asks for has run by the time the answer is refused."""
+    hosted = {"type": "web_search_20250305", "name": "web_search"}
+    options: dict[str, Any] = {"model": "m"}
+    if tools == "local":
+        options["tools"] = [_local_tool(), _local_tool("grep")]
+    elif tools == "hosted":
+        options["tools"] = [hosted]
+    elif tools == "mixed":
+        options["tools"] = [_local_tool(), hosted]
+    elif tools != "absent":
+        options["tools"] = tools
+    client = _RecordingClient()
+    strategy = _CapturingStrategy()
+
+    await client.get_response([Message("user", ["hi"])], options=options, compaction_strategy=strategy)
+
+    context = strategy.contexts[0]
+    assert context.last_words_completer is not None
+    assert context.last_words_extends_request is extends
+
+
+@pytest.mark.asyncio
+async def test_request_without_a_completer_never_extends() -> None:
+    """Service-side storage and a forced tool choice get no side call, so there is nothing to extend."""
+    forced = _CapturingStrategy()
+    await _RecordingClient().get_response(
+        [Message("user", ["hi"])],
+        options={"model": "m", "tools": [_local_tool()], "tool_choice": "required"},
+        compaction_strategy=forced,
+    )
+    stored = _CapturingStrategy()
+    await _StoringClient().get_response(
+        [Message("user", ["hi"])], options={"model": "m", "tools": [_local_tool()]}, compaction_strategy=stored
+    )
+
+    for strategy in (forced, stored):
+        assert strategy.contexts[0].last_words_completer is None
+        assert strategy.contexts[0].last_words_extends_request is False

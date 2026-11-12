@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from copy import copy
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -58,6 +59,7 @@ from chrys.kernel import (
     annotate_message_groups,
     annotate_token_counts,
     included_token_count,
+    project_included_messages,
     recount_user_messages,
 )
 from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
@@ -101,7 +103,7 @@ from .turns import _resolve_turns
 _log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
 
     from chrys.kernel import CompactionCallContext, LastWordsCompleter, TokenizerProtocol
 
@@ -146,6 +148,8 @@ class _PassPlan:
     """Phase 4 starts only above this; ``None`` keeps it out of the pass."""
     protect_newest_turn: bool
     """Leave the newest completed turn untouched in Phases 1 to 3."""
+    spend_recent_tail: bool = False
+    """Phase 4 gives up the recent work it would keep, oldest first, until usage is at the stop point."""
 
 
 class LastWordsGeneratorLike(Protocol):
@@ -165,6 +169,7 @@ class LastWordsGeneratorLike(Protocol):
         request_overhead_tokens: int = 0,
         calibration_ratio: float = 1.0,
         spend_side_call_tokens: Callable[[int], bool] | None = None,
+        entry_messages: Sequence[Message] | None = None,
     ) -> str: ...
 
     async def publish_breaker_trip(self, failure_reason: str) -> None: ...
@@ -314,6 +319,9 @@ class UnifiedContextStrategy:
         self._boundary_suspended = False
         # The plan of the pass in flight; phases read it through ``_plan``.
         self._active_plan: _PassPlan | None = None
+        # The request as the pass in flight found it, for a note asked for as
+        # an extension of it; None when that pass may not extend.
+        self._entry_request: tuple[Message, ...] | None = None
         self._on_context_pressure = on_context_pressure
         self._spill_quota = spill_quota
         self._spill_root = spill_root
@@ -794,7 +802,14 @@ class UnifiedContextStrategy:
             # The provider counted more than the estimate: assume real usage
             # was at least at the trigger and scale the stop point to match.
             stop = self.target_pct * min(1.0, entry_usage / self.trigger_pct)
-            return _PassPlan(mode, stop_pct=stop, escalate_pct=stop, phase4_pct=stop, protect_newest_turn=False)
+            return _PassPlan(
+                mode,
+                stop_pct=stop,
+                escalate_pct=stop,
+                phase4_pct=stop,
+                protect_newest_turn=False,
+                spend_recent_tail=True,
+            )
         boundary = mode is CompactionMode.BOUNDARY
         return _PassPlan(
             mode,
@@ -867,6 +882,9 @@ class UnifiedContextStrategy:
         else:
             mode = CompactionMode.BOUNDARY
         self._active_plan = self._plan_for(mode, usage)
+        self._entry_request = (
+            self._snapshot_entry_request(messages, context, usage) if not compressions_processed else None
+        )
 
         run = CompactionRunTrace.open(
             next_exchange_operation_id=context.next_exchange_operation_id if context is not None else None
@@ -897,6 +915,7 @@ class UnifiedContextStrategy:
             reset_compaction_operation(compaction_token)
             self._trajectory_run = None
             self._active_plan = None
+            self._entry_request = None
         self._finalize_pass(messages, changed, entry_tokens=current)
         # A completed pass answers every reason at or below its own mode.
         self._context_overflow_pending = False
@@ -905,6 +924,39 @@ class UnifiedContextStrategy:
         if run is not None:
             await run.finished(tokens_before=tokens_before, tokens_after=self._last_included_tokens)
         return changed or compressions_processed
+
+    def _snapshot_entry_request(
+        self,
+        messages: list[Message],
+        context: CompactionCallContext | None,
+        usage: float,
+    ) -> tuple[Message, ...] | None:
+        """The request as this pass found it, when its note may be asked for as an extension of it.
+
+        That list is what the provider has cached: the previous request plus
+        the newest tool results.  The pass rewrites it from Phase 1 on, so it
+        is copied here, before any phase runs; a queued fold has already
+        rewritten its head, and then nothing is taken.  Only for a pass that
+        can reach Phase 4 with room for one more message: an overflow pass
+        starts from a request the window refused.
+        """
+        plan = self._plan
+        if (
+            context is None
+            or context.last_words_completer is None
+            or not context.last_words_extends_request
+            or plan.phase4_pct is None
+            or plan.spend_recent_tail
+            or usage <= plan.phase4_pct
+        ):
+            return None
+        views: list[Message] = []
+        for message in project_included_messages(messages):
+            view = copy(message)
+            view.contents = list(message.contents)
+            view.additional_properties = dict(message.additional_properties)
+            views.append(view)
+        return tuple(views)
 
     def _report_skip(self, reason_code: str, included: int) -> None:
         """Say why usage past the trigger started no pass, once per stretch above it."""

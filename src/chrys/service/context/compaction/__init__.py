@@ -9,7 +9,7 @@ from chrys.kernel import GROUP_ANNOTATION_KEY as GROUP_ANNOTATION_KEY
 from chrys.kernel import SUMMARIZED_BY_SUMMARY_ID_KEY as SUMMARIZED_BY_SUMMARY_ID_KEY
 from chrys.kernel.compaction import _group_id as _group_id
 
-from .breaker import _MAX_DROP_ROUNDS_PER_TURN as _MAX_DROP_ROUNDS_PER_TURN
+from .breaker import MAX_DROP_ROUNDS_PER_TURN as MAX_DROP_ROUNDS_PER_TURN
 from .events import _REASON_COMPRESSION as _REASON_COMPRESSION
 from .events import _REASON_CURRENT_TURN_DROP as _REASON_CURRENT_TURN_DROP
 from .events import CachedCompressedContextSummary as CachedCompressedContextSummary

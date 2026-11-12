@@ -19,8 +19,9 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 # Primary current-turn-drop safety guard: at most this many rounds per
-# logical turn.
-_MAX_DROP_ROUNDS_PER_TURN = 100
+# logical turn.  A round replaces most of a window of work with a note, so a
+# turn that needs more than these is one the notes no longer carry.
+MAX_DROP_ROUNDS_PER_TURN = 8
 _DROP_MIN_PROGRESS_PCT = 0.05
 
 # Human-readable card text for an entry-time breaker trip, keyed by the
@@ -28,7 +29,7 @@ _DROP_MIN_PROGRESS_PCT = 0.05
 # every later trigger re-enters through it, and one failure card per turn
 # is enough.
 _BREAKER_TRIP_FAILURE_REASONS = {
-    "round_limit": f"{_MAX_DROP_ROUNDS_PER_TURN} attempts limit exceeded for current turn",
+    "round_limit": f"{MAX_DROP_ROUNDS_PER_TURN} attempts limit exceeded for current turn",
     "side_call_budget": SPEND_BUDGET_FAILURE_REASON,
 }
 
@@ -54,7 +55,7 @@ class DropBreakerController:
         reason = ""
         if breaker.disabled:
             reason = "disabled"
-        elif breaker.attempts >= _MAX_DROP_ROUNDS_PER_TURN:
+        elif breaker.attempts >= MAX_DROP_ROUNDS_PER_TURN:
             reason = "round_limit"
         elif 0 <= self._strategy._phase4_side_call_token_budget <= breaker.side_call_tokens:
             reason = "side_call_budget"

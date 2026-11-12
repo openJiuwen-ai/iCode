@@ -6,22 +6,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from chrys.foundation.models.history_markers import read_last_words_record
 from chrys.foundation.models.turns import is_continuation_message
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
-from chrys.kernel import Message, annotate_token_counts, included_token_count, set_excluded
+from chrys.kernel import EXCLUDED_KEY, Message, annotate_token_counts, included_token_count, set_excluded
 
-from .breaker import DropBreakerController
+from .breaker import _DROP_MIN_PROGRESS_PCT, DropBreakerController
 from .events import _REASON_CURRENT_TURN_DROP, CompactionInfo
 from .exclusions import ExclusionLedger
 from .groups import _tool_call_name
 from .last_words import LastWordsSpendBudgetExceeded
 from .last_words_state import LastWordsState, ManifestEntry
 from .scoped import ScopedGroup, build_scoped_group_timeline
-from .spill import SpillBatchResult, SpillManifestItem, SpillQuota, turn_directory_name, write_spill_batch
+from .spill import (
+    SpillBatchResult,
+    SpillManifestItem,
+    SpillQuota,
+    group_result_texts,
+    turn_directory_name,
+    write_spill_batch,
+)
+from .summaries import _result_excerpt
 from .turns import _resolve_turns
 
 if TYPE_CHECKING:
@@ -32,6 +41,36 @@ if TYPE_CHECKING:
     from .strategy import LastWordsGeneratorLike, UnifiedContextStrategy
 
 _log = logging.getLogger(__name__)
+
+# The newest work of the turn stays as it is: results the model has not read
+# yet, and the calls it would otherwise have to repeat to see them again.
+_KEEP_RECENT_MAX_TOKENS = 20_000
+_KEEP_RECENT_WINDOW_SHARE = 0.08
+
+
+@dataclass(frozen=True, slots=True)
+class _DropPlan:
+    """Which of the turn's groups one round drops; the groups after them stay."""
+
+    drop: tuple[ScopedGroup, ...]
+    drop_tokens: int
+    oversized: ScopedGroup | None
+    """The newest tool group, when it is dropped only for being larger than what may stay.
+
+    Its manifest lines carry both ends of each result, so the newest work is
+    not dropped without a trace in the request.
+    """
+
+
+def _recorded_note(messages: list[Message], span: tuple[int, int]) -> str | None:
+    """The note the turn's carrier records, for a turn whose live note is gone."""
+    for message in reversed(messages[span[0] : span[1]]):
+        if message.role != "user" or message.additional_properties.get(EXCLUDED_KEY, False):
+            continue
+        record = read_last_words_record(message.additional_properties)
+        if record is not None:
+            return record.note or None
+    return None
 
 
 def _consumed_item_ids(groups: Sequence[ScopedGroup]) -> list[str]:
@@ -143,6 +182,7 @@ class CurrentTurnDropRound:
                 request_overhead_tokens=request_overhead_tokens,
                 calibration_ratio=self._strategy.calibration_ratio,
                 spend_side_call_tokens=self._breaker.spend_side_call_tokens,
+                entry_messages=self._strategy._entry_request,
             )
         except LastWordsSpendBudgetExceeded:
             breaker = self._breaker.record_no_progress("side_call_budget")
@@ -198,6 +238,42 @@ class CurrentTurnDropRound:
                 _log.warning("Phase 4 spill I/O failure was not durably checkpointed; retaining groups")
         return spill_result, spill_permitted
 
+    def _plan_drop(self, groups: list[ScopedGroup], *, tokens_before: int) -> _DropPlan:
+        """Split the turn's work into what this round drops and the recent tail that stays.
+
+        The tail is whole groups, newest first, while they fit what may stay,
+        and starts at a tool group: assistant text ahead of the first kept
+        call belongs to the dropped work.  An overflow pass gives the tail up
+        group by group, oldest first, until the pass's stop point is reached.
+        """
+        strategy = self._strategy
+        keep_budget = min(_KEEP_RECENT_MAX_TOKENS, int(strategy.max_context_tokens * _KEEP_RECENT_WINDOW_SHARE))
+        sizes = [included_token_count(list(group.messages)) for group in groups]
+        kept_from = len(groups)
+        kept_tokens = 0
+        while kept_from > 0 and kept_tokens + sizes[kept_from - 1] <= keep_budget:
+            kept_from -= 1
+            kept_tokens += sizes[kept_from]
+
+        def start_at_tool_group(index: int) -> int:
+            while index < len(groups) and groups[index].kind != "tool_call":
+                index += 1
+            return index
+
+        kept_from = start_at_tool_group(kept_from)
+        plan = strategy._plan
+        if plan.spend_recent_tail:
+            while (
+                kept_from < len(groups) and strategy._usage_pct(tokens_before - sum(sizes[:kept_from])) > plan.stop_pct
+            ):
+                kept_from = start_at_tool_group(kept_from + 1)
+        oversized: ScopedGroup | None = None
+        if kept_from == len(groups):
+            newest = next((index for index in range(len(groups) - 1, -1, -1) if groups[index].kind == "tool_call"), -1)
+            if newest >= 0 and sizes[newest] > keep_budget:
+                oversized = groups[newest]
+        return _DropPlan(tuple(groups[:kept_from]), sum(sizes[:kept_from]), oversized)
+
     async def run(
         self,
         messages: list[Message],
@@ -206,11 +282,12 @@ class CurrentTurnDropRound:
         """Run one Phase-4 pipeline stage."""
         changed = False
 
-        # ---- Phase 4: Drop ALL current-turn tool calls + inline agent text ----
-        # One shot: collect every current-turn group that is still included,
-        # hand them to the LAST_WORDS LLM summariser, exclude them, and set
-        # the updated note on the LAST_WORDS state, whose reminder is appended
-        # to the user message on every subsequent LLM call until the turn ends.
+        # ---- Phase 4: drop the current turn's older tool calls + inline agent text ----
+        # One shot: collect every current-turn group that is still included
+        # except the recent tail, hand the turn to the LAST_WORDS LLM
+        # summariser, exclude the collected groups, and record the updated
+        # note on the turn's carrier message, which every later call sends
+        # with it.
         # Generator failures (SDK error, empty response) are retried inside
         # the generator against the same LAST_WORDS prompt — we never drop
         # current-turn work without a note in hand.
@@ -235,15 +312,27 @@ class CurrentTurnDropRound:
                 span_end=current_turn[1],
                 degraded=resolved.degraded,
             )
-            current_groups = [group.group_id for group in timeline.groups if group.kind not in ("user", "system")]
+            drop_plan = self._plan_drop(
+                [group for group in timeline.groups if group.kind not in ("user", "system")],
+                tokens_before=p4_tokens_before,
+            )
+            drop_groups = list(drop_plan.drop)
 
             # Phase 4 only fires when there is at least one tool-call group
             # to drop — otherwise there is nothing meaningful to summarise
             # and dropping plain assistant text alone would lose content
-            # without replacing it.
-            has_tool_call = any(group.kind == "tool_call" for group in timeline.groups)
+            # without replacing it — and when the drop is worth a round: one
+            # that frees less than a round has to would only spend a side
+            # call and a breaker attempt on a prefix rewrite.  An overflow
+            # pass takes what it can get: the provider refused the request,
+            # and a little room may be all the resend needs.
+            has_tool_call = any(group.kind == "tool_call" for group in drop_groups)
+            freed_pct = self._strategy._usage_pct(p4_tokens_before) - self._strategy._usage_pct(
+                p4_tokens_before - drop_plan.drop_tokens
+            )
+            worth_a_round = self._strategy._plan.spend_recent_tail or freed_pct >= _DROP_MIN_PROGRESS_PCT
 
-            if current_groups and has_tool_call:
+            if has_tool_call and worth_a_round:
                 reminder_middleware = self._strategy._reminder_middleware
                 last_words_state = self._strategy._last_words_state
                 last_words_generator = self._strategy._last_words_generator
@@ -268,7 +357,6 @@ class CurrentTurnDropRound:
                             usage_pct=entry_usage_pct,
                             tokens_before=p4_tokens_before,
                         )
-                        drop_groups = [group for group in timeline.groups if group.kind not in ("user", "system")]
                         p4_consumed_item_ids = _consumed_item_ids(drop_groups)
                         for group in drop_groups:
                             if group.kind == "tool_call":
@@ -282,7 +370,7 @@ class CurrentTurnDropRound:
                         # Step 2: only a non-empty note produced by THIS round
                         # authorizes the later drop. A stale note is inherited
                         # input, never authorization for a new delta.
-                        previous = last_words_state.get_last_words()
+                        previous = last_words_state.get_last_words() or _recorded_note(messages, current_turn)
                         has_continuation_nudges = any(
                             is_continuation_message(message) for group in timeline.groups for message in group.messages
                         )
@@ -308,7 +396,7 @@ class CurrentTurnDropRound:
                             )
 
                             if spill_permitted:
-                                manifest_entries = [self._manifest_entry(item) for item in spill_result.entries]
+                                manifest_entries = self._manifest_entries(spill_result, drop_plan.oversized)
 
                                 # Steps 4-5: synchronous commit through
                                 # exclusion and the post-round usage sample.
@@ -406,8 +494,20 @@ class CurrentTurnDropRound:
 
         return changed
 
+    @classmethod
+    def _manifest_entries(cls, spill_result: SpillBatchResult, oversized: ScopedGroup | None) -> list[ManifestEntry]:
+        """The round's manifest lines; those of *oversized* carry both ends of their results."""
+        excerpts = iter(group_result_texts(oversized)) if oversized is not None else iter(())
+        entries: list[ManifestEntry] = []
+        for item in spill_result.entries:
+            excerpt = ""
+            if oversized is not None and item.group_id == oversized.group_id and not item.assistant_text:
+                excerpt = _result_excerpt(next(excerpts, ""))
+            entries.append(cls._manifest_entry(item, excerpt=excerpt))
+        return entries
+
     @staticmethod
-    def _manifest_entry(item: SpillManifestItem) -> ManifestEntry:
+    def _manifest_entry(item: SpillManifestItem, *, excerpt: str = "") -> ManifestEntry:
         return ManifestEntry(
             record_id=item.record_id,
             group_id=item.group_id,
@@ -423,6 +523,7 @@ class CurrentTurnDropRound:
             assistant_text=item.assistant_text,
             available=item.available,
             no_record_reason=item.no_record_reason,
+            excerpt=excerpt,
         )
 
     def _schedule_detached_on_compaction(self, info: CompactionInfo) -> asyncio.Future:

@@ -55,13 +55,16 @@ class FakeCompleter:
         self._results = list(results)
         self.calls: list[dict] = []
 
-    async def complete_last_words(self, base_messages, instruction, *, max_output_tokens, on_usage=None):  # type: ignore[no-untyped-def]
+    async def complete_last_words(  # type: ignore[no-untyped-def]
+        self, base_messages, instruction, *, max_output_tokens, on_usage=None, keep_tool_choice=False
+    ):
         self.calls.append(
             {
                 "base_messages": list(base_messages),
                 "instruction": instruction,
                 "max_output_tokens": max_output_tokens,
                 "on_usage": on_usage,
+                "keep_tool_choice": keep_tool_choice,
             }
         )
         result = self._results.pop(0) if len(self._results) > 1 else self._results[0]
@@ -183,6 +186,7 @@ async def generate(
     degraded_opener: bool = False,
     completer=None,  # type: ignore[no-untyped-def]
     spend_side_call_tokens=None,  # type: ignore[no-untyped-def]
+    entry_messages: list[Message] | None = None,
 ):
     """Build a compact scoped timeline for generator-focused tests."""
     opener = DEGRADED_SCOPED_PREAMBLE if degraded_opener else user_request
@@ -209,4 +213,5 @@ async def generate(
         has_continuation_nudges=has_continuation_nudges,
         completer=completer,
         spend_side_call_tokens=spend_side_call_tokens,
+        entry_messages=entry_messages,
     )

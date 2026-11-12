@@ -467,8 +467,9 @@ async def test_tool_terminals_share_the_carrier_id_named_by_the_next_revision(tm
 @pytest.mark.asyncio
 async def test_real_phase4_emission_closes_analytics_fan_in(tmp_path: Path) -> None:
     """A real strategy/write/read pass agrees on Phase-4 segmented evidence."""
+    # Larger than the recent work a drop leaves in the request.
     ctx = await create_test_engine(
-        [MockResponse(tool_calls=[("echo", "call-1", {"message": "hi"})]), MockResponse(text="done")],
+        [MockResponse(tool_calls=[("echo", "call-1", {"message": "hi " * 20_000})]), MockResponse(text="done")],
         tmp_path,
         compaction=CompactionConfig(),
     )

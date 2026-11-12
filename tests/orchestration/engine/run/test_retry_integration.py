@@ -424,7 +424,8 @@ async def test_retry_after_restored_first_turn_compacts_its_tool_work(
     """Continue on a restored first turn with completed tool work sends no new
     input: the stored opener is the last user message, rebuilt by the reminder
     middleware.  With nothing earlier in state to anchor the history segment,
-    compaction must still resolve that turn and drop its work."""
+    compaction must still resolve that turn and drop its work: all but the
+    newest of it, which the request keeps beside the note."""
     profile = AgentProfile(
         name="Code",
         display_name="Code Agent",
@@ -439,7 +440,10 @@ async def test_retry_after_restored_first_turn_compacts_its_tool_work(
     session_id = "restore-first-turn-tool-work"
     user = Message("user", ["Inspect the repository"])
     call = Message("assistant", [Content.from_function_call("read-1", "read_file", arguments={"path": "a.py"})])
-    result = Message("tool", [Content.from_function_result("read-1", result="source " * 2_000)])
+    # Larger than the recent work a drop leaves in place; the second read is well within it.
+    result = Message("tool", [Content.from_function_result("read-1", result="source " * 40_000)])
+    recent_call = Message("assistant", [Content.from_function_call("read-2", "read_file", arguments={"path": "b.py"})])
+    recent_result = Message("tool", [Content.from_function_result("read-2", result="source " * 200)])
     interrupted = Message("assistant", ["Execution interrupted"])
     interrupted.additional_properties[HistoryMarkerKind.KEY] = HistoryMarkerKind.INTERRUPTED
     interrupted.additional_properties["_interrupted_by"] = "error"
@@ -448,7 +452,7 @@ async def test_retry_after_restored_first_turn_compacts_its_tool_work(
     turn.additional_properties["_turn"] = 1
     await state_store.save_session(
         session_id,
-        {"messages": [user, call, result, interrupted, turn], "turn_counter": 1},
+        {"messages": [user, call, result, recent_call, recent_result, interrupted, turn], "turn_counter": 1},
         agent_profile="Code",
         agent_display_name="Code Agent",
         primary_cwd=str(tmp_path),
@@ -489,12 +493,12 @@ async def test_retry_after_restored_first_turn_compacts_its_tool_work(
     assert len(finals) == 1
     assert generate_call.call_count == 1
     (sent, _options) = mock_clients[-1].call_history[-1]
-    assert not any(
-        content.call_id == "read-1"
+    assert [
+        (content.type, content.call_id)
         for message in sent
         for content in message.contents
         if content.type in ("function_call", "function_result")
-    )
+    ] == [("function_call", "read-2"), ("function_result", "read-2")]
     (opener,) = [m for m in sent if m.role == "user"]
     assert opener.text.startswith("Inspect the repository")
     assert "Read a.py. Next, report what it does." in opener.text

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.errors import is_context_overflow
-from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.history_markers import HistoryMarkerKind, read_last_words_record
 from chrys.foundation.tool_kinds import KIND_CONTEXT, set_tool_kind
 from chrys.foundation.trajectory.context import side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
@@ -141,12 +141,22 @@ def context_instructions(*, automatic_compaction: bool) -> str:
 
 
 def _format_messages_as_text(messages: list[Any]) -> str:
-    """Format a list of Message objects as human-readable text for recall context."""
+    """Format a list of Message objects as human-readable text for recall context.
+
+    A user message that carried a progress note is followed by the note as
+    it was sent, todo list and dropped-call manifest included: the note is
+    recorded in the message's properties, not its contents, and is all that
+    tells what the tool calls dropped from that turn did.  Other reminders
+    (environment, catalogs) are left out.
+    """
     parts: list[str] = []
     for msg in messages:
         text_parts = [rendered for content in msg.contents if (rendered := _format_recall_content(content))]
         if text_parts:
             parts.append(f"[{msg.role}]: {''.join(text_parts)}")
+        record = read_last_words_record(msg.additional_properties) if msg.role == "user" else None
+        if record is not None:
+            parts.append(f"[progress note of this turn]: {record.text}")
     return "\n".join(parts)
 
 
