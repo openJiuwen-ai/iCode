@@ -21,8 +21,8 @@ import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -355,9 +355,7 @@ def test_write_shutdown_does_not_kill_the_command(monkeypatch: pytest.MonkeyPatc
         session.close()
 
 
-def test_timeout_writes_v2_cgroup_kill_for_a_setsid_pid(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_timeout_writes_v2_cgroup_kill_for_a_setsid_pid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A double-fork is a pid in the command cgroup and not in the process group.
 
     Timeout still killpg's the session leader, and writes ``cgroup.kill`` so
@@ -402,9 +400,7 @@ def test_timeout_writes_v2_cgroup_kill_for_a_setsid_pid(
         session.close()
 
 
-def test_cancel_kills_v1_cgroup_pids_outside_the_process_group(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_cancel_kills_v1_cgroup_pids_outside_the_process_group(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     group = tmp_path / "cmd-cancel"
     group.mkdir()
     leader = 71051
@@ -439,9 +435,7 @@ def test_cancel_kills_v1_cgroup_pids_outside_the_process_group(
         session.close()
 
 
-def test_release_command_cgroup_removes_only_that_child(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_release_command_cgroup_removes_only_that_child(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from jiuwenbox.supervisor.cgroup import CgroupBackend, CommandCgroup, release_command_cgroup
 
     parent = tmp_path / "sandbox"
@@ -468,9 +462,7 @@ def test_release_command_cgroup_removes_only_that_child(
     assert (supervisor_dir / "cgroup.procs").read_text(encoding="utf-8") == "11\n"
 
 
-def test_v1_kill_cgroup_processes_signals_every_recorded_pid(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_v1_kill_cgroup_processes_signals_every_recorded_pid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from jiuwenbox.supervisor import cgroup as cgroup_module
 
     group = tmp_path / "cmd-v1"

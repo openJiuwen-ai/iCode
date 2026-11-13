@@ -60,7 +60,7 @@ def test_offline_unshares_net_without_a_named_namespace(
     monkeypatch.setattr(
         process_module.network_module,
         "create_named_namespace",
-        lambda name: created.append(name),
+        created.append,
     )
     monkeypatch.setenv("JIUWENBOX_NETWORK_MODE", "offline")
     host = SecurityPolicy(network={"mode": "host"})
@@ -120,9 +120,7 @@ def test_offline_unshares_net_without_a_named_namespace(
     assert "--unshare-net" in fresh
 
 
-def test_exec_fails_when_the_command_cgroup_cannot_be_created(
-    jiuwenbox_importable: None, tmp_path: Path
-) -> None:
+def test_exec_fails_when_the_command_cgroup_cannot_be_created(jiuwenbox_importable: None, tmp_path: Path) -> None:
     from jiuwenbox.server.runtime.process import ProcessRuntime
     from jiuwenbox.supervisor.cgroup import CgroupBackend, CgroupHandle
 
@@ -186,9 +184,7 @@ def test_user_namespace_turns_on_only_when_the_probe_succeeds(
     from jiuwenbox.server.runtime import process as process_module
 
     policy = SecurityPolicy()
-    policy = policy.model_copy(
-        update={"namespace": policy.namespace.model_copy(update={"user": False})}
-    )
+    policy = policy.model_copy(update={"namespace": policy.namespace.model_copy(update={"user": False})})
     monkeypatch.setattr(process_module, "unprivileged_user_namespace_works", lambda: False)
     assert process_module._apply_user_namespace(policy).namespace.user is False
     monkeypatch.setattr(process_module, "unprivileged_user_namespace_works", lambda: True)
@@ -207,9 +203,7 @@ def test_guarded_blocks_metadata_and_private_addresses(jiuwenbox_importable: Non
     assert host_is_blocked("8.8.8.8") is False
 
 
-def test_disk_floor_trips_when_free_space_is_low(
-    jiuwenbox_importable: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_disk_floor_trips_when_free_space_is_low(jiuwenbox_importable: None, monkeypatch: pytest.MonkeyPatch) -> None:
     from jiuwenbox.supervisor import disk_floor
 
     monkeypatch.setattr(disk_floor, "free_bytes", lambda _path: 10)

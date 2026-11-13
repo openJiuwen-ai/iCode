@@ -356,7 +356,7 @@ def test_configured_network_mode_reads_the_loaded_setting(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(
         "chrys.foundation.config.settings_store.load_settings",
-        lambda: _Loaded(),
+        _Loaded,
     )
     assert supervisor._configured_network_mode() == "offline"
 

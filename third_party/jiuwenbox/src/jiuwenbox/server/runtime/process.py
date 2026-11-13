@@ -289,6 +289,34 @@ def _cover_host_runtime_directories(config: BwrapConfig) -> None:
         config.extra_args.extend(("--tmpfs", path))
 
 
+def _rebind_under_private_tmpfs(config: BwrapConfig) -> None:
+    """Restore binds that the private ``/tmp``, ``/run``, and ``/var/run`` hide.
+
+    The late tmpfs covers host sockets. It also covers a workspace whose
+    path is under one of those directories, so the command's working
+    directory does not exist. Re-binding only the stricter paths leaves
+    the tmpfs on the directory itself. A read-only cover nested inside
+    the workspace is applied after the workspace bind.
+    """
+    roots: list[str] = []
+    for path in _PRIVATE_RUNTIME_DIRS:
+        if path == "/var/run" and _var_run_follows_private_run():
+            continue
+        roots.append(path.rstrip("/") or "/")
+
+    def covered(destination: str) -> bool:
+        normalized = destination.rstrip("/") or "/"
+        return any(normalized.startswith(root + "/") for root in roots)
+
+    ordered: list[tuple[str, str, str]] = [
+        (src, dst, "--bind") for src, dst in config.rw_binds if covered(dst)
+    ]
+    ordered.extend((src, dst, "--ro-bind") for src, dst in config.ro_binds if covered(dst))
+    ordered.sort(key=lambda item: (item[1].count("/"), item[2] == "--ro-bind"))
+    for src, dst, flag in ordered:
+        config.extra_args.extend((flag, src, dst))
+
+
 def _drop_host_session_env(config: BwrapConfig) -> None:
     """Drop host session-bus variables and the management listen URL.
 
@@ -1445,9 +1473,7 @@ class ProcessRuntime(RuntimeAdapter):
         if policy.network.mode == NetworkMode.GUARDED:
             proxy = self._guarded_proxies.get(sandbox_id)
             if proxy is None or proxy.path is None:
-                raise RuntimeError(
-                    f"Sandbox {sandbox_id} guarded proxy is not listening"
-                )
+                raise RuntimeError(f"Sandbox {sandbox_id} guarded proxy is not listening")
             config.env["JIUWENBOX_GUARDED_PROXY"] = "1"
             config.env["HTTP_PROXY"] = "http://127.0.0.1:3128"
             config.env["HTTPS_PROXY"] = "http://127.0.0.1:3128"
@@ -1537,6 +1563,7 @@ class ProcessRuntime(RuntimeAdapter):
 
         config.seccomp_fd = seccomp_fd
         _cover_host_runtime_directories(config)
+        _rebind_under_private_tmpfs(config)
         cgroup_handle = self._cgroup_handles.get(sandbox_id)
         if cgroup_handle is not None:
             # After the private /run tmpfs. An earlier bind would be hidden.
@@ -1546,9 +1573,7 @@ class ProcessRuntime(RuntimeAdapter):
             if proxy is not None and proxy.path is not None:
                 # Same reason as the cgroup bind: the private /run tmpfs
                 # would cover a socket mounted earlier.
-                config.extra_args.extend(
-                    ("--bind", str(proxy.path), "/run/guarded-proxy.sock")
-                )
+                config.extra_args.extend(("--bind", str(proxy.path), "/run/guarded-proxy.sock"))
         _drop_host_session_env(config)
         if self._needs_privdrop_for_process_identity(
             process_uid,
@@ -3409,9 +3434,7 @@ class ProcessRuntime(RuntimeAdapter):
                 timeout=request.timeout,
                 ipc=slot,
                 cgroup_procs=(
-                    ()
-                    if command_cgroup is None
-                    else tuple(command_cgroup.sandbox_procs_paths())
+                    () if command_cgroup is None else tuple(command_cgroup.sandbox_procs_paths())
                 ),
             ),
         )

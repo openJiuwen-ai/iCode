@@ -517,3 +517,43 @@ def test_non_root_keeps_named_account_resolution(
 
     assert ProcessRuntime._resolve_process_uid(policy) == _NAMED_UID
     assert ProcessRuntime._resolve_backing_identity(policy) == (_NAMED_UID, _NAMED_GID)
+
+
+def test_workspace_under_private_tmp_is_rebound_after_the_tmpfs(
+    jiuwenbox_importable: None,
+) -> None:
+    """A workspace under ``/tmp`` stays visible after the private tmpfs.
+
+    The late tmpfs hides host sockets. It must not hide the workspace or a
+    read-only cover nested inside it. ``/tmp`` itself stays a tmpfs, and a
+    workspace outside it is not mounted a second time.
+    """
+    from jiuwenbox.server.runtime.process import (
+        _cover_host_runtime_directories,
+        _rebind_under_private_tmpfs,
+    )
+    from jiuwenbox.supervisor.bwrap import BwrapConfig
+
+    config = BwrapConfig(
+        command=["/bin/true"],
+        rw_binds=[
+            ("/tmp/r5ws/ws", "/tmp/r5ws/ws"),
+            ("/home/dev/ws", "/home/dev/ws"),
+        ],
+        ro_binds=[("/tmp/r5ws/ws/.ssh", "/tmp/r5ws/ws/.ssh")],
+    )
+    _cover_host_runtime_directories(config)
+    _rebind_under_private_tmpfs(config)
+    argv = config.to_args()
+
+    def _last(flag: str, path: str) -> int:
+        found = [index for index in range(len(argv) - 1) if argv[index] == flag and argv[index + 1] == path]
+        assert found, (flag, path, argv)
+        return found[-1]
+
+    tmpfs = _last("--tmpfs", "/tmp")
+    workspace = _last("--bind", "/tmp/r5ws/ws")
+    cover = _last("--ro-bind", "/tmp/r5ws/ws/.ssh")
+    assert tmpfs < workspace < cover
+    assert _effective_mount(argv, "/tmp") == ("--tmpfs", "/tmp")
+    assert argv.count("/home/dev/ws") == 2
