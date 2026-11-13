@@ -578,6 +578,9 @@ class AgentLoader:
         status: str = "",
         subject: str = "",
         detail: str = "",
+        stage: str = "",
+        stage_subject: str = "",
+        stage_status: str = "",
     ) -> None:
         """Publish an agent load progress event."""
         await self._bus.publish(
@@ -591,6 +594,9 @@ class AgentLoader:
                 status=status,
                 subject=subject,
                 detail=detail,
+                stage=stage,
+                stage_subject=stage_subject,
+                stage_status=stage_status,
                 session_id=self._session.session_id,
             ),
         )

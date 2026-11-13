@@ -49,6 +49,7 @@ from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SHELL, get_to
 from chrys.foundation.util.imports import import_off_loop
 from chrys.kernel import Agent, LoopRecorder
 from chrys.orchestration.engine.run.bindings import TurnBindings
+from chrys.orchestration.initialization import initialize_dependencies
 from chrys.orchestration.invoker.origin import InvocationPublishers
 from chrys.orchestration.invoker.resources import Conversation, PreparedAgent, rollback_resources
 from chrys.orchestration.invoker.runtime import (
@@ -199,6 +200,9 @@ class LoadProgressCallback(Protocol):
         status: str = "",
         subject: str = "",
         detail: str = "",
+        stage: str = "",
+        stage_subject: str = "",
+        stage_status: str = "",
     ) -> Awaitable[None]: ...
 
 
@@ -331,6 +335,9 @@ async def build_agent(
             status: str = "",
             subject: str = "",
             detail: str = "",
+            stage: str = "",
+            stage_subject: str = "",
+            stage_status: str = "",
         ) -> None:
             if on_load_progress is not None:
                 await on_load_progress(
@@ -343,6 +350,7 @@ async def build_agent(
                     status=status,
                     subject=subject,
                     detail=detail,
+                    **({"stage": stage, "stage_subject": stage_subject, "stage_status": stage_status} if stage else {}),
                 )
 
         if profile.acp is not None:
@@ -588,6 +596,21 @@ async def build_agent(
                 shows_answer_text=sub_agent_shows_answer_text,
             )
             prepared.own(sub_agent_tools.cleanup)
+
+            async def _sub_progress(name: str, position: int, stage: str, subject: str, status: str) -> None:
+                await _progress(
+                    AGENT_LOAD_PHASE_SUB_AGENTS,
+                    f"Loading sub-agent {name}",
+                    server_name=name,
+                    current=position,
+                    total=sub_agent_total,
+                    status=AGENT_LOAD_STATUS_RUNNING,
+                    subject=name,
+                    stage=stage,
+                    stage_subject=subject,
+                    stage_status=status,
+                )
+
             for index, ref in enumerate(profile.sub_agents.agents, start=1):
                 await _progress(
                     AGENT_LOAD_PHASE_SUB_AGENTS,
@@ -636,6 +659,8 @@ async def build_agent(
                         settings=settings,
                         fallback_profile=active_profile,
                         model_registry=model_registry,
+                        initialization=initialization,
+                        on_initialization_progress=partial(_sub_progress, ref.profile, index - 1),
                     )
                 await _progress(
                     AGENT_LOAD_PHASE_SUB_AGENTS,
@@ -702,7 +727,9 @@ async def build_agent(
                     subject=config.name,
                 )
 
-            mcp_tools = await mcp_adapter.connect_all(profile.tools.mcp, progress=_mcp_progress)
+            mcp_tools = await mcp_adapter.connect_all(
+                profile.tools.mcp, progress=_mcp_progress, acquisition_scope=initialization.mcp
+            )
             mcp_tools_by_server = mcp_adapter.tool_names_by_server
             tools.extend(mcp_tools)
             warn_if_tool_loading_unbinds_thinking(profile, active_profile, chat_options, mcp_tools_by_server)
@@ -731,6 +758,7 @@ async def build_agent(
             runtime=runtime,
             session_dir=effective_session_dir,
             project_skills_enabled=settings.project_skills_enabled,
+            discovery_scope=initialization.skills,
         )
         if skills_provider is not None:
             context_providers.append(skills_provider)
@@ -1019,7 +1047,8 @@ async def build_agent(
         )
 
     try:
-        return await prepared.open(_acquire)
+        async with initialize_dependencies(mcp_cache) as initialization:
+            return await prepared.open(_acquire)
     except BaseException:
         await rollback_resources(prepared)
         raise

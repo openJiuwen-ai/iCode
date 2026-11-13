@@ -4120,6 +4120,42 @@ msgstr "已跳过子智能体 {name}"
 msgid "tui.agent_load.stage.skipped_sub_agent_reason"
 msgstr "已跳过子智能体 {name}：{reason}"
 
+#. English: Loading sub-agent {name} → Connected MCP server {server}
+#. chrys-meta={"fingerprint":"5e11c70e50aac444fb10bdb54ada6c0f5150c2429b32c20f9969e3a6557f6d94","multiline":false,"placeholders":["name","server"]}
+#: src/chrys/app/tui/screens/dialogs/agent_load.py
+msgid "tui.agent_load.stage.sub_agent_mcp_connected"
+msgstr "正在加载子智能体 {name} → 已连接 MCP 服务器 {server}"
+
+#. English: Loading sub-agent {name} → Connecting MCP server {server}
+#. chrys-meta={"fingerprint":"32885dfb8e127fdd60058ef24018c485df16e6c136f7318bff32e352eb9e0c8e","multiline":false,"placeholders":["name","server"]}
+#: src/chrys/app/tui/screens/dialogs/agent_load.py
+msgid "tui.agent_load.stage.sub_agent_mcp_connecting"
+msgstr "正在加载子智能体 {name} → 正在连接 MCP 服务器 {server}"
+
+#. English: Loading sub-agent {name} → Failed MCP server {server}
+#. chrys-meta={"fingerprint":"426f34a4c35609c809afdfb9de6dfa5b2196b83434b08fb2858cc1ea1c3a2978","multiline":false,"placeholders":["name","server"]}
+#: src/chrys/app/tui/screens/dialogs/agent_load.py
+msgid "tui.agent_load.stage.sub_agent_mcp_failed"
+msgstr "正在加载子智能体 {name} → MCP 服务器 {server} 连接失败"
+
+#. English: Loading sub-agent {name} → Failed to load skills
+#. chrys-meta={"fingerprint":"500b9dbd368b753985f140d1189b27d39ede65b6ee1d1c8496ce9c927ad0b7c3","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/agent_load.py
+msgid "tui.agent_load.stage.sub_agent_skills_failed"
+msgstr "正在加载子智能体 {name} → Skills 加载失败"
+
+#. English: Loading sub-agent {name} → Skills loaded
+#. chrys-meta={"fingerprint":"24111af50fb8e9bcfdd59c28ae304562f40cdf76354de86750ab25c512e1ca3e","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/agent_load.py
+msgid "tui.agent_load.stage.sub_agent_skills_loaded"
+msgstr "正在加载子智能体 {name} → Skills 已加载"
+
+#. English: Loading sub-agent {name} → Loading skills
+#. chrys-meta={"fingerprint":"6d67fbb71105738fadcb80b6a4de99042db2424a5b93f36a4b4a48fb09957e20","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/agent_load.py
+msgid "tui.agent_load.stage.sub_agent_skills_loading"
+msgstr "正在加载子智能体 {name} → 正在加载 Skills"
+
 #. English: Sub-agents loaded
 #. chrys-meta={"fingerprint":"339109ffa24b49254b8593a9b138d22d308f84e02a6076eea64df9fececf6f20","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/agent_load.py

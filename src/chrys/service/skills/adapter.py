@@ -42,6 +42,7 @@ from chrys.service.skills.runner import SubprocessScriptRunner
 if TYPE_CHECKING:
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.service.profiles.agents.schema import SkillConfig, SkillsConfig
+    from chrys.service.skills.discovery import SkillDiscoveryScope
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +302,7 @@ async def create_skills_provider(
     session_dir: Path | None = None,
     *,
     project_skills_enabled: bool = False,
+    discovery_scope: SkillDiscoveryScope | None = None,
 ) -> tuple[ChrysSkillsProvider | None, list[SkillProviderWarning]]:
     """Create a ChrysSkillsProvider from chrys SkillsConfig.
 
@@ -311,6 +313,8 @@ async def create_skills_provider(
         session_dir: Current session directory for recoverable script-output spills.
         project_skills_enabled: The user's ``project.skills_enabled`` setting;
             the working folder's ``.agents/skills`` loads only when it is on.
+        discovery_scope: Optional build-local initial file discovery. It is
+            never retained by the provider's runtime refresh callback.
 
     Returns ``(provider, warnings)`` where *warnings* collects any non-fatal
     errors (e.g. a single invalid skill that was skipped).  Empty
@@ -356,16 +360,8 @@ async def create_skills_provider(
     script_ext = tuple(config.script_extensions)
     tracker = _FileSkillLoadTracker()
 
-    async def _load_all_skills() -> list[Skill]:
-        file_skills: list[Skill] = []
-        if paths:
-            file_skills, failures = await asyncio.to_thread(
-                discover_file_skills,
-                paths,
-                script_extensions=script_ext,
-            )
-            tracker.record(failures)
-
+    def _merge_skills(file_skills: list[Skill], failures: list[SkillLoadFailure]) -> list[Skill]:
+        tracker.record(failures)
         merged: list[Skill] = []
         seen: set[str] = set()
         for skill in (*file_skills, *inline_skills):
@@ -379,6 +375,18 @@ async def create_skills_provider(
             seen.add(key)
             merged.append(skill)
         return merged
+
+    async def _load_all_skills() -> list[Skill]:
+        # Runtime refreshes deliberately never capture the initial discovery scope.
+        file_skills: list[Skill] = []
+        failures: list[SkillLoadFailure] = []
+        if paths:
+            file_skills, failures = await asyncio.to_thread(
+                discover_file_skills,
+                paths,
+                script_extensions=script_ext,
+            )
+        return _merge_skills(file_skills, failures)
 
     try:
         provider = ChrysSkillsProvider(
@@ -396,7 +404,11 @@ async def create_skills_provider(
     # Eagerly trigger discovery so synchronous callers (TUI startup screen)
     # can read skill_names / skill_sources / skill_details without awaiting.
     try:
-        await provider.initialize()
+        if discovery_scope is None:
+            await provider.initialize()
+        else:
+            file_skills, failures = await discovery_scope.discover(paths, script_extensions=script_ext)
+            await provider.initialize(initial_skills=_merge_skills(file_skills, failures))
     except Exception as exc:
         msg = f"Failed to discover skills: {exc}"
         logger.warning(msg)

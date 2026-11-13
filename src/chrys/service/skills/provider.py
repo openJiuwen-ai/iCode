@@ -402,15 +402,23 @@ class ChrysSkillsProvider(ContextProvider):
         self._skills = skills
         self._loaded = True
 
-    async def initialize(self) -> None:
+    async def initialize(self, *, initial_skills: Sequence[Skill] | None = None) -> None:
         """Run first discovery so synchronous accessors are populated.
 
         ``create_skills_provider`` always calls this before returning, so
         chrys callers reading :meth:`skill_names` / :meth:`skill_sources` /
         :meth:`skill_details` synchronously see the full list at startup.
+        A build may provide its private copy of an initial file snapshot;
+        later refreshes always use the independent ``load_skills`` callback.
         """
         if not self._loaded:
-            await self._reload()
+            if initial_skills is None:
+                await self._reload()
+            else:
+                skills = list(initial_skills)
+                _warm_skill_revisions(skills)
+                self._skills = skills
+                self._loaded = True
 
     def skill_names(self) -> list[str]:
         """Return loaded skill names in source order."""

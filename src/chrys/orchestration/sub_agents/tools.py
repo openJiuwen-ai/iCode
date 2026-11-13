@@ -63,6 +63,7 @@ from chrys.kernel import (
     Message,
     StallExhaustedAction,
 )
+from chrys.orchestration.initialization import AgentInitialization, initialize_dependencies
 from chrys.orchestration.invoker.attempts import AgentRunKwargs, WireRecipe
 from chrys.orchestration.invoker.child_history import service_storage_side
 from chrys.orchestration.invoker.contracts import SubAgentFailureReason, SubAgentStatus, Unbind
@@ -101,7 +102,7 @@ from chrys.service.llm.clients import create_client, effective_model_base_url
 from chrys.service.llm.route_sessions import derive_llm_route_session_id, llm_parent_session_id, llm_route_session_id
 from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.mcp.thinking_warning import warn_if_tool_loading_unbinds_thinking
-from chrys.service.profiles.agents.schema import DEFAULT_SUB_AGENT_CONCURRENCY
+from chrys.service.profiles.agents.schema import DEFAULT_SUB_AGENT_CONCURRENCY, MCPServerConfig
 from chrys.service.profiles.models.options import effective_chat_options, uses_responses_compact_continuation
 from chrys.service.profiles.models.schema import API_STYLE_RESPONSES
 from chrys.service.session.message_metadata import TOOL_RESULT_METADATA_KEY
@@ -395,6 +396,8 @@ class SubAgentTools:
         settings: Settings,
         fallback_profile: ModelProfile,
         model_registry: ModelProfileRegistry | None = None,
+        initialization: AgentInitialization | None = None,
+        on_initialization_progress: Callable[[str, str, str], Awaitable[None]] | None = None,
     ) -> None:
         """Build a sub-agent from a profile and register it as a tool.
 
@@ -406,6 +409,19 @@ class SubAgentTools:
         command-line ``--model`` flag changes only the active fallback model,
         so it does not replace sub-agent model bindings.
         """
+        if initialization is None:
+            async with initialize_dependencies(self._mcp_cache) as scoped:
+                await self.register(
+                    ref,
+                    profile,
+                    runtime,
+                    settings=settings,
+                    fallback_profile=fallback_profile,
+                    model_registry=model_registry,
+                    initialization=scoped,
+                    on_initialization_progress=on_initialization_progress,
+                )
+            return
         prepared = PreparedAgent()
 
         async def _acquire(conversation: Conversation) -> None:
@@ -480,13 +496,27 @@ class SubAgentTools:
                 # the build with the guidance to rename or exclude it.
                 reserved_tool_names.update(web_tools.hosted)
                 mcp_adapter = MCPAdapter(
+                    bus=self._bus,
+                    session_id=self._session_id,
                     cache=self._mcp_cache,
                     stdio_cwd=runtime_cwd,
                     session_dir=self._session_dir,
                     reserved_tool_names=reserved_tool_names,
                 )
                 prepared.own(mcp_adapter.disconnect_all)
-                mcp_tools = await mcp_adapter.connect_all(profile.tools.mcp)
+
+                async def _mcp_progress(
+                    config: MCPServerConfig, state: str, current: int, total: int, failed: int
+                ) -> None:
+                    if on_initialization_progress is not None:
+                        status = {"starting": "running", "connected": "done", "failed": "failed"}[state]
+                        await on_initialization_progress("mcp", config.name, status)
+
+                mcp_tools = await mcp_adapter.connect_all(
+                    profile.tools.mcp,
+                    acquisition_scope=initialization.mcp,
+                    progress=_mcp_progress,
+                )
                 self._mcp_adapters[tool_name] = mcp_adapter
                 tools.extend(mcp_tools)
                 warn_if_tool_loading_unbinds_thinking(
@@ -563,12 +593,17 @@ class SubAgentTools:
             progressive_resume_provider = mcp_adapter.create_resume_provider() if mcp_adapter is not None else None
             from chrys.service.skills.adapter import create_skills_provider
 
+            if on_initialization_progress is not None:
+                await on_initialization_progress("skills", "", "running")
             skills_provider, skill_warnings = await create_skills_provider(
                 profile.skills,
                 runtime=runtime,
                 session_dir=self._session_dir,
                 project_skills_enabled=settings.project_skills_enabled,
+                discovery_scope=initialization.skills,
             )
+            if on_initialization_progress is not None:
+                await on_initialization_progress("skills", "", "done" if skills_provider is not None else "failed")
             if skills_provider is not None:
                 shared_providers.append(skills_provider)
             if progressive_resume_provider is not None:

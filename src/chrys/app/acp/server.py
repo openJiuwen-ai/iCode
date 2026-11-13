@@ -1326,6 +1326,15 @@ class ChrysAcpServer:
                     "current": event.current,
                     "total": event.total,
                     "failed": event.failed,
+                    **(
+                        {
+                            "stage": event.stage,
+                            "stageSubject": event.stage_subject,
+                            "stageStatus": event.stage_status,
+                        }
+                        if event.stage
+                        else {}
+                    ),
                 },
             )
             return True
