@@ -380,7 +380,18 @@ class ApprovalMiddleware(FunctionMiddleware):
                 from chrys.service.tools.builtins.shell_filter import classify_shell_for_approval
 
                 approval_safe = classify_shell_for_approval(cmd, shell_name=tool_name)
-                if approval_safe.safe and not shell_command_may_access_sensitive_data(cmd, shell_name=tool_name):
+                # The classifier normalizes quote concatenation, while the text
+                # sensitive scan sees the raw command: ``cat .en''v`` becomes
+                # argv ``("cat", ".env")``. Check the argv that will actually
+                # run as well, or the two views disagree.
+                argv_sensitive = approval_safe.command is not None and any(
+                    target_may_access_sensitive_data(arg) for arg in approval_safe.command.argv
+                )
+                if (
+                    approval_safe.safe
+                    and not argv_sensitive
+                    and not shell_command_may_access_sensitive_data(cmd, shell_name=tool_name)
+                ):
                     self._decisions.append(
                         _decision(
                             request_id="",

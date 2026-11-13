@@ -91,6 +91,16 @@ def test_classifier_requires_approval(command: str, reason: str) -> None:
     assert decision.reason == reason
 
 
+def test_git_bash_keeps_safe_commands_on_its_shell() -> None:
+    """Git Bash's core tools live in its own usr/bin; keep shell lookup semantics."""
+    for command in ("ls -la", "cat README.md", "git log --oneline"):
+        decision = classify_shell_for_approval(command, shell_name="git_bash")
+
+        assert decision.safe is True
+        assert decision.command is not None
+        assert decision.command.execution == "shell"
+
+
 @pytest.mark.parametrize("shell_name", ["pwsh", "powershell", "cmd"])
 def test_windows_shells_are_not_auto_approved(shell_name: str) -> None:
     """Their argument grammar needs a separate parser; fail closed until then."""

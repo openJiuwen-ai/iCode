@@ -141,14 +141,27 @@ def classify_shell_for_approval(command: str, *, shell_name: str = "") -> Approv
     name = argv[0]
     args = list(argv[1:])
     if name in _APPROVAL_SAFE_EXTERNAL:
-        return ApprovalShellDecision(
-            command=SafeShellCommand(argv=argv, execution="exec", rule=f"unconditional:{name}")
-        )
+        return _safe_command(argv, execution="exec", rule=f"unconditional:{name}", shell_name=shell_name)
     if name in _POSIX_SHELL_BUILTINS:
-        return ApprovalShellDecision(command=SafeShellCommand(argv=argv, execution="shell", rule=f"builtin:{name}"))
+        return _safe_command(argv, execution="shell", rule=f"builtin:{name}", shell_name=shell_name)
     if _is_safe_special_command(name, args):
-        return ApprovalShellDecision(command=SafeShellCommand(argv=argv, execution="exec", rule=f"validator:{name}"))
+        return _safe_command(argv, execution="exec", rule=f"validator:{name}", shell_name=shell_name)
     return ApprovalShellDecision(reason=f"not_approval_safe:{name}")
+
+
+def _safe_command(
+    argv: tuple[str, ...], *, execution: ExecutionMode, rule: str, shell_name: str
+) -> ApprovalShellDecision:
+    """Build a safe decision, keeping Git Bash on its shell for tool lookup.
+
+    Git Bash's ``ls``/``cat``/``stat`` live in its own ``usr/bin`` and are not
+    necessarily on the parent process ``PATH``. The command text still passed
+    the no-expansion check, so running it through Git Bash preserves the old
+    lookup semantics without reopening shell expansion.
+    """
+    if shell_name == "git_bash":
+        execution = "shell"
+    return ApprovalShellDecision(command=SafeShellCommand(argv=argv, execution=execution, rule=rule))
 
 
 def _simple_posix_argv(command: str) -> tuple[str, ...] | None:

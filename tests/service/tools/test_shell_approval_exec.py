@@ -9,7 +9,8 @@ import pytest
 import chrys.service.tools.builtins.shell as shell_module
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform import ShellInfo
-from chrys.service.tools.builtins.shell import ShellTools
+from chrys.foundation.tool_result_metadata import SHELL_EXIT_CODE_METADATA_KEY
+from chrys.service.tools.builtins.shell import ShellTools, shell_result_metadata
 
 
 def _shell() -> ShellTools:
@@ -54,6 +55,27 @@ async def test_quoted_argument_stays_one_argv_element(monkeypatch: pytest.Monkey
     await _shell().execute("cat 'file with space'", reason="test")
 
     assert calls == [("cat 'file with space'", ("cat", "file with space"), True)]
+
+
+async def test_missing_direct_executable_reports_command_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing auto-approved binary is not a missing shell; keep shell exit 127 semantics."""
+
+    async def missing_spawn(command, shell, cwd, *, direct_argv=None, sanitized=False):
+        raise FileNotFoundError(direct_argv[0] if direct_argv else command)
+
+    monkeypatch.setattr(shell_module, "_spawn_pty", missing_spawn)
+    monkeypatch.setattr(shell_module, "_spawn_pipe", missing_spawn)
+    metadata: dict[str, object] = {}
+    token = shell_result_metadata.set(metadata)
+    try:
+        result = await _shell().execute("md5sum README.md", reason="test")
+    finally:
+        shell_result_metadata.reset(token)
+
+    assert "command not found — md5sum" in result
+    assert "[exit_code: 127]" in result
+    assert metadata[SHELL_EXIT_CODE_METADATA_KEY] == 127
+    assert "shell not found" not in result
 
 
 @pytest.mark.parametrize(

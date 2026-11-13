@@ -5395,11 +5395,11 @@
         ["wrapper", "await bound_process_output(self._session_dir, 'shell', canonical, budget, captures, lead=lead)", "unresolved", "chrys.service.tools.spill.bound_process_output"]
       ],
       "ShellTools._execute_pipe": [
-        ["wrapper", "await _spawn_pipe(command, shell, cwd)", "unresolved", "chrys.service.tools.builtins.shell._spawn_pipe"],
+        ["wrapper", "await _spawn_pipe(command, shell, cwd, direct_argv=argv, sanitized=sanitized)", "unresolved", "chrys.service.tools.builtins.shell._spawn_pipe"],
         ["wrapper", "await self._follow(run, command, reason, cwd, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._follow"]
       ],
       "ShellTools._execute_pty": [
-        ["wrapper", "await _spawn_pty(command, shell, cwd)", "unresolved", "chrys.service.tools.builtins.shell._spawn_pty"],
+        ["wrapper", "await _spawn_pty(command, shell, cwd, direct_argv=argv, sanitized=sanitized)", "unresolved", "chrys.service.tools.builtins.shell._spawn_pty"],
         ["wrapper", "await self._follow(run, command, reason, cwd, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._follow"]
       ],
       "ShellTools._follow": [
@@ -5410,8 +5410,8 @@
         ["wrapper", "await self._bound_result('\\n'.join(parts), budget, captures)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"]
       ],
       "ShellTools._run": [
-        ["wrapper", "await self._execute_pipe(command, shell, cwd, timeout, reason)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pipe"],
-        ["wrapper", "await self._execute_pty(command, shell, cwd, timeout, reason)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pty"],
+        ["wrapper", "await self._execute_pipe(command, shell, cwd, timeout, reason, argv=argv, sanitized=sanitized)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pipe"],
+        ["wrapper", "await self._execute_pty(command, shell, cwd, timeout, reason, argv=argv, sanitized=sanitized)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pty"],
         ["wrapper", "await self._bound_result('\\n'.join(parts), budget, captures)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"],
         ["wrapper", "await self._output_then(exc.run.captured(), budget, f'[{stopped}]', f'[exit_code: {exc.run.returncode}]')", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._output_then"],
         ["wrapper", "await self._backgrounded_result(exc.task, exc.captures, timeout, budget)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._backgrounded_result"],
@@ -5419,9 +5419,9 @@
       ],
       "ShellTools.execute": [
         ["thread_pool", "await asyncio.to_thread(physical_dir, cwd)", "unresolved"],
-        ["wrapper", "await self._run(command, reason, cwd, timeout, budget, workdir)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._run"],
+        ["wrapper", "await self._run(command, reason, cwd, timeout, budget, workdir, argv=argv, sanitized=sanitized)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._run"],
         ["awaitable", "await tasks.stop_requested()", "unresolved"],
-        ["wrapper", "await self._run(command, reason, cwd, timeout, budget, workdir)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._run"],
+        ["wrapper", "await self._run(command, reason, cwd, timeout, budget, workdir, argv=argv, sanitized=sanitized)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._run"],
         ["awaitable", "await tasks.stop_requested()", "unresolved"]
       ],
       "_Command._close": [
@@ -5469,10 +5469,10 @@
         ["sleep", "await asyncio.sleep(0)", "event-loop-yield"]
       ],
       "_spawn_pipe": [
-        ["wrapper", "await spawn_managed_stdio_process(*argv, cwd=cwd, env=env, limit=_READ_CHUNK_BYTES)", "unresolved", "chrys.foundation.platform.process.spawn_managed_stdio_process"]
+        ["wrapper", "await spawn_managed_stdio_process(*launch_argv, cwd=cwd, env=env, limit=_READ_CHUNK_BYTES)", "unresolved", "chrys.foundation.platform.process.spawn_managed_stdio_process"]
       ],
       "_spawn_pty": [
-        ["awaitable", "await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL, stdout=slave, stderr=slave, cwd=cwd, env=env, preexec_fn=_setup_pty)", "unresolved"],
+        ["awaitable", "await asyncio.create_subprocess_exec(*launch_argv, stdin=asyncio.subprocess.DEVNULL, stdout=slave, stderr=slave, cwd=cwd, env=env, preexec_fn=_setup_pty)", "unresolved"],
         ["awaitable", "await asyncio.get_running_loop().connect_read_pipe(lambda: PtyOutputProtocol(reader), master_file)", "unresolved"],
         ["awaitable", "await run.close()", "unresolved"]
       ],

@@ -1276,6 +1276,17 @@ class ShellTools:
             return working_dir_missing_error(exc.path)
         except FileNotFoundError:
             _record_shell_error()
+            if argv:
+                # Direct exec reports a missing executable at spawn time. The
+                # shell path would instead print ``command not found`` and exit
+                # 127; keep the same semantics instead of blaming the shell.
+                executable = argv[0]
+                _record_shell_exit_code(127)
+                return tool_error(
+                    "command_not_found",
+                    f"command not found — {executable}\n[exit_code: 127]",
+                    details={"command": command, "executable": executable},
+                )
             return tool_error("shell_not_found", f"shell not found at {shell.path}", details={"shell_path": shell.path})
         except Exception as e:
             _record_shell_error()
