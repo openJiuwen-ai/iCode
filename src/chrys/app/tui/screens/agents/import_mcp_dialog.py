@@ -50,7 +50,7 @@ from chrys.app.tui.widgets import Checkbox, DialogButtonRow, DialogButtonSpec, H
 from chrys.app.tui.widgets.config_card import CollapsibleConfigCard
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar, sanitize_terminal_block
 from chrys.service.mcp.importers import IMPORT_SOURCES, ImportContext, detected_sources
 from chrys.service.profiles.agents.schema import MCPServerConfig
 
@@ -172,7 +172,9 @@ class _RefusedCard(CollapsibleConfigCard):
         super().__init__(index, collapsed=collapsed, read_only=True)
 
     def compose(self) -> ComposeResult:
-        yield from self.compose_header(self._title, row_class="mcp-header-row", title_class="mcp-title")
+        yield from self.compose_header(
+            sanitize_legacy_scalar(self._title), row_class="mcp-header-row", title_class="mcp-title"
+        )
         with self.card_body(), Vertical(classes="mcp-import-notes") as notes:
             notes.border_title = self._notes_title
             yield from self._notes
@@ -251,7 +253,8 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
 
     def _render_message(self, reference: MessageRef) -> str:
         controller = self._locale_controller
-        return format_message(reference) if controller is None else render_str(controller.localizer, reference)
+        text = format_message(reference) if controller is None else render_str(controller.localizer, reference)
+        return sanitize_terminal_block(text)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="mcp-import-container") as container:
@@ -354,6 +357,7 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
                         self._results[source_id] = result
             async with self._pane_lock:
                 if generation == self._generation:
+                    self._remember_folds()
                     await self._mount_pane(self._pane_widgets(source, self._results[source_id]), source_id)
                     self._pane_message = None
         except Exception:
@@ -365,6 +369,7 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
     async def _show_message(self, reference: MessageRef, generation: int, *, error: bool = False) -> None:
         async with self._pane_lock:
             if generation == self._generation:
+                self._remember_folds()
                 classes = "mcp-import-error" if error else "mcp-import-message"
                 await self._mount_pane([Static(Text(self._render_message(reference)), classes=classes)])
                 self._pane_message = (reference, error)
@@ -375,14 +380,17 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
         except Exception:
             logger.exception("Showing a message in the MCP import dialog failed")
 
+    def _remember_folds(self) -> None:
+        """Snapshot current folds before constructing replacements that read them."""
+        for item in self.query_one("#mcp-import-servers", VerticalScroll).query(_ImportItem):
+            self._folded.setdefault(item.source.source_id, {})[item.index] = item.card.collapsed
+
     async def _mount_pane(self, widgets: list[Widget], source_id: str | None = None) -> None:
         """Replace the right pane with *source_id*'s servers, or a message when ``None``.
 
         Callers hold ``_pane_lock`` so two rebuilds never interleave.
         """
         pane = self.query_one("#mcp-import-servers", VerticalScroll)
-        for item in pane.query(_ImportItem):
-            self._folded.setdefault(item.source.source_id, {})[item.index] = item.card.collapsed
         with self.app.batch_update():
             await remove_children_shielded(pane)
             await pane.mount(*widgets)

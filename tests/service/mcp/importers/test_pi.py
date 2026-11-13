@@ -38,6 +38,16 @@ def _only(home: Path, entry: dict[str, Any]) -> McpImportCandidate:
     return candidate
 
 
+@pytest.mark.parametrize("exposure", ["hidden", "deferred"])
+@pytest.mark.parametrize("tool", ["read,delete", " read", ""])
+def test_unrepresentable_tool_policy_refuses_the_original_setting(tmp_path: Path, exposure: str, tool: str) -> None:
+    candidate = _only(tmp_path, {"command": "run", "exposure": exposure, "toolExposure": {tool: "direct"}})
+
+    assert candidate.config is None
+    assert candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert candidate.problem_field == "mcpServers.srv.toolExposure"
+
+
 @pytest.mark.parametrize(
     ("entry", "expected"),
     [

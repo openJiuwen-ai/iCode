@@ -86,40 +86,55 @@ Working Directory can use `{{ENV_VAR}}` to reference environment variables set b
 You can copy MCP servers you already use in Claude Code, Codex, OpenCode or Pi into the current agent. This is a one-time copy: later changes in the other application do not update iCode.
 
 1. In `/agents mcp`, click "Import from Other Apps" next to "+ Add".
-2. Select an application on the left. Each server is shown as the card it will become; click its name to expand it.
-3. Tick the servers you want, then click "Import". You can tick servers from several applications before importing; each application on the left shows how many of its servers are ticked. Before adding them, iCode lists the ticked servers by application: click "Import" to confirm, or "Back" to change your ticks.
-4. Review the new cards, do what their warnings ask, click "Test", then "Save". Importing alone does not connect to a server or save anything.
+2. Select an application on the left. Click a server's name to expand its card and review its settings and warnings.
+3. Tick the servers you want, then click "Import". You can select servers from several applications before importing; the left panel shows the number selected in each application.
+4. Review the server list in the confirmation window. Click "Import" to confirm, or "Back" to change your selection.
+5. Check the newly added cards, fill in or adjust settings as the warnings suggest, click "Test", then "Save". Importing alone does not connect to a server or save anything.
 
-The mark after a server's name tells you what to check. "⚠" with a number counts its warnings. A server you cannot tick follows the same rules as "+ Add": "Already added" when the current agent has the same server, or "Name in use" or "Connection in use" when it has a conflicting one (point at the mark for details); "Duplicate" when it conflicts with a server you ticked (point at the mark to see which); or "Can't import", with the reason in the card. Servers you cannot tick have no tick box and a gray name.
+Cards you have expanded stay open when you switch applications or change the interface language, so you can continue checking them.
+
+Some special characters appear as `�` when you preview or edit a configuration. Copying or saving keeps the original characters.
+
+The mark after a server's name tells you what to check. Servers you cannot select have a gray name and no checkbox.
+
+| Mark | Meaning and action |
+| --- | --- |
+| ⚠ with a number | The number of warnings. Expand the card to read them. |
+| Already added | The current agent already has this configuration. You do not need to import it again. |
+| Name in use / Connection in use | It conflicts with a configuration in the current agent. Hover over the mark for details. |
+| Duplicate | It conflicts with another server you selected. Hover over the mark to see which one, then uncheck one of them. |
+| Can't import | Expand the card for the reason, then follow [When a server cannot be imported](#when-a-server-cannot-be-imported). |
 
 ### Check before use
 
-- **Warnings (⚠)**: Each one explains what changed and what to check: settings that were not copied, sign-in that cannot be carried over, environment variables to set, or tools to choose. “Original setting” identifies the setting in the source file without showing its value. Unknown settings are not copied; check whether the features you need are available. They are shown in the card's Description and kept there after import, so you can come back to them; delete them once handled.
-- **Enabled**: A server the other application would not start is imported with "Enabled" unchecked: one turned off there, or a Claude Code project server (from `.mcp.json`) that you rejected or have not approved yet. Check it in the card if you want to use the server.
-- **Scope**: Imported servers work in every project that uses this agent, even if the other application used them in one project only. For STDIO, a blank Working Directory uses the current session folder; a relative path follows that folder when it changes, and an absolute path stays fixed.
+- **Warnings (⚠)**: Read the warnings in the card's "Description" first. They may ask you to set environment variables, add authentication details or choose tools again. "Original setting" tells you where to find the setting in the other application's file. Settings iCode does not recognize are not copied, so check that the features you need are still available. You can delete warnings from "Description" once you have addressed them.
+- **Enabled**: Servers disabled in the other application still have "Enabled" unchecked after import. The same applies to Claude Code project servers you rejected or have not approved yet. To use one, check its settings and select "Enabled".
+- **Scope**: Imported servers are available in every project that uses this agent, even if you originally used them in just one project. For STDIO servers, also check the [working directory](#check-imported-working-directories).
 - **Credentials**: Tokens written directly in the other application's configuration are copied into the agent's file. Sign-in done in the other application, such as OAuth, is not copied. iCode does not yet support MCP OAuth sign-in. If the server supports token authentication, configure “Headers” as its documentation describes; header values can also [come from a command](../configuration/models.md#get-an-api-key-from-a-command). If the server only supports OAuth sign-in, it cannot currently be used in iCode. A separate warning identifies authentication headers that were not copied; re-enter them only if the server needs them.
-- **Tools turned off everywhere**: Settings that turn tools off for all servers in the other application, such as OpenCode's global `tools`, are not imported. Choose the server's tools again in "Available Tool Scope".
-- **Tool restrictions and loading**: When a tool restriction cannot be carried over safely, the server is imported with no tools enabled; choose the tools you need in “Available Tool Scope”. A warning about Pi loading rules means only some loading rules were not copied: check “Loading Strategy” and “Initially Visible Tools”.
-- **Timeouts**: Codex's tool timeout becomes iCode's “MCP Request Timeout”; connecting to the server and each tool call use this waiting limit separately. After import, the connection waiting limit may differ from Codex. Click “Test” to check the connection; if it times out, increase “MCP Request Timeout (seconds)” and retry. This also lets tool calls wait longer. A Codex tool timeout of `0` becomes iCode's default MCP request timeout; any value you enter manually must be greater than `0` seconds.
+- **Available tools**: Check "Available Tool Scope" and select only the tools you need. Settings that apply to all servers in the other application, such as OpenCode's global `tools`, are not imported. If a warning says a tool restriction could not be copied, the server is set to "No tools" until you choose again.
+- **Loading**: If you see a loading warning after importing from Pi, check "Loading Strategy" and "Initially Visible Tools". See [Tool loading](#tool-loading) to choose suitable settings.
+- **Timeouts**: After importing from Codex, "MCP Request Timeout" uses the original tool timeout, or iCode's default if the original value was `0`. This setting affects how long both connections and tool calls can wait. If "Test" reports a connection timeout, increase "MCP Request Timeout (seconds)" and retry. Any value you enter must be greater than `0` seconds.
 - **Approval**: Approval rules from the other application do not carry over. Imported tools follow iCode's current approval mode and the agent's approval rules. Use `/approval` to choose the current mode; see [approval modes](../configuration/approval.md).
 
 ### Check imported working directories
 
-Check “Working Directory” before saving. A relative path follows the current iCode session folder. If you need the server to keep using its original folder, enter that folder's full path, without `~` or `..`. This is especially useful for Codex relative paths and OpenCode paths that use environment variables.
+Before saving, make sure "Working Directory" points to the folder the server needs. A blank value uses the current session folder; a relative path such as `tools/mcp` also follows that folder when it changes. To keep using the original folder, the most direct option is to enter its full path without `~` or `..`, for example `/home/me/mcp-server` or `C:\tools\mcp-server`.
 
-Click “Test” to check the connection, then “Save”. A successful connection does not confirm that the server is using the folder you intended, or that authentication, tool scope and every feature are configured correctly. Check the folder and the tools you need too. On a directory error, look for `Working directory:` in the connection report; connection errors during agent loading are also available with **F6**. See [Test and save](#test-and-save).
+After clicking "Test", check the folder and the tools you need as well as the connection result. On a directory error, look for the path after `Working directory:` in the connection report. Connection errors during agent loading are also available with **F6**. See [Test and save](#test-and-save).
 
 #### Working directory compatibility details
 
-Codex, OpenCode V1 and Pi working directories are copied into “Working Directory”. Pi's `~` becomes your home folder. In OpenCode V1 and Codex, `~/server` means a folder named `~` inside the session folder; import writes it as `./~/server` to keep that meaning. OpenCode's `{env:VAR}` becomes `{{VAR}}`; set that variable before starting iCode. Paths read from a file cannot be imported automatically.
+After importing from Codex, OpenCode V1 or Pi, review the copied path in the card's "Working Directory" field. Check these cases in particular:
 
-**OpenCode variables:** A path such as `{env:ROOT}/../srv` cannot be imported because the two applications may choose different folders. Other paths that use variables are imported with a reminder to check the folder. A variable value of `~/server`, for example, points to a folder named `~` in OpenCode but to your home folder in iCode. On macOS and Linux, if `link` is a symbolic link, `link/..` can also lead to different folders: OpenCode removes `link/..` before following the link, while iCode follows the link and then enters its parent folder. Use the intended folder's full path to avoid these differences.
+- **Paths starting with `~`**: Pi's `~` appears as your home folder after import. Codex and OpenCode V1 paths such as `~/server` appear as `./~/server`, pointing to an ordinary folder named `~`. If you want your home folder instead, enter the intended folder's full path.
+- **OpenCode environment variables**: `{env:VAR}` appears as `{{VAR}}` after import. Set the variable before starting iCode. If its value contains `~`, or uses symbolic links and `..` on macOS or Linux, it may point to a different folder after import; use the intended folder's full path. A path such as `{env:ROOT}/../srv` cannot be imported. Add the server manually with the full path.
+- **Windows paths**: Use a full path such as `C:\tools`. A path such as `C:tools` or `C:` cannot be imported. If you use an environment variable, check that its value is a full path too.
 
-**Windows paths:** Use a full path such as `C:\tools`. A path such as `C:tools` or `C:` cannot be imported. If an environment variable supplies such a path, the connection fails.
-
-**Codex relative paths:** Codex uses the folder where it was started to interpret a configured relative `cwd`, including `"."`. iCode uses the current session folder. For example, starting Codex in `/launch` with `codex -C /project` makes `cwd = "tools"` use `/launch/tools` and `cwd = "."` use `/launch`. Leaving out `cwd` uses `/project`. In an iCode session at `/project`, the imported `tools` uses `/project/tools`, and `.` uses `/project`. Import keeps these relative paths and shows a reminder; it cannot recover the folder where Codex was originally started.
+**Take extra care with relative paths imported from Codex.** For example, starting Codex in `/launch` with `codex -C /project` makes `cwd = "tools"` use `/launch/tools`. After importing into an iCode session whose working directory is `/project`, `tools` uses `/project/tools`. To keep using the original folder, enter `/launch/tools`. Check `cwd = "."` too: it changes from the folder where you started Codex to the current iCode session folder.
 
 ### Where servers are found
+
+If a server is missing from the list, check that it is saved in one of these locations, then check the project trust settings below.
 
 | Application | Files read |
 | --- | --- |
@@ -128,24 +143,28 @@ Codex, OpenCode V1 and Pi working directories are copied into “Working Directo
 | OpenCode | `opencode.json`, `opencode.jsonc` or `config.json` in `~/.config/opencode`; the file named by `OPENCODE_CONFIG`; `opencode.json` or `opencode.jsonc` in each folder from the top of the Git repository (outside a repository, from the top of the disk) down to the current folder, in those folders' `.opencode` folders, in `~/.opencode` and in the folder named by `OPENCODE_CONFIG_DIR` |
 | Pi | `~/.pi/agent/mcp.json` (or the one in `PI_CODING_AGENT_DIR`); `.pi/mcp.json` in the current folder, if you trust it in Pi |
 
-A project's own files cannot add servers to your agent on their own. As in Codex and Pi, their project files are read only if you trust the folder there; in Claude Code, a server from `.mcp.json` is imported turned off until you approve it, and approvals saved in the project's own settings count only once you trust that project itself (trusting a folder above it is not enough).
+Project configurations also depend on your choices in the original application:
+
+- **Codex and Pi**: Project servers appear in the import list only if you trust that folder in the original application.
+- **Claude Code**: Servers from `.mcp.json` that you have not approved are imported disabled. If approval is saved in the project's own settings, you must also trust that project itself in Claude Code; trusting a parent folder is not enough.
 
 When several files define a server with the same name, the one that applies to the current project is listed. Servers added only by cloud services, plugins or extensions are not listed; add them manually.
 
 ### When a server cannot be imported
 
-"Can't import" names the setting in the other application's file that iCode cannot use as written. Common causes:
+"Can't import" names the setting that needs attention in the other application's file. Use this table to correct it and reopen import, or add the server manually.
 
 | Cause | What to do |
 | --- | --- |
 | The server uses SSE or WebSocket, or runs in a remote Codex environment | If it also offers Streamable HTTP or a STDIO command on this computer, add it manually that way. |
 | An environment variable in a URL, command or argument | Add the server manually with the full URL or the actual value. |
-| A value read from a file, such as OpenCode's `{file:...}` | Import does not read the referenced file. For a URL, name, command or argument, enter the actual content when adding the server manually. Environment variable values and header values can use a literal value, an environment variable or a value command. Working Directory can use a path or an environment variable, but cannot use a value command. |
+| A file reference in a setting, such as OpenCode's `{file:...}` | Add the server manually and fill in the needed content. Environment variable values and header values can also [come from a command](../configuration/models.md#get-an-api-key-from-a-command) or reference an environment variable with `{{ENV_VAR}}`. Working Directory supports only a path or an environment variable reference. |
 | A value Pi gets by running a command (starting with `!`) | Add the server manually and [get the value from a command](../configuration/models.md#get-an-api-key-from-a-command) in iCode, or enter it directly. |
 | A missing value, or one with spaces at either end | Fill in the value or remove the extra spaces in the original configuration file, then reopen import. |
-| An explicit empty Codex `cwd = ""` | Remove the setting to use the session folder, or enter a valid directory. An empty string is not treated as an omitted setting. |
+| A tool list with empty entries, duplicate names, spaces around names, or a comma within a name | Remove empty entries and duplicates and trim spaces around names in the original configuration, then import again. Lists containing a tool name with a comma cannot currently be imported. |
+| A Codex working directory written as `cwd = ""` | Remove that line to use the session folder, or fill in the folder the server needs, then import again. |
 | An OpenCode Working Directory combining an environment variable and `..`, such as `{env:ROOT}/../srv` | Add the server manually with the intended folder's full path, without `~` or `..`, to avoid using a different folder. |
-| On Windows, a drive-relative `cwd` such as `C:tools` or `C:` | Enter a full absolute path such as `C:\tools`. A drive-relative path depends on a drive's current folder and cannot launch in iCode. |
+| A Windows working directory written as `C:tools` or `C:` | Use a full path such as `C:\tools`, with a slash after the drive letter's colon. |
 | A Working Directory containing line breaks or invisible special characters | Retype the folder path in the original configuration file, then reopen import, or add the server manually and enter the path. |
 | An incorrect header name, a value containing unsupported characters such as Chinese text or line breaks, or different values entered for the same header | Check the headers in the original configuration file against the server instructions, then reopen import. Keep one entry per header; names that differ only in case count as the same name. |
 

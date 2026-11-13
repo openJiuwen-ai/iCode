@@ -18,6 +18,7 @@ from chrys.service.mcp.importers.base import (
     SourceErrorKind,
     SourceReadError,
     SourceServer,
+    ValueReason,
     Var,
     WarningKind,
     by_name,
@@ -90,6 +91,37 @@ def test_convert_caps_an_unbounded_timeout() -> None:
     config = convert(_stdio(timeout_seconds=math.inf)).config
     assert config is not None
     assert config.request_timeout == MAX_REQUEST_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("field", ["allowed_tools", "always_load"])
+@pytest.mark.parametrize(
+    ("names", "reason"),
+    [
+        (("read,delete",), ValueReason.CHARACTERS),
+        ((" read",), ValueReason.WHITESPACE),
+        (("read ",), ValueReason.WHITESPACE),
+        (("",), ValueReason.EMPTY),
+        ((" \t",), ValueReason.EMPTY),
+        (("read", "read"), ValueReason.INVALID),
+    ],
+)
+def test_convert_refuses_tool_lists_the_editor_cannot_preserve(field, names, reason) -> None:
+    server = _stdio(**{field: names, f"{field}_path": "servers.srv.tool_policy"})
+
+    candidate = convert(server)
+
+    assert candidate.config is None
+    assert candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert candidate.problem_field == "servers.srv.tool_policy"
+    assert candidate.reason is reason
+
+
+@pytest.mark.parametrize("allowed", [None, (), ("read", "delete"), ("read file", "工具")])
+def test_convert_keeps_representable_tool_scope(allowed) -> None:
+    config = convert(_stdio(allowed_tools=allowed)).config
+
+    assert config is not None
+    assert config.allowed_tools == (None if allowed is None else list(allowed))
 
 
 @pytest.mark.parametrize(

@@ -29,7 +29,7 @@ class _PickerApp(App[None]):
         self.locale_controller = LocaleController(Settings(locale=locale))
         self.results: list[MCPPickerResult] = []
         self.server = MCPServerConfig(
-            name="[server]\x1b\n", transport="stdio", command="/bin/server", description="[desc]\x1b\n"
+            name="[server]\x1b\n\u202e", transport="stdio", command="/bin/server", description="[desc]\x1b\n\u200b"
         )
         existing = MCPServerConfig(name="0-existing", transport="stdio", command="existing")
         choices = collect_mcp_choices(
@@ -121,6 +121,7 @@ async def test_picker_sanitizes_literal_text_and_delivers_only_one_selection() -
         text = option.prompt.plain
         assert "[server]" in text and "[desc]" in text
         assert "\x1b" not in text
+        assert "\u202e" in text and "\u200b" in text
         assert "STDIO · server" in text
         assert "Sources: Code" in text
         assert "1 invalid configuration hidden" in options.get_option("action:create").prompt.plain

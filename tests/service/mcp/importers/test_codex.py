@@ -38,6 +38,15 @@ def _only(home: Path, body: str) -> McpImportCandidate:
     return candidate
 
 
+@pytest.mark.parametrize("tools", [["read,delete"], [" read"], [""], ["read", "read"]])
+def test_unrepresentable_allowlist_refuses_the_original_setting(tmp_path: Path, tools: list[str]) -> None:
+    candidate = _only(tmp_path, 'command = "run"\nenabled_tools = ' + json.dumps(tools) + "\n")
+
+    assert candidate.config is None
+    assert candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert candidate.problem_field == "mcp_servers.srv.enabled_tools"
+
+
 def test_http_cwd_is_reported_as_not_imported(tmp_path: Path) -> None:
     candidate = _only(tmp_path, 'url = "https://x/mcp"\ncwd = "/unused"\nhttp_headers = { Authorization = "token" }\n')
     assert candidate.config is not None

@@ -314,6 +314,7 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         enabled=entry.get("enabled", True),
         timeout_seconds=positive_number(timeout),
         allowed_tools=allowed,
+        allowed_tools_path=f"{prefix}.enabled_tools",
         warnings=tuple(warning for warning in warnings if warning is not None),
         blocked_field=blocked,
         blocked_problem=problem,

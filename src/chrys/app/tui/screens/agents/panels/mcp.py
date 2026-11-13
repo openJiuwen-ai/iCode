@@ -35,6 +35,8 @@ from chrys.app.tui.screens.agents.panels.markdown_report import (
     inline_text,
     md_table,
 )
+from chrys.app.tui.screens.agents.panels.mcp_fields import MCPInput as Input
+from chrys.app.tui.screens.agents.panels.mcp_fields import MCPTextArea as EnhancedTextArea
 from chrys.app.tui.screens.agents.validation_messages import (
     CONTEXT_ERROR,
     DUPLICATE_KEY_ROW,
@@ -77,12 +79,11 @@ from chrys.app.tui.screens.agents.validation_messages import (
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.dialogs.connection_test import ConnectionTestDialog
 from chrys.app.tui.util.liveness import composed_live
-from chrys.app.tui.widgets import Checkbox, ConfigAddButton, EnhancedTextArea, HatchedEmptyState, Select
-from chrys.app.tui.widgets import EnhancedInput as Input
+from chrys.app.tui.widgets import Checkbox, ConfigAddButton, HatchedEmptyState, Select
 from chrys.app.tui.widgets.config_card import CardListChanged, CollapsibleConfigCard
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar, sanitize_terminal_block
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.command_line import join_windows_command_line, split_windows_command_line
 from chrys.service.mcp.adapter import (
@@ -1027,7 +1028,9 @@ class MCPConnectionCard(CollapsibleConfigCard):
 
     def _header_title(self, name: str) -> str:
         # An unnamed server is told apart by position, with the label its Save errors use.
-        return name.strip() or render_str(widget_localizer(self), MCP_SERVER_CONTEXT.bind(index=self._index + 1))
+        return sanitize_legacy_scalar(name.strip()) or render_str(
+            widget_localizer(self), MCP_SERVER_CONTEXT.bind(index=self._index + 1)
+        )
 
     @on(Input.Changed)
     def _on_name_changed(self, event: Input.Changed) -> None:
@@ -1660,7 +1663,7 @@ class MCPConnectionCard(CollapsibleConfigCard):
         return errors
 
     def _render_message(self, reference: MessageRef) -> str:
-        return render_str(widget_localizer(self), reference)
+        return sanitize_terminal_block(render_str(widget_localizer(self), reference))
 
     def _render_context_error(self, context: str, reference: MessageRef) -> str:
         return self._render_message(
@@ -1808,7 +1811,7 @@ class MCPConfigPanel(VerticalScroll):
         super().__init__()
 
     def _render_message(self, reference: MessageRef) -> str:
-        return render_str(widget_localizer(self), reference)
+        return sanitize_terminal_block(render_str(widget_localizer(self), reference))
 
     def _current_reserved_tool_names(self) -> set[str]:
         names = chrys_reserved_tool_names()
@@ -2013,7 +2016,9 @@ class MCPConfigPanel(VerticalScroll):
         with contextlib.suppress(Exception):
             server_name = card.query_one(f"#mcp-name-{index}", Input).value.strip()
 
-        dialog = ConnectionTestDialog(server_name=server_name, subject_label=_MCP_SERVER_SUBJECT.bind())
+        dialog = ConnectionTestDialog(
+            server_name=sanitize_legacy_scalar(server_name), subject_label=_MCP_SERVER_SUBJECT.bind()
+        )
         self.app.push_screen(dialog)
 
         try:
@@ -2143,7 +2148,7 @@ class MCPConfigPanel(VerticalScroll):
         else:
             friendly = render_message(_CONNECTION_FAILED.bind())
 
-        return f"{friendly}\n\n{raw}"
+        return sanitize_terminal_block(f"{friendly}\n\n{raw}")
 
     def _shows(self, card: MCPConnectionCard) -> bool:
         """Whether *card* is one of the mounted cards; a rebuild replaces them all, and re-indexes the new ones."""

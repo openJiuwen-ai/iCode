@@ -1419,6 +1419,8 @@ async def test_test_connect_button_shows_markdown_report_dialog() -> None:
 
         card = await _add_mcp_card(panel, pilot)
         card.query_one("#mcp-cmd-0", TextArea).text = "python -V"
+        raw_name = "server\x1b]52;c;VEVTVA==\x1b\\\u202e\u200b"
+        card.query_one("#mcp-name-0", Input).value = raw_name
 
         report = MCPTestReport(
             server_name="everything",
@@ -1437,6 +1439,11 @@ async def test_test_connect_button_shows_markdown_report_dialog() -> None:
         dialog = await _wait_for_test_dialog(app, pilot, success=True)
 
         assert _dialog_status(dialog) == "Connection Successful"
+        title = str(dialog.query_one("#connection-test-container").border_title)
+        assert "\x1b" not in title
+        assert "\u202e" in title and "\u200b" in title
+        assert "�" in title
+        assert panel.test_adapter.test_connection.call_args.args[0].name == raw_name
         # Success renders the Markdown report in the widened dialog; the plain
         # text body is gone with the rest of the loading chrome.
         assert dialog.has_class("-markdown")
@@ -1452,6 +1459,19 @@ async def test_test_connect_button_shows_markdown_report_dialog() -> None:
         assert "| `tools` | ✓ |" in source
         assert "- **echo** — Echo a message." in source
         assert not app.notifications
+
+
+@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
+def test_connection_error_marks_external_controls_without_changing_exception(locale: str) -> None:
+    raw = "server\x1b]52;c;VEVTVA==\x1b\\\u202e\u200b\nfailed"
+    error = RuntimeError(raw)
+
+    shown = MCPConfigPanel._format_connection_error(error, render_message=Localizer(locale).render)
+
+    assert "\x1b" not in shown
+    assert "\u202e" in shown and "\u200b" in shown
+    assert "�" in shown and "\nfailed" in shown
+    assert str(error) == raw
 
 
 @pytest.mark.asyncio

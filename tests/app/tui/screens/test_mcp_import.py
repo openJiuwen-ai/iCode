@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
 from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widgets import Button, Input, OptionList, Static, TextArea
@@ -27,7 +28,7 @@ from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.widgets import HatchedEmptyState
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n import Localizer
-from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
 from chrys.service.mcp.importers import (
     FieldUse,
     ImportWarning,
@@ -39,6 +40,7 @@ from chrys.service.mcp.importers import (
     ValueReason,
     WarningKind,
 )
+from chrys.service.mcp.importers.base import SourceServer, convert
 from tests.app.tui.screens._mcp_import_support import (
     FakeSource,
     PanelApp,
@@ -217,6 +219,140 @@ async def test_an_unopened_preview_keeps_cwd_on_import(monkeypatch) -> None:
         await import_ticked(dialog, pilot)
         await wait_for(lambda: len(app.panel.query(MCPConnectionCard)) == 1, pilot=pilot, description="card added")
         assert app.panel._snapshot_rows()[0].config.cwd == "."
+
+
+@pytest.mark.parametrize("transport", ["stdio", "http"])
+async def test_preview_and_imported_fields_sanitize_rendering_but_keep_raw_values(monkeypatch, transport) -> None:
+    payload = "\x1b]52;c;VEVTVA==\x1b\\\u202e\u200b"
+    raw = "value" + payload
+    config = replace(
+        stdio("srv" + payload),
+        transport=transport,
+        description=raw + "\nsecond line",
+        args=[raw],
+        env={"KEY" + payload: raw},
+        url="https://example.test/" + payload,
+        headers={"X-Test" + payload: raw},
+        allowed_tools=[raw],
+        use_progressive_disclosure=True,
+        always_load=[raw],
+        tool_name_prefix="srv",
+        enabled=False,
+    )
+    copied: list[str] = []
+    monkeypatch.setattr("chrys.app.tui.clipboard.platform_helpers.clipboard_copy", copied.append)
+    app = PanelApp(MCPConfigPanel([]))
+    async with app.run_test(size=(120, 100)) as pilot:
+        source = FakeSource("fake", "Fake", McpImportResult((candidate(config),)))
+        dialog = await open_dialog(app, pilot, [source])
+        (item,) = await wait_for_items(dialog, pilot, 1)
+        title = str(item.card.query_one(CollapsibleTitle).content)
+        assert "\x1b" not in title
+        assert "\u202e" in title and "\u200b" in title
+        item.card.set_collapsed(False, scroll_visible=False)
+        await wait_for(
+            lambda: bool(item.card.query(".mcp-item-value-input")), pilot=pilot, description="fields mounted"
+        )
+        await pilot.pause()
+        for field in item.card.query(Input):
+            assert "\x1b" not in field.render_line(0).text
+        value_input = item.card.query_one(".mcp-item-value-input", Input)
+        assert value_input.value == raw
+        assert sanitize_legacy_scalar(raw) in value_input.render_line(0).text
+        value_input.select_all()
+        value_input.action_copy()
+        assert copied[-1] == raw
+        assert item.imported is not None and item.imported.enabled is False
+        item.tick.value = True
+        await import_ticked(dialog, pilot)
+        await wait_for(lambda: len(app.panel.query(MCPConnectionCard)) == 1, pilot=pilot, description="card added")
+        card = app.panel.query_one(MCPConnectionCard)
+        await pilot.pause()
+        for field in card.query(Input):
+            assert "\x1b" not in field.render_line(0).text
+        for field in card.query(TextArea):
+            assert "\x1b" not in field.render_line(0).text
+            assert "\x1b" not in field.get_line(0).plain
+        description = card.query_one("#mcp-desc-0", TextArea)
+        assert raw in description.text
+        description.action_select_all()
+        description.action_copy()
+        assert copied[-1] == description.text
+        saved = card.get_config()
+        assert saved.name == config.name
+        assert saved.allowed_tools == config.allowed_tools
+        assert saved.always_load == config.always_load
+        assert saved.enabled is False
+        assert raw in saved.description
+        if transport == "stdio":
+            assert saved.args == config.args
+            assert saved.env == config.env
+        else:
+            assert saved.url == config.url
+            assert saved.headers == config.headers
+
+
+async def test_localization_and_source_switch_keep_current_folds() -> None:
+    result = McpImportResult((candidate(stdio("srv")), _unsupported("refused", Problem.UNSUPPORTED_CONNECTION)))
+    sources = [FakeSource("a", "Alpha", result), FakeSource("b", "Beta", result)]
+    app = PanelApp(MCPConfigPanel([]))
+    async with app.run_test(size=(120, 70)) as pilot:
+        dialog = await open_dialog(app, pilot, sources)
+        items = await wait_for_items(dialog, pilot, 2)
+        for collapsed in (False, True, False):
+            for item in items:
+                item.card.set_collapsed(collapsed, scroll_visible=False)
+            previous = items[0]
+            dialog.refresh_localization()
+            await wait_for(
+                lambda previous=previous: (
+                    bool(dialog.query(_ImportItem)) and dialog.query_one(_ImportItem) is not previous
+                ),
+                pilot=pilot,
+                description="localized pane replaced",
+            )
+            items = await wait_for_items(dialog, pilot, 2)
+            assert [item.card.collapsed for item in items] == [collapsed, collapsed]
+        for source_id in ("b", "a"):
+            dialog._request_source(source_id)
+            await wait_for(
+                lambda source_id=source_id: (
+                    bool(dialog.query(_ImportItem)) and dialog.query_one(_ImportItem).source.source_id == source_id
+                ),
+                pilot=pilot,
+                description="requested source mounted",
+            )
+            items = await wait_for_items(dialog, pilot, 2)
+            assert [item.card.collapsed for item in items] == ([True, True] if source_id == "b" else [False, False])
+
+
+@pytest.mark.parametrize(
+    ("allowed", "progressive", "always"),
+    [(None, False, ()), ((), False, ()), (("read", "delete"), True, ("read",)), (None, True, ("read",))],
+)
+async def test_import_keeps_representable_tool_policy_through_editor(allowed, progressive, always) -> None:
+    server = SourceServer(
+        "srv",
+        "/cfg.json",
+        "stdio",
+        command="python",
+        allowed_tools=allowed,
+        progressive=progressive,
+        always_load=always,
+    )
+    app = PanelApp(MCPConfigPanel([]))
+    async with app.run_test(size=(120, 80)) as pilot:
+        dialog = await open_dialog(app, pilot, [FakeSource("fake", "Fake", McpImportResult((convert(server),)))])
+        (item,) = await wait_for_items(dialog, pilot, 1)
+        item.tick.value = True
+        await import_ticked(dialog, pilot)
+        await wait_for(lambda: len(app.panel.query(MCPConnectionCard)) == 1, pilot=pilot, description="card added")
+        card = app.panel.query_one(MCPConnectionCard)
+        assert card.validate() == []
+        saved = card.get_config()
+        assert saved.allowed_tools == (None if allowed is None else list(allowed))
+        assert saved.use_progressive_disclosure is progressive
+        assert saved.always_load == list(always)
 
 
 def test_codex_relative_cwd_warning_survives_import_in_both_languages() -> None:

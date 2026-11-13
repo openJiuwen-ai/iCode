@@ -184,6 +184,8 @@ class SourceServer:
     cwd: Value | None = None
     """None means absent; an explicit empty path must not become iCode's session default."""
     cwd_path: str = ""
+    allowed_tools_path: str = ""
+    always_load_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -557,6 +559,18 @@ def convert(server: SourceServer) -> McpImportCandidate:
         return replace(refuse(Problem.UNSUPPORTED_CONNECTION), transport=server.transport)
     if server.blocked_field:
         return refuse(server.blocked_problem, server.blocked_field, server.blocked_reason, server.blocked_use)
+    for names, path in (
+        (server.allowed_tools, server.allowed_tools_path),
+        (server.always_load, server.always_load_path),
+    ):
+        if names is None:
+            continue
+        # The editor joins with commas, strips each item and rejects empty or duplicate names.
+        for name in names:
+            if not name.strip() or name != name.strip() or "," in name:
+                return refuse(Problem.VALUE_NOT_REPRESENTABLE, path, value_reason(name))
+        if len(set(names)) != len(names):
+            return refuse(Problem.VALUE_NOT_REPRESENTABLE, path)
     stdio = server.transport == "stdio"
     env: dict[str, str] = {}
     headers: dict[str, str] = {}

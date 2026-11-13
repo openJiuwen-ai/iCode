@@ -244,6 +244,8 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
         allowed_tools=access.allowed,
         progressive=access.progressive,
         always_load=access.always_load,
+        allowed_tools_path=f"{prefix}.toolExposure",
+        always_load_path=f"{prefix}.toolExposure",
         warnings=tuple(warning for warning in warnings if warning is not None),
         blocked_field=blocked,
         blocked_problem=Problem.VALUE_FROM_FILE_OR_COMMAND,
