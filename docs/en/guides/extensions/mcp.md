@@ -129,6 +129,8 @@ For failures while loading the agent, press **F6** to view iCode's connection er
 
 ## Reconnect with /reload
 
+While an agent and its local sub-agents load, matching MCP configurations share one connection attempt, including a failed attempt. The loading dialog names the sub-agent and MCP server being prepared. A failed server is not retried for each sub-agent during that load; fix the server and use `/reload` to try again. Server names and connection settings must match to share an attempt; the same address alone is not sufficient.
+
 `/reload` tries a new connection to each enabled MCP server of the current agent and its sub-agents, while the existing connections stay open. The next request uses the tools, prompt templates, and usage instructions each server now reports. Every server has its own result, so a failure on one doesn't affect the others:
 
 | The new connection | What happens | In the summary |

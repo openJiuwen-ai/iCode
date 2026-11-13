@@ -19,6 +19,8 @@ import contextlib
 import logging
 import tempfile
 from contextvars import Token
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -63,6 +65,7 @@ from chrys.kernel import (
     Message,
     StallExhaustedAction,
 )
+from chrys.orchestration.initialization import AgentInitialization, initialize_dependencies
 from chrys.orchestration.invoker.attempts import AgentRunKwargs, WireRecipe
 from chrys.orchestration.invoker.child_history import service_storage_side
 from chrys.orchestration.invoker.contracts import SubAgentFailureReason, SubAgentStatus, Unbind
@@ -101,7 +104,7 @@ from chrys.service.llm.clients import create_client, effective_model_base_url
 from chrys.service.llm.route_sessions import derive_llm_route_session_id, llm_parent_session_id, llm_route_session_id
 from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.mcp.thinking_warning import warn_if_tool_loading_unbinds_thinking
-from chrys.service.profiles.agents.schema import DEFAULT_SUB_AGENT_CONCURRENCY
+from chrys.service.profiles.agents.schema import DEFAULT_SUB_AGENT_CONCURRENCY, MCPServerConfig
 from chrys.service.profiles.models.options import effective_chat_options, uses_responses_compact_continuation
 from chrys.service.profiles.models.schema import API_STYLE_RESPONSES
 from chrys.service.session.message_metadata import TOOL_RESULT_METADATA_KEY
@@ -122,7 +125,7 @@ from chrys.service.trajectory.sub_agents import SubAgentStatus as TrajectorySubA
 from chrys.service.trajectory.sub_agents import SubAgentTrace
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Coroutine, Mapping
+    from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 
     from chrys.foundation.config.settings import Settings
     from chrys.foundation.events.bus import EventBus
@@ -266,6 +269,44 @@ def _acp_stderr_path(
     return Path(tempfile.gettempdir()) / f"chrys-acp-{invocation_id}.stderr.log"
 
 
+@dataclass(frozen=True)
+class _SubAgentRegistration:
+    """One prepared kernel sub-agent, waiting for its place in the registry.
+
+    Preparation opens everything the sub-agent needs — its client, its tools, its MCP
+    servers, its skills and its runtime — and touches no registry state, so several
+    preparations can be in flight at once.  ``SubAgentTools._commit`` installs it.
+    """
+
+    tool_name: str
+    tool: FunctionTool
+    prepared: PreparedAgent
+    agent: Agent
+    context: ContextManager
+    chat_options: dict[str, Any] | None
+    model_provenance: SubAgentModelProvenance
+    approval_policy: ApprovalPolicy
+    extension_hooks: ExtensionToolHooks | None
+    tool_kinds: dict[str, str]
+    display_name: str
+    hook_profile_name: str
+    per_agent_max: int
+    mcp_adapter: MCPAdapter | None
+
+
+@dataclass(frozen=True)
+class _AcpSubAgentRegistration:
+    """One prepared external ACP sub-agent; nothing is opened, so preparing it never waits."""
+
+    tool_name: str
+    tool: FunctionTool
+    prepared: PreparedAgent
+    acp_profile: AgentProfile
+    display_name: str
+    hook_profile_name: str
+    per_agent_max: int
+
+
 class SubAgentTools:
     """Manages sub-agent lifecycle and exposes them as FunctionTools.
 
@@ -395,6 +436,8 @@ class SubAgentTools:
         settings: Settings,
         fallback_profile: ModelProfile,
         model_registry: ModelProfileRegistry | None = None,
+        initialization: AgentInitialization | None = None,
+        on_initialization_progress: Callable[[str, str, str], Awaitable[None]] | None = None,
     ) -> None:
         """Build a sub-agent from a profile and register it as a tool.
 
@@ -406,9 +449,150 @@ class SubAgentTools:
         command-line ``--model`` flag changes only the active fallback model,
         so it does not replace sub-agent model bindings.
         """
+        if initialization is None:
+            async with initialize_dependencies(self._mcp_cache) as scoped:
+                await self.register(
+                    ref,
+                    profile,
+                    runtime,
+                    settings=settings,
+                    fallback_profile=fallback_profile,
+                    model_registry=model_registry,
+                    initialization=scoped,
+                    on_initialization_progress=on_initialization_progress,
+                )
+            return
+        record = await self._prepare(
+            ref,
+            profile,
+            runtime,
+            settings=settings,
+            fallback_profile=fallback_profile,
+            model_registry=model_registry,
+            initialization=initialization,
+            on_initialization_progress=on_initialization_progress,
+        )
+        self._commit(record)
+
+    async def register_many(
+        self,
+        entries: Sequence[tuple[SubAgentRef, AgentProfile]],
+        runtime: SessionEnvironment,
+        *,
+        settings: Settings,
+        fallback_profile: ModelProfile,
+        model_registry: ModelProfileRegistry | None = None,
+        initialization: AgentInitialization | None = None,
+        on_initialization_progress: Callable[[SubAgentRef, str, str, str], Awaitable[None]] | None = None,
+        on_registered: Callable[[SubAgentRef], Awaitable[None]] | None = None,
+    ) -> None:
+        """Prepare every sub-agent at once, then register them in the declared order.
+
+        Preparation is where a sub-agent waits on anything outside the process — its MCP
+        servers, its skills folders, its model client.  Overlapping those waits keeps one
+        slow server from holding back sub-agents that do not use it; *initialization* is
+        what makes the sub-agents that do use it share one attempt and one skills scan,
+        so a server that fails costs one wait and one warning rather than one per
+        sub-agent that asks for it.  Without one, the batch opens its own.  Installing
+        the results keeps the declared order: the tool list the parent's model sees must
+        not depend on which sub-agent happened to finish first.
+
+        ``on_initialization_progress`` reports a sub-agent's own MCP and skills stages,
+        tagged with its ref.  ``on_registered`` runs as each record is ready, before any
+        of them is installed.  A failure propagates as that same exception, never a
+        group: the other preparations are cancelled and drained first, and every record
+        that did get prepared — including one whose ``on_registered`` failed — is rolled
+        back, since a record holds no registry entry for anything else to close.
+        """
+        if not entries:
+            return
+        if initialization is None:
+            async with initialize_dependencies(self._mcp_cache) as scoped:
+                await self.register_many(
+                    entries,
+                    runtime,
+                    settings=settings,
+                    fallback_profile=fallback_profile,
+                    model_registry=model_registry,
+                    initialization=scoped,
+                    on_initialization_progress=on_initialization_progress,
+                    on_registered=on_registered,
+                )
+            return
+
+        async def _stage(ref: SubAgentRef, profile: AgentProfile) -> _SubAgentRegistration | _AcpSubAgentRegistration:
+            record: _SubAgentRegistration | _AcpSubAgentRegistration
+            if profile.acp is not None:
+                record = self._prepare_acp(ref, profile, runtime)
+            else:
+                record = await self._prepare(
+                    ref,
+                    profile,
+                    runtime,
+                    settings=settings,
+                    fallback_profile=fallback_profile,
+                    model_registry=model_registry,
+                    initialization=initialization,
+                    on_initialization_progress=(
+                        partial(on_initialization_progress, ref) if on_initialization_progress is not None else None
+                    ),
+                )
+            if on_registered is not None:
+                try:
+                    await on_registered(ref)
+                except BaseException:
+                    await rollback_resources(record.prepared)
+                    raise
+            return record
+
+        tasks = [asyncio.create_task(_stage(ref, profile)) for ref, profile in entries]
+        try:
+            staged = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+
+            async def _roll_back() -> None:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                # A preparation that finished before the failure opened its client, agent
+                # and MCP lease with nobody left to close them: it was never installed.
+                # A cleanup that ends in cancellation still leaves the next record to close.
+                cancelled: asyncio.CancelledError | None = None
+                for task in tasks:
+                    if not task.cancelled() and task.exception() is None:
+                        try:
+                            await rollback_resources(task.result().prepared)
+                        except asyncio.CancelledError as exc:
+                            cancelled = exc
+                if cancelled is not None:
+                    raise cancelled
+
+            # One task owns the whole rollback, so cancelling this caller mid-way still
+            # closes every prepared record rather than stopping after the current one.
+            await finish_close(asyncio.create_task(_roll_back()))
+            raise
+        for record in staged:
+            if isinstance(record, _AcpSubAgentRegistration):
+                self._commit_acp(record)
+            else:
+                self._commit(record)
+
+    async def _prepare(
+        self,
+        ref: SubAgentRef,
+        profile: AgentProfile,
+        runtime: SessionEnvironment,
+        *,
+        settings: Settings,
+        fallback_profile: ModelProfile,
+        model_registry: ModelProfileRegistry | None,
+        initialization: AgentInitialization,
+        on_initialization_progress: Callable[[str, str, str], Awaitable[None]] | None,
+    ) -> _SubAgentRegistration:
+        """Open a sub-agent's resources and describe it, writing nothing into the registry."""
         prepared = PreparedAgent()
 
-        async def _acquire(conversation: Conversation) -> None:
+        async def _acquire(conversation: Conversation) -> _SubAgentRegistration:
             from chrys.service.profiles.models.resolver import resolve_for_agent
 
             sub_active_profile = resolve_for_agent(model_registry, settings, profile, fallback=fallback_profile)
@@ -480,14 +664,27 @@ class SubAgentTools:
                 # the build with the guidance to rename or exclude it.
                 reserved_tool_names.update(web_tools.hosted)
                 mcp_adapter = MCPAdapter(
+                    bus=self._bus,
+                    session_id=self._session_id,
                     cache=self._mcp_cache,
                     stdio_cwd=runtime_cwd,
                     session_dir=self._session_dir,
                     reserved_tool_names=reserved_tool_names,
                 )
                 prepared.own(mcp_adapter.disconnect_all)
-                mcp_tools = await mcp_adapter.connect_all(profile.tools.mcp)
-                self._mcp_adapters[tool_name] = mcp_adapter
+
+                async def _mcp_progress(
+                    config: MCPServerConfig, state: str, current: int, total: int, failed: int
+                ) -> None:
+                    if on_initialization_progress is not None:
+                        status = {"starting": "running", "connected": "done", "failed": "failed"}.get(state, "running")
+                        await on_initialization_progress("mcp", config.name, status)
+
+                mcp_tools = await mcp_adapter.connect_all(
+                    profile.tools.mcp,
+                    acquisition_scope=initialization.mcp,
+                    progress=_mcp_progress,
+                )
                 tools.extend(mcp_tools)
                 warn_if_tool_loading_unbinds_thinking(
                     profile, sub_active_profile, chat_options, mcp_adapter.tool_names_by_server
@@ -564,12 +761,17 @@ class SubAgentTools:
             progressive_resume_provider = mcp_adapter.create_resume_provider() if mcp_adapter is not None else None
             from chrys.service.skills.adapter import create_skills_provider
 
+            if on_initialization_progress is not None:
+                await on_initialization_progress("skills", "", "running")
             skills_provider, skill_warnings = await create_skills_provider(
                 profile.skills,
                 runtime=runtime,
                 session_dir=self._session_dir,
                 project_skills_enabled=settings.project_skills_enabled,
+                discovery_scope=initialization.skills,
             )
+            if on_initialization_progress is not None:
+                await on_initialization_progress("skills", "", "done" if skills_provider is not None else "failed")
             if skills_provider is not None:
                 shared_providers.append(skills_provider)
             if progressive_resume_provider is not None:
@@ -670,20 +872,9 @@ class SubAgentTools:
 
             full_description = description + _execution_note(per_agent_max, self._max_total)
 
-            self._agents[tool_name] = agent
-            self._context_managers[tool_name] = ctx
-            self._chat_options_by_tool[tool_name] = chat_options
-            self._model_provenance_by_tool[tool_name] = model_provenance
             # Use the parent's approval config so sub-agents inherit the same
             # approval rules (e.g. shell: require) as the main agent.
             approval_config = self._parent_approval if self._parent_approval is not None else profile.approval
-            self._approval_policies[tool_name] = ApprovalPolicy(approval_config, tools=tools)
-            self._extension_hooks[tool_name] = extensions.tool_hooks
-            self._tool_kinds[tool_name] = {t.name: k for t in tools if (k := get_tool_kind(t))}
-            self._display_names[tool_name] = profile.display_name or profile.name
-            self._hook_profile_names[tool_name] = profile.name
-            self._agent_active[tool_name] = 0
-            self._agent_max[tool_name] = per_agent_max
 
             def _make_invocation_runtime(
                 owner: Conversation,
@@ -838,16 +1029,56 @@ class SubAgentTools:
                 active_profile=sub_active_profile,
                 model_provenance=model_provenance,
             )
-            self._tools.append(fn_tool)
-
-            logger.debug("Registered sub-agent tool: %s (profile=%s, max=%d)", tool_name, profile.name, per_agent_max)
+            return _SubAgentRegistration(
+                tool_name=tool_name,
+                tool=fn_tool,
+                prepared=prepared,
+                agent=agent,
+                context=ctx,
+                chat_options=chat_options,
+                model_provenance=model_provenance,
+                approval_policy=ApprovalPolicy(approval_config, tools=tools),
+                extension_hooks=extensions.tool_hooks,
+                tool_kinds={t.name: k for t in tools if (k := get_tool_kind(t))},
+                display_name=profile.display_name or profile.name,
+                hook_profile_name=profile.name,
+                per_agent_max=per_agent_max,
+                mcp_adapter=mcp_adapter,
+            )
 
         try:
-            await prepared.open(_acquire)
+            return await prepared.open(_acquire)
         except BaseException:
             await rollback_resources(prepared)
             raise
-        self._prepared_by_tool[ref.tool_name or profile.name] = prepared
+
+    def _commit(self, record: _SubAgentRegistration) -> None:
+        """Install a prepared kernel sub-agent under its tool name.
+
+        Nothing here awaits, so the caller decides the registry's order.
+        """
+        tool_name = record.tool_name
+        self._agents[tool_name] = record.agent
+        self._context_managers[tool_name] = record.context
+        self._chat_options_by_tool[tool_name] = record.chat_options
+        self._model_provenance_by_tool[tool_name] = record.model_provenance
+        self._approval_policies[tool_name] = record.approval_policy
+        self._extension_hooks[tool_name] = record.extension_hooks
+        self._tool_kinds[tool_name] = record.tool_kinds
+        self._display_names[tool_name] = record.display_name
+        self._hook_profile_names[tool_name] = record.hook_profile_name
+        self._agent_active[tool_name] = 0
+        self._agent_max[tool_name] = record.per_agent_max
+        if record.mcp_adapter is not None:
+            self._mcp_adapters[tool_name] = record.mcp_adapter
+        self._prepared_by_tool[tool_name] = record.prepared
+        self._tools.append(record.tool)
+        logger.debug(
+            "Registered sub-agent tool: %s (profile=%s, max=%d)",
+            tool_name,
+            record.hook_profile_name,
+            record.per_agent_max,
+        )
 
     async def _refresh_skill_catalog(self, provider: ChrysSkillsProvider, tool_name: str) -> None:
         """Refresh a sub-agent's runtime skills and publish non-fatal warnings."""
@@ -868,6 +1099,15 @@ class SubAgentTools:
         runtime: SessionEnvironment,
     ) -> None:
         """Register an external ACP profile without constructing kernel machinery."""
+        self._commit_acp(self._prepare_acp(ref, profile, runtime))
+
+    def _prepare_acp(
+        self,
+        ref: SubAgentRef,
+        profile: AgentProfile,
+        runtime: SessionEnvironment,
+    ) -> _AcpSubAgentRegistration:
+        """Describe an external ACP sub-agent; it opens nothing, so this never waits."""
         if profile.acp is None:
             raise ValueError("register_acp requires an ACP agent profile")
         self._runtime = runtime
@@ -879,14 +1119,32 @@ class SubAgentTools:
             ref.tool_description or profile.description or f"Delegate task to {profile.display_name or profile.name}"
         )
         description += _execution_note(per_agent_max, self._max_total)
-        self._acp_profiles[tool_name] = profile
-        self._display_names[tool_name] = profile.display_name or profile.name
-        self._hook_profile_names[tool_name] = profile.name
+        return _AcpSubAgentRegistration(
+            tool_name=tool_name,
+            tool=self._make_acp_tool(tool_name, description, profile, runtime),
+            prepared=PreparedAgent(),
+            acp_profile=profile,
+            display_name=profile.display_name or profile.name,
+            hook_profile_name=profile.name,
+            per_agent_max=per_agent_max,
+        )
+
+    def _commit_acp(self, record: _AcpSubAgentRegistration) -> None:
+        """Install a prepared ACP sub-agent under its tool name, without awaiting."""
+        tool_name = record.tool_name
+        self._acp_profiles[tool_name] = record.acp_profile
+        self._display_names[tool_name] = record.display_name
+        self._hook_profile_names[tool_name] = record.hook_profile_name
         self._agent_active[tool_name] = 0
-        self._agent_max[tool_name] = per_agent_max
-        self._prepared_by_tool[tool_name] = PreparedAgent()
-        self._tools.append(self._make_acp_tool(tool_name, description, profile, runtime))
-        logger.debug("Registered ACP sub-agent tool: %s (profile=%s, max=%d)", tool_name, profile.name, per_agent_max)
+        self._agent_max[tool_name] = record.per_agent_max
+        self._prepared_by_tool[tool_name] = record.prepared
+        self._tools.append(record.tool)
+        logger.debug(
+            "Registered ACP sub-agent tool: %s (profile=%s, max=%d)",
+            tool_name,
+            record.hook_profile_name,
+            record.per_agent_max,
+        )
 
     def _make_acp_tool(
         self,
