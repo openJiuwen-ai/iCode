@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -69,6 +70,8 @@ _REMEMBER_FAILED = msg(
 )
 
 _GITDIR_POINTER_PREFIX = "gitdir:"
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -366,17 +369,18 @@ class ApprovalMiddleware(FunctionMiddleware):
             await call_next()
             return
 
-        # Auto-approve safe read-only shell commands (e.g. ls, cat, grep)
-        # without showing the approval dialog.
+        # Auto-approve only commands the approval-safe classifier can turn into
+        # an exact argv; anything with shell expansion goes through the normal
+        # approval/judge path. This is deliberately separate from the
+        # best-effort ``read_only`` shell filter.
         if tool_kind == KIND_SHELL:
             raw = context.arguments
             cmd = raw.get("command", "") if isinstance(raw, dict) else ""
             if cmd:
-                from chrys.service.tools.builtins.shell_filter import is_safe_readonly_command
+                from chrys.service.tools.builtins.shell_filter import classify_shell_for_approval
 
-                if is_safe_readonly_command(cmd, shell_name=tool_name) and not shell_command_may_access_sensitive_data(
-                    cmd, shell_name=tool_name
-                ):
+                approval_safe = classify_shell_for_approval(cmd, shell_name=tool_name)
+                if approval_safe.safe and not shell_command_may_access_sensitive_data(cmd, shell_name=tool_name):
                     self._decisions.append(
                         _decision(
                             request_id="",
@@ -388,6 +392,8 @@ class ApprovalMiddleware(FunctionMiddleware):
                     )
                     await call_next()
                     return
+                if not approval_safe.safe:
+                    logger.debug("Shell command requires approval (%s)", approval_safe.reason)
 
         # Auto-approve file writes inside workspace git repos.
         if tool_kind == KIND_FILESYSTEM_WRITE and self._workspace_roots:

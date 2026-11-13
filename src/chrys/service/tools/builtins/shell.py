@@ -77,6 +77,7 @@ from chrys.service.tools.approval_targets import (
     physical_dir,
 )
 from chrys.service.tools.background import MAX_RUNNING_TASKS, current_scope, stop_command
+from chrys.service.tools.builtins.shell_filter import classify_shell_for_approval
 from chrys.service.tools.kinds import KIND_SHELL, set_tool_kind, tool
 from chrys.service.tools.result_metadata import record_tool_success, tool_error
 from chrys.service.tools.spill import bound_process_output
@@ -317,6 +318,73 @@ def _prepare_pipe_command(command: str, shell: ShellInfo) -> str:
     if shell.name not in ("pwsh", "powershell"):
         return command
     return f"{_POWERSHELL_UTF8_PREAMBLE}\n{command}"
+
+
+_APPROVAL_SAFE_ENV_DROP = frozenset(
+    {
+        # Shell startup/expansion hooks.
+        "BASH_ENV",
+        "BASHOPTS",
+        "CDPATH",
+        "ENV",
+        "GLOBIGNORE",
+        "IFS",
+        "SHELLOPTS",
+        # Tool configuration that can turn a read-only command into an exec.
+        "GIT_ASKPASS",
+        "GIT_CONFIG_COUNT",
+        "GIT_EXTERNAL_DIFF",
+        "LESS",
+        "LESSCLOSE",
+        "LESSOPEN",
+        "RIPGREP_CONFIG_PATH",
+        "SSH_ASKPASS",
+        # Language startup hooks that run before the requested program.
+        "JAVA_TOOL_OPTIONS",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "PERL5LIB",
+        "PERL5OPT",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "RUBYLIB",
+        "RUBYOPT",
+        "_JAVA_OPTIONS",
+        # Dynamic-loader injection.
+        "DYLD_FRAMEWORK_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "LD_AUDIT",
+        "LD_PRELOAD",
+    }
+)
+"""Variables removed only for commands the approval layer auto-approved.
+
+A user-approved command keeps the normal shell environment; the sanitized
+environment exists so an ambient config cannot silently turn an auto-approved
+read-only command into an executor.
+"""
+
+
+def _approval_safe_env() -> dict[str, str]:
+    """The environment for an auto-approved command, without startup/config hooks."""
+    env = build_shell_subprocess_env()
+    for name in _APPROVAL_SAFE_ENV_DROP:
+        env.pop(name, None)
+    for name in tuple(env):
+        if name.startswith("BASH_FUNC_"):
+            env.pop(name, None)
+    return env
+
+
+def _direct_argv_variants(argv: Sequence[str]) -> list[tuple[str, ...]]:
+    """Launch argvs for a validated argv, keeping the optional fsatrace wrapper."""
+    base = tuple(argv)
+    prefix = shell_trace_argv.get()
+    if prefix:
+        return [(*prefix, *base), base]
+    return [base]
 
 
 _READ_CHUNK_BYTES = 64 * 1024
@@ -598,8 +666,20 @@ class _Command:
             del self._line[:-_PROGRESS_LINE_LIMIT]
 
 
-async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
-    """Start *command* with its output on a PTY (Unix only)."""
+async def _spawn_pty(
+    command: str,
+    shell: ShellInfo,
+    cwd: str,
+    *,
+    direct_argv: Sequence[str] | None = None,
+    sanitized: bool = False,
+) -> _Command:
+    """Start *command* with its output on a PTY (Unix only).
+
+    *direct_argv*, when given, is a validated command to exec without a shell.
+    A *sanitized* environment is used for commands the approval layer
+    auto-approved.
+    """
     master, slave = pty.openpty()
     try:
         # Set terminal size to 80x24
@@ -611,7 +691,7 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
         flags = fcntl.fcntl(master, fcntl.F_GETFL)
         fcntl.fcntl(master, fcntl.F_SETFL, flags | posix_os.O_NONBLOCK)
 
-        env = build_shell_subprocess_env()
+        env = _approval_safe_env() if sanitized else build_shell_subprocess_env()
 
         def _setup_pty() -> None:
             posix_os.setsid()
@@ -620,12 +700,15 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
         # stdio fds are inherited, ``setsid`` applies to fsatrace, and
         # the shell inherits its process group — draining and
         # group-kill behave exactly as untraced.
-        argv_variants = _shell_argv_variants(shell, command)
+        argv_variants = (
+            _direct_argv_variants(direct_argv) if direct_argv is not None else _shell_argv_variants(shell, command)
+        )
         proc: asyncio.subprocess.Process | None = None
-        for index, argv in enumerate(argv_variants):
+        chosen_argv: tuple[str, ...] | None = None
+        for index, launch_argv in enumerate(argv_variants):
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *argv,
+                    *launch_argv,
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=slave,
                     stderr=slave,
@@ -633,13 +716,14 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
                     env=env,
                     preexec_fn=_setup_pty,
                 )
+                chosen_argv = launch_argv
                 break
             except OSError as exc:
                 raise_if_missing_cwd(cwd, exc)
                 if index == len(argv_variants) - 1:
                     raise
                 logger.debug("Traced shell spawn failed; degrading to untraced", exc_info=True)
-        if proc is None:
+        if proc is None or chosen_argv is None:
             raise RuntimeError("No shell process was created by the configured spawn variants.")
     except BaseException:
         # Clean up both fds if subprocess creation fails
@@ -689,7 +773,7 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
         live=functools.partial(session_processes, proc.pid),
         stop=stop,
         after_exit=drained,
-        trace_file=_trace_file(argv),
+        trace_file=_trace_file(chosen_argv),
     )
     try:
         # Async reader on PTY master (same pattern as TUI shell)
@@ -703,19 +787,32 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
     return run
 
 
-async def _spawn_pipe(command: str, shell: ShellInfo, cwd: str) -> _Command:
+async def _spawn_pipe(
+    command: str,
+    shell: ShellInfo,
+    cwd: str,
+    *,
+    direct_argv: Sequence[str] | None = None,
+    sanitized: bool = False,
+) -> _Command:
     """Start *command* with its output on pipes (the Windows backend).
 
     In a Job of its own on Windows, joined as it is created, and in a session
     of its own elsewhere: every process the command starts can be listed and
-    stopped with it.
+    stopped with it. *direct_argv* and *sanitized* have the same meaning as in
+    :func:`_spawn_pty`.
     """
-    env = build_shell_subprocess_env()
-    argv_variants = _shell_argv_variants(shell, _prepare_pipe_command(command, shell))
+    env = _approval_safe_env() if sanitized else build_shell_subprocess_env()
+    prepared = command if direct_argv is not None else _prepare_pipe_command(command, shell)
+    argv_variants = (
+        _direct_argv_variants(direct_argv) if direct_argv is not None else _shell_argv_variants(shell, prepared)
+    )
     proc: ManagedStdioProcess | None = None
-    for index, argv in enumerate(argv_variants):
+    chosen_argv: tuple[str, ...] | None = None
+    for index, launch_argv in enumerate(argv_variants):
         try:
-            proc = await spawn_managed_stdio_process(*argv, cwd=cwd, env=env, limit=_READ_CHUNK_BYTES)
+            proc = await spawn_managed_stdio_process(*launch_argv, cwd=cwd, env=env, limit=_READ_CHUNK_BYTES)
+            chosen_argv = launch_argv
             break
         except MissingWorkingDirectoryError:
             raise
@@ -723,7 +820,7 @@ async def _spawn_pipe(command: str, shell: ShellInfo, cwd: str) -> _Command:
             if index == len(argv_variants) - 1:
                 raise
             logger.debug("Traced shell spawn failed; degrading to untraced", exc_info=True)
-    if proc is None:
+    if proc is None or chosen_argv is None:
         raise RuntimeError("No shell process was created by the configured spawn variants.")
     # Its input is a pipe that ends at once, never the console of the outer
     # chrys: a grandchild TUI (e.g. ``uv run icode`` inside PowerShell) could
@@ -744,7 +841,7 @@ async def _spawn_pipe(command: str, shell: ShellInfo, cwd: str) -> _Command:
         cleanup,
         live=proc.live_processes,
         stop=stop,
-        trace_file=_trace_file(argv),
+        trace_file=_trace_file(chosen_argv),
     )
 
 
@@ -1098,16 +1195,35 @@ class ShellTools:
             # could still be retargeted between this check and the spawn.
             cwd = pinned_cwd
 
+        decision = classify_shell_for_approval(command, shell_name=self._shell.name)
+        argv = None
+        sanitized = False
+        if decision.safe and decision.command is not None:
+            sanitized = True
+            if decision.command.execution == "exec":
+                argv = decision.command.argv
+
         if tasks is None:
-            return await self._run(command, reason, cwd, timeout, budget, workdir)
+            return await self._run(command, reason, cwd, timeout, budget, workdir, argv=argv, sanitized=sanitized)
         # A stop file may come from another tool: stop its task before a new
         # command can reach for the same port or files.
         stopped = await tasks.stop_requested()
-        result = await self._run(command, reason, cwd, timeout, budget, workdir)
+        result = await self._run(command, reason, cwd, timeout, budget, workdir, argv=argv, sanitized=sanitized)
         stopped += [task for task in await tasks.stop_requested() if task not in stopped]
         return _with_stop_notes(result, stopped)
 
-    async def _run(self, command: str, reason: str, cwd: str, timeout: int, budget: int, workdir: str | None) -> str:
+    async def _run(
+        self,
+        command: str,
+        reason: str,
+        cwd: str,
+        timeout: int,
+        budget: int,
+        workdir: str | None,
+        *,
+        argv: Sequence[str] | None = None,
+        sanitized: bool = False,
+    ) -> str:
         shell = self._shell
         try:
             if sys.platform == "win32":
@@ -1116,10 +1232,14 @@ class ShellTools:
                 # outer chrys without mouse/keyboard input after it exits.
                 # See ``preserve_console_mode`` for the full rationale.
                 with preserve_console_mode():
-                    stdout, returncode, stderr = await self._execute_pipe(command, shell, cwd, timeout, reason)
+                    stdout, returncode, stderr = await self._execute_pipe(
+                        command, shell, cwd, timeout, reason, argv=argv, sanitized=sanitized
+                    )
                 captures: tuple[CapturedOutput, ...] = (stdout, stderr)
             else:
-                merged, returncode = await self._execute_pty(command, shell, cwd, timeout, reason)
+                merged, returncode = await self._execute_pty(
+                    command, shell, cwd, timeout, reason, argv=argv, sanitized=sanitized
+                )
                 captures = (merged,)
             _record_shell_exit_code(returncode)
             parts = [*_output_parts(captures), f"[exit_code: {returncode}]"]
@@ -1215,19 +1335,35 @@ class ShellTools:
     # ------------------------------------------------------------------
 
     async def _execute_pty(
-        self, command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
+        self,
+        command: str,
+        shell: ShellInfo,
+        cwd: str,
+        timeout: int | float,
+        reason: str = "",
+        *,
+        argv: Sequence[str] | None = None,
+        sanitized: bool = False,
     ) -> tuple[CapturedOutput, int]:
         """Run *command* in a PTY (Unix only). Returns ``(output, returncode)``."""
-        run = await _spawn_pty(command, shell, cwd)
+        run = await _spawn_pty(command, shell, cwd, direct_argv=argv, sanitized=sanitized)
         returncode = await self._follow(run, command, reason, cwd, timeout)
         (output,) = run.captured()
         return output, returncode
 
     async def _execute_pipe(
-        self, command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
+        self,
+        command: str,
+        shell: ShellInfo,
+        cwd: str,
+        timeout: int | float,
+        reason: str = "",
+        *,
+        argv: Sequence[str] | None = None,
+        sanitized: bool = False,
     ) -> tuple[CapturedOutput, int, CapturedOutput]:
         """Run *command* with pipes (Windows fallback). Returns ``(stdout, returncode, stderr)``."""
-        run = await _spawn_pipe(command, shell, cwd)
+        run = await _spawn_pipe(command, shell, cwd, direct_argv=argv, sanitized=sanitized)
         returncode = await self._follow(run, command, reason, cwd, timeout)
         stdout, stderr = run.captured()
         return stdout, returncode, stderr

@@ -26,7 +26,6 @@ _SAFE_READONLY_COMMANDS = frozenset(
     {
         # filesystem navigation (read-only)
         "ls",
-        "tree",
         "pwd",
         "cd",
         "realpath",
@@ -38,13 +37,10 @@ _SAFE_READONLY_COMMANDS = frozenset(
         "tac",
         "head",
         "tail",
-        "less",
-        "more",
         "wc",
         "stat",
         # text processing (read-only — redirections blocked separately)
         "grep",
-        "rg",
         "cut",
         "tr",
         "diff",
@@ -52,12 +48,10 @@ _SAFE_READONLY_COMMANDS = frozenset(
         # system info (read-only)
         "uname",
         "whoami",
-        "date",
         "printenv",
         "which",
         "type",
         "id",
-        "hostname",
         "ps",
         "df",
         "du",
@@ -328,8 +322,11 @@ def is_safe_readonly_command(command: str, *, shell_name: str = "") -> bool:
        (catches destructive flags like ``-delete`` and destructive
        commands like ``rm`` appearing as arguments).
 
-    Used by ``ApprovalMiddleware`` to auto-approve shell commands that
-    cannot modify the system.
+    This is a best-effort analysis, not a security boundary: it models shell
+    syntax only well enough to answer "does this look read-only?", not "can
+    this text become an executable option after expansion?". Approval uses
+    ``classify_shell_for_approval`` in ``approval_safe.py``; do not use this
+    function to skip a user approval.
     """
     # Reject redirections that can touch normal files. Harmless fd/null
     # redirections such as ``2>/dev/null`` and ``2>&1`` are allowed.
