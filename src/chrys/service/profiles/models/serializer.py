@@ -8,7 +8,9 @@ import logging
 from dataclasses import MISSING, fields
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.platform.files import atomic_write_owner_only_text
 from chrys.foundation.text.yaml_io import dump_yaml
+from chrys.foundation.trajectory.keys import ensure_owner_only_directory
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -51,14 +53,17 @@ def _user_profiles_dir() -> Path:
 def save_profile(profile: ModelProfile) -> Path:
     """Serialize *profile* to YAML and write to ``~/.chrys/models/{id}.yaml``.
 
+    The file holds the provider API key, so it is written owner-only and
+    atomically, in a directory that is owner-only as well.
+
     Returns the path written.
     """
     target_dir = _user_profiles_dir()
-    target_dir.mkdir(parents=True, exist_ok=True)
+    ensure_owner_only_directory(target_dir)
     path = target_dir / f"{profile.id}.yaml"
     data = profile_to_dict(profile)
     text = dump_yaml(data)
-    path.write_text(text, encoding="utf-8")
+    atomic_write_owner_only_text(path, text)
     logger.debug("Saved model profile to %s", path)
     return path
 
