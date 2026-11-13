@@ -293,9 +293,7 @@ def test_sandbox_network_defaults_to_guarded_and_accepts_offline(config_dir: Pat
     assert loaded.warnings == ()
 
 
-def test_sandbox_network_env_overrides_user_yaml(
-    config_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sandbox_network_env_overrides_user_yaml(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHRYS_SANDBOX_NETWORK", "offline")
     freeze_process_env()
     _write_user_yaml(config_dir, "sandbox:\n  network: host\n")
