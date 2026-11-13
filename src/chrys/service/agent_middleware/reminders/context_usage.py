@@ -18,25 +18,25 @@ if TYPE_CHECKING:
 
 
 CONTEXT_USAGE_WARNING = (
-    "[Context Usage] WARNING: Context usage is high. The platform compacts older content "
-    "on its own, so no action is needed. If a large piece of finished work no longer needs "
-    "its details, you may fold it with one `compress_context` call up to the newest marker "
-    "that fits (`list_compressed_contexts` lists them); `recall_context` queries a "
-    "compressed block later."
+    "[Context Usage] NOTE: Context usage is high. This is for your information only: the "
+    "platform compacts older content on its own, so no action is needed."
 )
 """Sent once when context usage reaches the warning threshold.
 
-It reports the state and leaves the decision with the model: telling it to fold
-now makes an obedient model rewrite the prompt head while nothing is short.
+It reports the state and nothing else.  Any mention of folding here, even as
+an option, makes a model fold on the spot: the note arrives with the usage of
+the turn before, often on the very request a booked pass is about to shrink,
+and the model's fold then rewrites the prompt head a second time.
 """
 
 CONTEXT_USAGE_WARNING_MANUAL = (
-    "[Context Usage] WARNING: Context usage is high, and automatic compaction is turned off "
-    "for this agent. Use `list_compressed_contexts` to see available fold markers, then "
-    "`compress_context` with a marker_id to compress older turns into a summary. Use "
-    "`recall_context` to query compressed blocks if you need specific details later."
+    "[Context Usage] NOTE: Context usage is high, and automatic compaction is turned off "
+    "for this agent: nothing frees context unless older turns are folded. "
+    "`list_compressed_contexts` shows the fold markers, `compress_context` with a marker_id "
+    "folds the turns up to it into a summary, and `recall_context` queries a compressed "
+    "block later."
 )
-"""The warning where nothing compacts on its own: only a fold by the model frees context."""
+"""The note where nothing compacts on its own: it says what frees context and leaves the decision with the model."""
 
 
 def context_usage_percent(usage: Mapping[str, Any], *, max_context_tokens: int) -> float:

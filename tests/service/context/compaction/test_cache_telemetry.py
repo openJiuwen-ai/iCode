@@ -24,6 +24,7 @@ from chrys.service.context.compaction.cache_telemetry import (
 )
 from chrys.service.context.middleware.usage import UsageTrackingMiddleware
 from chrys.service.context.providers.history import CompressibleHistoryProvider
+from chrys.service.trajectory.state import TurnRecord, append_turn
 from tests.service.context.compaction._compaction_helpers import (
     _assistant_text,
     _build_multi_turn,
@@ -353,7 +354,7 @@ async def test_three_passes_that_rewrite_the_head_within_ten_turns_are_reported_
     strategy.bind_state(state)
     sink = FakeSink()
 
-    with caplog.at_level(logging.WARNING, logger=_STRATEGY_LOGGER), trajectory_scope(make_context(sink)):
+    with caplog.at_level(logging.DEBUG, logger=_STRATEGY_LOGGER), trajectory_scope(make_context(sink)):
         for completed_turns in (3, 7):
             state["turn_counter"] = completed_turns
             assert await strategy(_head_rewriting_pass())
@@ -361,10 +362,28 @@ async def test_three_passes_that_rewrite_the_head_within_ten_turns_are_reported_
         state["turn_counter"] = 12
         assert await strategy(_head_rewriting_pass())
 
+    # A history that only counts completed turns: each pass ran in the turn after them.
     thrash = sink.only(EventType.COMPACTION_THRASH_DETECTED)
-    assert thrash.payload == {"rewrites": 3, "window_turns": 10, "turn_numbers": [3, 7, 12]}
-    [warning] = [record for record in caplog.records if record.getMessage().startswith("Compaction thrash:")]
-    assert "rewritten 3 times within 10 turns (after turns 3, 7, 12)" in warning.getMessage()
+    assert thrash.payload == {"rewrites": 3, "window_turns": 10, "turn_numbers": [4, 8, 13]}
+    # Logged for whoever is debugging, below the level a healthy session's log is read at.
+    [logged] = [record for record in caplog.records if record.getMessage().startswith("Compaction thrash:")]
+    assert logged.levelno == logging.DEBUG
+    assert "rewritten 3 times within 10 turns (in turns 4, 8, 13)" in logged.getMessage()
+
+
+async def test_thrash_names_the_turns_as_the_session_numbered_them() -> None:
+    """The registry holds the number ``turn.started`` gave the turn in progress; the saved counter can lag behind it."""
+    strategy = _forced_phase4(_head_rewriting_pass())
+    state: dict[str, Any] = {"messages": [], "compressed_msgs": [], "turn_counter": 0}
+    strategy.bind_state(state)
+    sink = FakeSink()
+
+    with trajectory_scope(make_context(sink)):
+        for turn_number in (4, 6, 7):
+            append_turn(state, TurnRecord(turn_number=turn_number, turn_id=f"turn-{turn_number}"))
+            assert await strategy(_head_rewriting_pass())
+
+    assert sink.only(EventType.COMPACTION_THRASH_DETECTED).payload["turn_numbers"] == [4, 6, 7]
 
 
 async def test_drops_of_the_current_turn_alone_are_not_thrash() -> None:
@@ -479,7 +498,7 @@ async def test_a_fold_and_a_pass_in_one_request_are_one_rewrite_of_the_head() ->
         strategy.bind_state({"messages": [], "compressed_msgs": [], "turn_counter": 9})
         assert await strategy(_head_rewriting_pass())
 
-    assert sink.only(EventType.COMPACTION_THRASH_DETECTED).payload["turn_numbers"] == [3, 7, 9]
+    assert sink.only(EventType.COMPACTION_THRASH_DETECTED).payload["turn_numbers"] == [4, 8, 10]
 
 
 async def test_a_pass_cancelled_while_it_reports_a_change_still_explains_the_next_miss() -> None:

@@ -338,7 +338,7 @@ async def test_every_token_figure_is_labelled_with_its_measurement_source() -> N
     sink = FakeSink()
     run = CompactionRunTrace(make_context(sink))
 
-    await run.started(trigger="force", tokens_before=10)
+    await run.started(trigger="usage_threshold", tokens_before=10)
     await run.phase_finished(
         phase="phase3", groups_compacted=1, turn_numbers=[], tool_names=[], tokens_before=10, tokens_after=4
     )
@@ -450,7 +450,7 @@ async def test_a_standalone_fold_is_its_own_run_with_both_markers() -> None:
 @pytest.mark.asyncio
 async def test_recording_a_compression_without_a_scope_is_a_no_op() -> None:
     await CompactionRunTrace.record_compression(
-        trigger="force", compressed_context_id="ctx_deadbeef", messages_freed=1, tokens_before=2, tokens_after=1
+        trigger="agent_request", compressed_context_id="ctx_deadbeef", messages_freed=1, tokens_before=2, tokens_after=1
     )
 
 
@@ -765,7 +765,7 @@ async def test_a_standalone_fold_interrupted_between_markers_reports_what_it_fol
     sink = CancelAckSink(at=1)
     with trajectory_scope(make_context(sink)), pytest.raises(asyncio.CancelledError):
         await CompactionRunTrace.record_compression(
-            trigger="force",
+            trigger="agent_request",
             compressed_context_id="ctx_deadbeef",
             messages_freed=4,
             tokens_before=900,

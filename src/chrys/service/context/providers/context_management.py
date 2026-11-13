@@ -104,28 +104,31 @@ Say which details are not documented."""
 _AUTOMATIC_COMPACTION = """\
 Tool-call results are automatically compressed when context usage is high —
 old turn results and tool-call groups are trimmed first, and under heavy
-pressure completed text turns may be compressed before the current turn's
-tool calls are dropped entirely and replaced with a `[LAST_WORDS]` summary
-in a `<system-reminder>`; treat that as your progress note and continue from
-there without redoing the dropped work. This is platform-managed — if you
+pressure completed text turns may be compressed before the older tool calls
+and intermediate work of the current turn are replaced with a `[LAST_WORDS]`
+summary in a `<system-reminder>`. The most recent work of the turn is kept
+where there is room. Treat the summary as your progress note and continue
+from there without redoing the dropped work. This is platform-managed — if you
 need details from a compacted result, read the file its summary names as
 `[full output: …]` when there is one, or call the tool again. If tool
 results keep getting compacted, consider delegating context-heavy subtasks
 (broad searches, multi-file analysis, batch edits) to a sub-agent if one is
 available, to preserve your own context window.
-Across turns the platform compacts on its own as well, so you rarely need to
-manage context yourself. Every fold rewrites the start of the prompt, which
-costs more than it frees when done often: use `compress_context` only after
-a large piece of work is finished, its details are no longer needed, and the
-`[Context Usage]` line is already high — and then fold once, up to the newest
-marker that fits, not in several small steps."""
+Across turns the platform compacts on its own as well. The `[Context Usage]`
+line and any note about high usage are for your information only: you are
+never required to manage context yourself, and high usage alone is no reason
+to fold. `compress_context` stays available for a large finished piece of
+work whose details you judge are no longer needed. Every fold rewrites the
+start of the prompt, which costs more than it frees when done often, so if
+you fold, fold once, up to the newest marker that fits, not in several small
+steps."""
 
 _MANUAL_COMPACTION = """\
 Automatic compaction is turned off for this agent: nothing is trimmed or
 folded unless you do it, and a conversation that outgrows the context window
-fails. Use `compress_context` to fold completed work once the
-`[Context Usage]` line exceeds 50% or after finishing a multi-step task. If
-your work is context-heavy (broad searches, multi-file analysis, batch
+fails. The `[Context Usage]` line shows how full the window is, and
+`compress_context` folds completed work into a summary when you decide to
+free room. If your work is context-heavy (broad searches, multi-file analysis, batch
 edits), consider delegating it to a sub-agent if one is available, to
 preserve your own context window."""
 
@@ -271,9 +274,8 @@ class ContextManagementProvider(ContextProvider):
             FunctionTool(
                 name="compress_context",
                 description=(
-                    "Compress conversation history up to a marker into a summary. "
-                    "Use this when context usage is high and earlier conversation details are "
-                    "no longer needed for the current task. The compressed messages are saved "
+                    "Compress conversation history up to a marker into a summary, for earlier "
+                    "work whose details are no longer needed. The compressed messages are saved "
                     "and can be queried later with recall_context."
                 ),
                 func=self._compress_context,
@@ -448,8 +450,9 @@ class ContextManagementProvider(ContextProvider):
                 return tool_error(
                     "compressed_context_not_found",
                     (
-                        f"no compressed block holds turn {turn}. "
-                        "Use list_compressed_contexts to see which turns are compressed."
+                        f"no compressed block holds turn {turn}. Only a turn that was folded "
+                        "into a block can be recalled. Use list_compressed_contexts to see "
+                        "which turns have blocks."
                     ),
                     details={"turn": turn},
                 )

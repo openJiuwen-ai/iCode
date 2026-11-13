@@ -16,8 +16,8 @@ from chrys.kernel import (
 )
 from chrys.kernel import compaction as chrys_compaction
 from chrys.service.context.compaction import (
+    _MAX_DROP_ROUNDS_PER_TURN,
     _REASON_CURRENT_TURN_DROP,
-    MAX_DROP_ROUNDS_PER_TURN,
     CompactionInfo,
     UnifiedContextStrategy,
 )
@@ -493,9 +493,9 @@ async def test_phase4_second_no_progress_disables_and_publishes_pressure_event()
             id="restored_disabled",
         ),
         pytest.param(
-            lambda: DropRoundBreakerState(attempts=MAX_DROP_ROUNDS_PER_TURN, side_call_tokens=10),
+            lambda: DropRoundBreakerState(attempts=_MAX_DROP_ROUNDS_PER_TURN, side_call_tokens=10),
             "round_limit",
-            [f"{MAX_DROP_ROUNDS_PER_TURN} attempts limit exceeded for current turn"],
+            [f"{_MAX_DROP_ROUNDS_PER_TURN} attempts limit exceeded for current turn"],
             id="entry_round_limit",
         ),
     ],

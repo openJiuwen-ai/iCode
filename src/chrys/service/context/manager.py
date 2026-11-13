@@ -97,7 +97,7 @@ class ContextManager:
 
         # Build unified strategy — always created so compress_context works
         # even when budget-triggered compaction is disabled.
-        from chrys.service.context.compaction import MAX_DROP_ROUNDS_PER_TURN, UnifiedContextStrategy
+        from chrys.service.context.compaction import UnifiedContextStrategy
 
         compaction_enabled = cfg.enabled
         compaction_strategy = UnifiedContextStrategy(
@@ -117,14 +117,7 @@ class ContextManager:
             spill_record_dir=spill_record_dir,
             spill_session_id=parent_session_id or session_id or "",
             debug_log_dir=debug_log_dir,
-            # Unset, a turn may spend one window per round the breaker allows:
-            # a side call never sends more than a window, so the budget binds
-            # only when retries and fallbacks multiply what a round costs.
-            phase4_side_call_token_budget=(
-                MAX_DROP_ROUNDS_PER_TURN * profile.max_context_tokens
-                if cfg.phase4_side_call_token_budget is None
-                else cfg.phase4_side_call_token_budget
-            ),
+            phase4_side_call_token_budget=cfg.phase4_side_call_token_budget,
             compaction_enabled=compaction_enabled,
         )
 

@@ -89,7 +89,7 @@ class PromptCacheTelemetry:
         """Note that the next request's prefix differs from what the provider cached.
 
         A *head* rewrite changed what precedes the current turn and is counted
-        against *turn*, the number of turns the session has completed; without
+        against *turn*, the number of the turn it was made in; without
         a turn number it is only noted.  The provider is sent one changed
         prefix however many steps changed it, so a request counts once;
         *before_next_request* is a rewrite made between two requests, which

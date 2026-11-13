@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from chrys.service.context.compaction.last_words_state import LastWordsState
 
 _RECORD = HistoryMarkerKind.LAST_WORDS_RECORD_KEY
-_GROUPS = 20
+_GROUPS = 12
 _GROUP_WORDS = 600
 _TODO = "[TODO]\n- [ ] port the lexer"
 
@@ -445,7 +445,23 @@ class _FailsBeforeCommit(StubLastWordsGenerator):
         super().__init__()
         self.failure = failure
 
-    async def generate(self, *args: Any, **kwargs: Any) -> str:
+    async def generate(
+        self,
+        scoped_groups: list,
+        previous_last_words: str | None,
+        *,
+        degraded_opener: bool,
+        has_continuation_nudges: bool,
+        completer: object | None = None,
+        tokenizer: object | None = None,
+        system_overhead_tokens: int = 0,
+        tool_definition_tokens: int = 0,
+        request_overhead_tokens: int = 0,
+        calibration_ratio: float = 1.0,
+        spend_side_call_tokens: object | None = None,
+        affords_side_call_tokens: object | None = None,
+        entry_messages: object | None = None,
+    ) -> str:
         raise self.failure
 
 
@@ -510,6 +526,52 @@ async def test_a_note_without_a_record_goes_on_the_last_user_message_and_is_reco
     later = await session.request()
     assert _carriers(session.history) == [injected]
     assert [bool(_note_blocks(message)) for message in later if message.role == "user"] == [False, True, False]
+
+
+async def test_a_newer_note_held_only_by_the_state_takes_the_records_place_on_the_same_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A build that keeps the note in the state alone ran the turn in between and wrote a newer one."""
+    opener = _user("Refactor the parser")
+    session = _Session(monkeypatch, tmp_path, [opener, *_work(0)])
+    session.middleware.prepare_turn()
+    await session.request()
+    old_record = read_last_words_record(opener.additional_properties)
+    assert old_record is not None
+    newer_note = "## Task\nPort.\n## Progress\nRead 40 files."
+    session.last_words.set_last_words(newer_note)
+    session.history.append(_injected("Keep the old token names"))
+
+    sent = await session.request()
+
+    [block] = _note_blocks(sent[0])
+    assert newer_note in block
+    assert old_record.note not in block
+    assert not _note_blocks(sent[-1])
+    record = read_last_words_record(opener.additional_properties)
+    assert record is not None
+    assert record.note == newer_note
+    assert _wrap(record.text) == block
+    assert _carriers(session.history) == [opener]
+
+    again = await session.request()
+    assert _texts(again[0]) == _texts(sent[0])
+
+
+async def test_a_state_without_a_note_leaves_the_recorded_one_as_it_is(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only a note in the state can be newer than the record; the list of dropped calls alone is not one."""
+    opener = _user("Refactor the parser")
+    session = _Session(monkeypatch, tmp_path, [opener, *_work(0)])
+    session.middleware.prepare_turn()
+    during = await session.request()
+    session.last_words.set_last_words(None)
+    assert session.last_words.render()
+
+    after = await session.request()
+
+    assert _texts(after[0]) == _texts(during[0])
 
 
 def test_a_rebuilt_copy_of_the_carrier_keeps_the_note_record() -> None:

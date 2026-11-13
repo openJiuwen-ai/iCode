@@ -46,7 +46,7 @@ from chrys.kernel._types import (
     _merge_content_item_lists,
 )
 from chrys.kernel.client import _wire_message_view
-from chrys.kernel.compaction import apply_compaction
+from chrys.kernel.compaction import EXCLUDED_KEY, CompactionCallContext, apply_compaction, set_excluded
 from chrys.kernel.identity import ContentList, WeakIdentityRegistry
 from chrys.kernel.loop import _strip_echoed_update
 from chrys.kernel.types import ChatResponseUpdate, Content, Message
@@ -58,6 +58,7 @@ from chrys.service.agent_middleware.injection import ConsumedInjection, Injectio
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.context.compaction.last_words_state import LastWordsState
 from chrys.service.context.compaction.scoped import clone_for_slice
+from chrys.service.context.compaction.strategy import UnifiedContextStrategy
 from chrys.service.context.providers.history import _TURN_ID_KEY, _compress_state
 from chrys.service.session import checkpoint as session_checkpoint
 from chrys.service.session.checkpoint import _DetachedLoopRecorder, build_recovery_state
@@ -774,6 +775,46 @@ class TestCompressionAndCompactionCopies:
         assert messages[0] is not message
         assert messages[0].contents[0] is not content
         assert message.contents[0] is content
+
+    def test_entry_request_snapshot_owns_its_lists_and_shares_the_content_objects(self) -> None:
+        """Copy class: the request a pass found, kept for the note's extension call
+        (``UnifiedContextStrategy._snapshot_entry_request``).  The pass rewrites
+        the live list from Phase 1 on — flags in the properties dict, results
+        swapped for summaries in the contents list — so each view owns its
+        wrapper, its contents list and the top level of its properties, and an
+        excluded message is not taken.  The content objects are shared: they are
+        what the provider has cached, and a phase replaces them rather than
+        writing into them, as it does a nested property value."""
+        content = Content.from_text("tool output")
+        message = Message("assistant", [content])
+        nested = {"key": "value"}
+        message.additional_properties["nested"] = nested
+        excluded = Message("assistant", [Content.from_text("already compacted")])
+        set_excluded(excluded, excluded=True)
+        registry = WeakIdentityRegistry()
+        registry.register(message.contents)
+        registry.register(content)
+        context = CompactionCallContext(last_words_completer=MagicMock(), last_words_extends_request=True)
+
+        snapshot = UnifiedContextStrategy()._snapshot_entry_request([excluded, message], context, 1.0)
+
+        assert snapshot is not None
+        [view] = snapshot
+        assert view is not message
+        assert view.contents is not message.contents
+        assert type(view.contents) is ContentList
+        assert view.contents[0] is content
+        assert view.additional_properties is not message.additional_properties
+        assert view.additional_properties["nested"] is nested
+        assert view.contents not in registry
+        assert view.contents[0] in registry
+        assert message.contents in registry
+
+        # What a phase does to the live message afterwards stays off the view.
+        message.contents[0] = Content.from_text("[summary]")
+        set_excluded(message, excluded=True)
+        assert view.contents[0] is content
+        assert EXCLUDED_KEY not in view.additional_properties
 
 
 # ---------------------------------------------------------------------------

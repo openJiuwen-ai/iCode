@@ -185,6 +185,44 @@ def test_a_tiny_index_budget_leaves_one_range_line() -> None:
     assert entries[0].turn_from == 1
 
 
+def test_an_index_built_under_a_larger_window_is_fitted_to_a_smaller_one() -> None:
+    """The window can shrink between sessions; the index's share must be re-checked on its own."""
+    state = _state_with_folds(40, summary_chars=400)
+    while _merge(state) is not None:
+        pass
+    index = state["messages"][0]
+    assert len(archive_entries(index)) > 1
+
+    # A smaller window whose summary share still holds every detailed summary but whose index share does not.
+    smaller = _WINDOW * 3 // 5
+    assert _count(index.text) > smaller * 0.02
+    detailed = [m for m in _visible(_summaries(state)) if not is_archive_index(m)]
+    assert sum(_count(m.text) for m in detailed) <= smaller * 0.08
+
+    merged = _merge(state, window=smaller)
+
+    assert merged is not None
+    assert merged.merged_summaries == ()
+    fitted = state["messages"][0]
+    assert fitted is not index
+    assert index not in state["messages"]
+    assert _count(fitted.text) <= smaller * 0.02
+    # Nothing left the index: the same blocks, in the same order, in fewer lines.
+    assert sum(entry.blocks for entry in archive_entries(fitted)) == sum(
+        entry.blocks for entry in archive_entries(index)
+    )
+
+
+def test_an_index_within_a_smaller_window_s_share_is_left_alone() -> None:
+    state = _state_with_folds(40, summary_chars=400)
+    while _merge(state) is not None:
+        pass
+    before = list(state["messages"])
+
+    assert _merge(state) is None  # The same window: nothing to fit.
+    assert state["messages"] == before
+
+
 def test_the_next_fold_starts_where_it_did_before_the_merge() -> None:
     state = _state_with_folds(6, unfolded_turns=2)
     _merge(state)

@@ -785,15 +785,17 @@ def test_context_usage_warning_starts_at_the_threshold() -> None:
     assert warns(501)
 
 
-def test_context_usage_warning_reports_the_state_without_telling_the_model_to_fold() -> None:
-    """An instruction to fold makes an obedient model rewrite the prompt head while nothing is short."""
+def test_context_usage_warning_reports_the_state_and_names_no_way_to_fold() -> None:
+    """Even an offer to fold makes a model rewrite the prompt head while the platform is compacting."""
     from chrys.service.agent_middleware.reminders.context_usage import CONTEXT_USAGE_WARNING
 
+    assert "for your information only" in CONTEXT_USAGE_WARNING
     assert "no action is needed" in CONTEXT_USAGE_WARNING
-    assert "you may fold" in CONTEXT_USAGE_WARNING
+    for word in ("compress_context", "list_compressed_contexts", "fold", "WARNING"):
+        assert word not in CONTEXT_USAGE_WARNING
 
 
-def test_context_usage_warning_tells_the_model_to_fold_where_nothing_compacts_on_its_own() -> None:
+def test_context_usage_warning_says_what_frees_context_where_nothing_compacts_on_its_own() -> None:
     """With automatic compaction off, only a fold by the model keeps the conversation inside the window."""
     from chrys.service.agent_middleware.reminders.context_usage import (
         CONTEXT_USAGE_WARNING,

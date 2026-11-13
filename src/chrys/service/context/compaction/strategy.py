@@ -17,12 +17,12 @@ call arguments, replacing results with one-line summaries).
 **Phase 2** — Old turn tool-call groups are removed entirely (args + results),
 oldest-turn-first.  Only the user/assistant text messages survive per turn.
 
-**Phase 3** — Completed text-heavy turns are compressed oldest-turn-first
-when Phase 1/2 cannot reach the request budget because there are no old tool
-groups left to trim.
+**Phase 3** — Completed turns are folded into summaries oldest-turn-first
+when Phase 1/2 leave usage above the line the pass's mode sets.
 
-**Phase 4** — All current-turn tool-call and inline assistant-text messages
-are dropped in a single shot and replaced by a ``<system-reminder>[LAST_WORDS]
+**Phase 4** — The current turn's tool-call and inline assistant-text messages,
+except the newest groups that fit the recent-work allowance, are dropped in
+one round and replaced by a ``<system-reminder>[LAST_WORDS]
 …</system-reminder>`` block appended to the user message's content array by
 ``SystemReminderMiddleware``.  The note is produced by
 :class:`chrys.service.context.compaction.last_words.LastWordsGenerator` (always LLM-generated —
@@ -71,8 +71,10 @@ from chrys.service.trajectory.compaction import (
     record_prompt_cache_miss,
     reset_compaction_operation,
 )
+from chrys.service.trajectory.state import turn_records
 
 from .breaker import DropBreakerController
+from .budgets import BOUNDARY_SUSPENDED_STATE_KEY, TURN_BOUNDARY_PENDING_STATE_KEY
 from .cache_telemetry import THRASH_WINDOW_TURNS, PromptCacheTelemetry
 from .calibration import TokenCalibration
 from .compression import CompressionEngine
@@ -204,6 +206,11 @@ class CompactionRetrySnapshot:
     anchors: tuple[_ExclusionAnchor, ...]
     published_fold_count: int
     phase4: Phase4RetrySnapshot | None
+    # The boundary schedule goes back with the history it was decided on: a
+    # pass that consumed its booking inside the attempt is rolled back with
+    # the attempt, and the retry has to run it again.
+    turn_boundary_pending: bool = False
+    boundary_suspended: bool = False
 
 
 class UnifiedContextStrategy:
@@ -313,12 +320,14 @@ class UnifiedContextStrategy:
         # Booked by a turn that ended above the force line; the next request
         # runs a turn-boundary pass even below the trigger.  Its own field,
         # never the overflow note: a pass that is cancelled or fails keeps
-        # both as they were, so the retry runs in the same mode.  Per instance
-        # and never persisted, like the overflow note.
+        # both as they were, so the retry runs in the same mode.  Unlike the
+        # overflow note it is kept in the bound state too: the request it is
+        # booked for is the next turn's, which another process may send.
         self._turn_boundary_pending = False
         # Set when a pass ended above the satisfied line: another boundary
         # pass would free too little to be worth a rewritten prefix, so none
-        # is booked until usage is at or below that line again.
+        # is booked until usage is at or below that line again.  Kept in the
+        # bound state with the booking.
         self._boundary_suspended = False
         # The plan of the pass in flight; phases read it through ``_plan``.
         self._active_plan: _PassPlan | None = None
@@ -529,8 +538,9 @@ class UnifiedContextStrategy:
     ) -> None:
         """Record a cross-turn fold on the trajectory, then deliver the UI callback.
 
-        Inside a triggered pass the fold is a phase of that run; a standalone
-        fold (agent-requested, forced after a run) is a run of its own.
+        Inside a triggered pass the fold is a phase of that run; a fold the
+        agent asked for, made at its next request or after the run, is a run
+        of its own.
         """
         run = self._trajectory_run
         turn_numbers = list(range(info.turn_range[0], info.turn_range[1] + 1)) if info.turn_range != (0, 0) else []
@@ -573,8 +583,41 @@ class UnifiedContextStrategy:
     # ------------------------------------------------------------------
 
     def bind_state(self, state: dict[str, Any]) -> None:
-        """Bind to the history provider's state dict for this agent.run() cycle."""
+        """Bind to the history provider's state dict for this agent.run() cycle.
+
+        The boundary schedule is read from the state on every bind: the state
+        is what a restart, a rewind or a fork hands over, and within one
+        process it holds what this strategy last wrote.  Only a schedule made
+        before the first bind has nowhere else to be, and is carried in.
+        """
+        first_bind = self._state is None
         self._compression.bind_state(state)
+        pending = bool(state.get(TURN_BOUNDARY_PENDING_STATE_KEY))
+        suspended = bool(state.get(BOUNDARY_SUSPENDED_STATE_KEY))
+        if first_bind:
+            pending = pending or self._turn_boundary_pending
+            suspended = suspended or self._boundary_suspended
+        self._set_boundary_schedule(pending=pending, suspended=suspended)
+
+    def _set_boundary_schedule(self, *, pending: bool, suspended: bool) -> None:
+        """Set the boundary booking and suspension, here and in the bound state.
+
+        Absent means false in the state, as the session serializer keeps
+        only truthy values of these keys.
+        """
+        self._turn_boundary_pending = pending
+        self._boundary_suspended = suspended
+        state = self._state
+        if state is None:
+            return
+        for key, value in (
+            (TURN_BOUNDARY_PENDING_STATE_KEY, pending),
+            (BOUNDARY_SUSPENDED_STATE_KEY, suspended),
+        ):
+            if value:
+                state[key] = True
+            else:
+                state.pop(key, None)
 
     # ------------------------------------------------------------------
     # Cross-turn compression API
@@ -646,6 +689,8 @@ class UnifiedContextStrategy:
             anchors=self._exclusions.snapshot_retry_state(),
             published_fold_count=self._compression.published_fold_count(),
             phase4=phase4,
+            turn_boundary_pending=self._turn_boundary_pending,
+            boundary_suspended=self._boundary_suspended,
         )
 
     def restore_retry_state(self, snapshot: CompactionRetrySnapshot) -> None:
@@ -663,6 +708,10 @@ class UnifiedContextStrategy:
         self._compression.replay_published_folds(snapshot.published_fold_count)
         if self._state is not None:
             self._exclusions.discard_unreferenced_summaries(self._state.get("messages", []))
+        self._set_boundary_schedule(
+            pending=snapshot.turn_boundary_pending,
+            suspended=snapshot.boundary_suspended,
+        )
 
     async def flush_pending_compressions(self) -> bool:
         """Process pending cross-turn compressions on bound state.
@@ -755,23 +804,41 @@ class UnifiedContextStrategy:
         thrash.  *before_next_request* is a rewrite made outside a request's
         preparation (a fold after the run).
         """
-        state = self._state
-        completed_turns = state.get("turn_counter") if state is not None else None
         turns = self._cache_telemetry.note_rewrite(
             head=head,
-            turn=completed_turns if isinstance(completed_turns, int) else None,
+            turn=self._running_turn_number(),
             before_next_request=before_next_request,
         )
         if turns is None:
             return
-        _log.warning(
-            "Compaction thrash: the head of the request was rewritten %d times within %d turns (after turns %s); "
-            "each rewrite makes the provider read the whole context again at full price",
+        # Not a warning: the thresholds are a judgement no workload has
+        # calibrated, and a session that is doing well can cross them.  The
+        # trajectory event is what the count is read from.
+        _log.debug(
+            "Compaction thrash: the head of the request was rewritten %d times within %d turns (in turns %s); "
+            "after each rewrite the provider reads the request again, uncached, from the point that changed",
             len(turns),
             THRASH_WINDOW_TURNS,
             ", ".join(str(turn) for turn in turns),
         )
         record_compaction_thrash(rewrites=len(turns), window_turns=THRASH_WINDOW_TURNS, turn_numbers=turns)
+
+    def _running_turn_number(self) -> int | None:
+        """The number of the turn in progress, as its ``turn.started`` gave it.
+
+        The turn registry's last entry is that turn, also for a retry that
+        resumed it and for a fold made after its run.  A history without a
+        registry (a child agent's) only counts the turns it completed, so the
+        one in progress is the next; with neither there is no number.
+        """
+        state = self._state
+        if state is None:
+            return None
+        records = turn_records(state)
+        if records:
+            return records[-1].turn_number
+        completed = state.get("turn_counter")
+        return completed + 1 if isinstance(completed, int) else None
 
     @property
     def calibration_ratio(self) -> float:
@@ -854,7 +921,7 @@ class UnifiedContextStrategy:
         """
         if not self._compaction_enabled or self._boundary_suspended:
             return False
-        self._turn_boundary_pending = True
+        self._set_boundary_schedule(pending=True, suspended=False)
         return True
 
     @property
@@ -900,10 +967,6 @@ class UnifiedContextStrategy:
             max(context.request_overhead_tokens, context.tool_definition_tokens) if context is not None else 0
         )
         compressions_processed = await self._run_queued_compressions(messages)
-        if compressions_processed:
-            refreshed_index = self._restore_folded_reminders(messages)
-            if refreshed_index is not None:
-                annotate_token_counts(messages, tokenizer=self._tokenizer, from_index=refreshed_index)
         self._reset_stale_exclusions(messages)
         self._reinject_compressed_context_summaries(messages)
         current = self._annotate_and_count(messages)
@@ -914,8 +977,7 @@ class UnifiedContextStrategy:
             # Room to grow again, whatever made it (a pass, a fold the model
             # asked for, a shorter history): boundary passes may be booked,
             # and one already booked has nothing left to do.
-            self._boundary_suspended = False
-            self._turn_boundary_pending = False
+            self._set_boundary_schedule(pending=False, suspended=False)
         boundary_booked = self._turn_boundary_pending
 
         if below_trigger and not overflow_forced and not boundary_booked:
@@ -923,7 +985,13 @@ class UnifiedContextStrategy:
             return compressions_processed
 
         if not self._compaction_enabled:
-            self._report_skip(CompactionSkipReason.DISABLED, current)
+            # A pass booked while compaction was on asks for nothing now,
+            # and a booking alone is not a request that needed room.
+            self._set_boundary_schedule(pending=False, suspended=self._boundary_suspended)
+            if below_trigger and not overflow_forced:
+                self._reported_skip = None
+            else:
+                self._report_skip(CompactionSkipReason.DISABLED, current)
             return compressions_processed
 
         tokens_before = current
@@ -967,7 +1035,13 @@ class UnifiedContextStrategy:
         changed = False
         try:
             if run is not None:
-                await run.started(trigger=mode.value, tokens_before=tokens_before)
+                await run.started(
+                    trigger=mode.value,
+                    tokens_before=tokens_before,
+                    estimated_input_tokens=self._calibration.estimated_tokens(tokens_before),
+                    trigger_tokens=self._trigger_tokens(),
+                    max_context_tokens=self.max_context_tokens,
+                )
             changed = await self._run_phase1(
                 messages,
                 previous_count=previous_count,
@@ -998,8 +1072,10 @@ class UnifiedContextStrategy:
         self._finalize_pass(messages, changed, entry_tokens=current)
         # A completed pass answers every reason at or below its own mode.
         self._context_overflow_pending = False
-        self._turn_boundary_pending = False
-        self._boundary_suspended = self._usage_pct(self._last_included_tokens) > self.satisfied_pct
+        self._set_boundary_schedule(
+            pending=False,
+            suspended=self._usage_pct(self._last_included_tokens) > self.satisfied_pct,
+        )
         if run is not None:
             await run.finished(tokens_before=tokens_before, tokens_after=self._last_included_tokens)
         return changed or compressions_processed
@@ -1037,6 +1113,12 @@ class UnifiedContextStrategy:
             views.append(view)
         return tuple(views)
 
+    def _trigger_tokens(self) -> int:
+        """The trigger line in tokens, as the events report it."""
+        # round(): the derived fraction is trigger_tokens / window, and ceil()
+        # would turn its float error into one token too many.
+        return round(self.trigger_pct * self.max_context_tokens)
+
     def _report_skip(self, reason_code: str, included: int) -> None:
         """Say why a request that needed room got none, once per stretch of such requests."""
         # Per session too: a restore that keeps this strategy starts a
@@ -1047,9 +1129,7 @@ class UnifiedContextStrategy:
             return
         self._reported_skip = skip
         estimated = self._calibration.estimated_tokens(included)
-        # round(): the derived fraction is trigger_tokens / window, and ceil()
-        # would turn its float error into one token too many.
-        trigger_tokens = round(self.trigger_pct * self.max_context_tokens)
+        trigger_tokens = self._trigger_tokens()
         _log.log(
             logging.INFO if reason_code == CompactionSkipReason.DISABLED else logging.WARNING,
             "Compaction freed nothing: reason=%s, estimated_input_tokens=%d, trigger_tokens=%d, max_context_tokens=%d"
@@ -1070,6 +1150,17 @@ class UnifiedContextStrategy:
 
     async def _run_queued_compressions(self, messages: list[Message]) -> bool:
         return await self._compression.run_queued(messages)
+
+    def _settle_after_fold(self, messages: list[Message]) -> None:
+        """Make *messages* the request a fold leaves: reminders re-attached, ids, groups and token counts current.
+
+        Run before the fold is reported, so the count it reports includes the
+        summary that replaced the turn and the reminders that moved off it.
+        """
+        self._restore_folded_reminders(messages)
+        _dedup_message_ids(messages)
+        annotate_message_groups(messages, force_reannotate=True)
+        annotate_token_counts(messages, tokenizer=self._tokenizer, force_retokenize=True)
 
     def _restore_folded_reminders(self, messages: list[Message]) -> int | None:
         """Re-attach catalog reminders whose carrier a fold just excluded.
@@ -1105,9 +1196,9 @@ class UnifiedContextStrategy:
         # message IDs.
         annotate_message_groups(messages, force_reannotate=True)
         annotate_token_counts(messages, tokenizer=self._tokenizer)
-        # Reminders on a user message change between calls (the last-words note
-        # leaves it when the turn ends, a turn adds notices), so its stored count
-        # can be another call's. There are about as many as turns.
+        # Reminders on a user message change between calls (a later drop
+        # rewrites its last-words note, a turn adds notices), so its stored
+        # count can be another call's. There are about as many as turns.
         recount_user_messages(messages, tokenizer=self._tokenizer)
 
         current = included_token_count(messages)
@@ -1298,10 +1389,6 @@ class UnifiedContextStrategy:
                     continue
                 p3_count += 1
                 changed = True
-                self._restore_folded_reminders(messages)
-                _dedup_message_ids(messages)
-                annotate_message_groups(messages, force_reannotate=True)
-                annotate_token_counts(messages, tokenizer=self._tokenizer, force_retokenize=True)
 
         return changed
 

@@ -177,6 +177,34 @@ async def test_a_fold_flushed_after_the_run_merges_in_state() -> None:
     assert [is_archived_summary(message) for message in state["messages"][1:3]] == [True, False]
 
 
+async def test_a_fold_flushed_after_the_run_reports_what_its_merge_left() -> None:
+    """Worked out rather than counted, and still the request the next call sends, give or take the new ids."""
+    strategy = _make_strategy(max_context_tokens=_WINDOW)
+    state = _new_state()
+    for turn in range(1, 4):
+        state["messages"].extend([_user(f"Turn {turn} request"), _assistant_text(f"Turn {turn} answer")])
+        CompressibleHistoryProvider.insert_marker(state, turn)
+    strategy.bind_state(state)
+    long_summary = "The model's own account of the work. " + "detail " * 1_200
+    current = _user("Current request")
+    await strategy([*_wire_view(state), current])
+    sink = FakeSink()
+
+    with trajectory_scope(make_context(sink)):
+        strategy.queue_compression("turn_1", long_summary)
+        strategy.queue_compression("turn_2", long_summary)
+        assert await strategy.flush_pending_compressions()
+
+    assert is_archive_index(state["messages"][0])
+    first, merged = (event.payload for event in sink.of_type(EventType.COMPACTION_FINISHED))
+    assert first["tokens_after"] == merged["tokens_before"]
+    # The first summary left the request with the second fold: its own summary is not all on top.
+    assert merged["tokens_after"] < merged["tokens_before"] + strategy.tokenizer.count_tokens(long_summary) // 2
+    await strategy([*_wire_view(state), current])
+    # The index and the second summary are new to that request, which gives each an id.
+    assert 0 <= strategy.last_included_tokens - merged["tokens_after"] <= 2 * 2
+
+
 async def test_a_rolled_back_attempt_leaves_a_head_the_next_pass_merges_again() -> None:
     """A retry restores the history the attempt started from: the merge is redone by the next fold, not replayed."""
     strategy = _make_strategy(max_context_tokens=_WINDOW)

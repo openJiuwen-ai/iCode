@@ -202,9 +202,10 @@ def merge_fold_summaries(
     """Merge the oldest fold summaries into the archive index when they outgrow their share of the window.
 
     Rewrites ``state["messages"]`` and returns what changed, or None when
-    the summaries fit or the window is unknown.  Call it only where a fold
-    already rewrites the head of the history: on its own it would cost a
-    prompt-cache miss.
+    there is nothing to merge or the window is unknown.  The summaries fitting
+    does not mean the index does: one written under a larger window is fitted
+    to this one's share as well.  Call it only where a fold already rewrites
+    the head of the history: on its own it would cost a prompt-cache miss.
     """
     if max_context_tokens <= 0:
         return None
@@ -216,7 +217,15 @@ def merge_fold_summaries(
     sizes = [count_tokens(m.text or "") for m in detailed]
     total = sum(sizes)
     if total <= detail_budget_tokens or not detailed:
-        return None
+        # The summaries fit, but the window may have shrunk since the index
+        # was built: its own share is checked on its own, or an index written
+        # under a larger window stays over the cap for the session's life.
+        if previous_index is None:
+            return None
+        fitted = _fit_index(archive_entries(previous_index), index_budget_tokens, count_tokens)
+        if fitted == archive_entries(previous_index):
+            return None
+        return _replace_index(state, messages, previous_index, fitted)
 
     # The oldest half by size, at least one: merging only the excess would
     # bring the next merge, and its rewritten head, one fold later.  The
@@ -240,19 +249,38 @@ def merge_fold_summaries(
     entries = archive_entries(previous_index) if previous_index is not None else []
     entries = _fit_index([*entries, *new_entries], index_budget_tokens, count_tokens)
 
+    for summary in merged:
+        set_excluded(summary, excluded=True, reason=REASON_ARCHIVED)
+
+    replacement = _replace_index(state, messages, previous_index, entries)
+    return ArchiveMerge(
+        index=replacement.index,
+        previous_index=previous_index,
+        merged_summaries=tuple(merged),
+    )
+
+
+def _replace_index(
+    state: dict[str, Any],
+    messages: list[Message],
+    previous_index: Message | None,
+    entries: list[ArchiveEntry],
+) -> ArchiveMerge:
+    """Write a new index message for *entries* where the head starts, and return what changed.
+
+    A new message rather than an edit: a history rollback restores the old
+    head as a whole.
+    """
     index = Message("assistant", [render_archive_index(entries)])
     index.additional_properties[HistoryMarkerKind.KEY] = HistoryMarkerKind.SUMMARY
     index.additional_properties[ARCHIVE_INDEX_KEY] = [entry.to_json() for entry in entries]
     # A new version is a new item: its text differs from the one it replaces.
     ensure_analytics_item_id(index.additional_properties)
 
-    for summary in merged:
-        set_excluded(summary, excluded=True, reason=REASON_ARCHIVED)
-
     kept = [m for m in messages if m is not previous_index]
     position = next(index_ for index_, m in enumerate(kept) if _is_summary(m))
     state["messages"] = [*kept[:position], index, *kept[position:]]
-    return ArchiveMerge(index=index, previous_index=previous_index, merged_summaries=tuple(merged))
+    return ArchiveMerge(index=index, previous_index=previous_index, merged_summaries=())
 
 
 def project_archive(state: dict[str, Any], messages: list[Message]) -> bool:

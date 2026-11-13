@@ -18,6 +18,7 @@ from chrys.foundation.tool_result_metadata import TOOL_ERROR_KIND_METADATA_KEY
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.kernel import AgentSession, Content, Message, SessionContext
 from chrys.service.context.compaction import UnifiedContextStrategy
+from chrys.service.context.providers.archive_index import is_archived_summary
 from chrys.service.context.providers.context_management import ContextManagementProvider, _format_messages_as_text
 from chrys.service.context.providers.history import CompressibleHistoryProvider
 from chrys.service.profiles.models.resolver import default_profile
@@ -105,10 +106,15 @@ class TestBeforeRun:
         assert "platform compacts on its own" in text
         assert "50%" not in text
         assert "proactively" not in text
+        # Usage is information: nothing in the instructions makes folding the model's job.
+        assert "for your information only" in text
+        assert "never required to manage context yourself" in text
+        assert "high usage alone is no reason" in text
+        assert "use `compress_context`" not in text.lower()
 
     @pytest.mark.asyncio
-    async def test_instructions_say_to_fold_where_nothing_compacts_on_its_own(self) -> None:
-        """With automatic compaction off only the model's own folds free context, so it is told to fold."""
+    async def test_instructions_say_what_frees_context_where_nothing_compacts_on_its_own(self) -> None:
+        """With automatic compaction off only the model's own folds free context, so it is told that they do."""
         provider = ContextManagementProvider(
             default_profile(), strategy=UnifiedContextStrategy(compaction_enabled=False)
         )
@@ -118,8 +124,8 @@ class TestBeforeRun:
 
         text = context.instructions[0]
         assert "Automatic compaction is turned off" in text
-        assert "Use `compress_context` to fold completed work" in text
-        assert "50%" in text
+        assert "`compress_context` folds completed work into a summary when you decide to" in text
+        assert "50%" not in text
         assert "platform compacts on its own" not in text
         assert "automatically compressed" not in text
         # The rest of the instructions is the same.
@@ -203,6 +209,25 @@ class TestCompressContext:
         # After compression: summary + user3 + assistant3 = 3 visible (marker_3 excluded)
         assert "3 visible message(s)" in result
         assert "1 compressed block(s)" in result
+
+    @pytest.mark.asyncio
+    async def test_compress_does_not_count_a_summary_the_archive_index_stands_for(self) -> None:
+        provider = ContextManagementProvider(
+            default_profile(), strategy=UnifiedContextStrategy(max_context_tokens=30_000)
+        )
+        state = _build_state(4)
+        _bind_session(provider, state)
+        long_summary = "The model's own account of the work. " + "detail " * 1_200
+        for marker_id in ("turn_1", "turn_2"):
+            provider._strategy.queue_compression(marker_id, long_summary)
+            assert await provider._strategy.flush_pending_compressions()
+        assert [is_archived_summary(message) for message in state["messages"][:3]] == [False, True, False]
+
+        result = await provider._compress_context(marker_id="turn_3", summary="Summary")
+
+        # The index, the two summaries still in the request, and the fourth turn's two messages.
+        assert "5 visible message(s)" in result
+        assert "3 compressed block(s)" in result
 
 
 # ---------------------------------------------------------------------------
@@ -515,7 +540,7 @@ class TestRecallContext:
             text = "remembered"
 
         class _Client:
-            async def get_response(self, messages: list[Any], **_kwargs: Any) -> _Response:
+            async def get_response(self, messages: list[Any], *, stream: bool, options: Any) -> _Response:
                 prompts.append(messages[-1].text)
                 return _Response()
 
@@ -548,6 +573,23 @@ class TestRecallContext:
 
         assert result.startswith("Error: ")
         assert ("no compressed block holds turn" in result) is bool(arguments)
+
+
+@pytest.mark.asyncio
+async def test_recall_of_an_unfolded_turn_says_only_that_it_has_no_block() -> None:
+    """A turn with no block may still be visible, or trimmed without one — neither is promised either way."""
+    provider = _make_provider()
+    _bind_session(provider, _build_state(5))
+
+    result = await provider._recall_context(question="what happened?", turn=4)
+
+    assert "Only a turn that was folded into a block can be recalled" in result
+    assert "still in the conversation itself" not in result
+    assert "needs no recall" not in result
+    # Phase 2 excludes a turn's tool results without folding it, and a later
+    # fold copies the excluded originals into the block: folding it now can
+    # bring that work back, so the error promises nothing either way.
+    assert "does not bring back" not in result
 
     @pytest.mark.asyncio
     async def test_recall_passes_session_id_to_client(self) -> None:
@@ -775,23 +817,21 @@ class TestContextManagerWiring:
         assert "compress_context" in ctx.context_mgmt_provider.tool_names
 
     @pytest.mark.parametrize(
-        ("configured", "windows"),
-        [(None, 8), (-1, None), (0, 0), (50_000, None)],
+        ("configured", "expected"),
+        [(None, -1), (-1, -1), (0, 0), (50_000, 50_000)],
         ids=["unset", "unlimited", "disabled", "explicit"],
     )
-    def test_an_unset_last_words_budget_is_one_window_per_round_a_turn_may_run(
-        self, configured: int | None, windows: int | None
+    def test_the_last_words_budget_is_the_configured_one_and_unlimited_when_unset(
+        self, configured: int | None, expected: int
     ) -> None:
-        from chrys.service.context.compaction import MAX_DROP_ROUNDS_PER_TURN
+        """Whatever the model's window: a default sized from it would stop long turns that complete without one."""
         from chrys.service.context.manager import ContextManager
         from chrys.service.profiles.agents.schema import CompactionConfig
 
-        profile = default_profile()
         config = (
             CompactionConfig() if configured is None else CompactionConfig(phase4_side_call_token_budget=configured)
         )
 
-        budget = ContextManager(profile, compaction_config=config).compaction_strategy._phase4_side_call_token_budget
+        strategy = ContextManager(default_profile(), compaction_config=config).compaction_strategy
 
-        assert MAX_DROP_ROUNDS_PER_TURN == 8
-        assert budget == (configured if windows is None else windows * profile.max_context_tokens)
+        assert strategy._phase4_side_call_token_budget == expected

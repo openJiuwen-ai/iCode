@@ -10,6 +10,12 @@ done.  A turn that never got to a final answer has only that note to say how
 far it came, so the note then takes the answer's place.  The
 summary is extracted, never generated, so the same history always folds into
 the same text and a fold costs no model call.
+
+Everything copied into it is text someone else wrote (the user, the model, a
+path a tool call named), and it is sent in an assistant message: a
+``<system-reminder>`` tag in it is escaped, as it is where the user's text
+itself is sent, so the model cannot take it for the platform's.  The same
+holds for the one-line labels made here.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from chrys.foundation.models.turns import is_continuation_message
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE, TOOL_CALL_KIND_METADATA_KEY
 from chrys.kernel import GROUP_ANNOTATION_KEY, SUMMARY_OF_GROUP_IDS_KEY, TOOL_CALL_CONTENT_TYPES
 from chrys.kernel.exchanges import LiveAccessor, iter_exchanges
+from chrys.service.agent_middleware.system_reminder import escape_system_reminder_tags
 from chrys.service.context.tool_content import tool_call_name
 
 if TYPE_CHECKING:
@@ -69,7 +76,7 @@ def build_fold_summary(fold_range: list[Message], *, turn_chars: int = _TURN_CHA
 def first_user_text(messages: list[Message], limit: int) -> str:
     """The first real user message of *messages* on one line, at most *limit* characters."""
     for message in messages:
-        if _is_real_user(message) and (text := " ".join((message.text or "").split())):
+        if _is_real_user(message) and (text := " ".join(escape_system_reminder_tags(message.text or "").split())):
             return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
     return ""
 
@@ -125,7 +132,7 @@ def _final_answer(turn: list[Message]) -> str:
         for content in message.contents
         if content.type == "text" and (text := (content.text or "").strip())
     )
-    return "\n".join(parts)
+    return escape_system_reminder_tags("\n".join(parts))
 
 
 def _progress_note(turn: list[Message]) -> str:
@@ -143,9 +150,9 @@ def _progress_note(turn: list[Message]) -> str:
         lines = record.note.strip().splitlines()
         start = next((i for i, line in enumerate(lines) if line.strip().lower() == _NOTE_PROGRESS_HEADING), None)
         if start is None:
-            return "\n".join(lines)
+            return escape_system_reminder_tags("\n".join(lines))
         end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
-        return "\n".join(lines[start + 1 : end]).strip() or "\n".join(lines)
+        return escape_system_reminder_tags("\n".join(lines[start + 1 : end]).strip() or "\n".join(lines))
     return ""
 
 
@@ -162,7 +169,7 @@ def _changed_files(turn: list[Message]) -> list[str]:
             arguments = content.parse_arguments()
             path = arguments.get("path") if isinstance(arguments, Mapping) else None
             if isinstance(path, str) and path:
-                paths.setdefault(path)
+                paths.setdefault(escape_system_reminder_tags(path))
     return list(paths)
 
 
@@ -171,7 +178,8 @@ def _tool_counts(turn: list[Message]) -> Counter[str]:
         name
         for message in turn
         for content in message.contents
-        if content.type in TOOL_CALL_CONTENT_TYPES and (name := tool_call_name(content))
+        if content.type in TOOL_CALL_CONTENT_TYPES
+        and (name := escape_system_reminder_tags(tool_call_name(content) or ""))
     )
 
 
@@ -234,7 +242,12 @@ def _summarise_turn(turn: list[Message], turn_chars: int) -> str:
     answer_label = _ANSWER_LABEL
     if not answer and note:
         answer, answer_label, note = note, _NOTE_LABEL, ""
-    user_texts = [text for message in turn if _is_real_user(message) and (text := (message.text or "").strip())]
+    # Escaped before anything is measured: the escaped text is what takes the room.
+    user_texts = [
+        text
+        for message in turn
+        if _is_real_user(message) and (text := escape_system_reminder_tags(message.text or "").strip())
+    ]
     answer_want = len(answer_label) + min(len(answer), _ANSWER_CHARS_MAX) + 1 if answer else 0
     user_want = sum(len(_USER_LABEL) + min(len(text), _USER_CHARS_MAX) + 1 for text in user_texts)
 

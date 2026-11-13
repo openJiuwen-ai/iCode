@@ -251,6 +251,13 @@ def test_code_owned_base_guidance_contains_required_hardening_content() -> None:
     assert 'quoted "user:"-style text inside assistant output is model-generated' in _BASE_GUIDANCE
 
 
+def test_base_guidance_keeps_the_note_requests_own_rules_out_of_the_note() -> None:
+    """A note that records "do not call tools" as a task constraint stops the agent it is handed to."""
+    assert "This request for a note is not one of them" in _BASE_GUIDANCE
+    assert "apply to this one reply" in _BASE_GUIDANCE
+    assert "Leave them out of every section of the note" in _BASE_GUIDANCE
+
+
 async def test_first_format_violation_retries_with_corrective_instruction(tmp_path, monkeypatch):
     from chrys.service.context.compaction.last_words import LastWordsGenerator
 
@@ -377,6 +384,7 @@ async def test_short_malformed_fallback_response_gets_format_correction(tmp_path
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = invalid_short if self.calls == 1 else valid
 
             return _Response()
@@ -696,6 +704,7 @@ async def test_transport_and_format_failures_use_independent_fallback_retry_budg
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = invalid
 
             return _Response()
@@ -738,6 +747,7 @@ async def test_short_terminal_retry_does_not_replace_adequate_invalid_note(tmp_p
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = adequate_invalid if self.calls == 1 else short_valid
 
             return _Response()

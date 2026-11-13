@@ -206,9 +206,9 @@ def test_load_full_yaml(tmp_yaml: Path) -> None:
 
 @pytest.mark.parametrize(
     ("yaml_value", "expected"),
-    [("-1", -1), ("0", 0), ("123456", 123_456), ("null", None)],
+    [("-1", -1), ("0", 0), ("123456", 123_456), ("null", -1)],
 )
-def test_load_phase4_side_call_token_budget(tmp_path: Path, yaml_value: str, expected: int | None) -> None:
+def test_load_phase4_side_call_token_budget(tmp_path: Path, yaml_value: str, expected: int) -> None:
     path = tmp_path / "phase4-budget.yaml"
     path.write_text(
         f"name: budgeted\ncompaction:\n  phase4_side_call_token_budget: {yaml_value}\n",

@@ -5,7 +5,7 @@
 ``compaction.skipped`` is the marker for usage past the trigger that started no
 pass, so a context that fills up without compacting says why.
 
-One run covers one triggered compaction pass (or one forced compression);
+One run covers one triggered compaction pass (or one fold the agent asked for);
 its phases report what they freed, with ``turn_numbers``, ``tool_names``, and
 Phase-4 ``consumed_item_ids`` always continued as ``event.segment`` lines so
 no phase line can outgrow the budget however many groups it touched. The same
@@ -206,7 +206,7 @@ class CompactionRunTrace:
         tokens_before: int,
         tokens_after: int,
     ) -> None:
-        """Record a standalone cross-turn fold (agent-requested or forced) as one run."""
+        """Record a standalone cross-turn fold (one the agent asked for) as one run."""
         run = cls.open()
         if run is None:
             return
@@ -236,22 +236,48 @@ class CompactionRunTrace:
     def _parent(self) -> str | None:
         return self._context.innermost_model_operation_id
 
-    async def started(self, *, trigger: str, tokens_before: int) -> None:
+    async def started(
+        self,
+        *,
+        trigger: str,
+        tokens_before: int,
+        estimated_input_tokens: int | None = None,
+        trigger_tokens: int | None = None,
+        max_context_tokens: int | None = None,
+    ) -> None:
+        """Record the start of a pass.
+
+        *tokens_before* is the local count of the messages alone, the figure
+        every later phase of the run is measured against.  It is not what the
+        trigger looked at: that is *estimated_input_tokens*, the whole request
+        (system prompt and tool definitions included) after calibration, to be
+        read against *trigger_tokens* and *max_context_tokens* as they stood
+        for this pass.  The names are those of ``compaction.skipped``.
+        """
         self._tokens_before = tokens_before
         self._tokens_after = tokens_before
+        payload: dict[str, Any] = {
+            "compaction_run_id": self._run_id,
+            "trigger": trigger,
+            "tokens_before": tokens_before,
+            "token_measurement_source": TOKEN_MEASUREMENT_SOURCE,
+        }
+        pointers = ["/payload/tokens_before"]
+        if estimated_input_tokens is not None:
+            payload["estimated_input_tokens"] = estimated_input_tokens
+            pointers.append("/payload/estimated_input_tokens")
+        if trigger_tokens is not None:
+            payload["trigger_tokens"] = trigger_tokens
+        if max_context_tokens is not None:
+            payload["max_context_tokens"] = max_context_tokens
         try:
             await self._context.sink.emit(
                 self._context.draft(
                     EventType.COMPACTION_STARTED,
                     operation_id=self._run_id,
                     parent_operation_id=self._parent(),
-                    payload={
-                        "compaction_run_id": self._run_id,
-                        "trigger": trigger,
-                        "tokens_before": tokens_before,
-                        "token_measurement_source": TOKEN_MEASUREMENT_SOURCE,
-                    },
-                    measurements=_token_measurements("/payload/tokens_before"),
+                    payload=payload,
+                    measurements=_token_measurements(*pointers),
                 )
             )
         except Exception:

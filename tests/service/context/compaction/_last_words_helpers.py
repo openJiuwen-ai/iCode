@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from chrys.foundation.retry import RetryAttemptInfo
+from chrys.kernel import LastWordsCompletion
 from chrys.service.context.compaction.last_words import CompactionStatus, LastWordsGenerator
 from chrys.service.context.compaction.scoped import DEGRADED_SCOPED_PREAMBLE, ScopedGroup
 from chrys.service.profiles.models.resolver import default_profile
@@ -47,8 +48,9 @@ def long_structured_note(fill: str = "detail") -> str:
 class FakeCompleter:
     """LastWordsCompleter fake: replays a scripted sequence of results.
 
-    Each entry is either the note text to return or an exception to raise.
-    The final entry repeats once the script is exhausted.
+    Each entry is the note text to return, a ``LastWordsCompletion`` (for an
+    answer the provider cut off), or an exception to raise.  The final entry
+    repeats once the script is exhausted.
     """
 
     def __init__(self, results: list) -> None:
@@ -70,7 +72,7 @@ class FakeCompleter:
         result = self._results.pop(0) if len(self._results) > 1 else self._results[0]
         if isinstance(result, Exception):
             raise result
-        return result
+        return result if isinstance(result, LastWordsCompletion) else LastWordsCompletion(result)
 
 
 class FallbackClient:
@@ -93,6 +95,7 @@ class FallbackClient:
             usage_details = None
             additional_properties: ClassVar[dict[str, object]] = {}
             messages: ClassVar[tuple[Message, ...]] = ()
+            finish_reason = None
             raw_text = self.text
 
         return _Response()
@@ -118,6 +121,7 @@ class SequenceFallbackClient:
             usage_details = None
             additional_properties: ClassVar[dict[str, object]] = {}
             messages: ClassVar[tuple[Message, ...]] = ()
+            finish_reason = None
             raw_text = text
 
         return _Response()

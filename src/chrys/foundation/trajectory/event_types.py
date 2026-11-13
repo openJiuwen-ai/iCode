@@ -175,7 +175,7 @@ class PromptCacheMissCause:
     COMPACTION = "compaction"
     """A compaction pass or a fold rewrote the request since the previous response."""
     IDLE = "idle"
-    """Longer passed since the previous response than a provider keeps a prefix cached."""
+    """The two requests were sent further apart than a provider keeps a prefix cached."""
     UNKNOWN = "unknown"
     """Nothing this process did explains it: the case worth investigating."""
 

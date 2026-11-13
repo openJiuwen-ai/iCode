@@ -22,6 +22,13 @@ TRIGGER_FLOOR_PCT_NUM = 30
 TRIGGER_FLOOR_PCT_DEN = 100
 MIN_DERIVABLE_CONTEXT_TOKENS = 100
 
+# History-state keys of the turn-boundary schedule: a pass booked for the
+# next turn's first request, and the suspension of further bookings.  They
+# live in the state because that request may be sent by another process.
+# Only ``True`` is ever stored; the session serializer drops falsy values.
+TURN_BOUNDARY_PENDING_STATE_KEY = "compaction_boundary_pending"
+BOUNDARY_SUSPENDED_STATE_KEY = "compaction_boundary_suspended"
+
 
 def _ceil_div(numerator: int, denominator: int) -> int:
     return -(-numerator // denominator)

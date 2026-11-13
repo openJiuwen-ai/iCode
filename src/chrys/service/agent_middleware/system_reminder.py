@@ -77,6 +77,7 @@ model's own judgement, not on this middleware, to discount it.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
 from contextvars import ContextVar
@@ -251,6 +252,42 @@ def _withdrawn_notices(sources: Iterable[CatalogSource]) -> dict[str, str]:
     it no longer applies.
     """
     return {source.name: source.withdrawn for source in sources if source.withdrawn is not None}
+
+
+def carried_catalog_tokens(
+    folded: Sequence[Message],
+    surviving: Sequence[Message],
+    count_tokens: Callable[[str], int],
+) -> int:
+    """Tokens of the catalogs a fold takes out of view that the next request sends again.
+
+    A fold takes the user messages holding a catalog out of view, and
+    ``restore_folded_reminders`` puts a catalog back on the message the fold
+    leaves — but only when no surviving message records that catalog's text.
+    A surviving message holding another version of it is the record the
+    restore compares against, and what it then sends is the session's current
+    version, not the folded text: the folded catalog's own tokens were freed
+    with its message.  A catalog no surviving message holds is sent again, at
+    about the size of the version it was last recorded with.  A fold
+    reporting what it freed therefore subtracts the text of the messages,
+    not these.  Each catalog counts as the serialized text content it rides
+    on, escapes included; the content's own keys are not counted, and the
+    figure stays a little under what the request carries.  Other reminders
+    (the progress note, a switch notice) stay with what was folded.
+    """
+    sent = _latest_visible_catalogs(surviving, _records_of(surviving))
+    folded_latest: dict[str, str] = {}
+    for message in folded:
+        if message.role != "user":
+            continue
+        for item in _recorded_reminders(message.additional_properties):
+            if item.kind == "catalog":
+                folded_latest[_catalog_key(item)] = item.text
+    return sum(
+        count_tokens(json.dumps(wrap_system_reminder(text), ensure_ascii=False))
+        for key, text in folded_latest.items()
+        if key not in sent
+    )
 
 
 def _catalog_updates(
@@ -923,10 +960,20 @@ class SystemReminderMiddleware(ChatMiddleware):
         new_items = self._unsent_reminders(in_view, turn_recorded, reminder_items) if target is not None else []
         # A note whose turn shows no record of it (a session saved before
         # the record existed, or one whose carrier went out of view) goes on
-        # the last user message and is recorded there once delivered.
-        unrecorded_last_words = ""
-        if target is not None and self._last_words_carrier(messages, target_idx) is None:
-            unrecorded_last_words = "\n\n".join(self._last_words_reminders())
+        # the last user message and is recorded there once delivered.  A
+        # record that holds another note than the state does is replaced on
+        # the message it is on (``_last_words_record_is_behind``).
+        state_last_words = ""
+        note_idx = -1
+        if target is not None:
+            carrier_idx = self._last_words_carrier(messages, target_idx)
+            if carrier_idx is None:
+                note_idx = target_idx
+            elif self._last_words_record_is_behind(messages[carrier_idx]):
+                note_idx = carrier_idx
+            if note_idx >= 0:
+                state_last_words = "\n\n".join(self._last_words_reminders())
+        note_properties = messages[note_idx].additional_properties if state_last_words else None
         for msg_idx, message in enumerate(messages):
             if message.role != "user" or not _is_visible(message):
                 # Excluded messages never reach the wire; nothing to render.
@@ -936,16 +983,17 @@ class SystemReminderMiddleware(ChatMiddleware):
             last_words = [self._recorded_last_words(last_words_record)] if last_words_record is not None else []
             if msg_idx == target_idx:
                 reminders.extend(item.text for item in new_items)
-                if unrecorded_last_words:
-                    last_words = [unrecorded_last_words]
+            if msg_idx == note_idx and state_last_words:
+                last_words = [state_last_words]
             if reminders or last_words or self._has_system_reminder_tags(message):
                 messages[msg_idx] = self._create_enriched(message, reminders, last_words)
         if target is not None:
-            if unrecorded_last_words:
+            if note_properties is not None:
                 context.request_message_observers.append(
                     self._record_last_words_on_delivery(
-                        target.additional_properties,
-                        self._last_words_record(unrecorded_last_words),
+                        note_properties,
+                        self._last_words_record(state_last_words),
+                        read_last_words_record(note_properties),
                         self._hidden_last_words_carriers(messages, target_idx),
                     )
                 )
@@ -1167,17 +1215,20 @@ class SystemReminderMiddleware(ChatMiddleware):
     def _record_last_words_on_delivery(
         properties: dict[str, Any],
         record: LastWordsRecord,
+        replaced: LastWordsRecord | None,
         hidden: Sequence[dict[str, Any]],
     ) -> Callable[[Sequence[Message]], None]:
-        """Return a request observer that records a note sent without a record, once a request carries it.
+        """Return a request observer that records a note sent from the state, once a request carries it.
 
-        A drop that commits while the request is prepared writes the record
-        itself, with a newer note: the observer then leaves it alone.  The
-        record of a carrier that left the view (*hidden*) is retired with it.
+        *replaced* is the record the message held when the request was
+        enriched: none, or one that was behind the state.  A drop that
+        commits while the request is prepared writes the record itself, with
+        a newer note: the observer then leaves it alone.  The record of a
+        carrier that left the view (*hidden*) is retired with it.
         """
 
         def _observe(_messages: Sequence[Message]) -> None:
-            if read_last_words_record(properties) is None:
+            if read_last_words_record(properties) == replaced:
                 properties[HistoryMarkerKind.LAST_WORDS_RECORD_KEY] = record.to_record()
                 _retire_last_words_records(hidden)
 
@@ -1229,6 +1280,19 @@ class SystemReminderMiddleware(ChatMiddleware):
 
     def _last_words_note(self) -> str | None:
         return self._last_words.get_last_words() if self._last_words is not None else None
+
+    def _last_words_record_is_behind(self, carrier: Message) -> bool:
+        """Whether the state holds another note than the one recorded on *carrier*.
+
+        A drop writes the note to the state and the record together, and a
+        rolled-back attempt takes both back, so the two differ only when a
+        build that keeps the note in the state alone ran the turn in between
+        and dropped more work: the state's note is then the one that stands
+        for everything dropped.
+        """
+        note = self._last_words_note()
+        record = read_last_words_record(carrier.additional_properties)
+        return bool(note) and record is not None and record.note != note
 
     def _last_words_record(self, text: str) -> LastWordsRecord:
         """The record of *text*, the LAST_WORDS block the state renders now."""

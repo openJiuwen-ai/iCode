@@ -652,8 +652,10 @@ def _parse_compaction(raw: object) -> CompactionConfig:
         "phase4_side_call_token_budget",
         defaults.phase4_side_call_token_budget,
     )
-    # ``null`` is the default: the budget then follows the model's context window.
-    if phase4_side_call_token_budget is not None and (
+    if phase4_side_call_token_budget is None:
+        # Explicit ``null`` keeps its pre--1 meaning: use the default.
+        phase4_side_call_token_budget = defaults.phase4_side_call_token_budget
+    if (
         not isinstance(phase4_side_call_token_budget, int)
         or isinstance(phase4_side_call_token_budget, bool)
         or phase4_side_call_token_budget < -1

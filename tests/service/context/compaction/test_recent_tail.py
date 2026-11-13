@@ -4,12 +4,19 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
+from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.kernel import EXCLUDED_KEY, Message
-from chrys.service.context.compaction import MAX_DROP_ROUNDS_PER_TURN, UnifiedContextStrategy
-from chrys.service.context.compaction.last_words_state import DropRoundBreakerState, ManifestEntry
+from chrys.service.agent_middleware.system_reminder import (
+    ReminderTurns,
+    TurnReminderState,
+    escape_system_reminder_tags,
+)
+from chrys.service.context.compaction import _MAX_DROP_ROUNDS_PER_TURN, UnifiedContextStrategy
+from chrys.service.context.compaction.last_words_state import DropRoundBreakerState, LastWordsState, ManifestEntry
 from chrys.service.context.compaction.spill import SpillQuota
 from tests.service.context.compaction._compaction_helpers import (
     _assistant_text,
@@ -35,8 +42,8 @@ def _turn(groups: int, *, words: int = _GROUP_WORDS) -> list[Message]:
 
 
 def _window_keeping(groups: float) -> int:
-    """A window whose recent-tail allowance (8% of it) holds *groups* of ``_turn``'s tool groups."""
-    return int(groups * _GROUP_TOKENS / 0.08)
+    """A window whose recent-tail allowance (10% of it) holds *groups* of ``_turn``'s tool groups."""
+    return int(groups * _GROUP_TOKENS / 0.10)
 
 
 def _strategy(window: int, **kwargs: Any) -> UnifiedContextStrategy:
@@ -121,9 +128,9 @@ async def test_a_drop_that_would_free_under_five_points_starts_no_round() -> Non
         *older,
         *_build_tool_group("call_1", "read_file", "word " * _GROUP_WORDS),
     ]
-    window = 50_000
+    window = 42_000
     # The newest group stays, the older one no longer fits beside it, and is under five points of the window.
-    assert _GROUP_TOKENS < 0.08 * window < _GROUP_TOKENS + _estimate_tokens(older) < 0.05 * window + _GROUP_TOKENS
+    assert _GROUP_TOKENS < 0.10 * window < _GROUP_TOKENS + _estimate_tokens(older) < 0.05 * window + _GROUP_TOKENS
     strategy = _strategy(window, last_words_generator=generator, reminder_middleware=reminder)
 
     assert not await strategy(messages)
@@ -238,6 +245,95 @@ async def test_the_same_turn_in_a_hard_pass_keeps_what_the_overflow_pass_gave_up
     assert _dropped_calls(messages) == ["call_0", "call_1", "call_2", "call_3"]
 
 
+def test_the_todo_section_counts_in_the_form_the_request_carries_it() -> None:
+    """A serialized message escapes quotes and backslashes, and reminder tags are defanged: the list is larger."""
+    todos = "\n".join("Review C:\\" + "a\\" * 20 + "file.py " + "<system-reminder>" for _ in range(40))
+    turns = ReminderTurns()
+    turns.install(TurnReminderState())
+    last_words = LastWordsState(turns, todo_provider=lambda: todos)
+
+    counted = last_words.todo_reminder_tokens(MixedLanguageTokenizer().count_tokens)
+
+    assert counted > MixedLanguageTokenizer().count_tokens(todos)
+    assert counted == MixedLanguageTokenizer().count_tokens(
+        json.dumps(escape_system_reminder_tags(todos), ensure_ascii=False)
+    )
+
+
+async def test_a_hard_pass_counts_the_todo_section_the_note_will_carry(tmp_path: Path) -> None:
+    """The reminder carries the todo list with the note, so a list with little room left takes the tail too."""
+    todos = "\n".join(f"- [ ] step {index}: " + "detail " * 120 for index in range(40))
+    turns = ReminderTurns()
+    turns.install(TurnReminderState())
+    last_words = LastWordsState(turns, todo_provider=lambda: todos)
+    assert last_words.todo_reminder_tokens(MixedLanguageTokenizer().count_tokens) > 4_096
+    # The window clears the turn by less than the todo section the note will
+    # capture; without one, the tail stays below the window and keeps two groups.
+    window = _estimate_tokens([_user("word " * 30_000), *_turn(6)[1:]]) + 2_000
+    without = [_user("word " * 30_000), *_turn(6)[1:]]
+    assert await _strategy(window, last_words_generator=StubLastWordsGenerator(text="[note]"))(without)
+    kept_without = 6 - len(_dropped_calls(without))
+    assert kept_without == 2
+    messages = [_user("word " * 30_000), *_turn(6)[1:]]
+    strategy = _strategy(
+        window,
+        reminder_middleware=StubReminderMiddleware(last_words),
+        last_words=last_words,
+        last_words_generator=StubLastWordsGenerator(text="[note]"),
+        spill_root=tmp_path,
+        spill_quota=SpillQuota(),
+        spill_session_id="todo-reserve",
+    )
+
+    assert await strategy(messages)
+
+    # The todo section the note captures counts against the request, so the
+    # same window keeps less of the tail than it does without one.
+    assert 6 - len(_dropped_calls(messages)) < kept_without
+    assert strategy._usage_pct(strategy.last_included_tokens) <= 1.0
+
+
+async def test_a_hard_pass_gives_up_the_tail_the_request_it_leaves_cannot_hold() -> None:
+    """The tail is kept for the work the turn has just done, not past the window it has to fit."""
+    # The window is wide enough for the allowance to keep the newest group,
+    # but the request the drop leaves is already over it: keeping the tail
+    # would send a request the provider refuses.
+    messages = [_user("word " * 30_000), *_turn(6)[1:]]
+    strategy = _strategy(_window_keeping(1.5), last_words_generator=StubLastWordsGenerator(text="[note]"))
+
+    assert await strategy(messages)
+
+    assert _dropped_calls(messages) == [f"call_{index}" for index in range(6)]
+    assert strategy._usage_pct(strategy.last_included_tokens) <= 1.0
+
+
+async def test_a_hard_pass_keeps_its_tail_when_the_request_it_leaves_still_fits() -> None:
+    """The control: the window has room to spare, so the tail stays whatever the booking's line says."""
+    messages = _turn(6)
+    strategy = _strategy(_window_keeping(2.5), last_words_generator=StubLastWordsGenerator(text="[note]"))
+
+    assert await strategy(messages)
+
+    assert _dropped_calls(messages) == ["call_0", "call_1", "call_2", "call_3"]
+
+
+async def test_a_hard_pass_scales_the_note_reserve_by_the_calibration_ratio() -> None:
+    """The reserve is local tokens and usage is counted calibrated, so the room it needs is scaled too."""
+    # Calibration reports this request 1.5 times its local size, so the
+    # reminder's 4,096 local tokens take 6,144 of the window.  At this window
+    # the request fits with the scaled reserve only after the newest group
+    # goes too; against an unscaled reserve one group would stay, and the
+    # request would go out over the window.
+    messages = [_user("word " * 38_700), *_turn(6)[1:]]
+    strategy = _strategy(82_500, last_words_generator=StubLastWordsGenerator(text="[note]"))
+    strategy._calibration_ratio = 1.5
+
+    assert await strategy(messages)
+
+    assert _dropped_calls(messages) == [f"call_{index}" for index in range(6)]
+    assert strategy._usage_pct(strategy.last_included_tokens) <= 1.0
+
+
 async def test_a_newest_group_too_large_to_stay_leaves_both_ends_of_its_result_and_its_record(
     tmp_path: Path,
 ) -> None:
@@ -301,21 +397,23 @@ def test_a_manifest_entry_keeps_its_excerpt_through_saved_state_and_old_state_ha
     assert ManifestEntry.from_state({**state, "excerpt": "x" * 2_000}) is None
 
 
-async def test_the_eighth_round_of_a_turn_is_the_last() -> None:
+async def test_a_turn_whose_every_round_frees_plenty_drops_until_the_round_limit() -> None:
+    """Rounds that keep freeing most of the window are not what the low-yield rule stops: only the limit does."""
     generator = StubLastWordsGenerator(text="[note]")
     reminder = StubReminderMiddleware()
     strategy = _strategy(_window_keeping(2.5), last_words_generator=generator, reminder_middleware=reminder)
 
-    for round_number in range(1, MAX_DROP_ROUNDS_PER_TURN + 1):
+    for round_number in range(1, _MAX_DROP_ROUNDS_PER_TURN + 1):
         assert await strategy(_turn(6)), round_number
-    assert MAX_DROP_ROUNDS_PER_TURN == 8
-    assert len(generator.calls) == 8
-    assert reminder.last_words.get_drop_round_breaker().attempts == 8
+    assert _MAX_DROP_ROUNDS_PER_TURN == 100
+    assert len(generator.calls) == 100
+    breaker = reminder.last_words.get_drop_round_breaker()
+    assert (breaker.attempts, breaker.consecutive_no_progress, breaker.disabled) == (100, 0, False)
 
-    ninth = _turn(6)
-    assert not await strategy(ninth)
+    refused = _turn(6)
+    assert not await strategy(refused)
 
-    assert len(generator.calls) == 8
-    assert _dropped_calls(ninth) == []
+    assert len(generator.calls) == 100
+    assert _dropped_calls(refused) == []
     assert reminder.last_words.get_drop_round_breaker().disabled is True
-    assert generator.breaker_trips == ["8 attempts limit exceeded for current turn"]
+    assert generator.breaker_trips == ["100 attempts limit exceeded for current turn"]

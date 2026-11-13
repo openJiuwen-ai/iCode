@@ -27,6 +27,7 @@ turn) and discards it otherwise (``begin_turn``, then ``discard_restored``).
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -36,7 +37,11 @@ from typing import TYPE_CHECKING, Any
 from chrys.foundation.models.history_markers import dropped_records_heading
 from chrys.foundation.platform.files import is_utf8_encodable
 from chrys.service.agent_middleware.reminders.todo import TodoSource
-from chrys.service.agent_middleware.system_reminder import LAST_WORDS_PREFIX, wrap_system_reminder
+from chrys.service.agent_middleware.system_reminder import (
+    LAST_WORDS_PREFIX,
+    escape_system_reminder_tags,
+    wrap_system_reminder,
+)
 
 from .spill import (
     DISPLAY_ARGUMENT_DEFAULT_MAX_CHARS,
@@ -227,7 +232,10 @@ class DropRoundBreakerState:
 
     @classmethod
     def from_state(cls, value: object) -> DropRoundBreakerState | None:
-        """Return a validated breaker state, or ``None`` for old/malformed data."""
+        """Return a validated breaker state, or ``None`` for none saved and for old/malformed data."""
+        if value is None:
+            # Nothing was saved: the usual case, and nothing to report.
+            return None
         version = value.get("version") if isinstance(value, Mapping) else None
         if (
             not isinstance(value, Mapping)
@@ -309,6 +317,19 @@ def _manifest_state_text(value: str, max_chars: int) -> str:
     """Return bounded text that strict UTF-8 session persistence can encode."""
     safe = value.encode("utf-8", errors="backslashreplace").decode("utf-8")
     return safe[:max_chars]
+
+
+def serialized_text_tokens(text: str | None, count_tokens: Callable[[str], int]) -> int:
+    """Tokens *text* takes in a request, where it rides inside a serialized message.
+
+    Estimation counts ``json.dumps`` of the message (sorted keys, non-ASCII
+    literal), so quotes, backslashes and control characters cost what their
+    escape sequences do, not the one character they are: a note or todo list
+    full of paths and newlines is larger on the wire than its rendered text.
+    Reminder tags are counted escaped as well: the middleware defangs
+    ``<system-reminder>`` in reminder text before it is sent.
+    """
+    return count_tokens(json.dumps(escape_system_reminder_tags(text), ensure_ascii=False)) if text else 0
 
 
 class LastWordsState:
@@ -422,6 +443,17 @@ class LastWordsState:
         turn = self._ensure_turn()
         turn.note = text or None
         turn.todo = self._todo.snapshot() if turn.note else None
+
+    def todo_reminder_tokens(self, count_tokens: Callable[[str], int]) -> int:
+        """Tokens the note's reminder adds from the todo list, captured as the note will capture it.
+
+        A caller sizing the request a drop leaves asks before the note exists;
+        the todo text is what ``set_last_words`` will record.  Counted in the
+        form the request carries it: a serialized message escapes quotes,
+        backslashes and control characters, so a todo list full of them takes
+        more room than its rendered text does.
+        """
+        return serialized_text_tokens(self._todo.snapshot(), count_tokens)
 
     def get_last_words(self) -> str | None:
         """Return the current LAST_WORDS text (for incremental regeneration).

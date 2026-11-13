@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -20,7 +21,7 @@ from .events import _REASON_CURRENT_TURN_DROP, CompactionInfo
 from .exclusions import ExclusionLedger
 from .groups import _tool_call_name
 from .last_words import LastWordsSpendBudgetExceeded
-from .last_words_state import LastWordsState, ManifestEntry
+from .last_words_state import LastWordsState, ManifestEntry, serialized_text_tokens
 from .scoped import ScopedGroup, build_scoped_group_timeline
 from .spill import (
     SpillBatchResult,
@@ -45,7 +46,18 @@ _log = logging.getLogger(__name__)
 # The newest work of the turn stays as it is: results the model has not read
 # yet, and the calls it would otherwise have to repeat to see them again.
 _KEEP_RECENT_MAX_TOKENS = 20_000
-_KEEP_RECENT_WINDOW_SHARE = 0.08
+_KEEP_RECENT_WINDOW_SHARE = 0.10
+# What the LAST_WORDS reminder adds besides the note itself: its heading,
+# affordance and opening lines, and the dropped-call list.  The list is capped
+# at six thousand characters; Han text is the densest the tokenizer measures
+# at 0.6 tokens per character, so the cap is under 3,600 tokens, and text the
+# serialized message escapes (quotes, backslashes, control characters) doubles
+# at most, which for ASCII stays under 3,000.  The rest of the block is a few
+# hundred.  The todo list it carries is measured separately in that serialized
+# form: it has no cap of its own.  A pass whose only remaining limit is the
+# window keeps the tail under both, since a request over the window is refused
+# however small the excess.
+_NOTE_REMINDER_RESERVE_TOKENS = 4_096
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,10 +258,13 @@ class CurrentTurnDropRound:
         and starts at a tool group: assistant text ahead of the first kept
         call belongs to the dropped work.  An overflow pass gives the tail up
         group by group, oldest first, until the pass's stop point is reached;
-        *note_tokens* is what the round's note adds to the request, known
-        once the note is written.
+        every other pass gives it up the same way only while the request after
+        the drop would otherwise exceed the window, so the work kept is work
+        the request can still carry.  *note_tokens* is what the round's note
+        adds to the request, known once the note is written.
         """
         strategy = self._strategy
+        plan = strategy._plan
         keep_budget = min(_KEEP_RECENT_MAX_TOKENS, int(strategy.max_context_tokens * _KEEP_RECENT_WINDOW_SHARE))
         sizes = [included_token_count(list(group.messages)) for group in groups]
         kept_from = len(groups)
@@ -264,13 +279,29 @@ class CurrentTurnDropRound:
             return index
 
         kept_from = start_at_tool_group(kept_from)
-        plan = strategy._plan
-        if plan.spend_recent_tail:
-            while (
-                kept_from < len(groups)
-                and strategy._usage_pct(tokens_before + note_tokens - sum(sizes[:kept_from])) > plan.stop_pct
-            ):
-                kept_from = start_at_tool_group(kept_from + 1)
+        # An overflow pass keeps nothing the pass's stop point does not allow.
+        # Any other pass keeps its tail while the request that goes out still
+        # fits the window, and gives it up group by group past it: the tail is
+        # work the turn has just done, and room above the trigger is the
+        # booking's business, but a request the provider will refuse is not.
+        # The reminder the drop leaves adds text around the note: a reserve for
+        # the list and its chrome, plus the todo section as it will be captured.
+        # The reserve is local tokens, and usage is counted after calibration,
+        # so the room it needs is scaled by the same ratio the request is.
+        reserve = _NOTE_REMINDER_RESERVE_TOKENS
+        last_words_state = strategy._last_words_state
+        if last_words_state is not None and not plan.spend_recent_tail:
+            reserve += last_words_state.todo_reminder_tokens(strategy.tokenizer.count_tokens)
+        reserved = math.ceil(reserve * strategy.calibration_ratio)
+        gate = (
+            plan.stop_pct
+            if plan.spend_recent_tail
+            else (strategy.max_context_tokens - reserved) / strategy.max_context_tokens
+        )
+        while (
+            kept_from < len(groups) and strategy._usage_pct(tokens_before + note_tokens - sum(sizes[:kept_from])) > gate
+        ):
+            kept_from = start_at_tool_group(kept_from + 1)
         oversized: ScopedGroup | None = None
         if kept_from == len(groups):
             newest = next((index for index in range(len(groups) - 1, -1, -1) if groups[index].kind == "tool_call"), -1)
@@ -376,24 +407,25 @@ class CurrentTurnDropRound:
                             last_words=last_words_state,
                         )
 
-                        if new_last_words and self._strategy._plan.spend_recent_tail:
-                            # The stop point is for the request that goes
-                            # out, note included: the plan made before the
-                            # note existed left room for the work alone.  The
-                            # note was written from the whole turn, so the
-                            # groups given up here are in it too.  What the
-                            # reminder adds around the note (its opening lines
-                            # and the list of dropped records, a bounded
-                            # couple of thousand tokens) is not counted: the
-                            # stop point is a target, not the window's limit.
+                        if new_last_words:
+                            # The plan is for the request that goes out, note
+                            # included: the one made before the note existed
+                            # left room for the work alone.  The note was
+                            # written from the whole turn, so the groups given
+                            # up here are in it too.  What the reminder adds
+                            # around the note is covered by the plan's reserve
+                            # rather than counted, since it depends on records
+                            # this drop has not written yet.  The note counts in
+                            # the form the request carries it (escaped in the
+                            # serialized message), not as its rendered text.
                             tokenizer = self._strategy.tokenizer
                             drop_plan = self._plan_drop(
                                 turn_work,
                                 tokens_before=p4_tokens_before,
                                 note_tokens=max(
                                     0,
-                                    tokenizer.count_tokens(new_last_words)
-                                    - (tokenizer.count_tokens(previous) if previous else 0),
+                                    serialized_text_tokens(new_last_words, tokenizer.count_tokens)
+                                    - serialized_text_tokens(previous, tokenizer.count_tokens),
                                 ),
                             )
                             drop_groups = list(drop_plan.drop)

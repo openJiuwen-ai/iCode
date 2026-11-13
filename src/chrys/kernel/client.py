@@ -32,7 +32,7 @@ from ._serialization import SerializationMixin, make_json_safe
 from ._types import ChatResponse, ChatResponseUpdate, Message, ResponseStream, validate_chat_options
 
 if TYPE_CHECKING:
-    from .compaction import CompactionCallContext, TokenizerProtocol
+    from .compaction import CompactionCallContext, LastWordsCompletion, TokenizerProtocol
 
 
 _log = logging.getLogger(__name__)
@@ -637,8 +637,9 @@ class _ClientLastWordsCompleter:
         max_output_tokens: int,
         on_usage: Callable[[Mapping[str, Any]], None] | None = None,
         keep_tool_choice: bool = False,
-    ) -> str:
+    ) -> LastWordsCompletion:
         from .compaction import (
+            LastWordsCompletion,
             LastWordsToolCallError,
             internal_side_call_scope,
             messages_contain_tool_calls,
@@ -722,6 +723,10 @@ class _ClientLastWordsCompleter:
         # rejects below still consumed real provider tokens.
         if on_usage is not None and response.usage_details:
             on_usage(response.usage_details)
+        # The window-filled guard runs first: its overflow has the caller shrink
+        # the prompt whatever the answer says, and a retry of the same prompt
+        # would only fill the window again. It keeps no text from a reply that
+        # asks for a tool, which is never a note.
         raise_if_context_window_filled(response)
         if messages_contain_tool_calls(response.messages):
             raise LastWordsToolCallError(
@@ -729,7 +734,7 @@ class _ClientLastWordsCompleter:
             )
         # Verbatim, not ``.text``: outer whitespace (leading indentation in
         # particular) is meaningful to the structured-note validator.
-        return response.raw_text
+        return LastWordsCompletion(response.raw_text, cut_off=response.finish_reason == "length")
 
 
 class SupportsAclose(Protocol):
