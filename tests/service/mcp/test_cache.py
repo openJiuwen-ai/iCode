@@ -9,16 +9,19 @@ import contextlib
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform import get_platform
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.tool_kinds import get_tool_kind
 from chrys.kernel import FunctionTool
+from chrys.orchestration.sub_agents import tools as tools_module
 from chrys.orchestration.sub_agents.tools import SubAgentTools
+from chrys.service.llm.mock import MockChatClient
 from chrys.service.mcp._connection import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     _create_tool_with_timeout_floor,
@@ -26,8 +29,15 @@ from chrys.service.mcp._connection import (
 from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.mcp.cache import MCPConnectionCache, mcp_config_cache_key, resolve_mcp_effective_config
 from chrys.service.mcp.errors import MCPConnectionError
-from chrys.service.profiles.agents.schema import AgentProfile, MCPServerConfig, SubAgentRef, ToolsConfig
+from chrys.service.profiles.agents.schema import (
+    AgentProfile,
+    CompactionConfig,
+    MCPServerConfig,
+    SubAgentRef,
+    ToolsConfig,
+)
 from chrys.service.profiles.models.schema import ModelProfile
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 async def _remote_tool(ctx, value: str = "") -> str:
@@ -315,6 +325,282 @@ async def test_sub_agent_partial_register_cleanup_releases_mcp_adapter() -> None
     assert entry.refcount == 0
     await sub_agent_tools.cleanup()
     assert entry.refcount == 0
+    await cache.close_all()
+    assert fake.exit_count == 1
+
+
+def _sub_agent_profile(name: str, config: MCPServerConfig) -> AgentProfile:
+    return AgentProfile(
+        name=name,
+        tools=ToolsConfig(builtins=[], mcp=[config]),
+        compaction=CompactionConfig(enabled=False),
+    )
+
+
+class _GatedMCPTool(_FakeMCPTool):
+    """A fake whose handshake holds until the test releases it, then succeeds or fails."""
+
+    def __init__(self, entered: asyncio.Event, release: asyncio.Event, error: Exception | None = None) -> None:
+        super().__init__()
+        self._entered = entered
+        self._release = release
+        self._error = error
+
+    async def __aenter__(self) -> _FakeMCPTool:
+        self.enter_count += 1
+        self._entered.set()
+        await self._release.wait()
+        if self._error is not None:
+            raise self._error
+        return self
+
+
+async def test_sub_agents_sharing_one_failing_server_connect_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Eight sub-agents on one broken MCP server cost one connect attempt, not eight waits.
+
+    The count is the assertion: while the handshake is held open every sub-agent must be
+    parked on the same in-flight connect, which only a concurrent registration reaches.
+    """
+    cache = MCPConnectionCache()
+    sub_agent_tools = SubAgentTools(mcp_cache=cache, session_dir=tmp_path)
+    monkeypatch.setattr(
+        tools_module, "create_client", create_autospec(tools_module.create_client, return_value=MockChatClient())
+    )
+    config = MCPServerConfig(name="srv", transport="stdio", command="python")
+    entries = [
+        (SubAgentRef(profile=f"Explore{index}"), _sub_agent_profile(f"Explore{index}", config)) for index in range(8)
+    ]
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    fake = _GatedMCPTool(entered, release, error=RuntimeError("boom"))
+    arrived: list[str] = []
+    all_arrived = asyncio.Event()
+    acquire = cache.acquire
+
+    async def _counting_acquire(config: MCPServerConfig, *, stdio_cwd: str | None = None) -> object:
+        arrived.append(config.name)
+        if len(arrived) == len(entries):
+            all_arrived.set()
+        return await acquire(config, stdio_cwd=stdio_cwd)
+
+    monkeypatch.setattr(cache, "acquire", _counting_acquire)
+
+    with patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake) as factory:
+        batch = asyncio.create_task(
+            sub_agent_tools.register_many(
+                entries,
+                SessionEnvironment(cwd=str(tmp_path), platform=get_platform()),
+                settings=Settings(),
+                fallback_profile=ModelProfile(id="test-id", name="test"),
+            )
+        )
+        await wait_for(
+            lambda: all_arrived.is_set() or batch.done(),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="every sub-agent waiting on the one connect attempt",
+        )
+        release.set()
+        await batch
+
+    assert factory.call_count == 1
+    assert fake.enter_count == 1
+    # A failed server costs its tools, never the sub-agent: all eight still register.
+    assert sub_agent_tools.tool_names() == [entry[1].name for entry in entries]
+    await sub_agent_tools.cleanup()
+    await cache.close_all()
+
+
+async def test_sub_agents_register_in_declared_order_over_one_connection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Installing follows the declared order and one connection serves every consumer.
+
+    This pins ordering and sharing, not concurrency: a serial registration would satisfy
+    both too. ``test_sub_agents_sharing_one_failing_server_connect_once`` is the test a
+    serial registration fails.
+    """
+    cache = MCPConnectionCache()
+    sub_agent_tools = SubAgentTools(mcp_cache=cache, session_dir=tmp_path)
+    monkeypatch.setattr(
+        tools_module, "create_client", create_autospec(tools_module.create_client, return_value=MockChatClient())
+    )
+    config = MCPServerConfig(name="srv", transport="stdio", command="python")
+    entries = [
+        (SubAgentRef(profile=f"Explore{index}"), _sub_agent_profile(f"Explore{index}", config)) for index in range(4)
+    ]
+    fake = _FakeMCPTool()
+
+    with patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake) as factory:
+        await sub_agent_tools.register_many(
+            entries,
+            SessionEnvironment(cwd=str(tmp_path), platform=get_platform()),
+            settings=Settings(),
+            fallback_profile=ModelProfile(id="test-id", name="test"),
+        )
+
+    assert factory.call_count == 1
+    assert sub_agent_tools.tool_names() == [entry[1].name for entry in entries]
+    entry = next(iter(cache._entries.values()))
+    assert entry.refcount == 4
+    await sub_agent_tools.cleanup()
+    await cache.close_all()
+    assert fake.exit_count == 1
+
+
+async def test_a_failing_sub_agent_cancels_the_others_and_keeps_the_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One failure ends the batch with that same exception, and installs none of the rest."""
+    cache = MCPConnectionCache()
+    sub_agent_tools = SubAgentTools(mcp_cache=cache, session_dir=tmp_path)
+    monkeypatch.setattr(
+        tools_module, "create_client", create_autospec(tools_module.create_client, return_value=MockChatClient())
+    )
+    config = MCPServerConfig(name="srv", transport="stdio", command="python")
+    entries = [
+        (SubAgentRef(profile=f"Explore{index}"), _sub_agent_profile(f"Explore{index}", config)) for index in range(3)
+    ]
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    fake = _GatedMCPTool(entered, release)
+    prepare = SubAgentTools._prepare
+
+    async def _prepare(
+        self: SubAgentTools,
+        ref: SubAgentRef,
+        profile: AgentProfile,
+        runtime: SessionEnvironment,
+        **kwargs: object,
+    ) -> object:
+        if profile.name == "Explore1":
+            raise RuntimeError("registration failed")
+        return await prepare(self, ref, profile, runtime, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(SubAgentTools, "_prepare", _prepare)
+
+    with patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake):
+        batch = asyncio.create_task(
+            sub_agent_tools.register_many(
+                entries,
+                SessionEnvironment(cwd=str(tmp_path), platform=get_platform()),
+                settings=Settings(),
+                fallback_profile=ModelProfile(id="test-id", name="test"),
+            )
+        )
+        await wait_for(
+            lambda: entered.is_set() or batch.done(),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="a sub-agent holding the connection while its sibling fails",
+        )
+        with pytest.raises(RuntimeError, match="registration failed"):
+            await asyncio.wait_for(batch, timeout=ENGINE_TURN_TIMEOUT)
+
+    assert sub_agent_tools.tool_names() == []
+    await sub_agent_tools.cleanup()
+    # Closing the cache cancels the handshake the cancelled registration left behind, so the
+    # test never leaves it running past its own end.
+    await cache.close_all()
+
+
+async def test_a_prepared_sibling_is_rolled_back_when_another_sub_agent_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A sibling that finished preparing before the failure opened real resources; nobody would close them."""
+    cache = MCPConnectionCache()
+    sub_agent_tools = SubAgentTools(mcp_cache=cache, session_dir=tmp_path)
+    monkeypatch.setattr(
+        tools_module, "create_client", create_autospec(tools_module.create_client, return_value=MockChatClient())
+    )
+    config = MCPServerConfig(name="srv", transport="stdio", command="python")
+    entries = [
+        (SubAgentRef(profile=f"Explore{index}"), _sub_agent_profile(f"Explore{index}", config)) for index in range(2)
+    ]
+    first_prepared = asyncio.Event()
+    prepare = SubAgentTools._prepare
+
+    async def _prepare(
+        self: SubAgentTools,
+        ref: SubAgentRef,
+        profile: AgentProfile,
+        runtime: SessionEnvironment,
+        **kwargs: object,
+    ) -> object:
+        if profile.name == "Explore1":
+            await first_prepared.wait()
+            raise RuntimeError("registration failed")
+        return await prepare(self, ref, profile, runtime, **kwargs)  # type: ignore[arg-type]
+
+    async def _registered(ref: SubAgentRef) -> None:
+        if ref.profile == "Explore0":
+            first_prepared.set()
+
+    monkeypatch.setattr(SubAgentTools, "_prepare", _prepare)
+    fake = _FakeMCPTool()
+
+    with (
+        patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake) as factory,
+        pytest.raises(RuntimeError, match="registration failed"),
+    ):
+        await asyncio.wait_for(
+            sub_agent_tools.register_many(
+                entries,
+                SessionEnvironment(cwd=str(tmp_path), platform=get_platform()),
+                settings=Settings(),
+                fallback_profile=ModelProfile(id="test-id", name="test"),
+                on_registered=_registered,
+            ),
+            timeout=ENGINE_TURN_TIMEOUT,
+        )
+
+    assert sub_agent_tools.tool_names() == []
+    assert factory.call_count == 1
+    entry = next(iter(cache._entries.values()))
+    assert entry.refcount == 0
+    await sub_agent_tools.cleanup()
+    assert entry.refcount == 0
+    await cache.close_all()
+    assert fake.exit_count == 1
+
+
+async def test_a_failing_registered_callback_rolls_the_prepared_sub_agent_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A record whose progress callback fails is still prepared, so it must be closed too."""
+    cache = MCPConnectionCache()
+    sub_agent_tools = SubAgentTools(mcp_cache=cache, session_dir=tmp_path)
+    monkeypatch.setattr(
+        tools_module, "create_client", create_autospec(tools_module.create_client, return_value=MockChatClient())
+    )
+    config = MCPServerConfig(name="srv", transport="stdio", command="python")
+    entries = [(SubAgentRef(profile="Explore0"), _sub_agent_profile("Explore0", config))]
+    fake = _FakeMCPTool()
+
+    async def _registered(ref: SubAgentRef) -> None:
+        raise RuntimeError("progress failed")
+
+    with (
+        patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake),
+        pytest.raises(RuntimeError, match="progress failed"),
+    ):
+        await asyncio.wait_for(
+            sub_agent_tools.register_many(
+                entries,
+                SessionEnvironment(cwd=str(tmp_path), platform=get_platform()),
+                settings=Settings(),
+                fallback_profile=ModelProfile(id="test-id", name="test"),
+                on_registered=_registered,
+            ),
+            timeout=ENGINE_TURN_TIMEOUT,
+        )
+
+    assert sub_agent_tools.tool_names() == []
+    entry = next(iter(cache._entries.values()))
+    assert entry.refcount == 0
+    await sub_agent_tools.cleanup()
     await cache.close_all()
     assert fake.exit_count == 1
 

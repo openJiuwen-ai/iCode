@@ -108,7 +108,7 @@ if TYPE_CHECKING:
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.tracker import MutationTracker
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
-    from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.profiles.agents.schema import AgentProfile, SubAgentRef
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
     from chrys.service.skills.provider import ChrysSkillsProvider
@@ -588,12 +588,16 @@ async def build_agent(
                 shows_answer_text=sub_agent_shows_answer_text,
             )
             prepared.own(sub_agent_tools.cleanup)
+            sub_agent_entries: list[tuple[SubAgentRef, AgentProfile]] = []
+            # One counter for every ref the phase is done with, skipped or loaded, so the
+            # count never goes back and ends at the total.
+            resolved_count = 0
             for index, ref in enumerate(profile.sub_agents.agents, start=1):
                 await _progress(
                     AGENT_LOAD_PHASE_SUB_AGENTS,
                     f"Loading sub-agent {ref.profile}",
                     server_name=ref.profile,
-                    current=index - 1,
+                    current=resolved_count,
                     total=sub_agent_total,
                     status=AGENT_LOAD_STATUS_RUNNING,
                     subject=ref.profile,
@@ -601,11 +605,12 @@ async def build_agent(
                 sub_profile = agent_registry.get(ref.profile)
                 if sub_profile is None:
                     logger.warning("Sub-agent profile not found: %s", ref.profile)
+                    resolved_count += 1
                     await _progress(
                         AGENT_LOAD_PHASE_SUB_AGENTS,
                         f"Skipped sub-agent {ref.profile}",
                         server_name=ref.profile,
-                        current=index,
+                        current=resolved_count,
                         total=sub_agent_total,
                         status=AGENT_LOAD_STATUS_SKIPPED,
                         subject=ref.profile,
@@ -615,37 +620,43 @@ async def build_agent(
                 if registration_state in {"empty_command", "depth_limit"}:
                     reason = sub_agent_skip_reason(registration_state, acp_depth=acp_depth)
                     logger.warning("Skipping sub-agent profile %s: %s", ref.profile, reason)
+                    resolved_count += 1
                     await _progress(
                         AGENT_LOAD_PHASE_SUB_AGENTS,
                         f"Skipped sub-agent {ref.profile}: {reason}",
                         server_name=ref.profile,
-                        current=index,
+                        current=resolved_count,
                         total=sub_agent_total,
                         status=AGENT_LOAD_STATUS_SKIPPED,
                         subject=ref.profile,
                         detail=reason,
                     )
                     continue
-                if sub_profile.acp is not None:
-                    await sub_agent_tools.register_acp(ref, sub_profile, runtime)
-                else:
-                    await sub_agent_tools.register(
-                        ref,
-                        sub_profile,
-                        runtime,
-                        settings=settings,
-                        fallback_profile=active_profile,
-                        model_registry=model_registry,
-                    )
+                sub_agent_entries.append((ref, sub_profile))
+
+            async def _sub_agent_registered(ref: SubAgentRef) -> None:
+                nonlocal resolved_count
+                resolved_count += 1
                 await _progress(
                     AGENT_LOAD_PHASE_SUB_AGENTS,
                     f"Loaded sub-agent {ref.profile}",
                     server_name=ref.profile,
-                    current=index,
+                    current=resolved_count,
                     total=sub_agent_total,
                     status=AGENT_LOAD_STATUS_DONE,
                     subject=ref.profile,
                 )
+
+            # Every sub-agent's outside waits — MCP connections above all — run together;
+            # the registry still takes them in the declared order.
+            await sub_agent_tools.register_many(
+                sub_agent_entries,
+                runtime,
+                settings=settings,
+                fallback_profile=active_profile,
+                model_registry=model_registry,
+                on_registered=_sub_agent_registered,
+            )
             sub_agent_tool_instances = sub_agent_tools.get_tools()
             sub_agent_tool_names = [tool.name for tool in sub_agent_tool_instances]
             tools.extend(sub_agent_tool_instances)

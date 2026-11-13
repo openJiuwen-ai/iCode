@@ -101,7 +101,7 @@ if TYPE_CHECKING:
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.tracker import MutationTracker
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
-    from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.profiles.agents.schema import AgentProfile, SubAgentRef
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
     from chrys.service.tools.background import BackgroundTasks
@@ -627,6 +627,7 @@ async def _register_sub_agents(
     )
     conversation.own(sub_agent_tools.cleanup)
     acp_depth = acp_sub_agent_depth()
+    entries: list[tuple[SubAgentRef, AgentProfile]] = []
     for ref in profile.sub_agents.agents:
         sub_profile = res.agent_registry.get(ref.profile)
         state = sub_agent_registration_state(sub_profile, acp_depth=acp_depth)
@@ -635,17 +636,15 @@ async def _register_sub_agents(
                 "Skipping sub-agent profile %s: %s", ref.profile, sub_agent_skip_reason(state, acp_depth=acp_depth)
             )
             continue
-        if sub_profile.acp is not None:
-            await sub_agent_tools.register_acp(ref, sub_profile, environment)
-        else:
-            await sub_agent_tools.register(
-                ref,
-                sub_profile,
-                environment,
-                settings=res.settings,
-                fallback_profile=model,
-                model_registry=res.model_registry,
-            )
+        entries.append((ref, sub_profile))
+    # The node's sub-agents wait on their MCP servers together, as the chat builder's do.
+    await sub_agent_tools.register_many(
+        entries,
+        environment,
+        settings=res.settings,
+        fallback_profile=model,
+        model_registry=res.model_registry,
+    )
     return sub_agent_tools
 
 

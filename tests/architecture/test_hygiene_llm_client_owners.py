@@ -24,7 +24,7 @@ _LLM_CLIENT_OWNER_ALLOWLIST = {
     "src/chrys/orchestration/engine/build/builder.py::build_agent._acquire": (
         "the build's PreparedAgent (prepared.own_or_release)"
     ),
-    "src/chrys/orchestration/sub_agents/tools.py::SubAgentTools.register._acquire": (
+    "src/chrys/orchestration/sub_agents/tools.py::SubAgentTools._prepare._acquire": (
         "the sub-agent build's PreparedAgent (prepared.own_or_release)"
     ),
     "src/chrys/orchestration/workflows/agent_node_build.py::build_kernel_node": (
