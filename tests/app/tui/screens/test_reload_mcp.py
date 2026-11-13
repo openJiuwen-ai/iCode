@@ -9,16 +9,18 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import psutil
 import pytest
 
+import chrys.orchestration.sub_agents.tools as sub_agent_module
 from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
 from chrys.foundation.events import types as ev
 from chrys.foundation.i18n.formatting import format_message
-from chrys.service.llm.mock import MockResponse
+from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
-from chrys.service.profiles.agents.schema import ApprovalConfig, MCPServerConfig
+from chrys.service.profiles.agents.schema import ApprovalConfig, MCPServerConfig, SubAgentRef, SubAgentsConfig
 from chrys.service.profiles.agents.serializer import save_profile
 from chrys.service.profiles.models.env_bridge import activate_model_profile
 from tests.app.tui.screens.test_manual_reload import ask_after_reload, slash_reload
@@ -122,6 +124,58 @@ async def closed(process: psutil.Process, session) -> None:
         timeout=ENGINE_TURN_TIMEOUT,
         description=f"process {process.pid} closed",
     )
+
+
+async def test_shared_sub_agent_reload_reports_nested_stages_and_keeps_tools_callable(
+    agent_engine, tmp_path, monkeypatch
+) -> None:
+    state = state_dir(tmp_path)
+    config = stdio_server(state)
+    parent = agent_with(config)
+    parent.sub_agents = SubAgentsConfig(agents=[SubAgentRef(profile=name) for name in ("Explore", "Review")])
+    save_profile(parent)
+    for name in ("Explore", "Review"):
+        child = make_agent(name)
+        child.tools.mcp = [config]
+        save_profile(child)
+    agents = AgentProfileRegistry()
+    agents.load_all()
+    activate_model_profile(MAIN_MODEL)
+    monkeypatch.setattr(
+        sub_agent_module,
+        "create_client",
+        create_autospec(sub_agent_module.create_client, return_value=MockChatClient(responses=[])),
+    )
+    async with running_session(agent_engine, tmp_path, monkeypatch, registry=agents, startup_agent=AGENT) as session:
+        assert len(starts(state)) == 1
+        progress: list[ev.AgentLoadProgress] = []
+
+        async def record(event: ev.AgentLoadProgress) -> None:
+            progress.append(event)
+
+        await session.bus.subscribe(ev.AgentLoadProgress, record)
+        try:
+            await reloaded(session)
+        finally:
+            await session.bus.unsubscribe(ev.AgentLoadProgress, record)
+        assert len(starts(state)) == 2
+        for index, name in enumerate(("Explore", "Review")):
+            nested = [event for event in progress if event.subject == name and event.stage]
+            assert {(event.stage, event.stage_status) for event in nested} >= {
+                ("mcp", "running"),
+                ("mcp", "done"),
+                ("skills", "running"),
+                ("skills", "done"),
+            }
+            assert all((event.current, event.total, event.status) == (index, 2, "running") for event in nested)
+            assert all(event.stage_subject == "first" for event in nested if event.stage == "mcp")
+            completed = next(
+                event for event in progress if event.subject == name and not event.stage and event.status == "done"
+            )
+            assert completed.current == index + 1
+            assert progress.index(completed) > max(progress.index(event) for event in nested)
+        await call_tool(session, "probe", "after-shared-reload")
+        assert calls(state) == [f"{starts(state)[-1]} after-shared-reload"]
 
 
 async def test_a_changed_remote_schema_reaches_the_next_request(agent_engine, tmp_path, monkeypatch):

@@ -1255,6 +1255,7 @@ async def test_agent_load_progress_maps_builder_and_mcp_states_without_changing_
         configs: list[MCPServerConfig],
         *,
         progress: Callable[..., Awaitable[None]],
+        acquisition_scope: object | None = None,
     ) -> list[object]:
         active = configs[0]
         await progress(active, "starting", 0, 1, 0)

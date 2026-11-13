@@ -34,11 +34,13 @@ import inspect
 import json
 import logging
 import os
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.config.process_env import canonical_env_name
@@ -47,6 +49,7 @@ from chrys.foundation.platform import get_platform
 from chrys.foundation.tool_call_context import get_tool_context, set_tool_context
 from chrys.foundation.tool_kinds import KIND_MCP, get_tool_kind, set_tool_kind
 from chrys.foundation.util.env_templates import resolve_env_template_mapping, resolve_env_templates
+from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import FunctionTool
 from chrys.service.mcp import _connection
 from chrys.service.mcp._stdio_transport import _inherited_stdio_environment
@@ -54,6 +57,7 @@ from chrys.service.mcp.errors import MCPConnectionError, mcp_failure_diagnostic
 from chrys.service.mcp.result_limits import _MCP_PROMPT_TOOL_KEY, truncate_mcp_result
 
 if TYPE_CHECKING:
+    from chrys.foundation.events.bus import EventBus
     from chrys.service.mcp.owned import MCPTool
     from chrys.service.profiles.agents.schema import MCPServerConfig
 
@@ -103,6 +107,7 @@ class _RefreshRound:
     """What one refresh tried, kept beside the live entries until it commits or aborts."""
 
     attempts: dict[str, asyncio.Task[MCPConnectionEntry]] = field(default_factory=dict)
+    first_attempts: dict[str, asyncio.Task[MCPTool]] = field(default_factory=dict)
     # Each candidate holds one reference of the round's, so an early release cannot close it.
     candidates: list[MCPConnectionEntry] = field(default_factory=list)
     unverified: list[MCPConnectionEntry] = field(default_factory=list)
@@ -296,6 +301,99 @@ def clone_mcp_function_tool(
     return clone
 
 
+class MCPAcquisitionScope:
+    """One build's attempts, with a private lease pinning each successful connection.
+
+    Consumers always get fresh leases. Retaining failed tasks prevents later,
+    sequential consumers from retrying the same failure during this build.
+    Only this scope's acquisition waiters are cancelled on close: the cache
+    still owns any transport task shared with an independent acquisition.
+    With no remaining waiter, that task may finish into an idle cache entry;
+    it remains tracked, bounded by the connection timeout, and drained by
+    ``close_all()``. Ending a build does not close another build's transport.
+    """
+
+    def __init__(self, cache: MCPConnectionCache) -> None:
+        self._cache = cache
+        self._attempts: dict[str, asyncio.Task[MCPConnectionLease]] = {}
+        self._logged_failures: set[MCPConnectionError] = set()
+        self._published_failures: set[tuple[MCPConnectionError, EventBus, str | None]] = set()
+        self._close = OnceClose(self._release)
+
+    async def __aenter__(self) -> MCPAcquisitionScope:
+        self._check(self._cache)
+        return self
+
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        await self.aclose()
+
+    def _check(self, cache: MCPConnectionCache) -> None:
+        if self._cache is not cache:
+            raise ValueError("MCP acquisition scope belongs to a different cache")
+        if self._close.started:
+            raise RuntimeError("MCP acquisition scope is closed")
+        if cache.closed:
+            raise RuntimeError("MCP connection cache is closed")
+
+    async def _acquire(self, cache: MCPConnectionCache, effective: MCPEffectiveConfig) -> MCPConnectionLease:
+        async with cache._lock:
+            self._check(cache)
+            task = self._attempts.get(effective.key)
+            if task is None or task.cancelled():
+                task = asyncio.create_task(cache._acquire_effective(effective))
+                task.add_done_callback(_consume_task_exception)
+                self._attempts[effective.key] = task
+            else:
+                logger.debug("Reusing this build's MCP acquisition for server '%s'", effective.config.name)
+        held = await asyncio.shield(task)
+        async with cache._lock:
+            self._check(cache)
+            lease = cache._lease_from_entry(held.entry)
+            held.entry.refcount += 1
+            return lease
+
+    async def _release(self) -> None:
+        tasks = tuple(self._attempts.values())
+        self._attempts.clear()
+        self._logged_failures.clear()
+        self._published_failures.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in tasks:
+            if not task.cancelled() and task.exception() is None:
+                await self._cache.release(task.result())
+
+    async def aclose(self) -> None:
+        """Drop this build's pins and failures without closing consumers' leases."""
+        await self._close()
+
+    def log_failure_once(self, error: MCPConnectionError) -> bool:
+        """Claim the detailed diagnostic of a failure this build's consumers share."""
+        if error in self._logged_failures:
+            return False
+        self._logged_failures.add(error)
+        return True
+
+    def publish_failure_once(self, error: MCPConnectionError, bus: EventBus, session_id: str | None) -> bool:
+        """Claim the warning *bus* hears about a shared failure for *session_id*.
+
+        The copies would be identical and name no consumer. The claim is per
+        failure, not per message: servers that share a name but not a
+        configuration fail separately and are each reported. Only a consumer
+        about to publish claims, so one without a bus never silences the rest.
+        """
+        claim = (error, bus, session_id)
+        if claim in self._published_failures:
+            return False
+        self._published_failures.add(claim)
+        return True
+
+
 class MCPConnectionCache:
     """Ref-counted cache of live MCP server connections."""
 
@@ -315,6 +413,10 @@ class MCPConnectionCache:
     def closed(self) -> bool:
         """Whether ``close_all()`` has permanently closed this cache."""
         return self._closed
+
+    def acquisition_scope(self) -> MCPAcquisitionScope:
+        """Create an explicit, short-lived scope for one agent build."""
+        return MCPAcquisitionScope(self)
 
     @property
     def refreshing(self) -> bool:
@@ -385,6 +487,8 @@ class MCPConnectionCache:
     def _detach_attempts(self, round_: _RefreshRound) -> None:
         for attempt in round_.attempts.values():
             self._detach(attempt)
+        for attempt in round_.first_attempts.values():
+            self._detach(attempt)
 
     def _detach(self, task: asyncio.Task[Any]) -> None:
         if task.done():
@@ -447,12 +551,25 @@ class MCPConnectionCache:
         round_.candidates.append(candidate)
         return candidate
 
-    async def acquire(self, config: MCPServerConfig, *, stdio_cwd: str | None = None) -> MCPConnectionLease:
+    async def acquire(
+        self,
+        config: MCPServerConfig,
+        *,
+        stdio_cwd: str | None = None,
+        acquisition_scope: MCPAcquisitionScope | None = None,
+    ) -> MCPConnectionLease:
         """Acquire a lease for ``config``, connecting once per cache key."""
         try:
             effective = resolve_mcp_effective_config(config, stdio_cwd=stdio_cwd)
         except Exception as exc:
             raise self._connection_error(config, exc) from exc
+        if acquisition_scope is not None:
+            return await acquisition_scope._acquire(self, effective)
+        return await self._acquire_effective(effective)
+
+    async def _acquire_effective(self, effective: MCPEffectiveConfig) -> MCPConnectionLease:
+        """Acquire an independent lease using the exact snapshot used for its key."""
+        config = effective.config
         key = effective.key
 
         lease: MCPConnectionLease | None = None
@@ -481,7 +598,10 @@ class MCPConnectionCache:
                     round_.attempts[key] = attempt
                 elif attempt is None:
                     round_.first_connections.add(key)
-            if attempt is not None:
+                    task = round_.first_attempts.get(key)
+                    if task is not None and task.cancelled():
+                        task = None
+            if attempt is not None or task is not None:
                 pass
             elif entry is not None and entry.mcp_tool is not None:
                 lease = self._lease_from_entry(entry)
@@ -497,10 +617,12 @@ class MCPConnectionCache:
                         connect_task=None,
                     )
                     self._entries[key] = entry
-                if entry.connect_task is None:
+                if entry.connect_task is None or entry.connect_task.cancelled():
                     entry.connect_task = asyncio.create_task(self._connect_and_store(key, effective))
                     entry.connect_task.add_done_callback(_consume_task_exception)
                 task = entry.connect_task
+                if round_ is not None:
+                    round_.first_attempts[key] = task
 
         if attempt is not None:
             refreshed = await asyncio.shield(attempt)
@@ -611,7 +733,21 @@ class MCPConnectionCache:
             raise
 
     async def _open_marked_tool(self, effective: MCPEffectiveConfig) -> MCPTool:
-        mcp_tool = await self._open_mcp_tool(effective)
+        started = time.perf_counter()
+        outcome = "cancelled"
+        try:
+            mcp_tool = await self._open_mcp_tool(effective)
+            outcome = "connected"
+        except Exception:
+            outcome = "failed"
+            raise
+        finally:
+            logger.debug(
+                "MCP connection attempt for server '%s': %s, %.1f ms",
+                effective.config.name,
+                outcome,
+                (time.perf_counter() - started) * 1000,
+            )
         for tool in list(mcp_tool.functions):
             set_tool_kind(tool, KIND_MCP)
         return mcp_tool

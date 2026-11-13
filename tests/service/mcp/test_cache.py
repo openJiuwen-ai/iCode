@@ -294,7 +294,8 @@ async def test_sub_agent_partial_register_cleanup_releases_mcp_adapter() -> None
         # Registration returns only after rollback. Observe the acquired lease at the
         # fault boundary; cleanup after failed registration is now idempotent.
         entry = next(iter(cache._entries.values()))
-        assert entry.refcount == 1
+        # The build scope pins the connection in addition to this adapter's lease.
+        assert entry.refcount == 2
         raise RuntimeError("ctx failed")
 
     with (

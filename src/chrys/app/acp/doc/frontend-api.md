@@ -625,6 +625,13 @@ One-way `ext_notification` pushes, bridged from `EventBus`:
   `chrys/approval_reviewed`.
 - Agent load lifecycle: `chrys/agent_load_started`, `chrys/agent_load_progress`,
   `chrys/agent_load_finished`, `chrys/agent_load_failed`.
+  Nested initialization updates add optional `stage` (`mcp` or `skills`),
+  `stageSubject` (the MCP server name, or empty for Skills), and `stageStatus`
+  (`running`, `done`, or `failed`) fields to `chrys/agent_load_progress`.
+  These fields are omitted when there is no nested stage. `current`, `total`,
+  and `failed` keep their outer progress meaning; a nested stage finishing
+  does not mean the owning sub-agent has finished loading. `message` remains
+  the English compatibility text.
 - Diagnostics: `chrys/error`, `chrys/warning`, `chrys/context_compressed`,
   `chrys/context_pressure`, `chrys/tool_compacted`,
   `chrys/compaction_started`, `chrys/compaction_finished`.

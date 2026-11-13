@@ -43,6 +43,7 @@ from chrys.service.mcp._stdio_transport import MAX_STDIO_STDERR_PREVIEW_LINES as
 from chrys.service.mcp._stdio_transport import _StdioFailureDiagnostics
 from chrys.service.mcp._stdio_transport import tolerant_stdio_client as tolerant_stdio_client
 from chrys.service.mcp.cache import (
+    MCPAcquisitionScope,
     MCPConnectionCache,
     MCPConnectionLease,
     clone_mcp_function_tool,
@@ -536,7 +537,9 @@ class MCPAdapter:
                 )
         return tools
 
-    async def connect(self, config: MCPServerConfig) -> list[Any]:
+    async def connect(
+        self, config: MCPServerConfig, *, acquisition_scope: MCPAcquisitionScope | None = None
+    ) -> list[Any]:
         """Connect to an MCP server and return its tools as FunctionTools.
 
         Idempotent: calling with a previously-connected name returns the
@@ -561,7 +564,7 @@ class MCPAdapter:
                 return self._current_functions_for_server(config.name, lease)
             task = self._connecting.get(config.name)
             if task is None:
-                task = asyncio.create_task(self._acquire_new(config))
+                task = asyncio.create_task(self._acquire_new(config, acquisition_scope=acquisition_scope))
                 self._connecting[config.name] = task
 
                 def _discard_finished(done: asyncio.Task[list[Any]], name: str = config.name) -> None:
@@ -595,7 +598,9 @@ class MCPAdapter:
                     if self._connecting.get(config.name) is current_task:
                         self._connecting.pop(config.name, None)
 
-    async def _acquire_new(self, config: MCPServerConfig) -> list[Any]:
+    async def _acquire_new(
+        self, config: MCPServerConfig, *, acquisition_scope: MCPAcquisitionScope | None = None
+    ) -> list[Any]:
         """Acquire a cache lease and register it on this adapter."""
         lease: MCPConnectionLease | None = None
         duplicate_tools: list[Any] | None = None
@@ -609,7 +614,12 @@ class MCPAdapter:
         namespace: set[str]
 
         try:
-            lease = await self._cache.acquire(config, stdio_cwd=self._stdio_cwd)
+            if acquisition_scope is None:
+                lease = await self._cache.acquire(config, stdio_cwd=self._stdio_cwd)
+            else:
+                lease = await self._cache.acquire(
+                    config, stdio_cwd=self._stdio_cwd, acquisition_scope=acquisition_scope
+                )
         except MCPConnectionError as err:
             self._failures[config.name] = err
             raise
@@ -816,6 +826,7 @@ class MCPAdapter:
         configs: list[MCPServerConfig],
         *,
         progress: Callable[[MCPServerConfig, str, int, int, int], Awaitable[None]] | None = None,
+        acquisition_scope: MCPAcquisitionScope | None = None,
     ) -> list[Any]:
         """Connect to multiple enabled MCP servers and return all tools.
 
@@ -861,14 +872,18 @@ class MCPAdapter:
             if progress is not None:
                 await progress(config, "starting", connected, total, failed)
             try:
-                tools = await self.connect(config)
+                tools = (
+                    await self.connect(config)
+                    if acquisition_scope is None
+                    else await self.connect(config, acquisition_scope=acquisition_scope)
+                )
             except asyncio.CancelledError:
                 raise
             except MCPToolConfigurationError:
                 raise
             except MCPConnectionError as exc:
                 self._cache.note_connect_failure(config, exc)
-                await self._publish_failure(exc)
+                await self._publish_failure(exc, acquisition_scope=acquisition_scope)
                 failed += 1
                 if progress is not None:
                     await progress(config, "failed", connected, total, failed)
@@ -1005,11 +1020,24 @@ class MCPAdapter:
                 )
             )
 
-    async def _publish_failure(self, err: MCPConnectionError) -> None:
-        """Log and, if a bus is configured, publish a user-visible Warning."""
-        logger.error("%s", err, exc_info=err.cause)
+    async def _publish_failure(
+        self, err: MCPConnectionError, *, acquisition_scope: MCPAcquisitionScope | None = None
+    ) -> None:
+        """Log and, if a bus is configured, publish a user-visible Warning.
+
+        Consumers sharing one build's failure each keep it on ``failures`` and
+        report their own progress; the log and the bus carry it once.
+        """
+        if acquisition_scope is None or acquisition_scope.log_failure_once(err):
+            logger.error("%s", err, exc_info=err.cause)
+        else:
+            logger.debug("MCP server '%s' is unavailable; reusing this build's failure", err.server_name)
         # A refresh's own report names this failure, without the server's stderr.
         if self._bus is None or self._cache.refreshing:
+            return
+        if acquisition_scope is not None and not acquisition_scope.publish_failure_once(
+            err, self._bus, self._session_id
+        ):
             return
         from chrys.foundation.events.types import Warning as WarningEvent
 
