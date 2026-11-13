@@ -29,12 +29,14 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n import Localizer
 from chrys.foundation.i18n.formatting import format_message
 from chrys.service.mcp.importers import (
+    FieldUse,
     ImportWarning,
     McpImportCandidate,
     McpImportResult,
     McpSourceError,
     Problem,
     SourceErrorKind,
+    ValueReason,
     WarningKind,
 )
 from tests.app.tui.screens._mcp_import_support import (
@@ -69,23 +71,28 @@ def test_each_warning_kind_reads_as_one_actionable_sentence() -> None:
     ]
 
     assert texts == [
-        "These pi settings are not imported. Set up any the server needs in iCode by hand:",
-        "Sign-in from pi is not imported. If the server requires authentication, add the headers it expects after import.",
+        "Some settings from the original application were not copied. After import, test the connection and check that the features you need are available.",
+        "Sign-in from pi cannot be carried over. iCode does not yet support MCP OAuth sign-in. If the server supports token authentication, configure “Headers” as its documentation describes. If it only supports OAuth sign-in, it cannot currently be used in iCode.",
         "Set these environment variables to nonempty values before starting iCode:",
-        (
-            "pi limits this server's tools in a way iCode can't express, so it is imported with no tools. "
-            "Choose its tools in “Available Tool Scope” after import."
-        ),
+        "The original application's tool restrictions cannot be carried over directly, so this server's tools are initially turned off after import. Choose the tools you need in “Available Tool Scope”.",
     ]
 
 
 def test_problems_and_source_errors_name_the_setting_or_file() -> None:
-    value = _unsupported("x", Problem.VALUE_NOT_REPRESENTABLE, "mcpServers.x.url")
+    value = replace(_unsupported("x", Problem.VALUE_NOT_REPRESENTABLE, "mcpServers.x.url"), field_use=FieldUse.URL)
     located = McpSourceError("/a.json", SourceErrorKind.UNPARSABLE, line=3, column=7)
     invalid = McpSourceError("/a.json", SourceErrorKind.INVALID, field="mcp.x")
 
-    variable = _unsupported("x", Problem.VARIABLE_NOT_SUPPORTED, "mcpServers.x.url")
-    external = _unsupported("x", Problem.VALUE_FROM_FILE_OR_COMMAND, "mcp.x.environment.T")
+    variable = replace(
+        _unsupported("x", Problem.VARIABLE_NOT_SUPPORTED, "mcpServers.x.url"),
+        field_use=FieldUse.URL,
+        reason=ValueReason.VARIABLE,
+    )
+    external = replace(
+        _unsupported("x", Problem.VALUE_FROM_FILE_OR_COMMAND, "mcp.x.environment.T"),
+        field_use=FieldUse.ENV_VALUE,
+        reason=ValueReason.FILE,
+    )
     sse = replace(_unsupported("x", Problem.UNSUPPORTED_CONNECTION), transport="sse")
     ws = replace(sse, transport="ws")
     remote = _unsupported("x", Problem.REMOTE_ENVIRONMENT, "mcp_servers.x.environment_id")
@@ -100,27 +107,18 @@ def test_problems_and_source_errors_name_the_setting_or_file() -> None:
         ),
         (
             "This server is set to run in a remote Codex environment; iCode starts MCP servers only on this computer. "
-            "Add a configuration that runs on this computer manually."
+            "If the server supports running on this computer, add that configuration manually."
         ),
     ]
     # A connection refusal's sentence says it all; the others lead to the setting listed after them.
     assert [names_field(c) for c in (sse, remote, variable, external, value)] == [False, False, True, True, True]
     assert [format_message(problem_text(c, "Codex")) for c in (variable, external, value)] == [
-        (
-            "iCode doesn't support environment variables in URLs, commands or arguments. "
-            "Add the server manually and enter the actual value:"
-        ),
-        (
-            "Codex reads this value from a file or a command, which the import doesn't do. Add the server "
-            "manually and enter the value, reference an environment variable, or get the value from a command:"
-        ),
-        (
-            "The value of this Codex setting can't be used in iCode as written. "
-            "Add the server manually; the User Guide (F8) lists common causes. The setting:"
-        ),
+        "The server URL uses an environment variable, but iCode needs the value itself here. Add the server manually and enter its full URL.",
+        "The environment variable value is stored in another file and cannot be imported automatically. Add the server manually and fill in the value using the server instructions. You can also reference an environment variable or get the value from a command.",
+        "The server URL cannot be imported as written. Add the server manually and enter its full URL.",
     ]
     assert format_message(source_error_text(located, "pi")) == (
-        "Couldn't parse /a.json: syntax error at line 3, column 7. Correct it, then open import again."
+        "Couldn't parse /a.json: syntax error at line 3, column 7. Correct it, then reopen import."
     )
     assert format_message(source_error_text(invalid, "pi")) == "/a.json has an invalid setting: mcp.x."
 
@@ -153,7 +151,7 @@ async def test_import_button_adds_ticked_servers_as_unsaved_cards(monkeypatch) -
     description = [
         "Imported from OpenCode (/src/config.json).",
         "⚠ Set these environment variables to nonempty values before starting iCode: TOKEN",
-        f"⚠ {format_message(warning_text(cwd_warning, 'OpenCode'))} mcp.github.cwd",
+        f"⚠ {format_message(warning_text(cwd_warning, 'OpenCode'))} Original setting: mcp.github.cwd",
     ]
     async with app.run_test(size=(120, 50)) as pilot:
         app.panel.query_one("#mcp-import-btn", Button).press()
@@ -249,8 +247,8 @@ def test_opencode_variable_cwd_warning_survives_import_in_both_languages() -> No
         assert config.cwd == "{{ROOT}}"
         assert text in config.description
         assert "mcp.srv.cwd" in config.description
-        assert "OpenCode" in text and "iCode" in text and "F8" in text
-        assert ("Check the expanded Working Directory with Test" if locale == "en" else "测试") in text
+        assert "OpenCode" in text
+        assert ("Click “Test”" if locale == "en" else "测试") in text
         assert config.description.count("⚠") == 2
 
 
@@ -329,10 +327,10 @@ async def test_servers_that_can_not_be_added_are_locked_as_the_add_picker_locks_
         ]
         assert notes_text(items[4]).splitlines() == [
             (
-                "The value of this Fake setting can't be used in iCode as written. "
-                "Add the server manually; the User Guide (F8) lists common causes. The setting:"
+                "The setting's content cannot be imported as written. "
+                "Add the server manually and fill in this setting using the server instructions."
             ),
-            "s.url",
+            "Original setting: s.url",
             "Configuration source: /src/config.json",
         ]
 

@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.platform import get_platform
 from chrys.service.mcp.importers.base import (
+    FieldUse,
     ImportContext,
     ImportWarning,
     McpImportResult,
@@ -56,6 +57,7 @@ from chrys.service.mcp.importers.base import (
     SourceReadError,
     SourceServer,
     Value,
+    ValueReason,
     Var,
     WarningKind,
     by_name,
@@ -245,6 +247,8 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
         warnings=tuple(warning for warning in warnings if warning is not None),
         blocked_field=blocked,
         blocked_problem=Problem.VALUE_FROM_FILE_OR_COMMAND,
+        blocked_reason=ValueReason.COMMAND,
+        blocked_use=FieldUse.ENV_VALUE if transport == "stdio" else FieldUse.HEADER_VALUE,
         env_path=group,
         headers_path=group,
         cwd=literal(_cwd(entry["cwd"], home)) if transport == "stdio" and entry.get("cwd") else None,
@@ -300,7 +304,7 @@ def _tool_access(exposure: str, rules: dict[str, str], prefix: str) -> _Access:
         else:
             unread.append(f"{prefix}.toolExposure.{tool}")
     if unread:
-        access.warnings.append(ImportWarning(WarningKind.NOT_IMPORTED, tuple(unread)))
+        access.warnings.append(ImportWarning(WarningKind.TOOL_LOADING, tuple(unread)))
     if base == _HIDDEN:
         access.allowed = tuple(granted)
         access.progressive = _ON_DEMAND in granted.values()

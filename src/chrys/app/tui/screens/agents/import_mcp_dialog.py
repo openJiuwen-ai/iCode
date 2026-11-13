@@ -31,6 +31,7 @@ from chrys.app.tui.i18n import render_str
 from chrys.app.tui.screens.agents.import_mcp_view import (
     imported_config,
     names_field,
+    original_setting,
     problem_text,
     source_error_text,
 )
@@ -424,8 +425,10 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
         collapsed = self._folded.get(source.source_id, {}).get(index, True)
         card: _PreviewCard | _RefusedCard
         if imported is None:
-            reason = self._note(problem_text(candidate, source.display_name), "mcp-import-problem")
-            field = [self._note_text(candidate.problem_field, "mcp-import-problem mcp-import-detail")]
+            reason = self._note(
+                problem_text(candidate, source.display_name, self._render_message), "mcp-import-problem"
+            )
+            field = [self._note(original_setting(candidate.problem_field), "mcp-import-problem mcp-import-detail")]
             path = sanitize_legacy_scalar(self._display_path(candidate.source_path))
             where = self._note(_SOURCE.bind(path=path), "mcp-import-source")
             notes: list[Widget] = [reason, *(field if names_field(candidate) else []), where]
@@ -445,9 +448,6 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
 
     def _note(self, reference: MessageRef, classes: str) -> Static:
         return Static(Text(self._render_message(reference)), classes=classes)
-
-    def _note_text(self, text: str, classes: str) -> Static:
-        return Static(Text(sanitize_legacy_scalar(text)), classes=classes)
 
     def _display_path(self, path: str) -> str:
         home = str(self._import_context.home)

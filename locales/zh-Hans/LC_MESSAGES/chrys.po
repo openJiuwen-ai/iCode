@@ -8952,6 +8952,34 @@ msgstr "HTTP 选项"
 msgid "tui.mcp.import"
 msgstr "从其他应用导入"
 
+#. English: Add the server manually and enter the full path of the folder to
+#. use. You can also reference an environment variable.
+#. chrys-meta={"fingerprint":"073361fad871365d5975b8902f3fef3b827ed2879634b343a15ead87aff84a1b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.action.cwd"
+msgstr "请手动添加服务器，并填写所需文件夹的完整路径。也可以引用环境变量。"
+
+#. English: Add the server manually and fill in this setting using the server
+#. instructions.
+#. chrys-meta={"fingerprint":"bac884fbc9f8d59e25dc4cb53f62976c65585543bd6afb27a444b704772de306","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.action.literal"
+msgstr "请手动添加服务器，并按服务器说明填写这项设置。"
+
+#. English: Add the server manually and enter its full URL.
+#. chrys-meta={"fingerprint":"a70c74f22269e7bc234330df771127dba3c318a1938a9eed1cd964561dd5748c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.action.url"
+msgstr "请手动添加服务器，并填写完整的服务器地址。"
+
+#. English: Add the server manually and fill in the value using the server
+#. instructions. You can also reference an environment variable or get the
+#. value from a command.
+#. chrys-meta={"fingerprint":"59b3afb998b806d1785b0a34f0daaa7c4adf8dfe7c81aab812d0c1d9ac0b238d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.action.value"
+msgstr "请手动添加服务器，并按服务器说明填写该值。也可以引用环境变量，或配置取值命令。"
+
 #. English: ,
 #. chrys-meta={"fingerprint":"aa55fa4d2bd85b4efb3ade9346715fda9af6b6e54719f43eb0612372c6d47938","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_dialog.py
@@ -9021,24 +9049,84 @@ msgstr "{path} 不是有效的 {agent} 配置。"
 msgid "tui.mcp.import.error.invalid_field"
 msgstr "{path} 中的配置项无效：{field}。"
 
-#. English: Couldn't parse {path}. Correct the file, then open import again.
-#. chrys-meta={"fingerprint":"cdeeec28c1e72b258b114a01928818cb0899901a0a1c2398f0c9877c47b0a292","multiline":false,"placeholders":["path"]}
+#. English: Couldn't parse {path}. Correct the syntax, then reopen import.
+#. chrys-meta={"fingerprint":"1bcc8078b8f04cc88b5ebbd4207bf2fa4aca2c6fd0bdd5618fdfc5a75276b559","multiline":false,"placeholders":["path"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.error.unparsable"
-msgstr "无法解析 {path}。请修正文件后重新打开导入。"
+msgstr "无法解析 {path}。请修正语法后重新打开导入。"
 
 #. English: Couldn't parse {path}: syntax error at line {line}, column
-#. {column}. Correct it, then open import again.
-#. chrys-meta={"fingerprint":"1033f8f8f2c80e23f82509e304ed55da09429eaffc6b0fcdbef850453e642220","multiline":false,"placeholders":["column","line","path"]}
+#. {column}. Correct it, then reopen import.
+#. chrys-meta={"fingerprint":"fe435029267ca33ff11e1c7eb617ba776defb4940406e83051439ca54a9b8e27","multiline":false,"placeholders":["column","line","path"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.error.unparsable_at"
-msgstr "无法解析 {path}：第 {line} 行第 {column} 列有语法错误。请修正后重新打开导入。"
+msgstr "无法解析 {path}：第 {line} 行、第 {column} 列有语法错误。请修正后重新打开导入。"
 
-#. English: Couldn't read {path}.
-#. chrys-meta={"fingerprint":"9e7395fc22732492a354c752115e3b0d8c629c3d71d1a2afcad3a28c3691d925","multiline":false,"placeholders":["path"]}
+#. English: Couldn't read {path}. Check access permissions, then reopen import.
+#. chrys-meta={"fingerprint":"5e917416a1f20533db33ccfc1354b6a7f346870d072ebdd8e0796bbe27d441b2","multiline":false,"placeholders":["path"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.error.unreadable"
-msgstr "无法读取 {path}。"
+msgstr "无法读取 {path}。请检查访问权限后重新打开导入。"
+
+#. English: The startup argument
+#. chrys-meta={"fingerprint":"60cb164f48622c2a2e6c4fc99b3abce350c2738a87c2d88348314a51f96f1095","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.field.argument"
+msgstr "此启动参数"
+
+#. English: The startup command
+#. chrys-meta={"fingerprint":"0d82925cada18f0968810ae123534c458509d0d9fda7377cb6e0d38d84aefaf5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.field.command"
+msgstr "此启动命令"
+
+#. English: The Working Directory
+#. chrys-meta={"fingerprint":"035ba009069401f6560db47a896cf4ed4a46a86cfad110add4299bafa21361b8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.field.cwd"
+msgstr "此工作目录"
+
+#. English: The environment variable name
+#. chrys-meta={"fingerprint":"698addc9275d15e4e96bedf4d2ca4f5bb2d2ac99237568d154b961b020b751f9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.field.env_name"
+msgstr "此环境变量的名称"
+
+#. English: The environment variable value
+#. chrys-meta={"fingerprint":"b6d99d56e164dabe0e2a4634f94e618729ebb8dcac7aec672fdfcdc7da5bd014","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.field.env_value"
+msgstr "此环境变量的值"
+
+#. English: The header name
+#. chrys-meta={"fingerprint":"d0419762bf0f79bb2eac62a0a5f977e084d27abd687f6bdcfa6639064b83b65a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.field.header_name"
+msgstr "此请求头的名称"
+
+#. English: The header value
+#. chrys-meta={"fingerprint":"42f22325708562ac8befdd50a158c5d0ef607f6285e8243cea5d0ba37602aa36","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.field.header_value"
+msgstr "此请求头的值"
+
+#. English: The server name
+#. chrys-meta={"fingerprint":"a47dc0e5e2592e4ee85a1bc761d7fbf4dd4293a3b6dbb80fc1f86c028e6bfb24","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.field.name"
+msgstr "此服务器名称"
+
+#. English: The server URL
+#. chrys-meta={"fingerprint":"334bbbc2db9a19bc199d0628514c2d2bbf64d2c4f448915a59d798812474e922","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.field.url"
+msgstr "此服务器地址"
+
+#. English: The setting's content
+#. chrys-meta={"fingerprint":"6a393e8cb7a65162b7dab10a281edc1d97f19adb6566edf0f658f4ba1bf77f94","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.field.value"
+msgstr "此设置的内容"
 
 #. English: Reading MCP servers...
 #. chrys-meta={"fingerprint":"6cce02bdd8e08360fe1d15015e4624c46ae3144b9e956937f42e66cf2ec76b7f","multiline":false,"placeholders":[]}
@@ -9071,13 +9159,66 @@ msgstr "导入说明"
 msgid "tui.mcp.import.origin"
 msgstr "从 {agent}（{path}）导入。"
 
+#. English: Original setting: {field}
+#. chrys-meta={"fingerprint":"2d12df3194d331110f54e88e8d745e33f8b94885f40411b6ab74fb14dd958d29","multiline":false,"placeholders":["field"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.original_setting"
+msgstr "原设置：{field}"
+
+#. English: {field} contains characters that cannot be imported. Check it in
+#. the original configuration file against the server instructions, then reopen
+#. import.
+#. chrys-meta={"fingerprint":"c9e42039bf1c559b4e56c92e0301d26bf9690e5ea2d055604145d16571b092e4","multiline":false,"placeholders":["field"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.characters"
+msgstr "{field}含有无法导入的字符。请按服务器说明核对原配置文件中的内容，再重新打开导入。"
+
+#. English: The Working Directory contains line breaks or invisible special
+#. characters. Retype the folder path in the original configuration file, then
+#. reopen import.
+#. chrys-meta={"fingerprint":"7696f46af773fa69f63063f6893262365dbb4e631cda85b18f3f1caf40d77531","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.cwd_characters"
+msgstr "工作目录中含有换行或不可见的特殊字符。请在原配置文件中重新输入文件夹路径，再重新打开导入。"
+
+#. English: {field} is missing. Fill it in in the original configuration file,
+#. then reopen import, or add the server manually.
+#. chrys-meta={"fingerprint":"0230aa1492ba7c78e04bcc667301d72a0809d2463f642f860762f6f53f0d5da7","multiline":false,"placeholders":["field"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.empty"
+msgstr "{field}未填写。请在原配置文件中补充，再重新打开导入；也可以手动添加服务器。"
+
+#. English: Two header names differ only in case and have different values.
+#. Keep one value for that header as the server requires before importing
+#. again.
+#. chrys-meta={"fingerprint":"940e7125bd813b4360f0489900159990451de08bece0b11375f6311ba1790ed8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.header_conflict"
+msgstr "两个请求头名称仅大小写不同，但值不一致。请按服务器要求为该请求头保留一个值后重新导入。"
+
+#. English: The header name contains unsupported characters, such as spaces or
+#. line breaks. Check the name in the original configuration file against the
+#. server instructions, then reopen import.
+#. chrys-meta={"fingerprint":"4dceebfa59b8bfc569cf0964787852198f5422a3d70bc8f18212fc29c4b34f35","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.header_name_characters"
+msgstr "请求头名称含有不支持的字符，例如空格或换行。请按服务器说明核对原配置文件中的名称，再重新打开导入。"
+
+#. English: Header values cannot contain characters such as Chinese text or
+#. line breaks in {app}. Check this header in the original configuration file
+#. against the server instructions, then reopen import.
+#. chrys-meta={"fingerprint":"78856ebb656f02fb6c7135a761b18c6c6802ea9aa4e6378bcd91735a9f96b5bd","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.header_value_characters"
+msgstr "{app} 的请求头值不支持中文、换行等字符。请按服务器说明核对原配置文件中的该请求头，再重新打开导入。"
+
 #. English: This server is set to run in a remote {agent} environment; {app}
-#. starts MCP servers only on this computer. Add a configuration that runs on
-#. this computer manually.
-#. chrys-meta={"fingerprint":"799fa6774d2d157aefe3f9f5fcd3e86456d9d6267bf691ebfac711e39c176f35","multiline":false,"placeholders":["agent","app"]}
+#. starts MCP servers only on this computer. If the server supports running on
+#. this computer, add that configuration manually.
+#. chrys-meta={"fingerprint":"144196781c1062c75e0dff56cbf93af12a61b70888254a3c177794060ea4fbcf","multiline":false,"placeholders":["agent","app"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.problem.remote_environment"
-msgstr "该服务器配置为在 {agent} 的远程环境中运行，{app} 只能在本机启动 MCP 服务器。请手动添加可在本机运行的配置。"
+msgstr "此服务器配置为在 {agent} 的远程环境中运行；{app} 只能在本机启动 MCP 服务器。如果服务器支持在本机运行，请手动添加相应配置。"
 
 #. English: This server connects over {transport}; {app} supports only STDIO
 #. and Streamable HTTP. If the server also offers one of these, add it
@@ -9085,30 +9226,63 @@ msgstr "该服务器配置为在 {agent} 的远程环境中运行，{app} 只能
 #. chrys-meta={"fingerprint":"84b94e1e0486aaa5789fa976e1f6a7621ac85f1604db6562b800acca780722dd","multiline":false,"placeholders":["app","transport"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.problem.unsupported_connection"
-msgstr "该服务器使用 {transport} 连接，{app} 仅支持 STDIO 和 Streamable HTTP。如果服务器也提供其中一种连接方式，请手动添加。"
+msgstr "此服务器使用 {transport} 连接；{app} 仅支持 STDIO 和 Streamable HTTP。如果服务器也提供其中一种连接方式，请手动添加。"
 
-#. English: {agent} reads this value from a file or a command, which the import
-#. doesn't do. Add the server manually and enter the value, reference an
-#. environment variable, or get the value from a command:
-#. chrys-meta={"fingerprint":"c9326e9d20dfd44b6c045b5dbb91f888f21f89757b9436edf0103fb5173d030d","multiline":false,"placeholders":["agent"]}
+#. English: {field} is supplied by a command and cannot be imported
+#. automatically. {action}
+#. chrys-meta={"fingerprint":"1410bd4e12cc49ccbf5a8829cbd513be17d76fc4d127981828d183965881dedf","multiline":false,"placeholders":["action","field"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
-msgid "tui.mcp.import.problem.value_from_file_or_command"
-msgstr "{agent} 从文件或命令获取该值，导入时不会读取。请手动添加服务器，填写实际值、引用环境变量，或通过命令获取值："
+msgid "tui.mcp.import.problem.value_from_command"
+msgstr "{field}通过命令取值，无法自动导入。{action}"
 
-#. English: The value of this {agent} setting can't be used in {app} as
-#. written. Add the server manually; the User Guide (F8) lists common causes.
-#. The setting:
-#. chrys-meta={"fingerprint":"1b03192c9398211b2608a23cd689ac6a7578b916639ac01fb00df745233bd016","multiline":false,"placeholders":["agent","app"]}
+#. English: {field} is stored in another file and cannot be imported
+#. automatically. {action}
+#. chrys-meta={"fingerprint":"5e7bdbd057443421a6a4ae0684eb96942bfadab8f72dd32af5aa10a20b43fb6f","multiline":false,"placeholders":["action","field"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.value_from_file"
+msgstr "{field}保存在另一个文件中，无法自动导入。{action}"
+
+#. English: {field} cannot be imported as written. {action}
+#. chrys-meta={"fingerprint":"f25a5a988083dd9f57658ebe415eaf7c62ef83f4c79f38f1799e1ef019b8ebe4","multiline":false,"placeholders":["action","field"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.problem.value_not_representable"
-msgstr "该 {agent} 配置项的值无法按原样在 {app} 中使用。请手动添加服务器，常见原因参阅用户指南（F8）。配置项："
+msgstr "{field}无法按原样导入。{action}"
 
-#. English: {app} doesn't support environment variables in URLs, commands or
-#. arguments. Add the server manually and enter the actual value:
-#. chrys-meta={"fingerprint":"3934f8cc14ee3105bf7c20097e9486a6d6750ed15ec169d9b398296a37ab83f8","multiline":false,"placeholders":["app"]}
+#. English: {field} uses an environment variable, but {app} needs the value
+#. itself here. {action}
+#. chrys-meta={"fingerprint":"eded7a8ccf94d332b0b062a0c5a42db9b2ab6f0ce308735069ff5ed6427c2061","multiline":false,"placeholders":["action","app","field"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.problem.variable_not_supported"
-msgstr "{app} 不支持在 URL、命令和参数中使用环境变量。请手动添加并填写实际值："
+msgstr "{field}使用了环境变量，但 {app} 在这里需要填写实际的值。{action}"
+
+#. English: This Working Directory combines an environment variable with “..”,
+#. so import could change the folder used. Add the server manually and enter
+#. the intended full path.
+#. chrys-meta={"fingerprint":"a4ec189b14f697e4d95f3531f8122241f29449731b61f21dcac967d879fbce8d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.variable_parent"
+msgstr "此工作目录同时含有环境变量和“..”，导入可能改变实际使用的文件夹。请手动添加服务器并填写所需文件夹的完整路径。"
+
+#. English: The variable reference in {field} cannot be carried over directly.
+#. {action}
+#. chrys-meta={"fingerprint":"f09b0ae774146728f8d103bbc715370b7abc81849ddb7f7abff607e60406da99","multiline":false,"placeholders":["action","field"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.variable_syntax"
+msgstr "{field}中的变量引用方式不能直接沿用。{action}"
+
+#. English: {field} starts or ends with whitespace. Check it in the original
+#. configuration file and remove the extra whitespace, then reopen import.
+#. chrys-meta={"fingerprint":"6141f258fa0d6e13a6492c0d945c095342a7466c5525aff448f7fc244a26fd3b","multiline":false,"placeholders":["field"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.whitespace"
+msgstr "{field}开头或结尾有空格、换行等空白字符。请在原配置文件中核对并去掉多余的空白，再重新打开导入。"
+
+#. English: Working Directory needs a full path such as C:\tools, rather than
+#. C:tools. Add the server manually and enter a full path.
+#. chrys-meta={"fingerprint":"d2d7886d04e1b11c67eff159d3b6b16b64fe573ed39dc1df006876736deef52d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.windows_path"
+msgstr "工作目录需要填写完整路径，例如 C:\\tools，不能写成 C:tools。请手动添加服务器并填写完整路径。"
 
 #. English: Couldn't load MCP configurations from {agent}. Reopen import to try
 #. again. If it still fails, see the User Guide (F8) to find {app}'s debug.log.
@@ -9159,51 +9333,92 @@ msgstr "{agent} ({ticked})"
 msgid "tui.mcp.import.title"
 msgstr "从其他应用导入"
 
-#. English: Sign-in from {agent} is not imported. If the server requires
-#. authentication, add the headers it expects after import.
-#. chrys-meta={"fingerprint":"843e057b12617864218e373e599c177418b863072931663be05ea96b19c4e52c","multiline":false,"placeholders":["agent"]}
+#. English: The original application's tool approval settings were not copied.
+#. These tools will follow {app}'s current approval mode and this agent's
+#. approval rules. See “Configure approval modes” in the User Guide (F8).
+#. chrys-meta={"fingerprint":"18b61f55be189784e38f8715661341bd910b91e8519a412bafccc9d85828316b","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.approval"
+msgstr "原应用的工具审批设置不会导入。使用这些工具时，将按 {app} 当前的审批模式和此智能体的审批规则处理。详见用户指南（F8）中的“配置审批模式”。"
+
+#. English: Some authentication headers were not copied. If the server needs
+#. these headers, enter them again after import as its documentation describes.
+#. chrys-meta={"fingerprint":"cf1d72e6bc22fe6d549444bbc41daecde520aa93e714ebaba34de92d7f7b2c62","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.auth_headers"
+msgstr "部分认证请求头未复制。如果服务器需要这些请求头，请在导入后按服务器说明重新填写。"
+
+#. English: Sign-in from {agent} cannot be carried over. {app} does not yet
+#. support MCP OAuth sign-in. If the server supports token authentication,
+#. configure “Headers” as its documentation describes. If it only supports
+#. OAuth sign-in, it cannot currently be used in {app}.
+#. chrys-meta={"fingerprint":"fdc7b71ae8a183c772a49a09d1f0a7e13e95be28cacdec427125bc1e015d1887","multiline":false,"placeholders":["agent","app"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.auth_not_imported"
-msgstr "{agent} 中的登录状态不会导入。如果服务器需要认证，请在导入后添加服务器要求的请求头。"
+msgstr "无法沿用 {agent} 中的登录状态。{app} 暂不支持 MCP OAuth 登录。如果服务器支持令牌认证，请按服务器说明在“请求头”中配置；如果仅支持 OAuth 登录，则暂时无法在 {app} 中使用。"
 
-#. English: Codex resolves this relative Working Directory from the folder
-#. where Codex was started; {app} resolves it from the current session folder.
-#. Check Working Directory after import and use an absolute path if it must
-#. stay fixed. An explicit "." is different from leaving it unset in Codex.
-#. chrys-meta={"fingerprint":"27f14a92711decce1d38dea7fd1b7aecc5706aee23806387c2b468e2b2674772","multiline":false,"placeholders":["app"]}
+#. English: After import, the server may start in a different folder than in
+#. Codex. Check “Working Directory”; enter a full path if it must use a fixed
+#. folder.
+#. chrys-meta={"fingerprint":"cd6421c6ddaed27b85225db1f8d8955412676ac20799e8744d68e3bf1395ca9d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.codex_relative_cwd"
-msgstr "Codex 从启动 Codex 的目录计算此相对工作目录；{app} 从当前会话目录计算。请在导入后检查“工作目录”，需要固定位置时改用绝对路径。在 Codex 中，显式填写“.”与不配置工作目录不同。"
+msgstr "导入后服务器可能在与 Codex 不同的文件夹中启动。请检查“工作目录”；如需使用固定文件夹，请填写完整路径。"
 
-#. English: These {agent} settings are not imported. Set up any the server
-#. needs in {app} by hand:
-#. chrys-meta={"fingerprint":"2105bed342763e0ae116ab18fc3f5bc71aa4af3551a69dafc48463f061f1fc4b","multiline":false,"placeholders":["agent","app"]}
+#. English: Codex's tool timeout of 0 was not copied; {app} will use its
+#. default MCP request timeout. To change it, enter a number of seconds greater
+#. than 0 in “MCP Request Timeout (seconds)”.
+#. chrys-meta={"fingerprint":"aacff190f13725ef9a65c77c58b4c9382e5167f28b1e5f6c931012eedcfab9dc","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.default_timeout"
+msgstr "Codex 中的工具超时值 0 未沿用，{app} 将使用默认的 MCP 请求超时。如需调整，请在“MCP 请求超时（秒）”中填写大于 0 的秒数。"
+
+#. English: Some settings from the original application were not copied. After
+#. import, test the connection and check that the features you need are
+#. available.
+#. chrys-meta={"fingerprint":"910b5d91072450f199da9ed10c71f77a9e7ea98c842f655bb238f9cc5cba1a3c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.not_imported"
-msgstr "以下 {agent} 配置项不会导入。如服务器需要，请在 {app} 中手动设置："
+msgstr "部分原应用设置未复制。导入后请测试连接，并检查所需功能是否可用。"
 
-#. English: OpenCode and {app} can resolve a variable's path differently. Check
-#. the expanded Working Directory with Test; use a full absolute path without
-#. '~' or '..'. The User Guide (F8) has examples. The setting:
-#. chrys-meta={"fingerprint":"e56055c708f23993b7c9bd349a170983412d9f27ba9c2221d49803439772acfa","multiline":false,"placeholders":["app"]}
+#. English: This Working Directory uses an environment variable, so the server
+#. may start in a different folder than in OpenCode. To keep using the original
+#. folder, enter its full path. Click “Test” to check the connection; a
+#. successful test does not confirm that the folder is the one you intended.
+#. chrys-meta={"fingerprint":"1848eb51491c62ba4e427ab51114033b57d30f0ca12f6909015ec5c92b441e7d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.opencode_variable_cwd"
-msgstr "OpenCode 和 {app} 对变量路径的解析可能不同。请点击“测试”检查展开后的工作目录；需要保持相同目录时，使用不含 '~' 或 '..' 的完整绝对路径。用户指南（F8）中有具体示例。设置项："
+msgstr "此工作目录使用了环境变量，服务器可能在与 OpenCode 不同的文件夹中启动。如需保持原目录，请填写该文件夹的完整路径。点击“测试”可检查连接，但连接成功不代表使用的文件夹符合预期。"
 
-#. English: {agent} limits this server's tools in a way {app} can't express, so
-#. it is imported with no tools. Choose its tools in “Available Tool Scope”
-#. after import.
-#. chrys-meta={"fingerprint":"3981db7753382c2494da743df6be986d29ea5c85451ede8e8df05fa89e67d37a","multiline":false,"placeholders":["agent","app"]}
+#. English: After import, the connection wait may differ from Codex. Click
+#. “Test”; if the connection times out, increase “MCP Request Timeout
+#. (seconds)” and retry. This also lets tool calls wait longer.
+#. chrys-meta={"fingerprint":"a08e10fbdae972e313889316ae26a79c656bf520a2d0a4e657d39db5cf67021f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.startup_wait"
+msgstr "导入后，连接服务器的等待时间可能与 Codex 不同。请点击“测试”；如提示连接超时，可增大“MCP 请求超时（秒）”后重试。这也会延长工具调用的等待时间。"
+
+#. English: Some tool loading rules were not copied. After import, check
+#. “Loading Strategy” and “Initially Visible Tools”.
+#. chrys-meta={"fingerprint":"0398f9cc6b1c2f769b58dca3f47c7a23eb915f278ebd81f9eb27308f7df8a816","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.tool_loading"
+msgstr "部分工具的加载方式未沿用。请在导入后检查“加载策略”和“初始可见工具”。"
+
+#. English: The original application's tool restrictions cannot be carried over
+#. directly, so this server's tools are initially turned off after import.
+#. Choose the tools you need in “Available Tool Scope”.
+#. chrys-meta={"fingerprint":"4a11294114cc56060c403a2d2984b124eb5aa918cd8b177c365b7414a38ad710","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.tools_restricted"
-msgstr "{agent} 对该服务器工具的限制无法在 {app} 中表达，因此导入时不启用任何工具。请在导入后于“可用工具范围”中选择需要的工具。"
+msgstr "原应用的工具限制不能直接沿用，导入后暂未启用该服务器的工具。请在“可用工具范围”中选择需要的工具。"
 
 #. English: Set these environment variables to nonempty values before starting
 #. {app}:
 #. chrys-meta={"fingerprint":"65333ad402ed7d8f2d84367fc4994d75f0e5f68cb72e9c17086b1a249125670c","multiline":false,"placeholders":["app"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.variable_required"
-msgstr "启动 {app} 前，请将以下环境变量设置为非空值："
+msgstr "请在启动 {app} 前，将以下环境变量设置为非空值："
 
 #. English: Imported {count} MCP server. Review it, then click Save.
 #. English-plural: Imported {count} MCP servers. Review them, then click Save.
@@ -18015,6 +18230,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.markdown.diagram.open_truncated"
 #~ msgstr "打开完整图表（{kind}，{width}×{height}）"
+
+#~ msgid "tui.mcp.import.problem.value_from_file_or_command"
+#~ msgstr "{agent} 从文件或命令获取该值，导入时不会读取。请手动添加服务器，填写实际值、引用环境变量，或通过命令获取值："
 
 #~ msgid "tui.model_indicator.label.configure"
 #~ msgstr "模型未配置"

@@ -95,7 +95,7 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, entry: dict[str, Any],
         ),
         (
             {"command": "run", "exposure": "direct", "toolExposure": {"big_*": "deferred"}},
-            (ImportWarning(Kind.NOT_IMPORTED, ("mcpServers.srv.toolExposure.big_*",)),),
+            (ImportWarning(Kind.TOOL_LOADING, ("mcpServers.srv.toolExposure.big_*",)),),
             None,
         ),
         ({"url": "https://x", "oauth": {}}, (ImportWarning(Kind.AUTH_NOT_IMPORTED),), None),

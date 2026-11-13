@@ -60,6 +60,7 @@ from typing import Any
 
 from chrys.foundation.platform import get_platform
 from chrys.service.mcp.importers.base import (
+    FieldUse,
     ImportContext,
     ImportWarning,
     McpImportResult,
@@ -69,6 +70,7 @@ from chrys.service.mcp.importers.base import (
     SourceReadError,
     SourceServer,
     Value,
+    ValueReason,
     Var,
     WarningKind,
     convert,
@@ -263,8 +265,10 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         return None
     stdio = "command" in entry
     known = (*_READ, _TIMEOUT, "cwd") if stdio else (*_READ, _TIMEOUT)
-    warnings: list[ImportWarning | None] = [missing_fields(entry, known, prefix)]
-    headers, blocked = ({}, "") if stdio else _headers(entry, prefix)
+    omitted = {"startup_timeout_sec": WarningKind.STARTUP_WAIT, "default_tools_approval_mode": WarningKind.APPROVAL}
+    warnings: list[ImportWarning | None] = [missing_fields(entry, (*known, *omitted), prefix)]
+    warnings.extend(ImportWarning(kind, (f"{prefix}.{key}",)) for key, kind in omitted.items() if key in entry)
+    headers, blocked, reason = ({}, "", ValueReason.INVALID) if stdio else _headers(entry, prefix)
     problem = Problem.VALUE_NOT_REPRESENTABLE
     if remote := _remote_setting(entry, prefix):
         blocked, problem = remote, Problem.REMOTE_ENVIRONMENT
@@ -297,7 +301,7 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         warnings.append(ImportWarning(WarningKind.TOOLS_RESTRICTED))
     timeout = entry.get(_TIMEOUT, _DEFAULT_TOOL_TIMEOUT)
     if timeout == 0:
-        warnings.append(ImportWarning(WarningKind.NOT_IMPORTED, (f"{prefix}.{_TIMEOUT}",)))
+        warnings.append(ImportWarning(WarningKind.DEFAULT_TIMEOUT, (f"{prefix}.{_TIMEOUT}",)))
     return SourceServer(
         name,
         path,
@@ -313,6 +317,8 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         warnings=tuple(warning for warning in warnings if warning is not None),
         blocked_field=blocked,
         blocked_problem=problem,
+        blocked_reason=reason,
+        blocked_use=FieldUse.HEADER_VALUE,
         env_path=f"{prefix}.env",
         headers_path=f"{prefix}.http_headers",
         cwd=literal(entry["cwd"]) if stdio and "cwd" in entry else None,
@@ -357,7 +363,7 @@ def _shape_is_valid(entry: dict[str, Any]) -> bool:
     return not isinstance(timeout, bool) and isinstance(timeout, int | float) and timeout >= 0
 
 
-def _headers(entry: dict[str, Any], prefix: str) -> tuple[dict[str, Value], str]:
+def _headers(entry: dict[str, Any], prefix: str) -> tuple[dict[str, Value], str, ValueReason]:
     """The headers Codex sends, and the setting to refuse when it can't be imported.
 
     A variable header replaces a literal one of the same name, and a bearer
@@ -374,13 +380,13 @@ def _headers(entry: dict[str, Any], prefix: str) -> tuple[dict[str, Value], str]
             if not _HEADER_NAME.fullmatch(key):
                 continue
             if isinstance(value[0], Var) and not _VARIABLE.fullmatch(value[0].name):
-                return {}, f"{prefix}.{group}.{key}"
+                return {}, f"{prefix}.{group}.{key}", ValueReason.VARIABLE
             if seen.setdefault(key.lower(), value) != value:
-                return {}, f"{prefix}.{group}.{key}"
+                return {}, f"{prefix}.{group}.{key}", ValueReason.HEADER_CONFLICT
             effective[key.lower()] = (key, value)
     if "bearer_token_env_var" in entry:
         variable = entry["bearer_token_env_var"]
         if not _VARIABLE.fullmatch(variable):
-            return {}, f"{prefix}.bearer_token_env_var"
+            return {}, f"{prefix}.bearer_token_env_var", ValueReason.VARIABLE
         effective["authorization"] = ("Authorization", ("Bearer ", Var(variable)))
-    return dict(effective.values()), ""
+    return dict(effective.values()), "", ValueReason.INVALID

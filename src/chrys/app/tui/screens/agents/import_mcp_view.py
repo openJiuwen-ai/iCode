@@ -13,8 +13,16 @@ from typing import TYPE_CHECKING
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import msg
-from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
-from chrys.service.mcp.importers import ImportWarning, McpImportCandidate, McpSourceError, Problem, SourceErrorKind
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
+from chrys.service.mcp.importers import (
+    FieldUse,
+    ImportWarning,
+    McpImportCandidate,
+    McpSourceError,
+    Problem,
+    SourceErrorKind,
+    ValueReason,
+)
 from chrys.service.mcp.importers import WarningKind as Kind
 
 if TYPE_CHECKING:
@@ -25,11 +33,27 @@ if TYPE_CHECKING:
 
 _NOT_IMPORTED = msg(
     "tui.mcp.import.warning.not_imported",
-    fallback="These {agent} settings are not imported. Set up any the server needs in {app} by hand:",
+    fallback="Some settings from the original application were not copied. After import, test the connection and check that the features you need are available.",
+)
+_STARTUP_WAIT = msg(
+    "tui.mcp.import.warning.startup_wait",
+    fallback="After import, the connection wait may differ from Codex. Click “Test”; if the connection times out, increase “MCP Request Timeout (seconds)” and retry. This also lets tool calls wait longer.",
+)
+_APPROVAL = msg(
+    "tui.mcp.import.warning.approval",
+    fallback="The original application's tool approval settings were not copied. These tools will follow {app}'s current approval mode and this agent's approval rules. See “Configure approval modes” in the User Guide (F8).",
+)
+_DEFAULT_TIMEOUT = msg(
+    "tui.mcp.import.warning.default_timeout",
+    fallback="Codex's tool timeout of 0 was not copied; {app} will use its default MCP request timeout. To change it, enter a number of seconds greater than 0 in “MCP Request Timeout (seconds)”.",
 )
 _AUTH_NOT_IMPORTED = msg(
     "tui.mcp.import.warning.auth_not_imported",
-    fallback="Sign-in from {agent} is not imported. If the server requires authentication, add the headers it expects after import.",
+    fallback="Sign-in from {agent} cannot be carried over. {app} does not yet support MCP OAuth sign-in. If the server supports token authentication, configure “Headers” as its documentation describes. If it only supports OAuth sign-in, it cannot currently be used in {app}.",
+)
+_AUTH_HEADERS = msg(
+    "tui.mcp.import.warning.auth_headers",
+    fallback="Some authentication headers were not copied. If the server needs these headers, enter them again after import as its documentation describes.",
 )
 _VARIABLE_REQUIRED = msg(
     "tui.mcp.import.warning.variable_required",
@@ -37,15 +61,19 @@ _VARIABLE_REQUIRED = msg(
 )
 _TOOLS_RESTRICTED = msg(
     "tui.mcp.import.warning.tools_restricted",
-    fallback="{agent} limits this server's tools in a way {app} can't express, so it is imported with no tools. Choose its tools in “Available Tool Scope” after import.",
+    fallback="The original application's tool restrictions cannot be carried over directly, so this server's tools are initially turned off after import. Choose the tools you need in “Available Tool Scope”.",
+)
+_TOOL_LOADING = msg(
+    "tui.mcp.import.warning.tool_loading",
+    fallback="Some tool loading rules were not copied. After import, check “Loading Strategy” and “Initially Visible Tools”.",
 )
 _CODEX_RELATIVE_CWD = msg(
     "tui.mcp.import.warning.codex_relative_cwd",
-    fallback='Codex resolves this relative Working Directory from the folder where Codex was started; {app} resolves it from the current session folder. Check Working Directory after import and use an absolute path if it must stay fixed. An explicit "." is different from leaving it unset in Codex.',
+    fallback="After import, the server may start in a different folder than in Codex. Check “Working Directory”; enter a full path if it must use a fixed folder.",
 )
 _OPENCODE_VARIABLE_CWD = msg(
     "tui.mcp.import.warning.opencode_variable_cwd",
-    fallback="OpenCode and {app} can resolve a variable's path differently. Check the expanded Working Directory with Test; use a full absolute path without '~' or '..'. The User Guide (F8) has examples. The setting:",
+    fallback="This Working Directory uses an environment variable, so the server may start in a different folder than in OpenCode. To keep using the original folder, enter its full path. Click “Test” to check the connection; a successful test does not confirm that the folder is the one you intended.",
 )
 _UNSUPPORTED_CONNECTION = msg(
     "tui.mcp.import.problem.unsupported_connection",
@@ -53,28 +81,112 @@ _UNSUPPORTED_CONNECTION = msg(
 )
 _REMOTE_ENVIRONMENT = msg(
     "tui.mcp.import.problem.remote_environment",
-    fallback="This server is set to run in a remote {agent} environment; {app} starts MCP servers only on this computer. Add a configuration that runs on this computer manually.",
+    fallback="This server is set to run in a remote {agent} environment; {app} starts MCP servers only on this computer. If the server supports running on this computer, add that configuration manually.",
 )
 _VARIABLE_NOT_SUPPORTED = msg(
     "tui.mcp.import.problem.variable_not_supported",
-    fallback="{app} doesn't support environment variables in URLs, commands or arguments. Add the server manually and enter the actual value:",
+    fallback="{field} uses an environment variable, but {app} needs the value itself here. {action}",
 )
-_VALUE_FROM_FILE_OR_COMMAND = msg(
-    "tui.mcp.import.problem.value_from_file_or_command",
-    fallback="{agent} reads this value from a file or a command, which the import doesn't do. Add the server manually and enter the value, reference an environment variable, or get the value from a command:",
+_FROM_FILE = msg(
+    "tui.mcp.import.problem.value_from_file",
+    fallback="{field} is stored in another file and cannot be imported automatically. {action}",
+)
+_FROM_COMMAND = msg(
+    "tui.mcp.import.problem.value_from_command",
+    fallback="{field} is supplied by a command and cannot be imported automatically. {action}",
 )
 _VALUE_NOT_REPRESENTABLE = msg(
     "tui.mcp.import.problem.value_not_representable",
-    fallback="The value of this {agent} setting can't be used in {app} as written. Add the server manually; the User Guide (F8) lists common causes. The setting:",
+    fallback="{field} cannot be imported as written. {action}",
 )
-_UNREADABLE = msg("tui.mcp.import.error.unreadable", fallback="Couldn't read {path}.")
+_EMPTY = msg(
+    "tui.mcp.import.problem.empty",
+    fallback="{field} is missing. Fill it in in the original configuration file, then reopen import, or add the server manually.",
+)
+_WHITESPACE = msg(
+    "tui.mcp.import.problem.whitespace",
+    fallback="{field} starts or ends with whitespace. Check it in the original configuration file and remove the extra whitespace, then reopen import.",
+)
+_CHARACTERS = msg(
+    "tui.mcp.import.problem.characters",
+    fallback="{field} contains characters that cannot be imported. Check it in the original configuration file against the server instructions, then reopen import.",
+)
+_HEADER_CONFLICT = msg(
+    "tui.mcp.import.problem.header_conflict",
+    fallback="Two header names differ only in case and have different values. Keep one value for that header as the server requires before importing again.",
+)
+_VARIABLE_SYNTAX = msg(
+    "tui.mcp.import.problem.variable_syntax",
+    fallback="The variable reference in {field} cannot be carried over directly. {action}",
+)
+_WINDOWS_PATH = msg(
+    "tui.mcp.import.problem.windows_path",
+    fallback="Working Directory needs a full path such as C:\\tools, rather than C:tools. Add the server manually and enter a full path.",
+)
+_VARIABLE_PARENT = msg(
+    "tui.mcp.import.problem.variable_parent",
+    fallback="This Working Directory combines an environment variable with “..”, so import could change the folder used. Add the server manually and enter the intended full path.",
+)
+_ENTER_LITERAL = msg(
+    "tui.mcp.import.action.literal",
+    fallback="Add the server manually and fill in this setting using the server instructions.",
+)
+_ENTER_URL = msg("tui.mcp.import.action.url", fallback="Add the server manually and enter its full URL.")
+_ENTER_VALUE = msg(
+    "tui.mcp.import.action.value",
+    fallback="Add the server manually and fill in the value using the server instructions. You can also reference an environment variable or get the value from a command.",
+)
+_ENTER_CWD = msg(
+    "tui.mcp.import.action.cwd",
+    fallback="Add the server manually and enter the full path of the folder to use. You can also reference an environment variable.",
+)
+_ORIGINAL_SETTING = msg("tui.mcp.import.original_setting", fallback="Original setting: {field}")
+_UNREADABLE = msg(
+    "tui.mcp.import.error.unreadable", fallback="Couldn't read {path}. Check access permissions, then reopen import."
+)
 _UNPARSABLE = msg(
-    "tui.mcp.import.error.unparsable", fallback="Couldn't parse {path}. Correct the file, then open import again."
+    "tui.mcp.import.error.unparsable", fallback="Couldn't parse {path}. Correct the syntax, then reopen import."
 )
 _UNPARSABLE_AT = msg(
     "tui.mcp.import.error.unparsable_at",
-    fallback="Couldn't parse {path}: syntax error at line {line}, column {column}. Correct it, then open import again.",
+    fallback="Couldn't parse {path}: syntax error at line {line}, column {column}. Correct it, then reopen import.",
 )
+_FIELD_VALUE = msg("tui.mcp.import.field.value", fallback="The setting's content")
+_FIELD_NAME = msg("tui.mcp.import.field.name", fallback="The server name")
+_FIELD_URL = msg("tui.mcp.import.field.url", fallback="The server URL")
+_FIELD_COMMAND = msg("tui.mcp.import.field.command", fallback="The startup command")
+_FIELD_ARGUMENT = msg("tui.mcp.import.field.argument", fallback="The startup argument")
+_FIELD_ENV_NAME = msg("tui.mcp.import.field.env_name", fallback="The environment variable name")
+_FIELD_ENV_VALUE = msg("tui.mcp.import.field.env_value", fallback="The environment variable value")
+_FIELD_HEADER_NAME = msg("tui.mcp.import.field.header_name", fallback="The header name")
+_FIELD_HEADER_VALUE = msg("tui.mcp.import.field.header_value", fallback="The header value")
+_FIELD_CWD = msg("tui.mcp.import.field.cwd", fallback="The Working Directory")
+
+_HEADER_NAME_CHARACTERS = msg(
+    "tui.mcp.import.problem.header_name_characters",
+    fallback="The header name contains unsupported characters, such as spaces or line breaks. Check the name in the original configuration file against the server instructions, then reopen import.",
+)
+_HEADER_VALUE_CHARACTERS = msg(
+    "tui.mcp.import.problem.header_value_characters",
+    fallback="Header values cannot contain characters such as Chinese text or line breaks in {app}. Check this header in the original configuration file against the server instructions, then reopen import.",
+)
+_CWD_CHARACTERS = msg(
+    "tui.mcp.import.problem.cwd_characters",
+    fallback="The Working Directory contains line breaks or invisible special characters. Retype the folder path in the original configuration file, then reopen import.",
+)
+
+_FIELDS = {
+    FieldUse.VALUE: _FIELD_VALUE,
+    FieldUse.NAME: _FIELD_NAME,
+    FieldUse.URL: _FIELD_URL,
+    FieldUse.COMMAND: _FIELD_COMMAND,
+    FieldUse.ARGUMENT: _FIELD_ARGUMENT,
+    FieldUse.ENV_NAME: _FIELD_ENV_NAME,
+    FieldUse.ENV_VALUE: _FIELD_ENV_VALUE,
+    FieldUse.HEADER_NAME: _FIELD_HEADER_NAME,
+    FieldUse.HEADER_VALUE: _FIELD_HEADER_VALUE,
+    FieldUse.CWD: _FIELD_CWD,
+}
 _INVALID = msg("tui.mcp.import.error.invalid", fallback="{path} isn't a valid {agent} configuration.")
 _INVALID_FIELD = msg("tui.mcp.import.error.invalid_field", fallback="{path} has an invalid setting: {field}.")
 _ORIGIN = msg("tui.mcp.import.origin", fallback="Imported from {agent} ({path}).")
@@ -84,36 +196,79 @@ _TRANSPORT_NAMES = {"sse": "SSE", "ws": "WebSocket"}
 
 def warning_text(warning: ImportWarning, agent: str) -> MessageRef:
     """The warning's sentence; the settings or variables it names (``warning.items``) follow it."""
-    match warning.kind:
-        case Kind.NOT_IMPORTED:
-            return _NOT_IMPORTED.bind(agent=agent, app=APP_DISPLAY_NAME)
-        case Kind.AUTH_NOT_IMPORTED:
-            return _AUTH_NOT_IMPORTED.bind(agent=agent)
-        case Kind.VARIABLE_REQUIRED:
-            return _VARIABLE_REQUIRED.bind(app=APP_DISPLAY_NAME)
-        case Kind.TOOLS_RESTRICTED:
-            return _TOOLS_RESTRICTED.bind(agent=agent, app=APP_DISPLAY_NAME)
-        case Kind.CODEX_RELATIVE_CWD:
-            return _CODEX_RELATIVE_CWD.bind(app=APP_DISPLAY_NAME)
-        case Kind.OPENCODE_VARIABLE_CWD:
-            return _OPENCODE_VARIABLE_CWD.bind(app=APP_DISPLAY_NAME)
+    message = {
+        Kind.NOT_IMPORTED: _NOT_IMPORTED,
+        Kind.STARTUP_WAIT: _STARTUP_WAIT,
+        Kind.APPROVAL: _APPROVAL,
+        Kind.DEFAULT_TIMEOUT: _DEFAULT_TIMEOUT,
+        Kind.AUTH_NOT_IMPORTED: _AUTH_NOT_IMPORTED,
+        Kind.AUTH_HEADERS: _AUTH_HEADERS,
+        Kind.VARIABLE_REQUIRED: _VARIABLE_REQUIRED,
+        Kind.TOOLS_RESTRICTED: _TOOLS_RESTRICTED,
+        Kind.TOOL_LOADING: _TOOL_LOADING,
+        Kind.CODEX_RELATIVE_CWD: _CODEX_RELATIVE_CWD,
+        Kind.OPENCODE_VARIABLE_CWD: _OPENCODE_VARIABLE_CWD,
+    }[warning.kind]
+    if warning.kind is Kind.AUTH_NOT_IMPORTED:
+        return message.bind(agent=agent, app=APP_DISPLAY_NAME)
+    if warning.kind in (Kind.APPROVAL, Kind.DEFAULT_TIMEOUT, Kind.VARIABLE_REQUIRED):
+        return message.bind(app=APP_DISPLAY_NAME)
+    return message.bind()
 
 
-def problem_text(candidate: McpImportCandidate, agent: str) -> MessageRef:
-    """Why the server can't be imported; :func:`names_field` says whether the setting follows."""
-    match candidate.problem:
-        case Problem.UNSUPPORTED_CONNECTION:
-            transport = candidate.transport
-            transport = sanitize_legacy_scalar(_TRANSPORT_NAMES.get(transport.lower(), transport.upper()))
-            return _UNSUPPORTED_CONNECTION.bind(transport=transport, app=APP_DISPLAY_NAME)
-        case Problem.REMOTE_ENVIRONMENT:
-            return _REMOTE_ENVIRONMENT.bind(agent=agent, app=APP_DISPLAY_NAME)
-        case Problem.VARIABLE_NOT_SUPPORTED:
-            return _VARIABLE_NOT_SUPPORTED.bind(app=APP_DISPLAY_NAME)
-        case Problem.VALUE_FROM_FILE_OR_COMMAND:
-            return _VALUE_FROM_FILE_OR_COMMAND.bind(agent=agent)
-        case _:
-            return _VALUE_NOT_REPRESENTABLE.bind(agent=agent, app=APP_DISPLAY_NAME)
+def problem_text(
+    candidate: McpImportCandidate, agent: str, render: Callable[[MessageRef], str] = format_message
+) -> MessageRef:
+    """Explain the recorded cause, with advice limited to what the target field supports."""
+    if candidate.problem is Problem.UNSUPPORTED_CONNECTION:
+        transport = candidate.transport
+        transport = sanitize_legacy_scalar(_TRANSPORT_NAMES.get(transport.lower(), transport.upper()))
+        return _UNSUPPORTED_CONNECTION.bind(transport=transport, app=APP_DISPLAY_NAME)
+    if candidate.problem is Problem.REMOTE_ENVIRONMENT:
+        return _REMOTE_ENVIRONMENT.bind(agent=agent, app=APP_DISPLAY_NAME)
+    use = candidate.field_use
+    action = _ENTER_LITERAL
+    if use is FieldUse.URL:
+        action = _ENTER_URL
+    elif use in (FieldUse.ENV_VALUE, FieldUse.HEADER_VALUE):
+        action = _ENTER_VALUE
+    elif use is FieldUse.CWD:
+        action = _ENTER_CWD
+    message = {
+        ValueReason.EMPTY: _EMPTY,
+        ValueReason.WHITESPACE: _WHITESPACE,
+        ValueReason.CHARACTERS: _CHARACTERS,
+        ValueReason.HEADER_CONFLICT: _HEADER_CONFLICT,
+        ValueReason.VARIABLE: _VARIABLE_SYNTAX,
+        ValueReason.FILE: _FROM_FILE,
+        ValueReason.COMMAND: _FROM_COMMAND,
+        ValueReason.WINDOWS_PATH: _WINDOWS_PATH,
+        ValueReason.VARIABLE_PARENT: _VARIABLE_PARENT,
+    }.get(candidate.reason, _VALUE_NOT_REPRESENTABLE)
+    if candidate.reason is ValueReason.CHARACTERS:
+        specific = {
+            FieldUse.HEADER_NAME: _HEADER_NAME_CHARACTERS,
+            FieldUse.HEADER_VALUE: _HEADER_VALUE_CHARACTERS,
+            FieldUse.CWD: _CWD_CHARACTERS,
+        }.get(use)
+        if specific is not None:
+            if specific is _HEADER_VALUE_CHARACTERS:
+                return specific.bind(app=APP_DISPLAY_NAME)
+            return specific.bind()
+    if candidate.problem is Problem.VARIABLE_NOT_SUPPORTED:
+        message = _VARIABLE_NOT_SUPPORTED
+    if message in (_HEADER_CONFLICT, _WINDOWS_PATH, _VARIABLE_PARENT):
+        return message.bind()
+    field = render(_FIELDS[use].bind())
+    if message in (_EMPTY, _WHITESPACE, _CHARACTERS):
+        return message.bind(field=field)
+    if message is _VARIABLE_NOT_SUPPORTED:
+        return message.bind(field=field, action=render(action.bind()), app=APP_DISPLAY_NAME)
+    return message.bind(field=field, action=render(action.bind()))
+
+
+def original_setting(field: str) -> MessageRef:
+    return _ORIGINAL_SETTING.bind(field=sanitize_legacy_scalar(field))
 
 
 def names_field(candidate: McpImportCandidate) -> bool:
@@ -155,6 +310,8 @@ def imported_config(
     lines.append(render(_ORIGIN.bind(agent=agent, path=sanitize_legacy_scalar(candidate.source_path))))
     for warning in candidate.warnings:
         items = ", ".join(sanitize_legacy_scalar(item) for item in warning.items)
+        if items and warning.kind is not Kind.VARIABLE_REQUIRED:
+            items = render(original_setting(items))
         text = render(warning_text(warning, agent))
         # A full-width colon carries its own spacing.
         separator = "" if text.endswith("\uff1a") else " "

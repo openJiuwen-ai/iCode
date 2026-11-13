@@ -52,7 +52,12 @@ class WarningKind(StrEnum):
     """Something the import changed or left out that the user must act on."""
 
     NOT_IMPORTED = "not_imported"
-    """Source settings with no iCode equivalent; ``items`` names them."""
+    """Unrecognized source settings not copied; ``items`` names them."""
+    STARTUP_WAIT = "startup_wait"
+    APPROVAL = "approval"
+    DEFAULT_TIMEOUT = "default_timeout"
+    AUTH_HEADERS = "auth_headers"
+    TOOL_LOADING = "tool_loading"
     AUTH_NOT_IMPORTED = "auth_not_imported"
     """OAuth or provider sign-in, which only the source application holds."""
     VARIABLE_REQUIRED = "variable_required"
@@ -86,6 +91,36 @@ class SourceErrorKind(StrEnum):
     UNREADABLE = "unreadable"
     UNPARSABLE = "unparsable"
     INVALID = "invalid"
+
+
+class FieldUse(StrEnum):
+    """The target field's purpose, recorded where a refusal is found."""
+
+    VALUE = "value"
+    NAME = "name"
+    URL = "url"
+    COMMAND = "command"
+    ARGUMENT = "argument"
+    ENV_NAME = "env_name"
+    ENV_VALUE = "env_value"
+    HEADER_NAME = "header_name"
+    HEADER_VALUE = "header_value"
+    CWD = "cwd"
+
+
+class ValueReason(StrEnum):
+    """Why a source value cannot be copied, without storing the value itself."""
+
+    INVALID = "invalid"
+    EMPTY = "empty"
+    WHITESPACE = "whitespace"
+    CHARACTERS = "characters"
+    HEADER_CONFLICT = "header_conflict"
+    VARIABLE = "variable"
+    FILE = "file"
+    COMMAND = "command"
+    WINDOWS_PATH = "windows_path"
+    VARIABLE_PARENT = "variable_parent"
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +177,8 @@ class SourceServer:
     warnings: tuple[ImportWarning, ...] = ()
     blocked_field: str = ""
     blocked_problem: Problem = Problem.VALUE_NOT_REPRESENTABLE
+    blocked_reason: ValueReason = ValueReason.INVALID
+    blocked_use: FieldUse = FieldUse.VALUE
     env_path: str = ""
     headers_path: str = ""
     cwd: Value | None = None
@@ -161,6 +198,8 @@ class McpImportCandidate:
     warnings: tuple[ImportWarning, ...] = ()
     # The transport the source declares, when the problem is that iCode doesn't run it.
     transport: str = ""
+    reason: ValueReason = ValueReason.INVALID
+    field_use: FieldUse = FieldUse.VALUE
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,13 +537,26 @@ def lexical_cwd(text: str) -> str:
 def convert(server: SourceServer) -> McpImportCandidate:
     """*server* as an importable candidate, or a refusal naming the first value iCode can't hold."""
 
-    def refuse(problem: Problem, problem_field: str = "") -> McpImportCandidate:
-        return McpImportCandidate(server.name, server.source_path, None, problem=problem, problem_field=problem_field)
+    def refuse(
+        problem: Problem,
+        problem_field: str = "",
+        reason: ValueReason = ValueReason.INVALID,
+        field_use: FieldUse = FieldUse.VALUE,
+    ) -> McpImportCandidate:
+        return McpImportCandidate(
+            server.name,
+            server.source_path,
+            None,
+            problem=problem,
+            problem_field=problem_field,
+            reason=reason,
+            field_use=field_use,
+        )
 
     if server.transport not in ("stdio", "http"):
         return replace(refuse(Problem.UNSUPPORTED_CONNECTION), transport=server.transport)
     if server.blocked_field:
-        return refuse(server.blocked_problem, server.blocked_field)
+        return refuse(server.blocked_problem, server.blocked_field, server.blocked_reason, server.blocked_use)
     stdio = server.transport == "stdio"
     env: dict[str, str] = {}
     headers: dict[str, str] = {}
@@ -513,16 +565,18 @@ def convert(server: SourceServer) -> McpImportCandidate:
         if server.cwd is not None:
             text = render(shield_tilde(server.cwd))
             if text is None or not text.strip() or text != text.strip() or _unsafe_cwd(text):
-                return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.cwd_path)
+                return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.cwd_path, value_reason(text), FieldUse.CWD)
             if get_platform().is_windows and not variables(server.cwd) and is_windows_drive_relative_path(text):
                 # The runtime refuses drive-relative paths even on the workspace's drive.
-                return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.cwd_path)
+                return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.cwd_path, ValueReason.WINDOWS_PATH, FieldUse.CWD)
             cwd = text
         for key, value in server.env.items():
             text = render(value)
             # The configuration editor trims values and refuses empty ones.
             if text is None or not text.strip() or text != text.strip():
-                return refuse(Problem.VALUE_NOT_REPRESENTABLE, f"{server.env_path}.{key}")
+                return refuse(
+                    Problem.VALUE_NOT_REPRESENTABLE, f"{server.env_path}.{key}", value_reason(text), FieldUse.ENV_VALUE
+                )
             env[key] = text
     else:
         for key, value in server.headers.items():
@@ -532,7 +586,9 @@ def convert(server: SourceServer) -> McpImportCandidate:
                 text = text.strip(" \t\r\n")
             # The editor refuses empty values; iCode's HTTP client sends only valid names and printable ASCII values.
             if text is None or not text or header_name_charset_error(key) or header_value_charset_error(key, text):
-                return refuse(Problem.VALUE_NOT_REPRESENTABLE, f"{server.headers_path}.{key}")
+                use = FieldUse.HEADER_NAME if header_name_charset_error(key) else FieldUse.HEADER_VALUE
+                reason = ValueReason.CHARACTERS if use is FieldUse.HEADER_NAME else value_reason(text)
+                return refuse(Problem.VALUE_NOT_REPRESENTABLE, f"{server.headers_path}.{key}", reason, use)
             headers[key] = text
     config = MCPServerConfig(
         name=server.name,
@@ -557,6 +613,17 @@ def convert(server: SourceServer) -> McpImportCandidate:
         with_tool_name_prefix(config),
         warnings=merge_warnings(server.warnings),
     )
+
+
+def value_reason(text: str | None) -> ValueReason:
+    """Classify an already refused value; this adds no validation conditions."""
+    if text is None:
+        return ValueReason.VARIABLE
+    if not text.strip():
+        return ValueReason.EMPTY
+    if text != text.strip():
+        return ValueReason.WHITESPACE
+    return ValueReason.CHARACTERS
 
 
 def merge_warnings(warnings: Iterable[ImportWarning]) -> tuple[ImportWarning, ...]:

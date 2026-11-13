@@ -107,19 +107,14 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, body: str, expected: d
         ('command = "run"\ndisabled_tools = ["rm"]\n', (ImportWarning(Kind.TOOLS_RESTRICTED),), {"allowed_tools": []}),
         (
             'command = "run"\ntool_timeout_sec = 0\n',
-            (ImportWarning(Kind.NOT_IMPORTED, ("mcp_servers.srv.tool_timeout_sec",)),),
+            (ImportWarning(Kind.DEFAULT_TIMEOUT, ("mcp_servers.srv.tool_timeout_sec",)),),
             {"request_timeout": None},
         ),
         (
             f'command = "run"\ncwd = {json.dumps(os.path.abspath("/x"))}\nstartup_timeout_sec = 5\ndefault_tools_approval_mode = "approve"\n',
             (
-                ImportWarning(
-                    Kind.NOT_IMPORTED,
-                    (
-                        "mcp_servers.srv.startup_timeout_sec",
-                        "mcp_servers.srv.default_tools_approval_mode",
-                    ),
-                ),
+                ImportWarning(Kind.STARTUP_WAIT, ("mcp_servers.srv.startup_timeout_sec",)),
+                ImportWarning(Kind.APPROVAL, ("mcp_servers.srv.default_tools_approval_mode",)),
             ),
             {"cwd": os.path.abspath("/x")},
         ),

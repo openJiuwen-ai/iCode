@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from chrys.service.mcp.importers.base import (
+    FieldUse,
     ImportContext,
     ImportWarning,
     McpImportResult,
@@ -64,6 +65,7 @@ from chrys.service.mcp.importers.base import (
     SourceReadError,
     SourceServer,
     Value,
+    ValueReason,
     WarningKind,
     by_name,
     convert,
@@ -313,13 +315,16 @@ def _stdio(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
     if not isinstance(command, str) or not command.strip() or not is_str_list(args) or not is_str_mapping(env):
         return None
     prefix = f"mcpServers.{name}"
-    blocked = next(
+    blocked, use = next(
         (
-            f"{prefix}.{field}"
-            for field, value in (("command", command), *((f"args[{i}]", arg) for i, arg in enumerate(args)))
+            (f"{prefix}.{field}", use)
+            for field, value, use in (
+                ("command", command, FieldUse.COMMAND),
+                *((f"args[{i}]", arg, FieldUse.ARGUMENT) for i, arg in enumerate(args)),
+            )
             if _DOLLAR_RE.search(value)
         ),
-        "",
+        ("", FieldUse.VALUE),
     )
     values = {key: _value(text) for key, text in env.items()}
     warnings = [*_variable_warnings(env, values), missing_fields(entry, _STDIO_FIELDS, prefix)]
@@ -334,6 +339,8 @@ def _stdio(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         warnings=tuple(warning for warning in warnings if warning is not None),
         blocked_field=blocked,
         blocked_problem=Problem.VARIABLE_NOT_SUPPORTED,
+        blocked_reason=ValueReason.VARIABLE,
+        blocked_use=use,
         env_path=f"{prefix}.env",
     )
 
@@ -353,7 +360,7 @@ def _http(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
             values[key] = value
     warnings = [
         *_variable_warnings({key: headers[key] for key in values}, values),
-        ImportWarning(WarningKind.NOT_IMPORTED, tuple(dropped)) if dropped else None,
+        ImportWarning(WarningKind.AUTH_HEADERS, tuple(dropped)) if dropped else None,
         # Claude Code signs in with OAuth whenever the server asks, so warn unless headers authenticate.
         ImportWarning(WarningKind.AUTH_NOT_IMPORTED) if "oauth" in entry or not values else None,
         missing_fields(entry, _HTTP_FIELDS, prefix),
@@ -368,6 +375,8 @@ def _http(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         warnings=tuple(warning for warning in warnings if warning is not None),
         blocked_field=f"{prefix}.url" if _DOLLAR_RE.search(url) else "",
         blocked_problem=Problem.VARIABLE_NOT_SUPPORTED,
+        blocked_reason=ValueReason.VARIABLE,
+        blocked_use=FieldUse.URL,
         headers_path=f"{prefix}.headers",
     )
 

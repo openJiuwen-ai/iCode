@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from chrys.service.mcp.importers.base import (
+    FieldUse,
     ImportContext,
     ImportWarning,
     McpImportCandidate,
@@ -13,12 +14,14 @@ from chrys.service.mcp.importers.base import (
     McpSourceError,
     Problem,
     SourceErrorKind,
+    ValueReason,
     WarningKind,
 )
 from chrys.service.mcp.importers.registry import IMPORT_SOURCES, detected_sources
 
 __all__ = [
     "IMPORT_SOURCES",
+    "FieldUse",
     "ImportContext",
     "ImportWarning",
     "McpImportCandidate",
@@ -27,6 +30,7 @@ __all__ = [
     "McpSourceError",
     "Problem",
     "SourceErrorKind",
+    "ValueReason",
     "WarningKind",
     "detected_sources",
 ]

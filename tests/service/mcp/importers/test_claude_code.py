@@ -83,7 +83,7 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, entry: dict[str, Any],
         ),
         (
             {"type": "http", "url": "https://x", "headers": {"Authorization": "Bearer ${anthropic_api_key}", "X": "1"}},
-            (ImportWarning(Kind.NOT_IMPORTED, ("mcpServers.srv.headers.Authorization",)),),
+            (ImportWarning(Kind.AUTH_HEADERS, ("mcpServers.srv.headers.Authorization",)),),
         ),
         (
             {"command": "run", "alwaysLoad": True, "cwd": "/x"},

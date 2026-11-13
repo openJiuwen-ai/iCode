@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.platform import get_platform
 from chrys.service.mcp.importers.base import (
+    FieldUse,
     ImportContext,
     ImportWarning,
     McpImportResult,
@@ -68,6 +69,7 @@ from chrys.service.mcp.importers.base import (
     SourceReadError,
     SourceServer,
     Value,
+    ValueReason,
     WarningKind,
     convert,
     folders_down_to,
@@ -201,8 +203,10 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
             return None
         if "cwd" in entry and not isinstance(entry["cwd"], str):
             return None
-        values, value_refusal = _values(env, f"{prefix}.environment")
-        cwd_values, cwd_refusal = _values({"cwd": entry["cwd"]}, prefix) if entry.get("cwd") else ({}, None)
+        values, value_refusal = _values(env, f"{prefix}.environment", FieldUse.ENV_VALUE)
+        cwd_values, cwd_refusal = (
+            _values({"cwd": entry["cwd"]}, prefix, FieldUse.CWD) if entry.get("cwd") else ({}, None)
+        )
         cwd = cwd_values.get("cwd")
         if cwd is not None:
             if not variables(cwd):
@@ -210,9 +214,25 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
             elif any(part == ".." for part in re.split(r"[/\\]" if get_platform().is_windows else "/", entry["cwd"])):
                 # A variable can span path components; normalizing across it now
                 # or leaving link/.. to POSIX later would change the source path.
-                cwd_refusal = (f"{prefix}.cwd", Problem.VALUE_NOT_REPRESENTABLE)
-        fields = [(prefix, name), *((f"{prefix}.command[{i}]", part) for i, part in enumerate(command))]
-        field, problem = _first_refusal(fields) or value_refusal or cwd_refusal or ("", Problem.VALUE_NOT_REPRESENTABLE)
+                cwd_refusal = (
+                    f"{prefix}.cwd",
+                    Problem.VALUE_NOT_REPRESENTABLE,
+                    ValueReason.VARIABLE_PARENT,
+                    FieldUse.CWD,
+                )
+        fields = [
+            (prefix, name, FieldUse.NAME),
+            *(
+                (f"{prefix}.command[{i}]", part, FieldUse.COMMAND if i == 0 else FieldUse.ARGUMENT)
+                for i, part in enumerate(command)
+            ),
+        ]
+        field, problem, reason, use = (
+            _first_refusal(fields)
+            or value_refusal
+            or cwd_refusal
+            or ("", Problem.VALUE_NOT_REPRESENTABLE, ValueReason.INVALID, FieldUse.VALUE)
+        )
         warnings = [
             missing_fields(entry, _LOCAL_FIELDS, prefix),
             _variables_required(values),
@@ -233,6 +253,8 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
             warnings=tuple(warning for warning in warnings if warning is not None),
             blocked_field=field,
             blocked_problem=problem,
+            blocked_reason=reason,
+            blocked_use=use,
             env_path=f"{prefix}.environment",
             cwd=cwd,
             cwd_path=f"{prefix}.cwd",
@@ -241,9 +263,13 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
         url, headers = entry.get("url"), entry.get("headers", {})
         if not isinstance(url, str) or not url.strip() or not is_str_mapping(headers):
             return None
-        values, value_refusal = _values(headers, f"{prefix}.headers")
-        fields = [(prefix, name), (f"{prefix}.url", url)]
-        field, problem = _first_refusal(fields) or value_refusal or ("", Problem.VALUE_NOT_REPRESENTABLE)
+        values, value_refusal = _values(headers, f"{prefix}.headers", FieldUse.HEADER_VALUE)
+        fields = [(prefix, name, FieldUse.NAME), (f"{prefix}.url", url, FieldUse.URL)]
+        field, problem, reason, use = (
+            _first_refusal(fields)
+            or value_refusal
+            or ("", Problem.VALUE_NOT_REPRESENTABLE, ValueReason.INVALID, FieldUse.VALUE)
+        )
         warnings = [missing_fields(entry, _REMOTE_FIELDS, prefix), _variables_required(values)]
         # opencode signs in with OAuth whenever the server asks, unless ``oauth`` is false; so warn
         # unless headers authenticate.
@@ -261,6 +287,8 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
             warnings=tuple(warning for warning in warnings if warning is not None),
             blocked_field=field,
             blocked_problem=problem,
+            blocked_reason=reason,
+            blocked_use=use,
             headers_path=f"{prefix}.headers",
         )
     return None
@@ -272,26 +300,32 @@ def _variables_required(values: Mapping[str, Value]) -> ImportWarning | None:
     return ImportWarning(WarningKind.VARIABLE_REQUIRED, tuple(names)) if names else None
 
 
-def _first_refusal(fields: list[tuple[str, str]]) -> tuple[str, Problem] | None:
+type Refusal = tuple[str, Problem, ValueReason, FieldUse]
+
+
+def _first_refusal(fields: list[tuple[str, str, FieldUse]]) -> Refusal | None:
     """The first name, command part or URL holding a reference, which iCode reads in none of them."""
-    for field, text in fields:
+    for field, text, use in fields:
         if _FILE_RE.search(text):
-            return field, Problem.VALUE_FROM_FILE_OR_COMMAND
+            return field, Problem.VALUE_FROM_FILE_OR_COMMAND, ValueReason.FILE, use
         if _REFERENCE_RE.search(text):
-            return field, Problem.VARIABLE_NOT_SUPPORTED
+            return field, Problem.VARIABLE_NOT_SUPPORTED, ValueReason.VARIABLE, use
     return None
 
 
-def _values(texts: Mapping[str, str], path: str) -> tuple[dict[str, Value], tuple[str, Problem] | None]:
+def _values(texts: Mapping[str, str], path: str, use: FieldUse) -> tuple[dict[str, Value], Refusal | None]:
     """The values as iCode references, and the first setting that can't be imported, with why."""
     values: dict[str, Value] = {}
+    key_use = {FieldUse.ENV_VALUE: FieldUse.ENV_NAME, FieldUse.HEADER_VALUE: FieldUse.HEADER_NAME}.get(
+        use, FieldUse.NAME
+    )
     for key, text in texts.items():
-        if refusal := _first_refusal([(f"{path}.{key}", key)]):
+        if refusal := _first_refusal([(f"{path}.{key}", key, key_use)]):
             return {}, refusal
         if _FILE_RE.search(text):
-            return {}, (f"{path}.{key}", Problem.VALUE_FROM_FILE_OR_COMMAND)
+            return {}, (f"{path}.{key}", Problem.VALUE_FROM_FILE_OR_COMMAND, ValueReason.FILE, use)
         # Left after the usable references: a variable whose name iCode can't reference.
         if _REFERENCE_RE.search(_ENV_RE.sub("", text)):
-            return {}, (f"{path}.{key}", Problem.VALUE_NOT_REPRESENTABLE)
+            return {}, (f"{path}.{key}", Problem.VALUE_NOT_REPRESENTABLE, ValueReason.VARIABLE, use)
         values[key] = split_variables(text, _ENV_RE)
     return values, None
