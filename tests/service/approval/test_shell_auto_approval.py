@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from unittest.mock import AsyncMock
 
 import pytest
@@ -13,6 +12,7 @@ import pytest
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import ApprovalRequest, ApprovalResponse
 from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.foundation.platform import ShellInfo
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
@@ -31,7 +31,11 @@ def _middleware(bus: EventBus) -> ApprovalMiddleware:
 
 def _shell_tool():
     runtime = SessionEnvironment.capture()
-    return ShellTools(runtime).tools()[0]
+    shell = ShellTools(runtime)
+    # Keep this contract test independent of the developer's detected shell;
+    # Windows fail-closed behavior has its own classifier test.
+    shell._shell = ShellInfo(name="bash", path="bash", args=["-c"])
+    return shell.tools()[0]
 
 
 async def _record_requests(bus: EventBus) -> list[ApprovalRequest]:
@@ -44,7 +48,6 @@ async def _record_requests(bus: EventBus) -> list[ApprovalRequest]:
     return requests
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows shells are intentionally not auto-approved yet")
 @pytest.mark.parametrize(
     "command",
     [

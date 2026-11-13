@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from chrys.service.tools.builtins.shell_command_filtering.readonly.commands import _is_safe_special_command
+from chrys.service.tools.builtins.shell_command_filtering.readonly.git import _strip_git_global_options
 
 ExecutionMode = Literal["exec", "shell"]
 
@@ -144,11 +145,14 @@ def classify_shell_for_approval(command: str, *, shell_name: str = "") -> Approv
         return _safe_command(argv, execution="exec", rule=f"unconditional:{name}", shell_name=shell_name)
     if name in _POSIX_SHELL_BUILTINS:
         return _safe_command(argv, execution="shell", rule=f"builtin:{name}", shell_name=shell_name)
-    if name == "git" and "config" in args[:3]:
-        # The sanitized Git environment hides global/system config; letting
-        # `git config` auto-approve would silently show an empty view. Read it
-        # under approval instead.
-        return ApprovalShellDecision(reason="not_approval_safe:git-config")
+    if name == "git":
+        # Strip global options first: stacked flags must not hide a ``config``
+        # subcommand from the guard. The sanitized Git environment hides
+        # global/system config; letting it auto-approve would silently show an
+        # empty view, so read it under approval instead.
+        stripped = _strip_git_global_options(args)
+        if stripped is not None and stripped[:1] == ["config"]:
+            return ApprovalShellDecision(reason="not_approval_safe:git-config")
     if _is_safe_special_command(name, args):
         return _safe_command(argv, execution="exec", rule=f"validator:{name}", shell_name=shell_name)
     return ApprovalShellDecision(reason=f"not_approval_safe:{name}")

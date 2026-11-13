@@ -363,16 +363,17 @@ _APPROVAL_SAFE_ENV_DROP = frozenset(
         "LD_PRELOAD",
     }
 )
-"""Variables removed only for commands the approval layer auto-approved.
+"""Variables removed for commands the approval layer classified as safe.
 
-A user-approved command keeps the normal shell environment; the sanitized
-environment exists so an ambient config cannot silently turn an auto-approved
-read-only command into an executor.
+The sanitized environment applies whether that decision was automatic or the
+user explicitly approved the command: the classifier is the boundary, and the
+same argv/environment must be used on both paths. Commands outside the boundary
+keep the normal shell environment.
 """
 
 
 def _approval_safe_env() -> dict[str, str]:
-    """The environment for an auto-approved command, without startup/config hooks."""
+    """The environment for an approval-safe command, without startup/config hooks."""
     env = build_shell_subprocess_env()
     for name in _APPROVAL_SAFE_ENV_DROP:
         env.pop(name, None)
@@ -699,7 +700,7 @@ async def _spawn_pty(
 
     *direct_argv*, when given, is a validated command to exec without a shell.
     A *sanitized* environment is used for commands the approval layer
-    auto-approved.
+    classified as safe, whether the decision was automatic or user-approved.
     """
     master, slave = pty.openpty()
     try:
