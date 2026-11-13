@@ -190,7 +190,7 @@ keep status notifications short and use `on_error: ignore` where appropriate.
 ```json
 {
   ...,
-  "trigger": "phase1|phase2|phase3|phase4|force",
+  "trigger": "phase1|phase2|phase3|phase4",
   "usage_pct": 0.82,
   "tokens_before": 174000,
   "sub_agent": { ... }              // present only for sub-agent compactions

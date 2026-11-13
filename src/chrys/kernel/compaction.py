@@ -111,17 +111,36 @@ class LastWordsToolCallError(RuntimeError):
 CONTEXT_WINDOW_FILLED_KEY: Final = "chrys_context_window_filled"
 
 
-def raise_if_context_window_filled(response: ChatResponse[Any]) -> None:
-    """Fail a LAST_WORDS note that filled the context window, as an overflow that is not retried.
+class ContextWindowFilledError(ProviderResponseError):
+    """A LAST_WORDS note that filled the context window, carrying what it wrote before it stopped.
 
-    The note was cut off and the same prompt fills the window again: the
-    overflow has the caller send a smaller one. Every LAST_WORDS side call
-    checks it, the completer's and the fallback's.
+    The same prompt fills the window again, so the caller still has to send a
+    smaller one — but a note it did answer with is not nothing: the caller
+    keeps ``note_text`` as the cut-off note it would have had from a plain
+    ``length`` finish, and asks for a shorter one beside it.
     """
-    if response.additional_properties.get(CONTEXT_WINDOW_FILLED_KEY) is True:
-        raise ProviderResponseError(
+
+    def __init__(self, note_text: str) -> None:
+        super().__init__(
             "model_context_window_exceeded", "The note filled the context window before it ended.", retryable=False
         )
+        self.note_text = note_text
+
+
+def raise_if_context_window_filled(response: ChatResponse[Any]) -> None:
+    """Fail a LAST_WORDS note that filled the context window, keeping the text it wrote.
+
+    The overflow has the caller send a smaller prompt whatever the note says,
+    so this is checked before anything the answer's text could disqualify: a
+    reply that asks for a tool is no note, but its overflow is still an
+    overflow, and retrying the same prompt would only fill the window again.
+    Such a reply keeps no text (:attr:`ContextWindowFilledError.note_text` is
+    empty), while a tool-free answer keeps what it wrote, for the caller to
+    use as the cut-off note it would have had from a plain ``length`` finish.
+    """
+    if response.additional_properties.get(CONTEXT_WINDOW_FILLED_KEY) is True:
+        keep_text = not messages_contain_tool_calls(response.messages)
+        raise ContextWindowFilledError(response.raw_text if keep_text else "")
 
 
 class CompactionProjectionAtomicityError(RuntimeError):
@@ -158,6 +177,21 @@ def messages_contain_tool_calls(messages: Sequence[Message]) -> bool:
     return any(content.type in TOOL_CALL_CONTENT_TYPES for message in messages for content in message.contents)
 
 
+@dataclass(frozen=True, slots=True)
+class LastWordsCompletion:
+    """What one LAST_WORDS side call answered.
+
+    ``text`` is the answer verbatim: outer whitespace is meaningful to the
+    note validator.  ``cut_off`` says the provider stopped the answer before
+    the model ended it (a ``length`` finish): the text is then a note with
+    its end missing, however well formed it looks.  The cause is not kept —
+    some providers report the output cap and a filled window alike.
+    """
+
+    text: str
+    cut_off: bool = False
+
+
 @runtime_checkable
 class LastWordsCompleter(Protocol):
     """Client-owned capability: scoped natural-completion side call.
@@ -166,9 +200,15 @@ class LastWordsCompleter(Protocol):
     ``instruction`` through the same client, route session, options, and
     tool definitions as the live call — with ``tool_choice`` forced to
     ``"none"`` when tools are present — and returns only the assistant
-    text. Tool-call markup in plain text is additionally suppressed by the
+    text and whether it was cut off. Tool-call markup in plain text is additionally suppressed by the
     instruction itself. Never persists anything into history and never
     mutates the live call's options.
+
+    With ``keep_tool_choice`` the live call's ``tool_choice`` is sent as it
+    is: the side call then extends the live request, whose prefix the
+    provider has cached, and a changed ``tool_choice`` would forfeit that
+    cache. Only for a request ``CompactionCallContext.last_words_extends_request``
+    allows; an answer that calls a tool is still refused.
     """
 
     async def complete_last_words(
@@ -178,8 +218,9 @@ class LastWordsCompleter(Protocol):
         *,
         max_output_tokens: int,
         on_usage: Callable[[Mapping[str, Any]], None] | None = None,
-    ) -> str:
-        """Run the side call over ``base_messages`` and return the note text.
+        keep_tool_choice: bool = False,
+    ) -> LastWordsCompletion:
+        """Run the side call over ``base_messages`` and return what it answered.
 
         ``on_usage`` receives the raw provider-reported ``usage_details`` of
         every side-call response as soon as it is observed — including
@@ -199,6 +240,14 @@ class CompactionCallContext:
     """
 
     last_words_completer: LastWordsCompleter | None = None
+    last_words_extends_request: bool = False
+    """Whether the completer may be given the request's own messages and tool choice.
+
+    True only when every tool the request carries runs on the client: a tool
+    call in the side call's answer is then data nothing executes, and the
+    completer refuses the answer.  A tool the provider runs has already run
+    by the time its answer arrives, so such a request never extends.
+    """
     tool_definition_tokens: int = 0
     """Deprecated tools-only estimate retained for public API compatibility."""
     request_overhead_tokens: int = 0

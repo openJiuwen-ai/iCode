@@ -85,6 +85,8 @@ class EventType:
     COMPACTION_PHASE_FINISHED = "compaction.phase.finished"
     COMPACTION_FINISHED = "compaction.finished"
     COMPACTION_SKIPPED = "compaction.skipped"
+    COMPACTION_THRASH_DETECTED = "compaction.thrash.detected"
+    PROMPT_CACHE_MISSED = "prompt_cache.missed"
 
     # Sub-agents, waits, hooks, mutation summary.
     SUB_AGENT_STARTED = "sub_agent.started"
@@ -157,12 +159,25 @@ class TurnEndReason:
 
 
 class CompactionSkipReason:
-    """``compaction.skipped.reason_code`` — why usage past the trigger started no pass."""
+    """``compaction.skipped.reason_code`` — why a request that needed room got none."""
 
     DISABLED = "disabled"
     """The agent's profile turns automatic compaction off."""
     TURNS_UNRESOLVED = "turns_unresolved"
     """The request's messages resolved to no turn, so there is nothing to compact against."""
+    NOTHING_FREED = "nothing_freed"
+    """A pass ran and freed nothing: nothing was left to free, or the drop of current-turn work was refused."""
+
+
+class PromptCacheMissCause:
+    """``prompt_cache.missed.cause`` — what changed the prefix the provider had cached."""
+
+    COMPACTION = "compaction"
+    """A compaction pass or a fold rewrote the request since the previous response."""
+    IDLE = "idle"
+    """The two requests were sent further apart than a provider keeps a prefix cached."""
+    UNKNOWN = "unknown"
+    """Nothing this process did explains it: the case worth investigating."""
 
 
 class TurnSuspendReason:

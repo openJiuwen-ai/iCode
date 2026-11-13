@@ -103,6 +103,11 @@ def _build_multi_turn(turns: int, groups_per_turn: int = 3, result_size: int = 2
     return messages
 
 
+# Collapses the target, satisfied and force lines onto one unreachable value, so no
+# escalation gate holds a pass back: every phase that applies runs.
+_EVERY_PHASE_LINES = {"target_pct": 0.01, "satisfied_pct": 0.01, "force_pct": 0.01}
+
+
 def _make_strategy(
     *,
     last_words_generator: object | None = None,
@@ -215,12 +220,16 @@ def _markerless_wire(state: dict) -> list[Message]:
 def _forced_phase4(messages: list[Message], **strategy_kwargs: Any) -> UnifiedContextStrategy:
     """Strategy whose budget trips immediately over *messages* with an unreachable target.
 
-    ``max_context_tokens`` sits just above the current estimate and ``target_pct`` is
-    impossibly low, so every phase that applies fires and the pass always falls
-    through to a Phase 4 drop round of the current turn.
+    ``max_context_tokens`` sits just above the current estimate and the target,
+    satisfied and force lines all sit impossibly low, so every phase that applies
+    fires and the pass always falls through to a Phase 4 drop round of the current turn.
     """
     total = _estimate_tokens(messages)
-    return _make_strategy(max_context_tokens=total + 50, trigger_pct=0.90, target_pct=0.01, **strategy_kwargs)
+    return _make_strategy(
+        max_context_tokens=total + 50,
+        trigger_pct=0.90,
+        **{**_EVERY_PHASE_LINES, **strategy_kwargs},
+    )
 
 
 def _anthropic_fetched_pdf_exchange(payload: str) -> list[Message]:

@@ -18,7 +18,13 @@ from chrys.foundation.platform.output_capture import CapturedOutput, capture_lim
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.kernel.tools import SyncToolCancelledAfterCompletion
 from chrys.service.tools import spill
-from chrys.service.tools.spill import TOOL_RESULTS_DIR_NAME, bound_process_output, format_spill_notice, try_spill_text
+from chrys.service.tools.spill import (
+    TOOL_RESULTS_DIR_NAME,
+    bound_process_output,
+    format_spill_notice,
+    split_spill_notice,
+    try_spill_text,
+)
 
 _tokenizer = MixedLanguageTokenizer()
 
@@ -37,6 +43,23 @@ def test_spill_creates_directory_lazily_and_round_trips_surrogates(tmp_path: Pat
     if not get_platform().is_windows:
         assert stat.S_IMODE(info.path.parent.stat().st_mode) == 0o700
         assert stat.S_IMODE(info.path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("kept_only", [False, True], ids=["full", "kept"])
+def test_split_spill_notice_returns_the_text_and_the_path(tmp_path: Path, kept_only: bool) -> None:
+    path = tmp_path / TOOL_RESULTS_DIR_NAME / "shell_12345678.txt"
+    notice = format_spill_notice(path, "line 1\nline 2", kept_only=kept_only)
+
+    assert split_spill_notice(f"first lines\n[...truncated...]\n{notice}") == (
+        "first lines\n[...truncated...]",
+        str(path),
+    )
+
+
+def test_split_spill_notice_leaves_other_text_alone() -> None:
+    text = "plain output [Full output is below]\nmore"
+
+    assert split_spill_notice(text) == (text, None)
 
 
 def test_the_spill_notice_names_a_folder_that_is_not_utf8_escaped_for_the_model() -> None:

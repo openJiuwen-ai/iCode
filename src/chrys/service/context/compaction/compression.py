@@ -10,10 +10,18 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
-from chrys.foundation.trajectory.envelope import MeasurementSource
-from chrys.kernel import EXCLUDED_KEY, Message, set_excluded
+from chrys.kernel import (
+    EXCLUDED_KEY,
+    Message,
+    annotate_token_counts,
+    estimate_message_tokens,
+    recount_user_messages,
+    set_excluded,
+)
 from chrys.kernel.compaction import _token_count, included_token_count
 from chrys.kernel.identity import WeakIdentityRegistry
+from chrys.service.agent_middleware.system_reminder import carried_catalog_tokens
+from chrys.service.context.providers.archive_index import ArchiveMerge, merge_fold_summaries, project_archive
 from chrys.service.context.providers.history import PRE_OUTPUT_HISTORY_LEN_STATE_KEY
 
 from .events import (
@@ -101,16 +109,6 @@ class _FoldMatch:
             or id(message.additional_properties) in self.properties_ids
             or (bool(self.summary_ids) and _matches_summary_id(message, self.summary_ids))
         )
-
-
-def _fold_tokens(fold_range: list[Message]) -> int:
-    """Local token estimate of a fold range; untokenized messages count as 0."""
-    total = 0
-    for message in fold_range:
-        token_count = _token_count(message)
-        if token_count is not None:
-            total += token_count
-    return total
 
 
 class CompressionEngine:
@@ -308,6 +306,12 @@ class CompressionEngine:
                     )
                 except ValueError:
                     continue
+                # Both figures of the fold's event are counts of this list,
+                # like every phase's: the newest messages get theirs first,
+                # and a user message the one this call's reminders give it.
+                annotate_token_counts(messages, tokenizer=self._strategy.tokenizer)
+                recount_user_messages(messages, tokenizer=self._strategy.tokenizer)
+                tokens_before = included_token_count(messages)
                 self._record_pre_output_history_len()
                 fold_summary_ids = _fold_summary_ids(fold_range)
                 insertion_index = self.exclude_wire_matches(
@@ -326,12 +330,21 @@ class CompressionEngine:
                 )
                 # The state-side fold range is re-flagged even when absent
                 # from the wire projection.
-                freed_tokens = _fold_tokens(fold_range)
                 for message in fold_range:
                     set_excluded(message, excluded=True, reason=_REASON_COMPRESSION)
                 self._ledger.invalidate_for_fold(fold_range)
+                self._strategy._note_prefix_rewrite(head=True)
                 compressions_processed = True
-                tokens_before = self._strategy.last_included_tokens
+                # Before the fold is reported: what the merge moves into the
+                # index is part of what this fold freed, and a catalog whose
+                # carrier it folded is part of the request it leaves.
+                self._merge_archive(messages)
+                restored_index = self._strategy._restore_folded_reminders(messages)
+                annotate_token_counts(messages, tokenizer=self._strategy.tokenizer)
+                if restored_index is not None:
+                    # The message a catalog went back onto keeps, on the
+                    # properties it shares, the count it had without it.
+                    annotate_token_counts(messages, tokenizer=self._strategy.tokenizer, from_index=restored_index)
                 await self._strategy._notify_compress(
                     CompressInfo(
                         compressed_context_id=pending.compressed_context_id,
@@ -342,7 +355,7 @@ class CompressionEngine:
                     ),
                     trigger="agent_request",
                     tokens_before=tokens_before,
-                    tokens_after=max(0, tokens_before - freed_tokens),
+                    tokens_after=included_token_count(messages),
                 )
                 self._record_published_fold(pending.compressed_context_id)
             self._pending_compressions.clear()
@@ -355,6 +368,16 @@ class CompressionEngine:
             return False
 
         any_processed = False
+        # No request list to count here, so the figures are worked out.
+        # Each fold starts from what the one before it left, the first from
+        # the last request's count: less what the same tokenizer counted for
+        # the folded messages that request carried (one an earlier phase had
+        # already taken out is not in that count), plus the message that
+        # stands for them from the next request on, plus what the archive
+        # merge after it changed.
+        # A message the next request has not carried yet is counted without
+        # the id that request will give it.
+        running_tokens = self._strategy.last_included_tokens
         for pending in self._pending_compressions:
             try:
                 _ctx_id, fold_range = self.execute_fold(
@@ -366,7 +389,21 @@ class CompressionEngine:
                 continue
             any_processed = True
             self._ledger.invalidate_for_fold(fold_range)
-            tokens_before = self._strategy.last_included_tokens
+            self._strategy._note_prefix_rewrite(head=True, before_next_request=True)
+            tokens_before = running_tokens
+            summary_message = self._find_state_summary(pending.compressed_context_id)
+            summary_tokens = self._estimated_tokens(summary_message) if summary_message is not None else 0
+            merge_change = self._merge_token_change(self._merge_archive(None))
+            # A catalog the folded messages carried that no surviving message
+            # still holds is sent again on the message the fold leaves, so
+            # those tokens were not freed.
+            carried = carried_catalog_tokens(
+                fold_range, cast("list[Message]", self._state["messages"]), self._strategy.tokenizer.count_tokens
+            )
+            running_tokens = max(
+                0,
+                tokens_before - included_token_count(fold_range) + summary_tokens + merge_change + carried,
+            )
             await self._strategy._notify_compress(
                 CompressInfo(
                     compressed_context_id=pending.compressed_context_id,
@@ -377,47 +414,23 @@ class CompressionEngine:
                 ),
                 trigger="agent_request",
                 tokens_before=tokens_before,
-                tokens_after=max(0, tokens_before - _fold_tokens(fold_range)),
+                tokens_after=running_tokens,
             )
             self._record_published_fold(pending.compressed_context_id)
         self._pending_compressions.clear()
         return any_processed
 
-    async def force_compress(
-        self,
-        marker_id: str,
-        summary: str,
-        source: str = "auto",
-        *,
-        usage_pct: float = 0.0,
-        tokens_before: int = 0,
-    ) -> str | None:
-        """Execute a fold after-run without wire exclusion or invalidation."""
-        if self._state is None:
-            return None
+    def _estimated_tokens(self, message: Message) -> int:
+        """What *message* counts for in a request: its annotation, or the same estimate taken now."""
+        counted = _token_count(message)
+        return counted if counted is not None else estimate_message_tokens(message, self._strategy.tokenizer)
 
-        try:
-            await self._strategy._fire_pre_compact("force", usage_pct=usage_pct, tokens_before=tokens_before)
-            ctx_id, fold_range = self.execute_fold(marker_id, summary)
-        except ValueError:
-            return None
-        # ``tokens_before`` is the provider-reported occupancy that tripped
-        # the force threshold; the fold's own size is the local estimate.
-        await self._strategy._notify_compress(
-            CompressInfo(
-                compressed_context_id=ctx_id,
-                summary=summary,
-                freed_messages=len(fold_range),
-                turn_range=_compressed_turn_range(self._state, ctx_id),
-                source=source,
-            ),
-            trigger="force",
-            tokens_before=tokens_before,
-            tokens_after=max(0, tokens_before - _fold_tokens(fold_range)),
-            token_source=MeasurementSource.PROVIDER,
-        )
-        self._record_published_fold(ctx_id)
-        return ctx_id
+    def _merge_token_change(self, merge: ArchiveMerge | None) -> int:
+        """Tokens an archive merge added to the request: the new index, less the index and summaries it replaced."""
+        if merge is None:
+            return 0
+        replaced = [*merge.merged_summaries, *([merge.previous_index] if merge.previous_index is not None else [])]
+        return self._estimated_tokens(merge.index) - sum(self._estimated_tokens(message) for message in replaced)
 
     async def emergency_compress_oldest_turn(
         self,
@@ -425,10 +438,12 @@ class CompressionEngine:
         *,
         usage_pct: float,
         tokens_before: int,
+        protect_newest_turn: bool = False,
     ) -> tuple[bool, bool]:
-        """Fold the oldest eligible completed turn into a visible summary.
+        """Fold the oldest eligible completed turn into a visible summary (Phase 3).
 
-        This is the Phase 3 pre-request counterpart to ``force_compress``.
+        With *protect_newest_turn* the newest completed turn's marker is never
+        the fold point, so that turn stays as it is.
 
         Returns ``(progressed, compressed)``.  Empty markers can be consumed
         without creating a summary, so ``progressed`` may be true while
@@ -464,6 +479,17 @@ class CompressionEngine:
         current_span = resolved.current
         state_boundary = current_span.state_boundary if current_span is not None else None
 
+        protected_marker_id: str | None = None
+        if protect_newest_turn:
+            completed = [
+                candidate
+                for candidate in markers
+                if state_boundary is None
+                or (isinstance(position := candidate.get("position"), int) and position < state_boundary)
+            ]
+            if completed:
+                protected_marker_id = completed[-1].get("marker_id")
+
         marker: dict[str, Any] | None = None
         marker_id = ""
         marker_position = 0
@@ -479,6 +505,8 @@ class CompressionEngine:
             if state_boundary is not None and candidate_position >= state_boundary:
                 # Folding up to this marker would swallow the current real
                 # turn's work (fold ranges are inclusive of the marker).
+                continue
+            if protected_marker_id is not None and candidate_id == protected_marker_id:
                 continue
 
             fold_range = self._state_fold_range(candidate_position)
@@ -500,7 +528,7 @@ class CompressionEngine:
         if marker is None:
             return False, False
 
-        summary = _auto_summary(self._state, marker_position)
+        summary = _auto_summary(self._state, marker_position, max_context_tokens=self._strategy.max_context_tokens)
 
         try:
             await self._strategy._fire_pre_compact("phase3", usage_pct=usage_pct, tokens_before=tokens_before)
@@ -530,6 +558,9 @@ class CompressionEngine:
             set_excluded(message, excluded=True, reason=_REASON_COMPRESSION)
 
         self._ledger.invalidate_for_fold(fold_range)
+        self._merge_archive(messages)
+        self._strategy._note_prefix_rewrite(head=True)
+        self._strategy._settle_after_fold(messages)
 
         await self._strategy._notify_compress(
             CompressInfo(
@@ -546,6 +577,30 @@ class CompressionEngine:
         self._record_published_fold(compressed_context_id)
 
         return True, True
+
+    def _merge_archive(self, messages: list[Message] | None) -> ArchiveMerge | None:
+        """Keep the fold summaries within their share of the window, right after a fold.
+
+        Only here: the fold has just rewritten the request from the last
+        summary on, so moving the oldest summaries into the archive index
+        costs the cached summaries before it and no second rewrite later.
+        *messages* is the live request list, or None after a run, where
+        only provider state is left to change.  Returns what was merged.
+        """
+        if self._state is None:
+            return None
+        merge = merge_fold_summaries(
+            self._state,
+            max_context_tokens=self._strategy.max_context_tokens,
+            count_tokens=self._strategy.tokenizer.count_tokens,
+        )
+        if merge is None or messages is None:
+            return merge
+        # A summary the index now lists is flagged excluded on the object the
+        # request shares with state, so only the index itself is missing here.
+        self._record_pre_output_history_len()
+        project_archive(self._state, messages)
+        return merge
 
     def _record_pre_output_history_len(self) -> None:
         """Remember the provider-state length after request-time compression."""
@@ -665,6 +720,12 @@ class CompressionEngine:
 
     def reinject_summaries(self, messages: list[Message]) -> None:
         """Re-inject emergency compressed summaries into per-call copies."""
+        self._reinject_cached_summaries(messages)
+        if self._state is not None:
+            # After the summaries: the archive index goes in front of them.
+            project_archive(self._state, messages)
+
+    def _reinject_cached_summaries(self, messages: list[Message]) -> None:
         if not self._compressed_context_cache:
             return
         self._prune_stale_compressed_context_cache()

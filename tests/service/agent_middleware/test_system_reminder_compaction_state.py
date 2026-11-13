@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextvars import Context
 from dataclasses import replace
 from pathlib import Path
@@ -342,6 +343,17 @@ class TestDroppedRecordManifestState:
             DropRoundBreakerState.from_state({**DropRoundBreakerState().to_state(), "side_call_tokens": 1 << 63})
             is None
         )
+
+    def test_no_saved_breaker_state_is_not_reported_as_malformed(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Every session that never dropped anything restores without one."""
+        with caplog.at_level(logging.DEBUG, logger=last_words_mod.__name__):
+            assert DropRoundBreakerState.from_state(None) is None
+            assert caplog.records == []
+            # The control: data that is there and wrong is still reported.
+            assert DropRoundBreakerState.from_state({"version": "1"}) is None
+            assert [record.getMessage() for record in caplog.records] == [
+                "Dropping malformed or unsupported Phase-4 breaker state"
+            ]
 
     def test_manifest_state_is_strict_utf8_even_with_unpaired_surrogate(self) -> None:
         entry = replace(_manifest_entry(7), display_argument='path="bad-\udc80.txt"')

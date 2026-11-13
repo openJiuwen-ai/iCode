@@ -326,11 +326,13 @@ async def build_kernel_node(
         session_dir=res.session_dir,
         skip_local_history_for_service_context=(model.provider == "openai" and model.api_style == API_STYLE_RESPONSES),
         service_context_default_options=chat_options,
+        tool_result_ceiling_tokens=res.settings.tool_result_ceiling_tokens,
         memory_text=memory_content.text,
     )
     skill_tool_names = skills_provider.tool_names if skills_provider is not None else []
     reminder_inputs = ReminderInputs(
         runtime=environment,
+        automatic_compaction=profile.compaction.enabled,
         sub_agent_names=[tool.name for tool in sub_agent_tools.get_tools()] if sub_agent_tools is not None else None,
         shell_tool_enabled=any(get_tool_kind(tool) == KIND_SHELL for tool in tools),
         tool_names=[*(tool.name for tool in tools), *skill_tool_names],

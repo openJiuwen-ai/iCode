@@ -265,6 +265,18 @@ TRAJECTORY_EXCHANGE_KWARG = "trajectory_exchange"
 """``client_kwargs`` key the kernel uses to hand an :class:`ExchangeTrace` to the wire client."""
 
 
+def forwarded_exchange_trace(middleware_kwargs: Mapping[str, Any]) -> ExchangeTrace | None:
+    """The exchange a chat middleware's call acquires, out of its context kwargs.
+
+    The middleware runs beneath the kernel loop, whose ambient scope is the
+    run's: the trace the kernel forwards to the wire client is the only
+    handle on the one exchange this call is.
+    """
+    nested = middleware_kwargs.get("client_kwargs")
+    trace = nested.get(TRAJECTORY_EXCHANGE_KWARG) if isinstance(nested, Mapping) else None
+    return trace if isinstance(trace, ExchangeTrace) else None
+
+
 def _percentile(sorted_values: list[int], fraction: float) -> int:
     if not sorted_values:
         return 0

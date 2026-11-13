@@ -90,6 +90,7 @@ class ContextManager:
         session_dir: Path | None = None,
         skip_local_history_for_service_context: bool = False,
         service_context_default_options: Mapping[str, Any] | None = None,
+        tool_result_ceiling_tokens: int | None = None,
     ) -> None:
         cfg = compaction_config or CompactionConfig()
         budgets = derive_compaction_budgets(profile)
@@ -105,6 +106,8 @@ class ContextManager:
             # reported against the model's real threshold.
             trigger_pct=budgets.trigger_pct,
             target_pct=budgets.target_pct,
+            satisfied_pct=budgets.satisfied_pct,
+            force_pct=budgets.force_compress_pct,
             on_compaction=on_compaction,
             on_pre_compact=on_pre_compact,
             on_compress=on_compress,
@@ -144,6 +147,7 @@ class ContextManager:
                 session_id=session_id,
                 parent_session_id=parent_session_id,
                 session_dir=session_dir,
+                tool_result_ceiling_tokens=tool_result_ceiling_tokens,
             )
             if include_context_management
             else None

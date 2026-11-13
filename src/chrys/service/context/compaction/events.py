@@ -11,6 +11,7 @@ from typing import Any
 
 from chrys.kernel import Message
 from chrys.kernel.identity import WeakIdentityRegistry
+from chrys.service.context.providers.archive_index import REASON_ARCHIVED as _REASON_ARCHIVED
 
 _log = logging.getLogger(__name__)
 
@@ -22,8 +23,10 @@ _REASON_REMOVAL = "budget_tool_removal"
 _REASON_CURRENT_TURN_DROP = "current_turn_drop"
 _REASON_COMPRESSION = "cross_turn_compression"
 _COMPACTION_EXCLUDE_REASONS = frozenset(
-    {_REASON_COMPACTION, _REASON_REMOVAL, _REASON_CURRENT_TURN_DROP, _REASON_COMPRESSION}
+    {_REASON_COMPACTION, _REASON_REMOVAL, _REASON_CURRENT_TURN_DROP, _REASON_COMPRESSION, _REASON_ARCHIVED}
 )
+_STATE_OWNED_EXCLUDE_REASONS = frozenset({_REASON_COMPRESSION, _REASON_ARCHIVED})
+"""Exclusions a history rewrite set on provider state itself: nothing to carry over after the run."""
 
 # ---------------------------------------------------------------------------
 # Compaction info
@@ -65,7 +68,7 @@ class PreCompactInfo:
     """Details about a compaction phase before it mutates context."""
 
     trigger: str
-    """Which phase is about to run: ``"phase1"`` to ``"phase4"``, or ``"force"``."""
+    """Which phase is about to run: ``"phase1"`` to ``"phase4"``."""
 
     usage_pct: float
     """Estimated context usage fraction at the phase boundary."""

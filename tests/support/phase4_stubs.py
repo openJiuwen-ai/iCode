@@ -43,9 +43,12 @@ class StubLastWordsGenerator:
         request_overhead_tokens: int = 0,
         calibration_ratio: float = 1.0,
         spend_side_call_tokens: object | None = None,
+        affords_side_call_tokens: object | None = None,
+        entry_messages: object | None = None,
     ) -> str:
         self.calls.append(
             {
+                "entry_messages": entry_messages,
                 "scoped_groups": list(scoped_groups),
                 "previous_last_words": previous_last_words,
                 "has_continuation_nudges": has_continuation_nudges,

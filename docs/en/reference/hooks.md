@@ -181,7 +181,6 @@ The values of `trigger` are:
 | `phase2` | Remove older tool calls and their results. |
 | `phase3` | Replace earlier completed turns with a summary. |
 | `phase4` | Generate Last Words for continuing the current task and reduce the current turn's content. |
-| `force` | Force compaction. |
 
 ### Workflow events
 

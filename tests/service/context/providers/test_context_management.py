@@ -8,15 +8,17 @@ the three tool method wrappers, and ContextManager wiring.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
 
+from chrys.foundation.models.history_markers import HistoryMarkerKind, LastWordsRecord, dropped_records_heading
 from chrys.foundation.tool_result_metadata import TOOL_ERROR_KIND_METADATA_KEY
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.kernel import AgentSession, Content, Message, SessionContext
 from chrys.service.context.compaction import UnifiedContextStrategy
+from chrys.service.context.providers.archive_index import is_archived_summary
 from chrys.service.context.providers.context_management import ContextManagementProvider, _format_messages_as_text
 from chrys.service.context.providers.history import CompressibleHistoryProvider
 from chrys.service.profiles.models.resolver import default_profile
@@ -38,6 +40,9 @@ from tests.support.provider_errors import openai_context_overflow
 
 _HISTORY_SOURCE_ID = CompressibleHistoryProvider.DEFAULT_SOURCE_ID
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 def _build_state(num_turns: int) -> dict:
     """Build a history state dict simulating *num_turns* of conversation with markers."""
@@ -49,8 +54,12 @@ def _build_state(num_turns: int) -> dict:
     return state
 
 
-def _make_provider() -> ContextManagementProvider:
-    return ContextManagementProvider(default_profile(), strategy=UnifiedContextStrategy())
+def _make_provider(*, tool_result_ceiling_tokens: int | None = None) -> ContextManagementProvider:
+    return ContextManagementProvider(
+        default_profile(),
+        strategy=UnifiedContextStrategy(),
+        tool_result_ceiling_tokens=tool_result_ceiling_tokens,
+    )
 
 
 def _bind_session(provider: ContextManagementProvider, history_state: dict | None = None) -> AgentSession:
@@ -92,6 +101,35 @@ class TestBeforeRun:
         assert "LAST_WORDS" in text
         assert "sub-agent" in text
         # Must not leak context management details to the user
+        assert "silently" in text
+        # The platform compacts by itself: no usage figure tells the model to fold.
+        assert "platform compacts on its own" in text
+        assert "50%" not in text
+        assert "proactively" not in text
+        # Usage is information: nothing in the instructions makes folding the model's job.
+        assert "for your information only" in text
+        assert "never required to manage context yourself" in text
+        assert "high usage alone is no reason" in text
+        assert "use `compress_context`" not in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_instructions_say_what_frees_context_where_nothing_compacts_on_its_own(self) -> None:
+        """With automatic compaction off only the model's own folds free context, so it is told that they do."""
+        provider = ContextManagementProvider(
+            default_profile(), strategy=UnifiedContextStrategy(compaction_enabled=False)
+        )
+        context = SessionContext(input_messages=[])
+
+        await provider.before_run(agent=None, session=AgentSession(), context=context, state={})
+
+        text = context.instructions[0]
+        assert "Automatic compaction is turned off" in text
+        assert "`compress_context` folds completed work into a summary when you decide to" in text
+        assert "50%" not in text
+        assert "platform compacts on its own" not in text
+        assert "automatically compressed" not in text
+        # The rest of the instructions is the same.
+        assert "`list_compressed_contexts` shows available fold markers" in text
         assert "silently" in text
 
     @pytest.mark.asyncio
@@ -172,6 +210,25 @@ class TestCompressContext:
         assert "3 visible message(s)" in result
         assert "1 compressed block(s)" in result
 
+    @pytest.mark.asyncio
+    async def test_compress_does_not_count_a_summary_the_archive_index_stands_for(self) -> None:
+        provider = ContextManagementProvider(
+            default_profile(), strategy=UnifiedContextStrategy(max_context_tokens=30_000)
+        )
+        state = _build_state(4)
+        _bind_session(provider, state)
+        long_summary = "The model's own account of the work. " + "detail " * 1_200
+        for marker_id in ("turn_1", "turn_2"):
+            provider._strategy.queue_compression(marker_id, long_summary)
+            assert await provider._strategy.flush_pending_compressions()
+        assert [is_archived_summary(message) for message in state["messages"][:3]] == [False, True, False]
+
+        result = await provider._compress_context(marker_id="turn_3", summary="Summary")
+
+        # The index, the two summaries still in the request, and the fourth turn's two messages.
+        assert "5 visible message(s)" in result
+        assert "3 compressed block(s)" in result
+
 
 # ---------------------------------------------------------------------------
 # _list_compressed_contexts
@@ -197,7 +254,7 @@ async def test_list_tool_rejects_extra_arguments_before_execution_and_accepts_re
 
     initial, bad_call, bad_note, retry = _result_contents(response)
     for result, field in ((bad_call, "_call"), (bad_note, "note")):
-        message = _assert_actionable_argument_error(result, name, f"unknown '{field}'", "Expected: {}.")
+        message = _assert_actionable_argument_error(result, name, f"unknown '{field}'", "Expected: {")
         assert "check before compressing" not in message
     assert initial.exception is retry.exception is None
     assert initial.result == retry.result
@@ -237,8 +294,9 @@ class TestListCompressedContexts:
 
         result = provider._list_compressed_contexts()
 
-        assert "No compressed blocks yet." in result
-        assert "No fold markers available" in result
+        assert result == (
+            "No compressed blocks yet; no fold markers available — markers are inserted after each agent turn."
+        )
 
     def test_lists_markers(self) -> None:
         provider = _make_provider()
@@ -262,11 +320,70 @@ class TestListCompressedContexts:
 
         result = provider._list_compressed_contexts()
 
-        assert "Summary A" in result
-        assert "turn_3" in result
+        # One line for the block, told apart by what the user asked; its summary only on request.
+        assert f"  - {block.compressed_context_id} · turns 1-2 · {len(block.messages)} messages · " in result
+        assert "Summary A" not in result
+        assert 'marker_id="turn_3"' in result
         # Folded markers should not appear
-        assert "turn_1 " not in result
-        assert "turn_2 " not in result
+        assert 'marker_id="turn_1"' not in result
+        assert 'marker_id="turn_2"' not in result
+
+        full = provider._list_compressed_contexts(compressed_context_id=block.compressed_context_id)
+
+        assert "Summary: Summary A" in full
+        assert "marker_id=" not in full.split("\n", 2)[2]
+
+    def test_filters_by_turn_range(self) -> None:
+        provider = _make_provider()
+        state = _build_state(6)
+        _bind_session(provider, state)
+        first = CompressibleHistoryProvider.compress(state, "turn_2", "Summary A")
+        second = CompressibleHistoryProvider.compress(state, "turn_4", "Summary B")
+
+        result = provider._list_compressed_contexts(turn_from=3, turn_to=5)
+
+        assert second in result
+        assert first not in result
+        assert 'marker_id="turn_5"' in result
+        assert 'marker_id="turn_6"' not in result
+        assert "Matching this request: 1 block(s), 1 marker(s)." in result
+
+    def test_a_request_the_caller_must_correct_is_a_tool_error(self) -> None:
+        provider = _make_provider()
+        _bind_session(provider, _build_state(3))
+
+        for arguments in (
+            {"compressed_context_id": "ctx_missing"},
+            {"cursor": "not-a-cursor"},
+            {"cursor": "99"},
+            {"turn_from": 3, "turn_to": 1},
+        ):
+            result = provider._list_compressed_contexts(**arguments)
+            assert result.startswith("Error: "), arguments
+
+    def test_pages_fit_the_tool_result_ceiling(self) -> None:
+        from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
+
+        provider = _make_provider(tool_result_ceiling_tokens=2_000)
+        state = _build_state(400)
+        _bind_session(provider, state)
+        counter = MixedLanguageTokenizer()
+
+        pages: list[str] = []
+        cursor: str | None = None
+        while True:
+            page = provider._list_compressed_contexts(cursor=cursor)
+            pages.append(page)
+            assert counter.count_tokens(page) <= 2_000
+            if "End of list." in page.split("\n")[1]:
+                break
+            cursor = page.split('cursor="', 1)[1].split('"', 1)[0]
+
+        assert len(pages) > 2
+        listed = [
+            line for page in pages for line in page.split("\n") if "marker_id=" in line and line.startswith("  - ")
+        ]
+        assert listed == [f'  - marker_id="turn_{turn}" (turn {turn})' for turn in range(1, 401)]
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +464,48 @@ class TestRecallContext:
         assert "[Tool result: [image/png image]]" in formatted
         assert "completed" not in formatted
 
+    def test_recall_formatter_follows_a_user_message_with_the_progress_note_it_carried(self) -> None:
+        """The note is recorded beside the message, not in it, and is all that tells what dropped calls did."""
+        block = "[LAST_WORDS]\n## Progress\nRewrote the tokenizer\n\nDropped tool calls:\n- shell(make test)"
+        opener = Message("user", ["Port the parser"])
+        opener.additional_properties[HistoryMarkerKind.LAST_WORDS_RECORD_KEY] = LastWordsRecord(
+            block, "## Progress\nRewrote the tokenizer"
+        ).to_record()
+        opener.additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] = [
+            {"kind": "catalog", "text": "Available skills: none", "name": "skills"}
+        ]
+        # A record on anything but a user message is not a progress note.
+        answer = Message("assistant", ["The parser is ported."])
+        answer.additional_properties[HistoryMarkerKind.LAST_WORDS_RECORD_KEY] = LastWordsRecord("stray", "").to_record()
+
+        formatted = _format_messages_as_text([opener, answer, Message("user", ["Thanks"])])
+
+        assert formatted == (
+            f"[user]: Port the parser\n[progress note of this turn]: {block}\n"
+            "[assistant]: The parser is ported.\n[user]: Thanks"
+        )
+
+    def test_recall_formatter_names_the_sessions_own_copy_of_the_dropped_records(self, tmp_path: Path) -> None:
+        """A fork holds copies of the records; the note it recalls must not send it to the parent's."""
+        records_dir = "compactions/dropped/turn001"
+        parent, fork = tmp_path / "parent", tmp_path / "fork"
+        block = (
+            "[LAST_WORDS]\n## Progress\nRewrote the tokenizer\n\n"
+            f"{dropped_records_heading(records_dir, parent)}\nr1 001 shell(make test)"
+        )
+        opener = Message("user", ["Port the parser"])
+        opener.additional_properties[HistoryMarkerKind.LAST_WORDS_RECORD_KEY] = LastWordsRecord(
+            block, "## Progress\nRewrote the tokenizer", records_dir
+        ).to_record()
+
+        in_fork = _format_messages_as_text([opener], fork)
+
+        assert f"(records under {(fork / records_dir).absolute().as_posix()}/)" in in_fork
+        assert parent.as_posix() not in in_fork
+        in_parent = _format_messages_as_text([opener], parent)
+        assert in_parent == f"[user]: Port the parser\n[progress note of this turn]: {block}"
+        assert in_fork == in_parent.replace(parent.absolute().as_posix(), fork.absolute().as_posix())
+
     @pytest.mark.asyncio
     async def test_recall_invalid_id(self) -> None:
         provider = _make_provider()
@@ -372,6 +531,65 @@ class TestRecallContext:
         result = await provider._recall_context(compressed_context_id=ctx_id, question="anything?")
 
         assert "no readable messages" in result
+
+    @pytest.mark.asyncio
+    async def test_recall_finds_the_block_by_a_turn_it_holds(self) -> None:
+        prompts: list[str] = []
+
+        class _Response:
+            text = "remembered"
+
+        class _Client:
+            async def get_response(self, messages: list[Any], *, stream: bool, options: Any) -> _Response:
+                prompts.append(messages[-1].text)
+                return _Response()
+
+            async def aclose(self) -> None:
+                pass
+
+        provider = _make_provider()
+        state = _build_state(5)
+        _bind_session(provider, state)
+        CompressibleHistoryProvider.compress(state, "turn_2", "Summary A")
+        CompressibleHistoryProvider.compress(state, "turn_4", "Summary B")
+
+        with patch("chrys.service.llm.clients.create_client", return_value=_Client()):
+            result = await provider._recall_context(question="what happened?", turn=3)
+
+        assert result == "remembered"
+        assert "User message turn 3" in prompts[0]
+        assert "User message turn 4" in prompts[0]
+        assert "User message turn 2" not in prompts[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("arguments", [{}, {"turn": 5}, {"turn": 99}])
+    async def test_recall_without_a_block_to_query_says_what_to_give(self, arguments: dict[str, int]) -> None:
+        provider = _make_provider()
+        state = _build_state(5)
+        _bind_session(provider, state)
+        CompressibleHistoryProvider.compress(state, "turn_2", "Summary A")
+
+        result = await provider._recall_context(question="what happened?", **arguments)
+
+        assert result.startswith("Error: ")
+        assert ("no compressed block holds turn" in result) is bool(arguments)
+
+
+@pytest.mark.asyncio
+async def test_recall_of_an_unfolded_turn_says_only_that_it_has_no_block() -> None:
+    """A turn with no block may still be visible, or trimmed without one — neither is promised either way."""
+    provider = _make_provider()
+    _bind_session(provider, _build_state(5))
+
+    result = await provider._recall_context(question="what happened?", turn=4)
+
+    assert "Only a turn that was folded into a block can be recalled" in result
+    assert "still in the conversation itself" not in result
+    assert "needs no recall" not in result
+    # Phase 2 excludes a turn's tool results without folding it, and a later
+    # fold copies the excluded originals into the block: folding it now can
+    # bring that work back, so the error promises nothing either way.
+    assert "does not bring back" not in result
 
     @pytest.mark.asyncio
     async def test_recall_passes_session_id_to_client(self) -> None:
@@ -466,6 +684,8 @@ class TestRecallContext:
         expected = "too large for this model's context window" if overflow else "did not complete"
         assert result.startswith("Error: recall failed — ")
         assert expected in result
+        # An overflow points at the block's full summary, which no longer comes with the default listing.
+        assert ("list_compressed_contexts with its compressed_context_id" in result) is overflow
         assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == "context_recall_failed"
         for leaked in ("131072", "gateway.internal", "sk-test-secret", "/Users/me"):
             assert leaked not in result
@@ -488,8 +708,8 @@ class TestSessionNotBound:
         provider = _make_provider()
         result = provider._list_compressed_contexts()
 
-        assert "No compressed blocks yet." in result
-        assert "No fold markers available" in result
+        assert "No compressed blocks yet" in result
+        assert "no fold markers available" in result
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +744,18 @@ class TestContextManagerWiring:
         assert ctx.context_mgmt_provider is not None
         assert ctx.context_mgmt_provider._session_id == "sess-context"
 
+    def test_context_manager_sizes_listing_pages_by_the_tool_result_ceiling(self) -> None:
+        from chrys.service.context.manager import ContextManager
+        from chrys.service.context.providers.archive_listing import page_budget_tokens
+
+        default = ContextManager(default_profile()).context_mgmt_provider
+        capped = ContextManager(default_profile(), tool_result_ceiling_tokens=2_000).context_mgmt_provider
+
+        assert default is not None
+        assert capped is not None
+        assert default._listing_budget_tokens == page_budget_tokens(None)
+        assert capped._listing_budget_tokens == page_budget_tokens(2_000) < default._listing_budget_tokens
+
     def test_context_manager_wires_derived_budgets_everywhere(self) -> None:
         from chrys.service.context.manager import ContextManager
 
@@ -531,6 +763,8 @@ class TestContextManagerWiring:
 
         assert ctx.compaction_strategy.trigger_pct == ctx.budgets.trigger_pct
         assert ctx.compaction_strategy.target_pct == ctx.budgets.target_pct
+        assert ctx.compaction_strategy.satisfied_pct == ctx.budgets.satisfied_pct
+        assert ctx.compaction_strategy.force_pct == ctx.budgets.force_compress_pct
         assert ctx.history_provider._force_compress_pct == ctx.budgets.force_compress_pct
         assert ctx.usage_middleware._compaction_strategy is ctx.compaction_strategy
 
@@ -568,7 +802,7 @@ class TestContextManagerWiring:
         assert not openai_stored.use_local_context_estimate_for_hosted_usage
         assert not chat.use_local_context_estimate_for_hosted_usage
 
-    def test_internal_disable_also_disables_force_compress(self) -> None:
+    def test_internal_disable_also_disables_the_turn_end_check(self) -> None:
         from chrys.service.context.manager import ContextManager
         from chrys.service.profiles.agents.schema import CompactionConfig
 
@@ -581,3 +815,23 @@ class TestContextManagerWiring:
         assert ctx.history_provider._force_compress_pct == 1.0
         assert ctx.context_mgmt_provider is not None
         assert "compress_context" in ctx.context_mgmt_provider.tool_names
+
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [(None, -1), (-1, -1), (0, 0), (50_000, 50_000)],
+        ids=["unset", "unlimited", "disabled", "explicit"],
+    )
+    def test_the_last_words_budget_is_the_configured_one_and_unlimited_when_unset(
+        self, configured: int | None, expected: int
+    ) -> None:
+        """Whatever the model's window: a default sized from it would stop long turns that complete without one."""
+        from chrys.service.context.manager import ContextManager
+        from chrys.service.profiles.agents.schema import CompactionConfig
+
+        config = (
+            CompactionConfig() if configured is None else CompactionConfig(phase4_side_call_token_budget=configured)
+        )
+
+        strategy = ContextManager(default_profile(), compaction_config=config).compaction_strategy
+
+        assert strategy._phase4_side_call_token_budget == expected

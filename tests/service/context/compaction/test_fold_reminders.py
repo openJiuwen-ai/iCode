@@ -10,10 +10,13 @@ re-attach whatever the fold removed to the request it is preparing.
 
 from __future__ import annotations
 
+import itertools
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.trajectory.context import trajectory_scope
+from chrys.foundation.trajectory.event_types import EventType
 from chrys.kernel import (
     EXCLUDED_KEY,
     Content,
@@ -35,6 +38,7 @@ from tests.service.context.compaction._compaction_helpers import (
     _tokenizer,
     _user,
 )
+from tests.service.trajectory._fakes import FakeSink, make_context
 from tests.support.reminder_calls import request_views
 from tests.support.reminder_stack import reminder_pair
 
@@ -91,7 +95,9 @@ async def test_compress_context_fold_resends_the_catalog_on_the_same_call(monkey
         return await apply_compaction(messages, strategy=strategy, tokenizer=_tokenizer)
 
     middleware.prepare_turn()
-    sent = await request_views(middleware, [first_user, first_answer, current_user], prepare=_fold)
+    sink = FakeSink()
+    with trajectory_scope(make_context(sink)):
+        sent = await request_views(middleware, [first_user, first_answer, current_user], prepare=_fold)
 
     assert [message.additional_properties.get(HistoryMarkerKind.KEY) for message in sent] == [
         HistoryMarkerKind.SUMMARY,
@@ -110,6 +116,9 @@ async def test_compress_context_fold_resends_the_catalog_on_the_same_call(monkey
     counted = included_token_count(wire)
     annotate_token_counts(wire, tokenizer=_tokenizer, force_retokenize=True)
     assert included_token_count(wire) == counted
+    # The fold reports the request it left, the re-sent catalog included.
+    assert sink.only(EventType.COMPACTION_FINISHED).payload["tokens_after"] == counted
+    assert counted > _estimate_tokens([sent[0], _user("Current turn")]) + _tokenizer.count_tokens(_CATALOG)
 
     # The next turn sees the catalog in view on the current opener and
     # re-renders that opener exactly as the fold call sent it.
@@ -149,7 +158,9 @@ async def test_phase3_fold_resends_the_catalog_on_the_same_call(monkeypatch: pyt
     # The turn's first call: its turn line, the runtime environment nothing
     # showed yet and the re-sent catalog go out together.
     middleware.prepare_turn()
-    sent = await request_views(middleware, [*_markerless_wire(state), current_user], prepare=_fold)
+    sink = FakeSink()
+    with trajectory_scope(make_context(sink)):
+        sent = await request_views(middleware, [*_markerless_wire(state), current_user], prepare=_fold)
 
     assert first_user.additional_properties.get(EXCLUDED_KEY) is True
     assert _catalog_count(sent) == 1
@@ -164,6 +175,16 @@ async def test_phase3_fold_resends_the_catalog_on_the_same_call(monkeypatch: pyt
     counted = included_token_count(wire)
     annotate_token_counts(wire, tokenizer=_tokenizer, force_retokenize=True)
     assert included_token_count(wire) == counted
+    # Each fold reports the request it left, the re-sent catalog included from the fold that took its carrier.
+    folds = [
+        event.payload
+        for event in sink.of_type(EventType.COMPACTION_PHASE_FINISHED)
+        if event.payload["phase"] == "phase3"
+    ]
+    assert len(folds) > 1
+    for earlier, later in itertools.pairwise(folds):
+        assert earlier["tokens_after"] == later["tokens_before"]
+    assert folds[-1]["tokens_after"] == sink.only(EventType.COMPACTION_FINISHED).payload["tokens_after"] == counted
 
     # The next call re-renders the opener byte-identically.
     next_wire = await request_views(

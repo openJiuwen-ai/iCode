@@ -200,7 +200,9 @@ async def test_phase4_passes_only_current_scoped_timeline_and_completer():
     """Phase 4 forwards the client completer with no previous-turn messages."""
 
     class _SentinelCompleter:
-        async def complete_last_words(self, base_messages, instruction, *, max_output_tokens, on_usage=None):  # type: ignore[no-untyped-def]
+        async def complete_last_words(  # type: ignore[no-untyped-def]
+            self, base_messages, instruction, *, max_output_tokens, on_usage=None, keep_tool_choice=False
+        ):
             raise AssertionError("stub generator must not invoke the completer")
 
     messages = _build_multi_turn(2, groups_per_turn=3, result_size=1000)
@@ -530,22 +532,21 @@ async def test_phase4_breaker_refusal_publishes_pressure_once_before_generator_c
     assert generator.breaker_trips == expected_trips
 
 
-async def test_phase4_success_freeing_less_than_five_points_sets_tail_override() -> None:
+async def test_phase4_drop_that_would_free_less_than_five_points_is_not_attempted() -> None:
+    generator = StubLastWordsGenerator(text="[note]")
     reminder = StubReminderMiddleware()
     messages = _build_single_turn(1, result_size=5)
     messages[0] = _user("large opener " + "context " * 20_000)
     strategy = _forced_phase4(
         messages,
+        last_words_generator=generator,
         reminder_middleware=reminder,
     )
 
-    assert await strategy(messages)
+    assert not await strategy(messages)
 
-    breaker = reminder.last_words.get_drop_round_breaker()
-    assert breaker.attempts == 1
-    assert breaker.consecutive_no_progress == 1
-    assert breaker.tail_override is True
-    assert breaker.disabled is False
+    assert generator.calls == []
+    assert reminder.last_words.get_drop_round_breaker() == DropRoundBreakerState()
 
 
 async def test_phase4_unlimited_budget_never_refuses_spend_or_entry() -> None:

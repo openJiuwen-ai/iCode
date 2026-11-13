@@ -51,6 +51,8 @@ from chrys.kernel import (
     ChatResponse,
     ChatResponseUpdate,
     Content,
+    ContextWindowFilledError,
+    LastWordsCompletion,
     LastWordsToolCallError,
     Message,
     ResponseStream,
@@ -755,6 +757,27 @@ async def test_fixed_request_overhead_counts_non_message_payloads(option_key: st
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("finish_reason", "cut_off"),
+    [("length", True), ("stop", False), (None, False)],
+    ids=["length", "stop", "unreported"],
+)
+async def test_completer_says_whether_the_provider_cut_the_note_off(finish_reason: str | None, cut_off: bool) -> None:
+    """The text alone cannot tell: a note cut off inside its last section has every heading."""
+    response = ChatResponse(
+        messages=[Message("assistant", [Content.from_text("note text")])],
+        finish_reason=finish_reason,  # type: ignore[arg-type]
+    )
+    completer = _ClientLastWordsCompleter(
+        _RecordingClient(response=response), stream=False, options={"model": "m"}, client_kwargs={}
+    )
+
+    note = await completer.complete_last_words([Message("user", ["q"])], "I", max_output_tokens=10)
+
+    assert note == LastWordsCompletion("note text", cut_off=cut_off)
+
+
+@pytest.mark.asyncio
 async def test_completer_side_call_shape_options_and_containment() -> None:
     class _LiveSchema:
         pass
@@ -784,7 +807,7 @@ async def test_completer_side_call_shape_options_and_containment() -> None:
     # the note validator treats indentation as meaningful) — the
     # ChatResponse (with its conversation_id) never escapes, so it cannot
     # reach hooks or continuation state, and the live options gained no state.
-    assert note == "  note text  "
+    assert note == LastWordsCompletion("  note text  ")
     assert live_options == live_snapshot
     assert live_options["tools"] is tools
 
@@ -924,7 +947,7 @@ async def test_completer_drains_streaming_side_call() -> None:
 
     note = await completer.complete_last_words([Message("user", ["q"])], "I", max_output_tokens=10)
 
-    assert note == "note text"
+    assert note == LastWordsCompletion("note text")
     assert client.inner_calls[-1]["stream"] is True
     # The side-call marker covers the stream drain (where result hooks fire),
     # not just the issuing call, and resets afterwards.
@@ -946,7 +969,7 @@ async def test_completer_preserves_leading_indentation_of_response_text() -> Non
 
     note = await completer.complete_last_words([Message("user", ["q"])], "I", max_output_tokens=10)
 
-    assert note == indented
+    assert note == LastWordsCompletion(indented)
 
 
 @pytest.mark.asyncio
@@ -962,6 +985,33 @@ async def test_completer_guard_rejects_every_tool_call_content_type(content_type
         await completer.complete_last_words([Message("user", ["q"])], "I", max_output_tokens=10)
     # The marker resets even when the guard rejects the response.
     assert not in_internal_side_call()
+
+
+@pytest.mark.asyncio
+async def test_a_note_that_filled_the_window_and_asked_for_a_tool_keeps_no_text() -> None:
+    """The text of a reply that asks for a tool is never kept, however much of it came before the window filled.
+
+    The overflow still reports as one, so the caller shrinks the prompt instead
+    of retrying it — but the text is dropped with it.
+    """
+    response = ChatResponse(
+        messages=[
+            Message(
+                "assistant",
+                [Content.from_text("## Task\nDo"), Content("function_call")],  # type: ignore[list-item]
+            )
+        ],
+        additional_properties={CONTEXT_WINDOW_FILLED_KEY: True},
+    )
+    completer = _ClientLastWordsCompleter(
+        _RecordingClient(response=response), stream=False, options={"model": "m"}, client_kwargs={}
+    )
+
+    with pytest.raises(ContextWindowFilledError) as raised:
+        await completer.complete_last_words([Message("user", ["q"])], "I", max_output_tokens=10)
+
+    assert raised.value.note_text == ""
+    assert may_be_context_overflow(raised.value)
 
 
 @pytest.mark.asyncio
@@ -982,7 +1032,7 @@ async def test_completer_reports_usage_to_on_usage_callback() -> None:
         [Message("user", ["q"])], "I", max_output_tokens=10, on_usage=reported.append
     )
 
-    assert note == "note text"
+    assert note == LastWordsCompletion("note text")
     assert reported == [usage]
 
 
@@ -1073,7 +1123,7 @@ async def test_completer_skips_on_usage_when_response_has_no_usage_details() -> 
         [Message("user", ["q"])], "I", max_output_tokens=10, on_usage=reported.append
     )
 
-    assert note == "note text"
+    assert note == LastWordsCompletion("note text")
     assert reported == []
 
 
@@ -1104,7 +1154,7 @@ async def test_completer_side_call_bypasses_compaction() -> None:
     )
 
     assert strategy.invocations == 1
-    assert strategy.note == "note text"
+    assert strategy.note == LastWordsCompletion("note text")
     # Exactly two provider calls: the side call, then the real call.
     assert len(client.inner_calls) == 2
     assert client.inner_calls[0]["options"].get("max_tokens") == 50
@@ -1141,7 +1191,7 @@ async def test_completer_reports_wire_progress_on_dispatch_each_chunk_and_comple
         completer.complete_last_words([Message("user", ["q"])], "I", max_output_tokens=10), _on_progress
     )
 
-    assert note == "note text"
+    assert note == LastWordsCompletion("note text")
     assert [at_dispatch[0], reports] == expected
     # The callback belongs to the task's context only.
     kernel_client.report_wire_progress()
@@ -1175,3 +1225,107 @@ async def test_wire_preparation_reports_progress_once_compaction_finishes() -> N
     )
 
     assert observed == [("compaction", 0), ("dispatch", 1)]
+
+
+# ---------------------------------------------------------------------------
+# A side call that extends the live request
+# ---------------------------------------------------------------------------
+
+
+def _local_tool(name: str = "read_file") -> Any:
+    from chrys.kernel import FunctionTool
+
+    def _read(path: str = "") -> str:
+        return ""
+
+    return FunctionTool(name=name, description="Read a file.", func=_read)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("live_options", "expected"),
+    [
+        ({"model": "m", "tools": [{"name": "t"}], "tool_choice": "auto"}, "auto"),
+        ({"model": "m", "tools": [{"name": "t"}]}, None),
+        ({"model": "m"}, None),
+    ],
+    ids=["auto", "tools-without-choice", "no-tools"],
+)
+async def test_completer_keeps_the_live_tool_choice_when_the_side_call_extends_the_request(
+    live_options: dict[str, Any], expected: str | None
+) -> None:
+    """The provider has the live request cached under its own ``tool_choice``: "none" would miss that cache."""
+    client = _RecordingClient()
+    completer = _ClientLastWordsCompleter(client, stream=False, options=live_options, client_kwargs={})
+
+    await completer.complete_last_words([Message("user", ["q"])], "I", max_output_tokens=10, keep_tool_choice=True)
+
+    assert client.inner_calls[-1]["options"].get("tool_choice") == expected
+    assert ("tool_choice" in client.inner_calls[-1]["options"]) is (expected is not None)
+
+
+@pytest.mark.asyncio
+async def test_completer_refuses_a_tool_call_in_an_answer_that_kept_the_live_tool_choice() -> None:
+    response = ChatResponse(
+        messages=[Message("assistant", [Content.from_function_call(call_id="c1", name="read_file", arguments="{}")])]
+    )
+    client = _RecordingClient(response=response)
+    completer = _ClientLastWordsCompleter(
+        client, stream=False, options={"model": "m", "tools": [_local_tool()]}, client_kwargs={}
+    )
+
+    with pytest.raises(LastWordsToolCallError):
+        await completer.complete_last_words([Message("user", ["q"])], "I", max_output_tokens=10, keep_tool_choice=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tools", "extends"),
+    [
+        ("absent", True),
+        ([], True),
+        ("local", True),
+        ("hosted", False),
+        ("mixed", False),
+    ],
+    ids=["no-tools-key", "empty", "local-only", "hosted-only", "local-and-hosted"],
+)
+async def test_request_extends_only_when_every_tool_runs_on_the_client(tools: object, extends: bool) -> None:
+    """A hosted tool the side call's answer asks for has run by the time the answer is refused."""
+    hosted = {"type": "web_search_20250305", "name": "web_search"}
+    options: dict[str, Any] = {"model": "m"}
+    if tools == "local":
+        options["tools"] = [_local_tool(), _local_tool("grep")]
+    elif tools == "hosted":
+        options["tools"] = [hosted]
+    elif tools == "mixed":
+        options["tools"] = [_local_tool(), hosted]
+    elif tools != "absent":
+        options["tools"] = tools
+    client = _RecordingClient()
+    strategy = _CapturingStrategy()
+
+    await client.get_response([Message("user", ["hi"])], options=options, compaction_strategy=strategy)
+
+    context = strategy.contexts[0]
+    assert context.last_words_completer is not None
+    assert context.last_words_extends_request is extends
+
+
+@pytest.mark.asyncio
+async def test_request_without_a_completer_never_extends() -> None:
+    """Service-side storage and a forced tool choice get no side call, so there is nothing to extend."""
+    forced = _CapturingStrategy()
+    await _RecordingClient().get_response(
+        [Message("user", ["hi"])],
+        options={"model": "m", "tools": [_local_tool()], "tool_choice": "required"},
+        compaction_strategy=forced,
+    )
+    stored = _CapturingStrategy()
+    await _StoringClient().get_response(
+        [Message("user", ["hi"])], options={"model": "m", "tools": [_local_tool()]}, compaction_strategy=stored
+    )
+
+    for strategy in (forced, stored):
+        assert strategy.contexts[0].last_words_completer is None
+        assert strategy.contexts[0].last_words_extends_request is False

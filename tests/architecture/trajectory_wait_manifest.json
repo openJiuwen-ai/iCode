@@ -4111,19 +4111,15 @@
         ["awaitable", "await self._strategy._notify_compress(CompressInfo(compressed_context_id=compressed_context_id, summary=summary, freed_messages=len(fold_range), turn_range=_compressed_turn_range(self._state, compressed_context_id), source='auto'), trigger='usage_threshold', tokens_before=tokens_before, tokens_after=included_token_count(messages))", "unresolved"]
       ],
       "CompressionEngine.flush_pending_compressions": [
-        ["awaitable", "await self._strategy._notify_compress(CompressInfo(compressed_context_id=pending.compressed_context_id, summary=pending.summary_text, freed_messages=len(fold_range), turn_range=_compressed_turn_range(self._state, pending.compressed_context_id), source='agent'), trigger='agent_request', tokens_before=tokens_before, tokens_after=max(0, tokens_before - _fold_tokens(fold_range)))", "unresolved"]
-      ],
-      "CompressionEngine.force_compress": [
-        ["awaitable", "await self._strategy._fire_pre_compact('force', usage_pct=usage_pct, tokens_before=tokens_before)", "unresolved"],
-        ["awaitable", "await self._strategy._notify_compress(CompressInfo(compressed_context_id=ctx_id, summary=summary, freed_messages=len(fold_range), turn_range=_compressed_turn_range(self._state, ctx_id), source=source), trigger='force', tokens_before=tokens_before, tokens_after=max(0, tokens_before - _fold_tokens(fold_range)), token_source=MeasurementSource.PROVIDER)", "unresolved"]
+        ["awaitable", "await self._strategy._notify_compress(CompressInfo(compressed_context_id=pending.compressed_context_id, summary=pending.summary_text, freed_messages=len(fold_range), turn_range=_compressed_turn_range(self._state, pending.compressed_context_id), source='agent'), trigger='agent_request', tokens_before=tokens_before, tokens_after=running_tokens)", "unresolved"]
       ],
       "CompressionEngine.run_queued": [
-        ["awaitable", "await self._strategy._notify_compress(CompressInfo(compressed_context_id=pending.compressed_context_id, summary=pending.summary_text, freed_messages=len(fold_range), turn_range=_compressed_turn_range(self._state, pending.compressed_context_id), source='agent'), trigger='agent_request', tokens_before=tokens_before, tokens_after=max(0, tokens_before - freed_tokens))", "unresolved"]
+        ["awaitable", "await self._strategy._notify_compress(CompressInfo(compressed_context_id=pending.compressed_context_id, summary=pending.summary_text, freed_messages=len(fold_range), turn_range=_compressed_turn_range(self._state, pending.compressed_context_id), source='agent'), trigger='agent_request', tokens_before=tokens_before, tokens_after=included_token_count(messages))", "unresolved"]
       ]
     },
     "chrys.service.context.compaction.current_turn_drop": {
       "CurrentTurnDropRound._generate_last_words": [
-        ["awaitable", "await generator.generate(timeline_groups, previous, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, completer=context.last_words_completer if context is not None else None, tokenizer=self._strategy.tokenizer, system_overhead_tokens=self._strategy.system_overhead_tokens, request_overhead_tokens=request_overhead_tokens, calibration_ratio=self._strategy.calibration_ratio, spend_side_call_tokens=self._breaker.spend_side_call_tokens)", "unresolved"]
+        ["awaitable", "await generator.generate(timeline_groups, previous, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, completer=context.last_words_completer if context is not None else None, tokenizer=self._strategy.tokenizer, system_overhead_tokens=self._strategy.system_overhead_tokens, request_overhead_tokens=request_overhead_tokens, calibration_ratio=self._strategy.calibration_ratio, spend_side_call_tokens=self._breaker.spend_side_call_tokens, affords_side_call_tokens=self._breaker.affords_side_call_tokens, entry_messages=self._strategy._entry_request)", "unresolved"]
       ],
       "CurrentTurnDropRound._spill_drop_groups": [
         ["wrapper", "await _write_spill_batch_in_worker(self._strategy._spill_root, self._strategy._spill_quota, drop_groups, record_dir=record_dir, absolute_turn=absolute_turn, round_number=round_number, session_id=self._strategy._spill_session_id, superseded_note=previous or None)", "unresolved", "chrys.service.context.compaction.current_turn_drop._write_spill_batch_in_worker"],
@@ -4145,6 +4141,7 @@
     },
     "chrys.service.context.compaction.last_words": {
       "LastWordsGenerator._generate": [
+        ["wrapper", "await self._generate_via_extension(completer, entry_messages, tokenizer=tokenizer, opener=_timeline_opener(scoped_groups, degraded_opener=degraded_opener), has_continuation_nudges=has_continuation_nudges, fixed_request_overhead_tokens=max(0, system_overhead_tokens, request_overhead_tokens, tool_definition_tokens), calibration_ratio=calibration_ratio, spend_side_call_tokens=spend_side_call_tokens, affords_side_call_tokens=affords_side_call_tokens, format_state=format_state)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_extension"],
         ["wrapper", "await self._generate_via_completer(completer, scoped_groups, tokenizer=tokenizer, has_continuation_nudges=has_continuation_nudges, system_overhead_tokens=system_overhead_tokens, tool_definition_tokens=tool_definition_tokens, request_overhead_tokens=request_overhead_tokens, calibration_ratio=calibration_ratio, spend_side_call_tokens=spend_side_call_tokens, format_state=format_state)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_completer"],
         ["wrapper", "await self._generate_via_fallback(scoped_groups, previous_last_words, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, spend_side_call_tokens=spend_side_call_tokens, format_state=format_state)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_fallback"]
       ],
@@ -4160,6 +4157,9 @@
         ["wrapper", "await self._sleep_for_retry(delay, reason_code=RetryReason.VALIDATION_REJECTED)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"],
         ["wrapper", "await self._publish_retry_attempt(shortfall, attempt + 1, _COMPLETER_MAX_RETRIES, delay)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"],
         ["wrapper", "await self._sleep_for_retry(delay, reason_code=RetryReason.VALIDATION_REJECTED)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"]
+      ],
+      "LastWordsGenerator._generate_via_extension": [
+        ["awaitable", "await completer.complete_last_words(entry_messages, instruction, max_output_tokens=wire_max_tokens, on_usage=self._report_side_call_usage, keep_tool_choice=True)", "unresolved"]
       ],
       "LastWordsGenerator._generate_via_fallback": [
         ["wrapper", "await self._generate_once(list(candidate.messages), max_tokens=send_max_tokens)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_once"],
@@ -4191,7 +4191,7 @@
       ],
       "LastWordsGenerator.generate": [
         ["wrapper", "await self._publish_status_cancellable(CompactionStatus(compaction_id=compaction_id, stage='started'))", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"],
-        ["wrapper", "await self._generate(scoped_groups, previous_last_words, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, completer=completer, tokenizer=tokenizer or MixedLanguageTokenizer(), system_overhead_tokens=system_overhead_tokens, tool_definition_tokens=tool_definition_tokens, request_overhead_tokens=request_overhead_tokens, calibration_ratio=calibration_ratio, spend_side_call_tokens=spend_side_call_tokens)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate"],
+        ["wrapper", "await self._generate(scoped_groups, previous_last_words, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, completer=completer, tokenizer=tokenizer or MixedLanguageTokenizer(), system_overhead_tokens=system_overhead_tokens, tool_definition_tokens=tool_definition_tokens, request_overhead_tokens=request_overhead_tokens, calibration_ratio=calibration_ratio, spend_side_call_tokens=spend_side_call_tokens, affords_side_call_tokens=affords_side_call_tokens, entry_messages=entry_messages)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._generate"],
         ["wrapper", "await self._publish_status_cancellable(finished)", "unresolved", "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"]
       ],
       "LastWordsGenerator.publish_breaker_trip": [
@@ -4204,8 +4204,11 @@
     },
     "chrys.service.context.compaction.strategy": {
       "UnifiedContextStrategy.__call__": [
+        ["wrapper", "await self._compact(messages, context)", "unresolved", "chrys.service.context.compaction.strategy.UnifiedContextStrategy._compact"]
+      ],
+      "UnifiedContextStrategy._compact": [
         ["wrapper", "await self._run_queued_compressions(messages)", "unresolved", "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_queued_compressions"],
-        ["awaitable", "await run.started(trigger='context_overflow' if overflow_forced else 'usage_threshold', tokens_before=tokens_before)", "unresolved"],
+        ["awaitable", "await run.started(trigger=mode.value, tokens_before=tokens_before, estimated_input_tokens=self._calibration.estimated_tokens(tokens_before), trigger_tokens=self._trigger_tokens(), max_context_tokens=self.max_context_tokens)", "unresolved"],
         ["wrapper", "await self._run_phase1(messages, previous_count=previous_count, usage=usage, tokens_before=tokens_before)", "unresolved", "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_phase1"],
         ["wrapper", "await self._run_phase2(messages)", "unresolved", "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_phase2"],
         ["wrapper", "await self._run_phase3(messages)", "unresolved", "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_phase3"],
@@ -4213,7 +4216,7 @@
         ["awaitable", "await run.finished(tokens_before=tokens_before, tokens_after=self._last_included_tokens)", "unresolved"]
       ],
       "UnifiedContextStrategy._emergency_compress_oldest_turn": [
-        ["awaitable", "await self._compression.emergency_compress_oldest_turn(messages, usage_pct=usage_pct, tokens_before=tokens_before)", "unresolved"]
+        ["awaitable", "await self._compression.emergency_compress_oldest_turn(messages, usage_pct=usage_pct, tokens_before=tokens_before, protect_newest_turn=self._plan.protect_newest_turn)", "unresolved"]
       ],
       "UnifiedContextStrategy._fire_pre_compact": [
         ["awaitable", "await self._on_pre_compact(PreCompactInfo(trigger=trigger, usage_pct=usage_pct, tokens_before=tokens_before, trajectory_operation_id=self._trajectory_run.run_id if self._trajectory_run is not None else None))", "unresolved"]
@@ -4227,7 +4230,7 @@
       ],
       "UnifiedContextStrategy._notify_compress": [
         ["awaitable", "await run.phase_finished(phase='phase3', groups_compacted=1, turn_numbers=turn_numbers, tool_names=[], tokens_before=tokens_before, tokens_after=tokens_after, messages_freed=info.freed_messages, compressed_context_id=info.compressed_context_id)", "unresolved"],
-        ["wrapper", "await CompactionRunTrace.record_compression(trigger=trigger, compressed_context_id=info.compressed_context_id, messages_freed=info.freed_messages, tokens_before=tokens_before, tokens_after=tokens_after, token_source=token_source)", "unresolved", "chrys.service.trajectory.compaction.CompactionRunTrace.record_compression"],
+        ["wrapper", "await CompactionRunTrace.record_compression(trigger=trigger, compressed_context_id=info.compressed_context_id, messages_freed=info.freed_messages, tokens_before=tokens_before, tokens_after=tokens_after)", "unresolved", "chrys.service.trajectory.compaction.CompactionRunTrace.record_compression"],
         ["awaitable", "await self._on_compress(info)", "unresolved"]
       ],
       "UnifiedContextStrategy._run_phase1": [
@@ -4249,9 +4252,6 @@
       ],
       "UnifiedContextStrategy.flush_pending_compressions": [
         ["awaitable", "await self._compression.flush_pending_compressions()", "unresolved"]
-      ],
-      "UnifiedContextStrategy.force_compress": [
-        ["awaitable", "await self._compression.force_compress(marker_id, summary, source, usage_pct=usage_pct, tokens_before=tokens_before)", "unresolved"]
       ]
     },
     "chrys.service.context.middleware.usage": {
@@ -4266,13 +4266,10 @@
       ]
     },
     "chrys.service.context.providers.history": {
-      "CompressibleHistoryProvider._check_force_compress": [
-        ["awaitable", "await self._compaction_strategy.force_compress(marker_id, summary, source='auto', usage_pct=pct, tokens_before=input_tokens)", "unresolved"]
-      ],
       "CompressibleHistoryProvider.after_run": [
         ["awaitable", "await super().after_run(agent=agent, session=session, context=context, state=state)", "unresolved"],
         ["awaitable", "await self._compaction_strategy.flush_pending_compressions()", "unresolved"],
-        ["wrapper", "await self._check_force_compress(state, context, session.invalidated_service_session_ids)", "unresolved", "chrys.service.context.providers.history.CompressibleHistoryProvider._check_force_compress"]
+        ["awaitable", "await self._check_turn_end_usage(state, context, session.invalidated_service_session_ids)", "unresolved"]
       ],
       "CompressibleHistoryProvider.before_run": [
         ["awaitable", "await super().before_run(agent=agent, session=session, context=context, state=state)", "unresolved"]
@@ -5640,7 +5637,7 @@
         ["awaitable", "await run.finished(tokens_before=tokens_before, tokens_after=tokens_after, compressed_context_id=compressed_context_id, messages_freed=messages_freed)", "unresolved"]
       ],
       "CompactionRunTrace.started": [
-        ["awaitable", "await self._context.sink.emit(self._context.draft(EventType.COMPACTION_STARTED, operation_id=self._run_id, parent_operation_id=self._parent(), payload={'compaction_run_id': self._run_id, 'trigger': trigger, 'tokens_before': tokens_before, 'token_measurement_source': self._token_source}, measurements=_token_measurements('/payload/tokens_before', source=self._token_source)))", "unresolved"]
+        ["awaitable", "await self._context.sink.emit(self._context.draft(EventType.COMPACTION_STARTED, operation_id=self._run_id, parent_operation_id=self._parent(), payload=payload, measurements=_token_measurements(*pointers)))", "unresolved"]
       ]
     },
     "chrys.service.trajectory.fork": {
