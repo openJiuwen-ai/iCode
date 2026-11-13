@@ -377,9 +377,11 @@ class ApprovalMiddleware(FunctionMiddleware):
             raw = context.arguments
             cmd = raw.get("command", "") if isinstance(raw, dict) else ""
             if cmd:
+                from chrys.service.tools.builtins.shell import shell_name_for_tool
                 from chrys.service.tools.builtins.shell_filter import classify_shell_for_approval
 
-                approval_safe = classify_shell_for_approval(cmd, shell_name=tool_name)
+                shell_name = shell_name_for_tool(context.function, fallback=tool_name)
+                approval_safe = classify_shell_for_approval(cmd, shell_name=shell_name)
                 # The classifier normalizes quote concatenation, while the text
                 # sensitive scan sees the raw command: ``cat .en''v`` becomes
                 # argv ``("cat", ".env")``. Check the argv that will actually
@@ -390,7 +392,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                 if (
                     approval_safe.safe
                     and not argv_sensitive
-                    and not shell_command_may_access_sensitive_data(cmd, shell_name=tool_name)
+                    and not shell_command_may_access_sensitive_data(cmd, shell_name=shell_name)
                 ):
                     self._decisions.append(
                         _decision(

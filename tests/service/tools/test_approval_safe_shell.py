@@ -81,6 +81,8 @@ def test_classifier_returns_validated_argv(command: str, argv: tuple[str, ...], 
         ("more README.md", "not_approval_safe:more"),
         ("bash -c id", "not_approval_safe:bash"),
         ("git status --short", "not_approval_safe:git"),
+        ("git config --global --list", "not_approval_safe:git-config"),
+        ("git --no-pager config --list", "not_approval_safe:git-config"),
     ],
 )
 def test_classifier_requires_approval(command: str, reason: str) -> None:

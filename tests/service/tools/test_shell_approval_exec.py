@@ -4,13 +4,20 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import chrys.service.tools.builtins.shell as shell_module
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform import ShellInfo
 from chrys.foundation.tool_result_metadata import SHELL_EXIT_CODE_METADATA_KEY
-from chrys.service.tools.builtins.shell import ShellTools, shell_result_metadata
+from chrys.service.tools.builtins.shell import (
+    SHELL_NAME_MISMATCH,
+    ShellTools,
+    shell_name_for_tool,
+    shell_result_metadata,
+)
 
 
 def _shell() -> ShellTools:
@@ -98,11 +105,29 @@ async def test_unexpandable_or_unapproved_command_keeps_shell_path(
     assert calls == [(command, None, False)]
 
 
+def test_shell_name_for_tool_requires_the_bound_shell_name() -> None:
+    shell = _shell()
+    tool = shell.tools()[0]
+
+    assert shell_name_for_tool(tool) == shell.shell.name
+    tool.name = "renamed-shell"
+
+    assert shell_name_for_tool(tool) == SHELL_NAME_MISMATCH
+
+
 def test_approval_safe_env_removes_startup_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RIPGREP_CONFIG_PATH", "/tmp/rg.conf")
     monkeypatch.setenv("BASH_ENV", "/tmp/bash_env")
     monkeypatch.setenv("PYTHONPATH", "/tmp/python")
     monkeypatch.setenv("BASH_FUNC_rg%%", "() { echo hacked; }")
+    monkeypatch.setenv("PAGER", "/tmp/evil-pager")
+    monkeypatch.setenv("GIT_PAGER", "/tmp/evil-pager")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/tmp/evil-global")
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/tmp/evil-system")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.pager")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "evil")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/evil-lib")
 
     env = shell_module._approval_safe_env()
 
@@ -110,3 +135,16 @@ def test_approval_safe_env_removes_startup_hooks(monkeypatch: pytest.MonkeyPatch
     assert "BASH_ENV" not in env
     assert "PYTHONPATH" not in env
     assert not any(name.startswith("BASH_FUNC_") for name in env)
+    assert env["PAGER"] == "cat"
+    assert env["GIT_PAGER"] == "cat"
+    assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert env["GIT_CONFIG_SYSTEM"] == os.devnull
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert env["GIT_CONFIG_COUNT"] == "3"
+    assert env["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
+    assert env["GIT_CONFIG_VALUE_0"] == "false"
+    assert env["GIT_CONFIG_KEY_1"] == "core.pager"
+    assert env["GIT_CONFIG_VALUE_1"] == "cat"
+    assert env["GIT_CONFIG_KEY_2"] == "core.hooksPath"
+    assert env["GIT_CONFIG_VALUE_2"] == os.devnull
+    assert "LD_LIBRARY_PATH" not in env

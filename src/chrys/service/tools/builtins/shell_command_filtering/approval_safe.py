@@ -144,6 +144,11 @@ def classify_shell_for_approval(command: str, *, shell_name: str = "") -> Approv
         return _safe_command(argv, execution="exec", rule=f"unconditional:{name}", shell_name=shell_name)
     if name in _POSIX_SHELL_BUILTINS:
         return _safe_command(argv, execution="shell", rule=f"builtin:{name}", shell_name=shell_name)
+    if name == "git" and "config" in args[:3]:
+        # The sanitized Git environment hides global/system config; letting
+        # `git config` auto-approve would silently show an empty view. Read it
+        # under approval instead.
+        return ApprovalShellDecision(reason="not_approval_safe:git-config")
     if _is_safe_special_command(name, args):
         return _safe_command(argv, execution="exec", rule=f"validator:{name}", shell_name=shell_name)
     return ApprovalShellDecision(reason=f"not_approval_safe:{name}")

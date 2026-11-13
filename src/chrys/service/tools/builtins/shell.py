@@ -68,7 +68,7 @@ from chrys.foundation.tool_result_metadata import (
     result_text_without_exit_code,
 )
 from chrys.foundation.util.once_close import OnceClose
-from chrys.kernel.tools import SyncToolCancelledAfterCompletion
+from chrys.kernel.tools import FunctionTool, SyncToolCancelledAfterCompletion
 from chrys.service.mutations.trace import discard_trace_file, prefix_trace_file, shell_trace_argv
 from chrys.service.tools.approval_targets import (
     CHANGED_AFTER_APPROVAL,
@@ -333,6 +333,9 @@ _APPROVAL_SAFE_ENV_DROP = frozenset(
         # Tool configuration that can turn a read-only command into an exec.
         "GIT_ASKPASS",
         "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_SYSTEM",
         "GIT_EXTERNAL_DIFF",
         "LESS",
         "LESSCLOSE",
@@ -356,6 +359,7 @@ _APPROVAL_SAFE_ENV_DROP = frozenset(
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
         "LD_AUDIT",
+        "LD_LIBRARY_PATH",
         "LD_PRELOAD",
     }
 )
@@ -373,8 +377,25 @@ def _approval_safe_env() -> dict[str, str]:
     for name in _APPROVAL_SAFE_ENV_DROP:
         env.pop(name, None)
     for name in tuple(env):
-        if name.startswith("BASH_FUNC_"):
+        if name.startswith(("BASH_FUNC_", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
             env.pop(name, None)
+    # A pager would block on the PTY and, worse, its command is configurable.
+    # build_shell_subprocess_env already sets cat; pin it again after cleanup.
+    env["PAGER"] = "cat"
+    env["GIT_PAGER"] = "cat"
+    # Keep Git from loading ambient global/system pager, fsmonitor or hook
+    # configuration. Repo-local config can still set these, so the environment
+    # config below wins over every file scope for the exec-capable keys.
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    env["GIT_CONFIG_COUNT"] = "3"
+    env["GIT_CONFIG_KEY_0"] = "core.fsmonitor"
+    env["GIT_CONFIG_VALUE_0"] = "false"
+    env["GIT_CONFIG_KEY_1"] = "core.pager"
+    env["GIT_CONFIG_VALUE_1"] = "cat"
+    env["GIT_CONFIG_KEY_2"] = "core.hooksPath"
+    env["GIT_CONFIG_VALUE_2"] = os.devnull
     return env
 
 
@@ -1459,6 +1480,27 @@ class ShellTools:
             exists = " ok" if wd.exists else " MISSING"
             lines.append(f"  {wd.path}{label}{marker}{exists}")
         return "\n".join(lines)
+
+
+SHELL_NAME_MISMATCH = "__mismatched__"
+"""A shell tool whose display name and bound shell disagree; never auto-approve it."""
+
+
+def shell_name_for_tool(tool: object, *, fallback: str = "") -> str:
+    """Return the bound shell's dialect only while the tool name still matches.
+
+    Approval and execution must classify with the same shell. ``ShellTools.tools``
+    names each tool after its shell, but a wrapper or extension could rename it;
+    that mismatch is a fail-closed condition, not a hint to trust the display name.
+    Non-tool test doubles may pass *fallback*.
+    """
+    if not isinstance(tool, FunctionTool):
+        return fallback
+    bound = tool.bound_instance
+    if not isinstance(bound, ShellTools):
+        return SHELL_NAME_MISMATCH
+    shell_name = bound.shell.name
+    return shell_name if tool.name == shell_name else SHELL_NAME_MISMATCH
 
 
 class _Timeout(Exception):

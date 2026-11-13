@@ -67,6 +67,26 @@ async def test_safe_shell_commands_skip_the_dialog(command: str) -> None:
     assert requests == []
 
 
+async def test_renamed_shell_tool_requires_approval() -> None:
+    """Approval and execution must agree on the real shell, not just a display name."""
+    bus = EventBus()
+    requests = await _record_requests(bus)
+    middleware = _middleware(bus)
+    called = AsyncMock()
+    tool = _shell_tool()
+    actual_shell = tool.bound_instance.shell.name
+    tool.name = "bash" if actual_shell != "bash" else "zsh"
+
+    task = asyncio.create_task(middleware.process(FunctionInvocationContext(tool, {"command": "ls -la"}), called))
+    await wait_for(lambda: len(requests) == 1, description="renamed shell approval request")
+    assert called.await_count == 0
+
+    await bus.publish(ApprovalResponse(request_id=requests[0].request_id, approved=False, reason="test"))
+    await task
+
+    assert called.await_count == 0
+
+
 @pytest.mark.parametrize(
     "command",
     [
