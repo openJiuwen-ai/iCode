@@ -57,6 +57,7 @@ from chrys.service.mcp.errors import MCPConnectionError, mcp_failure_diagnostic
 from chrys.service.mcp.result_limits import _MCP_PROMPT_TOOL_KEY, truncate_mcp_result
 
 if TYPE_CHECKING:
+    from chrys.foundation.events.bus import EventBus
     from chrys.service.mcp.owned import MCPTool
     from chrys.service.profiles.agents.schema import MCPServerConfig
 
@@ -316,6 +317,7 @@ class MCPAcquisitionScope:
         self._cache = cache
         self._attempts: dict[str, asyncio.Task[MCPConnectionLease]] = {}
         self._logged_failures: set[MCPConnectionError] = set()
+        self._published_failures: set[tuple[MCPConnectionError, EventBus, str | None]] = set()
         self._close = OnceClose(self._release)
 
     async def __aenter__(self) -> MCPAcquisitionScope:
@@ -356,6 +358,7 @@ class MCPAcquisitionScope:
         tasks = tuple(self._attempts.values())
         self._attempts.clear()
         self._logged_failures.clear()
+        self._published_failures.clear()
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -370,10 +373,24 @@ class MCPAcquisitionScope:
         await self._close()
 
     def log_failure_once(self, error: MCPConnectionError) -> bool:
-        """Claim the detailed diagnostic; every consumer still publishes its own warning."""
+        """Claim the detailed diagnostic of a failure this build's consumers share."""
         if error in self._logged_failures:
             return False
         self._logged_failures.add(error)
+        return True
+
+    def publish_failure_once(self, error: MCPConnectionError, bus: EventBus, session_id: str | None) -> bool:
+        """Claim the warning *bus* hears about a shared failure for *session_id*.
+
+        The copies would be identical and name no consumer. The claim is per
+        failure, not per message: servers that share a name but not a
+        configuration fail separately and are each reported. Only a consumer
+        about to publish claims, so one without a bus never silences the rest.
+        """
+        claim = (error, bus, session_id)
+        if claim in self._published_failures:
+            return False
+        self._published_failures.add(claim)
         return True
 
 

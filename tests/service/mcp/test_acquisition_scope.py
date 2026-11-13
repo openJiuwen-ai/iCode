@@ -41,7 +41,10 @@ async def test_sequential_failure_is_shared_only_until_the_build_ends(caplog: py
                     assert await adapter.connect_all([config], acquisition_scope=scope) == []
                     assert "srv" in adapter.failures
                 assert factory.call_count == 1
-                assert len(warnings) == 4
+                # Every consumer keeps the failure on its own adapter, but the
+                # identical copies share one log line and one warning.
+                assert all("srv" in adapter.failures for adapter in adapters)
+                assert len(warnings) == 1
                 assert sum(record.exc_info is not None for record in caplog.records) == 1
                 assert sum("MCP connection attempt for server" in record.message for record in caplog.records) == 1
                 assert sum("Reusing this build's MCP acquisition" in record.message for record in caplog.records) == 3
@@ -240,3 +243,70 @@ async def test_concurrent_consumers_share_failure_and_late_consumers_do_not_retr
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await cache.close_all()
+
+
+async def test_servers_sharing_a_name_but_not_a_configuration_are_each_reported() -> None:
+    cache = MCPConnectionCache()
+    configs = [
+        MCPServerConfig(name="srv", transport="stdio", command="unused", env={"TOKEN": token}) for token in ("a", "b")
+    ]
+    bus = EventBus()
+    warnings: list[WarningEvent] = []
+
+    async def record_warning(event: WarningEvent) -> None:
+        warnings.append(event)
+
+    await bus.subscribe(WarningEvent, record_warning)
+    adapters = [MCPAdapter(cache=cache, bus=bus) for _ in range(4)]
+    failing = [_FakeMCPTool(enter_error=RuntimeError("offline")) for _ in configs]
+    try:
+        with patch("chrys.service.mcp._connection._create_mcp_tool", side_effect=failing) as factory:
+            async with cache.acquisition_scope() as scope:
+                for adapter, config in zip(adapters, [configs[0], configs[0], configs[1], configs[1]], strict=True):
+                    assert await adapter.connect_all([config], acquisition_scope=scope) == []
+                assert factory.call_count == 2
+        # The two failures read the same, so only their identity tells them apart.
+        assert len(warnings) == 2
+        assert warnings[0].message == warnings[1].message
+    finally:
+        for adapter in adapters:
+            await adapter.disconnect_all()
+        await cache.close_all()
+        await bus.unsubscribe(WarningEvent, record_warning)
+
+
+async def test_shared_failure_warns_each_listening_session_once_and_again_next_build() -> None:
+    cache = MCPConnectionCache()
+    config = MCPServerConfig(name="srv", transport="stdio", command="unused")
+    bus = EventBus()
+    warnings: list[WarningEvent] = []
+
+    async def record_warning(event: WarningEvent) -> None:
+        warnings.append(event)
+
+    await bus.subscribe(WarningEvent, record_warning)
+    # The consumer with no bus connects first: it must not use up the warning.
+    adapters = [
+        MCPAdapter(cache=cache),
+        MCPAdapter(cache=cache, bus=bus, session_id="s1"),
+        MCPAdapter(cache=cache, bus=bus, session_id="s1"),
+        MCPAdapter(cache=cache, bus=bus, session_id="s2"),
+    ]
+    failing = [_FakeMCPTool(enter_error=RuntimeError("offline")) for _ in range(2)]
+    try:
+        with patch("chrys.service.mcp._connection._create_mcp_tool", side_effect=failing) as factory:
+            async with cache.acquisition_scope() as scope:
+                for adapter in adapters:
+                    assert await adapter.connect_all([config], acquisition_scope=scope) == []
+                assert factory.call_count == 1
+                assert [event.session_id for event in warnings] == ["s1", "s2"]
+            async with cache.acquisition_scope() as scope:
+                for adapter in adapters:
+                    assert await adapter.connect_all([config], acquisition_scope=scope) == []
+                assert factory.call_count == 2
+        assert [event.session_id for event in warnings] == ["s1", "s2", "s1", "s2"]
+    finally:
+        for adapter in adapters:
+            await adapter.disconnect_all()
+        await cache.close_all()
+        await bus.unsubscribe(WarningEvent, record_warning)

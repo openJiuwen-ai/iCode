@@ -4765,7 +4765,7 @@
         ["awaitable", "await progress(config, 'starting', connected, total, failed)", "unresolved"],
         ["wrapper", "await self.connect(config)", "unresolved", "chrys.service.mcp.adapter.MCPAdapter.connect"],
         ["wrapper", "await self.connect(config, acquisition_scope=acquisition_scope)", "unresolved", "chrys.service.mcp.adapter.MCPAdapter.connect"],
-        ["wrapper", "await self._publish_failure(exc, detailed=acquisition_scope is None or acquisition_scope.log_failure_once(exc))", "unresolved", "chrys.service.mcp.adapter.MCPAdapter._publish_failure"],
+        ["wrapper", "await self._publish_failure(exc, acquisition_scope=acquisition_scope)", "unresolved", "chrys.service.mcp.adapter.MCPAdapter._publish_failure"],
         ["awaitable", "await progress(config, 'failed', connected, total, failed)", "unresolved"],
         ["wrapper", "await self._publish_failure(err)", "unresolved", "chrys.service.mcp.adapter.MCPAdapter._publish_failure"],
         ["awaitable", "await progress(config, 'failed', connected, total, failed)", "unresolved"],

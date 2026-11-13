@@ -509,7 +509,7 @@ class SubAgentTools:
                     config: MCPServerConfig, state: str, current: int, total: int, failed: int
                 ) -> None:
                     if on_initialization_progress is not None:
-                        status = {"starting": "running", "connected": "done", "failed": "failed"}[state]
+                        status = {"starting": "running", "connected": "done", "failed": "failed"}.get(state, "running")
                         await on_initialization_progress("mcp", config.name, status)
 
                 mcp_tools = await mcp_adapter.connect_all(
