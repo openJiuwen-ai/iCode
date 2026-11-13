@@ -33,6 +33,11 @@ checked, which the innermost commit middleware takes before the tool runs. Never
 _HOOK_CONFIRMATION_KEY = "_hook_confirmation"
 """Metadata key set when a hook's ``ask`` stopped the call (the user did not approve, or nobody could be asked)."""
 
+_BEFORE_TOOL_CONTEXT_KEY = "_chrys_before_tool_context"
+"""Metadata key carrying the ``extra_context`` that ``before_tool_call`` hooks returned for the
+version of the call that runs, appended to its result ahead of ``after_tool_call`` context.
+Absent when the call was blocked. Never persisted."""
+
 _SLEEP_SKIPPED_KEY = "_sleep_skipped"
 """Metadata key set by ``SleepMiddleware`` when the user skips a sleep."""
 

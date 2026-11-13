@@ -51,6 +51,7 @@ _BLOCKED = msg("tui.sidebar.hooks.outcome.blocked", fallback="blocked")
 _MODIFIED_ARGS = msg("tui.sidebar.hooks.outcome.modified_args", fallback="modified args")
 _ADDED_REMINDER = msg("tui.sidebar.hooks.outcome.added_reminder", fallback="added reminder")
 _ADDED_CONTEXT = msg("tui.sidebar.hooks.outcome.added_context", fallback="added context")
+_REPLACED_RESULT = msg("tui.sidebar.hooks.outcome.replaced_result", fallback="replaced result")
 _EXIT = msg("tui.sidebar.hooks.outcome.exit", fallback="exit {code}")
 _TIMED_OUT = msg("tui.sidebar.hooks.outcome.timed_out", fallback="timed out")
 _COULDNT_START = msg("tui.sidebar.hooks.outcome.couldnt_start", fallback="couldn't start")
@@ -89,6 +90,7 @@ _EFFECTS = {
     "modified_args": _MODIFIED_ARGS,
     "added_reminder": _ADDED_REMINDER,
     "added_context": _ADDED_CONTEXT,
+    "replaced_result": _REPLACED_RESULT,
 }
 
 _ICONS = {

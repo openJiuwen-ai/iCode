@@ -7207,6 +7207,12 @@ msgstr ""
 msgid "tui.hook_run.applied.reminder"
 msgstr ""
 
+#. English: Replaced the tool result with:
+#. chrys-meta={"fingerprint":"d4ead39120d4af457497b233ebd1bb776e85166049ec5195650ce7d5ed9338e0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.replaced"
+msgstr ""
+
 #. English: Arguments cut at 64 KB of {size}
 #. chrys-meta={"fingerprint":"0cafa06fa41ccdf2c41021edd0e75336bec1bf36b9b9e6932a47fc6904901760","multiline":false,"placeholders":["size"]}
 #: src/chrys/app/tui/screens/dialogs/hook_run.py
@@ -12520,6 +12526,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"292031914838efc235b6a1d841d6c5a9ba8e1d5dfeea522e30b6ac43c8b8f9f1","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/hooks.py
 msgid "tui.sidebar.hooks.outcome.queued"
+msgstr ""
+
+#. English: replaced result
+#. chrys-meta={"fingerprint":"8b4ccd2eb9f5a651a0a3f789e36922e7db64e36e9283abb45210ae985c50e1fe","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.replaced_result"
 msgstr ""
 
 #. English: running

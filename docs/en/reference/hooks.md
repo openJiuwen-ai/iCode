@@ -111,16 +111,27 @@ All events provide the [base fields](#base-fields). Some events also provide add
 | Event | When it runs | Additional fields |
 | --- | --- | --- |
 | `before_turn` | Before a turn starts. | `turn`: turn number, starting at `1`<br>`user_text`: user text used for the current turn<br>`is_retry`: whether the same turn is being retried |
-| `after_turn` | After a turn ends, including normal completion, user interruption, and run failure. | `turn`: turn number, starting at `1`<br>`status`: `ok`, `interrupted`, or `failed`<br>`failed`: whether this turn did not complete normally; `true` for both failure and interruption |
+| `after_turn` | After a turn ends, including normal completion, user interruption, and run failure. | `turn`: turn number, starting at `1`<br>`status`: `ok`, `interrupted`, or `failed`<br>`failed`: whether this turn did not complete normally; `true` for both failure and interruption<br>`usage`: token usage, see below |
 
 ### User action events
 
 | Event | When it runs | Additional fields |
 | --- | --- | --- |
-| `user_prompt_submit` | When the user submits a message to start a new turn, an additional message while the agent is running, or a `/btw` side question. | `text`: the submitted text; for a side question, the question without the `/btw` prefix<br>`injected`: `true` for an additional message sent to the running main turn; `false` for a new main-turn message or a side question<br>`side_question`: `true` for a side question; omitted for main-conversation messages (treat a missing value as `false`) |
+| `user_prompt_submit` | When the user submits a message to start a new turn, an additional message while the agent is running, or a `/btw` side question. | `text`: the submitted text; for a side question, the question without the `/btw` prefix<br>`injected`: `true` for an additional message sent to the running main turn; `false` for a new main-turn message or a side question<br>`side_question`: `true` for a side question; omitted for main-conversation messages (treat a missing value as `false`)<br>`usage`: token usage, see below<br>`system_prompt`: the system prompt at the top of this turn's model calls: the agent's instructions followed by what memory files such as `AGENTS.md` render to, in the order the model receives them; an empty string while no agent is loaded. For a side question, the prompt that side question's own call carries instead, since it answers with no tools and not as the main agent |
 | `user_interrupt` | After the user interrupts the current turn. | None |
 
 To identify a message starting a new main turn, check both `not payload.get("injected", False)` and `not payload.get("side_question", False)`. A side question sends `injected: false` and `side_question: true`; it does not start a main turn or trigger `before_turn` / `after_turn`. Opening saved side questions with `/btw` alone does not trigger `user_prompt_submit`.
+
+The `usage` of `after_turn` and `user_prompt_submit` is iCode's own token accounting. It is the provider's reported counts, except where a provider reports none for the context window and iCode estimates it locally to keep a budget meaningful: then `input_tokens`, `total_tokens` and the session input totals follow that estimate, while `output_tokens` and the session output totals stay the provider's.
+
+| Field | Meaning |
+| --- | --- |
+| `input_tokens`, `output_tokens`, `total_tokens` | The counts of the most recently completed model call. All `0` before any call has completed in the session. |
+| `cache_hit_tokens` | Cache-read tokens of the most recent call; `null` when that call reported none, which includes every call before a provider first reports cache information. It describes one call, so a later call without that information is `null` again; use `total_session_cache_hit_tokens` for the durable session total. |
+| `total_session_tokens`, `total_session_input_tokens`, `total_session_output_tokens` | Running totals for this session up to now. |
+| `total_session_cache_hit_tokens` | Cumulative cache-hit tokens for this session; `null` until a provider first reports cache information, then kept across calls that do not report it. |
+
+A hook that judges budget against the context window should use the most recent call's numbers rather than re-tokenizing the text it was handed: a hook's estimate and the model's tokenizer rarely agree. `input_tokens` and `total_tokens` follow the provider's report, except when the provider does not report context-window usage and iCode substitutes a local estimate to keep budgets meaningful — in that case those two fields hold the estimate. `output_tokens` and all session totals always reflect the provider's figures.
 
 ### Tool events
 
@@ -128,9 +139,13 @@ For the fields in the `tool` and `result` objects, see [Tool event fields](#tool
 
 | Event | When it runs | Additional fields |
 | --- | --- | --- |
-| `before_tool_call` | Before a tool enters the approval and execution process. If the user edits the arguments when approving the call, the hook runs again with the edited arguments before the tool runs. | `tool`: tool name, kind, call ID, and arguments |
-| `after_tool_call` | After a tool call returns. Triggered whether the tool returns a normal result or a failure result, is not executed because approval was denied, or is denied by a `before_tool_call` hook. | `tool`: tool call<br>`result`: execution result |
-| `tool_error` | After a tool call raises a runtime error. For the same call, `after_tool_call` is triggered first, followed by `tool_error`. | `tool`: tool call<br>`result`: execution result, with `result.error` set to `true` |
+| `before_tool_call` | Before a tool enters the approval and execution process. If the user edits the arguments when approving the call, the hook runs again with the edited arguments before the tool runs. | `tool`: tool name, kind, call ID, and arguments<br>`origin`: the invocation that made the call (see below) |
+| `after_tool_call` | After a tool call returns. Triggered whether the tool returns a normal result or a failure result, is not executed because approval was denied, or is denied by a `before_tool_call` hook. | `tool`: tool call<br>`origin`: as above<br>`result`: execution result |
+| `tool_error` | After a tool call raises a runtime error. For the same call, `after_tool_call` is triggered first, followed by `tool_error`. | `tool`: tool call<br>`origin`: as above<br>`result`: execution result, with `result.error` set to `true` |
+
+`origin` names the invocation that made the tool call: its `kind` (`turn`, `sub_agent` or `workflow_node`), `session_id`, `invocation_id`, `attempt`, and a nested `parent` walking outwards (`null` at the root). A sub-agent's tool calls carry the `invocation_id` its `sub_agent_start` announced, so concurrent sub-agents of one profile stay distinguishable, and `parent` leads back to the chat turn or workflow node the call belongs to. It is `null` when the call has no bound invocation. The field is additive; existing hooks are unaffected.
+
+Sub-agents that run concurrently may read and write the same state file. A hook that keeps per-sub-agent state should key it on `origin.invocation_id`, not `session_id`.
 
 ### Approval events
 
@@ -185,8 +200,8 @@ Only the following events apply decisions that blocking hooks return in the resu
 | --- | --- |
 | `user_prompt_submit` | Reject a message, [ask you to confirm it](#asking-you-to-confirm), or add a system reminder. A rejected main-conversation message stays in the input box; if you sent it while the agent was running, the agent keeps working. A rejected side question shows the reason in its card; its reminders apply only to that side question. |
 | `before_tool_call` | Reject a tool call, [ask you to confirm it](#asking-you-to-confirm), or modify its arguments, but cannot approve a call or bypass approval. |
-| `after_tool_call` | Append context to the tool result, but cannot undo a call that has already occurred. |
-| `tool_error` | Append context to the tool error, but cannot undo a call that has already occurred. |
+| `after_tool_call` | Append context to the tool result or replace its text, but cannot undo a call that has already occurred. |
+| `tool_error` | Append context to the tool error or replace its text, but cannot undo a call that has already occurred. |
 
 ### When iCode waits for async hooks
 
@@ -409,7 +424,7 @@ Choose `mode` based on whether the hook must finish before the current operation
 | `timeout_seconds` | Number greater than `0` | `30.0` | Maximum hook runtime in seconds; ignored when `detach` is enabled. |
 | `on_error` | `block`, `warn`, or `ignore` | `warn` | How to handle hook failures; see the table below. |
 
-`on_error` determines how iCode continues when a hook cannot start, times out, or returns a nonzero exit code:
+`on_error` determines how iCode continues when a hook cannot start, times out, returns a nonzero exit code, or — on a gating event — leaves a result file iCode cannot act on:
 
 | Value | Behavior |
 | --- | --- |
@@ -486,6 +501,8 @@ Every input file contains the following fields:
 | `profile` | The current agent's name, such as `Code`. For sub-agent events, and for tool, approval, and compaction events inside a sub-agent, this is the sub-agent's profile name. |
 | `cwd` | The current session's working directory. `run.cwd` sets the hook process's working directory and does not change this field. |
 | `confirmation_available` | Only for `user_prompt_submit` and `before_tool_call`. `true` when this hook can [ask you to confirm](#asking-you-to-confirm): it is a blocking hook, and someone can answer (not in `icode run` or a workflow run from the command line). Use it to decide what to do when nobody can be asked. |
+| `extra_context_available` | Only for `before_tool_call`. `true` when the `extra_context` this hook returns reaches the model with the call's result: it is a blocking hook. Older iCode versions don't send this field and ignore `extra_context` from `before_tool_call`; a hook that needs the note to arrive can check for `true` and otherwise fall back to `ask` or `block`. |
+| `operation` | Only for `user_prompt_submit` and `before_tool_call`. The identity of the operation (a tool call or a submitted input): `id`, the current version of its arguments `revision`, and how many checks of it have started `check`. When an approval edits the arguments, or a hook modifies them, iCode checks the operation again from the first hook: the same operation appears more than once, with `check` counting up while `id` stays the same. A hook that counts per call should de-duplicate on this rather than treat each check as a new call. |
 
 For example, input before a tool call includes the following base fields:
 
@@ -538,6 +555,7 @@ The following object shows only the fields added by tool events:
 | `rejection_source` | Present only when the call is rejected; `user` means rejection by the user and `hook` means rejection by a hook. |
 | `hook_denied` | Present only when the call is rejected; `true` for rejection by a hook and `false` for rejection by the user. |
 | `hook_confirmation` | Present only when a hook [asked you to confirm](#asking-you-to-confirm) the call and it did not go ahead; says why: `declined` (you cancelled), `timed_out` (no answer came in time) or `unavailable` (nobody could be asked). Then `rejection_source` is `hook`. |
+| `outcome` | How the call ended: `rejected` (refused, so it never ran), `errored` (raised), `failed` (returned a failure result without raising) or `ok` (ran and returned). The `after_tool_call` and `tool_error` of one call carry the same value. It says how a call ended, not which call it was, so count per call on `tool.call_id` — or listen to `after_tool_call` alone, which fires for every call including the ones `tool_error` follows. |
 
 When `error: true`, `failed` is also `true`, but `failed: true` does not necessarily mean an exception was raised. `tool_error` is triggered only by exceptions. To check for all types of failure, listen for `after_tool_call` and inspect `result.failed`.
 
@@ -582,16 +600,18 @@ The result file supports the following JSON fields:
 
 | Field | Type | Applicable events and conditions | Description |
 | --- | --- | --- | --- |
-| `action` | `allow`, `block`, `modify`, or `ask` | `user_prompt_submit`, `before_tool_call` | Defaults to `allow`. Both events accept `block` and `ask`; only `before_tool_call` accepts `modify`. |
+| `action` | `allow`, `block`, `modify`, `ask`, or `warn` | `user_prompt_submit`, `before_tool_call` | Defaults to `allow`. Both events accept `block`, `ask`, and `warn`; only `before_tool_call` accepts `modify`. `warn` lets the call through and keeps any text the hook provided. |
 | `reason` | String | `user_prompt_submit` or `before_tool_call`, with `action: block` or `ask` | With `block`, the rejection reason displayed to the user and, when a tool call is rejected, provided to the model. With `ask`, what iCode shows when it asks you to confirm. |
 | `args_override` | Object | `before_tool_call` with `action: modify` | Adds its top-level fields to the existing `tool.args`. Fields with the same name replace the original values; if a value is an object, that entire object is also replaced. |
 | `system_reminder` | String | `user_prompt_submit` | Added as a system reminder to every model call in the current turn. |
-| `extra_context` | String | `after_tool_call`, `tool_error` | Appended to the tool result text; cannot undo a call that has already occurred. |
+| `extra_context` | String | `before_tool_call`, `after_tool_call`, `tool_error` | Appended to the tool result text; cannot undo a call that has already occurred. From `before_tool_call` it doesn't change whether the call runs: once the call has run, the text comes before any `after_tool_call` context, so a hook can let a call go ahead and still warn the model about it. A rejected call doesn't get it; if the call's arguments are checked again (see [Asking you to confirm](#asking-you-to-confirm)), only the last check's text is kept. |
+| `result_override` | String | `after_tool_call`, `tool_error` | Replaces the tool result text the model reads; cannot undo a call that has already occurred. The last hook to set it wins. A result with images keeps them and only its text is replaced; a non-text result is left as it is. `extra_context` follows the replacement. |
 
 Result files are read according to these rules:
 
 - An empty file or no written result is equivalent to `{"action": "allow"}`.
-- If the JSON is invalid, the top-level value is not an object, or the file exceeds 1 MiB, iCode logs a warning and ignores the result, treating it as no decision.
+- If the JSON is invalid, the top-level value is not an object, or the file exceeds 1 MiB, iCode logs a warning and ignores the result. On `user_prompt_submit` and `before_tool_call` that counts as a failed hook: `on_error` applies, also with exit code `0`.
+- An `action` other than `allow`, `block`, `modify`, `ask` or `warn` counts as a failed hook the same way, so a mistyped action does not silently allow the operation. Only the action is dropped: the file's other fields — `reason`, `system_reminder`, `extra_context`, `result_override` — still apply, so a hook that names an action this iCode version does not know keeps everything else it wrote.
 - Unknown fields are ignored.
 
 For how decisions from multiple hooks are combined, see [Execution order and configuration merging for multiple hooks](#execution-order-and-configuration-merging-for-multiple-hooks).
@@ -627,6 +647,7 @@ Decisions returned by blocking hooks are combined as follows:
 | --- | --- |
 | `args_override` | Modifies tool arguments immediately. Subsequent hooks use the modified arguments for matching and checks. If multiple hooks modify the same argument, the later hook overrides the earlier one. |
 | `system_reminder`, `extra_context` | Accumulated in hook execution order. |
+| `result_override` | Overridden in hook execution order: the last one that sets it wins. |
 | `action: block` | For `user_prompt_submit` and `before_tool_call`, the first rejection stops all remaining hooks for the current event, including non-blocking hooks that have not started. |
 | `action: ask` | iCode asks you before the next hook runs. If you continue, the remaining hooks run; otherwise it is handled like a rejection. If several hooks ask, you are asked once for each. |
 

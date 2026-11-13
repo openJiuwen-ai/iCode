@@ -193,6 +193,10 @@ class ContextManagementProvider(ContextProvider):
     # ContextProvider hooks
     # ------------------------------------------------------------------
 
+    def contributed_instructions(self) -> str:
+        """The instructions this provider adds before every run."""
+        return self._instructions
+
     async def before_run(
         self,
         *,

@@ -1444,6 +1444,7 @@ async def test_sub_agent_event_middleware_hook_denial_metadata_split():
         "approval_rejected": True,
         "rejection_source": "hook",
         "hook_denied": True,
+        "outcome": "rejected",
     }
     assert ctx.metadata[TOOL_RESULT_METADATA_KEY] == {
         TOOL_FAILED_METADATA_KEY: True,

@@ -12,7 +12,7 @@ sub-agent registration, skills, middleware chain, and Agent/TurnBindings creatio
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
@@ -48,6 +48,7 @@ from chrys.foundation.retry import RetryAttemptInfo
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
 from chrys.foundation.util.imports import import_off_loop
 from chrys.kernel import Agent, LoopRecorder
+from chrys.kernel.sessions import ContextProvider
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.invoker.origin import InvocationPublishers
 from chrys.orchestration.invoker.resources import Conversation, PreparedAgent, rollback_resources
@@ -202,6 +203,35 @@ class LoadProgressCallback(Protocol):
     ) -> Awaitable[None]: ...
 
 
+def _system_prompt(
+    profile: AgentProfile,
+    memory_text: str,
+    providers: Sequence[ContextProvider] = (),
+) -> str:
+    """The text this build puts at the top of every model call, as one string.
+
+    The profile's own instructions, then the memory block the context layer renders
+    (``AGENTS.md`` and the like), then what each context provider appends on every
+    call (skills, context management, documentation) — the same order and content
+    the model receives. A guard shown only the first two is looking at a fraction of
+    what the model treats as its instructions.
+    """
+    parts = [text for text in (profile.instructions, memory_text) if text]
+    parts.extend(_provider_instructions(providers))
+    return chr(10).join(parts)
+
+
+def _provider_instructions(providers: Sequence[ContextProvider]) -> list[str]:
+    """What each context provider contributes to every call's instructions, in run order.
+
+    Providers fix these strings when they are built, so each is asked through its
+    public ``contributed_instructions`` method.  Running ``before_run`` would re-enter
+    the session for what is only a read; the method exists on the base class so the
+    type checker can verify it without a ``getattr`` probe.
+    """
+    return [text for provider in providers if isinstance((text := provider.contributed_instructions()), str) and text]
+
+
 @dataclass
 class AgentBuildResult:
     """Everything produced by ``build_agent``."""
@@ -226,6 +256,13 @@ class AgentBuildResult:
     runtime_details: AgentRuntimeDetails
     compaction_strategy: Any
     active_profile: ModelProfile
+    instructions: str = ""
+    """The system prompt this build hands the model: the profile's instructions plus memory text.
+
+    Defaulted and last, so existing constructors that predate it keep working.
+    """
+    profile_instructions: str = ""
+    """The agent profile's own instructions only, without memory or provider contributions."""
 
 
 async def build_agent(
@@ -313,8 +350,8 @@ async def build_agent(
     -------
     AgentBuildResult
         All constructed components needed by the engine.
-    """
 
+    """
     prepared = PreparedAgent()
 
     async def _acquire(conversation: Conversation) -> AgentBuildResult:
@@ -723,7 +760,7 @@ async def build_agent(
 
         # Build skills provider (if configured)
         await _progress(AGENT_LOAD_PHASE_SKILLS, "Loading skills", status=AGENT_LOAD_STATUS_RUNNING)
-        context_providers = []
+        context_providers: list[ContextProvider] = []
         progressive_resume_provider = mcp_adapter.create_resume_provider() if mcp_adapter is not None else None
 
         skills_provider, skill_warnings = await create_skills_provider(
@@ -1011,6 +1048,8 @@ async def build_agent(
             tool_kinds=tool_kinds,
             skill_names=skill_names,
             memory_files=memory_content.loaded_files,
+            instructions=_system_prompt(profile, memory_content.text, context_providers),
+            profile_instructions=profile.instructions or "",
             agent_profile_fingerprint=agent_profile_fingerprint,
             model_profile_fingerprint=model_profile_fingerprint,
             runtime_details=runtime_details,

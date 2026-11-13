@@ -104,6 +104,9 @@ class HookResult:
     """Bytes cut from the middle of each stream past ``HOOK_OUTPUT_CAPTURE_LIMIT_BYTES``."""
     result_file: HookResultFileStatus = "missing"
     """Whether the result file was read (``ok``), absent or empty, or ignored as invalid."""
+    unusable: str = ""
+    """Set by the manager on a gating run that exited ``0`` with nothing it can act on
+    (``invalid_result_file`` or ``unknown_action``): such a run counts as failed."""
     duration_ms: int = 0
 
 
