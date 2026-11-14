@@ -101,6 +101,10 @@ class WriteFilePlan:
     before_display_content: str = ""
     overwrites_existing: bool = False
     content_only_reason: str = ""
+    # An existing UTF-16/UTF-32 file keeps its byte order; everything else is
+    # written as plain UTF-8.
+    encoding: str = "utf-8"
+    bom: bytes = b""
 
 
 @dataclass(slots=True)
@@ -110,6 +114,7 @@ class EditFilePlan:
     resolved_path: str
     encoding: str
     decode_errors: str
+    bom: bytes
     before_text: str
     after_text: str
     write_content: str
@@ -153,13 +158,23 @@ def _open_posix_atomic_temp(parent: str, mode: int) -> tuple[int, str]:
     raise FileExistsError("failed to allocate a unique atomic-write temporary file")
 
 
-def _atomic_write(path: str, content: str, encoding: str = "utf-8", errors: str = "strict") -> None:
+def _atomic_write(
+    path: str,
+    content: str,
+    encoding: str = "utf-8",
+    errors: str = "strict",
+    bom: bytes = b"",
+) -> None:
     """Write *content* to *path* atomically via temp-file + rename.
 
     Writes to a temporary file in the same directory (same filesystem) and
     then calls ``os.replace()`` which is atomic on POSIX and Windows/NTFS.
     If the write or flush fails, the temp file is removed and the original
     file is left untouched.
+
+    *bom* — the exact byte prefix (a UTF-16/UTF-32 byte-order mark) to write
+    ahead of the encoded text. A text-mode write would let Python pick the
+    host's byte order instead, flipping an existing big-endian file.
     """
     path = approved_write_path(path)
     parent = os.path.dirname(path) or "."
@@ -168,6 +183,7 @@ def _atomic_write(path: str, content: str, encoding: str = "utf-8", errors: str 
     preserve_existing_mode = False
     if not platform.is_windows:
         target_mode, preserve_existing_mode = _posix_write_mode(path, content)
+    payload = bom + content.encode(encoding, errors=errors)
     fd = None
     tmp_path = ""
     try:
@@ -177,9 +193,9 @@ def _atomic_write(path: str, content: str, encoding: str = "utf-8", errors: str 
             if target_mode is None:
                 raise RuntimeError("A POSIX atomic write requires a target file mode.")
             fd, tmp_path = _open_posix_atomic_temp(parent, target_mode)
-        with os.fdopen(fd, "w", encoding=encoding, errors=errors, newline="") as f:
+        with os.fdopen(fd, "wb") as f:
             fd = None  # os.fdopen takes ownership of the fd
-            f.write(content)
+            f.write(payload)
             f.flush()
             if preserve_existing_mode:
                 # Existing modes override umask and must be restored exactly.
@@ -198,15 +214,27 @@ def _atomic_write(path: str, content: str, encoding: str = "utf-8", errors: str 
         raise
 
 
-def _detect_line_ending(raw: bytes, path: str = "") -> str:
-    """Detect the predominant line ending in raw file bytes.
+def _is_wide_encoding(encoding: str) -> bool:
+    """Whether *encoding* stores a character in two or four whole bytes."""
+    return encoding.lower().replace("_", "-").startswith(("utf-16", "utf-32"))
+
+
+def _line_ending_counts(text: str) -> tuple[int, int, int]:
+    """Return *(CRLF, lone CR, lone LF)* counts for *text*."""
+    crlf = text.count("\r\n")
+    return crlf, text.count("\r") - crlf, text.count("\n") - crlf
+
+
+def _detect_line_ending(text: str, path: str = "") -> str:
+    """Detect the predominant line ending in a text view of a file.
+
+    Must run on decoded text, never on raw bytes: in UTF-16/UTF-32 a newline
+    spans several bytes (``0D 00 0A 00``), so a byte scan finds none.
 
     Falls back to ``_default_eol_for_new_file(path)`` when the file contains
     no line endings (e.g. single-line or empty files).
     """
-    crlf = raw.count(b"\r\n")
-    cr = raw.count(b"\r") - crlf  # standalone \r only
-    lf = raw.count(b"\n") - crlf  # standalone \n only
+    crlf, cr, lf = _line_ending_counts(text)
     if crlf >= lf and crlf >= cr and crlf > 0:
         return "\r\n"
     if cr > lf and cr > 0:
@@ -215,6 +243,21 @@ def _detect_line_ending(raw: bytes, path: str = "") -> str:
         return "\n"
     # No line endings found — use the smart default for this file type / platform
     return _default_eol_for_new_file(path)
+
+
+def _line_ending_for(raw: bytes, existing: _ExistingFileText, path: str) -> str:
+    """Read an existing file's line ending from the view where it is visible.
+
+    A wide encoding hides 0x0A/0x0D behind a second byte, so its decoded text
+    must be scanned — with or without a BOM. When that text carries no line
+    ending at all, the wide encoding may be a detection guess over a legacy
+    file (whose bytes were never wide), so fall back to the raw bytes: every
+    other codec is an ASCII superset whose newline bytes are never part of
+    another character, and latin-1 maps them one to one.
+    """
+    if _is_wide_encoding(existing.encoding) and _line_ending_counts(existing.text) != (0, 0, 0):
+        return _detect_line_ending(existing.text, path)
+    return _detect_line_ending(raw.decode("latin-1"), path)
 
 
 # File extensions that MUST use a specific line ending regardless of platform.
@@ -251,26 +294,55 @@ def _default_eol_for_new_file(path: str) -> str:
     return os.linesep
 
 
-def _decode_write_preview_before(raw: bytes) -> tuple[str, str]:
-    """Return display-safe existing content for overwrite approval previews."""
+@dataclass(frozen=True, slots=True)
+class _ExistingFileText:
+    """An existing file decoded for editing, and how to write it back.
+
+    ``text`` is the decoded content with its line endings intact; callers
+    normalize a derived copy, never this value, when they need LF-only text.
+    """
+
+    text: str
+    encoding: str
+    errors: str
+    bom: bytes
+
+
+def _read_existing_text(raw: bytes, detected: str | None) -> _ExistingFileText:
+    """Decode a file read as *raw*, keeping its byte order and BOM to write back.
+
+    Raises whatever the codec raises; callers that tolerate an undecodable
+    file catch it themselves.
+    """
+    from chrys.foundation.text.encoding import resolve_wide_encoding
+
+    encoding, bom = resolve_wide_encoding(detected, raw)
+    errors = "replace" if _is_wide_encoding(encoding) else "surrogateescape"
+    body = raw[len(bom) :] if bom else raw
+    return _ExistingFileText(body.decode(encoding, errors=errors), encoding, errors, bom)
+
+
+def _decode_write_preview_before(raw: bytes) -> tuple[str, str, _ExistingFileText | None]:
+    """Return approval-preview text, a content-only reason, and the decoded file.
+
+    The decoded file is ``None`` for binary or undecodable content; the write
+    still happens, but under the default encoding for the path.
+    """
     from chrys.foundation.text.encoding import EncodingDetector
 
     if EncodingDetector.looks_binary(raw):
-        return "", f"content-only; existing binary file ({len(raw)} bytes) not shown"
+        return "", f"content-only; existing binary file ({len(raw)} bytes) not shown", None
 
     detector = EncodingDetector()
     detection = detector.detect_from_bytes(raw)
     if detection.is_binary:
-        return "", f"content-only; existing binary file ({len(raw)} bytes) not shown"
+        return "", f"content-only; existing binary file ({len(raw)} bytes) not shown", None
 
-    encoding = detection.encoding or "utf-8"
-    normalized_encoding = encoding.lower().replace("_", "-")
-    decode_errors = "replace" if normalized_encoding.startswith(("utf-16", "utf-32")) else "surrogateescape"
     try:
-        before_text = raw.decode(encoding, errors=decode_errors)
+        existing = _read_existing_text(raw, detection.encoding)
     except LookupError, UnicodeDecodeError:
-        return "", "content-only; existing file could not be decoded"
-    return _replace_surrogate_escapes(normalize_line_endings(before_text)), ""
+        return "", "content-only; existing file could not be decoded", None
+    return _replace_surrogate_escapes(normalize_line_endings(existing.text)), "", existing
 
 
 def plan_write_file(
@@ -315,13 +387,22 @@ def plan_write_file(
 
         before_display_content = ""
         content_only_reason = ""
+        write_encoding, write_bom = "utf-8", b""
         overwrites_existing = overwrite and os.path.isfile(resolved)
         # Determine line ending: preserve existing file's style, or pick a smart default.
         if overwrites_existing:
             with open(resolved, "rb") as f:
                 raw = f.read()
-            eol = _detect_line_ending(raw, resolved)
-            before_display_content, content_only_reason = _decode_write_preview_before(raw)
+            before_display_content, content_only_reason, existing = _decode_write_preview_before(raw)
+            if existing is None:
+                eol = _default_eol_for_new_file(resolved)
+            else:
+                eol = _line_ending_for(raw, existing, resolved)
+                # A wide BOM is the only deterministic sign of a file whose
+                # byte order is worth keeping; every other existing file is
+                # still rewritten as plain UTF-8.
+                if existing.bom:
+                    write_encoding, write_bom = existing.encoding, existing.bom
         else:
             eol = _default_eol_for_new_file(resolved)
 
@@ -335,6 +416,8 @@ def plan_write_file(
             before_display_content=before_display_content,
             overwrites_existing=overwrites_existing,
             content_only_reason=content_only_reason,
+            encoding=write_encoding,
+            bom=write_bom,
         )
     except Exception as e:
         return FileToolPreviewError(
@@ -664,7 +747,7 @@ def _write_file_impl(
             if parent:
                 os.makedirs(parent, exist_ok=True)
 
-            _atomic_write(plan.resolved_path, plan.write_content)
+            _atomic_write(plan.resolved_path, plan.write_content, encoding=plan.encoding, bom=plan.bom)
         line_count = len(split_lines(normalize_line_endings(content)))
         return f"Written {len(content)} chars ({line_count} lines) to {surrogate_safe_text(plan.resolved_path)}."
     except Exception as e:
@@ -689,6 +772,8 @@ def write_file(
     file, the original line ending style is preserved.  For new files, the
     line ending is chosen by file extension (e.g. ``.sh`` → LF, ``.bat`` →
     CRLF) and platform default (CRLF on Windows, LF on macOS/Linux).
+    Only a UTF-16/UTF-32 file that carries a byte-order mark keeps its byte
+    order and that mark; every other existing file is written as UTF-8.
 
     On POSIX, new regular files request mode 0644 and new shell/shebang scripts
     request mode 0755, with both filtered by the process umask. Overwriting an
@@ -826,14 +911,14 @@ def plan_edit_file(
                 ),
                 resolved_path=resolved,
             )
-        encoding = detection.encoding or "utf-8"
-
-        # Read once in binary — detect EOL from raw bytes, then decode.
+        # Read once in binary, decode, and only then look at line endings:
+        # a wide encoding spreads a newline over several bytes.
         with open(resolved, "rb") as f:
             raw = f.read()
-        original_eol = _detect_line_ending(raw, resolved)
-        decode_errors = "replace" if encoding.startswith(("utf-16", "utf-32")) else "surrogateescape"
-        content = normalize_line_endings(raw.decode(encoding, errors=decode_errors))
+        existing = _read_existing_text(raw, detection.encoding)
+        encoding, decode_errors, bom = existing.encoding, existing.errors, existing.bom
+        original_eol = _line_ending_for(raw, existing, resolved)
+        content = normalize_line_endings(existing.text)
 
         normalized_old = normalize_line_endings(old_string)
         normalized_new = normalize_line_endings(new_string)
@@ -889,6 +974,7 @@ def plan_edit_file(
             resolved_path=resolved,
             encoding=encoding,
             decode_errors=decode_errors,
+            bom=bom,
             before_text=display_content,
             after_text=_replace_surrogate_escapes(new_content),
             write_content=write_content,
@@ -920,7 +1006,13 @@ def _edit_file_impl(
             if isinstance(plan, FileToolPreviewError):
                 return plan.message
 
-            _atomic_write(plan.resolved_path, plan.write_content, encoding=plan.encoding, errors=plan.decode_errors)
+            _atomic_write(
+                plan.resolved_path,
+                plan.write_content,
+                encoding=plan.encoding,
+                errors=plan.decode_errors,
+                bom=plan.bom,
+            )
 
         plural = "s" if plan.replacements != 1 else ""
         return (
@@ -960,8 +1052,9 @@ def edit_file(
 
     Line endings are handled automatically — use ``\\n`` in old_string and
     new_string regardless of the file's actual line ending style.  The original
-    line ending style is detected and preserved on write. On POSIX, the file's
-    existing user/group/other rwx bits are also preserved.
+    line ending style is detected and preserved on write. UTF-16/UTF-32 files
+    keep their byte order and BOM. On POSIX, the file's existing
+    user/group/other rwx bits are also preserved.
 
     When ``replace_all=false`` (default), the ``old_string`` must appear exactly
     once. If it appears multiple times, the edit is rejected — include more
@@ -1058,6 +1151,8 @@ class FilesystemTools:
         file, the original line ending style is preserved.  For new files, the
         line ending is chosen by file extension (e.g. ``.sh`` → LF, ``.bat`` →
         CRLF) and platform default (CRLF on Windows, LF on macOS/Linux).
+        Only a UTF-16/UTF-32 file that carries a byte-order mark keeps its byte
+        order and that mark; every other existing file is written as UTF-8.
 
         On POSIX, new regular files request mode 0644 and new shell/shebang scripts
         request mode 0755, with both filtered by the process umask. Overwriting an
@@ -1097,8 +1192,9 @@ class FilesystemTools:
 
         Line endings are handled automatically — use ``\\n`` in old_string and
         new_string regardless of the file's actual line ending style.  The original
-        line ending style is detected and preserved on write. On POSIX, the file's
-        existing user/group/other rwx bits are also preserved.
+        line ending style is detected and preserved on write. UTF-16/UTF-32 files
+        keep their byte order and BOM. On POSIX, the file's existing
+        user/group/other rwx bits are also preserved.
 
         When ``replace_all=false`` (default), the ``old_string`` must appear exactly
         once. If it appears multiple times, the edit is rejected — include more
