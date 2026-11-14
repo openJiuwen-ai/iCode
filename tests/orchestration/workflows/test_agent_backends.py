@@ -124,7 +124,7 @@ async def test_workflow_agent_warns_once_when_its_on_demand_mcp_tools_can_unbind
         for name in ("alpha", "down", "beta")
     ]
 
-    async def connect(_adapter: MCPAdapter, config: MCPServerConfig) -> list[object]:
+    async def connect(_adapter: MCPAdapter, config: MCPServerConfig, *, acquisition_scope=None) -> list[object]:
         if config.name == "down":
             raise RuntimeError("server down")
         return []
@@ -172,8 +172,8 @@ async def test_cancellation_while_mcp_shell_opens_disconnects_partial_acquisitio
         create_autospec(mcp_connection_module._create_mcp_tool, return_value=fake),
     )
 
-    async def connect(self: MCPAdapter, configs, *, progress=None):
-        tools = await original(self, configs, progress=progress)
+    async def connect(self: MCPAdapter, configs, *, progress=None, acquisition_scope=None):
+        tools = await original(self, configs, progress=progress, acquisition_scope=acquisition_scope)
         adapters.append(self)
         connected.set()
         await asyncio.Event().wait()
@@ -539,7 +539,7 @@ async def test_workflow_agent_hands_its_servers_cwd_and_the_session_folder_to_th
     profile.tools.mcp = [MCPServerConfig(name="own", transport="stdio", command="unused", cwd="tools/srv")]
     seen: list[tuple[str, str | None]] = []
 
-    async def connect(adapter: MCPAdapter, config: MCPServerConfig) -> list[object]:
+    async def connect(adapter: MCPAdapter, config: MCPServerConfig, *, acquisition_scope=None) -> list[object]:
         seen.append((config.cwd, adapter._stdio_cwd))
         return []
 

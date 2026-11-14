@@ -45,6 +45,7 @@ from chrys.foundation.util.env_templates import EnvVarResolutionError
 from chrys.orchestration.engine.build import builder as ab
 from chrys.orchestration.invoker import runtime as runtime_factory_module
 from chrys.orchestration.invoker.origin import invocation_routing_key
+from chrys.orchestration.sub_agents.tools import SubAgentTools
 from chrys.service.context.compaction.last_words import CompactionStatus
 from chrys.service.context.memory_loader import MemoryContent
 from chrys.service.llm.route_sessions import derive_llm_route_session_id
@@ -1092,13 +1093,20 @@ async def test_sub_agent_progress_counts_after_register_completes() -> None:
         if phase == "sub_agents":
             timeline.append((message, current, total, status, subject, detail, server_name))
 
-    async def _register(*_args: object, **_kwargs: object) -> None:
+    async def _register_many(
+        entries: list[tuple[object, object]],
+        _runtime: object,
+        *,
+        on_registered: Callable[[object], Awaitable[None]],
+        **_kwargs: object,
+    ) -> None:
         timeline.append("register")
+        for ref, _profile in entries:
+            await on_registered(ref)
 
-    sub_agent_tools = MagicMock()
-    sub_agent_tools.register = AsyncMock(side_effect=_register)
-    sub_agent_tools.cleanup = AsyncMock()
-    sub_agent_tools.get_tools = MagicMock(return_value=[])
+    sub_agent_tools = create_autospec(SubAgentTools, instance=True)
+    sub_agent_tools.register_many.side_effect = _register_many
+    sub_agent_tools.get_tools.return_value = []
 
     agent_mock = MagicMock()
     agent_mock.__aenter__ = AsyncMock(return_value=agent_mock)
@@ -1131,6 +1139,69 @@ async def test_sub_agent_progress_counts_after_register_completes() -> None:
     ]
     assert sub_agent_tools_cls.call_args.kwargs["max_transient_retries"] == 8
     assert sub_agent_tools_cls.call_args.kwargs["allow_user_interaction"] is False
+
+
+async def test_sub_agent_progress_reaches_the_total_when_some_are_skipped() -> None:
+    """A skipped ref counts toward the total, so the phase finishes and never counts down."""
+    profile = AgentProfile(
+        name="test",
+        sub_agents=SubAgentsConfig(agents=[SubAgentRef(profile="Explore"), SubAgentRef(profile="Missing")]),
+    )
+    sub_profile = AgentProfile(name="Explore")
+
+    class _Registry:
+        def get(self, name: str) -> AgentProfile | None:
+            return sub_profile if name == "Explore" else None
+
+    counts: list[tuple[int, int]] = []
+
+    async def _on_progress(
+        *,
+        phase: str,
+        message: str,
+        server_name: str = "",
+        current: int = 0,
+        total: int = 0,
+        failed: int = 0,
+        status: str = "",
+        subject: str = "",
+        detail: str = "",
+    ) -> None:
+        del message, server_name, failed, status, subject, detail
+        if phase == "sub_agents":
+            counts.append((current, total))
+
+    async def _register_many(
+        entries: list[tuple[object, object]],
+        _runtime: object,
+        *,
+        on_registered: Callable[[object], Awaitable[None]],
+        **_kwargs: object,
+    ) -> None:
+        for ref, _profile in entries:
+            await on_registered(ref)
+
+    sub_agent_tools = create_autospec(SubAgentTools, instance=True)
+    sub_agent_tools.register_many.side_effect = _register_many
+    sub_agent_tools.get_tools.return_value = []
+    agent_mock = MagicMock()
+    agent_mock.__aenter__ = AsyncMock(return_value=agent_mock)
+    agent_mock.__aexit__ = AsyncMock()
+    agent_mock.create_session = MagicMock(return_value=MagicMock())
+
+    with (
+        _build_agent_env(mcp_mock=None, agent_mock=agent_mock),
+        patch("chrys.orchestration.sub_agents.tools.SubAgentTools", return_value=sub_agent_tools),
+        patch.object(ab, "TurnBindings", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
+        patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
+        patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
+    ):
+        await _invoke_build_agent(profile, agent_registry=_Registry(), on_load_progress=_on_progress)
+
+    current_values = [current for current, _total in counts]
+    assert current_values == sorted(current_values)
+    assert counts[-1] == (2, 2)
 
 
 @pytest.mark.parametrize(
@@ -1186,9 +1257,8 @@ async def test_sub_agent_skip_progress_preserves_message_and_exposes_reason(
             }
         )
 
-    sub_agent_tools = MagicMock()
-    sub_agent_tools.cleanup = AsyncMock()
-    sub_agent_tools.get_tools = MagicMock(return_value=[])
+    sub_agent_tools = create_autospec(SubAgentTools, instance=True)
+    sub_agent_tools.get_tools.return_value = []
     agent_mock = MagicMock()
     agent_mock.__aenter__ = AsyncMock(return_value=agent_mock)
     agent_mock.__aexit__ = AsyncMock()
@@ -1255,6 +1325,7 @@ async def test_agent_load_progress_maps_builder_and_mcp_states_without_changing_
         configs: list[MCPServerConfig],
         *,
         progress: Callable[..., Awaitable[None]],
+        acquisition_scope: object | None = None,
     ) -> list[object]:
         active = configs[0]
         await progress(active, "starting", 0, 1, 0)

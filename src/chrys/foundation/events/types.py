@@ -1408,6 +1408,12 @@ class AgentLoadProgress(Event):
     """Generic per-item identifier, such as an MCP server or sub-agent profile."""
     detail: str = ""
     """Raw untranslated dynamic reason associated with this progress update."""
+    stage: str = ""
+    """Nested initialization phase; outer counts still count completed sub-agents."""
+    stage_subject: str = ""
+    """The nested resource, such as the MCP server being connected."""
+    stage_status: str = ""
+    """Nested phase status, independent of the owning sub-agent's status."""
 
 
 @dataclass

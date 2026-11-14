@@ -50,6 +50,7 @@ from chrys.foundation.util.imports import import_off_loop
 from chrys.kernel import Agent, LoopRecorder
 from chrys.kernel.sessions import ContextProvider
 from chrys.orchestration.engine.run.bindings import TurnBindings
+from chrys.orchestration.initialization import initialize_dependencies
 from chrys.orchestration.invoker.origin import InvocationPublishers
 from chrys.orchestration.invoker.resources import Conversation, PreparedAgent, rollback_resources
 from chrys.orchestration.invoker.runtime import (
@@ -109,7 +110,7 @@ if TYPE_CHECKING:
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.tracker import MutationTracker
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
-    from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.profiles.agents.schema import AgentProfile, SubAgentRef
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
     from chrys.service.skills.provider import ChrysSkillsProvider
@@ -200,6 +201,9 @@ class LoadProgressCallback(Protocol):
         status: str = "",
         subject: str = "",
         detail: str = "",
+        stage: str = "",
+        stage_subject: str = "",
+        stage_status: str = "",
     ) -> Awaitable[None]: ...
 
 
@@ -368,6 +372,9 @@ async def build_agent(
             status: str = "",
             subject: str = "",
             detail: str = "",
+            stage: str = "",
+            stage_subject: str = "",
+            stage_status: str = "",
         ) -> None:
             if on_load_progress is not None:
                 await on_load_progress(
@@ -380,6 +387,7 @@ async def build_agent(
                     status=status,
                     subject=subject,
                     detail=detail,
+                    **({"stage": stage, "stage_subject": stage_subject, "stage_status": stage_status} if stage else {}),
                 )
 
         if profile.acp is not None:
@@ -626,12 +634,31 @@ async def build_agent(
                 shows_answer_text=sub_agent_shows_answer_text,
             )
             prepared.own(sub_agent_tools.cleanup)
+            sub_agent_entries: list[tuple[SubAgentRef, AgentProfile]] = []
+            # One counter for every ref the phase is done with, skipped or loaded, so the
+            # count never goes back and ends at the total.
+            resolved_count = 0
+
+            async def _sub_progress(ref: SubAgentRef, stage: str, subject: str, status: str) -> None:
+                await _progress(
+                    AGENT_LOAD_PHASE_SUB_AGENTS,
+                    f"Loading sub-agent {ref.profile}",
+                    server_name=ref.profile,
+                    current=resolved_count,
+                    total=sub_agent_total,
+                    status=AGENT_LOAD_STATUS_RUNNING,
+                    subject=ref.profile,
+                    stage=stage,
+                    stage_subject=subject,
+                    stage_status=status,
+                )
+
             for index, ref in enumerate(profile.sub_agents.agents, start=1):
                 await _progress(
                     AGENT_LOAD_PHASE_SUB_AGENTS,
                     f"Loading sub-agent {ref.profile}",
                     server_name=ref.profile,
-                    current=index - 1,
+                    current=resolved_count,
                     total=sub_agent_total,
                     status=AGENT_LOAD_STATUS_RUNNING,
                     subject=ref.profile,
@@ -639,11 +666,12 @@ async def build_agent(
                 sub_profile = agent_registry.get(ref.profile)
                 if sub_profile is None:
                     logger.warning("Sub-agent profile not found: %s", ref.profile)
+                    resolved_count += 1
                     await _progress(
                         AGENT_LOAD_PHASE_SUB_AGENTS,
                         f"Skipped sub-agent {ref.profile}",
                         server_name=ref.profile,
-                        current=index,
+                        current=resolved_count,
                         total=sub_agent_total,
                         status=AGENT_LOAD_STATUS_SKIPPED,
                         subject=ref.profile,
@@ -653,37 +681,45 @@ async def build_agent(
                 if registration_state in {"empty_command", "depth_limit"}:
                     reason = sub_agent_skip_reason(registration_state, acp_depth=acp_depth)
                     logger.warning("Skipping sub-agent profile %s: %s", ref.profile, reason)
+                    resolved_count += 1
                     await _progress(
                         AGENT_LOAD_PHASE_SUB_AGENTS,
                         f"Skipped sub-agent {ref.profile}: {reason}",
                         server_name=ref.profile,
-                        current=index,
+                        current=resolved_count,
                         total=sub_agent_total,
                         status=AGENT_LOAD_STATUS_SKIPPED,
                         subject=ref.profile,
                         detail=reason,
                     )
                     continue
-                if sub_profile.acp is not None:
-                    await sub_agent_tools.register_acp(ref, sub_profile, runtime)
-                else:
-                    await sub_agent_tools.register(
-                        ref,
-                        sub_profile,
-                        runtime,
-                        settings=settings,
-                        fallback_profile=active_profile,
-                        model_registry=model_registry,
-                    )
+                sub_agent_entries.append((ref, sub_profile))
+
+            async def _sub_agent_registered(ref: SubAgentRef) -> None:
+                nonlocal resolved_count
+                resolved_count += 1
                 await _progress(
                     AGENT_LOAD_PHASE_SUB_AGENTS,
                     f"Loaded sub-agent {ref.profile}",
                     server_name=ref.profile,
-                    current=index,
+                    current=resolved_count,
                     total=sub_agent_total,
                     status=AGENT_LOAD_STATUS_DONE,
                     subject=ref.profile,
                 )
+
+            # Every sub-agent's outside waits — MCP connections above all — run together;
+            # the registry still takes them in the declared order.
+            await sub_agent_tools.register_many(
+                sub_agent_entries,
+                runtime,
+                settings=settings,
+                fallback_profile=active_profile,
+                model_registry=model_registry,
+                initialization=initialization,
+                on_initialization_progress=_sub_progress,
+                on_registered=_sub_agent_registered,
+            )
             sub_agent_tool_instances = sub_agent_tools.get_tools()
             sub_agent_tool_names = [tool.name for tool in sub_agent_tool_instances]
             tools.extend(sub_agent_tool_instances)
@@ -740,7 +776,9 @@ async def build_agent(
                     subject=config.name,
                 )
 
-            mcp_tools = await mcp_adapter.connect_all(profile.tools.mcp, progress=_mcp_progress)
+            mcp_tools = await mcp_adapter.connect_all(
+                profile.tools.mcp, progress=_mcp_progress, acquisition_scope=initialization.mcp
+            )
             mcp_tools_by_server = mcp_adapter.tool_names_by_server
             tools.extend(mcp_tools)
             warn_if_tool_loading_unbinds_thinking(profile, active_profile, chat_options, mcp_tools_by_server)
@@ -769,6 +807,7 @@ async def build_agent(
             runtime=runtime,
             session_dir=effective_session_dir,
             project_skills_enabled=settings.project_skills_enabled,
+            discovery_scope=initialization.skills,
         )
         if skills_provider is not None:
             context_providers.append(skills_provider)
@@ -1060,7 +1099,8 @@ async def build_agent(
         )
 
     try:
-        return await prepared.open(_acquire)
+        async with initialize_dependencies(mcp_cache) as initialization:
+            return await prepared.open(_acquire)
     except BaseException:
         await rollback_resources(prepared)
         raise

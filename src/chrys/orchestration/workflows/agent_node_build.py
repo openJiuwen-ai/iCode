@@ -16,6 +16,7 @@ from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, StreamStall
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
 from chrys.kernel import RESPONSE_READY_KWARG, LoopRecorder, ResponseReadyObserver, StallExhaustedAction
+from chrys.orchestration.initialization import AgentInitialization, initialize_dependencies
 from chrys.orchestration.invoker.acp import AcpConversation, AcpInvocationCounters
 from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker, AcpUpdateTranslator
 from chrys.orchestration.invoker.acp_spec import resolve_acp_spec
@@ -101,7 +102,7 @@ if TYPE_CHECKING:
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.tracker import MutationTracker
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
-    from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.profiles.agents.schema import AgentProfile, SubAgentRef
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
     from chrys.service.tools.background import BackgroundTasks
@@ -203,6 +204,32 @@ async def build_kernel_node(
     callbacks: AgentNodeCallbacks,
     stats: SubAgentLogStats,
 ) -> KernelNodeParts:
+    async with initialize_dependencies(res.mcp_cache) as initialization:
+        return await _build_kernel_node(
+            conversation,
+            binding=binding,
+            node_id=node_id,
+            invocation_id=invocation_id,
+            res=res,
+            archive=archive,
+            callbacks=callbacks,
+            stats=stats,
+            initialization=initialization,
+        )
+
+
+async def _build_kernel_node(
+    conversation: Conversation,
+    *,
+    binding: AgentBinding,
+    node_id: str,
+    invocation_id: str,
+    res: AgentNodeResources,
+    archive: AgentNodeArchive,
+    callbacks: AgentNodeCallbacks,
+    stats: SubAgentLogStats,
+    initialization: AgentInitialization,
+) -> KernelNodeParts:
     session_id = res.session_id
     display_name = binding.agent.display_name or binding.agent.name
     model = binding.model
@@ -255,6 +282,7 @@ async def build_kernel_node(
         environment=environment,
         workspace_roots=workspace_roots,
         turn_context=turn_context,
+        initialization=initialization,
     )
     if sub_agent_tools is not None:
         tools.extend(sub_agent_tools.get_tools())
@@ -272,7 +300,7 @@ async def build_kernel_node(
             reserved_tool_names=reserved_names,
         )
         conversation.own(mcp_adapter.disconnect_all)
-        tools.extend(await mcp_adapter.connect_all(profile.tools.mcp))
+        tools.extend(await mcp_adapter.connect_all(profile.tools.mcp, acquisition_scope=initialization.mcp))
         warn_if_tool_loading_unbinds_thinking(profile, model, chat_options, mcp_adapter.tool_names_by_server)
     # Extensions come last: their tools yield every name the agent's other tools take.
     extensions = await tool_packs.assemble_extensions(
@@ -293,6 +321,7 @@ async def build_kernel_node(
         runtime=environment,
         session_dir=res.session_dir,
         project_skills_enabled=res.settings.project_skills_enabled,
+        discovery_scope=initialization.skills,
     )
     for warn in skill_warnings:
         await res.bus.publish(Warning(code=warn.code, message=warn.message, session_id=session_id))
@@ -587,6 +616,7 @@ async def _register_sub_agents(
     environment: SessionEnvironment,
     workspace_roots: list[str],
     turn_context: TurnContextHolder,
+    initialization: AgentInitialization,
 ) -> SubAgentTools | None:
     """Register the profile's sub-agents as tools of this node, as the chat builder does for its agent.
 
@@ -629,6 +659,7 @@ async def _register_sub_agents(
     )
     conversation.own(sub_agent_tools.cleanup)
     acp_depth = acp_sub_agent_depth()
+    entries: list[tuple[SubAgentRef, AgentProfile]] = []
     for ref in profile.sub_agents.agents:
         sub_profile = res.agent_registry.get(ref.profile)
         state = sub_agent_registration_state(sub_profile, acp_depth=acp_depth)
@@ -637,17 +668,16 @@ async def _register_sub_agents(
                 "Skipping sub-agent profile %s: %s", ref.profile, sub_agent_skip_reason(state, acp_depth=acp_depth)
             )
             continue
-        if sub_profile.acp is not None:
-            await sub_agent_tools.register_acp(ref, sub_profile, environment)
-        else:
-            await sub_agent_tools.register(
-                ref,
-                sub_profile,
-                environment,
-                settings=res.settings,
-                fallback_profile=model,
-                model_registry=res.model_registry,
-            )
+        entries.append((ref, sub_profile))
+    # The node's sub-agents wait on their MCP servers together, as the chat builder's do.
+    await sub_agent_tools.register_many(
+        entries,
+        environment,
+        settings=res.settings,
+        fallback_profile=model,
+        model_registry=res.model_registry,
+        initialization=initialization,
+    )
     return sub_agent_tools
 
 
