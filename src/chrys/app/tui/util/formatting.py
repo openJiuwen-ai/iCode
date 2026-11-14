@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from rich.cells import cell_len
+from rich.cells import cell_len, split_graphemes
 
 if TYPE_CHECKING:
     from rich.text import Text
@@ -124,12 +124,55 @@ def format_elapsed(seconds: float) -> str:
     )
 
 
+_REGIONAL_INDICATOR_LOW = 0x1F1E6
+_REGIONAL_INDICATOR_HIGH = 0x1F1FF
+"""The two code points of a regional indicator, the halves of a flag emoji."""
+
+
+def _is_regional_indicator(char: str) -> bool:
+    """Return whether *char* is a regional indicator symbol (half a flag)."""
+    return _REGIONAL_INDICATOR_LOW <= ord(char) <= _REGIONAL_INDICATOR_HIGH
+
+
+def _is_lone_regional_indicator(text: str, cluster: tuple[int, int, int]) -> bool:
+    """Return whether *cluster* of *text* is a single, unpaired regional indicator."""
+    start, end, _cells = cluster
+    return end - start == 1 and _is_regional_indicator(text[start])
+
+
+def _display_clusters(text: str) -> list[tuple[int, int, int]]:
+    """Split *text* into user-perceived characters as ``(start, end, cell_width)``.
+
+    ``rich.cells.split_graphemes`` already keeps a ZWJ emoji sequence and a
+    combining mark with its base in one cluster, but it reports the two regional
+    indicators of a flag as two clusters, which would let a width budget cut a
+    flag into two lettered boxes. A contiguous pair of regional indicators is
+    therefore joined here; an odd leftover stays on its own.
+    """
+    spans, _total_width = split_graphemes(text)
+    clusters: list[tuple[int, int, int]] = []
+    total = len(spans)
+    index = 0
+    while index < total:
+        start, end, cell_width = spans[index]
+        index += 1
+        if end - start == 1 and _is_regional_indicator(text[start]) and index < total:
+            next_start, next_end, next_width = spans[index]
+            if next_start == end and next_end - next_start == 1 and _is_regional_indicator(text[next_start]):
+                index += 1
+                end, cell_width = next_end, cell_width + next_width
+        clusters.append((start, end, cell_width))
+    return clusters
+
+
 def elide_middle(text: str, max_width: int) -> str:
     """Cap *text* at *max_width* terminal cells, eliding the middle.
 
     Head and tail survive (both ends of a name tend to carry the
     distinguishing parts); widths are measured in cells so CJK names don't
-    overflow the cap.
+    overflow the cap. Cutting happens on display clusters rather than code
+    points, so an emoji, a flag or a letter carrying a combining mark is kept
+    whole or dropped whole, never sliced in half.
     """
     if cell_len(text) <= max_width:
         return text
@@ -139,18 +182,30 @@ def elide_middle(text: str, max_width: int) -> str:
     budget = max_width - 1  # the ellipsis cell
     tail_budget = budget // 2
     head_budget = budget - tail_budget
-    head: list[str] = []
-    used = 0
-    for char in text:
-        used += cell_len(char)
-        if used > head_budget:
+    clusters = _display_clusters(text)
+
+    head_end = 0
+    head_used = 0
+    for cluster in clusters:
+        if head_used + cluster[2] > head_budget:
             break
-        head.append(char)
-    tail: list[str] = []
-    used = 0
-    for char in reversed(text):
-        used += cell_len(char)
-        if used > tail_budget:
+        head_used += cluster[2]
+        head_end += 1
+    # A regional indicator with no partner renders as a lettered box, so drop one
+    # left stranded at the cut instead of spending cells on it.
+    while head_end and _is_lone_regional_indicator(text, clusters[head_end - 1]):
+        head_end -= 1
+
+    tail_start = len(clusters)
+    tail_used = 0
+    # Stop at head_end so the two ends can never cover the same cluster.
+    for index in range(len(clusters) - 1, head_end - 1, -1):
+        cluster = clusters[index]
+        if tail_used + cluster[2] > tail_budget or _is_lone_regional_indicator(text, cluster):
             break
-        tail.append(char)
-    return f"{''.join(head)}…{''.join(reversed(tail))}"
+        tail_used += cluster[2]
+        tail_start = index
+
+    head_text = text[: clusters[head_end - 1][1]] if head_end else ""
+    tail_text = text[clusters[tail_start][0] :] if tail_start < len(clusters) else ""
+    return f"{head_text}…{tail_text}"
