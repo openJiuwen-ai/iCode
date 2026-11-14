@@ -11,7 +11,7 @@ from textual.widgets import Static
 
 from chrys.app.tui.widgets.sidebar.context import CONTEXT_BLOCK_MESSAGES, CONTEXT_TURN_RANGE, CONTEXT_TURN_SINGLE
 from chrys.foundation.i18n import MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block
 
 _CONTEXT_FOLD_COMPRESSED = msg("tui.transcript.fold.compressed", fallback="Compressed")
 
@@ -73,5 +73,5 @@ class ContextFoldWidget(Static):
         t.append(" ═══", style="magenta dim")
         # Summary
         if self._summary:
-            t.append(f"\n  {self._summary}", style="dim italic")
+            t.append(f"\n  {sanitize_legacy_block(self._summary)}", style="dim italic")
         return t

@@ -1600,7 +1600,7 @@ class ErrorMessage(ProcessMember):
         t = Text()
         t.append(render_str(widget_localizer(self), INTERRUPTED_ERROR_HEADER_MESSAGE.bind()), style="bold")
         t.append("\n")
-        t.append(self._text)
+        t.append(sanitize_legacy_block(self._text))
         return t
 
     def compose(self) -> ComposeResult:

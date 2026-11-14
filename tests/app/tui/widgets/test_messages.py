@@ -694,6 +694,23 @@ async def test_error_message_renders() -> None:
         assert "Error" in rendered.plain
 
 
+async def test_error_message_body_shows_control_characters_as_text() -> None:
+    text = "Error code: 400 - bad \x1b[31mred\x1b[0m\r\nsecond\x07\tline\x9b"
+
+    async with WidgetApp(lambda: ErrorMessage(text)).run_test() as pilot:
+        msg = pilot.app.query_one(ErrorMessage)
+        rendered = msg._render_text().plain
+
+        assert "\x1b" not in rendered
+        assert "\x9b" not in rendered
+        assert "\r" not in rendered
+        assert "\x07" not in rendered
+        assert "\t" not in rendered
+        # LF still separates the provider's own lines; every other control is replaced.
+        assert rendered.split("\n", 1)[1] == "Error code: 400 - bad �[31mred�[0m�\nsecond��line�"
+        assert msg._text == text
+
+
 async def test_chrys_conversation_status_rails_keep_semantic_colors() -> None:
     class MsgApp(TuiVariableDefaultsMixin, App):
         def __init__(self) -> None:
