@@ -1500,6 +1500,7 @@ class MCPConnectionCard(CollapsibleConfigCard):
             encoding=self._config.encoding if transport == "stdio" else None,
             cwd=cwd,
             env=env,
+            resolve_env_templates=self._config.resolve_env_templates if transport == "stdio" else True,
             url=url,
             headers=headers,
             resolve_header_templates=self._config.resolve_header_templates if transport == "http" else True,

@@ -68,6 +68,13 @@ class MCPServerConfig:
     # stdio only — env vars exported to the spawned subprocess (the MCP
     # server itself sees them). Ignored for HTTP transport.
     env: dict[str, str] = field(default_factory=dict)
+    resolve_env_templates: bool = True
+    """Resolve ``{{ENV_VAR}}``/``{{!command}}`` placeholders in ``env`` (stdio only).
+
+    Mirrors ``resolve_header_templates`` for the HTTP transport: values that come
+    from outside the profile — an ACP client's server list, for one — are passed
+    to the child process literally.
+    """
 
     # common options
     load_prompts: bool = True

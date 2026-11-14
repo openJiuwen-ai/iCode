@@ -143,6 +143,18 @@ def _manager(process_cwd: str | None, store: StateStore, *, profile_name: str = 
     )
 
 
+def _stdio_mcp() -> list[acp_schema.McpServerStdio]:
+    return [
+        acp_schema.McpServerStdio(
+            type="stdio",
+            name="local",
+            command="/usr/bin/python3",
+            args=["-m", "local_server"],
+            env=[acp_schema.EnvVariable(name="TOKEN", value="literal-{{NOT_A_PLACEHOLDER}}")],
+        )
+    ]
+
+
 def _unsupported_sse_mcp() -> list[acp_schema.SseMcpServer]:
     return [
         acp_schema.SseMcpServer(

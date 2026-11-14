@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
@@ -20,6 +21,7 @@ from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform import get_platform
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.tool_kinds import get_tool_kind
+from chrys.foundation.util.env_templates import EnvVarResolutionError
 from chrys.kernel import FunctionTool
 from chrys.orchestration.invoker.resources import PreparedAgent
 from chrys.orchestration.sub_agents import tools as tools_module
@@ -845,6 +847,42 @@ def test_http_headers_can_bypass_env_template_resolution(monkeypatch: pytest.Mon
 
     assert effective.http_headers == {"Authorization": "Bearer {{OPENAI_API_KEY}}"}
     assert tool._static_headers == {"Authorization": "Bearer {{OPENAI_API_KEY}}"}
+
+
+def test_stdio_env_can_bypass_env_template_resolution() -> None:
+    literal = "literal-{{NOT_A_PLACEHOLDER}}"
+    config = MCPServerConfig(
+        name="srv",
+        transport="stdio",
+        command="python",
+        env={"TOKEN": literal},
+        resolve_env_templates=False,
+    )
+
+    effective = resolve_mcp_effective_config(config)
+    tool = _create_tool_with_timeout_floor(config, DEFAULT_CONNECT_TIMEOUT_SECONDS)
+
+    assert effective.stdio_env["TOKEN"] == literal
+    assert tool.env == {"TOKEN": literal}
+    # The flag decides what the child process sees, so it belongs to the connection
+    # identity: the same env text resolved instead of literal is another server.
+    plain = MCPServerConfig(name="srv", transport="stdio", command="python", env={"TOKEN": "plain"})
+    assert (
+        resolve_mcp_effective_config(replace(plain, resolve_env_templates=True)).key
+        != resolve_mcp_effective_config(replace(plain, resolve_env_templates=False)).key
+    )
+
+
+def test_stdio_env_placeholders_still_fail_closed_by_default() -> None:
+    config = MCPServerConfig(
+        name="srv",
+        transport="stdio",
+        command="python",
+        env={"TOKEN": "{{CHRYS_UNSET_STDIO_TOKEN}}"},
+    )
+
+    with pytest.raises(EnvVarResolutionError):
+        resolve_mcp_effective_config(config)
 
 
 def _surrogateescaped_dir(tmp_path: Path, name: bytes) -> tuple[bytes, str]:
