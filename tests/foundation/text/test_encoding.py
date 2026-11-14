@@ -17,6 +17,7 @@ from chrys.foundation.text.encoding import (
     _canonical_encoding,
     decode_bytes,
     is_mostly_text,
+    resolve_wide_encoding,
 )
 
 # ---------------------------------------------------------------------------
@@ -186,6 +187,37 @@ def test_bom_utf32_le_not_confused_with_utf16() -> None:
     raw = codecs.BOM_UTF32_LE + "AB".encode("utf-32-le")
     r = _result(raw)
     assert r.encoding == "utf-32"
+
+
+# ---------------------------------------------------------------------------
+# resolve_wide_encoding
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_wide_encoding_utf16_le() -> None:
+    raw = codecs.BOM_UTF16_LE + "Hello".encode("utf-16-le")
+    assert resolve_wide_encoding("utf-16", raw) == ("utf-16-le", codecs.BOM_UTF16_LE)
+
+
+def test_resolve_wide_encoding_utf16_be() -> None:
+    raw = codecs.BOM_UTF16_BE + "Hello".encode("utf-16-be")
+    assert resolve_wide_encoding("utf-16", raw) == ("utf-16-be", codecs.BOM_UTF16_BE)
+
+
+def test_resolve_wide_encoding_utf32_le_wins_over_utf16_prefix() -> None:
+    """The UTF-32 LE BOM starts with the UTF-16 LE BOM; it must not be stolen."""
+    raw = codecs.BOM_UTF32_LE + "AB".encode("utf-32-le")
+    assert resolve_wide_encoding("utf-32", raw) == ("utf-32-le", codecs.BOM_UTF32_LE)
+
+
+def test_resolve_wide_encoding_keeps_a_non_wide_name_verbatim() -> None:
+    """A UTF-8 BOM already re-emits itself when encoding; no prefix is added."""
+    raw = codecs.BOM_UTF8 + b"Hello"
+    assert resolve_wide_encoding("utf-8-sig", raw) == ("utf-8-sig", b"")
+
+
+def test_resolve_wide_encoding_defaults_a_missing_name_to_utf8() -> None:
+    assert resolve_wide_encoding(None, b"Hello") == ("utf-8", b"")
 
 
 # ---------------------------------------------------------------------------
