@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -14,7 +15,14 @@ import pytest
 
 from chrys.foundation.platform import get_platform
 from chrys.foundation.trajectory import lease as lease_module
-from chrys.foundation.trajectory.lease import WRITER_LEASE_FILE_NAME, WriterLease
+from chrys.foundation.trajectory.lease import (
+    WRITER_LEASE_FILE_NAME,
+    WriterLease,
+    describe_holder,
+    owner_record_path,
+    read_holder,
+)
+from tests.support.secure_files import plant_owner_only_bytes
 
 
 def test_lease_is_exclusive_within_a_process_and_released_explicitly(tmp_path: Path) -> None:
@@ -120,8 +128,28 @@ _HOLDER_SCRIPT = textwrap.dedent(
 )
 
 
-def _spawn_holder(lock_path: Path, ready_path: Path, hold_seconds: float) -> subprocess.Popen:
-    proc = subprocess.Popen([sys.executable, "-c", _HOLDER_SCRIPT, str(lock_path), str(ready_path), str(hold_seconds)])
+_RAW_HOLDER_SCRIPT = textwrap.dedent(
+    """
+    import os, sys, time
+    from pathlib import Path
+    from chrys.foundation.platform import get_platform
+
+    fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+    if get_platform().is_windows:
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    Path(sys.argv[2]).write_text("held", encoding="utf-8")
+    time.sleep(float(sys.argv[3]))
+    """
+)
+
+
+def _spawn(script: str, lock_path: Path, ready_path: Path, hold_seconds: float) -> subprocess.Popen:
+    proc = subprocess.Popen([sys.executable, "-c", script, str(lock_path), str(ready_path), str(hold_seconds)])
     deadline = time.monotonic() + 15.0
     while not ready_path.exists():
         if proc.poll() is not None or time.monotonic() > deadline:
@@ -131,6 +159,49 @@ def _spawn_holder(lock_path: Path, ready_path: Path, hold_seconds: float) -> sub
             raise RuntimeError("holder subprocess never signalled readiness")
         time.sleep(0.02)
     return proc
+
+
+def _spawn_holder(lock_path: Path, ready_path: Path, hold_seconds: float) -> subprocess.Popen:
+    return _spawn(_HOLDER_SCRIPT, lock_path, ready_path, hold_seconds)
+
+
+def _stop(proc: subprocess.Popen) -> None:
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def _dead_pid() -> int:
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=30)
+    return proc.pid
+
+
+def _record_with(**fields: object) -> bytes:
+    """A well-formed record's bytes with *fields* overriding its numbers."""
+    record: dict[str, object] = {
+        "schemaVersion": lease_module.HOLDER_RECORD_SCHEMA,
+        "pid": 1,
+        "startTime": 1.0,
+        "host": "h",
+        "bootTime": 1.0,
+        "at": "2026-01-01T00:00:00Z",
+    }
+    record.update(fields)
+    return json.dumps(record).encode("utf-8")
+
+
+def _record_for(pid: int) -> lease_module.LeaseHolder:
+    host, boot_time = lease_module._host_facts()
+    return lease_module.LeaseHolder(
+        pid=pid,
+        # Any real process creation time differs from this by far more than the
+        # reuse tolerance, so a recycled pid still reads as the dead original.
+        start_time=0.0,
+        host=host,
+        boot_time=boot_time,
+        at="2026-01-01T00:00:00Z",
+    )
 
 
 def test_lease_blocks_across_processes_without_waiting(tmp_path: Path) -> None:
@@ -151,6 +222,95 @@ def test_lease_blocks_across_processes_without_waiting(tmp_path: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def test_a_taken_lease_records_its_holder(tmp_path: Path) -> None:
+    """The lock file itself stays empty; who holds it lives in ``writer.owner``."""
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    lease = WriterLease.try_acquire(lock_path)
+    assert lease is not None
+    try:
+        holder = read_holder(lock_path)
+        assert holder is not None
+        assert holder.pid == os.getpid()
+        assert holder.host == lease_module._host_facts()[0]
+        assert holder.at
+        assert describe_holder(lock_path).endswith("(running)")
+        if not get_platform().is_windows:
+            assert owner_record_path(lock_path).stat().st_mode & 0o777 == 0o600
+    finally:
+        lease.release()
+
+
+def test_a_live_holder_is_reported_and_its_record_left_alone(tmp_path: Path) -> None:
+    """A refused attempt reports the holder, and never writes a record of its own."""
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    proc = _spawn_holder(lock_path, tmp_path / "ready", hold_seconds=30.0)
+    try:
+        assert WriterLease.try_acquire(lock_path) is None
+        assert WriterLease.is_held_elsewhere(lock_path) is True
+        holder = read_holder(lock_path)
+        assert holder is not None
+        assert holder.pid == proc.pid
+        assert describe_holder(lock_path).endswith("(running)")
+    finally:
+        _stop(proc)
+
+
+def test_a_dead_holders_record_is_reported_but_never_acts_on_the_lock(tmp_path: Path) -> None:
+    """A record cannot prove nobody holds the lock, so a held lock is never broken."""
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    proc = _spawn_holder(lock_path, tmp_path / "ready", hold_seconds=30.0)
+    try:
+        lease_module._write_record(owner_record_path(lock_path), _record_for(_dead_pid()))
+        assert WriterLease.try_acquire(lock_path) is None
+        assert WriterLease.is_held_elsewhere(lock_path) is True
+        assert describe_holder(lock_path).endswith("(no longer running)")
+    finally:
+        _stop(proc)
+
+
+def test_a_lock_without_a_holder_record_stays_held(tmp_path: Path) -> None:
+    """A lock file whose holder never announced itself is still a held lock."""
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    proc = _spawn(_RAW_HOLDER_SCRIPT, lock_path, tmp_path / "ready", hold_seconds=30.0)
+    try:
+        assert read_holder(lock_path) is None
+        assert describe_holder(lock_path) == ""
+        assert WriterLease.try_acquire(lock_path) is None
+    finally:
+        _stop(proc)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        # JSON's ``Infinity`` literal: legal input, no int holds it.
+        {"pid": float("inf")},
+        # An integer literal Python parses exactly but no float can hold.
+        {"startTime": 10**400},
+    ],
+    ids=["infinite-pid", "start-time-beyond-float"],
+)
+def test_a_holder_record_with_an_unrepresentable_number_is_unknown(tmp_path: Path, fields: dict[str, object]) -> None:
+    """A number that cannot become pid/startTime leaves the whole record unknown.
+
+    ``describe_holder`` decorates a refused activation's report and promises
+    never to raise; a conversion overflow escaping here would replace the
+    refusal with an activation failure and lose who holds the session.
+    """
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    plant_owner_only_bytes(owner_record_path(lock_path), _record_with(**fields))
+    assert read_holder(lock_path) is None
+    assert describe_holder(lock_path) == ""
+
+
+def test_a_probe_leaves_no_record_of_itself(tmp_path: Path) -> None:
+    """Asking whether a free lease is free must not make the asker its holder."""
+    lock_path = tmp_path / WRITER_LEASE_FILE_NAME
+    plant_owner_only_bytes(lock_path, b"")
+    assert WriterLease.is_held_elsewhere(lock_path) is False
+    assert read_holder(lock_path) is None
 
 
 def test_lease_is_reclaimed_by_os_when_holder_is_killed(tmp_path: Path) -> None:
