@@ -77,9 +77,9 @@ If "Code review" appears in the list, the profile has loaded. If it does not app
 | --- | --- | --- | --- |
 | `name` | String | Required | Profile name, also used as the base of the normalized filename. Sub-agent references use this value. |
 | `id` | String | Assigned automatically | Stable identifier. If omitted or empty, iCode automatically assigns a 12-character hexadecimal ID: it reuses the built-in agent's ID when the names match, or generates a new ID otherwise. You can also specify a unique ID manually; quote an ID made only of digits, such as `id: "123"`, because an unquoted one is read as a number and the profile fails to load. When copying and modifying an existing profile to create a new one, remove the `id` field so iCode can assign a new ID. |
-| `display_name` | String | Empty | Display name. |
-| `description` | String | Empty | Describes the agent's purpose. Also used as the default tool description for a sub-agent when none is specified. |
-| `sub_agent_only` | Boolean | `false` | If `true`, the agent cannot be selected as the main agent and can only be called by other agents. Forced to `true` for external ACP agents. |
+| `display_name` | String | Empty | Display name. Must be text: an unquoted number or boolean, such as `display_name: 2024`, makes the whole profile fail to load, so quote it as text instead. Earlier versions read such a value as is and then failed in `agent list` or ACP. |
+| `description` | String | Empty | Describes the agent's purpose. Also used as the default tool description for a sub-agent when none is specified. Must be text: an unquoted number or boolean, such as `description: 42`, makes the whole profile fail to load. |
+| `sub_agent_only` | Boolean | `false` | If `true`, the agent cannot be selected as the main agent and can only be called by other agents. This field also accepts `true`/`false`, `yes`/`no` and `on`/`off` as text, in any case. Forced to `true` for external ACP agents. |
 | `instructions` | String or list of strings | Empty | Main behavioral instructions for agents of the built-in type. A list is joined into one text, one item per line. External ACP profiles ignore this field. |
 | `model` | Object | `{}` | Binds a model profile. See [model](#model). |
 | `tools` | Object | `{}` | Configures built-in tools, MCP, and shell filtering. See [tools](#tools). |

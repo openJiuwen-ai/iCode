@@ -15,6 +15,7 @@ from chrys.service.profiles.agents.loader import (
     load_profile_files_from_dir,
     load_profile_from_yaml,
     load_profiles_from_dir,
+    scan_profile_dir,
 )
 from chrys.service.profiles.agents.schema import ShellFilterConfig
 from chrys.service.profiles.agents.serializer import save_profile
@@ -548,6 +549,65 @@ def test_load_missing_name(tmp_path: Path) -> None:
     p.write_text("description: no name field\n", encoding="utf-8")
     with pytest.raises(AgentProfileLoadError, match="missing required 'name'"):
         load_profile_from_yaml(p)
+
+
+@pytest.mark.parametrize("raw", ["2024", "[a]", "{a: 1}"])
+def test_load_rejects_non_text_display_name(tmp_path: Path, raw: str) -> None:
+    p = tmp_path / "bad_display_name.yaml"
+    p.write_text(f"name: bad-display\ndisplay_name: {raw}\n", encoding="utf-8")
+
+    with pytest.raises(AgentProfileLoadError, match=r"display_name.*must be a string") as exc_info:
+        load_profile_from_yaml(p)
+
+    assert exc_info.value.field == "display_name"
+
+
+@pytest.mark.parametrize("raw", ["2024", "[a]", "{a: 1}"])
+def test_load_rejects_non_text_description(tmp_path: Path, raw: str) -> None:
+    p = tmp_path / "bad_description.yaml"
+    p.write_text(f"name: bad-description\ndescription: {raw}\n", encoding="utf-8")
+
+    with pytest.raises(AgentProfileLoadError, match=r"description.*must be a string") as exc_info:
+        load_profile_from_yaml(p)
+
+    assert exc_info.value.field == "description"
+
+
+def test_load_reads_null_display_name_and_description_as_empty(tmp_path: Path) -> None:
+    p = tmp_path / "nulls.yaml"
+    p.write_text("name: nulls\ndisplay_name:\ndescription:\n", encoding="utf-8")
+
+    profile = load_profile_from_yaml(p)
+
+    assert profile.display_name == ""
+    assert profile.description == ""
+
+
+@pytest.mark.parametrize(("raw", "expected"), [('"false"', False), ("'no'", False), ("true", True)])
+def test_load_coerces_sub_agent_only_from_settings_text(tmp_path: Path, raw: str, expected: bool) -> None:
+    p = tmp_path / "sub_agent_only.yaml"
+    p.write_text(f"name: coerced\nsub_agent_only: {raw}\n", encoding="utf-8")
+
+    assert load_profile_from_yaml(p).sub_agent_only is expected
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("'false'", False), ("'yes'", True)])
+def test_load_coerces_user_can_override_from_settings_text(tmp_path: Path, raw: str, expected: bool) -> None:
+    p = tmp_path / "user_can_override.yaml"
+    p.write_text(f"name: coerced\napproval:\n  user_can_override: {raw}\n", encoding="utf-8")
+
+    assert load_profile_from_yaml(p).approval.user_can_override is expected
+
+
+def test_profile_dir_scan_reports_display_name_as_the_invalid_field(tmp_path: Path) -> None:
+    (tmp_path / "good.yaml").write_text("name: good\n", encoding="utf-8")
+    bad_path = tmp_path / "bad.yaml"
+    bad_path.write_text("name: bad\ndisplay_name: 2024\n", encoding="utf-8")
+
+    scan = scan_profile_dir(tmp_path)
+
+    assert [profile.name for _path, profile in scan.loaded] == ["good"]
+    assert scan.invalid[bad_path].location == "display_name"
 
 
 @pytest.mark.parametrize(
