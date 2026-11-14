@@ -101,3 +101,52 @@ async def test_missing_executable_still_reports_ripgrep_not_found(
         else await search.glob("*.py", path=str(tmp_path))
     )
     assert result == "Error: ripgrep (rg) not found"
+
+
+@pytest.mark.parametrize("operation", ["grep", "glob"])
+@pytest.mark.parametrize("max_results", [0, -1])
+async def test_max_results_below_one_is_rejected_before_searching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, max_results: int
+) -> None:
+    # Matches exist, so a clamped search would report them: only the rejection is acceptable.
+    (tmp_path / "a.py").write_text("NEEDLE\n", encoding="utf-8")
+
+    async def forbidden_run_rg(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
+        raise AssertionError("ripgrep must not run when max_results is invalid")
+
+    monkeypatch.setattr(search, "_run_rg", forbidden_run_rg)
+    metadata: dict[str, object] = {}
+    token = tool_result_metadata.set(metadata)
+    try:
+        result = (
+            await search.grep("NEEDLE", path=str(tmp_path), glob="*.py", max_results=max_results)
+            if operation == "grep"
+            else await search.glob("*.py", path=str(tmp_path), max_results=max_results)
+        )
+    finally:
+        tool_result_metadata.reset(token)
+
+    assert result == "Error: max_results must be an integer >= 1 (the maximum number of results to return)."
+    assert "No matches" not in result
+    assert "Found" not in result
+    assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == "invalid_max_results"
+
+
+@pytest.mark.parametrize(("operation", "header"), [("grep", "Found 1 match(es)"), ("glob", "Found 1 file(s)")])
+async def test_max_results_one_still_searches(tmp_path: Path, operation: str, header: str) -> None:
+    (tmp_path / "a.py").write_text("NEEDLE\n", encoding="utf-8")
+
+    result = (
+        await search.grep("NEEDLE", path=str(tmp_path), glob="*.py", max_results=1)
+        if operation == "grep"
+        else await search.glob("*.py", path=str(tmp_path), max_results=1)
+    )
+
+    assert header in result
+    assert "a.py" in result
