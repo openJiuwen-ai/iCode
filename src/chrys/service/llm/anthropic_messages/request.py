@@ -25,6 +25,7 @@ from chrys.kernel import (
     prepend_instructions_to_messages,
     validate_tool_mode,
 )
+from chrys.service.llm.output_cap import fold_output_cap_options
 from chrys.service.profiles.models.options import AUTO_INTERLEAVED_THINKING_OPTION, THINKING_BLOCK_BINDING_OPTION
 
 from .history import encode_history
@@ -123,14 +124,15 @@ def build_request(
     replays: passed back as *skip_thinking*, they build the same request
     without that thinking.
     """
+    options = fold_output_cap_options(options)
     if instructions := options.get("instructions"):
         messages = prepend_instructions_to_messages(list(messages), instructions, role="system")
 
     request = {key: value for key, value in options.items() if value is not None and key not in _OPTIONS_NOT_COPIED}
     _rename_options(request)
-    call_fields = {
-        key: value for key, value in call_kwargs.items() if not key.startswith("_") and key not in _CALL_SETTINGS
-    }
+    call_fields = fold_output_cap_options(
+        {key: value for key, value in call_kwargs.items() if not key.startswith("_") and key not in _CALL_SETTINGS}
+    )
     _rename_options(call_fields)
     request.update(call_fields)
 
