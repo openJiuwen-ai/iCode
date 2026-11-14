@@ -183,6 +183,71 @@ def test_bad_store_does_not_allow_or_get_overwritten(service, data):
     assert service.store.path.read_text(encoding="utf-8") == data
 
 
+def test_unreadable_store_is_distinguishable_from_an_empty_one(service):
+    assert service.store.load() == []
+    assert not service.store.unreadable
+    atomic_write_owner_only_text(service.store.path, "{")
+    assert service.store.load() == []
+    assert service.store.unreadable
+
+
+def test_unreadable_store_warns_once_per_broken_spell(service, caplog):
+    atomic_write_owner_only_text(service.store.path, "{")
+    with caplog.at_level("WARNING", logger="chrys.service.approval.grant_store"):
+        for _ in range(3):
+            assert service.store.load() == []
+        assert [record.getMessage() for record in caplog.records] == [
+            "Approval grants could not be read; no grants reused"
+        ]
+    assert service.store.clear()
+    with caplog.at_level("WARNING", logger="chrys.service.approval.grant_store"):
+        caplog.clear()
+        atomic_write_owner_only_text(service.store.path, "{")
+        assert service.store.load() == []
+        assert len(caplog.records) == 1
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "{",
+        '{"version":1,"rules":[',
+        '{"version":99,"rules":[]}',
+        '{"version":1,"rules":[42]}',
+        '{"version":1,"rules":"none"}',
+    ],
+)
+def test_clearing_everything_repairs_an_unreadable_store(service, data):
+    atomic_write_owner_only_text(service.store.path, data)
+    assert not service.match(command())
+    assert service.store.clear()
+    assert service.store.load() == []
+    assert not service.store.unreadable
+    assert service.remember(command(), "EXACT_PROJECT")
+    assert service.match(command())
+
+
+def test_clearing_everything_repairs_a_store_over_its_bounds(service, monkeypatch):
+    import chrys.service.approval.grant_store as store_module
+
+    assert service.remember(command(), "EXACT_PROJECT")
+    monkeypatch.setattr(store_module, "MAX_GRANTS", 0)
+    assert service.store.load() == []
+    assert service.store.unreadable
+    assert service.store.clear()
+    assert service.store.load() == []
+    assert not service.store.unreadable
+    monkeypatch.undo()
+    assert service.remember(command(), "EXACT_PROJECT")
+    assert service.match(command())
+
+
+def test_clearing_one_project_still_needs_a_readable_store(service):
+    atomic_write_owner_only_text(service.store.path, "{")
+    assert not service.store.clear(project=command().key.cwd)
+    assert service.store.path.read_text(encoding="utf-8") == "{"
+
+
 def test_store_refuses_symlink_and_writes_owner_only(service, tmp_path):
     candidate = command()
     assert service.remember(candidate, "EXACT_PROJECT")

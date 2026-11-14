@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.config.settings import resolve_sessions_dir
-from chrys.foundation.platform.files import atomic_write_owner_only_text, secure_open_owner_only_binary
+from chrys.foundation.platform.files import (
+    SecureFileError,
+    atomic_write_owner_only_text,
+    secure_open_owner_only_binary,
+)
 from chrys.foundation.util.lock import FileLock
 from chrys.foundation.util.session_ids import session_short_id
 
@@ -34,6 +38,11 @@ def session_grants_path(config_dir: Path, session_id: str) -> Path:
 class ApprovalGrantStore:
     def __init__(self, path: Path) -> None:
         self.path = path
+        # Set by `load`: an unreadable store is not an empty one, and callers must not
+        # report it as "no grants" without saying so.
+        self.unreadable = False
+        # Every match re-reads the store, so warn once per broken spell, not per call.
+        self._warned_unreadable = False
 
     @property
     def lock_path(self) -> Path:
@@ -58,11 +67,42 @@ class ApprovalGrantStore:
         return rules
 
     def load(self) -> list[dict[str, Any]]:
+        self.unreadable = False
         try:
-            return self._read()
+            rules = self._read()
         except OSError, ValueError, RecursionError:
-            logger.debug("Approval grants could not be read; no grants reused", exc_info=True)
+            self.unreadable = True
+            if not self._warned_unreadable:
+                self._warned_unreadable = True
+                # The line stays readable in a terminal; the traceback is one `debug` away.
+                logger.warning("Approval grants could not be read; no grants reused")
+                logger.debug("Approval grants could not be read", exc_info=True)
             return []
+        self._warned_unreadable = False
+        return rules
+
+    def _write_rules(self, rules: list[dict[str, Any]]) -> bool:
+        """Rewrite the store without reading it; the caller owns the whole payload.
+
+        Repairing unreadable content is not the same thing as following a planted link:
+        the leaf is refused here because ``_read`` used to be the only place that did it.
+        """
+        try:
+            if self.path.is_symlink():
+                raise SecureFileError(f"Approval store is a symbolic link: {self.path}")
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with FileLock(self.lock_path, timeout=1):
+                payload = (
+                    json.dumps({"version": 1, "rules": rules}, ensure_ascii=True, allow_nan=False, indent=2) + "\n"
+                )
+                if len(rules) > MAX_GRANTS or len(payload.encode("utf-8")) > MAX_BYTES:
+                    return False
+                atomic_write_owner_only_text(self.path, payload)
+            self._warned_unreadable = False
+            return True
+        except OSError, ValueError, TypeError, RecursionError:
+            logger.warning("Approval grants could not be written")
+            return False
 
     def _update(self, edit: Callable[[list[dict[str, Any]]], list[dict[str, Any]] | None]) -> bool:
         """Rewrite the locked, re-read rules with *edit*; None from *edit* writes nothing."""
@@ -99,9 +139,11 @@ class ApprovalGrantStore:
         return bool(rule_id) and self._update(edit)
 
     def clear(self, *, project: str | None = None) -> bool:
-        return self._update(
-            lambda rules: [] if project is None else [rule for rule in rules if rule.get("project") != project]
-        )
+        # Clearing everything needs no knowledge of what is stored, so it must never
+        # depend on a readable store: otherwise an unreadable file is also unrepairable.
+        if project is None:
+            return self._write_rules([])
+        return self._update(lambda rules: [rule for rule in rules if rule.get("project") != project])
 
 
 def _identity(rule: dict[str, Any]) -> list[object]:
