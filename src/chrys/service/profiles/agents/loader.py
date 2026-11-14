@@ -308,6 +308,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
             allowed_tools=allowed_tools,
             use_progressive_disclosure=use_progressive_disclosure,
             always_load=always_load,
+            tool_name_prefix=tool_name_prefix if isinstance(tool_name_prefix, str) else None,
         )
         if policy_errors:
             msg = f"MCP server '{entry.get('name', '?')}' has invalid tool loading policy: {' '.join(policy_errors)}"

@@ -92,7 +92,11 @@ from chrys.service.mcp.adapter import (
     MCPToolConfigurationError,
 )
 from chrys.service.mcp.errors import StdioWorkingDirectoryError
-from chrys.service.mcp.validation import MCP_PROGRESSIVE_CONTROL_TOOL_NAMES, validate_mcp_tool_name_prefix
+from chrys.service.mcp.validation import (
+    MCP_PROGRESSIVE_CONTROL_TOOL_NAMES,
+    mcp_config_names_outside_scope,
+    validate_mcp_tool_name_prefix,
+)
 from chrys.service.tools.names import chrys_reserved_tool_names
 
 logger = logging.getLogger(__name__)
@@ -1608,7 +1612,11 @@ class MCPConnectionCard(CollapsibleConfigCard):
                 )
             )
             if access_mode == _TOOL_ACCESS_SELECTED:
-                outside_scope = [name for name in always_load if name not in set(selected_tools)]
+                outside_scope = mcp_config_names_outside_scope(
+                    always_load,
+                    selected_tools,
+                    tool_name_prefix=prefix_text,
+                )
                 if outside_scope:
                     errors.append(
                         self._render_server_error(

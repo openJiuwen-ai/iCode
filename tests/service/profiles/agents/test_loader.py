@@ -859,6 +859,31 @@ tools:
     assert config.always_load == ["search", "read"]
 
 
+def test_load_mcp_loading_policy_accepts_either_tool_name_spelling(tmp_path: Path) -> None:
+    p = tmp_path / "mcp_mixed_spellings.yaml"
+    p.write_text(
+        """\
+name: mcp-mixed-spellings
+tools:
+  mcp:
+    - name: local-server
+      transport: stdio
+      command: python
+      tool_name_prefix: gh
+      allowed_tools: [gh_search]
+      use_progressive_disclosure: true
+      always_load: [search]
+""",
+        encoding="utf-8",
+    )
+
+    config = load_profile_from_yaml(p).tools.mcp[0]
+
+    assert config.tool_name_prefix == "gh"
+    assert config.allowed_tools == ["gh_search"]
+    assert config.always_load == ["search"]
+
+
 @pytest.mark.parametrize("invalid", ["search", True, ["search", 7]])
 def test_load_mcp_always_load_rejects_non_string_lists(tmp_path: Path, invalid: object) -> None:
     p = tmp_path / "mcp_invalid_always.yaml"

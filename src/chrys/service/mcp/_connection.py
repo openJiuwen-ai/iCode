@@ -74,12 +74,6 @@ def _validate_config(config: MCPServerConfig) -> None:
         raise ValueError(f"MCP server {config.name!r}: 'allowed_tools' must be a list of strings or null")
     if not isinstance(config.always_load, list) or not all(isinstance(name, str) for name in config.always_load):
         raise ValueError(f"MCP server {config.name!r}: 'always_load' must be a list of strings")
-    if policy_errors := validate_mcp_tool_loading_policy(
-        allowed_tools=config.allowed_tools,
-        use_progressive_disclosure=config.use_progressive_disclosure,
-        always_load=config.always_load,
-    ):
-        raise ValueError(f"MCP server {config.name!r}: {' '.join(policy_errors)}")
     prefix_error = validate_mcp_tool_name_prefix(
         config.tool_name_prefix,
         generated_suffixes=MCP_PROGRESSIVE_CONTROL_TOOL_NAMES if config.use_progressive_disclosure else (),
@@ -90,6 +84,13 @@ def _validate_config(config: MCPServerConfig) -> None:
             config.transport,
             violations={prefix_error},
         )
+    if policy_errors := validate_mcp_tool_loading_policy(
+        allowed_tools=config.allowed_tools,
+        use_progressive_disclosure=config.use_progressive_disclosure,
+        always_load=config.always_load,
+        tool_name_prefix=config.tool_name_prefix,
+    ):
+        raise ValueError(f"MCP server {config.name!r}: {' '.join(policy_errors)}")
     if config.transport == "stdio":
         if not config.command:
             raise ValueError(f"MCP server {config.name!r} (stdio) requires 'command'")
