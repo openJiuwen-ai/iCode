@@ -3720,6 +3720,7 @@
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
+        ["awaitable", "await call_next()", "unresolved"],
         ["thread_pool", "await asyncio.to_thread(binding.prepare, context, reusable=not sensitive)", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
         ["async_context", "async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id)", "unresolved"],

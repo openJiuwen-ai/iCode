@@ -550,9 +550,9 @@ The following object shows only the fields added by tool events:
 | --- | --- |
 | `error` | `true` when the tool call raises an exception; `false` when it returns a failure result normally or the call is rejected. |
 | `failed` | `true` when the call is considered failed, including an exception, a recognizable failure result (such as a shell command returning a nonzero exit code), or rejection of the call. |
-| `approval_rejected` | Always present; `true` when the call is rejected by the user or a hook, otherwise `false`. |
-| `rejection_source` | Present only when the call is rejected; `user` means rejection by the user and `hook` means rejection by a hook. |
-| `hook_denied` | Present only when the call is rejected; `true` for rejection by a hook and `false` for rejection by the user. |
+| `approval_rejected` | Always present; `true` when execution is rejected by a user, hook, or invalidated approval; otherwise `false`. |
+| `rejection_source` | Present only when the call is rejected; `user` means rejection by the user, `hook` by a hook, and `approval_invalidated` when a post-approval rewrite invalidated the approved arguments. |
+| `hook_denied` | Present only when the call is rejected; `true` only for rejection by a hook and `false` for all other rejection sources. |
 | `hook_confirmation` | Present only when a hook [asked you to confirm](#asking-you-to-confirm) the call and it did not go ahead; says why: `declined` (you cancelled), `timed_out` (no answer came in time) or `unavailable` (nobody could be asked). Then `rejection_source` is `hook`. |
 | `outcome` | How the call ended: `rejected` (refused, so it never ran), `errored` (raised), `failed` (returned a failure result without raising) or `ok` (ran and returned). The `after_tool_call` and `tool_error` of one call carry the same value. It says how a call ended, not which call it was, so count per call on `tool.call_id` — or listen to `after_tool_call` alone, which fires for every call including the ones `tool_error` follows. |
 

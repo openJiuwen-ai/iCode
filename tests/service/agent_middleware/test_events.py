@@ -516,6 +516,33 @@ async def test_tool_event_middleware_user_rejection_public_metadata_is_persisted
     }
 
 
+async def test_invalidated_approval_is_persisted_without_impersonating_user_or_hook() -> None:
+    bus = EventBus()
+    results = await capture_events(bus, InvocationToolCallResult)
+    mw = ToolEventMiddleware(bus, session_id="test", origin=InvocationOrigin("turn", "test", "turn-test", None))
+    ctx = _ctx(
+        "bash",
+        KIND_SHELL,
+        args={"command": "rm sample"},
+        metadata={
+            _APPROVAL_REJECTED_KEY: True,
+            _REJECTION_SOURCE_KEY: "approval_invalidated",
+            _REJECTION_MESSAGE_KEY: "Tool arguments changed after approval.",
+        },
+    )
+
+    async def _next() -> None:
+        ctx.result = "Error: Tool arguments changed after approval."
+
+    await mw.process(ctx, _next)
+
+    assert results[0].metadata[TOOL_FAILED_METADATA_KEY] is True
+    assert results[0].metadata[TOOL_ERROR_KIND_METADATA_KEY] == "approval_invalidated"
+    assert results[0].metadata[TOOL_ERROR_MESSAGE_METADATA_KEY] == "Tool arguments changed after approval."
+    assert "approval" not in results[0].metadata
+    assert ctx.metadata[TOOL_RESULT_METADATA_KEY][TOOL_ERROR_KIND_METADATA_KEY] == "approval_invalidated"
+
+
 async def test_sub_agent_stats_middleware_counts_completed_tools_without_event_bus() -> None:
     stats = SubAgentLogStats()
     mw = SubAgentStatsMiddleware(stats)

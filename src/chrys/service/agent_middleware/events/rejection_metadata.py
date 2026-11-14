@@ -20,7 +20,7 @@ from chrys.service.agent_middleware.events.result_persistence import RESULT_APPR
 
 
 def rejection_result_metadata(metadata: Any) -> dict[str, Any]:
-    """Return public tool-result metadata for a user or hook rejection."""
+    """Return public metadata for a user/hook rejection or invalidated approval."""
     source = rejection_source(metadata) or "user"
     message = rejection_message(metadata, source)
     result: dict[str, Any] = {
@@ -29,6 +29,8 @@ def rejection_result_metadata(metadata: Any) -> dict[str, Any]:
     }
     if source == "hook":
         result[TOOL_ERROR_KIND_METADATA_KEY] = "hook_denied"
+    elif source == "approval_invalidated":
+        result[TOOL_ERROR_KIND_METADATA_KEY] = "approval_invalidated"
     else:
         result[RESULT_APPROVAL_METADATA_KEY] = "user_rejected"
         result[TOOL_ERROR_KIND_METADATA_KEY] = "approval_rejected"
@@ -40,7 +42,7 @@ def rejection_source(metadata: Any) -> str:
     if not isinstance(metadata, dict):
         return ""
     source = metadata.get(_REJECTION_SOURCE_KEY)
-    return source if source in {"user", "hook"} else ""
+    return source if source in {"user", "hook", "approval_invalidated"} else ""
 
 
 def hook_confirmation(metadata: Any) -> str:
@@ -60,4 +62,6 @@ def rejection_message(metadata: Any, source: str) -> str:
             return message
     if source == "hook":
         return "Tool execution was blocked by hook."
+    if source == "approval_invalidated":
+        return "Tool arguments changed after approval."
     return "Tool execution was rejected by user."
