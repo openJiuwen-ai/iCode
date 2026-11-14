@@ -119,8 +119,10 @@ Approvals for a session are deleted with that session and are not copied to a br
 
 The following operations usually run without an approval dialog:
 
-- Safe, read-only Shell commands that do not access sensitive targets, such as `ls`, `cat`, and `grep`.
+- A single simple POSIX Shell command that does not access sensitive targets, such as `ls`, `cat`, or `grep`.
 - File writes within the working directory's Git repository that do not access sensitive targets.
+
+Automatic approval is intentionally narrow. The command must contain no pipe, redirection, glob, variable or command substitution, brace or tilde expansion, or other shell syntax that can change the words passed to the program; quoted literal text is allowed. A command with any of those constructs requires approval. PowerShell and `cmd` shell commands currently always require approval. Commands that can start another program or change system state are not auto-approved even when their name looks read-only — for example `rg --pre`, `less`, `more`, `tree -o`, `date -s`, and `hostname`. The `read_only` shell filter is a separate, best-effort filter and is not an approval boundary; see [Agent profile reference](../../reference/agent-profile.md#tools).
 
 Shell commands and file reads or writes that access sensitive targets such as `.env` files, credentials, and private keys still go through approval, even for read-only operations or writes within a Git working directory. This protection applies in manual and automatic modes. Bypass mode skips these approval protections.
 
