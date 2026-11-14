@@ -57,6 +57,7 @@ from chrys.orchestration.session_host import (
     HeadlessRunResult,
     SessionNotFoundError,
 )
+from chrys.service.profiles.file_scan import ProfileDirScan
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.support.streams import FailingTextStream
 
@@ -131,6 +132,14 @@ class FakeModelRegistry:
         FakeModelRegistry.instances.append(self)
 
     def load_all(self) -> int:
+        return len(self.profiles)
+
+    def read_profiles(self, directory: Path | None = None) -> tuple[Path, ProfileDirScan[ModelProfile]]:
+        """Every stand-in profile is a file that loads; ``profiles`` is what the CLI lists."""
+        scan = ProfileDirScan[ModelProfile](loaded=[(Path(f"{profile.id}.yaml"), profile) for profile in self.profiles])
+        return directory or Path("."), scan
+
+    def install_profiles(self, directory: Path, profiles: ProfileDirScan[ModelProfile]) -> int:
         return len(self.profiles)
 
     def get(self, profile_id: str) -> ModelProfile | None:

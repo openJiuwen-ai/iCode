@@ -846,8 +846,17 @@ def _parse_profile(path: Path, text: str) -> AgentProfile:
         raise AgentProfileLoadError(f"Invalid agent profile structure in {path}: {e}") from e
 
 
+def read_profile_dir(directory: Path) -> ProfileDirScan[AgentProfile]:
+    """Read *directory* without reporting on it: what loaded, and what could not.
+
+    Callers that only need to know why a selector missed — an error message, not a
+    listing — must not repeat the errors :func:`scan_profile_dir` logs.
+    """
+    return scan_profiles(directory, _parse_profile, AgentProfileLoadError, skip_hidden=True)
+
+
 def scan_profile_dir(directory: Path) -> ProfileDirScan[AgentProfile]:
-    scan = scan_profiles(directory, _parse_profile, AgentProfileLoadError, skip_hidden=True)
+    scan = read_profile_dir(directory)
     for path, issue in scan.invalid.items():
         logger.error(
             "Skipping invalid agent profile %s: %s (any builtin with this name stays active)", path, issue.reason
