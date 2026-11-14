@@ -33,16 +33,16 @@ def isolated_chrys_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.fixture
 def isolated_model_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep model-profile serializer paths inside pytest temp dirs, and nothing else.
+    """Keep model-profile serializer paths inside pytest temp dirs.
 
-    Deliberately narrower than :func:`isolated_chrys_config_dir`: the stand-in
-    carries ``config_dir`` and no other field, so the day the model-config screen
-    starts consulting another part of the platform record these tests raise
-    ``AttributeError`` instead of quietly reading the developer's real machine.
-    The absence is the assertion, so do not widen this to a full ``PlatformInfo``.
+    The stand-in is the real detected platform with only ``config_dir``
+    replaced, like :func:`isolated_chrys_config_dir`: saving a model profile
+    goes through the owner-only writer and ``ensure_owner_only_directory``,
+    which branch on the OS, so a record carrying invented OS booleans would
+    lie on the Windows runner instead of guarding anything.
     """
     reset_wait_deadline()
-    fake_platform = type("P", (), {"config_dir": tmp_path})()
+    fake_platform = platform_with_config_dir(tmp_path)
     monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: fake_platform)
 
 

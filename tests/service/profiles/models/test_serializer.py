@@ -4,23 +4,44 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import stat
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
+from chrys.foundation.platform import get_platform
 from chrys.service.profiles.models.loader import load_profile_from_yaml
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.profiles.models.serializer import delete_profile, profile_to_dict, save_profile
+from tests.support.platform_fakes import platform_with_config_dir
 
 
 @pytest.fixture
 def fake_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Redirect ``get_platform().config_dir`` to a temp directory."""
-    fake_platform = type("P", (), {"config_dir": tmp_path})()
+    """Redirect ``get_platform().config_dir`` to a temp directory.
+
+    The stand-in is the real detected platform with only ``config_dir``
+    replaced: the owner-only writer and ``ensure_owner_only_directory`` consult
+    the OS, so inventing ``is_windows`` here would defeat them.
+    """
+    fake_platform = platform_with_config_dir(tmp_path)
     monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: fake_platform)
     return tmp_path
+
+
+@contextlib.contextmanager
+def _temporary_umask(mask: int) -> Iterator[None]:
+    """Run the block under *mask* so a freshly written file's mode is deterministic."""
+    previous = os.umask(mask)
+    try:
+        yield
+    finally:
+        os.umask(previous)
 
 
 def test_profile_to_dict_defaults_omitted() -> None:
@@ -161,6 +182,46 @@ def test_save_profile_overwrites_existing(fake_config_dir: Path) -> None:
 
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert loaded["name"] == "Second"
+
+
+def test_save_profile_writes_an_owner_only_file(fake_config_dir: Path) -> None:
+    """The YAML carries the provider API key, so no other local user may read it."""
+    with _temporary_umask(0o022):
+        path = save_profile(ModelProfile(id="secret", name="Secret", model_id="gpt-test", api_key="sk-test-key"))
+
+    if get_platform().is_windows:
+        return
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_save_profile_tightens_a_legacy_world_readable_file(fake_config_dir: Path) -> None:
+    """A file an older build left at the umask default becomes owner-only on the next save."""
+    if get_platform().is_windows:
+        return
+    models_dir = fake_config_dir / "models"
+    models_dir.mkdir(parents=True)
+    legacy = models_dir / "legacy.yaml"
+    legacy.write_text("id: legacy\nname: Legacy\n", encoding="utf-8")
+    legacy.chmod(0o644)
+
+    path = save_profile(ModelProfile(id="legacy", name="Legacy", api_key="sk-test-key"))
+
+    assert path == legacy
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["api_key"] == "sk-test-key"
+
+
+def test_save_profile_tightens_an_existing_models_directory(fake_config_dir: Path) -> None:
+    """Existing installs already have a readable ``models/``; saving must tighten it, not just new ones."""
+    if get_platform().is_windows:
+        return
+    models_dir = fake_config_dir / "models"
+    models_dir.mkdir(parents=True)
+    models_dir.chmod(0o755)
+
+    save_profile(ModelProfile(id="dir", name="Dir"))
+
+    assert stat.S_IMODE(models_dir.stat().st_mode) == 0o700
 
 
 def test_delete_profile_removes_existing_file(fake_config_dir: Path) -> None:
