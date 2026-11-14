@@ -906,6 +906,11 @@ async def _grep_impl(
     base_cwd: str | None = None,
     respect_gitignore: bool = True,
 ) -> str:
+    if type(max_results) is not int or max_results < 1:
+        return tool_error(
+            "invalid_max_results",
+            "max_results must be an integer >= 1 (the maximum number of results to return).",
+        )
     max_results = min(max_results, _MAX_RESULTS_HARD_LIMIT)
     missing_base = missing_base_cwd_error(path, base_cwd)
     if missing_base is not None:
@@ -1084,7 +1089,7 @@ async def grep(
         str | None, "Glob pattern to filter files (e.g. '*.py', '**/*.ts'). Omit to search all files."
     ] = None,
     context_lines: Annotated[int, "Number of context lines before and after each match."] = 2,
-    max_results: Annotated[int, "Maximum number of matches to return."] = _MAX_RESULTS,
+    max_results: Annotated[int, "Maximum number of matches to return (must be at least 1)."] = _MAX_RESULTS,
 ) -> str:
     """Search file contents using a regex pattern. Returns matching lines with context.
 
@@ -1092,7 +1097,7 @@ async def grep(
     The pattern is a Rust-flavor regex (PCRE-like, not Python re). Glob filtering
     uses gitignore-style rules: patterns without '/' match the filename at any
     depth (e.g. '*.py' matches 'src/foo.py'), patterns with '/' match against
-    the relative path. max_results is capped at 100 regardless of the value provided.
+    the relative path. max_results must be at least 1 and is capped at 100 regardless of the value provided.
     Directory searches respect Git ignore rules and ripgrep hidden-file rules.
     Explicit file names and directory prefixes can select hidden or ignored paths.
     Explicit ignored directories bypass Git ignore rules within that directory.
@@ -1119,6 +1124,11 @@ async def _glob_impl(
     base_cwd: str | None = None,
     respect_gitignore: bool = True,
 ) -> str:
+    if type(max_results) is not int or max_results < 1:
+        return tool_error(
+            "invalid_max_results",
+            "max_results must be an integer >= 1 (the maximum number of results to return).",
+        )
     max_results = min(max_results, _MAX_RESULTS_HARD_LIMIT)
     missing_base = missing_base_cwd_error(path, base_cwd)
     if missing_base is not None:
@@ -1167,7 +1177,7 @@ async def _glob_impl(
 async def glob(
     pattern: Annotated[str, "Glob pattern to match file names (e.g. '*.py', 'test_*.py', '**/*.ts')."],
     path: Annotated[str, "Directory to search in."] = ".",
-    max_results: Annotated[int, "Maximum number of results to return."] = _MAX_RESULTS,
+    max_results: Annotated[int, "Maximum number of results to return (must be at least 1)."] = _MAX_RESULTS,
 ) -> str:
     """Find files by name pattern. Returns relative paths of matching files.
 
@@ -1175,7 +1185,7 @@ async def glob(
     gitignore-style glob rules: patterns without '/' match the filename at any
     depth (e.g. '*.py' matches 'src/foo.py'), patterns with '/' match against
     the relative path. Searches recursively through all subdirectories.
-    max_results is capped at 100 regardless of the value provided.
+    max_results must be at least 1 and is capped at 100 regardless of the value provided.
     Discovery respects Git ignore rules and ripgrep hidden-file rules.
     Explicit file names and directory prefixes can select hidden or ignored paths.
     Explicit ignored directories bypass Git ignore rules within that directory.
@@ -1221,7 +1231,7 @@ class SearchTools:
             str | None, "Glob pattern to filter files (e.g. '*.py', '**/*.ts'). Omit to search all files."
         ] = None,
         context_lines: Annotated[int, "Number of context lines before and after each match."] = 2,
-        max_results: Annotated[int, "Maximum number of matches to return."] = _MAX_RESULTS,
+        max_results: Annotated[int, "Maximum number of matches to return (must be at least 1)."] = _MAX_RESULTS,
     ) -> str:
         """Search file contents using a regex pattern. Returns matching lines with context.
 
@@ -1229,7 +1239,7 @@ class SearchTools:
         The pattern is a Rust-flavor regex (PCRE-like, not Python re). Glob filtering
         uses gitignore-style rules: patterns without '/' match the filename at any
         depth (e.g. '*.py' matches 'src/foo.py'), patterns with '/' match against
-        the relative path. max_results is capped at 100 regardless of the value provided.
+        the relative path. max_results must be at least 1 and is capped at 100 regardless of the value provided.
         """
         return await _grep_impl(
             pattern,
@@ -1246,7 +1256,7 @@ class SearchTools:
         self,
         pattern: Annotated[str, "Glob pattern to match file names (e.g. '*.py', 'test_*.py', '**/*.ts')."],
         path: Annotated[str, "Directory to search in."] = ".",
-        max_results: Annotated[int, "Maximum number of results to return."] = _MAX_RESULTS,
+        max_results: Annotated[int, "Maximum number of results to return (must be at least 1)."] = _MAX_RESULTS,
     ) -> str:
         """Find files by name pattern. Returns relative paths of matching files.
 
@@ -1254,7 +1264,7 @@ class SearchTools:
         gitignore-style glob rules: patterns without '/' match the filename at any
         depth (e.g. '*.py' matches 'src/foo.py'), patterns with '/' match against
         the relative path. Searches recursively through all subdirectories.
-        max_results is capped at 100 regardless of the value provided.
+        max_results must be at least 1 and is capped at 100 regardless of the value provided.
         """
         return await _glob_impl(
             pattern,
