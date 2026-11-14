@@ -83,11 +83,13 @@ from chrys.service.profiles.models.schema import (
     API_STYLE_RESPONSES,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MAX_OUTPUT_TOKENS,
+    VALID_PROVIDERS,
     is_model_profile_selectable,
     is_responses_wire_dialect,
 )
 
 if TYPE_CHECKING:
+    from rich.console import RenderableType
     from textual.app import ComposeResult
     from textual.timer import Timer
     from textual.worker import Worker
@@ -318,6 +320,10 @@ _PROFILE_EXISTS = msg(
 _PROVIDER_ALLOWED = msg(
     "tui.model_config.validation.provider_allowed",
     fallback="Provider must be one of: {providers}.",
+)
+_PROVIDER_NOT_LISTED = msg(
+    "tui.model_config.provider.not_listed",
+    fallback="Not listed: {provider}",
 )
 _MODEL_REQUIRED = msg("tui.model_config.validation.model_required", fallback="Model name is required.")
 _FIELD_REQUIRED_EXAMPLE = msg(
@@ -810,6 +816,9 @@ class ModelConfigScreen(BaseDialog[str]):
         self._global_default_profile_id = global_default_profile_id
         self._read_only = read_only
         self._selected_profile_id: str = ""
+        # The provider value the dropdown currently carries as an extra option
+        # because no shipped option has it; None when it carries only shipped ones.
+        self._provider_option_extra: str | None = None
         # A successful Save requires a soft restart even when the global
         # default pointer is unchanged because profile fields may affect
         # the runtime-effective model.
@@ -1402,6 +1411,7 @@ class ModelConfigScreen(BaseDialog[str]):
             self._set_form_enabled(True)
 
             self.query_one("#mc-name", Input).value = profile.name
+            self._sync_provider_options(profile.provider)
             self.query_one("#mc-provider", Select).value = profile.provider
             self.query_one("#mc-api-style", Select).value = (
                 profile.api_style if profile.provider in ("openai", "deepseek-openai") else API_STYLE_CHAT_COMPLETIONS
@@ -1448,12 +1458,38 @@ class ModelConfigScreen(BaseDialog[str]):
 
     # ── Provider-dependent labels ────────────────────────────────────
 
+    def _sync_provider_options(self, provider: str) -> None:
+        """Give the provider dropdown an option for a stored value it does not ship.
+
+        ``Select.value`` rejects anything that is not one of its options, so a
+        profile whose file names a provider the form does not offer (``mock``,
+        a hand-typed id) would take the panel down on open. The extra option
+        carries the stored value, so the panel shows what the profile actually
+        says and the user can pick a shipped provider from the same list.
+        """
+        listed = {value for _label, value in _PROVIDERS}
+        extra = None if provider in listed else provider
+        if extra == self._provider_option_extra:
+            return
+        self._provider_option_extra = extra
+        options: list[tuple[RenderableType, str]] = [(label, value) for label, value in _PROVIDERS]
+        if extra is not None:
+            label = self._render_toast(_PROVIDER_NOT_LISTED.bind(provider=extra))
+            options.append((Text(label), extra))
+        select = self.query_one("#mc-provider", Select)
+        select.set_options(options)
+        # ``set_options`` reselects the first option when blank is not allowed,
+        # so the caller's choice has to be reapplied over it.
+        select.value = provider
+
     def _update_provider_labels(self, provider: str) -> None:
         """Refresh provider labels and the defaults shown by the form."""
         prefix = _PROVIDER_LABELS.get(provider, provider.title())
         self._refresh_model_heading_and_hint()
         self._refresh_url_label()
-        self.query_one("#mc-key-label", Label).update(self._render_toast(_PROVIDER_API_KEY.bind(provider=prefix)))
+        # ``Label`` parses markup by default and the prefix can carry a provider
+        # id no shipped list knows, so hand it over as text.
+        self.query_one("#mc-key-label", Label).update(Text(self._render_toast(_PROVIDER_API_KEY.bind(provider=prefix))))
 
         defaults = resolve_model_connection(ConnectionSnapshot(provider, ""))
         self.query_one("#mc-base-url", Input).placeholder = defaults.base_url or self._render_toast(
@@ -1834,10 +1870,19 @@ class ModelConfigScreen(BaseDialog[str]):
     # ── Events ───────────────────────────────────────────────────────
 
     @on(Select.Changed, "#mc-provider")
-    def _on_provider_changed(self, _event: Select.Changed) -> None:
+    def _on_provider_changed(self, event: Select.Changed) -> None:
         # Read the widget, not the event: a Changed queued before _load_profile's
         # prevented assignments must not reapply the stale initial value.
-        self._update_provider_labels(str(self.query_one("#mc-provider", Select).value))
+        select = self.query_one("#mc-provider", Select)
+        provider = str(select.value)
+        if str(event.value) != provider:
+            # A rebuild reselects an intermediate value and posts it before the
+            # picked one is reapplied; that change no longer describes the form.
+            return
+        # Picking a shipped provider retires the extra option the previous value
+        # needed; the sync reapplies the picked value over ``set_options``.
+        self._sync_provider_options(provider)
+        self._update_provider_labels(provider)
         self._connection_changed()
 
     @on(Select.Changed, "#mc-api-style")
@@ -2281,7 +2326,9 @@ class ModelConfigScreen(BaseDialog[str]):
                     break
 
         provider = str(self.query_one("#mc-provider", Select).value)
-        if provider not in {p[1] for p in _PROVIDERS}:
+        # The engine's own set: a value it cannot build a client for is refused
+        # here (clients.py::create_client), while ``mock`` is one it accepts.
+        if provider not in VALID_PROVIDERS:
             allowed = ", ".join(p[0] for p in _PROVIDERS)
             errors.append(self._render_toast(_PROVIDER_ALLOWED.bind(providers=allowed)))
 

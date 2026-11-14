@@ -90,6 +90,8 @@ Clicking "Clone" saves the copy immediately, but does not switch the current mod
 
 If you edit the model profile currently in use, the updated configuration applies to subsequent requests after you save it and close the configuration window.
 
+If the profile file names a provider the window does not offer — one you edited by hand, for example — the "Provider" list shows it as "Not listed: <name>". Select one of the listed providers and click "Save" to keep using the profile from the window.
+
 ### Claude thinking settings
 
 To request adaptive thinking with readable summaries, add a `thinking` row with the value `{"type": "adaptive", "display": "summarized"}` in ["Chat Options"](./chat-options.md#anthropic).
