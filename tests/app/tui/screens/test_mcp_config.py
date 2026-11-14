@@ -907,6 +907,37 @@ async def test_progressive_mcp_read_only_state_and_list_validation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_progressive_initial_tools_accept_the_prefixed_spelling() -> None:
+    """An initially visible name matches its permitted counterpart under the same tool name prefix."""
+
+    from chrys.service.profiles.agents.schema import MCPServerConfig
+
+    initial = MCPServerConfig(
+        name="progressive",
+        transport="stdio",
+        command="python",
+        tool_name_prefix="gh",
+        allowed_tools=["gh_search"],
+        use_progressive_disclosure=True,
+        always_load=["search"],
+    )
+    app = _MCPPanelApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        panel = MCPConfigPanel([initial])
+        await app.mount(panel)
+        await pilot.pause()
+
+        card = (await _wait_for_mcp_cards(panel, pilot, 1))[0]
+        card.query_one("#mcp-tool-access-0", Select).value = "selected"
+        await pilot.pause()
+
+        assert not any("must also be included in Available Tool Scope" in error for error in card.validate())
+
+        card.query_one("#mcp-always-load-0", Input).value = "write"
+        assert any("must also be included in Available Tool Scope: write" in error for error in card.validate())
+
+
+@pytest.mark.asyncio
 async def test_transport_selector_switches_to_http_fields() -> None:
     """Transport Select should switch fields and parse HTTP config."""
 

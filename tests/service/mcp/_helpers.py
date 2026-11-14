@@ -15,7 +15,7 @@ from mcp import ClientSession, types
 from mcp.shared.session import ProgressFnT
 
 from chrys.kernel import FunctionTool as ChrysFunctionTool
-from chrys.service.mcp.owned import MCPTool
+from chrys.service.mcp.owned import MCPTool, _mcp_config_names_for
 
 
 async def _remote_tool(ctx, value: str = "") -> str:
@@ -233,7 +233,7 @@ class _FakeCatalogTool:
         if self.allowed_tools is None:
             return self._functions
         allowed_names = set(self.allowed_tools)
-        return [tool for tool in self._functions if tool.name in allowed_names]
+        return [tool for tool in self._functions if not allowed_names.isdisjoint(_mcp_config_names_for(tool))]
 
     async def __aenter__(self) -> _FakeCatalogTool:
         return self
