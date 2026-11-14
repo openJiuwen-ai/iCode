@@ -16,6 +16,7 @@ from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
 from chrys.app.tui.screens.dialogs.approval.body import ApprovalBody, ApprovalBypass, register_approval_body
+from chrys.app.tui.util.removal import remove_shielded
 from chrys.foundation.i18n import DisplayBlock, DisplayPath, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE
@@ -104,7 +105,7 @@ class ApprovalDiffPreview(VerticalGroup):
             return
         with suppress(Exception):
             await self.mount(dv)
-            await self.query_one(".approval-diff-placeholder", Static).remove()
+            await remove_shielded(self.query_one(".approval-diff-placeholder", Static))
             self._mark_ready()
 
     def _mark_ready(self) -> None:
