@@ -22,6 +22,7 @@ from chrys.app.tui.screens.dialogs.vision_unsupported import VisionUnsupportedDi
 from chrys.app.tui.screens.main import MainScreen
 from chrys.app.tui.screens.main.event_handlers import BackendEventHandler
 from chrys.app.tui.screens.main.input_flow import InputFlowController
+from chrys.app.tui.screens.main.ports import InputSubmission
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, RunState
 from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar
 from chrys.foundation.events.bus import EventBus
@@ -52,8 +53,18 @@ class _InputBar:
     """The composer: an injection keeps its text while the bar is locked."""
 
     def __init__(self) -> None:
-        self.value = ""
+        self._value = ""
+        self.draft_revision = 0
         self.locked = False
+
+    @property
+    def value(self) -> str:
+        return self._value
+
+    @value.setter
+    def value(self, text: str) -> None:
+        self._value = text
+        self.draft_revision += 1
 
     def lock_with_text(self) -> None:
         self.locked = True
@@ -93,15 +104,16 @@ class _InputFlowView:
     def clear_terminal_title_result(self) -> None:
         return None
 
-    def lock_input_with_text(self) -> None:
+    def lock_input_with_text(self) -> InputSubmission:
         self._input_bar.lock_with_text()
+        return InputSubmission(self._input_bar.draft(), self._input_bar.draft_revision)
 
     def unlock_input_keep_if_locked(self) -> None:
         if self._input_bar.locked:
             self._input_bar.unlock_and_keep()
 
-    def unlock_input_clearing(self, text: str) -> None:
-        if self._input_bar.locked or self._input_bar.value.strip() == text:
+    def clear_submitted_input(self, submission: InputSubmission) -> None:
+        if self._input_bar.draft_revision == submission.revision and self._input_bar.draft() == submission.draft:
             self._input_bar.unlock_and_clear()
 
     def current_chat_session_id(self) -> str:
@@ -448,10 +460,10 @@ async def test_mid_run_message_whose_run_ended_first_shows_the_turn_it_opened(me
     async def admit_as_new_turn(event: UserMessage) -> None:
         # The run finished while the message waited for admission (the UI saw
         # its end), so the backend opened a new turn with it instead.
+        h.handler.set_agent_running(False)
         if meanwhile == "esc":
             # Its backend cancel arrives too late.
-            assert h.controller.cancel_pending_injection() is True
-        h.handler.set_agent_running(False)
+            assert h.controller.withdraw_submit() is True
         if meanwhile == "edit":
             # The run's end handed the composer back, so it is editable.
             h.input_bar.value = "edited draft"
@@ -474,8 +486,8 @@ async def test_mid_run_message_whose_run_ended_first_shows_the_turn_it_opened(me
     assert h.state.submit.active is False
     assert h.state.render_gate.active is False
     assert h.input_bar.locked is False
-    # The terminal event handed the draft back; delayed admission cannot reclaim it.
-    assert h.input_bar.value == {"nothing": _TEXT, "esc": _TEXT, "edit": "edited draft"}[meanwhile]
+    # Only the unchanged, unwithdrawn sent draft is cleared after delayed admission.
+    assert h.input_bar.value == {"nothing": "", "esc": _TEXT, "edit": "edited draft"}[meanwhile]
 
 
 @pytest.mark.asyncio

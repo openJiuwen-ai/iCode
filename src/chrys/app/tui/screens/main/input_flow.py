@@ -14,11 +14,12 @@ keeps the message from going out hands the draft back whole, once.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from chrys.app.tui.screens.main.ports import InputFlowView, StartWorker
+from chrys.app.tui.screens.main.ports import InputFlowView, InputSubmission, StartWorker
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, SubmitKind
 from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcAbsorbRequested
 from chrys.app.tui.widgets.chat.replay import contents_text
@@ -57,6 +58,16 @@ _RUNNING_COMMANDS = msg(
     fallback="Running {count} command… Esc to cancel",
     plural_fallback="Running {count} commands… Esc to cancel",
 )
+
+
+@dataclass(frozen=True)
+class _QueuedSubmit:
+    """Admission identity survives a turn ending and handing its composer back."""
+
+    injection_id: str
+    input: InputSubmission
+    place: tuple[int, str]
+    owns_draft: bool
 
 
 class InputFlowController:
@@ -119,9 +130,9 @@ class InputFlowController:
                 self._view.flash_submit_still_sending()
             return
         if self._state.run.agent_running:
-            injection_id = self._begin_injection(text, draft)
-            if injection_id is not None:
-                self._start_worker(partial(self._publish_queued_injection, text, draft, injection_id))
+            queued = self._begin_injection(text, draft)
+            if queued is not None:
+                self._start_worker(partial(self._publish_queued_injection, text, queued))
             return
         self._start_worker(partial(self.send_user_message, text, draft))
 
@@ -140,7 +151,7 @@ class InputFlowController:
             self._view.flash_submit_still_sending()
 
     def withdraw_submit(self) -> bool:
-        """Esc while a message carrying a prompt shortcut is on its way: withdraw it; False for anything else.
+        """Esc while a cancellable submit is on its way: withdraw it; False for anything else.
 
         Owns Esc for that whole time: the first one withdraws (a message not yet
         published is never published; one the engine is admitting is told to
@@ -149,6 +160,10 @@ class InputFlowController:
         submit = self._state.submit
         if not submit.active or submit.message_id is None:
             return False
+        if submit.kind == "injection" and self._state.pending_injection.active:
+            # During a live queue Esc also hands the composer back immediately.
+            # Once a terminal event did that, the admission id still permits withdrawal.
+            return self.cancel_pending_injection()
         if not submit.withdrawn:
             submit.withdrawn = True
             self._start_worker(partial(self._bus.publish, UserInjectCancel(injection_id=submit.message_id)))
@@ -313,43 +328,63 @@ class InputFlowController:
 
     async def queue_injection(self, text: str, draft: ChatDraft | None = None) -> None:
         """Queue a user message for mid-run injection without chat display; *draft* is the composer's whole draft."""
-        injection_id = self._begin_injection(text, draft)
-        if injection_id is not None:
-            await self._publish_queued_injection(text, draft, injection_id)
+        queued = self._begin_injection(text, draft)
+        if queued is not None:
+            await self._publish_queued_injection(text, queued)
 
-    def _begin_injection(self, text: str, draft: ChatDraft | None) -> str | None:
+    def _begin_injection(self, text: str, draft: ChatDraft | None) -> _QueuedSubmit | None:
         """Reserve the draft synchronously before another Enter or action can arrive."""
         if not self._claim_submit(text, kind="injection", draft=draft):
             return None
         injection_id = uuid4().hex[:12]
+        self._state.submit.message_id = injection_id
         self._state.pending_injection.begin(injection_id, text)
         try:
-            self._view.lock_input_with_text()
+            submission = self._view.lock_input_with_text()
+            place = self.place()
         except BaseException:
             self._state.pending_injection.clear()
             self._state.submit.clear()
             raise
-        return injection_id
+        owns_draft = submission.draft == draft if draft is not None else submission.draft.sent_text() == text
+        if not owns_draft:
+            # UserSubmitted also travels through a message queue. Input typed
+            # before it arrived belongs to the user, not to this injection's
+            # eventual consumed result. Admission keeps its own cancel id.
+            self._state.pending_injection.clear()
+            self._view.unlock_input_keep_if_locked()
+        return _QueuedSubmit(injection_id, submission, place, owns_draft)
 
-    async def _publish_queued_injection(self, text: str, draft: ChatDraft | None, injection_id: str) -> None:
+    async def _publish_queued_injection(self, text: str, queued: _QueuedSubmit) -> None:
+        injection_id = queued.injection_id
+        submit = self._state.submit
+        if submit.message_id != injection_id:
+            return
         try:
-            if not self._state.pending_injection.matches(injection_id):
+            if submit.withdrawn or self.place() != queued.place:
+                if self._state.pending_injection.matches(injection_id):
+                    self._state.pending_injection.clear()
+                    self._view.unlock_input_keep_if_locked()
                 return
             event = UserMessage(text=text, injection_id=injection_id)
             if await self._publish_submit(event):
                 self._state.pending_injection.clear()
                 return
         finally:
-            self._state.submit.clear()
+            withdrawn = submit.withdrawn
+            submit.clear()
         if event.started_turn:
             # The run ended before the backend admitted this message, so it
             # opened a new turn with it: show that turn as a new turn's Enter
-            # would. The run's end or an Esc handed the composer back meanwhile,
-            # so only the sent text leaves it.
-            if self._state.pending_injection.matches(injection_id):
+            # would. A terminal event may have handed the composer back while
+            # admission awaited; only its unchanged, unwithdrawn draft leaves it.
+            owns_input = self._state.pending_injection.matches(injection_id)
+            if owns_input:
                 self._state.pending_injection.clear()
-                # The locked composer holds the draft, not the text it sent.
-                self._view.unlock_input_clearing(draft.text.strip() if draft is not None else text)
+            if not withdrawn and queued.owns_draft and self.place() == queued.place:
+                self._view.clear_submitted_input(queued.input)
+            if owns_input:
+                self._view.unlock_input_keep_if_locked()
             self._state.render_gate.begin()
             await self._open_turn(event)
             self._debug("UserMessage (inject → new turn)", text[:60])
@@ -379,6 +414,7 @@ class InputFlowController:
         event = UserInjectSteer(injection_id=injection_id)
         try:
             await self._bus.publish(event)
+            self._debug("UserInjectSteer", f"{injection_id} accepted={event.accepted}")
         finally:
             if not event.accepted and pending.matches(injection_id):
                 pending.phase = "queued"
@@ -395,6 +431,9 @@ class InputFlowController:
         if not pending.active or pending.phase == "steering":
             return False
         injection_id = pending.injection_id
+        submit = self._state.submit
+        if submit.active and submit.message_id == injection_id:
+            submit.withdrawn = True
         pending.clear()
         self._view.unlock_input_keep_if_locked()
         if injection_id is not None:

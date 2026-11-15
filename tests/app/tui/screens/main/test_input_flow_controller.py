@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from chrys.app.tui.screens.main.input_flow import InputFlowController
+from chrys.app.tui.screens.main.ports import InputSubmission
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import (
@@ -56,6 +57,7 @@ class _FakeInputFlowView:
         self.retry_note_ids: list[str | None] = []
         self.session_id = "panel-session"
         self.input_locked = False
+        self.draft_on_lock: Callable[[], ChatDraft] = lambda: ChatDraft("")
 
     def set_terminal_title_for_user_message(self, text: str) -> None:
         self.calls.append(("title", text))
@@ -95,9 +97,10 @@ class _FakeInputFlowView:
     def clear_ask_user_inline_prompts(self) -> None:
         self.calls.append("clear_inline")
 
-    def lock_input_with_text(self) -> None:
+    def lock_input_with_text(self) -> InputSubmission:
         self.input_locked = True
         self.calls.append("lock_input")
+        return InputSubmission(self.draft_on_lock(), 0)
 
     def set_injection_steering(self, steering: bool) -> None:
         self.calls.append(("steering", steering))
@@ -145,6 +148,7 @@ def _make_input_flow_controller(
 ) -> tuple[InputFlowController, MainScreenState, _FakeInputFlowView]:
     state = state or MainScreenState()
     view = view or _FakeInputFlowView()
+    view.draft_on_lock = lambda: state.submit.draft or ChatDraft(state.submit.text)
     running = running if running is not None else []
     has_messages = has_messages if has_messages is not None else []
 

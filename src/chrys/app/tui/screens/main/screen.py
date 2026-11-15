@@ -2184,12 +2184,14 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     # ------------------------------------------------------------------ #
 
     @on(InputBar.SteerRequested)
-    def _on_steer_requested(self, _event: InputBar.SteerRequested) -> None:
-        self._input_flow.steer_pending_injection()
+    def _on_steer_requested(self, event: InputBar.SteerRequested) -> None:
+        if self.query_one(InputBar).owns_queued_action(event.queue_generation):
+            self._input_flow.steer_pending_injection()
 
     @on(InputBar.CancelQueueRequested)
-    def _on_cancel_queue_requested(self, _event: InputBar.CancelQueueRequested) -> None:
-        self._input_flow.cancel_pending_injection()
+    def _on_cancel_queue_requested(self, event: InputBar.CancelQueueRequested) -> None:
+        if self.query_one(InputBar).owns_queued_action(event.queue_generation):
+            self._input_flow.cancel_pending_injection()
 
     @on(InputBar.InterruptRequested)
     def _on_interrupt_requested(self, _event: InputBar.InterruptRequested) -> None:

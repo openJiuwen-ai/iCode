@@ -49,7 +49,7 @@ Type a message and press **Enter** to queue it for the next model request. The t
 - **Steer** tries to stop the current generation or running tools and continue with this message. **Steering…** shows while the request is pending; **Interrupt** remains available. If the message has already reached the model, it is not sent again and that request continues.
 - **Ctrl+B** interrupts the task even while a message is queued. Without a queued message, the right-hand button is **Interrupt**.
 
-The input clears when the message reaches the model. If the task finishes or fails while the message is still shown as queued, the draft becomes editable immediately. You can send another message without waiting for confirmation about the queued one. A late delivery confirmation still adds the delivered message to the conversation and keeps your current draft. A cancellation that arrives after delivery cannot retract the message.
+The input clears when the message reaches the model. If the task finishes or fails while the message is still shown as queued, the draft becomes editable immediately. If the message is still being submitted, **Esc** can still withdraw it. If that submission starts a new task, the original draft clears only if you have not edited it. A late delivery confirmation still adds the delivered message to the conversation and keeps your current draft. A cancellation that arrives after delivery cannot retract the message.
 
 ## Ask a side question
 

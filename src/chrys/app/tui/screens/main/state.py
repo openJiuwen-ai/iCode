@@ -231,7 +231,7 @@ class SubmitCoordinator:
     draft: ChatDraft | None = field(default=None, repr=False)
     returned: bool = False
     # The id the message can be withdrawn by while the engine admits it
-    # (``UserInjectCancel``); set only for a message carrying a prompt shortcut.
+    # (``UserInjectCancel``); a queued injection or a message carrying a prompt shortcut.
     message_id: str | None = None
     # Esc asked to withdraw it: a message not yet published is not published.
     withdrawn: bool = False
