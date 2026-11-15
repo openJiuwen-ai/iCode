@@ -419,17 +419,12 @@ class DocConverterTools:
             "Absolute or relative path to the document to convert. Supported formats: PDF, DOCX, PPTX, XLSX, XLS.",
         ],
     ) -> str:
-        """Convert a PDF or Office document to Markdown.
+        """Convert PDF/Office files to Markdown, not page or slide layouts.
 
-        For small documents the full Markdown is returned inline.  For large
-        documents the output is saved to the session folder and a table of
-        contents with file metadata is returned. A session handle is always
-        returned, plus an absolute path when it is strict-UTF-8 representable.
-        Use ``read_file`` with ``offset`` and ``limit`` when available. When ``view_image`` is
-        available, embedded raster assets from PDF, DOCX, and PPTX files are
-        saved as lazy references.  XLS/XLSX conversion remains text/table-only.
-        This does not render complete pages/slides or preserve document layout.
-        """
+        Returns a session handle and, when representable as strict UTF-8, an absolute path.
+        Small output is inline; large output has a table of contents for read_file with
+        offset/limit. With view_image, PDF/DOCX/PPTX raster images are lazy references;
+        XLS/XLSX are text and tables only."""
         from chrys.service.tools.builtins.doc_converter.registry import get_parser, supported_extensions
 
         # Resolve and validate

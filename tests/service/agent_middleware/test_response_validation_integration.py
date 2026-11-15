@@ -349,7 +349,8 @@ class TestOutputTruncationCompaction:
         await ctx.bus.subscribe(ToolCompacted, _on_compacted)
 
         try:
-            await ctx.send_message("first")
+            # User context survives result trimming, keeping phase-2 recovery exercised.
+            await ctx.send_message("first " + "task requirement " * 200)
             await ctx.send_message("second")
 
             assert ctx.mock_client.call_count == 3

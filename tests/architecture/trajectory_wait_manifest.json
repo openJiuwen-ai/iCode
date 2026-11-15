@@ -5058,6 +5058,11 @@
         ["thread_pool", "await loop.run_in_executor(None, _track_shell_scan_before, tracker, args, workspace_cwd)", "unresolved"]
       ]
     },
+    "chrys.service.profiles.agents.serializer": {
+      "async_profile_directory_lock": [
+        ["sleep", "await asyncio.sleep(0.05)", "unresolved"]
+      ]
+    },
     "chrys.service.prompt_shortcuts.shell": {
       "interpolate_shell": [
         ["async_context", "async with asyncio.TaskGroup()", "unresolved"]

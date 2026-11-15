@@ -277,37 +277,15 @@ async def ask_user(
         ),
     ],
 ) -> str:
-    """Ask the user one or more multiple-choice questions and wait for their answers.
+    """Ask for missing context or a user decision that changes the next action.
 
-    Use this when you are blocked on a decision that is genuinely the user's to make:
-    a preference, a priority call, or missing context you cannot get any other way.
-    Do not ask about things you can discover yourself from the repository, the
-    environment, or the conversation. Reserve it for questions whose answer changes
-    what you do next.
-
-    Ask everything you need in ONE call: pass up to 5 entries in ``questions`` and the
-    user answers them all in a single dialog. Do not call this tool several times in a
-    row for one clarification.
-
-    Usage notes:
-    - Each question takes ``question`` (the complete question, Markdown supported),
-      ``header`` (a <=12 character tab label such as "Auth method" or "Library"), and
-      2-4 ``options``, each with a short ``label`` (1-5 words) and a ``description``
-      saying what choosing it means.
-    - Never add an "Other"/"Something else" option: a free-text box is always shown.
-    - If you recommend one option, put it first and end its label with "(Recommended)".
-    - Set ``multi_select`` to true when the choices are not mutually exclusive.
-    - ``options`` may be omitted for an open-ended question; the user then answers in
-      free text.
-    - Put the complete question inside ``question``. Do not send the question as
-      assistant text and then call this tool with a short prompt.
-    - The result lists one entry per question; an entry marked ``"unanswered": true``
-      was skipped by the user - never assume an answer for it. Proceed with your
-      recommended option and state the assumption, or continue without it.
-    - If the task is already finished and your question is only a follow-up, ask it in
-      your final response instead of calling this tool.
-    - If the user asks you to stop asking questions, stop calling this tool and wait.
-    """
+    Check the conversation, repository, and environment first. Bundle up to 5 questions
+    in one call. Put each complete question in question; omit options for free text.
+    Do not add an Other option: free text is built in. Put a recommended choice first
+    and suffix its label with (Recommended). Use multi_select for compatible choices.
+    Unanswered entries are skipped, not approval; state any nonessential assumption
+    or continue independent work. Do not ask follow-ups after completing the task,
+    or call this tool when the user has asked you to stop asking questions."""
     canonical = parse_ask_user_questions([_question_param_dict(item) for item in questions])
     if not canonical:
         return "[Questions for user]"

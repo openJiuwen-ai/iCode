@@ -14,7 +14,7 @@ from chrys.foundation.i18n import DisplayPath, DisplaySequence, MessageRef, msg
 from chrys.foundation.platform.files import publish_file_no_replace, replace_with_retry
 from chrys.service.profiles.agents.loader import scan_profile_dir as scan_agents
 from chrys.service.profiles.agents.registry import AgentProfileRegistry, legacy_profile_id, resolve_launch_profile
-from chrys.service.profiles.agents.serializer import profile_write_lock, save_profile
+from chrys.service.profiles.agents.serializer import profile_directory_lock
 from chrys.service.profiles.file_scan import profile_fingerprint
 from chrys.service.profiles.models.loader import scan_profile_dir as scan_models
 from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -137,6 +137,19 @@ class ProfileReload:
             self.report.append(_CHANGED.bind())
 
     def normalize(self) -> None:
+        if self.agents is None:
+            self._normalize()
+            return
+        try:
+            with profile_directory_lock(self.agents.directory):
+                self._normalize()
+        except OSError as exc:
+            raise ConfigError(
+                _NORMALIZE_FAILED.bind(path=DisplayPath(self.agents.directory), reason=str(exc)),
+                hint=self.changes_hint(),
+            ) from exc
+
+    def _normalize(self) -> None:
         """Recheck disk inputs *after* the build, before applying any agent migrations."""
         if self.models is not None and self._model_files is not None:
             current = scan_models(self.models.directory)
@@ -194,7 +207,7 @@ class ProfileReload:
             expected[target] = expected.pop(source)
 
         try:
-            with profile_write_lock:
+            with profile_directory_lock(directory):
                 self.check_versions()
                 ready = self.agents.canonicalize_profile_files(originals, directory, move=move)
                 ready_ids = {id(profile) for _, profile in ready}
@@ -204,6 +217,31 @@ class ProfileReload:
                 for path, _ in originals:
                     self.agents.sources.pop(path, None)
                 self.agents.sources.update({path: profile.name for path, profile in ready})
+                before_migration = scan_agents(directory)
+                if before_migration.directory_error or before_migration.fingerprints != expected:
+                    changed_path = next(
+                        (
+                            path
+                            for path in sorted(expected.keys() | before_migration.fingerprints.keys())
+                            if (path in expected, expected.get(path))
+                            != (path in before_migration.fingerprints, before_migration.fingerprints.get(path))
+                        ),
+                        directory,
+                    )
+                    raise failure(changed_path)
+                backups = self.agents.migrate_builtin_prompts()
+                if backups:
+                    migrated = scan_agents(directory)
+                    migrated_names: set[str] = set()
+                    for path, profile in migrated.loaded:
+                        if (self.agents.is_builtin(profile.name) or profile.name in backups) and expected.get(
+                            path
+                        ) != migrated.fingerprints[path]:
+                            migrated_names.add(profile.name)
+                            self.agents.register(profile, source=path)
+                            expected[path] = migrated.fingerprints[path]
+                    self._rewrites = [p for p in self._rewrites if p.name not in migrated_names]
+                    self.completed_changes.extend(f"{name}.yaml" for name in backups)
                 if self._rewrites:
                     ready_paths = {id(profile): path for path, profile in ready}
                     try:
@@ -214,7 +252,7 @@ class ProfileReload:
                         for profile in self._rewrites:
                             path = ready_paths[id(profile)]
                             try:
-                                replacement = save_profile(profile, target_dir=Path(staging))
+                                replacement = self.agents.save(profile, target_dir=Path(staging))
                                 digest = profile_fingerprint(replacement)
                                 if digest is None:
                                     raise failure(path)

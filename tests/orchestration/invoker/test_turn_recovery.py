@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 from unittest.mock import call, create_autospec
 
 import pytest
@@ -16,6 +17,20 @@ from chrys.orchestration.invoker.contracts import AbortCause, Aborted, Failed, O
 from chrys.service.llm.mock import MockResponse
 from tests.orchestration.invoker._build_fixtures import build_recipe_engine
 from tests.orchestration.invoker._main_pass import fresh_pass
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+
+if TYPE_CHECKING:
+    from chrys.orchestration.engine.engine import AgentEngine
+
+
+async def _wait_for_running_phase(engine: AgentEngine, entered: asyncio.Event, description: str) -> None:
+    task = engine.turn_lifecycle_task
+    assert task is not None
+    await wait_for(lambda: entered.is_set() or task.done(), timeout=ENGINE_TURN_TIMEOUT, description=description)
+    if task.done():
+        await task
+    assert entered.is_set(), engine.current.require_loaded().bindings.inputs.outcome
+    assert not task.done(), "turn finished before the interrupt boundary"
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -29,6 +44,9 @@ async def test_real_engine_interrupt_routes_through_backend_abort(route, stream,
         await release.wait()
         return "done"
 
+    # Schema generation can trigger a full GC on a loaded worker. It is setup,
+    # not part of the running-tool interruption this test measures.
+    blocked.parameters()
     engine, _, _ = await build_recipe_engine(
         agent_engine,
         monkeypatch,
@@ -44,7 +62,7 @@ async def test_real_engine_interrupt_routes_through_backend_abort(route, stream,
     monkeypatch.setattr(backend, "abort", abort)
     try:
         await engine.event_bus.publish(UserMessage(text="work"))
-        await asyncio.wait_for(entered.wait(), 5)
+        await _wait_for_running_phase(engine, entered, "blocked tool entered")
         handle = backend.active_handle
         assert handle is not None
         if route == "user":
@@ -96,7 +114,7 @@ async def test_real_prepare_stop_retry_does_not_use_previous_invocation(
 
         monkeypatch.setattr(TurnRunner, "_fire_before_turn", create_autospec(original, side_effect=prepare))
         await engine.event_bus.publish(UserMessage(text="second"))
-        await asyncio.wait_for(entered.wait(), 5)
+        await _wait_for_running_phase(engine, entered, "second turn preparation entered")
         current = engine.current.loaded.bindings.inputs.origin
         assert current != previous
         assert engine.current.loaded.bindings.inputs.outcome is None
@@ -151,9 +169,10 @@ async def test_real_engine_owner_close_cause_reaches_outcome(route, tmp_path, mo
         monkeypatch.setattr(backend._attempts, "run", create_autospec(backend._attempts.run, side_effect=attempt))
         monkeypatch.setattr(backend, "run", create_autospec(original_run, side_effect=observe))
         await engine.event_bus.publish(UserMessage(text="work") if route == "fresh" else UserRetry())
-        await asyncio.wait_for(entered.wait(), 5)
+        await _wait_for_running_phase(engine, entered, "backend attempt entered")
         closing = asyncio.create_task(engine.current.loaded.prepared.aclose())
-        await asyncio.wait_for(closing, 5)
+        await wait_for(closing.done, timeout=ENGINE_TURN_TIMEOUT, description="prepared conversation closed")
+        await closing
         assert len(outcomes) == 1
         assert isinstance(outcomes[0], Aborted)
         assert outcomes[0].cause is AbortCause.OWNER_CLOSE

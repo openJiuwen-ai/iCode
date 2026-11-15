@@ -2186,12 +2186,6 @@ msgstr "变量"
 msgid "tui.acp.working_directory"
 msgstr "工作目录"
 
-#. English: Agent already uses the system defaults
-#. chrys-meta={"fingerprint":"106ba3f1213af904c7a97cb6fd680e777cfadb7e3211379af55e589e955818c8","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.already_default"
-msgstr "智能体已使用系统默认设置"
-
 #. English: Agent Profile
 #. chrys-meta={"fingerprint":"9ed1e190563ca498c2d853bb088262ae41038323a06709cf4e7608571a888dd7","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/basic.py
@@ -2327,12 +2321,6 @@ msgstr "删除"
 msgid "tui.agent_config.button.new"
 msgstr "新建"
 
-#. English: Reset
-#. chrys-meta={"fingerprint":"153f87afbe6a28418796d6fbe48109d7140ad7f627a8e4b17fcf946628af5142","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.button.reset"
-msgstr "重置"
-
 #. English: Save
 #. chrys-meta={"fingerprint":"c412f9116c212d2749697d0fce560e880e82ef767c87d9614d341b4ce1ee2061","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/config.py
@@ -2378,24 +2366,6 @@ msgstr ""
 #: src/chrys/app/tui/screens/agents/config.py
 msgid "tui.agent_config.confirm.delete.title"
 msgstr "删除智能体"
-
-#. English: Reset built-in agent "{display}" to system defaults?  Skills, MCP,
-#. Memory, and Extensions settings will be preserved. All other changes will be
-#. discarded.
-#. chrys-meta={"fingerprint":"6cc6ce611c7dd4302f9fdf6eb7d3ae9b3aee218f348cd01e54f3bef411282546","multiline":true,"placeholders":["display"]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.confirm.reset.message"
-msgstr ""
-"将内置智能体\n"
-"“{display}”重置为系统默认设置？\n"
-"\n"
-"Skills、MCP、Memory 和扩展设置将被保留，其他所有更改都将丢弃。"
-
-#. English: Reset Agent
-#. chrys-meta={"fingerprint":"d5d9572588e468a399375b67f2252810ea1e8a6aee0a70ba8db9f0a268341ad2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.confirm.reset.title"
-msgstr "重置智能体"
 
 #. English: Agent deleted
 #. chrys-meta={"fingerprint":"85f08cfcbc26592a3edbbe81406e0d6c4da0bbc8977946b77d6a4a94959473e5","multiline":false,"placeholders":[]}
@@ -2662,6 +2632,32 @@ msgstr "工作区相对路径"
 msgid "tui.agent_config.profile.modified"
 msgstr "{name}（已修改）"
 
+#. English: Built-in configurations containing nonempty custom prompts were
+#. saved as editable agents: {names}. Built-in prompts now update with {app}.
+#. chrys-meta={"fingerprint":"727ba60405f19d9303f3b8d08e3d786743727f7ed8aa638743f401d3526486ef","multiline":false,"placeholders":["app","names"]}
+#: src/chrys/app/tui/screens/agents/config.py
+msgid "tui.agent_config.prompts.backups"
+msgstr "含非空自定义提示词的内置配置已保留为可编辑智能体：{names}。内置提示词今后将随 {app} 更新。"
+
+#. English: Clone and edit
+#. chrys-meta={"fingerprint":"432ecabb11ef0a058083d963836a63b80c5f119b2e5443dbcd30b43594e650e4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/prompt_editor.py
+msgid "tui.agent_config.prompts.clone_and_edit"
+msgstr "克隆并编辑"
+
+#. English: System and compaction prompts are managed and updated by {app}.
+#. Clone this agent to customize them.
+#. chrys-meta={"fingerprint":"20ec43aeeb73fed923787125b591a3617d089493cfd2a22aafd6203e0539fde1","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/prompt_editor.py
+msgid "tui.agent_config.prompts.locked_message"
+msgstr "系统提示词和压缩提示词由 {app} 管理，并随版本更新。如需自定义，请克隆这个智能体后编辑。"
+
+#. English: Built-in prompts are read-only
+#. chrys-meta={"fingerprint":"a4cc017a740613aa0fb0f3a9d7c4f5f20bcb1ebaabbbb80c84b8731118ef2ac6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/prompt_editor.py
+msgid "tui.agent_config.prompts.locked_title"
+msgstr "内置智能体提示词不可修改"
+
 #. English: • Agent is running. This page is read-only.
 #. chrys-meta={"fingerprint":"2c1d9c5ee6873b430118a5b327031a85ab31bd7977a7d912ebcffa6d633308bf","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/config.py
@@ -2673,18 +2669,6 @@ msgstr "• 智能体正在运行。此页面为只读。"
 #: src/chrys/app/tui/screens/agents/config.py
 msgid "tui.agent_config.removed"
 msgstr "智能体已移除"
-
-#. English: Agent reset to system defaults
-#. chrys-meta={"fingerprint":"b5e3d8a51820255f370e3004b165c1fc154a14c059befd373cb7bcb01296e8ef","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.reset_complete"
-msgstr "智能体已重置为系统默认设置"
-
-#. English: Agent reset prepared — save to apply
-#. chrys-meta={"fingerprint":"34bc2659bd709512051a4967d23b3b55375878b1dca1ec24b1ff0b148b9ce15e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.reset_pending"
-msgstr "智能体重置已准备就绪——保存后应用"
 
 #. English: Agent profile saved
 #. chrys-meta={"fingerprint":"2fe3b602d1d1c202db347838043615f3ee4143312441899ecbc1552ea7e0c4b6","multiline":false,"placeholders":[]}
@@ -17681,6 +17665,31 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "startup.settings_migration_failed"
 #~ msgstr "无法把设置迁移到 {path}（{error}）。现有配置仍然生效；下次启动会重试迁移。"
+
+#~ msgid "tui.agent_config.already_default"
+#~ msgstr "智能体已使用系统默认设置"
+
+#~ msgid "tui.agent_config.button.reset"
+#~ msgstr "重置"
+
+#~ msgid "tui.agent_config.confirm.reset.message"
+#~ msgstr ""
+#~ "将内置智能体\n"
+#~ "“{display}”重置为系统默认设置？\n"
+#~ "\n"
+#~ "Skills、MCP、Memory 和扩展设置将被保留，其他所有更改都将丢弃。"
+
+#~ msgid "tui.agent_config.confirm.reset.title"
+#~ msgstr "重置智能体"
+
+#~ msgid "tui.agent_config.prompts.clone"
+#~ msgstr "克隆以自定义"
+
+#~ msgid "tui.agent_config.reset_complete"
+#~ msgstr "智能体已重置为系统默认设置"
+
+#~ msgid "tui.agent_config.reset_pending"
+#~ msgstr "智能体重置已准备就绪——保存后应用"
 
 #~ msgid "tui.agent_config.tools.custom_packs"
 #~ msgstr "自定义工具包"

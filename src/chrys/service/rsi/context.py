@@ -464,14 +464,27 @@ class RsiServiceContext:
         if write_user:
             if user_agents_dir is None:
                 raise RsiBadRequest("write_user requires an explicit user_agents_dir")
-            dest = Path(user_agents_dir) / f"{snap.profile.name}.yaml"
+            from chrys.service.profiles.agents.registry import AgentProfileRegistry
+            from chrys.service.profiles.agents.serializer import profile_directory_lock
+
+            with profile_directory_lock(Path(user_agents_dir)):
+                registry = AgentProfileRegistry()
+                registry.load_all(user_dir=Path(user_agents_dir))
+                installed = registry.clone(snap.profile) if registry.is_builtin(snap.profile.name) else snap.profile
+                dest = Path(user_agents_dir) / f"{installed.name}.yaml"
+                if dest.exists() and not force:
+                    raise RsiBadRequest(
+                        f"export destination already exists: {dest} (choose another path or pass --force)"
+                    )
+                written = registry.save(installed)
         elif destination is not None:
             dest = Path(destination)
         else:
             dest = best_export_path(self.store, task_id, snap.profile.name)
         # Task export/ default may rewrite the same path; other targets need --force.
         overwrite = bool(force) or (not write_user and destination is None)
-        written = export_profile_yaml(snap.profile_path, dest, overwrite=overwrite)
+        if not write_user:
+            written = export_profile_yaml(snap.profile_path, dest, overwrite=overwrite)
         summary = (
             dump_best_summary(self.store, task_id)
             if not candidate_id
@@ -485,6 +498,9 @@ class RsiServiceContext:
         )
         summary["export_path"] = str(written)
         summary["wrote_user_agents"] = bool(write_user)
+        if write_user:
+            summary["profile_name"] = installed.name
+            summary["profile_id"] = installed.id
         return summary
 
     async def wait_idle(self) -> None:

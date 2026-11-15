@@ -88,7 +88,7 @@ class TestBeforeRun:
         await provider.before_run(agent=None, session=session, context=context, state={})
 
         assert len(context.instructions) == 1
-        text = context.instructions[0]
+        text = " ".join(context.instructions[0].split())
         assert "Context self-management" in text
         assert "compress_context" in text
         assert "user's own content is" in text
@@ -107,8 +107,8 @@ class TestBeforeRun:
         assert "50%" not in text
         assert "proactively" not in text
         # Usage is information: nothing in the instructions makes folding the model's job.
-        assert "for your information only" in text
-        assert "never required to manage context yourself" in text
+        assert "Context usage is informational" in text
+        assert "`compress_context` is optional" in text
         assert "high usage alone is no reason" in text
         assert "use `compress_context`" not in text.lower()
 
@@ -122,9 +122,10 @@ class TestBeforeRun:
 
         await provider.before_run(agent=None, session=AgentSession(), context=context, state={})
 
-        text = context.instructions[0]
+        text = " ".join(context.instructions[0].split())
         assert "Automatic compaction is turned off" in text
-        assert "`compress_context` folds completed work into a summary when you decide to" in text
+        assert "`compress_context` folds completed work into a summary" in text
+        assert "before the window overflows" in text
         assert "50%" not in text
         assert "platform compacts on its own" not in text
         assert "automatically compressed" not in text

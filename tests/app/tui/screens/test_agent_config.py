@@ -713,7 +713,7 @@ async def test_agent_config_read_only_hides_mutations_and_disables_controls(tmp_
         future_button = screen.query_one("#future-panel-action", Button)
         assert future_button.display is True
         assert future_button.disabled is True
-        for button_id in ("ac-new", "ac-clone", "ac-reset", "ac-delete", "ac-save"):
+        for button_id in ("ac-new", "ac-clone", "ac-delete", "ac-save"):
             button = screen.query_one(f"#{button_id}", Button)
             assert button.display is False
             assert button.disabled is True
