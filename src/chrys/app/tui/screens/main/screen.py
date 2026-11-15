@@ -2683,8 +2683,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 self._state.run.turn_end_check_pending = False
                 self._workspace_actions.check_after_turn()
         input_bar = self.query_one(InputBar)
-        if not running and input_bar.locked:
-            input_bar.unlock_and_keep()
+        if not running:
+            # Unlock hands the draft back to the user immediately. A late
+            # injection outcome may still render its bubble, but no longer
+            # owns the composer or blocks the next submit.
+            self._state.pending_injection.clear()
+            if input_bar.locked:
+                input_bar.unlock_and_keep()
         self.refresh_bindings()
         # Auto-dismiss interrupt confirmation when agent stops
         if not running and self._state.overlays.interrupt_confirm_active:
@@ -2701,6 +2706,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._state.run.agent_loading = loading
         input_bar = self.query_one(InputBar)
         if not loading and input_bar.locked and not self._state.run.agent_running:
+            self._state.pending_injection.clear()
             input_bar.unlock_and_keep()
         # Loading hides the trajectory key; nothing else refreshes the footer when it ends.
         self._sync_main_bindings()

@@ -359,7 +359,9 @@ class MainScreenViewAdapter:
         self._screen.query_one(InputBar).lock_with_text()
 
     def set_injection_steering(self, steering: bool) -> None:
-        self._screen.query_one(InputBar).injection_phase = "steering" if steering else "queued"
+        input_bar = self._screen.query_one(InputBar)
+        if input_bar.locked and input_bar.injection_phase:
+            input_bar.injection_phase = "steering" if steering else "queued"
 
     def unlock_input_keep_if_locked(self) -> None:
         input_bar = self._screen.query_one(InputBar)

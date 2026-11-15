@@ -944,8 +944,14 @@ class InputBar(Widget):
         self._refresh_interaction_state()
 
     def watch_locked(self, locked: bool) -> None:
+        if not locked:
+            self.injection_phase = ""
         self.post_message(self.LockedChanged(locked))
         self._refresh_interaction_state()
+
+    def validate_injection_phase(self, phase: Literal["", "queued", "steering"]) -> Literal["", "queued", "steering"]:
+        """Queue actions belong only to a locked composer, including delayed worker updates."""
+        return phase if self.locked else ""
 
     def watch_injection_phase(self, _phase: str) -> None:
         self._refresh_interaction_state()
@@ -1475,8 +1481,8 @@ class InputBar(Widget):
 
     def lock_with_text(self) -> None:
         """Lock while a typed injection is queued for a running agent."""
-        self.injection_phase = "queued"
         self._lock(INPUT_QUEUED.bind(), stop_style=False, spin_prompt=False)
+        self.injection_phase = "queued"
 
     def _spin_prompt(self) -> None:
         """Update the prompt indicator with a spinner frame."""
@@ -1555,7 +1561,7 @@ class InputBar(Widget):
         composer never submits.
         """
         whole = draft if isinstance(draft, ChatDraft) else ChatDraft(draft)
-        if not whole.text:
+        if self.locked or not whole.text:
             return False
         text_area = self.query_one("#chat-input", _ChatTextArea)
         if text_area.text:

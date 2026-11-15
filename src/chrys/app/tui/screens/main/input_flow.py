@@ -115,6 +115,8 @@ class InputFlowController:
     def submit_user_text(self, text: str, draft: ChatDraft | None = None) -> None:
         """Submit normal user text as a new turn or mid-run injection; *draft* is the composer's whole draft."""
         if self._state.pending_injection.active:
+            if self._view.restore_input_draft(draft if draft is not None else text):
+                self._view.flash_submit_still_sending()
             return
         if self._state.run.agent_running:
             injection_id = self._begin_injection(text, draft)
@@ -161,9 +163,7 @@ class InputFlowController:
         turn's Enter never cleared the composer; a new turn's did, so the text
         coming back says why — until the first submit's own outcome shows.
         """
-        if self._state.pending_injection.active:
-            return False
-        if self._state.submit.active:
+        if self._state.pending_injection.active or self._state.submit.active:
             if self._view.restore_input_draft(draft if draft is not None else text):
                 self._view.flash_submit_still_sending()
             return False

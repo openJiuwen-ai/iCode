@@ -318,10 +318,11 @@ class SubmitCoordinator:
 class PendingInjectionState:
     """Tracks the mid-run injection queued behind the locked input bar.
 
-    At most one injection is pending at a time — the input stays locked
-    until the backend reports a ``UserInjectResult`` for it or the user
-    cancels it with Esc. Steering records intent until that result arrives;
-    the running pass's ``InvocationSteered`` is the execution fact.
+    At most one injection owns the composer at a time. Its ownership ends
+    when the backend reports a ``UserInjectResult``, the user cancels, or
+    the turn ends and hands the draft back. Late outcomes may still render
+    a bubble, but cannot touch a draft handed back to the user. Steering
+    records intent; ``InvocationSteered`` is the execution fact.
     """
 
     injection_id: str | None = None
@@ -330,7 +331,7 @@ class PendingInjectionState:
 
     @property
     def active(self) -> bool:
-        """Return whether an injection is queued and awaiting its outcome."""
+        """Return whether a queued injection still owns the composer."""
         return self.injection_id is not None
 
     def begin(self, injection_id: str, text: str) -> None:
@@ -344,7 +345,7 @@ class PendingInjectionState:
         return self.injection_id is not None and self.injection_id == injection_id
 
     def clear(self) -> None:
-        """Stop tracking after the outcome arrived or the user cancelled."""
+        """Release the composer after an outcome, cancellation or turn end."""
         self.injection_id = None
         self.text = ""
         self.phase = "queued"

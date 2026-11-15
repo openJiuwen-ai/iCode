@@ -55,6 +55,7 @@ class _FakeInputFlowView:
         self.gc_messages: list[object] = []
         self.retry_note_ids: list[str | None] = []
         self.session_id = "panel-session"
+        self.input_locked = False
 
     def set_terminal_title_for_user_message(self, text: str) -> None:
         self.calls.append(("title", text))
@@ -95,12 +96,14 @@ class _FakeInputFlowView:
         self.calls.append("clear_inline")
 
     def lock_input_with_text(self) -> None:
+        self.input_locked = True
         self.calls.append("lock_input")
 
     def set_injection_steering(self, steering: bool) -> None:
         self.calls.append(("steering", steering))
 
     def unlock_input_keep_if_locked(self) -> None:
+        self.input_locked = False
         self.calls.append("unlock_keep")
 
     def flash_interrupted(self) -> None:
@@ -113,6 +116,8 @@ class _FakeInputFlowView:
         self.calls.append("toc")
 
     def restore_input_draft(self, draft: str | ChatDraft) -> bool:
+        if self.input_locked:
+            return False
         self.calls.append(("restore", draft))
         return True
 
@@ -1009,3 +1014,17 @@ async def test_cancel_before_queue_worker_starts_never_publishes_message() -> No
     assert not state.pending_injection.active
     assert not state.submit.active
     assert "unlock_keep" in view.calls
+
+
+@pytest.mark.parametrize("entry", ["submit_user_text", "send_user_message"])
+async def test_pending_injection_guard_hands_cleared_draft_back(entry: str) -> None:
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, state, view = _make_input_flow_controller(EventBus(), start_worker=scheduled.append)
+    state.pending_injection.begin("old-id", "old text")
+    draft = ChatDraft("  new draft  ")
+    if entry == "submit_user_text":
+        controller.submit_user_text("new draft", draft)
+    else:
+        await controller.send_user_message("new draft", draft)
+    assert scheduled == []
+    assert view.calls == [("restore", draft), "still_sending"]

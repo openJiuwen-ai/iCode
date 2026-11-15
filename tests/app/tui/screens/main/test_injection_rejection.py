@@ -239,8 +239,10 @@ class _Harness:
         def set_agent_running(running: bool) -> None:
             self.running.append(running)
             # As MainScreen does: a run's end hands a locked composer back.
-            if not running and self.input_bar.locked:
-                self.input_bar.unlock_and_keep()
+            if not running:
+                self.state.pending_injection.clear()
+                if self.input_bar.locked:
+                    self.input_bar.unlock_and_keep()
 
         screen = SimpleNamespace(
             _state=self.state,
@@ -354,8 +356,8 @@ async def test_error_the_running_turn_publishes_meanwhile_is_the_turns() -> None
     assert h.running == [False]
     assert h.chat_errors == ["Working directory is gone"]
     assert h.notifications == []
-    # The message still waits for the backend's word on it.
-    assert h.state.pending_injection.active is True
+    # Admission may still be pending, but the ended turn no longer owns the composer.
+    assert h.state.pending_injection.active is False
     assert h.input_bar.value == _TEXT
 
 
@@ -446,10 +448,10 @@ async def test_mid_run_message_whose_run_ended_first_shows_the_turn_it_opened(me
     async def admit_as_new_turn(event: UserMessage) -> None:
         # The run finished while the message waited for admission (the UI saw
         # its end), so the backend opened a new turn with it instead.
-        h.handler.set_agent_running(False)
         if meanwhile == "esc":
             # Its backend cancel arrives too late.
             assert h.controller.cancel_pending_injection() is True
+        h.handler.set_agent_running(False)
         if meanwhile == "edit":
             # The run's end handed the composer back, so it is editable.
             h.input_bar.value = "edited draft"
@@ -472,8 +474,8 @@ async def test_mid_run_message_whose_run_ended_first_shows_the_turn_it_opened(me
     assert h.state.submit.active is False
     assert h.state.render_gate.active is False
     assert h.input_bar.locked is False
-    # Only the sent text leaves the composer; a draft edited since stays.
-    assert h.input_bar.value == {"nothing": "", "esc": _TEXT, "edit": "edited draft"}[meanwhile]
+    # The terminal event handed the draft back; delayed admission cannot reclaim it.
+    assert h.input_bar.value == {"nothing": _TEXT, "esc": _TEXT, "edit": "edited draft"}[meanwhile]
 
 
 @pytest.mark.asyncio

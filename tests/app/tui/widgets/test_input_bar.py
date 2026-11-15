@@ -1624,6 +1624,45 @@ async def test_input_bar_queued_draft_keeps_focus_until_unlock() -> None:
         assert text_area.disabled is False
 
 
+@pytest.mark.parametrize("phase", ["queued", "steering"])
+@pytest.mark.parametrize("action", ["undo", "redo"])
+async def test_locked_injection_keeps_draft_and_edit_history(phase: str, action: str) -> None:
+    async with _InputBarApp().run_test() as pilot:
+        bar = pilot.app.query_one(InputBar)
+        area = bar.query_one("#chat-input", TextArea)
+        bar.value = "original"
+        area.insert(" addition")
+        if action == "redo":
+            area.action_undo()
+        original = bar.value
+        bar.lock_with_text()
+        bar.injection_phase = phase
+        key = "ctrl+z" if action == "undo" else "ctrl+y"
+        await pilot.press(key)
+        assert bar.value == original
+        assert area.has_focus
+        bar.unlock_and_keep()
+        await pilot.press(key)
+        assert bar.value != original
+
+
+async def test_unlocked_input_ignores_late_queue_phase() -> None:
+    async with _InputBarApp().run_test() as pilot:
+        bar = pilot.app.query_one(InputBar)
+        bar.value = "queued text"
+        bar.lock_with_text()
+        bar.unlock_and_keep()
+        bar.value = "next draft"
+        # A delayed UI callback must not resurrect queue actions after unlock.
+        bar.injection_phase = "queued"
+        await pilot.pause()
+        assert bar.injection_phase == ""
+        assert not bar.query_one("#cancel-btn", Button).display
+        assert not bar.query_one("#btn-group").parent.border_title
+        await click_when_settled(pilot, "#send-btn")
+        assert pilot.app.submitted == ["next draft"]
+
+
 async def test_continue_button_sends_the_typed_note_stripped_and_clears_it() -> None:
     retries: list[str] = []
 
