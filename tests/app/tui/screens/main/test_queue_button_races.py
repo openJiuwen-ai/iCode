@@ -220,3 +220,45 @@ async def test_old_running_action_cannot_submit_a_draft_after_turn_end(tmp_path:
         send.press()
         await wait_for(lambda: len(messages) == sent_before + 1, pilot=pilot)
         assert messages[-1].text == "new unsent draft"
+
+
+async def test_repeated_running_send_presses_queue_one_message(tmp_path: Path) -> None:
+    app, _bus, messages, controls = await _app_with_recorded_controls(tmp_path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        main._set_agent_running(True)
+        bar = main.query_one(InputBar)
+        bar.value = "additional guidance"
+        await pilot.pause()
+        send = bar.query_one("#running-send-btn", Button)
+        assert send.display
+        send.press()
+        send.press()
+        await wait_for(lambda: len(messages) == 1 and not main._state.submit.active, pilot=pilot)
+        await pilot.pause()
+        assert len(messages) == 1 and controls == []
+        assert bar.locked and bar.injection_phase == "queued"
+        assert not send.display
+        assert bar.value == "additional guidance"
+
+
+async def test_late_running_send_press_does_not_start_a_new_turn(tmp_path: Path) -> None:
+    app, _bus, messages, controls = await _app_with_recorded_controls(tmp_path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        main._set_agent_running(True)
+        bar = main.query_one(InputBar)
+        bar.value = "guidance for the running turn"
+        await pilot.pause()
+        bar.query_one("#running-send-btn", Button).press()
+        main._set_agent_running(False)
+        bar.value = "new draft"
+        await pilot.pause()
+        assert messages == [] and controls == []
+        assert bar.value == "new draft"
+        assert not bar.query_one("#running-send-btn", Button).display
+        bar.query_one("#send-btn", Button).press()
+        await wait_for(lambda: len(messages) == 1, pilot=pilot)
+        assert messages[0].text == "new draft"

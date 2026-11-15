@@ -2194,9 +2194,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             self._input_flow.cancel_pending_injection()
 
     @on(InputBar.InterruptRequested)
-    def _on_interrupt_requested(self, _event: InputBar.InterruptRequested) -> None:
+    def _on_interrupt_requested(self, event: InputBar.InterruptRequested) -> None:
         """Stop button clicked — interrupt the running agent."""
-        self.action_interrupt()
+        self._publish_interrupt(run_generation=event.run_generation)
 
     @on(InputBar.RetryRequested)
     def _on_retry_requested(self, event: InputBar.RetryRequested) -> None:
@@ -2762,7 +2762,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._publish_interrupt()
 
     @work(thread=False)
-    async def _publish_interrupt(self) -> None:
+    async def _publish_interrupt(self, *, run_generation: int | None = None) -> None:
+        if run_generation is not None and not self.query_one(InputBar).owns_running_action(run_generation):
+            return
         if self._services.execution().kind == "workflow":
             self._workflow.run_control.stop()
             return

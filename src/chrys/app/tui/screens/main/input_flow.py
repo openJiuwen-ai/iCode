@@ -466,7 +466,15 @@ class InputFlowController:
         if not self._state.run.agent_running:
             return
 
+        generation = self._state.run.generation
+        place = self.place()
+
+        def owns_run() -> bool:
+            return self._state.run.generation == generation and self.place() == place
+
         await self._bus.publish(UserInterrupt())
+        if not owns_run():
+            return
         terminal_request = GcAbsorbRequested(GcAbsorbReason.TURN_TERMINAL, terminal_boundary=True)
         try:
             self._clear_pending_questions()
@@ -474,19 +482,16 @@ class InputFlowController:
             self._view.clear_ask_user_inline_prompts()
             await self._view.render_interrupted()
         finally:
-            self._view.clear_terminal_title_result()
-            self._set_agent_running(False)
-            # Teardown events (late tool results, compaction finishing) that
-            # raced the awaits above saw ``agent_running`` still True and may
-            # have flipped the status bar back to run mode; now that the gate
-            # is closed, re-assert the interrupted flash so nothing leaves a
-            # stuck "Thinking" spinner behind.
-            self._view.flash_interrupted()
-            # The interrupt already unlocks the input with the text kept; drop
-            # pending-injection tracking so a later abandoned result (or Esc)
-            # cannot act on an entry that no longer belongs to a live turn.
-            self._state.pending_injection.clear()
-            self._view.unlock_input_keep_if_locked()
+            if owns_run():
+                self._view.clear_terminal_title_result()
+                self._set_agent_running(False)
+                # Teardown events may have put the old status bar back in run
+                # mode. Reassert its flash only while this is still that run.
+                self._view.flash_interrupted()
+                self._state.pending_injection.clear()
+                self._view.unlock_input_keep_if_locked()
+        if not owns_run():
+            return
         self._post_gc_message(terminal_request)
         self._view.set_retry_mode(True, label=INPUT_CONTINUE.bind())
         self._debug("UserInterrupt", "")

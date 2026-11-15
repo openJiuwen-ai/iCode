@@ -105,7 +105,9 @@ async def test_pending_retry_disables_submission_without_consuming_draft(submit:
             if submit == "button":
                 input_bar.on_button_pressed(Button.Pressed(button))
             else:
-                input_bar.on__chat_text_area_submitted(_ChatTextArea.Submitted(input_bar.value))
+                input_bar.on__chat_text_area_submitted(
+                    _ChatTextArea.Submitted(input_bar.value, input_bar._button_action("chat-input"))
+                )
 
         attempt()
         await pilot.pause()
@@ -955,6 +957,14 @@ async def test_input_bar_relocalizes_semantic_state_and_cell_width_in_place(
         assert input_bar._interaction_signature != signature_after_switch
         assert str(send.label) == "中断"
         assert text_area.placeholder.plain == "输入消息 · Enter 排队  /  命令  @  文件"
+        input_bar.value = "补充说明"
+        await pilot.pause()
+        running_send = input_bar.query_one("#running-send-btn", Button)
+        assert running_send.display
+        assert str(running_send.label) == "发送"
+        assert controller.switch_locale("en").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
+        assert str(running_send.label) == "Send"
+        assert controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
 
         input_bar.agent_running = False
         adapter_screen = type("_AdapterScreen", (), {"query_one": lambda _self, _type: input_bar})()
@@ -1483,13 +1493,15 @@ async def test_input_bar_buttons_hug_labels_without_side_gaps() -> None:
         bar._set_btn_label("Send")
         await pilot.pause()
 
-        # Running: Interrupt tracks its own label width.
+        # Running with text: Send appears to the left of Interrupt without stealing space.
         bar.agent_running = True
         await pilot.pause()
+        running_send = bar.query_one("#running-send-btn", Button)
         assert str(send.label) == "Interrupt"
         assert new.region.width == 0
         assert send.region.width == len("Interrupt") + 4
-        assert send.region.x == group.content_region.x
+        assert running_send.region.x == group.content_region.x
+        assert send.region.x == running_send.region.right + 1
         assert send.region.right == group.content_region.right
         strips = pilot.app.screen._compositor.render_strips()
         row = next(strip.text for strip in strips if "Interrupt" in strip.text)

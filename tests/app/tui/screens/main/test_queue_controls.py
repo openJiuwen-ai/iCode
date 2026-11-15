@@ -135,7 +135,10 @@ async def test_rejected_steer_after_terminal_cannot_restore_queue_buttons(tmp_pa
 
 
 @pytest.mark.parametrize("action", ["steer", "cancel", "escape", "interrupt"])
-async def test_main_screen_queue_controls_keep_one_message_and_the_original_draft(tmp_path: Path, action: str) -> None:
+@pytest.mark.parametrize("submit", ["enter", "button"])
+async def test_main_screen_queue_controls_keep_one_message_and_the_original_draft(
+    tmp_path: Path, action: str, submit: str
+) -> None:
     bus = EventBus()
     messages: list[UserMessage] = []
     controls: list[object] = []
@@ -161,12 +164,17 @@ async def test_main_screen_queue_controls_keep_one_message_and_the_original_draf
         assert not main._model_unconfigured()
         assert not bar.agent_loading
         assert bar.display
-        await pilot.press("enter", "enter")
+        if submit == "enter":
+            await pilot.press("enter", "enter")
+        else:
+            await click_when_settled(pilot, "#running-send-btn")
+            await pilot.press("enter")
         assert main._state.pending_injection.active, (type(app.screen), bar.value, bar.locked, messages)
         await wait_for(
             lambda: len(messages) == 1 and not main._state.submit.active, pilot=pilot, description="one queued message"
         )
         assert bar.query_one(TextArea).has_focus
+        assert not bar.query_one("#running-send-btn", Button).display
         assert bar.value == "  keep the original draft  "
         assert str(bar.query_one("#send-btn", Button).label) == "Steer"
         injection_id = messages[0].injection_id
@@ -198,6 +206,7 @@ async def test_main_screen_queue_controls_keep_one_message_and_the_original_draf
             await wait_for(lambda: not bar.locked, pilot=pilot, description="cancel or stop releases composer")
             assert bar.value == "  keep the original draft  "
             assert main.agent_running_state is (action != "interrupt")
+            assert bar.query_one("#running-send-btn", Button).display is (action != "interrupt")
             # A late abandoned result cannot erase the user's next edit.
             bar.value = "new draft"
             await bus.publish(
@@ -231,7 +240,6 @@ async def test_queue_and_steering_controls_only_refresh_the_input_row(
         await panel.mount(*(Static(f"Transcript row {index}") for index in range(64)))
         main._set_agent_running(True)
         bar = main.query_one(InputBar)
-        bar.value = "additional guidance"
         bar.focus_input()
         await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled populated screen")
         layouts: list[None] = []
@@ -244,7 +252,12 @@ async def test_queue_and_steering_controls_only_refresh_the_input_row(
             recomposes.append(None)
 
         monkeypatch.setattr(main.query_one(ChrysFooter), "recompose", recompose)
-        await pilot.press("enter")
+        await pilot.press("h")
+        assert bar.query_one("#running-send-btn", Button).display
+        await pilot.press("backspace")
+        assert not bar.query_one("#running-send-btn", Button).display
+        await pilot.press("h")
+        await click_when_settled(pilot, "#running-send-btn")
         await wait_for(
             lambda: bar.injection_phase == "queued" and not main._state.submit.active,
             pilot=pilot,

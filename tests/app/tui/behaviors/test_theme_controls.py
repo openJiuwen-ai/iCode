@@ -226,7 +226,10 @@ async def test_chrys_ansi_scroll_and_selector_surfaces(tmp_path: Path) -> None:
         ("ansi-light", "default"),
     ],
 )
-async def test_filled_buttons_use_chrys_ink_or_native_ansi_foreground(theme_name: str, expected: str) -> None:
+@pytest.mark.parametrize("running", [False, True])
+async def test_filled_buttons_use_chrys_ink_or_native_ansi_foreground(
+    theme_name: str, expected: str, running: bool
+) -> None:
     class ButtonApp(TuiVariableDefaultsMixin, App):
         CSS_PATH = SRC_ROOT / "chrys" / "app" / "tui" / "chrys.tcss"
 
@@ -246,18 +249,18 @@ async def test_filled_buttons_use_chrys_ink_or_native_ansi_foreground(theme_name
     async with app.run_test(size=(100, 45)) as pilot:
         app.query_one(InputBar).value = "ready to send"
         app.query_one(InputBar).has_messages = True
+        app.query_one(InputBar).agent_running = running
         app.screen.set_focus(None)
         await wait_for(
             lambda: (
                 app.focused is None
                 and not app.query_one("#send-btn", Button).disabled
-                and app.query_one("#new-btn", Button).content_size.width > 0
+                and app.query_one("#running-send-btn" if running else "#new-btn", Button).content_size.width > 0
             ),
             pilot=pilot,
         )
-        buttons = [*app.query(Button)]
+        buttons = [button for button in app.query(Button) if button.display and button.visible]
         buttons.remove(app.query_one("#editor-btn", Button))  # transparent text affordance
-        buttons.remove(app.query_one("#cancel-btn", Button))  # secondary action on a muted fill
         for button in buttons:
             color = button.rich_style.color
             assert color == Color.parse(expected), (theme_name, button, button.rich_style)
