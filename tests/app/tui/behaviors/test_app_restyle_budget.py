@@ -484,6 +484,8 @@ async def test_input_and_status_state_changes_do_not_relayout_large_transcript(
         await pilot.pause()
         input_bar.lock_with_text()
         await pilot.pause()
+        input_bar.injection_phase = "steering"
+        await pilot.pause()
         input_bar.unlock_and_keep()
         await pilot.pause()
 

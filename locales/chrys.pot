@@ -7770,6 +7770,18 @@ msgstr[1] ""
 msgid "tui.injection.not_sent"
 msgstr ""
 
+#. English: Cancel queue and keep editing
+#. chrys-meta={"fingerprint":"bd7c4939d5e9ffaf0acabd8f60dd7db5f02dad2930e16b98c46a800dce455bd5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.cancel_description"
+msgstr ""
+
+#. English: Cancel
+#. chrys-meta={"fingerprint":"ee3eb6e02cd8772be8786b7d714f54bf90abe5d0f0523aebf9c292a1e48c7d3d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.cancel_queue"
+msgstr ""
+
 #. English: Continue
 #. chrys-meta={"fingerprint":"167e575361c5e16ba03f613cc29c5da6ba716b02f2d070a5e8a84325e46e1e26","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
@@ -7836,8 +7848,8 @@ msgstr ""
 msgid "tui.input.placeholder.history_select"
 msgstr ""
 
-#. English: Inject a message
-#. chrys-meta={"fingerprint":"4230abd9ea720286f6248e0446520f4eaa8f0ab6c5bd4f0ca78bf94056456ffc","multiline":false,"placeholders":[]}
+#. English: Type a message · Enter to queue
+#. chrys-meta={"fingerprint":"38fd8179ea63117c29ea119570b075925e8a3a92aa7358b5f9b40831b5233b24","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
 msgid "tui.input.placeholder.inject"
 msgstr ""
@@ -7877,6 +7889,12 @@ msgstr[1] ""
 msgid "tui.input.queued"
 msgstr ""
 
+#. English: Queued · Esc to cancel · Ctrl+B to interrupt
+#. chrys-meta={"fingerprint":"d45f30c70db82d307aa6b30149f99630c5b45584bc9dabc0937632b3bea5e97b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.queued_hint"
+msgstr ""
+
 #. English: A quote inside a !`command` would run as part of it. Move the quote
 #. out of the command to send.
 #. chrys-meta={"fingerprint":"01b58ef98922fc3e499f33c9443bb0251b357c47fe98f02a9f8ddfbc63f9524d","multiline":false,"placeholders":[]}
@@ -7903,6 +7921,24 @@ msgstr[1] ""
 #. chrys-meta={"fingerprint":"add273c721eb680a4f9e1ba65e55d47c739397f22134aed96cfbd8551edd51f7","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
 msgid "tui.input.send"
+msgstr ""
+
+#. English: Steer
+#. chrys-meta={"fingerprint":"6b52308f1c66a4dcb13b643f16ea97c634fdc65c3307d69fca62f834f5ab2586","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.steer"
+msgstr ""
+
+#. English: Try to stop the current work and continue with this message
+#. chrys-meta={"fingerprint":"68d7cd8527d6e041d6e1507e201cfdd5f938cb438523a831a3457dd1e419dec8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.steer_description"
+msgstr ""
+
+#. English: Steering…
+#. chrys-meta={"fingerprint":"e39e75cf2df58b8e086d014ee297690d929db6a8a495e4373b00294a85c98ccc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/input_bar.py
+msgid "tui.input.steering"
 msgstr ""
 
 #. English: Not sent

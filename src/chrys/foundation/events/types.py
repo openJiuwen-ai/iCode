@@ -236,6 +236,15 @@ class UserInject(Event):
 
 
 @dataclass
+class UserInjectSteer(Event):
+    """Try steering the active pass with an already queued message, without resubmitting it."""
+
+    injection_id: str = ""
+    accepted: bool = field(default=False, compare=False)
+    """The backend accepted the request; InvocationSteered reports the actual pass ending."""
+
+
+@dataclass
 class UserInjectCancel(Event):
     """User cancels a queued mid-run injection before the model sees it.
 

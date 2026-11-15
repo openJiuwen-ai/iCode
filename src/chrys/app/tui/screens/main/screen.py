@@ -2183,6 +2183,14 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     # Input bar action buttons
     # ------------------------------------------------------------------ #
 
+    @on(InputBar.SteerRequested)
+    def _on_steer_requested(self, _event: InputBar.SteerRequested) -> None:
+        self._input_flow.steer_pending_injection()
+
+    @on(InputBar.CancelQueueRequested)
+    def _on_cancel_queue_requested(self, _event: InputBar.CancelQueueRequested) -> None:
+        self._input_flow.cancel_pending_injection()
+
     @on(InputBar.InterruptRequested)
     def _on_interrupt_requested(self, _event: InputBar.InterruptRequested) -> None:
         """Stop button clicked — interrupt the running agent."""

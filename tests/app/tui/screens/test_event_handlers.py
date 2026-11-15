@@ -1223,3 +1223,31 @@ def test_todo_list_updated_sets_todo_state_and_debug_logs() -> None:
 
     assert screen.todo_state == TodoListState(items=tuple(items))
     assert ("TodoListUpdated", "1/3 done") in debug_calls
+
+
+@pytest.mark.parametrize("requeue", [False, True])
+async def test_consumed_injection_does_not_clear_a_draft_reclaimed_while_its_bubble_mounts(
+    monkeypatch: pytest.MonkeyPatch, requeue: bool
+) -> None:
+    from unittest.mock import create_autospec
+
+    from chrys.app.tui.widgets.chat.panel import ChatPanel
+
+    calls: list[object] = []
+    screen = _make_injection_outcome_screen(calls)
+    handler = make_backend_handler(screen)
+    pending = screen._state.pending_injection
+    pending.begin("old", "sent")
+    panel = screen.query_one(ChatPanel)
+    original = panel.add_user_message
+
+    async def reclaim(*args: object, **kwargs: object) -> None:
+        await original(*args, **kwargs)
+        pending.clear()
+        if requeue:
+            pending.begin("new", "new draft")
+
+    monkeypatch.setattr(panel, "add_user_message", create_autospec(original, side_effect=reclaim))
+    await handler.on_injection_outcome(UserInjectResult(text="sent", injection_id="old", consumed=True))
+    assert "unlock_and_clear" not in calls
+    assert pending.injection_id == ("new" if requeue else None)

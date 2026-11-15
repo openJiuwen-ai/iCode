@@ -408,17 +408,18 @@ async def test_second_submit_in_the_same_tick_goes_back_to_the_composer(agent_ru
         await h.bus.publish(Error(code="hook_blocked", message=_BLOCK_REASON))
 
     await h.start(hold_then_refuse)
-    # A running turn's Enter leaves the text in the composer, so a repeated
-    # Enter sends it again; a new turn's Enter clears it.
+    # A running turn reserves its unchanged draft synchronously; a new turn's
+    # Enter clears it and a second submission is handed back by its worker.
     h.input_bar.value = _TEXT if agent_running else ""
     second = _TEXT if agent_running else "second message"
     h.controller.submit_user_text(_TEXT)
     h.controller.submit_user_text(second)
-    assert len(h.workers) == 2
+    assert len(h.workers) == (1 if agent_running else 2)
 
     first_task = asyncio.create_task(h.workers[0]())
     await wait_for(lambda: hook_entered.is_set() or first_task.done(), description="first submit in its hook")
-    await h.workers[1]()
+    if not agent_running:
+        await h.workers[1]()
 
     assert not first_task.done()
     assert [event.text for event in h.published] == [_TEXT]
@@ -432,7 +433,7 @@ async def test_second_submit_in_the_same_tick_goes_back_to_the_composer(agent_ru
     # Nothing stays reserved: the next submit is sent.
     assert h.state.submit.active is False
     h.controller.submit_user_text(second)
-    await h.workers[2]()
+    await h.workers[-1]()
     assert [event.text for event in h.published] == [_TEXT, second]
 
 
@@ -517,6 +518,7 @@ async def test_mid_run_message_failing_before_its_publish_releases_the_submit(mo
         await h.controller.queue_injection(_TEXT)
 
     assert h.state.submit.active is False
+    assert h.state.pending_injection.active is False
     assert h.published == []
 
 

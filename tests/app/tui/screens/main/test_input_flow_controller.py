@@ -26,6 +26,7 @@ from chrys.foundation.events.types import (
     InvocationContentDelta,
     InvocationContentFinished,
     InvocationMessage,
+    UserInjectSteer,
     UserInterrupt,
     UserMessage,
     UserRetry,
@@ -95,6 +96,9 @@ class _FakeInputFlowView:
 
     def lock_input_with_text(self) -> None:
         self.calls.append("lock_input")
+
+    def set_injection_steering(self, steering: bool) -> None:
+        self.calls.append(("steering", steering))
 
     def unlock_input_keep_if_locked(self) -> None:
         self.calls.append("unlock_keep")
@@ -955,3 +959,53 @@ def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> 
     assert view.user_contents == [["hello", _PREPARED_IMAGE]]
     assert state.submit.blocked is False
     assert input_bar.retry_mode is True
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+async def test_queue_reserves_before_worker_and_promotes_after_admission_once(accepted: bool) -> None:
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    bus = EventBus()
+    controller, state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    state.run.agent_running = True
+    events: list[object] = []
+
+    async def admit(event: UserMessage) -> None:
+        events.append(event)
+        controller.steer_pending_injection()
+        controller.steer_pending_injection()
+        assert len(scheduled) == 0
+        assert controller.cancel_pending_injection() is False
+
+    async def promote(event: UserInjectSteer) -> None:
+        events.append(event)
+        event.accepted = accepted
+
+    await bus.subscribe(UserMessage, admit)
+    await bus.subscribe(UserInjectSteer, promote)
+    controller.submit_user_text("original")
+    assert state.pending_injection.active
+    assert state.submit.active
+    controller.submit_user_text("duplicate")
+    assert not any(isinstance(call, tuple) and call[0] == "restore" for call in view.calls)
+    assert len(scheduled) == 1
+    await _run_started(scheduled)
+    assert [type(event) for event in events] == [UserMessage, UserInjectSteer]
+    assert events[0].injection_id == events[1].injection_id
+    assert state.pending_injection.phase == ("steering" if accepted else "queued")
+    assert state.submit.active is False
+
+
+async def test_cancel_before_queue_worker_starts_never_publishes_message() -> None:
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    bus = EventBus()
+    controller, state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    state.run.agent_running = True
+    messages: list[UserMessage] = []
+    await bus.subscribe(UserMessage, messages.append)
+    controller.submit_user_text("original")
+    assert controller.cancel_pending_injection()
+    await _run_started(scheduled)
+    assert messages == []
+    assert not state.pending_injection.active
+    assert not state.submit.active
+    assert "unlock_keep" in view.calls

@@ -257,6 +257,7 @@ async def test_filled_buttons_use_chrys_ink_or_native_ansi_foreground(theme_name
         )
         buttons = [*app.query(Button)]
         buttons.remove(app.query_one("#editor-btn", Button))  # transparent text affordance
+        buttons.remove(app.query_one("#cancel-btn", Button))  # secondary action on a muted fill
         for button in buttons:
             color = button.rich_style.color
             assert color == Color.parse(expected), (theme_name, button, button.rich_style)
@@ -277,6 +278,20 @@ async def test_filled_buttons_use_chrys_ink_or_native_ansi_foreground(theme_name
             else:
                 assert color.is_default
                 assert color.get_ansi_codes() == ("39",)
+
+        bar = app.query_one(InputBar)
+        bar.agent_running = True
+        bar.lock_with_text()
+        cancel = bar.query_one("#cancel-btn", Button)
+        await wait_for(lambda: cancel.content_size.width > 0, pilot=pilot, description="queued cancel button visible")
+        assert cancel.display and not cancel.disabled
+        style = cancel.rich_style
+        assert style.color is not None and style.bgcolor is not None
+        if not style.color.is_default and not style.bgcolor.is_default:
+            assert _contrast_ratio(style.color, style.bgcolor) >= 4.5
+        label_styles = [segment.style for segment in cancel.render_line(0) if segment.text.strip()]
+        assert label_styles
+        assert all(label is not None and label.color == style.color for label in label_styles)
 
 
 def _contrast_ratio(color: Color, background: Color) -> float:

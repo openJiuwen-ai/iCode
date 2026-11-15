@@ -1,12 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""InputBar widget — multi-line input area with Send/Stop button.
+"""InputBar widget — multi-line input with send, interrupt and queued-message actions.
 
 Enter submits. Ctrl+J, Shift+Enter and Ctrl+Enter insert a newline.
 Cross-platform system clipboard support (macOS pbcopy/pbpaste,
 Win32 ``SetClipboardData``/``GetClipboardData`` on Windows,
 xclip/xsel on Linux).
-When the agent is running, the button becomes Stop to interrupt.
+When the agent is running, the button becomes Interrupt; a queued draft offers Steer and Cancel.
 """
 
 from __future__ import annotations
@@ -73,6 +73,14 @@ INPUT_BTW_OPEN = msg("tui.btw.open", fallback="Open side questions")
 INPUT_NEW = msg("tui.input.new", fallback="New")
 INPUT_NEW_DESCRIPTION = msg("tui.input.new_description", fallback="Create a new session")
 INPUT_QUEUED = msg("tui.input.queued", fallback="Queued")
+INPUT_STEER = msg("tui.input.steer", fallback="Steer")
+INPUT_CANCEL_QUEUE = msg("tui.input.cancel_queue", fallback="Cancel")
+_INPUT_QUEUED_HINT = msg("tui.input.queued_hint", fallback="Queued · Esc to cancel · Ctrl+B to interrupt")
+_INPUT_STEERING = msg("tui.input.steering", fallback="Steering…")
+_INPUT_STEER_DESCRIPTION = msg(
+    "tui.input.steer_description", fallback="Try to stop the current work and continue with this message"
+)
+_INPUT_CANCEL_DESCRIPTION = msg("tui.input.cancel_description", fallback="Cancel queue and keep editing")
 INPUT_INTERRUPT = msg("tui.input.interrupt", fallback="Interrupt")
 INPUT_CONTINUE = msg("tui.input.continue", fallback="Continue")
 INPUT_RETRY = msg("tui.input.retry", fallback="Retry")
@@ -80,7 +88,7 @@ _INPUT_PROMPT_PLACEHOLDER = msg(
     "tui.input.placeholder.prompt",
     fallback="Type a message ({shortcut} for Editor)",
 )
-_INPUT_INJECT_PLACEHOLDER = msg("tui.input.placeholder.inject", fallback="Inject a message")
+_INPUT_INJECT_PLACEHOLDER = msg("tui.input.placeholder.inject", fallback="Type a message · Enter to queue")
 _INPUT_PLACEHOLDER_AGENTS = msg("tui.input.placeholder.agents", fallback="Agents")
 _INPUT_PLACEHOLDER_MODELS = msg("tui.input.placeholder.models", fallback="Models")
 _INPUT_PLACEHOLDER_SHELL = msg("tui.input.placeholder.shell", fallback="Shell")
@@ -421,7 +429,8 @@ class _ChatTextArea(DraftTextArea, EnhancedTextArea):
         # line, and the arrows move between its rows first.
         # Skip history when suggestion list is active — arrows navigate suggestions instead
         if (
-            event.key in _HISTORY_PREVIOUS_KEYS
+            not self.read_only
+            and event.key in _HISTORY_PREVIOUS_KEYS
             and self.navigator.is_first_wrapped_line(self.cursor_location)
             and not self._suggestions_active
             and await self._browse_history(-1)
@@ -430,7 +439,8 @@ class _ChatTextArea(DraftTextArea, EnhancedTextArea):
             event.prevent_default()
             return
         if (
-            event.key in _HISTORY_NEXT_KEYS
+            not self.read_only
+            and event.key in _HISTORY_NEXT_KEYS
             and self._history.index != -1
             and not self._suggestions_active
             and self.navigator.is_last_wrapped_line(self.cursor_location)
@@ -444,7 +454,12 @@ class _ChatTextArea(DraftTextArea, EnhancedTextArea):
             event.prevent_default()
             self.post_message(self.EditorRequested())
             return
-        if event.key == "tab" and not self._suggestions_active and self.select_next_prompt_field():
+        if (
+            event.key == "tab"
+            and not self.read_only
+            and not self._suggestions_active
+            and self.select_next_prompt_field()
+        ):
             event.stop()
             event.prevent_default()
             return
@@ -530,7 +545,7 @@ class InputBar(Widget):
 
     - Enter or clicking Send submits the message.
     - Ctrl+J, Shift+Enter and Ctrl+Enter insert a newline for multi-line input.
-    - When agent is running, button becomes Stop (fires ``InterruptRequested``).
+    - While running, Interrupt stops the task; a queued draft offers Steer and Cancel.
     """
 
     DEFAULT_CSS = """
@@ -598,6 +613,13 @@ class InputBar(Widget):
     InputBar > Horizontal > #btn-group > #send-btn.-stop {
         background: $error;
     }
+    InputBar > Horizontal > #btn-group > #cancel-btn {
+        width: 0;
+        min-width: 0;
+        padding: 0;
+        background: $foreground 12%;
+        color: $foreground;
+    }
     InputBar > Horizontal > #btn-group > #new-btn {
         visibility: hidden;
         width: 0;
@@ -615,6 +637,7 @@ class InputBar(Widget):
     agent_running: reactive[bool] = reactive(False)
     agent_loading: reactive[bool] = reactive(False)
     locked: reactive[bool] = reactive(False)
+    injection_phase: reactive[Literal["", "queued", "steering"]] = reactive("")
     has_messages: reactive[bool] = reactive(False)
     shell_mode: reactive[bool] = reactive(False)
     # ``_retry_label`` is a semantic plain attribute, so label-only transitions
@@ -647,8 +670,14 @@ class InputBar(Widget):
             self.reference = reference
             super().__init__()
 
+    class SteerRequested(Message):
+        """Try steering with the queued message."""
+
+    class CancelQueueRequested(Message):
+        """Withdraw the queued message for editing."""
+
     class InterruptRequested(Message):
-        """Posted when the user clicks Stop."""
+        """Posted when the user clicks Interrupt."""
 
     class RetryRequested(Message):
         """Posted when the user clicks Retry / Continue.
@@ -823,6 +852,9 @@ class InputBar(Widget):
             )
             with Horizontal(id="btn-group"):
                 yield _InputBarButton(Text(self._render_label(INPUT_SEND.bind())), id="send-btn")
+                cancel = _InputBarButton(Text(self._render_label(INPUT_CANCEL_QUEUE.bind())), id="cancel-btn")
+                cancel.display = False
+                yield cancel
                 yield _InputBarButton(
                     Text(self._render_label(INPUT_NEW.bind())),
                     id="new-btn",
@@ -915,6 +947,9 @@ class InputBar(Widget):
         self.post_message(self.LockedChanged(locked))
         self._refresh_interaction_state()
 
+    def watch_injection_phase(self, _phase: str) -> None:
+        self._refresh_interaction_state()
+
     def watch_retry_mode(self, retry: bool) -> None:
         self._refresh_interaction_state()
 
@@ -933,7 +968,7 @@ class InputBar(Widget):
         if str(btn.label) != label:
             btn.label = Text(label)
         changed = False
-        if button_id == "send-btn":
+        if button_id in ("send-btn", "cancel-btn"):
             width = Scalar.from_number(Text(label).cell_len + 4)
             changed = btn.styles.set_rule("width", width)
             changed = btn.styles.set_rule("min_width", width) or changed
@@ -970,13 +1005,9 @@ class InputBar(Widget):
 
     def _pin_button_group_width(self, group: Horizontal) -> None:
         """Content-size the group from its currently visible buttons."""
-        send = self.query_one("#send-btn", Button)
-        new = self.query_one("#new-btn", Button)
-        send_width = Text(str(send.label)).cell_len + 4
-        new_visible = new.styles.visibility == "visible"
-        new_width = Text(str(new.label)).cell_len + 4 if new_visible else 0
-        inter_button_margin = 1 if new_visible else 0
-        width = send_width + new_width + inter_button_margin + _BUTTON_GROUP_HORIZONTAL_PADDING
+        visible = [button for button in group.query(Button) if button.display and button.styles.visibility != "hidden"]
+        width = sum(Text(str(button.label)).cell_len + 4 for button in visible)
+        width += max(0, len(visible) - 1) + _BUTTON_GROUP_HORIZONTAL_PADDING
         group.styles.set_rule("width", Scalar.from_number(width))
 
     def sync_deferred_button_geometry(self) -> None:
@@ -1016,6 +1047,7 @@ class InputBar(Widget):
 
         signature = (
             self.locked,
+            self.injection_phase,
             self._lock_label,
             self._lock_stop_style,
             self._lock_spin_prompt,
@@ -1034,24 +1066,41 @@ class InputBar(Widget):
             return
         self._interaction_signature = signature
 
-        # A hard lock (queued injection) takes precedence over startup
-        # loading if both flags are ever set.
+        # Editing and actions are independent: a queued draft keeps focus, while its buttons work.
+        ta.read_only = self.locked
+        ta.disabled = False
+        self.set_class(self.locked, "-locked")
+        cancel = self.query_one("#cancel-btn", Button)
+        queued = self.injection_phase == "queued"
+        if cancel.has_focus and not queued:
+            self.focus_input()
+        if cancel.display != queued:
+            # Keep this fixed chrome change local to its row, as the button widths below are.
+            cancel.styles.set_rule("display", "block" if queued else "none")
+            self._mark_button_geometry_dirty()
+        self._set_btn_label(self._render_label(INPUT_CANCEL_QUEUE.bind()), button_id="cancel-btn", defer_geometry=True)
+        cancel.styles.set_rule("margin", Spacing(0, 0, 0, 1))
+        cancel.styles.set_rule("padding", Spacing(0, 1, 0, 1))
+        cancel.tooltip = Text(self._render_label(_INPUT_CANCEL_DESCRIPTION.bind()))
+        row = self.query_one("#btn-group").parent
+        if isinstance(row, Widget):
+            title = _INPUT_QUEUED_HINT if queued else _INPUT_STEERING
+            row.border_title = Text(self._render_label(title.bind())) if self.injection_phase else ""
+        btn.tooltip = Text(self._render_label(_INPUT_STEER_DESCRIPTION.bind())) if queued else None
         if self.locked:
-            self.add_class("-locked")
-            # ``read_only`` blocks edits; ``disabled`` also suppresses cursor
-            # movement and history navigation while the queued injection is pending.
-            ta.read_only = True
-            ta.disabled = True
-            self._set_btn_label(self._render_label(self._lock_label or INPUT_QUEUED.bind()), defer_geometry=True)
-            btn.set_class(self._lock_stop_style, "-stop")
-            btn.disabled = True
+            label = INPUT_STEER if queued else INPUT_INTERRUPT
+            self._set_btn_label(
+                self._render_label(label.bind() if self.injection_phase else self._lock_label or INPUT_QUEUED.bind()),
+                defer_geometry=True,
+            )
+            btn.set_class(
+                self.injection_phase == "steering" or (not self.injection_phase and self._lock_stop_style), "-stop"
+            )
+            btn.disabled = not bool(self.injection_phase)
             self._set_prompt_spinner(self._lock_spin_prompt)
             self._update_new_btn_visibility()
             return
 
-        self.remove_class("-locked")
-        ta.disabled = False
-        ta.read_only = False
         ta.show_cursor = True
         self._set_prompt_spinner(False)
 
@@ -1129,7 +1178,7 @@ class InputBar(Widget):
         if self._suggestions_active and self._suggestion_mode == "history":
             self.post_message(self.SuggestionSelect(execute=True))
             return
-        if self.retry_pending:
+        if self.retry_pending or self.locked:
             return
         if self.agent_loading:
             self._refresh_interaction_state()
@@ -1152,6 +1201,8 @@ class InputBar(Widget):
         lock keeps on screen. Every gesture asks here, once, before sending
         a draft whose prompt fields are still unfilled.
         """
+        if self.locked:
+            return
         ta = self.query_one("#chat-input", _ChatTextArea)
         draft = ta.chat_draft()
         text = draft.text.strip()
@@ -1244,6 +1295,18 @@ class InputBar(Widget):
         if event.button.id == "editor-btn":
             self._request_editor()
             return
+        if self.injection_phase:
+            if event.button.id == "cancel-btn" and self.injection_phase == "queued":
+                self.focus_input()
+                self.post_message(self.CancelQueueRequested())
+            elif event.button.id == "send-btn":
+                self.focus_input()
+                self.post_message(
+                    self.SteerRequested() if self.injection_phase == "queued" else self.InterruptRequested()
+                )
+            return
+        if event.button.id == "cancel-btn":
+            return  # a queued click may arrive after consumption hid this button
         if self.locked or self.retry_pending:
             return  # keep the admission owner stable; draft editing stays available
         if self.agent_loading:
@@ -1412,7 +1475,8 @@ class InputBar(Widget):
 
     def lock_with_text(self) -> None:
         """Lock while a typed injection is queued for a running agent."""
-        self._lock(INPUT_QUEUED.bind(), stop_style=True)
+        self.injection_phase = "queued"
+        self._lock(INPUT_QUEUED.bind(), stop_style=False, spin_prompt=False)
 
     def _spin_prompt(self) -> None:
         """Update the prompt indicator with a spinner frame."""
@@ -1421,6 +1485,7 @@ class InputBar(Widget):
 
     def _unlock(self) -> None:
         """Common unlock logic."""
+        self.injection_phase = ""
         self.locked = False
         self._lock_label = ""
         self._lock_stop_style = False

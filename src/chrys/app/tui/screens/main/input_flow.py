@@ -39,6 +39,7 @@ from chrys.foundation.events.types import (
     TurnStarted,
     UnansweredInputDropped,
     UserInjectCancel,
+    UserInjectSteer,
     UserInterrupt,
     UserMessage,
     UserRetry,
@@ -113,8 +114,12 @@ class InputFlowController:
 
     def submit_user_text(self, text: str, draft: ChatDraft | None = None) -> None:
         """Submit normal user text as a new turn or mid-run injection; *draft* is the composer's whole draft."""
+        if self._state.pending_injection.active:
+            return
         if self._state.run.agent_running:
-            self._start_worker(partial(self.queue_injection, text, draft))
+            injection_id = self._begin_injection(text, draft)
+            if injection_id is not None:
+                self._start_worker(partial(self._publish_queued_injection, text, draft, injection_id))
             return
         self._start_worker(partial(self.send_user_message, text, draft))
 
@@ -156,6 +161,8 @@ class InputFlowController:
         turn's Enter never cleared the composer; a new turn's did, so the text
         coming back says why — until the first submit's own outcome shows.
         """
+        if self._state.pending_injection.active:
+            return False
         if self._state.submit.active:
             if self._view.restore_input_draft(draft if draft is not None else text):
                 self._view.flash_submit_still_sending()
@@ -306,12 +313,28 @@ class InputFlowController:
 
     async def queue_injection(self, text: str, draft: ChatDraft | None = None) -> None:
         """Queue a user message for mid-run injection without chat display; *draft* is the composer's whole draft."""
+        injection_id = self._begin_injection(text, draft)
+        if injection_id is not None:
+            await self._publish_queued_injection(text, draft, injection_id)
+
+    def _begin_injection(self, text: str, draft: ChatDraft | None) -> str | None:
+        """Reserve the draft synchronously before another Enter or action can arrive."""
         if not self._claim_submit(text, kind="injection", draft=draft):
-            return
+            return None
+        injection_id = uuid4().hex[:12]
+        self._state.pending_injection.begin(injection_id, text)
         try:
-            injection_id = uuid4().hex[:12]
             self._view.lock_input_with_text()
-            self._state.pending_injection.begin(injection_id, text)
+        except BaseException:
+            self._state.pending_injection.clear()
+            self._state.submit.clear()
+            raise
+        return injection_id
+
+    async def _publish_queued_injection(self, text: str, draft: ChatDraft | None, injection_id: str) -> None:
+        try:
+            if not self._state.pending_injection.matches(injection_id):
+                return
             event = UserMessage(text=text, injection_id=injection_id)
             if await self._publish_submit(event):
                 self._state.pending_injection.clear()
@@ -332,6 +355,34 @@ class InputFlowController:
             self._debug("UserMessage (inject → new turn)", text[:60])
             return
         self._debug("UserMessage (inject)", text[:60])
+        pending = self._state.pending_injection
+        if pending.matches(injection_id) and pending.phase == "steering":
+            await self._publish_inject_steer(injection_id)
+
+    def steer_pending_injection(self) -> None:
+        """Latch one steering intent; admission must finish before its queue entry can be promoted."""
+        pending = self._state.pending_injection
+        if not pending.active or pending.phase == "steering":
+            return
+        injection_id = pending.injection_id
+        if injection_id is None:
+            return
+        pending.phase = "steering"
+        self._view.set_injection_steering(True)
+        if not self._state.submit.active:
+            self._start_worker(partial(self._publish_inject_steer, injection_id))
+
+    async def _publish_inject_steer(self, injection_id: str) -> None:
+        pending = self._state.pending_injection
+        if not pending.matches(injection_id):
+            return
+        event = UserInjectSteer(injection_id=injection_id)
+        try:
+            await self._bus.publish(event)
+        finally:
+            if not event.accepted and pending.matches(injection_id):
+                pending.phase = "queued"
+                self._view.set_injection_steering(False)
 
     def cancel_pending_injection(self) -> bool:
         """Withdraw the queued injection and hand the text back for editing.
@@ -341,7 +392,7 @@ class InputFlowController:
         ``consumed=True`` result that no longer touches the input bar.
         """
         pending = self._state.pending_injection
-        if not pending.active:
+        if not pending.active or pending.phase == "steering":
             return False
         injection_id = pending.injection_id
         pending.clear()

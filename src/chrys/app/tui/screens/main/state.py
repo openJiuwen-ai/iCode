@@ -320,11 +320,13 @@ class PendingInjectionState:
 
     At most one injection is pending at a time — the input stays locked
     until the backend reports a ``UserInjectResult`` for it or the user
-    cancels it with Esc.
+    cancels it with Esc. Steering records intent until that result arrives;
+    the running pass's ``InvocationSteered`` is the execution fact.
     """
 
     injection_id: str | None = None
     text: str = ""
+    phase: Literal["queued", "steering"] = "queued"
 
     @property
     def active(self) -> bool:
@@ -335,6 +337,7 @@ class PendingInjectionState:
         """Track a newly queued injection."""
         self.injection_id = injection_id
         self.text = text
+        self.phase = "queued"
 
     def matches(self, injection_id: str | None) -> bool:
         """Return whether *injection_id* identifies the tracked injection."""
@@ -344,6 +347,7 @@ class PendingInjectionState:
         """Stop tracking after the outcome arrived or the user cancelled."""
         self.injection_id = None
         self.text = ""
+        self.phase = "queued"
 
 
 @dataclass

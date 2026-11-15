@@ -31,6 +31,7 @@ from chrys.foundation.events.types import (
     UserInject,
     UserInjectCancel,
     UserInjectResult,
+    UserInjectSteer,
     UserInterrupt,
     UserMessage,
 )
@@ -129,15 +130,24 @@ def _inject_results(started: _Started, text: str) -> list[bool]:
     return [event.consumed for event in started.events if isinstance(event, UserInjectResult) and event.text == text]
 
 
+@pytest.mark.parametrize("queued_first", [False, True])
 async def test_a_steer_mid_answer_drops_the_cut_off_answer_and_goes_on_with_the_message(
-    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch, queued_first: bool
 ) -> None:
     client = _HeldStreamClient([MockResponse(text="Hello world", chunk_size=6), MockResponse(text="Steered.")])
     started = await _start(agent_engine, tmp_path, monkeypatch, client, event_types=_STEER_EVENTS)
     try:
         await started.bus.publish(UserMessage(text="go"))
         await _wait_shown(started, client)
-        await started.bus.publish(UserMessage(text="do this instead", steer=True))
+        if queued_first:
+            await started.bus.publish(UserMessage(text="do this instead", injection_id="queued"))
+            assert client.call_count == 1
+            request = UserInjectSteer(injection_id="queued")
+            await started.bus.publish(request)
+            assert request.accepted is True
+            await started.bus.publish(UserInjectSteer(injection_id="queued"))
+        else:
+            await started.bus.publish(UserMessage(text="do this instead", steer=True))
         await await_run_task_chain(started.engine, turn_state=started.engine.turns.turn_state)
     finally:
         client.release.set()
@@ -817,3 +827,33 @@ async def test_a_shutdown_while_the_steered_pass_gives_up_its_answer_still_settl
     saved = await _saved(started)
     unmarked = [message for message in saved if _marker(message) is None]
     assert [(message["role"], _texts(message)) for message in unmarked] == [("user", ["go"])]
+
+
+@pytest.mark.parametrize("resolve", ["consumed", "cancelled"])
+async def test_promoting_a_resolved_queue_never_aborts_the_running_pass(
+    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch, resolve: str
+) -> None:
+    held = _HeldTool()
+    client = _HeldStreamClient(
+        [MockResponse(tool_calls=[("hold", "c1", {"message": "x"})]), MockResponse(text="Next answer")],
+        hold_stream=2,
+    )
+    started = await _start(agent_engine, tmp_path, monkeypatch, client, event_types=_STEER_EVENTS, tools=[held.tool])
+    try:
+        await started.bus.publish(UserMessage(text="go"))
+        await _wait_entered(started, held)
+        await started.bus.publish(UserMessage(text="extra", injection_id="queued"))
+        if resolve == "cancelled":
+            await started.bus.publish(UserInjectCancel(injection_id="queued"))
+        held.release.set()
+        await _wait_shown(started, client)
+        request = UserInjectSteer(injection_id="queued")
+        await started.bus.publish(request)
+        assert request.accepted is False
+        assert _turn_events(started.events, InvocationSteered) == []
+    finally:
+        held.release.set()
+        client.release.set()
+        await await_run_task_chain(started.engine, turn_state=started.engine.turns.turn_state)
+    assert client.call_count == 2
+    assert _inject_results(started, "extra") == [resolve == "consumed"]
