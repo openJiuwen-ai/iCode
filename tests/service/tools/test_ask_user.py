@@ -100,10 +100,10 @@ def test_ask_user_schema_advertises_only_the_questions_form() -> None:
     assert schema["required"] == ["questions"]
     assert AskUserQuestionParam(question="Pick?").options == []
     tool_description = ask_user.to_json_schema_spec()["function"]["description"]
-    assert "Ask everything you need in ONE call" in tool_description
-    assert "genuinely the user's to make" in tool_description
-    assert 'Never add an "Other"' in tool_description
-    assert "unanswered" in tool_description
+    assert "Bundle up to 5 questions" in tool_description
+    assert "user decision that changes the next action" in tool_description
+    assert "Do not add an Other option" in tool_description
+    assert "Unanswered entries are skipped, not approval" in tool_description
 
 
 def _validated_ask_user_args(arguments: dict[str, object]) -> dict[str, object]:

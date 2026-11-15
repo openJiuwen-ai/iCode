@@ -48,68 +48,24 @@ logger = logging.getLogger(__name__)
 
 
 SKILLS_STATIC_PROMPT = """\
-You have access to skills — packaged domain expertise with instructions, \
-reference resources, and executable scripts.
+## Skills
+The runtime catalog in a system reminder lists available skills and revisions.
+Use a skill when requested or when its description fits; choose the most specific.
+Call `load_skill` before using its resources or scripts. Do not reload unchanged
+skills unless requested; check the current catalog for revisions.
 
-Skills use progressive disclosure: the current runtime skill catalog is appended \
-to the latest user message in a system reminder. That catalog shows names, \
-descriptions, revisions, and file-based skill directories when available. Full \
-content is loaded on demand via skill tools.
-
-## Using skills
-
-1. **Match**: When a task aligns with a skill's description, or the user \
-explicitly requests one, proceed to step 2. If multiple skills match, choose \
-the most specific. If none apply, proceed normally without loading any skill.
-
-2. **Load**: Call `load_skill` with the skill name to retrieve full \
-instructions. The response may list resources and scripts available for that \
-skill. Do not re-load a skill already loaded in this conversation unless the \
-latest runtime catalog shows a changed skill or the user asks you to refresh it.
-
-3. **Follow**: Execute the loaded instructions. When they reference \
-supporting material:
-   - Call `read_skill_resource` to read any referenced resource.
+Use `read_skill_resource` for references and `run_skill_script` for scripts,
+not file or shell tools. Preserve names and directory prefixes exactly:
+- `skill_name`: "style-guide", not "style-guide.md".
+- `resource_name`: "references/FAQ.md", not "FAQ.md".
 {runner_instructions}
-   - Pass exact ordered script tokens via the `arguments` array \
-(e.g. `arguments: ["input.txt", "output.txt"]`). Use `arguments` for \
-subcommands, short flags, repeated flags, global flags before a subcommand, \
-and `--` passthrough. Use `args` only as optional sugar for flat, \
-order-insensitive CLI flags.
-
-## Parameter naming
-
-Use names exactly as listed — preserve directory prefixes, do not append \
-file extensions to skill names:
-- `skill_name`: e.g. `"style-guide"` (not `"style-guide.md"`)
-- `resource_name`: e.g. `"references/FAQ.md"` (not `"FAQ.md"`)
-- `script_name`: e.g. `"scripts/convert.py"` (not `"convert.py"`)
-  File-based script names are paths relative to the skill directory, using \
-forward slashes on every platform. A script stored at \
-`<skill_dir>/scripts/{{skill_script_name}}.py` must be invoked with \
-`script_name: "scripts/{{skill_script_name}}.py"`, not \
-`"{{skill_script_name}}.py"`.
-
 ## Constraints
-
-- Always call `load_skill` before accessing a skill's resources or scripts.
-- Only use skill tools to interact with skill content — do not use \
-file-read or shell tools to access skill files directly.
-- Always execute skill scripts via `run_skill_script`. Never run them \
-through shell/bash/zsh/pwsh/powershell tools (e.g. `bash scripts/convert.py`, \
-`python scripts/convert.py`, `./scripts/convert.py`) — the skill runner \
-handles skill-path validation, interpreter selection, timeouts, approval, \
-and provenance consistently. The runner is not a security sandbox: scripts \
-retain the user's normal file, network, and process privileges and inherit \
-most of the iCode process environment. Use executable skills only from \
-sources you trust.
-- Do not verify script file existence before calling `run_skill_script`; \
-the skill system resolves paths internally.
-- Scripts run in the user's primary working directory by default. \
-When the catalog lists a `skill_dir` for a skill, it is an absolute path for \
-the current platform. Use it to build an absolute `cwd` or argument when the \
-skill needs paths relative to its package. Override via the `cwd` parameter \
-only when needed, and pass an absolute path (relative paths are rejected).
+Do not probe script existence; the runner resolves and validates paths and handles
+interpreters, timeouts, approval, and provenance. It is not a security sandbox:
+scripts retain the user's file/network/process privileges and most environment
+variables. Run executable skills only from trusted sources.
+Scripts default to the primary workspace. For package-relative paths, use the
+catalog's absolute skill_dir; an explicit cwd must be absolute.
 """
 
 

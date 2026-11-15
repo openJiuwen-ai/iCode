@@ -40,7 +40,7 @@ Filesystem restrictions may prevent iCode from adding the `.conflict` marker. In
 
 The original profiles for built-in agents are included with the iCode installation. When you edit and save a built-in agent through the TUI, iCode creates a profile with the same name in the [user agent profile directory](#user-agent-profile-directory). For example, editing and saving the built-in agent named `Code` creates `Code.yaml`.
 
-The built-in agent names are `Code`, `QA`, `Explore`, and `General`. A profile manually created in the user agent profile directory with any of these `name` values also overrides the corresponding built-in agent. An override replaces the entire built-in profile; it does not inherit or merge any other fields from it. Delete the corresponding user profile and restart iCode to restore the built-in profile.
+The built-in agent names are `Code`, `QA`, `Explore`, and `General`. A profile manually created in the user agent profile directory with any of these `name` values also overrides the corresponding built-in agent. The `instructions` and `compaction.last_words_template` fields always come from the installed built-in profile, including when their built-in value is empty. User settings omit these fields when saved. Other fields retain the values from the user profile; they are not merged with built-in defaults. Legacy overrides containing nonempty system or compaction prompts are backed up as independent custom agents before the protected fields are removed. Empty or whitespace-only prompts do not create a backup. To customize prompts, clone the built-in agent and use its new name and ID. Delete the corresponding user profile and restart iCode to restore the built-in profile.
 
 ## Basic profile example
 

@@ -1,10 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for agent profile lifecycle on the configuration screen: reset/shadow files, delete/promotion, clone."""
+"""Tests for agent profile lifecycle on the configuration screen: delete/promotion and cloning."""
 
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 
 import pytest
@@ -16,13 +15,8 @@ from textual.widgets import (
     Select,
 )
 
-from chrys.app.tui.screens.agents.config import AgentsConfigScreen
-from chrys.service.profiles.agents.loader import load_profile_from_yaml
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import (
-    MCPServerConfig,
-    MemoryConfig,
-    SkillsConfig,
     SubAgentRef,
     SubAgentsConfig,
 )
@@ -30,12 +24,8 @@ from tests.app.tui.screens._agent_config_support import (
     _DEFAULT_WAIT_TIMEOUT,
     _activate_agent_config_tab,
     _agent_config_clone_save_debug,
-    _draft_for_original,
     _draft_for_profile,
-    _file_mode,
     _registry,
-    _wait_for_active_screen,
-    _wait_for_confirm_button,
     _wait_for_hydrated,
     _wait_for_input_enabled,
     _wait_for_panel_display_name,
@@ -84,283 +74,6 @@ async def test_agent_config_unsaved_edit_survives_agent_switch_and_close_discard
     assert current is not None
     assert current.display_name == original.display_name
     assert not (tmp_path / "agents" / "Code.yaml").exists()
-
-
-async def test_agent_config_reset_preserves_unsaved_memory_and_close_discards(tmp_path: Path) -> None:
-    from chrys.service.profiles.agents.serializer import save_profile
-
-    registry = _registry()
-    template = registry.get_builtin_template("Code")
-    assert template is not None
-    customized = copy.deepcopy(template)
-    customized.instructions = "custom instructions"
-    customized.skills = SkillsConfig(paths=["custom-skills"])
-    customized.tools.mcp = [MCPServerConfig(name="private", transport="http", url="https://example.test")]
-    customized.memory = MemoryConfig(files=["saved.md"])
-    canonical_customized = copy.deepcopy(customized)
-    AgentsConfigScreen._canonicalize_profile_for_ui(canonical_customized)
-    save_profile(customized)
-    registry.register(customized)
-    original_yaml = (tmp_path / "agents" / "Code.yaml").read_bytes()
-
-    async with open_agent_config(registry, current_profile="Code", initial_tab="memory") as (screen, pilot):
-        assert screen.query_one("#ac-reset", Button).display is True
-        assert screen.query_one("#ac-delete", Button).display is False
-        assert not screen._drafts[screen._selected_draft_key].dirty
-        memory_input = screen.query_one("#mem-file-path-0", Input)
-        memory_input.focus()
-        await wait_for(lambda: memory_input.has_focus, pilot=pilot, description="memory path editor focused")
-        memory_input.value = "unsaved.md"
-        # Let the field-change event reach the draft before Reset replaces the
-        # panel; this test exercises preserving an established unsaved edit.
-        await wait_for(
-            lambda: screen._drafts[screen._selected_draft_key].dirty,
-            pilot=pilot,
-            description="unsaved memory edit recognized before resetting the profile",
-        )
-        screen.query_one("#ac-reset", Button).press()
-        confirm_button = await _wait_for_confirm_button(pilot.app, pilot)
-        assert confirm_button.variant == "primary"  # same look as New/Clone, not a destructive action
-        confirm_button.press()
-        await _wait_for_active_screen(pilot.app, pilot, screen)
-        await _wait_for_hydrated(screen, pilot)
-
-        draft = screen._drafts[screen._selected_draft_key]
-        assert draft.profile.instructions == template.instructions
-        assert draft.profile.skills == canonical_customized.skills
-        assert draft.profile.tools.mcp == canonical_customized.tools.mcp
-        assert draft.profile.memory.files == ["unsaved.md"]
-        assert draft.reset_to_builtin is True
-        assert draft.dirty is True
-        assert screen.query_one("#ac-save", Button).disabled is False
-        screen.action_cancel()
-        await pilot.pause()
-
-    assert registry.get("Code") == customized
-    assert (tmp_path / "agents" / "Code.yaml").read_bytes() == original_yaml
-
-
-async def test_agent_config_reset_to_exact_template_deletes_shadow_on_save(tmp_path: Path) -> None:
-    from chrys.service.profiles.agents.serializer import save_profile
-
-    registry = _registry()
-    template = registry.get_builtin_template("Code")
-    assert template is not None
-    canonical_template = copy.deepcopy(template)
-    AgentsConfigScreen._canonicalize_profile_for_ui(canonical_template)
-    customized = copy.deepcopy(template)
-    customized.instructions = "custom instructions"
-    save_profile(customized)
-    registry.register(customized)
-
-    async with open_agent_config(registry, current_profile="Code") as (screen, pilot):
-        screen._do_reset(screen._selected_draft_key)
-        await pilot.pause()
-        await _wait_for_hydrated(screen, pilot)
-        screen.query_one("#ac-save", Button).press()
-        await pilot.pause()
-        await _wait_for_hydrated(screen, pilot)
-
-    assert registry.get("Code") == canonical_template
-    assert not (tmp_path / "agents" / "Code.yaml").exists()
-
-
-async def test_agent_config_reset_removes_shadow_loaded_from_noncanonical_filename(tmp_path: Path) -> None:
-    from chrys.service.profiles.agents.serializer import save_profile
-
-    user_dir = tmp_path / "agents"
-    template = _registry().get_builtin_template("Code")
-    assert template is not None
-    customized = copy.deepcopy(template)
-    customized.instructions = "custom instructions"
-    save_profile(customized)
-    (user_dir / "Code.yaml").rename(user_dir / "my-code.yaml")
-    registry = AgentProfileRegistry()
-    registry.load_all(user_dir=user_dir)
-    assert registry.get("Code").instructions == "custom instructions"
-
-    async with open_agent_config(registry, current_profile="Code") as (screen, pilot):
-        screen._do_reset(screen._selected_draft_key)
-        await pilot.pause()
-        await _wait_for_hydrated(screen, pilot)
-        screen.query_one("#ac-save", Button).press()
-        await pilot.pause()
-        await _wait_for_hydrated(screen, pilot)
-
-    assert registry.get("Code").instructions == template.instructions
-    assert sorted(p.name for p in user_dir.glob("*.y*ml")) == []
-
-
-async def test_agent_config_reset_with_only_preserved_changes_is_noop(tmp_path: Path) -> None:
-    from chrys.service.profiles.agents.serializer import save_profile
-
-    registry = _registry()
-    template = registry.get_builtin_template("Code")
-    assert template is not None
-    customized = copy.deepcopy(template)
-    customized.skills = SkillsConfig(paths=["custom-skills"])
-    canonical_customized = copy.deepcopy(customized)
-    AgentsConfigScreen._canonicalize_profile_for_ui(canonical_customized)
-    save_profile(customized)
-    registry.register(customized)
-    shadow_path = tmp_path / "agents" / "Code.yaml"
-    original_yaml = shadow_path.read_bytes()
-
-    async with open_agent_config(registry, current_profile="Code") as (screen, pilot):
-        screen._do_reset(screen._selected_draft_key)
-        await pilot.pause()
-        await _wait_for_hydrated(screen, pilot)
-
-        draft = screen._drafts[screen._selected_draft_key]
-        assert draft.profile == canonical_customized
-        assert draft.reset_to_builtin is False
-        assert draft.dirty is False
-        assert screen.query_one("#ac-save", Button).disabled is True
-
-    assert registry.get("Code") == customized
-    assert shadow_path.read_bytes() == original_yaml
-
-
-async def test_agent_config_reset_with_preserved_settings_keeps_shadow(tmp_path: Path) -> None:
-    from chrys.service.profiles.agents.serializer import save_profile
-
-    registry = _registry()
-    template = registry.get_builtin_template("Code")
-    assert template is not None
-    customized = copy.deepcopy(template)
-    customized.instructions = "custom instructions"
-    customized.skills = SkillsConfig(paths=["custom-skills"])
-    canonical_customized = copy.deepcopy(customized)
-    AgentsConfigScreen._canonicalize_profile_for_ui(canonical_customized)
-    save_profile(customized)
-    registry.register(customized)
-
-    async with open_agent_config(registry, current_profile="Code") as (screen, pilot):
-        screen._do_reset(screen._selected_draft_key)
-        await pilot.pause()
-        await _wait_for_hydrated(screen, pilot)
-        screen._apply_all()
-        await _wait_for_hydrated(screen, pilot)
-
-    saved = load_profile_from_yaml(tmp_path / "agents" / "Code.yaml")
-    assert saved.instructions == template.instructions
-    assert saved.skills == canonical_customized.skills
-
-
-async def test_agent_config_reset_shadow_delete_rolls_back_when_later_save_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from chrys.service.profiles.agents.serializer import save_profile
-
-    registry = _registry()
-    template = registry.get_builtin_template("Code")
-    assert template is not None
-    customized = copy.deepcopy(template)
-    customized.instructions = "custom instructions"
-    other = make_profile(
-        "Other",
-        display_name="Other",
-        description="Another agent",
-    )
-    save_profile(customized)
-    save_profile(other)
-    registry.register(customized)
-    registry.register(other)
-    code_path = tmp_path / "agents" / "Code.yaml"
-    other_path = tmp_path / "agents" / "Other.yaml"
-    original_code = code_path.read_bytes()
-    original_other = other_path.read_bytes()
-
-    original_save_profile = save_profile
-
-    def fail_on_other(profile, *args, **kwargs):
-        if profile.name == "Other":
-            raise OSError("simulated save failure")
-        return original_save_profile(profile, *args, **kwargs)
-
-    monkeypatch.setattr("chrys.service.profiles.agents.serializer.save_profile", fail_on_other)
-    deleted: list[str] = []
-    monkeypatch.setattr("chrys.service.profiles.agents.serializer.delete_profile", deleted.append)
-    original_code_mode = _file_mode(code_path)
-
-    async with open_agent_config(registry, current_profile="Code") as (screen, pilot):
-        screen._do_reset(screen._selected_draft_key)
-        await pilot.pause()
-        await _wait_for_hydrated(screen, pilot)
-        other_draft = _draft_for_original(screen, "Other")
-        other_draft.profile.display_name = "Other edited"
-        other_draft.dirty = True
-
-        screen.query_one("#ac-save", Button).press()
-        await pilot.pause()
-
-        reset_draft = _draft_for_original(screen, "Code")
-        assert reset_draft.reset_to_builtin is True
-        assert reset_draft.dirty is True
-
-    restored_code = registry.get("Code")
-    restored_other = registry.get("Other")
-    assert restored_code is not None
-    assert restored_code.instructions == "custom instructions"
-    assert restored_other is not None
-    assert restored_other.display_name == "Other"
-    assert code_path.read_bytes() == original_code
-    assert other_path.read_bytes() == original_other
-    # Shadow deletes run only after every save succeeded, so a failed save
-    # never has to be undone by recreating the shadow.
-    assert deleted == []
-    assert _file_mode(code_path) == original_code_mode
-
-
-async def test_agent_config_reset_rollback_recreates_shadow_owner_only(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A shadow removed by an exact-template reset comes back 0600 when a later step fails."""
-    from chrys.service.profiles.agents.serializer import delete_profile, save_profile
-
-    registry = _registry()
-    shadows: dict[str, bytes] = {}
-    for name in ("Code", "Explore"):
-        template = registry.get_builtin_template(name)
-        assert template is not None
-        customized = copy.deepcopy(template)
-        customized.instructions = f"custom {name}"
-        save_profile(customized)
-        registry.register(customized)
-        shadows[name] = (tmp_path / "agents" / f"{name}.yaml").read_bytes()
-    code_path = tmp_path / "agents" / "Code.yaml"
-    original_code_mode = _file_mode(code_path)
-
-    original_delete_profile = delete_profile
-    deleted: list[str] = []
-
-    def fail_on_explore(name, *args, **kwargs):
-        deleted.append(name)
-        if name == "Explore":
-            raise OSError("simulated delete failure")
-        return original_delete_profile(name, *args, **kwargs)
-
-    monkeypatch.setattr("chrys.service.profiles.agents.serializer.delete_profile", fail_on_explore)
-
-    async with open_agent_config(registry, current_profile="Code") as (screen, pilot):
-        screen._do_reset(_draft_for_original(screen, "Code").key)
-        await pilot.pause()
-        await _wait_for_hydrated(screen, pilot)
-        screen._do_reset(_draft_for_original(screen, "Explore").key)
-        await pilot.pause()
-        await _wait_for_hydrated(screen, pilot)
-
-        screen.query_one("#ac-save", Button).press()
-        await pilot.pause()
-
-    # The Code shadow really was removed and then recreated by the rollback.
-    assert deleted == ["Code", "Explore"]
-    for name, original in shadows.items():
-        assert (tmp_path / "agents" / f"{name}.yaml").read_bytes() == original
-        assert registry.get(name).instructions == f"custom {name}"
-    assert _file_mode(code_path) == original_code_mode
 
 
 async def test_agent_config_delete_custom_profile_is_immediate_and_leaves_save_disabled(tmp_path: Path) -> None:
@@ -752,7 +465,7 @@ async def test_agent_config_footer_buttons_stay_inside_modal_after_clone() -> No
         container_right = container.region.x + container.region.width
         buttons = [
             screen.query_one(f"#{button_id}", Button)
-            for button_id in ("ac-new", "ac-clone", "ac-reset", "ac-delete", "ac-save", "ac-cancel")
+            for button_id in ("ac-new", "ac-clone", "ac-delete", "ac-save", "ac-cancel")
         ]
 
         visible_buttons = [button for button in buttons if button.display]

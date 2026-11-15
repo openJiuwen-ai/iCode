@@ -211,7 +211,7 @@ async def test_real_build_preserves_main_child_model_context_approval_and_chat_i
         assert "Product documentation could not be found" in root_options["instructions"]
         assert "ROOT-MEMORY-SENTINEL" in root_options["instructions"]
         # The recipe profiles turn automatic compaction off: the model is told that folding is up to it.
-        assert "Automatic compaction is turned off for this agent" in root_options["instructions"]
+        assert "Automatic compaction is turned off" in root_options["instructions"]
         assert "platform compacts on its own" not in root_options["instructions"]
         assert child_options["instructions"].startswith("CHILD-INSTRUCTION")
         assert "iCode documentation" not in child_options["instructions"]

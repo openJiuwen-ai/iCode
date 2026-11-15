@@ -2152,12 +2152,6 @@ msgstr ""
 msgid "tui.acp.working_directory"
 msgstr ""
 
-#. English: Agent already uses the system defaults
-#. chrys-meta={"fingerprint":"106ba3f1213af904c7a97cb6fd680e777cfadb7e3211379af55e589e955818c8","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.already_default"
-msgstr ""
-
 #. English: Agent Profile
 #. chrys-meta={"fingerprint":"9ed1e190563ca498c2d853bb088262ae41038323a06709cf4e7608571a888dd7","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/basic.py
@@ -2293,12 +2287,6 @@ msgstr ""
 msgid "tui.agent_config.button.new"
 msgstr ""
 
-#. English: Reset
-#. chrys-meta={"fingerprint":"153f87afbe6a28418796d6fbe48109d7140ad7f627a8e4b17fcf946628af5142","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.button.reset"
-msgstr ""
-
 #. English: Save
 #. chrys-meta={"fingerprint":"c412f9116c212d2749697d0fce560e880e82ef767c87d9614d341b4ce1ee2061","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/config.py
@@ -2341,20 +2329,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"645b89ba2b8063556566843b957882b73600566b7309053d8ccab26388fc363c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/config.py
 msgid "tui.agent_config.confirm.delete.title"
-msgstr ""
-
-#. English: Reset built-in agent "{display}" to system defaults?  Skills, MCP,
-#. Memory, and Extensions settings will be preserved. All other changes will be
-#. discarded.
-#. chrys-meta={"fingerprint":"6cc6ce611c7dd4302f9fdf6eb7d3ae9b3aee218f348cd01e54f3bef411282546","multiline":true,"placeholders":["display"]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.confirm.reset.message"
-msgstr ""
-
-#. English: Reset Agent
-#. chrys-meta={"fingerprint":"d5d9572588e468a399375b67f2252810ea1e8a6aee0a70ba8db9f0a268341ad2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.confirm.reset.title"
 msgstr ""
 
 #. English: Agent deleted
@@ -2618,6 +2592,32 @@ msgstr ""
 msgid "tui.agent_config.profile.modified"
 msgstr ""
 
+#. English: Built-in configurations containing nonempty custom prompts were
+#. saved as editable agents: {names}. Built-in prompts now update with {app}.
+#. chrys-meta={"fingerprint":"727ba60405f19d9303f3b8d08e3d786743727f7ed8aa638743f401d3526486ef","multiline":false,"placeholders":["app","names"]}
+#: src/chrys/app/tui/screens/agents/config.py
+msgid "tui.agent_config.prompts.backups"
+msgstr ""
+
+#. English: Clone and edit
+#. chrys-meta={"fingerprint":"432ecabb11ef0a058083d963836a63b80c5f119b2e5443dbcd30b43594e650e4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/prompt_editor.py
+msgid "tui.agent_config.prompts.clone_and_edit"
+msgstr ""
+
+#. English: System and compaction prompts are managed and updated by {app}.
+#. Clone this agent to customize them.
+#. chrys-meta={"fingerprint":"20ec43aeeb73fed923787125b591a3617d089493cfd2a22aafd6203e0539fde1","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/prompt_editor.py
+msgid "tui.agent_config.prompts.locked_message"
+msgstr ""
+
+#. English: Built-in prompts are read-only
+#. chrys-meta={"fingerprint":"a4cc017a740613aa0fb0f3a9d7c4f5f20bcb1ebaabbbb80c84b8731118ef2ac6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/prompt_editor.py
+msgid "tui.agent_config.prompts.locked_title"
+msgstr ""
+
 #. English: • Agent is running. This page is read-only.
 #. chrys-meta={"fingerprint":"2c1d9c5ee6873b430118a5b327031a85ab31bd7977a7d912ebcffa6d633308bf","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/config.py
@@ -2628,18 +2628,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"af67e3cd9cfa13ec149c0f2d4c7841222172473e1dc4719dcf7640e64dddad46","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/config.py
 msgid "tui.agent_config.removed"
-msgstr ""
-
-#. English: Agent reset to system defaults
-#. chrys-meta={"fingerprint":"b5e3d8a51820255f370e3004b165c1fc154a14c059befd373cb7bcb01296e8ef","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.reset_complete"
-msgstr ""
-
-#. English: Agent reset prepared — save to apply
-#. chrys-meta={"fingerprint":"34bc2659bd709512051a4967d23b3b55375878b1dca1ec24b1ff0b148b9ce15e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/config.py
-msgid "tui.agent_config.reset_pending"
 msgstr ""
 
 #. English: Agent profile saved

@@ -12,6 +12,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Label
 
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.screens.agents.prompt_editor import PromptTextArea
 from chrys.app.tui.screens.agents.validation_messages import FIELDS_REQUIRED, INSTRUCTIONS_FIELD
 from chrys.app.tui.widgets import EnhancedTextArea
 from chrys.foundation.i18n import msg
@@ -62,15 +63,16 @@ class InstructionsConfigPanel(VerticalScroll):
     }
     """
 
-    def __init__(self, instructions: str) -> None:
+    def __init__(self, instructions: str, *, prompt_locked: bool = False) -> None:
         self._instructions = instructions
+        self._prompt_locked = prompt_locked
         super().__init__()
 
     def compose(self) -> ComposeResult:
         localizer = widget_localizer(self)
         yield Label(render_str(localizer, _SYSTEM_INSTRUCTIONS.bind()), classes="ic-section-title")
         yield Label(render_str(localizer, _SYSTEM_INSTRUCTIONS_DESCRIPTION.bind()), classes="ic-section-desc")
-        yield EnhancedTextArea(self._instructions, id="ic-instructions")
+        yield PromptTextArea(self._instructions, locked=self._prompt_locked, id="ic-instructions")
 
     def get_config(self) -> str:
         """Return the current instructions text."""

@@ -42,7 +42,8 @@ async def test_an_overflowing_request_is_compacted_and_resent_within_the_turn(tm
     compacted = await capture_events(ctx.bus, ToolCompacted)
 
     try:
-        await ctx.send_message("first")
+        # Keep enough user context that trimming only the echo result cannot satisfy recovery.
+        await ctx.send_message("first " + "task requirement " * 200)
         await ctx.send_message("second")
     finally:
         restore()

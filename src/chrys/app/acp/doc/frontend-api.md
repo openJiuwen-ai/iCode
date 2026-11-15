@@ -314,9 +314,9 @@ A sub-agent pauses only for a client that declared `subAgentPause` (see
 |---|---|---|
 | `profiles/agents/list` | — | Agent profile summaries, including a `builtin` flag. |
 | `profiles/agents/read` | `name` | Full agent profile. **MCP `headers`/`env` values masked as `"***"`.** |
-| `profiles/agents/write` | `profile` | Persist. Masked `"***"` MCP secrets restored from the stored profile. |
+| `profiles/agents/write` | `profile` | Persist user settings. Built-in system and compaction prompts remain package-owned; create a custom agent with a new name and ID to change them. If explicitly submitted prompts differ from the built-in values, the response includes `ignored_fields` (using `instructions` and/or `compaction.last_words_template`); other settings are still saved. Unchanged or omitted prompt fields produce no warning. Masked `"***"` MCP secrets are restored from the stored profile. |
 | `profiles/agents/delete` | `name` | Delete a user agent profile. Built-in profiles are rejected; clients should migrate the previous "delete shadow to restore built-in" behavior to `profiles/agents/reset`. |
-| `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, Memory, and Extensions settings. Returns `changed: false` when no shadow or resettable changes exist. |
+| `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, Memory, and Extensions settings. System and compaction prompts remain package-owned and are excluded from reset comparisons. Returns `changed: false` when no shadow or resettable changes exist. |
 | `profiles/models/list` | — | Model profile summaries (no secrets). |
 | `profiles/models/read` | `id` | Full model profile. **`api_key` masked as `"***"`.** |
 | `profiles/models/write` | `profile` | Persist. `api_key` of `""`/`"***"` preserves the stored key. Omitting `stream` or sending `null` streams for a new profile and keeps the stored value on an update; `false` (or another false spelling such as `0` or `""`) turns streaming off. |

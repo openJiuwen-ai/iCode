@@ -17,6 +17,7 @@ from chrys.app.tui.screens.agents.agent_draft_store import (
     MAX_LAST_WORDS_TOKENS,
     MIN_LAST_WORDS_TOKENS,
 )
+from chrys.app.tui.screens.agents.prompt_editor import PromptTextArea
 from chrys.app.tui.screens.agents.validation_messages import (
     COMPACTION_MAX_OUTPUT_TOKENS as _MAX_OUTPUT_TOKENS,
 )
@@ -121,8 +122,9 @@ class CompactionConfigPanel(VerticalScroll):
     }
     """
 
-    def __init__(self, compaction: CompactionConfig) -> None:
+    def __init__(self, compaction: CompactionConfig, *, prompt_locked: bool = False) -> None:
         self._compaction = compaction
+        self._prompt_locked = prompt_locked
         super().__init__()
 
     def compose(self) -> ComposeResult:
@@ -152,7 +154,7 @@ class CompactionConfigPanel(VerticalScroll):
         )
 
         yield Label(render_str(localizer, _LAST_WORDS_SUPPLEMENT.bind()), classes="cc-label")
-        yield EnhancedTextArea(c.last_words_template, id="cc-last-words-template")
+        yield PromptTextArea(c.last_words_template, locked=self._prompt_locked, id="cc-last-words-template")
 
     def get_config(self) -> CompactionConfig:
         """Return an updated ``CompactionConfig`` preserving unrelated fields."""

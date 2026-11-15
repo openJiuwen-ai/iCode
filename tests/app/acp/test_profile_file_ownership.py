@@ -184,7 +184,10 @@ def test_create_update_and_remove_owned_files_remain_persistent(
     fresh.load_all(user_dir=user_dir)
     persisted = fresh.get(name)
     assert persisted is not None
-    assert persisted.instructions == "updated customization"
+    expected_prompt = (
+        registry.get_builtin_template(name).instructions if registry.is_builtin(name) else "updated customization"
+    )
+    assert persisted.instructions == expected_prompt
     assert persisted.id == profile.id
 
     if name == "Code":
@@ -227,6 +230,7 @@ def test_case_variant_creation_respects_the_actual_filesystem(
     assert owner_path.read_bytes() == before
     fresh = AgentProfileRegistry()
     fresh.load_all(user_dir=user_dir)
+    registry.enforce_builtin_prompts(owner)
     assert fresh.get(owner_name) == owner
     assert (fresh.get(request_name) is None) is aliases
 
@@ -379,6 +383,7 @@ def test_mutations_check_the_actual_storage_directory(
     name = "Code" if operation == "reset" else "Custom"
     profile = registry.get_builtin_template(name) or AgentProfile(name=name, id="custom-id")
     profile.instructions = "persisted customization"
+    profile.model.profile_id = "resettable-model"
     # Reset must retain a shadow, exercising its save branch.
     profile.skills.paths = ["preserved-skills"]
     registry.register(profile)
