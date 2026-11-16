@@ -9275,6 +9275,14 @@ msgstr "工作目录中含有换行或不可见的特殊字符。请在原配置
 msgid "tui.mcp.import.problem.empty"
 msgstr "{field}未填写。请在原配置文件中补充，再重新打开导入；也可以手动添加服务器。"
 
+#. English: The configuration editor cannot preserve this environment variable
+#. name as written: it is empty or starts or ends with whitespace. Check and
+#. adjust the name in the original configuration file, then reopen import.
+#. chrys-meta={"fingerprint":"6a0f098818535b79ca41664c4706fe6f5f58cee262e3da57626468466774ae16","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.env_name_not_representable"
+msgstr "配置编辑器无法原样保留此环境变量名：名称为空，或首尾带有空白字符。请在原配置文件中确认并调整名称，再重新打开导入。"
+
 #. English: Two header names differ only in case and have different values.
 #. Keep one value for that header as the server requires before importing
 #. again.

@@ -107,6 +107,7 @@ The mark after a server's name tells you what to check. Servers you cannot selec
 
 ### Check before use
 
+- **HTTP URLs**: Import removes leading and trailing whitespace from the URL. Spaces within the URL and encoded characters such as `%20` are preserved.
 - **Warnings (⚠)**: Read the warnings in the card's "Description" first. They may ask you to set environment variables, add authentication details or choose tools again. "Original setting" tells you where to find the setting in the other application's file. Settings iCode does not recognize are not copied, so check that the features you need are still available. You can delete warnings from "Description" once you have addressed them.
 - **Enabled**: Servers disabled in the other application still have "Enabled" unchecked after import. The same applies to Claude Code project servers you rejected or have not approved yet. To use one, check its settings and select "Enabled".
 - **Scope**: Imported servers are available in every project that uses this agent, even if you originally used them in just one project. For STDIO servers, also check the [working directory](#check-imported-working-directories).
@@ -161,6 +162,7 @@ When several files define a server with the same name, the one that applies to t
 | A file reference in a setting, such as OpenCode's `{file:...}` | Add the server manually and fill in the needed content. Environment variable values and header values can also [come from a command](../configuration/models.md#get-an-api-key-from-a-command) or reference an environment variable with `{{ENV_VAR}}`. Working Directory supports only a path or an environment variable reference. |
 | A value Pi gets by running a command (starting with `!`) | Add the server manually and [get the value from a command](../configuration/models.md#get-an-api-key-from-a-command) in iCode, or enter it directly. |
 | A missing value, or one with spaces at either end | Fill in the value or remove the extra spaces in the original configuration file, then reopen import. |
+| An empty environment variable name, or one with leading or trailing whitespace | The editor cannot preserve this name as written, so the server cannot be imported. Check and adjust the name in the original configuration file, then reopen import. The setting path shows the name in quotes, with tabs and other invisible whitespace escaped. |
 | A tool list with empty entries, duplicate names, spaces around names, or a comma within a name | Remove empty entries and duplicates and trim spaces around names in the original configuration, then import again. Lists containing a tool name with a comma cannot currently be imported. |
 | A Codex working directory written as `cwd = ""` | Remove that line to use the session folder, or fill in the folder the server needs, then import again. |
 | An OpenCode Working Directory combining an environment variable and `..`, such as `{env:ROOT}/../srv` | Add the server manually with the intended folder's full path, without `~` or `..`, to avoid using a different folder. |

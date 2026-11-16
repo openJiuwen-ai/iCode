@@ -107,6 +107,10 @@ _WHITESPACE = msg(
     "tui.mcp.import.problem.whitespace",
     fallback="{field} starts or ends with whitespace. Check it in the original configuration file and remove the extra whitespace, then reopen import.",
 )
+_ENV_NAME_NOT_REPRESENTABLE = msg(
+    "tui.mcp.import.problem.env_name_not_representable",
+    fallback="The configuration editor cannot preserve this environment variable name as written: it is empty or starts or ends with whitespace. Check and adjust the name in the original configuration file, then reopen import.",
+)
 _CHARACTERS = msg(
     "tui.mcp.import.problem.characters",
     fallback="{field} contains characters that cannot be imported. Check it in the original configuration file against the server instructions, then reopen import.",
@@ -227,6 +231,12 @@ def problem_text(
     if candidate.problem is Problem.REMOTE_ENVIRONMENT:
         return _REMOTE_ENVIRONMENT.bind(agent=agent, app=APP_DISPLAY_NAME)
     use = candidate.field_use
+    if (
+        candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
+        and use is FieldUse.ENV_NAME
+        and candidate.reason in (ValueReason.EMPTY, ValueReason.WHITESPACE)
+    ):
+        return _ENV_NAME_NOT_REPRESENTABLE.bind()
     action = _ENTER_LITERAL
     if use is FieldUse.URL:
         action = _ENTER_URL

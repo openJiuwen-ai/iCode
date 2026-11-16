@@ -9060,6 +9060,14 @@ msgstr ""
 msgid "tui.mcp.import.problem.empty"
 msgstr ""
 
+#. English: The configuration editor cannot preserve this environment variable
+#. name as written: it is empty or starts or ends with whitespace. Check and
+#. adjust the name in the original configuration file, then reopen import.
+#. chrys-meta={"fingerprint":"6a0f098818535b79ca41664c4706fe6f5f58cee262e3da57626468466774ae16","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.env_name_not_representable"
+msgstr ""
+
 #. English: Two header names differ only in case and have different values.
 #. Keep one value for that header as the server requires before importing
 #. again.

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import sys
@@ -13,6 +14,7 @@ import pytest
 
 from chrys.service.mcp.importers.base import (
     MAX_REQUEST_TIMEOUT_SECONDS,
+    FieldUse,
     ImportWarning,
     Problem,
     SourceErrorKind,
@@ -125,6 +127,39 @@ def test_convert_keeps_representable_tool_scope(allowed) -> None:
 
 
 @pytest.mark.parametrize(
+    ("key", "reason"),
+    [
+        ("", ValueReason.EMPTY),
+        (" \t", ValueReason.EMPTY),
+        (" TOKEN", ValueReason.WHITESPACE),
+        ("TOKEN ", ValueReason.WHITESPACE),
+        ("\tTOKEN", ValueReason.WHITESPACE),
+        ("TOKEN\t", ValueReason.WHITESPACE),
+        ("\u00a0TOKEN", ValueReason.WHITESPACE),
+        ("TOKEN\u3000", ValueReason.WHITESPACE),
+    ],
+)
+def test_convert_refuses_env_names_the_editor_cannot_preserve(key: str, reason: ValueReason) -> None:
+    candidate = convert(_stdio(env={"TOKEN": ("original",), key: ("private-source-value",)}))
+
+    assert candidate.config is None
+    assert candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert candidate.field_use is FieldUse.ENV_NAME
+    assert candidate.reason is reason
+    assert candidate.problem_field.startswith("servers.srv.env[")
+    assert json.loads(candidate.problem_field.removeprefix("servers.srv.env[").removesuffix("]")) == key
+    assert "private-source-value" not in candidate.problem_field
+
+
+@pytest.mark.parametrize("key", ["TOKEN", "A B", "A-B"])
+def test_convert_keeps_representable_env_names(key: str) -> None:
+    config = convert(_stdio(env={key: ("value",)})).config
+
+    assert config is not None
+    assert config.env == {key: "value"}
+
+
+@pytest.mark.parametrize(
     ("server", "problem", "field"),
     [
         (SourceServer("srv", "/cfg.json", "sse"), Problem.UNSUPPORTED_CONNECTION, ""),
@@ -166,10 +201,32 @@ def test_convert_refuses_values_icode_cannot_hold(server: SourceServer, problem:
 
 def test_convert_trims_header_whitespace_and_ignores_env_of_http_servers() -> None:
     # As fetch trims them, which the other applications send with.
-    config = convert(_http(headers={"X": (" v\t",), "Y": ("w\r\n",)}, env={"IGNORED": ("",)})).config
+    config = convert(_http(headers={"X": (" v\t",), "Y": ("w\r\n",)}, env={" IGNORED ": ("",)})).config
 
     assert config is not None
     assert (config.headers, config.env) == ({"X": "v", "Y": "w"}, {})
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://x/mcp", "https://x/mcp"),
+        ("  https://x/mcp", "https://x/mcp"),
+        ("https://x/mcp  ", "https://x/mcp"),
+        ("  https://x/mcp  ", "https://x/mcp"),
+        ("\t\r\nhttps://x/mcp\r\n\t", "https://x/mcp"),
+        ("\u00a0https://x/mcp\u3000", "https://x/mcp"),
+        (" https://x/a b?key=a b ", "https://x/a b?key=a b"),
+        (" https://x/mcp%20?key=%20 ", "https://x/mcp%20?key=%20"),
+    ],
+    ids=["unchanged", "leading", "trailing", "both", "ascii-whitespace", "unicode-whitespace", "internal", "encoded"],
+)
+def test_convert_trims_only_surrounding_url_whitespace(url: str, expected: str) -> None:
+    candidate = convert(SourceServer("srv", "/cfg.json", "http", url=url))
+
+    assert candidate.problem is None
+    assert candidate.config is not None
+    assert candidate.config.url == expected
 
 
 def test_convert_keeps_only_the_settings_of_the_servers_own_transport() -> None:

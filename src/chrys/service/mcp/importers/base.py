@@ -585,6 +585,14 @@ def convert(server: SourceServer) -> McpImportCandidate:
                 return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.cwd_path, ValueReason.WINDOWS_PATH, FieldUse.CWD)
             cwd = text
         for key, value in server.env.items():
+            # The editor strips names too; refuse rather than rename a variable.
+            if not key.strip() or key != key.strip():
+                return refuse(
+                    Problem.VALUE_NOT_REPRESENTABLE,
+                    f"{server.env_path}[{json.dumps(key)}]",
+                    value_reason(key),
+                    FieldUse.ENV_NAME,
+                )
             text = render(value)
             # The configuration editor trims values and refuses empty ones.
             if text is None or not text.strip() or text != text.strip():
@@ -612,7 +620,7 @@ def convert(server: SourceServer) -> McpImportCandidate:
         args=list(server.args) if stdio else [],
         env=env,
         cwd=cwd,
-        url="" if stdio else server.url,
+        url="" if stdio else server.url.strip(),
         headers=headers,
         enabled=server.enabled,
         description=server.description,

@@ -10,12 +10,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from chrys.app.tui.screens.agents.import_mcp_view import imported_config, problem_text, warning_text
+from chrys.app.tui.screens.agents.import_mcp_view import imported_config, original_setting, problem_text, warning_text
 from chrys.foundation.i18n import Localizer
 from chrys.service.mcp.importers import (
     FieldUse,
     ImportContext,
     McpImportCandidate,
+    Problem,
     ValueReason,
     WarningKind,
     base,
@@ -50,6 +51,47 @@ def discover(home: Path, source: str, entry: dict[str, object] | str) -> McpImpo
     path.write_text(text, encoding="utf-8")
     (candidate,) = importer.discover(ctx).candidates
     return candidate
+
+
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "pi"])
+@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
+@pytest.mark.parametrize(
+    ("key", "quoted", "reason"),
+    [
+        ("", '""', ValueReason.EMPTY),
+        (" \t", r'" \t"', ValueReason.EMPTY),
+        (" TOKEN", '" TOKEN"', ValueReason.WHITESPACE),
+        ("TOKEN ", '"TOKEN "', ValueReason.WHITESPACE),
+        ("TOKEN\t", r'"TOKEN\t"', ValueReason.WHITESPACE),
+        ("\u00a0TOKEN", r'"\u00a0TOKEN"', ValueReason.WHITESPACE),
+    ],
+)
+def test_unpreservable_env_names_are_refused_with_visible_whitespace(
+    tmp_path, source, locale, key, quoted, reason
+) -> None:
+    entry: dict[str, object] | str
+    if source == "codex":
+        entry = f'command = "run"\nenv = {{ {quoted} = "private-source-value" }}\n'
+    elif source == "opencode":
+        entry = {"type": "local", "command": ["run"], "environment": {key: "private-source-value"}}
+    else:
+        entry = {"command": "run", "env": {key: "private-source-value"}}
+
+    item = discover(tmp_path, source, entry)
+
+    assert item.config is None
+    assert item.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert (item.field_use, item.reason) == (FieldUse.ENV_NAME, reason)
+    assert item.problem_field.endswith(f"[{quoted}]")
+    localizer = Localizer(locale)
+    text = localizer.render(problem_text(item, source, localizer.render))
+    assert ("editor cannot preserve" if locale == "en" else "编辑器无法原样保留") in text
+    assert ("original configuration file" if locale == "en" else "原配置文件") in text
+    assert ("invalid" if locale == "en" else "非法") not in text
+    setting = localizer.render(original_setting(item.problem_field))
+    assert f"[{quoted}]" in setting
+    assert "private-source-value" not in text + setting
+    assert imported_config(item, source, localizer.render) is None
 
 
 @pytest.mark.parametrize("locale", ["en", "zh-Hans"])
