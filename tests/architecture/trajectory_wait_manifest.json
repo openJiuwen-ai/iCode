@@ -726,6 +726,9 @@
       "AgentEngine._on_user_inject_cancel": [
         ["awaitable", "await self._turns.on_user_inject_cancel(event)", "unresolved"]
       ],
+      "AgentEngine._on_user_inject_steer": [
+        ["awaitable", "await self._turns.on_user_inject_steer(event)", "unresolved"]
+      ],
       "AgentEngine._on_user_interrupt": [
         ["awaitable", "await self._turns.on_user_interrupt(_event)", "unresolved"]
       ],
@@ -759,6 +762,7 @@
         ["awaitable", "await self._bus.subscribe(UserRetry, self._on_user_retry)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(UserInject, self._on_user_inject)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(UserInjectCancel, self._on_user_inject_cancel)", "unresolved"],
+        ["awaitable", "await self._bus.subscribe(UserInjectSteer, self._on_user_inject_steer)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(RetryWaitSkip, self._on_retry_wait_skip)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(UserRollback, self._on_user_rollback)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(AgentProfileSwitch, self._on_profile_switch)", "unresolved"],
@@ -1059,6 +1063,9 @@
       ],
       "ActiveTurnInjector.publish_abandoned": [
         ["awaitable", "await self._bus.publish(UserInjectResult(text=text, consumed=False, created_at=created_at, injection_id=injection_id, session_id=target.session_id if target is not None else self._session.session_id))", "unresolved"]
+      ],
+      "ActiveTurnInjector.steer_pending": [
+        ["wrapper", "await self._steer(target, _Queued(injection, target.conversation.active_handle))", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._steer"]
       ]
     },
     "chrys.orchestration.engine.run.bindings": {
@@ -1228,6 +1235,9 @@
       ],
       "TurnCoordinator.on_user_inject_cancel": [
         ["awaitable", "await self._bus.publish(UserInjectResult(text=removed.text, consumed=False, created_at=removed.created_at, injection_id=injection_id, session_id=self._session.session_id))", "unresolved"]
+      ],
+      "TurnCoordinator.on_user_inject_steer": [
+        ["awaitable", "await self._injector.steer_pending(event.injection_id)", "unresolved"]
       ],
       "TurnCoordinator.on_user_interrupt": [
         ["awaitable", "await self._bus.publish(Warning(code='agent_loading_interrupt_ignored', message='Interrupt ignored while agent infrastructure is loading.', display_message=_COORDINATOR_INTERRUPT_IGNORED_LOADING.bind(), session_id=self._session.session_id))", "unresolved"],

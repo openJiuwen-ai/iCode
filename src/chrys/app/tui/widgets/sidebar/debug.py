@@ -49,6 +49,7 @@ _EVENT_STYLES: dict[str, tuple[str, str]] = {
     "UserInterrupt": ("Interrupt", "cyan bold"),
     "UserInject": ("Inject", "cyan"),
     "UserInjectCancel": ("InjectCancel", "cyan"),
+    "UserInjectSteer": ("InjectSteer", "cyan"),
     "ApprovalResponse": ("Approval", "cyan"),
     "AgentProfileSwitch": ("Profile", "cyan"),
     "SessionReady": ("SessionReady", "dim"),

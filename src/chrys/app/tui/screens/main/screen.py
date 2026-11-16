@@ -2183,10 +2183,20 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     # Input bar action buttons
     # ------------------------------------------------------------------ #
 
+    @on(InputBar.SteerRequested)
+    def _on_steer_requested(self, event: InputBar.SteerRequested) -> None:
+        if self.query_one(InputBar).owns_queued_action(event.queue_generation):
+            self._input_flow.steer_pending_injection()
+
+    @on(InputBar.CancelQueueRequested)
+    def _on_cancel_queue_requested(self, event: InputBar.CancelQueueRequested) -> None:
+        if self.query_one(InputBar).owns_queued_action(event.queue_generation):
+            self._input_flow.cancel_pending_injection()
+
     @on(InputBar.InterruptRequested)
-    def _on_interrupt_requested(self, _event: InputBar.InterruptRequested) -> None:
+    def _on_interrupt_requested(self, event: InputBar.InterruptRequested) -> None:
         """Stop button clicked — interrupt the running agent."""
-        self.action_interrupt()
+        self._publish_interrupt(run_generation=event.run_generation)
 
     @on(InputBar.RetryRequested)
     def _on_retry_requested(self, event: InputBar.RetryRequested) -> None:
@@ -2675,8 +2685,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 self._state.run.turn_end_check_pending = False
                 self._workspace_actions.check_after_turn()
         input_bar = self.query_one(InputBar)
-        if not running and input_bar.locked:
-            input_bar.unlock_and_keep()
+        if not running:
+            # Unlock hands the draft back to the user immediately. A late
+            # injection outcome may still render its bubble, but no longer
+            # owns the composer or blocks the next submit.
+            self._state.pending_injection.clear()
+            if input_bar.locked:
+                input_bar.unlock_and_keep()
         self.refresh_bindings()
         # Auto-dismiss interrupt confirmation when agent stops
         if not running and self._state.overlays.interrupt_confirm_active:
@@ -2693,6 +2708,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._state.run.agent_loading = loading
         input_bar = self.query_one(InputBar)
         if not loading and input_bar.locked and not self._state.run.agent_running:
+            self._state.pending_injection.clear()
             input_bar.unlock_and_keep()
         # Loading hides the trajectory key; nothing else refreshes the footer when it ends.
         self._sync_main_bindings()
@@ -2746,7 +2762,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._publish_interrupt()
 
     @work(thread=False)
-    async def _publish_interrupt(self) -> None:
+    async def _publish_interrupt(self, *, run_generation: int | None = None) -> None:
+        if run_generation is not None and not self.query_one(InputBar).owns_running_action(run_generation):
+            return
         if self._services.execution().kind == "workflow":
             self._workflow.run_control.stop()
             return

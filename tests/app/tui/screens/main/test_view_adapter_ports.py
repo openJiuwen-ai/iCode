@@ -16,6 +16,7 @@ from chrys.app.tui.screens.main import ports
 from chrys.app.tui.screens.main.state import MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n import MessageRef
@@ -193,25 +194,26 @@ def test_approval_dialog_tool_name_is_the_raw_name_or_empty() -> None:
 
 
 @pytest.mark.parametrize(
-    ("draft", "locked", "expected"),
+    ("sent", "draft", "revision", "locked", "cleared"),
     [
-        ("queued text", True, ("", False, ["unlock_and_clear"])),
-        ("queued text", False, ("", False, ["unlock_and_clear"])),
-        # Enter sends the composer's text stripped.
-        ("  queued text\n", False, ("", False, ["unlock_and_clear"])),
-        ("edited draft", False, ("edited draft", False, [])),
+        ("queued text", "queued text", 1, True, True),
+        ("queued text", "queued text", 1, False, True),
+        ("  queued text\n", "  queued text\n", 1, False, True),
+        ("queued text", "edited draft", 2, False, False),
+        ("queued text", "edited draft", 1, False, False),
+        ("queued text", "queued text", 2, False, False),
     ],
-    ids=["still_queued", "handed_back_unchanged", "handed_back_with_whitespace", "edited_since"],
+    ids=["still_queued", "handed_back_unchanged", "whitespace", "edited_since", "changed_not_delivered", "edited_back"],
 )
-def test_unlock_input_clearing_keeps_a_draft_edited_since(
-    draft: str, locked: bool, expected: tuple[str, bool, list[str]]
+def test_clear_submitted_input_keeps_a_draft_edited_since(
+    sent: str, draft: str, revision: int, locked: bool, cleared: bool
 ) -> None:
     from types import SimpleNamespace
 
     from chrys.app.tui.widgets.chrome.input_bar import InputBar
 
     calls: list[str] = []
-    input_bar = SimpleNamespace(value=draft, locked=locked)
+    input_bar = SimpleNamespace(value=draft, locked=locked, draft_revision=revision, draft=lambda: ChatDraft(draft))
 
     def unlock_and_clear() -> None:
         calls.append("unlock_and_clear")
@@ -230,6 +232,7 @@ def test_unlock_input_clearing_keeps_a_draft_edited_since(
         return input_bar
 
     adapter = MainScreenViewAdapter(SimpleNamespace(query_one=query_one), state=MainScreenState())  # type: ignore[arg-type]
-    adapter.unlock_input_clearing("queued text")
+    adapter.clear_submitted_input(ports.InputSubmission(ChatDraft(sent), 1))
 
+    expected = ("", False, ["unlock_and_clear"]) if cleared else (draft, locked, [])
     assert (input_bar.value, input_bar.locked, calls) == expected

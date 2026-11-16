@@ -41,6 +41,16 @@ A task you stop shows no mark, and the mark clears when you start the next task.
 
 When you stop a task or it fails, the part of the reply that already appeared stays in the conversation and in the saved session. If you click **Retry** or **Continue**, that part is removed first and the agent picks up after its last completed tool call. If you typed a message before clicking, the agent reads it there and goes on from it; if not, the agent writes the reply again. Tool calls stay. If you press **Enter** instead, your message starts a new task: the part of the reply stays, and the agent reads it.
 
+## Add guidance while the agent runs
+
+Type a message and press **Enter**, or click **Send** to the left of **Interrupt**, to queue it for the next model request. **Send** appears when the running task's input contains text; empty or whitespace-only input shows only **Interrupt**. The text stays visible and read-only after queuing, with **Steer** and **Cancel** on its right. Pressing Enter again does nothing; use Tab to focus a button or click it.
+
+- **Cancel** or **Esc** cancels the queued message and returns its draft for editing. The current task continues.
+- **Steer** tries to stop the current generation or running tools and continue with this message. **Steering…** shows while the request is pending; **Interrupt** remains available. If the message has already reached the model, it is not sent again and that request continues.
+- **Ctrl+B** interrupts the task even while a message is queued. Without a queued message, the right-hand button is **Interrupt**.
+
+The input clears when the message reaches the model. If the task finishes or fails while the message is still shown as queued, the draft becomes editable immediately. If the message is still being submitted, **Esc** can still withdraw it. If that submission starts a new task, the original draft clears only if you have not edited it. A late delivery confirmation still adds the delivered message to the conversation and keeps your current draft. A cancellation that arrives after delivery cannot retract the message.
+
 ## Ask a side question
 
 Enter `/btw <question>` to ask about the current conversation while the main task continues. The side question uses the current model and existing conversation text and tool results. It cannot read new files, run commands, or use tools. Very long reference text may be shortened to fit the model's context window. Prompt-submission hooks also check side questions: a blocked question is not sent to the model, and any hook reminders apply only to that side question.
