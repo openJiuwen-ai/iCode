@@ -1088,6 +1088,7 @@ _message_ids.update(
         "tui.mcp.connection_report.prompt_loading_disabled",
         ("tui.mcp.connection_report.prompts_exposed", "tui.mcp.connection_report.prompts_exposed#plural"),
         ("tui.mcp.connection_report.tools_exposed", "tui.mcp.connection_report.tools_exposed#plural"),
+        "tui.mcp.connection_report.working_directory",
         "tui.mcp.connection_test.error.cancelled",
         "tui.mcp.connection_test.error.configuration_conflict",
         "tui.mcp.connection_test.error.failed",

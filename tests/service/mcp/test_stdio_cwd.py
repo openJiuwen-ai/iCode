@@ -613,6 +613,7 @@ async def test_import_save_reload_and_launch_preserve_cwd(tmp_path: Path) -> Non
         MCPAdapter(stdio_cwd=str(workspace)).test_connection(config), timeout=ENGINE_TURN_TIMEOUT
     )
     assert "cwd_get_cwd" in [name for name, _description in report.tools]
+    assert report.effective_cwd == str(workspace / "tools" / "server")
 
 
 async def test_the_connection_test_starts_where_the_agent_would(tmp_path: Path) -> None:
@@ -631,6 +632,7 @@ async def test_the_connection_test_starts_where_the_agent_would(tmp_path: Path) 
     report = await asyncio.wait_for(adapter.test_connection(config), timeout=ENGINE_TURN_TIMEOUT)
 
     assert "get_cwd" in [name for name, _description in report.tools]
+    assert report.effective_cwd == str(workspace / "srv")
 
 
 # ── Stock stdio client fallback ──────────────────────────────────────

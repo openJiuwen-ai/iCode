@@ -120,7 +120,7 @@ The mark after a server's name tells you what to check. Servers you cannot selec
 
 Before saving, make sure "Working Directory" points to the folder the server needs. A blank value uses the current session folder; a relative path such as `tools/mcp` also follows that folder when it changes. To keep using the original folder, the most direct option is to enter its full path without `~` or `..`, for example `/home/me/mcp-server` or `C:\tools\mcp-server`.
 
-After clicking "Test", check the folder and the tools you need as well as the connection result. On a directory error, look for the path after `Working directory:` in the connection report. Connection errors during agent loading are also available with **F6**. See [Test and save](#test-and-save).
+After clicking "Test", check the folder and the tools you need as well as the connection result. A successful STDIO report shows "Working directory" below the connection command. On a directory error, look for the path after `Working directory:` in the connection report. Connection errors during agent loading are also available with **F6**. See [Test and save](#test-and-save).
 
 #### Working directory compatibility details
 
@@ -209,6 +209,8 @@ With Claude Opus 5.5, Fable 5.1 and Sonnet 5.5, on-demand loading has a cost. Th
 1. **Enable or disable the server**: To enable an MCP server, keep "Enabled" checked at the bottom left of its configuration card. To keep the configuration but temporarily disable the server, uncheck it. A disabled server does not provide tools, prompt templates, or usage instructions to the agent.
 2. **Test the server connection**: Click "Test" at the bottom right of the server configuration card. iCode attempts to connect and displays the server's identity, advertised capabilities, and usage instructions in a connection report, along with the tools and prompt templates available under the current configuration.
 3. **Save the configuration**: Click "Save". If you are editing the agent used by the current session, the saved MCP configuration applies to subsequent requests.
+
+For STDIO servers, a successful report shows "Working directory" below the connection command: the folder used to start the test process, including the current session folder when the field is blank. Environment variables, `~`, and relative paths have been expanded. Check this path to confirm that the server started in the intended folder. HTTP reports do not show a working directory.
 
 If the test fails:
 

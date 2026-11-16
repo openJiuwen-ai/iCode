@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -711,6 +714,49 @@ async def test_test_connection_enters_and_exits_tool() -> None:
 
     fake.__aenter__.assert_awaited_once()
     fake.__aexit__.assert_awaited_once_with(None, None, None)
+
+
+@pytest.mark.parametrize("cwd_kind", ["absolute", "inherited", "process", "relative", "variable", "home", "parent"])
+async def test_test_connection_reports_the_directory_passed_to_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cwd_kind: str
+) -> None:
+    workspace = str(tmp_path / "workspace")
+    target = str(tmp_path / "server")
+    home = os.path.expanduser("~")
+    monkeypatch.setenv("MCP_TEST_CWD", target)
+    cases = {
+        "absolute": (target, target),
+        "inherited": ("", workspace),
+        "process": ("", os.getcwd()),
+        "relative": ("tools/server", str(Path(workspace) / "tools" / "server")),
+        "variable": ("{{MCP_TEST_CWD}}", target),
+        "home": ("~/server", str(Path(home) / "server")),
+        "parent": ("link/..", os.path.join(workspace, "link", "..")),
+    }
+    configured, expected = cases[cwd_kind]
+    if sys.platform == "win32":
+        expected = os.path.normpath(expected)
+    adapter = MCPAdapter(stdio_cwd=None if cwd_kind == "process" else workspace)
+    config = MCPServerConfig(name="s", transport="stdio", command="python", cwd=configured)
+    fake = _FakeConnectionTool()
+
+    with patch.object(adapter, "_create_tool_with_timeout_floor", autospec=True, return_value=fake) as create:
+        report = await adapter.test_connection(config)
+
+    create.assert_called_once_with(config, DEFAULT_TEST_TIMEOUT_SECONDS, stdio_cwd=expected)
+    assert report.effective_cwd == expected
+
+
+async def test_http_connection_report_has_no_working_directory(tmp_path: Path) -> None:
+    adapter = MCPAdapter(stdio_cwd=str(tmp_path))
+    config = MCPServerConfig(name="s", transport="http", url="https://example.com/mcp", cwd="{{MISSING_CWD}}")
+    with patch.object(
+        adapter, "_create_tool_with_timeout_floor", autospec=True, return_value=_FakeConnectionTool()
+    ) as create:
+        report = await adapter.test_connection(config)
+
+    create.assert_called_once_with(config, DEFAULT_TEST_TIMEOUT_SECONDS, stdio_cwd=None)
+    assert report.effective_cwd is None
 
 
 async def test_test_connection_returns_server_report() -> None:

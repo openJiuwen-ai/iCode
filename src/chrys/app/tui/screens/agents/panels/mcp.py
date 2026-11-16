@@ -303,6 +303,10 @@ _CONNECTED_VIA = msg(
     "tui.mcp.connection_report.connected_via",
     fallback="Connected via {transport}: {target}",
 )
+_REPORT_WORKING_DIRECTORY = msg(
+    "tui.mcp.connection_report.working_directory",
+    fallback="Working directory: {cwd}",
+)
 _TOOLS_EXPOSED = msg(
     "tui.mcp.connection_report.tools_exposed",
     fallback="{count} tool available to the model.\n\n{catalog}",
@@ -2270,15 +2274,21 @@ def _format_mcp_report(
     sections = [
         _server_heading(report, render_message),
         _connection_caption(config, render_message),
-        f"### {render_message(_CAPABILITIES_HEADING.bind())}",
-        _mcp_capabilities_section(report.capabilities, render_message),
-        f"### {render_message(_INSTRUCTIONS_HEADING.bind())}",
-        _instructions_section(report.instructions, render_message),
-        f"### {render_message(_TOOLS_HEADING.bind())}",
-        _tools_section(report, render_message),
-        f"### {render_message(_PROMPTS_HEADING.bind())}",
-        _prompts_section(config, report, render_message),
     ]
+    if config.transport == "stdio" and report.effective_cwd is not None:
+        sections.append(render_message(_REPORT_WORKING_DIRECTORY.bind(cwd=code_span(report.effective_cwd))))
+    sections.extend(
+        [
+            f"### {render_message(_CAPABILITIES_HEADING.bind())}",
+            _mcp_capabilities_section(report.capabilities, render_message),
+            f"### {render_message(_INSTRUCTIONS_HEADING.bind())}",
+            _instructions_section(report.instructions, render_message),
+            f"### {render_message(_TOOLS_HEADING.bind())}",
+            _tools_section(report, render_message),
+            f"### {render_message(_PROMPTS_HEADING.bind())}",
+            _prompts_section(config, report, render_message),
+        ]
+    )
     if report.initial_tool_names is not None:
         sections.extend(
             (

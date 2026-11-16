@@ -8825,6 +8825,12 @@ msgstr[0] ""
 "\n"
 "{catalog}"
 
+#. English: Working directory: {cwd}
+#. chrys-meta={"fingerprint":"57e7599b5d472549da7e05207bc6d8760cc318204babbc5f3b8668e7db1b9158","multiline":false,"placeholders":["cwd"]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.connection_report.working_directory"
+msgstr "工作目录：{cwd}"
+
 #. English: Connection test was cancelled. Please try again.
 #. chrys-meta={"fingerprint":"3aad64b49eed0f4694a6439f91ee29c5fd29386bcaecc1fa391569d1e1e4ac85","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/mcp.py
