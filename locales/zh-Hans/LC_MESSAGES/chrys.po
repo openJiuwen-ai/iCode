@@ -1307,6 +1307,13 @@ msgstr "未找到模型配置：{model}"
 msgid "run.model_profile_not_found_with_available"
 msgstr "未找到模型配置：{model}。可用模型配置：{available}"
 
+#. English: Model profile not found: {model}. Available model profiles:
+#. {available}. Could not read these profile files: {files}
+#. chrys-meta={"fingerprint":"80c9f87eb462b5b65ad5f063aaeca979fb8586e49dffb11a50ebceeec5d0c042","multiline":false,"placeholders":["available","files","model"]}
+#: src/chrys/app/cli/run.py
+msgid "run.model_profile_not_found_with_available_and_unreadable"
+msgstr "未找到模型配置：{model}。可用模型配置：{available}。以下配置文件无法读取：{files}"
+
 #. English: Model profile not found: {model}. Could not read these profile
 #. files: {files}
 #. chrys-meta={"fingerprint":"264a7540b8c50bdf5637a5652622199067865b264f47adc003d6ad0686703f5a","multiline":false,"placeholders":["files","model"]}
@@ -1343,6 +1350,13 @@ msgstr "未找到智能体配置：{name}"
 #: src/chrys/orchestration/session_host.py
 msgid "session_host.agent_profile_not_found_with_available"
 msgstr "未找到智能体配置：{name}。可用智能体配置：{available}"
+
+#. English: Agent profile not found: {name}. Available profiles: {available}.
+#. Could not read these profile files: {files}
+#. chrys-meta={"fingerprint":"095c4e27890634e9f890ddfdf0f6b65b16d8aeca27bba664d5729d2ea4dffbca","multiline":false,"placeholders":["available","files","name"]}
+#: src/chrys/orchestration/session_host.py
+msgid "session_host.agent_profile_not_found_with_available_and_unreadable"
+msgstr "未找到智能体配置：{name}。可用智能体配置：{available}。以下配置文件无法读取：{files}"
 
 #. English: Agent profile not found: {name}. Could not read these profile
 #. files: {files}
