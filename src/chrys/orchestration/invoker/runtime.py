@@ -73,6 +73,7 @@ class ContextInputs(TypedDict):
     session_dir: NotRequired[Path | None]
     skip_local_history_for_service_context: NotRequired[bool]
     service_context_default_options: NotRequired[Mapping[str, Any] | None]
+    tool_result_ceiling_tokens: NotRequired[int | None]
 
 
 class ReminderInputs(TypedDict):
@@ -81,6 +82,7 @@ class ReminderInputs(TypedDict):
     runtime: NotRequired[SessionEnvironment | None]
     max_context_tokens: NotRequired[int]
     warn_threshold_pct: NotRequired[float]
+    automatic_compaction: NotRequired[bool]
     sub_agent_names: NotRequired[list[str] | None]
     shell_tool_enabled: NotRequired[bool]
     tool_names: NotRequired[list[str] | None]

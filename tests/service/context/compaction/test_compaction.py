@@ -371,7 +371,7 @@ async def test_on_pre_compact_called_before_phase4():
 async def test_full_tool_phase_cascade():
     """Old-tool phases and Phase 4 fire in order when target is impossibly low."""
     # 3 old turns + 1 current turn, many groups
-    messages = _build_multi_turn(4, groups_per_turn=4, result_size=500)
+    messages = _build_multi_turn(4, groups_per_turn=4, result_size=3000)
 
     received: list[CompactionInfo] = []
     strategy = _forced_phase4(

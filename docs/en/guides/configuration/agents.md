@@ -1,6 +1,6 @@
 # Configure agents
 
-iCode uses agent profiles to define an agent's name, instructions, model, available tools, sub-agents, and other settings. This guide explains how to create, clone, edit, reset, switch, and delete agent profiles in the terminal user interface (TUI), and how to configure models and sub-agents for an agent.
+iCode uses agent profiles to define an agent's name, instructions, model, available tools, sub-agents, and other settings. This guide explains how to create, clone, edit, switch, and delete agent profiles in the terminal user interface (TUI), and how to configure models and sub-agents for an agent.
 
 ## Open the agent configuration window
 
@@ -75,7 +75,7 @@ Use cloning to create a new profile based on an existing agent. Cloning creates 
 
 **Notes:**
 
-- You cannot change **Name** or **Agent Type** for the built-in agents included with iCode, such as Code Agent and Q&A Agent. Other settings can be adjusted as needed.
+- You cannot change **Name** or **Agent Type** for the built-in agents included with iCode, such as Code Agent and Q&A Agent. Their system and compaction prompts are also read-only; clone the agent to customize these prompts. Other settings can be adjusted as needed.
 - After editing a profile, click **Save** to apply the changes. Changes left unsaved when you close the agent configuration window do not take effect.
 - If you edit the agent used by the current session, the saved configuration takes effect for subsequent requests.
 
@@ -96,25 +96,13 @@ To delete a custom agent:
 
 If you delete the agent currently in use, iCode automatically switches to another available main agent when you close the configuration window.
 
-### Reset a built-in agent profile
+### Built-in prompts and updates
 
-The built-in agents included with iCode cannot be deleted.
+The system and compaction prompts of Code, QA, Explore, and General are read-only and update with iCode. Other settings, including models, tools, skills, MCP servers, memory files, and compaction token budgets, remain editable.
 
-When you edit and save a built-in agent, iCode creates a user profile file with the same name, such as `Code.yaml`, in the [user agent profile directory](../../reference/agent-profile.md#user-agent-profile-directory). This file stores both your changes and the other settings in effect at that time. For example, if you only add an MCP server, the saved profile contains that server and retains the current values of the other settings.
+You can drag to select and copy prompt text without opening a notice. A single click or an attempt to edit a built-in prompt opens a notice; choose **Clone and edit** to create an editable custom agent. The copy keeps the current settings and prompts; click **Save** to keep it. Custom agents do not receive built-in prompt updates.
 
-At startup, iCode gives precedence to the user profile file with the same name, instead of merging user and built-in settings field by field. As a result, after an iCode upgrade, updates to built-in defaults such as agent instructions are not automatically applied to that agent.
-
-To adopt the built-in defaults from the current version, reset the built-in agent. Resetting preserves only skills, MCP server, memory, and [extension](../extensions/python-extensions.md) settings. Instructions, compaction, and all other settings return to the current version's built-in defaults.
-
-To reset an agent:
-
-1. Select the built-in agent to reset in the list on the left.
-2. Click **Reset**, then click **Reset** again in the confirmation window.
-3. If **Save** is enabled, click it to apply the reset. If it is disabled, the current configuration already matches the reset result described above, so there is nothing to save.
-
-Reset changes remain pending in the configuration window until saved. Closing the window discards unsaved changes.
-
-After a reset, if the user profile file with the same name no longer exists, future upgrades use the new built-in configuration directly. If the file remains because it preserves custom skills, MCP server, memory, or extension settings, you still need to reset the agent again after future upgrades to adopt updated built-in defaults.
+On upgrade, user configuration files for built-in agents containing nonempty system or compaction prompts are preserved as custom agents such as **Code Agent (Modified)**. If that name is taken, iCode adds a number. Built-in agents retain their other user settings and use the current built-in prompts. Empty or whitespace-only prompts do not create a backup. Backups are not selected automatically; select one if you want to keep using its previous prompts.
 
 ## Configure models and sub-agents
 

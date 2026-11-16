@@ -482,6 +482,62 @@ async def test_settings_reload_tells_the_client_which_values_were_dropped() -> N
 
 
 @pytest.mark.anyio
+async def test_one_warning_object_reaching_both_senders_is_notified_once() -> None:
+    """A reload's collected batch and the prompt stream it overlaps can share an event.
+
+    Both paths end in ``_send_warning``, so identity there is what keeps the
+    client from receiving the identical diagnosis twice. Distinct failures
+    that happen to read the same are still separate notifications.
+    """
+    host = _FakeHost(event_bus=EventBus())
+    client = _FakeClient()
+    server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(client)
+    shared = Warning(code="mcp.connect_failed", message="MCP server 'probe' failed to connect", session_id="s1")
+
+    def count() -> int:
+        return sum(
+            1
+            for method, params in client.ext_notifications
+            if method == "chrys/warning" and params["code"] == "mcp.connect_failed"
+        )
+
+    await server._send_warning("s1", shared)  # the reload's batch
+    assert count() == 1
+    await server._send_warning("s1", shared)  # the overlapping prompt stream
+    assert count() == 1
+    await server._send_warning(
+        "s1", Warning(code="mcp.connect_failed", message=shared.message, session_id="s1")
+    )  # a different failure reading the same
+    assert count() == 2
+
+
+@pytest.mark.anyio
+async def test_a_large_overlapping_batch_is_still_notified_once_per_event() -> None:
+    """Every live warning stays remembered, however many are in flight.
+
+    A reload can carry more warnings than any fixed ring would hold, and one
+    server serves every session, so eviction by count would let a whole batch
+    through a second time.
+    """
+    host = _FakeHost(event_bus=EventBus())
+    client = _FakeClient()
+    server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(client)
+    shared = [
+        Warning(code="mcp.connect_failed", message=f"MCP server 'probe{i}' failed to connect", session_id="s1")
+        for i in range(64)
+    ]
+
+    for warning in shared:  # the prompt stream drains the batch first
+        await server._send_warning("s1", warning)
+    for warning in shared:  # the reload then sends the same collected objects
+        await server._send_warning("s1", warning)
+
+    assert len([method for method, _ in client.ext_notifications if method == "chrys/warning"]) == len(shared)
+
+
+@pytest.mark.anyio
 async def test_setting_a_config_option_tells_the_client_what_the_reload_refused() -> None:
     """This route persists the value *before* reloading it, so silence is worse here.
 

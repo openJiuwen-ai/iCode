@@ -81,8 +81,8 @@ async def _convert_over_threshold(tools: DocConverterTools, doc: Path, parser: o
 def test_convert_document_contract_limits_visual_assets_to_pdf_docx_and_pptx() -> None:
     description = DocConverterTools.convert_document.description
 
-    assert "embedded raster assets from PDF, DOCX, and PPTX" in description
-    assert "XLS/XLSX conversion remains text/table-only" in description
+    assert "PDF/DOCX/PPTX raster images are lazy references" in description
+    assert "XLS/XLSX are text and tables only" in description
 
 
 def test_document_image_storage_limits_align_with_session_and_model_boundaries() -> None:

@@ -68,6 +68,10 @@ class AgentManifest:
     tool_kinds: Mapping[str, str]
     skill_names: tuple[str, ...]
     memory_files: tuple[str, ...]
+    instructions: str = ""
+    """The system prompt the installed build hands the model, kept so hooks can be shown it."""
+    profile_instructions: str = ""
+    """The agent profile's own instructions, without memory or provider contributions."""
     agent_profile_fingerprint: str
     model_profile_fingerprint: str
     runtime_details: AgentRuntimeDetails
@@ -95,6 +99,8 @@ class AgentManifest:
             tool_kinds=MappingProxyType(dict(result.tool_kinds)),
             skill_names=tuple(result.skill_names),
             memory_files=tuple(result.memory_files),
+            instructions=result.instructions,
+            profile_instructions=result.profile_instructions,
             agent_profile_fingerprint=result.agent_profile_fingerprint,
             model_profile_fingerprint=result.model_profile_fingerprint,
             runtime_details=copy.deepcopy(result.runtime_details),

@@ -1212,7 +1212,8 @@ class BackendEventHandler:
                 s.update_toc()
                 s.debug("UserInjectResult", "consumed" if owns_input else "consumed (stale id)")
             finally:
-                if owns_input:
+                # Mounting the bubble yields: Cancel or a new queue may have changed ownership meanwhile.
+                if owns_input and (event.injection_id is None or pending.matches(event.injection_id)):
                     pending.clear()
                     ui.unlock_input_after_consumed_injection()
         elif owns_input:

@@ -116,6 +116,7 @@ async def test_fallback_path_reports_side_call_usage(tmp_path):
     usage = {"input_token_count": 7, "output_token_count": 3, "total_token_count": 10}
 
     class _UsageResponse:
+        finish_reason = None
         raw_text = note
         usage_details = usage
         additional_properties: ClassVar[dict[str, object]] = {}

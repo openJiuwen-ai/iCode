@@ -412,7 +412,7 @@ async def test_a_scrollbar_press_still_lets_the_scroll_withdraw_the_pill(source:
         if source == "chat":
             app.main_screen.schedule_chat_selection_reprojection(app.main_screen.query_one(ChatPanel))
         else:
-            card.post_message(BtwPanel.Scrolled())
+            card.post_message(BtwPanel.Scrolled(card.query_one(BtwPage)))
 
         await wait_for(lambda: not popup.is_shown, pilot=pilot, description="the scroll withdrew the pill")
 
@@ -614,4 +614,29 @@ async def test_a_drag_over_the_side_question_and_answer_quotes_both_with_their_l
 
         assert input_bar.draft().references.get("quote", 1) == DraftReference(
             "quote", 1, "why retry at all\n[Answer]\na bounded"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_side_card_quote_outlives_the_sidebar_text_its_drag_picked_up() -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        card = await _side_card(app, pilot, "a side question", "the side answer")
+        body = _side_body(card, "answer")
+        label = app.main_screen.query_one("#ctx-usage-label", Static)
+        input_bar = app.main_screen.query_one(InputBar)
+
+        app.main_screen._watch__select_state(_chat_drag_state(body, body, end_offset=Offset(4, 0)))
+        app.main_screen.selections = {body: SELECT_ALL, label: SELECT_ALL}
+        app.main_screen._watch__selecting(False)
+        popup = app.main_screen.query_one(QuoteSelectionPopup)
+        await wait_for(lambda: popup.is_shown, pilot=pilot, description="the quote pill is offered")
+        # The sidebar rebuilds its rows before the click.
+        await label.remove()
+        app.main_screen.clear_selection()
+        app.main_screen.post_message(QuoteSelectionPopup.Requested())
+        await pilot.pause()
+
+        assert input_bar.draft().references.get("quote", 1) == DraftReference(
+            "quote", 1, "the side answer\nContext Usage"
         )

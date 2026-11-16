@@ -61,16 +61,12 @@ _tokenizer = MixedLanguageTokenizer()
 # format values are never re-formatted, so braces here are literal prompt text
 # and must stay single.
 _SCRIPT_RUNNER_INSTRUCTIONS = """
-- Use `run_skill_script` to run referenced scripts, using the name exactly as listed.
-- File-based script names are relative paths from the skill directory. For a script in the skill's `scripts`
-  directory, pass `script_name: "scripts/{skill_script_name}.py"`, not `"{skill_script_name}.py"`.
-- Use forward slashes in `script_name` exactly as listed, including on Windows.
-- Pass the exact ordered script tokens inside `arguments` (e.g. `arguments: ["input.txt", "output.txt"]`).
-- Use `arguments` for anything order-sensitive: subcommands, short flags, repeated flags, global flags
-  before a subcommand, or `--` passthrough.
-- Use `args` only as optional sugar for flat, order-insensitive CLI flags
-  (e.g. `args: {"length": 24}` appends `--length 24` after `arguments`).
-- Do not pass script arguments as top-level tool parameters.
+- `script_name`: exact skill-relative path with forward slashes, including on Windows;
+  use "scripts/{skill_script_name}.py", not "{skill_script_name}.py".
+- Put ordered tokens in `arguments`, including subcommands, short/repeated flags,
+  global flags before subcommands, and `--` passthrough. Example: ["input.txt", "output.txt"].
+- `args` is optional sugar for flat, order-insensitive flags appended after arguments.
+  Never pass script arguments as top-level tool parameters.
 """
 
 
@@ -402,15 +398,23 @@ class ChrysSkillsProvider(ContextProvider):
         self._skills = skills
         self._loaded = True
 
-    async def initialize(self) -> None:
+    async def initialize(self, *, initial_skills: Sequence[Skill] | None = None) -> None:
         """Run first discovery so synchronous accessors are populated.
 
         ``create_skills_provider`` always calls this before returning, so
         chrys callers reading :meth:`skill_names` / :meth:`skill_sources` /
         :meth:`skill_details` synchronously see the full list at startup.
+        A build may provide its private copy of an initial file snapshot;
+        later refreshes always use the independent ``load_skills`` callback.
         """
         if not self._loaded:
-            await self._reload()
+            if initial_skills is None:
+                await self._reload()
+            else:
+                skills = list(initial_skills)
+                _warm_skill_revisions(skills)
+                self._skills = skills
+                self._loaded = True
 
     def skill_names(self) -> list[str]:
         """Return loaded skill names in source order."""
@@ -461,6 +465,10 @@ class ChrysSkillsProvider(ContextProvider):
     # ------------------------------------------------------------------ #
     # ContextProvider hook                                                #
     # ------------------------------------------------------------------ #
+
+    def contributed_instructions(self) -> str:
+        """The instructions this provider adds before every run."""
+        return self._static_instructions or ""
 
     async def before_run(
         self,

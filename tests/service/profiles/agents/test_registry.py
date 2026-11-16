@@ -119,7 +119,10 @@ def test_stdio_ignores_invalid_headers_without_dropping_user_profile(tmp_path: P
 
     profile = registry.get(name)
     assert profile is not None
-    assert profile.instructions == "Keep my custom instructions"
+    preserved = registry.get("Code-Modified") if name == "Code" else profile
+    assert preserved.instructions == "Keep my custom instructions"
+    if name == "Code":
+        assert profile.instructions == registry.get_builtin_template(name).instructions
     assert len(profile.tools.mcp) == 1
     assert profile.tools.mcp[0].command == "my-server"
     assert profile.tools.mcp[0].headers == {}
@@ -537,7 +540,6 @@ def test_load_all_continues_when_hidden_metadata_cannot_be_deleted(tmp_path: Pat
 def test_load_user_profiles_moves_noncanonical_shadow_to_name_yaml(tmp_path: Path, caplog) -> None:
     source = tmp_path / "my-code.yaml"
     source.write_text("name: Code\nid: b011c0de0001\ninstructions: custom shadow\n", encoding="utf-8")
-    original_bytes = source.read_bytes()
     reg = AgentProfileRegistry()
 
     with caplog.at_level("INFO", logger="chrys.service.profiles.agents.registry"):
@@ -545,10 +547,11 @@ def test_load_user_profiles_moves_noncanonical_shadow_to_name_yaml(tmp_path: Pat
 
     canonical = tmp_path / "Code.yaml"
     assert not source.exists()
-    assert canonical.read_bytes() == original_bytes
+    assert load_profile_from_yaml(canonical).instructions == ""
     code = reg.get("Code")
     assert code is not None
-    assert code.instructions == "custom shadow"
+    assert code.instructions == reg.get_builtin_template("Code").instructions
+    assert reg.get("Code-Modified").instructions == "custom shadow"
     assert "canonical path" in caplog.text
 
 
@@ -574,13 +577,12 @@ def test_load_user_profiles_moves_yml_shadow_and_migrates_id_into_canonical_file
     assert load_profile_from_yaml(tmp_path / "Custom.yaml").id == numeric_id
 
 
-def test_load_user_profiles_quarantines_conflicting_source_and_never_rewrites_canonical_file(
+def test_load_user_profiles_quarantines_conflicting_source_and_backs_up_canonical_profile(
     tmp_path: Path, caplog
 ) -> None:
     """The canonical file wins; a conflicting source is moved out of the scan, byte-for-byte intact."""
     canonical = tmp_path / "Code.yaml"
     canonical.write_text("name: Code\nid: b011c0de0001\ninstructions: first\n", encoding="utf-8")
-    canonical_bytes = canonical.read_bytes()
     other = tmp_path / "my-code.yaml"
     # No ``id`` on purpose: the legacy-id migration must not write this content to Code.yaml.
     other.write_text("name: Code\ninstructions: second\n", encoding="utf-8")
@@ -590,17 +592,22 @@ def test_load_user_profiles_quarantines_conflicting_source_and_never_rewrites_ca
     with caplog.at_level("WARNING", logger="chrys.service.profiles.agents.registry"):
         total = reg.load_all(user_dir=tmp_path)
 
-    assert total == 5  # 4 builtins + the canonical Code shadow; the conflicting source is not counted
-    assert canonical.read_bytes() == canonical_bytes
+    assert total == 6  # 4 builtins + the canonical override + its prompt backup; the conflict is excluded
+    assert load_profile_from_yaml(canonical).instructions == ""
     assert not other.exists()
     quarantined = tmp_path / "my-code.yaml.conflict"
     assert quarantined.read_bytes() == other_bytes
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["Code.yaml", "my-code.yaml.conflict"]
+    assert sorted(p.name for p in tmp_path.iterdir() if not p.name.startswith(".")) == [
+        "Code-Modified.yaml",
+        "Code.yaml",
+        "my-code.yaml.conflict",
+    ]
     assert "moved it to my-code.yaml.conflict" in caplog.text
     assert "Duplicate agent profile name" not in caplog.text
     code = reg.get("Code")
     assert code is not None
-    assert code.instructions == "first"
+    assert code.instructions == reg.get_builtin_template("Code").instructions
+    assert reg.get("Code-Modified").instructions == "first"
 
 
 def test_quarantined_conflict_does_not_resurrect_after_canonical_file_is_deleted(tmp_path: Path) -> None:
@@ -611,7 +618,8 @@ def test_quarantined_conflict_does_not_resurrect_after_canonical_file_is_deleted
 
     reg = AgentProfileRegistry()
     reg.load_all(user_dir=tmp_path)
-    assert reg.get("Code").instructions == "edited via screen"
+    assert reg.get("Code").instructions == reg.get_builtin_template("Code").instructions
+    assert reg.get("Code-Modified").instructions == "edited via screen"
 
     canonical.unlink()  # what Delete or an exact-template Reset does
     fresh = AgentProfileRegistry()
@@ -643,7 +651,7 @@ def test_load_user_profiles_swaps_files_whose_names_point_at_each_other(tmp_path
         total = reg.load_all(user_dir=tmp_path)
 
     assert total == 6
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["A.yaml", "B.yaml"]
+    assert sorted(p.name for p in tmp_path.iterdir() if not p.name.startswith(".")) == ["A.yaml", "B.yaml"]
     assert "name: A" in (tmp_path / "A.yaml").read_text(encoding="utf-8")
     assert "name: B" in (tmp_path / "B.yaml").read_text(encoding="utf-8")
     assert reg.get("A").instructions == "i am a"
@@ -659,8 +667,13 @@ def test_load_user_profiles_moves_a_chain_of_pending_renames_before_judging_conf
 
     reg.load_all(user_dir=tmp_path)
 
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["Code.yaml", "Foo.yaml"]
-    assert reg.get("Code").instructions == "shadow"
+    assert sorted(p.name for p in tmp_path.iterdir() if not p.name.startswith(".")) == [
+        "Code-Modified.yaml",
+        "Code.yaml",
+        "Foo.yaml",
+    ]
+    assert reg.get("Code").instructions == reg.get_builtin_template("Code").instructions
+    assert reg.get("Code-Modified").instructions == "shadow"
     assert reg.get("Foo").instructions == "foo"
 
 
@@ -673,8 +686,14 @@ def test_load_user_profiles_quarantines_pending_source_whose_target_is_kept_by_a
 
     reg.load_all(user_dir=tmp_path)
 
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["Code.yaml", "Code.yaml.conflict", "Foo.yaml"]
-    assert reg.get("Code").instructions == "shadow"
+    assert sorted(p.name for p in tmp_path.iterdir() if not p.name.startswith(".")) == [
+        "Code-Modified.yaml",
+        "Code.yaml",
+        "Code.yaml.conflict",
+        "Foo.yaml",
+    ]
+    assert reg.get("Code").instructions == reg.get_builtin_template("Code").instructions
+    assert reg.get("Code-Modified").instructions == "shadow"
     assert reg.get("Foo").instructions == "real foo"
     assert "dup foo" in (tmp_path / "Code.yaml.conflict").read_text(encoding="utf-8")
 
@@ -699,14 +718,14 @@ def test_load_user_profiles_leaves_dependents_alone_when_their_blocker_cannot_mo
     """X.yaml waits on Code.yaml; when Code.yaml fails to move away, X.yaml is skipped, not quarantined."""
     (tmp_path / "X.yaml").write_text("name: Code\nid: b011c0de0001\ninstructions: shadow\n", encoding="utf-8")
     (tmp_path / "Code.yaml").write_text("name: Foo\nid: b011c0de0002\ninstructions: foo\n", encoding="utf-8")
-    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if not p.name.startswith(".")}
     monkeypatch.setattr(_Path, "rename", _fail_rename_to("Foo.yaml"))
     reg = AgentProfileRegistry()
 
     with caplog.at_level("WARNING", logger="chrys.service.profiles.agents.registry"):
         reg.load_all(user_dir=tmp_path)
 
-    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if not p.name.startswith(".")} == before
     assert reg.get("Code").instructions != "shadow"
     assert reg.get("Foo") is None
     assert "could not be moved to Foo.yaml" in caplog.text
@@ -716,8 +735,13 @@ def test_load_user_profiles_leaves_dependents_alone_when_their_blocker_cannot_mo
     monkeypatch.setattr(_Path, "rename", _REAL_RENAME)  # the blocker is "fixed" for the next load
     fresh = AgentProfileRegistry()
     fresh.load_all(user_dir=tmp_path)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["Code.yaml", "Foo.yaml"]
-    assert fresh.get("Code").instructions == "shadow"
+    assert sorted(p.name for p in tmp_path.iterdir() if not p.name.startswith(".")) == [
+        "Code-Modified.yaml",
+        "Code.yaml",
+        "Foo.yaml",
+    ]
+    assert fresh.get("Code").instructions == fresh.get_builtin_template("Code").instructions
+    assert fresh.get("Code-Modified").instructions == "shadow"
     assert fresh.get("Foo").instructions == "foo"
 
 
@@ -726,14 +750,14 @@ def test_load_user_profiles_leaves_cycle_alone_when_parking_fails(
 ) -> None:
     (tmp_path / "A.yaml").write_text("name: B\nid: b011c0de000b\ninstructions: i am b\n", encoding="utf-8")
     (tmp_path / "B.yaml").write_text("name: A\nid: b011c0de000a\ninstructions: i am a\n", encoding="utf-8")
-    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if not p.name.startswith(".")}
     monkeypatch.setattr(_Path, "rename", _fail_rename_to("A.moving.yaml", "B.moving.yaml"))
     reg = AgentProfileRegistry()
 
     with caplog.at_level("WARNING", logger="chrys.service.profiles.agents.registry"):
         reg.load_all(user_dir=tmp_path)
 
-    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if not p.name.startswith(".")} == before
     assert reg.get("A") is None
     assert reg.get("B") is None
     assert "conflict" not in caplog.text
@@ -746,15 +770,16 @@ def test_load_user_profiles_leaves_dependent_alone_when_duplicate_cannot_be_quar
     (tmp_path / "Code.yaml").write_text("name: Code\nid: b011c0de0001\ninstructions: real\n", encoding="utf-8")
     (tmp_path / "X.yaml").write_text("name: Code\nid: b011c0de0002\ninstructions: dup\n", encoding="utf-8")
     (tmp_path / "Y.yaml").write_text("name: X\nid: b011c0de0003\ninstructions: x\n", encoding="utf-8")
-    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if not p.name.startswith(".")}
     monkeypatch.setattr(_Path, "rename", _fail_rename_to("X.yaml.conflict"))
     reg = AgentProfileRegistry()
 
     with caplog.at_level("WARNING", logger="chrys.service.profiles.agents.registry"):
         reg.load_all(user_dir=tmp_path)
 
-    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
-    assert reg.get("Code").instructions == "real"
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if not p.name.startswith(".")} == before
+    assert reg.get("Code").instructions == reg.get_builtin_template("Code").instructions
+    assert reg.get("Code-Modified") is None
     assert reg.get("X") is None
     assert "X.yaml is still occupied" in caplog.text
 
@@ -771,32 +796,55 @@ def test_load_user_profiles_keeps_profile_whose_filename_differs_only_in_normali
 
     # macOS resolves both spellings to this file and it stays put; elsewhere it
     # is moved to the NFC name.  Either way it is registered and never quarantined.
-    listed = [unicodedata.normalize("NFC", p.name) for p in tmp_path.iterdir()]
+    listed = [unicodedata.normalize("NFC", p.name) for p in tmp_path.iterdir() if not p.name.startswith(".")]
     assert listed == [f"{nfc_name}.yaml"]
+    assert nfd_file.with_name(f"{nfc_name}.yaml").samefile(next(tmp_path.glob("*.yaml")))
     assert reg.get(nfc_name).instructions == "coffee"
     assert "conflict" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "name,stored_name",
+    [("Custom", "custom.yaml"), ("\u0390", "\u0399\u0308\u0301.yaml")],
+    ids=["case", "case-and-normalization"],
+)
 def test_load_user_profiles_keeps_profile_whose_filename_differs_in_case_and_normalization(
-    tmp_path: Path, caplog
+    tmp_path: Path, caplog, name: str, stored_name: str
 ) -> None:
     """``Ϊ́.yaml`` (U+0399 U+0308 U+0301) for ``name: ΐ`` (U+0390): the two case-folds are only canonically equal."""
     # Spelled as escapes on purpose: an editor normalizing the combining marks would erase the case.
-    name = "\u0390"
-    stored = tmp_path / "\u0399\u0308\u0301.yaml"
+    stored = tmp_path / stored_name
     stored.write_text(f"name: {name}\nid: b011c0de0390\ninstructions: iota\n", encoding="utf-8")
     reg = AgentProfileRegistry()
 
     with caplog.at_level("WARNING", logger="chrys.service.profiles.agents.registry"):
         reg.load_all(user_dir=tmp_path)
 
-    # macOS keeps the stored spelling (it resolves both); elsewhere the file is
-    # moved to ``<name>.yaml``.  Either way there is one file and it is the canonical one.
-    files = list(tmp_path.iterdir())
+    # Filesystems that resolve both spellings keep the original; others must
+    # move it. Either way there is one file and name-based writes address it.
+    files = [p for p in tmp_path.iterdir() if not p.name.startswith(".")]
     assert len(files) == 1
     assert files[0].samefile(tmp_path / f"{name}.yaml")
     assert reg.get(name).instructions == "iota"
     assert "conflict" not in caplog.text
+
+
+def test_load_user_profiles_quarantines_a_distinct_file_with_the_same_caseless_name(tmp_path: Path) -> None:
+    canonical = tmp_path / "Custom.yaml"
+    canonical.write_text("name: Custom\nid: canonical\ninstructions: original\n", encoding="utf-8")
+    duplicate = tmp_path / "custom.yaml"
+    if duplicate.exists():
+        pytest.skip("filesystem resolves both case spellings to the same file")
+    duplicate.write_text("name: Custom\nid: duplicate\ninstructions: conflicting\n", encoding="utf-8")
+    original_bytes, duplicate_bytes = canonical.read_bytes(), duplicate.read_bytes()
+    reg = AgentProfileRegistry()
+
+    reg.load_all(user_dir=tmp_path)
+
+    assert reg.get("Custom").instructions == "original"
+    assert canonical.read_bytes() == original_bytes
+    assert not duplicate.exists()
+    assert (tmp_path / "custom.yaml.conflict").read_bytes() == duplicate_bytes
 
 
 def test_load_user_profiles_quarantines_hard_link_alias_of_canonical_file(tmp_path: Path) -> None:
@@ -812,7 +860,11 @@ def test_load_user_profiles_quarantines_hard_link_alias_of_canonical_file(tmp_pa
 
     reg.load_all(user_dir=tmp_path)
 
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["Code.yaml", "my-code.yaml.conflict"]
+    assert sorted(p.name for p in tmp_path.iterdir() if not p.name.startswith(".")) == [
+        "Code-Modified.yaml",
+        "Code.yaml",
+        "my-code.yaml.conflict",
+    ]
     canonical.unlink()  # what Delete or an exact-template Reset does
     fresh = AgentProfileRegistry()
     fresh.load_all(user_dir=tmp_path)
@@ -854,6 +906,6 @@ def test_load_user_profiles_skips_source_that_cannot_be_moved(tmp_path: Path, mo
 
     assert total == 4
     assert reg.get("Custom") is None
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["my-custom.yaml"]
+    assert sorted(p.name for p in tmp_path.iterdir() if not p.name.startswith(".")) == ["my-custom.yaml"]
     assert source.read_bytes() == source_bytes
     assert "could not be moved to Custom.yaml" in caplog.text

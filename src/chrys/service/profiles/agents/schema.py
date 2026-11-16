@@ -269,21 +269,31 @@ class CompactionConfig:
     **Trigger**: compaction thresholds are derived from the active model's
     context window and maximum output-token budget, with a safety margin.
 
+    A pass runs before a request in one of three modes: usage reached the
+    trigger, the previous turn ended above the force line (a turn-boundary
+    pass, which leaves the newest completed turn alone and never runs
+    Phase 4), or the provider rejected the request as too large (overflow
+    recovery).  A phase that starts aims for the derived target; outside
+    overflow recovery a later phase starts only while usage is still above
+    the satisfied line, so a pass never does a little work on every request.
+    Overflow recovery has no such gate and may aim below the target.
+
     **Phase 1** (old turns): tool-call results from completed turns are
-    summarised oldest-turn-first (keeping call args), stopping when usage
-    drops to the derived target.
+    summarised oldest-turn-first (keeping call args and both ends of the
+    result), stopping when usage drops to the derived target.
 
     **Phase 2** (old turns): completed-turn tool-call groups are removed
     entirely oldest-first.
 
     **Phase 3** (old turns): completed text-heavy turns are auto-compressed
-    oldest-first when Phase 1/2 cannot reach the request budget because
+    oldest-first when Phase 1/2 leave usage above the satisfied line because
     there are no old tool-call groups left to trim.
 
-    **Phase 4** (current turn): all current-turn tool-call + inline
-    assistant-text groups are dropped in a single shot and replaced by a
-    ``<system-reminder>[LAST_WORDS]…</system-reminder>`` block appended to
-    the current user message.  The reminder is produced by an LLM call
+    **Phase 4** (current turn): the older current-turn tool-call + inline
+    assistant-text groups are dropped and replaced by a
+    ``<system-reminder>[LAST_WORDS]…</system-reminder>`` block on a user
+    message of the turn; the newest groups stay while they fit the
+    recent-work allowance.  The reminder is produced by an LLM call
     using a code-owned format contract and base content guidance, followed by
     the optional agent-creator-defined ``last_words_template`` supplement.
     Generator failures (transport error, empty response) and format violations
@@ -292,9 +302,9 @@ class CompactionConfig:
     previous reminder + newly dropped work as a delta, so the note accumulates
     insight without re-summarising from scratch.
 
-    **Force-compress**: after a turn completes, if usage exceeds the derived
-    force threshold, the oldest uncompressed turn is auto-compressed
-    (cross-turn fold) as a safety net.
+    Phase 4 starts only when the earlier phases leave usage above the force
+    line; in overflow recovery it starts whenever they leave usage above
+    that pass's stop point.
     """
 
     enabled: bool = True

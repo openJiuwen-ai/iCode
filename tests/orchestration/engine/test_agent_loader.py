@@ -303,3 +303,21 @@ async def test_failed_load_emits_failure_once_without_ready_and_preserves_live(m
     assert engine.current.manifest is manifest
     assert loaded.bindings.closed is False
     assert engine.permits.agent_loading is False
+
+
+def test_only_a_load_that_starts_a_session_fires_session_start() -> None:
+    """A restore, a profile switch and a rebuild load an agent under a session that already exists.
+
+    ``session_restored`` alone says a restore came back; firing ``session_start``
+    for it too would change what an existing hook sees, and a rebuild firing it
+    would announce a session start for the same session again.
+    """
+    for operation in ("startup", "new_session", "reset"):
+        assert loader_module.fires_session_start(operation) is True, operation
+    for operation in ("restore", "reload", "profile_switch", "workspace_change", ""):
+        assert loader_module.fires_session_start(operation) is False, operation
+
+
+def test_a_session_start_operation_is_what_the_set_names() -> None:
+    # Pinned apart from the function so renaming one without the other is a failure.
+    assert frozenset({"startup", "new_session", "reset"}) == loader_module.SESSION_START_OPERATIONS

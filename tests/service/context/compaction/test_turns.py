@@ -511,6 +511,8 @@ async def test_p1_p2_skip_injected_current_turn_groups():
         max_context_tokens=total + 100,
         trigger_pct=0.85,
         target_pct=0.01,  # forces every phase to run
+        satisfied_pct=0.01,
+        force_pct=0.01,
         on_compaction=_async_appender(received),
     )
     changed = await strategy(messages)
@@ -714,6 +716,8 @@ async def test_phase4_reports_last_healthy_plus_one_on_unstripped_crash_cluster(
         max_context_tokens=total + 100,
         trigger_pct=0.85,
         target_pct=0.01,
+        satisfied_pct=0.01,
+        force_pct=0.01,
         on_compaction=_async_appender(received),
         on_compress=_async_appender(compressed_events),
     )
@@ -829,6 +833,8 @@ async def test_phase4_degraded_mixed_shape_drops_only_region_work():
         max_context_tokens=total + 100,
         trigger_pct=0.85,
         target_pct=0.01,
+        satisfied_pct=0.01,
+        force_pct=0.01,
         last_words_generator=generator,
         on_compaction=_async_appender(received),
     )

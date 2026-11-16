@@ -199,6 +199,8 @@ class EnhancedTextArea(TextArea):
         await super()._on_key(event)
 
     def action_undo(self) -> None:
+        if self.read_only:
+            return
         try:
             super().action_undo()
         except ValueError, IndexError:
@@ -226,6 +228,8 @@ class EnhancedTextArea(TextArea):
         history.checkpoint()
 
     def action_redo(self) -> None:
+        if self.read_only:
+            return
         try:
             super().action_redo()
         except ValueError, IndexError:

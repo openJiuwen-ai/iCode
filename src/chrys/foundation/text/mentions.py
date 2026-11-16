@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _TRAILING_PUNCTUATION = ".,;:!?)]}>"
+_UNQUOTED_MENTION_RE = re.compile(r"@[^\s]+")
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,7 @@ def _parse_quoted_mention(text: str, start: int, quote: str) -> tuple[MentionTok
 
 
 def _parse_unquoted_mention(text: str, start: int) -> tuple[MentionToken, int] | None:
-    match = re.match(r"@[^\s]+", text[start:])
+    match = _UNQUOTED_MENTION_RE.match(text, start)
     if match is None:
         return None
     raw = match.group(0)

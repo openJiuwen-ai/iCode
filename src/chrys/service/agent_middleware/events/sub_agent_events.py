@@ -26,6 +26,7 @@ from chrys.foundation.tool_call_context import resolve_tool_call_context
 from chrys.foundation.tool_execution_stamp import write_execution_stamp
 from chrys.foundation.tool_kinds import KIND_SHELL, KIND_SUB_AGENT, get_tool_kind
 from chrys.foundation.tool_result_metadata import (
+    COMMITTED_ERROR_TEXT_KEY,
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_ERRORED_METADATA_KEY,
     tool_payload_observation,
@@ -52,9 +53,10 @@ from chrys.service.agent_middleware._metadata_keys import (
     _SLEEP_SKIPPED_KEY,
 )
 from chrys.service.agent_middleware.events.hook_dispatch import (
-    append_extra_context_to_result,
     apply_after_tool_extensions,
     apply_before_tool_hooks,
+    apply_result_hooks,
+    before_tool_context,
     final_tool_args,
     fire_after_tool_hooks,
     get_call_id,
@@ -868,11 +870,22 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                         target_operation_id=trajectory.operation_id if trajectory is not None else None,
                         origin=origin,
                     )
-                    context.result, result_text = append_extra_context_to_result(
+                    original_result_text = result_text
+                    context.result, result_text = apply_result_hooks(
                         context.result,
                         result_text,
-                        hook_decision.extra_context,
+                        result_override=hook_decision.result_override,
+                        extra_context=[*before_tool_context(context), *hook_decision.extra_context],
                     )
+                    if (
+                        isinstance(context.metadata, dict)
+                        and raised_text is not None
+                        and result_text != original_result_text
+                    ):
+                        # A raised call: the kernel answers it after this middleware, so any change
+                        # to the result text (replacement or extra_context appended) must be marked
+                        # or the kernel rebuilds the result from the exception, discarding it.
+                        context.metadata[COMMITTED_ERROR_TEXT_KEY] = result_text
                     structured_error_kind = metadata.get(TOOL_ERROR_KIND_METADATA_KEY)
                     if not isinstance(context.metadata, dict):
                         context.metadata = {}

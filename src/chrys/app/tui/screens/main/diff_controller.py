@@ -53,6 +53,7 @@ class DiffEngine(Protocol):
     mutation_tracker: MutationTracker | None
 
     async def refresh_mutation_attribution(self, *, force: bool = False) -> bool: ...
+    def turn_prompt_previews(self) -> dict[int, str]: ...
 
 
 @dataclass(frozen=True)
@@ -297,6 +298,13 @@ class DiffController:
         async def load_data() -> DiffLoadResult:
             return (await self.load_current(request=request)).merged
 
+        engine = request.engine
+
+        def turn_prompt(turn: int) -> str | None:
+            # Read when a comment is added, so a turn that ended after the Diff opened is named too. The history
+            # numbers turns as the change log the Diff tabs come from does: both count every turn and drop the same.
+            return engine.turn_prompt_previews().get(turn) if engine is not None else None
+
         platform_label = get_platform().display_label
         self._view.open_diff_screen(
             {},
@@ -308,6 +316,7 @@ class DiffController:
             focus=focus,
             draft=self._view.diff_draft(),
             comments=self._comments,
+            turn_prompt=turn_prompt,
         )
 
     def chat_session_changed(self, session_id: str) -> None:

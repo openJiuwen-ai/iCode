@@ -281,7 +281,7 @@ async def test_context_management_records_production_failure_metadata() -> None:
     provider._session = AgentSession()
     metadata, token = _capture_tool_metadata()
     try:
-        result = await provider._recall_context("ctx_missing", "what happened?")
+        result = await provider._recall_context("what happened?", compressed_context_id="ctx_missing")
     finally:
         tool_result_metadata.reset(token)
 

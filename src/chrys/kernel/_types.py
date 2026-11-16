@@ -91,8 +91,8 @@ _UNSET_USAGE: Final[UsageDetails] = cast("UsageDetails", object())
 
 An omitted argument means "single-call response" and inherits ``usage_details``.
 An explicit ``None`` means the final call's usage is genuinely unavailable and
-must NOT fall back to the aggregate — consumers such as after-run
-force-compression would otherwise mistake turn-total billing usage for the
+must NOT fall back to the aggregate — consumers such as the after-run
+usage check would otherwise mistake turn-total billing usage for the
 final call's context occupancy.
 """
 

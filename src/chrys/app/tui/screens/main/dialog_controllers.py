@@ -13,12 +13,17 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, ClassVar, Protocol
 
-from chrys.app.tui.screens.dialogs.agent_load import load_count_failed_message, map_load_progress_prose
+from chrys.app.tui.screens.dialogs.agent_load import (
+    load_count_failed_message,
+    map_load_progress_prose,
+    sub_agent_load_stage_message,
+)
 from chrys.app.tui.screens.main.ports import StatusMessage
 from chrys.app.tui.widgets import PromptDraft
 from chrys.foundation.config.settings import DEFAULT_APPROVAL_TIMEOUT_SECONDS
 from chrys.foundation.events.types import (
     AGENT_LOAD_PHASE_SESSION,
+    AGENT_LOAD_PHASE_SUB_AGENTS,
     AGENT_LOAD_STATUS_DONE,
     AgentLoadFailed,
     AgentLoadFinished,
@@ -938,10 +943,17 @@ class AgentLoadDialogController:
     async def on_progress(self, event: AgentLoadProgress) -> None:
         raw_message: StatusMessage = event.message or _LOAD_LOADING_AGENT.bind()
         display: StatusMessage = raw_message
+        nested_stage = (
+            sub_agent_load_stage_message(event.subject, event.stage, event.stage_subject, event.stage_status)
+            if event.phase == AGENT_LOAD_PHASE_SUB_AGENTS
+            else None
+        )
         if isinstance(raw_message, str):
             # Backend prose is an English protocol; show its localized display
             # definition in the status bar and keep unknown prose verbatim.
             display = map_load_progress_prose(raw_message) or raw_message
+        if nested_stage is not None:
+            display = nested_stage
         if event.total or event.current or event.failed or event.status == AGENT_LOAD_STATUS_DONE:
             label = self._port.render_status_message(display)
             message: StatusMessage = f"{label} ({self._render_load_count(event.current, event.total, event.failed)})"
@@ -950,7 +962,7 @@ class AgentLoadDialogController:
         completed = False
         if self.dialog is not None:
             completed = self.dialog.update_progress(
-                raw_message,
+                nested_stage or raw_message,
                 phase=event.phase,
                 server_name=event.server_name,
                 current=event.current,

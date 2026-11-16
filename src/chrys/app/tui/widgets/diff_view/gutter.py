@@ -18,6 +18,7 @@ from textual.widget import Widget
 
 from chrys.app.tui.i18n import render_text, widget_localizer
 from chrys.app.tui.support.gc_freeze import detach_lru_cache, renew_lru_cache
+from chrys.app.tui.widgets.diff_view.cells import COMMENT_ICON
 from chrys.app.tui.widgets.diff_view.palette import DiffLook
 from chrys.app.tui.widgets.diff_view.rows import Side, comment_side, line_identity
 from chrys.foundation.i18n import msg
@@ -30,7 +31,6 @@ type GutterCell = Callable[[DiffRow, DiffLook], Content]
 """Draws what a gutter shows for one row. See `chrys.app.tui.widgets.diff_view.cells`."""
 
 
-COMMENT_ICON = "💬"
 _ADD_COMMENT_TIP = msg(
     "tui.diff_quote.bubble_add",
     fallback="Comment on this line. It goes into the message input; send it from the chat.",

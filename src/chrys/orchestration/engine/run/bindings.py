@@ -984,6 +984,10 @@ class TurnBindings:
         """Whether *injection* still waits for the next model call."""
         return self._injection.is_pending(injection)
 
+    def pending_injection(self, injection_id: str) -> QueuedInjection | None:
+        """Find the queued message, or None once a call took it."""
+        return self._injection.pending_by_id(injection_id)
+
     def cancel_injection(self, injection_id: str) -> QueuedInjection | None:
         """Remove a still-pending injection; returns it, or None when too late."""
         return self._injection.cancel(injection_id)

@@ -9,6 +9,7 @@ import contextlib
 import functools
 import json
 import uuid
+import weakref
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -337,6 +338,11 @@ class ChrysAcpServer:
         self._pending_permission_tasks: dict[tuple[str, str], asyncio.Task[acp_schema.RequestPermissionResponse]] = {}
         self._input_cancel_tombstones: set[tuple[str, str]] = set()
         self._permission_cancel_tombstones: set[tuple[str, str]] = set()
+        # One ``Warning`` object can reach the client from two senders at once:
+        # a reload's collected batch and the prompt stream it overlaps.
+        # Identity, not text: distinct failures may read identically. Entries
+        # vanish with the event itself, so a live warning is never forgotten.
+        self._sent_warnings: dict[int, weakref.ref[Warning]] = {}
 
     def on_connect(self, conn: Client) -> None:
         """Capture the ACP client connection used for server-to-client requests."""
@@ -1326,6 +1332,15 @@ class ChrysAcpServer:
                     "current": event.current,
                     "total": event.total,
                     "failed": event.failed,
+                    **(
+                        {
+                            "stage": event.stage,
+                            "stageSubject": event.stage_subject,
+                            "stageStatus": event.stage_status,
+                        }
+                        if event.stage
+                        else {}
+                    ),
                 },
             )
             return True
@@ -1744,7 +1759,24 @@ class ChrysAcpServer:
         )
 
     async def _send_warning(self, session_id: str, warning: Warning) -> None:
-        """Send one ``chrys/warning``, whether it came from a turn or an RPC."""
+        """Send one ``chrys/warning``, whether it came from a turn or an RPC.
+
+        A warning already sent from the other path is not sent again: the copy
+        would be identical and names nothing the first does not.
+        """
+        sent = self._sent_warnings
+        previous = sent.get(id(warning))
+        if previous is not None and previous() is warning:
+            return
+        # Entries leave with their events: the callback below removes each one,
+        # so there is nothing to sweep here — and sweeping would race the very
+        # callback a collection triggers mid-iteration.
+        key = id(warning)
+
+        def _forget(_ref: weakref.ref[Warning], key: int = key) -> None:
+            sent.pop(key, None)
+
+        sent[key] = weakref.ref(warning, _forget)
         payload = {"sessionId": session_id, "code": warning.code, "message": warning.message}
         if warning.reason:
             payload["reason"] = warning.reason

@@ -216,6 +216,17 @@ def _highlight_lines(code: str, path: str, language: str, *, shown_end: int | No
     return lines
 
 
+def highlight_snippet(code: str, path: str) -> list[Content]:
+    """A few lines cut from the file at *path*, highlighted on their own, one `Content` per line.
+
+    Without the lines above them, a string or comment opened earlier is not known to be open.
+    """
+    lines = _highlight_lines(code, path, _guess_diff_language(code, path))
+    # A blank last line is not a line to `splitlines`: give it back.
+    lines.extend(Content(line) for line in code.split("\n")[len(lines) :])
+    return lines
+
+
 def shown_code(code: str) -> str:
     """``code`` as a diff shows it.
 

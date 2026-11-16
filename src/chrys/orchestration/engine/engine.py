@@ -48,6 +48,7 @@ from chrys.foundation.events.types import (
     SettingsReload,
     UserInject,
     UserInjectCancel,
+    UserInjectSteer,
     UserInterrupt,
     UserMessage,
     UserRetry,
@@ -531,6 +532,7 @@ class AgentEngine:
         await self._bus.subscribe(UserRetry, self._on_user_retry)
         await self._bus.subscribe(UserInject, self._on_user_inject)
         await self._bus.subscribe(UserInjectCancel, self._on_user_inject_cancel)
+        await self._bus.subscribe(UserInjectSteer, self._on_user_inject_steer)
         await self._bus.subscribe(RetryWaitSkip, self._on_retry_wait_skip)
         await self._bus.subscribe(UserRollback, self._on_user_rollback)
         await self._bus.subscribe(AgentProfileSwitch, self._on_profile_switch)
@@ -788,6 +790,10 @@ class AgentEngine:
     async def _on_user_inject(self, event: UserInject) -> None:
         """Handle user injection (prompt inserted before next model call)."""
         await self._turns.on_user_inject(event)
+
+    async def _on_user_inject_steer(self, event: UserInjectSteer) -> None:
+        """Promote an existing queued message to steering."""
+        await self._turns.on_user_inject_steer(event)
 
     async def _on_user_inject_cancel(self, event: UserInjectCancel) -> None:
         """Handle user cancellation of a still-pending mid-run injection."""

@@ -122,6 +122,39 @@ async def test_install_refuses_user_without_dir(tmp_path: Path) -> None:
         ctx.install_best(created["task_id"], write_user=True)
 
 
+@pytest.mark.asyncio
+async def test_builtin_candidate_exports_full_prompt_and_installs_as_custom_agent(tmp_path):
+    from chrys.service.profiles.agents.loader import load_profile_from_yaml
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.agents.serializer import save_profile
+
+    registry = AgentProfileRegistry()
+    registry.load_builtins()
+    base = registry.get_builtin_template("Code")
+    base.instructions = "experimental RSI prompt"
+    base.compaction.last_words_template = "experimental memory prompt"
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    created = ctx.create_task(name="builtin candidate", max_iterations=1, dataset_path=_OPTIMIZE_FIXTURE)
+    await ctx.optimize_task(created["task_id"], base_profile=base, max_epochs=1)
+    baseline_id = next((tmp_path / "tasks" / created["task_id"] / "run" / "candidates").glob("*-baseline")).name
+    destination = tmp_path / "maintainer" / "Code.yaml"
+    ctx.install_best(created["task_id"], candidate_id=baseline_id, destination=destination)
+    assert load_profile_from_yaml(destination).instructions == base.instructions
+    assert load_profile_from_yaml(destination).compaction.last_words_template == base.compaction.last_words_template
+    user_dir = tmp_path / "agents"
+    save_profile(AgentProfile(name="Code-copy", instructions="existing copy"), target_dir=user_dir)
+    installed = ctx.install_best(
+        created["task_id"], candidate_id=baseline_id, user_agents_dir=user_dir, write_user=True
+    )
+    profile = load_profile_from_yaml(Path(installed["export_path"]))
+    assert profile.name == "Code-copy-2"
+    assert profile.id != base.id
+    assert profile.instructions == base.instructions
+    assert profile.compaction.last_words_template == base.compaction.last_words_template
+    assert load_profile_from_yaml(user_dir / "Code-copy.yaml").instructions == "existing copy"
+    assert not (user_dir / "Code.yaml").exists()
+
+
 def test_mutations_preserve_existing_inline_skills() -> None:
     base = AgentProfile(
         name="RsiCandidate",

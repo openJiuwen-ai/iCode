@@ -32,7 +32,7 @@ from ._serialization import SerializationMixin, make_json_safe
 from ._types import ChatResponse, ChatResponseUpdate, Message, ResponseStream, validate_chat_options
 
 if TYPE_CHECKING:
-    from .compaction import CompactionCallContext, TokenizerProtocol
+    from .compaction import CompactionCallContext, LastWordsCompletion, TokenizerProtocol
 
 
 _log = logging.getLogger(__name__)
@@ -373,6 +373,22 @@ def _tool_choice_forces_tool_use(tool_choice: Any) -> bool:
     return bool(tool_choice.get("required_function_name"))
 
 
+def _all_tools_run_locally(tools: Any) -> bool:
+    """Whether every tool a request carries is a function the client itself runs.
+
+    Anything else (a provider's search, fetch, code execution, remote MCP, or
+    a shape this cannot read) counts as hosted: the provider may run it while
+    answering, before any check of the answer.
+    """
+    from .tools import FunctionTool
+
+    if tools is None:
+        return True
+    if not isinstance(tools, list | tuple):
+        return False
+    return all(isinstance(tool, FunctionTool) for tool in tools)
+
+
 def _estimate_tool_definition_tokens(options: Mapping[str, Any], tokenizer: TokenizerProtocol | None) -> int:
     """Estimate the live call's tool definitions without touching provider objects."""
     tools = options.get("tools")
@@ -590,7 +606,9 @@ class _ClientLastWordsCompleter:
     prefix already diverges from the live call, so the options delta forfeits
     nothing. The no-tools instruction text (composed by the strategy layer)
     stays because ``tool_choice`` cannot stop tool-call markup emitted as
-    plain text, with the response guard below as the hard backstop. Goes through
+    plain text, with the response guard below as the hard backstop. A side
+    call that extends the live request instead of a slice (``keep_tool_choice``)
+    is the one case with a shared prefix, and keeps the live value. Goes through
     ``_inner_get_response`` — not ``get_response`` — so the side call never
     re-enters compaction. Returns only the note text; the side-call response
     object never escapes.
@@ -618,8 +636,10 @@ class _ClientLastWordsCompleter:
         *,
         max_output_tokens: int,
         on_usage: Callable[[Mapping[str, Any]], None] | None = None,
-    ) -> str:
+        keep_tool_choice: bool = False,
+    ) -> LastWordsCompletion:
         from .compaction import (
+            LastWordsCompletion,
             LastWordsToolCallError,
             internal_side_call_scope,
             messages_contain_tool_calls,
@@ -639,8 +659,10 @@ class _ClientLastWordsCompleter:
         # class docstring.  Only when tools are actually present: "none"
         # without tools is meaningless and providers differ on rejecting the
         # combination, so a tool-less side call keeps the live value (or its
-        # absence) untouched.
-        if side_options.get("tools"):
+        # absence) untouched.  A side call that extends the live request
+        # keeps the live value: the provider has that request's prefix
+        # cached, and a changed ``tool_choice`` would forfeit the cache.
+        if side_options.get("tools") and not keep_tool_choice:
             side_options["tool_choice"] = "none"
         # The throwaway summarization response must never become a chainable
         # node in service-side storage (OpenAI Responses store mode). Only
@@ -701,6 +723,10 @@ class _ClientLastWordsCompleter:
         # rejects below still consumed real provider tokens.
         if on_usage is not None and response.usage_details:
             on_usage(response.usage_details)
+        # The window-filled guard runs first: its overflow has the caller shrink
+        # the prompt whatever the answer says, and a retry of the same prompt
+        # would only fill the window again. It keeps no text from a reply that
+        # asks for a tool, which is never a note.
         raise_if_context_window_filled(response)
         if messages_contain_tool_calls(response.messages):
             raise LastWordsToolCallError(
@@ -708,7 +734,7 @@ class _ClientLastWordsCompleter:
             )
         # Verbatim, not ``.text``: outer whitespace (leading indentation in
         # particular) is meaningful to the structured-note validator.
-        return response.raw_text
+        return LastWordsCompletion(response.raw_text, cut_off=response.finish_reason == "length")
 
 
 class SupportsAclose(Protocol):
@@ -874,6 +900,7 @@ class BaseChatClient(SerializationMixin, _PreparedRequestObserverClient, ABC):
         exchange_trace = client_kwargs.get(TRAJECTORY_EXCHANGE_KWARG)
         return CompactionCallContext(
             last_words_completer=completer,
+            last_words_extends_request=completer is not None and _all_tools_run_locally(effective_options.get("tools")),
             tool_definition_tokens=tool_definition_tokens,
             request_overhead_tokens=_estimate_fixed_request_overhead_tokens(
                 effective_options,

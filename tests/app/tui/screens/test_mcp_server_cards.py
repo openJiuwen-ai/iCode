@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Callable
 from pathlib import Path
 
@@ -24,7 +23,6 @@ from chrys.service.profiles.agents.loader import load_profile_from_yaml
 from chrys.service.profiles.agents.schema import MCPServerConfig, SubAgentRef, SubAgentsConfig, ToolsConfig
 from tests.app.tui.screens._agent_config_support import (
     _DEFAULT_WAIT_TIMEOUT,
-    _wait_for_active_screen,
     _wait_for_confirm_button,
     _wait_for_hydrated,
     make_profile,
@@ -32,7 +30,6 @@ from tests.app.tui.screens._agent_config_support import (
     press_and_answer_confirm,
     registry_with,
 )
-from tests.app.tui.screens._agent_config_support import _registry as _builtin_registry
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for, wait_until
 
@@ -677,31 +674,6 @@ async def test_leaving_an_agent_unfolds_the_card_that_blocks_it(command: str) ->
         assert "command" in errors[0].lower()
         assert screen._selected_draft_key == mcp_key
         assert (good.collapsed, bad.collapsed) == (True, False)
-
-
-async def test_reset_keeps_each_card_folded_or_unfolded() -> None:
-    registry = _builtin_registry()
-    code = registry.get_builtin_template("Code")
-    assert code is not None
-    customized = copy.deepcopy(code)
-    customized.tools.mcp = _servers("one", "two")
-    registry.register(customized)
-
-    async with open_agent_config(registry, current_profile="Code", initial_tab="mcp") as (screen, pilot):
-        panel = screen.query_one(MCPConfigPanel)
-        _one, two = await _cards_laid_out(panel, pilot, 2)
-        await click_when_settled(pilot, two.query_one(CollapsibleTitle))
-        await _add_valid_server(screen, pilot)
-
-        # Reset keeps the MCP servers, so it keeps their cards' folds too.
-        await press_and_answer_confirm(pilot, screen.query_one("#ac-reset", Button))
-        await _wait_for_active_screen(pilot.app, pilot, screen)
-        await _wait_for_hydrated(screen, pilot)
-
-        panel = screen._live_panel(MCPConfigPanel)
-        await _cards_laid_out(panel, pilot, 3)
-        assert [server.name for server in panel.get_config()] == ["New Server", "one", "two"]
-        assert _folds(panel) == [False, True, False]
 
 
 async def test_clone_opens_the_copy_cards_as_the_original_shows_them() -> None:

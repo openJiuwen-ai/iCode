@@ -130,6 +130,7 @@ async def _http_probe_server(tmp_path: Path) -> AsyncIterator[tuple[MCPServerCon
         str(port_file),
         "--state-file",
         str(state_file),
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -166,7 +167,6 @@ async def _http_probe_server(tmp_path: Path) -> AsyncIterator[tuple[MCPServerCon
                 await proc.wait()
 
 
-@pytest.mark.integration
 async def test_real_stdio_cache_reuses_process_across_adapters_and_reacquire(tmp_path: Path) -> None:
     """Two adapters with the same stdio config share one real MCP subprocess."""
     cache = MCPConnectionCache()
@@ -280,7 +280,6 @@ async def test_real_stdio_cache_key_separates_different_effective_env(tmp_path: 
     await cache.close_all()
 
 
-@pytest.mark.integration
 async def test_real_stdio_parent_and_sub_agent_share_connection_but_not_wrappers(tmp_path: Path) -> None:
     """A real parent/sub-agent build shares one MCP session while keeping wrappers isolated."""
     cache = MCPConnectionCache()
@@ -396,16 +395,17 @@ async def test_real_stdio_parent_and_sub_agent_share_connection_but_not_wrappers
         exit_tool.assert_awaited_once()
 
 
-@pytest.mark.integration
-async def test_real_http_cache_shares_live_mcp_tool_and_releases_refs(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scoped", [False, True], ids=["independent", "one-build"])
+async def test_real_http_cache_shares_live_mcp_tool_and_releases_refs(tmp_path: Path, scoped: bool) -> None:
     """HTTP MCP configs share one live MCPTool while wrappers stay per-adapter."""
     async with _http_probe_server(tmp_path) as (config, state_file):
         cache = MCPConnectionCache()
         adapter_a = MCPAdapter(cache=cache)
         adapter_b = MCPAdapter(cache=cache)
 
-        tools_a = await adapter_a.connect(config)
-        tools_b = await adapter_b.connect(config)
+        async with cache.acquisition_scope() if scoped else contextlib.nullcontext() as scope:
+            tools_a = await adapter_a.connect(config, acquisition_scope=scope)
+            tools_b = await adapter_b.connect(config, acquisition_scope=scope)
 
         lease_a = adapter_a._leases[config.name]
         lease_b = adapter_b._leases[config.name]

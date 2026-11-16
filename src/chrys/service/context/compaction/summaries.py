@@ -22,6 +22,7 @@ from chrys.kernel import (
     Content,
     Message,
     annotate_message_groups,
+    included_token_count,
     set_excluded,
 )
 from chrys.kernel.compaction import _has_reasoning
@@ -33,6 +34,7 @@ from chrys.kernel.exchanges import (
     iter_exchanges,
     pair_results,
 )
+from chrys.service.tools.spill import split_spill_notice
 
 from .events import _REASON_COMPACTION, _REASON_REMOVAL, CachedSummary
 from .groups import _group_start_indices, _tool_call_name, _tool_result_text
@@ -67,7 +69,15 @@ def _make_summary_message(
 
 
 _RESULT_SUMMARY_MAX = 100
-"""Max characters for individual tool result text in compaction summaries."""
+"""Max characters kept from each end of a tool result (and from the start of narration) in compaction summaries."""
+
+_MIN_SUMMARY_SAVING_TOKENS = 200
+"""A group whose summary saves fewer tokens than this stays as it is.
+
+Every summarised group rewrites one more place in the prompt, so a small one
+costs more in lost prompt cache than it frees; Phase 2 still removes it when
+a pass escalates.
+"""
 
 _ARGS_SUMMARY_MAX = 200
 """Max characters for tool call arguments in compaction summaries."""
@@ -138,9 +148,7 @@ def _build_summary(group_msgs: list[Message]) -> str | None:
         for content_index, content in enumerate(msg.contents):
             if content.type in TOOL_RESULT_CONTENT_TYPES:
                 call = paired_calls.get((message_index, content_index))
-                result_text = _tool_result_text(content) or "completed"
-                if len(result_text) > _RESULT_SUMMARY_MAX:
-                    result_text = f"{result_text[:_RESULT_SUMMARY_MAX]}... ({len(result_text)} chars)"
+                result_text = _result_excerpt(_tool_result_text(content) or "completed")
                 name = _tool_call_name(call) if call is not None else None
                 arguments = _summary_call_arguments(call) if call is not None else None
                 args_str = _format_summary_arguments(arguments)
@@ -163,6 +171,19 @@ def _build_summary(group_msgs: list[Message]) -> str | None:
     allowed_label_chars = _SUMMARY_TOTAL_MAX - len(prefix) - len(suffix) - len(_SUMMARY_TRUNCATION_MARKER)
     truncated_label = summary_label[:allowed_label_chars].rstrip()
     return f"{prefix}{truncated_label}{_SUMMARY_TRUNCATION_MARKER}{suffix}"
+
+
+def _result_excerpt(result_text: str) -> str:
+    """Both ends of a tool result, plus the path of its full output when it was spilled.
+
+    The end of command output (exit code, error, test summary) is worth at
+    least as much as its start; a spilled result keeps its pointer so the
+    model can read the file instead of running the tool again.
+    """
+    body, spill_path = split_spill_notice(result_text)
+    if len(body) > 2 * _RESULT_SUMMARY_MAX:
+        body = f"{body[:_RESULT_SUMMARY_MAX]} ... {body[-_RESULT_SUMMARY_MAX:]} ({len(result_text)} chars)"
+    return f"{body} [full output: {spill_path}]" if spill_path is not None else body
 
 
 def _summary_call_arguments(content: Content) -> Any:
@@ -234,6 +255,10 @@ def _compact_group(
 
     summary_text = _build_summary(replaced_msgs)
     if summary_text is None:
+        return None
+    # Untokenized messages count as zero, which says nothing about the saving.
+    original_tokens = included_token_count(replaced_msgs)
+    if 0 < original_tokens < tokenizer.count_tokens(summary_text) + _MIN_SUMMARY_SAVING_TOKENS:
         return None
     # Group IDs are positional wire-view labels and may be reused next turn.
     # The original-to-summary relationship needs its own occurrence identity.

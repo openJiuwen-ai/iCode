@@ -754,28 +754,25 @@ def test_context_manager_without_context_management():
 
 
 # ---------------------------------------------------------------------------
-# Force-compress tests
+# Turn-end usage check tests
 # ---------------------------------------------------------------------------
 
 
-class TestForceCompress:
-    """Tests for automatic force-compression when usage exceeds force_compress_pct."""
+class TestTurnEndUsage:
+    """A turn that ends above ``force_compress_pct`` books a pass; only a strategy-less provider folds."""
 
     def _make_provider(
         self,
         max_context_tokens: int = 100_000,
         force_compress_pct: float = 0.70,
-        on_force_compress: object | None = None,
+        *,
+        with_strategy: bool = True,
     ) -> CompressibleHistoryProvider:
         strategy = None
-        if max_context_tokens > 0:
+        if with_strategy and max_context_tokens > 0:
             from chrys.service.context.compaction import UnifiedContextStrategy
 
-            strategy = UnifiedContextStrategy(
-                max_context_tokens=max_context_tokens,
-                compaction_enabled=False,
-                on_compress=on_force_compress,
-            )
+            strategy = UnifiedContextStrategy(max_context_tokens=max_context_tokens)
         return CompressibleHistoryProvider(
             compaction_strategy=strategy,
             max_context_tokens=max_context_tokens,
@@ -801,48 +798,49 @@ class TestForceCompress:
         return context
 
     @pytest.mark.asyncio
-    async def test_force_compress_triggers_above_threshold(self) -> None:
-        """Force-compress fires when usage exceeds force_compress_pct."""
+    async def test_usage_above_threshold_books_a_pass_and_keeps_history(self) -> None:
+        """The provider leaves history alone: the next request's pass does the compaction."""
         provider = self._make_provider(max_context_tokens=100_000, force_compress_pct=0.70)
         state = _build_multi_turn_state(3)
         provider._compaction_strategy.bind_state(state)
+        before = list(state["messages"])
         context = self._mock_context(75_000)  # 75% > 70%
 
-        await provider._check_force_compress(state, context)
+        changed = await provider._check_turn_end_usage(state, context)
 
-        # Should have compressed at marker_1
-        compressed = state.get("compressed_msgs", [])
-        assert len(compressed) == 1
-        assert compressed[0].marker_id == "turn_1"
+        assert not changed
+        assert provider._compaction_strategy._turn_boundary_pending
+        assert state["messages"] == before
+        assert state.get("compressed_msgs", []) == []
 
     @pytest.mark.asyncio
-    async def test_force_compress_does_not_trigger_below_threshold(self) -> None:
-        """No compression when usage is below force_compress_pct."""
+    async def test_usage_below_threshold_books_nothing(self) -> None:
         provider = self._make_provider(max_context_tokens=100_000, force_compress_pct=0.70)
         state = _build_multi_turn_state(3)
         provider._compaction_strategy.bind_state(state)
         context = self._mock_context(60_000)  # 60% < 70%
 
-        await provider._check_force_compress(state, context)
+        await provider._check_turn_end_usage(state, context)
 
-        compressed = state.get("compressed_msgs", [])
-        assert len(compressed) == 0
+        assert not provider._compaction_strategy._turn_boundary_pending
+        assert state.get("compressed_msgs", []) == []
 
     @pytest.mark.asyncio
-    async def test_force_compress_ignores_multi_call_aggregate_above_threshold(self) -> None:
+    async def test_multi_call_aggregate_above_threshold_books_nothing(self) -> None:
         """Billable turn totals must not masquerade as current context occupancy."""
         provider = self._make_provider(max_context_tokens=100_000, force_compress_pct=0.70)
         state = _build_multi_turn_state(3)
         provider._compaction_strategy.bind_state(state)
         context = self._mock_context(20_000, aggregate_input_tokens=80_000)
 
-        await provider._check_force_compress(state, context)
+        await provider._check_turn_end_usage(state, context)
 
+        assert not provider._compaction_strategy._turn_boundary_pending
         assert state.get("compressed_msgs", []) == []
 
     @pytest.mark.asyncio
-    async def test_force_compress_no_markers_available(self) -> None:
-        """No crash when no markers are available for force-compress."""
+    async def test_no_older_turn_books_nothing(self) -> None:
+        """With no completed turn before the one that just ended, a pass has nothing to work on."""
         provider = self._make_provider(max_context_tokens=100_000, force_compress_pct=0.70)
         state: dict = {
             "messages": [Message("user", ["hello"]), Message("assistant", ["hi"])],
@@ -851,38 +849,39 @@ class TestForceCompress:
         provider._compaction_strategy.bind_state(state)
         context = self._mock_context(80_000)
 
-        # Should not crash
-        await provider._check_force_compress(state, context)
-        assert len(state.get("compressed_msgs", [])) == 0
+        await provider._check_turn_end_usage(state, context)
+
+        assert not provider._compaction_strategy._turn_boundary_pending
+        assert state.get("compressed_msgs", []) == []
 
     @pytest.mark.asyncio
-    async def test_force_compress_fires_callback(self) -> None:
-        """on_force_compress callback is invoked on auto-compression."""
-        from chrys.service.context.compaction import CompressInfo
-
-        received: list[CompressInfo] = []
-
-        async def _append(info: CompressInfo) -> None:
-            received.append(info)
-
-        provider = self._make_provider(
-            max_context_tokens=100_000,
-            force_compress_pct=0.70,
-            on_force_compress=_append,
-        )
-        state = _build_multi_turn_state(3)
+    async def test_booking_twice_never_folds(self) -> None:
+        """Turns that keep ending above the threshold never fold a turn here."""
+        provider = self._make_provider(max_context_tokens=100_000, force_compress_pct=0.70)
+        state = _build_multi_turn_state(5)
         provider._compaction_strategy.bind_state(state)
         context = self._mock_context(75_000)
 
-        await provider._check_force_compress(state, context)
+        await provider._check_turn_end_usage(state, context)
+        await provider._check_turn_end_usage(state, context)
 
-        assert len(received) == 1
-        info = received[0]
-        assert info.compressed_context_id.startswith("ctx_")
-        assert info.freed_messages > 0
-        assert info.turn_range == (1, 1)
+        assert provider._compaction_strategy._turn_boundary_pending
+        assert state.get("compressed_msgs", []) == []
 
-    def test_force_compress_generates_reasonable_summary(self) -> None:
+    @pytest.mark.asyncio
+    async def test_strategy_less_provider_folds_its_oldest_turn(self) -> None:
+        provider = self._make_provider(max_context_tokens=100_000, force_compress_pct=0.70, with_strategy=False)
+        state = _build_multi_turn_state(3)
+        context = self._mock_context(75_000)
+
+        changed = await provider._check_turn_end_usage(state, context)
+
+        assert changed
+        compressed = state.get("compressed_msgs", [])
+        assert len(compressed) == 1
+        assert compressed[0].marker_id == "turn_1"
+
+    def test_auto_summary_is_reasonable(self) -> None:
         """Auto-generated summary includes user text and tool names."""
         from chrys.service.context.providers.history import _auto_summary
 
@@ -894,27 +893,29 @@ class TestForceCompress:
         assert summary != "Earlier conversation"
 
     @pytest.mark.asyncio
-    async def test_force_compress_disabled_with_high_pct(self) -> None:
-        """force_compress_pct >= 1.0 disables auto-compression."""
+    async def test_disabled_with_high_pct(self) -> None:
+        """force_compress_pct >= 1.0 disables the check."""
         provider = self._make_provider(max_context_tokens=100_000, force_compress_pct=1.0)
         state = _build_multi_turn_state(3)
         context = self._mock_context(99_000)
 
-        await provider._check_force_compress(state, context)
-        assert len(state.get("compressed_msgs", [])) == 0
+        await provider._check_turn_end_usage(state, context)
+
+        assert not provider._compaction_strategy._turn_boundary_pending
+        assert state.get("compressed_msgs", []) == []
 
     @pytest.mark.asyncio
-    async def test_force_compress_disabled_with_zero_max_context(self) -> None:
-        """max_context_tokens=0 disables force-compress."""
+    async def test_disabled_with_zero_max_context(self) -> None:
+        """max_context_tokens=0 disables the check."""
         provider = self._make_provider(max_context_tokens=0, force_compress_pct=0.70)
         state = _build_multi_turn_state(3)
         context = self._mock_context(75_000)
 
-        await provider._check_force_compress(state, context)
-        assert len(state.get("compressed_msgs", [])) == 0
+        assert not await provider._check_turn_end_usage(state, context)
+        assert state.get("compressed_msgs", []) == []
 
     @pytest.mark.asyncio
-    async def test_force_compress_no_response(self) -> None:
+    async def test_no_response(self) -> None:
         """No crash when context has no response."""
         from unittest.mock import MagicMock
 
@@ -923,24 +924,10 @@ class TestForceCompress:
         context = MagicMock()
         context.response = None
 
-        await provider._check_force_compress(state, context)
-        assert len(state.get("compressed_msgs", [])) == 0
+        await provider._check_turn_end_usage(state, context)
 
-    @pytest.mark.asyncio
-    async def test_force_compress_successive_turns(self) -> None:
-        """Force-compress can fire multiple times across turns."""
-        provider = self._make_provider(max_context_tokens=100_000, force_compress_pct=0.70)
-        state = _build_multi_turn_state(5)
-        provider._compaction_strategy.bind_state(state)
-        context = self._mock_context(75_000)
-
-        # First force-compress
-        await provider._check_force_compress(state, context)
-        assert len(state.get("compressed_msgs", [])) == 1
-
-        # Second force-compress (still above threshold)
-        await provider._check_force_compress(state, context)
-        assert len(state.get("compressed_msgs", [])) == 2
+        assert not provider._compaction_strategy._turn_boundary_pending
+        assert state.get("compressed_msgs", []) == []
 
 
 @pytest.mark.asyncio

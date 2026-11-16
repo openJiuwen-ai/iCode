@@ -209,6 +209,34 @@ async def test_a_connection_the_round_opened_is_not_refreshed_again(cache, tmp_p
     await cache.release(child)
 
 
+async def test_a_failed_first_connection_is_shared_for_a_refresh_and_retries_next_round(cache, tmp_path) -> None:
+    state = _state(tmp_path)
+    config = _config(state)
+    _flag(state, "refuse")
+    adapters = [MCPAdapter(cache=cache) for _ in range(4)]
+    try:
+        cache.begin_refresh()
+        for adapter in adapters:
+            assert await adapter.connect_all([config]) == []
+            assert "probe" in adapter.failures
+        assert len(_starts(state)) == 1
+        (report,) = await cache.commit_refresh()
+        assert not report.kept_existing
+
+        (state / "refuse").unlink()
+        cache.begin_refresh()
+        for adapter in adapters:
+            (tool,) = await adapter.connect_all([config])
+            (answer,) = await tool.invoke(label="recovered")
+            assert answer.text.startswith("answered by ")
+            assert adapter.failures == {}
+        assert len(_starts(state)) == 2
+        assert await cache.commit_refresh() == ()
+    finally:
+        for adapter in adapters:
+            await adapter.disconnect_all()
+
+
 async def test_abort_closes_the_candidate_and_leaves_the_running_connection(cache, tmp_path) -> None:
     state = _state(tmp_path)
     config = _config(state)
@@ -256,6 +284,65 @@ async def test_cancelling_a_reconnect_in_progress_leaves_no_process(cache, tmp_p
     await wait_for(lambda: not cache._detached, timeout=ENGINE_TURN_TIMEOUT, description="the cancelled connect ended")
     assert await old.mcp_tool.probe_session(timeout=5) is None
     await cache.release(old)
+
+
+async def test_scope_close_preserves_an_independent_waiter_and_cache_close_reaps_the_process(cache, tmp_path) -> None:
+    state = _state(tmp_path)
+    config = _config(state)
+    _flag(state, "hold")
+    scope = cache.acquisition_scope()
+    first = asyncio.create_task(cache.acquire(config, acquisition_scope=scope))
+    second = None
+    second_started = asyncio.Event()
+    try:
+        await wait_for(
+            lambda: bool(_starts(state)) or first.done(),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="the scoped connection started its process",
+        )
+        if first.done():
+            await first
+        (pid,) = _starts(state)
+        process = psutil.Process(pid)
+        transport = next(iter(cache._entries.values())).connect_task
+        assert transport is not None and not transport.done()
+
+        async def acquire_independently():
+            second_started.set()
+            return await cache.acquire(config)
+
+        second = asyncio.create_task(acquire_independently())
+        await wait_for(lambda: second_started.is_set() or second.done(), description="independent consumer entered")
+        if second.done():
+            await second
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await scope.aclose()
+        assert not transport.done()
+        assert not second.done()
+        assert process.is_running()
+        assert scope._attempts == {}
+
+        (state / "hold").unlink()
+        await wait_for(second.done, timeout=ENGINE_TURN_TIMEOUT, description="independent consumer connected")
+        lease = await second
+        (answer,) = await lease.functions[0].invoke(label="survives-scope")
+        assert answer.text == f"answered by {pid}"
+        assert len(_starts(state)) == 1
+        await cache.release(lease)
+        await cache.close_all()
+        await _gone(pid, process)
+        assert transport.done()
+        assert not cache._entries and not cache._detached
+    finally:
+        (state / "hold").unlink(missing_ok=True)
+        first.cancel()
+        if second is not None:
+            second.cancel()
+        await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
+        await scope.aclose()
+        await cache.close_all()
 
 
 async def test_abort_closes_a_first_connection_the_failed_build_opened(cache, tmp_path) -> None:

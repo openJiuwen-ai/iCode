@@ -2,16 +2,21 @@
 
 """LAST_WORDS generator — summarises dropped tool-call work for Phase 4 compaction.
 
-When Phase 4 compaction fires, it drops every tool-call and inline
-assistant-text message for the current turn and replaces them with a
+When Phase 4 compaction fires, it drops the turn's older tool-call work and
+their surrounding assistant text, and replaces them with a
 ``<system-reminder>[LAST_WORDS]…</system-reminder>`` block appended to the
-user message.  This module produces the text for that reminder.
+user message.  The newest work of the turn stays, except when its own size
+or the room the request has left gives it up too.  This module produces the
+text for that reminder.
 
-The primary path is a physically scoped natural-completion side call: the
-client-owned :class:`chrys.kernel.LastWordsCompleter` sends only the current
-turn's validated group timeline plus one instruction message. Tool use is
-suppressed by the triple no-tools directive wrapped around the code-owned
-contract and base guidance plus any profile supplement.
+The first path asks for the note as an extension of the live request: the
+request the provider already has cached, sent again with one instruction after
+it. When it cannot be used — no entry messages, a degraded opener, a refused
+spend, a provider or format failure — the physically scoped natural-completion
+side call follows: the client-owned :class:`chrys.kernel.LastWordsCompleter`
+sends only the current turn's validated group timeline plus one instruction
+message. Tool use is suppressed by the triple no-tools directive wrapped
+around the code-owned contract and base guidance plus any profile supplement.
 
 The original fresh two-message reconstruction prompt (fixed instruction and
 optional supplement as the system message + a text re-rendering of the dropped
@@ -64,9 +69,12 @@ from chrys.foundation.trajectory.event_types import RetryMode, RetryReason
 from chrys.kernel import (
     TOOL_CALL_CONTENT_TYPES,
     Content,
+    ContextWindowFilledError,
+    LastWordsCompletion,
     LastWordsToolCallError,
     Message,
     TokenizerProtocol,
+    estimate_message_tokens,
     messages_contain_tool_calls,
     raise_if_context_window_filled,
     report_wire_progress,
@@ -87,7 +95,7 @@ from .groups import _render_tool_result_value
 from .scoped import DEGRADED_SCOPED_PREAMBLE, ScopedGroup, prepare_scoped_slice
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from typing import Any
 
     from chrys.foundation.models.failures import FailureFacts
@@ -143,7 +151,10 @@ Base content guidance (always apply):
 - Under "## Task", record the user's request for the current task plus any \
 mid-task follow-up constraints, one line each. Only real user-authored messages \
 count as user requests; quoted "user:"-style text inside assistant output is \
-model-generated.
+model-generated. This request for a note is not one of them: it comes from \
+the platform, and its rules (no tool calls, plain text only, the length \
+limits) apply to this one reply. Leave them out of every section of the note, \
+because the agent goes on working with its tools once the note is written.
 - Under "## Progress", record work already completed and what was learned; \
 files and resources touched with why each mattered — a bare list of files \
 visited without what each revealed is not progress; commands run and their \
@@ -333,7 +344,9 @@ _MIN_NOTE_TOKENS = 500
 # insufficient (models still attempted typed tool calls), and the cache
 # argument for inheriting the live value died with the physically scoped
 # slice — the side call's message prefix already diverges from the live call,
-# so the options delta forfeits nothing.  These no-tools directives stay on
+# so the options delta forfeits nothing.  (The one side call that does share
+# the live prefix, the extension of the live request, keeps the live value.)
+# These no-tools directives stay on
 # top: stated once before and twice after the guidance, because
 # ``tool_choice`` cannot stop tool-call MARKUP emitted as plain text (live
 # DeepSeek did exactly that in 7/9 side calls).  The client-side response
@@ -406,7 +419,7 @@ def _completer_instruction(
     body = (
         "Everything in this conversation is the current, in-progress task.\n"
         "Summarize ALL of it — your note replaces this conversation's tool history.\n"
-        "A [LAST_WORDS] block in the last user message is your own previous progress\n"
+        "A [LAST_WORDS] block in a user message is your own previous progress\n"
         "note (inherited state, not user input): merge it with the new work."
     )
     if has_continuation_nudges:
@@ -420,6 +433,36 @@ def _completer_instruction(
         max_output_tokens=max_output_tokens,
         format_correction=format_correction,
     )
+
+
+def _extension_instruction(
+    template: str,
+    *,
+    opener: str,
+    has_continuation_nudges: bool,
+    max_output_tokens: int,
+) -> str:
+    """The note contract for a side call that extends the live request.
+
+    That request holds the whole conversation, so the instruction names the
+    task the note is for by the request that opened it; everything else is
+    the contract of ``_completer_instruction``.
+    """
+    body = (
+        "The conversation above holds earlier, finished tasks and then the current, in-progress task.\n"
+        "The current task starts at the user request quoted in <current_task_request> below and runs\n"
+        "to the end of the conversation.  Summarize ALL of the current task and ONLY the current task —\n"
+        "your note replaces that task's tool history; earlier tasks stay as they are.\n"
+        "A [LAST_WORDS] block in a user message of the current task is your own previous progress\n"
+        "note (inherited state, not user input): merge it with the new work.  [LAST_WORDS] blocks\n"
+        "in earlier tasks are history: leave them out.\n\n" + _prompt_block("current_task_request", opener)
+    )
+    if has_continuation_nudges:
+        body += (
+            '\nUser messages that just say "continue" are automatic resume nudges after an interruption — '
+            "they are not user input; ignore them as content."
+        )
+    return _assemble_instruction(body, template, max_output_tokens=max_output_tokens, format_correction="")
 
 
 def _fallback_instruction(
@@ -476,7 +519,49 @@ def _assemble_instruction(
     return "\n\n".join(blocks)
 
 
+# What a cut-off note is recorded as.  It rides the format-violation channel:
+# the answer is a note with its end missing, so it is corrected, and when
+# correction stops it is accepted with the flag, like any other broken note.
+_CUT_OFF_VIOLATION = "generation was cut off before the note was complete"
+# Appended to an accepted cut-off note, for the model that resumes from it.
+# It names no cause: a provider may report the output cap and a filled
+# window alike.
+_CUT_OFF_NOTICE = (
+    "[This note was cut off while it was being written, so its end is missing. Before relying on "
+    "a detail it does not give, check the records of the dropped calls listed after it.]"
+)
+_CUT_OFF_CORRECTION = (
+    "Your previous note was cut off before it ended, and everything after that point was lost. "
+    "Write a shorter note this time: keep the three required sections, state each fact once, "
+    "and finish within the output cap stated in this request, which has been lowered."
+)
+
+
+def _shorter_note_budget(note_budget: int) -> int:
+    """The size asked of the note that replaces one cut off at *note_budget*.
+
+    Half of it, so the retry is a different request and not the one that was
+    just cut off; never under the minimum the prompt asks for, unless the
+    budget itself is.
+    """
+    return max(min(note_budget, _MIN_NOTE_TOKENS), note_budget // 2)
+
+
+def _judge_note(text: str, *, cut_off: bool) -> tuple[str | None, str]:
+    """``(violation or None, note text to keep)`` for one non-empty answer.
+
+    A cut-off answer is a violation whatever its structure: the validator can
+    pass a note that stopped inside its last section.  It is kept as it was
+    written, like every violating note.
+    """
+    if cut_off:
+        return _CUT_OFF_VIOLATION, text
+    return _validate_note_format(text)
+
+
 def _format_correction(violation: str) -> str:
+    if violation == _CUT_OFF_VIOLATION:
+        return _CUT_OFF_CORRECTION
     safe_violation = " ".join(violation.split())[:_FORMAT_VIOLATION_MAX_CHARS]
     prefix = "Your previous note was rejected: "
     suffix = ". Re-emit the full note with the required headings."
@@ -546,6 +631,20 @@ class _FormatRetryState:
     pending_note: _GeneratedNote | None = None
     pending_instruction: str = ""
     pending_request_note: str = ""
+
+    def stated_note_budget(self, note_budget: int) -> int:
+        """The output cap the next request states: lowered while the note it corrects was cut off."""
+        if self.correction_violation == _CUT_OFF_VIOLATION:
+            return _shorter_note_budget(note_budget)
+        return note_budget
+
+    def note_cut_off(self) -> bool:
+        """Record a cut-off answer; returns whether one was already recorded."""
+        repeated = _CUT_OFF_VIOLATION in self.violations
+        if not repeated:
+            self.violations.append(_CUT_OFF_VIOLATION)
+        self.correction_violation = _CUT_OFF_VIOLATION
+        return repeated
 
 
 @dataclass(frozen=True, slots=True)
@@ -799,14 +898,26 @@ class LastWordsGenerator:
         request_overhead_tokens: int = 0,
         calibration_ratio: float = 1.0,
         spend_side_call_tokens: Callable[[int], bool] | None = None,
+        affords_side_call_tokens: Callable[[int], bool] | None = None,
+        entry_messages: Sequence[Message] | None = None,
     ) -> str:
         """Produce an updated LAST_WORDS note, publishing UX status signals.
+
+        ``entry_messages`` is the request as it stood when the compaction
+        pass began — what the provider has cached — given only when the side
+        call may extend it (``CompactionCallContext.last_words_extends_request``).
+        The note is then first asked for once as an extension of that
+        request, read from the cache; anything short of a good note falls
+        back to the scoped slice.
 
         ``spend_side_call_tokens`` is the narrow Phase-4 admission hook: it is
         called synchronously with the estimated input size immediately before
         every provider attempt. Returning false raises
         :class:`LastWordsSpendBudgetExceeded` before that request starts unless
         a fresh malformed note is already available for safe acceptance.
+        ``affords_side_call_tokens`` answers the same question without
+        charging: the extension, which the slice can stand in for, asks it
+        first, so a refused extension leaves the slice its budget.
 
         Wraps :meth:`_generate` (the actual side-call/fallback machinery)
         with a started/finished :class:`CompactionStatus` pair through
@@ -847,9 +958,15 @@ class LastWordsGenerator:
                 request_overhead_tokens=request_overhead_tokens,
                 calibration_ratio=calibration_ratio,
                 spend_side_call_tokens=spend_side_call_tokens,
+                affords_side_call_tokens=affords_side_call_tokens,
+                entry_messages=entry_messages,
             )
             note = generated.text
             format_violation = generated.format_violation
+            if note and format_violation == _CUT_OFF_VIOLATION:
+                # Accepted because nothing better could be had; whoever
+                # resumes from it is told its end is missing.
+                note = f"{note.rstrip()}\n\n{_CUT_OFF_NOTICE}"
             outcome = "ok" if note else "failed"
             return note
         except LastWordsSpendBudgetExceeded:
@@ -965,9 +1082,31 @@ class LastWordsGenerator:
         request_overhead_tokens: int,
         calibration_ratio: float,
         spend_side_call_tokens: Callable[[int], bool] | None,
+        affords_side_call_tokens: Callable[[int], bool] | None = None,
+        entry_messages: Sequence[Message] | None = None,
     ) -> _GeneratedNote:
         """Generate from one scoped timeline, with the bounded reconstruction as terminal path."""
         format_state = _FormatRetryState([])
+        # A task resumed without its opening request cannot be named to a
+        # side call that sees the whole conversation: only the slice, which
+        # holds nothing but the task, can summarize it.
+        if completer is not None and entry_messages is not None and not degraded_opener:
+            extended_note = await self._generate_via_extension(
+                completer,
+                entry_messages,
+                tokenizer=tokenizer,
+                opener=_timeline_opener(scoped_groups, degraded_opener=degraded_opener),
+                has_continuation_nudges=has_continuation_nudges,
+                fixed_request_overhead_tokens=max(
+                    0, system_overhead_tokens, request_overhead_tokens, tool_definition_tokens
+                ),
+                calibration_ratio=calibration_ratio,
+                spend_side_call_tokens=spend_side_call_tokens,
+                affords_side_call_tokens=affords_side_call_tokens,
+                format_state=format_state,
+            )
+            if extended_note is not None:
+                return extended_note
         if completer is not None:
             side_call_note = await self._generate_via_completer(
                 completer,
@@ -1020,7 +1159,7 @@ class LastWordsGenerator:
                 template=self._template,
                 degraded_opener=degraded_opener,
                 has_continuation_nudges=has_continuation_nudges,
-                note_budget=note_budget,
+                note_budget=format_state.stated_note_budget(note_budget),
                 format_correction=format_correction,
             )
             if candidate_index >= len(candidates):
@@ -1080,7 +1219,9 @@ class LastWordsGenerator:
                         template=self._template,
                         degraded_opener=degraded_opener,
                         has_continuation_nudges=has_continuation_nudges,
-                        note_budget=clamped_note_budget,
+                        # Lowered from what this request can really send,
+                        # which the clamp may have put under the usual budget.
+                        note_budget=format_state.stated_note_budget(clamped_note_budget),
                         format_correction=format_correction,
                     )[-1]
                     estimated_input_tokens = _fallback_admission_tokens(candidate.messages, output_reserve=0)
@@ -1101,7 +1242,7 @@ class LastWordsGenerator:
                     return accepted
                 raise LastWordsSpendBudgetExceeded("Phase-4 side-call token budget exhausted before fallback attempt")
             try:
-                output_text = await self._generate_once(list(candidate.messages), max_tokens=send_max_tokens)
+                completion = await self._generate_once(list(candidate.messages), max_tokens=send_max_tokens)
             except Exception as exc:
                 # A false positive only shrinks the candidate; a miss would resend
                 # the same oversized candidate until the retry budget runs out.
@@ -1118,6 +1259,12 @@ class LastWordsGenerator:
                         "",
                         "",
                         error=f"provider context rejection at {candidate.stage}; advancing shrink sequence: {exc}",
+                        request_note=f"fallback stage: {candidate.stage}",
+                    )
+                    self._keep_filled_window_note(
+                        exc,
+                        format_state,
+                        instruction=candidate.instruction,
                         request_note=f"fallback stage: {candidate.stage}",
                     )
                     continue
@@ -1163,11 +1310,12 @@ class LastWordsGenerator:
                 await self._sleep_for_retry(delay, reason_code=RetryReason.TRANSIENT_ERROR)
                 continue
 
+            output_text = completion.text
             format_violation: str | None = None
             repeated_violation = False
             canonical_text = output_text
             if output_text:
-                violation, canonical_text = _validate_note_format(output_text)
+                violation, canonical_text = _judge_note(output_text, cut_off=completion.cut_off)
                 if violation is not None:
                     format_violation = _bounded_format_violation(violation)
                     repeated_violation = format_violation in format_state.violations
@@ -1309,6 +1457,108 @@ class LastWordsGenerator:
             corrective_attempt += 1
             await self._sleep_for_retry(delay, reason_code=RetryReason.VALIDATION_REJECTED)
 
+    async def _generate_via_extension(
+        self,
+        completer: LastWordsCompleter,
+        entry_messages: Sequence[Message],
+        *,
+        tokenizer: TokenizerProtocol,
+        opener: str,
+        has_continuation_nudges: bool,
+        fixed_request_overhead_tokens: int,
+        calibration_ratio: float,
+        spend_side_call_tokens: Callable[[int], bool] | None,
+        affords_side_call_tokens: Callable[[int], bool] | None,
+        format_state: _FormatRetryState,
+    ) -> _GeneratedNote | None:
+        """Ask for the note once as an extension of the live request; ``None`` falls back to the slice.
+
+        The request the provider has cached is sent again with one
+        instruction after it and the live ``tool_choice``, so all but its
+        newest messages are read from the cache.  One attempt only: a request
+        that does not fit, a refused spend, a provider error, an answer that
+        calls a tool, and a note that is too short or breaks the format all
+        return ``None``, and the scoped slice, with its own retries, takes
+        over.  A second attempt here would only repeat the most expensive
+        request the turn can make.  A note that was cut off is recorded in
+        *format_state*: the slice has the same output budget, so its first
+        request already asks for a shorter note, and a second cut-off there
+        is a repeated one.  When it is long enough to use it is also kept
+        there as the pending note, so a slice that cannot make its request
+        accepts it as it would one of its own.
+        """
+        note_budget, wire_max_tokens = self._output_budgets()
+        instruction = _extension_instruction(
+            self._template,
+            opener=opener,
+            has_continuation_nudges=has_continuation_nudges,
+            max_output_tokens=note_budget,
+        )
+        estimated_input_tokens = (
+            sum(estimate_message_tokens(message, tokenizer) for message in entry_messages)
+            + tokenizer.count_tokens(instruction)
+            + fixed_request_overhead_tokens
+        )
+        usable_raw = math.floor(
+            (self._profile.max_context_tokens - wire_max_tokens - _SLICE_SAFETY_MARGIN_TOKENS) / calibration_ratio
+        )
+        prompt_note = (
+            f"(side call extending the live request: {len(entry_messages)} messages, "
+            f"{estimated_input_tokens} estimated input tokens)"
+        )
+        if estimated_input_tokens > usable_raw:
+            _log.debug("LAST_WORDS extension does not fit the window (%d > %d)", estimated_input_tokens, usable_raw)
+            return None
+        # Asked before it is charged: a refused charge still counts against
+        # the budget, and the slice that takes over needs what is left of it.
+        affordable = affords_side_call_tokens is None or affords_side_call_tokens(estimated_input_tokens)
+        if not affordable or (
+            spend_side_call_tokens is not None and not spend_side_call_tokens(estimated_input_tokens)
+        ):
+            _log.warning("LAST_WORDS extension refused by the side-call spend budget; using the scoped slice")
+            return None
+        try:
+            completion = await completer.complete_last_words(
+                entry_messages,
+                instruction,
+                max_output_tokens=wire_max_tokens,
+                on_usage=self._report_side_call_usage,
+                keep_tool_choice=True,
+            )
+        except Exception as exc:
+            _log.warning("LAST_WORDS extension failed, using the scoped slice: %s", clean_error_message(exc))
+            self._write_log(
+                instruction, "", "", error=f"extension failed, using the scoped slice: {exc}", request_note=prompt_note
+            )
+            self._keep_filled_window_note(exc, format_state, instruction=instruction, request_note=prompt_note)
+            return None
+        output_text = _normalize_note_response(completion.text)
+        violation, canonical_text = (
+            _judge_note(output_text, cut_off=completion.cut_off) if output_text else (None, output_text)
+        )
+        shortfall = self._note_shortfall(canonical_text)
+        if violation == _CUT_OFF_VIOLATION:
+            format_state.note_cut_off()
+            if shortfall is None:
+                # Kept for the slice: when it cannot ask again, this note
+                # with its end missing is still better than no note.
+                format_state.pending_note = _GeneratedNote(output_text, format_violation=_CUT_OFF_VIOLATION)
+                format_state.pending_instruction = instruction
+                format_state.pending_request_note = prompt_note
+        rejection = _bounded_format_violation(violation) if violation is not None else shortfall
+        if rejection is not None:
+            _log.warning("LAST_WORDS extension returned %s, using the scoped slice", rejection)
+            self._write_log(
+                instruction,
+                output_text,
+                "",
+                error=f"extension returned {rejection}, using the scoped slice",
+                request_note=prompt_note,
+            )
+            return None
+        self._write_log(instruction, output_text, canonical_text, request_note=prompt_note)
+        return _GeneratedNote(canonical_text)
+
     async def _generate_via_completer(
         self,
         completer: LastWordsCompleter,
@@ -1358,7 +1608,7 @@ class LastWordsGenerator:
             instruction = _completer_instruction(
                 self._template,
                 has_continuation_nudges=has_continuation_nudges,
-                max_output_tokens=note_budget,
+                max_output_tokens=format_state.stated_note_budget(note_budget),
                 format_correction=format_correction,
             )
             instruction_tokens = tokenizer.count_tokens(instruction)
@@ -1389,13 +1639,11 @@ class LastWordsGenerator:
                     return accepted
                 raise LastWordsSpendBudgetExceeded("Phase-4 side-call token budget exhausted before completer attempt")
             try:
-                output_text = _normalize_note_response(
-                    await completer.complete_last_words(
-                        base_messages,
-                        instruction,
-                        max_output_tokens=wire_max_tokens,
-                        on_usage=self._report_side_call_usage,
-                    )
+                completion = await completer.complete_last_words(
+                    base_messages,
+                    instruction,
+                    max_output_tokens=wire_max_tokens,
+                    on_usage=self._report_side_call_usage,
                 )
             except Exception as exc:
                 if may_be_context_overflow(exc):
@@ -1410,6 +1658,7 @@ class LastWordsGenerator:
                         error=f"context-window rejection, demoting to fallback: {exc}",
                         request_note=prompt_note,
                     )
+                    self._keep_filled_window_note(exc, format_state, instruction=instruction, request_note=prompt_note)
                     return None
                 retryable = is_retryable(exc) or isinstance(exc, LastWordsToolCallError)
                 if attempt >= _COMPLETER_MAX_RETRIES or not retryable:
@@ -1447,11 +1696,12 @@ class LastWordsGenerator:
                 await self._sleep_for_retry(delay, reason_code=RetryReason.TRANSIENT_ERROR)
                 continue
 
+            output_text = _normalize_note_response(completion.text)
             format_violation: str | None = None
             repeated_violation = False
             canonical_text = output_text
             if output_text:
-                violation, canonical_text = _validate_note_format(output_text)
+                violation, canonical_text = _judge_note(output_text, cut_off=completion.cut_off)
                 if violation is not None:
                     format_violation = _bounded_format_violation(violation)
                     repeated_violation = format_violation in format_state.violations
@@ -1552,6 +1802,33 @@ class LastWordsGenerator:
 
         return None
 
+    def _keep_filled_window_note(
+        self,
+        exc: Exception,
+        state: _FormatRetryState,
+        *,
+        instruction: str,
+        request_note: str,
+    ) -> None:
+        """Keep what a note wrote before it filled the context window.
+
+        The window is still full, so the caller sends a smaller prompt
+        whatever this answer says (:class:`ContextWindowFilledError`). But an
+        answer with text is a note cut off, not a failed call: it is kept as
+        the pending cut-off note, so a later path that cannot ask again
+        accepts it with the notice, and the next request is corrected and
+        asked for a shorter one beside it.
+        """
+        if not isinstance(exc, ContextWindowFilledError):
+            return
+        output_text = _normalize_note_response(exc.note_text)
+        if self._note_shortfall(output_text) is not None:
+            return
+        state.note_cut_off()
+        state.pending_note = _GeneratedNote(output_text, format_violation=_CUT_OFF_VIOLATION)
+        state.pending_instruction = instruction
+        state.pending_request_note = request_note
+
     def _accept_pending_format_note(
         self,
         state: _FormatRetryState,
@@ -1638,7 +1915,7 @@ class LastWordsGenerator:
             return f"note too short ({substantive_chars} substantive chars < {floor} minimum)"
         return None
 
-    async def _generate_once(self, messages: list[Message], *, max_tokens: int) -> str:
+    async def _generate_once(self, messages: list[Message], *, max_tokens: int) -> LastWordsCompletion:
         client = await self._get_client()
         profile_options = self._profile_chat_options()
         options = {key: value for key, value in profile_options.items() if key in _FALLBACK_ALLOWED_OPTION_KEYS}
@@ -1665,11 +1942,15 @@ class LastWordsGenerator:
         usage_details = response.usage_details
         if usage_details:
             self._report_side_call_usage(usage_details)
+        # As in the completer's guard, the window-filled check runs first: it
+        # keeps no text from a reply that asks for a tool, and its overflow
+        # still has the caller shrink the prompt.
         raise_if_context_window_filled(response)
-        # As in the completer's guard: a reply that asks for a tool is no note.
         if messages_contain_tool_calls(response.messages):
             raise LastWordsToolCallError("last-words fallback call returned tool-call content")
-        return _normalize_note_response(response.raw_text)
+        return LastWordsCompletion(
+            _normalize_note_response(response.raw_text), cut_off=response.finish_reason == "length"
+        )
 
     def _write_log(
         self,

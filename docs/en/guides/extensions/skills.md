@@ -55,6 +55,8 @@ When a skill script prints more than 32 MiB to standard output or standard error
 
 ## Confirm that skills have loaded
 
+When an agent and its local sub-agents load together with the same skills directories and scanning options, iCode scans those files once for that load. Each agent keeps its own skill configuration and script settings. The loading dialog shows which sub-agent is loading skills. Files edited during loading are picked up on a later refresh.
+
 After you save the agent's configuration and return to the session, iCode reloads its skills. If you add skill directories or change their files directly on disk, iCode does not monitor those changes in real time. The next time you send a message, iCode rescans the current agent's enabled skills directories before processing the message.
 
 Use either of the following methods to confirm that a skill has loaded:

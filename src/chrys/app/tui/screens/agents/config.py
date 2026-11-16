@@ -26,11 +26,13 @@ from textual.widgets.option_list import Option, OptionDoesNotExist
 from chrys.app.tui.binding_display import CANCEL_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
 from chrys.app.tui.screens.agents.agent_draft_store import AgentDraftStore, mcp_draft_errors_by_server
+from chrys.app.tui.screens.agents.prompt_editor import CLONE_AND_EDIT, LOCKED_MESSAGE, LOCKED_TITLE, PromptTextArea
 from chrys.app.tui.screens.agents.validation_messages import FIX_VALIDATION_ERRORS
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.widgets import Checkbox
 from chrys.app.tui.widgets import EnhancedInput as Input
 from chrys.app.tui.widgets.config_card import CardListChanged
+from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
 
 if TYPE_CHECKING:
@@ -64,20 +66,10 @@ _TAB_ACP_SHORT = msg("tui.agent_config.tab.acp_short", fallback="ACP")
 _NEW = msg("tui.agent_config.button.new", fallback="New")
 _CLONE = msg("tui.agent_config.button.clone", fallback="Clone")
 _DELETE = msg("tui.agent_config.button.delete", fallback="Delete")
-_RESET = msg("tui.agent_config.button.reset", fallback="Reset")
 _SAVE = msg("tui.agent_config.button.save", fallback="Save")
 _CLOSE = msg("tui.agent_config.button.close", fallback="Close")
 _MODIFIED_LABEL = msg("tui.agent_config.profile.modified", fallback="{name} (modified)")
-_RESET_AGENT_TITLE = msg("tui.agent_config.confirm.reset.title", fallback="Reset Agent")
 _DELETE_AGENT_TITLE = msg("tui.agent_config.confirm.delete.title", fallback="Delete Agent")
-_RESET_AGENT_MESSAGE = msg(
-    "tui.agent_config.confirm.reset.message",
-    fallback=(
-        'Reset built-in agent\n"{display}" to system defaults?\n\n'
-        "Skills, MCP, Memory, and Extensions settings will be preserved. All other changes will be discarded."
-    ),
-    multiline=True,
-)
 _DELETE_AGENT_MESSAGE = msg(
     "tui.agent_config.confirm.delete.message",
     fallback='Delete agent profile\n"{display}"?',
@@ -116,19 +108,11 @@ _AGENT_STILL_REFERENCED = msg(
 _AGENT_MORE_SUFFIX = msg("tui.agent_config.more_suffix", fallback=" (+{extra_count} more)")
 _AGENT_REMOVED = msg("tui.agent_config.removed", fallback="Agent removed")
 _AGENT_DELETED = msg("tui.agent_config.deleted", fallback="Agent deleted")
-_AGENT_RESET_PENDING = msg(
-    "tui.agent_config.reset_pending",
-    fallback="Agent reset prepared — save to apply",
-)
-_AGENT_RESET_COMPLETE = msg(
-    "tui.agent_config.reset_complete",
-    fallback="Agent reset to system defaults",
-)
-_AGENT_ALREADY_DEFAULT = msg(
-    "tui.agent_config.already_default",
-    fallback="Agent already uses the system defaults",
-)
 _AGENT_PROFILE_SAVED = msg("tui.agent_config.saved", fallback="Agent profile saved")
+_PROMPT_BACKUPS = msg(
+    "tui.agent_config.prompts.backups",
+    fallback="Built-in configurations containing nonempty custom prompts were saved as editable agents: {names}. Built-in prompts now update with {app}.",
+)
 
 
 class _DismissIntent(StrEnum):
@@ -149,7 +133,6 @@ class _AgentDraft:
     original_profile: AgentProfile | None
     is_builtin: bool
     dirty: bool = False
-    reset_to_builtin: bool = False
 
 
 @dataclass
@@ -158,7 +141,6 @@ class _AgentDraftSnapshot:
 
     profile: AgentProfile
     dirty: bool
-    reset_to_builtin: bool
 
 
 @dataclass
@@ -237,6 +219,7 @@ class AgentsConfigScreen(BaseDialog[str]):
         if not self._workspace_roots and workspace_cwd:
             self._workspace_roots = [workspace_cwd]
         self._read_only = read_only
+        self._prompt_dialog_open = False
         self._current_profile = current_profile
         self._initial_profile = initial_profile or current_profile
         self._initial_tab = initial_tab
@@ -325,7 +308,6 @@ class AgentsConfigScreen(BaseDialog[str]):
                 with Horizontal(id="ac-buttons"):
                     yield Button(render_str(localizer, _NEW.bind()), variant="primary", id="ac-new", flat=True)
                     yield Button(render_str(localizer, _CLONE.bind()), variant="primary", id="ac-clone", flat=True)
-                    yield Button(render_str(localizer, _RESET.bind()), variant="warning", id="ac-reset", flat=True)
                     yield Button(render_str(localizer, _DELETE.bind()), variant="error", id="ac-delete", flat=True)
                     yield Static(id="ac-buttons-spacer")
                     save_button = Button(
@@ -348,6 +330,19 @@ class AgentsConfigScreen(BaseDialog[str]):
         self._select_initial_profile()
         self._update_save_button_state()
         self._apply_read_only_state()
+
+        self._notify_prompt_backups()
+
+    def _notify_prompt_backups(self) -> None:
+        if self._registry.prompt_backups:
+            self.notify(
+                self._render_toast(
+                    _PROMPT_BACKUPS.bind(names=", ".join(self._registry.prompt_backups), app=APP_DISPLAY_NAME)
+                ),
+                timeout=10,
+                markup=False,
+            )
+            self._registry.prompt_backups.clear()
 
     def on_unmount(self) -> None:
         self._hydrating_generation += 1
@@ -497,15 +492,13 @@ class AgentsConfigScreen(BaseDialog[str]):
         if pending_agent_type is not None and pending_agent_type[0] != draft_key:
             self._pending_agent_type_change = None
         if not mcp_card_folds_carried:
-            # Also on a reload in place: Reset keeps the MCP servers, and a panel
-            # ignores folds that no longer match its server count.
+            # A panel ignores folds that no longer match its server count.
             self._remember_mcp_card_folds()
         profile = draft.profile
         self._selected_draft_key = draft_key
         self._selected_profile_name = profile.name
         is_builtin = draft.is_builtin
 
-        self.query_one("#ac-reset", Button).display = is_builtin
         self.query_one("#ac-delete", Button).display = not is_builtin
 
         # Clear all panes, then mount only the active tab. Additional tabs are
@@ -685,7 +678,7 @@ class AgentsConfigScreen(BaseDialog[str]):
 
         pane = self.query_one("#instructions", TabPane)
         pane.remove_children()
-        pane.mount(InstructionsConfigPanel(profile.instructions))
+        pane.mount(InstructionsConfigPanel(profile.instructions, prompt_locked=self._registry.is_builtin(profile.name)))
 
     def _mount_tools_tab(self, profile) -> None:
         from chrys.app.tui.screens.agents.panels.tools import ToolsConfigPanel
@@ -794,7 +787,7 @@ class AgentsConfigScreen(BaseDialog[str]):
 
         pane = self.query_one("#compaction", TabPane)
         pane.remove_children()
-        pane.mount(CompactionConfigPanel(profile.compaction))
+        pane.mount(CompactionConfigPanel(profile.compaction, prompt_locked=self._registry.is_builtin(profile.name)))
 
     def _mount_acp_tab(self, profile) -> None:
         from chrys.app.tui.screens.agents.panels.acp import AcpConfigPanel
@@ -885,7 +878,6 @@ class AgentsConfigScreen(BaseDialog[str]):
         if button_id in {
             "ac-new",
             "ac-clone",
-            "ac-reset",
             "ac-delete",
             "ac-save",
             "sa-add-btn",
@@ -953,7 +945,7 @@ class AgentsConfigScreen(BaseDialog[str]):
     def _is_draft_dirty(self, draft: _AgentDraft) -> bool:
         if draft.original_profile is None:
             return True
-        return draft.reset_to_builtin or draft.profile != draft.original_profile
+        return draft.profile != draft.original_profile
 
     def _set_draft_dirty(self, draft: _AgentDraft, dirty: bool) -> None:
         if draft.dirty != dirty:
@@ -966,7 +958,6 @@ class AgentsConfigScreen(BaseDialog[str]):
             key: _AgentDraftSnapshot(
                 profile=copy.deepcopy(draft.profile),
                 dirty=draft.dirty,
-                reset_to_builtin=draft.reset_to_builtin,
             )
             for key, draft in self._drafts.items()
         }
@@ -978,7 +969,6 @@ class AgentsConfigScreen(BaseDialog[str]):
                 continue
             draft.profile = copy.deepcopy(state.profile)
             draft.dirty = state.dirty
-            draft.reset_to_builtin = state.reset_to_builtin
         selected = self._drafts.get(self._selected_draft_key)
         if selected is not None:
             self._selected_profile_name = selected.profile.name
@@ -1228,53 +1218,46 @@ class AgentsConfigScreen(BaseDialog[str]):
             if profile_id not in existing_ids:
                 return profile_id
 
-    @staticmethod
-    def _clone_name_parts(name: str) -> tuple[str, int] | None:
-        """Return ``(root, suffix_index)`` for generated clone names."""
-        match = re.fullmatch(r"(.+?)-copy(?:-(\d+))?", name, flags=re.IGNORECASE)
-        if match is None:
-            return None
-        suffix = match.group(2)
-        return match.group(1), int(suffix) if suffix is not None else 1
-
-    def _clone_name_indices(self, root_name: str) -> list[int]:
-        """Return existing generated clone suffixes for the given root."""
-        indices: list[int] = []
-        for name in self._reserved_profile_names():
-            parts = self._clone_name_parts(name)
-            if parts is not None and parts[0].casefold() == root_name.casefold():
-                indices.append(parts[1])
-        return indices
-
-    @staticmethod
-    def _clone_display_root(source_display_name: str) -> str:
-        """Return the original display root for a generated clone label."""
-        match = re.fullmatch(r"(.+?) copy(?: \d+)?", source_display_name, flags=re.IGNORECASE)
-        return source_display_name if match is None else match.group(1)
-
-    def _next_clone_names(self, source_name: str, source_display_name: str) -> tuple[str, str]:
-        """Generate unique registry and display names for a cloned agent profile."""
-        existing_names = {name.casefold() for name in self._reserved_profile_names()}
-        source_parts = self._clone_name_parts(source_name)
-        if source_parts is None:
-            root_name = source_name
-            counter = 1
-        else:
-            root_name, source_index = source_parts
-            source_display_name = self._clone_display_root(source_display_name)
-            counter = max([source_index, *self._clone_name_indices(root_name)]) + 1
-        base_name = f"{root_name}-copy"
-        base_display_name = f"{source_display_name} Copy"
-        name = base_name if counter == 1 else f"{base_name}-{counter}"
-        display_name = base_display_name if counter == 1 else f"{base_display_name} {counter}"
-        while name.casefold() in existing_names:
-            counter += 1
-            name = f"{base_name}-{counter}"
-            display_name = f"{base_display_name} {counter}"
-        return name, display_name
-
     @on(Button.Pressed, "#ac-clone")
     def _on_clone(self, _event: Button.Pressed) -> None:
+        self._clone_selected_profile()
+
+    @on(PromptTextArea.CustomizeRequested)
+    def _customize_builtin_prompt(self) -> None:
+        if self._prompt_dialog_open:
+            return
+        if self._read_only:
+            self._reset_prompt_customization()
+            return
+        draft_key = self._selected_draft_key
+        draft = self._drafts.get(draft_key)
+        if draft is None or not draft.is_builtin:
+            self._reset_prompt_customization()
+            return
+        from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
+
+        def clone(confirmed: bool | None) -> None:
+            self._reset_prompt_customization()
+            if confirmed and self._selected_draft_key == draft_key:
+                self._clone_selected_profile()
+
+        self._prompt_dialog_open = True
+        self.app.push_screen(
+            ConfirmDialog(
+                title=LOCKED_TITLE.bind(),
+                message=LOCKED_MESSAGE.bind(app=APP_DISPLAY_NAME),
+                confirm_label=CLONE_AND_EDIT.bind(),
+                locale_controller=widget_locale_controller(self),
+            ),
+            callback=clone,
+        )
+
+    def _reset_prompt_customization(self) -> None:
+        self._prompt_dialog_open = False
+        for editor in self.query(PromptTextArea):
+            editor.reset_customization_request()
+
+    def _clone_selected_profile(self) -> None:
         """Stage a copy of the selected profile and select it."""
         if self._read_only:
             return
@@ -1295,9 +1278,7 @@ class AgentsConfigScreen(BaseDialog[str]):
             return
 
         source = source_draft.profile
-        duplicate = copy.deepcopy(source)
-        duplicate.name, duplicate.display_name = self._next_clone_names(source.name, source.display_name or source.name)
-        duplicate.id = self._next_profile_id()
+        duplicate = self._registry.clone(source, reserved_profiles=(draft.profile for draft in self._drafts.values()))
         self._canonicalize_profile_for_ui(duplicate)
         key = self._new_draft_key()
         self._drafts[key] = _AgentDraft(
@@ -1319,74 +1300,6 @@ class AgentsConfigScreen(BaseDialog[str]):
             ol.highlighted = ol.get_option_index(key)
         self._load_profile(key)
         self._update_save_button_state()
-
-    @on(Button.Pressed, "#ac-reset")
-    def _on_reset(self, _event: Button.Pressed) -> None:
-        """Stage a built-in profile reset after confirmation."""
-        if self._read_only:
-            return
-        try:
-            self._sync_selected_draft_from_panels()
-        except Exception as exc:
-            self.notify(
-                str(exc),
-                title=self._render_toast(_AGENT_TITLE.bind()),
-                severity="error",
-                timeout=5,
-                markup=False,
-            )
-            return
-        draft_key = self._selected_draft_key
-        draft = self._drafts.get(draft_key)
-        if draft is None or not draft.is_builtin or draft.original_name is None:
-            return
-        display = draft.profile.display_name or draft.profile.name
-        from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
-
-        dialog = ConfirmDialog(
-            title=_RESET_AGENT_TITLE.bind(),
-            message=_RESET_AGENT_MESSAGE.bind(display=display),
-            confirm_label=_RESET.bind(),
-            confirm_variant="primary",
-            locale_controller=widget_locale_controller(self),
-        )
-        self.app.push_screen(
-            dialog,
-            callback=lambda confirmed: self._do_reset(draft_key) if confirmed else None,
-        )
-
-    def _do_reset(self, draft_key: str) -> None:
-        """Replace one built-in draft with its reset candidate."""
-        if self._read_only:
-            return
-        draft = self._drafts.get(draft_key)
-        if draft is None or not draft.is_builtin or draft.original_name is None:
-            return
-        reset_profile = self._registry.build_builtin_reset(
-            draft.original_name,
-            preserve_from=draft.profile,
-        )
-        self._canonicalize_profile_for_ui(reset_profile)
-        draft_changed = reset_profile != draft.profile
-        shadow_exists = self._profile_yaml_path(draft.original_name).is_file()
-        original = draft.original_profile
-        reset_matches_template = self._profile_matches_builtin_template(reset_profile, draft.original_name)
-        needs_save = reset_profile != original or (shadow_exists and reset_matches_template)
-        draft.profile = reset_profile
-        draft.reset_to_builtin = needs_save
-        self._selected_profile_name = reset_profile.name
-        self._set_draft_dirty(draft, needs_save)
-        self._load_profile(draft_key)
-        message = (
-            _AGENT_RESET_PENDING if needs_save else _AGENT_RESET_COMPLETE if draft_changed else _AGENT_ALREADY_DEFAULT
-        )
-        self.notify(
-            self._render_toast(message.bind()),
-            title=self._render_toast(_AGENT_SETTINGS_TITLE.bind()),
-            severity="information",
-            timeout=3,
-            markup=False,
-        )
 
     @on(Button.Pressed, "#ac-delete")
     def _on_delete(self, _event: Button.Pressed) -> None:
@@ -1562,7 +1475,25 @@ class AgentsConfigScreen(BaseDialog[str]):
         self._update_save_button_state()
 
     @on(Button.Pressed, "#ac-save")
-    def _on_save(self, _event: Button.Pressed) -> None:
+    async def _on_save(self, _event: Button.Pressed) -> None:
+        if self._read_only:
+            return
+        from chrys.service.profiles.agents.serializer import async_profile_directory_lock
+
+        self.query_one("#ac-save", Button).disabled = True
+        try:
+            async with async_profile_directory_lock(self._registry.directory):
+                # Harvest only after acquiring the lock: edits made while waiting
+                # must remain authoritative. No await while the lock is held.
+                self._save_locked()
+        except OSError as exc:
+            self.notify(
+                str(exc), title=self._render_toast(_SAVE_ERROR_TITLE.bind()), severity="error", timeout=5, markup=False
+            )
+        finally:
+            self._update_save_button_state()
+
+    def _save_locked(self) -> None:
         if self._read_only:
             return
         if not self._hydrating:
@@ -1942,6 +1873,7 @@ class AgentsConfigScreen(BaseDialog[str]):
             raise RuntimeError(self._render_toast(_PANELS_READ_ERROR.bind(details=DisplayBlock("\n".join(failures)))))
         for applier, cfg in collected:
             applier(updated, cfg)
+        self._registry.enforce_builtin_prompts(updated)
         self._canonicalize_profile_for_ui(updated)
         return updated
 
@@ -1989,24 +1921,6 @@ class AgentsConfigScreen(BaseDialog[str]):
     def _should_persist_retargeted_profile(self, profile: AgentProfile) -> bool:
         return not self._registry.is_builtin(profile.name) or self._profile_yaml_path(profile.name).is_file()
 
-    def _profile_matches_builtin_template(self, profile: AgentProfile, builtin_name: str) -> bool:
-        template = self._registry.get_builtin_template(builtin_name)
-        if template is None:
-            return False
-        from chrys.service.profiles.agents.serializer import profile_to_dict
-
-        candidate = copy.deepcopy(profile)
-        self._canonicalize_profile_for_ui(candidate)
-        self._canonicalize_profile_for_ui(template)
-        return profile_to_dict(candidate) == profile_to_dict(template)
-
-    def _reset_matches_builtin_template(self, draft: _AgentDraft) -> bool:
-        return (
-            draft.reset_to_builtin
-            and draft.original_name is not None
-            and self._profile_matches_builtin_template(draft.profile, draft.original_name)
-        )
-
     def _perform_save(
         self,
         dirty_drafts: list[_AgentDraft],
@@ -2016,22 +1930,11 @@ class AgentsConfigScreen(BaseDialog[str]):
         target_names: set[str],
         old_active_name: str,
     ) -> tuple[str | None, str | None]:
-        from chrys.service.profiles.agents.serializer import delete_profile, save_profile
-
-        # Write everything before deleting anything: a save that fails after an
-        # exact-template reset already removed its shadow would leave the
-        # rollback to recreate that file instead of never touching it.
-        reset_drafts: list[_AgentDraft] = []
         for draft in dirty_drafts:
-            if self._reset_matches_builtin_template(draft):
-                reset_drafts.append(draft)
-            else:
-                save_profile(draft.profile)
+            self._registry.save(draft.profile)
         for profile in retargeted_profiles:
             if self._should_persist_retargeted_profile(profile):
-                save_profile(profile)
-        for draft in reset_drafts:
-            delete_profile(draft.profile.name)
+                self._registry.save(profile)
 
         for old_name in old_names:
             old_path = self._profile_yaml_path(old_name)
@@ -2088,9 +1991,10 @@ class AgentsConfigScreen(BaseDialog[str]):
         target_names.update(
             profile.name for profile in retargeted_profiles if self._should_persist_retargeted_profile(profile)
         )
-        from chrys.service.profiles.agents.serializer import profile_write_lock
+        from chrys.service.profiles.agents.serializer import profile_directory_lock
 
-        with profile_write_lock:
+        with profile_directory_lock(self._registry.directory):
+            self._registry.migrate_builtin_prompts()
             snapshot = self._snapshot_save_state(old_names | target_names)
             try:
                 active_new_display, active_new_name = self._perform_save(
@@ -2103,6 +2007,8 @@ class AgentsConfigScreen(BaseDialog[str]):
             except Exception:
                 self._restore_save_state(snapshot)
                 raise
+
+        self._notify_prompt_backups()
 
         if active_new_display is not None:
             self._current_profile = active_new_display

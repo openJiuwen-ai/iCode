@@ -25,10 +25,24 @@ ReferencePreviewDialog {
     scrollbar-size: 1 1;
 }
 
-#reference-preview-path {
+#reference-preview-path,
+#reference-preview-title {
     width: 1fr;
     height: auto;
     margin: 0 2 1 0;
+}
+
+/* A Diff block keeps its lines unwrapped and scrolls sideways under a 1-cell scrollbar. */
+#reference-preview-diff {
+    width: 1fr;
+    height: auto;
+    margin: 0 2 0 0;
+    scrollbar-size: 1 1;
+}
+
+#reference-preview-diff > UnifiedDiffLines {
+    width: auto;
+    min-width: 100%;
 }
 
 #reference-preview-status,

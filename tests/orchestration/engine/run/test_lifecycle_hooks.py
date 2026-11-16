@@ -342,7 +342,10 @@ class _HostPermits:
 
 class _Host:
     def __init__(self, *, decision: HookDecision, executor_running: bool = False) -> None:
-        self.current = make_current(loaded=SimpleNamespace(), manifest=make_manifest())
+        self.current = make_current(
+            loaded=SimpleNamespace(agent=SimpleNamespace(context_providers=[])),
+            manifest=make_manifest(),
+        )
         self._current = self.current
         self.permits = _HostPermits()
         self.session = SimpleNamespace()
@@ -1600,6 +1603,8 @@ async def test_prompt_admission_concurrent_fresh_user_message_waits_before_secon
             host.finish_runs.set()
 
         assert [payload["injected"] for payload in host.session.hook_manager.payloads] == [False, True]
+        # The prompt hook is shown the instructions the model will read, not just the message.
+        assert all("system_prompt" in payload for payload in host.session.hook_manager.payloads)
         assert host.run_texts == ["first fresh"]
         assert host.current.loaded.bindings.injected == ["second fresh"]
         assert host._turn_state.lease.current_run_scope is not None
@@ -1893,3 +1898,81 @@ async def test_user_retry_rechecks_working_dir_after_waiting_for_the_previous_ru
     assert lease.run_task is cleanup
     assert sink.only(EventType.PREPARATION_FINISHED).payload["outcome"] == PreparationOutcome.REJECTED
     sink.assert_operations_settled()
+
+
+def test_system_prompt_matches_what_the_running_agent_will_send() -> None:
+    """The gate hands the guard exactly the instructions the agent will assemble.
+
+    ``manifest.instructions`` already includes profile + memory + skills; using it
+    as the base would cause those two to appear twice. The gate starts from the
+    profile's own instructions and appends each live provider's contribution, which
+    is the same assembly the agent uses.
+    """
+    from types import SimpleNamespace
+
+    from chrys.orchestration.engine.run.turn_hooks import PromptSubmitGate
+
+    class _FakeProvider:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def contributed_instructions(self) -> str:
+            return self._text
+
+    memory_provider = _FakeProvider("## Project rules")
+    skills_provider = _FakeProvider("## Skills")
+    doc_provider = _FakeProvider("## Docs")
+
+    manifest = SimpleNamespace(
+        profile_instructions="You are Code.",
+    )
+    agent = SimpleNamespace(
+        context_providers=[memory_provider, skills_provider, doc_provider],
+    )
+    loaded = SimpleNamespace(agent=agent)
+    current = SimpleNamespace(loaded=loaded, manifest=manifest)
+
+    gate = object.__new__(PromptSubmitGate)
+    gate._current = current
+
+    result = gate.system_prompt()
+
+    expected = "\n".join(["You are Code.", "## Project rules", "## Skills", "## Docs"])
+    assert result == expected, f"got: {result!r}"
+    # Must NOT contain manifest.instructions; that string already has memory + skills baked in.
+    # The separate profile instructions appear exactly once.
+    assert result.count("You are Code.") == 1
+
+
+def test_usage_payload_reports_last_call_and_session_totals() -> None:
+    from chrys.orchestration.engine.run.turn_hooks import usage_payload
+    from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
+
+    meta = SessionRuntimeMetadata()
+    meta.record_usage(150, input_tokens=100, output_tokens=50, cache_hit_tokens=40)
+    meta.record_usage(320, input_tokens=300, output_tokens=20)
+
+    # The window figures are the last call's own; the totals are the running sums.
+    assert usage_payload(SimpleNamespace(runtime_meta=meta)) == {  # type: ignore[arg-type]
+        "input_tokens": 300,
+        "output_tokens": 20,
+        "total_tokens": 320,
+        "cache_hit_tokens": None,
+        "total_session_tokens": 470,
+        "total_session_input_tokens": 400,
+        "total_session_output_tokens": 70,
+        # The session's own cache figure: the per-call field above is None for the
+        # second call, which reported none, and this keeps what the session saw.
+        "total_session_cache_hit_tokens": 40,
+    }
+
+
+def test_usage_payload_is_zero_before_accounting_starts() -> None:
+    from chrys.orchestration.engine.run.turn_hooks import usage_payload
+    from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
+
+    for meta in (None, SessionRuntimeMetadata()):
+        usage = usage_payload(SimpleNamespace(runtime_meta=meta))  # type: ignore[arg-type]
+        assert usage["total_tokens"] == 0
+        assert usage["total_session_tokens"] == 0
+        assert usage["cache_hit_tokens"] is None

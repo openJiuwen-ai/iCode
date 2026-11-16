@@ -318,6 +318,8 @@ def _complete_identified_kernel_messages(
         summary_block_id = _compressed_summary_block_id(message)
         if summary_block_id and summary_block_id in archived_block_ids:
             continue
+        if _is_archive_index(message):
+            continue
         if not append_once(message):
             return None
     return complete
@@ -343,6 +345,8 @@ def _complete_legacy_kernel_messages(
     if isinstance(live_messages, list):
         for message in live_messages:
             if not isinstance(message, dict):
+                continue
+            if _is_archive_index(message):
                 continue
             block_id = _compressed_summary_block_id(message)
             block_messages = blocks_by_id.get(block_id) if block_id else None
@@ -419,6 +423,12 @@ def _compressed_summary_block_id(message: dict[str, Any]) -> str:
         return ""
     block_id = properties.get("_block_id")
     return block_id if isinstance(block_id, str) else ""
+
+
+def _is_archive_index(message: dict[str, Any]) -> bool:
+    """Whether *message* only lists archived blocks, whose messages the transcript already holds."""
+    properties = message.get("additional_properties")
+    return isinstance(properties, dict) and HistoryMarkerKind.ARCHIVE_INDEX_KEY in properties
 
 
 def _includes_final_assistant_message(messages: list[dict[str, Any]]) -> bool:

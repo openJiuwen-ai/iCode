@@ -52,6 +52,7 @@ from chrys.foundation.tool_execution_stamp import EXECUTION_STAMP_KEY, execution
 from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY, read_tool_invocation_order
 from chrys.foundation.tool_kinds import TOOL_CALL_KIND_METADATA_KEY, get_tool_kind
 from chrys.foundation.tool_result_metadata import (
+    COMMITTED_ERROR_TEXT_KEY,
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_ERROR_MESSAGE_METADATA_KEY,
     TOOL_FAILED_METADATA_KEY,
@@ -1063,9 +1064,19 @@ async def _invoke_function_call(
             tool.name,
             exc,
         )
+        # A middleware that cleaned the error text owns what the model reads: it
+        # committed the replacement under COMMITTED_ERROR_TEXT_KEY before
+        # re-raising, and rebuilding the result from ``exc`` alone would throw
+        # that away — the one place sensitive text most often lands. Read only
+        # that mark: ``context.result`` on its own already holds the tool's own
+        # output when the tool succeeded and a later middleware raised, and
+        # passing that on as the error text would tell the model a failed call
+        # produced it. An empty replacement is a replacement (withheld), so the
+        # value is used as it stands rather than the exception's text returning.
+        committed = context.metadata.get(COMMITTED_ERROR_TEXT_KEY)
         return Content.from_function_result(
             call_id=function_call.call_id,  # type: ignore[arg-type]
-            result=tool_error_result_text(exc),
+            result=committed if isinstance(committed, str) else tool_error_result_text(exc),
             # Never None: it marks the result failed for the consecutive-error
             # count and the providers' error flag, whatever the model reads.
             exception=_failure_record_text(exc),
