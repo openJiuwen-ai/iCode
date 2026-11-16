@@ -39,7 +39,6 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.file_scan import ProfileDirScan, unreadable_file_notes
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.resolver import (
-    format_available_profile_labels,
     loaded_with_active_model_profile,
     resolve_profile_selector,
 )
@@ -73,6 +72,11 @@ _MODEL_PROFILE_NOT_FOUND_WITH_AVAILABLE = msg(
 _MODEL_PROFILE_UNREADABLE = msg(
     "run.model_profile_unreadable",
     fallback="Model profile not found: {model}. Could not read these profile files: {files}",
+)
+_MODEL_PROFILE_NOT_FOUND_WITH_AVAILABLE_AND_UNREADABLE = msg(
+    "run.model_profile_not_found_with_available_and_unreadable",
+    fallback="Model profile not found: {model}. Available model profiles: {available}. "
+    "Could not read these profile files: {files}",
 )
 
 
@@ -163,14 +167,22 @@ def _apply_active_model_selection(
 def _model_profile_not_found(
     model: str, registry: ModelProfileRegistry, scan: ProfileDirScan[ModelProfile]
 ) -> ModelProfileNotFoundError:
-    """The error for a model selector nothing resolved, naming any file that could not be read."""
-    if (notes := unreadable_file_notes(scan.invalid)) is not None:
-        display_message = _MODEL_PROFILE_UNREADABLE.bind(model=model, files=notes)
-    elif format_available_profile_labels(registry):
-        profiles = sorted(registry.list_profiles(), key=lambda item: item.name.casefold())
-        display_message = _MODEL_PROFILE_NOT_FOUND_WITH_AVAILABLE.bind(
-            model=model, available=DisplaySequence(f"{item.name} ({item.id})" for item in profiles)
+    """The error for a model selector nothing resolved, naming any file that could not be read.
+
+    Two profiles may share a display name, and then the ids in the list are the only
+    way to pick one; naming the unreadable file instead of the list hides that choice.
+    """
+    notes = unreadable_file_notes(scan.invalid)
+    profiles = sorted(registry.list_profiles(), key=lambda item: item.name.casefold())
+    labels = DisplaySequence(f"{item.name} ({item.id})" for item in profiles)
+    if profiles and notes is not None:
+        display_message = _MODEL_PROFILE_NOT_FOUND_WITH_AVAILABLE_AND_UNREADABLE.bind(
+            model=model, available=labels, files=notes
         )
+    elif notes is not None:
+        display_message = _MODEL_PROFILE_UNREADABLE.bind(model=model, files=notes)
+    elif profiles:
+        display_message = _MODEL_PROFILE_NOT_FOUND_WITH_AVAILABLE.bind(model=model, available=labels)
     else:
         display_message = _MODEL_PROFILE_NOT_FOUND.bind(model=model)
     return ModelProfileNotFoundError(format_message(display_message), display_message=display_message)

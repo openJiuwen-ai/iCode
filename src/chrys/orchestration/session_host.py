@@ -115,6 +115,11 @@ _AGENT_PROFILE_UNREADABLE = msg(
     "session_host.agent_profile_unreadable",
     fallback="Agent profile not found: {name}. Could not read these profile files: {files}",
 )
+_AGENT_PROFILE_NOT_FOUND_WITH_AVAILABLE_AND_UNREADABLE = msg(
+    "session_host.agent_profile_not_found_with_available_and_unreadable",
+    fallback="Agent profile not found: {name}. Available profiles: {available}. "
+    "Could not read these profile files: {files}",
+)
 _SESSION_NOT_FOUND = msg(
     "session_host.session_not_found",
     fallback="Session not found: {session_id}",
@@ -329,11 +334,19 @@ def agent_profile_not_found(name: str, registry: AgentProfileRegistry) -> AgentP
     so the user rebuilds a profile that was never the problem.  The files are read
     afresh rather than remembered: the registry drops them once it has loaded what
     it could, and a stale list would name a file the user has already fixed.
+
+    The list and the unreadable files answer different questions — "which name did
+    you mean" and "why was my name not there" — so both are said when both apply.
     """
     notes = unreadable_file_notes(read_profile_dir(registry.directory).invalid)
-    if notes is not None:
+    available_names = sorted(registry.list_names())
+    if available_names and notes is not None:
+        display_message = _AGENT_PROFILE_NOT_FOUND_WITH_AVAILABLE_AND_UNREADABLE.bind(
+            name=name, available=DisplaySequence(available_names), files=notes
+        )
+    elif notes is not None:
         display_message = _AGENT_PROFILE_UNREADABLE.bind(name=name, files=notes)
-    elif available_names := sorted(registry.list_names()):
+    elif available_names:
         display_message = _AGENT_PROFILE_NOT_FOUND_WITH_AVAILABLE.bind(
             name=name, available=DisplaySequence(available_names)
         )
