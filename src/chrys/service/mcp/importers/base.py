@@ -60,8 +60,6 @@ class WarningKind(StrEnum):
     TOOL_LOADING = "tool_loading"
     AUTH_NOT_IMPORTED = "auth_not_imported"
     """OAuth or provider sign-in, which only the source application holds."""
-    VARIABLE_REQUIRED = "variable_required"
-    """Referenced variables that must be set and nonempty in iCode; ``items`` names them."""
     TOOLS_RESTRICTED = "tools_restricted"
     """Tool rules iCode can't express, so the server is imported with no tools."""
     CODEX_RELATIVE_CWD = "codex_relative_cwd"
@@ -125,7 +123,7 @@ class ValueReason(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ImportWarning:
-    """Names settings or variables, never their values: warnings are saved in the server's description."""
+    """Names settings, never their values: warnings are saved in the server's description."""
 
     kind: WarningKind
     items: tuple[str, ...] = ()

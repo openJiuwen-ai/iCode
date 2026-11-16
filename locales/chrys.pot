@@ -8837,8 +8837,9 @@ msgstr ""
 msgid "tui.mcp.import.action.literal"
 msgstr ""
 
-#. English: Add the server manually and enter its full URL.
-#. chrys-meta={"fingerprint":"a70c74f22269e7bc234330df771127dba3c318a1938a9eed1cd964561dd5748c","multiline":false,"placeholders":[]}
+#. English: Add the server manually and enter its full URL, replacing any
+#. environment variable references with their values.
+#. chrys-meta={"fingerprint":"c1d06488e74b4b7bee033d670be40c293fcceb465c4f6e9e8eddb0fc56fa0896","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.action.url"
 msgstr ""
@@ -9019,8 +9020,8 @@ msgstr ""
 msgid "tui.mcp.import.note.conflict"
 msgstr ""
 
-#. English: Import Notes
-#. chrys-meta={"fingerprint":"ad2a0d88386f3c3cfa96b5e4a16946f55a69b756e0d24c1845bc5a1c2e23c450","multiline":false,"placeholders":[]}
+#. English: Notes
+#. chrys-meta={"fingerprint":"f179a711e7151c44d1f73b7b7e3dd7480632832eacfed112d72274f56b95abf9","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_dialog.py
 msgid "tui.mcp.import.notes"
 msgstr ""
@@ -9031,10 +9032,16 @@ msgstr ""
 msgid "tui.mcp.import.origin"
 msgstr ""
 
-#. English: Original setting: {field}
-#. chrys-meta={"fingerprint":"2d12df3194d331110f54e88e8d745e33f8b94885f40411b6ab74fb14dd958d29","multiline":false,"placeholders":["field"]}
+#. English: Original configuration field: {field}
+#. chrys-meta={"fingerprint":"ca20dd3618bf9256cd14bfd8b839d1161b7d7dfe7a4eafc5367475e8c7c458e8","multiline":false,"placeholders":["field"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.original_setting"
+msgstr ""
+
+#. English: Original configuration fields:
+#. chrys-meta={"fingerprint":"74ce7032067c6538b3b6ebaee86dc0f9f089930f8efb2cfc9072dac7f79e3dfb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.original_settings"
 msgstr ""
 
 #. English: {field} contains characters that cannot be imported. Check it in
@@ -9060,10 +9067,10 @@ msgstr ""
 msgid "tui.mcp.import.problem.empty"
 msgstr ""
 
-#. English: The configuration editor cannot preserve this environment variable
-#. name as written: it is empty or starts or ends with whitespace. Check and
-#. adjust the name in the original configuration file, then reopen import.
-#. chrys-meta={"fingerprint":"6a0f098818535b79ca41664c4706fe6f5f58cee262e3da57626468466774ae16","multiline":false,"placeholders":[]}
+#. English: The environment variable name is empty or starts or ends with
+#. whitespace. The configuration editor cannot preserve it as written, so this
+#. server cannot be imported.
+#. chrys-meta={"fingerprint":"9fba9ded8309d6e1cbc09dd51e3639e6a698217878b8ec0cc1d3a01149349774","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.problem.env_name_not_representable"
 msgstr ""
@@ -9092,10 +9099,11 @@ msgstr ""
 msgid "tui.mcp.import.problem.header_value_characters"
 msgstr ""
 
-#. English: This server is set to run in a remote {agent} environment; {app}
-#. starts MCP servers only on this computer. If the server supports running on
-#. this computer, add that configuration manually.
-#. chrys-meta={"fingerprint":"144196781c1062c75e0dff56cbf93af12a61b70888254a3c177794060ea4fbcf","multiline":false,"placeholders":["agent","app"]}
+#. English: This configuration accesses the MCP server through a remote
+#. environment, which {app} cannot use. If you have a Streamable HTTP URL
+#. accessible from this computer or a STDIO command that runs here, add the
+#. server manually.
+#. chrys-meta={"fingerprint":"6435a9aa342f20074693d570df1756116e62578ef57c50a2d662d3652af1b681","multiline":false,"placeholders":["app"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.problem.remote_environment"
 msgstr ""
@@ -9128,9 +9136,9 @@ msgstr ""
 msgid "tui.mcp.import.problem.value_not_representable"
 msgstr ""
 
-#. English: {field} uses an environment variable, but {app} needs the value
-#. itself here. {action}
-#. chrys-meta={"fingerprint":"eded7a8ccf94d332b0b062a0c5a42db9b2ab6f0ce308735069ff5ed6427c2061","multiline":false,"placeholders":["action","app","field"]}
+#. English: {field} contains an environment variable reference, which {app}
+#. does not expand here. {action}
+#. chrys-meta={"fingerprint":"d4098829f77ae43244415b60641e36c86253020713e0e2b5b293d502294182e5","multiline":false,"placeholders":["action","app","field"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.problem.variable_not_supported"
 msgstr ""
@@ -9150,9 +9158,10 @@ msgstr ""
 msgid "tui.mcp.import.problem.variable_syntax"
 msgstr ""
 
-#. English: {field} starts or ends with whitespace. Check it in the original
-#. configuration file and remove the extra whitespace, then reopen import.
-#. chrys-meta={"fingerprint":"6141f258fa0d6e13a6492c0d945c095342a7466c5525aff448f7fc244a26fd3b","multiline":false,"placeholders":["field"]}
+#. English: {field} starts or ends with whitespace. The configuration editor
+#. would remove it and change the content, so this server cannot be imported as
+#. written.
+#. chrys-meta={"fingerprint":"4ac83d795745a4a9ac4a5e544339cdfa8c361a0b9e272143da91c748d1fca4b3","multiline":false,"placeholders":["field"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.problem.whitespace"
 msgstr ""
@@ -9221,9 +9230,11 @@ msgstr ""
 msgid "tui.mcp.import.warning.approval"
 msgstr ""
 
-#. English: Some authentication headers were not copied. If the server needs
-#. these headers, enter them again after import as its documentation describes.
-#. chrys-meta={"fingerprint":"cf1d72e6bc22fe6d549444bbc41daecde520aa93e714ebaba34de92d7f7b2c62","multiline":false,"placeholders":[]}
+#. English: Some headers reference the original application's authentication
+#. variables, so they were not copied. If the MCP server requires
+#. authentication, configure the required credentials in “Headers” after import
+#. as its documentation describes.
+#. chrys-meta={"fingerprint":"d532b40ee384a3cf0bf1380fa75f11654878b9cd6a11f5bca115518eb0505865","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.auth_headers"
 msgstr ""
@@ -9237,18 +9248,19 @@ msgstr ""
 msgid "tui.mcp.import.warning.auth_not_imported"
 msgstr ""
 
-#. English: After import, the server may start in a different folder than in
-#. Codex. Check “Working Directory”; enter a full path if it must use a fixed
-#. folder.
-#. chrys-meta={"fingerprint":"cd6421c6ddaed27b85225db1f8d8955412676ac20799e8744d68e3bf1395ca9d","multiline":false,"placeholders":[]}
+#. English: After import, the server's working directory may differ from the
+#. original. To keep using the original folder, enter its full path in “Working
+#. Directory”.
+#. chrys-meta={"fingerprint":"45ba72f0706da5b28e0df271cd01a627dae08cc14d0b431cb89f8ee133e0b136","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.codex_relative_cwd"
 msgstr ""
 
-#. English: Codex's tool timeout of 0 was not copied; {app} will use its
-#. default MCP request timeout. To change it, enter a number of seconds greater
-#. than 0 in “MCP Request Timeout (seconds)”.
-#. chrys-meta={"fingerprint":"aacff190f13725ef9a65c77c58b4c9382e5167f28b1e5f6c931012eedcfab9dc","multiline":false,"placeholders":["app"]}
+#. English: ChatGPT's tool timeout is set to 0, but {app} requires a timeout
+#. greater than 0, so the imported server will use the default MCP request
+#. timeout. To change it, enter a number of seconds greater than 0 in “MCP
+#. Request Timeout (seconds)”.
+#. chrys-meta={"fingerprint":"539c9f2af8b0d012c689c1c80455cfe89a7f9ad7ff50e6ce04ae4141347cd4d1","multiline":false,"placeholders":["app"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.default_timeout"
 msgstr ""
@@ -9261,19 +9273,21 @@ msgstr ""
 msgid "tui.mcp.import.warning.not_imported"
 msgstr ""
 
-#. English: This Working Directory uses an environment variable, so the server
-#. may start in a different folder than in OpenCode. To keep using the original
-#. folder, enter its full path. Click “Test” to check the connection; a
-#. successful test does not confirm that the folder is the one you intended.
-#. chrys-meta={"fingerprint":"1848eb51491c62ba4e427ab51114033b57d30f0ca12f6909015ec5c92b441e7d","multiline":false,"placeholders":[]}
+#. English: This Working Directory uses an environment variable. After import,
+#. the server's working directory may differ from the folder it used in
+#. OpenCode. To keep using that folder, enter its full path in “Working
+#. Directory”. Click “Test” to check the connection; a successful test does not
+#. confirm that the folder is the one you intended.
+#. chrys-meta={"fingerprint":"c604c4c5dfed26263f5cd7f6f25664d21b40acad2cd499fbc1a64471cb5dad09","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.opencode_variable_cwd"
 msgstr ""
 
-#. English: After import, the connection wait may differ from Codex. Click
-#. “Test”; if the connection times out, increase “MCP Request Timeout
-#. (seconds)” and retry. This also lets tool calls wait longer.
-#. chrys-meta={"fingerprint":"a08e10fbdae972e313889316ae26a79c656bf520a2d0a4e657d39db5cf67021f","multiline":false,"placeholders":[]}
+#. English: After import, the connection timeout may differ from the one in
+#. ChatGPT. Click “Test”; if the connection times out, increase “MCP Request
+#. Timeout (seconds)” and retry. Increasing this value also increases the tool
+#. call timeout.
+#. chrys-meta={"fingerprint":"6548fe62b89147849dbdbfba97877a723934d33f71f17177b7b41936d822b0f9","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.startup_wait"
 msgstr ""
@@ -9291,13 +9305,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"4a11294114cc56060c403a2d2984b124eb5aa918cd8b177c365b7414a38ad710","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.tools_restricted"
-msgstr ""
-
-#. English: Set these environment variables to nonempty values before starting
-#. {app}:
-#. chrys-meta={"fingerprint":"65333ad402ed7d8f2d84367fc4994d75f0e5f68cb72e9c17086b1a249125670c","multiline":false,"placeholders":["app"]}
-#: src/chrys/app/tui/screens/agents/import_mcp_view.py
-msgid "tui.mcp.import.warning.variable_required"
 msgstr ""
 
 #. English: Imported {count} MCP server. Review it, then click Save.

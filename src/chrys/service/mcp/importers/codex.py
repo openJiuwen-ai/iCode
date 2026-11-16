@@ -17,8 +17,8 @@ only the settings it changes. A server's file is the last one that sets its
 
 Values in ``env`` and ``http_headers`` are literal. ``env_http_headers`` and
 ``bearer_token_env_var`` name variables, which become iCode references; Codex
-leaves out a header whose variable is unset, iCode needs it set, hence a
-warning. A deny-only tool filter (``disabled_tools`` without
+leaves out a header whose variable is unset, while iCode reports a connection
+error. A deny-only tool filter (``disabled_tools`` without
 ``enabled_tools``) can't be expressed, so the server is imported with no
 tools. ``tool_timeout_sec`` defaults to Codex's 300 seconds. ``env_vars``
 names variables Codex passes on from its own environment; iCode passes on its
@@ -120,7 +120,7 @@ class CodexSource:
 
     @property
     def display_name(self) -> str:
-        return "Codex"
+        return "ChatGPT"
 
     def detect(self, ctx: ImportContext) -> bool:
         return _user_file(ctx).is_file()
@@ -282,10 +282,7 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         passed = [name for name in _passed_variables(entry) if name.upper() in _NOT_INHERITED]
         passed = [name for name in passed if not any(key.upper() == name.upper() for key in env)]
         env |= {name: (Var(name),) for name in passed}
-        warnings.append(ImportWarning(WarningKind.VARIABLE_REQUIRED, tuple(passed)) if passed else None)
     else:
-        required = [*entry.get("env_http_headers", {}).values()]
-        warnings.append(ImportWarning(WarningKind.VARIABLE_REQUIRED, tuple(required)) if required else None)
         # Codex keeps a ``codex mcp login`` sign-in outside the file, so warn unless headers authenticate.
         signs_in = (
             entry.get("auth") in ("oauth", "chatgpt", "ema_auth") or "oauth" in entry or "oauth_resource" in entry

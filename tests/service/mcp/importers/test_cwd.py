@@ -148,10 +148,7 @@ def test_opencode_cwd_variables_are_converted_and_required(home_path: Path, monk
     ).candidates
     assert candidate.config is not None
     assert candidate.config.cwd == "{{ROOT}}/srv"
-    assert candidate.warnings == (
-        ImportWarning(WarningKind.VARIABLE_REQUIRED, ("ROOT",)),
-        ImportWarning(WarningKind.OPENCODE_VARIABLE_CWD, ("mcp.srv.cwd",)),
-    )
+    assert candidate.warnings == (ImportWarning(WarningKind.OPENCODE_VARIABLE_CWD, ("mcp.srv.cwd",)),)
     monkeypatch.setenv("ROOT", str(home_path / "fixed"))
     assert resolve_stdio_cwd(candidate.config.cwd, str(home_path)) == str(home_path / "fixed" / "srv")
 

@@ -96,7 +96,7 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, body: str, expected: d
     [
         (
             'url = "https://x"\nenv_http_headers = { "X-Token" = "TOKEN" }\nhttp_headers = { "x-token" = "lit" }\n',
-            (ImportWarning(Kind.VARIABLE_REQUIRED, ("TOKEN",)),),
+            (),
             {"headers": {"X-Token": "{{TOKEN}}"}},
         ),
         ('url = "https://x"\nauth = "chatgpt"\n', (ImportWarning(Kind.AUTH_NOT_IMPORTED),), {}),
@@ -105,7 +105,7 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, body: str, expected: d
         # iCode passes on its whole environment but these two, so they must be set.
         (
             'command = "run"\nenv_vars = ["PATH", "PYTHONPATH", { name = "PYTHONHOME", source = "local" }]\n',
-            (ImportWarning(Kind.VARIABLE_REQUIRED, ("PYTHONPATH", "PYTHONHOME")),),
+            (),
             {"env": {"PYTHONPATH": "{{PYTHONPATH}}", "PYTHONHOME": "{{PYTHONHOME}}"}},
         ),
         (

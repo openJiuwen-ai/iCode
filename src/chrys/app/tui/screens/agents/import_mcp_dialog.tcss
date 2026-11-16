@@ -91,22 +91,9 @@ ImportMcpServersDialog {
     width: 1fr;
 }
 
-/* A server that can't be ticked: the tick keeps its column so names stay aligned, and the name is muted
-   except under the pointer or cursor, which keep the card title's colors. */
+/* An unavailable tick keeps its column so server names stay aligned. */
 #mcp-import-servers .mcp-import-item.-unavailable > .mcp-import-tick {
     visibility: hidden;
-}
-
-#mcp-import-servers .mcp-import-item.-unavailable .config-card-title {
-    color: $text-muted;
-}
-
-#mcp-import-servers .mcp-import-item.-unavailable .config-card-title:hover {
-    color: $foreground;
-}
-
-#mcp-import-servers .mcp-import-item.-unavailable .config-card-title:focus {
-    color: $block-cursor-foreground;
 }
 
 /* The agent config window strips the frame of its cards' checkboxes (#ac-tabs Checkbox); this window must too,
@@ -129,7 +116,7 @@ ImportMcpServersDialog {
     color: $warning;
 }
 
-/* "Can't import" explains why there is no tick, as the other statuses do; the reason inside the card stays red. */
+/* "Can't import" explains why there is no tick, as the other statuses do. */
 #mcp-import-servers .mcp-import-badge.-status {
     color: $text-muted;
 }
@@ -138,13 +125,13 @@ ImportMcpServersDialog {
     height: auto;
     border: round $tui-border-foreground 30%;
     border-title-color: $text-muted;
-    padding: 0 1;
+    padding: 1;
     /* One line under the title, as before a card's first field; the next field's label adds the line below. */
     margin: 1 0 0 0;
 }
 
 #mcp-import-servers .mcp-import-problem {
-    color: $error;
+    color: $text;
 }
 
 #mcp-import-servers .mcp-import-status,
@@ -154,11 +141,6 @@ ImportMcpServersDialog {
 
 #mcp-import-servers .mcp-import-source {
     margin: 1 0 0 0;
-}
-
-/* The setting a refusal names, under the sentence that explains it. */
-#mcp-import-servers .mcp-import-detail {
-    padding: 0 0 0 2;
 }
 
 #mcp-import-servers .mcp-import-error {

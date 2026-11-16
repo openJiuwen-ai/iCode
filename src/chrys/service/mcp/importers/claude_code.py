@@ -13,7 +13,8 @@ precedence first, a same-named server replacing an earlier one:
   checkout every worktree shares, or the bare repository), else the workspace.
 
 Values in ``env`` and ``headers`` may reference ``${VAR}`` or ``${VAR:-default}``;
-iCode has no default syntax, so the default is dropped with a warning.
+iCode has no default syntax, so the default is dropped. Missing or empty
+variables cause a connection error in iCode.
 ``CLAUDE_PROJECT_DIR``, which Claude Code sets for its stdio servers, must be
 set by the user. Claude Code reads credential variables as empty in a remote
 server's headers; a header referencing one is not imported, so the import
@@ -86,7 +87,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
 _DOLLAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
-_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-[^}]*\}")
 
 # The variables Claude Code reads as empty in a remote server's headers, in any case and with an
 # ``INPUT_`` prefix too [doc: mcp, "Credential variables that read as empty", which names examples;
@@ -124,7 +124,6 @@ _CREDENTIAL_PATTERN = re.compile(
     r"CLAUDE_.*|OTEL_.*|GIT_CONFIG_(?:PARAMETERS|(?:KEY|VALUE)_\d+)|CARGO_REGISTRIES_.*"
     r"|(?:ORG_GRADLE_PROJECT|POETRY_PYPI_TOKEN|POETRY_HTTP_BASIC|CONAN_LOGIN_USERNAME|CONAN_PASSWORD)_.*|BUNDLE_.*__.*"
 )
-CLAUDE_PROJECT_DIR = "CLAUDE_PROJECT_DIR"
 _NAME_CHARACTER_RE = re.compile(r"[^a-zA-Z0-9_-]")
 
 # Read and dropped without a note: ``alwaysLoad`` only changes when Claude Code loads tools, and
@@ -327,7 +326,7 @@ def _stdio(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         ("", FieldUse.VALUE),
     )
     values = {key: _value(text) for key, text in env.items()}
-    warnings = [*_variable_warnings(env, values), missing_fields(entry, _STDIO_FIELDS, prefix)]
+    warnings = [missing_fields(entry, _STDIO_FIELDS, prefix)]
     return SourceServer(
         name,
         path,
@@ -359,7 +358,6 @@ def _http(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         else:
             values[key] = value
     warnings = [
-        *_variable_warnings({key: headers[key] for key in values}, values),
         ImportWarning(WarningKind.AUTH_HEADERS, tuple(dropped)) if dropped else None,
         # Claude Code signs in with OAuth whenever the server asks, so warn unless headers authenticate.
         ImportWarning(WarningKind.AUTH_NOT_IMPORTED) if "oauth" in entry or not values else None,
@@ -393,14 +391,6 @@ def is_credential_variable(name: str) -> bool:
 
 def _value(text: str) -> Value:
     return split_variables(text, _DOLLAR_RE)
-
-
-def _variable_warnings(texts: Mapping[str, str], values: Mapping[str, Value]) -> Iterator[ImportWarning]:
-    """Variables iCode needs set: those whose default is dropped, and ``CLAUDE_PROJECT_DIR``."""
-    required = [match.group(1) for text in texts.values() for match in _DEFAULT_RE.finditer(text)]
-    required += [name for value in values.values() for name in variables(value) if name == CLAUDE_PROJECT_DIR]
-    if required:
-        yield ImportWarning(WarningKind.VARIABLE_REQUIRED, tuple(dict.fromkeys(required)))
 
 
 def _timeout(entry: dict[str, Any]) -> float | None:

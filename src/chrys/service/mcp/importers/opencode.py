@@ -18,8 +18,8 @@ Git root and the folders below it. ``OPENCODE_CONFIG_CONTENT`` and managed
 settings are not read.
 
 Files are JSON with comments and trailing commas. ``{env:NAME}`` in
-``environment``, ``headers`` and ``cwd`` values becomes an iCode reference, with a
-warning to set it: opencode reads an unset variable as empty, iCode refuses
+``environment``, ``headers`` and ``cwd`` values becomes an iCode reference.
+opencode reads an unset variable as empty, while iCode refuses
 to start the server. A value
 read from a file (``{file:path}``) or a variable anywhere else can't be
 imported. ``timeout`` is in milliseconds, falling back to
@@ -235,8 +235,6 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
         )
         warnings = [
             missing_fields(entry, _LOCAL_FIELDS, prefix),
-            _variables_required(values),
-            _variables_required(cwd_values),
             ImportWarning(WarningKind.OPENCODE_VARIABLE_CWD, (f"{prefix}.cwd",))
             if cwd is not None and variables(cwd)
             else None,
@@ -270,7 +268,7 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
             or value_refusal
             or ("", Problem.VALUE_NOT_REPRESENTABLE, ValueReason.INVALID, FieldUse.VALUE)
         )
-        warnings = [missing_fields(entry, _REMOTE_FIELDS, prefix), _variables_required(values)]
+        warnings = [missing_fields(entry, _REMOTE_FIELDS, prefix)]
         # opencode signs in with OAuth whenever the server asks, unless ``oauth`` is false; so warn
         # unless headers authenticate.
         oauth = entry.get("oauth")
@@ -292,12 +290,6 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
             headers_path=f"{prefix}.headers",
         )
     return None
-
-
-def _variables_required(values: Mapping[str, Value]) -> ImportWarning | None:
-    """The variables *values* reference, which opencode reads as empty when unset and iCode requires."""
-    names = dict.fromkeys(name for value in values.values() for name in variables(value))
-    return ImportWarning(WarningKind.VARIABLE_REQUIRED, tuple(names)) if names else None
 
 
 type Refusal = tuple[str, Problem, ValueReason, FieldUse]

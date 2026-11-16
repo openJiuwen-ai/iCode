@@ -72,7 +72,7 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, entry: dict[str, Any],
     [
         (
             {"command": "run", "env": {"A": "${A:-1}", "DIR": "${CLAUDE_PROJECT_DIR}/x"}},
-            (ImportWarning(Kind.VARIABLE_REQUIRED, ("A", "CLAUDE_PROJECT_DIR")),),
+            (),
         ),
         (
             {"type": "http", "url": "https://x", "oauth": {"clientId": "c"}, "headersHelper": "get-headers"},

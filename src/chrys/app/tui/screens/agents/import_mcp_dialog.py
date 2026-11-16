@@ -73,7 +73,7 @@ _DUPLICATE = msg("tui.mcp.import.status.duplicate", fallback="Duplicate")
 # Short forms of the "+ Add" picker's reasons, which the badge's tooltip gives in full.
 _NAME_IN_USE = msg("tui.mcp.import.status.name_in_use", fallback="Name in use")
 _CONNECTION_IN_USE = msg("tui.mcp.import.status.connection_in_use", fallback="Connection in use")
-_NOTES = msg("tui.mcp.import.notes", fallback="Import Notes")
+_NOTES = msg("tui.mcp.import.notes", fallback="Notes")
 _TICKED_CONFLICT = msg(
     "tui.mcp.import.note.conflict",
     fallback="Conflicts with the selected {name} ({agent}); only one of them can be imported.",
@@ -436,10 +436,10 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
             reason = self._note(
                 problem_text(candidate, source.display_name, self._render_message), "mcp-import-problem"
             )
-            field = [self._note(original_setting(candidate.problem_field), "mcp-import-problem mcp-import-detail")]
+            field = [self._note(original_setting(candidate.problem_field), "mcp-import-problem")]
             path = sanitize_legacy_scalar(self._display_path(candidate.source_path))
             where = self._note(_SOURCE.bind(path=path), "mcp-import-source")
-            notes: list[Widget] = [reason, *(field if names_field(candidate) else []), where]
+            notes: list[Widget] = [*(field if names_field(candidate) else []), reason, where]
             card = _RefusedCard(
                 candidate.name,
                 index,
@@ -481,7 +481,7 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
         ticked_conflict = self._ticked_conflict(item) if state == "importable" else None
         badge = item.card.badge
         item.tick.disabled = state != "importable" or ticked_conflict is not None
-        # A server that can't be ticked shows no tick and a muted name; its badge says why.
+        # A server that can't be ticked shows no tick; its badge says why.
         item.set_class(item.tick.disabled, "-unavailable")
         warnings = self._candidate(item).warnings
         detail = ticked_conflict

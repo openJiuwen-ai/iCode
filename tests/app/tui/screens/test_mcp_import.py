@@ -57,7 +57,7 @@ from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import resize_when_settled
 from tests.support.waiting import wait_for
 
-_NEEDS_TOKEN = ImportWarning(WarningKind.VARIABLE_REQUIRED, ("TOKEN",))
+_AUTH_NOT_IMPORTED = ImportWarning(WarningKind.AUTH_NOT_IMPORTED)
 
 
 def _unsupported(name: str, problem: Problem, field: str = "") -> McpImportCandidate:
@@ -68,14 +68,12 @@ def test_each_warning_kind_reads_as_one_actionable_sentence() -> None:
     texts = [
         format_message(warning_text(ImportWarning(WarningKind.NOT_IMPORTED, ("a.cwd", "a.x")), "pi")),
         format_message(warning_text(ImportWarning(WarningKind.AUTH_NOT_IMPORTED), "pi")),
-        format_message(warning_text(_NEEDS_TOKEN, "pi")),
         format_message(warning_text(ImportWarning(WarningKind.TOOLS_RESTRICTED), "pi")),
     ]
 
     assert texts == [
         "Some settings from the original application were not copied. After import, test the connection and check that the features you need are available.",
         "Sign-in from pi cannot be carried over. iCode does not yet support MCP OAuth sign-in. If the server supports token authentication, configure “Headers” as its documentation describes. If it only supports OAuth sign-in, it cannot currently be used in iCode.",
-        "Set these environment variables to nonempty values before starting iCode:",
         "The original application's tool restrictions cannot be carried over directly, so this server's tools are initially turned off after import. Choose the tools you need in “Available Tool Scope”.",
     ]
 
@@ -98,7 +96,7 @@ def test_problems_and_source_errors_name_the_setting_or_file() -> None:
     sse = replace(_unsupported("x", Problem.UNSUPPORTED_CONNECTION), transport="sse")
     ws = replace(sse, transport="ws")
     remote = _unsupported("x", Problem.REMOTE_ENVIRONMENT, "mcp_servers.x.environment_id")
-    assert [format_message(problem_text(c, "Codex")) for c in (sse, ws, remote)] == [
+    assert [format_message(problem_text(c, "ChatGPT")) for c in (sse, ws, remote)] == [
         (
             "This server connects over SSE; iCode supports only STDIO and Streamable HTTP. "
             "If the server also offers one of these, add it manually."
@@ -108,16 +106,17 @@ def test_problems_and_source_errors_name_the_setting_or_file() -> None:
             "If the server also offers one of these, add it manually."
         ),
         (
-            "This server is set to run in a remote Codex environment; iCode starts MCP servers only on this computer. "
-            "If the server supports running on this computer, add that configuration manually."
+            "This configuration accesses the MCP server through a remote environment, which iCode cannot use. "
+            "If you have a Streamable HTTP URL accessible from this computer "
+            "or a STDIO command that runs here, add the server manually."
         ),
     ]
-    # A connection refusal's sentence says it all; the others lead to the setting listed after them.
+    # A connection refusal's sentence says it all; the others are introduced by their source setting.
     assert [names_field(c) for c in (sse, remote, variable, external, value)] == [False, False, True, True, True]
-    assert [format_message(problem_text(c, "Codex")) for c in (variable, external, value)] == [
-        "The server URL uses an environment variable, but iCode needs the value itself here. Add the server manually and enter its full URL.",
+    assert [format_message(problem_text(c, "ChatGPT")) for c in (variable, external, value)] == [
+        "The server URL contains an environment variable reference, which iCode does not expand here. Add the server manually and enter its full URL, replacing any environment variable references with their values.",
         "The environment variable value is stored in another file and cannot be imported automatically. Add the server manually and fill in the value using the server instructions. You can also reference an environment variable or get the value from a command.",
-        "The server URL cannot be imported as written. Add the server manually and enter its full URL.",
+        "The server URL cannot be imported as written. Add the server manually and enter its full URL, replacing any environment variable references with their values.",
     ]
     assert format_message(source_error_text(located, "pi")) == (
         "Couldn't parse /a.json: syntax error at line 3, column 7. Correct it, then reopen import."
@@ -125,35 +124,45 @@ def test_problems_and_source_errors_name_the_setting_or_file() -> None:
     assert format_message(source_error_text(invalid, "pi")) == "/a.json has an invalid setting: mcp.x."
 
 
-def test_imported_server_keeps_its_description_origin_and_warnings() -> None:
+@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
+def test_imported_server_keeps_its_description_origin_and_warnings(locale) -> None:
     config = stdio("github")
     config.description = "GitHub tools"
-    chinese = Localizer("zh-Hans")
+    localizer = Localizer(locale)
+    omitted = ImportWarning(WarningKind.NOT_IMPORTED, ("mcp.github.setting_a", "mcp.github.setting_b"))
 
-    imported = imported_config(candidate(config, warnings=(_NEEDS_TOKEN,)), "Codex", chinese.render)
+    imported = imported_config(candidate(config, warnings=(omitted, _AUTH_NOT_IMPORTED)), "ChatGPT", localizer.render)
 
     assert imported is not None
     assert imported.description.splitlines() == [
         "GitHub tools",
-        chinese.render(_ORIGIN.bind(agent="Codex", path="/src/config.json")),
-        # A full-width colon is not followed by a space.
-        f"⚠ {chinese.render(warning_text(_NEEDS_TOKEN, 'Codex'))}TOKEN",
+        localizer.render(_ORIGIN.bind(agent="ChatGPT", path="/src/config.json")),
+        "",
+        "⚠ Original configuration fields:" if locale == "en" else "⚠ 原配置项：",  # noqa: RUF001 -- localized punctuation
+        "  mcp.github.setting_a",
+        "  mcp.github.setting_b",
+        localizer.render(warning_text(omitted, "ChatGPT")),
+        "",
+        f"⚠ {localizer.render(warning_text(_AUTH_NOT_IMPORTED, 'ChatGPT'))}",
     ]
-    assert imported_config(_unsupported("x", Problem.UNSUPPORTED_CONNECTION), "Codex", chinese.render) is None
+    assert imported_config(_unsupported("x", Problem.UNSUPPORTED_CONNECTION), "ChatGPT", localizer.render) is None
 
 
 async def test_import_button_adds_ticked_servers_as_unsaved_cards(monkeypatch) -> None:
     imported = replace(stdio("github"), cwd="{{ROOT}}/server")
     cwd_warning = ImportWarning(WarningKind.OPENCODE_VARIABLE_CWD, ("mcp.github.cwd",))
     source = FakeSource(
-        "fake", "OpenCode", McpImportResult((candidate(imported, warnings=(_NEEDS_TOKEN, cwd_warning)),))
+        "fake", "OpenCode", McpImportResult((candidate(imported, warnings=(_AUTH_NOT_IMPORTED, cwd_warning)),))
     )
     monkeypatch.setattr(import_mcp_dialog, "IMPORT_SOURCES", (source,))
     app = PanelApp(MCPConfigPanel([replace(stdio("existing", "node"), cwd="existing-dir")]))
     description = [
         "Imported from OpenCode (/src/config.json).",
-        "⚠ Set these environment variables to nonempty values before starting iCode: TOKEN",
-        f"⚠ {format_message(warning_text(cwd_warning, 'OpenCode'))} Original setting: mcp.github.cwd",
+        "",
+        f"⚠ {format_message(warning_text(_AUTH_NOT_IMPORTED, 'OpenCode'))}",
+        "",
+        "⚠ Original configuration field: mcp.github.cwd",
+        format_message(warning_text(cwd_warning, "OpenCode")),
     ]
     async with app.run_test(size=(120, 50)) as pilot:
         app.panel.query_one("#mcp-import-btn", Button).press()
@@ -360,13 +369,14 @@ def test_codex_relative_cwd_warning_survives_import_in_both_languages() -> None:
     for locale in ("en", "zh-Hans"):
         localizer = Localizer(locale)
         config = imported_config(
-            candidate(replace(stdio("srv"), cwd="."), warnings=(warning,)), "Codex", localizer.render
+            candidate(replace(stdio("srv"), cwd="."), warnings=(warning,)), "ChatGPT", localizer.render
         )
         assert config is not None
         assert config.cwd == "."
-        assert localizer.render(warning_text(warning, "Codex")) in config.description
-        assert "/src" not in localizer.render(warning_text(warning, "Codex"))
-        assert "Codex" in config.description
+        assert localizer.render(warning_text(warning, "ChatGPT")) in config.description
+        assert "/src" not in localizer.render(warning_text(warning, "ChatGPT"))
+        assert "ChatGPT" in config.description
+        assert "Codex" not in config.description
 
 
 def test_opencode_variable_cwd_warning_survives_import_in_both_languages() -> None:
@@ -375,7 +385,7 @@ def test_opencode_variable_cwd_warning_survives_import_in_both_languages() -> No
         localizer = Localizer(locale)
         text = localizer.render(warning_text(warning, "OpenCode"))
         config = imported_config(
-            candidate(replace(stdio("srv"), cwd="{{ROOT}}"), warnings=(_NEEDS_TOKEN, warning)),
+            candidate(replace(stdio("srv"), cwd="{{ROOT}}"), warnings=(warning,)),
             "OpenCode",
             localizer.render,
         )
@@ -385,7 +395,7 @@ def test_opencode_variable_cwd_warning_survives_import_in_both_languages() -> No
         assert "mcp.srv.cwd" in config.description
         assert "OpenCode" in text
         assert ("Click “Test”" if locale == "en" else "测试") in text
-        assert config.description.count("⚠") == 2
+        assert config.description.count("⚠") == 1
 
 
 async def test_pressing_import_twice_opens_one_dialog_and_one_confirmation(monkeypatch) -> None:
@@ -453,7 +463,7 @@ async def test_servers_that_can_not_be_added_are_locked_as_the_add_picker_locks_
             Text("Same name already exists with different settings"),
             None,
         ]
-        # A server that can't be ticked shows no tick and a muted name.
+        # A server that can't be ticked shows no tick.
         assert [(item.tick.disabled, item.tick.value, item.tick.visible) for item in items] == [
             (False, False, True),
             (False, False, True),
@@ -462,11 +472,11 @@ async def test_servers_that_can_not_be_added_are_locked_as_the_add_picker_locks_
             (True, False, False),
         ]
         assert notes_text(items[4]).splitlines() == [
+            "Original configuration field: s.url",
             (
                 "The setting's content cannot be imported as written. "
                 "Add the server manually and fill in this setting using the server instructions."
             ),
-            "Original setting: s.url",
             "Configuration source: /src/config.json",
         ]
 

@@ -93,7 +93,7 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, entry: dict[str, Any],
     candidate = _only(tmp_path, entry)
 
     assert candidate.config is not None
-    assert [w for w in candidate.warnings if w.kind is not Kind.VARIABLE_REQUIRED] == []
+    assert candidate.warnings == ()
     for key, value in expected.items():
         assert getattr(candidate.config, key) == value
 
@@ -118,11 +118,11 @@ def test_the_experimental_timeout_applies_to_servers_without_their_own(tmp_path:
         ),
         (
             {"type": "local", "command": ["run"], "environment": {"A": "{env:T}", "B": "{env:U}-{env:T}"}},
-            (ImportWarning(Kind.VARIABLE_REQUIRED, ("T", "U")),),
+            (),
         ),
         (
             {"type": "remote", "url": "https://x", "headers": {"Authorization": "Bearer {env:KEY}"}},
-            (ImportWarning(Kind.VARIABLE_REQUIRED, ("KEY",)),),
+            (),
         ),
     ],
     ids=["oauth", "oauth-by-default", "oauth-off", "cwd-imported", "environment-variables", "header-variable"],

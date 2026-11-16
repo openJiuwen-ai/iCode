@@ -86,12 +86,61 @@ def test_unpreservable_env_names_are_refused_with_visible_whitespace(
     localizer = Localizer(locale)
     text = localizer.render(problem_text(item, source, localizer.render))
     assert ("editor cannot preserve" if locale == "en" else "编辑器无法原样保留") in text
-    assert ("original configuration file" if locale == "en" else "原配置文件") in text
+    assert ("original configuration file" if locale == "en" else "原配置文件") not in text
     assert ("invalid" if locale == "en" else "非法") not in text
     setting = localizer.render(original_setting(item.problem_field))
     assert f"[{quoted}]" in setting
     assert "private-source-value" not in text + setting
     assert imported_config(item, source, localizer.render) is None
+
+
+@pytest.mark.parametrize("is_set", [False, True])
+@pytest.mark.parametrize(
+    ("source", "entry", "field", "expected"),
+    [
+        ("codex", 'url = "https://example.com"\nenv_http_headers = { X = "TOKEN" }\n', "headers", {"X": "{{TOKEN}}"}),
+        (
+            "codex",
+            'url = "https://example.com"\nbearer_token_env_var = "TOKEN"\n',
+            "headers",
+            {"Authorization": "Bearer {{TOKEN}}"},
+        ),
+        (
+            "claude",
+            {"command": "run", "env": {"A": "${TOKEN:-fallback}", "DIR": "${CLAUDE_PROJECT_DIR}"}},
+            "env",
+            {"A": "{{TOKEN}}", "DIR": "{{CLAUDE_PROJECT_DIR}}"},
+        ),
+        (
+            "opencode",
+            {"type": "local", "command": ["run"], "environment": {"A": "{env:TOKEN}"}},
+            "env",
+            {"A": "{{TOKEN}}"},
+        ),
+        (
+            "opencode",
+            {"type": "remote", "url": "https://example.com", "headers": {"X": "{env:TOKEN}"}},
+            "headers",
+            {"X": "{{TOKEN}}"},
+        ),
+    ],
+)
+def test_variable_references_are_preserved_without_import_warnings(
+    tmp_path, monkeypatch, source, entry, field, expected, is_set
+) -> None:
+    for name in ("TOKEN", "CLAUDE_PROJECT_DIR"):
+        if is_set:
+            monkeypatch.setenv(name, "private-resolved-value")
+        else:
+            monkeypatch.delenv(name, raising=False)
+    item = discover(tmp_path, source, entry)
+    assert item.config is not None
+    assert (item.config.env if field == "env" else item.config.headers) == expected
+    assert item.warnings == ()
+    saved = imported_config(item, source, Localizer("en").render)
+    assert saved is not None
+    assert "⚠" not in saved.description
+    assert "private-resolved-value" not in saved.description
 
 
 @pytest.mark.parametrize("locale", ["en", "zh-Hans"])
@@ -117,7 +166,7 @@ def test_unknown_settings_name_the_location_without_promising_support(tmp_path, 
     saved = imported_config(item, source, localizer.render)
     assert saved is not None
     assert localizer.render(warning_text(warning, source)) in saved.description
-    assert ("Original setting:" if locale == "en" else "原设置") in saved.description
+    assert ("Original configuration field:" if locale == "en" else "原配置项") in saved.description
     assert warning.items[0] in saved.description
     assert "private-source-value" not in saved.description
     assert ("unsupported" if locale == "en" else "不支持") not in saved.description
@@ -257,6 +306,12 @@ def test_known_warnings_keep_the_connection_timeout_and_tool_results(tmp_path) -
         ),
         (
             "codex",
+            'command = "run"\ncwd = " private-source-value "\n',
+            FieldUse.CWD,
+            ValueReason.WHITESPACE,
+        ),
+        (
+            "codex",
             'url = "https://example.com"\nhttp_headers = { X = "a", x = "b" }\n',
             FieldUse.HEADER_VALUE,
             ValueReason.HEADER_CONFLICT,
@@ -287,7 +342,10 @@ def test_refused_values_record_the_cause_and_offer_only_supported_actions(
     text = localizer.render(problem_text(item, source, localizer.render))
     assert "private-source-value" not in text
     assert "private-source-value" not in item.problem_field
-    assert ("Original setting:" if locale == "en" else "原设置") not in text
+    assert ("Original configuration field:" if locale == "en" else "原配置项") not in text
+    if reason is ValueReason.WHITESPACE:
+        assert ("editor would remove" if locale == "en" else "编辑器会去掉") in text
+        assert ("original configuration file" if locale == "en" else "原配置文件") not in text
     variable_advice = "reference an environment variable" if locale == "en" else "引用环境变量"
     command_advice = "get the value from a command" if locale == "en" else "取值命令"
     if reason in (ValueReason.FILE, ValueReason.COMMAND, ValueReason.VARIABLE):

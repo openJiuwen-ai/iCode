@@ -37,7 +37,7 @@ _NOT_IMPORTED = msg(
 )
 _STARTUP_WAIT = msg(
     "tui.mcp.import.warning.startup_wait",
-    fallback="After import, the connection wait may differ from Codex. Click “Test”; if the connection times out, increase “MCP Request Timeout (seconds)” and retry. This also lets tool calls wait longer.",
+    fallback="After import, the connection timeout may differ from the one in ChatGPT. Click “Test”; if the connection times out, increase “MCP Request Timeout (seconds)” and retry. Increasing this value also increases the tool call timeout.",
 )
 _APPROVAL = msg(
     "tui.mcp.import.warning.approval",
@@ -45,7 +45,7 @@ _APPROVAL = msg(
 )
 _DEFAULT_TIMEOUT = msg(
     "tui.mcp.import.warning.default_timeout",
-    fallback="Codex's tool timeout of 0 was not copied; {app} will use its default MCP request timeout. To change it, enter a number of seconds greater than 0 in “MCP Request Timeout (seconds)”.",
+    fallback="ChatGPT's tool timeout is set to 0, but {app} requires a timeout greater than 0, so the imported server will use the default MCP request timeout. To change it, enter a number of seconds greater than 0 in “MCP Request Timeout (seconds)”.",
 )
 _AUTH_NOT_IMPORTED = msg(
     "tui.mcp.import.warning.auth_not_imported",
@@ -53,11 +53,7 @@ _AUTH_NOT_IMPORTED = msg(
 )
 _AUTH_HEADERS = msg(
     "tui.mcp.import.warning.auth_headers",
-    fallback="Some authentication headers were not copied. If the server needs these headers, enter them again after import as its documentation describes.",
-)
-_VARIABLE_REQUIRED = msg(
-    "tui.mcp.import.warning.variable_required",
-    fallback="Set these environment variables to nonempty values before starting {app}:",
+    fallback="Some headers reference the original application's authentication variables, so they were not copied. If the MCP server requires authentication, configure the required credentials in “Headers” after import as its documentation describes.",
 )
 _TOOLS_RESTRICTED = msg(
     "tui.mcp.import.warning.tools_restricted",
@@ -69,11 +65,11 @@ _TOOL_LOADING = msg(
 )
 _CODEX_RELATIVE_CWD = msg(
     "tui.mcp.import.warning.codex_relative_cwd",
-    fallback="After import, the server may start in a different folder than in Codex. Check “Working Directory”; enter a full path if it must use a fixed folder.",
+    fallback="After import, the server's working directory may differ from the original. To keep using the original folder, enter its full path in “Working Directory”.",
 )
 _OPENCODE_VARIABLE_CWD = msg(
     "tui.mcp.import.warning.opencode_variable_cwd",
-    fallback="This Working Directory uses an environment variable, so the server may start in a different folder than in OpenCode. To keep using the original folder, enter its full path. Click “Test” to check the connection; a successful test does not confirm that the folder is the one you intended.",
+    fallback="This Working Directory uses an environment variable. After import, the server's working directory may differ from the folder it used in OpenCode. To keep using that folder, enter its full path in “Working Directory”. Click “Test” to check the connection; a successful test does not confirm that the folder is the one you intended.",
 )
 _UNSUPPORTED_CONNECTION = msg(
     "tui.mcp.import.problem.unsupported_connection",
@@ -81,11 +77,11 @@ _UNSUPPORTED_CONNECTION = msg(
 )
 _REMOTE_ENVIRONMENT = msg(
     "tui.mcp.import.problem.remote_environment",
-    fallback="This server is set to run in a remote {agent} environment; {app} starts MCP servers only on this computer. If the server supports running on this computer, add that configuration manually.",
+    fallback="This configuration accesses the MCP server through a remote environment, which {app} cannot use. If you have a Streamable HTTP URL accessible from this computer or a STDIO command that runs here, add the server manually.",
 )
 _VARIABLE_NOT_SUPPORTED = msg(
     "tui.mcp.import.problem.variable_not_supported",
-    fallback="{field} uses an environment variable, but {app} needs the value itself here. {action}",
+    fallback="{field} contains an environment variable reference, which {app} does not expand here. {action}",
 )
 _FROM_FILE = msg(
     "tui.mcp.import.problem.value_from_file",
@@ -105,11 +101,11 @@ _EMPTY = msg(
 )
 _WHITESPACE = msg(
     "tui.mcp.import.problem.whitespace",
-    fallback="{field} starts or ends with whitespace. Check it in the original configuration file and remove the extra whitespace, then reopen import.",
+    fallback="{field} starts or ends with whitespace. The configuration editor would remove it and change the content, so this server cannot be imported as written.",
 )
 _ENV_NAME_NOT_REPRESENTABLE = msg(
     "tui.mcp.import.problem.env_name_not_representable",
-    fallback="The configuration editor cannot preserve this environment variable name as written: it is empty or starts or ends with whitespace. Check and adjust the name in the original configuration file, then reopen import.",
+    fallback="The environment variable name is empty or starts or ends with whitespace. The configuration editor cannot preserve it as written, so this server cannot be imported.",
 )
 _CHARACTERS = msg(
     "tui.mcp.import.problem.characters",
@@ -135,7 +131,10 @@ _ENTER_LITERAL = msg(
     "tui.mcp.import.action.literal",
     fallback="Add the server manually and fill in this setting using the server instructions.",
 )
-_ENTER_URL = msg("tui.mcp.import.action.url", fallback="Add the server manually and enter its full URL.")
+_ENTER_URL = msg(
+    "tui.mcp.import.action.url",
+    fallback="Add the server manually and enter its full URL, replacing any environment variable references with their values.",
+)
 _ENTER_VALUE = msg(
     "tui.mcp.import.action.value",
     fallback="Add the server manually and fill in the value using the server instructions. You can also reference an environment variable or get the value from a command.",
@@ -144,7 +143,8 @@ _ENTER_CWD = msg(
     "tui.mcp.import.action.cwd",
     fallback="Add the server manually and enter the full path of the folder to use. You can also reference an environment variable.",
 )
-_ORIGINAL_SETTING = msg("tui.mcp.import.original_setting", fallback="Original setting: {field}")
+_ORIGINAL_SETTING = msg("tui.mcp.import.original_setting", fallback="Original configuration field: {field}")
+_ORIGINAL_SETTINGS = msg("tui.mcp.import.original_settings", fallback="Original configuration fields:")
 _UNREADABLE = msg(
     "tui.mcp.import.error.unreadable", fallback="Couldn't read {path}. Check access permissions, then reopen import."
 )
@@ -199,7 +199,7 @@ _TRANSPORT_NAMES = {"sse": "SSE", "ws": "WebSocket"}
 
 
 def warning_text(warning: ImportWarning, agent: str) -> MessageRef:
-    """The warning's sentence; the settings or variables it names (``warning.items``) follow it."""
+    """The warning's sentence; its source settings are presented separately."""
     message = {
         Kind.NOT_IMPORTED: _NOT_IMPORTED,
         Kind.STARTUP_WAIT: _STARTUP_WAIT,
@@ -207,7 +207,6 @@ def warning_text(warning: ImportWarning, agent: str) -> MessageRef:
         Kind.DEFAULT_TIMEOUT: _DEFAULT_TIMEOUT,
         Kind.AUTH_NOT_IMPORTED: _AUTH_NOT_IMPORTED,
         Kind.AUTH_HEADERS: _AUTH_HEADERS,
-        Kind.VARIABLE_REQUIRED: _VARIABLE_REQUIRED,
         Kind.TOOLS_RESTRICTED: _TOOLS_RESTRICTED,
         Kind.TOOL_LOADING: _TOOL_LOADING,
         Kind.CODEX_RELATIVE_CWD: _CODEX_RELATIVE_CWD,
@@ -215,7 +214,7 @@ def warning_text(warning: ImportWarning, agent: str) -> MessageRef:
     }[warning.kind]
     if warning.kind is Kind.AUTH_NOT_IMPORTED:
         return message.bind(agent=agent, app=APP_DISPLAY_NAME)
-    if warning.kind in (Kind.APPROVAL, Kind.DEFAULT_TIMEOUT, Kind.VARIABLE_REQUIRED):
+    if warning.kind in (Kind.APPROVAL, Kind.DEFAULT_TIMEOUT):
         return message.bind(app=APP_DISPLAY_NAME)
     return message.bind()
 
@@ -229,7 +228,7 @@ def problem_text(
         transport = sanitize_legacy_scalar(_TRANSPORT_NAMES.get(transport.lower(), transport.upper()))
         return _UNSUPPORTED_CONNECTION.bind(transport=transport, app=APP_DISPLAY_NAME)
     if candidate.problem is Problem.REMOTE_ENVIRONMENT:
-        return _REMOTE_ENVIRONMENT.bind(agent=agent, app=APP_DISPLAY_NAME)
+        return _REMOTE_ENVIRONMENT.bind(app=APP_DISPLAY_NAME)
     use = candidate.field_use
     if (
         candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
@@ -282,7 +281,7 @@ def original_setting(field: str) -> MessageRef:
 
 
 def names_field(candidate: McpImportCandidate) -> bool:
-    """Whether the refusal's sentence leads to the source setting, listed after it.
+    """Whether the refusal is introduced by its source setting.
 
     A connection refusal says everything in its sentence: the setting adds nothing.
     """
@@ -319,11 +318,15 @@ def imported_config(
     lines = [config.description] if config.description else []
     lines.append(render(_ORIGIN.bind(agent=agent, path=sanitize_legacy_scalar(candidate.source_path))))
     for warning in candidate.warnings:
-        items = ", ".join(sanitize_legacy_scalar(item) for item in warning.items)
-        if items and warning.kind is not Kind.VARIABLE_REQUIRED:
-            items = render(original_setting(items))
+        items = [sanitize_legacy_scalar(item) for item in warning.items]
         text = render(warning_text(warning, agent))
-        # A full-width colon carries its own spacing.
-        separator = "" if text.endswith("\uff1a") else " "
-        lines.append(f"⚠ {text}{separator}{items}".rstrip())
+        lines.append("")
+        if len(items) == 1:
+            lines.append(f"⚠ {render(original_setting(items[0]))}")
+        elif items:
+            lines.append(f"⚠ {render(_ORIGINAL_SETTINGS.bind())}")
+            lines.extend(f"  {item}" for item in items)
+        else:
+            text = f"⚠ {text}"
+        lines.append(text)
     return replace(config, description="\n".join(lines))
