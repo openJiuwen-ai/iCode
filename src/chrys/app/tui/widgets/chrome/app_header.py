@@ -17,6 +17,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str
+from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.util.visibility import (
     is_widget_shown_on_active_screen,
@@ -115,6 +116,8 @@ class AppHeader(Widget):
             yield _HeaderBadge(id="approval-badge")
 
     def on_mount(self) -> None:
+        if not composed_live(self):
+            return
         if self._locale_controller is not None:
             self._locale_controller.register_surface(self)
         self._refresh_title()

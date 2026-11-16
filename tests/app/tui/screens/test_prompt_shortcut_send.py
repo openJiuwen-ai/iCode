@@ -73,6 +73,7 @@ from chrys.service.profiles.models.serializer import save_profile
 from chrys.service.prompt_shortcuts import load_prompt_shortcuts, prompt_shortcut_folders
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.scripted_clients import FrameworkBoom
+from tests.support.toasts import shown_toasts
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled, hold_prompt_fields_confirm_window
 from tests.support.waiting import (
@@ -345,13 +346,18 @@ async def running_session(
     startup_agent: str = ALPHA,
     hold_startup_load: bool = False,
     size: tuple[int, int] = (120, 40),
+    load_holds: bool = False,
 ) -> AsyncIterator[Session]:
     """Run the app on a real engine until the session is ready, with the chat input focused.
 
     With *hold_startup_load* the startup's ``AgentLoadStarted`` is held before
     the screen sees it (the first hold in ``holds``): the agent is loading and
-    nothing is waited for.
+    nothing is waited for. A load's dialog goes through its finished steps and
+    closes without pausing on them unless *load_holds* keeps its real pauses.
     """
+    if not load_holds:
+        monkeypatch.setattr(AgentLoadDialog, "COMPLETE_STEP_HOLD_SECONDS", 0.0)
+        monkeypatch.setattr(AgentLoadDialog, "FINISH_HOLD_SECONDS", 0.0)
     bus = EventBus()
     seen = Seen()
     for kind in recorded_event_types():
@@ -455,8 +461,8 @@ def footer_actions(main: MainScreen) -> set[str]:
 
 
 def notices(app: ChrysApp) -> list[tuple[str, str]]:
-    """Every toast on screen, as ``(severity, message)``."""
-    return [(str(notification.severity), str(notification.message)) for notification in app._notifications]
+    """Every toast the App has shown, as ``(severity, message)``."""
+    return [(str(notification.severity), str(notification.message)) for notification in shown_toasts(app)]
 
 
 def user_bubbles(main: MainScreen) -> list[str]:
@@ -618,10 +624,16 @@ async def await_error(session: Session, code: str) -> ev.Error:
     return error
 
 
-async def send_plain(session: Session, text: str) -> ev.UserMessage:
-    """Type *text* and press Enter; return the message once its turn has started."""
+async def send_plain(session: Session, text: str, *, typed: bool = True) -> ev.UserMessage:
+    """Type *text* and press Enter; return the message once its turn has started.
+
+    Unless *typed*, the text is put in whole: where it only labels the turn, typing it is not what is tested.
+    """
     before = len(session.seen.of(ev.UserMessage))
-    await type_text(session.pilot, text)
+    if typed:
+        await type_text(session.pilot, text)
+    else:
+        session.chat.insert(text)
     await session.pilot.press("enter")
     await wait_for(
         lambda: len(session.seen.of(ev.UserMessage)) > before and session.seen.of(ev.UserMessage)[-1].started_turn,
@@ -678,7 +690,8 @@ async def test_enter_sends_the_draft_with_its_shortcut_and_shows_its_commands_ru
 ) -> None:
     command = held_command("go", "clean")
     write_shortcut("zzstatus", f"Status: {command}")
-    async with running_session(agent_engine, tmp_path, monkeypatch) as session:
+    # The startup load's dialog keeps its real pauses before the session counts as ready.
+    async with running_session(agent_engine, tmp_path, monkeypatch, load_holds=True) as session:
         main, pilot, chat = session.main, session.pilot, session.chat
         draft = await expand_shortcut(session, "zzstatus")
         assert draft.text == f"Status: {command}"
@@ -903,7 +916,11 @@ async def test_esc_during_the_switch_does_nothing_and_the_message_goes_out_after
 
         await pilot.press("enter")
         await wait_for(build.entered.is_set, pilot=pilot, timeout=ENGINE_TURN_TIMEOUT, description="switch building")
-        await wait_for(lambda: isinstance(app.screen, AgentLoadDialog), pilot=pilot, description="agent-load modal")
+        await wait_for(
+            lambda: isinstance(app.screen, AgentLoadDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="agent-load modal",
+        )
 
         await pilot.press("escape")
         assert not await wait_until(
@@ -1227,7 +1244,7 @@ async def test_a_config_dialog_opened_while_a_send_is_in_flight_is_read_only(
         async def opens_read_only() -> bool:
             await pilot.press(key)
             await wait_for(
-                lambda: isinstance(app.screen, dialog) and bool(app.screen.query(notice)),
+                lambda: isinstance(app.screen, dialog) and app.screen.is_mounted and bool(app.screen.query(notice)),
                 pilot=pilot,
                 description="dialog open",
             )
@@ -1316,7 +1333,11 @@ async def test_a_shortcuts_draft_that_names_a_command_runs_it_as_typed_text_woul
 
         await pilot.press("enter")
 
-        await wait_for(lambda: isinstance(app.screen, GuideDialog), pilot=pilot, description="the guide opened")
+        await wait_for(
+            lambda: isinstance(app.screen, GuideDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="the guide opened",
+        )
         assert session.seen.of(ev.UserMessage) == []
         assert main.query_one(InputBar).draft_owner is None
 
@@ -1391,7 +1412,9 @@ async def test_a_failed_switch_sends_nothing_and_gives_the_draft_back(
         await pilot.press("enter")
 
         await wait_for(
-            lambda: isinstance(app.screen, AgentLoadDialog) and app.screen.has_class("-error"),
+            lambda: (
+                isinstance(app.screen, AgentLoadDialog) and app.screen.is_mounted and app.screen.has_class("-error")
+            ),
             pilot=pilot,
             timeout=ENGINE_TURN_TIMEOUT,
             description="the load failure shown",
@@ -1627,7 +1650,11 @@ async def test_the_footer_status_bar_and_workflow_entry_follow_the_commands_and_
         await pilot.press("backspace")
         await wait_for(lambda: card_state(main) is None, pilot=pilot, description="draft deleted, card gone")
         await click_when_settled(pilot, "#profile-tag")
-        await wait_for(lambda: isinstance(app.screen, AgentsScreen), pilot=pilot, description="agent picker opens")
+        await wait_for(
+            lambda: isinstance(app.screen, AgentsScreen) and app.screen.is_mounted,
+            pilot=pilot,
+            description="agent picker opens",
+        )
         await pilot.press("escape")
         await wait_for(lambda: app.screen is main, pilot=pilot, description="agent picker closed")
         assert running.count == 1

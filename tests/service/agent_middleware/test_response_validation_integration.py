@@ -349,7 +349,8 @@ class TestOutputTruncationCompaction:
         await ctx.bus.subscribe(ToolCompacted, _on_compacted)
 
         try:
-            await ctx.send_message("first")
+            # User context survives result trimming, keeping phase-2 recovery exercised.
+            await ctx.send_message("first " + "task requirement " * 200)
             await ctx.send_message("second")
 
             assert ctx.mock_client.call_count == 3
@@ -359,7 +360,7 @@ class TestOutputTruncationCompaction:
             await ctx.send_retry()
 
             assert ctx.mock_client.call_count == 4
-            assert [event.phase for event in compacted] == ["phase1"]
+            assert [event.phase for event in compacted] == ["phase1", "phase2"]
             assert extract_final_messages(ctx.events) == ["first answer", "recovered answer"]
         finally:
             await ctx.cleanup()

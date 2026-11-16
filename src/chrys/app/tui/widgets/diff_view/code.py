@@ -7,10 +7,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar, NamedTuple
 
+from rich.style import Style
+from textual import events
 from textual.cache import LRUCache
 from textual.content import Content
 from textual.dom import NoScreen
 from textual.geometry import Region, Size
+from textual.message import Message
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.style import Style as VisualStyle
@@ -18,7 +21,7 @@ from textual.style import Style as VisualStyle
 from chrys.app.tui.support.gc_freeze import detach_lru_cache, renew_lru_cache
 from chrys.app.tui.widgets import HATCH_GLYPH, normalize_selection_rich_style
 from chrys.app.tui.widgets.diff_view.palette import DiffLook
-from chrys.app.tui.widgets.diff_view.rows import DiffRow
+from chrys.app.tui.widgets.diff_view.rows import DiffRow, RowKind, line_identity
 
 if TYPE_CHECKING:
     from textual.selection import Selection
@@ -45,14 +48,26 @@ class CodeColumn(ScrollView):
     look of the app changes; scrolling down reuses all of them.
     """
 
+    class RowRequested(Message):
+        """A line number (or the comment icon in its place) requested a comment on this exact row."""
+
+        def __init__(self, column: CodeColumn, index: int) -> None:
+            super().__init__()
+            self.column = column
+            self.index = index
+
     ALLOW_SELECT = True
 
-    COMPONENT_CLASSES: ClassVar[set[str]] = {"hatch--pattern"}
+    COMPONENT_CLASSES: ClassVar[set[str]] = {"hatch--pattern", "diff--comment-line"}
 
     DEFAULT_CSS = """
     CodeColumn > .hatch--pattern {
         color: $hatch-color;
     }
+    CodeColumn > .diff--comment-line {
+        background: $accent 22%;
+    }
+
     CodeColumn {
         overflow: auto auto;
         scrollbar-size: 1 2;
@@ -78,6 +93,8 @@ class CodeColumn(ScrollView):
         """The other side of a split diff, which scrolls along."""
         self.gutters: list[GutterColumn] = []
         """The columns beside this one. They follow its scroll position and have none of their own."""
+        self.comments_enabled = False
+        self.current_comment_row: int | None = None
         self._syncing = False
         self._strip_cache: LRUCache[int, Strip] = LRUCache(maxsize=2000)
         self._strips_valid_for: tuple[int, int] | None = None
@@ -226,13 +243,20 @@ class CodeColumn(ScrollView):
             return strip.adjust_cell_length(width, visual_style.rich_style)
 
         line = row.code
+        # Pad before applying the current-line background, which fills the visible row.
+        if (padding := max(self.code_width, width) - line.cell_length) > 0:
+            line = line.pad_right(padding)
+        if index == self.current_comment_row:
+            line = line.stylize(
+                VisualStyle.from_rich_style(Style(bgcolor=self.get_component_rich_style("diff--comment-line").bgcolor))
+            )
         if selected is not None:
             start, end = selected
             selection_style = normalize_selection_rich_style(self.screen.get_component_rich_style("screen--selection"))
-            line = line.stylize(VisualStyle.from_rich_style(selection_style), start, len(line) if end == -1 else end)
+            line = line.stylize(
+                VisualStyle.from_rich_style(selection_style), start, len(row.code) if end == -1 else end
+            )
         # The line's background reaches the edge of the viewport, also where that is wider than the code.
-        if (padding := max(self.code_width, width) - line.cell_length) > 0:
-            line = line.pad_right(padding)
         line = line.stylize_before(self._current_look().line_style(row.kind))
         strip = Strip(line.render_segments(visual_style), cell_length=line.cell_length)
         # Textual finds the character under the pointer from offsets that count characters of the
@@ -244,10 +268,65 @@ class CodeColumn(ScrollView):
         strip = visible.crop(0, width).adjust_cell_length(width, visual_style.rich_style)
         return strip.apply_offsets(first_character, index)
 
+    def set_current_comment(self, index: int | None) -> None:
+        if self.current_comment_row == index:
+            return
+        # An open comment bar covers the pointer; the icon comes back when it moves again.
+        self.set_comment_hover(None)
+        self.current_comment_row = index
+        self._invalidate_render_cache()
+        self.refresh()
+        for gutter in self.gutters:
+            gutter.set_current_comment(index)
+
+    def row_at(self, y: int) -> int | None:
+        """The row at viewport line *y*, if it is one a comment can go on."""
+        index = round(self.scroll_offset.y) + y
+        if (
+            self.comments_enabled
+            and 0 <= y < self.scrollable_content_region.height
+            and 0 <= index < len(self.rows)
+            and line_identity(self.rows[index]) is not None
+        ):
+            return index
+        return None
+
+    def set_comment_hover(self, index: int | None) -> None:
+        """Turn the number of row *index* of this column into the comment icon.
+
+        Each side of a split diff has lines of its own, so only the side under the pointer shows
+        it. A context line is the exception: its icon stands in the right column, so the pointer
+        over its left half shows it there.
+        """
+        target: CodeColumn = self
+        if (
+            index is not None
+            and self.scroll_sync is not None
+            and self.has_class("code-left")
+            and self.rows[index].kind is RowKind.CONTEXT
+        ):
+            target = self.scroll_sync
+        for column in (self, self.scroll_sync):
+            if column is not None:
+                for gutter in column.gutters:
+                    gutter.set_comment_hover(index if column is target else None)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self.comments_enabled:
+            # A drag selects code to copy; the icon would only flicker along it.
+            self.set_comment_hover(None if event.button else self.row_at(event.y))
+
+    def on_leave(self, _event: events.Leave) -> None:
+        if self.comments_enabled:
+            self.set_comment_hover(None)
+
     # -- scrolling ---------------------------------------------------------------------------------
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
+        if round(old_value) != round(new_value) and self.comments_enabled:
+            # The pointer is over another row now; the next move shows that one.
+            self.set_comment_hover(None)
         if self._syncing:
             return
         self._syncing = True

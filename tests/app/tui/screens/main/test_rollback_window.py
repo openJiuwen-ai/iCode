@@ -182,7 +182,7 @@ async def test_seventh_turn_prunes_first_two_message_links_but_keeps_session_sta
 
         main.action_show_rollback()
         await wait_for(
-            lambda: isinstance(app.screen, RollbackModal) and app.screen._content_ready,
+            lambda: isinstance(app.screen, RollbackModal) and app.screen.is_mounted and app.screen._content_ready,
             pilot=pilot,
             description="real pruned rollback picker ready",
         )

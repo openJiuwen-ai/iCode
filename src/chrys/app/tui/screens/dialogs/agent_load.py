@@ -67,6 +67,30 @@ _STAGE_CAPTURING_WORKSPACE = msg(
 )
 _STAGE_FINALIZING_AGENT = msg("tui.agent_load.stage.finalizing_agent", fallback="Finalizing agent")
 _STAGE_LOADING_SUB_AGENT = msg("tui.agent_load.stage.loading_sub_agent", fallback="Loading sub-agent {name}")
+_STAGE_SUB_AGENT_MCP_CONNECTING = msg(
+    "tui.agent_load.stage.sub_agent_mcp_connecting",
+    fallback="Loading sub-agent {name} → Connecting MCP server {server}",
+)
+_STAGE_SUB_AGENT_MCP_CONNECTED = msg(
+    "tui.agent_load.stage.sub_agent_mcp_connected",
+    fallback="Loading sub-agent {name} → Connected MCP server {server}",
+)
+_STAGE_SUB_AGENT_MCP_FAILED = msg(
+    "tui.agent_load.stage.sub_agent_mcp_failed",
+    fallback="Loading sub-agent {name} → Failed MCP server {server}",
+)
+_STAGE_SUB_AGENT_SKILLS_LOADING = msg(
+    "tui.agent_load.stage.sub_agent_skills_loading",
+    fallback="Loading sub-agent {name} → Loading skills",
+)
+_STAGE_SUB_AGENT_SKILLS_LOADED = msg(
+    "tui.agent_load.stage.sub_agent_skills_loaded",
+    fallback="Loading sub-agent {name} → Skills loaded",
+)
+_STAGE_SUB_AGENT_SKILLS_FAILED = msg(
+    "tui.agent_load.stage.sub_agent_skills_failed",
+    fallback="Loading sub-agent {name} → Failed to load skills",
+)
 _STAGE_LOADED_SUB_AGENT = msg("tui.agent_load.stage.loaded_sub_agent", fallback="Loaded sub-agent {name}")
 _STAGE_SKIPPED_SUB_AGENT = msg("tui.agent_load.stage.skipped_sub_agent", fallback="Skipped sub-agent {name}")
 _STAGE_SKIPPED_SUB_AGENT_REASON = msg(
@@ -183,6 +207,25 @@ def map_load_progress_prose(message: str) -> MessageRef | None:
 def load_count_failed_message(current: int, total: int, failed: int) -> MessageRef:
     """Return the localized "{current}/{total}, failed: {failed}" count text."""
     return _STATUS_COUNT_FAILED.bind(current=current, total=total, failed=failed)
+
+
+def sub_agent_load_stage_message(name: str, stage: str, subject: str, status: str) -> MessageRef | None:
+    """Localize structured child progress independently of the backend prose."""
+    if not name:
+        return None
+    if stage == AGENT_LOAD_PHASE_MCP and subject:
+        definition = {
+            AGENT_LOAD_STATUS_DONE: _STAGE_SUB_AGENT_MCP_CONNECTED,
+            AGENT_LOAD_STATUS_FAILED: _STAGE_SUB_AGENT_MCP_FAILED,
+        }.get(status, _STAGE_SUB_AGENT_MCP_CONNECTING)
+        return definition.bind(name=name, server=subject)
+    if stage == AGENT_LOAD_PHASE_SKILLS:
+        definition = {
+            AGENT_LOAD_STATUS_DONE: _STAGE_SUB_AGENT_SKILLS_LOADED,
+            AGENT_LOAD_STATUS_FAILED: _STAGE_SUB_AGENT_SKILLS_FAILED,
+        }.get(status, _STAGE_SUB_AGENT_SKILLS_LOADING)
+        return definition.bind(name=name)
+    return None
 
 
 type AgentLoadMessage = MessageRef | str
@@ -446,11 +489,14 @@ class AgentLoadDialog(BaseDialog[None]):
             )
 
         if phase == AGENT_LOAD_PHASE_SUB_AGENTS:
+            nested_stage = isinstance(message, MessageRef) and message.definition.key.startswith(
+                "tui.agent_load.stage.sub_agent_"
+            )
             if total:
                 entry_status = "done" if current >= total else "active"
                 action = _STAGE_SUB_AGENTS_LOADED if entry_status == "done" else _STAGE_LOADING_SUB_AGENTS
                 return _ProgressEntry(
-                    action.bind(),
+                    message if nested_stage and entry_status != "done" else action.bind(),
                     AGENT_LOAD_PHASE_SUB_AGENTS,
                     _KIND_SUB_AGENTS_LOADING,
                     entry_status,

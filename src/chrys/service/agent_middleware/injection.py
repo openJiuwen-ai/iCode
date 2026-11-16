@@ -380,6 +380,10 @@ class InjectionMiddleware(ChatMiddleware):
         self._retry_consumed = []
         self._consumed_injection_messages = []
 
+    def pending_by_id(self, injection_id: str) -> QueuedInjection | None:
+        """Find a message still waiting for a model call, without removing it."""
+        return next((item for item in self._pending if item.injection_id == injection_id), None)
+
     def cancel(self, injection_id: str) -> QueuedInjection | None:
         """Remove and return the pending injection with *injection_id*, if any.
 

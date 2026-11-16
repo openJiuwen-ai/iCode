@@ -801,7 +801,9 @@ class SessionHandler:
                                 block.turn_range,
                             )
             except Exception:
-                pass
+                logger.debug(
+                    "Session restore: failed to replay compressed blocks for %s", event.session_id, exc_info=True
+                )
         s.set_has_messages(restored_has_messages)
 
         # Reseed the Tasks panel from the restored state (covers session

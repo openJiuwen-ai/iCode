@@ -85,7 +85,11 @@ async def test_stop_settles_node_process_and_rejects_late_activity(
         if detail_open:
             main._workflow.session_view.open_node(running.node_id)
             await wait_for(
-                lambda: isinstance(app.screen, WorkflowNodeDialog) and bool(app.screen.query(TabbedContent)),
+                lambda: (
+                    isinstance(app.screen, WorkflowNodeDialog)
+                    and app.screen.is_mounted
+                    and bool(app.screen.query(TabbedContent))
+                ),
                 pilot=pilot,
             )
             dialog = app.screen
@@ -137,7 +141,12 @@ async def test_stop_settles_node_process_and_rejects_late_activity(
         if not detail_open:
             main._workflow.session_view.open_node(running.node_id)
         await wait_for(
-            lambda: isinstance(app.screen, WorkflowNodeDialog) and bool(app.screen.query(TabbedContent)), pilot=pilot
+            lambda: (
+                isinstance(app.screen, WorkflowNodeDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query(TabbedContent))
+            ),
+            pilot=pilot,
         )
         dialog = app.screen
         assert isinstance(dialog, WorkflowNodeDialog)
@@ -173,7 +182,12 @@ async def test_stop_settles_node_process_and_rejects_late_activity(
         await wait_for(lambda: app.screen is main, pilot=pilot)
         main._workflow.session_view.open_node(running.node_id)
         await wait_for(
-            lambda: isinstance(app.screen, WorkflowNodeDialog) and bool(app.screen.query(TabbedContent)), pilot=pilot
+            lambda: (
+                isinstance(app.screen, WorkflowNodeDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query(TabbedContent))
+            ),
+            pilot=pilot,
         )
         await wait_for(lambda: bool(app.screen.query(InterruptedMessage)), pilot=pilot)
         assert app.screen.query_one(ToolGroup).all_complete

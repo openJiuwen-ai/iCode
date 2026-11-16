@@ -147,7 +147,7 @@ iCode should reply with a greeting. If the model service returns an error, check
 
 While an agent runs, the status bar above the input shows elapsed time, tool calls and, while text is arriving, its speed. Long runs include hours and days, for example `1d 4h 20m 50s`. Tool cards, background tasks, CLI progress, and the F12 timing dashboard also support days; compact displays keep only the largest time units.
 
-Once the agent answers, the answer's header shows how long the whole turn took, for example `Code Agent - 2:04 AM (6m 5s)`: from when you sent your message, or clicked **Continue** or **Retry**, to the answer, including the time the agent waited for your approval or reply. A message you send while the agent works doesn't restart it. It shows the same when you reopen the session.
+Once the agent answers, the answer's header shows how long the whole turn took, for example `Code Agent - 02:04 (6m 5s)`: from when you sent your message, or clicked **Continue** or **Retry**, to the answer, including the time the agent waited for your approval or reply. A message you send while the agent works doesn't restart it. It shows the same when you reopen the session.
 
 ## 4. Use agents
 
@@ -207,7 +207,7 @@ In other multi-line fields, **Enter** and **Shift+Enter** start a new line. In t
 
 ### Attach images, quote the conversation and paste long text
 
-Paste a screenshot or an image, or drop an image file into the message box, and it shows as **[Image #1]**. To quote part of the conversation, select it with the mouse and click **Quote** when it appears; **[Quote #1]** is added where the cursor is. Long pasted text, more than 800 characters or six lines or more (fewer in a very short terminal), shows as **[Pasted text #1 +5 lines]**. Keep typing around them as usual; each message numbers each kind from 1.
+Paste a screenshot or an image, or drop an image file into the message box, and it shows as **[Image #1]**. To quote part of the conversation, select it with the mouse and click **Quote** when it appears; **[Quote #1]** is added where the cursor is. Long pasted text, more than 800 characters or six lines or more (fewer in a very short terminal), shows as **[Pasted text #1 +5 lines]**. Keep typing around them as usual; each message numbers each kind from 1. In `/diff`, point at a line to reveal 💬, click its number to write a comment (Shift+Enter for a new line), then press Enter to add it to the message box; click 💬 to edit, and return to chat to send. The quote also carries the line before and after it; click the label to preview it, with 💬 on the quoted line.
 
 Click an image or quote label for a read-only preview. A label is edited as one piece: the cursor steps over it, and Backspace or Delete removes all of it. Click a pasted-text label to edit that text in the prompt editor; it stays folded while it is still long. Press **Ctrl+O** to open the prompt editor on the full text to be sent: save without changes to keep the labels; after any change, the message box shows the full text. Press **Ctrl+Z** to undo a save that changed the message.
 

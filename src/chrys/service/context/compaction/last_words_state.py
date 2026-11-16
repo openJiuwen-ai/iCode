@@ -27,15 +27,21 @@ turn) and discards it otherwise (``begin_turn``, then ``discard_restored``).
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.models.history_markers import dropped_records_heading
 from chrys.foundation.platform.files import is_utf8_encodable
 from chrys.service.agent_middleware.reminders.todo import TodoSource
-from chrys.service.agent_middleware.system_reminder import LAST_WORDS_PREFIX, wrap_system_reminder
+from chrys.service.agent_middleware.system_reminder import (
+    LAST_WORDS_PREFIX,
+    escape_system_reminder_tags,
+    wrap_system_reminder,
+)
 
 from .spill import (
     DISPLAY_ARGUMENT_DEFAULT_MAX_CHARS,
@@ -51,6 +57,7 @@ from .spill import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from chrys.foundation.models.history_markers import LastWordsRecord
     from chrys.service.agent_middleware.system_reminder import ReminderTurns, TurnReminderState
 
     from .spill import SpillQuota
@@ -70,6 +77,7 @@ MANIFEST_DISPLAY_ARGUMENT_MAX_CHARS = max(
     DISPLAY_ARGUMENT_DEFAULT_MAX_CHARS + 2 + DISPLAY_ARGUMENT_REASON_MAX_CHARS,
 )
 _MANIFEST_STATUS_MAX_CHARS = 128
+_MANIFEST_EXCERPT_MAX_CHARS = 1_024
 _MANIFEST_STRING_FIELD_LIMITS = {
     "record_id": _MANIFEST_STATUS_MAX_CHARS,
     "group_id": _MANIFEST_FIELD_MAX_CHARS,
@@ -79,6 +87,7 @@ _MANIFEST_STRING_FIELD_LIMITS = {
     "display_argument": MANIFEST_DISPLAY_ARGUMENT_MAX_CHARS,
     "outcome": _MANIFEST_STATUS_MAX_CHARS,
     "no_record_reason": _MANIFEST_STATUS_MAX_CHARS,
+    "excerpt": _MANIFEST_EXCERPT_MAX_CHARS,
 }
 _STATE_INTEGER_MAX = (1 << 63) - 1
 _BREAKER_STATE_VERSION = 1
@@ -102,10 +111,12 @@ class ManifestEntry:
     assistant_text: bool = False
     available: bool = True
     no_record_reason: str = ""
+    excerpt: str = ""
+    """Both ends of the result, for a call dropped although it was the newest work: too large to keep whole."""
 
     def to_state(self) -> dict[str, Any]:
         """Return a JSON-compatible representation (never a dataclass instance)."""
-        return {
+        state: dict[str, Any] = {
             "record_id": _manifest_state_text(self.record_id, _MANIFEST_STATUS_MAX_CHARS),
             "group_id": _manifest_state_text(self.group_id, _MANIFEST_FIELD_MAX_CHARS),
             "record_dir": _manifest_state_text(self.record_dir, _MANIFEST_FIELD_MAX_CHARS),
@@ -121,6 +132,9 @@ class ManifestEntry:
             "available": self.available,
             "no_record_reason": _manifest_state_text(self.no_record_reason, _MANIFEST_STATUS_MAX_CHARS),
         }
+        if self.excerpt:
+            state["excerpt"] = _manifest_state_text(self.excerpt, _MANIFEST_EXCERPT_MAX_CHARS)
+        return state
 
     @classmethod
     def from_state(cls, value: object) -> ManifestEntry | None:
@@ -190,6 +204,7 @@ class ManifestEntry:
             assistant_text=assistant_text,
             available=available,
             no_record_reason=strings["no_record_reason"],
+            excerpt=strings["excerpt"],
         )
 
 
@@ -217,7 +232,10 @@ class DropRoundBreakerState:
 
     @classmethod
     def from_state(cls, value: object) -> DropRoundBreakerState | None:
-        """Return a validated breaker state, or ``None`` for old/malformed data."""
+        """Return a validated breaker state, or ``None`` for none saved and for old/malformed data."""
+        if value is None:
+            # Nothing was saved: the usual case, and nothing to report.
+            return None
         version = value.get("version") if isinstance(value, Mapping) else None
         if (
             not isinstance(value, Mapping)
@@ -299,6 +317,19 @@ def _manifest_state_text(value: str, max_chars: int) -> str:
     """Return bounded text that strict UTF-8 session persistence can encode."""
     safe = value.encode("utf-8", errors="backslashreplace").decode("utf-8")
     return safe[:max_chars]
+
+
+def serialized_text_tokens(text: str | None, count_tokens: Callable[[str], int]) -> int:
+    """Tokens *text* takes in a request, where it rides inside a serialized message.
+
+    Estimation counts ``json.dumps`` of the message (sorted keys, non-ASCII
+    literal), so quotes, backslashes and control characters cost what their
+    escape sequences do, not the one character they are: a note or todo list
+    full of paths and newlines is larger on the wire than its rendered text.
+    Reminder tags are counted escaped as well: the middleware defangs
+    ``<system-reminder>`` in reminder text before it is sent.
+    """
+    return count_tokens(json.dumps(escape_system_reminder_tags(text), ensure_ascii=False)) if text else 0
 
 
 class LastWordsState:
@@ -412,6 +443,17 @@ class LastWordsState:
         turn = self._ensure_turn()
         turn.note = text or None
         turn.todo = self._todo.snapshot() if turn.note else None
+
+    def todo_reminder_tokens(self, count_tokens: Callable[[str], int]) -> int:
+        """Tokens the note's reminder adds from the todo list, captured as the note will capture it.
+
+        A caller sizing the request a drop leaves asks before the note exists;
+        the todo text is what ``set_last_words`` will record.  Counted in the
+        form the request carries it: a serialized message escapes quotes,
+        backslashes and control characters, so a todo list full of them takes
+        more room than its rendered text does.
+        """
+        return serialized_text_tokens(self._todo.snapshot(), count_tokens)
 
     def get_last_words(self) -> str | None:
         """Return the current LAST_WORDS text (for incremental regeneration).
@@ -566,24 +608,7 @@ class LastWordsState:
         restored: list[dict[str, Any]] = []
         for entry in entries:
             available = not entry.relative_path or entry.relative_path in available_relative_paths
-            restored.append(
-                ManifestEntry(
-                    record_id=entry.record_id,
-                    group_id=entry.group_id,
-                    record_dir=entry.record_dir,
-                    relative_path=entry.relative_path,
-                    turn=entry.turn,
-                    round=entry.round,
-                    sequence=entry.sequence,
-                    tool=entry.tool,
-                    display_argument=entry.display_argument,
-                    outcome=entry.outcome,
-                    size_chars=entry.size_chars,
-                    assistant_text=entry.assistant_text,
-                    available=entry.available and available,
-                    no_record_reason=entry.no_record_reason,
-                ).to_state()
-            )
+            restored.append(replace(entry, available=entry.available and available).to_state())
         self._restored_last_words_manifest = restored or None
 
     def restore_last_words_breaker(self, value: object) -> None:
@@ -604,6 +629,10 @@ class LastWordsState:
         (``refresh_last_words_reminder`` strips only ``[LAST_WORDS]``-prefixed
         contents — a separately wrapped block would accumulate stale copies
         across refreshes).
+
+        The middleware records this text on the message that carries it when
+        a drop commits and sends the record from then on, so what is rendered
+        here reaches the wire once per note, not once per call.
         """
         reminders: list[str] = []
         last_words = self.get_last_words()
@@ -691,13 +720,23 @@ class LastWordsState:
             entry for value in self.get_last_words_manifest() if (entry := ManifestEntry.from_state(value)) is not None
         ]
 
+    def manifest_records_dir(self) -> str:
+        """The directory the rendered dropped-call list points at, relative to the session's; empty with no list."""
+        entries = self._current_manifest_entries()
+        return entries[-1].record_dir if entries else ""
+
+    def recorded_block(self, record: LastWordsRecord) -> str:
+        """A recorded block as this session sends it.
+
+        The block was rendered by the session that wrote the note.  A fork
+        copies the records and the block alike, and the block still names the
+        parent's copy, which the fork neither owns nor can count on.
+        """
+        return record.text_in(self._session_root)
+
     def _render_manifest(self, entries: list[ManifestEntry]) -> str:
         """Render the bounded dropped-call appendix without filesystem access."""
-        record_dir = entries[-1].record_dir
-        absolute_dir = (
-            (self._session_root / record_dir).absolute().as_posix() if self._session_root is not None else record_dir
-        )
-        heading = f"--- Dropped this turn (records under {absolute_dir.rstrip('/')}/) ---"
+        heading = dropped_records_heading(entries[-1].record_dir, self._session_root)
         rendered_entries = [self._render_manifest_entry(entry) for entry in entries]
         omitted = 0
 
@@ -736,13 +775,15 @@ class LastWordsState:
         else:
             argument = f"{entry.display_argument}" if entry.display_argument else "…"
             body = f"r{entry.round} {entry.sequence:03d} {entry.tool}({argument}) → {entry.outcome}, {size} chars"
+        # One line, like the entry it belongs to: the manifest is bounded by lines.
+        excerpt = f"\n    excerpt: {' '.join(entry.excerpt.split())}" if entry.excerpt else ""
         if entry.no_record_reason:
-            return f"{body} — (no record: {entry.no_record_reason})"
+            return f"{body} — (no record: {entry.no_record_reason}){excerpt}"
         filename = Path(entry.relative_path).name
         suffix = f" — {filename}"
         if not entry.available:
             suffix += " (record missing)"
-        return body + suffix
+        return body + suffix + excerpt
 
     def _current_last_words_todo(self) -> str | None:
         """Todo text captured with the active LAST_WORDS note, if any."""

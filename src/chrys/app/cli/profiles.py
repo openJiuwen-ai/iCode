@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from chrys.app.tui.util.formatting import format_compact_count
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import DEFAULT_AGENT_PROFILE, Settings
 from chrys.foundation.config.warnings import settings_warning_events
@@ -179,14 +180,6 @@ def _model_flags(profile: ModelProfile) -> str:
     return ", ".join(flags) if flags else "-"
 
 
-def _format_context(tokens: int) -> str:
-    if tokens >= 1_000_000 and tokens % 1_000_000 == 0:
-        return f"{tokens // 1_000_000}m"
-    if tokens >= 1_000 and tokens % 1_000 == 0:
-        return f"{tokens // 1_000}k"
-    return str(tokens)
-
-
 def _format_api_style(api_style: str) -> str:
     if api_style == API_STYLE_CHAT_COMPLETIONS:
         return "chat"
@@ -281,7 +274,7 @@ def _print_models(rows: list[_ModelRow]) -> None:
             Text(profile.provider or "-"),
             Text(_format_api_style(profile.api_style)),
             Text(profile.model_id or "-"),
-            Text(_format_context(profile.max_context_tokens)),
+            Text(format_compact_count(profile.max_context_tokens)),
             Text(row.flags),
         )
     console.print(table)

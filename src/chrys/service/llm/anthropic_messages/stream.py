@@ -267,7 +267,10 @@ class StreamState:
                 raw_input = "".join(parts)
                 try:
                     arguments = json.loads(raw_input)
-                except json.JSONDecodeError:
+                # A bare ValueError is an integer literal past Python's
+                # integer-string conversion limit: keep the raw input, as for
+                # malformed JSON.
+                except ValueError:
                     arguments = raw_input
                 apply_streamed_input(call, arguments)
                 call.provider_phase = HostedToolPhase.DELTA

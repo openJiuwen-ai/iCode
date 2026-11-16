@@ -1523,7 +1523,12 @@ def _format_metric_bytes(metric: Metric) -> str:
         value = "—"
     else:
         size = float(metric.value)
-        value = f"{size / 1024:.1f} KiB" if size >= 1024 else f"{int(size)} B"
+        if size < 1024:
+            value = f"{int(size)} B"
+        elif round(size / 1024, 1) < 1024:
+            value = f"{size / 1024:.1f} KiB"
+        else:
+            value = f"{size / (1024 * 1024):.1f} MiB"
     return f"{value} {PRECISION_SYMBOLS[metric.precision]}"
 
 

@@ -27,6 +27,8 @@ from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import ChatPanelApp, WidgetApp
 from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, wait_for, wait_until, with_wait_deadline
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 _ANSWER_LINES = 200
 _SCREEN_LAYOUT_BOUND = 12
 """Screen layouts a burst may cost: one install plus cursor, copy button and scroll settling."""

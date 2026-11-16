@@ -114,6 +114,8 @@ class ManPageDialog(BaseDialog[None]):
 
     def on_mount(self) -> None:
         """Reset scroll to top on mount."""
+        if not self._composed_live:
+            return
         if self._locale_controller is not None:
             self._locale_controller.register_surface(self)
         scroll = self.query_one("#man-scroll", StableAutoHeightScroll)

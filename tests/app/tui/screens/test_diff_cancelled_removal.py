@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Leaving the diff viewer or the rollback modal while its load removes widgets lets that removal finish.
+"""Leaving a preview, the diff viewer or the rollback modal while its load removes widgets lets that removal finish.
 
 Leaving cancels the load's worker. Each test holds a child of a widget the load removes, so the
 removal is still waiting for that child when the user leaves.
@@ -9,16 +9,23 @@ removal is still waiting for that child when the user leaves.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
+from textual.widget import Widget
+from textual.widgets import Static
+from textual.worker import Worker, WorkerCancelled
 
+from chrys.app.tui.screens.dialogs.approval.bodies.file_edit import ApprovalDiffPreview
 from chrys.app.tui.screens.diff.rollback_modal import RollbackModal
 from chrys.app.tui.screens.diff.screen import DiffScreen
 from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
+from chrys.app.tui.widgets.chat.tool_view_builders import ToolViewDiff
+from chrys.app.tui.widgets.diff_view import DiffView
 from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, MutationSource
@@ -157,3 +164,68 @@ async def test_closing_the_rollback_modal_while_its_loading_shell_is_removed(tmp
         assert not loading_state.is_attached
         assert not busy.is_attached
         await assert_app_handles_messages(app)
+
+
+class _PreviewApp(App):
+    """Host a diff preview as the only screen content."""
+
+    def __init__(self, preview: Widget) -> None:
+        super().__init__()
+        self._preview = preview
+
+    def compose(self) -> ComposeResult:
+        yield self._preview
+
+
+def _approval_diff_preview() -> Widget:
+    return ApprovalDiffPreview("a.py", "before\n", "after\n", title="Planned Diff")
+
+
+def _tool_card_diff_preview() -> Widget:
+    return ToolViewDiff("a.py", "before\n", "after\n")
+
+
+@pytest.mark.parametrize(
+    ("preview_factory", "placeholder_class"),
+    [
+        pytest.param(_approval_diff_preview, "approval-diff-placeholder", id="approval-diff"),
+        pytest.param(_tool_card_diff_preview, "tool-view-diff-placeholder", id="tool-view-diff"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cancelling_a_diff_preview_while_its_placeholder_is_removed(
+    preview_factory: Callable[[], Widget],
+    placeholder_class: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_prepare = asyncio.Event()
+    original_prepare = DiffView.prepare
+
+    async def prepare(self: DiffView) -> None:
+        await release_prepare.wait()
+        await original_prepare(self)
+
+    monkeypatch.setattr(DiffView, "prepare", prepare)
+    preview = preview_factory()
+    app = _PreviewApp(preview)
+    async with app.run_test() as pilot:
+        await wait_for(lambda: preview.is_mounted, pilot=pilot, description="the diff preview mounts")
+        placeholder = preview.query_one(f".{placeholder_class}", Static)
+        busy = BusyWidget()
+        await placeholder.mount(busy)
+        workers: list[Worker[object]] = []
+
+        def cancel_preview_worker() -> None:
+            workers.extend(preview.workers.cancel_node(preview))
+
+        # The worker reaches its placeholder removal once the preparation gate opens; the removal
+        # then waits for `busy`, and the cancel lands while the worker awaits that removal.
+        await interrupt_removal(busy, release_prepare.set, cancel_preview_worker)
+
+        await wait_for(lambda: not placeholder.is_attached, description="the placeholder still leaves")
+        assert not busy.is_attached
+        assert preview.query(DiffView)
+        await assert_app_handles_messages(app)
+        assert len(workers) == 1
+        with pytest.raises(WorkerCancelled):
+            await workers[0].wait()

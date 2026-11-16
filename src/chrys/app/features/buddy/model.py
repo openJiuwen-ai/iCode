@@ -217,8 +217,8 @@ class Buddy:
 
     @property
     def display_name(self) -> str:
-        """The name, marked once the buddy has evolved."""
-        if not self.evolved:
+        """The name, marked once the buddy has come all the way."""
+        if not self.honored:
             return self.name
         return f"{'🌟' if self.rarity is _RARITIES[-1] else '✨'} {self.name}"
 
@@ -240,9 +240,14 @@ class Buddy:
         return self.progress.level
 
     @property
+    def honored(self) -> bool:
+        """Whether the buddy has come all the way: it evolved, or it maxed the top tier."""
+        return self.evolved or self.level == FINAL_LEVEL
+
+    @property
     def shiny(self) -> bool:
-        """Hatched shiny, or earned: evolving into the top tier or finishing it."""
-        earned = self.rarity is _RARITIES[-1] and (self.evolved or self.level == FINAL_LEVEL)
+        """Hatched shiny, or earned: reaching the end of the top tier, by evolution or by level."""
+        earned = self.rarity is _RARITIES[-1] and self.honored
         return self.record.shiny or earned
 
     @property

@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
+import time
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import MISSING, fields
 from typing import TYPE_CHECKING, Any
 
@@ -104,6 +107,7 @@ def profile_to_dict(profile: AgentProfile) -> dict[str, Any]:
     for mcp in d.get("tools", {}).get("mcp", []):
         if mcp.get("transport") == "http":
             mcp.pop("env", None)
+            mcp.pop("cwd", None)
         for src, dst in _MCP_KEY_MAP.items():
             if src in mcp:
                 mcp[dst] = mcp.pop(src)
@@ -163,7 +167,86 @@ def stored_profile_name(name: str) -> str | None:
 profile_write_lock = threading.RLock()
 
 
-def save_profile(profile: AgentProfile, *, target_dir: Path | None = None) -> Path:
+class _HeldLocks(threading.local):
+    def __init__(self) -> None:
+        self.directories: set[str] = set()
+
+
+_held_locks = _HeldLocks()
+
+
+@contextmanager
+def profile_directory_lock(directory: Path, *, timeout: float = 1.0):
+    """Bounded transaction lock shared by profile editors and migrations.
+
+    Reentry is supported only on the owning thread. Do not await or hand an
+    inner operation to another thread while holding this lock; acquire it in
+    the thread that will perform the complete synchronous transaction.
+    """
+    from chrys.foundation.util.lock import FileLock
+
+    deadline = time.monotonic() + timeout
+    if not profile_write_lock.acquire(timeout=timeout):
+        raise TimeoutError("Agent profiles are being updated. Try saving again.")
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        key = str(directory.resolve())
+        if key in _held_locks.directories:
+            yield
+            return
+        file_lock = FileLock(directory / ".profiles.lock", timeout=max(0.0, deadline - time.monotonic()))
+        try:
+            file_lock.acquire()
+        except TimeoutError as exc:
+            raise TimeoutError("Agent profiles are being updated by another process. Try saving again.") from exc
+        try:
+            _held_locks.directories.add(key)
+            try:
+                yield
+            finally:
+                _held_locks.directories.remove(key)
+        finally:
+            file_lock.release()
+    finally:
+        profile_write_lock.release()
+
+
+@asynccontextmanager
+async def async_profile_directory_lock(directory: Path):
+    """Wait briefly for another writer without blocking the TUI event loop.
+
+    The protected write itself must not await: the underlying lock is thread-owned.
+    """
+    deadline = time.monotonic() + 2.0
+    while True:
+        lock = profile_directory_lock(directory, timeout=0)
+        try:
+            lock.__enter__()
+        except TimeoutError:
+            if time.monotonic() >= deadline:
+                raise
+            await asyncio.sleep(0.05)
+        else:
+            break
+    try:
+        yield
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def builtin_override_dict(profile: AgentProfile) -> dict[str, Any]:
+    """User settings for a builtin; complete exports use ``profile_to_dict`` instead."""
+    data = profile_to_dict(profile)
+    data.pop("instructions", None)
+    if isinstance(compaction := data.get("compaction"), dict):
+        compaction.pop("last_words_template", None)
+        if not compaction:
+            data.pop("compaction")
+    data["_builtin_prompts_managed"] = True
+    return data
+
+
+def save_profile(profile: AgentProfile, *, target_dir: Path | None = None, builtin_override: bool = False) -> Path:
     """Serialize *profile* to YAML and write to ``{target_dir}/{name}.yaml``.
 
     ``target_dir`` defaults to ``~/.chrys/agents/`` (the user profiles dir).
@@ -176,9 +259,9 @@ def save_profile(profile: AgentProfile, *, target_dir: Path | None = None) -> Pa
     out_dir = target_dir if target_dir is not None else _user_profiles_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{profile.name}.yaml"
-    data = profile_to_dict(profile)
+    data = builtin_override_dict(profile) if builtin_override else profile_to_dict(profile)
     text = dump_yaml(data)
-    with profile_write_lock:
+    with profile_directory_lock(out_dir):
         atomic_write_owner_only_text(path, text)
     logger.debug("Saved agent profile to %s", path)
     return path
@@ -195,7 +278,7 @@ def delete_profile(name: str) -> bool:
     """
     _require_filename_safe_name(name)
     path = _user_profiles_dir() / f"{name}.yaml"
-    with profile_write_lock:
+    with profile_directory_lock(path.parent):
         if path.is_file():
             path.unlink()
             logger.debug("Deleted agent profile %s", path)

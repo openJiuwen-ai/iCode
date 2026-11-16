@@ -20,6 +20,7 @@ from textual.app import App, ComposeResult
 from textual.widget import Widget
 from textual.widgets import Static
 
+import chrys.app.tui.widgets.chat.compaction_card as compaction_card_module
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     TranscriptCompactionFinishedOp,
@@ -34,6 +35,7 @@ from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ
+from tests.support.frozen_clock import freeze_monotonic
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import ChatPanelApp, mount_sub_agent_detail
 from tests.support.waiting import wait_for
@@ -155,17 +157,20 @@ async def test_compaction_summary_chrome_uses_mount_locale(
 
 
 @pytest.mark.asyncio
-async def test_compaction_card_running_label_elapsed_trail_survives_rendering() -> None:
+async def test_compaction_card_running_label_elapsed_trail_survives_rendering(monkeypatch: pytest.MonkeyPatch) -> None:
     """The elapsed suffix must survive actual segment rendering — the label
     goes through Content markup (terminal labels use theme variables like
     ``$warning`` that Rich inline styles cannot parse), and a rich-style
-    implementation once silently dropped the trail."""
-    import time as time_module
+    implementation once silently dropped the trail.
+
+    The card's clock is frozen: its once-a-second tick would otherwise move the
+    trail past the asserted second whenever the runner stalls (a long GC pause)."""
+    clock = freeze_monotonic(monkeypatch, compaction_card_module)
 
     async with _CardApp().run_test() as pilot:
         await pilot.pause()
         card = pilot.app.query_one(CompactionCard)
-        card._start_time = time_module.monotonic() - 65
+        clock.now += 65
         card._tick()
         await pilot.pause()
 

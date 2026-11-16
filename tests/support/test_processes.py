@@ -1,13 +1,19 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""A process a test started has ended once it is gone or a zombie, even if it goes while being read."""
+"""A process a test started has ended once it is gone or a zombie, even if it goes while being read.
+
+The pid it published is read only once its file opens.
+"""
 
 from __future__ import annotations
+
+import errno
+from pathlib import Path
 
 import psutil
 import pytest
 
-from tests.support.processes import still_running
+from tests.support.processes import published_pid, still_running
 
 
 class _ReadProcess:
@@ -41,3 +47,19 @@ class _ReadProcess:
 )
 def test_a_process_has_ended_once_gone_or_a_zombie(running: bool, status: str | None, expected: bool) -> None:
     assert still_running(_ReadProcess(running=running, status=status)) is expected  # type: ignore[arg-type]
+
+
+def test_a_published_pid_is_read_only_once_its_file_opens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = tmp_path / "pid"
+    assert published_pid(marker) is None
+    marker.write_text("4242", encoding="utf-8")
+
+    def held(path: Path, encoding: str | None = None, errors: str | None = None, newline: str | None = None) -> str:
+        # What Windows raises while the rename that published the file still holds it.
+        raise PermissionError(errno.EACCES, "Permission denied", str(path))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", held)
+        assert marker.exists()
+        assert published_pid(marker) is None
+    assert published_pid(marker) == 4242

@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from chrys.foundation.retry import RetryAttemptInfo
+from chrys.kernel import LastWordsCompletion
 from chrys.service.context.compaction.last_words import CompactionStatus, LastWordsGenerator
 from chrys.service.context.compaction.scoped import DEGRADED_SCOPED_PREAMBLE, ScopedGroup
 from chrys.service.profiles.models.resolver import default_profile
@@ -47,27 +48,31 @@ def long_structured_note(fill: str = "detail") -> str:
 class FakeCompleter:
     """LastWordsCompleter fake: replays a scripted sequence of results.
 
-    Each entry is either the note text to return or an exception to raise.
-    The final entry repeats once the script is exhausted.
+    Each entry is the note text to return, a ``LastWordsCompletion`` (for an
+    answer the provider cut off), or an exception to raise.  The final entry
+    repeats once the script is exhausted.
     """
 
     def __init__(self, results: list) -> None:
         self._results = list(results)
         self.calls: list[dict] = []
 
-    async def complete_last_words(self, base_messages, instruction, *, max_output_tokens, on_usage=None):  # type: ignore[no-untyped-def]
+    async def complete_last_words(  # type: ignore[no-untyped-def]
+        self, base_messages, instruction, *, max_output_tokens, on_usage=None, keep_tool_choice=False
+    ):
         self.calls.append(
             {
                 "base_messages": list(base_messages),
                 "instruction": instruction,
                 "max_output_tokens": max_output_tokens,
                 "on_usage": on_usage,
+                "keep_tool_choice": keep_tool_choice,
             }
         )
         result = self._results.pop(0) if len(self._results) > 1 else self._results[0]
         if isinstance(result, Exception):
             raise result
-        return result
+        return result if isinstance(result, LastWordsCompletion) else LastWordsCompletion(result)
 
 
 class FallbackClient:
@@ -90,6 +95,7 @@ class FallbackClient:
             usage_details = None
             additional_properties: ClassVar[dict[str, object]] = {}
             messages: ClassVar[tuple[Message, ...]] = ()
+            finish_reason = None
             raw_text = self.text
 
         return _Response()
@@ -115,6 +121,7 @@ class SequenceFallbackClient:
             usage_details = None
             additional_properties: ClassVar[dict[str, object]] = {}
             messages: ClassVar[tuple[Message, ...]] = ()
+            finish_reason = None
             raw_text = text
 
         return _Response()
@@ -183,6 +190,8 @@ async def generate(
     degraded_opener: bool = False,
     completer=None,  # type: ignore[no-untyped-def]
     spend_side_call_tokens=None,  # type: ignore[no-untyped-def]
+    affords_side_call_tokens=None,  # type: ignore[no-untyped-def]
+    entry_messages: list[Message] | None = None,
 ):
     """Build a compact scoped timeline for generator-focused tests."""
     opener = DEGRADED_SCOPED_PREAMBLE if degraded_opener else user_request
@@ -209,4 +218,6 @@ async def generate(
         has_continuation_nudges=has_continuation_nudges,
         completer=completer,
         spend_side_call_tokens=spend_side_call_tokens,
+        affords_side_call_tokens=affords_side_call_tokens,
+        entry_messages=entry_messages,
     )

@@ -166,6 +166,44 @@ def test_models_command_renders_rich_table(monkeypatch: pytest.MonkeyPatch, caps
 
 
 @pytest.mark.parametrize(
+    ("max_context_tokens", "expected"),
+    [
+        (0, "0"),
+        (65_536, "65.5k"),
+        (131_072, "131.1k"),
+        (200_000, "200k"),
+        (999_950, "1.0m"),
+        (1_048_576, "1.0m"),
+        (1_500_000, "1.5m"),
+    ],
+)
+def test_models_command_formats_the_context_column_in_compact_units(
+    monkeypatch: pytest.MonkeyPatch, capsys, max_context_tokens: int, expected: str
+) -> None:
+    FakeAgentRegistry.profiles = []
+    FakeAgentRegistry.builtin_names = set()
+    FakeModelRegistry.profiles = [
+        ModelProfile(
+            id="m1",
+            name="Gamma",
+            provider="openai",
+            model_id="gpt",
+            max_context_tokens=max_context_tokens,
+            stream=False,
+        )
+    ]
+    _patch_runtime(monkeypatch, Settings(model_profile="m1", locale="en"))
+
+    assert profiles_cli.models_main([]) == 0
+
+    out = capsys.readouterr().out
+    row = next(line for line in out.splitlines() if "Gamma" in line)
+    assert row.split() == ["*", "m1", "Gamma", "openai", "chat", "gpt", expected, "-"]
+    for raw in ("1048576", "1500k", "65536"):
+        assert raw not in out
+
+
+@pytest.mark.parametrize(
     "locale",
     ["en", "zh-Hans"],
 )

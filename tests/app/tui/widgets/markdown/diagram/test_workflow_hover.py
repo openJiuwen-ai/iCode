@@ -109,7 +109,7 @@ async def test_hover_highlights_without_selecting_or_reflowing(
 
         assert await pilot.click(graph, offset=offset)
         await wait_for(lambda: opened == [target], pilot=pilot)
-        await wait_for(lambda: isinstance(pilot.app.screen, ModalScreen), pilot=pilot)
+        await wait_for(lambda: isinstance(pilot.app.screen, ModalScreen) and pilot.app.screen.is_mounted, pilot=pilot)
         assert graph.selected_node == target and graph._hovered_node == ""
         pilot.app.pop_screen()
         await wait_for(lambda: pilot.app.screen is graph.screen, pilot=pilot)
@@ -123,7 +123,7 @@ async def test_hover_highlights_without_selecting_or_reflowing(
         graph.focus()
         await pilot.press("enter")
         await wait_for(lambda: opened == [target, target], pilot=pilot)
-        await wait_for(lambda: isinstance(pilot.app.screen, ModalScreen), pilot=pilot)
+        await wait_for(lambda: isinstance(pilot.app.screen, ModalScreen) and pilot.app.screen.is_mounted, pilot=pilot)
         pilot.app.pop_screen()
         await wait_for(lambda: pilot.app.screen is graph.screen, pilot=pilot)
         assert graph.selected_node == target and highlighted(target)

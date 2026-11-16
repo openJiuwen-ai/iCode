@@ -17,6 +17,7 @@ import logging
 import ntpath
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from collections.abc import AsyncGenerator, Mapping
@@ -176,6 +177,86 @@ def _resolve_spawn_executable(command: str, env: Mapping[str, str]) -> str:
     except OSError, TypeError, ValueError:
         return command
     return found or command
+
+
+WORKING_DIRECTORY_PROBLEMS = {
+    "not_absolute": "the server's working directory starts with a drive letter and must be a full path, such as D:\\server",
+    "missing": "the server's working directory does not exist",
+    "not_directory": "the server's working directory is not a folder",
+    "inaccessible": "the server's working directory cannot be entered",
+}
+"""What each :class:`StdioWorkingDirectoryError` reason says, as its message and in failure reports."""
+
+
+class StdioWorkingDirectoryError(OSError):
+    """The folder a stdio server is configured to start in cannot be used.
+
+    ``reason`` is a :data:`WORKING_DIRECTORY_PROBLEMS` key; the message is its sentence and
+    names no path (the connection error shows the working directory beside it).
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(WORKING_DIRECTORY_PROBLEMS[reason])
+
+
+def _check_working_directory(cwd: str | os.PathLike[str]) -> None:
+    """Raise :class:`StdioWorkingDirectoryError` unless *cwd* is a folder the server can start in.
+
+    Checked before spawning because the spawn's own error is the same
+    ``FileNotFoundError`` a missing command gives, and differs by platform.
+    A resolved folder is absolute unless it is a drive-relative Windows path
+    (``D:server``), which would start from that drive's process-wide current
+    folder rather than the workspace, so it is refused.
+    """
+    if not os.path.isabs(cwd):
+        raise StdioWorkingDirectoryError("not_absolute")
+    try:
+        is_folder = stat.S_ISDIR(os.stat(cwd).st_mode)
+    except FileNotFoundError:
+        raise StdioWorkingDirectoryError("missing") from None
+    except NotADirectoryError:
+        raise StdioWorkingDirectoryError("not_directory") from None
+    except OSError, ValueError:
+        raise StdioWorkingDirectoryError("inaccessible") from None
+    if not is_folder:
+        raise StdioWorkingDirectoryError("not_directory")
+    if not os.access(cwd, os.X_OK):
+        raise StdioWorkingDirectoryError("inaccessible")
+
+
+COMMAND_DRIVE_RELATIVE = (
+    "the server command starts with a drive letter and must be a full path, such as D:\\server\\server.exe"
+)
+"""The message of :class:`StdioCommandPathError`, and what failure reports say for it."""
+
+
+class StdioCommandPathError(OSError):
+    """A Windows stdio command is relative to a drive (``D:bin\\server.exe``), so no folder anchors it."""
+
+    def __init__(self) -> None:
+        super().__init__(COMMAND_DRIVE_RELATIVE)
+
+
+def _anchor_relative_command(command: str, cwd: str | os.PathLike[str] | None) -> str:
+    """*command* made absolute under *cwd* when it is a relative path with a folder part.
+
+    POSIX looks such a command up from the new folder, but Windows' process
+    creation reads it from the parent's, so it is anchored the same way everywhere.
+    A bare name (searched on ``PATH``) and an absolute path are returned unchanged.
+    The parts are joined, never collapsed: on POSIX ``link/..`` follows the link,
+    which a lexical ``normpath`` would not.
+
+    A drive-relative Windows command (``D:bin\\server.exe``) counts from that drive's
+    process-wide current folder, which nothing here controls, so it raises
+    :class:`StdioCommandPathError` instead, on the working directory's drive as well,
+    as a drive-relative working directory is refused.
+    """
+    if os.path.splitdrive(command)[0] and not os.path.isabs(command):
+        raise StdioCommandPathError
+    if cwd is None or cwd == "" or not os.path.dirname(command) or os.path.isabs(command):
+        return command
+    return os.path.join(cwd, command)
 
 
 def _past_store_python_stub(
@@ -373,6 +454,23 @@ async def tolerant_stdio_client(
 
     diagnostics = process_diagnostics or _StdioProcessDiagnostics()
     diagnostics.reset()
+
+    # Before either reader is chosen, so the stock fallback below gets both: a
+    # missing folder is named as such, and a relative command is read from it
+    # (or, relative to a drive, refused).
+    if server.cwd is not None and server.cwd != "":
+        try:
+            _check_working_directory(server.cwd)
+        except StdioWorkingDirectoryError:
+            diagnostics.record_spawn(resolved_executable="", cwd=server.cwd)
+            raise
+    try:
+        anchored_command = _anchor_relative_command(server.command, server.cwd)
+    except StdioCommandPathError:
+        diagnostics.record_spawn(resolved_executable="", cwd=server.cwd)
+        raise
+    if anchored_command != server.command:
+        server = server.model_copy(update={"command": anchored_command})
 
     # A child keeps the environment it starts with, so each launch gets a token just fetched.
     if server.env and command_handles_in(server.env.values()):

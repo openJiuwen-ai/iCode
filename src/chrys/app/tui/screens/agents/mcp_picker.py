@@ -110,6 +110,8 @@ class MCPPickerDialog(BaseDialog[MCPPickerResult]):
             yield OptionList()
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         controller = widget_locale_controller(self)
         if controller is not None:
             controller.register_surface(self)

@@ -14,6 +14,7 @@ import re
 from collections.abc import Mapping, MutableMapping
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
+from enum import Enum
 from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
 
 logger = logging.getLogger(__name__)
@@ -420,6 +421,10 @@ def _make_json_safe(obj: Any, *, depth: int) -> Any:
             return _make_json_safe(obj.dict(), depth=depth + 1)  # type: ignore[no-any-return]
         except TypeError:
             pass
+    if isinstance(obj, Enum):
+        # A plain Enum member would otherwise fall to ``vars()`` below and walk
+        # its class (``__objclass__``): megabytes of JSON for one value.
+        return _make_json_safe(obj.value, depth=depth + 1)
     if isinstance(obj, Mapping):
         return {str(key): _make_json_safe(value, depth=depth + 1) for key, value in obj.items()}  # type: ignore[misc]
     if isinstance(obj, (list, tuple)):

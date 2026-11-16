@@ -44,6 +44,7 @@ from chrys.foundation.trajectory_timing import TRAJECTORY_TIMING_KEY
 from chrys.kernel import (
     TELEMETRY_GATE,
     ChatClientException,
+    LastWordsCompletion,
     Message,
     ResponseStream,
     instrumentation,
@@ -475,7 +476,7 @@ async def test_the_last_words_side_call_reports_an_exchange_of_its_own(
         with trajectory_scope(context):
             note = await completer.complete_last_words(case.messages(), "Write the note.", max_output_tokens=512)
 
-    assert note == "Sunny for note."
+    assert note == LastWordsCompletion("Sunny for note.")
     started = sink.only(EventType.MODEL_EXCHANGE_STARTED)
     finished = sink.only(EventType.MODEL_EXCHANGE_FINISHED)
     assert sink.event_types == [

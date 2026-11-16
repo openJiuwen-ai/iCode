@@ -166,23 +166,57 @@ def extract_result_text(result: Any) -> str:
 
 def extract_result_images(result: Any) -> list[Any]:
     """Extract image Content-like items from a tool invocation result."""
+    images: list[Any] = []
+    for item in _media_items(result):
+        media_type = getattr(item, "media_type", None)
+        properties = getattr(item, "additional_properties", None)
+        property_media_type = properties.get("media_type") if isinstance(properties, Mapping) else None
+        if is_image_media_type(media_type) or is_image_media_type(property_media_type):
+            images.append(item)
+    return images
+
+
+def extract_result_attachments(result: Any) -> list[Any]:
+    """Extract the media Content-like items of a tool invocation result: images, audio, files.
+
+    What a text replacement has to keep. A hook hands back text only, so a
+    result carrying an image, an audio clip or a file beside its text would
+    lose them to that text alone; the model would no longer see what the tool
+    gave it. :func:`extract_result_images` is the images of these.
+    """
+    return _media_items(result)
+
+
+_ITEMS_SLOTS = ("function_result", "hosted_tool_result", "search_tool_result")
+"""Result contents that carry their nested contents in ``items``."""
+
+_OUTPUTS_SLOTS = ("shell_tool_result", "code_interpreter_tool_result", "image_generation_tool_result")
+"""Result contents that carry their nested contents in ``outputs``."""
+
+_OUTPUT_SLOT = "mcp_server_tool_result"
+"""The result content that carries its nested contents in ``output``."""
+
+
+def _media_items(result: Any) -> list[Any]:
+    """The ``data``/``uri`` items of a result, beside its text, wherever its kind nests them."""
     if result is None or isinstance(result, str):
         return []
     if isinstance(result, list):
-        images: list[Any] = []
+        items: list[Any] = []
         for item in result:
-            images.extend(extract_result_images(item))
-        return images
+            items.extend(_media_items(item))
+        return items
     item_type = getattr(result, "type", None)
-    if item_type == "function_result":
-        items = getattr(result, "items", None)
-        return extract_result_images(items) if isinstance(items, list) else []
     if item_type in ("data", "uri"):
-        media_type = getattr(result, "media_type", None)
-        properties = getattr(result, "additional_properties", None)
-        property_media_type = properties.get("media_type") if isinstance(properties, Mapping) else None
-        if is_image_media_type(media_type) or is_image_media_type(property_media_type):
-            return [result]
+        return [result]
+    # Each kind of result content keeps what it holds in its own slot, so the kind
+    # decides which one to walk rather than trying all three.
+    if item_type in _ITEMS_SLOTS:
+        return _media_items(getattr(result, "items", None))
+    if item_type in _OUTPUTS_SLOTS:
+        return _media_items(getattr(result, "outputs", None))
+    if item_type == _OUTPUT_SLOT:
+        return _media_items(getattr(result, "output", None))
     return []
 
 

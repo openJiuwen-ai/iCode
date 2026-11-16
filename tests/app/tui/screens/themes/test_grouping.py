@@ -51,7 +51,7 @@ async def test_theme_lists_group_by_source_and_keep_keyboard_selection(
             await pilot.press("up")
             assert app.theme == users[-1]
         await pilot.press("escape")
-        await wait_for(lambda: isinstance(app.screen, _EditorScreen), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, _EditorScreen) and app.screen.is_mounted, pilot=pilot)
         editor = await open_editor(app, pilot, tmp_path)
         selector = editor.query_one(Select)
         await pilot.click(selector)

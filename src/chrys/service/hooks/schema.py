@@ -183,8 +183,8 @@ class HookExecution:
     """
 
     on_error: HookErrorPolicy = "warn"
-    """What to do when the hook fails (non-zero exit or timeout).  See
-    :data:`HookErrorPolicy`.
+    """What to do when the hook fails (non-zero exit, timeout, or — on a gating
+    event — a result file iCode cannot act on).  See :data:`HookErrorPolicy`.
     """
 
 
@@ -337,6 +337,12 @@ class HookDecision:
     """Text to append to textual tool results (``after_tool_call``) or
     surface to the user.  Kept distinct from :attr:`system_reminders`
     because the consumers are different.
+    """
+
+    result_override: str = ""
+    """Replaces the text of a textual tool result (``after_tool_call``,
+    ``tool_error``) before the model reads it.  The last hook that sets it
+    wins; a result with images keeps them, a non-text result is left as it is.
     """
 
     confirmation: HookConfirmationOutcome | None = None

@@ -38,6 +38,8 @@ from tests.support.tui_app_harness import ShutdownOnlyEngine, make_chrys_app
 from tests.support.tui_helpers import ChatPanelApp, click_when_settled, rich_plain
 from tests.support.waiting import wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.fixture(autouse=True)
 def no_native_branch_observer(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,7 +119,7 @@ async def test_main_screen_mouse_rollback_needs_no_model_and_restores_first_prom
             button = panel.query_one(UserMessage).query_one(MessageRollbackButton)
         await click_when_settled(pilot, button)
         # Both entries ask even for the latest turn without file changes.
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted, pilot=pilot)
         assert requests == []
         await click_when_settled(pilot, "#confirm-yes")
         await wait_for(

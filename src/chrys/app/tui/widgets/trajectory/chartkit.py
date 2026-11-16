@@ -268,8 +268,11 @@ def _axis_duration(value_ns: int, span_ns: int) -> str:
     seconds = value_ns / 1_000_000_000
     if value_ns <= 0:
         return "0ms" if span_ns < 1_000_000_000 else "0s"
-    if seconds < 1:
-        return f"{seconds * 1000:.0f}ms"
+    # The unit is chosen after rounding, so 999.6 ms reads 1.0s rather than
+    # 1000ms — the same rule the turn and operation durations use.
+    milliseconds = round(seconds * 1000)
+    if milliseconds < 1000:
+        return f"{milliseconds}ms"
     if seconds < 10:
         return f"{seconds:.1f}s"
     whole_seconds = round(seconds)

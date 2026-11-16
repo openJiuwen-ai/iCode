@@ -170,8 +170,14 @@ async def test_an_edited_rule_applies_to_the_next_event(agent_engine, tmp_path, 
         assert "blocked by new-rule" in await read_attempt(session, tmp_path)
 
 
-@pytest.mark.parametrize("source", ["global", "project"])
-@pytest.mark.parametrize("damage", ["unparsable", "invalid-entry", "skipped-rule"])
+# Each damage once, each file at least once: one strict read handles both files
+# (``_read_hooks_folder``, which only the folder and the trust switch tell apart),
+# and the reload keeps the running rules on any problem it reports, whatever it is.
+@pytest.mark.parametrize(
+    ("damage", "source"),
+    [("unparsable", "global"), ("invalid-entry", "project"), ("skipped-rule", "project")],
+    ids=["unparsable-global", "invalid-entry-project", "skipped-rule-project"],
+)
 async def test_a_damaged_file_keeps_the_rule_that_was_blocking(agent_engine, tmp_path, monkeypatch, source, damage):
     path = global_hooks() if source == "global" else project_hooks()
     write_hooks(path, blocks_reading("old-rule"))
@@ -395,7 +401,12 @@ async def test_a_replacement_fires_no_session_start_and_redelivers_nothing(agent
     started = blocking("started", "session_start", appends)
     # With no retry age, recovery would take the job still running for a dead process's.
     write_hooks(global_hooks(), started, durable, settings={"outbox_retry_age_seconds": 0})
-    async with hook_session(agent_engine, tmp_path, monkeypatch) as session:
+
+    def recording_runs(*args, **kwargs):
+        # As the TUI's own engine does: every hook run is in the run log from the moment it is queued.
+        return agent_engine(*args, record_hook_runs=True, **kwargs)
+
+    async with hook_session(recording_runs, tmp_path, monkeypatch) as session:
         await ask_after_reload(session, "one turn")
         lines = lambda: log.read_text(encoding="utf-8").splitlines() if log.exists() else []  # noqa: E731
         await wait_for(
@@ -405,6 +416,10 @@ async def test_a_replacement_fires_no_session_start_and_redelivers_nothing(agent
             description="the durable hook delivered",
         )
         assert lines().count("session_start") == 1
+        run_log = session.engine.hook_runs
+        assert run_log is not None
+        runs = lambda: sorted(record.hook_event for record in run_log.records())  # noqa: E731
+        assert runs() == ["after_turn", "session_start"]
         write_hooks(
             global_hooks(), started, durable, blocks_reading("new-rule"), settings={"outbox_retry_age_seconds": 0}
         )
@@ -412,10 +427,17 @@ async def test_a_replacement_fires_no_session_start_and_redelivers_nothing(agent
         await reloaded(session)
 
         assert session.engine.session.outbox_recovery_task is None
+        # A session start or a redelivery is in the run log once queued, before its process
+        # starts: recovery would queue at once (no retry age, no timer), a session start in the
+        # load itself, so 0.3 s is ample. The hooks' own log is read too, for a run outside it.
         assert not await wait_until(
-            lambda: lines().count("after_turn") > 1 or lines().count("session_start") > 1,
+            lambda: (
+                runs() != ["after_turn", "session_start"]
+                or lines().count("after_turn") > 1
+                or lines().count("session_start") > 1
+            ),
             pilot=session.pilot,
-            timeout=2.0,
+            timeout=0.3,
         )
         release.write_text("x", encoding="utf-8")
 

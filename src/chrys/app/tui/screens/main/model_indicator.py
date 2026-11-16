@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from chrys.app.tui.util.formatting import format_compact_count
 from chrys.foundation.events.types import RuntimeModelDetails
 from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
@@ -95,13 +96,7 @@ def model_lock_notice(details: RuntimeModelDetails, agent_label: str) -> Message
 
 def fmt_context_size(tokens: int) -> str:
     """Format token count as compact size string."""
-    if tokens >= 1_000_000:
-        millions = tokens / 1_000_000
-        return f"{millions:.0f}m" if millions == int(millions) else f"{millions:.1f}m"
-    if tokens >= 1000:
-        thousands = tokens / 1000
-        return f"{thousands:.0f}k" if thousands == int(thousands) else f"{thousands:.1f}k"
-    return str(tokens)
+    return format_compact_count(tokens)
 
 
 def compute_model_indicator_state(

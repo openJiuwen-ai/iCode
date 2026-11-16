@@ -198,7 +198,9 @@ def _arguments_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         try:
             decoded = json.loads(value)
-        except json.JSONDecodeError:
+        # A bare ValueError is an integer literal past Python's integer-string
+        # conversion limit: expose the raw text, as for malformed JSON.
+        except ValueError:
             return {"input": value}
         if isinstance(decoded, Mapping):
             return {str(key): _json_safe(item) for key, item in decoded.items()}

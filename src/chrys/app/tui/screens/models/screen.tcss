@@ -63,6 +63,16 @@ ModelConfigScreen {
     height: auto;
 }
 
+/* The model input is shortened so Fetch sits after it and the row ends where the other fields end. */
+#mc-model-line {
+    height: auto;
+    margin: 0 2 0 0;
+}
+
+#mc-model-fetch {
+    margin: 0 0 0 1;
+}
+
 .mc-label:first-of-type {
     margin-top: 0;
 }
@@ -105,6 +115,53 @@ ModelConfigScreen {
     max-height: 16;
     border: round $tui-border-primary $border-opacity;
     background: $surface;
+}
+
+/* The overlay shape follows #mc-scroll SelectOverlay. */
+#mc-model-picker {
+    width: 1fr;
+    height: auto;
+    color: $foreground;
+}
+
+#mc-model-row {
+    height: 1;
+}
+
+#mc-scroll #mc-model {
+    width: 1fr;
+    margin: 0;
+}
+
+#mc-model-arrow {
+    width: 2;
+    height: 1;
+    color: $text-muted;
+    background: $foreground 8%;
+}
+
+#mc-model-row:focus-within #mc-model-arrow {
+    background: $foreground 12%;
+}
+
+#mc-model-picker > SelectOverlay {
+    width: 1fr;
+    display: none;
+    overlay: screen;
+    constrain: none inside;
+    color: $foreground;
+}
+
+#mc-model-picker > SelectOverlay:focus {
+    background-tint: $foreground 5%;
+}
+
+#mc-model-picker > SelectOverlay > .option-list--option {
+    padding: 0 1;
+}
+
+#mc-model-picker.-expanded > SelectOverlay {
+    display: block;
 }
 
 /* Key-value list container */
@@ -192,6 +249,16 @@ ModelConfigScreen {
     color: $warning;
 }
 
+/* Lookup hints sit under an input: start where the input's text starts. */
+#mc-url-hint,
+#mc-model-hint {
+    padding: 0 0 0 1;
+}
+
+#mc-model-hint.-progress {
+    color: $text-muted;
+}
+
 /* Footer buttons */
 #mc-footer {
     dock: bottom;
@@ -217,22 +284,11 @@ ModelConfigScreen {
     width: auto;
 }
 
-#mc-buttons #mc-new {
-    margin: 0 1 0 0;
-    min-width: 10;
-    width: auto;
-}
-
-#mc-buttons #mc-clone {
-    margin: 0 1 0 0;
-    min-width: 10;
-    width: auto;
-}
-
+#mc-buttons #mc-new,
+#mc-buttons #mc-clone,
 #mc-buttons #mc-delete {
     margin: 0 1 0 0;
     min-width: 10;
-    width: auto;
 }
 
 #mc-buttons-spacer {
@@ -250,15 +306,57 @@ ModelConfigScreen {
     background: $warning 15%;
 }
 
+#mc-buttons #mc-test,
 #mc-buttons #mc-save {
     margin: 0 1 0 0;
 }
 
-#mc-buttons #mc-save {
-    min-width: 13;
+#mc-buttons #mc-test,
+#mc-buttons #mc-save,
+#mc-buttons #mc-cancel {
+    min-width: 11;
+    width: 11;
+}
+
+#mc-buttons #mc-test {
+    /* A quiet secondary action: a faint block in the theme's border colour with secondary ink;
+       fill and block edge share one colour so it reads as one button. */
+    color: $secondary;
+    background: $tui-border-foreground 22%;
+    border: block $tui-border-foreground 22%;
+}
+
+#mc-buttons #mc-test:hover {
+    color: $background;
+    background: $tui-border-foreground;
+    border: block $tui-border-foreground;
+}
+
+#mc-buttons #mc-test:disabled {
+    color: $secondary 50%;
+}
+
+App:ansi #mc-buttons #mc-test {
+    background: $tui-border-control-background;
+    border: block $tui-border-control-background;
 }
 
 #mc-buttons #mc-cancel {
     margin: 0;
-    min-width: 13;
+}
+
+/* On narrow screens, drop the profile buttons' side edges while keeping their labels and gaps. */
+ModelConfigScreen.-narrow #mc-buttons #mc-new,
+ModelConfigScreen.-narrow #mc-buttons #mc-clone,
+ModelConfigScreen.-narrow #mc-buttons #mc-delete {
+    min-width: 0;
+    border-left: none;
+    border-right: none;
+}
+
+ModelConfigScreen.-narrow #mc-buttons #mc-test,
+ModelConfigScreen.-narrow #mc-buttons #mc-save,
+ModelConfigScreen.-narrow #mc-buttons #mc-cancel {
+    min-width: 9;
+    width: 9;
 }

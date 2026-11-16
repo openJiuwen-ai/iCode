@@ -137,7 +137,7 @@ class AnthropicMessagesClient(WireClient):
             origin=self.reasoning_origin(),
             skip_thinking=skip_thinking,
         )
-        self._stamp_request_headers(built.request)
+        self._finalize_request(built.request)
         return built
 
     async def _create(

@@ -216,6 +216,17 @@ def _highlight_lines(code: str, path: str, language: str, *, shown_end: int | No
     return lines
 
 
+def highlight_snippet(code: str, path: str) -> list[Content]:
+    """A few lines cut from the file at *path*, highlighted on their own, one `Content` per line.
+
+    Without the lines above them, a string or comment opened earlier is not known to be open.
+    """
+    lines = _highlight_lines(code, path, _guess_diff_language(code, path))
+    # A blank last line is not a line to `splitlines`: give it back.
+    lines.extend(Content(line) for line in code.split("\n")[len(lines) :])
+    return lines
+
+
 def shown_code(code: str) -> str:
     """``code`` as a diff shows it.
 
@@ -227,7 +238,8 @@ def shown_code(code: str) -> str:
     return mark_hidden_format(sanitize_source_text(code, tab_size=8))
 
 
-def _compared_lines(code: str) -> list[str]:
+def compared_lines(code: str) -> list[str]:
+    """Split original text exactly as the diff comparison does."""
     lines = _LINE_BREAK.split(code)
     if lines[-1] == "":
         lines.pop()
@@ -240,8 +252,12 @@ def compute_hunks(code_before: str, code_after: str) -> list[Hunk]:
     The texts are compared as given, since `shown_code` shows different characters alike and a
     change between two of them would go missing, in lines that are the lines it shows.
     """
-    matcher = difflib.SequenceMatcher(None, _compared_lines(code_before), _compared_lines(code_after))
-    return list(matcher.get_grouped_opcodes())
+    return hunks_between(compared_lines(code_before), compared_lines(code_after))
+
+
+def hunks_between(lines_before: list[str], lines_after: list[str]) -> list[Hunk]:
+    """`compute_hunks` for texts already split by `compared_lines`."""
+    return list(difflib.SequenceMatcher(None, lines_before, lines_after).get_grouped_opcodes())
 
 
 def emphasize_changes(removed: Sequence[Content], added: Sequence[Content]) -> tuple[list[Content], list[Content]]:

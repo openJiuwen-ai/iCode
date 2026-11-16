@@ -40,7 +40,7 @@ Filesystem restrictions may prevent iCode from adding the `.conflict` marker. In
 
 The original profiles for built-in agents are included with the iCode installation. When you edit and save a built-in agent through the TUI, iCode creates a profile with the same name in the [user agent profile directory](#user-agent-profile-directory). For example, editing and saving the built-in agent named `Code` creates `Code.yaml`.
 
-The built-in agent names are `Code`, `QA`, `Explore`, and `General`. A profile manually created in the user agent profile directory with any of these `name` values also overrides the corresponding built-in agent. An override replaces the entire built-in profile; it does not inherit or merge any other fields from it. Delete the corresponding user profile and restart iCode to restore the built-in profile.
+The built-in agent names are `Code`, `QA`, `Explore`, and `General`. A profile manually created in the user agent profile directory with any of these `name` values also overrides the corresponding built-in agent. The `instructions` and `compaction.last_words_template` fields always come from the installed built-in profile, including when their built-in value is empty. User settings omit these fields when saved. Other fields retain the values from the user profile; they are not merged with built-in defaults. Legacy overrides containing nonempty system or compaction prompts are backed up as independent custom agents before the protected fields are removed. Empty or whitespace-only prompts do not create a backup. To customize prompts, clone the built-in agent and use its new name and ID. Delete the corresponding user profile and restart iCode to restore the built-in profile.
 
 ## Basic profile example
 
@@ -77,9 +77,9 @@ If "Code review" appears in the list, the profile has loaded. If it does not app
 | --- | --- | --- | --- |
 | `name` | String | Required | Profile name, also used as the base of the normalized filename. Sub-agent references use this value. |
 | `id` | String | Assigned automatically | Stable identifier. If omitted or empty, iCode automatically assigns a 12-character hexadecimal ID: it reuses the built-in agent's ID when the names match, or generates a new ID otherwise. You can also specify a unique ID manually; quote an ID made only of digits, such as `id: "123"`, because an unquoted one is read as a number and the profile fails to load. When copying and modifying an existing profile to create a new one, remove the `id` field so iCode can assign a new ID. |
-| `display_name` | String | Empty | Display name. |
-| `description` | String | Empty | Describes the agent's purpose. Also used as the default tool description for a sub-agent when none is specified. |
-| `sub_agent_only` | Boolean | `false` | If `true`, the agent cannot be selected as the main agent and can only be called by other agents. Forced to `true` for external ACP agents. |
+| `display_name` | String | Empty | Display name. Must be text: an unquoted number or boolean, such as `display_name: 2024`, makes the whole profile fail to load, so quote it as text instead. Earlier versions read such a value as is and then failed in `agent list` or ACP. |
+| `description` | String | Empty | Describes the agent's purpose. Also used as the default tool description for a sub-agent when none is specified. Must be text: an unquoted number or boolean, such as `description: 42`, makes the whole profile fail to load. |
+| `sub_agent_only` | Boolean | `false` | If `true`, the agent cannot be selected as the main agent and can only be called by other agents. This field also accepts `true`/`false`, `yes`/`no` and `on`/`off` as text, in any case. Forced to `true` for external ACP agents. |
 | `instructions` | String or list of strings | Empty | Main behavioral instructions for agents of the built-in type. A list is joined into one text, one item per line. External ACP profiles ignore this field. |
 | `model` | Object | `{}` | Binds a model profile. See [model](#model). |
 | `tools` | Object | `{}` | Configures built-in tools, MCP, and shell filtering. See [tools](#tools). |
@@ -175,6 +175,7 @@ Both `env` and `headers` are key-value mappings: enter the variable or header na
 | `max_tool_result_tokens` | Integer or `null` | `null` | All | Text result limit for a single remote tool call. `null` uses the default limit of `8000` tokens; `0` disables only this limit; a positive integer must be at least `100`. Other values cause the entire agent profile to be skipped. |
 | `command` | String | Empty | STDIO | Executable name or path used to start the server. Do not append arguments to this YAML field. |
 | `args` | List of strings | `[]` | STDIO | Arguments passed to the server process. |
+| `cwd` | String | Empty | STDIO | Folder the server starts in; leading and trailing whitespace is ignored, and an empty value uses the current session's working directory. Relative paths start from that directory and can use `..` to point outside it. Also supports `~/` and absolute paths. Supports `{{ENV_VAR}}` references but not `{{!command}}`. Cannot contain NUL. See [Choose a working directory](../guides/extensions/mcp.md#choose-a-working-directory) for examples and [Test and save](../guides/extensions/mcp.md#test-and-save) for troubleshooting. |
 | `env` | String-valued object | `{}` | STDIO | Environment variables passed to the server process. Ignored for HTTP configurations. |
 | `encoding` | String or `null` | `null` | STDIO | Encoding for the server's standard input and output. Usually left empty. |
 | `url` | String | Empty | HTTP | Server URL beginning with `http://` or `https://`. |
@@ -183,6 +184,8 @@ Both `env` and `headers` are key-value mappings: enter the variable or header na
 | `verify_ssl` | Boolean | `true` | HTTP | Whether to verify HTTPS certificates. Disabling this reduces connection security. |
 | `bypass_proxy` | Boolean | `false` | HTTP | Whether to bypass HTTP/HTTPS proxies configured through environment variables and connect directly to the server. |
 | `terminate_on_close` | Boolean or `null` | `null` | HTTP | Whether to request termination of the remote session when closing the connection. `null` uses the default of `true`. |
+
+`enabled` and `load_prompts` are read with the usual profile boolean words: `false`, `no`, `off`, and `0` turn them off, in any letter case and quoted or not; any other non-empty text counts as `true`, and empty or whitespace-only text counts as `false`. Leaving the key out, or writing it with no value at all, keeps the default `true`.
 
 Use the server's original tool names in `allowed_tools` and `always_load`. `tool_name_prefix` changes the name the agent uses to call a tool; `approval.overrides` uses that same name. See [MCP tool names](./tool-kinds-and-names.md#mcp-tool-names) for naming rules. If a name you list could mean two tools — for example, with prefix `gh`, a server tool `search` becomes `gh_search`, the original name of another tool — the agent fails to load. The error names that entry and, for each tool it matches, a name that selects only that tool: here `search` for the server's `search` and `gh_gh_search` for the server's `gh_search`. Replace the entry with the names of only the tools you want the agent to use. If the error says no name selects a tool by itself, choose a different `tool_name_prefix`.
 
@@ -216,7 +219,7 @@ Available presets:
 | `read_only` | Allows only commands in the built-in command list and blocks unquoted redirection and command substitution. Examples include `ls`, `cat`, `rg`, `git`, `python`, `curl`, and PowerShell's `Get-Content`. It does not inspect arguments, subcommands, or script contents, so it does not guarantee read-only execution and is not a security sandbox. |
 | `unrestricted` | Does not filter shell commands. Usually, you can simply omit `shell_filter`. |
 
-Only the names in this table enable presets. Unrecognized presets do not take effect: the scalar form performs no shell filtering; for the object form, iCode attempts to use the custom rules in the same object. If `commands` is empty, no shell filtering occurs in that case either.
+Only the names in this table are valid. Any other name, in either form, makes the whole profile invalid: iCode skips the file instead of loading it with shell filtering switched off, and names `tools.shell_filter.preset` as the field to fix. To switch filtering off, write `unrestricted` or omit `shell_filter`.
 
 To specify your own allowed or blocked commands, use the object form. For example:
 
@@ -233,7 +236,7 @@ The object form supports these fields:
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `preset` | `read_only`, `unrestricted`, or empty | Empty | Selects a preset. A recognized preset takes precedence over all custom filtering fields. |
+| `preset` | `read_only`, `unrestricted`, or empty | Empty | Selects a preset. A recognized preset takes precedence over all custom filtering fields. Any other value is a load error. |
 | `mode` | `whitelist` or `blacklist` | `whitelist` | `whitelist` allows only commands in `commands`; `blacklist` blocks commands in `commands` and allows others. |
 | `commands` | List of strings | `[]` | Command names to allow in `whitelist` mode or block in `blacklist` mode. Must contain at least one command for custom filtering to take effect. An empty list means no shell filtering. |
 | `allow_redirections` | Boolean | `true` | Whether to allow unquoted `>`, `>>`, and `<`. |
@@ -429,7 +432,7 @@ skills:
 | --- | --- | --- | --- |
 | `paths` | List of strings | `[]` | Additional skill search roots. iCode searches each directory and up to two levels of subdirectories for `SKILL.md`. Once found, it does not search inside that skill directory. Relative paths are resolved against the current [working directory](../guides/daily-use/workspaces.md). iCode expands a leading `~` to the current user's home directory. |
 | `inline` | List of objects | `[]` | Skills written directly in the profile. See below. |
-| `script_timeout` | Positive integer | `300` | Maximum runtime for a skill script, in seconds. |
+| `script_timeout` | Positive integer | `300` | Maximum runtime for a skill script, in seconds. Leaving it out, or writing it with no value, keeps the default; a value that is not a positive integer causes the entire agent profile to be skipped. |
 | `script_extensions` | List of strings | `[.py, .sh, .ps1]` | Extensions allowed for skill scripts. The required interpreters must already be installed. |
 | `auto_load_user_agents_skills` | Boolean | `true` | Whether to load the user-level shared Agent Skills directory. |
 | `auto_load_cwd_agents_skills` | Boolean | `true` | Whether to load `.agents/skills` in the current working directory; “Load project skills” (`project.skills_enabled`) must also be on in settings. Reloaded when switching working directories. |
@@ -472,8 +475,8 @@ memory:
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `files` | List of strings | `[]` | Individual `.md` or `.txt` files. |
-| `folders` | List of strings | `[]` | Directories to scan for `.md` and `.txt` files. |
+| `files` | List of strings or `null` | `[]` | Individual `.md` or `.txt` files. `null` loads none; a single string, or a list holding a non-string, causes the entire agent profile to be skipped. |
+| `folders` | List of strings or `null` | `[]` | Directories to scan for `.md` and `.txt` files. `null` loads none; a single string, or a list holding a non-string, causes the entire agent profile to be skipped. |
 
 Paths can be absolute or relative to the current working directory; relative paths cannot point outside the working directory. Memory is loaded by the main agent and by workflow agent nodes; sub-agents load neither their own memory nor their parent's memory. For directory scan depth, file count, and total token limits, see [Configure memory](../guides/configuration/memory.md).
 
@@ -553,7 +556,7 @@ acp:
 | `command` | String | Empty | Executable name or path. Required to start the external agent. An empty value can be loaded but cannot be started. Cannot contain NUL. Do not append arguments to this field. |
 | `args` | List of strings | `[]` | Arguments passed individually to the process. Cannot contain NUL. |
 | `env` | String-valued object | `{}` | Environment variables passed to the process. Names must follow environment variable naming rules and be unique ignoring case. `CHRYS_ACP_SUBAGENT_DEPTH` is reserved for iCode. |
-| `cwd` | String | Empty | The external agent's working directory. If empty, uses the current iCode session's working directory. Relative paths are resolved against that session directory. |
+| `cwd` | String | Empty | The external agent's working directory. Leading and trailing whitespace in the configured text is ignored. If empty, uses the current iCode session's working directory. Relative paths start from that directory. Supports `{{ENV_VAR}}` references. |
 | `allow_external_cwd` | Boolean | `false` | Whether to allow the external agent to run outside the current session's working directory and its subdirectories. Defaults to `false`: a `cwd` outside the allowed directory scope causes an error and prevents startup; iCode does not fall back to the default directory. This option only controls startup directory validation, not the external agent's file access permissions. |
 | `session_mode` | String | Empty | Session mode ID to request from the external agent. |
 | `model_id` | String | Empty | Model ID to request from the external agent on a best-effort basis. |

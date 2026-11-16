@@ -55,6 +55,10 @@ counters, so changing the curve re-levels every buddy consistently.
 
 Traits grow by one point per ten levels and ten per evolution, capped at 100.
 A top-tier buddy that has evolved or reached the final level turns shiny.
+`honored` holds once a buddy has evolved at any stage or has maxed the final
+level, and the name is marked exactly when it does: ✨ below the top tier and
+🌟 at it. A buddy hatched shiny without either keeps its bare name, and a buddy
+hatched in the top tier earns the mark by finishing it.
 
 ## Save file
 

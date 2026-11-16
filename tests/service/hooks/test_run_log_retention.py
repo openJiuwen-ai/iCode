@@ -496,7 +496,16 @@ def _kept_text(detail: HookRunDetail) -> int:
         size += sum(len(text) for text in (detail.io.payload, detail.io.decision, detail.io.stdout, detail.io.stderr))
     if detail.applied is not None:
         applied = detail.applied
-        size += sum(len(text) for text in (applied.block_reason, applied.args, applied.reminder, applied.extra_context))
+        size += sum(
+            len(text)
+            for text in (
+                applied.block_reason,
+                applied.args,
+                applied.reminder,
+                applied.extra_context,
+                applied.result_override,
+            )
+        )
     return size
 
 
@@ -519,6 +528,44 @@ def test_what_ended_runs_applied_counts_toward_the_detail_budget() -> None:
     # The oldest go first, the texts iCode took from them with what they read and wrote.
     assert kept[0].io is None and kept[0].applied is not None and kept[0].applied.reminder == ""
     assert kept[-1].applied is not None and kept[-1].applied.reminder == "r" * 4000
+
+
+def test_a_replaced_result_counts_toward_the_detail_budget() -> None:
+    """A hook may replace the text the model reads with one nearly a megabyte: it is a detail like the rest."""
+    log = HookRunLog(max_detail_chars=10_000)
+    for n in range(5):
+        _register(log, f"r{n}")
+        log.finish(
+            f"r{n}",
+            outcome=HookOutcome.SUCCESS,
+            effect="replaced_result",
+            applied=HookRunApplied(result_override="x" * 4000),
+        )
+    details = [log.detail(f"r{n}") for n in range(5)]
+    kept = [detail for detail in details if detail is not None]
+    assert len(kept) == 5, "every row stays; only details go"
+    assert sum(_kept_text(detail) for detail in kept) <= 10_000
+    assert log._detail_chars == sum(_kept_text(detail) for detail in kept), "the count is what the details hold"
+    # The oldest go first, the text iCode took from them with what they read and wrote.
+    assert kept[0].applied is not None and kept[0].applied.result_override == ""
+    assert kept[-1].applied is not None and kept[-1].applied.result_override == "x" * 4000
+
+
+def test_a_replaced_result_is_forgotten_once_its_details_go() -> None:
+    """The replacement is the whole result file's worth of text: dropping the details must drop it too."""
+    log = HookRunLog(max_detail_chars=1_000)
+    _register(log, "rewrite")
+    log.finish(
+        "rewrite",
+        outcome=HookOutcome.SUCCESS,
+        effect="replaced_result",
+        applied=HookRunApplied(result_override="x" * 4_000),
+    )
+    detail = log.detail("rewrite")
+    assert detail is not None
+    assert detail.io is None, "the details went"
+    assert detail.applied is not None and detail.applied.result_override == ""
+    assert log._detail_chars == 0
 
 
 def test_a_block_whose_details_went_still_says_why() -> None:

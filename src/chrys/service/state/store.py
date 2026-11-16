@@ -1215,7 +1215,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 raw,
                 size_bytes=_dir_size(directory),
             )
-        except KeyError, OSError:
+        except KeyError, OSError, ValueError:
             return None
 
     async def load_recovery_session_meta(self, session_id: str) -> SessionMeta | None:
@@ -1500,9 +1500,9 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """Best-effort SessionMeta for a title patch's return value.
 
         The patch itself has already succeeded (or been skipped as a no-op)
-        by the time this runs, so malformed meta must degrade to ``None``
-        rather than escape as a false failure.  ``TypeError`` covers
-        ``datetime.fromisoformat`` on non-string timestamps.
+        by the time this runs, so malformed meta — including timestamps no
+        reader can parse — must degrade to ``None`` rather than escape as a
+        false failure.
         """
         try:
             directory = self._session_dir(session_id)
@@ -2116,7 +2116,11 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             if meta.kind == kind and (listed_at := self._listed_at(session_dir, meta, entry)) is not None:
                 entries.append(
                     SessionListingEntry(
-                        meta.session_id, coerce_utc(listed_at), meta.last_surface or SessionSurface.TUI, session_dir
+                        meta.session_id,
+                        coerce_utc(listed_at),
+                        meta.last_surface or SessionSurface.TUI,
+                        session_dir,
+                        meta=self._with_workflow_status(meta),
                     )
                 )
         for path, meta in self._legacy_session_metas_with_paths(seen):
@@ -2133,6 +2137,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                         meta.last_surface or SessionSurface.TUI,
                         path,
                         legacy=True,
+                        meta=self._with_workflow_status(meta),
                     )
                 )
         self._settle_listing_caches()
@@ -2140,11 +2145,14 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         return SessionListing(kind, tuple(entries))
 
     async def open_session_listing(self, *, kind: Literal["chat", "workflow"]) -> SessionListing:
-        """Snapshot the displayable sessions of *kind*, newest first, for paging.
+        """Snapshot the displayable sessions of *kind*, newest first, for paging and searching.
 
         Costs a ``stat`` per session folder plus a parse for each session
         changed since it was last listed (by any process, through the
-        persisted catalog); folder sizes and run status are left to
+        persisted catalog). Each entry keeps the meta read: a workflow
+        session's with its latest run's summary (title, input excerpt and
+        status, a header and log-tail read per session), so every session can
+        be searched by what its row shows; folder sizes are left to
         :meth:`load_session_page`.
         """
         return await asyncio.to_thread(self._open_session_listing_sync, kind)

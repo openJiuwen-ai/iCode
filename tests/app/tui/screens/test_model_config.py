@@ -76,15 +76,15 @@ def test_model_option_and_header_placeholders_show_usable_examples() -> None:
 
 
 def test_provider_editor_tables_cover_every_provider() -> None:
-    """The editor's label and default-base-url maps have silent ``.title()``/empty
-    fallbacks, so a provider missing from either ships a visibly broken editor."""
-    from chrys.app.tui.screens.models.screen import _PROVIDER_DEFAULT_BASE_URLS, _PROVIDER_LABELS, _PROVIDERS
+    """Every selectable provider needs its display label and shared connection defaults."""
+    from chrys.app.tui.screens.models.screen import _PROVIDER_LABELS, _PROVIDERS
+    from chrys.service.llm.providers import PROVIDERS
 
     provider_ids = {provider_id for _label, provider_id in _PROVIDERS}
     assert provider_ids <= set(_PROVIDER_LABELS)
-    assert provider_ids <= set(_PROVIDER_DEFAULT_BASE_URLS)
+    assert provider_ids <= set(PROVIDERS)
     assert _PROVIDER_LABELS["glm-openai"] == "GLM (OpenAI)"
-    assert _PROVIDER_DEFAULT_BASE_URLS["glm-openai"] == "https://open.bigmodel.cn/api/paas/v4"
+    assert PROVIDERS["glm-openai"].default_base_url == "https://open.bigmodel.cn/api/paas/v4"
 
 
 async def test_model_config_uses_default_token_limits() -> None:
@@ -1006,7 +1006,7 @@ async def test_model_config_sections_are_ordered_and_titled() -> None:
         vision_in_model_options = vision.parent is model_options
         vision_is_last_in_model_options = model_children[-1] is vision
         provider_in_model_options = provider_select.parent is model_options
-        model_id_in_model_options = model_input.parent is model_options
+        model_id_in_model_options = model_options in model_input.ancestors
         api_key_in_model_options = api_key_input.parent is model_options
         http_timeout_in_http_options = connect_timeout_input.parent is http_options
         headers_in_extra_options = headers_list.parent is extra_options

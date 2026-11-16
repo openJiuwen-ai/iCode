@@ -99,9 +99,14 @@ def _inline_binary_placeholder(media_type: object) -> str:
 
 
 def _tool_result_text(content: Content) -> str:
-    """Render live or restored local/hosted result payloads for summaries."""
+    """Render live or restored local/hosted result payloads for summaries.
+
+    ``items`` is the canonical representation; ``result`` only mirrors the
+    concatenated text items and is ``""`` when a result carries non-text
+    payloads, so it must never be preferred over ``items``.
+    """
     if content.type == "function_result":
-        value = content.result if content.result is not None else content.items
+        value = content.items or content.result
         return _render_tool_result_value(value)
     if content.type in {"hosted_tool_result", "search_tool_result"}:
         value = content.items or content.result

@@ -29,12 +29,15 @@ from chrys.service.mcp.cache import MCPConnectionLease
 from chrys.service.mcp.owned import MCPStdioTool, MCPStreamableHTTPTool, MCPTool
 from chrys.service.profiles.agents.schema import MCPServerConfig
 from tests.service.mcp._helpers import (
+    _as_client_session,
     _FakeBannerConnectionTool,
     _FakeConnectionTool,
     _FakeDisconnectTool,
     _function_tool,
     _load_fake_remote_tools,
+    _mcp_remote_prompt,
     _mcp_remote_tool,
+    _ScriptedClientSession,
 )
 
 
@@ -67,6 +70,23 @@ def test_adapter_accepts_valid_max_tool_result_tokens(value: int | None) -> None
         command="python",
         max_tool_result_tokens=value,
     )
+
+    _validate_config(config)
+
+
+@pytest.mark.parametrize("value", [0, -5, 0.0, True, "30", float("nan"), float("inf")])
+def test_adapter_rejects_a_timeout_that_is_not_a_positive_number(value: Any) -> None:
+    config = MCPServerConfig(name="srv", transport="stdio", command="python")
+    config.request_timeout = value
+
+    with pytest.raises(ValueError, match="'timeout' must be a positive number of seconds"):
+        _validate_config(config)
+
+
+@pytest.mark.parametrize("value", [None, 1, 30, 2.5])
+def test_adapter_accepts_a_positive_timeout(value: Any) -> None:
+    config = MCPServerConfig(name="srv", transport="stdio", command="python")
+    config.request_timeout = value
 
     _validate_config(config)
 
@@ -698,9 +718,11 @@ async def test_test_connection_returns_server_report() -> None:
     from mcp import types as mcp_types
 
     owned_tool = MCPTool(name="s")
-    await _load_fake_remote_tools(owned_tool, _mcp_remote_tool("echo"), _mcp_remote_tool("greet"))
-    # Mark "greet" as prompt-derived so the report splits it out of the tools list.
-    owned_tool._loaded_prompt_remote_names = {"greet"}
+    owned_tool.session = _as_client_session(
+        _ScriptedClientSession(tools=[_mcp_remote_tool("echo")], prompts=[_mcp_remote_prompt("greet")])
+    )
+    await owned_tool.load_tools()
+    await owned_tool.load_prompts()
 
     fake = _FakeConnectionTool(functions=owned_tool.functions)
     fake._server_info = mcp_types.Implementation(name="everything", title="Everything Server", version="1.0.0")
@@ -710,7 +732,6 @@ async def test_test_connection_returns_server_report() -> None:
         prompts=mcp_types.PromptsCapability(),
     )
     fake._server_instructions = "Use the echo tool."
-    fake._loaded_prompt_remote_names = owned_tool._loaded_prompt_remote_names
 
     adapter = MCPAdapter()
     config = MCPServerConfig(name="s", transport="stdio", command="python")
@@ -724,7 +745,7 @@ async def test_test_connection_returns_server_report() -> None:
     assert report.capabilities == ("prompts", "tools", "tools.listChanged")
     assert report.instructions == "Use the echo tool."
     assert report.tools == (("echo", "Remote tool"),)
-    assert report.prompts == (("greet", "Remote tool"),)
+    assert report.prompts == (("greet", "Remote prompt"),)
     assert report.initial_tool_names is None
 
 

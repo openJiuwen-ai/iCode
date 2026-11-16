@@ -23,13 +23,14 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import sys
 import time
 from typing import TYPE_CHECKING
 
 from tests.support.stall_diagnostics import awaited_chain, describe_pending_pumps, frame_of
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
     from types import CodeType
 
     import pytest
@@ -170,13 +171,66 @@ async def _barrier(app: App[object], pumps: list[MessagePump], deadline: float) 
     return False if pending else None
 
 
+async def press_keys(self: App[object], keys: Iterable[str]) -> None:
+    """Textual 8.2.7's ``App._press_keys``, waiting for animations only while one is pending.
+
+    Upstream probes for CPU idle, waits for every current and scheduled animation, and probes
+    again, for each key. The second probe covers only what an animation's end set off, so it
+    runs only when the key left one pending; a key that animates nothing costs one probe.
+    """
+    import unicodedata
+
+    from textual import events
+    from textual._wait import wait_for_idle
+    from textual.keys import REPLACED_KEYS, _character_to_key, _get_unicode_name_from_key
+
+    driver = self._driver
+    if driver is None:
+        raise RuntimeError("keys pressed before the app has a driver")
+    animator = self._animator
+    for key in keys:
+        if key.startswith("wait:"):
+            _, wait_ms = key.split(":")
+            await asyncio.sleep(float(wait_ms) / 1000)
+            await animator.wait_until_complete()
+            continue
+        if len(key) == 1 and not key.isalnum():
+            key = _character_to_key(key)
+        original_key = REPLACED_KEYS.get(key, key)
+        char: str | None
+        try:
+            char = unicodedata.lookup(_get_unicode_name_from_key(original_key))
+        except KeyError:
+            char = key if len(key) == 1 else None
+        key_event = events.Key(key, char)
+        key_event.set_sender(self)
+        driver.send_message(key_event)
+        await wait_for_idle(0)
+        if not animator._complete_event.is_set():
+            await animator.wait_until_complete()
+            await wait_for_idle(0)
+
+
+_IDLE_PROBE_SECONDS = 0.005
+"""One round of Textual's CPU-idle probe, which calls the process idle once a round burns
+under 1 ms of CPU time; upstream sleeps 20 ms a round, and every key press and bare
+``pause()`` takes at least one. Windows keeps upstream's: it counts process time in 15.6 ms
+ticks, and its loop sleeps at that resolution anyway."""
+
+
 def install_settled_wait_for_screen(monkeypatch: pytest.MonkeyPatch) -> bool:
-    """Swap in the settled wait on the pinned Textual; False leaves an unpinned install untouched."""
+    """Swap in the settled wait and key presses on the pinned Textual; False leaves an unpinned
+    install untouched."""
     import textual
+    import textual._wait
+    from textual.app import App
     from textual.pilot import Pilot
 
     if textual.__version__ != _SETTLED_TEXTUAL_VERSION:
         return False
     _park()
     monkeypatch.setattr(Pilot, "_wait_for_screen", settled_wait_for_screen)
+    monkeypatch.setattr(App, "_press_keys", press_keys)
+    if sys.platform != "win32":
+        monkeypatch.setattr(textual._wait, "SLEEP_GRANULARITY", _IDLE_PROBE_SECONDS)
     return True

@@ -179,6 +179,8 @@ class SettingsDialog(BaseDialog[None]):
         return widget
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         if self._locale_controller is not None:
             self._locale_controller.register_surface(self)
         self.refresh_status()

@@ -23,6 +23,7 @@ from chrys.app.tui.screens.main.diff_controller import (
 from chrys.app.tui.screens.main.live_diff import LiveFileMutation
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
+from chrys.app.tui.util.diff_comments import DiffComment, DiffDraft
 from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffFocus, DiffLoadResult
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import InvocationToolCallResult
@@ -84,6 +85,12 @@ class _DiffView:
     def __init__(self) -> None:
         self.load_data: Callable[[], Awaitable[DiffLoadResult]] | None = None
         self.opened = False
+        self.focus: DiffFocus | None = None
+
+    def diff_draft(self) -> DiffDraft:
+        from unittest.mock import Mock
+
+        return Mock(spec=DiffDraft)
 
     def current_chat_session_id(self) -> str:
         return "session-1"
@@ -101,13 +108,109 @@ class _DiffView:
         all_entries: list[object],
         load_data: Callable[[], Awaitable[DiffLoadResult]] | None = None,
         focus: DiffFocus | None = None,
+        draft: DiffDraft | None = None,
+        comments: list[DiffComment] | None = None,
+        turn_prompt: Callable[[int], str | None] | None = None,
     ) -> None:
         assert cwd == "/repo"
         assert session_id == "session-1"
         assert all_entries == []
         assert isinstance(subtitle_parts, tuple)
         self.opened = True
+        self.focus = focus
         self.load_data = load_data
+        self.draft = draft
+        self.comments = comments
+        self.turn_prompt = turn_prompt
+
+
+@pytest.mark.parametrize("focus", [None, DiffFocus(), DiffFocus("file.py")])
+def test_show_diff_passes_focus_and_live_draft_to_the_loading_screen(focus: DiffFocus | None) -> None:
+    view = _DiffView()
+    controller = DiffController(
+        services=MainScreenServices(bus=EventBus()),
+        live_diff=LiveDiffTracker(),
+        view=view,
+        workspace_cwd=lambda: "/repo",
+        is_agent_running=lambda: False,
+        run_generation=lambda: 0,
+        session_generation=lambda: 1,
+    )
+    controller.show_diff(focus=focus)
+    assert view.opened is True
+    assert view.focus == focus
+    assert view.draft is not None
+    assert view.comments is controller._comments
+
+
+@pytest.mark.parametrize("with_engine", [False, True])
+def test_quotes_name_a_turn_by_the_user_message_read_when_the_comment_is_added(with_engine: bool) -> None:
+    previews = {1: "first request"}
+    engine = SimpleNamespace(turn_prompt_previews=lambda: previews)
+    view = _DiffView()
+    controller = DiffController(
+        services=MainScreenServices(bus=EventBus(), engine_provider=(lambda: engine) if with_engine else None),
+        live_diff=LiveDiffTracker(),
+        view=view,
+        workspace_cwd=lambda: "/repo",
+        is_agent_running=lambda: False,
+        run_generation=lambda: 0,
+        session_generation=lambda: 1,
+    )
+    controller.show_diff()
+    assert view.turn_prompt is not None
+    previews[2] = "a turn that ended after the Diff opened"
+    if with_engine:
+        assert view.turn_prompt(1) == "first request"
+        assert view.turn_prompt(2) == "a turn that ended after the Diff opened"
+        assert view.turn_prompt(3) is None
+    else:
+        assert view.turn_prompt(1) is None
+
+
+def test_comments_survive_a_repeated_session_id_and_clear_at_a_session_change() -> None:
+    """Sending and undoing keep the session, so its comments stay; another session starts with none."""
+    view = _DiffView()
+    controller = DiffController(
+        services=MainScreenServices(bus=EventBus()),
+        live_diff=LiveDiffTracker(),
+        view=view,
+        workspace_cwd=lambda: "/repo",
+        is_agent_running=lambda: False,
+        run_generation=lambda: 0,
+        session_generation=lambda: 1,
+    )
+    controller.chat_session_changed("session-1")
+    controller.show_diff()  # Opening the Diff checks the same session again (the view reports session-1).
+    comments = view.comments
+    assert comments is not None
+    comments.append(object())
+    controller.chat_session_changed("session-1")
+    controller.show_diff()
+    assert len(comments) == 1
+    controller.chat_session_changed("session-2")
+    assert comments == []
+    comments.append(object())
+    controller.show_diff()  # Back in session-1: the other session's comments do not come along.
+    assert comments == []
+    assert view.comments is comments
+
+
+def test_workflow_diff_opens_without_a_comment_draft() -> None:
+    view = _DiffView()
+    controller = DiffController(
+        services=MainScreenServices(bus=EventBus()),
+        live_diff=LiveDiffTracker(),
+        view=view,
+        workspace_cwd=lambda: "/repo",
+        is_agent_running=lambda: False,
+        run_generation=lambda: 0,
+        session_generation=lambda: 1,
+    )
+    controller.show_workflow_diff("session-1", "/repo")
+    assert view.opened is True
+    assert view.draft is None
+    assert view.comments is None
 
 
 def test_show_diff_pushes_first_and_loads_persisted_entries_off_event_loop(monkeypatch) -> None:

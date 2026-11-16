@@ -462,6 +462,44 @@ async def test_load_and_unload_mutate_only_the_current_live_list() -> None:
     await adapter.disconnect_all()
 
 
+async def test_tool_the_server_dropped_after_loading_still_unloads() -> None:
+    remote = _function("remote")
+    adapter, fake, initial = await _connected(remote)
+    _list_tool, load_tool, unload_tool = initial
+    live = list(initial)
+    await load_tool.func(FunctionInvocationContext(function=load_tool, arguments={}, tools=live), tool="remote")
+    # A list_changed refresh replaced the catalog without the loaded tool.
+    fake._functions = [_function("other")]
+
+    unload_ctx = FunctionInvocationContext(function=unload_tool, arguments={}, tools=live)
+    unloaded = await unload_tool.func(unload_ctx, tool="remote")
+    missing = await unload_tool.func(unload_ctx, tool="never_loaded")
+
+    assert "next model iteration" in unloaded
+    assert "remote" not in {tool.name for tool in live}
+    assert "'never_loaded' is not available" in missing
+
+    await adapter.disconnect_all()
+
+
+async def test_ambiguous_unload_leaves_the_loaded_tool_in_place() -> None:
+    # Remote ``gh_search`` is shown as ``gh_gh_search``; remote ``search`` as ``gh_search``.
+    catalog = (_function("gh_gh_search", remote_name="gh_search"), _function("gh_search", remote_name="search"))
+    adapter, _fake, initial = await _connected(*catalog, config=_config(tool_name_prefix="gh"))
+    _list_tool, load_tool, unload_tool = initial
+    live = list(initial)
+    await load_tool.func(FunctionInvocationContext(function=load_tool, arguments={}, tools=live), tool="gh_gh_search")
+
+    result = await unload_tool.func(
+        FunctionInvocationContext(function=unload_tool, arguments={}, tools=live), tool="gh_search"
+    )
+
+    assert "is ambiguous" in result
+    assert "gh_gh_search" in {tool.name for tool in live}
+
+    await adapter.disconnect_all()
+
+
 async def test_foreign_same_name_is_not_loaded_or_removed_by_progressive_controls() -> None:
     remote = _function("remote")
     adapter, _fake, initial = await _connected(remote)

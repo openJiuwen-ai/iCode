@@ -22,7 +22,7 @@ from chrys.kernel import (
 )
 from chrys.kernel.identity import ContentList
 
-from .events import _COMPACTION_EXCLUDE_REASONS, _REASON_COMPRESSION, CachedSummary
+from .events import _COMPACTION_EXCLUDE_REASONS, _STATE_OWNED_EXCLUDE_REASONS, CachedSummary
 from .groups import _content_signature, _message_call_ids
 from .summaries import _set_summarized
 
@@ -178,12 +178,12 @@ class ExclusionLedger:
         self._excluded_anchors = list(anchors)
 
     def snapshot_excluded_anchors(self, messages: list[Message]) -> None:
-        """Snapshot non-compression exclusions for after-run propagation."""
+        """Snapshot the exclusions provider state does not hold yet, for after-run propagation."""
         self._excluded_anchors = [
             _ExclusionAnchor.from_message(msg)
             for msg in messages
             if msg.additional_properties.get(EXCLUDED_KEY, False)
-            and msg.additional_properties.get(EXCLUDE_REASON_KEY) != _REASON_COMPRESSION
+            and msg.additional_properties.get(EXCLUDE_REASON_KEY) not in _STATE_OWNED_EXCLUDE_REASONS
         ]
 
     def invalidate_for_fold(self, fold_range: list[Message]) -> None:

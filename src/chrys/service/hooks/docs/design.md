@@ -77,8 +77,8 @@ Names in YAML are the lowercase string values.
 | `before_tool_call` | Before a tool runs (main or sub-agent) | Yes | tool args |
 | `approval_requested` | A native tool approval still needs a human after automatic review, if any | No | No |
 | `approval_resolved` | That human approval wait ends with acceptance or rejection | No | No |
-| `after_tool_call` | After a tool returns | No (blocking hooks can append to result) | extra_context |
-| `tool_error` | When a tool raises | No | extra_context |
+| `after_tool_call` | After a tool returns | No (blocking hooks can append to or replace the result) | extra_context, result_override |
+| `tool_error` | When a tool raises | No | extra_context, result_override |
 | `sub_agent_start` | When a sub-agent invocation begins | No | No |
 | `sub_agent_end` | When a sub-agent invocation finishes | No | No |
 | `pre_compact` | Before each compaction phase fires | No | No |
@@ -120,8 +120,11 @@ actions:
   arguments before it runs.
 - `user_prompt_submit` blocking hook → can refuse the prompt or queue
   `<system-reminder>` text for the next LLM call.
+- `before_tool_call` blocking hook → can attach `extra_context` that reaches the model
+  with the call's result once it runs, without changing whether it runs.
 - `after_tool_call` / `tool_error` blocking hook → can append `extra_context`
-  text to the tool result before it streams back to the model.
+  text to the tool result before it streams back to the model, or replace its
+  text outright with `result_override`.
 
 Blocking hooks within the same event run **sequentially** in YAML order. The
 first `action: block` short-circuits the rest. `action: modify` updates the

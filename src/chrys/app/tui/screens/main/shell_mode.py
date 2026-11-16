@@ -12,6 +12,7 @@ from textual.widget import Widget
 from chrys.app.tui.screens.main.ports import InputFocusView, ShellModeView
 from chrys.app.tui.screens.main.state import MainScreenState
 from chrys.app.tui.widgets import ASK_USER_INTERACTIVE_CLASS
+from chrys.app.tui.widgets.btw import BtwPage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
 
@@ -86,14 +87,14 @@ class ShellModeController:
         has_class = getattr(widget, "has_class", None)
         if callable(has_class) and has_class("status-action-btn"):
             return
-        if isinstance(widget, ChatPanel):
+        if isinstance(widget, ChatPanel | BtwPage):
             return
         ancestors = getattr(widget, "ancestors_with_self", ())
         for ancestor in ancestors:
             if isinstance(ancestor, Widget) and ancestor.has_class(ASK_USER_INTERACTIVE_CLASS):
                 return
         for ancestor in ancestors:
-            if isinstance(ancestor, ChatPanel | SidebarPanel):
+            if isinstance(ancestor, ChatPanel | BtwPage | SidebarPanel):
                 self._focus_view.focus_input()
                 return
 

@@ -293,7 +293,9 @@ def test_resources_scanned_recursively_by_extension(tmp_path: Path) -> None:
     (skill_dir / "references").mkdir()
     (skill_dir / "references" / "faq.md").write_text("faq", encoding="utf-8")
     (skill_dir / "references" / "nested").mkdir()
-    (skill_dir / "references" / "nested" / "hidden.md").write_text("not scanned", encoding="utf-8")
+    (skill_dir / "references" / "nested" / "hidden.md").write_text("found", encoding="utf-8")
+    (skill_dir / "references" / "nested" / "deeper").mkdir()
+    (skill_dir / "references" / "nested" / "deeper" / "skip.md").write_text("too deep", encoding="utf-8")
     (skill_dir / "assets").mkdir()
     (skill_dir / "assets" / "data.json").write_text("{}", encoding="utf-8")
     (skill_dir / "scripts").mkdir()
@@ -306,10 +308,41 @@ def test_resources_scanned_recursively_by_extension(tmp_path: Path) -> None:
     assert isinstance(skill, Skill)
     names = [r.name for r in skill.resources]
     # Sorted, forward-slash relative paths; SKILL.md and non-resource
-    # extensions excluded; default depth scans root plus one subdirectory level.
-    assert names == ["assets/data.json", "extra/details.yaml", "notes.md", "references/faq.md", "scripts/README.md"]
+    # extensions excluded; the default depth scans the root plus two
+    # subdirectory levels, so a fourth level stays out.
+    assert names == [
+        "assets/data.json",
+        "extra/details.yaml",
+        "notes.md",
+        "references/faq.md",
+        "references/nested/hidden.md",
+        "scripts/README.md",
+    ]
     assert all(r.full_path and os.path.isabs(r.full_path) for r in skill.resources)
     assert "SKILL.md" not in {os.path.basename(n) for n in names}
+
+
+async def test_default_depth_registers_and_reads_two_level_nested_resource(tmp_path: Path) -> None:
+    """A resource two subdirectory levels below the skill root is discoverable and readable."""
+    skill_dir = _write_skill(tmp_path, "depth-demo")
+    api_dir = skill_dir / "references" / "api"
+    api_dir.mkdir(parents=True)
+    (api_dir / "authentication.md").write_text("API authentication reference.\n", encoding="utf-8")
+    too_deep_dir = api_dir / "v1"
+    too_deep_dir.mkdir()
+    (too_deep_dir / "legacy.md").write_text("too deep\n", encoding="utf-8")
+    helpers_dir = skill_dir / "scripts" / "helpers"
+    helpers_dir.mkdir(parents=True)
+    (helpers_dir / "check.py").write_text("print('nested')\n", encoding="utf-8")
+    (skill_dir / "scripts" / "check.py").write_text("print('top')\n", encoding="utf-8")
+
+    # Only the scan depth relies on its default; script_extensions is required.
+    skill = load_file_skill(str(skill_dir), script_extensions=(".py",))
+
+    assert isinstance(skill, Skill)
+    assert [r.name for r in skill.resources] == ["references/api/authentication.md"]
+    assert [s.name for s in skill.scripts] == ["scripts/check.py", "scripts/helpers/check.py"]
+    assert await _read_resource(skill, "references/api/authentication.md") == "API authentication reference.\n"
 
 
 def test_scripts_scanned_with_extension_filter(tmp_path: Path) -> None:
@@ -383,11 +416,11 @@ def test_nested_skill_files_still_obey_parent_scan_depth(tmp_path: Path) -> None
     deep_dir.mkdir()
     (deep_dir / "deep.md").write_text("deep", encoding="utf-8")
 
-    default_depth = load_file_skill(str(skill_dir), script_extensions=(".py",))
+    shallow_depth = load_file_skill(str(skill_dir), script_extensions=(".py",), search_depth=2)
     raised_depth = load_file_skill(str(skill_dir), script_extensions=(".py",), search_depth=3)
 
-    assert isinstance(default_depth, Skill)
-    assert [resource.name for resource in default_depth.resources] == ["child/direct.md"]
+    assert isinstance(shallow_depth, Skill)
+    assert [resource.name for resource in shallow_depth.resources] == ["child/direct.md"]
     assert isinstance(raised_depth, Skill)
     assert [resource.name for resource in raised_depth.resources] == ["child/deep/deep.md", "child/direct.md"]
 

@@ -77,6 +77,8 @@ async def _ready(pilot: Pilot, monkeypatch: pytest.MonkeyPatch) -> tuple[MainScr
     await wait_for(ready, pilot=pilot, description="main screen ready with chat input focused")
     main = app._main_screen
     assert main is not None
+    # Until the shortcut files are read, Tab on a typed /name only says they are loading.
+    await wait_for(lambda: main._suggestions._shortcuts() is not None, pilot=pilot, description="shortcuts read")
     sent = _Sent()
     monkeypatch.setattr(main, "_submit_user_text", sent)
     return main, main.query_one("#chat-input", _ChatTextArea), sent

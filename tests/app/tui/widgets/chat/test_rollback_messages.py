@@ -33,6 +33,8 @@ from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import ChatPanelApp, WidgetApp, click_when_settled
 from tests.support.waiting import wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("compressed", [False, True])
 async def test_opener_link_targets_before_its_turn_and_disables_immediately(compressed: bool) -> None:

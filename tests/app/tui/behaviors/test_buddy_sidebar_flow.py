@@ -18,6 +18,7 @@ from chrys.app.tui.widgets.sidebar import buddy as buddy_module
 from chrys.app.tui.widgets.sidebar.buddy import BuddyPanel
 from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
 from tests.support.buddies import HeldPetReply, HeldSaveFile, wedge_the_save_file
+from tests.support.toasts import shown_toasts
 from tests.support.waiting import wait_for
 
 _NEVER = 3600.0
@@ -52,8 +53,8 @@ class _SidebarApp(App[None]):
         return BuddyCommandController(MainScreenViewAdapter(self.screen, state=MainScreenState()))  # type: ignore[arg-type]
 
     def toasts(self) -> list[tuple[str, str]]:
-        """Live toasts as (severity, text), oldest first."""
-        return [(notification.severity, notification.message) for notification in self._notifications]
+        """Every toast shown, as (severity, text), oldest first."""
+        return [(notification.severity, notification.message) for notification in shown_toasts(self)]
 
     def label(self, selector: str) -> str:
         return str(self.panel.query_one(selector, Static).render())

@@ -113,7 +113,11 @@ async def _delete_in_the_models_dialog(session: Session, profile_id: str) -> Non
         description=f"{_NAMES[profile_id]} selected",
     )
     await click_when_settled(pilot, "#mc-delete")
-    await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="delete confirmation")
+    await wait_for(
+        lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted,
+        pilot=pilot,
+        description="delete confirmation",
+    )
     await click_when_settled(pilot, "#confirm-yes")
     await wait_for(
         lambda: (

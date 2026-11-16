@@ -379,7 +379,10 @@ class _HostPermits:
 
 class _Host:
     def __init__(self, tmp_path: Path, *, vision: bool, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.current = make_current(loaded=SimpleNamespace(), manifest=make_manifest())
+        self.current = make_current(
+            loaded=SimpleNamespace(agent=SimpleNamespace(context_providers=[])),
+            manifest=make_manifest(),
+        )
         self._current = self.current
         self.permits = _HostPermits()
         self.session = SimpleNamespace(mark_surface=lambda: None)

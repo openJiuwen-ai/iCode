@@ -40,6 +40,8 @@ from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain, wai
 if TYPE_CHECKING:
     from collections.abc import AsyncIterable
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("retired", [False, True])
 async def test_live_opener_waits_for_backend_cleanup_and_authoritative_index(retired: bool) -> None:
@@ -237,7 +239,11 @@ async def test_hook_interruption_keeps_invisible_tool_turn_through_message_rollb
             lambda: newest.query_one(MessageRollbackButton).display, pilot=pilot, description="new rollback link"
         )
         await click_when_settled(pilot, newest.query_one(MessageRollbackButton))
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="discard confirm")
+        await wait_for(
+            lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="discard confirm",
+        )
         await click_when_settled(pilot, "#confirm-yes")
         await wait_for(
             lambda: (

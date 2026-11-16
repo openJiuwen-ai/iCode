@@ -4,6 +4,7 @@
 
 import base64
 import copy
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,7 @@ from chrys.service.context.compaction import (
     _set_summarized,
 )
 from chrys.service.context.compaction.summaries import _SUMMARY_TOTAL_MAX
+from chrys.service.tools.spill import TOOL_RESULTS_DIR_NAME, bound_process_output
 from tests.service.context.compaction._compaction_helpers import (
     _anthropic_fetched_pdf_exchange,
     _assistant_text,
@@ -50,6 +52,38 @@ def test_summary_truncates_long_results(field: str) -> None:
     assert "(500 chars)" in summary
     assert "x" * 500 not in summary
     assert "n" * 500 not in summary
+
+
+def test_summary_keeps_both_ends_of_a_long_result() -> None:
+    """The end of command output (exit code, error, test summary) is worth as much as its start."""
+    result = "HEAD" + "a" * 96 + "m" * 500 + "z" * 96 + "TAIL"
+    summary = _build_summary(_build_tool_group("c1", "zsh", result, args={"command": "pytest"}))
+
+    assert "HEAD" + "a" * 96 + " ... " + "z" * 96 + "TAIL" in summary
+    assert "m" not in summary.split("→", 1)[1].split("(", 1)[0]
+    assert f"({len(result)} chars)" in summary
+
+
+def test_summary_keeps_a_short_result_whole() -> None:
+    result = "r" * 200
+    summary = _build_summary(_build_tool_group("c1", "zsh", result))
+
+    assert result in summary
+    assert "chars)" not in summary
+
+
+async def test_summary_keeps_the_path_of_a_spilled_result(tmp_path: Path) -> None:
+    """The full output is on disk: the summary must still say where, or the model runs the tool again."""
+    text = "\n".join(f"line {i} " + "x" * 60 for i in range(400))
+    bounded = await bound_process_output(tmp_path, "shell", text, 400)
+    [spilled] = (tmp_path / TOOL_RESULTS_DIR_NAME).glob("shell_*.txt")
+    assert "Full output saved to:" in bounded
+
+    summary = _build_summary(_build_tool_group("c1", "zsh", bounded, args={"command": "make"}))
+
+    assert f"[full output: {spilled.resolve()}]" in summary
+    assert "Full output saved to:" not in summary
+    assert "line 0 " in summary
 
 
 def test_summary_multiple_tools():
@@ -177,6 +211,63 @@ def test_summary_preserves_specialized_hosted_calls_and_results(restored: bool) 
         "exit code: 0",
     ):
         assert fragment in summary
+
+
+@pytest.mark.parametrize(
+    ("items", "expected"),
+    [
+        pytest.param([Content.from_text("47 matches")], "47 matches", id="text"),
+        pytest.param([Content.from_data(b"\x89PNG", "image/png")], "[image/png image]", id="image-data"),
+        pytest.param(
+            [Content.from_data(b"%PDF-1.7", "application/pdf")],
+            "[application/pdf artifact]",
+            id="document-data",
+        ),
+        pytest.param(
+            [Content.from_uri("https://example.com/shot.png", media_type="image/png")],
+            "[image/png image]",
+            id="image-uri",
+        ),
+    ],
+)
+@pytest.mark.parametrize("restored", [False, True], ids=["live", "restored"])
+def test_summary_renders_function_result_items(items: list[Content], expected: str, restored: bool) -> None:
+    """A function result's non-text items render as placeholders, never as ``completed``."""
+    messages = [
+        _assistant_tool_call("c1", "view_image", args={"path": "shot.png"}),
+        Message("tool", [Content.from_function_result("c1", result=items)]),
+    ]
+    if restored:
+        messages = [Message.from_dict(message.to_dict()) for message in messages]
+
+    summary = _build_summary(messages)
+
+    assert expected in summary
+    assert "→ completed" not in summary
+
+
+def test_summary_renders_hosted_file_placeholder() -> None:
+    """Hosted file results keep their name instead of collapsing to their id."""
+    messages = [
+        Message("assistant", [Content.from_shell_tool_call(call_id="shell-1", commands=["ls"])]),
+        Message(
+            "tool",
+            [
+                Content.from_shell_tool_result(
+                    call_id="shell-1",
+                    outputs=[
+                        Content.from_hosted_file(file_id="file-1", name="report.pdf"),
+                        Content.from_shell_command_output(stdout="ok", exit_code=0),
+                    ],
+                )
+            ],
+        ),
+    ]
+
+    summary = _build_summary(messages)
+
+    assert "[file: report.pdf]" in summary
+    assert "ok" in summary
 
 
 def test_summary_preserves_absorbed_narration():

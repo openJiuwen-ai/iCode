@@ -913,8 +913,14 @@ class SuggestionHandler:
             self._show_suggestions(
                 "files", self._file_suggestion_items(snapshot.head(limit=_FILE_QUERY_LIMIT), index=snapshot)
             )
-            if index.current:
-                return
+        # A burst of keys can reach the text area before this trigger is handled, and their
+        # Changed messages found no list to filter: filter by what follows the ``@`` now.
+        text = self._view.input_value()
+        start = completion_token_start(text, "@")
+        if start is not None and start + 1 < len(text):
+            self.on_text_changed(text)
+        if snapshot is not None and index.current:
+            return
         self._callbacks.start_worker(self.show_file_suggestions_async)
 
     def on_agent_triggered(self) -> None:
@@ -923,6 +929,10 @@ class SuggestionHandler:
             return
         items, disabled = self._get_agent_items()
         self._show_suggestions("agents", items, disabled=disabled)
+        # As for ``/``: keys typed in a burst changed the draft before the list opened.
+        text = self._view.input_value()
+        if text not in ("#", "\uff03"):
+            self.on_text_changed(text)
 
     def _get_agent_items(self) -> tuple[list[SuggestionItem], set[str]]:
         """Build suggestion items and disabled set from available agent profiles."""
@@ -979,6 +989,10 @@ class SuggestionHandler:
             return
         items, disabled = self._get_model_items()
         self._show_suggestions("models", items, disabled=disabled)
+        # As for ``/``: keys typed in a burst changed the draft before the list opened.
+        text = self._view.input_value()
+        if text not in ("$", "\uff04"):
+            self.on_text_changed(text)
 
     def _model_selection_is_locked(self) -> bool:
         """Return whether runtime policy prevents changing the active model."""

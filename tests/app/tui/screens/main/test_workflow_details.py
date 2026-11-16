@@ -635,7 +635,7 @@ async def test_large_graph_list_uses_same_keyboard_and_click_details(
         await pilot.click(
             graph, offset=(1 + graph.diagram_origin.x, box.y - round(graph.scroll_y) + graph.diagram_origin.y)
         )
-        await wait_for(lambda: isinstance(app.screen, WorkflowNodeDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, WorkflowNodeDialog) and app.screen.is_mounted, pilot=pilot)
         assert isinstance(app.screen, WorkflowNodeDialog) and app.screen.node["id"] == "node190"
 
 
@@ -653,7 +653,11 @@ async def test_idle_agent_has_transcript_tab_but_python_and_loop_nodes_do_not(
         for node_id in ("read_request", "refine", "architecture"):
             main._workflow.session_view.open_node(node_id)
             await wait_for(
-                lambda: isinstance(app.screen, WorkflowNodeDialog) and bool(app.screen.query(TabbedContent)),
+                lambda: (
+                    isinstance(app.screen, WorkflowNodeDialog)
+                    and app.screen.is_mounted
+                    and bool(app.screen.query(TabbedContent))
+                ),
                 pilot=pilot,
             )
             dialog = app.screen
@@ -746,7 +750,12 @@ async def test_node_records_attempts_previous_output_and_transcript(
             graph.focus()
             await pilot.press("j", "enter")
             await wait_for(
-                lambda: isinstance(app.screen, WorkflowNodeDialog) and app.screen.selected is not None, pilot=pilot
+                lambda: (
+                    isinstance(app.screen, WorkflowNodeDialog)
+                    and app.screen.is_mounted
+                    and app.screen.selected is not None
+                ),
+                pilot=pilot,
             )
             dialog = app.screen
             assert isinstance(dialog, WorkflowNodeDialog)
@@ -892,7 +901,7 @@ async def test_node_records_attempts_previous_output_and_transcript(
                     box.y + 1 - round(graph.scroll_y) + graph.diagram_origin.y,
                 ),
             )
-            await wait_for(lambda: isinstance(app.screen, WorkflowNodeDialog), pilot=pilot)
+            await wait_for(lambda: isinstance(app.screen, WorkflowNodeDialog) and app.screen.is_mounted, pilot=pilot)
         finally:
             await store.close()
 
@@ -932,6 +941,7 @@ async def test_retry_is_latched_across_dialog_reopen_and_new_attempts(
         await wait_for(
             lambda: (
                 isinstance(app.screen, WorkflowNodeDialog)
+                and app.screen.is_mounted
                 and bool(app.screen.query("#workflow-node-retry"))
                 and app.screen.query_one("#workflow-node-actions").display
             ),
@@ -947,6 +957,7 @@ async def test_retry_is_latched_across_dialog_reopen_and_new_attempts(
         await wait_for(
             lambda: (
                 isinstance(app.screen, WorkflowNodeDialog)
+                and app.screen.is_mounted
                 and bool(app.screen.query("#workflow-node-retry"))
                 and app.screen.query_one("#workflow-node-actions").display
             ),
@@ -1003,7 +1014,11 @@ async def test_corrupt_new_attempt_clears_previous_attempt_details(
             await bus.publish(first)
             main._workflow.session_view.open_node("fn")
             await wait_for(
-                lambda: isinstance(app.screen, WorkflowNodeDialog) and bool(app.screen.query("#workflow-node-output")),
+                lambda: (
+                    isinstance(app.screen, WorkflowNodeDialog)
+                    and app.screen.is_mounted
+                    and bool(app.screen.query("#workflow-node-output"))
+                ),
                 pilot=pilot,
             )
             dialog = app.screen

@@ -16,6 +16,17 @@ from chrys.service.profiles.agents.serializer import profile_to_dict, save_profi
 from chrys.service.session.persistence import agent_profile_context_fingerprint
 
 
+@pytest.mark.parametrize(("cwd", "expected"), [(" \t\n ", ""), (" tools/my agent \n", "tools/my agent")])
+def test_load_acp_cwd_trims_surrounding_whitespace(tmp_path: Path, cwd: str, expected: str) -> None:
+    import yaml
+
+    path = tmp_path / "external.yaml"
+    path.write_text(yaml.safe_dump({"name": "external", "acp": {"command": "agent", "cwd": cwd}}), encoding="utf-8")
+    profile = load_profile_from_yaml(path)
+    assert profile.acp is not None
+    assert profile.acp.cwd == expected
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

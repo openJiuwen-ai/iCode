@@ -246,7 +246,17 @@ class ActiveTurnInjector:
                 await preparation.finished(outcome=PreparationOutcome.TARGET_STALE)
         return False
 
-    async def _steer(self, target: ActiveInjectionTarget, queued: _Queued) -> None:
+    async def steer_pending(self, injection_id: str) -> bool:
+        """Promote the pending message against the pass producing now, without repeating admission."""
+        target = self.capture_target(route="fsm_active")
+        if target is None or not injection_id:
+            return False
+        injection = target.bindings.pending_injection(injection_id)
+        if injection is None:
+            return False
+        return await self._steer(target, _Queued(injection, target.conversation.active_handle))
+
+    async def _steer(self, target: ActiveInjectionTarget, queued: _Queued) -> bool:
         """Abort the pass *queued* was bound to while its message still waits, as Stop does.
 
         Nothing is aborted once the message no longer waits (a model call took
@@ -261,9 +271,13 @@ class ActiveTurnInjector:
         """
         handle = queued.pass_handle
         if handle is None:
-            return
-        if not (self.target_is_current(target) and target.bindings.injection_pending(queued.injection)):
-            return
+            return False
+        if not (
+            self.target_is_current(target)
+            and target.bindings.injection_pending(queued.injection)
+            and target.conversation.can_steer(handle)
+        ):
+            return False
         loaded = self._current.loaded
         sub_agent_tools = loaded.sub_agent_tools if loaded is not None else None
 
@@ -272,6 +286,7 @@ class ActiveTurnInjector:
                 await sub_agent_tools.cascade_abort_all()
 
         await target.conversation.steer(handle, before_abort=_cascade)
+        return True
 
     def _is_cancelled(self, injection_id: str | None) -> bool:
         """Return whether the user cancelled this injection during admission."""

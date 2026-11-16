@@ -102,6 +102,34 @@ def _string_list_field(raw: object, field: str) -> list[str]:
     return list(cast("list[str]", raw))
 
 
+def _text_field(raw: object, field: str) -> str:
+    """Parse a top-level text field; a missing value is empty text.
+
+    A non-text value (an unquoted number, a list) would reach callers that
+    compare, strip or casefold it, so the profile is refused instead.
+    """
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        msg = f"Agent profile field '{field}' must be a string; got {type(raw).__name__}"
+        raise AgentProfileLoadError(msg, field=field)
+    return raw
+
+
+def _positive_int_field(raw: object, field: str, *, default: int) -> int:
+    """Parse a positive integer field; a missing value keeps ``default``.
+
+    ``type(raw) is int`` rejects YAML booleans, which would otherwise read as
+    ``1``; a zero or negative value is rejected the same way.
+    """
+    if raw is None:
+        return default
+    if type(raw) is not int or raw <= 0:
+        msg = f"Agent profile field '{field}' must be a positive integer; got {raw!r}"
+        raise AgentProfileLoadError(msg, field=field)
+    return raw
+
+
 def _instructions_field(raw: object, field: str) -> str:
     """Parse instructions text; a list of strings joins one item per line.
 
@@ -175,7 +203,7 @@ def _parse_acp(raw: object) -> AcpAgentConfig:
     defaults = AcpAgentConfig()
 
     command = _acp_string(raw_map.get("command", defaults.command), "command", reject_nul=True)
-    cwd = _acp_string(raw_map.get("cwd", defaults.cwd), "cwd", reject_nul=True)
+    cwd = _acp_string(raw_map.get("cwd", defaults.cwd), "cwd", reject_nul=True).strip()
     session_mode = _acp_string(raw_map.get("session_mode", defaults.session_mode), "session_mode")
     model_id = _acp_string(raw_map.get("model_id", defaults.model_id), "model_id")
 
@@ -317,6 +345,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 args=entry.get("args", []),
                 env=_mcp_string_mapping(entry.get("env"), "tools.mcp.env") if transport == "stdio" else {},
                 encoding=entry.get("encoding"),
+                cwd=_mcp_cwd(entry.get("cwd")) if transport == "stdio" else "",
                 # http
                 url=entry.get("url", ""),
                 headers=_mcp_string_mapping(entry.get("headers"), "tools.mcp.headers") if transport == "http" else {},
@@ -325,7 +354,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 verify_ssl=coerce_bool(entry.get("verify_ssl"), default=True),
                 bypass_proxy=coerce_bool(entry.get("bypass_proxy"), default=False),
                 # common
-                enabled=entry.get("enabled", entry.get("enable", True)),
+                enabled=coerce_bool(entry.get("enabled", entry.get("enable")), default=True),
                 description=entry.get("description", ""),
                 tool_name_prefix=tool_name_prefix,
                 allowed_tools=allowed_tools,
@@ -333,11 +362,24 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 always_load=always_load,
                 request_timeout=entry.get("timeout", entry.get("request_timeout")),
                 max_tool_result_tokens=max_tool_result_tokens,
-                load_prompts=entry.get("load_prompts", True),
+                load_prompts=coerce_bool(entry.get("load_prompts"), default=True),
                 expose_instructions=coerce_bool(entry.get("expose_instructions"), default=True),
             )
         )
     return configs
+
+
+def _mcp_cwd(raw: object) -> str:
+    """Validate and trim the configured directory, matching the editor and runtime."""
+    if raw is None:
+        return ""
+    if type(raw) is not str:
+        msg = f"MCP server field 'cwd' must be a string; got {raw!r}"
+        raise AgentProfileLoadError(msg, field="tools.mcp.cwd")
+    if "\0" in raw:
+        msg = "MCP server field 'cwd' must not contain an embedded NUL"
+        raise AgentProfileLoadError(msg, field="tools.mcp.cwd")
+    return raw.strip()
 
 
 def _mcp_string_mapping(raw: object, field: str) -> dict[str, str]:
@@ -436,11 +478,30 @@ def _parse_skills(raw: object) -> SkillsConfig:
     return SkillsConfig(
         paths=_string_list_field(raw_map.get("paths"), "skills.paths"),
         inline=inline,
-        script_timeout=DEFAULT_SKILL_SCRIPT_TIMEOUT if raw_timeout is None else raw_timeout,
+        script_timeout=_positive_int_field(raw_timeout, "skills.script_timeout", default=DEFAULT_SKILL_SCRIPT_TIMEOUT),
         script_extensions=script_extensions,
         auto_load_user_agents_skills=coerce_bool(raw_map.get("auto_load_user_agents_skills"), default=True),
         auto_load_cwd_agents_skills=coerce_bool(raw_map.get("auto_load_cwd_agents_skills"), default=True),
     )
+
+
+def _shell_filter_preset(raw: object) -> str:
+    """Parse the preset name; an unrecognized one must never load as "no policy".
+
+    The builder ignores a name it does not know and, with no custom commands,
+    returns no filter at all, which allows every command. A blank or absent value
+    is the documented default of naming no preset.
+    """
+    if raw is None or raw == "":
+        return ""
+    from chrys.service.tools.builtins.shell_filter import preset_names
+
+    names = preset_names()
+    if isinstance(raw, str) and raw in names:
+        return raw
+    allowed = ", ".join(names)
+    msg = f"Agent profile field 'tools.shell_filter.preset' must be one of: {allowed}, or empty; got {raw!r}"
+    raise AgentProfileLoadError(msg, field="tools.shell_filter.preset")
 
 
 def _parse_shell_filter(raw: object) -> ShellFilterConfig | None:
@@ -448,10 +509,10 @@ def _parse_shell_filter(raw: object) -> ShellFilterConfig | None:
         return None
     if isinstance(raw, str):
         # Shorthand: shell_filter: read_only
-        return ShellFilterConfig(preset=raw)
+        return ShellFilterConfig(preset=_shell_filter_preset(raw))
     raw_map = _mapping_section(raw, "tools.shell_filter")
     return ShellFilterConfig(
-        preset=raw_map.get("preset", ""),
+        preset=_shell_filter_preset(raw_map.get("preset", "")),
         mode=raw_map.get("mode", "whitelist"),
         commands=raw_map.get("commands", []),
         allow_redirections=raw_map.get("allow_redirections", True),
@@ -554,7 +615,7 @@ def _parse_approval(raw: object) -> ApprovalConfig:
     return ApprovalConfig(
         default=_approval_rule(raw_map.get("default", defaults.default), "approval.default"),
         overrides=overrides,
-        user_can_override=raw_map.get("user_can_override", defaults.user_can_override),
+        user_can_override=coerce_bool(raw_map.get("user_can_override"), default=defaults.user_can_override),
     )
 
 
@@ -634,8 +695,8 @@ def _parse_memory(raw: object) -> MemoryConfig:
         return MemoryConfig()
     raw_map = _mapping_section(raw, "memory")
     return MemoryConfig(
-        files=list(raw_map.get("files", [])),
-        folders=list(raw_map.get("folders", [])),
+        files=_string_list_field(raw_map.get("files"), "memory.files"),
+        folders=_string_list_field(raw_map.get("folders"), "memory.folders"),
     )
 
 
@@ -741,9 +802,9 @@ def _parse_profile(path: Path, text: str) -> AgentProfile:
         profile = AgentProfile(
             name=name,
             id=profile_id,
-            display_name=data.get("display_name", ""),
-            description=data.get("description", ""),
-            sub_agent_only=bool(data.get("sub_agent_only", False)),
+            display_name=_text_field(data.get("display_name"), "display_name"),
+            description=_text_field(data.get("description"), "description"),
+            sub_agent_only=coerce_bool(data.get("sub_agent_only"), default=False),
             acp=_parse_acp(data.get("acp")) if acp_present else None,
             instructions=_instructions_field(data.get("instructions"), "instructions"),
             tools=_parse_tools(data.get("tools")),

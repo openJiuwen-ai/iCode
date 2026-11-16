@@ -1573,6 +1573,12 @@ def _group_manifest_items(
     return items
 
 
+def group_result_texts(group: ScopedGroup) -> list[str]:
+    """The result text of each call of *group*, in the order its manifest items list the calls."""
+    results = _group_results(group)
+    return [_result_record_text(_matching_result(call, results)) for call in _group_calls(group)]
+
+
 def _group_calls(group: ScopedGroup) -> list[Content]:
     return [
         content for message in group.messages for content in message.contents if content.type in TOOL_CALL_CONTENT_TYPES

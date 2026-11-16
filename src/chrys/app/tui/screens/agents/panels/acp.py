@@ -757,6 +757,7 @@ class AcpConfigPanel(VerticalScroll):
         containment check.
         """
         try:
+            configured_cwd = config.cwd.strip()
             expanded: dict[str, Any] = {
                 "command": resolve_env_templates(config.command, location="ACP command", allow_commands=False),
                 "args": tuple(resolve_env_templates(value, location="ACP argument") for value in config.args),
@@ -765,8 +766,8 @@ class AcpConfigPanel(VerticalScroll):
                     for key, value in config.env.items()
                 },
                 "cwd": (
-                    resolve_env_templates(config.cwd, location="ACP cwd", allow_commands=False)
-                    if config.cwd
+                    resolve_env_templates(configured_cwd, location="ACP cwd", allow_commands=False)
+                    if configured_cwd
                     else self._workspace_cwd
                 ),
             }

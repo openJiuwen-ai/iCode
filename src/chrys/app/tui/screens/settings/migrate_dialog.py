@@ -121,6 +121,8 @@ class MigrateSessionsDialog(BaseDialog[None]):
             )
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         self.query_one("#migrate-run", Button).focus()
 
     def _set_status(self, message: MessageRef | None, *, error: bool = False) -> None:

@@ -151,7 +151,7 @@ def test_changed_registry_version_refuses_commit(tmp_path):
     "yaml_text", ["name: Writer\n", "name: Writer\nid: writer\nsub_agents:\n  agents: [{profile: Plan}]\n"]
 )
 def test_failed_id_or_plan_rewrite_does_not_register_candidate(tmp_path, monkeypatch, yaml_text):
-    from chrys.service.profiles import reload as module
+    from chrys.service.profiles.agents import serializer as module
 
     agents, models = documents(tmp_path)
     path = agents.directory / "Writer.yaml"
@@ -206,7 +206,7 @@ def test_casefolded_agent_filename_keeps_last_registered_definition_on_corruptio
 
 
 def test_atomic_editor_save_while_serializing_a_missing_id_survives(tmp_path, monkeypatch):
-    from chrys.service.profiles import reload as module
+    from chrys.service.profiles.agents import serializer as module
 
     agents, models = documents(tmp_path)
     path = agents.directory / "Writer.yaml"

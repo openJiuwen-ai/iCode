@@ -35,7 +35,14 @@ def resolve_session_kind(meta: dict[str, Any]) -> Literal["chat", "workflow"]:
 
 @dataclass(kw_only=True)
 class SessionMetadata:
-    """Identity and storage facts shared by Chat and Workflow sessions."""
+    """Identity and storage facts shared by Chat and Workflow sessions.
+
+    ``created_at`` and ``updated_at`` are always aware UTC. Envelope metadata —
+    a session file, its recovery sidecar, a legacy flat file — is normalized by
+    :meth:`SessionMetaMixin._session_meta_from_envelope`; the listing catalog
+    records and replays only values that reader derived, and rejects an
+    offset-free stamp instead of serving it.
+    """
 
     session_id: str
     created_at: datetime
@@ -508,10 +515,27 @@ class SessionMetaMixin:
     def _session_meta_from_envelope(envelope: dict[str, Any], *, size_bytes: int) -> SessionMeta:
         """Build the purpose-specific metadata without reading any run artifacts."""
         meta = envelope["meta"]
+        if not isinstance(meta, dict):
+            # A hand-edited or truncated file can put anything here. Refuse it
+            # on the same path as an unreadable stamp — the caller skips this
+            # session — rather than let an AttributeError take down the page.
+            raise ValueError("Session meta is not an object.")
+        # The one place persisted stamps become datetimes, so it is the one
+        # place they are normalized: consumers (relative-time rendering, MRU
+        # ordering, ACP session/list) compare them with aware UTC values.
+        # A stamp without an offset is read as UTC rather than local time:
+        # every writer stamps ``datetime.now(UTC)``, so an offset-free one
+        # came from a legacy or hand-edited file, and local time would shift
+        # it again on every machine that read it. ``_parse_session_timestamp``
+        # applies both that rule and the aware-UTC conversion.
+        created_at = _parse_session_timestamp(meta.get("created_at"))
+        updated_at = _parse_session_timestamp(meta.get("updated_at"))
+        if created_at is None or updated_at is None:
+            raise ValueError("Session meta carries no readable creation or update timestamp.")
         common: dict[str, Any] = {
             "session_id": meta["session_id"],
-            "created_at": datetime.fromisoformat(meta["created_at"]),
-            "updated_at": datetime.fromisoformat(meta["updated_at"]),
+            "created_at": created_at,
+            "updated_at": updated_at,
             "total_tokens": SessionMetaMixin._envelope_total_tokens(envelope),
             "primary_cwd": meta.get("primary_cwd") or "",
             "working_dirs": meta.get("working_dirs") or [],

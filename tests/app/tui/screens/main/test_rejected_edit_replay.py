@@ -25,6 +25,8 @@ from chrys.service.state.store import JsonFileStateStore
 from tests.support.tui_helpers import ChatPanelApp, make_session_handler
 from tests.support.waiting import wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("reuse_call_id", [False, True])
 async def test_rejected_then_approved_snapshots_survive_restore_without_a_rejected_diff(

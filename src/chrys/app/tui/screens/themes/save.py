@@ -65,6 +65,8 @@ class SaveThemeDialog(_DismissableModal):
             )
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         self.query_one("#save-theme-confirm" if self._revision is not None else "#theme-name").focus()
 
     def refresh_localization(self) -> None:

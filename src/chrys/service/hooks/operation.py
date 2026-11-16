@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 from typing import Any, Literal
 from uuid import uuid4
 
 from chrys.foundation.models.hook_confirmations import HookConfirmationSubjectKind
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.tool_execution_stamp import canonicalize_effective_arguments
+
+logger = logging.getLogger(__name__)
 
 OperationState = Literal["pending", "committed", "invalidated"]
 
@@ -61,7 +64,7 @@ def _snapshot(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
         try:
             return copy.deepcopy(arguments), key
         except Exception:
-            pass
+            logger.debug("Hook operation snapshot: deepcopy failed; hooks get no snapshot for this call", exc_info=True)
     return dict(arguments), None
 
 
@@ -72,6 +75,7 @@ class HookOperation:
         "_arguments",
         "_arguments_key",
         "_checked_revision",
+        "_checks",
         "_confirmed_arguments",
         "_end_reason",
         "_ended",
@@ -114,6 +118,7 @@ class HookOperation:
         self._input_text = input_text
         self._revision = 1
         self._checked_revision: int | None = None
+        self._checks = 0
         self._confirmed_arguments: dict[str, Any] | None = None
         self._state: OperationState = "pending"
         self._end_reason = ""
@@ -128,6 +133,11 @@ class HookOperation:
     def checked_revision(self) -> int | None:
         """The version the event's hooks checked through to the end; None until they did."""
         return self._checked_revision
+
+    @property
+    def check_count(self) -> int:
+        """How many checks of this operation have started; 2 and up are re-checks of the same call."""
+        return self._checks
 
     @property
     def state(self) -> OperationState:
@@ -193,6 +203,7 @@ class HookOperation:
 
     def begin_check(self) -> None:
         """A check of the current version starts: what an earlier check passed no longer counts."""
+        self._checks += 1
         self._checked_revision = None
 
     def mark_checked(self, revision: int) -> bool:

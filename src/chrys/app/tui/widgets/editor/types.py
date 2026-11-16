@@ -45,6 +45,10 @@ class EditorMode(StrEnum):
         return cls.STANDARD
 
 
+EDITOR_MODE_CYCLE: Final[tuple[EditorMode, ...]] = (EditorMode.STANDARD, EditorMode.EMACS, EditorMode.VIM)
+"""The order F3 steps through the keymaps, back to the first after the last."""
+
+
 class EditorIntent(StrEnum):
     """Mode-independent requests emitted by an editor keymap."""
 

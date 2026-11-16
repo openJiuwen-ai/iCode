@@ -151,6 +151,19 @@ def test_snapshot_pairs_embedded_results_and_reused_ids_in_order() -> None:
     assert "[Tool result: shell]\nshell output" in snapshot
 
 
+def test_snapshot_renders_non_text_tool_result() -> None:
+    """An image result reaches the side question as a placeholder, not as an empty line."""
+    messages = [
+        Message("assistant", [Content.from_function_call("call", "view_image", arguments={"path": "shot.png"})]),
+        Message(
+            "tool",
+            [Content.from_function_result("call", result=[Content.from_data(b"\x89PNG", "image/png")])],
+        ),
+    ]
+    snapshot = side_question.conversation_snapshot(messages)
+    assert "[Tool result: view_image]\n[image/png image]" in snapshot
+
+
 def test_snapshot_does_not_pair_results_across_history_markers() -> None:
     from chrys.foundation.models.history_markers import HistoryMarkerKind
 

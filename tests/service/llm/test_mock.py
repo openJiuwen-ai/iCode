@@ -15,6 +15,7 @@ from chrys.kernel import (
     ChatResponse,
     CompactionCallContext,
     Content,
+    LastWordsCompletion,
     Message,
     internal_side_call_scope,
 )
@@ -298,7 +299,7 @@ async def test_mock_stack_completer_side_call_consumes_scripted_response() -> No
         compaction_strategy=strategy,
     )
 
-    assert strategy.note == "side note"
+    assert strategy.note == LastWordsCompletion("side note")
     assert resp.text == "live answer"
     side_messages, side_options = client.call_history[0]
     assert side_messages[-1].text == "SUMMARIZE"

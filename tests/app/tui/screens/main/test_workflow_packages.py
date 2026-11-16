@@ -113,7 +113,12 @@ async def test_deleting_a_folder_workflow_says_what_stays_and_removes_only_its_e
         await pilot.press("d")
 
         await wait_for(
-            lambda: isinstance(app.screen, ConfirmDialog) and bool(app.screen.query("#confirm-yes")), pilot=pilot
+            lambda: (
+                isinstance(app.screen, ConfirmDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query("#confirm-yes"))
+            ),
+            pilot=pilot,
         )
         body = str(app.screen.query_one("#confirm-message", Static).content)
         assert "Only pkg.py is deleted. The other files in" in body and "are kept." in body

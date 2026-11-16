@@ -108,7 +108,7 @@ class TestFormatSize:
         assert format_size(1536) == "1.5 KB"
 
     def test_one_byte_below_mb(self) -> None:
-        assert format_size(1024 * 1024 - 1) == "1024.0 KB"
+        assert format_size(1024 * 1024 - 1) == "1.0 MB"
 
     def test_exactly_one_mb(self) -> None:
         assert format_size(1024 * 1024) == "1.0 MB"
@@ -339,13 +339,15 @@ async def test_rapid_delete_while_reload_is_pending_renders_from_the_last_render
         assert [table.get_row_at(i)[0].plain for i in range(2)] == ["session1", "session3"]
         assert screen._get_selected_session_id() == "session-3"
 
-        # The second delete's reload replaced the first.
+        # The second delete's reload replaced the first, and reads only once the first's read is done.
+        store.release_all()
         await wait_for_blocked_loads(store, pilot, 2)
-        await wait_for(lambda: store.cancelled_loads == 1, pilot=pilot, description="first reload is cancelled")
         store.release_all()
         await wait_for_load_idle(screen, pilot)
         assert [table.get_row_at(i)[0].plain for i in range(2)] == ["session1", "session3"]
         assert screen._get_selected_session_id() == "session-3"
+        assert store.most_loads_running == 1
+        assert store.cancelled_loads == 0
 
 
 @pytest.mark.asyncio
@@ -628,6 +630,31 @@ async def test_search_filters_rows_and_highlights_matches(theme: str) -> None:
 
         screen.query_one("#search", Input).value = ""
         await wait_for_row_count(table, pilot, 5)
+
+
+@pytest.mark.asyncio
+async def test_search_highlights_the_query_only_where_it_searches() -> None:
+    from textual.widgets import Input
+
+    store = FakeSessionStore(3)
+    store.sessions[1] = replace(store.sessions[1], title="mb converter", size_bytes=3 * 1024 * 1024)
+    screen = SessionsScreen(store)
+
+    app = SessionsHostApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.push_screen(screen)
+        table = screen.query_one("#sessions", _SessionTable)
+        await wait_for_row_count(table, pilot, 3)
+
+        screen.query_one("#search", Input).value = "mb"
+        await wait_for_row_count(table, pilot, 1)
+
+        cells = dict(zip((column.key for column in screen._columns), table.get_row_at(0), strict=True))
+        match_style = rich_style_from_textual_color(app.theme_variables["warning"], reverse=True)
+        assert (cells["title"].plain, cells["size"].plain) == ("mb converter", "3.0 MB")
+        assert [span for span in cells["title"].spans if span.style == match_style]
+        # Size is not searched, so its "MB" is no match.
+        assert not [span for span in cells["size"].spans if span.style == match_style]
 
 
 @pytest.mark.asyncio

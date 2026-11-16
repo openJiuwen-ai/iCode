@@ -14,6 +14,7 @@ from typing import Any
 
 from chrys.kernel import Message
 from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
+from chrys.service.context.compaction.budgets import BOUNDARY_SUSPENDED_STATE_KEY, TURN_BOUNDARY_PENDING_STATE_KEY
 from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.session.runtime_metadata import (
     CONTEXT_CALIBRATION_KEY,
@@ -45,6 +46,10 @@ _PASS_THROUGH_OPTIONAL_KEYS = (
     # attempt/spend breaker for the interrupted logical turn.
     "last_words_manifest",
     "last_words_breaker",
+    # Turn-boundary compaction schedule — booked by one turn for the next
+    # turn's first request, which a resumed session sends from a new process.
+    TURN_BOUNDARY_PENDING_STATE_KEY,
+    BOUNDARY_SUSPENDED_STATE_KEY,
     TOTAL_SESSION_TOKENS_KEY,
     TOTAL_SESSION_INPUT_TOKENS_KEY,
     TOTAL_SESSION_OUTPUT_TOKENS_KEY,

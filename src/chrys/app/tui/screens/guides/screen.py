@@ -129,6 +129,8 @@ class GuideDialog(BaseDialog[None]):
             yield HatchedEmptyState("", id="gd-empty")
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         if self._locale_controller is not None:
             self._locale_controller.register_surface(self)
         self._tree = cast(Tree[GuideTopic], self.query_one("#gd-tree", Tree))

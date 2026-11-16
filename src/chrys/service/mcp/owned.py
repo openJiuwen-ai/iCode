@@ -97,6 +97,16 @@ LOG_LEVEL_MAPPING: dict[types.LoggingLevel, int] = {
 }
 
 
+# Page requests one tools/list or prompts/list listing may make, retries and
+# restarts included. A server still paging after that is looping, not listing.
+_MAX_CATALOG_PAGE_REQUESTS = 100
+
+
+def _is_mcp_prompt_function(function: FunctionTool) -> bool:
+    """Whether *function* was built from an MCP prompt rather than an MCP tool."""
+    return bool((function.additional_properties or {}).get(_MCP_PROMPT_TOOL_KEY))
+
+
 def _get_input_model_from_mcp_prompt(prompt: types.Prompt) -> dict[str, Any]:
     if not prompt.arguments:
         return {"type": "object", "properties": {}}
@@ -104,10 +114,11 @@ def _get_input_model_from_mcp_prompt(prompt: types.Prompt) -> dict[str, Any]:
     properties: dict[str, Any] = {}
     required: list[str] = []
     for prompt_argument in prompt.arguments:
-        properties[prompt_argument.name] = {
-            "type": "string",
-            "description": prompt_argument.description if hasattr(prompt_argument, "description") else "",
-        }
+        argument_schema: dict[str, Any] = {"type": "string"}
+        # A description is a string or absent: ``null`` is not valid JSON Schema.
+        if prompt_argument.description:
+            argument_schema["description"] = prompt_argument.description
+        properties[prompt_argument.name] = argument_schema
         if prompt_argument.required:
             required.append(prompt_argument.name)
 
@@ -317,16 +328,16 @@ class MCPTool:
         self._lifecycle_lock = asyncio.Lock()
         self._lifecycle_request_lock = asyncio.Lock()
         self._function_load_lock = asyncio.Lock()
-        self._lifecycle_queue: asyncio.Queue[tuple[str, bool, bool, asyncio.Future[None]]] | None = None
+        self._lifecycle_queue: (
+            asyncio.Queue[tuple[str, bool, bool, ClientSession | None, asyncio.Future[None]]] | None
+        ) = None
         self._lifecycle_owner_task: asyncio.Task[None] | None = None
         self.session = session
         self.request_timeout = request_timeout
+        # The current tool catalog, then the current prompt catalog; each
+        # listing replaces its own part. Different remote names that normalize
+        # to one local name stay apart here: the adapter rejects them.
         self._functions: list[FunctionTool] = []
-        # Reloads must skip an already wrapped remote declaration without
-        # collapsing *different* remote names that normalize to the same local
-        # name. The adapter validates those duplicates before exposure.
-        self._loaded_tool_remote_names: set[str] = set()
-        self._loaded_prompt_remote_names: set[str] = set()
         self._tool_call_meta_by_name: dict[str, dict[str, Any]] = {}
         self._tool_task_support_by_name: dict[str, str] = {}
         self._tool_param_names_by_name: dict[str, set[str]] = {}
@@ -436,10 +447,12 @@ class MCPTool:
         stop_error: BaseException | None = None
         try:
             while True:
-                action, reset, load_configured, future = await queue.get()
+                action, reset, load_configured, failed_session, future = await queue.get()
                 try:
                     if action == "connect":
-                        await self._connect_on_owner(reset=reset, load_configured=load_configured)
+                        await self._connect_on_owner(
+                            reset=reset, load_configured=load_configured, failed_session=failed_session
+                        )
                     elif action == "close":
                         await self._close_on_owner()
                     else:
@@ -464,7 +477,7 @@ class MCPTool:
         finally:
             while True:
                 try:
-                    _, _, _, future = queue.get_nowait()
+                    *_, future = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
                 if not future.done():
@@ -482,12 +495,15 @@ class MCPTool:
         *,
         reset: bool = False,
         load_configured: bool = True,
+        failed_session: ClientSession | None = None,
     ) -> None:
         await self._ensure_lifecycle_owner()
 
         if self._is_lifecycle_owner_task():
             if action == "connect":
-                await self._connect_on_owner(reset=reset, load_configured=load_configured)
+                await self._connect_on_owner(
+                    reset=reset, load_configured=load_configured, failed_session=failed_session
+                )
             elif action == "close":
                 await self._close_on_owner()
             else:
@@ -499,10 +515,17 @@ class MCPTool:
             raise RuntimeError("MCP lifecycle owner is not available.")
 
         future = asyncio.get_running_loop().create_future()
-        await queue.put((action, reset, load_configured, future))
+        await queue.put((action, reset, load_configured, failed_session, future))
         await future
 
-    async def connect(self, *, reset: bool = False) -> None:
+    async def connect(self, *, reset: bool = False, failed_session: ClientSession | None = None) -> None:
+        """Connect, or with *reset* reconnect, on the lifecycle owner.
+
+        *failed_session* names the session a failed request used: the reset
+        then happens only while that session is still the current one, so
+        concurrent requests that all saw one connection drop replace it once
+        and then share the replacement.
+        """
         # A connect inside a model run (lazy first use, reconnect after a
         # dropped session) is a wait the turn timeline must account for.
         wait = WaitTrace.open(
@@ -516,7 +539,7 @@ class MCPTool:
             # leave the wait open forever.
             if wait is not None:
                 await wait.started()
-            await self._connect_unrecorded(reset=reset)
+            await self._connect_unrecorded(reset=reset, failed_session=failed_session)
         except asyncio.CancelledError:
             if wait is not None:
                 wait.finished_soon(outcome=WaitOutcome.CANCELLED)
@@ -528,16 +551,24 @@ class MCPTool:
         if wait is not None:
             await wait.finished()
 
-    async def _connect_unrecorded(self, *, reset: bool) -> None:
+    async def _connect_unrecorded(self, *, reset: bool, failed_session: ClientSession | None) -> None:
         if self._is_lifecycle_owner_task():
-            await self._connect_on_owner(reset=reset)
+            await self._connect_on_owner(reset=reset, failed_session=failed_session)
             return
 
         async with self._lifecycle_request_lock:
-            await self._run_on_lifecycle_owner("connect", reset=reset)
+            await self._run_on_lifecycle_owner("connect", reset=reset, failed_session=failed_session)
 
-    async def _connect_on_owner(self, *, reset: bool = False, load_configured: bool = True) -> None:
+    async def _connect_on_owner(
+        self,
+        *,
+        reset: bool = False,
+        load_configured: bool = True,
+        failed_session: ClientSession | None = None,
+    ) -> None:
         """Connect, initialize, and load configured MCP functions."""
+        if reset and failed_session is not None and self._session_replaced(failed_session):
+            return
         if reset:
             await self._safe_close_exit_stack()
             self.session = None
@@ -572,7 +603,9 @@ class MCPTool:
                     ClientSession(
                         read_stream=transport[0],
                         write_stream=transport[1],
-                        read_timeout_seconds=timedelta(seconds=self.request_timeout) if self.request_timeout else None,
+                        read_timeout_seconds=(
+                            timedelta(seconds=self.request_timeout) if self.request_timeout is not None else None
+                        ),
                         message_handler=self.message_handler,
                         logging_callback=self.logging_callback,
                     )
@@ -632,12 +665,20 @@ class MCPTool:
                 level_name = next(level for level, value in LOG_LEVEL_MAPPING.items() if value == logger.level)
                 await self.session.set_logging_level(level_name)
 
-    async def _reconnect_without_loading(self) -> None:
+    def _session_replaced(self, failed_session: ClientSession) -> bool:
+        """Whether a live session other than *failed_session* already took its place.
+
+        Read on the lifecycle owner, which runs connects one at a time, so the
+        answer holds until the caller's own action finishes.
+        """
+        return self.is_connected and self.session is not None and self.session is not failed_session
+
+    async def _reconnect_without_loading(self, failed_session: ClientSession | None) -> None:
         if self._is_lifecycle_owner_task():
-            await self._connect_on_owner(reset=True, load_configured=False)
+            await self._connect_on_owner(reset=True, load_configured=False, failed_session=failed_session)
             return
 
-        await self._run_on_lifecycle_owner("connect", reset=True, load_configured=False)
+        await self._run_on_lifecycle_owner("connect", reset=True, load_configured=False, failed_session=failed_session)
 
     async def _close_on_owner(self) -> None:
         tasks = list(self._pending_reload_tasks)
@@ -679,9 +720,9 @@ class MCPTool:
                 self._ping_available = False
                 logger.debug("Skipping future MCP pings because the server does not support ping.")
                 return
-            await self._reconnect_or_raise(mcp_exc)
+            await self._reconnect_or_raise(mcp_exc, session)
         except Exception as ex:
-            await self._reconnect_or_raise(ex)
+            await self._reconnect_or_raise(ex, session)
 
     async def probe_session(self, *, timeout: float) -> str | None:
         """Ask the current session for one bounded ping, never reconnecting.
@@ -708,10 +749,10 @@ class MCPTool:
             return f"ping failed ({type(exc).__name__})"
         return None if self.session is session else "the session was replaced during the check"
 
-    async def _reconnect_or_raise(self, ex: BaseException) -> None:
+    async def _reconnect_or_raise(self, ex: BaseException, failed_session: ClientSession) -> None:
         logger.info("MCP connection invalid or closed. Reconnecting...")
         try:
-            await self._reconnect_without_loading()
+            await self._reconnect_without_loading(failed_session)
         except Exception as reconn_ex:
             raise ToolExecutionException("Failed to establish MCP connection.", inner_exception=reconn_ex) from ex
 
@@ -759,29 +800,97 @@ class MCPTool:
             await self._load_prompts_locked()
 
     async def _load_prompts_locked(self) -> None:
+        pages = await self._list_catalog(
+            "prompts",
+            lambda session, params: session.list_prompts(params=params),
+            lambda: self._supports_prompts,
+        )
+        if pages is None:
+            return
+
+        prompt_functions: list[FunctionTool] = []
+        listed: set[str] = set()
+        for prompt in (prompt for page in pages for prompt in page.prompts):
+            if prompt.name in listed:
+                continue
+            listed.add(prompt.name)
+            normalized_name = _normalize_mcp_name(prompt.name)
+            func = FunctionTool(
+                func=partial(self.get_prompt, prompt.name),
+                name=_build_prefixed_mcp_name(normalized_name, self.tool_name_prefix),
+                description=prompt.description or "",
+                input_model=_get_input_model_from_mcp_prompt(prompt),
+                additional_properties={
+                    _MCP_REMOTE_NAME_KEY: prompt.name,
+                    _MCP_NORMALIZED_NAME_KEY: normalized_name,
+                    _MCP_PROMPT_TOOL_KEY: True,
+                },
+            )
+            # Static provenance persisted on the function_call content;
+            # identity only — never URLs, headers, env, or command lines.
+            set_tool_context(
+                func,
+                {
+                    "server_name": self.name,
+                    "remote_name": prompt.name,
+                    "normalized_name": normalized_name,
+                },
+            )
+            prompt_functions.append(func)
+
+        # The listing is the server's whole prompt catalog: it replaces the
+        # previous one, so removed prompts go and changed ones are rebuilt.
+        self._functions = [func for func in self._functions if not _is_mcp_prompt_function(func)] + prompt_functions
+
+    async def _list_catalog[PageT: types.ListToolsResult | types.ListPromptsResult](
+        self,
+        kind: str,
+        list_page: Callable[[ClientSession, types.PaginatedRequestParams | None], Awaitable[PageT]],
+        supported: Callable[[], bool],
+    ) -> list[PageT] | None:
+        """Every page of one ``tools/list`` or ``prompts/list`` listing, all from one session.
+
+        None when the server, reconnected meanwhile, no longer offers *kind*.
+        A dropped connection is reconnected once per page; a listing whose
+        session was replaced starts over from the first page, since a cursor
+        belongs to the session that issued it. A server that pages past
+        ``_MAX_CATALOG_PAGE_REQUESTS`` requests or repeats a cursor fails the
+        listing instead of holding the connect up forever.
+        """
         from anyio import ClosedResourceError
         from mcp import types
 
-        if not self._supports_prompts:
-            return
-
+        pages: list[PageT] = []
+        cursors: set[str] = set()
         params: types.PaginatedRequestParams | None = None
+        listing_session: ClientSession | None = None
+        requests = 0
         while True:
-            prompt_list: types.ListPromptsResult | None = None
+            page: PageT | None = None
             for attempt in range(2):
+                await self._ensure_connected()
+                # Catalog loading is entered only for a connected lifecycle session.
+                session = cast("ClientSession", self.session)
+                if not supported():
+                    return None
+                if session is not listing_session:
+                    if listing_session is not None:
+                        pages, cursors, params = [], set(), None
+                    listing_session = session
+                requests += 1
+                if requests > _MAX_CATALOG_PAGE_REQUESTS:
+                    raise ToolExecutionException(
+                        f"Failed to load {kind}: the server did not finish its listing "
+                        f"within {_MAX_CATALOG_PAGE_REQUESTS} page requests."
+                    )
                 try:
-                    await self._ensure_connected()
-                    # Prompt loading is entered only for a connected lifecycle session.
-                    session = cast("ClientSession", self.session)
-                    if not self._supports_prompts:
-                        return
-                    with create_mcp_client_span("prompts/list", attributes=self._mcp_base_span_attributes()):
-                        prompt_list = await session.list_prompts(params=params)
+                    with create_mcp_client_span(f"{kind}/list", attributes=self._mcp_base_span_attributes()):
+                        page = await list_page(session, params)
                     break
                 except ClosedResourceError as cl_ex:
                     if attempt == 0:
                         try:
-                            await self._reconnect_without_loading()
+                            await self._reconnect_without_loading(session)
                         except Exception as reconn_ex:
                             raise ToolExecutionException(
                                 "Failed to reconnect to MCP server.",
@@ -789,43 +898,18 @@ class MCPTool:
                             ) from reconn_ex
                         continue
                     raise ToolExecutionException(
-                        "Failed to load prompts - connection lost.", inner_exception=cl_ex
+                        f"Failed to load {kind} - connection lost.", inner_exception=cl_ex
                     ) from cl_ex
-            if prompt_list is None:
-                raise ToolExecutionException("Failed to load prompts.")
-
-            for prompt in prompt_list.prompts:
-                normalized_name = _normalize_mcp_name(prompt.name)
-                local_name = _build_prefixed_mcp_name(normalized_name, self.tool_name_prefix)
-                if prompt.name in self._loaded_prompt_remote_names:
-                    continue
-                func = FunctionTool(
-                    func=partial(self.get_prompt, prompt.name),
-                    name=local_name,
-                    description=prompt.description or "",
-                    input_model=_get_input_model_from_mcp_prompt(prompt),
-                    additional_properties={
-                        _MCP_REMOTE_NAME_KEY: prompt.name,
-                        _MCP_NORMALIZED_NAME_KEY: normalized_name,
-                        _MCP_PROMPT_TOOL_KEY: True,
-                    },
-                )
-                # Static provenance persisted on the function_call content;
-                # identity only — never URLs, headers, env, or command lines.
-                set_tool_context(
-                    func,
-                    {
-                        "server_name": self.name,
-                        "remote_name": prompt.name,
-                        "normalized_name": normalized_name,
-                    },
-                )
-                self._functions.append(func)
-                self._loaded_prompt_remote_names.add(prompt.name)
-
-            if not prompt_list.nextCursor:
-                break
-            params = types.PaginatedRequestParams(cursor=prompt_list.nextCursor)
+            if page is None:
+                raise ToolExecutionException(f"Failed to load {kind}.")
+            pages.append(page)
+            cursor = page.nextCursor
+            if not cursor:
+                return pages
+            if cursor in cursors:
+                raise ToolExecutionException(f"Failed to load {kind}: the server repeated a page cursor.")
+            cursors.add(cursor)
+            params = types.PaginatedRequestParams(cursor=cursor)
 
     async def load_tools(self) -> None:
         async with self._function_load_lock:
@@ -859,92 +943,65 @@ class MCPTool:
         return _call_tool_with_runtime_kwargs
 
     async def _load_tools_locked(self) -> None:
-        from anyio import ClosedResourceError
-        from mcp import types
-
-        if not self._supports_tools:
+        pages = await self._list_catalog(
+            "tools",
+            lambda session, params: session.list_tools(params=params),
+            lambda: self._supports_tools,
+        )
+        if pages is None:
             return
 
+        tool_functions: list[FunctionTool] = []
         tool_call_meta_by_name: dict[str, dict[str, Any]] = {}
         tool_task_support_by_name: dict[str, str] = {}
         tool_param_names_by_name: dict[str, set[str]] = {}
+        listed: set[str] = set()
+        for tool in (tool for page in pages for tool in page.tools):
+            if tool.name in listed:
+                continue
+            listed.add(tool.name)
+            if tool.meta is not None:
+                tool_call_meta_by_name[tool.name] = dict(tool.meta)
+            task_support = getattr(getattr(tool, "execution", None), "taskSupport", None)
+            if task_support is not None:
+                tool_task_support_by_name[tool.name] = task_support
 
-        params: types.PaginatedRequestParams | None = None
-        while True:
-            tool_list: types.ListToolsResult | None = None
-            for attempt in range(2):
-                try:
-                    await self._ensure_connected()
-                    # Tool loading is entered only for a connected lifecycle session.
-                    session = cast("ClientSession", self.session)
-                    if not self._supports_tools:
-                        return
-                    with create_mcp_client_span("tools/list", attributes=self._mcp_base_span_attributes()):
-                        tool_list = await session.list_tools(params=params)
-                    break
-                except ClosedResourceError as cl_ex:
-                    if attempt == 0:
-                        try:
-                            await self._reconnect_without_loading()
-                        except Exception as reconn_ex:
-                            raise ToolExecutionException(
-                                "Failed to reconnect to MCP server.",
-                                inner_exception=reconn_ex,
-                            ) from reconn_ex
-                        continue
-                    raise ToolExecutionException(
-                        "Failed to load tools - connection lost.", inner_exception=cl_ex
-                    ) from cl_ex
-            if tool_list is None:
-                raise ToolExecutionException("Failed to load tools.")
+            input_schema = dict(tool.inputSchema or {})
+            if input_schema.get("type") == "object" and "properties" not in input_schema:
+                input_schema["properties"] = {}
+            properties = input_schema.get("properties")
+            tool_param_names_by_name[tool.name] = (
+                set(cast(dict[str, Any], properties)) if isinstance(properties, dict) else set()
+            )
 
-            for tool in tool_list.tools:
-                if tool.meta is not None:
-                    tool_call_meta_by_name[tool.name] = dict(tool.meta)
-                task_support = getattr(getattr(tool, "execution", None), "taskSupport", None)
-                if task_support is not None:
-                    tool_task_support_by_name[tool.name] = task_support
+            normalized_name = _normalize_mcp_name(tool.name)
+            func = FunctionTool(
+                func=self._make_remote_tool_call(tool.name),
+                name=_build_prefixed_mcp_name(normalized_name, self.tool_name_prefix),
+                description=tool.description or "",
+                input_model=input_schema,
+                additional_properties={
+                    _MCP_REMOTE_NAME_KEY: tool.name,
+                    _MCP_NORMALIZED_NAME_KEY: normalized_name,
+                },
+            )
+            # Static provenance persisted on the function_call content;
+            # identity only — never URLs, headers, env, or command lines.
+            set_tool_context(
+                func,
+                {
+                    "server_name": self.name,
+                    "remote_name": tool.name,
+                    "normalized_name": normalized_name,
+                },
+            )
+            tool_functions.append(func)
 
-                input_schema = dict(tool.inputSchema or {})
-                if input_schema.get("type") == "object" and "properties" not in input_schema:
-                    input_schema["properties"] = {}
-                properties = input_schema.get("properties")
-                tool_param_names_by_name[tool.name] = (
-                    set(cast(dict[str, Any], properties)) if isinstance(properties, dict) else set()
-                )
-
-                normalized_name = _normalize_mcp_name(tool.name)
-                local_name = _build_prefixed_mcp_name(normalized_name, self.tool_name_prefix)
-                if tool.name in self._loaded_tool_remote_names:
-                    continue
-
-                func = FunctionTool(
-                    func=self._make_remote_tool_call(tool.name),
-                    name=local_name,
-                    description=tool.description or "",
-                    input_model=input_schema,
-                    additional_properties={
-                        _MCP_REMOTE_NAME_KEY: tool.name,
-                        _MCP_NORMALIZED_NAME_KEY: normalized_name,
-                    },
-                )
-                # Static provenance persisted on the function_call content;
-                # identity only — never URLs, headers, env, or command lines.
-                set_tool_context(
-                    func,
-                    {
-                        "server_name": self.name,
-                        "remote_name": tool.name,
-                        "normalized_name": normalized_name,
-                    },
-                )
-                self._functions.append(func)
-                self._loaded_tool_remote_names.add(tool.name)
-
-            if not tool_list.nextCursor:
-                break
-            params = types.PaginatedRequestParams(cursor=tool_list.nextCursor)
-
+        # The listing is the server's whole tool catalog: it replaces the
+        # previous one, together with the call metadata read from it, so
+        # removed tools go, changed ones are rebuilt, and a listing that
+        # failed partway leaves the previous catalog whole.
+        self._functions = tool_functions + [func for func in self._functions if _is_mcp_prompt_function(func)]
         self._tool_call_meta_by_name = tool_call_meta_by_name
         self._tool_task_support_by_name = tool_task_support_by_name
         self._tool_param_names_by_name = tool_param_names_by_name
@@ -1115,7 +1172,7 @@ class MCPTool:
 
                 if attempt == 0:
                     try:
-                        await self.connect(reset=True)
+                        await self.connect(reset=True, failed_session=session)
                         continue
                     except Exception as reconn_ex:
                         raise ToolExecutionException(
@@ -1153,7 +1210,7 @@ class MCPTool:
                 except ClosedResourceError as cl_ex:
                     if attempt == 0:
                         try:
-                            await self.connect(reset=True)
+                            await self.connect(reset=True, failed_session=session)
                         except Exception as reconn_ex:
                             raise ToolExecutionException(
                                 "Failed to reconnect to MCP server.",

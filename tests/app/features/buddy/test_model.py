@@ -166,11 +166,20 @@ def test_reaching_the_top_tier_by_evolving_earns_the_shine() -> None:
 
 def test_a_buddy_hatched_in_the_top_tier_earns_the_shine_at_the_final_level() -> None:
     record = a_record(rarity=Rarity.SSR)
-    assert not Buddy.of(replace(record, turns=turns_to_finish(1) - 1)).shiny
+    almost = Buddy.of(replace(record, turns=turns_to_finish(1) - 1))
+    assert (almost.shiny, almost.honored, almost.display_name) == (False, False, "Pico")
     finished = Buddy.of(replace(record, turns=turns_to_finish(1)))
     assert (finished.level, finished.evolved, finished.shiny) == (FINAL_LEVEL, False, True)
+    assert finished.honored
+    assert finished.display_name == "🌟 Pico"
     assert finished.progress.maxed
 
 
 def test_a_buddy_hatched_shiny_stays_shiny() -> None:
     assert Buddy.of(a_record(shiny=True)).shiny
+
+
+def test_the_name_is_marked_for_what_was_earned_not_for_what_was_hatched() -> None:
+    # Hatched shiny, at level one: the shine is real, the mark is not.
+    lucky = Buddy.of(a_record(shiny=True))
+    assert (lucky.shiny, lucky.honored, lucky.display_name) == (True, False, "Pico")

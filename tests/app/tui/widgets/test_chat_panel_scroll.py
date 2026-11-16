@@ -455,6 +455,35 @@ async def test_a_new_message_stops_a_scroll_animation_under_way() -> None:
         assert cp._anchor_released is True
 
 
+async def test_a_new_message_sized_before_the_transcript_grew_waits_for_its_height() -> None:
+    """Showing the bottom-jump button sizes a message no layout placed yet: the transcript's height is still the old.
+
+    Revealing then would stop at the old bottom and follow the reply from there, as when the scroll animation
+    the user started showed the button while the message mounted.
+    """
+    async with ChatPanelApp().run_test(size=(80, 20)) as pilot:
+        app = pilot.app
+        cp = app.query_one(ChatPanel)
+        await scrolled_to_bottom(cp, pilot)
+        cp.agent_running = True
+        old_max = cp.max_scroll_y
+        message = UserMessage("\n".join(f"line {index}" for index in range(30)))
+        with app.batch_update():
+            # The layout that grows the transcript waits for the batch.
+            await cp.mount_transcript_widget(message)
+            _simulate_chat_panel_user_scroll_y(cp, 0)
+            assert message.outer_size
+            assert cp.max_scroll_y == old_max
+            cp.scroll_user_message_to_top(message)
+        await wait_for(
+            lambda: cp.max_scroll_y > old_max and screen_is_settled(app, cp.screen),
+            pilot=pilot,
+            description="the transcript took the message's height",
+        )
+        assert cp.scroll_y == message.virtual_region_with_margin.y < cp.max_scroll_y
+        assert cp._anchor_released is True
+
+
 async def test_chat_panel_arrange_defuses_short_canvas_anchor_pin() -> None:
     """When the arranged canvas is shorter than the container, ``arrange`` must
     release the bottom-anchor + reset ``scroll_y`` BEFORE the compositor reads

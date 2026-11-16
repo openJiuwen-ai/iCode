@@ -231,7 +231,7 @@ class SubmitCoordinator:
     draft: ChatDraft | None = field(default=None, repr=False)
     returned: bool = False
     # The id the message can be withdrawn by while the engine admits it
-    # (``UserInjectCancel``); set only for a message carrying a prompt shortcut.
+    # (``UserInjectCancel``); a queued injection or a message carrying a prompt shortcut.
     message_id: str | None = None
     # Esc asked to withdraw it: a message not yet published is not published.
     withdrawn: bool = False
@@ -318,32 +318,37 @@ class SubmitCoordinator:
 class PendingInjectionState:
     """Tracks the mid-run injection queued behind the locked input bar.
 
-    At most one injection is pending at a time — the input stays locked
-    until the backend reports a ``UserInjectResult`` for it or the user
-    cancels it with Esc.
+    At most one injection owns the composer at a time. Its ownership ends
+    when the backend reports a ``UserInjectResult``, the user cancels, or
+    the turn ends and hands the draft back. Late outcomes may still render
+    a bubble, but cannot touch a draft handed back to the user. Steering
+    records intent; ``InvocationSteered`` is the execution fact.
     """
 
     injection_id: str | None = None
     text: str = ""
+    phase: Literal["queued", "steering"] = "queued"
 
     @property
     def active(self) -> bool:
-        """Return whether an injection is queued and awaiting its outcome."""
+        """Return whether a queued injection still owns the composer."""
         return self.injection_id is not None
 
     def begin(self, injection_id: str, text: str) -> None:
         """Track a newly queued injection."""
         self.injection_id = injection_id
         self.text = text
+        self.phase = "queued"
 
     def matches(self, injection_id: str | None) -> bool:
         """Return whether *injection_id* identifies the tracked injection."""
         return self.injection_id is not None and self.injection_id == injection_id
 
     def clear(self) -> None:
-        """Stop tracking after the outcome arrived or the user cancelled."""
+        """Release the composer after an outcome, cancellation or turn end."""
         self.injection_id = None
         self.text = ""
+        self.phase = "queued"
 
 
 @dataclass

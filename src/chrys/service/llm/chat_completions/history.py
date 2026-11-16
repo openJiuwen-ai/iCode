@@ -590,7 +590,9 @@ def _json_object_arguments(arguments: Any) -> str:
     if isinstance(arguments, str):
         try:
             decoded = json.loads(arguments)
-        except json.JSONDecodeError:
+        # A bare ValueError is an integer literal past Python's integer-string
+        # conversion limit: unrepresentable, like malformed JSON.
+        except ValueError:
             return "{}"
         if isinstance(decoded, dict):
             return arguments

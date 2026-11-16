@@ -7,10 +7,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 from unittest.mock import patch
 
 import anyio
@@ -20,6 +21,7 @@ from mcp.shared.message import SessionMessage
 
 import chrys.service.mcp.owned as owned_mcp
 from chrys.kernel import ChatResponse, Content, Message
+from chrys.kernel.exceptions import ToolExecutionException
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.kernel.types import ChatResponseUpdate
 from chrys.service.mcp._http_transport import _HTTPMCPTool
@@ -30,10 +32,12 @@ from chrys.service.mcp.errors import (
     MCPToolNameValidationError,
 )
 from chrys.service.mcp.owned import (
+    _MAX_CATALOG_PAGE_REQUESTS,
     _MCP_FRAMEWORK_DENYLIST,
     _MCP_NORMALIZED_NAME_KEY,
     _MCP_REMOTE_NAME_KEY,
     MCPTool,
+    _get_input_model_from_mcp_prompt,
 )
 from chrys.service.profiles.agents.schema import MCPServerConfig
 from tests.kernel._fakes import _final_response, _result_contents, _stack, _text_response, _text_update, _user
@@ -50,7 +54,14 @@ from tests.service.mcp._helpers import (
 if TYPE_CHECKING:
     from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
     from mcp.client.experimental.task_handlers import ExperimentalTaskHandlers
-    from mcp.client.session import ElicitationFnT, ListRootsFnT, LoggingFnT, MessageHandlerFnT, SamplingFnT
+    from mcp.client.session import (
+        ClientSession,
+        ElicitationFnT,
+        ListRootsFnT,
+        LoggingFnT,
+        MessageHandlerFnT,
+        SamplingFnT,
+    )
 
 
 def _ok_result() -> types.CallToolResult:
@@ -684,6 +695,196 @@ async def test_owned_catalog_reload_exception_is_logged_not_propagated(
     assert "catalog failed" in caplog.text
 
 
+class _PagedSession:
+    """``list_tools``/``list_prompts`` answering one scripted page per cursor, with the SDK's signatures.
+
+    A page is ``(items, next_cursor)``, or an exception to raise; ``cursors`` logs the
+    cursor each list request asked for (None for the first page). Past
+    ``_RUNAWAY_LISTING`` requests it fails the test: a listing that never ends.
+    """
+
+    _RUNAWAY_LISTING = 5 * _MAX_CATALOG_PAGE_REQUESTS
+
+    def __init__(
+        self,
+        *,
+        tool_pages: Callable[[str | None], tuple[list[types.Tool], str | None] | Exception] | None = None,
+        prompt_pages: Callable[[str | None], tuple[list[types.Prompt], str | None] | Exception] | None = None,
+    ) -> None:
+        self._tool_pages = tool_pages
+        self._prompt_pages = prompt_pages
+        self.cursors: list[str | None] = []
+
+    def _page[T](
+        self, pages: Callable[[str | None], tuple[list[T], str | None] | Exception] | None, params: Any
+    ) -> tuple[list[T], str | None]:
+        cursor = params.cursor if params is not None else None
+        self.cursors.append(cursor)
+        if len(self.cursors) > self._RUNAWAY_LISTING:
+            raise AssertionError("the listing never ended")
+        if pages is None:
+            raise AssertionError("the test scripted no pages for this listing")
+        page = pages(cursor)
+        if isinstance(page, Exception):
+            raise page
+        return page
+
+    async def send_ping(self) -> types.EmptyResult:
+        return types.EmptyResult()
+
+    async def list_tools(
+        self, cursor: str | None = None, *, params: types.PaginatedRequestParams | None = None
+    ) -> types.ListToolsResult:
+        tools, next_cursor = self._page(self._tool_pages, params)
+        return types.ListToolsResult(tools=tools, nextCursor=next_cursor)
+
+    async def list_prompts(
+        self, cursor: str | None = None, *, params: types.PaginatedRequestParams | None = None
+    ) -> types.ListPromptsResult:
+        prompts, next_cursor = self._page(self._prompt_pages, params)
+        return types.ListPromptsResult(prompts=prompts, nextCursor=next_cursor)
+
+
+def _described_tool(name: str, description: str, *params: str) -> types.Tool:
+    return types.Tool(
+        name=name,
+        description=description,
+        inputSchema={"type": "object", "properties": {param: {"type": "string"} for param in params}},
+    )
+
+
+def test_prompt_argument_without_description_has_no_description_key() -> None:
+    prompt = types.Prompt(
+        name="p",
+        arguments=[types.PromptArgument(name="bare"), types.PromptArgument(name="told", description="Told.")],
+    )
+
+    assert _get_input_model_from_mcp_prompt(prompt)["properties"] == {
+        "bare": {"type": "string"},
+        "told": {"type": "string", "description": "Told."},
+    }
+
+
+async def test_tool_listing_replaces_the_previous_tool_catalog() -> None:
+    owned_tool = MCPTool(name="s")
+    owned_tool.session = _as_client_session(
+        _ScriptedClientSession(
+            tools=[_described_tool("kept", "Old.", "a"), _described_tool("gone", "Gone.")],
+            prompts=[_mcp_remote_prompt("prompt")],
+        )
+    )
+    await owned_tool.load_tools()
+    await owned_tool.load_prompts()
+
+    owned_tool.session = _as_client_session(
+        _ScriptedClientSession(tools=[_described_tool("kept", "New.", "b"), _described_tool("added", "Added.")])
+    )
+    await owned_tool.load_tools()
+
+    assert [(f.name, f.description) for f in owned_tool.functions] == [
+        ("kept", "New."),
+        ("added", "Added."),
+        ("prompt", "Remote prompt"),
+    ]
+    assert owned_tool._tool_param_names_by_name == {"kept": {"b"}, "added": set()}
+
+
+async def test_prompt_listing_replaces_the_previous_prompt_catalog() -> None:
+    owned_tool = MCPTool(name="s")
+    owned_tool.session = _as_client_session(
+        _ScriptedClientSession(
+            tools=[_mcp_remote_tool("tool")], prompts=[_mcp_remote_prompt("gone"), _mcp_remote_prompt("kept")]
+        )
+    )
+    await owned_tool.load_tools()
+    await owned_tool.load_prompts()
+
+    owned_tool.session = _as_client_session(
+        _ScriptedClientSession(
+            prompts=[types.Prompt(name="kept", description="New.", arguments=[types.PromptArgument(name="q")])]
+        )
+    )
+    await owned_tool.load_prompts()
+
+    assert [function.name for function in owned_tool.functions] == ["tool", "kept"]
+    kept = owned_tool.functions[1]
+    assert kept.description == "New."
+    assert kept.parameters()["properties"] == {"q": {"type": "string"}}
+
+
+async def test_listing_that_fails_partway_keeps_the_previous_catalog() -> None:
+    owned_tool = MCPTool(name="s")
+    owned_tool.session = _as_client_session(_ScriptedClientSession(tools=[_described_tool("old", "Old.", "x")]))
+    await owned_tool.load_tools()
+
+    def pages(cursor: str | None) -> tuple[list[types.Tool], str | None] | Exception:
+        if cursor is None:
+            return [_described_tool("new", "New.", "y")], "page-2"
+        return RuntimeError("page 2 failed")
+
+    owned_tool.session = _as_client_session(cast("Any", _PagedSession(tool_pages=pages)))
+    with pytest.raises(RuntimeError, match="page 2 failed"):
+        await owned_tool.load_tools()
+
+    assert [function.name for function in owned_tool.functions] == ["old"]
+    assert owned_tool._tool_param_names_by_name == {"old": {"x"}}
+
+
+async def test_listing_that_repeats_a_cursor_fails_instead_of_looping() -> None:
+    owned_tool = MCPTool(name="s")
+    session = _PagedSession(
+        tool_pages=lambda cursor: ([_mcp_remote_tool(f"t-{cursor}")], "b" if cursor == "a" else "a")
+    )
+    owned_tool.session = _as_client_session(cast("Any", session))
+
+    with pytest.raises(ToolExecutionException, match="repeated a page cursor"):
+        await owned_tool.load_tools()
+
+    assert session.cursors == [None, "a", "b"]
+    assert owned_tool.functions == []
+
+
+async def test_listing_that_never_ends_fails_at_the_page_request_cap() -> None:
+    owned_tool = MCPTool(name="s")
+    session = _PagedSession(prompt_pages=lambda cursor: ([], f"{cursor}+"))
+    owned_tool.session = _as_client_session(cast("Any", session))
+
+    with pytest.raises(ToolExecutionException, match=f"within {_MAX_CATALOG_PAGE_REQUESTS} page requests"):
+        await owned_tool.load_prompts()
+
+    assert len(session.cursors) == _MAX_CATALOG_PAGE_REQUESTS
+
+
+async def test_listing_restarts_from_the_first_page_on_a_replaced_session() -> None:
+    owned_tool = _HTTPMCPTool(name="h", url="http://localhost/mcp")
+
+    def pages(tools: str) -> Callable[[str | None], tuple[list[types.Tool], str | None] | Exception]:
+        failures = [anyio.ClosedResourceError()] if tools == "old" else []
+
+        def page(cursor: str | None) -> tuple[list[types.Tool], str | None] | Exception:
+            if cursor is None:
+                return [_mcp_remote_tool(f"{tools}-1")], "page-2"
+            return failures.pop() if failures else ([_mcp_remote_tool(f"{tools}-2")], None)
+
+        return page
+
+    old_session, new_session = _PagedSession(tool_pages=pages("old")), _PagedSession(tool_pages=pages("new"))
+    failed_sessions: list[ClientSession | None] = []
+
+    async def reconnect_without_loading(failed_session: ClientSession | None) -> None:
+        failed_sessions.append(failed_session)
+        owned_tool.session = _as_client_session(cast("Any", new_session))
+
+    owned_tool._reconnect_without_loading = reconnect_without_loading  # type: ignore[method-assign]
+    owned_tool.session = _as_client_session(cast("Any", old_session))
+    await owned_tool.load_tools()
+
+    assert old_session.cursors == [None, "page-2"]
+    assert new_session.cursors == [None, "page-2"]
+    assert [function.name for function in owned_tool.functions] == ["new-1", "new-2"]
+    assert failed_sessions == [old_session]
+
+
 # ---------------------------------------------------------------------------
 # lifecycle owner task, reconnect wrapping, session-state reset
 # ---------------------------------------------------------------------------
@@ -829,12 +1030,92 @@ async def test_owned_mcp_initialize_failure_does_not_commit_closed_session(monke
     assert tool.is_connected is False
 
 
+async def test_concurrent_calls_on_a_dropped_session_reconnect_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Calls that all saw one session drop replace it once, then share the replacement."""
+    callers = 3
+    transports_opened = 0
+    sessions: list[_HandshakeClientSession] = []
+    all_in_flight = asyncio.Event()
+    in_flight = 0
+
+    @asynccontextmanager
+    async def transport() -> Any:
+        nonlocal transports_opened
+        transports_opened += 1
+        yield object(), object()
+
+    class _DroppingSession(_HandshakeClientSession):
+        async def initialize(self) -> types.InitializeResult:
+            sessions.append(self)
+            return await super().initialize()
+
+        async def call_tool(
+            self,
+            name: str,
+            arguments: dict[str, Any] | None = None,
+            read_timeout_seconds: timedelta | None = None,
+            progress_callback: Any = None,
+            *,
+            meta: dict[str, Any] | None = None,
+        ) -> types.CallToolResult:
+            nonlocal in_flight
+            if self is not sessions[0]:
+                return _ok_result()
+            in_flight += 1
+            if in_flight == callers:
+                all_in_flight.set()
+            await all_in_flight.wait()
+            raise anyio.ClosedResourceError
+
+    class _DroppingTool(MCPTool):
+        def get_mcp_client(self) -> Any:
+            return transport()
+
+    monkeypatch.setattr("mcp.client.session.ClientSession", _DroppingSession)
+    tool = _DroppingTool(name="dropping")
+    await tool.connect()
+    try:
+        results = await asyncio.gather(*(tool.call_tool("echo") for _ in range(callers)))
+    finally:
+        await tool.close()
+
+    assert transports_opened == 2
+    assert len(sessions) == 2
+    assert [[content.text for content in result] for result in results] == [["ok"]] * callers
+
+
+async def test_reset_naming_a_replaced_session_keeps_the_replacement(monkeypatch: pytest.MonkeyPatch) -> None:
+    @asynccontextmanager
+    async def transport() -> Any:
+        yield object(), object()
+
+    class _Tool(MCPTool):
+        def get_mcp_client(self) -> Any:
+            return transport()
+
+    monkeypatch.setattr("mcp.client.session.ClientSession", _HandshakeClientSession)
+    tool = _Tool(name="t")
+    await tool.connect()
+    first = tool.session
+    try:
+        await tool.connect(reset=True, failed_session=first)
+        second = tool.session
+        await tool.connect(reset=True, failed_session=first)
+
+        assert second is not first
+        assert tool.session is second
+        await tool.connect(reset=True, failed_session=second)
+        assert tool.session is not second
+    finally:
+        await tool.close()
+
+
 async def test_load_retries_reconnect_without_recursive_configured_load() -> None:
     """ClosedResourceError during list pagination must not deadlock on the load lock."""
     tool = _HTTPMCPTool(name="h", url="http://localhost/mcp")
     reconnect_calls = 0
 
-    async def reconnect_without_loading() -> None:
+    async def reconnect_without_loading(failed_session: ClientSession | None) -> None:
         nonlocal reconnect_calls
         reconnect_calls += 1
         assert tool._function_load_lock.locked()
@@ -855,7 +1136,7 @@ async def test_load_retries_reconnect_without_recursive_configured_load() -> Non
 async def test_load_reconnect_failure_is_wrapped() -> None:
     tool = _HTTPMCPTool(name="h", url="http://localhost/mcp")
 
-    async def reconnect_without_loading() -> None:
+    async def reconnect_without_loading(failed_session: ClientSession | None) -> None:
         raise RuntimeError("reconnect failed")
 
     tool._reconnect_without_loading = reconnect_without_loading  # type: ignore[method-assign]
@@ -872,7 +1153,7 @@ async def test_get_prompt_reconnect_failure_is_wrapped() -> None:
     tool = _HTTPMCPTool(name="h", url="http://localhost/mcp")
     resets: list[bool] = []
 
-    async def connect(*, reset: bool = False) -> None:
+    async def connect(*, reset: bool = False, failed_session: ClientSession | None = None) -> None:
         resets.append(reset)
         raise RuntimeError("reconnect failed")
 

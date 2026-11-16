@@ -90,6 +90,28 @@ def _schema_supplied_tool(func: Any = None, **kwargs: Any) -> FunctionTool:
     )
 
 
+def _counting_tool(schema_type: Any, received: list[Any]) -> FunctionTool:
+    async def count(**call_kwargs: Any) -> str:
+        received.append(call_kwargs["count"])
+        return "counted"
+
+    return FunctionTool(
+        name="count",
+        description="Count.",
+        func=count,
+        input_model={
+            "type": "object",
+            "properties": {"count": {"type": schema_type}},
+            "required": ["count"],
+            "additionalProperties": False,
+        },
+    )
+
+
+class _Pair(BaseModel):
+    label: str
+
+
 def _foreign_content(text: str) -> object:
     class ForeignContent:
         type = "text"
@@ -186,6 +208,26 @@ class TestToolInvocationContracts:
         assert [item.text for item in mixed] == ["见下", '{"城市": "北京"}']
         assert [item.text for item in direct.items or []] == ['{"城市": "北京"}']
 
+    def test_parse_result_keeps_the_content_items_of_a_tuple(self) -> None:
+        image = Content.from_uri("https://example.test/chart.png", media_type="image/png")
+
+        parsed = FunctionTool.parse_result((Content.from_text("see the chart"), image))
+
+        assert [item.type for item in parsed] == ["text", "uri"]
+        assert parsed[1] is image
+
+    def test_parse_result_dumps_the_models_of_a_tuple_as_json(self) -> None:
+        parsed = FunctionTool.parse_result((_Pair(label="a"), _Pair(label="b")))
+
+        assert [json.loads(item.text or "") for item in parsed] == [[{"label": "a"}, {"label": "b"}]]
+
+    def test_to_dict_keeps_the_schema_of_a_schema_supplied_tool(self) -> None:
+        schema_tool = _schema_supplied_tool()
+
+        assert schema_tool.input_model is None
+        assert schema_tool.to_dict()["input_model"] == _SCHEMA
+        assert "input_model" not in schema_tool.to_dict(exclude={"input_model"})
+
     def test_skip_parsing_sentinel_repr_stays_stable(self) -> None:
         assert repr(SKIP_PARSING) == "SKIP_PARSING"
 
@@ -253,10 +295,33 @@ class TestToolInvocationContracts:
             ({"a": 1}, "object", True),
             (None, "null", True),
             ("anything", "unknown-type", True),
+            (3.0, "integer", True),
+            (3.5, "integer", False),
+            (float("inf"), "integer", False),
+            (float("nan"), "integer", False),
         ],
     )
     def test_type_matcher_contract(self, value: Any, schema_type: str, expected: bool) -> None:
         assert _matches_json_schema_type(value, schema_type) is expected
+
+    @pytest.mark.parametrize(
+        "schema_type,expected",
+        [
+            ("integer", 3),
+            (["integer", "null"], 3),
+            (["integer", "number"], 3.0),
+            ("number", 3.0),
+        ],
+    )
+    def test_validation_gives_a_whole_float_the_declared_type(self, schema_type: Any, expected: Any) -> None:
+        validated = _validate_arguments_against_schema(
+            arguments={"count": 3.0},
+            schema={"properties": {"count": {"type": schema_type}}},
+            tool_name="t",
+        )
+
+        assert validated == {"count": expected}
+        assert type(validated["count"]) is type(expected)
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +509,31 @@ class TestInvokeValidation:
             await schema_tool.invoke(arguments={"text": "hi", "extra": 1})
         result = await schema_tool.invoke(arguments={"text": "hi", "mode": "a"})
         assert result[0].text == "echo:hi"
+
+    @pytest.mark.parametrize("schema_type", ["integer", ["integer", "null"]])
+    async def test_schema_supplied_integer_takes_a_whole_float_as_an_int(self, schema_type: Any) -> None:
+        received: list[Any] = []
+
+        await _counting_tool(schema_type, received).invoke(arguments={"count": 3.0})
+
+        assert received == [3]
+        assert type(received[0]) is int
+
+    async def test_schema_supplied_integer_or_number_keeps_the_float(self) -> None:
+        received: list[Any] = []
+
+        await _counting_tool(["integer", "number"], received).invoke(arguments={"count": 3.0})
+
+        assert received == [3.0]
+        assert type(received[0]) is float
+
+    @pytest.mark.parametrize("value", [3.5, True, "3", float("inf")])
+    async def test_schema_supplied_integer_still_rejects_non_integers(self, value: Any) -> None:
+        received: list[Any] = []
+
+        with pytest.raises(TypeError, match="Invalid type for 'count'"):
+            await _counting_tool("integer", received).invoke(arguments={"count": value})
+        assert received == []
 
     async def test_typed_tool_rejects_unadvertised_argument_instead_of_dropping_it(self) -> None:
         received: list[str] = []

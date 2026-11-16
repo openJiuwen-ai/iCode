@@ -358,10 +358,10 @@ def test_description_offers_the_background_only_with_a_registry(tmp_path: Path) 
     assert "moves to the background" not in without
     assert "No asynchronous task handle is provided." not in with_tasks
     assert "moves to the background" in with_tasks
-    assert "stopped when you finish" in with_tasks
-    assert "stopped when the session ends" not in with_tasks
-    assert "stopped when the session ends" in session_wide
-    assert "stopped when you finish" not in session_wide
+    assert "stop when you finish" in with_tasks
+    assert "stop when the session ends" not in with_tasks
+    assert "stop when the session ends" in session_wide
+    assert "stop when you finish" not in session_wide
 
 
 async def test_processes_left_after_the_shell_exited_move_to_the_background_with_its_exit_code(

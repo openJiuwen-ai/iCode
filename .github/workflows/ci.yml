@@ -50,29 +50,36 @@ jobs:
             os: linux
             workers: 4
             pytest_args: tests --ignore=tests/architecture --ignore=tests/app/tui
-          # The TUI suite fills two runners, cut the same on every platform at
-          # a measured, roughly even point: the main screen's, behaviors',
-          # themes', settings' and terminal tests weigh as much as the rest.
-          # The second shard takes everything the first does not name. Move
-          # the cut by the shards' JUnit times when one nears the step limit.
+          # The TUI suite fills three runners, cut the same on every platform
+          # by directory at measured, roughly even points: the main screen's
+          # and terminal tests; widgets', behaviors', themes' and settings';
+          # and the rest, mostly the files directly under screens/, where new
+          # tests land. The third shard takes everything the first two do not
+          # name. Move a cut by the shards' JUnit times when one nears the
+          # step limit.
           - label: linux/1/tui
             artifact: linux-tui-1
             os: linux
             workers: 4
-            pytest_args: >-
-              tests/app/tui/screens/main tests/app/tui/behaviors
-              tests/app/tui/screens/themes tests/app/tui/screens/settings
-              tests/app/tui/terminal
+            pytest_args: tests/app/tui/screens/main tests/app/tui/terminal
           - label: linux/2/tui
             artifact: linux-tui-2
             os: linux
             workers: 4
             pytest_args: >-
+              tests/app/tui/widgets tests/app/tui/behaviors
+              tests/app/tui/screens/themes tests/app/tui/screens/settings
+          - label: linux/3/tui
+            artifact: linux-tui-3
+            os: linux
+            workers: 4
+            pytest_args: >-
               tests/app/tui --ignore=tests/app/tui/screens/main
+              --ignore=tests/app/tui/terminal
+              --ignore=tests/app/tui/widgets
               --ignore=tests/app/tui/behaviors
               --ignore=tests/app/tui/screens/themes
               --ignore=tests/app/tui/screens/settings
-              --ignore=tests/app/tui/terminal
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -101,12 +108,21 @@ jobs:
         # costs ~27s on macOS with no test-step payback — skip it there.
         if: matrix.os != 'macos'
         run: uv run pytest --collect-only -q -n 0 -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
+      - name: Cache the vendored ripgrep binary
+        # Keyed by the fetch scripts themselves: a version bump edits their default,
+        # which rotates the key, so nothing here repeats the version.
+        id: rg
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src/chrys/foundation/vendor/ripgrep
+          key: ripgrep-host-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch_rg.sh', 'scripts/fetch_rg.ps1') }}
       - name: Fetch ripgrep binary
+        if: steps.rg.outputs.cache-hit != 'true'
         run: ./scripts/fetch_rg.sh
       # ``gc_calibration`` tests are slow real-App probes covered by the
       # scheduled gc-freeze-calibration workflow, not PR CI.
       - name: Run tests
-        timeout-minutes: 15
+        timeout-minutes: 20
         env:
           CHRYS_TEST_STALL_DIAGNOSTICS: "1"
         run: uv run pytest -q --tb=short --durations=20 --dist=worksteal --junitxml=test-results-${{ matrix.artifact }}.xml -n ${{ matrix.workers }} -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
@@ -140,20 +156,25 @@ jobs:
             artifact: macos-tui-1
             os: macos
             workers: 6
-            pytest_args: >-
-              tests/app/tui/screens/main tests/app/tui/behaviors
-              tests/app/tui/screens/themes tests/app/tui/screens/settings
-              tests/app/tui/terminal
+            pytest_args: tests/app/tui/screens/main tests/app/tui/terminal
           - label: macos/2/tui
             artifact: macos-tui-2
             os: macos
             workers: 6
             pytest_args: >-
+              tests/app/tui/widgets tests/app/tui/behaviors
+              tests/app/tui/screens/themes tests/app/tui/screens/settings
+          - label: macos/3/tui
+            artifact: macos-tui-3
+            os: macos
+            workers: 6
+            pytest_args: >-
               tests/app/tui --ignore=tests/app/tui/screens/main
+              --ignore=tests/app/tui/terminal
+              --ignore=tests/app/tui/widgets
               --ignore=tests/app/tui/behaviors
               --ignore=tests/app/tui/screens/themes
               --ignore=tests/app/tui/screens/settings
-              --ignore=tests/app/tui/terminal
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -175,12 +196,21 @@ jobs:
         # costs ~27s on macOS with no test-step payback — skip it there.
         if: matrix.os != 'macos'
         run: uv run pytest --collect-only -q -n 0 -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
+      - name: Cache the vendored ripgrep binary
+        # Keyed by the fetch scripts themselves: a version bump edits their default,
+        # which rotates the key, so nothing here repeats the version.
+        id: rg
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src/chrys/foundation/vendor/ripgrep
+          key: ripgrep-host-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch_rg.sh', 'scripts/fetch_rg.ps1') }}
       - name: Fetch ripgrep binary
+        if: steps.rg.outputs.cache-hit != 'true'
         run: ./scripts/fetch_rg.sh
       # ``gc_calibration`` tests are slow real-App probes covered by the
       # scheduled gc-freeze-calibration workflow, not PR CI.
       - name: Run tests
-        timeout-minutes: 15
+        timeout-minutes: 20
         env:
           CHRYS_TEST_STALL_DIAGNOSTICS: "1"
         run: uv run pytest -q --tb=short --durations=20 --dist=worksteal --junitxml=test-results-${{ matrix.artifact }}.xml -n ${{ matrix.workers }} -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
@@ -215,20 +245,25 @@ jobs:
             artifact: windows-tui-1
             workers: 4
             py39: false
-            pytest_args: >-
-              tests/app/tui/screens/main tests/app/tui/behaviors
-              tests/app/tui/screens/themes tests/app/tui/screens/settings
-              tests/app/tui/terminal
+            pytest_args: tests/app/tui/screens/main tests/app/tui/terminal
           - label: windows/2/tui
             artifact: windows-tui-2
             workers: 4
             py39: false
             pytest_args: >-
+              tests/app/tui/widgets tests/app/tui/behaviors
+              tests/app/tui/screens/themes tests/app/tui/screens/settings
+          - label: windows/3/tui
+            artifact: windows-tui-3
+            workers: 4
+            py39: false
+            pytest_args: >-
               tests/app/tui --ignore=tests/app/tui/screens/main
+              --ignore=tests/app/tui/terminal
+              --ignore=tests/app/tui/widgets
               --ignore=tests/app/tui/behaviors
               --ignore=tests/app/tui/screens/themes
               --ignore=tests/app/tui/screens/settings
-              --ignore=tests/app/tui/terminal
     steps:
       # Hosted Windows images already disable real-time Defender scanning, so
       # changing Defender settings here is a measured no-op.
@@ -272,12 +307,21 @@ jobs:
         run: uv run python -m compileall -q src
       - name: Prewarm test collection
         run: uv run pytest --collect-only -q -n 0 -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
+      - name: Cache the vendored ripgrep binary
+        # Keyed by the fetch scripts themselves: a version bump edits their default,
+        # which rotates the key, so nothing here repeats the version.
+        id: rg
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src/chrys/foundation/vendor/ripgrep
+          key: ripgrep-host-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch_rg.sh', 'scripts/fetch_rg.ps1') }}
       - name: Fetch ripgrep binary
+        if: steps.rg.outputs.cache-hit != 'true'
         run: .\scripts\fetch_rg.ps1
       # pytest-timeout's thread method can fail to kill workers blocked in
       # Windows IOCP, so the step also has a hard wall-clock limit.
       - name: Run tests
-        timeout-minutes: 15
+        timeout-minutes: 20
         env:
           CHRYS_TEST_STALL_DIAGNOSTICS: "1"
         # Separate runners give the TUI and core suites independent CPU
@@ -314,7 +358,7 @@ jobs:
           allow-prereleases: true
       - run: uv sync
       - name: Run architecture tests
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: uv run pytest -q --tb=short --durations=20 --junitxml=test-results-architecture.xml -n 0 -m "not integration and not gc_calibration" tests/architecture
       - name: Upload architecture test results
         if: always()
@@ -381,8 +425,17 @@ jobs:
         with:
           python-version-file: .python-version
           allow-prereleases: true
+      - name: Cache the vendored ripgrep binaries
+        # Same key discipline as the shards; the --all fetch fills every platform,
+        # so the entry needs no runner identity.
+        id: rg
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src/chrys/foundation/vendor/ripgrep
+          key: ripgrep-all-${{ hashFiles('scripts/fetch_rg.sh', 'scripts/fetch_rg.ps1') }}
       # Built as CD builds the released wheel, with every platform's ripgrep.
       - name: Fetch ripgrep binaries (all platforms)
+        if: steps.rg.outputs.cache-hit != 'true'
         run: ./scripts/fetch_rg.sh --all
       - run: uv build
       - name: Install and run the wheel as a PyPI user would

@@ -34,6 +34,69 @@ from tests.app.acp._session_manager_fakes import (
 from tests.support.platform_fakes import platform_with_config_dir
 
 
+@pytest.mark.parametrize("name", ["Code", "QA", "Explore", "General"])
+def test_acp_builtin_prompt_writes_keep_package_prompts_and_other_settings(tmp_path, monkeypatch, name):
+    platform = platform_with_config_dir(tmp_path)
+    monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: platform)
+    registry = AgentProfileRegistry()
+    registry.load_all(tmp_path / "agents")
+    manager = _acp_manager(registry)
+    data = manager.read_agent_profile(name)
+    data["instructions"] = "attempted system prompt override"
+    data["compaction"]["last_words_template"] = "attempted memory prompt override"
+    data["compaction"]["last_words_max_output_tokens"] = 7000
+    result = manager.write_agent_profile(data)
+    assert result["ignored_fields"] == ["instructions", "compaction.last_words_template"]
+    fresh = AgentProfileRegistry()
+    fresh.load_all(tmp_path / "agents")
+    effective = fresh.get(name)
+    template = fresh.get_builtin_template(name)
+    assert effective.instructions == template.instructions
+    assert effective.compaction.last_words_template == template.compaction.last_words_template
+    assert effective.compaction.last_words_max_output_tokens == 7000
+    assert not list((tmp_path / "agents").glob("*-Modified*.yaml"))
+
+
+@pytest.mark.parametrize("payload", ["unchanged", "omitted", "one_changed", "custom"])
+def test_acp_ignored_prompts_only_reports_explicit_builtin_changes(tmp_path, monkeypatch, payload):
+    platform = platform_with_config_dir(tmp_path)
+    monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: platform)
+    registry = AgentProfileRegistry()
+    registry.load_all(tmp_path / "agents")
+    manager = _acp_manager(registry)
+    data = manager.read_agent_profile("Code")
+    if payload == "omitted":
+        data.pop("instructions")
+        data["compaction"].pop("last_words_template")
+    elif payload == "one_changed":
+        data["instructions"] = "new prompt"
+    elif payload == "custom":
+        data.update(name="Code-copy", id="custom-id", instructions="custom prompt")
+    result = manager.write_agent_profile(data)
+    assert result.get("ignored_fields", []) == (["instructions"] if payload == "one_changed" else [])
+    if payload == "custom":
+        assert load_profile_from_yaml(tmp_path / "agents" / "Code-copy.yaml").instructions == "custom prompt"
+
+
+def test_acp_write_backs_up_legacy_prompts_before_replacing_user_settings(tmp_path, monkeypatch):
+    platform = platform_with_config_dir(tmp_path)
+    monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: platform)
+    registry = AgentProfileRegistry()
+    registry.load_all(tmp_path / "agents")
+    old = registry.get_builtin_template("Code")
+    old.instructions = "legacy user system prompt"
+    old.compaction.last_words_template = "legacy user memory prompt"
+    save_agent_profile(old)
+    manager = _acp_manager(registry)
+    data = manager.read_agent_profile("Code")
+    data["description"] = "updated description"
+    manager.write_agent_profile(data)
+    backup = load_profile_from_yaml(tmp_path / "agents" / "Code-Modified.yaml")
+    assert backup.instructions == old.instructions
+    assert backup.compaction.last_words_template == old.compaction.last_words_template
+    assert registry.get("Code").description == "updated description"
+
+
 def test_read_agent_profile_masks_mcp_secrets() -> None:
     agent_registry = AgentProfileRegistry()
     agent_registry.register(_mcp_profile())
@@ -68,6 +131,7 @@ def test_reset_agent_profile_preserves_integrations_without_cascade(monkeypatch:
     customized = agent_registry.get_builtin_template("Code")
     assert customized is not None
     customized.instructions = "custom shadow"
+    customized.model.profile_id = "resettable-model"
     customized.skills.paths = ["private-skills"]
     customized.tools.mcp = [
         MCPServerConfig(
@@ -158,13 +222,14 @@ def test_reset_agent_profile_removes_noncanonical_shadow_file(monkeypatch: pytes
     agent_registry = AgentProfileRegistry()
     agent_registry.load_all(user_dir=user_dir)
     manager = _acp_manager(agent_registry)
-    assert agent_registry.get("Code").instructions == "custom shadow"
+    assert agent_registry.get("Code-Modified").instructions == "custom shadow"
+    assert agent_registry.get("Code").instructions == agent_registry.get_builtin_template("Code").instructions
 
     result = manager.reset_agent_profile("Code")
 
     assert result["changed"] is True
     assert not (user_dir / "my-code.yaml").exists()
-    assert sorted(p.name for p in user_dir.glob("*.y*ml")) == []
+    assert sorted(p.name for p in user_dir.glob("*.y*ml")) == ["Code-Modified.yaml"]
     fresh = AgentProfileRegistry()
     fresh.load_all(user_dir=user_dir)
     assert fresh.get("Code").instructions != "custom shadow"
@@ -565,7 +630,9 @@ def test_delete_agent_profile_rejects_case_variant_of_builtin_name(
     if has_shadow:
         assert shadow.read_bytes() == shadow_before
     assert agent_registry.get("Code") is not None
-    assert agent_registry.get("Code") == (customized if has_shadow else source_registry.get_builtin_template("Code"))
+    assert agent_registry.get("Code") == source_registry.get_builtin_template("Code")
+    if has_shadow:
+        assert agent_registry.get("Code-Modified").instructions == customized.instructions
 
 
 @pytest.mark.parametrize("spelling", ["code", "CODE", "cOdE"])
@@ -757,11 +824,12 @@ def test_delete_agent_profile_checks_stored_owner_after_legacy_write(
     fresh = AgentProfileRegistry()
     fresh.load_all(user_dir=user_dir)
     assert fresh.get(owner_name) == owner
+    owner_after_reload = owner_path.read_bytes()
 
     if registry.is_builtin(owner_name):
         with pytest.raises(AcpSessionError, match="cannot be deleted; reset 'Code' instead"):
             manager.delete_agent_profile(owner_name)
-        assert owner_path.read_bytes() == owner_before
+        assert owner_path.read_bytes() == owner_after_reload
         assert manager.reset_agent_profile(owner_name)["changed"] is True
     else:
         assert manager.delete_agent_profile(owner_name) == {"name": owner_name, "deleted": True}

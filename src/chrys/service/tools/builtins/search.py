@@ -1086,17 +1086,10 @@ async def grep(
     context_lines: Annotated[int, "Number of context lines before and after each match."] = 2,
     max_results: Annotated[int, "Maximum number of matches to return."] = _MAX_RESULTS,
 ) -> str:
-    """Search file contents using a regex pattern. Returns matching lines with context.
+    """Search file contents with a Rust-flavor regex; returns matching lines with context.
 
-    Powered by ripgrep (rg --json -e PATTERN -C CONTEXT_LINES -E ENCODING PATH).
-    The pattern is a Rust-flavor regex (PCRE-like, not Python re). Glob filtering
-    uses gitignore-style rules: patterns without '/' match the filename at any
-    depth (e.g. '*.py' matches 'src/foo.py'), patterns with '/' match against
-    the relative path. max_results is capped at 100 regardless of the value provided.
-    Directory searches respect Git ignore rules and ripgrep hidden-file rules.
-    Explicit file names and directory prefixes can select hidden or ignored paths.
-    Explicit ignored directories bypass Git ignore rules within that directory.
-    """
+    Glob filters without '/' match file names at any depth; those with '/' match
+    relative paths. At most 100 matches are returned."""
     return await _grep_impl(
         pattern,
         path=path,
@@ -1169,17 +1162,9 @@ async def glob(
     path: Annotated[str, "Directory to search in."] = ".",
     max_results: Annotated[int, "Maximum number of results to return."] = _MAX_RESULTS,
 ) -> str:
-    """Find files by name pattern. Returns relative paths of matching files.
+    """Find files recursively by gitignore-style glob; returns relative paths, at most 100.
 
-    Powered by ripgrep (rg --files --glob PATTERN PATH). The pattern uses
-    gitignore-style glob rules: patterns without '/' match the filename at any
-    depth (e.g. '*.py' matches 'src/foo.py'), patterns with '/' match against
-    the relative path. Searches recursively through all subdirectories.
-    max_results is capped at 100 regardless of the value provided.
-    Discovery respects Git ignore rules and ripgrep hidden-file rules.
-    Explicit file names and directory prefixes can select hidden or ignored paths.
-    Explicit ignored directories bypass Git ignore rules within that directory.
-    """
+    Patterns without '/' match file names at any depth; those with '/' match relative paths."""
     return await _glob_impl(pattern, path=path, max_results=max_results)
 
 
@@ -1223,14 +1208,10 @@ class SearchTools:
         context_lines: Annotated[int, "Number of context lines before and after each match."] = 2,
         max_results: Annotated[int, "Maximum number of matches to return."] = _MAX_RESULTS,
     ) -> str:
-        """Search file contents using a regex pattern. Returns matching lines with context.
+        """Search file contents with a Rust-flavor regex; returns matching lines with context.
 
-        Powered by ripgrep (rg --json -e PATTERN -C CONTEXT_LINES -E ENCODING PATH).
-        The pattern is a Rust-flavor regex (PCRE-like, not Python re). Glob filtering
-        uses gitignore-style rules: patterns without '/' match the filename at any
-        depth (e.g. '*.py' matches 'src/foo.py'), patterns with '/' match against
-        the relative path. max_results is capped at 100 regardless of the value provided.
-        """
+        Glob filters without '/' match file names at any depth; those with '/' match
+        relative paths. At most 100 matches are returned."""
         return await _grep_impl(
             pattern,
             path=path,
@@ -1248,14 +1229,9 @@ class SearchTools:
         path: Annotated[str, "Directory to search in."] = ".",
         max_results: Annotated[int, "Maximum number of results to return."] = _MAX_RESULTS,
     ) -> str:
-        """Find files by name pattern. Returns relative paths of matching files.
+        """Find files recursively by gitignore-style glob; returns relative paths, at most 100.
 
-        Powered by ripgrep (rg --files --glob PATTERN PATH). The pattern uses
-        gitignore-style glob rules: patterns without '/' match the filename at any
-        depth (e.g. '*.py' matches 'src/foo.py'), patterns with '/' match against
-        the relative path. Searches recursively through all subdirectories.
-        max_results is capped at 100 regardless of the value provided.
-        """
+        Patterns without '/' match file names at any depth; those with '/' match relative paths."""
         return await _glob_impl(
             pattern,
             path=path,

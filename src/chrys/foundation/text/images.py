@@ -258,11 +258,16 @@ def format_mb(size_bytes: int) -> str:
 
 
 def _format_size(size_bytes: int) -> str:
-    """Format bytes as bytes, kilobytes or, from a megabyte, as :func:`format_mb` does."""
+    """Format bytes as bytes, kilobytes or, from a megabyte, as :func:`format_mb` does.
+
+    Kilobytes are rounded up, so the unit is chosen from that rounded value: a
+    size never reads ``1024 KB`` (1,048,575 bytes is ``1.0 MB``).
+    """
     if size_bytes < 1024:
         return f"{size_bytes} bytes"
-    if size_bytes < 1024 * 1024:
-        return f"{math.ceil(size_bytes / 1024)} KB"
+    kib = math.ceil(size_bytes / 1024)
+    if kib < 1024:
+        return f"{kib} KB"
     return format_mb(size_bytes)
 
 

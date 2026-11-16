@@ -14,7 +14,7 @@ import pytest
 from rich.text import Text
 from textual.color import Color
 from textual.widgets import Button, Checkbox, Select, Static
-from textual.widgets._select import SelectCurrent
+from textual.widgets._select import SelectCurrent, SelectOverlay
 
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.diff.rollback_modal import RollbackModal
@@ -172,7 +172,12 @@ async def test_pruned_picker_has_only_retained_turns_and_keyboard_can_choose(
         assert [value for _, value in select._options] == [19, 18, 17, 16]
         assert all("Session start" not in rich_plain(label) for label, _ in select._options)
         select.focus()
-        await pilot.press("enter", "down", "enter")
+        await pilot.press("enter")
+        # Enter opens the menu, which takes focus only on a later callback: keys typed before that
+        # still reach the picker, whose bindings just open the menu again.
+        overlay = select.query_one(SelectOverlay)
+        await wait_for(lambda: select.expanded and modal.focused is overlay, pilot=pilot, description="turn menu open")
+        await pilot.press("down", "enter")
         await wait_for(
             lambda: modal._content_ready and not modal._preview_refreshing and select.value == 18,
             pilot=pilot,

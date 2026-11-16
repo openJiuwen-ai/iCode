@@ -542,7 +542,7 @@ async def test_direct_rollback_replaces_progress_modal_with_single_restore_modal
         await pilot.press("enter")
         await asyncio.wait_for(restore_modal_pushed.wait(), timeout=2)
         await wait_for(
-            lambda: isinstance(app.screen, AgentLoadDialog),
+            lambda: isinstance(app.screen, AgentLoadDialog) and app.screen.is_mounted,
             timeout=4.0,
             interval=0.05,
             pilot=pilot,
@@ -704,7 +704,7 @@ async def test_populated_main_screen_rollback_opens_before_snapshot_scan_without
 
         await pilot.press("enter")
         await wait_for(
-            lambda: isinstance(app.screen, RollbackModal),
+            lambda: isinstance(app.screen, RollbackModal) and app.screen.is_mounted,
             timeout=4.0,
             interval=0.05,
             pilot=pilot,

@@ -121,7 +121,7 @@ async def test_node_completion_and_next_start_repaint_after_details_close(
         graph.select_node("conventions")
         graph.focus()
         await pilot.press("enter")
-        await wait_for(lambda: isinstance(app.screen, WorkflowNodeDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, WorkflowNodeDialog) and app.screen.is_mounted, pilot=pilot)
         for node in (*reviews, "merge_findings"):
             await bus.publish(
                 events.WorkflowNodeStateChanged(run_id="run", node_id=node, activation_id=node, state="completed")

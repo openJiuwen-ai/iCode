@@ -15,6 +15,8 @@ from chrys.service.agent_middleware.events.hosted_tools import ResponsePresentat
 from chrys.service.llm.observer import intermediate_text_signal
 from tests.support.tui_helpers import ChatPanelApp
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("legacy_separator", ["", "\n"])
 @pytest.mark.parametrize(

@@ -35,6 +35,8 @@ from tests.support.waiting import wait_for
 if TYPE_CHECKING:
     from pathlib import Path
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 def _think(text: str, *, summary: bool = False) -> dict[str, Any]:
     properties = {REASONING_SUMMARY_KEY: True} if summary else None

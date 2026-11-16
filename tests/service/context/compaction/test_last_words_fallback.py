@@ -152,6 +152,7 @@ async def test_fallback_prompt_states_length_contract(tmp_path):
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -250,6 +251,7 @@ async def test_note_call_output_budget_is_clamped_on_both_paths(
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -360,6 +362,7 @@ async def test_fallback_uses_three_scoped_blocks_and_interleaves_followups(tmp_p
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -395,6 +398,7 @@ async def test_fallback_renders_an_image_result_as_a_placeholder_not_base64(tmp_
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -432,6 +436,7 @@ async def test_fallback_renders_a_hosted_base64_document_as_a_placeholder(tmp_pa
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -465,6 +470,7 @@ async def test_fallback_option_allowlist_drops_all_input_shaping_fields(tmp_path
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -559,6 +565,7 @@ async def test_a_fallback_note_keeps_the_profile_thinking_settings(
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -655,6 +662,7 @@ async def test_fallback_caps_supplement_and_middle_truncates_previous_note(tmp_p
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -687,6 +695,17 @@ def test_fallback_admission_counter_is_utf8_byte_conservative() -> None:
     )
 
 
+def test_fallback_admission_counter_counts_a_lone_surrogate_as_its_escape() -> None:
+    from chrys.service.context.compaction.last_words import _fallback_admission_tokens
+
+    raw = (Message("user", [Content.from_text("bad \udcff byte")]),)
+    plain = (Message("user", [Content.from_text("bad x byte")]),)
+
+    # The byte is counted as the six-character ``\udcff`` escape the wire body
+    # carries, not as one character, and the strict encode cannot fail here.
+    assert _fallback_admission_tokens(raw, output_reserve=0) == _fallback_admission_tokens(plain, output_reserve=0) + 5
+
+
 async def test_fallback_shrinks_timeline_without_truncating_fixed_guidance(tmp_path):
     from chrys.service.context.compaction.last_words import (
         _FALLBACK_TEMPLATE_COMPACT_CHARS,
@@ -705,6 +724,7 @@ async def test_fallback_shrinks_timeline_without_truncating_fixed_guidance(tmp_p
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -759,6 +779,7 @@ async def test_fallback_format_correction_is_readmitted_and_shrunk(tmp_path, mon
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = invalid if len(self.messages) == 1 else valid
 
             return _Response()
@@ -770,7 +791,7 @@ async def test_fallback_format_correction_is_readmitted_and_shrunk(tmp_path, mon
         # Calibrated between the first attempt's admission estimate and the
         # correction attempt's (larger, rejection-notice-bearing) one; growing
         # the shared guidance/contract text shifts both and moves this line.
-        max_context_tokens=9_560,
+        max_context_tokens=9_900,
         max_output_tokens=500,
         stream=False,
     )
@@ -845,6 +866,7 @@ async def test_fallback_small_window_final_candidate_is_provider_authoritative(t
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -906,6 +928,7 @@ async def test_fallback_bypass_never_raises_max_tokens_above_model_cap(tmp_path)
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -948,6 +971,7 @@ async def test_fallback_short_note_acceptance_still_canonicalizes(tmp_path, monk
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = short_relaxed
 
             return _Response()
@@ -976,6 +1000,7 @@ async def test_provider_context_rejection_advances_fallback_shrink_sequence(tmp_
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -1031,6 +1056,7 @@ async def _prompt_lengths_after(tmp_path, monkeypatch, rejection: BaseException)
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()
@@ -1347,6 +1373,7 @@ async def test_sibling_call_run_admission_charges_one_merged_timeline(tmp_path):
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = structured_note()
 
             return _Response()

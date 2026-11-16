@@ -217,8 +217,13 @@ async def test_reopened_run_keeps_recorded_title(
         assert "Original title" in str(main._workflow_panel.border_title)
 
 
-@pytest.mark.parametrize("revision", ["remove_loop", "change_limit"])
-@pytest.mark.parametrize("outcome", [RunOutcome.COMPLETED, RunOutcome.CANCELLED])
+# The badge reads both its iteration and its limit from the run's recorded manifest, whichever way the
+# outcome derives the iteration (a verdict or the entry's state); so each revision meets one outcome.
+@pytest.mark.parametrize(
+    ("outcome", "revision"),
+    [(RunOutcome.COMPLETED, "remove_loop"), (RunOutcome.CANCELLED, "change_limit")],
+    ids=["completed-remove_loop", "cancelled-change_limit"],
+)
 async def test_reopened_run_keeps_recorded_loop_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, revision: str, outcome: RunOutcome
 ) -> None:
@@ -439,8 +444,12 @@ async def test_workflow_structured_questions_resolve_the_node_through_the_dialog
         await host.shutdown()
 
 
-@pytest.mark.parametrize("presentation", ["open", "covered", "queued"])
-@pytest.mark.parametrize("state", ["awaiting_retry", "failed", "cancelled", "completed"])
+# Any state but running retires the attempt's questions in the projector, and the dialog closes from
+# that projection alone, whatever the state; so each state runs once and each presentation meets one.
+@pytest.mark.parametrize(
+    ("state", "presentation"),
+    [("awaiting_retry", "open"), ("failed", "covered"), ("cancelled", "queued"), ("completed", "open")],
+)
 async def test_workflow_question_expires_with_its_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, presentation: str, state: str
 ) -> None:

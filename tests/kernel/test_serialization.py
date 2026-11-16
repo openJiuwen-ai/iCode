@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from dataclasses import dataclass
+from enum import Enum, IntEnum
 from typing import ClassVar
 
 import pytest
@@ -95,6 +96,22 @@ def test_make_json_safe_broken_conversion_methods_fall_through_silently() -> Non
             raise TypeError("broken dict")
 
     assert make_json_safe(_BrokenMethods()) == {"value": "fallback"}
+
+
+class _Color(Enum):
+    RED = "red"
+    PAIR = ("a", 1)
+
+
+class _Level(IntEnum):
+    HIGH = 3
+
+
+def test_make_json_safe_serializes_an_enum_member_as_its_value() -> None:
+    assert make_json_safe(_Color.RED) == "red"
+    assert make_json_safe({"color": _Color.RED, "pair": _Color.PAIR}) == {"color": "red", "pair": ["a", 1]}
+    # A member that is already an int stays itself, which JSON writes as 3.
+    assert json.dumps(make_json_safe(_Level.HIGH)) == "3"
 
 
 def test_make_json_safe_serializes_frozenset_deterministically() -> None:

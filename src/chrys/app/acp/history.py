@@ -822,6 +822,8 @@ def _tool_args(content: dict[str, object]) -> object:
     if isinstance(args, str):
         try:
             return json.loads(args)
-        except json.JSONDecodeError:
+        # A bare ValueError is an integer literal past Python's integer-string
+        # conversion limit: replay the raw text, as for malformed JSON.
+        except ValueError:
             return args
     return args

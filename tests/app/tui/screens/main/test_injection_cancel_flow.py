@@ -12,7 +12,9 @@ import pytest
 
 from chrys.app.tui.screens.main.input_flow import InputFlowController
 from chrys.app.tui.screens.main.navigation import MainNavigationController
+from chrys.app.tui.screens.main.ports import InputSubmission
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import UserInjectCancel, UserMessage
 from chrys.foundation.i18n import MessageRef
@@ -26,6 +28,7 @@ async def _unused_turn_event(event: object) -> None:
 class _FakeInputFlowView:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.draft_on_lock: Callable[[], ChatDraft] = lambda: ChatDraft("")
 
     def set_terminal_title_for_user_message(self, text: str) -> None:
         self.calls.append(f"title:{text}")
@@ -33,8 +36,9 @@ class _FakeInputFlowView:
     def clear_terminal_title_result(self) -> None:
         self.calls.append("clear_terminal_title_result")
 
-    def lock_input_with_text(self) -> None:
+    def lock_input_with_text(self) -> InputSubmission:
         self.calls.append("lock_input_with_text")
+        return InputSubmission(self.draft_on_lock(), 0)
 
     def unlock_input_keep_if_locked(self) -> None:
         self.calls.append("unlock_input_keep_if_locked")
@@ -46,6 +50,8 @@ def _make_controller(
     view: _FakeInputFlowView,
     workers: list[Callable[[], Awaitable[object]]],
 ) -> InputFlowController:
+    view.draft_on_lock = lambda: state.submit.draft or ChatDraft(state.submit.text)
+
     async def _noop_agent_message(_event: object) -> None:
         return None
 

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""The eight test-source hygiene rules, their allowlist liveness pins and red/green proofs."""
+"""The nine test-source hygiene rules, their allowlist liveness pins and red/green proofs."""
 
 from __future__ import annotations
 
@@ -89,7 +89,9 @@ def _assert_no_unapproved_local_polling_helpers(sources: Mapping[Path, str]) -> 
     assert violations == [], "\n".join(violations)
 
 
-_WAIT_CALLABLE = "wait_callable"
+# One binding origin per shared helper, so a name bound to wait_for never
+# resolves as wait_until and vice versa.
+_WAIT_CALLABLES = {helper: f"wait_callable:{helper}" for helper in ("wait_for", "wait_until")}
 
 
 _WAIT_MODULE = "wait_module"
@@ -220,8 +222,8 @@ class _WaitUntilScopes:
         module = _resolved_import_module(self._path, node)
         for alias in node.names:
             bound = alias.asname or alias.name
-            if module == "tests.support.waiting" and alias.name == "wait_until":
-                yield bound, _WAIT_CALLABLE
+            if module == "tests.support.waiting" and alias.name in _WAIT_CALLABLES:
+                yield bound, _WAIT_CALLABLES[alias.name]
             elif module == "tests.support" and alias.name == "waiting":
                 yield bound, _WAIT_MODULE
             else:
@@ -278,28 +280,50 @@ class _WaitUntilScopes:
                         break
                     parent = self._parents[id(parent)]
 
-    def _resolved_origins(self, scope: ast.AST, name: str) -> set[str]:
+    def _binding_scope(self, scope: ast.AST, name: str) -> ast.AST | None:
         current: ast.AST | None = self.tree if name in self._globals[id(scope)] else scope
         if name in self._nonlocals[id(scope)]:
             current = self._parents[id(scope)]
         while current is not None:
-            origins = self._bindings[id(current)].get(name)
-            if origins is not None:
-                return origins
+            if name in self._bindings[id(current)]:
+                return current
             current = self._parents[id(current)]
-        return set()
+        return None
 
-    def resolves_shared_wait_until(self, scope: ast.AST, callee: ast.expr) -> bool:
+    def _resolved_origins(self, scope: ast.AST, name: str) -> set[str]:
+        binding_scope = self._binding_scope(scope, name)
+        return set() if binding_scope is None else self._bindings[id(binding_scope)][name]
+
+    def shared_wait_helper(self, scope: ast.AST, callee: ast.expr) -> str | None:
+        """The ``tests.support.waiting`` helper *callee* resolves to, if any."""
         parts = _qualified_name(callee).split(".")
         if len(parts) == 1:
-            expected = _WAIT_CALLABLE
-        elif len(parts) == 2 and parts[1] == "wait_until":
+            origins = self._resolved_origins(scope, parts[0])
+            return next((helper for helper, origin in _WAIT_CALLABLES.items() if origins == {origin}), None)
+        helper = parts[-1]
+        if helper not in _WAIT_CALLABLES:
+            return None
+        if len(parts) == 2:
             expected = _WAIT_MODULE
-        elif len(parts) == 4 and parts[1:] == ["support", "waiting", "wait_until"]:
+        elif len(parts) == 4 and parts[1:3] == ["support", "waiting"]:
             expected = _WAIT_PACKAGE
         else:
-            return False
-        return self._resolved_origins(scope, parts[0]) == {expected}
+            return None
+        return helper if self._resolved_origins(scope, parts[0]) == {expected} else None
+
+    def resolves_shared_wait_until(self, scope: ast.AST, callee: ast.expr) -> bool:
+        return self.shared_wait_helper(scope, callee) == "wait_until"
+
+    def local_functions(self, scope: ast.AST, name: str) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+        """The ``def``s that bind *name* in the scope a read of it from *scope* resolves to."""
+        binding_scope = self._binding_scope(scope, name)
+        if binding_scope is None:
+            return []
+        return [
+            node
+            for node in _wait_scope_nodes(binding_scope)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+        ]
 
 
 def _assert_no_ignored_wait_until_results(sources: Mapping[Path, str]) -> None:
@@ -319,6 +343,143 @@ def _assert_no_ignored_wait_until_results(sources: Mapping[Path, str]) -> None:
                     f"{path}:{node.lineno}: ignored wait_until result hides timeout; "
                     "use wait_for(...) or assert/branch on the bool result"
                 )
+    assert violations == [], "\n".join(violations)
+
+
+def _is_top_screen_read(node: ast.expr) -> bool:
+    """``<E>.screen`` or ``<E>.screen_stack[...]``, which push_screen updates before the screen composes."""
+    if isinstance(node, ast.Attribute):
+        return node.attr == "screen"
+    return (
+        isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == "screen_stack"
+    )
+
+
+def _screen_aliases(nodes: Sequence[ast.AST]) -> dict[str, str]:
+    """Predicate-local names bound to a screen read (``screen = app.screen`` or ``(screen := app.screen)``).
+
+    Each maps to the dump of the read it names.
+    """
+    aliases: dict[str, str] = {}
+    for node in nodes:
+        if isinstance(node, ast.Assign) and _is_top_screen_read(node.value):
+            aliases.update((target.id, ast.dump(node.value)) for target in node.targets if isinstance(target, ast.Name))
+        elif isinstance(node, ast.NamedExpr) and _is_top_screen_read(node.value):
+            aliases[node.target.id] = ast.dump(node.value)
+    return aliases
+
+
+def _screen_identity(node: ast.expr, aliases: Mapping[str, str]) -> str:
+    """The screen *node* reads: a local name for the screen is the read bound to it."""
+    if isinstance(node, ast.NamedExpr):
+        node = node.value
+    if isinstance(node, ast.Name) and node.id in aliases:
+        return aliases[node.id]
+    return ast.dump(node)
+
+
+def _keeps_waiting(statement: ast.If) -> bool:
+    """Whether the ``if`` branch answers "not yet": it ends returning nothing or a false constant."""
+    last = statement.body[-1]
+    return isinstance(last, ast.Return) and (
+        last.value is None or (isinstance(last.value, ast.Constant) and not last.value.value)
+    )
+
+
+def _checked_screen(node: ast.expr, aliases: Mapping[str, str]) -> ast.expr | None:
+    """The expression whose ``.is_mounted`` read vouches for the screen *node* reads, if it reads one."""
+    if isinstance(node, ast.NamedExpr):
+        return ast.Name(id=node.target.id, ctx=ast.Load()) if _is_top_screen_read(node.value) else None
+    if _is_top_screen_read(node) or (isinstance(node, ast.Name) and node.id in aliases):
+        return node
+    return None
+
+
+def _unmounted_screen_type_checks(predicate: ast.AST) -> Iterator[tuple[ast.Call, ast.expr]]:
+    """``isinstance(<screen>, ...)`` checks that read no ``<screen>.is_mounted`` beside them.
+
+    A negated check is a close-wait, unless it is in the test of an ``if``
+    whose branch answers "not yet" (``return False``): that gates the wait
+    and needs the mount like a positive check.
+    """
+    nodes = list(ast.walk(predicate))
+    aliases = _screen_aliases(nodes)
+    gates = {
+        id(inner)
+        for node in nodes
+        if isinstance(node, ast.If) and _keeps_waiting(node)
+        for inner in ast.walk(node.test)
+    }
+    closes = {
+        id(node.operand)
+        for node in nodes
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not) and id(node) not in gates
+    }
+    mounted = {
+        _screen_identity(node.value, aliases)
+        for node in nodes
+        if isinstance(node, ast.Attribute) and node.attr == "is_mounted"
+    }
+    for node in nodes:
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "isinstance"):
+            continue
+        screen = _checked_screen(node.args[0], aliases) if node.args else None
+        if screen is not None and id(node) not in closes and _screen_identity(screen, aliases) not in mounted:
+            yield node, screen
+
+
+def _assert_screen_waits_require_a_mounted_screen(sources: Mapping[Path, str]) -> None:
+    """A wait for a pushed screen's type must also wait for that screen to mount.
+
+    push_screen makes the screen current before it composes, so a predicate
+    met by the type alone can return before the screen's children exist and
+    the next query raises NoMatches. A local name assigned from the screen
+    counts as that screen. Close-waits (``not isinstance(...)``, except in
+    the test of an ``if`` that keeps waiting) need no mount, and neither does a bounded absence check
+    (``assert not await wait_until(...)``), for which the type alone is the
+    stricter test.
+    """
+    violations: list[str] = []
+    for path, source in sources.items():
+        tree = _tree(path, source)
+        scopes = _WaitUntilScopes(tree, path)
+        for scope in scopes.scopes:
+            nodes = list(_wait_scope_nodes(scope))
+            absences = {
+                id(node.operand.value)
+                for node in nodes
+                if isinstance(node, ast.UnaryOp)
+                and isinstance(node.op, ast.Not)
+                and isinstance(node.operand, ast.Await)
+            }
+            for node in nodes:
+                if (
+                    not isinstance(node, ast.Call)
+                    or id(node) in absences
+                    or scopes.shared_wait_helper(scope, node.func) is None
+                ):
+                    continue
+                predicate = (
+                    node.args[0]
+                    if node.args
+                    else next((keyword.value for keyword in node.keywords if keyword.arg == "predicate"), None)
+                )
+                if predicate is None:
+                    continue
+                bodies: list[ast.AST] = (
+                    list(scopes.local_functions(scope, predicate.id))
+                    if isinstance(predicate, ast.Name)
+                    else [predicate]
+                )
+                for body in bodies:
+                    for check, checked in _unmounted_screen_type_checks(body):
+                        screen = ast.unparse(checked)
+                        violation = (
+                            f"{path}:{check.lineno}: a wait met by {screen}'s type can return before that screen "
+                            f"composes; require {screen}.is_mounted in the same predicate"
+                        )
+                        if violation not in violations:
+                            violations.append(violation)
     assert violations == [], "\n".join(violations)
 
 
@@ -812,6 +973,88 @@ def test_ignored_wait_until_guard_allows_consumed_relative_import_result() -> No
 )
 def test_ignored_wait_until_guard_honors_lexical_shadowing(source: str) -> None:
     _assert_no_ignored_wait_until_results({Path("tests/test_good.py"): source})
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    await wait_for(lambda: isinstance(app.screen, Dialog))\n",
+        "    def opened():\n        return isinstance(app.screen, Dialog)\n    await wait_for(opened)\n",
+        "    assert await wait_until(lambda: isinstance(app.screen, Dialog) or task.done())\n",
+        "    await wait_for(lambda: isinstance(app.screen_stack[-1], Dialog))\n",
+        # Mounted must be read on the screen the isinstance reads.
+        "    await wait_for(lambda: isinstance(pilot.app.screen, Dialog) and app.screen.is_mounted)\n",
+        # A local name for the screen is that screen.
+        "    def opened():\n        screen = app.screen\n        return isinstance(screen, Dialog)\n    await wait_for(opened)\n",
+        # A negated check in an ``if`` test gates the wait: it is no close-wait.
+        (
+            "    def opened():\n"
+            "        screen = app.screen\n"
+            "        if not isinstance(screen, Dialog):\n"
+            "            return False\n"
+            "        return bool(screen.query('#ok'))\n"
+            "    await wait_for(opened)\n"
+        ),
+    ],
+)
+def test_screen_wait_guard_rejects_a_type_only_wait(body: str) -> None:
+    source = f"from tests.support.waiting import wait_for, wait_until\nasync def test_bad(app, pilot, task):\n{body}"
+
+    with pytest.raises(AssertionError, match=r"tests/test_bad\.py:\d+: a wait met by .*is_mounted"):
+        _assert_screen_waits_require_a_mounted_screen({Path("tests/test_bad.py"): source})
+
+
+@pytest.mark.parametrize(
+    ("imports", "callee"),
+    [
+        ("from ..support.waiting import wait_for", "wait_for"),
+        ("from ..support import waiting", "waiting.wait_for"),
+        ("import tests.support.waiting", "tests.support.waiting.wait_for"),
+    ],
+)
+def test_screen_wait_guard_resolves_every_import_form(imports: str, callee: str) -> None:
+    source = f"{imports}\nasync def test_bad(app):\n    await {callee}(lambda: isinstance(app.screen, Dialog))\n"
+
+    with pytest.raises(AssertionError, match=r"app\.screen\.is_mounted"):
+        _assert_screen_waits_require_a_mounted_screen({Path("tests/app/test_bad.py"): source})
+
+
+def test_screen_wait_guard_allows_mounted_close_and_absence_waits() -> None:
+    source = (
+        "from tests.support.waiting import wait_for, wait_until\n"
+        "async def test_good(app, task):\n"
+        "    await wait_for(lambda: isinstance(app.screen, Dialog) and app.screen.is_mounted)\n"
+        "    await wait_for(lambda: (isinstance(app.screen, Dialog) and app.screen.is_mounted) or task.done())\n"
+        "    def opened():\n"
+        "        return isinstance(app.screen_stack[-1], Dialog) and app.screen_stack[-1].is_mounted\n"
+        "    await wait_for(opened)\n"
+        "    await wait_for(lambda: not isinstance(app.screen, Dialog))\n"
+        "    def closed():\n"
+        "        return not isinstance(app.screen, Dialog)\n"
+        "    await wait_for(closed)\n"
+        "    def gated():\n"
+        "        screen = app.screen\n"
+        "        if not isinstance(screen, Dialog) or not screen.is_mounted:\n"
+        "            return False\n"
+        "        return bool(screen.query('#ok'))\n"
+        "    await wait_for(gated)\n"
+        # A negated check whose branch ends the wait is a close-wait.
+        "    def dismissed():\n"
+        "        if not isinstance(app.screen, Dialog):\n"
+        "            return task.done()\n"
+        "        return False\n"
+        "    await wait_for(dismissed)\n"
+        # A local name for the screen and the read it names are the same screen.
+        "    def opened():\n"
+        "        screen = app.screen\n"
+        "        return isinstance(screen, Dialog) and app.screen.is_mounted\n"
+        "    await wait_for(opened)\n"
+        "    await wait_for(lambda: isinstance(app.screen, Dialog) and (screen := app.screen).is_mounted)\n"
+        "    assert not await wait_until(lambda: isinstance(app.screen, Dialog), timeout=0.3)\n"
+        "    await other.wait_for(lambda: isinstance(app.screen, Dialog))\n"
+    )
+
+    _assert_screen_waits_require_a_mounted_screen({Path("tests/test_good.py"): source})
 
 
 def test_tool_loop_layer_guard_rejects_counterexample() -> None:

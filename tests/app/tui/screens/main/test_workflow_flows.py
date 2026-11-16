@@ -89,7 +89,12 @@ async def test_global_shadowed_symlink_delete_forgets_ledger_but_keeps_target(
         main._workflow.browser._picker.selection.query_one(WorkflowList).focus()
         await pilot.press("d")
         await wait_for(
-            lambda: isinstance(app.screen, ConfirmDialog) and bool(app.screen.query("#confirm-yes")), pilot=pilot
+            lambda: (
+                isinstance(app.screen, ConfirmDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query("#confirm-yes"))
+            ),
+            pilot=pilot,
         )
         body = str(app.screen.query_one("#confirm-message", Static).content)
         assert str(path) in body and "Global files cannot be recovered" in body
@@ -225,7 +230,10 @@ async def test_historical_run_source_and_unavailable_agent_transcript(
         assert isinstance(code, Syntax) and code.code == source.decode()
         await pilot.press("escape", "j", "enter")
         await wait_for(
-            lambda: isinstance(app.screen, WorkflowNodeDialog) and app.screen.selected is not None, pilot=pilot
+            lambda: (
+                isinstance(app.screen, WorkflowNodeDialog) and app.screen.is_mounted and app.screen.selected is not None
+            ),
+            pilot=pilot,
         )
         dialog = app.screen
         assert isinstance(dialog, WorkflowNodeDialog)
@@ -316,7 +324,12 @@ async def test_workflow_question_answers_and_run_terminal_owns_dialog(
             if end == "covered":
                 await app.push_screen(ConfirmDialog())
                 await wait_for(
-                    lambda: isinstance(app.screen, ConfirmDialog) and bool(app.screen.query("#confirm-no")), pilot=pilot
+                    lambda: (
+                        isinstance(app.screen, ConfirmDialog)
+                        and app.screen.is_mounted
+                        and bool(app.screen.query("#confirm-no"))
+                    ),
+                    pilot=pilot,
                 )
             await bus.publish(events.WorkflowRunFinished(run_id="run", outcome="cancelled"))
             await wait_for(lambda: dialog._dismiss_requested, pilot=pilot)
@@ -364,18 +377,33 @@ async def test_project_file_delete_confirmation_and_active_guard(
         picker.focus()
         await pilot.press("d")
         await wait_for(
-            lambda: isinstance(app.screen, ConfirmDialog) and bool(app.screen.query("#confirm-no")), pilot=pilot
+            lambda: (
+                isinstance(app.screen, ConfirmDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query("#confirm-no"))
+            ),
+            pilot=pilot,
         )
         body = str(app.screen.query_one("#confirm-message", Static).content)
         assert str(path) in body and "Git" in body and "project" in body
         confirm = app.screen
         await click_when_settled(pilot, "#confirm-no")
-        await wait_for(lambda: app.screen is not confirm and isinstance(app.screen, WorkflowPickerDialog), pilot=pilot)
+        await wait_for(
+            lambda: (
+                app.screen is not confirm and isinstance(app.screen, WorkflowPickerDialog) and app.screen.is_mounted
+            ),
+            pilot=pilot,
+        )
         assert path.exists()
         picker.focus()
         await pilot.press("d")
         await wait_for(
-            lambda: isinstance(app.screen, ConfirmDialog) and bool(app.screen.query("#confirm-yes")), pilot=pilot
+            lambda: (
+                isinstance(app.screen, ConfirmDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query("#confirm-yes"))
+            ),
+            pilot=pilot,
         )
         # Admission while the confirmation is open must be checked again at deletion.
         await engine.set_execution(ExecutionSnapshot("workflow", "run", True), main._services.bus)
@@ -384,7 +412,7 @@ async def test_project_file_delete_confirmation_and_active_guard(
         )
         await click_when_settled(pilot, "#confirm-yes")
         await dismiss_workflow_notice(main, pilot, "Stop this workflow")
-        await wait_for(lambda: isinstance(app.screen, WorkflowPickerDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, WorkflowPickerDialog) and app.screen.is_mounted, pilot=pilot)
         assert path.exists()
         picker.focus()
         await pilot.press("d")
@@ -395,7 +423,12 @@ async def test_project_file_delete_confirmation_and_active_guard(
         picker.focus()
         await pilot.press("d")
         await wait_for(
-            lambda: isinstance(app.screen, ConfirmDialog) and bool(app.screen.query("#confirm-yes")), pilot=pilot
+            lambda: (
+                isinstance(app.screen, ConfirmDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query("#confirm-yes"))
+            ),
+            pilot=pilot,
         )
         await click_when_settled(pilot, "#confirm-yes")
         await wait_for(lambda: len(main._workflow.browser._picker.selection.rows) == 1, pilot=pilot)

@@ -18,6 +18,8 @@ from chrys.kernel import Message
 from tests.app.tui.screens.main.test_rollback_entries import _controller, _EntryEngine, _EntryView
 from tests.support.tui_app_harness import ShutdownOnlyEngine, make_chrys_app
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.fixture(autouse=True)
 def no_native_branch_observer(monkeypatch: pytest.MonkeyPatch) -> None:

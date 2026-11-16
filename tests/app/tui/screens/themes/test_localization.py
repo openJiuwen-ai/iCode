@@ -52,7 +52,7 @@ async def test_settings_language_switch_relabels_editor_without_replacing_draft(
         tmp_path, settings=Settings(theme="chrys-legacy", locale="en"), agent_registry=_SettingsRegistry()
     )
     async with app.run_test(size=(140, 50)) as pilot:
-        await wait_for(lambda: isinstance(app.screen, MainScreen), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, MainScreen) and app.screen.is_mounted, pilot=pilot)
         main = app.screen
         assert isinstance(main, MainScreen)
         await main.open_theme_editor(copy_theme(app.current_theme), UserThemeStore(tmp_path / "themes"))
@@ -272,5 +272,5 @@ async def test_theme_list_relabels_manage_entry_without_changing_highlight(tmp_p
         assert str(options.get_option("__manage_themes__").prompt) == "修改主题…"
         assert options.highlighted == selected
         await pilot.press("escape")
-        await wait_for(lambda: isinstance(app.screen, MainScreen), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, MainScreen) and app.screen.is_mounted, pilot=pilot)
         assert screen not in app.locale_controller._surfaces

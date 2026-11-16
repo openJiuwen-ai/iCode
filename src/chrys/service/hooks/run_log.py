@@ -64,7 +64,13 @@ def _detail_size(detail: HookRunDetail) -> int:
         size += len(io.payload) + len(io.decision) + len(io.stdout) + len(io.stderr)
     applied = detail.applied
     if applied is not None:
-        size += len(applied.block_reason) + len(applied.args) + len(applied.reminder) + len(applied.extra_context)
+        size += (
+            len(applied.block_reason)
+            + len(applied.args)
+            + len(applied.reminder)
+            + len(applied.extra_context)
+            + len(applied.result_override)
+        )
     return size
 
 
@@ -75,7 +81,7 @@ def _without_details(detail: HookRunDetail) -> HookRunDetail:
     """
     applied = detail.applied
     if applied is not None:
-        applied = replace(applied, args="", args_size=0, reminder="", extra_context="")
+        applied = replace(applied, args="", args_size=0, reminder="", extra_context="", result_override="")
     return replace(detail, io=None, applied=applied)
 
 

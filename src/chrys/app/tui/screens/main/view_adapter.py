@@ -33,6 +33,7 @@ from chrys.app.tui.screens.main.ports import (
     ConfirmMessage,
     InputLabel,
     InputRestore,
+    InputSubmission,
     NotificationSeverity,
     StatusMessage,
     StatusTrail,
@@ -41,6 +42,7 @@ from chrys.app.tui.screens.main.ports import (
 from chrys.app.tui.screens.main.runtime_info import with_background_count
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
+from chrys.app.tui.util.diff_comments import DiffComment, DiffDraft
 from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.widgets import PromptDraft
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
@@ -354,8 +356,15 @@ class MainScreenViewAdapter:
     def clear_ask_user_inline_prompts(self) -> None:
         self._screen.query_one(ChatPanel).clear_ask_user_inline_prompts()
 
-    def lock_input_with_text(self) -> None:
-        self._screen.query_one(InputBar).lock_with_text()
+    def lock_input_with_text(self) -> InputSubmission:
+        input_bar = self._screen.query_one(InputBar)
+        input_bar.lock_with_text()
+        return InputSubmission(input_bar.draft(), input_bar.draft_revision)
+
+    def set_injection_steering(self, steering: bool) -> None:
+        input_bar = self._screen.query_one(InputBar)
+        if input_bar.locked and input_bar.injection_phase:
+            input_bar.injection_phase = "steering" if steering else "queued"
 
     def unlock_input_keep_if_locked(self) -> None:
         input_bar = self._screen.query_one(InputBar)
@@ -507,14 +516,14 @@ class MainScreenViewAdapter:
     def set_input_paste_cwd(self, cwd: str) -> None:
         self._screen.query_one(InputBar).set_paste_cwd(cwd)
 
-    def unlock_input_clearing(self, text: str) -> None:
-        """Unlock the composer, clearing it unless edited since *text* was sent.
+    def clear_submitted_input(self, submission: InputSubmission) -> None:
+        """Clear a successfully sent draft only if it has never been edited or replaced.
 
-        A locked composer is read-only, so it still holds what was sent; Enter
-        sends the composer's text stripped.
+        The synchronous revision also catches edits undone back to the same
+        text; compare the whole draft, including fields and references, too.
         """
         input_bar = self._screen.query_one(InputBar)
-        if input_bar.locked or input_bar.value.strip() == text:
+        if input_bar.draft_revision == submission.revision and input_bar.draft() == submission.draft:
             input_bar.unlock_and_clear()
 
     def restore_input_draft(self, draft: str | ChatDraft) -> bool:
@@ -742,6 +751,9 @@ class MainScreenViewAdapter:
     # Diff and rollback
     # -------------------------------------------------------------- #
 
+    def diff_draft(self) -> DiffDraft:
+        return self._screen.query_one(InputBar)
+
     def open_diff_screen(
         self,
         periods_data: dict[int, list[DiffFileEntry]],
@@ -752,6 +764,9 @@ class MainScreenViewAdapter:
         all_entries: list[DiffFileEntry],
         load_data: Callable[[], Awaitable[DiffLoadResult]] | None = None,
         focus: DiffFocus | None = None,
+        draft: DiffDraft | None = None,
+        comments: list[DiffComment] | None = None,
+        turn_prompt: Callable[[int], str | None] | None = None,
     ) -> None:
         from chrys.app.tui.screens.diff import DiffScreen
 
@@ -764,6 +779,9 @@ class MainScreenViewAdapter:
                 all_entries=all_entries,
                 load_data=load_data,
                 focus=focus,
+                draft=draft,
+                comments=comments,
+                turn_prompt=turn_prompt,
                 locale_controller=self._locale_controller,
             )
         )

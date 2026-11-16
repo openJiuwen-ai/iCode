@@ -124,7 +124,10 @@ async def test_playground_waits_for_manual_retry_then_continues_without_replayin
         graph.focus()
         await pilot.press("enter")
         await wait_for(
-            lambda: isinstance(app.screen, WorkflowNodeDialog) and app.screen.selected is not None, pilot=pilot
+            lambda: (
+                isinstance(app.screen, WorkflowNodeDialog) and app.screen.is_mounted and app.screen.selected is not None
+            ),
+            pilot=pilot,
         )
         dialog = app.screen
         assert isinstance(dialog, WorkflowNodeDialog)

@@ -47,7 +47,12 @@ async def test_cancel_requires_confirmation_and_dismissal_keeps_the_run(
         await wait_for(lambda: not main._workflow_panel.query_one("#workflow-stop", Button).disabled, pilot=pilot)
         await click_when_settled(pilot, "#workflow-stop")
         await wait_for(
-            lambda: isinstance(app.screen, ConfirmDialog) and bool(app.screen.query("#confirm-no")), pilot=pilot
+            lambda: (
+                isinstance(app.screen, ConfirmDialog)
+                and app.screen.is_mounted
+                and bool(app.screen.query("#confirm-no"))
+            ),
+            pilot=pilot,
         )
         dialog = app.screen
         main._workflow.run_control.stop()
@@ -60,7 +65,7 @@ async def test_cancel_requires_confirmation_and_dismissal_keeps_the_run(
         assert not main.query_one("#workflow-stop", Button).has_focus
         assert cancellations == [] and engine.snapshot.kind == "workflow"
         main._workflow.run_control.stop()
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted, pilot=pilot)
         await pilot.press("escape")
         await wait_for(lambda: app.screen is main, pilot=pilot)
         assert cancellations == []
@@ -93,7 +98,7 @@ async def test_stale_cancel_confirmation_never_cancels_a_new_run(
         main._workflow.session_view._run_ids = ["old-run", "finishing"]
         await engine.set_execution(ExecutionSnapshot("workflow", "old-run", True), main._services.bus)
         main._workflow.run_control.stop()
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted, pilot=pilot)
         dialog = app.screen
         await engine.set_execution(
             ExecutionSnapshot("idle") if replacement == "idle" else ExecutionSnapshot("workflow", replacement, True),
@@ -107,7 +112,7 @@ async def test_stale_cancel_confirmation_never_cancels_a_new_run(
         await engine.set_execution(ExecutionSnapshot("workflow", "finishing", True), main._services.bus)
         await bus.publish(events.WorkflowRunStarted(run_id="finishing"))
         main._workflow.run_control.stop()
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted, pilot=pilot)
         await bus.publish(events.WorkflowRunFinished(run_id="finishing", outcome="completed"))
         await wait_for(lambda: app.screen is main, pilot=pilot)
         assert cancellations == []

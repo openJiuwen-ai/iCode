@@ -390,7 +390,9 @@ async def test_double_click_opens_one_diff_and_one_escape_returns_to_chat(target
             description="preview laid out",
         )
         await pilot.click(target, offset=(2, 0), times=2)
-        await wait_for(lambda: isinstance(app.screen, DiffScreen), pilot=pilot, description="diff opened")
+        await wait_for(
+            lambda: isinstance(app.screen, DiffScreen) and app.screen.is_mounted, pilot=pilot, description="diff opened"
+        )
         await pilot.pause()
         assert len(app.opened) == 1
         assert len(app.screen_stack) == 2

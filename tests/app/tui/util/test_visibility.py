@@ -41,6 +41,22 @@ async def test_animation_visibility_rejects_detached_and_screenless_nodes() -> N
             indicator._detach()
 
 
+async def test_active_screen_visibility_is_false_once_shutdown_empties_the_screen_stack() -> None:
+    """Shutdown pops every screen before it cancels the workers and timers that ask."""
+    from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
+
+    async with _ToggleApp().run_test() as pilot:
+        marker = pilot.app.query_one("#marker")
+        await wait_for(lambda: is_widget_shown_on_active_screen(marker), pilot=pilot)
+        stack = pilot.app._screen_stack
+        screens = list(stack)
+        stack.clear()
+        try:
+            assert not is_widget_shown_on_active_screen(marker)
+        finally:
+            stack.extend(screens)
+
+
 def _frame_text(app: App) -> str:
     """Text of the currently composited frame."""
     strips = app.screen._compositor.render_strips()

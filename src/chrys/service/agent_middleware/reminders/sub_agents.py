@@ -27,9 +27,7 @@ class SubAgentsSource:
             return None
         names = ", ".join(f"`{n}`" for n in self._sub_agent_names)
         return (
-            f"TIP: Sub-agents are available ({names}). Prefer delegating to a sub-agent for "
-            "context-heavy but simple or repeated tasks (file searches, exploration, "
-            "bulk edits). Each sub-agent runs in its own context window, keeping "
-            "the main conversation lean. This is especially important when context "
-            "usage is high."
+            f"TIP: Sub-agents are available ({names}). Delegate only a scoped task whose "
+            "benefit outweighs coordination; handle routine lookups directly. "
+            "High context usage alone does not require delegation."
         )

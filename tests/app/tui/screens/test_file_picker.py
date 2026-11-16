@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -31,6 +32,8 @@ from chrys.app.tui.support.workspace_mru import (
     workspace_mru_exists,
 )
 from chrys.foundation.platform import safe_getcwd
+from chrys.kernel import Message
+from chrys.service.state.store import JsonFileStateStore
 from tests.support.waiting import wait_for
 
 
@@ -311,6 +314,29 @@ async def test_provider_missing_index_seeds_once_from_sessions(mru_config_dir: P
     # Seeded once — the second open reads the index without another scan.
     assert await provider.get_recent_paths() == paths
     assert store.list_sessions_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_seed_reads_naive_session_timestamps_as_utc(mru_config_dir: Path, tmp_path: Path) -> None:
+    """One session saved without an offset must not cost the picker its whole seed."""
+    older = tmp_path / "repo-older"
+    newer = tmp_path / "repo-naive"
+    for directory in (older, newer):
+        directory.mkdir()
+    store = JsonFileStateStore(tmp_path / "sessions")
+    for session_id, directory, stamp in (
+        ("older", older, "2026-09-01T09:00:00+00:00"),
+        ("naive", newer, "2026-09-02T09:30:00"),
+    ):
+        await store.save_session(session_id, {"messages": [Message("user", ["hi"])]}, primary_cwd=str(directory))
+        path = store.session_dir(session_id) / "session.json"
+        envelope = json.loads(path.read_text(encoding="utf-8"))
+        envelope["meta"]["updated_at"] = stamp
+        path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    paths = await WorkspaceMruRecentDirs(store, max_entries=20).get_recent_paths()
+
+    assert [path for _, path in paths] == [str(newer), str(older)]
 
 
 @pytest.mark.asyncio

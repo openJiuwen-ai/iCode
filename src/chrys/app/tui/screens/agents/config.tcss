@@ -136,7 +136,6 @@ AgentsConfigScreen {
     width: auto;
 }
 
-#ac-buttons #ac-reset,
 #ac-buttons #ac-delete {
     margin: 0 1 0 0;
     min-width: 10;

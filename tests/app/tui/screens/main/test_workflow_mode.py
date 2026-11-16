@@ -139,7 +139,7 @@ async def test_mode_picker_rechecks_execution_when_its_selection_returns(
         composer = main.query_one(InputBar)
         composer.replace_draft("Preserve the current mode's draft")
         await click_when_settled(pilot, "#mode-badge")
-        await wait_for(lambda: isinstance(app.screen, AppModeDialog), pilot=pilot)
+        await wait_for(lambda: isinstance(app.screen, AppModeDialog) and app.screen.is_mounted, pilot=pilot)
         await engine.set_execution(
             ExecutionSnapshot("workflow" if workflow else "turn", "run", True), main._services.bus
         )

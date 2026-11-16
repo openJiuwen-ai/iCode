@@ -48,6 +48,7 @@ from chrys.app.tui.screens.dialogs.tool_view import (
     COPIED_OUTPUT_UNAVAILABLE,
     copy_and_notify,
 )
+from chrys.app.tui.util.formatting import format_byte_size
 from chrys.app.tui.util.removal import remove_children_shielded
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets.chat.tool_call import fmt_duration
@@ -149,6 +150,7 @@ _APPLIED_ASKED = {
 _APPLIED_ARGS = msg("tui.hook_run.applied.args", fallback="Changed the tool arguments to:")
 _APPLIED_REMINDER = msg("tui.hook_run.applied.reminder", fallback="Added a reminder for the model:")
 _APPLIED_CONTEXT = msg("tui.hook_run.applied.context", fallback="Added to the tool result:")
+_APPLIED_REPLACED = msg("tui.hook_run.applied.replaced", fallback="Replaced the tool result with:")
 _NOT_APPLIED_NONBLOCKING = msg(
     "tui.hook_run.not_applied.nonblocking", fallback="Async and fire_and_forget hooks can't change the action"
 )
@@ -184,14 +186,6 @@ _COPIED_LOG_PATH_UNAVAILABLE = msg(
 
 def _wall_time(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _size(count: int) -> str:
-    if count < 1024:
-        return f"{count} B"
-    if count < 1024 * 1024:
-        return f"{count / 1024:.1f} KB"
-    return f"{count / (1024 * 1024):.1f} MB"
 
 
 def _pretty_json(text: str) -> str:
@@ -560,7 +554,7 @@ class HookRunModal(BaseDialog[None]):
             return _Section(
                 name,
                 (
-                    self._note(_PAYLOAD_TRUNCATED.bind(size=_size(io.payload_size)), copied=False),
+                    self._note(_PAYLOAD_TRUNCATED.bind(size=format_byte_size(io.payload_size)), copied=False),
                     _Code("text", io.payload),
                 ),
             )
@@ -631,16 +625,33 @@ class HookRunModal(BaseDialog[None]):
             if gone:
                 widgets.append(self._note(_DETAILS_GONE.bind(), copied=False))
             elif applied.args_size:
-                widgets.append(self._note(_ARGS_TRUNCATED.bind(size=_size(applied.args_size)), copied=False))
+                widgets.append(self._note(_ARGS_TRUNCATED.bind(size=format_byte_size(applied.args_size)), copied=False))
                 widgets.append(_Code("text", applied.args))
             else:
                 widgets.append(_Code("json", applied.args))
-        elif effect in ("added_reminder", "added_context"):
-            widgets.append(self._note((_APPLIED_REMINDER if effect == "added_reminder" else _APPLIED_CONTEXT).bind()))
+        elif effect in ("added_reminder", "added_context", "replaced_result"):
+            widgets.append(
+                self._note(
+                    {
+                        "added_reminder": _APPLIED_REMINDER,
+                        "added_context": _APPLIED_CONTEXT,
+                        "replaced_result": _APPLIED_REPLACED,
+                    }[effect].bind(),
+                ),
+            )
             if gone:
                 widgets.append(self._note(_DETAILS_GONE.bind(), copied=False))
             else:
-                widgets.append(_Code("text", applied.reminder if effect == "added_reminder" else applied.extra_context))
+                widgets.append(
+                    _Code(
+                        "text",
+                        {
+                            "added_reminder": applied.reminder,
+                            "added_context": applied.extra_context,
+                            "replaced_result": applied.result_override,
+                        }[effect],
+                    ),
+                )
         if detail.record.call_rejected:
             widgets.append(self._note(_APPLIED_CALL_REJECTED.bind()))
         reason = {

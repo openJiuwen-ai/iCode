@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from chrys.app.tui.support.path_shortcuts import format_recent_path_label, get_default_favorite_paths
@@ -102,10 +102,7 @@ class WorkspaceMruRecentDirs:
                 seen.add(key)
                 if not os.path.isdir(cwd):
                     continue
-                updated_at = meta.updated_at
-                if updated_at.tzinfo is None:
-                    updated_at = updated_at.replace(tzinfo=UTC)
-                seed.append((cwd, updated_at))
+                seed.append((cwd, meta.updated_at))
                 if len(seed) >= self._max_entries:
                     return seed
         return seed

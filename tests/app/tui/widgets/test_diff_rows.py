@@ -22,12 +22,25 @@ from chrys.app.tui.widgets.diff_view.rows import (
     Side,
     change_counts,
     code_width,
+    comment_side,
     number_width,
     split_rows,
     unified_rows,
 )
 
 _LOOK = DiffLook(DARK, "truecolor", Style())
+
+
+@pytest.mark.parametrize(
+    ("row", "side"),
+    [
+        (DiffRow(RowKind.REMOVED, Content("old"), before=2), Side.BEFORE),
+        (DiffRow(RowKind.ADDED, Content("new"), after=3), Side.AFTER),
+        (DiffRow(RowKind.CONTEXT, Content("same"), before=2, after=3), Side.AFTER),
+    ],
+)
+def test_comment_icon_belongs_to_old_number_for_deletions_and_new_number_otherwise(row, side) -> None:
+    assert comment_side(row) is side
 
 
 def _lines(text: str) -> list[Content]:
@@ -110,8 +123,8 @@ def test_split_rows_pair_from_the_top_and_fill_the_shorter_side() -> None:
 
     left, right = split_rows(compute_hunks(before, after), _lines(before), _lines(after))
 
-    assert _shape(left) == [("context", "alpha", 1, None), ("removed", "beta", 2, None), ("filler", None, None, None)]
-    assert _shape(right) == [("context", "alpha", None, 1), ("added", "BETA", None, 2), ("added", "gamma", None, 3)]
+    assert _shape(left) == [("context", "alpha", 1, 1), ("removed", "beta", 2, None), ("filler", None, None, None)]
+    assert _shape(right) == [("context", "alpha", 1, 1), ("added", "BETA", None, 2), ("added", "gamma", None, 3)]
     assert left[2] is FILLER_ROW
 
 

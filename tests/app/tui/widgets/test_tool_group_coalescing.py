@@ -39,6 +39,8 @@ from chrys.kernel import Content, Message
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from tests.support.pipeline_helpers import create_test_engine
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 # ---------------------------------------------------------------------------
 # Helpers — replay message construction (mirrors test_replay_batch_merge.py)
 # ---------------------------------------------------------------------------

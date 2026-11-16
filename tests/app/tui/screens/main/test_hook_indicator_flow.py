@@ -31,6 +31,7 @@ from chrys.app.tui.widgets.chrome import hook_indicator as hook_indicator_module
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
 from chrys.app.tui.widgets.chrome.hook_indicator import HOOK_INDICATOR_WIDTH, HookIndicator
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
+from chrys.app.tui.widgets.hook_activity import HOOK_SHOW_AFTER_SECONDS
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.sidebar.panel import SIDEBAR_HOOKS_TAB, SidebarPanel
 from chrys.foundation.events.bus import EventBus
@@ -162,6 +163,21 @@ def indicator_clock(monkeypatch: pytest.MonkeyPatch) -> _IndicatorClock:
     return clock
 
 
+@pytest.fixture
+def aged_indicator_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The indicator reads every hook age one display threshold older than it is.
+
+    For runs a real manager stamps with the real clock, where the tests are about which run
+    shows, not when: each is past the 1 s threshold as soon as it is reported. The real second
+    still runs where the real clock stays (the snapshot under a modal, the long transcript).
+    """
+    real = time.monotonic
+    shadow = ModuleType("time")
+    shadow.__dict__.update(vars(time))
+    shadow.monotonic = lambda: real() + HOOK_SHOW_AFTER_SECONDS
+    monkeypatch.setattr(hook_indicator_module, "time", shadow)
+
+
 async def _snapshot(bus: EventBus, *views: HookExecutionView, session_id: str = _SESSION) -> None:
     await bus.publish(HookExecutionsChanged(session_id=session_id, executions=views), raise_handler_errors=True)
 
@@ -245,13 +261,42 @@ async def _shows(pilot: Pilot, expected: str, *, timeout: float = 5.0, what: str
         raise AssertionError(f"{exc}; indicator text={_indicator(app)!r}") from None
 
 
-async def _keeps(pilot: Pilot, expected: str, *, seconds: float = 0.5) -> None:
-    """The indicator keeps showing exactly *expected* for *seconds*."""
+async def _keeps(pilot: Pilot, expected: str, *, seconds: float = 0.3) -> None:
+    """The indicator keeps showing exactly *expected* for *seconds*.
+
+    What this default window proves is an event's effect: a snapshot or a mode change reaches the
+    indicator on the screen's next pump (``call_later``), well inside 0.3 s, and the 0.1 s spinner
+    timer, when it runs, ticks about three times in it.
+    """
     app = pilot.app
     assert isinstance(app, ChrysApp)
     assert not await wait_until(lambda: _shown_name(_indicator(app)) != expected, timeout=seconds, pilot=pilot), (
         _indicator(app)
     )
+
+
+async def _keeps_through_ticks(pilot: Pilot, expected: str, *, ticks: int = 3) -> None:
+    """The indicator keeps showing exactly *expected* while its running timer ticks *ticks* times.
+
+    Each tick reads the hook ages again: with the ages held by ``indicator_clock``, the ticks are
+    what could change the label, so counting them, not seconds, is what proves it stays.
+    """
+    app = pilot.app
+    assert isinstance(app, ChrysApp)
+    main = app._main_screen
+    assert main is not None
+    indicator = main.query_one(HookIndicator)
+    start = indicator._frame
+    seen: list[str] = []
+
+    def ticked() -> bool:
+        text = _indicator(app)
+        if _shown_name(text) != expected:
+            seen.append(text)
+        return bool(seen) or indicator._frame >= start + ticks
+
+    await wait_for(ticked, pilot=pilot, description=f"{ticks} timer ticks showing {expected!r}")
+    assert not seen, seen
 
 
 # --- Idle, threshold, latest-started --------------------------------------------
@@ -279,9 +324,9 @@ async def test_a_run_shows_after_a_second_and_goes_back_to_hooks_when_it_ends(
         run = _view("protect-env", age=0.0, now=indicator_clock.now)
         await _snapshot(bus, run)
         indicator_clock.now = run.started_at + 0.999
-        # Observe longer than the display threshold in real time. GC pauses
-        # or slow paints must not advance the hook age under test.
-        await _keeps(pilot, "Hooks", seconds=1.1)
+        # The ages are held by the clock, so GC pauses or slow paints cannot advance
+        # the hook age under test: the timer's ticks are what read it again.
+        await _keeps_through_ticks(pilot, "Hooks")
         indicator_clock.now = run.started_at + 1.0
         await _shows(pilot, "protect-env", timeout=4.0, what="shown after its first second")
         assert "protect-env" in _indicator(app)
@@ -298,7 +343,7 @@ async def test_a_run_under_a_second_never_shows(tmp_path: Path, indicator_clock:
         run = _view("quick", age=0.0, now=indicator_clock.now)
         await _snapshot(bus, run)
         indicator_clock.now = run.started_at + 0.999
-        await _keeps(pilot, "Hooks", seconds=1.1)
+        await _keeps_through_ticks(pilot, "Hooks")
         await _snapshot(bus)
         await wait_for(
             lambda: not main.query_one(HookIndicator)._executions,
@@ -325,7 +370,7 @@ async def test_the_latest_started_run_shows_and_the_previous_one_comes_back(
         b = _view("hook-b", waited_at="turn", age=0.0, now=indicator_clock.now)
         await _snapshot(bus, a, b)
         indicator_clock.now = b.started_at + 0.999
-        await _keeps(pilot, "hook-a", seconds=1.1)
+        await _keeps_through_ticks(pilot, "hook-a")
         indicator_clock.now = b.started_at + 1.0
         await _shows(pilot, "hook-b", timeout=4.0, what="B once it lasted a second")
 
@@ -360,7 +405,13 @@ async def test_runs_nobody_waits_for_never_show(tmp_path: Path) -> None:
             _view("ff", waited_at="none", age=9),
             _view("on-interrupt", waited_at="none", age=9),
         )
-        await _keeps(pilot, "Hooks", seconds=1.5)
+        indicator = main.query_one(HookIndicator)
+        await wait_for(
+            lambda: len(indicator._executions) == 2, pilot=pilot, description="the unwaited runs' snapshot applied"
+        )
+        # Both are long past the threshold: the paint that applied them already decided, and a
+        # timer started by them would tick about three times in the window.
+        await _keeps(pilot, "Hooks")
 
 
 async def test_a_long_id_is_cut_in_the_middle_to_the_indicators_cap(tmp_path: Path) -> None:
@@ -526,7 +577,7 @@ async def test_after_an_interrupt_the_managers_report_removes_the_cancelled_run(
         else:
             await bus.publish(UserInterrupt(session_id=_SESSION))
         # The interrupt alone changes nothing on the indicator.
-        await _keeps(pilot, "stuck", seconds=0.5)
+        await _keeps(pilot, "stuck")
         # The manager reports the cancelled blocking run removed; the others stay.
         await _snapshot(bus, session_bg, ff, turn_bg)
         await _shows(pilot, "turn-bg")
@@ -534,6 +585,7 @@ async def test_after_an_interrupt_the_managers_report_removes_the_cancelled_run(
         await _shows(pilot, "session-bg")
 
 
+@pytest.mark.usefixtures("aged_indicator_clock")
 async def test_a_real_interrupted_blocking_hook_disappears_through_the_managers_report(tmp_path: Path) -> None:
     """Real hook subprocess: cancelling the firing task (what an interrupt does) reports the run removed."""
     import asyncio
@@ -651,7 +703,7 @@ async def test_a_blocking_run_still_running_after_the_turn_goes_idle_keeps_showi
         await _shows(pilot, "inject-guard")
         await _finish_turn(bus)
         await bus.publish(ExecutionChanged(snapshot=ExecutionSnapshot("idle"), session_id=_SESSION))
-        await _keeps(pilot, "inject-guard", seconds=1.0)
+        await _keeps(pilot, "inject-guard")
         # Only the manager's reports change what shows.
         await _snapshot(bus, session_bg, turn_bg)
         await _shows(pilot, "turn-bg")
@@ -807,8 +859,9 @@ async def test_indicator_updates_on_a_long_transcript_do_not_restyle_relayout_or
         assert time.monotonic() - a.started_at > 1.0
         b = _view("hook-b", queued=True, age=1.0)
         await _snapshot(bus, a, b)
-        # Running first: the later queued run does not take over while A runs.
-        await _keeps(pilot, "hook-a", seconds=1.5)
+        # Running first: the later queued run does not take over while A runs. Both are past
+        # the threshold, so the ticks only repaint the order the snapshot set.
+        await _keeps_through_ticks(pilot, "hook-a")
         await _snapshot(bus, _view("hook-b", age=1.0))
         await _shows(pilot, "hook-b", what="B once it got the slot")
         await _snapshot(bus, a)
@@ -837,10 +890,11 @@ async def test_interactive_mode_keeps_the_indicator_hidden_until_shell_mode_ends
         await wait_for(lambda: _indicator(app) == "", pilot=pilot, description="hidden in shell mode")
         await wait_for(lambda: main.query(Terminal), pilot=pilot, description="the shell's terminal")
         terminal = main.query_one(Terminal)
+        # Each message reaches the screen on its next pump: 0.3 s is many pumps.
         terminal.post_message(Terminal.AlternateScreenChanged(terminal, True))
-        assert not await wait_until(lambda: _indicator(app) != "", timeout=0.5, pilot=pilot)
+        assert not await wait_until(lambda: _indicator(app) != "", timeout=0.3, pilot=pilot)
         terminal.post_message(Terminal.AlternateScreenChanged(terminal, False))
-        assert not await wait_until(lambda: _indicator(app) != "", timeout=0.5, pilot=pilot)
+        assert not await wait_until(lambda: _indicator(app) != "", timeout=0.3, pilot=pilot)
         main.shell_mode_state = False
         await _shows(pilot, "guard", what="back with the footer")
 
@@ -858,7 +912,7 @@ async def test_a_running_run_outranks_a_later_queued_one(tmp_path: Path) -> None
         waiting = _view("waiting", queued=True, age=3)
         await _snapshot(bus, holder, waiting)
         await _shows(pilot, "slot-holder")
-        await _keeps(pilot, "slot-holder", seconds=0.5)
+        await _keeps_through_ticks(pilot, "slot-holder")
         # The holder ends; the queued one gets the slot and runs.
         await _snapshot(bus, _view("waiting", age=3))
         await _shows(pilot, "waiting")
@@ -868,7 +922,7 @@ async def test_a_running_run_outranks_a_later_queued_one(tmp_path: Path) -> None
 
 
 async def test_while_hidden_a_snapshot_does_not_repaint_and_the_run_shows_once_back(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, indicator_clock: _IndicatorClock
 ) -> None:
     from textual.widget import Widget
 
@@ -895,9 +949,14 @@ async def test_while_hidden_a_snapshot_does_not_repaint_and_the_run_shows_once_b
 
         monkeypatch.setattr(Widget, "refresh", counting_refresh)
         # A young run crosses the 1 s threshold while the indicator is hidden.
-        await _snapshot(bus, _view("hidden-run", age=0.0))
+        run = _view("hidden-run", age=0.0, now=indicator_clock.now)
+        await _snapshot(bus, run)
         settled = len(repaints)
-        assert not await wait_until(lambda: len(repaints) > settled + 1, timeout=2.5, pilot=pilot), repaints
+        await wait_for(lambda: indicator._executions == (run,), pilot=pilot, description="the snapshot applied")
+        indicator_clock.now = run.started_at + 2.0
+        # A timer left running would repaint every 0.1 s: about three times in the window.
+        assert not await wait_until(lambda: len(repaints) > settled + 1, timeout=0.3, pilot=pilot), repaints
+        assert indicator._timer is not None and not indicator._timer._active.is_set(), "the timer runs while hidden"
         hidden = len(repaints)
 
         main.shell_mode_state = False
@@ -1160,8 +1219,10 @@ async def test_only_unwaited_runs_keep_the_timer_off_and_a_waited_one_starts_it(
             _view("on-interrupt", waited_at="none", age=0.0),
         )
         after_snapshot = len(repaints)
-        # A running timer would repaint every 0.1 s; at most the snapshot's own render may follow.
-        assert not await wait_until(lambda: len(repaints) > after_snapshot + 1, timeout=1.5, pilot=pilot), repaints
+        # A running timer would repaint every 0.1 s, about three times in the window; at most the
+        # snapshot's own render may follow.
+        assert not await wait_until(lambda: len(repaints) > after_snapshot + 1, timeout=0.3, pilot=pilot), repaints
+        assert indicator._timer is not None and not indicator._timer._active.is_set(), "the timer runs"
         assert _body(app) == "⠿ Hooks"
 
         # Positive control: a waited-on run starts the timer, and the spinner repaints keep coming.
@@ -1351,6 +1412,7 @@ async def test_the_box_hugs_its_label_in_the_corner(tmp_path: Path) -> None:
 # --- Real hooks behind an unwaited slot holder ----------------------------------
 
 
+@pytest.mark.usefixtures("aged_indicator_clock")
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
 async def test_a_blocking_hook_queued_behind_a_fire_and_forget_shows_itself_not_the_holder(tmp_path: Path) -> None:
     """Real hook subprocesses on the app's bus, ``max_parallel_hooks=1``: F holds the slot, B queues behind it."""
@@ -1412,8 +1474,9 @@ async def test_a_blocking_hook_queued_behind_a_fire_and_forget_shows_itself_not_
                 pilot=pilot,
                 description="the fire-and-forget run holding the slot",
             )
-            # Alone, the holder nobody waits for never shows.
-            await _keeps(pilot, "Hooks", seconds=1.3)
+            # Alone, the holder nobody waits for never shows. It is past the display threshold as
+            # soon as it is reported (the aged clock), so the report's render already decides.
+            await _keeps(pilot, "Hooks")
 
             fire_b = asyncio.create_task(manager.fire(HookEvent.BEFORE_TOOL_CALL, payload))
             await wait_for(
@@ -1432,7 +1495,7 @@ async def test_a_blocking_hook_queued_behind_a_fire_and_forget_shows_itself_not_
                 pilot=pilot,
                 description="the blocking run took the slot",
             )
-            await _keeps(pilot, "guard", seconds=0.5)
+            await _keeps(pilot, "guard")
             release_b.touch()
             await wait_for(
                 fire_b.done, timeout=ENGINE_TURN_TIMEOUT, pilot=pilot, description="the blocking fire returned"
@@ -1624,7 +1687,8 @@ async def test_a_mouse_that_stayed_on_the_label_keeps_the_highlight_after_a_dial
             description="back on the main screen",
         )
         await wait_for(lambda: _highlighted(app, hover) == label, pilot=pilot, description="still highlighted")
-        assert not await wait_until(lambda: _highlighted(app, hover) != label, timeout=0.5, pilot=pilot)
+        # A Leave queued while the dialog covered the label lands on the next pumps: 0.3 s is many.
+        assert not await wait_until(lambda: _highlighted(app, hover) != label, timeout=0.3, pilot=pilot)
 
 
 async def test_hiding_the_footer_row_drops_the_hover(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1643,6 +1707,7 @@ async def test_hiding_the_footer_row_drops_the_hover(tmp_path: Path, monkeypatch
         await pilot.hover(main, offset=(2, 2))
         main.shell_mode_state = False
         await _shows(pilot, "Hooks")
-        assert not await wait_until(lambda: _highlighted(app, hover), timeout=0.5, pilot=pilot), _highlighted(
+        # Shown again, the label paints on its Show: a stale hover would be back at once.
+        assert not await wait_until(lambda: _highlighted(app, hover), timeout=0.3, pilot=pilot), _highlighted(
             app, hover
         )

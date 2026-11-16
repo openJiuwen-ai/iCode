@@ -12,6 +12,7 @@ from chrys.foundation.text.images import (
     IMAGE_DECODE_FORMATS,
     MAX_IMAGE_BYTES,
     ImageProcessingError,
+    _format_size,
     compress_image_data,
     inspect_image_dimensions,
     load_image_file,
@@ -133,6 +134,22 @@ def test_an_image_no_size_fits_names_the_limit() -> None:
     # Under what the headers of even a one-pixel JPEG take.
     with pytest.raises(ImageProcessingError, match="still larger than 300 bytes after compression"):
         compress_image_data(noisy_image_bytes("PNG"), max_bytes=300)
+
+
+@pytest.mark.parametrize(
+    ("size_bytes", "expected"),
+    [
+        (300, "300 bytes"),
+        (1_024, "1 KB"),
+        (1_047_552, "1023 KB"),
+        (1_047_553, "1.0 MB"),
+        (1_048_575, "1.0 MB"),
+    ],
+)
+def test_a_size_in_a_compression_error_gains_megabytes_before_kilobytes_read_1024(
+    size_bytes: int, expected: str
+) -> None:
+    assert _format_size(size_bytes) == expected
 
 
 def test_an_image_whose_header_reads_but_whose_data_is_broken_is_unreadable() -> None:

@@ -235,3 +235,20 @@ def test_summaries_hide_credentials_arguments_and_url_query() -> None:
 )
 def test_summary_does_not_show_arguments_embedded_in_yaml_command(command: str, expected: str) -> None:
     assert mcp_target_summary(MCPServerConfig(name="x", transport="stdio", command=command)) == expected
+
+
+def test_a_differing_cwd_neither_hides_nor_creates_a_connection_conflict() -> None:
+    existing = MCPServerConfig(name="gh", transport="stdio", command="npx", args=["server"], cwd="a")
+    other_cwd = replace(existing, name="github", cwd="b")
+
+    # The check stops two copies of one program exposing the same tool names; a folder does not change them.
+    conflict = mcp_choice_conflict(other_cwd, [existing])
+    assert conflict is not None and conflict.kind is MCPConflictKind.CONNECTION
+
+
+def test_cwd_tells_same_name_servers_apart_and_http_ignores_it() -> None:
+    stdio = MCPServerConfig(name="gh", transport="stdio", command="npx", cwd="a")
+    conflict = mcp_choice_conflict(replace(stdio, cwd="b"), [stdio])
+    assert conflict is not None and conflict.kind is MCPConflictKind.NAME
+    http = MCPServerConfig(name="remote", transport="http", url="https://example.com/mcp")
+    assert comparable_mcp_config(replace(http, cwd="/srv")) == comparable_mcp_config(http)

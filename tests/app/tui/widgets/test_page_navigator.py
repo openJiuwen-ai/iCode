@@ -17,6 +17,7 @@ class _NavigatorApp(App[None]):
     def __init__(self) -> None:
         super().__init__()
         self.requested: list[int] = []
+        self.views: list[object] = []
 
     def compose(self) -> ComposeResult:
         yield PageNavigator(id="pages")
@@ -24,6 +25,7 @@ class _NavigatorApp(App[None]):
     @on(PageNavigator.Changed)
     def _record(self, event: PageNavigator.Changed) -> None:
         self.requested.append(event.page)
+        self.views.append(event.view)
 
 
 def _label(navigator: PageNavigator) -> str:
@@ -69,3 +71,25 @@ async def test_buttons_ask_for_the_next_page_and_stop_at_either_end() -> None:
         assert (previous.disabled, _label(navigator), following.disabled) == (False, "Page 2 of 2", True)
         previous.press()
         await wait_for(lambda: app.requested == [2, 1], pilot=pilot, description="page 1 is requested")
+
+
+@pytest.mark.asyncio
+async def test_a_request_carries_the_view_shown_when_its_button_was_pressed() -> None:
+    async with _NavigatorApp().run_test(size=(80, 5)) as pilot:
+        app = pilot.app
+        navigator = app.query_one(PageNavigator)
+        following = navigator.query_one("#next-page", Button)
+
+        # An owner whose pages always show the same thing passes no view.
+        navigator.show(1, 2)
+        following.press()
+        await wait_for(lambda: app.views == [None], pilot=pilot, description="Next is pressed")
+        # The same page of the same count each time, but of another view.
+        for shown, view in enumerate(("listing", "results"), start=2):
+            navigator.show(1, 2, view=view)
+            following.press()
+            await wait_for(
+                lambda shown=shown: len(app.views) == shown, pilot=pilot, description=f"Next is pressed on {view!r}"
+            )
+            assert app.views[-1] == view
+        assert app.requested == [2, 2, 2]

@@ -4,13 +4,15 @@
 
 The store takes the snapshot once when a browser opens; paging, filtering by
 surface and deleting then work on it without rescanning, so a session saved
-meanwhile never moves between pages. Page contents are loaded fresh.
+meanwhile never moves between pages. Page contents are loaded fresh. Each
+entry keeps the metadata the snapshot read, which the browser searches every
+session by without reading any session again.
 """
 
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -23,7 +25,7 @@ SESSION_PAGE_SIZE = 100
 
 @dataclass(frozen=True, slots=True)
 class SessionListingEntry:
-    """One listed session: its ordering time, its surface and where it is stored."""
+    """One listed session: its ordering time, its surface, where it is stored and what the snapshot read of it."""
 
     session_id: str
     listed_at: datetime
@@ -33,6 +35,9 @@ class SessionListingEntry:
     source: Path
     """The session folder, or the file of a legacy flat-file session."""
     legacy: bool = False
+    meta: SessionMeta = field(kw_only=True, hash=False)
+    """The session as the snapshot read it, a copy no cache shares: ``size_bytes`` 0 for a folder session, and a
+    workflow session's ``latest_run`` read when the snapshot was taken."""
 
 
 @dataclass(frozen=True, slots=True)

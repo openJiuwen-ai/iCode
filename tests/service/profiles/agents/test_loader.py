@@ -15,7 +15,9 @@ from chrys.service.profiles.agents.loader import (
     load_profile_files_from_dir,
     load_profile_from_yaml,
     load_profiles_from_dir,
+    scan_profile_dir,
 )
+from chrys.service.profiles.agents.schema import ShellFilterConfig
 from chrys.service.profiles.agents.serializer import save_profile
 from tests.support.paths import SRC_ROOT
 
@@ -549,6 +551,65 @@ def test_load_missing_name(tmp_path: Path) -> None:
         load_profile_from_yaml(p)
 
 
+@pytest.mark.parametrize("raw", ["2024", "[a]", "{a: 1}"])
+def test_load_rejects_non_text_display_name(tmp_path: Path, raw: str) -> None:
+    p = tmp_path / "bad_display_name.yaml"
+    p.write_text(f"name: bad-display\ndisplay_name: {raw}\n", encoding="utf-8")
+
+    with pytest.raises(AgentProfileLoadError, match=r"display_name.*must be a string") as exc_info:
+        load_profile_from_yaml(p)
+
+    assert exc_info.value.field == "display_name"
+
+
+@pytest.mark.parametrize("raw", ["2024", "[a]", "{a: 1}"])
+def test_load_rejects_non_text_description(tmp_path: Path, raw: str) -> None:
+    p = tmp_path / "bad_description.yaml"
+    p.write_text(f"name: bad-description\ndescription: {raw}\n", encoding="utf-8")
+
+    with pytest.raises(AgentProfileLoadError, match=r"description.*must be a string") as exc_info:
+        load_profile_from_yaml(p)
+
+    assert exc_info.value.field == "description"
+
+
+def test_load_reads_null_display_name_and_description_as_empty(tmp_path: Path) -> None:
+    p = tmp_path / "nulls.yaml"
+    p.write_text("name: nulls\ndisplay_name:\ndescription:\n", encoding="utf-8")
+
+    profile = load_profile_from_yaml(p)
+
+    assert profile.display_name == ""
+    assert profile.description == ""
+
+
+@pytest.mark.parametrize(("raw", "expected"), [('"false"', False), ("'no'", False), ("true", True)])
+def test_load_coerces_sub_agent_only_from_settings_text(tmp_path: Path, raw: str, expected: bool) -> None:
+    p = tmp_path / "sub_agent_only.yaml"
+    p.write_text(f"name: coerced\nsub_agent_only: {raw}\n", encoding="utf-8")
+
+    assert load_profile_from_yaml(p).sub_agent_only is expected
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("'false'", False), ("'yes'", True)])
+def test_load_coerces_user_can_override_from_settings_text(tmp_path: Path, raw: str, expected: bool) -> None:
+    p = tmp_path / "user_can_override.yaml"
+    p.write_text(f"name: coerced\napproval:\n  user_can_override: {raw}\n", encoding="utf-8")
+
+    assert load_profile_from_yaml(p).approval.user_can_override is expected
+
+
+def test_profile_dir_scan_reports_display_name_as_the_invalid_field(tmp_path: Path) -> None:
+    (tmp_path / "good.yaml").write_text("name: good\n", encoding="utf-8")
+    bad_path = tmp_path / "bad.yaml"
+    bad_path.write_text("name: bad\ndisplay_name: 2024\n", encoding="utf-8")
+
+    scan = scan_profile_dir(tmp_path)
+
+    assert [profile.name for _path, profile in scan.loaded] == ["good"]
+    assert scan.invalid[bad_path].location == "display_name"
+
+
 @pytest.mark.parametrize(
     "name",
     [
@@ -993,6 +1054,95 @@ tools:
     assert mcps[1].load_prompts is True
 
 
+@pytest.mark.parametrize(
+    ("field", "literal", "expected"),
+    [
+        (field, literal, expected)
+        for field in ("enabled", "load_prompts")
+        for literal, expected in (
+            ("false", False),
+            ('"false"', False),
+            ("no", False),
+            ("off", False),
+            ("0", False),
+            ("true", True),
+            ('"true"', True),
+            ("yes", True),
+        )
+    ],
+)
+def test_load_mcp_boolean_literals(tmp_path: Path, field: str, literal: str, expected: bool) -> None:
+    """MCP flags follow the profile boolean words; a quoted 'false' never reads as true."""
+    p = tmp_path / "mcp_boolean_literal.yaml"
+    p.write_text(
+        f"""\
+name: mcp-boolean-literal
+tools:
+  mcp:
+    - name: srv
+      transport: stdio
+      command: python
+      {field}: {literal}
+""",
+        encoding="utf-8",
+    )
+
+    config = load_profile_from_yaml(p).tools.mcp[0]
+
+    actual = config.enabled if field == "enabled" else config.load_prompts
+    assert actual is expected
+
+
+def test_load_mcp_boolean_defaults(tmp_path: Path) -> None:
+    """An omitted flag and a flag written with no value both keep the default true."""
+    p = tmp_path / "mcp_boolean_defaults.yaml"
+    p.write_text(
+        """\
+name: mcp-boolean-defaults
+tools:
+  mcp:
+    - name: omitted
+      transport: stdio
+      command: python
+    - name: blank
+      transport: stdio
+      command: python
+      enabled:
+      load_prompts:
+""",
+        encoding="utf-8",
+    )
+
+    profile = load_profile_from_yaml(p)
+    omitted, blank = profile.tools.mcp
+
+    assert omitted.enabled is True
+    assert omitted.load_prompts is True
+    assert blank.enabled is True
+    assert blank.load_prompts is True
+
+
+def test_load_mcp_enable_alias(tmp_path: Path) -> None:
+    """The legacy ``enable`` key still disables a server."""
+    p = tmp_path / "mcp_enable_alias.yaml"
+    p.write_text(
+        """\
+name: mcp-enable-alias
+tools:
+  mcp:
+    - name: legacy-disabled
+      transport: stdio
+      command: python
+      enable: "false"
+""",
+        encoding="utf-8",
+    )
+
+    profile = load_profile_from_yaml(p)
+
+    assert profile.tools.mcp[0].enabled is False
+
+
 def test_load_mcp_invalid_transport(tmp_path: Path) -> None:
     """MCP server with invalid transport should raise."""
     p = tmp_path / "bad_transport.yaml"
@@ -1218,6 +1368,85 @@ skills:
     assert profile.skills.script_timeout == 60
 
 
+@pytest.mark.parametrize("literal", ["0", "-1", '"300"', "1.5", "true"])
+def test_load_skills_rejects_invalid_script_timeout(tmp_path: Path, literal: str) -> None:
+    """A zero, negative, quoted or fractional timeout is a field-level load error."""
+    p = tmp_path / "timeout-invalid.yaml"
+    p.write_text(
+        f"""\
+name: timeout-invalid
+skills:
+  script_timeout: {literal}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AgentProfileLoadError) as excinfo:
+        load_profile_from_yaml(p)
+
+    assert excinfo.value.field == "skills.script_timeout"
+
+
+def test_load_skills_script_timeout_blank_keeps_default(tmp_path: Path) -> None:
+    """A ``script_timeout`` key with no value keeps the documented default."""
+    p = tmp_path / "timeout-blank.yaml"
+    p.write_text(
+        """\
+name: timeout-blank
+skills:
+  script_timeout:
+""",
+        encoding="utf-8",
+    )
+
+    assert load_profile_from_yaml(p).skills.script_timeout == 300
+
+
+@pytest.mark.parametrize(
+    ("section", "value", "field"),
+    [
+        ("files", "README.md", "memory.files"),
+        ("folders", "docs", "memory.folders"),
+        ("files", "[a.md, 1]", "memory.files"),
+    ],
+)
+def test_load_memory_rejects_non_list_paths(tmp_path: Path, section: str, value: str, field: str) -> None:
+    """A scalar path or a mixed list is a field-level load error, not a char split."""
+    p = tmp_path / "memory-invalid.yaml"
+    p.write_text(
+        f"""\
+name: memory-invalid
+memory:
+  {section}: {value}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AgentProfileLoadError) as excinfo:
+        load_profile_from_yaml(p)
+
+    assert excinfo.value.field == field
+
+
+def test_load_memory_null_is_empty(tmp_path: Path) -> None:
+    """A path list written with no value loads as no paths."""
+    p = tmp_path / "memory-blank.yaml"
+    p.write_text(
+        """\
+name: memory-blank
+memory:
+  files:
+  folders:
+""",
+        encoding="utf-8",
+    )
+
+    profile = load_profile_from_yaml(p)
+
+    assert profile.memory.files == []
+    assert profile.memory.folders == []
+
+
 def test_load_builtin_profiles() -> None:
     """Verify built-in agent profile YAML files load successfully."""
     builtins_dir = SRC_ROOT / "chrys" / "service" / "profiles" / "agents" / "builtins"
@@ -1410,3 +1639,89 @@ tools:
     mcps = profile.tools.mcp
     assert mcps[0].expose_instructions is False
     assert mcps[1].expose_instructions is True
+
+
+@pytest.mark.parametrize(
+    ("shell_filter", "expected"),
+    [
+        ("read_only", ShellFilterConfig(preset="read_only")),
+        ("{preset: read_only}", ShellFilterConfig(preset="read_only")),
+        ("{preset: unrestricted}", ShellFilterConfig(preset="unrestricted")),
+        ("{preset: null}", ShellFilterConfig()),
+        ("{mode: blacklist, commands: [rm]}", ShellFilterConfig(mode="blacklist", commands=["rm"])),
+    ],
+)
+def test_load_accepts_shell_filter_presets(tmp_path: Path, shell_filter: str, expected: ShellFilterConfig) -> None:
+    """A documented preset name loads in either form; leaving it empty names none."""
+    path = tmp_path / "filter.yaml"
+    path.write_text(f"name: filtered\ntools:\n  shell_filter: {shell_filter}\n", encoding="utf-8")
+
+    profile = load_profile_from_yaml(path)
+
+    assert profile.tools.shell_filter == expected
+
+
+@pytest.mark.parametrize(
+    "shell_filter",
+    ["Whitelist", "{preset: Whitelist}", "{preset: 3}", "{preset: true}", "{preset: [read_only]}"],
+)
+def test_load_rejects_unrecognized_shell_filter_preset(tmp_path: Path, shell_filter: str) -> None:
+    """An unknown name would otherwise build no filter at all and allow every command."""
+    path = tmp_path / "filter-bad.yaml"
+    path.write_text(f"name: filtered\ntools:\n  shell_filter: {shell_filter}\n", encoding="utf-8")
+
+    with pytest.raises(
+        AgentProfileLoadError,
+        match=r"shell_filter\.preset' must be one of: read_only, unrestricted, or empty",
+    ):
+        load_profile_from_yaml(path)
+
+
+def test_unrecognized_shell_filter_preset_names_the_field(tmp_path: Path) -> None:
+    """The error carries the field so the reload report and config screen can point at it."""
+    path = tmp_path / "filter-bad.yaml"
+    path.write_text("name: filtered\ntools:\n  shell_filter: Whitelist\n", encoding="utf-8")
+
+    with pytest.raises(AgentProfileLoadError) as excinfo:
+        load_profile_from_yaml(path)
+
+    assert excinfo.value.field == "tools.shell_filter.preset"
+
+
+def _mcp_profile_yaml(tmp_path: Path, entry: str) -> Path:
+    path = tmp_path / "Cwd.yaml"
+    path.write_text(f"name: Cwd\ninstructions: x\ntools:\n  mcp:\n    - name: srv\n{entry}", encoding="utf-8")
+    return path
+
+
+def test_stdio_mcp_cwd_trims_surrounding_whitespace(tmp_path: Path) -> None:
+    path = _mcp_profile_yaml(tmp_path, '      transport: stdio\n      command: python\n      cwd: " ~/srv "\n')
+
+    assert load_profile_from_yaml(path).tools.mcp[0].cwd == "~/srv"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["", "      cwd:\n", '      cwd: ""\n', '      cwd: " \\t\\n "\n'],
+    ids=["absent", "null", "empty", "blank"],
+)
+def test_mcp_cwd_defaults_to_empty(tmp_path: Path, entry: str) -> None:
+    path = _mcp_profile_yaml(tmp_path, f"      transport: stdio\n      command: python\n{entry}")
+
+    assert load_profile_from_yaml(path).tools.mcp[0].cwd == ""
+
+
+def test_http_mcp_cwd_is_ignored(tmp_path: Path) -> None:
+    path = _mcp_profile_yaml(tmp_path, "      transport: http\n      url: http://localhost/mcp\n      cwd: /srv\n")
+
+    assert load_profile_from_yaml(path).tools.mcp[0].cwd == ""
+
+
+@pytest.mark.parametrize("value", ["[a]", "5", '"a\\0b"'])
+def test_invalid_mcp_cwd_names_its_field(tmp_path: Path, value: str) -> None:
+    path = _mcp_profile_yaml(tmp_path, f"      transport: stdio\n      command: python\n      cwd: {value}\n")
+
+    with pytest.raises(AgentProfileLoadError) as caught:
+        load_profile_from_yaml(path)
+
+    assert caught.value.field == "tools.mcp.cwd"

@@ -22,14 +22,14 @@ import chrys.service.trajectory.tombstone as tombstone_module
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.util.lock import FileLock
 from chrys.kernel import Message
-from chrys.service.state.session_catalog import CATALOG_DERIVATION_VERSION
+from chrys.service.state.session_catalog import CATALOG_DERIVATION_VERSION, CatalogEntry, encode_entry
 from chrys.service.state.session_listing import SessionListing, SessionListingEntry, page_slice
 from chrys.service.state.store import ChatSessionMeta, JsonFileStateStore, SessionMeta
 from chrys.service.state.workflow import WorkflowSessionState
 from chrys.service.trajectory.tombstone import INTENT_SUFFIX, DeleteOutcome, DeleteResult, tombstones_dir
 from chrys.service.workflows import history as history_module
-from chrys.service.workflows.history import WorkflowRunRead
-from tests.service.state._store_helpers import write_legacy_envelope
+from chrys.service.workflows.history import WorkflowRunMeta, WorkflowRunRead
+from tests.service.state._store_helpers import browser_page, write_legacy_envelope
 from tests.support.secure_files import plant_owner_only_bytes
 from tests.support.workflow_history import record_workflow_run, workflow_state
 
@@ -42,7 +42,16 @@ def _at(hour: int) -> str:
 
 
 def _entry(session_id: str, hour: int, surface: SessionSurface = SessionSurface.TUI) -> SessionListingEntry:
-    return SessionListingEntry(session_id, datetime(2026, 9, 1, hour, tzinfo=UTC), surface, Path(session_id))
+    at = datetime(2026, 9, 1, hour, tzinfo=UTC)
+    meta = ChatSessionMeta(
+        session_id=session_id,
+        created_at=at,
+        updated_at=at,
+        agent_profile="Code",
+        agent_display_name="Code",
+        message_count=1,
+    )
+    return SessionListingEntry(session_id, at, surface, Path(session_id), meta=meta)
 
 
 def _ids(listing: SessionListing, surfaces: frozenset[SessionSurface] = ALL) -> list[str]:
@@ -67,6 +76,7 @@ def _count_parses(monkeypatch: pytest.MonkeyPatch, store: JsonFileStateStore) ->
 
 
 def _count_run_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Reads of a run's files for its listing time (cached in the catalog under the run files' signatures)."""
     reads: list[Path] = []
     read_workflow_run = store_module.read_workflow_run
 
@@ -76,6 +86,24 @@ def _count_run_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 
     monkeypatch.setattr(store_module, "read_workflow_run", counting_read)
     return reads
+
+
+def _count_summary_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Live reads of a run's summary (title, input, status), never cached: the status depends on the active lock."""
+    reads: list[Path] = []
+    read_workflow_meta = store_module.read_workflow_meta
+
+    def counting_read(directory: Path, *, active: bool) -> WorkflowRunMeta | None:
+        reads.append(directory)
+        return read_workflow_meta(directory, active=active)
+
+    monkeypatch.setattr(store_module, "read_workflow_meta", counting_read)
+    return reads
+
+
+def _latest_run_id(store: JsonFileStateStore, session_id: str) -> str:
+    (run_id,) = (path.name for path in (store.session_dir(session_id) / "workflows").iterdir())
+    return run_id
 
 
 def _pinned_delete(session_dir: Path, *, sessions_root: Path, path_reused: bool = False) -> DeleteResult:
@@ -164,6 +192,10 @@ async def test_workflow_sessions_list_by_their_latest_run_and_only_with_one(tmp_
     assert [meta.session_id for meta in page.metas] == [run_last, saved_first]
     assert all(meta.latest_run is not None and meta.latest_run.status == "completed" for meta in page.metas)
     assert listing.entries[0].listed_at == page.metas[0].latest_run.updated_at
+    # The snapshot already knows what each row shows of its run, so the browser can search every session by it.
+    assert [entry.meta.latest_run for entry in listing.entries] == [meta.latest_run for meta in page.metas]
+    assert listing.entries[0].meta.latest_run.title == "Review"
+    assert listing.entries[0].meta.latest_run.input_text == "workflow input only"
 
 
 async def test_pages_measure_folder_size_only_for_their_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -202,6 +234,10 @@ async def test_a_page_shows_current_contents_in_snapshot_order(tmp_path: Path) -
 
     assert [meta.session_id for meta in page.metas] == ["new", "old"]
     assert page.metas[1].message_count == 2 and page.metas[1].last_surface is SessionSurface.CLI
+    # The entry keeps what the snapshot read, prompts included.
+    old_entry = next(entry for entry in listing.entries if entry.session_id == "old")
+    assert (old_entry.meta.message_count, old_entry.meta.user_prompt_search_text) == (1, "hi")
+    assert "now the newest" in page.metas[1].user_prompt_search_text
     assert page.total == 3
     assert (await store.load_session_page(listing.without("mid"), surfaces=ALL)).total == 2
 
@@ -216,12 +252,14 @@ async def test_legacy_flat_file_sessions_are_listed_and_paged(tmp_path: Path) ->
 
     assert _ids(listing) == ["folder", "legacy-id"]
     assert listing.entries[1].legacy and listing.entries[1].source == tmp_path / "flat.json"
+    assert listing.entries[1].meta.session_id == "legacy-id" and listing.entries[1].meta.message_count == 1
     assert [meta.session_id for meta in page.metas] == ["folder", "legacy-id"]
     assert "legacy-id" not in _catalog_ids(tmp_path)
 
 
 async def test_a_caller_editing_a_listed_meta_never_changes_later_listings(tmp_path: Path) -> None:
-    """The listing caches hand out copies: nested lists included, for folder, legacy and workflow sessions."""
+    """The listing caches hand out copies — to snapshot entries and pages alike —
+    nested lists included, for folder, legacy and workflow sessions."""
     write_legacy_envelope(tmp_path / "flat.json", "legacy-id", updated_at=_at(8), message_count=1)
     store = JsonFileStateStore(tmp_path)
     await _chat(store, "folder")
@@ -239,6 +277,7 @@ async def test_a_caller_editing_a_listed_meta_never_changes_later_listings(tmp_p
         edit(await store.list_sessions())
         for kind in ("chat", "workflow"):
             listing = await store.open_session_listing(kind=kind)
+            edit([entry.meta for entry in listing.entries])
             edit((await store.load_session_page(listing, surfaces=ALL)).metas)
 
     metas = await store.list_sessions()
@@ -294,10 +333,13 @@ async def test_another_process_lists_from_the_catalog_and_reparses_only_changes(
     reader = JsonFileStateStore(tmp_path)
     parsed = _count_parses(monkeypatch, reader)
     run_reads = _count_run_reads(monkeypatch)
+    summary_reads = _count_summary_reads(monkeypatch)
 
     assert await reader.open_session_listing(kind="chat") == first
     await reader.open_session_listing(kind="workflow")
     assert (parsed, run_reads) == ([], [])
+    # Only the summary each workflow row shows is read: once per workflow session, never for a chat listing.
+    assert summary_reads == [writer.session_dir(workflow) / "workflows" / _latest_run_id(writer, workflow)]
 
     await _chat(writer, "b", "hi", "changed")
     listing = await reader.open_session_listing(kind="chat")
@@ -570,6 +612,77 @@ async def test_a_corrupt_catalog_is_rebuilt_and_a_newer_one_left_alone(tmp_path:
 
     assert _ids(await other.open_session_listing(kind="chat")) == ["t", "s"]
     assert catalog.read_bytes() == newer
+
+
+async def test_naive_session_timestamps_are_read_as_utc(tmp_path: Path) -> None:
+    """An envelope written without an offset must never reach a consumer as a naive datetime."""
+    write_legacy_envelope(
+        tmp_path / "naive" / "session.json",
+        "naive",
+        created_at="2026-08-01T00:00:00",
+        updated_at="2026-09-02T09:30:00",
+    )
+    write_legacy_envelope(tmp_path / "aware" / "session.json", "aware", updated_at="2026-09-03T09:30:00+00:00")
+    store = JsonFileStateStore(tmp_path)
+
+    listing = await store.open_session_listing(kind="chat")
+    page = await store.load_session_page(listing, surfaces=ALL)
+    listed = {meta.session_id: meta for meta in await store.list_sessions()}
+
+    assert _ids(listing) == ["aware", "naive"]
+    assert [(meta.session_id, meta.created_at, meta.updated_at) for meta in page.metas] == [
+        ("aware", datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 9, 3, 9, 30, tzinfo=UTC)),
+        ("naive", datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 9, 2, 9, 30, tzinfo=UTC)),
+    ]
+    assert listed["naive"].created_at == datetime(2026, 8, 1, tzinfo=UTC)
+    assert listed["naive"].updated_at == datetime(2026, 9, 2, 9, 30, tzinfo=UTC)
+    assert all(meta.updated_at.tzinfo is UTC for meta in listed.values())
+
+
+@pytest.mark.parametrize("bad_meta", ["not-an-object", ["not", "an", "object"]], ids=["string", "list"])
+async def test_a_non_object_session_meta_costs_only_its_own_row(tmp_path: Path, bad_meta: object) -> None:
+    """A meta block of the wrong type is refused like any other bad record, never raised through."""
+    write_legacy_envelope(tmp_path / "good" / "session.json", "good", updated_at="2026-09-03T09:30:00+00:00")
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "session.json").write_text(
+        json.dumps({"meta": bad_meta, "state": {"messages": [], "compressed_msgs": []}}), encoding="utf-8"
+    )
+    store = JsonFileStateStore(tmp_path)
+
+    page = await store.load_session_page(await store.open_session_listing(kind="chat"), surfaces=ALL)
+
+    assert [meta.session_id for meta in page.metas] == ["good"]
+    assert await store.load_session_meta("bad") is None
+
+
+async def test_an_older_catalog_is_discarded_and_naive_stamps_rederived(tmp_path: Path) -> None:
+    """A catalog written before the UTC normalization must not replay its naive stamps."""
+    envelope = write_legacy_envelope(tmp_path / "s" / "session.json", "s", updated_at="2026-09-02T09:30:00")
+    naive = ChatSessionMeta(
+        session_id="s",
+        agent_profile="",
+        agent_display_name="",
+        created_at=datetime(2026, 9, 2, 9, 30),  # noqa: DTZ001 - naive on purpose
+        updated_at=datetime(2026, 9, 2, 9, 30),  # noqa: DTZ001 - naive on purpose
+        message_count=0,
+    )
+    catalog = tmp_path / ".cache" / "session_catalog.json"
+    catalog.parent.mkdir(parents=True)
+    # A catalog written by the generation that recorded naive stamps. Two
+    # independent guards drop it — the derivation-version bump, and the
+    # decoder refusing an offset-free stamp — so this exercises the upgrade
+    # path; the version pin itself lives in ``test_v2_records_are_pinned``.
+    planted = {
+        "version": 1,
+        "sessions": {"s": encode_entry(CatalogEntry(catalog_module.file_signature(envelope), naive))},
+    }
+    plant_owner_only_bytes(catalog, json.dumps(planted).encode("utf-8"))
+
+    metas = await browser_page(JsonFileStateStore(tmp_path))
+
+    assert [(meta.session_id, meta.updated_at) for meta in metas] == [("s", datetime(2026, 9, 2, 9, 30, tzinfo=UTC))]
+    assert json.loads(catalog.read_text(encoding="utf-8"))["version"] == CATALOG_DERIVATION_VERSION
 
 
 async def test_listing_the_legacy_way_still_reports_sizes_and_feeds_the_catalog(tmp_path: Path) -> None:

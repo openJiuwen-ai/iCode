@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Subprocess doubles for code that reads a process's output pipes, and a liveness check for real ones."""
+"""Subprocess doubles for code that reads a process's output pipes, and liveness and pid reads for real ones."""
 
 from __future__ import annotations
 
@@ -8,7 +8,23 @@ import asyncio
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import psutil
+
+
+def published_pid(path: Path) -> int | None:
+    """The pid a child process renamed into *path*, or None while it cannot be read yet.
+
+    On Windows the new name appears before the rename closes its handle on the
+    file, and opening the file meanwhile fails with ``PermissionError``: that
+    file exists but is not readable yet.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError, PermissionError:
+        return None
+    return int(text)
 
 
 def still_running(process: psutil.Process) -> bool:

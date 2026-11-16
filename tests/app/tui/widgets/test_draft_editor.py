@@ -150,7 +150,11 @@ async def test_the_input_box_and_the_editor_hand_one_draft_back_and_forth() -> N
         await pilot.pause()
 
         await pilot.press("ctrl+o")
-        await wait_for(lambda: isinstance(app.screen, EditorDialog), pilot=pilot, description="editor open")
+        await wait_for(
+            lambda: isinstance(app.screen, EditorDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="editor open",
+        )
         editor = app.screen.query_one(DraftEditor)
         assert editor.text == "explain \n> it failed\n\n "
         assert editor.chat_draft().references == EMPTY_REFERENCES
@@ -485,7 +489,11 @@ async def test_editor_confirmation_keeps_the_unfilled_fields_in_the_input_box(fi
         input_bar.set_draft(ChatDraft("ab field-one then field-two cd", fields=((3, 12), (18, 27))))
 
         await pilot.press("ctrl+o")
-        await wait_for(lambda: isinstance(app.screen, EditorDialog), pilot=pilot, description="editor open")
+        await wait_for(
+            lambda: isinstance(app.screen, EditorDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="editor open",
+        )
         editor = app.screen.query_one(DraftEditor)
         await wait_for(lambda: editor.has_focus, pilot=pilot, description="editor focused")
         editor.move_cursor((0, 0))

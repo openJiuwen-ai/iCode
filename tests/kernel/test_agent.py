@@ -739,6 +739,18 @@ class TestPrepareRunContext:
         assert client.calls[1]["options"]["tools"] == [t_opt]
 
     @pytest.mark.asyncio
+    async def test_options_tools_iterator_reaches_the_client(self) -> None:
+        # The telemetry layer merges options before the run reads them; that
+        # merge must not consume a one-shot iterator.
+        t_opt = _make_tool(name="opt_tool")
+        client = _BareClient(turns=[_text_response()])
+        agent = Agent(client=client)
+
+        await agent.run("hi", options={"tools": iter([t_opt])})
+
+        assert client.calls[0]["options"]["tools"] == [t_opt]
+
+    @pytest.mark.asyncio
     async def test_provider_contributed_middleware_appended_after_agent_middleware(self) -> None:
         log: list[str] = []
         agent_fn = _LogFn("agent-fn", log)
@@ -899,7 +911,7 @@ class TestProviderPipeline:
     @pytest.mark.asyncio
     async def test_latest_usage_is_none_when_final_call_reports_no_usage(self, stream: bool) -> None:
         """A final call reporting no usage must surface latest=None (so
-        force-compress skips conservatively) — never fall back to the
+        after-run usage check skips conservatively) — never fall back to the
         tool-loop billing aggregate."""
         if stream:
             turns = [

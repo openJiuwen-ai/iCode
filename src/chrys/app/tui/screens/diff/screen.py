@@ -27,8 +27,9 @@ import functools
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, ClassVar
+from weakref import ref
 
 from rich.style import Style
 from rich.text import Text
@@ -36,6 +37,7 @@ from textual import events, on
 from textual.containers import HorizontalGroup, VerticalGroup
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.geometry import Size
 from textual.message import Message
 from textual.screen import Screen
 from textual.widget import Widget
@@ -44,6 +46,7 @@ from textual.widgets import Static, TabbedContent, TabPane, Tree
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.binding_display import localized_binding
 from chrys.app.tui.i18n import LocaleController, render_str, widget_localizer
+from chrys.app.tui.util.diff_comments import CONTEXT_OMITTED, DiffComment, DiffDraft, LineIdentity, line_hash
 from chrys.app.tui.util.diff_content import DiffContent, read_diff_content
 from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffFocus, DiffLoadResult, entry_has_visible_change
 from chrys.app.tui.util.diff_labels import (
@@ -54,10 +57,16 @@ from chrys.app.tui.util.diff_labels import (
     filter_and_dedupe_entries,
     is_within_cwd,
 )
+from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.util.mutation_sources import merge_mutation_source as _merge_source
 from chrys.app.tui.util.removal import remove_children_shielded, remove_shielded
 from chrys.app.tui.widgets import ChrysLoadingIndicator
+from chrys.app.tui.widgets.chrome.draft_text_area import QUOTE_TRUNCATED, QUOTE_TRUNCATED_TITLE
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
+from chrys.app.tui.widgets.diff_view import CodeColumn
+from chrys.app.tui.widgets.diff_view.quote import build_diff_quote, quote_scope, raw_line
+from chrys.app.tui.widgets.diff_view.rows import line_identity
+from chrys.app.tui.widgets.text_area import MESSAGE_EDITOR_PASTE_MAX_TOKENS
 from chrys.foundation.i18n import DisplayPath, MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.mutation_scope import MutationScope, WorkflowRunScope
@@ -69,6 +78,7 @@ if TYPE_CHECKING:
     from textual.widgets._tree import TreeNode
 
     from chrys.app.tui.widgets.diff_view import DiffView
+    from chrys.foundation.text.draft_references import DraftReference
     from chrys.service.state.store import StateStore
 
 
@@ -600,6 +610,7 @@ class DiffPeriodPane(Widget):
         column_titles: tuple[str, str] | None = None,
     ) -> None:
         super().__init__()
+        self.comment_configurer: Callable[[DiffView], None] | None = None
         self._column_titles = column_titles
         self._entries = filter_and_dedupe_entries(entries)
         self._diff_cache: dict[str, DiffView] = {}  # path → DiffView widget
@@ -651,13 +662,13 @@ class DiffPeriodPane(Widget):
                 yield Static(self._render_message(_SELECT_FILE.bind()), classes="diff-message")
 
     async def on_mount(self) -> None:
-        if self._lazy:
+        if not composed_live(self) or self._lazy:
             return
         await self.ensure_initialized()
 
     async def ensure_initialized(self) -> None:
         """Build tree contents and mount the first file diff on demand."""
-        if self._initialized or self._initializing:
+        if not composed_live(self) or self._initialized or self._initializing:
             return
         self._initializing = True
         try:
@@ -1155,7 +1166,13 @@ class DiffPeriodPane(Widget):
                 id=f"dv-{hash(entry.path) & 0xFFFFFFFF:08x}",
                 column_titles=self._column_titles,
             )
+            if self.comment_configurer is not None:
+                dv.comments_enabled = True  # So that preparing splits the lines comments look up as well.
             await dv.prepare()
+            if not composed_live(self):
+                return
+            if self.comment_configurer is not None:
+                self.comment_configurer(dv)
             split = self._view_overrides.get(entry.path)
             if split is None:
                 additions, removals = dv.counts
@@ -1163,6 +1180,8 @@ class DiffPeriodPane(Widget):
             dv.split = split
             await content_box.mount(dv, before=message)
             self._diff_cache[entry.path] = dv
+            if not composed_live(self):
+                return
 
         self._update_content_border(content_box, entry, dv=dv)
         self._active_path = entry.path
@@ -1223,13 +1242,26 @@ class _DiffScreenContent(Widget):
         initial_tab_id: str,
         scopes: dict[int, MutationScope],
         focus: DiffFocus | None = None,
+        comment_configurer: Callable[[DiffView, str], None] | None = None,
     ) -> None:
         super().__init__(classes="diff-screen-content")
+        self._comment_configurer = comment_configurer
         self._periods_data = periods_data
         self._all_entries = all_entries
         self._initial_tab_id = initial_tab_id
         self._scopes = scopes
         self._focus = focus
+
+    def _with_comments(self, pane: DiffPeriodPane) -> DiffPeriodPane:
+        configure = self._comment_configurer
+        if configure is not None:
+
+            def configure_view(view: DiffView) -> None:
+                tab = next(ancestor for ancestor in pane.ancestors if isinstance(ancestor, TabPane))
+                configure(view, tab.id or "")
+
+            pane.comment_configurer = configure_view
+        return pane
 
     def compose(self) -> ComposeResult:
         render_message = functools.partial(render_str, widget_localizer(self))
@@ -1244,14 +1276,16 @@ class _DiffScreenContent(Widget):
                         ),
                         markup=False,
                     ),
-                    DiffPeriodPane(
-                        self._periods_data[turn_id],
-                        lazy=True,
-                        initial_display_key=(
-                            self._focus.display_key
-                            if self._focus is not None and self._initial_tab_id == f"turn-{turn_id}"
-                            else None
-                        ),
+                    self._with_comments(
+                        DiffPeriodPane(
+                            self._periods_data[turn_id],
+                            lazy=True,
+                            initial_display_key=(
+                                self._focus.display_key
+                                if self._focus is not None and self._initial_tab_id == f"turn-{turn_id}"
+                                else None
+                            ),
+                        )
                     ),
                     id=f"turn-{turn_id}",
                 )
@@ -1260,10 +1294,12 @@ class _DiffScreenContent(Widget):
             if _should_show_all_tab(self._all_entries, self._periods_data):
                 yield TabPane(
                     Content.from_text(render_message(_ALL_TAB.bind()), markup=False),
-                    DiffPeriodPane(
-                        self._all_entries,
-                        lazy=True,
-                        initial_display_key=self._focus.display_key if self._focus is not None else None,
+                    self._with_comments(
+                        DiffPeriodPane(
+                            self._all_entries,
+                            lazy=True,
+                            initial_display_key=self._focus.display_key if self._focus is not None else None,
+                        )
                     ),
                     id="turn-all",
                 )
@@ -1292,6 +1328,9 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         locale_controller: LocaleController | None = None,
         scopes: dict[int, MutationScope] | None = None,
         focus: DiffFocus | None = None,
+        draft: DiffDraft | None = None,
+        comments: list[DiffComment] | None = None,
+        turn_prompt: Callable[[int], str | None] | None = None,
     ) -> None:
         super().__init__()
         self._periods_data = periods_data
@@ -1307,6 +1346,15 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         self._content_ready = False
         self._close_when_current = False
         self._focus = focus
+        self._draft = draft
+        self._comments = comments if comments is not None else []
+        self._turn_prompt = turn_prompt
+
+    def _screen_resized(self, size: Size) -> None:
+        """Like MainScreen, ignore unchanged resize broadcasts from an overlay."""
+        if size == self._size:
+            return
+        super()._screen_resized(size)
 
     def _render_toast(self, reference: MessageRef) -> str:
         controller = self._locale_controller
@@ -1342,6 +1390,8 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         yield ChrysFooter(locale_controller=self._locale_controller)
 
     def on_mount(self) -> None:
+        if not composed_live(self):
+            return
         # Propagate subtitle from the caller (platform info).
         if self._subtitle_parts:
             from chrys.app.tui.widgets.chrome.app_header import AppHeader
@@ -1352,13 +1402,16 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         self.call_after_refresh(self._start_content_loading)
 
     def _start_content_loading(self) -> None:
-        self.run_worker(self._load_and_mount_content(), exclusive=True, group="diff-screen-content")
+        if composed_live(self):
+            self.run_worker(self._load_and_mount_content(), exclusive=True, group="diff-screen-content")
 
     async def _load_and_mount_content(self) -> None:
         """Load data off-loop, prepare the active pane, then reveal it atomically."""
         try:
             if self._load_data is not None:
                 result = await self._load_data()
+                if not composed_live(self):
+                    return
                 self._periods_data = result.per_period_entries
                 self._scopes = result.scopes
                 self._all_entries = result.all_entries
@@ -1380,14 +1433,21 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
                 initial_tab_id=self._initial_tab_id(),
                 scopes=self._scopes,
                 focus=self._focus,
+                comment_configurer=self._configure_comments if self._draft is not None else None,
             )
             content.display = False
             await self.query_one("#diff-container", VerticalGroup).mount(content)
+            if not composed_live(self):
+                return
 
             # Keep the loading state visible until both the change tree and
             # first DiffView have completed their expensive preparation.
             await self._ensure_active_turn_pane_initialized()
+            if not composed_live(self):
+                return
             await remove_shielded(self.query_one("#diff-loading-state", VerticalGroup))
+            if not composed_live(self):
+                return
             content.display = True
             self._content_loading = False
             self._content_ready = True
@@ -1403,7 +1463,7 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
 
     async def _show_load_error(self, exc: Exception) -> None:
         """Show a recoverable error whether or not the loading shell remains."""
-        if not self.is_attached:
+        if not composed_live(self):
             return
         with suppress(Exception):
             message = Static(
@@ -1414,6 +1474,8 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
             if loading_states:
                 loading_state = loading_states[0]
                 await remove_children_shielded(loading_state)
+                if not composed_live(self):
+                    return
                 await loading_state.mount(message)
                 return
             for content in self.query(".diff-screen-content"):
@@ -1435,6 +1497,8 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
 
     def on_screen_resume(self, _event: events.ScreenResume) -> None:
         """Honor a deferred close and recover stranded footer recomposition."""
+        if not composed_live(self):
+            return
         if self._close_when_current:
             self._close_if_current()
             return
@@ -1442,6 +1506,7 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         # deliberately stranded by the Footer's active-screen guard; resuming
         # is the recovery point that replays it.
         self.query_one(ChrysFooter).sync_bindings()
+        self._refresh_comments()
 
     @on(TabbedContent.TabActivated)
     async def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
@@ -1452,6 +1517,8 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         pane = event.pane.query_one(DiffPeriodPane)
         pane.set_change_list_visible(self._change_list_visible)
         await pane.ensure_initialized()
+        if composed_live(self):
+            self._refresh_comments()
 
     async def _ensure_active_turn_pane_initialized(self) -> None:
         """Initialize the active turn pane without touching inactive tabs."""
@@ -1498,3 +1565,101 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         self._change_list_visible = not self._change_list_visible
         for turn_pane in self.query(DiffPeriodPane):
             turn_pane.set_change_list_visible(self._change_list_visible)
+
+    def _configure_comments(self, view: DiffView, tab: str | None = None) -> None:
+        if self._draft is None:
+            return
+        view.comments_enabled = True
+        if tab is None:
+            tab = next(ancestor.id for ancestor in view.ancestors if isinstance(ancestor, TabPane))
+        view.set_comment_lines(frozenset(record.line for record in self._matching_comments(view, tab)))
+
+    def _matching_comments(
+        self, view: DiffView, tab: str | None, line: LineIdentity | None = None
+    ) -> list[DiffComment]:
+        draft = self._draft
+        if draft is None:
+            return []
+        self._comments[:] = [record for record in self._comments if record.handle() is not None]
+        candidates = [
+            record
+            for record in self._comments
+            if record.tab == tab
+            and record.path == view.path_after
+            and (line is None or record.line == line)
+            and (handle := record.handle()) is not None
+            and draft.probe_diff_comment(handle) != "absent"
+        ]
+        if not candidates:
+            return []
+        before, after = view.lines
+        return [
+            record
+            for record in candidates
+            if 0 < record.line[1] <= len(lines := before if record.line[0] == "before" else after)
+            and line_hash(lines[record.line[1] - 1]) == record.raw_hash
+        ]
+
+    def _refresh_comments(self) -> None:
+        from chrys.app.tui.widgets.diff_view import DiffView
+
+        for view in self.query(DiffView):
+            self._configure_comments(view)
+
+    @on(CodeColumn.RowRequested)
+    def _on_comment_requested(self, event: CodeColumn.RowRequested) -> None:
+        from chrys.app.tui.screens.diff.comment_bar import COMMENT_CHANGED, DiffCommentBar
+        from chrys.app.tui.widgets.diff_view import DiffView
+
+        event.stop()
+        draft = self._draft
+        if draft is None or self.app.screen is not self:
+            return
+        column, index = event.column, event.index
+        # A tab, file or layout switch queued behind the click may have hidden or replaced the clicked line.
+        if not column.is_attached or not all(node.display for node in column.ancestors_with_self):
+            return
+        row = column.rows[index]
+        identity = line_identity(row)
+        if identity is None:
+            return
+        view = next(ancestor for ancestor in column.ancestors if isinstance(ancestor, DiffView))
+        tab = self.query_one(TabbedContent).active
+        raw_hash = line_hash(raw_line(row, view.lines))
+        record = next(reversed(self._matching_comments(view, tab, identity)), None)
+        handle = record.handle() if record is not None else None
+        if record is not None and (handle is None or draft.probe_diff_comment(handle) != "original"):
+            self.notify(self._render_toast(COMMENT_CHANGED.bind()), severity="warning", markup=False)
+            return
+        comment = (draft.diff_comment(handle) or "") if handle is not None else ""
+        turn = None if tab == "turn-all" else int(tab.removeprefix("turn-"))
+        scope = quote_scope(turn, self._turn_prompt(turn) if turn is not None and self._turn_prompt else None)
+        path = Path(view.path_after)
+        try:
+            quote_path = path.relative_to(Path(self._cwd)).as_posix()
+        except ValueError:
+            quote_path = path.as_posix()
+        quote = build_diff_quote(row, view.lines, quote_path, scope, hunks=view.hunks)
+        if quote is None:
+            return
+        if quote.truncated:
+            self.notify(
+                self._render_toast(
+                    QUOTE_TRUNCATED.bind(
+                        original_tokens=f"{quote.original_tokens:,}", limit=f"{MESSAGE_EDITOR_PASTE_MAX_TOKENS:,}"
+                    )
+                ),
+                title=self._render_toast(QUOTE_TRUNCATED_TITLE.bind()),
+                severity="warning",
+                markup=False,
+            )
+        elif quote.context_omitted:
+            self.notify(self._render_toast(CONTEXT_OMITTED.bind()), severity="warning", markup=False)
+
+        def added(handle: DraftReference) -> None:
+            self._comments.append(DiffComment(ref(handle), tab, view.path_after, identity, raw_hash))
+
+        self.clear_selection()
+        self.app.push_screen(
+            DiffCommentBar(column, index, quote, draft, record, comment, added, self._refresh_comments)
+        )

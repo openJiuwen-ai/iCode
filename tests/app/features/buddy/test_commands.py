@@ -219,7 +219,20 @@ def test_the_card_of_a_finished_buddy_shows_what_it_became() -> None:
     assert card[0] == "🐾 🌟 Pico · owl · SSR · shiny"
     assert card[1] == "level      ▰▰▰▰▰▰▰▰▰▰  100 · fully grown"
     assert card[2] == "focus      ▰▰▰▰▰▰▰▰▰▱  90"
-    assert card[-1] == f"{_HATCH_DAY} · {top.record.turns} turns · 0 pets · evolution 2"
+    assert card[-1] == f"{_HATCH_DAY} · {top.record.turns} turns · 0 pets"
+
+
+def test_the_card_of_a_buddy_hatched_at_the_top_gives_it_the_name_mark() -> None:
+    top = a_buddy(rarity=Rarity.SSR, turns=turns_to_finish(1))
+    card = buddy_card(top).splitlines()
+
+    assert card[0] == "🐾 🌟 Pico · owl · SSR · shiny"
+    assert card[-1] == f"{_HATCH_DAY} · {top.record.turns} turns · 0 pets"
+
+
+def test_the_card_of_a_buddy_hatched_shiny_says_so_without_giving_it_the_mark() -> None:
+    assert a_buddy(shiny=True).display_name == "Pico"
+    assert buddy_card(a_buddy(shiny=True)).splitlines()[0] == "🐾 Pico · owl · R · shiny"
 
 
 def test_the_card_labels_are_in_the_language_of_whoever_asked_for_it() -> None:
@@ -233,7 +246,7 @@ def test_the_card_labels_are_in_the_language_of_whoever_asked_for_it() -> None:
     finished = buddy_card(a_buddy(turns=turns_to_finish(3)), render=_in_brackets).splitlines()
     assert finished[0] == "🐾 🌟 Pico · owl · SSR · <tui.buddy.card.shiny>"
     assert finished[1].endswith("  ▰▰▰▰▰▰▰▰▰▰  <tui.buddy.card.fully_grown>")
-    assert finished[-1] == "<tui.buddy.card.since> · <tui.buddy.card.evolution>"
+    assert finished[-1] == "<tui.buddy.card.since>"
 
 
 def test_the_card_lines_its_gauges_up_by_cell_whatever_the_labels_are_made_of() -> None:

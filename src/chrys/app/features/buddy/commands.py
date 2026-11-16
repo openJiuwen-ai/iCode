@@ -82,7 +82,6 @@ _CARD_TRAIT_CURIOSITY = msg("tui.buddy.card.trait.curiosity", fallback="curiosit
 _CARD_TRAIT_GRIT = msg("tui.buddy.card.trait.grit", fallback="grit")
 _CARD_TRAIT_CHARM = msg("tui.buddy.card.trait.charm", fallback="charm")
 _CARD_SINCE = msg("tui.buddy.card.since", fallback="{hatched} · {turns} turns · {pets} pets")
-_CARD_EVOLUTION = msg("tui.buddy.card.evolution", fallback="evolution {stage}")
 _CARD_TRAITS = {
     Trait.FOCUS: _CARD_TRAIT_FOCUS,
     Trait.CURIOSITY: _CARD_TRAIT_CURIOSITY,
@@ -169,8 +168,6 @@ def buddy_card(buddy: Buddy, *, render: Render = format_message) -> str:
     since = render(
         _CARD_SINCE.bind(hatched=f"{record.hatched_at.astimezone():%Y-%m-%d}", turns=record.turns, pets=record.pets)
     )
-    if buddy.evolved:
-        since += f" · {render(_CARD_EVOLUTION.bind(stage=progress.stage))}"
     return "\n".join(
         [
             f"🐾 {' · '.join(who)}",

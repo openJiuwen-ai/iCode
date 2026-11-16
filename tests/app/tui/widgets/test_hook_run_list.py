@@ -21,6 +21,7 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.hook_runs import HookRunRecord
 from chrys.service.hooks.run_log import HOOK_RUN_LOG_MAX_ENDED
 from chrys.service.trajectory.hooks import HookOutcome
+from tests.support.frozen_clock import freeze_monotonic
 from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for, wait_until
 
@@ -44,8 +45,9 @@ def _record(
     number: int = 1,
     call_rejected: bool = False,
     confirmation: str | None = None,
+    now: float | None = None,
 ) -> HookRunRecord:
-    now = time.monotonic()
+    now = time.monotonic() if now is None else now
     if state == "queued":
         registered, started, ended = now - queued_for, None, None
         outcome, exit_code = None, None
@@ -198,16 +200,18 @@ async def _shown(pilot, count: int) -> list[str]:
     ],
 )
 async def test_a_rows_icon_follows_how_it_ended_and_its_outcome_is_left_to_the_details(
-    fields: dict[str, object], icon: str, outcome: str
+    fields: dict[str, object], icon: str, outcome: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    record = _record("r1", hook_id="check", **fields)  # type: ignore[arg-type]
+    # A queued row counts its wait up from now: the list and the expected text share one frozen clock.
+    clock = freeze_monotonic(monkeypatch, hooks_module, now=time.monotonic())
+    record = _record("r1", hook_id="check", now=clock.now, **fields)  # type: ignore[arg-type]
     # What the run's details say of it.
     assert " · ".join(format_message(part) for part in run_outcome(record)) == outcome
     app = _ListApp(_Source(record))
     async with app.run_test(size=(60, 20)) as pilot:
         (row,) = await _shown(pilot, 1)
         # Only its duration follows the hook's name; handed off, it has none.
-        expected = [] if fields.get("ran_for", 0.0) is None else [run_duration(record, time.monotonic())]
+        expected = [] if fields.get("ran_for", 0.0) is None else [run_duration(record, clock.now)]
         assert row.split() == [icon, "check", *expected], row
 
 

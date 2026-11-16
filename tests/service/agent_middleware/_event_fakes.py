@@ -71,6 +71,17 @@ class DenyBeforeToolHookManager(_TableHookManager):
             self.after_payloads.append(payload)
 
 
+class PayloadRecordingHookManager(_TableHookManager):
+    """Keeps every payload a hook fired with, so a scenario can assert what hooks are handed."""
+
+    def __init__(self, decisions: Mapping[HookEvent, HookDecision]) -> None:
+        super().__init__(decisions)
+        self.payloads: dict[HookEvent, list[dict[str, Any]]] = {}
+
+    def _record(self, event: HookEvent, payload: dict[str, Any]) -> None:
+        self.payloads.setdefault(event, []).append(payload)
+
+
 class DualDecisionHookManager(_TableHookManager):
     """Records the order the after/error hooks fired in, and nothing else.
 

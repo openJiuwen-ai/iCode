@@ -911,6 +911,8 @@ def test_model_trigger_filters_selectable_profiles_and_switches_by_profile_id() 
     screen.services.model_registry = registry
     screen.services.active_model_profile_id = "current-id"
     handler = make_suggestion_handler(screen)
+    # The trigger fires on a draft that is just the ``$``.
+    screen.input_bar.value = "$"
 
     handler.on_model_triggered()
 

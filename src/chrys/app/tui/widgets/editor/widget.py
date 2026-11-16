@@ -16,6 +16,7 @@ from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.widgets.editor.highlighter import MarkdownHighlightedTextArea
 from chrys.app.tui.widgets.editor.keymaps import DEFAULT_EDITOR_KEYMAP_REGISTRY, EditorKeymapRegistry
 from chrys.app.tui.widgets.editor.types import (
+    EDITOR_MODE_CYCLE,
     MESSAGE_EDITOR_CHARACTER_LIMIT_STATUS,
     MESSAGE_EDITOR_MAX_CHARACTERS,
     EditorBufferSnapshot,
@@ -89,10 +90,14 @@ class MessageEditor(MarkdownHighlightedTextArea):
         mode: EditorMode | str = EditorMode.STANDARD,
         max_paste_tokens: int | None = MESSAGE_EDITOR_PASTE_MAX_TOKENS,
         registry: EditorKeymapRegistry | None = None,
+        cycles_modes: bool = False,
         **kwargs: Any,
     ) -> None:
+        """With *cycles_modes*, F3 switches this editor to the next keymap itself, as ``cycle_mode`` does;
+        otherwise F3 reaches the host as a ``CYCLE_MODE`` intent."""
         if len(text) > MESSAGE_EDITOR_MAX_CHARACTERS:
             raise ValueError(f"Message editor text exceeds {MESSAGE_EDITOR_MAX_CHARACTERS:,} characters")
+        self._cycles_modes = cycles_modes
         self._registry = registry or DEFAULT_EDITOR_KEYMAP_REGISTRY
         self._keymap: EditorKeymap | None = self._registry.create(mode)
         self._initial_cursor_location = cursor_location
@@ -139,6 +144,11 @@ class MessageEditor(MarkdownHighlightedTextArea):
         keymap.normalize_cursor(self)
         self._set_status("")
         self.post_message(self.ModeChanged(keymap.mode))
+
+    def cycle_mode(self) -> None:
+        """Switch to the keymap after the current one in ``EDITOR_MODE_CYCLE``."""
+        position = EDITOR_MODE_CYCLE.index(self.mode)
+        self.set_mode(EDITOR_MODE_CYCLE[(position + 1) % len(EDITOR_MODE_CYCLE)])
 
     def snapshot(self) -> EditorBufferSnapshot:
         """Capture editor text and cursor without changing either."""
@@ -199,7 +209,11 @@ class MessageEditor(MarkdownHighlightedTextArea):
         if result.consumed:
             event.prevent_default()
             event.stop()
-            if result.intent is not EditorIntent.NONE:
+            if result.intent is EditorIntent.CYCLE_MODE and self._cycles_modes:
+                # Switched before the next key is read. Keys typed while the loop was busy are already
+                # queued here behind F3, and a host switching on the intent would get to it only after them.
+                self.cycle_mode()
+            elif result.intent is not EditorIntent.NONE:
                 self.emit_editor_intent(result.intent, result.status, warning=result.warning)
             return
 

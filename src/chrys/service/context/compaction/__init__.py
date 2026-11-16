@@ -29,6 +29,7 @@ from .spill import SpillManifestItem as SpillManifestItem
 from .spill import SpillQuota as SpillQuota
 from .spill import turn_directory_name as turn_directory_name
 from .spill import write_spill_batch as write_spill_batch
+from .strategy import CompactionMode as CompactionMode
 from .strategy import LastWordsGeneratorLike as LastWordsGeneratorLike
 from .strategy import UnifiedContextStrategy as UnifiedContextStrategy
 from .summaries import _build_summary as _build_summary

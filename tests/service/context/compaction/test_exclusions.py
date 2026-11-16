@@ -463,7 +463,12 @@ async def test_session_restore_preserves_compaction_exclusions(
     messages = _build_multi_turn(turns, groups_per_turn=groups_per_turn, result_size=result_size)
     total = _estimate_tokens(messages)
 
-    strategy1 = _make_strategy(max_context_tokens=total + 100, trigger_pct=trigger_pct, target_pct=target_pct)
+    strategy1 = _make_strategy(
+        max_context_tokens=total + 100,
+        trigger_pct=trigger_pct,
+        target_pct=target_pct,
+        satisfied_pct=target_pct,
+    )
     changed = await strategy1(messages)
     assert changed, "Strategy #1 should have compacted"
     if required_reason is not None:

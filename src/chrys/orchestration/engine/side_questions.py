@@ -24,12 +24,17 @@ from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.trajectory.context import side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
+from chrys.orchestration.engine.run.turn_hooks import usage_payload
 from chrys.orchestration.invoker.content_projection import ContentProjector
 from chrys.orchestration.invoker.origin import BoundEmitter
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import check_operation
 from chrys.service.hooks.operation import HookOperation
-from chrys.service.llm.side_question import answer_side_question, conversation_snapshot
+from chrys.service.llm.side_question import (
+    answer_side_question,
+    conversation_snapshot,
+    side_question_instructions,
+)
 from chrys.service.session.side_questions import SideQuestionSessionSeed, load_side_questions, order_side_questions
 
 if TYPE_CHECKING:
@@ -195,6 +200,14 @@ class SideQuestions:
                     "text": question,
                     "injected": False,
                     "side_question": True,
+                    # The fields every ``user_prompt_submit`` payload carries: a hook reads
+                    # them without asking which kind of input it was handed.
+                    "usage": usage_payload(self._session),
+                    # What this call itself puts at the top, not the main agent's instructions:
+                    # a side question answers with no tools, from a prompt of its own. Built
+                    # without this check's reminders, which do not exist yet and reach the call
+                    # the way a main turn's do, after the decision.
+                    "system_prompt": side_question_instructions(),
                 },
                 scope="session",
                 trajectory_context=trajectory,

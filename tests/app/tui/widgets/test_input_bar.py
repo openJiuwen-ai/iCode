@@ -105,7 +105,9 @@ async def test_pending_retry_disables_submission_without_consuming_draft(submit:
             if submit == "button":
                 input_bar.on_button_pressed(Button.Pressed(button))
             else:
-                input_bar.on__chat_text_area_submitted(_ChatTextArea.Submitted(input_bar.value))
+                input_bar.on__chat_text_area_submitted(
+                    _ChatTextArea.Submitted(input_bar.value, input_bar._button_action("chat-input"))
+                )
 
         attempt()
         await pilot.pause()
@@ -167,9 +169,11 @@ async def test_ctrl_r_opens_prompt_history_and_enter_restores_original_prompt(
     retry_pending: bool,
 ) -> None:
     markup_shaped_prompt = "failure [type=missing, input_value={}, input_type=dict])"
+    release = asyncio.Event()
 
     async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
         assert max_entries == 1000
+        await release.wait()
         return ["older", "middle\nwith newline", markup_shaped_prompt]
 
     monkeypatch.setattr(InputBar, "load_prompt_history", load_prompt_history)
@@ -193,7 +197,14 @@ async def test_ctrl_r_opens_prompt_history_and_enter_restores_original_prompt(
 
         suggestions = app.main_screen.query_one(SuggestionList)
         assert suggestions.mode == "history"
-        assert suggestions._values == [markup_shaped_prompt, "middle\nwith newline", "older"]
+        # The rows come from the load and an indexing thread, which no pilot wait covers.
+        assert suggestions._values == []
+        release.set()
+        await wait_for(
+            lambda: suggestions._values == [markup_shaped_prompt, "middle\nwith newline", "older"],
+            pilot=pilot,
+            description="prompt history rows",
+        )
         assert [content.plain for content in suggestions._contents] == [
             markup_shaped_prompt,
             "middle ↵ with newline",
@@ -538,9 +549,9 @@ async def test_prompt_history_selection_resets_up_down_browsing(monkeypatch: pyt
         await pilot.press("ctrl+r")
         await pilot.pause()
         await pilot.press("tab")
-        await pilot.pause()
+        # Tab is held until the loaded rows show, which no pilot wait covers.
+        await wait_for(lambda: input_bar.value == "selected prompt", pilot=pilot, description="history row selected")
 
-        assert input_bar.value == "selected prompt"
         assert text_area._history.index == -1
         assert text_area._history_browsing is False
 
@@ -575,7 +586,7 @@ async def test_main_screen_binds_one_way_child_flags() -> None:
         assert chat_panel.agent_running is True
         assert chat_panel._profile_name == "Code"
         assert chat_panel.session_id == "12345678-1234-1234-1234-123456789abc"
-        assert str(chat_panel.border_subtitle) == "/repo/chrys"
+        assert chat_panel.workspace_cwd == "/repo/chrys"
         assert str(chat_panel.border_title) == "Session: 123456781234 \u00b7 Fix login bug"
         assert context_panel._current_used == 57_700
         assert context_panel._current_max == 200_000
@@ -827,7 +838,7 @@ async def test_input_bar_ctrl_o_remains_available_while_agent_running() -> None:
         await pilot.pause()
 
         assert app.editor_request_count == 1
-        assert text_area.placeholder.plain == "Inject a message  /  Commands  @  Files"
+        assert text_area.placeholder.plain == "Type a message · Enter to queue  /  Commands  @  Files"
 
 
 @pytest.mark.parametrize("guard", ["locked", "shell_mode"])
@@ -900,7 +911,7 @@ async def test_input_bar_editor_placeholders_are_exact_and_ordered() -> None:
 
         input_bar.agent_running = True
         await pilot.pause()
-        assert text_area.placeholder.plain == "Inject a message  /  Commands  @  Files"
+        assert text_area.placeholder.plain == "Type a message · Enter to queue  /  Commands  @  Files"
 
 
 @pytest.mark.asyncio
@@ -945,7 +956,15 @@ async def test_input_bar_relocalizes_semantic_state_and_cell_width_in_place(
         await pilot.pause()
         assert input_bar._interaction_signature != signature_after_switch
         assert str(send.label) == "中断"
-        assert text_area.placeholder.plain == "注入消息  /  命令  @  文件"
+        assert text_area.placeholder.plain == "输入消息 · Enter 排队  /  命令  @  文件"
+        input_bar.value = "补充说明"
+        await pilot.pause()
+        running_send = input_bar.query_one("#running-send-btn", Button)
+        assert running_send.display
+        assert str(running_send.label) == "发送"
+        assert controller.switch_locale("en").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
+        assert str(running_send.label) == "Send"
+        assert controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
 
         input_bar.agent_running = False
         adapter_screen = type("_AdapterScreen", (), {"query_one": lambda _self, _type: input_bar})()
@@ -959,7 +978,7 @@ async def test_input_bar_relocalizes_semantic_state_and_cell_width_in_place(
         input_bar.retry_mode = False
         input_bar.agent_running = True
         input_bar.lock_with_text()
-        assert str(send.label) == "已排队"
+        assert str(send.label) == "引导"
 
     assert input_bar is not None
     assert input_bar not in controller._surfaces
@@ -1346,8 +1365,8 @@ async def test_down_moves_through_a_wrapped_history_entry_before_the_next_one(mo
 
 
 @pytest.mark.asyncio
-async def test_input_bar_suppresses_arrow_keys_for_queued_injection(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Once an injection is queued, disabling the input must block arrow edits."""
+async def test_input_bar_preserves_queued_text_during_history_navigation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A queued draft keeps focus and allows cursor movement, but never history replacement."""
     monkeypatch.setattr(
         input_bar_module,
         "append_history",
@@ -1366,7 +1385,7 @@ async def test_input_bar_suppresses_arrow_keys_for_queued_injection(monkeypatch:
         text_area.focus()
         await pilot.pause()
 
-        assert text_area.disabled is True
+        assert text_area.disabled is False
 
         await pilot.press("up")
         await pilot.press("down")
@@ -1375,7 +1394,7 @@ async def test_input_bar_suppresses_arrow_keys_for_queued_injection(monkeypatch:
 
         text_area.move_cursor((0, 2))
         await pilot.press("left")
-        assert text_area.cursor_location == (0, 2)
+        assert text_area.cursor_location == (0, 1)
         await pilot.press("right")
         assert text_area.cursor_location == (0, 2)
 
@@ -1474,13 +1493,15 @@ async def test_input_bar_buttons_hug_labels_without_side_gaps() -> None:
         bar._set_btn_label("Send")
         await pilot.pause()
 
-        # Running: Interrupt tracks its own label width.
+        # Running with text: Send appears to the left of Interrupt without stealing space.
         bar.agent_running = True
         await pilot.pause()
+        running_send = bar.query_one("#running-send-btn", Button)
         assert str(send.label) == "Interrupt"
         assert new.region.width == 0
         assert send.region.width == len("Interrupt") + 4
-        assert send.region.x == group.content_region.x
+        assert running_send.region.x == group.content_region.x
+        assert send.region.x == running_send.region.right + 1
         assert send.region.right == group.content_region.right
         strips = pilot.app.screen._compositor.render_strips()
         row = next(strip.text for strip in strips if "Interrupt" in strip.text)
@@ -1586,8 +1607,8 @@ async def test_input_bar_loading_disables_submit_but_keeps_input_editable() -> N
         assert send_btn.disabled is False
 
 
-async def test_input_bar_locked_queue_disables_text_area_until_unlock() -> None:
-    """Queued mid-run injection disables text-area interaction until it is consumed or abandoned."""
+async def test_input_bar_queued_draft_keeps_focus_until_unlock() -> None:
+    """Queued mid-run injection keeps focus without allowing text edits."""
 
     async with _InputBarApp().run_test() as pilot:
         ib = pilot.app.query_one(InputBar)
@@ -1600,8 +1621,12 @@ async def test_input_bar_locked_queue_disables_text_area_until_unlock() -> None:
 
         assert ib.locked is True
         assert text_area.read_only is True
-        assert text_area.disabled is True
-        assert send_btn.disabled is True
+        assert text_area.disabled is False
+        assert text_area.has_focus
+        assert send_btn.disabled is False
+        assert str(send_btn.label) == "Steer"
+        assert ib.query_one("#cancel-btn", Button).display
+        assert ib.query_one("#editor-btn", Button).render().plain == ">"
 
         ib.unlock_and_keep()
         await pilot.pause()
@@ -1609,6 +1634,45 @@ async def test_input_bar_locked_queue_disables_text_area_until_unlock() -> None:
         assert ib.locked is False
         assert text_area.read_only is False
         assert text_area.disabled is False
+
+
+@pytest.mark.parametrize("phase", ["queued", "steering"])
+@pytest.mark.parametrize("action", ["undo", "redo"])
+async def test_locked_injection_keeps_draft_and_edit_history(phase: str, action: str) -> None:
+    async with _InputBarApp().run_test() as pilot:
+        bar = pilot.app.query_one(InputBar)
+        area = bar.query_one("#chat-input", TextArea)
+        bar.value = "original"
+        area.insert(" addition")
+        if action == "redo":
+            area.action_undo()
+        original = bar.value
+        bar.lock_with_text()
+        bar.injection_phase = phase
+        key = "ctrl+z" if action == "undo" else "ctrl+y"
+        await pilot.press(key)
+        assert bar.value == original
+        assert area.has_focus
+        bar.unlock_and_keep()
+        await pilot.press(key)
+        assert bar.value != original
+
+
+async def test_unlocked_input_ignores_late_queue_phase() -> None:
+    async with _InputBarApp().run_test() as pilot:
+        bar = pilot.app.query_one(InputBar)
+        bar.value = "queued text"
+        bar.lock_with_text()
+        bar.unlock_and_keep()
+        bar.value = "next draft"
+        # A delayed UI callback must not resurrect queue actions after unlock.
+        bar.injection_phase = "queued"
+        await pilot.pause()
+        assert bar.injection_phase == ""
+        assert not bar.query_one("#cancel-btn", Button).display
+        assert not bar.query_one("#btn-group").parent.border_title
+        await click_when_settled(pilot, "#send-btn")
+        assert pilot.app.submitted == ["next draft"]
 
 
 async def test_continue_button_sends_the_typed_note_stripped_and_clears_it() -> None:
@@ -1783,3 +1847,51 @@ async def test_enter_during_history_loading_selects_the_first_result_once_loaded
             description="held Enter selecting the first loaded row",
         )
         assert app.user_submitted == []
+
+
+@pytest.mark.parametrize("width", [45, 80, 120])
+async def test_queue_actions_receive_clicks_and_repeated_enter_stays_in_the_draft(width: int) -> None:
+    actions: list[str] = []
+
+    class QueueApp(_InputBarApp):
+        def on_input_bar_steer_requested(self, event: InputBar.SteerRequested) -> None:
+            actions.append("steer")
+            self.query_one(InputBar).injection_phase = "steering"
+
+        def on_input_bar_cancel_queue_requested(self, event: InputBar.CancelQueueRequested) -> None:
+            actions.append("cancel")
+            self.query_one(InputBar).unlock_and_keep()
+
+        def on_input_bar_interrupt_requested(self, event: InputBar.InterruptRequested) -> None:
+            actions.append("interrupt")
+
+    async with QueueApp().run_test(size=(width, 20)) as pilot:
+        ib = pilot.app.query_one(InputBar)
+        ib.agent_running = True
+        ib.value = "Keep this draft"
+        ib.lock_with_text()
+        await pilot.press("enter", "enter", "up", "x", "ctrl+j")
+        assert ib.value == "Keep this draft"
+        assert actions == []
+        assert ib.query_one(TextArea).has_focus
+        send = ib.query_one("#send-btn", Button)
+        cancel = ib.query_one("#cancel-btn", Button)
+        group = ib.query_one("#btn-group")
+        assert send.region.right < cancel.region.x
+        assert cancel.region.right <= group.region.right <= ib.region.right
+        await click_when_settled(pilot, "#cancel-btn")
+        assert actions == ["cancel"]
+        assert ib.value == "Keep this draft"
+        assert str(send.label) == "Interrupt"
+        ib.lock_with_text()
+        await pilot.press("tab")
+        assert send.has_focus
+        await pilot.press("enter")
+        assert actions == ["cancel", "steer"]
+        assert ib.query_one(TextArea).has_focus
+        assert str(send.label) == "Interrupt"
+        assert not cancel.display
+        await pilot.press("enter")
+        assert actions == ["cancel", "steer"]
+        await click_when_settled(pilot, "#send-btn")
+        assert actions == ["cancel", "steer", "interrupt"]

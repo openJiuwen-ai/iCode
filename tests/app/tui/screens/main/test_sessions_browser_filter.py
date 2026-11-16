@@ -23,7 +23,7 @@ from ._workflow_support import WorkflowEngine, switch_mode
 async def _open_browser(app: ChrysApp, pilot: Pilot) -> SessionsScreen:
     await pilot.press("f1")
     await wait_for(
-        lambda: isinstance(app.screen, SessionsScreen) and not app.screen._loading,
+        lambda: isinstance(app.screen, SessionsScreen) and app.screen.is_mounted and not app.screen._loading,
         pilot=pilot,
         description="the sessions browser has loaded",
     )

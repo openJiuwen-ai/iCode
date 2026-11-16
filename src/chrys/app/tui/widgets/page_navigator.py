@@ -30,7 +30,10 @@ class PageNavigator(Horizontal):
     """Previous and Next around "Page X of Y", disabled at either end.
 
     The owner loads the page a :class:`Changed` asks for and reports it
-    through :meth:`show`. It moves focus to its content first (see
+    through :meth:`show`, with a key for what it pages if that can change:
+    a :class:`Changed` carries the key shown when its button was pressed,
+    so the owner can drop one that reaches it after it replaced what the
+    user paged. It moves focus to its content first (see
     :meth:`disables_focused`): disabling a focused boundary button would
     otherwise hand focus to the button's sibling.
     """
@@ -55,11 +58,13 @@ class PageNavigator(Horizontal):
     class Changed(Message):
         """The user asked for another page."""
 
-        def __init__(self, navigator: PageNavigator, page: int) -> None:
+        def __init__(self, navigator: PageNavigator, page: int, view: object = None) -> None:
             super().__init__()
             self.navigator = navigator
             self.page = page
             """1-based."""
+            self.view = view
+            """The key :meth:`PageNavigator.show` gave for what the pager showed when its button was pressed."""
 
         @property
         def control(self) -> PageNavigator:
@@ -70,6 +75,7 @@ class PageNavigator(Horizontal):
         self._locale = locale
         self._page = 1
         self._pages = 1
+        self._view: object = None
 
     @property
     def page(self) -> int:
@@ -91,8 +97,9 @@ class PageNavigator(Horizontal):
             page >= pages and focused is self.query_one("#next-page", Button)
         )
 
-    def show(self, page: int, pages: int) -> None:
-        """Show *page* of *pages*, both 1-based."""
+    def show(self, page: int, pages: int, *, view: object = None) -> None:
+        """Show *page* of *pages*, both 1-based, of what the owner keys as *view*."""
+        self._view = view
         if (page, pages) == (self._page, self._pages):
             return
         self._page, self._pages = page, pages
@@ -111,7 +118,7 @@ class PageNavigator(Horizontal):
         event.stop()
         page = self._page + (1 if event.button.id == "next-page" else -1)
         if 1 <= page <= self._pages:
-            self.post_message(self.Changed(self, page))
+            self.post_message(self.Changed(self, page, self._view))
 
     def _text(self, reference: MessageRef) -> Text:
         localizer = self._locale.localizer if self._locale is not None else widget_localizer(self)

@@ -18,6 +18,7 @@ from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.widgets.sidebar.buddy import BuddyPanel
 from chrys.foundation.events.bus import EventBus
 from tests.support.buddies import HeldPetReply, HeldSaveFile, assert_reply_gate_open
+from tests.support.toasts import shown_toasts
 from tests.support.tui_helpers import discard_worker
 from tests.support.waiting import wait_for, wait_until
 
@@ -184,8 +185,8 @@ class _PanelApp(App[None]):
         yield BuddyPanel()
 
     def toasts(self) -> list[str]:
-        """Live toast texts, oldest first."""
-        return [notification.message for notification in self._notifications]
+        """Every toast text shown, oldest first."""
+        return [notification.message for notification in shown_toasts(self)]
 
 
 @pytest.mark.asyncio
