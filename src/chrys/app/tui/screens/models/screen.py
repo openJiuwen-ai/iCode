@@ -1922,7 +1922,13 @@ class ModelConfigScreen(BaseDialog[str]):
 
         profile_id = self._next_profile_id()
         profile = ModelProfile(id=profile_id, name=name)
-        await asyncio.to_thread(save_profile, profile)
+        try:
+            await asyncio.to_thread(save_profile, profile)
+        except Exception as exc:
+            # Reached from on_mount too: an unusable profiles directory must
+            # toast here, not escape and take the whole app down.
+            self._report_save_failure(exc)
+            return
         self._registry.register(profile)
 
         self._populate_sidebar()
@@ -1995,7 +2001,11 @@ class ModelConfigScreen(BaseDialog[str]):
         duplicate = copy.deepcopy(source)
         duplicate.id = self._next_profile_id()
         duplicate.name = self._next_clone_name(source.name)
-        await asyncio.to_thread(save_profile, duplicate)
+        try:
+            await asyncio.to_thread(save_profile, duplicate)
+        except Exception as exc:
+            self._report_save_failure(exc)
+            return
         self._registry.register(duplicate)
 
         self._populate_sidebar()
@@ -2161,17 +2171,21 @@ class ModelConfigScreen(BaseDialog[str]):
             return
         await self._save_and_report()
 
+    def _report_save_failure(self, exc: Exception) -> None:
+        """Toast a failed profile write; every save path ends at this sink."""
+        self.notify(
+            self._render_toast(exc.display) if isinstance(exc, ConfigError) else str(exc),
+            title=self._render_toast(_SAVE_ERROR_TITLE.bind()),
+            severity="error",
+            timeout=5,
+            markup=False,
+        )
+
     async def _save_and_report(self) -> None:
         try:
             profile = await self._save_only()
         except Exception as exc:
-            self.notify(
-                self._render_toast(exc.display) if isinstance(exc, ConfigError) else str(exc),
-                title=self._render_toast(_SAVE_ERROR_TITLE.bind()),
-                severity="error",
-                timeout=5,
-                markup=False,
-            )
+            self._report_save_failure(exc)
             return
         self.notify(
             self._render_toast(_MODEL_PROFILE_SAVED.bind()),

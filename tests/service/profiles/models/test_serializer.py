@@ -172,6 +172,15 @@ def test_save_profile_creates_parent_dir(fake_config_dir: Path) -> None:
     assert path.parent.is_dir()
 
 
+@pytest.mark.parametrize("profile_id", ["nested/custom", "../escape", "C:\\temp\\x", "CON", ""])
+def test_save_profile_refuses_an_id_that_is_not_a_bare_filename(fake_config_dir: Path, profile_id: str) -> None:
+    """A path-shaped id would save somewhere the top-level-only scan never reads back."""
+    with pytest.raises(ValueError, match="filename-safe"):
+        save_profile(ModelProfile(id=profile_id, name="Bad"))
+
+    assert list(fake_config_dir.rglob("*.yaml")) == []
+
+
 def test_save_profile_overwrites_existing(fake_config_dir: Path) -> None:
     """Re-saving the same id overwrites the existing file."""
     p1 = ModelProfile(id="same-id", name="First")
