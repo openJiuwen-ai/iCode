@@ -9,12 +9,14 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
+from types import ModuleType
 
 import pytest
 from rich.cells import cell_len
 from rich.style import Style
 from textual.geometry import Region, Size
 
+from chrys.app.tui import clipboard
 from chrys.app.tui.widgets.trajectory import DashboardTab, ResponsiveTier
 from chrys.app.tui.widgets.trajectory import panel as trajectory_panel
 from chrys.app.tui.widgets.trajectory.text_view import TrajectoryTextView
@@ -117,9 +119,18 @@ async def test_overview_renders_kpi_waterfall_coverage_and_structured_diagnostic
 
 
 @pytest.mark.parametrize("linked_store", [False, True])
+@pytest.mark.parametrize("os_name", ["macos", "windows"])
 async def test_overview_session_info_shows_folder_sizes_and_wall_clock_for_store_layout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked_store: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked_store: bool, os_name: str
 ) -> None:
+    # Keep UI/platform services native to the runner while checking both
+    # synchronous fallback and queued Windows clipboard completion.
+    platform = clipboard.platform_helpers
+    shadow = ModuleType(platform.__name__)
+    shadow.__dict__.update(platform.__dict__)
+    info = replace(platform.get_platform(), os_name=os_name)
+    shadow.get_platform = lambda: info
+    monkeypatch.setattr(clipboard, "platform_helpers", shadow)
     capability_checks: list[None] = []
 
     def can_open_folder() -> bool:
@@ -147,7 +158,7 @@ async def test_overview_session_info_shows_folder_sizes_and_wall_clock_for_store
         path = session_dir / "trajectory" / "events.jsonl"
         assert session_dir.parent.name == "icode-history"
 
-    async with open_dashboard(path, size=(150, 40)) as (dashboard, _pilot):
+    async with open_dashboard(path, size=(150, 40)) as (dashboard, pilot):
         assert capability_checks == [None]
         view = dashboard.query_one(TrajectoryTextView)
         lines = view._lines
@@ -167,9 +178,11 @@ async def test_overview_session_info_shows_folder_sizes_and_wall_clock_for_store
 
         copied: list[str] = []
         notices: list[str] = []
-        monkeypatch.setattr(trajectory_panel, "copy_text_to_clipboards", lambda _app, value: copied.append(value))
+        monkeypatch.setattr(clipboard, "clipboard_copy", copied.append)
         monkeypatch.setattr(dashboard, "notify", lambda message, **kwargs: notices.append(message))
         dashboard.query_one(TrajectoryTextView).action_copy_session_path()
+        await clipboard.wait_for_clipboard(dashboard.app)
+        await wait_for(lambda: bool(notices), pilot=pilot)
         assert copied == [str(session_dir)]
         assert notices == ["Path copied"]
 

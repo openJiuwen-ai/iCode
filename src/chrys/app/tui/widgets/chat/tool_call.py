@@ -30,7 +30,12 @@ from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Static
 
-from chrys.app.tui.clipboard import OSC52_COPY_MAX_BYTES, copy_text_to_clipboards, terminal_clipboard_size
+from chrys.app.tui.clipboard import (
+    OSC52_COPY_MAX_BYTES,
+    copy_text_to_clipboards,
+    notify_after_copy,
+    terminal_clipboard_size,
+)
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
 from chrys.app.tui.support.gc_freeze import (
@@ -805,23 +810,30 @@ class ToolCopyExcludedMixin(_ToolCopyExcludedBase):
 
         terminal_payload_too_large = terminal_clipboard_size(payload) > OSC52_COPY_MAX_BYTES
         localizer = widget_localizer(self)
-        if copy_text_to_clipboards(self.app, payload, max_terminal_bytes=OSC52_COPY_MAX_BYTES):
-            self.notify(
+        dispatched = copy_text_to_clipboards(self.app, payload, max_terminal_bytes=OSC52_COPY_MAX_BYTES)
+        if dispatched:
+            notify_after_copy(
+                self,
                 render_str(localizer, _TOOL_DETAILS_COPIED.bind(tool_name=self.tool_name)),
+                dispatched=dispatched,
                 title=render_str(localizer, COPIED_TITLE.bind()),
                 timeout=2,
                 markup=False,
             )
         elif terminal_payload_too_large:
-            self.notify(
+            notify_after_copy(
+                self,
                 render_str(localizer, _TOOL_DETAILS_COPIED_TOO_LARGE.bind(tool_name=self.tool_name)),
+                dispatched=dispatched,
                 title=render_str(localizer, COPIED_TITLE.bind()),
                 timeout=3,
                 markup=False,
             )
         else:
-            self.notify(
+            notify_after_copy(
+                self,
                 render_str(localizer, _TOOL_DETAILS_COPIED_UNAVAILABLE.bind(tool_name=self.tool_name)),
+                dispatched=dispatched,
                 title=render_str(localizer, COPIED_TITLE.bind()),
                 timeout=3,
                 markup=False,

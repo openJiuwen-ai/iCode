@@ -57,8 +57,8 @@ class _CopyView:
     def chat_copy_messages(self, _target: str) -> list[tuple[str, str]]:
         return list(self.messages)
 
-    def copy_text(self, _text: str) -> None:
-        return
+    def copy_text(self, _text: str, *, message: MessageRef | str, title: MessageRef | str) -> None:
+        self.notify(message, title=title, timeout=2)
 
     def toggle_chat_fold_all(self) -> bool:
         return False

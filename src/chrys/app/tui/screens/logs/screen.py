@@ -15,7 +15,7 @@ from textual.timer import Timer
 from textual.widgets import RichLog, TabbedContent, TabPane
 
 from chrys.app.tui.binding_display import CLOSE_BINDING, COPY_BINDING, localized_binding
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
@@ -552,10 +552,12 @@ class LogViewerScreen(BaseDialog[None]):
             return
 
         payload = "\n".join(lines)
-        copy_text_to_clipboards(self.app, payload)
+        dispatched = copy_text_to_clipboards(self.app, payload)
         localizer = widget_localizer(self)
-        self.notify(
+        notify_after_copy(
+            self,
             render_str(localizer, _COPIED_LINES.bind(count=len(lines), module=module)),
+            dispatched=dispatched,
             title=render_str(localizer, COPIED_TITLE.bind()),
             timeout=2,
             markup=False,

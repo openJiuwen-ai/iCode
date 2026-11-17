@@ -12,6 +12,7 @@ from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
 from textual.events import Paste
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.widgets.editor import EditorMode, EditorStatus, EmacsKeymap, MessageEditor, VimKeymap, VimState
 from chrys.app.tui.widgets.editor.types import EditorIntent
 from chrys.foundation.i18n import MessageRef
@@ -357,12 +358,13 @@ async def test_vim_shift_insert_pastes_only_in_insert_mode(monkeypatch: pytest.M
 
 async def test_vim_ctrl_insert_copies_visual_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     copied: list[str] = []
-    monkeypatch.setattr("chrys.app.tui.clipboard.platform_helpers.clipboard_copy", copied.append)
+    monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
     app = _EditorApp("one two", (0, 0), EditorMode.VIM)
     async with app.run_test() as pilot:
         await pilot.press("v", "l", "ctrl+insert")
 
         assert app.clipboard == "on"
+        await wait_for_clipboard(app)
         assert copied == ["on"]
         keymap = app.editor.active_keymap
         assert isinstance(keymap, VimKeymap)

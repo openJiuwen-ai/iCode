@@ -74,7 +74,7 @@ async def test_running_send_visibility_geometry_and_focus(width: int) -> None:
         bar.lock_with_text()
         await pilot.pause()
         assert not send.display
-        assert str(interrupt.label) == "Steer"
+        assert str(interrupt.label) == "Send Now"
         cancel = bar.query_one("#cancel-btn", Button)
         assert cancel.display and cancel in pilot.app.screen.focus_chain
         bar.injection_phase = "steering"

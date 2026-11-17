@@ -18,6 +18,7 @@ from textual.message import Message
 from textual.widgets import Button, Static, TextArea
 from textual.widgets.option_list import OptionDoesNotExist
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.util.message_gate import messages_disabled
 from chrys.app.tui.widgets import AskUserPrompt, AskUserResponseResized, PromptDraft
 from chrys.app.tui.widgets.ask_user_controls import (
@@ -484,6 +485,7 @@ async def test_ask_user_renderer_mounts_question_and_full_answer(monkeypatch: py
         tool.copy_tool_execution()
         await pilot.pause()
 
+        await wait_for_clipboard(pilot.app)
         assert len(copied) == 1
         payload = copied[-1]
         assert "~~~markdown" in payload
@@ -1884,6 +1886,7 @@ async def test_completed_card_displays_controls_as_replacement_characters_and_co
         tool.copy_tool_execution()
         await pilot.pause()
         # Copy starts from the raw text, not the display copy, and escapes controls its own way.
+        await wait_for_clipboard(pilot.app)
         assert "1. Pick\\x1b[2J?\n\tdeep\n2. Why?" in copied[-1]
 
 

@@ -19,6 +19,7 @@ from textual.selection import SELECT_ALL, Selection
 from textual.widget import Widget
 from textual.widgets import Button, Static
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.screens.dialogs.approval import ApprovalDialog
 from chrys.app.tui.screens.dialogs.approval import body as approval_body_module
 from chrys.app.tui.screens.dialogs.approval.body import (
@@ -934,6 +935,7 @@ async def test_file_approval_dialog_right_click_copies_diff_selection(
         )
 
         assert app.clipboard == expected
+        await wait_for_clipboard(app)
         assert copied == [expected]
         assert dialog.get_selected_text() is None
 

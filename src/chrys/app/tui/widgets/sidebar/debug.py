@@ -21,7 +21,7 @@ from rich.text import Text
 from textual.widget import Widget
 from textual.widgets import RichLog, Static
 
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.foundation.i18n import msg
@@ -89,10 +89,12 @@ class _ClickableLog(RichLog, can_focus=False):
     def on_click(self, event: Click) -> None:
         if self._plain_lines:
             payload = "\n".join(self._plain_lines)
-            copy_text_to_clipboards(self.app, payload)
+            dispatched = copy_text_to_clipboards(self.app, payload)
             localizer = widget_localizer(self)
-            self.notify(
+            notify_after_copy(
+                self,
                 render_str(localizer, _EVENT_STREAM_COPIED.bind()),
+                dispatched=dispatched,
                 title=render_str(localizer, COPIED_TITLE.bind()),
                 timeout=1,
                 markup=False,

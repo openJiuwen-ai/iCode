@@ -5603,6 +5603,12 @@ msgstr "手动"
 msgid "tui.chrome.approval_mode.reviewing"
 msgstr "审查中"
 
+#. English: Could not copy to the system clipboard. Please try again.
+#. chrys-meta={"fingerprint":"adcf9d22865c985016cdf0dd4a62ad1d7f3c31b82754fd7cf239959a695da1ac","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/copy_messages.py
+msgid "tui.clipboard.copy_failed"
+msgstr "无法复制到系统剪贴板，请重试。"
+
 #. English: Opacity
 #. chrys-meta={"fingerprint":"fbe9921562136650ecb20c434111c0f313739ce4d747ef35ac0fefbac089ae97","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/color_picker/__init__.py
@@ -7964,11 +7970,11 @@ msgstr[0] "正在运行 {count} 条命令… 按 Esc 取消"
 msgid "tui.input.send"
 msgstr "发送"
 
-#. English: Steer
-#. chrys-meta={"fingerprint":"6b52308f1c66a4dcb13b643f16ea97c634fdc65c3307d69fca62f834f5ab2586","multiline":false,"placeholders":[]}
+#. English: Send Now
+#. chrys-meta={"fingerprint":"73e003ad745a135854544f11d5b7f22b242c7e70011cfd61b087fbdf1f5e9b44","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
 msgid "tui.input.steer"
-msgstr "引导"
+msgstr "立刻发送"
 
 #. English: Try to stop the current work and continue with this message
 #. chrys-meta={"fingerprint":"68d7cd8527d6e041d6e1507e201cfdd5f938cb438523a831a3457dd1e419dec8","multiline":false,"placeholders":[]}

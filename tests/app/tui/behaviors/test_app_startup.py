@@ -469,11 +469,44 @@ def test_tui_locale_parser_sanitizes_hostile_argv_while_usage_stays_english(
     assert "\x1b" not in stderr
 
 
-async def test_unmount_drains_title_updater_after_engine_shutdown() -> None:
-    """Engine shutdown can finalize a completed run whose success callback
-    schedules one last title task; draining the updater afterwards is what
-    guarantees that task gets cancelled and awaited."""
+@pytest.mark.parametrize(
+    ("clipboard_outcome", "failure_stage", "failure_type"),
+    [
+        ("success", "", None),
+        ("failure", "", None),
+        ("cancelled", "", None),
+        *[
+            ("success", stage, error)
+            for stage in ("program-status", "graphics", "engine")
+            for error in (RuntimeError, asyncio.CancelledError)
+        ],
+    ],
+)
+async def test_unmount_drains_title_updater_after_engine_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    clipboard_outcome: str,
+    failure_stage: str,
+    failure_type: type[BaseException] | None,
+) -> None:
+    """Keep hangup protection until a real clipboard queue has drained."""
+    from threading import Event
+
+    from chrys.app.tui import clipboard
+    from chrys.app.tui.support.clipboard_writer import ClipboardWriter
+    from tests.support.waiting import wait_for
+
     calls: list[str] = []
+    entered, release = Event(), Event()
+
+    def record(stage: str) -> None:
+        calls.append(stage)
+        if stage == failure_stage and failure_type is not None:
+            raise failure_type("earlier cleanup failed")
+
+    def write(text: str) -> None:
+        entered.set()
+        assert release.wait(5)
+        calls.append(f"copied:{text}")
 
     class _Updater:
         async def shutdown(self) -> None:
@@ -481,15 +514,17 @@ async def test_unmount_drains_title_updater_after_engine_shutdown() -> None:
 
     class _Reporter:
         async def close(self) -> None:
-            calls.append("program-status")
+            record("program-status")
 
     class _Engine:
         async def shutdown(self) -> None:
-            calls.append("engine")
+            # Programmatic callbacks during teardown must not add new work.
+            assert not clipboard.copy_text_to_clipboards(host, "late engine copy")
+            record("engine")
 
     class _Graphics:
         async def close(self) -> None:
-            calls.append("graphics")
+            record("graphics")
 
     class _Freeze:
         def close(self) -> None:
@@ -499,22 +534,82 @@ async def test_unmount_drains_title_updater_after_engine_shutdown() -> None:
         def stop(self) -> None:
             calls.append("timer-stop")
 
-    host = SimpleNamespace(
-        _startup_task=None,
-        _update_check_task=None,
-        _left_behind_task=None,
-        _program_status_reporter=_Reporter(),
-        _terminal_graphics=_Graphics(),
-        _session_title_updater=_Updater(),
-        _engine=_Engine(),
-        _gc_freeze=_Freeze(),
-        _gc_freeze_watchdog=_Timer(),
-    )
+    class _Host:
+        _clipboard = "queued"
+        _startup_task = None
+        _update_check_task = None
+        _left_behind_task = None
+        _program_status_reporter = _Reporter()
+        _terminal_graphics = _Graphics()
+        _session_title_updater = _Updater()
+        _engine = _Engine()
+        _gc_freeze = _Freeze()
+        _gc_freeze_watchdog = _Timer()
 
-    await ChrysApp.on_unmount(host)
+        @property
+        def clipboard(self) -> str:
+            return self._clipboard
 
-    assert calls == ["program-status", "graphics", "gc-close", "timer-stop", "engine", "updater"]
-    assert host._gc_freeze_watchdog is None
+        def copy_to_clipboard(self, text: str) -> None:
+            raise AssertionError("native Windows must not dispatch OSC52")
+
+    async def observed_clipboard_close(app) -> None:
+        calls.append("clipboard")
+        await clipboard.close_clipboard(app)
+        if clipboard_outcome == "failure":
+            raise RuntimeError("clipboard cleanup failed")
+
+    def remove_signal_handler(signum: int) -> bool:
+        calls.append(f"remove-signal:{signum}")
+        return True
+
+    monkeypatch.setattr(clipboard, "_clipboard_frontend", lambda: "native-windows")
+    monkeypatch.setattr("chrys.app.tui.app.close_clipboard", observed_clipboard_close)
+    # Observe the signal-removal boundary portably, without changing OS handlers.
+    monkeypatch.setattr("chrys.app.tui.app.HANGUP_SIGNALS", (1, 15))
+    monkeypatch.setattr(asyncio.get_running_loop(), "remove_signal_handler", remove_signal_handler)
+    host = _Host()
+    writer = ClipboardWriter(write)
+    clipboard._native_writers[host] = writer
+    shutdown = None
+    try:
+        assert writer.submit("queued")
+        await wait_for(entered.is_set)
+        shutdown = asyncio.create_task(ChrysApp.on_unmount(host))
+        await wait_for(lambda: writer.closed or shutdown.done())
+        if shutdown.done():
+            await shutdown
+        assert writer.closed
+        expected = ["program-status", "graphics", "gc-close", "timer-stop", "engine", "updater", "clipboard"]
+        if failure_stage:
+            expected = [*expected[: expected.index(failure_stage) + 1], "clipboard"]
+        assert calls == expected
+        assert not shutdown.done()
+        if clipboard_outcome == "cancelled":
+            shutdown.cancel()
+        release.set()
+        expected_error = asyncio.CancelledError if clipboard_outcome == "cancelled" else failure_type
+        if expected_error is not None:
+            with pytest.raises(expected_error):
+                await shutdown
+        else:
+            await shutdown
+
+        assert calls == [*expected, "copied:queued", "remove-signal:1", "remove-signal:15"]
+        assert not clipboard.copy_text_to_clipboards(host, "late copy after unmount")
+        assert host.clipboard == "queued"
+        if failure_stage not in ("program-status", "graphics"):
+            assert host._gc_freeze_watchdog is None
+    finally:
+        release.set()
+        try:
+            if shutdown is not None:
+                with contextlib.suppress(asyncio.CancelledError, RuntimeError):
+                    await shutdown
+        finally:
+            await writer.wait()
+            await writer.close()
+            await clipboard.close_clipboard(host)
 
 
 def test_terminal_title_reset_after_run_uses_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:

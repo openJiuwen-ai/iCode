@@ -10,6 +10,7 @@ from textual.events import MouseDown, MouseUp
 from textual.geometry import Offset
 from textual.selection import Selection
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.screens.diff.screen import DiffScreen
 from chrys.app.tui.util.diff_entries import DiffFileEntry
 from chrys.app.tui.widgets.diff_view.code import CodeColumn
@@ -104,5 +105,6 @@ async def test_right_click_copies_diff_selection_then_clears_it(monkeypatch: pyt
         await pilot.pause()
 
         assert app.clipboard == "first line"
+        await wait_for_clipboard(app)
         assert copied == ["first line"]
         assert screen.get_selected_text() is None
