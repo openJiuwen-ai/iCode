@@ -79,6 +79,7 @@ from tests.service.agent_middleware._event_fakes import (
     _ctx,
 )
 from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.async_tasks import running_task, wait_for_completion, wait_for_started
 from tests.support.event_capture import capture_event_sequence, capture_events
 
 # ──────────────── ResponseBatchCounter ──────────────────────────────────
@@ -1272,13 +1273,17 @@ async def test_tool_event_middleware_runs_implicit_windows_in_parallel_by_defaul
     first_ctx = _ctx("bash", KIND_SHELL, args={"command": "true"})
     second_ctx = _ctx("bash", KIND_SHELL, args={"command": "true"})
 
-    first_task = asyncio.create_task(mw.process(first_ctx, first_next))
-    await first_entered.wait()
-    second_task = asyncio.create_task(mw.process(second_ctx, second_next))
-    await asyncio.wait_for(second_entered.wait(), timeout=0.5)
-
-    release_both.set()
-    await asyncio.gather(first_task, second_task)
+    try:
+        async with running_task(mw.process(first_ctx, first_next)) as first_task:
+            await wait_for_started(first_entered, first_task, description="first parallel tool entered")
+            async with running_task(mw.process(second_ctx, second_next)) as second_task:
+                await wait_for_started(second_entered, second_task, description="second parallel tool entered")
+                assert not first_task.done()
+                release_both.set()
+                await wait_for_completion(first_task)
+                await wait_for_completion(second_task)
+    finally:
+        release_both.set()
     assert max_active == 2
 
 

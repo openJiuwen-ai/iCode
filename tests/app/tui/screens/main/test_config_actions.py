@@ -45,6 +45,7 @@ from chrys.service.profiles.models.schema import ModelProfile, is_model_profile_
 from tests.app.tui.screens._model_config_support import _model_config_result_events
 from tests.support.event_capture import capture_event_sequence
 from tests.support.tui_helpers import discard_worker
+from tests.support.waiting import wait_for
 
 
 @pytest.fixture(autouse=True)
@@ -433,7 +434,7 @@ async def test_open_model_config_keeps_the_event_loop_responsive_while_the_point
         assert await asyncio.to_thread(read_started.wait, 2)
         loop_advanced = asyncio.Event()
         asyncio.get_running_loop().call_soon(loop_advanced.set)
-        await asyncio.wait_for(loop_advanced.wait(), timeout=1)
+        await wait_for(loop_advanced.is_set, description="loop advanced")
         assert view.pushed == []
     finally:
         release_read.set()

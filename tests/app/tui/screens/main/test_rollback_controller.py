@@ -33,6 +33,7 @@ from chrys.foundation.events.types import (
     WorkspaceUpdated,
 )
 from chrys.foundation.models.todos import TodoItem
+from tests.support.async_tasks import running_task
 from tests.support.tui_helpers import (
     ScreenSetters,
     fake_session_title,
@@ -40,6 +41,7 @@ from tests.support.tui_helpers import (
     main_screen_state_at,
     make_session_handler,
 )
+from tests.support.waiting import wait_for
 
 
 class _RollbackProjectionFenceMixin:
@@ -712,17 +714,18 @@ async def test_rollback_picker_loader_keeps_projection_fenced_until_cancelled_sc
     )
 
     controller.show_rollback()
-    operation = asyncio.create_task(state_loaders[0]())  # type: ignore[operator]
-    assert await asyncio.to_thread(scan_started.wait, 1)
+    async with running_task(state_loaders[0]()) as operation:  # type: ignore[operator]
+        try:
+            assert await asyncio.to_thread(scan_started.wait, 1)
 
-    operation.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await operation
-    assert engine.rollback_projection_fenced is True
-    assert projection_released.is_set() is False
-
-    release_scan.set()
-    await asyncio.wait_for(projection_released.wait(), timeout=1)
+            operation.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+            assert engine.rollback_projection_fenced is True
+            assert projection_released.is_set() is False
+        finally:
+            release_scan.set()
+    await wait_for(projection_released.is_set, description="projection released")
     assert engine.rollback_projection_fenced is False
 
 
