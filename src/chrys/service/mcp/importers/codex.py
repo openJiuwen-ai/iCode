@@ -280,7 +280,9 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         if "cwd" in entry and entry["cwd"] and not cwd_paths.isabs(entry["cwd"]):
             warnings.append(ImportWarning(WarningKind.CODEX_RELATIVE_CWD))
         passed = [name for name in _passed_variables(entry) if name.upper() in _NOT_INHERITED]
-        passed = [name for name in passed if not any(key.upper() == name.upper() for key in env)]
+        windows = get_platform().is_windows
+        explicit = {key.upper() if windows else key for key in env}
+        passed = [name for name in passed if (name.upper() if windows else name) not in explicit]
         env |= {name: (Var(name),) for name in passed}
     else:
         # Codex keeps a ``codex mcp login`` sign-in outside the file, so warn unless headers authenticate.
@@ -305,6 +307,8 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         "stdio" if stdio else "http",
         command=entry.get("command", ""),
         args=tuple(entry.get("args", [])),
+        command_path=f"{prefix}.command",
+        arg_paths=tuple(f"{prefix}.args[{i}]" for i in range(len(entry.get("args", [])))),
         env=env,
         url=entry.get("url", ""),
         headers=headers,

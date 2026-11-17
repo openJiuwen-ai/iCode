@@ -9099,6 +9099,13 @@ msgstr ""
 msgid "tui.mcp.import.problem.header_value_characters"
 msgstr ""
 
+#. English: {field} uses line endings that cannot be preserved during import,
+#. so this server configuration cannot be imported unchanged.
+#. chrys-meta={"fingerprint":"5251a99a13e6b75d9ede4d801a360c6e75eeeabbe8069333f04f5718223fe789","multiline":false,"placeholders":["field"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.line_endings"
+msgstr ""
+
 #. English: This configuration accesses the MCP server through a remote
 #. environment, which {app} cannot use. If you have a Streamable HTTP URL
 #. accessible from this computer or a STDIO command that runs here, add the

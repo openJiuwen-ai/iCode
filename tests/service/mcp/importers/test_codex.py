@@ -38,6 +38,24 @@ def _only(home: Path, body: str) -> McpImportCandidate:
     return candidate
 
 
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize("explicit", ["PYTHONPATH", "pythonpath"])
+def test_explicit_env_overrides_passed_variables_by_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool, explicit: str
+) -> None:
+    monkeypatch.setattr(codex, "get_platform", lambda: SimpleNamespace(is_windows=windows))
+    candidate = _only(
+        tmp_path,
+        f'command = "run"\nenv_vars = ["PATH", "PYTHONPATH"]\nenv = {{ {explicit} = "literal" }}\n',
+    )
+
+    expected = {explicit: "literal"}
+    if not windows and explicit != "PYTHONPATH":
+        expected["PYTHONPATH"] = "{{PYTHONPATH}}"
+    assert candidate.config is not None
+    assert candidate.config.env == expected
+
+
 @pytest.mark.parametrize("tools", [["read,delete"], [" read"], [""], ["read", "read"]])
 def test_unrepresentable_allowlist_refuses_the_original_setting(tmp_path: Path, tools: list[str]) -> None:
     candidate = _only(tmp_path, 'command = "run"\nenabled_tools = ' + json.dumps(tools) + "\n")

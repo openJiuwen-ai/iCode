@@ -234,6 +234,10 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
         transport,
         command=_expand_home(entry["command"], home) if transport == "stdio" else "",
         args=tuple(_expand_home(arg, home) for arg in entry.get("args", [])) if transport == "stdio" else (),
+        command_path=f"{prefix}.command",
+        arg_paths=tuple(f"{prefix}.args[{i}]" for i in range(len(entry.get("args", []))))
+        if transport == "stdio"
+        else (),
         env=values if transport == "stdio" else {},
         url=entry.get("url", ""),
         headers=values if transport == "http" else {},

@@ -114,9 +114,13 @@ def test_unrepresentable_paths_name_the_source_field(home_path: Path, source: st
 
 
 @pytest.mark.parametrize("source", ["codex", "opencode", "pi"])
-@pytest.mark.parametrize("cwd", [1, [], False])
+@pytest.mark.parametrize("cwd", [0, 1, [], False, True, {}])
 def test_invalid_cwd_types_are_rejected_by_the_source(home_path: Path, source: str, cwd: object) -> None:
     assert discover(home_path, source, {"cwd": cwd}).candidates == ()
+
+
+def test_pi_rejects_null_cwd_before_applying_its_runtime_default(home_path: Path) -> None:
+    assert discover(home_path, "pi", {"cwd": None}).candidates == ()
 
 
 @pytest.mark.parametrize("source", ["codex", "opencode", "pi"])

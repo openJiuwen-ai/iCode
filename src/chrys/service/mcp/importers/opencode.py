@@ -245,6 +245,8 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
             "stdio",
             command=command[0],
             args=tuple(command[1:]),
+            command_path=f"{prefix}.command[0]",
+            arg_paths=tuple(f"{prefix}.command[{i}]" for i in range(1, len(command))),
             env=values,
             enabled=enabled,
             timeout_seconds=timeout,

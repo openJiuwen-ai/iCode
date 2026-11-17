@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.text import Text
@@ -19,9 +22,7 @@ from chrys.app.tui.screens.agents.import_mcp_dialog import ImportMcpServersDialo
 from chrys.app.tui.screens.agents.import_mcp_view import (
     _ORIGIN,
     imported_config,
-    names_field,
     problem_text,
-    source_error_text,
     warning_text,
 )
 from chrys.app.tui.screens.agents.panels.mcp import MCPConfigPanel, MCPConnectionCard
@@ -31,7 +32,6 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n import Localizer
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
 from chrys.service.mcp.importers import (
-    FieldUse,
     ImportContext,
     ImportWarning,
     McpImportCandidate,
@@ -43,6 +43,7 @@ from chrys.service.mcp.importers import (
     WarningKind,
 )
 from chrys.service.mcp.importers.base import SourceServer, convert
+from chrys.service.mcp.importers.codex import CodexSource
 from tests.app.tui.screens._mcp_import_support import (
     FakeSource,
     PanelApp,
@@ -64,66 +65,6 @@ _AUTH_NOT_IMPORTED = ImportWarning(WarningKind.AUTH_NOT_IMPORTED)
 
 def _unsupported(name: str, problem: Problem, field: str = "") -> McpImportCandidate:
     return McpImportCandidate(name, "/src/config.json", None, problem=problem, problem_field=field)
-
-
-def test_each_warning_kind_reads_as_one_actionable_sentence() -> None:
-    texts = [
-        format_message(warning_text(ImportWarning(WarningKind.NOT_IMPORTED, ("a.cwd", "a.x")), "pi")),
-        format_message(warning_text(ImportWarning(WarningKind.AUTH_NOT_IMPORTED), "pi")),
-        format_message(warning_text(ImportWarning(WarningKind.TOOLS_RESTRICTED), "pi")),
-    ]
-
-    assert texts == [
-        "Some settings from the original application were not copied. After import, test the connection and check that the features you need are available.",
-        "Sign-in from pi cannot be carried over. iCode does not yet support MCP OAuth sign-in. If the server supports token authentication, configure “Headers” as its documentation describes. If it only supports OAuth sign-in, it cannot currently be used in iCode.",
-        "The original application's tool restrictions cannot be carried over directly, so this server's tools are initially turned off after import. Choose the tools you need in “Available Tool Scope”.",
-    ]
-
-
-def test_problems_and_source_errors_name_the_setting_or_file() -> None:
-    value = replace(_unsupported("x", Problem.VALUE_NOT_REPRESENTABLE, "mcpServers.x.url"), field_use=FieldUse.URL)
-    located = McpSourceError("/a.json", SourceErrorKind.UNPARSABLE, line=3, column=7)
-    invalid = McpSourceError("/a.json", SourceErrorKind.INVALID, field="mcp.x")
-
-    variable = replace(
-        _unsupported("x", Problem.VARIABLE_NOT_SUPPORTED, "mcpServers.x.url"),
-        field_use=FieldUse.URL,
-        reason=ValueReason.VARIABLE,
-    )
-    external = replace(
-        _unsupported("x", Problem.VALUE_FROM_FILE_OR_COMMAND, "mcp.x.environment.T"),
-        field_use=FieldUse.ENV_VALUE,
-        reason=ValueReason.FILE,
-    )
-    sse = replace(_unsupported("x", Problem.UNSUPPORTED_CONNECTION), transport="sse")
-    ws = replace(sse, transport="ws")
-    remote = _unsupported("x", Problem.REMOTE_ENVIRONMENT, "mcp_servers.x.environment_id")
-    assert [format_message(problem_text(c, "ChatGPT")) for c in (sse, ws, remote)] == [
-        (
-            "This server connects over SSE; iCode supports only STDIO and Streamable HTTP. "
-            "If the server also offers one of these, add it manually."
-        ),
-        (
-            "This server connects over WebSocket; iCode supports only STDIO and Streamable HTTP. "
-            "If the server also offers one of these, add it manually."
-        ),
-        (
-            "This configuration accesses the MCP server through a remote environment, which iCode cannot use. "
-            "If you have a Streamable HTTP URL accessible from this computer "
-            "or a STDIO command that runs here, add the server manually."
-        ),
-    ]
-    # A connection refusal's sentence says it all; the others are introduced by their source setting.
-    assert [names_field(c) for c in (sse, remote, variable, external, value)] == [False, False, True, True, True]
-    assert [format_message(problem_text(c, "ChatGPT")) for c in (variable, external, value)] == [
-        "The server URL contains an environment variable reference, which iCode does not expand here. Add the server manually and enter its full URL, replacing any environment variable references with their values.",
-        "The environment variable value is stored in another file and cannot be imported automatically. Add the server manually and fill in the value using the server instructions. You can also reference an environment variable or get the value from a command.",
-        "The server URL cannot be imported as written. Add the server manually and enter its full URL, replacing any environment variable references with their values.",
-    ]
-    assert format_message(source_error_text(located, "pi")) == (
-        "Couldn't parse /a.json: syntax error at line 3, column 7. Correct it, then reopen import."
-    )
-    assert format_message(source_error_text(invalid, "pi")) == "/a.json has an invalid setting: mcp.x."
 
 
 @pytest.mark.parametrize("locale", ["en", "zh-Hans"])
@@ -340,6 +281,47 @@ async def test_preview_and_imported_fields_keep_raw_values_through_copy_edit_and
             assert edited.url == config.url
 
 
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize(
+    ("command", "args", "changed"),
+    [
+        ("run", ["plain", "", r"literal\r\n"], False),
+        ("run", ["a\nb", "\n"], False),
+        ("run", ["a\r\nb", "\r\n"], False),
+        ("run", ["a\rb", "\r"], False),
+        ("run\r\nserver", ["a\r\nb"], False),
+        ("run", ["a\rb\nc"], True),
+        ("run", ["a\r\nb\nc"], True),
+        ("run", ["a\rb", "c\nd"], True),
+        ("run", ["a\nb", "c\r\nd"], True),
+        ("run\rserver", ["a\nb"], True),
+        ("run", ["a\u2028b"], True),
+    ],
+)
+async def test_import_line_ending_decision_matches_the_mounted_command_editor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool, command: str, args: list[str], changed: bool
+) -> None:
+    monkeypatch.setattr(
+        "chrys.app.tui.screens.agents.panels.mcp.get_platform", lambda: SimpleNamespace(is_windows=windows)
+    )
+    path = tmp_path / ".codex" / "config.toml"
+    path.parent.mkdir()
+    path.write_text(
+        f"[mcp_servers.srv]\ncommand = {json.dumps(command)}\nargs = {json.dumps(args)}\n", encoding="utf-8"
+    )
+    (item,) = CodexSource().discover(ImportContext(None, tmp_path)).candidates
+    assert (item.config is None) is changed
+    if changed:
+        assert item.reason is ValueReason.LINE_ENDINGS
+    # Mount refused values too to verify the refusal against the actual editor.
+    config = item.config if item.config is not None else stdio("srv", command, *args)
+    app = PanelApp(MCPConfigPanel([config]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        saved = app.panel.query_one(MCPConnectionCard).get_config()
+        assert ((saved.command, saved.args) != (command, args)) is changed
+
+
 async def test_localization_and_source_switch_keep_current_folds() -> None:
     result = McpImportResult((candidate(stdio("srv")), _unsupported("refused", Problem.UNSUPPORTED_CONNECTION)))
     sources = [FakeSource("a", "Alpha", result), FakeSource("b", "Beta", result)]
@@ -553,17 +535,9 @@ async def test_servers_that_can_not_be_added_are_locked_as_the_add_picker_locks_
         assert len({item.card.region.x for item in items}) == 1
         assert notes_text(items[4]).splitlines() == [
             "Original configuration field: s.url",
-            (
-                "The setting's content cannot be imported as written. "
-                "Add the server manually and fill in this setting using the server instructions."
-            ),
+            format_message(problem_text(legacy, "Fake")),
             "Configuration source: /src/config.json",
         ]
-
-        # An open card's title moves down a line; its item is marked so the tick follows it.
-        assert not items[4].has_class("-open")
-        items[4].card.set_collapsed(False, scroll_visible=False)
-        assert items[4].has_class("-open")
 
 
 class _ChineseApp(PanelApp):

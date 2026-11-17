@@ -9314,6 +9314,13 @@ msgstr "请求头名称含有不支持的字符，例如空格或换行。请按
 msgid "tui.mcp.import.problem.header_value_characters"
 msgstr "{app} 的请求头值不支持中文、换行等字符。请按服务器说明核对原配置文件中的该请求头，再重新打开导入。"
 
+#. English: {field} uses line endings that cannot be preserved during import,
+#. so this server configuration cannot be imported unchanged.
+#. chrys-meta={"fingerprint":"5251a99a13e6b75d9ede4d801a360c6e75eeeabbe8069333f04f5718223fe789","multiline":false,"placeholders":["field"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.problem.line_endings"
+msgstr "{field}中的换行形式无法原样保留，因此无法导入此服务器配置。"
+
 #. English: This configuration accesses the MCP server through a remote
 #. environment, which {app} cannot use. If you have a Streamable HTTP URL
 #. accessible from this computer or a STDIO command that runs here, add the

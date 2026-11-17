@@ -47,6 +47,9 @@ MAX_SOURCE_BYTES = 16 * 1024 * 1024
 # The longest request timeout iCode's MCP client can wait, which it holds as a timedelta.
 MAX_REQUEST_TIMEOUT_SECONDS = timedelta.max.days * 86_400
 
+# TextArea splits at these characters, then joins every line with one newline style.
+_COMMAND_LINE_BREAK = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]")
+
 
 class WarningKind(StrEnum):
     """Something the import changed or left out that the user must act on."""
@@ -119,6 +122,7 @@ class ValueReason(StrEnum):
     COMMAND = "command"
     WINDOWS_PATH = "windows_path"
     VARIABLE_PARENT = "variable_parent"
+    LINE_ENDINGS = "line_endings"
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +159,9 @@ class SourceServer:
     ``env_path`` and ``headers_path`` are the source setting paths of ``env``
     and ``headers``, so a refusal names the exact source setting. Set
     ``blocked_field`` when the source writes a value iCode can't hold at all,
-    and ``blocked_problem`` to say why.
+    and ``blocked_problem`` to say why. ``command_path`` and ``arg_paths``
+    retain the source locations even when it stores the command and arguments
+    together in one array.
     """
 
     name: str
@@ -184,6 +190,8 @@ class SourceServer:
     cwd_path: str = ""
     allowed_tools_path: str = ""
     always_load_path: str = ""
+    command_path: str = ""
+    arg_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -557,6 +565,14 @@ def convert(server: SourceServer) -> McpImportCandidate:
         return replace(refuse(Problem.UNSUPPORTED_CONNECTION), transport=server.transport)
     if server.blocked_field:
         return refuse(server.blocked_problem, server.blocked_field, server.blocked_reason, server.blocked_use)
+    if server.transport == "stdio":
+        changed = _changed_command_part((server.command, *server.args))
+        if changed is not None:
+            path = server.command_path
+            if changed:
+                path = server.arg_paths[changed - 1] if server.arg_paths else ""
+            use = FieldUse.COMMAND if changed == 0 else FieldUse.ARGUMENT
+            return refuse(Problem.VALUE_NOT_REPRESENTABLE, path, ValueReason.LINE_ENDINGS, use)
     for names, path in (
         (server.allowed_tools, server.allowed_tools_path),
         (server.always_load, server.always_load_path),
@@ -632,6 +648,20 @@ def convert(server: SourceServer) -> McpImportCandidate:
         server.source_path,
         with_tool_name_prefix(config),
         warnings=merge_warnings(server.warnings),
+    )
+
+
+def _changed_command_part(parts: Sequence[str]) -> int | None:
+    """First command part whose line breaks the command editor would change.
+
+    Quoting adds no line breaks. TextArea chooses CRLF over LF over CR for
+    the whole command, including breaks in different arguments, and replaces
+    every splitlines separator with that style. Keep uniform CRLF and CR too.
+    """
+    newline = next((style for style in ("\r\n", "\n", "\r") if any(style in part for part in parts)), "\n")
+    return next(
+        (index for index, part in enumerate(parts) if any(m[0] != newline for m in _COMMAND_LINE_BREAK.finditer(part))),
+        None,
     )
 
 

@@ -135,7 +135,6 @@ ImportMcpServersDialog {
     color: $text;
 }
 
-#mcp-import-servers .mcp-import-status,
 #mcp-import-servers .mcp-import-source {
     color: $text-muted;
 }

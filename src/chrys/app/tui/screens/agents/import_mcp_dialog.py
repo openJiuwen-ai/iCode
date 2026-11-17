@@ -127,12 +127,6 @@ def _agent_conflict(imported: MCPServerConfig, existing: Sequence[MCPServerConfi
     return conflict
 
 
-def _mark_open(card: CollapsibleConfigCard) -> None:
-    """Mark the card's item while the card is open, so its tick follows the title down a line."""
-    if card.parent is not None:
-        card.parent.set_class(not card.collapsed, "-open")
-
-
 class _PreviewCard(MCPConnectionCard):
     """The read-only card a server becomes, its description included, with its status in the header."""
 
@@ -155,7 +149,6 @@ class _PreviewCard(MCPConnectionCard):
             # Composed folded, so without fields; card_body() records them, so this happens once.
             self.mount(*compose(self, self.compose_fields()))
         super().set_collapsed(collapsed, scroll_visible=scroll_visible)
-        _mark_open(self)
 
 
 class _RefusedCard(CollapsibleConfigCard):
@@ -181,10 +174,6 @@ class _RefusedCard(CollapsibleConfigCard):
     def compose_header_extras(self) -> ComposeResult:
         yield self.badge
 
-    def set_collapsed(self, collapsed: bool, *, scroll_visible: bool = True) -> None:
-        super().set_collapsed(collapsed, scroll_visible=scroll_visible)
-        _mark_open(self)
-
 
 class _ImportItem(Horizontal):
     """One server: its tick, then its card."""
@@ -199,7 +188,7 @@ class _ImportItem(Horizontal):
         tick: Checkbox,
         card: _PreviewCard | _RefusedCard,
     ) -> None:
-        super().__init__(classes="mcp-import-item" if card.collapsed else "mcp-import-item -open")
+        super().__init__(classes="mcp-import-item")
         self.source = source
         self.index = index
         # The server as it would be imported, and its conflict with a server the agent already has.

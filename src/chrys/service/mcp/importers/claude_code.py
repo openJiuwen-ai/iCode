@@ -333,6 +333,8 @@ def _stdio(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         "stdio",
         command=command,
         args=tuple(args),
+        command_path=f"{prefix}.command",
+        arg_paths=tuple(f"{prefix}.args[{i}]" for i in range(len(args))),
         env=values,
         timeout_seconds=_timeout(entry),
         warnings=tuple(warning for warning in warnings if warning is not None),

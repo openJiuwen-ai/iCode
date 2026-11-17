@@ -30,6 +30,7 @@ MCP_IMPORT_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "tui.mcp.import.problem.header_conflict",
         "tui.mcp.import.problem.header_name_characters",
         "tui.mcp.import.problem.header_value_characters",
+        "tui.mcp.import.problem.line_endings",
         "tui.mcp.import.problem.value_from_command",
         "tui.mcp.import.problem.value_from_file",
         "tui.mcp.import.problem.variable_parent",

@@ -5,18 +5,30 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from chrys.app.tui.screens.agents.import_mcp_view import imported_config, original_setting, problem_text, warning_text
+from chrys.app.tui.screens.agents.import_mcp_view import (
+    imported_config,
+    names_field,
+    original_setting,
+    problem_text,
+    source_error_text,
+    warning_text,
+)
 from chrys.foundation.i18n import Localizer
+from chrys.foundation.i18n.formatting import format_message
 from chrys.service.mcp.importers import (
     FieldUse,
     ImportContext,
+    ImportWarning,
     McpImportCandidate,
+    McpSourceError,
     Problem,
+    SourceErrorKind,
     ValueReason,
     WarningKind,
     base,
@@ -54,21 +66,9 @@ def discover(home: Path, source: str, entry: dict[str, object] | str) -> McpImpo
 
 
 @pytest.mark.parametrize("source", ["codex", "claude", "opencode", "pi"])
-@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
-@pytest.mark.parametrize(
-    ("key", "quoted", "reason"),
-    [
-        ("", '""', ValueReason.EMPTY),
-        (" \t", r'" \t"', ValueReason.EMPTY),
-        (" TOKEN", '" TOKEN"', ValueReason.WHITESPACE),
-        ("TOKEN ", '"TOKEN "', ValueReason.WHITESPACE),
-        ("TOKEN\t", r'"TOKEN\t"', ValueReason.WHITESPACE),
-        ("\u00a0TOKEN", r'"\u00a0TOKEN"', ValueReason.WHITESPACE),
-    ],
-)
-def test_unpreservable_env_names_are_refused_with_visible_whitespace(
-    tmp_path, source, locale, key, quoted, reason
-) -> None:
+def test_sources_forward_unpreservable_env_names_to_shared_conversion(tmp_path, source) -> None:
+    key = " TOKEN"
+    quoted = json.dumps(key)
     entry: dict[str, object] | str
     if source == "codex":
         entry = f'command = "run"\nenv = {{ {quoted} = "private-source-value" }}\n'
@@ -81,17 +81,81 @@ def test_unpreservable_env_names_are_refused_with_visible_whitespace(
 
     assert item.config is None
     assert item.problem is Problem.VALUE_NOT_REPRESENTABLE
-    assert (item.field_use, item.reason) == (FieldUse.ENV_NAME, reason)
+    assert (item.field_use, item.reason) == (FieldUse.ENV_NAME, ValueReason.WHITESPACE)
     assert item.problem_field.endswith(f"[{quoted}]")
+    assert "private-source-value" not in item.problem_field
+    assert imported_config(item, source, format_message) is None
+
+
+@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
+@pytest.mark.parametrize(("key", "reason"), [("", ValueReason.EMPTY), ("\tTOKEN", ValueReason.WHITESPACE)])
+def test_unpreservable_env_names_have_localized_advice(locale, key, reason) -> None:
+    quoted = json.dumps(key)
+    item = McpImportCandidate(
+        "srv",
+        "/config",
+        None,
+        problem=Problem.VALUE_NOT_REPRESENTABLE,
+        problem_field=f"servers.srv.env[{quoted}]",
+        field_use=FieldUse.ENV_NAME,
+        reason=reason,
+    )
     localizer = Localizer(locale)
-    text = localizer.render(problem_text(item, source, localizer.render))
+    text = localizer.render(problem_text(item, "source", localizer.render))
     assert ("editor cannot preserve" if locale == "en" else "编辑器无法原样保留") in text
     assert ("original configuration file" if locale == "en" else "原配置文件") not in text
     assert ("invalid" if locale == "en" else "非法") not in text
     setting = localizer.render(original_setting(item.problem_field))
     assert f"[{quoted}]" in setting
-    assert "private-source-value" not in text + setting
-    assert imported_config(item, source, localizer.render) is None
+
+
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "pi"])
+@pytest.mark.parametrize("in_command", [False, True])
+def test_sources_report_the_exact_command_field_with_changed_line_endings(tmp_path, source, in_command) -> None:
+    command = "private\rsource\nvalue" if in_command else "run"
+    args = [] if in_command else ["safe", "private\rsource\nvalue"]
+    if source == "codex":
+        entry = f"command = {json.dumps(command)}\nargs = {json.dumps(args)}\n"
+        field = "mcp_servers.srv." + ("command" if in_command else "args[1]")
+    elif source == "opencode":
+        entry = {"type": "local", "command": [command, *args]}
+        field = f"mcp.srv.command[{0 if in_command else 2}]"
+    else:
+        entry = {"command": command, "args": args}
+        field = "mcpServers.srv." + ("command" if in_command else "args[1]")
+    item = discover(tmp_path, source, entry)
+
+    assert item.config is None
+    assert item.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert item.reason is ValueReason.LINE_ENDINGS
+    assert item.field_use is (FieldUse.COMMAND if in_command else FieldUse.ARGUMENT)
+    assert item.problem_field == field
+
+
+@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
+@pytest.mark.parametrize("use", [FieldUse.COMMAND, FieldUse.ARGUMENT])
+def test_changed_line_endings_have_localized_advice_without_parameter_values(locale, use) -> None:
+    item = McpImportCandidate(
+        "srv",
+        "/config",
+        None,
+        problem=Problem.VALUE_NOT_REPRESENTABLE,
+        problem_field="servers.srv.args[0]",
+        field_use=use,
+        reason=ValueReason.LINE_ENDINGS,
+    )
+    localizer = Localizer(locale)
+    text = localizer.render(problem_text(item, "source", localizer.render))
+
+    assert ("cannot be preserved during import" if locale == "en" else "换行形式无法原样保留") in text
+    field = (
+        ("startup command" if locale == "en" else "启动命令")
+        if use is FieldUse.COMMAND
+        else ("startup argument" if locale == "en" else "启动参数")
+    )
+    assert field in text
+    assert "private" not in text
+    assert ("add the server manually" if locale == "en" else "手动添加") not in text
 
 
 @pytest.mark.parametrize("is_set", [False, True])
@@ -383,3 +447,67 @@ def test_first_blocking_field_still_wins(tmp_path) -> None:
     assert item.config is None
     assert item.problem_field == "mcp.srv.command[0]"
     assert (item.field_use, item.reason) == (FieldUse.COMMAND, ValueReason.VARIABLE)
+
+
+def _unsupported(name: str, problem: Problem, field: str = "") -> McpImportCandidate:
+    return McpImportCandidate(name, "/src/config.json", None, problem=problem, problem_field=field)
+
+
+def test_each_warning_kind_reads_as_one_actionable_sentence() -> None:
+    texts = [
+        format_message(warning_text(ImportWarning(WarningKind.NOT_IMPORTED, ("a.cwd", "a.x")), "pi")),
+        format_message(warning_text(ImportWarning(WarningKind.AUTH_NOT_IMPORTED), "pi")),
+        format_message(warning_text(ImportWarning(WarningKind.TOOLS_RESTRICTED), "pi")),
+    ]
+
+    assert texts == [
+        "Some settings from the original application were not copied. After import, test the connection and check that the features you need are available.",
+        "Sign-in from pi cannot be carried over. iCode does not yet support MCP OAuth sign-in. If the server supports token authentication, configure “Headers” as its documentation describes. If it only supports OAuth sign-in, it cannot currently be used in iCode.",
+        "The original application's tool restrictions cannot be carried over directly, so this server's tools are initially turned off after import. Choose the tools you need in “Available Tool Scope”.",
+    ]
+
+
+def test_problems_and_source_errors_name_the_setting_or_file() -> None:
+    value = replace(_unsupported("x", Problem.VALUE_NOT_REPRESENTABLE, "mcpServers.x.url"), field_use=FieldUse.URL)
+    located = McpSourceError("/a.json", SourceErrorKind.UNPARSABLE, line=3, column=7)
+    invalid = McpSourceError("/a.json", SourceErrorKind.INVALID, field="mcp.x")
+
+    variable = replace(
+        _unsupported("x", Problem.VARIABLE_NOT_SUPPORTED, "mcpServers.x.url"),
+        field_use=FieldUse.URL,
+        reason=ValueReason.VARIABLE,
+    )
+    external = replace(
+        _unsupported("x", Problem.VALUE_FROM_FILE_OR_COMMAND, "mcp.x.environment.T"),
+        field_use=FieldUse.ENV_VALUE,
+        reason=ValueReason.FILE,
+    )
+    sse = replace(_unsupported("x", Problem.UNSUPPORTED_CONNECTION), transport="sse")
+    ws = replace(sse, transport="ws")
+    remote = _unsupported("x", Problem.REMOTE_ENVIRONMENT, "mcp_servers.x.environment_id")
+    assert [format_message(problem_text(c, "ChatGPT")) for c in (sse, ws, remote)] == [
+        (
+            "This server connects over SSE; iCode supports only STDIO and Streamable HTTP. "
+            "If the server also offers one of these, add it manually."
+        ),
+        (
+            "This server connects over WebSocket; iCode supports only STDIO and Streamable HTTP. "
+            "If the server also offers one of these, add it manually."
+        ),
+        (
+            "This configuration accesses the MCP server through a remote environment, which iCode cannot use. "
+            "If you have a Streamable HTTP URL accessible from this computer "
+            "or a STDIO command that runs here, add the server manually."
+        ),
+    ]
+    # A connection refusal's sentence says it all; the others are introduced by their source setting.
+    assert [names_field(c) for c in (sse, remote, variable, external, value)] == [False, False, True, True, True]
+    assert [format_message(problem_text(c, "ChatGPT")) for c in (variable, external, value)] == [
+        "The server URL contains an environment variable reference, which iCode does not expand here. Add the server manually and enter its full URL, replacing any environment variable references with their values.",
+        "The environment variable value is stored in another file and cannot be imported automatically. Add the server manually and fill in the value using the server instructions. You can also reference an environment variable or get the value from a command.",
+        "The server URL cannot be imported as written. Add the server manually and enter its full URL, replacing any environment variable references with their values.",
+    ]
+    assert format_message(source_error_text(located, "pi")) == (
+        "Couldn't parse /a.json: syntax error at line 3, column 7. Correct it, then reopen import."
+    )
+    assert format_message(source_error_text(invalid, "pi")) == "/a.json has an invalid setting: mcp.x."

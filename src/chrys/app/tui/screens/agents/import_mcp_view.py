@@ -107,6 +107,10 @@ _ENV_NAME_NOT_REPRESENTABLE = msg(
     "tui.mcp.import.problem.env_name_not_representable",
     fallback="The environment variable name is empty or starts or ends with whitespace. The configuration editor cannot preserve it as written, so this server cannot be imported.",
 )
+_LINE_ENDINGS = msg(
+    "tui.mcp.import.problem.line_endings",
+    fallback="{field} uses line endings that cannot be preserved during import, so this server configuration cannot be imported unchanged.",
+)
 _CHARACTERS = msg(
     "tui.mcp.import.problem.characters",
     fallback="{field} contains characters that cannot be imported. Check it in the original configuration file against the server instructions, then reopen import.",
@@ -230,6 +234,8 @@ def problem_text(
     if candidate.problem is Problem.REMOTE_ENVIRONMENT:
         return _REMOTE_ENVIRONMENT.bind(app=APP_DISPLAY_NAME)
     use = candidate.field_use
+    if candidate.reason is ValueReason.LINE_ENDINGS:
+        return _LINE_ENDINGS.bind(field=render(_FIELDS[use].bind()))
     if (
         candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
         and use is FieldUse.ENV_NAME

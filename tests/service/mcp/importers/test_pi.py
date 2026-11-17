@@ -130,13 +130,6 @@ def test_oauth_metadata_beside_an_authorization_header_needs_no_warning(tmp_path
     assert candidate.warnings == ()
 
 
-@pytest.mark.parametrize("cwd", [None, False, 0, True, [], {}])
-def test_non_string_cwd_is_rejected_as_in_pi_1_5_2(tmp_path: Path, cwd: object) -> None:
-    # pi-mcp's validateStdioFields rejects these before runtime's nullish default.
-    _write(_global(tmp_path), {"mcpServers": {"srv": {"command": "run", "cwd": cwd}}})
-    assert _discover(tmp_path).candidates == ()
-
-
 def test_http_cwd_is_reported_as_not_imported(tmp_path: Path) -> None:
     candidate = _only(tmp_path, {"url": "https://x", "cwd": "/unused", "headers": {"Authorization": "token"}})
     assert candidate.config is not None

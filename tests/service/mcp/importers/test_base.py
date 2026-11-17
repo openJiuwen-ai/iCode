@@ -95,6 +95,17 @@ def test_convert_caps_an_unbounded_timeout() -> None:
     assert config.request_timeout == MAX_REQUEST_TIMEOUT_SECONDS
 
 
+@pytest.mark.parametrize("separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"])
+def test_convert_refuses_argument_separators_the_command_editor_rewrites(separator: str) -> None:
+    candidate = convert(_stdio(args=(f"a{separator}b",), arg_paths=("servers.srv.args[0]",)))
+
+    assert candidate.config is None
+    assert candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert candidate.reason is ValueReason.LINE_ENDINGS
+    assert candidate.field_use is FieldUse.ARGUMENT
+    assert candidate.problem_field == "servers.srv.args[0]"
+
+
 @pytest.mark.parametrize("field", ["allowed_tools", "always_load"])
 @pytest.mark.parametrize(
     ("names", "reason"),
