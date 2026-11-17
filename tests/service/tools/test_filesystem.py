@@ -1153,6 +1153,27 @@ def test_write_file_overwrite_preserves_utf16_be_bom(tmp_path: Path) -> None:
     assert f.read_bytes() == codecs.BOM_UTF16_BE + "new\r\n".encode("utf-16-be")
 
 
+def test_write_file_overwrite_preserves_utf32_le_encoding_and_eol(tmp_path: Path) -> None:
+    """A four-byte-per-character file keeps its byte order, BOM and CRLF."""
+    f = tmp_path / "wide32_le.txt"
+    f.write_bytes(codecs.BOM_UTF32_LE + "old\r\n".encode("utf-32-le"))
+
+    write_file(str(f), "new\nline\n", overwrite=True)
+
+    assert f.read_bytes() == codecs.BOM_UTF32_LE + "new\r\nline\r\n".encode("utf-32-le")
+
+
+@pytest.mark.parametrize("signature", [b"MZ", b"%PDF-"])
+def test_write_file_overwrite_binary_looking_text_keeps_crlf(tmp_path: Path, signature: bytes) -> None:
+    """A binary signature only hides the preview; the line ending still comes from the bytes."""
+    f = tmp_path / "looks_binary.txt"
+    f.write_bytes(signature + b" header\r\nsecond line\r\n")
+
+    write_file(str(f), "new\nline\n", overwrite=True)
+
+    assert f.read_bytes() == b"new\r\nline\r\n"
+
+
 def test_write_file_overwrite_bomless_utf16_writes_utf8(tmp_path: Path) -> None:
     """Without a BOM the encoding is a detection guess, so the file is rewritten as utf-8.
 
@@ -1236,6 +1257,40 @@ def test_edit_file_preserves_utf32_be_byte_order(tmp_path: Path) -> None:
     edit_file(str(f), "two", "TWO")
 
     assert f.read_bytes() == codecs.BOM_UTF32_BE + "one\r\nTWO\r\n".encode("utf-32-be")
+
+
+def test_edit_file_preserves_utf32_le_byte_order(tmp_path: Path) -> None:
+    """A little-endian UTF-32 file keeps its four-byte code units and BOM."""
+    f = tmp_path / "wide32_le.txt"
+    f.write_bytes(codecs.BOM_UTF32_LE + "one\r\ntwo\r\n".encode("utf-32-le"))
+
+    edit_file(str(f), "two", "TWO")
+
+    assert f.read_bytes() == codecs.BOM_UTF32_LE + "one\r\nTWO\r\n".encode("utf-32-le")
+
+
+@pytest.mark.parametrize(("bom", "codec"), [(codecs.BOM_UTF16_LE, "utf-16-le"), (codecs.BOM_UTF16_BE, "utf-16-be")])
+def test_edit_file_bom_single_line_cjk_keeps_bat_crlf(tmp_path: Path, bom: bytes, codec: str) -> None:
+    """A single-line wide file has no line ending of its own, and a CJK character's
+    other byte must not be read as one (上 is ``0A 4E`` in UTF-16 LE, ``4E 0A`` in BE)."""
+    f = tmp_path / "run.bat"
+    f.write_bytes(bom + "上".encode(codec))
+
+    edit_file(str(f), "上", "上\n上\n")
+
+    assert f.read_bytes() == bom + "上\r\n上\r\n".encode(codec)
+
+
+@pytest.mark.parametrize(("bom", "codec"), [(codecs.BOM_UTF16_LE, "utf-16-le"), (codecs.BOM_UTF16_BE, "utf-16-be")])
+def test_edit_file_bom_single_line_cjk_keeps_sh_lf(tmp_path: Path, bom: bytes, codec: str) -> None:
+    """The same file as a shell script keeps LF instead of inventing a lone CR
+    from 不's ``0D 4E`` / ``4E 0D``."""
+    f = tmp_path / "run.sh"
+    f.write_bytes(bom + "不".encode(codec))
+
+    edit_file(str(f), "不", "不\n不\n")
+
+    assert f.read_bytes() == bom + "不\n不\n".encode(codec)
 
 
 def test_edit_file_preserves_bomless_utf16_le_crlf(tmp_path: Path) -> None:

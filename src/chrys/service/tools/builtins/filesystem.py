@@ -249,13 +249,16 @@ def _line_ending_for(raw: bytes, existing: _ExistingFileText, path: str) -> str:
     """Read an existing file's line ending from the view where it is visible.
 
     A wide encoding hides 0x0A/0x0D behind a second byte, so its decoded text
-    must be scanned — with or without a BOM. When that text carries no line
-    ending at all, the wide encoding may be a detection guess over a legacy
-    file (whose bytes were never wide), so fall back to the raw bytes: every
-    other codec is an ASCII superset whose newline bytes are never part of
-    another character, and latin-1 maps them one to one.
+    must be scanned. A BOM settles that the file really is wide, so that text
+    is then the only view to read: in the raw bytes the low or high half of an
+    ordinary character reads as a line ending (名 is ``0D 54`` in UTF-16 LE),
+    which would invent one where the file has none. Without a BOM the wide
+    name may only be a detection guess over a legacy file (whose bytes were
+    never wide), so a text view holding no line ending falls back to the raw
+    bytes: every other codec is an ASCII superset whose newline bytes are
+    never part of another character, and latin-1 maps them one to one.
     """
-    if _is_wide_encoding(existing.encoding) and _line_ending_counts(existing.text) != (0, 0, 0):
+    if _is_wide_encoding(existing.encoding) and (existing.bom or _line_ending_counts(existing.text) != (0, 0, 0)):
         return _detect_line_ending(existing.text, path)
     return _detect_line_ending(raw.decode("latin-1"), path)
 
@@ -395,7 +398,9 @@ def plan_write_file(
                 raw = f.read()
             before_display_content, content_only_reason, existing = _decode_write_preview_before(raw)
             if existing is None:
-                eol = _default_eol_for_new_file(resolved)
+                # The preview cannot show this file, but its bytes still carry
+                # the line ending style: read them one to one, never guess.
+                eol = _detect_line_ending(raw.decode("latin-1"), resolved)
             else:
                 eol = _line_ending_for(raw, existing, resolved)
                 # A wide BOM is the only deterministic sign of a file whose
