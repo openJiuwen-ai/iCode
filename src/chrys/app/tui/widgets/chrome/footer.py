@@ -64,7 +64,11 @@ class ChrysFooter(Footer):
 
     def on_mount(self) -> None:
         """Subscribe to bindings and join the bounded locale refresh registry."""
-        super().on_mount()
+        # Invalidate an in-flight recompose when bindings change, before its
+        # mount finishes and commits a signature. A queued notification can
+        # arrive too late and deduplicate against bindings never rendered.
+        # Only this bookkeeping is synchronous; recomposition stays deferred.
+        self.screen.bindings_updated_signal.subscribe(self, self.bindings_changed, immediate=True)
         if self._locale_controller is not None:
             self._locale_controller.register_footer(self)
             if self._rendered_locale_revision != self._locale_controller.revision:

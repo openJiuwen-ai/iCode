@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from chrys.app.tui.support import prompt_history
+from tests.support.async_tasks import wait_for_completion, wait_for_started
 from tests.support.windows_replace import briefly_locked_rename
 
 
@@ -118,7 +119,7 @@ async def test_flush_handles_cancellation_while_waiting(monkeypatch: pytest.Monk
     flushing = asyncio.create_task(writer.flush())
     try:
         assert await asyncio.to_thread(started.wait, 5)
-        await asyncio.wait_for(joining.wait(), timeout=1)
+        await wait_for_started(joining, flushing, description="history flush joining the writer")
         assert not flushing.done()
         if cancel_target == "flush":
             flushing.cancel()
@@ -126,7 +127,7 @@ async def test_flush_handles_cancellation_while_waiting(monkeypatch: pytest.Monk
                 await flushing
             assert not worker.done()
             release.set()
-            await asyncio.wait_for(writer.flush(), timeout=1)
+            await wait_for_completion(writer.flush())
             assert calls == ["first", "second"]
         else:
             if cancel_target == "close":
@@ -135,10 +136,10 @@ async def test_flush_handles_cancellation_while_waiting(monkeypatch: pytest.Monk
                 worker.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await worker
-            await asyncio.wait_for(flushing, timeout=1)
+            await wait_for_completion(flushing)
             assert not writer._queue.empty()
             # Also cover a later Ctrl+R after a timed-out close/dead worker.
-            await asyncio.wait_for(writer.flush(), timeout=1)
+            await wait_for_completion(writer.flush())
     finally:
         release.set()
         flushing.cancel()

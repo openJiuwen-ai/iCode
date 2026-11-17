@@ -40,6 +40,7 @@ from chrys.foundation.tool_result_metadata import (
 )
 from chrys.foundation.trajectory_timing import TRAJECTORY_TIMING_KEY
 from chrys.service.mutations.store import SnapshotStore
+from tests.support.async_tasks import running_task, wait_for_completion, wait_for_started
 from tests.support.tui_helpers import (
     ChatPanelApp,
 )
@@ -315,26 +316,24 @@ async def test_replay_history_hatches_batch_until_descendants_finish(monkeypatch
         cp = pilot.app.query_one(ChatPanel)
         progress: list[tuple[int, int]] = []
         cp.set_replay_progress_callback(lambda current, total: progress.append((current, total)))
-        replay = asyncio.create_task(cp.replay_history(messages))
-
-        await asyncio.wait_for(update_started.wait(), timeout=1)
-        message = cp.query_one(AgentMessage)
-        hatch = message.styles.hatch
-
-        try:
-            await wait_for(
-                lambda: message.size.width > 0 and message.size.height > 0,
-                description="replay placeholder message laid out",
-            )
-            assert message.has_class(chat_panel_module._REPLAY_PLACEHOLDER_CLASS)
-            assert hatch != "none"
-            assert hatch[0] == HATCH_GLYPH
-            assert progress == [(0, 1)]
-            rendered = message.render_lines(Region(0, 0, message.size.width, min(3, message.size.height)))
-            assert any(HATCH_GLYPH in strip.text for strip in rendered)
-        finally:
-            release_update.set()
-        await asyncio.wait_for(replay, timeout=1)
+        async with running_task(cp.replay_history(messages)) as replay:
+            try:
+                await wait_for_started(update_started, replay, description="replay markdown update started")
+                message = cp.query_one(AgentMessage)
+                hatch = message.styles.hatch
+                await wait_for(
+                    lambda: message.size.width > 0 and message.size.height > 0,
+                    description="replay placeholder message laid out",
+                )
+                assert message.has_class(chat_panel_module._REPLAY_PLACEHOLDER_CLASS)
+                assert hatch != "none"
+                assert hatch[0] == HATCH_GLYPH
+                assert progress == [(0, 1)]
+                rendered = message.render_lines(Region(0, 0, message.size.width, min(3, message.size.height)))
+                assert any(HATCH_GLYPH in strip.text for strip in rendered)
+            finally:
+                release_update.set()
+            await wait_for_completion(replay)
         await pilot.pause()
 
         assert not message.has_class(chat_panel_module._REPLAY_PLACEHOLDER_CLASS)

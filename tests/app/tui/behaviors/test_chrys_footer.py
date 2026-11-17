@@ -13,6 +13,7 @@ from textual.screen import Screen
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.i18n import LocaleSwitchStatus
 from chrys.foundation.config.settings import Settings
+from tests.support.async_tasks import running_task, wait_for_completion, wait_for_started
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.waiting import wait_for, wait_until_quiet, with_wait_deadline
 
@@ -256,6 +257,81 @@ async def test_chrys_footer_retries_binding_publish_during_recompose(
         assert rendered == ["B", "A"]
         assert footer._visible_binding_signature == "A"
         assert footer._binding_recompose_dirty is False
+
+
+async def test_chrys_footer_reconciles_binding_change_before_queued_signal_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A queued binding signal must not commit bindings absent from the composed nodes."""
+    from collections.abc import Awaitable, Callable, Iterable
+
+    from textual.widget import Widget
+    from textual.widgets._footer import FooterKey
+
+    from chrys.app.tui.widgets.chrome.footer import ChrysFooter
+
+    app = make_chrys_app(tmp_path, engine=SessionGenerationEngine())
+    async with app.run_test() as pilot:
+        main = app._main_screen
+        assert main is not None
+        footer = main.query_one(ChrysFooter)
+        await _wait_for_footer_settled(footer, app, pilot)
+        assert any(key.key == "f12" for key in footer.query(FooterKey))
+        nodes_composed = asyncio.Event()
+        release_mount = asyncio.Event()
+        signal_queue_held = asyncio.Event()
+        release_signals = asyncio.Event()
+        mount_all = footer.mount_all
+        deferred: list[tuple[Callable[[Screen, int], Awaitable[None]], Screen, int]] = []
+
+        def defer_recompose(
+            callback: Callable[[Screen, int], Awaitable[None]], screen: Screen, generation: int
+        ) -> bool:
+            deferred.append((callback, screen, generation))
+            return True
+
+        async def held_mount(
+            widgets: Iterable[Widget],
+            *,
+            before: int | str | Widget | None = None,
+            after: int | str | Widget | None = None,
+        ) -> None:
+            nodes_composed.set()
+            await release_mount.wait()
+            await mount_all(widgets, before=before, after=after)
+
+        async def hold_signal_queue() -> None:
+            signal_queue_held.set()
+            await release_signals.wait()
+
+        monkeypatch.setattr(footer, "mount_all", held_mount)
+        try:
+            with monkeypatch.context() as queued:
+                queued.setattr(footer, "call_after_refresh", defer_recompose)
+                main.set_startup_agent_loading(True)
+                footer.call_next(hold_signal_queue)
+                await wait_for(signal_queue_held.is_set, description="footer binding signal queue held")
+            assert deferred
+            callback, screen, generation = deferred[-1]
+            # Run the scheduled callback while the Footer pump holds later signals.
+            # This models the Screen refresh and Footer signal queues advancing independently.
+            async with running_task(callback(screen, generation)) as recompose:
+                await wait_for_started(nodes_composed, recompose, description="loading footer nodes composed")
+                main.set_startup_agent_loading(False)
+                assert "f12" in main.active_bindings
+                release_mount.set()
+                await wait_for_completion(recompose)
+        finally:
+            release_mount.set()
+            release_signals.set()
+
+        await wait_for(
+            lambda: any(key.key == "f12" for key in footer.query(FooterKey)),
+            pilot=pilot,
+            description="F12 restored after the queued binding signal",
+        )
+        await _wait_for_footer_settled(footer, app, pilot)
 
 
 async def test_chrys_footer_localizes_in_place_with_natural_per_locale_widths(

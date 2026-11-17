@@ -22,6 +22,7 @@ from rich.console import Console
 from chrys import __version__
 from chrys.app.cli import serve as serve_cli
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from tests.support.waiting import wait_for
 
 
 class FakeServer:
@@ -1458,7 +1459,7 @@ async def test_real_textual_serve_starts_app_after_valid_capability(monkeypatch:
         await websocket.send_json(
             [serve_cli._BROWSER_CAPABILITY_MESSAGE_TYPE, server._browser_capability],
         )
-        await asyncio.wait_for(started.wait(), timeout=1)
+        await wait_for(started.is_set, description="started")
 
         assert starts == [(100, 40)]
         await websocket.close()
