@@ -51,13 +51,15 @@ Sandbox mode does not stream terminal output live. The tool result shows the com
 
 Sandbox mode does not move a command to the background. A command that reaches its time limit ends in the sandbox. It does not become a background task, **Ctrl+T** does not move it to the background, and it does not appear under **Background Tasks**.
 
-Stopping the command, or the command reaching its time limit, stops that command only. That includes a process the command started in its own session. Other commands still running in the same sandbox keep going.
+Stopping the command, or the command reaching its time limit, stops that command only. That includes a process the command started in its own session. Other commands still running in the same sandbox keep going. When the command finishes, a process it started that is still running is stopped too. This holds even when the sandbox cannot create a cgroup (see [Memory and processes](#memory-and-processes)).
 
 ## Files the command writes
 
 The workspace is mounted writable inside the sandbox, so the command can read and change files there. Those changes are written in the workspace on your computer. Stopping the sandbox does not undo files the command wrote there.
 
 The writable area is the workspace of this session: the directory where iCode was started. Starting iCode in your home directory makes the rest of that directory writable. These paths stay read-only when they are real files or directories inside that writable area: `.ssh`, `.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, `.zprofile`, `.zshenv`, `.zlogin`, `.gitconfig`, `.git-credentials`, `.gnupg`, `.pypirc`, `.npmrc`, `.wgetrc`, `.curlrc`, `.azure`, `.config/gh`, `.config/git`, `.config/gcloud`, `.config/glab`, `.config/configstore`, `.local/share/keyrings`, `.aws`, `.kube`, `.docker`, and `.netrc`. A symbolic link with one of those names is left as it is. The sandbox's limit is where the command can write.
+
+Other working directories you add to the session are writable in the same way. Adding or removing one takes effect at the next Shell command: a directory you removed is no longer writable there. When a command's directory is reached through a symbolic link, the command runs in the real directory the link points to.
 
 The sandbox limits the command's process. It is not a restore point for the workspace.
 
@@ -70,6 +72,8 @@ The sandbox limits the command's process. It is not a restore point for the work
 - `offline`: the command has no network. It cannot reach services on this computer, the internet, or the proxy.
 
 With `host`, this is not a read-isolated sandbox. The sandbox does not mount the rest of your home directory or `/root`. A command can still read other files this account can already read, such as files under `/usr` and `/etc`, and send what it read out over this computer's network.
+
+`sandbox.network` applies only to the sandbox iCode starts itself. When `sandbox.url` is set, the service at that URL decides what network the command has.
 
 ## Memory and processes
 
@@ -84,6 +88,8 @@ Commands also cannot call system calls that only change the kernel, mount filesy
 Changing these settings takes effect the next time the agent is reloaded, not in the middle of a turn.
 
 Save the user settings file, then quit iCode and start it again so the agent reloads. Shell commands after that reload use the new settings. A turn that is already running keeps the previous settings: iCode does not move a command into or out of the sandbox partway through that turn.
+
+When `sandbox.network` changes, iCode starts a new sandbox with the new network for the next Shell command. A command already running in the old sandbox is not stopped: it finishes there, and iCode closes the old sandbox once no command is using it.
 
 ## Windows and macOS
 

@@ -3,7 +3,7 @@
 """Structural settings view for the sandbox backend.
 
 The fields are the ones ``run_shell`` reads. A ``Settings`` instance matches
-once those attributes exist; tests can pass a stand-in with the same three
+once those attributes exist; tests can pass a stand-in with the same four
 attributes without constructing ``Settings``.
 """
 
@@ -26,3 +26,6 @@ class SandboxSettings(Protocol):
 
     @property
     def sandbox_token(self) -> str: ...
+
+    @property
+    def sandbox_network(self) -> str: ...

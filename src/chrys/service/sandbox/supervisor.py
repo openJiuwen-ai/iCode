@@ -10,6 +10,17 @@ own error, and that line never includes the bearer token. The child is
 retained so it can be stopped; a failed start closes it. Each start creates
 a bearer token and keeps it only in memory. This module does not run the
 user's command on the host.
+
+Each child keeps the ``sandbox.network`` value it was started with. The
+caller passes the value from its own settings, so a change reaches a
+session when its agent reloads, like the other sandbox settings. A command
+asking for another value makes a new child the current one. The replaced
+child takes no new commands and is stopped once the last command holding
+it (``leased_server``) finishes, so a network change never ends a running
+command. The new server does not know the old sandbox ids; the backend
+gets a 404 for a cached id and creates a replacement. A configured
+``sandbox.url`` never reaches this module, so ``sandbox.network`` does not
+apply to that service.
 """
 
 from __future__ import annotations
@@ -59,11 +70,21 @@ class _RunningServer:
     url: str
     proc: _LauncherProcess
     closer: contextlib.AsyncExitStack
+    # The only configured input to the child env. The policy path is fixed by
+    # the install, and the listen URL and token are new on every start.
+    network_mode: str
     # Omitted from ``repr`` so a log of this object cannot print the bearer token.
     token: str = field(repr=False)
+    # Commands inside ``leased_server`` for this child.
+    leases: int = 0
 
 
+_NETWORK_MODES = frozenset({"offline", "guarded", "host"})
+
+# ``_server`` takes new commands. ``_retired`` holds replaced children that a
+# command still leases; the last lease to end stops the child.
 _server: _RunningServer | None = None
+_retired: list[_RunningServer] = []
 _lock: asyncio.Lock | None = None
 
 
@@ -263,18 +284,13 @@ async def _drain_launcher_output(
     )
 
 
-def _configured_network_mode() -> str:
-    """Return the loaded sandbox network mode for the bundled server.
+def _network_mode(value: str) -> str:
+    """``value`` when it names a mode, else ``guarded``, the setting's default.
 
-    The caller starts the server without a settings argument. ``guarded`` is
-    the default. ``host`` does not set a child variable. ``offline`` and
-    ``guarded`` do.
+    ``host`` does not set a child variable. ``offline`` and ``guarded`` do.
     """
-    from chrys.foundation.config.settings_store import load_settings
-
-    mode = load_settings().settings.sandbox_network
-    if mode in {"offline", "guarded", "host"}:
-        return mode
+    if value in _NETWORK_MODES:
+        return value
     return "guarded"
 
 
@@ -344,56 +360,104 @@ async def _discard(stack: contextlib.AsyncExitStack) -> None:
     await finish_close(asyncio.create_task(stack.aclose()))
 
 
-async def _close_running() -> None:
+async def _retire_current() -> None:
+    """Take new commands off the current child; stop it unless one still leases it."""
     global _server
     running = _server
     _server = None
-    if running is not None:
-        await _discard(running.closer)
+    if running is None:
+        return
+    if running.leases:
+        _retired.append(running)
+        return
+    await _discard(running.closer)
 
 
 async def _shutdown() -> None:
-    """Stop a retained child. Tests call this; a live server stays up otherwise."""
-    async with _gate():
-        await _close_running()
-
-
-async def ensure_started(*, health_timeout: float = _HEALTH_TIMEOUT_SECONDS) -> tuple[str, str]:
-    """Start the bundled server if this process does not already have one.
-
-    Returns the http URL and the bearer token for that child. The token is
-    created with ``secrets.token_urlsafe`` on each start and kept only on
-    the retained server. It is given to the child solely as
-    ``JIUWENBOX_API_TOKEN``. The user's ``sandbox.token`` is not read and
-    is not copied into the child. The token is not written into errors.
-    """
+    """Stop every retained child, leased or not. Tests call this; a live server stays up otherwise."""
     global _server
     async with _gate():
-        running = _server
-        if running is not None and running.proc.returncode is None:
-            return running.url, running.token
-        await _close_running()
-        listen = _choose_listen_url()
-        # Fresh credential for this child. Not the user's sandbox.token, and
-        # not placed in argv, a policy file, or the listen URL.
-        token = secrets.token_urlsafe()
-        env = _child_env(
-            _bundled_policy_path(),
-            listen,
-            token,
-            network_mode=_configured_network_mode(),
-        )
-        stack = contextlib.AsyncExitStack()
-        try:
-            proc = await stack.enter_async_context(_spawn_launcher(env))
-            await _wait_until_healthy(listen, token, proc, health_timeout=health_timeout)
-        except BaseException as exc:
-            await _discard(stack)
-            if isinstance(exc, OSError):
-                raise SandboxError("Sandbox server failed to start.") from None
-            raise
-        _server = _RunningServer(url=listen, token=token, proc=proc, closer=stack)
-        return listen, token
+        children = [child for child in (_server, *_retired) if child is not None]
+        _server = None
+        _retired.clear()
+        for child in children:
+            await _discard(child.closer)
+
+
+async def ensure_started(
+    *,
+    network_mode: str = "guarded",
+    health_timeout: float = _HEALTH_TIMEOUT_SECONDS,
+) -> tuple[str, str]:
+    """Return the URL and token of a live bundled server with ``network_mode``.
+
+    This takes no lease; ``run_shell`` uses ``leased_server``.
+    """
+    async with _gate():
+        running = await _current_server(_network_mode(network_mode), health_timeout)
+    return running.url, running.token
+
+
+@asynccontextmanager
+async def leased_server(
+    network_mode: str,
+    *,
+    health_timeout: float = _HEALTH_TIMEOUT_SECONDS,
+) -> AsyncGenerator[tuple[str, str]]:
+    """Hold a live bundled server with ``network_mode`` for one command.
+
+    Yields its URL and bearer token. While the lease is held, a command with
+    another mode can make a new child current, but this child is not
+    stopped; the last lease on a replaced child stops it on exit.
+    """
+    async with _gate():
+        running = await _current_server(_network_mode(network_mode), health_timeout)
+        running.leases += 1
+    try:
+        yield running.url, running.token
+    finally:
+        running.leases -= 1
+        if running.leases == 0 and running in _retired:
+            _retired.remove(running)
+            await _discard(running.closer)
+
+
+async def _current_server(network_mode: str, health_timeout: float) -> _RunningServer:
+    """The current child when it is live with ``network_mode``; otherwise a new one.
+
+    Called with the gate held. A current child that exited or runs another
+    mode is retired first. The token is created with
+    ``secrets.token_urlsafe`` on each start and kept only on the retained
+    server. It is given to the child solely as ``JIUWENBOX_API_TOKEN``. The
+    user's ``sandbox.token`` is not read and is not copied into the child.
+    The token is not written into errors.
+    """
+    global _server
+    running = _server
+    if running is not None and running.proc.returncode is None and running.network_mode == network_mode:
+        return running
+    await _retire_current()
+    listen = _choose_listen_url()
+    # Fresh credential for this child. Not the user's sandbox.token, and
+    # not placed in argv, a policy file, or the listen URL.
+    token = secrets.token_urlsafe()
+    env = _child_env(
+        _bundled_policy_path(),
+        listen,
+        token,
+        network_mode=network_mode,
+    )
+    stack = contextlib.AsyncExitStack()
+    try:
+        proc = await stack.enter_async_context(_spawn_launcher(env))
+        await _wait_until_healthy(listen, token, proc, health_timeout=health_timeout)
+    except BaseException as exc:
+        await _discard(stack)
+        if isinstance(exc, OSError):
+            raise SandboxError("Sandbox server failed to start.") from None
+        raise
+    _server = _RunningServer(url=listen, token=token, proc=proc, closer=stack, network_mode=network_mode)
+    return _server
 
 
 async def _wait_until_healthy(

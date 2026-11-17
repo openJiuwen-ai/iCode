@@ -4,7 +4,7 @@
 
 The daemon killpg's a command when its IPC connection fully closes. These
 tests drive ``ProcessRuntime`` with ``socket.socketpair`` and never start
-bubblewrap or a process group. The two tests that wait out a blocked read
+bubblewrap or a process group. The tests that wait out a blocked read
 after the socket closes run on Linux only. The sandbox runs only on Linux,
 and macOS does not wake that read the same way. A regression that leaves the
 cancelled call's socket open fails the wait for that close.
@@ -20,6 +20,7 @@ import struct
 import sys
 import threading
 import types
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -290,21 +291,12 @@ async def test_cancel_before_connect_closes_the_new_socket(
         await _shutdown(harness, [task], 1)
 
 
-@_LINUX_ONLY
-async def test_http_disconnect_closes_only_that_exec_socket(
-    jiuwenbox_importable: None,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _route_to_harness(harness: _Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serve the sandbox routes from a manager whose runtime is ``harness``."""
     from jiuwenbox.models.sandbox import SandboxPhase, SandboxRef
     from jiuwenbox.server.policy_engine import PolicyEngine
     from jiuwenbox.server.routes import sandbox as sandbox_routes
-    from jiuwenbox.server.routes.sandbox import ExecRequest
     from jiuwenbox.server.sandbox_manager import SandboxManager
-    from starlette.responses import Response
-
-    harness = _Harness(monkeypatch)
-    _arm_daemon(harness, tmp_path)
 
     class _Audit:
         def log(self, *_args: object, **_kwargs: object) -> None:
@@ -329,6 +321,21 @@ async def test_http_disconnect_closes_only_that_exec_socket(
 
     monkeypatch.setattr(manager, "restart_sandbox", _restart)
     monkeypatch.setattr(sandbox_routes, "_mgr", lambda: manager)
+
+
+@_LINUX_ONLY
+async def test_http_disconnect_closes_only_that_exec_socket(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenbox.server.routes import sandbox as sandbox_routes
+    from jiuwenbox.server.routes.sandbox import ExecRequest
+    from starlette.responses import Response
+
+    harness = _Harness(monkeypatch)
+    _arm_daemon(harness, tmp_path)
+    _route_to_harness(harness, tmp_path, monkeypatch)
 
     class _HttpRequest:
         def __init__(self) -> None:
@@ -377,3 +384,83 @@ async def test_http_disconnect_closes_only_that_exec_socket(
         assert http_request.calls >= 1
     finally:
         await _shutdown(harness, [route_task, kept], 2)
+
+
+def _exec_http_request(token: str) -> bytes:
+    body = json.dumps({"command": list(_ROUTE), "timeout_seconds": 30}).encode("utf-8")
+    head = (
+        f"POST /api/v1/sandboxes/{_SANDBOX_ID}/exec HTTP/1.1\r\n"
+        "Host: jiuwenbox\r\n"
+        f"Authorization: Bearer {token}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "\r\n"
+    )
+    return head.encode("ascii") + body
+
+
+@_LINUX_ONLY
+async def test_client_drop_through_the_served_app_closes_the_exec_socket(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production app, middleware included, sees a dropped client.
+
+    iCode never POSTs ``/stop`` on cancel; closing the connection is the only
+    cancel signal. A middleware that hides ``http.disconnect`` from the route
+    leaves the exec socket open, and the wait for its close fails.
+    """
+    import uvicorn
+    from jiuwenbox.server.app import app as jiuwenbox_app
+
+    monkeypatch.setenv("JIUWENBOX_API_TOKEN", "sekret")
+    harness = _Harness(monkeypatch)
+    _arm_daemon(harness, tmp_path)
+    _route_to_harness(harness, tmp_path, monkeypatch)
+
+    class _Server(uvicorn.Server):
+        @contextlib.contextmanager
+        def capture_signals(self) -> Iterator[None]:
+            # The test owns the main thread's signal handlers.
+            yield
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    address = listener.getsockname()[:2]
+    server = _Server(uvicorn.Config(jiuwenbox_app, lifespan="off", log_config=None, timeout_graceful_shutdown=5))
+    serving = asyncio.create_task(server.serve(sockets=[listener]))
+    writer: asyncio.StreamWriter | None = None
+    try:
+        await wait_for(lambda: server.started or serving.done(), description="jiuwenbox app serving")
+        if serving.done():
+            await serving
+        _reader, writer = await asyncio.open_connection(*address)
+        writer.write(_exec_http_request("sekret"))
+        await writer.drain()
+        await wait_for(
+            lambda: harness.pair_for(_ROUTE) is not None,
+            description="served exec reached the daemon socket",
+        )
+        route_pair = harness.pair_for(_ROUTE)
+        assert route_pair is not None
+        writer.close()
+        await writer.wait_closed()
+        await wait_for(route_pair.closed, description="dropped client's exec socket closed")
+        await wait_for(
+            lambda: _ROUTE in harness.finished_commands(),
+            description="dropped client's exec worker finished",
+        )
+    finally:
+        if writer is not None:
+            writer.close()
+        harness.close_all()
+        server.should_exit = True
+        await asyncio.wait_for(serving, 15)
+        listener.close()
+        if harness.pairs_snapshot():
+            await wait_for(
+                lambda: _ROUTE in harness.finished_commands(),
+                description="served exec worker finished",
+            )

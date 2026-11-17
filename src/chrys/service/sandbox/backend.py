@@ -29,14 +29,18 @@ Writable root
 When ``workspace_root`` is provided, it is the session workspace. The
 read-write mount and the cache key are that root, resolved with
 ``os.path.realpath`` before either use, not the command cwd. The process
-cwd stays the command cwd (exec ``workdir``). A cwd inside that root, or
-inside a ``workspace_dirs`` entry that is not already under it, reuses the
-writable sandbox. Those extra directories are further read-write binds on
-the same sandbox. The cache key is the physical primary root, so two
-workspaces do not share one mount. A cwd outside that set does not replace
-the writable sandbox and is not mounted read-write; it runs in a read-only
-sandbox. Binding ``/`` is not special: the base policy remounts ``/``
-read-only.
+cwd is the command cwd resolved the same way (exec ``workdir``): only
+physical paths are mounted, so a symlink spelling of the cwd may not exist
+inside the sandbox. A cwd inside that root, or inside a ``workspace_dirs``
+entry that is not already under it, reuses the writable sandbox. Those
+extra directories are further read-write binds on the same sandbox. The
+cache entry is the physical primary root together with the whole mount
+set, so two workspaces do not share one mount, and a command whose mount
+set differs from the cached one (a directory added or removed) gets a new
+sandbox, which supersedes the cached one for that root. A cwd outside that
+set does not replace the writable sandbox and is not mounted read-write; it
+runs in a read-only sandbox. Binding ``/`` is not special: the base policy
+remounts ``/`` read-only.
 
 Paths are compared as components after ``os.path.realpath``, so a sibling
 such as ``work-extra`` is not inside ``work``. Two symlink spellings of one
@@ -60,11 +64,16 @@ legacy single-cwd writable create uses the same covers.
 
 When ``workspace_root`` is omitted, the first command cwd remains the
 writable root of a single legacy slot. That slot is separate from the
-workspace-keyed cache.
+workspace-keyed cache. Its mounts are the command cwd as given, and so is
+its exec ``workdir``.
 
 A 404 for a cached id drops that one entry and creates one replacement.
 Any other HTTP error, and a second 404, still fail the call. Replacing a
-read-only sandbox deletes the previous read-only sandbox. That delete is
+cached sandbox (a read-only one for another root, a superseded workspace
+mount set, or one that is not ready) deletes the replaced sandbox once no
+command is executing in it: each exec counts as one in-flight use from the
+moment its id is chosen under the lock until the exec returns, raises or
+is cancelled, and the last use to end performs the delete. That delete is
 not cancellation.
 
 Lock and command budget
@@ -86,14 +95,17 @@ Stopping the sandbox would kill every other command in it. ``CancelledError``
 is reraised. The writable cache entry is kept, so the next command reuses
 that workspace's sandbox instead of adopting a new cwd as the writable root.
 A read-only id for the cancelled command is forgotten. That forget is
-shielded, so a second cancellation does not skip it. A cancel before this
-call has started an exec, a ``SandboxError``, and a completed exec do not
-change the cache.
+shielded, so a second cancellation does not skip it. The command's
+in-flight use ends as on any other exit; when its sandbox was already
+replaced and this was the last use, the delete is shielded the same way.
+A cancel before this call has started an exec, a ``SandboxError``, and a
+completed exec do not change the cache.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import posixpath
 import re
@@ -127,15 +139,22 @@ _LOCK_WAIT_EXPIRED = "Sandbox command timed out waiting for the sandbox."
 # ``_sandbox_id`` / ``_writable_root`` are the legacy slot used when the
 # caller omits ``workspace_root``: the first command cwd is the writable root.
 # ``_writable_by_root`` maps a physical workspace root to its read-write
-# sandbox. Cancel does not drop either writable entry.
+# sandbox, and ``_writable_mounts`` that root to the mount set the sandbox
+# was created with; the two change together. Cancel does not drop either
+# writable entry.
 # ``_readonly_id`` mounts ``_readonly_root`` read-only and never replaces a
-# writable entry. Switching it deletes the sandbox being replaced.
+# writable entry.
+# ``_in_flight`` counts the execs using each id. A replaced id still in use
+# waits in ``_retiring`` until its count reaches zero, then is deleted.
 _sandbox_id: str | None = None
 _writable_root: str | None = None
 _writable_by_root: dict[str, str] = {}
+_writable_mounts: dict[str, tuple[str, ...]] = {}
 _readonly_id: str | None = None
 _readonly_root: str | None = None
 _readonly_physical: bool = False
+_in_flight: dict[str, int] = {}
+_retiring: set[str] = set()
 _lock: asyncio.Lock | None = None
 
 
@@ -194,7 +213,8 @@ async def run_shell(
     server authenticates with a token the supervisor creates and keeps in
     memory; ``sandbox_token`` is not sent to it. A non-empty URL is used
     as-is, does not start a process, and is the only place ``sandbox_token``
-    is sent. Waiting for the cache lock consumes ``timeout_seconds``.
+    is sent. The bundled server runs with ``sandbox_network`` and is leased
+    until the command is done. Waiting for the cache lock consumes ``timeout_seconds``.
     Cancellation during exec does not stop the sandbox, and then propagates.
     The writable cache is kept across that cancellation.
 
@@ -207,33 +227,61 @@ async def run_shell(
 
     # Imported here so a non-Linux call does not touch the client, and so this
     # module can define SandboxError before the client imports it back.
-    from chrys.service.sandbox.client import connect
-    from chrys.service.sandbox.supervisor import ensure_started
+    from chrys.service.sandbox.supervisor import leased_server
 
-    configured = settings.sandbox_url
-    if configured:
-        base_url = configured
-        token = settings.sandbox_token
-    else:
-        base_url, token = await ensure_started()
+    run = functools.partial(
+        _run_on_server,
+        argv=argv,
+        cwd=cwd,
+        timeout_seconds=timeout_seconds,
+        workspace_root=workspace_root,
+        workspace_dirs=workspace_dirs,
+    )
+    if settings.sandbox_url:
+        return await run(settings.sandbox_url, settings.sandbox_token, trust_env=True)
+    # Held until the command is done: a server replaced by a network change
+    # is stopped only after the last command on it.
+    async with leased_server(settings.sandbox_network) as (base_url, token):
+        return await run(base_url, token, trust_env=False)
+
+
+async def _run_on_server(
+    base_url: str,
+    token: str,
+    *,
+    trust_env: bool,
+    argv: Sequence[str],
+    cwd: str,
+    timeout_seconds: int,
+    workspace_root: str | None,
+    workspace_dirs: Sequence[str],
+) -> SandboxExec:
+    from chrys.service.sandbox.client import connect
+
     # Opened before the lock wait. Health and create use this budget; the exec
     # request replaces it with the time left after the wait. trust_env stays on
     # for a configured URL and is off for the bundled server this process started.
     http_timeout = float(timeout_seconds) + _HTTP_TIMEOUT_SLACK_SECONDS
-    async with connect(base_url, token, http_timeout, trust_env=bool(configured)) as client:
+    async with connect(base_url, token, http_timeout, trust_env=trust_env) as client:
         await _require_health(client)
-        sandbox_id, remaining = await _sandbox_for_command(
+        sandbox_id, workdir, remaining = await _sandbox_for_command(
             client,
             cwd,
             timeout_seconds,
             workspace_root=workspace_root,
             workspace_dirs=workspace_dirs,
         )
+        # The in-flight use taken under the lock is released on every exit,
+        # with no await before the release.
         try:
-            return await _exec(client, sandbox_id, argv, cwd, timeout_seconds, remaining)
-        except asyncio.CancelledError:
-            await _stop_on_cancel(sandbox_id)
-            raise
+            try:
+                return await _exec(client, sandbox_id, argv, workdir, timeout_seconds, remaining)
+            except asyncio.CancelledError:
+                await _stop_on_cancel(sandbox_id)
+                raise
+        finally:
+            if _release_in_flight(sandbox_id):
+                await _delete_sandbox(client, sandbox_id)
 
 
 async def _require_health(client: httpx.AsyncClient) -> None:
@@ -249,21 +297,23 @@ async def _sandbox_for_command(
     *,
     workspace_root: str | None,
     workspace_dirs: Sequence[str],
-) -> tuple[str, float]:
-    """Return a ready sandbox id and the command budget left after the lock wait.
+) -> tuple[str, str, float]:
+    """Return a ready sandbox id, its exec workdir, and the budget left after the lock wait.
 
     The lock is held only while the cache is read or updated and while a
-    sandbox is created. The caller execs after this returns.
+    sandbox is created. The returned id carries one in-flight use, taken
+    before the lock is released; the caller execs, then releases it.
     """
     remaining = await _acquire_cache_lock(float(timeout_seconds))
     try:
-        sandbox_id = await _ready_sandbox(
+        sandbox_id, workdir = await _ready_sandbox(
             client,
             cwd,
             workspace_root=workspace_root,
             workspace_dirs=workspace_dirs,
         )
-        return sandbox_id, remaining
+        _in_flight[sandbox_id] = _in_flight.get(sandbox_id, 0) + 1
+        return sandbox_id, workdir, remaining
     finally:
         _gate().release()
 
@@ -274,9 +324,10 @@ async def _ready_sandbox(
     *,
     workspace_root: str | None,
     workspace_dirs: Sequence[str],
-) -> str:
+) -> tuple[str, str]:
+    """Return a ready sandbox id and the workdir that exists inside it."""
     if workspace_root is None:
-        return await _ready_legacy_sandbox(client, cwd)
+        return await _ready_legacy_sandbox(client, cwd), cwd
     return await _ready_workspace_sandbox(client, cwd, workspace_root, workspace_dirs)
 
 
@@ -302,33 +353,39 @@ async def _ready_workspace_sandbox(
     cwd: str,
     workspace_root: str,
     workspace_dirs: Sequence[str],
-) -> str:
-    """Read-write mount is the physical workspace, not ``cwd``."""
+) -> tuple[str, str]:
+    """Read-write mount is the physical workspace, not ``cwd``.
+
+    The workdir is the physical cwd: only physical paths are mounted.
+    """
     mounts = _workspace_mounts(workspace_root, workspace_dirs)
     physical_cwd = _physical_dir(cwd)
     if _cwd_uses_writable(physical_cwd, mounts):
-        return await _ready_keyed_writable(client, mounts[0], mounts)
-    return await _ready_physical_readonly(client, physical_cwd)
+        return await _ready_keyed_writable(client, mounts), physical_cwd
+    return await _ready_physical_readonly(client, physical_cwd), physical_cwd
 
 
-async def _ready_keyed_writable(
-    client: httpx.AsyncClient,
-    primary: str,
-    mounts: tuple[str, ...],
-) -> str:
-    """Reuse or create the read-write sandbox keyed by ``primary``.
+async def _ready_keyed_writable(client: httpx.AsyncClient, mounts: tuple[str, ...]) -> str:
+    """Reuse or create the read-write sandbox for the primary root ``mounts[0]``.
 
-    A 404 drops only this root's id. Other workspace roots stay.
+    The cached id is reused only when it was created with exactly ``mounts``.
+    A different set creates a sandbox that supersedes it for this root; the
+    superseded one is retired. A 404 drops only this root's id. Other
+    workspace roots stay.
     """
+    primary = mounts[0]
     cached = _writable_by_root.get(primary)
-    if cached is not None:
+    if cached is not None and _writable_mounts.get(primary) == mounts:
         state = await _cached_phase(client, cached)
         if state == _READY:
             return cached
         if state == _CACHE_MISSING:
-            _writable_by_root.pop(primary, None)
+            _drop_writable(primary)
     sandbox_id = await _create_ready(client, _bind_body(mounts, _READ_WRITE))
-    _writable_by_root[primary] = sandbox_id
+    previous = _writable_by_root.get(primary)
+    _store_writable(primary, mounts, sandbox_id)
+    if previous is not None and previous != sandbox_id:
+        await _retire(client, previous)
     return sandbox_id
 
 
@@ -390,27 +447,59 @@ async def _replace_readonly(
     *,
     physical: bool,
 ) -> None:
-    """Point the read-only cache at ``sandbox_id`` and delete a different previous id."""
+    """Point the read-only cache at ``sandbox_id`` and retire a different previous id."""
     previous = _readonly_id
-    if previous is not None and previous != sandbox_id:
-        await _retire_replaced_readonly(client, previous)
     _store_readonly(sandbox_id, root, physical=physical)
+    if previous is not None and previous != sandbox_id:
+        await _retire(client, previous)
 
 
-async def _retire_replaced_readonly(client: httpx.AsyncClient, sandbox_id: str) -> None:
-    """Delete a read-only sandbox that a different root is replacing.
+async def _retire(client: httpx.AsyncClient, sandbox_id: str) -> None:
+    """Delete a sandbox the cache no longer points at, once nothing runs in it.
+
+    Called under the cache lock after the replacement is stored. An id with
+    an exec still in flight is only marked; the last of those execs deletes
+    it (``_release_in_flight``). An id another cache entry still holds is
+    not deleted.
+    """
+    if _is_cached(sandbox_id):
+        return
+    if _in_flight.get(sandbox_id, 0) > 0:
+        _retiring.add(sandbox_id)
+        return
+    await _delete_sandbox(client, sandbox_id)
+
+
+def _release_in_flight(sandbox_id: str) -> bool:
+    """Drop one in-flight use. True when the caller must now delete the sandbox.
+
+    No await, so a cancellation cannot skip the release.
+    """
+    count = _in_flight.get(sandbox_id, 0) - 1
+    if count > 0:
+        _in_flight[sandbox_id] = count
+        return False
+    _in_flight.pop(sandbox_id, None)
+    if sandbox_id not in _retiring:
+        return False
+    _retiring.discard(sandbox_id)
+    return not _is_cached(sandbox_id)
+
+
+async def _delete_sandbox(client: httpx.AsyncClient, sandbox_id: str) -> None:
+    """DELETE a retired sandbox. A cancelled caller still waits for the delete.
 
     This is not cancellation. Cancellation does not POST ``/stop`` and does
-    not delete the sandbox. It only forgets a read-only id and leaves the
-    writable cache in place. This function DELETEs
-    ``/api/v1/sandboxes/{id}`` and runs only when the read-only cache is
-    about to point at a different sandbox. A failed delete does not fail
-    the command; the caller still stores the replacement.
+    not delete the sandbox it ran in. This function DELETEs
+    ``/api/v1/sandboxes/{id}`` and runs only for an id no cache entry holds
+    and no exec is using. A failed delete does not fail the command.
     """
+    await finish_close(asyncio.create_task(_delete_quietly(client, sandbox_id)))
+
+
+async def _delete_quietly(client: httpx.AsyncClient, sandbox_id: str) -> None:
     try:
         await client.delete(_sandbox_path(sandbox_id), timeout=_STOP_TIMEOUT_SECONDS)
-    except asyncio.CancelledError:
-        raise
     except Exception:
         return
 
@@ -465,7 +554,7 @@ async def _exec(
     client: httpx.AsyncClient,
     sandbox_id: str,
     argv: Sequence[str],
-    cwd: str,
+    workdir: str,
     timeout_seconds: int,
     remaining: float,
 ) -> SandboxExec:
@@ -475,7 +564,7 @@ async def _exec(
             f"{_sandbox_path(sandbox_id)}/exec",
             json={
                 "command": list(argv),
-                "workdir": cwd,
+                "workdir": workdir,
                 "timeout_seconds": command_timeout,
             },
             timeout=remaining + _HTTP_TIMEOUT_SLACK_SECONDS,
@@ -781,11 +870,24 @@ def _drop_readonly() -> None:
     _readonly_physical = False
 
 
+def _drop_writable(primary: str) -> None:
+    _writable_by_root.pop(primary, None)
+    _writable_mounts.pop(primary, None)
+
+
 def _store_cache(sandbox_id: str, cwd: str) -> None:
     """Legacy writable slot. The mounted root is this command cwd."""
     global _sandbox_id, _writable_root
     _sandbox_id = sandbox_id
     _writable_root = cwd
+    _retiring.discard(sandbox_id)
+
+
+def _store_writable(primary: str, mounts: tuple[str, ...], sandbox_id: str) -> None:
+    """Workspace writable entry: ``sandbox_id`` was created with exactly ``mounts``."""
+    _writable_by_root[primary] = sandbox_id
+    _writable_mounts[primary] = mounts
+    _retiring.discard(sandbox_id)
 
 
 def _store_readonly(sandbox_id: str, root: str, *, physical: bool) -> None:
@@ -794,6 +896,12 @@ def _store_readonly(sandbox_id: str, root: str, *, physical: bool) -> None:
     _readonly_id = sandbox_id
     _readonly_root = root
     _readonly_physical = physical
+    _retiring.discard(sandbox_id)
+
+
+def _is_cached(sandbox_id: str) -> bool:
+    """Whether any cache entry still points at ``sandbox_id``."""
+    return sandbox_id in (_sandbox_id, _readonly_id) or sandbox_id in _writable_by_root.values()
 
 
 def _sandbox_path(sandbox_id: str) -> str:

@@ -14,9 +14,12 @@ async def _reset_sandbox_process_state():
     backend._sandbox_id = None
     backend._writable_root = None
     backend._writable_by_root.clear()
+    backend._writable_mounts.clear()
     backend._readonly_id = None
     backend._readonly_root = None
     backend._readonly_physical = False
+    backend._in_flight.clear()
+    backend._retiring.clear()
     backend._lock = None
     supervisor._lock = None
     await supervisor._shutdown()
@@ -25,8 +28,11 @@ async def _reset_sandbox_process_state():
     backend._sandbox_id = None
     backend._writable_root = None
     backend._writable_by_root.clear()
+    backend._writable_mounts.clear()
     backend._readonly_id = None
     backend._readonly_root = None
     backend._readonly_physical = False
+    backend._in_flight.clear()
+    backend._retiring.clear()
     backend._lock = None
     supervisor._lock = None

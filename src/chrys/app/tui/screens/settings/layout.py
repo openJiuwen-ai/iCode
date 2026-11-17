@@ -579,6 +579,7 @@ DEFERRED_KEYS: frozenset[str] = frozenset(
         "sandbox.enabled",
         "sandbox.url",
         "sandbox.token",
+        "sandbox.network",
     }
 )
 

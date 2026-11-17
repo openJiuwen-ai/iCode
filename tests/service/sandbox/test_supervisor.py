@@ -21,6 +21,7 @@ import pytest
 
 from chrys.service.sandbox import client, supervisor
 from chrys.service.sandbox.backend import SandboxError, run_shell
+from tests.support.waiting import wait_for
 
 _REAL_CHOOSE = supervisor._choose_listen_url
 _REAL_POLICY = supervisor._bundled_policy_path
@@ -347,24 +348,19 @@ def test_child_env_sets_policy_listen_and_token(monkeypatch: pytest.MonkeyPatch)
     assert "JIUWENBOX_API_TOKEN" not in empty
 
 
-def test_configured_network_mode_reads_the_loaded_setting(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Settings:
-        sandbox_network = "offline"
-
-    class _Loaded:
-        settings = _Settings()
-
-    monkeypatch.setattr(
-        "chrys.foundation.config.settings_store.load_settings",
-        _Loaded,
-    )
-    assert supervisor._configured_network_mode() == "offline"
+def test_network_mode_keeps_known_values_and_falls_back_to_guarded() -> None:
+    assert [supervisor._network_mode(mode) for mode in ("offline", "guarded", "host")] == [
+        "offline",
+        "guarded",
+        "host",
+    ]
+    assert supervisor._network_mode("") == "guarded"
+    assert supervisor._network_mode("HOST") == "guarded"
 
 
 async def test_ensure_started_exports_offline_network_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     proc = _FakeProcess()
     seen = _patch_spawn(monkeypatch, proc)
-    monkeypatch.setattr(supervisor, "_configured_network_mode", lambda: "offline")
     monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: "fresh-secret")
 
     async def healthy(_base_url: str, _token: str) -> bool:
@@ -373,11 +369,224 @@ async def test_ensure_started_exports_offline_network_mode(monkeypatch: pytest.M
     monkeypatch.setattr(supervisor, "_health_ok", healthy)
     await supervisor._shutdown()
     try:
-        await supervisor.ensure_started()
+        await supervisor.ensure_started(network_mode="offline")
         assert seen[0]["JIUWENBOX_NETWORK_MODE"] == "offline"
     finally:
         proc.returncode = 1
         await supervisor._shutdown()
+
+
+def _patch_recording_spawn(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> list[dict[str, str]]:
+    """Each start yields a new live child and records when its context is closed."""
+    seen: list[dict[str, str]] = []
+
+    @asynccontextmanager
+    async def spawn(env: dict[str, str]) -> AsyncIterator[_FakeProcess]:
+        index = len(seen)
+        seen.append(dict(env))
+        events.append(f"spawn:{index}")
+        try:
+            yield _FakeProcess()
+        finally:
+            events.append(f"close:{index}")
+
+    monkeypatch.setattr(supervisor, "_spawn_launcher", spawn)
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [("host", "offline"), ("guarded", "host"), ("offline", "guarded")],
+)
+async def test_network_mode_change_replaces_the_live_child(
+    monkeypatch: pytest.MonkeyPatch,
+    before: str,
+    after: str,
+) -> None:
+    tokens = iter(["first-token", "second-token"])
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: next(tokens))
+    events: list[str] = []
+    seen = _patch_recording_spawn(monkeypatch, events)
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        return True
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    assert await supervisor.ensure_started(network_mode=before) == ("http://127.0.0.1:9", "first-token")
+    assert await supervisor.ensure_started(network_mode=after) == ("http://127.0.0.1:9", "second-token")
+    # Nothing leased the first child, so it stops before the next one starts.
+    assert events == ["spawn:0", "close:0", "spawn:1"]
+    assert seen[0].get("JIUWENBOX_NETWORK_MODE") == (None if before == "host" else before)
+    assert seen[1].get("JIUWENBOX_NETWORK_MODE") == (None if after == "host" else after)
+    assert seen[1]["JIUWENBOX_API_TOKEN"] == "second-token"
+    running = supervisor._server
+    assert running is not None
+    assert running.network_mode == after
+
+
+async def test_unchanged_network_mode_reuses_the_live_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokens = iter(["only-token"])
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: next(tokens))
+    events: list[str] = []
+    seen = _patch_recording_spawn(monkeypatch, events)
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        return True
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    assert await supervisor.ensure_started(network_mode="offline") == ("http://127.0.0.1:9", "only-token")
+    for _ in range(2):
+        async with supervisor.leased_server("offline") as leased:
+            assert leased == ("http://127.0.0.1:9", "only-token")
+    assert events == ["spawn:0"]
+    assert len(seen) == 1
+    assert seen[0]["JIUWENBOX_NETWORK_MODE"] == "offline"
+
+
+@pytest.mark.parametrize("ending", ["finished", "cancelled"])
+async def test_a_network_change_stops_the_old_child_only_after_its_running_command(
+    monkeypatch: pytest.MonkeyPatch,
+    ending: str,
+) -> None:
+    tokens = iter(["first-token", "second-token"])
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: next(tokens))
+    events: list[str] = []
+    _patch_recording_spawn(monkeypatch, events)
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        return True
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def running_command() -> None:
+        async with supervisor.leased_server("host") as (_url, token):
+            assert token == "first-token"
+            entered.set()
+            await release.wait()
+
+    holder = asyncio.create_task(running_command())
+    try:
+        await wait_for(lambda: entered.is_set() or holder.done(), description="first command holds its server")
+        if holder.done():
+            await holder
+        async with supervisor.leased_server("offline") as (_url, token):
+            assert token == "second-token"
+        assert events == ["spawn:0", "spawn:1"]
+        assert not holder.done()
+        if ending == "finished":
+            release.set()
+            await holder
+        else:
+            holder.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await holder
+        assert events == ["spawn:0", "spawn:1", "close:0"]
+        assert supervisor._retired == []
+        running = supervisor._server
+        assert running is not None
+        assert running.network_mode == "offline"
+    finally:
+        release.set()
+        if not holder.done():
+            holder.cancel()
+        await asyncio.gather(holder, return_exceptions=True)
+
+
+async def test_shutdown_stops_a_replaced_child_that_is_still_leased(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokens = iter(["first-token", "second-token"])
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: next(tokens))
+    events: list[str] = []
+    _patch_recording_spawn(monkeypatch, events)
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        return True
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    async with supervisor.leased_server("host"):
+        await supervisor.ensure_started(network_mode="offline")
+        await supervisor._shutdown()
+        assert sorted(events) == ["close:0", "close:1", "spawn:0", "spawn:1"]
+    # The lease ending after shutdown does not close the child a second time.
+    assert events.count("close:0") == 1
+
+
+async def test_run_shell_after_a_network_change_recreates_the_sandbox_on_the_new_server(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The replaced server does not know the cached id: it answers 404 and the backend creates one."""
+    tokens = iter(["first-token", "second-token"])
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: next(tokens))
+    events: list[str] = []
+    _patch_recording_spawn(monkeypatch, events)
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        return True
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    # Each started child is one server, told apart by the bearer token it was given.
+    sandboxes: dict[str, set[str]] = {"first-token": set(), "second-token": set()}
+    requests: list[tuple[str, str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        server = request.headers["authorization"].removeprefix("Bearer ")
+        owned = sandboxes[server]
+        path = request.url.path
+        requests.append((server, request.method, path))
+        if path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.method == "POST" and path == "/api/v1/sandboxes":
+            sandbox_id = f"{server}-box{len(owned)}"
+            owned.add(sandbox_id)
+            return httpx.Response(200, json={"id": sandbox_id, "phase": "ready"})
+        sandbox_id = path.removeprefix("/api/v1/sandboxes/").removesuffix("/exec")
+        if sandbox_id not in owned:
+            return httpx.Response(404, json={"error": "not found"})
+        if path.endswith("/exec"):
+            return httpx.Response(200, json={"exit_code": 0, "stdout": server, "stderr": ""})
+        return httpx.Response(200, json={"id": sandbox_id, "phase": "ready"})
+
+    def new_client(**kwargs: object) -> httpx.AsyncClient:
+        built = dict(kwargs)
+        built["transport"] = httpx.MockTransport(handler)
+        return httpx.AsyncClient(**built)
+
+    monkeypatch.setattr(client, "_new_client", new_client)
+
+    class _Settings:
+        sandbox_enabled = True
+        sandbox_url = ""
+        sandbox_token = "user-token"
+
+        def __init__(self, sandbox_network: str) -> None:
+            self.sandbox_network = sandbox_network
+
+    async def run(settings: _Settings) -> str:
+        completed = await run_shell(
+            settings,
+            argv=["echo"],
+            cwd=str(tmp_path),
+            timeout_seconds=5,
+            linux=True,
+            workspace_root=str(tmp_path),
+        )
+        assert completed.exit_code == 0
+        return completed.stdout
+
+    assert await run(_Settings("host")) == "first-token"
+    assert await run(_Settings("host")) == "first-token"
+    # A reloaded agent passes its new settings; the old server is unleased and stops first.
+    assert await run(_Settings("offline")) == "second-token"
+    assert events == ["spawn:0", "close:0", "spawn:1"]
+    second_server = [(method, path) for server, method, path in requests if server == "second-token"]
+    assert second_server == [
+        ("GET", "/health"),
+        ("GET", "/api/v1/sandboxes/first-token-box0"),
+        ("POST", "/api/v1/sandboxes"),
+        ("POST", "/api/v1/sandboxes/second-token-box0/exec"),
+    ]
 
 
 def test_child_env_offline_sets_network_mode_and_host_clears_it(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -458,6 +667,7 @@ async def test_non_linux_does_not_spawn_the_launcher(monkeypatch: pytest.MonkeyP
         sandbox_enabled = True
         sandbox_url = ""
         sandbox_token = "sekret"
+        sandbox_network = "guarded"
 
     with pytest.raises(SandboxError, match="only on Linux"):
         await run_shell(
@@ -587,19 +797,22 @@ async def test_run_shell_disables_trust_env_only_for_the_bundled_server(
         built["transport"] = httpx.MockTransport(handler)
         return httpx.AsyncClient(**built)
 
-    async def started() -> tuple[str, str]:
+    @asynccontextmanager
+    async def started(network_mode: str) -> AsyncIterator[tuple[str, str]]:
         nonlocal started_calls
+        assert network_mode == "guarded"
         started_calls += 1
-        return "http://started.sandbox", "generated-token"
+        yield "http://started.sandbox", "generated-token"
 
     monkeypatch.setattr(client, "_new_client", new_client)
-    monkeypatch.setattr(supervisor, "ensure_started", started)
+    monkeypatch.setattr(supervisor, "leased_server", started)
 
     class _Settings:
         def __init__(self, sandbox_url: str) -> None:
             self.sandbox_enabled = True
             self.sandbox_url = sandbox_url
             self.sandbox_token = "user-token"
+            self.sandbox_network = "guarded"
 
     with pytest.raises(SandboxError, match="health is not ok"):
         await run_shell(
@@ -642,10 +855,31 @@ def test_import_boundary_scanner_rejects_a_planted_snippet(tmp_path: Path) -> No
         "import jiuwenbox\nLISTENER = 'http://jiuwenbox'\ndef nested() -> str:\n    return 'jiuwenswarm'\n",
         encoding="utf-8",
     )
+    elsewhere = tmp_path / "service" / "other.py"
+    elsewhere.write_text(
+        '"""Aligned with the JiuwenSwarm web contract."""\n'
+        "# JiuwenSwarm is mentioned in a comment.\n"
+        "import jiuwenswarm.agent\n"
+        "class Status:\n"
+        '    """Also aligned with JiuwenSwarm."""\n'
+        "def home() -> str:\n"
+        '    """JiuwenSwarm keeps state under the home directory."""\n'
+        "    from jiuwenswarm import paths\n"
+        "    return '~/.JiuwenSwarm/state'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "policy.yaml").write_text("bind: ~/.jiuwenswarm\n", encoding="utf-8")
+    (tmp_path / "notes.md").write_text("Ported from JiuwenSwarm.\n", encoding="utf-8")
     violations = _boundary_violations(tmp_path, allowed_file=allowed)
-    assert any(item.endswith("jiuwenbox-import:in_function=False") for item in violations)
-    assert any(item.endswith("jiuwenbox-string:in_function=False") for item in violations)
-    assert any(":jiuwenswarm:" in item for item in violations)
+    assert sorted(violations) == [
+        "policy.yaml:1:jiuwenswarm-data:in_function=False",
+        "service/other.py:3:jiuwenswarm-import:in_function=False",
+        "service/other.py:8:jiuwenswarm-import:in_function=True",
+        "service/other.py:9:jiuwenswarm-string:in_function=True",
+        "service/sandbox/supervisor.py:1:jiuwenbox-import:in_function=False",
+        "service/sandbox/supervisor.py:2:jiuwenbox-string:in_function=False",
+        "service/sandbox/supervisor.py:4:jiuwenswarm-string:in_function=True",
+    ]
 
 
 def test_sandbox_package_import_does_not_load_jiuwenbox_fastapi_or_bwrap() -> None:
@@ -747,7 +981,7 @@ def _engine_mentions() -> dict[str, object]:
             continue
         text = path.read_text(encoding="utf-8").lower()
         problems: list[str] = []
-        if "jiuwenbox" in text or "jiuwenswarm" in text:
+        if "jiuwenbox" in text:
             problems.append(path.relative_to(_SRC).as_posix())
         other.append((path.as_posix(), problems))
     return {
@@ -818,15 +1052,24 @@ class _BoundaryHit:
 
 
 def _boundary_violations(root: Path, *, allowed_file: Path) -> list[str]:
-    """jiuwenbox strings and imports may live only inside functions of ``allowed_file``."""
+    """jiuwenbox strings and imports may live only inside functions of ``allowed_file``.
+
+    Nothing may depend on jiuwenswarm, the product the engine was taken from:
+    no import, no string value (a path, env name or module name) and no data
+    file that names it. Docstrings, comments and Markdown may mention it.
+    """
     allowed = allowed_file.resolve()
     root_resolved = root.resolve()
     violations: list[str] = []
     for hit in _scan_boundary(root_resolved):
-        if hit.kind == "jiuwenswarm" or hit.path.resolve() != allowed or not hit.in_function:
+        if hit.kind.startswith("jiuwenswarm") or hit.path.resolve() != allowed or not hit.in_function:
             relative = hit.path.resolve().relative_to(root_resolved).as_posix()
             violations.append(f"{relative}:{hit.line}:{hit.kind}:in_function={hit.in_function}")
     return violations
+
+
+# Prose a person reads, and the catalog compiled from translated prose.
+_PROSE_SUFFIXES = frozenset({".md", ".mo"})
 
 
 def _scan_boundary(root: Path) -> list[_BoundaryHit]:
@@ -835,30 +1078,60 @@ def _scan_boundary(root: Path) -> list[_BoundaryHit]:
         if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
             continue
         data = path.read_bytes()
-        if b"jiuwenswarm" in data.lower():
-            text = data.decode("utf-8", errors="replace")
-            for lineno, line in enumerate(text.splitlines(), 1):
-                if "jiuwenswarm" in line.lower():
-                    hits.append(_BoundaryHit(path, lineno, "jiuwenswarm", False))
-        if path.suffix != ".py":
+        if path.suffix == ".py":
+            tree = ast.parse(data.decode("utf-8"))
+            _walk_boundary(tree, path, False, _docstring_ids(tree), hits)
             continue
-        _walk_boundary(ast.parse(data.decode("utf-8")), path, False, hits)
+        if path.suffix in _PROSE_SUFFIXES or b"jiuwenswarm" not in data.lower():
+            continue
+        text = data.decode("utf-8", errors="replace")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if "jiuwenswarm" in line.lower():
+                hits.append(_BoundaryHit(path, lineno, "jiuwenswarm-data", False))
     return hits
 
 
-def _walk_boundary(node: ast.AST, path: Path, in_function: bool, hits: list[_BoundaryHit]) -> None:
+def _docstring_ids(tree: ast.Module) -> frozenset[int]:
+    owners = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, owners) or not node.body:
+            continue
+        first = node.body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+            found.add(id(first.value))
+    return frozenset(found)
+
+
+def _names_package(module: str, package: str) -> bool:
+    return module == package or module.startswith(f"{package}.")
+
+
+def _walk_boundary(
+    node: ast.AST,
+    path: Path,
+    in_function: bool,
+    docstrings: frozenset[int],
+    hits: list[_BoundaryHit],
+) -> None:
+    modules: list[str] = []
     if isinstance(node, ast.Import):
-        for alias in node.names:
-            if alias.name == "jiuwenbox" or alias.name.startswith("jiuwenbox."):
-                hits.append(_BoundaryHit(path, node.lineno, "jiuwenbox-import", in_function))
+        modules = [alias.name for alias in node.names]
     elif isinstance(node, ast.ImportFrom) and node.module is not None:
-        if node.module == "jiuwenbox" or node.module.startswith("jiuwenbox."):
-            hits.append(_BoundaryHit(path, node.lineno, "jiuwenbox-import", in_function))
-    elif isinstance(node, ast.Constant) and isinstance(node.value, str) and "jiuwenbox" in node.value.lower():
-        hits.append(_BoundaryHit(path, node.lineno, "jiuwenbox-string", in_function))
+        modules = [node.module]
+    for module in modules:
+        for package in ("jiuwenbox", "jiuwenswarm"):
+            if _names_package(module, package):
+                hits.append(_BoundaryHit(path, node.lineno, f"{package}-import", in_function))
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        lowered = node.value.lower()
+        if "jiuwenbox" in lowered:
+            hits.append(_BoundaryHit(path, node.lineno, "jiuwenbox-string", in_function))
+        if "jiuwenswarm" in lowered and id(node) not in docstrings:
+            hits.append(_BoundaryHit(path, node.lineno, "jiuwenswarm-string", in_function))
     child_in_function = in_function or isinstance(node, _FUNCTION_NODES)
     for child in ast.iter_child_nodes(node):
-        _walk_boundary(child, path, child_in_function, hits)
+        _walk_boundary(child, path, child_in_function, docstrings, hits)
 
 
 def _dependency_name_and_specifier(requirement: str) -> tuple[str, str]:

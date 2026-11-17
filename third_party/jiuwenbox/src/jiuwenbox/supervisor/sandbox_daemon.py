@@ -55,6 +55,11 @@ Important security notes:
   stripped from inside the sandbox. ``close_fds=True`` (the Python
   default) ensures the listener fd is **not** inherited by user code.
 
+* Each exec and background job runs under a small subreaper shim
+  (``_COMMAND_SHIM_SOURCE``). Its descendants, including ones that call
+  ``setsid`` or daemonize, stay under the shim, so ending the command
+  kills all of them without a cgroup and leaves other commands alone.
+
 The module deliberately stays standard-library-only so it can be
 launched with ``python3 -S`` (no ``import site``) for fastest cold
 start, and so the launcher's ``compile``/``exec`` step does not need to
@@ -68,6 +73,7 @@ import datetime
 import errno
 import json
 import logging
+import marshal
 import os
 import select
 import shutil
@@ -280,18 +286,19 @@ class DaemonState:
 
 
 # How often the exec wait checks the IPC socket and the command deadline.
-# A peer that has only shut down its write side stays readable, so the
-# check must block for this slice instead of spinning.
+# A peer that has only shut down its write side stays readable, so each
+# slice must block (on the output pipes or the shim) instead of spinning.
 _EXEC_POLL_SECONDS = 0.05
 _PIPE_READ_BYTES = 65536
 
 
 def _kill_command_group(pid: int) -> None:
-    """SIGKILL the session whose leader is ``pid``.
+    """SIGKILL the process group whose leader is the command ``pid``.
 
-    Foreground execs are started with ``start_new_session=True``, so
-    ``pid`` is that session's leader. ``killpg`` signals the command's
-    group and not the daemon. ``os.killpg`` and ``signal.SIGKILL`` are
+    The command shim puts the command in its own process group, so
+    ``killpg`` signals the command's group and not the daemon. A group
+    id is not reused while any member is alive, so this is safe after
+    the leader has exited. ``os.killpg`` and ``signal.SIGKILL`` are
     POSIX-only and are resolved here so this module imports on Windows.
     When ``SIGKILL`` is absent, the POSIX value 9 is used so a test can
     patch ``os.killpg`` and observe the same signal.
@@ -304,6 +311,80 @@ def _kill_command_group(pid: int) -> None:
         killpg(pid, sigkill)
     except OSError:
         logger.debug("killpg(%s) failed", pid, exc_info=True)
+
+
+# A tree kill runs in rounds. Each round SIGKILLs every descendant it
+# finds; a process forked after that scan is found in the next round.
+_TREE_KILL_SECONDS = 2.0
+_TREE_KILL_ROUND_SECONDS = 0.01
+
+
+def _live_children() -> dict[int, list[int]] | None:
+    """Map each parent pid to its live (non-zombie) children; None without /proc."""
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return None
+    children: dict[int, list[int]] = {}
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as fh:
+                stat = fh.read()
+        except OSError:
+            continue
+        # ``comm`` may hold spaces and parentheses; state and ppid follow its last ")".
+        fields = stat[stat.rfind(b")") + 2 :].split()
+        if len(fields) < 2 or fields[0] in (b"Z", b"X"):
+            continue
+        try:
+            ppid = int(fields[1])
+        except ValueError:
+            continue
+        children.setdefault(ppid, []).append(int(name))
+    return children
+
+
+def _descendant_pids(root_pid: int) -> list[int] | None:
+    children = _live_children()
+    if children is None:
+        return None
+    found: list[int] = []
+    pending = [root_pid]
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            found.append(child)
+            pending.append(child)
+    return found
+
+
+def _kill_process_tree(root_pid: int) -> bool:
+    """SIGKILL every descendant of ``root_pid``, never ``root_pid`` itself.
+
+    ``root_pid`` must be a live child subreaper (``PR_SET_CHILD_SUBREAPER``):
+    a descendant whose parent is killed, or that daemonized before the
+    first scan, reparents to it, so the next round still finds it.
+    Returns True once no live descendant is left, False when ``/proc``
+    cannot be read or the budget ran out (a fork bomb outrunning it).
+    """
+    sigkill = getattr(signal, "SIGKILL", 9)
+    deadline = time.monotonic() + _TREE_KILL_SECONDS
+    while True:
+        pids = _descendant_pids(root_pid)
+        if pids is None:
+            return False
+        if not pids:
+            return True
+        for pid in pids:
+            try:
+                os.kill(pid, sigkill)
+            except OSError:
+                pass
+        if time.monotonic() >= deadline:
+            logger.warning("process tree under %s still running after SIGKILL", root_pid)
+            return False
+        time.sleep(_TREE_KILL_ROUND_SECONDS)
 
 
 def _parse_cgroup_procs(header: dict[str, Any]) -> list[str]:
@@ -488,6 +569,354 @@ def _kill_command_cgroup(procs_paths: list[str]) -> None:
                 pass
 
 
+# Every foreground exec and background job runs under this shim, started
+# as ``python3 -I -S -c`` (no site, PYTHON* variables ignored). It makes
+# itself a child subreaper, so a descendant that calls ``setsid`` or
+# daemonizes reparents to the shim instead of leaving the command, and
+# ``_kill_process_tree`` still finds it under the shim's pid without a
+# cgroup. ``argv[1]`` is the spec fd: one length-prefixed ``marshal``
+# frame ``(argv, env)``, then EOF once the daemon is done with the
+# command, which makes the shim exit. ``argv[2]`` is the status fd:
+# ``P <pid>`` once the command has exec'd, ``E <text>`` when it could not
+# start, ``X <code>`` when it exits (``Popen.returncode`` form). The
+# command gets the shim's stdio and its own process group; the shim then
+# drops its own copies, so the pipes reach EOF when the command's
+# processes close them. ``marshal`` is safe here: the daemon and the shim
+# run the same interpreter. Keep the source free of syntax newer than
+# what the in-sandbox ``python3`` may be.
+_COMMAND_SHIM_SOURCE = r"""
+import marshal, os, select, signal, sys
+
+
+def _read_exact(fd, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = os.read(fd, n - len(buf))
+        if not chunk:
+            raise EOFError("command spec closed early")
+        buf += chunk
+    return buf
+
+
+def _report(fd, line):
+    try:
+        os.write(fd, (line + "\n").encode("utf-8", "surrogateescape"))
+    except OSError:
+        pass
+
+
+def _become_subreaper():
+    try:
+        import ctypes
+        ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)  # PR_SET_CHILD_SUBREAPER
+    except Exception:
+        pass
+
+
+def _exit_code(status):
+    if os.WIFSIGNALED(status):
+        return -os.WTERMSIG(status)
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    return 1
+
+
+def _exec_command(argv, env):
+    os.setpgid(0, 0)
+    # Python ignores these at startup, and an ignored signal stays ignored
+    # across exec. subprocess restores the same three.
+    for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ"):
+        num = getattr(signal, name, None)
+        if num is not None:
+            signal.signal(num, signal.SIG_DFL)
+    os.execvpe(argv[0], argv, env)
+
+
+def _reap(leader, status_fd, leader_running):
+    while True:
+        try:
+            child, status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return leader_running
+        if child == 0:
+            return leader_running
+        if child == leader and leader_running:
+            leader_running = False
+            _report(status_fd, "X %d" % _exit_code(status))
+
+
+def main():
+    spec_fd = int(sys.argv[1])
+    status_fd = int(sys.argv[2])
+    os.set_inheritable(spec_fd, False)
+    os.set_inheritable(status_fd, False)
+    _become_subreaper()
+    size = int.from_bytes(_read_exact(spec_fd, 4), "big")
+    argv, env = marshal.loads(_read_exact(spec_fd, size))
+    wake_r, wake_w = os.pipe()
+    os.set_blocking(wake_r, False)
+    os.set_blocking(wake_w, False)
+    signal.set_wakeup_fd(wake_w)
+    signal.signal(signal.SIGCHLD, lambda signum, frame: None)
+    err_r, err_w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        text = "command did not start"
+        try:
+            _exec_command(argv, env)
+        except OSError as exc:
+            text = "[Errno %s] %s: %r" % (exc.errno, exc.strerror, argv[0])
+        except BaseException as exc:
+            text = repr(exc)
+        try:
+            os.write(err_w, text.encode("utf-8", "surrogateescape"))
+        finally:
+            os._exit(127)
+    os.close(err_w)
+    # Only the daemon ends the shim: it closes the spec fd or sends SIGKILL.
+    for name in ("SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"):
+        signal.signal(getattr(signal, name), signal.SIG_IGN)
+    failure = b""
+    while True:
+        chunk = os.read(err_r, 4096)
+        if not chunk:
+            break
+        failure += chunk
+    os.close(err_r)
+    if failure:
+        os.waitpid(pid, 0)
+        _report(status_fd, "E " + failure.decode("utf-8", "surrogateescape"))
+        return
+    _report(status_fd, "P %d" % pid)
+    null = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(null, fd)
+    os.close(null)
+    leader_running = True
+    while True:
+        leader_running = _reap(pid, status_fd, leader_running)
+        ready = select.select([spec_fd, wake_r], [], [])[0]
+        if wake_r in ready:
+            try:
+                while os.read(wake_r, 512):
+                    pass
+            except OSError:
+                pass
+        if spec_fd in ready:
+            try:
+                released = not os.read(spec_fd, 512)
+            except OSError:
+                released = True
+            if released:
+                break
+    _reap(pid, status_fd, leader_running)
+
+
+main()
+"""
+
+# How long ``_CommandShim.finish`` waits for a released shim to exit
+# before it SIGKILLs it.
+_SHIM_EXIT_SECONDS = 2.0
+
+
+class _CommandShim:
+    """A command running under ``_COMMAND_SHIM_SOURCE``.
+
+    Exposes what the exec paths read from ``Popen``: ``pid`` (the
+    command, which leads its own process group), its pipes, ``poll`` and
+    ``returncode``, both the command's and not the shim's. ``finish``
+    ends the command for good, the way releasing a command cgroup does:
+    it kills whatever the command left running and reaps the shim.
+    """
+
+    def __init__(self, shim: subprocess.Popen[bytes], spec_fd: int, status_fd: int) -> None:
+        self._shim = shim
+        self._spec_fd: int | None = spec_fd
+        self._status_fd: int | None = status_fd
+        self._status = b""
+        self._status_closed = False
+        self._spawn_error: str | None = None
+        self._lock = threading.RLock()
+        self.pid = 0
+        self.returncode: int | None = None
+        self.stdin = shim.stdin
+        self.stdout = shim.stdout
+        self.stderr = shim.stderr
+
+    def _read_status(self, wait: float | None) -> None:
+        """Apply what the shim reported; wait up to ``wait`` (None: until data or EOF)."""
+        fd = self._status_fd
+        if fd is None or self._status_closed:
+            return
+        readable, _, _ = select.select([fd], [], [], wait)
+        if not readable:
+            return
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            chunk = b""
+        if not chunk:
+            self._status_closed = True
+            return
+        self._status += chunk
+        while b"\n" in self._status:
+            raw, self._status = self._status.split(b"\n", 1)
+            kind, _, value = raw.decode("utf-8", "surrogateescape").partition(" ")
+            if kind == "P":
+                self.pid = int(value)
+            elif kind == "E":
+                self._spawn_error = value
+            elif kind == "X":
+                self.returncode = int(value)
+
+    def start(self, spec: bytes) -> None:
+        """Send the command to the shim; return once it has exec'd.
+
+        Raises ``OSError`` with the exec error text when it could not start.
+        """
+        spec_fd = self._spec_fd
+        if spec_fd is None:
+            raise OSError("command shim already finished")
+        try:
+            frame = memoryview(len(spec).to_bytes(4, "big") + spec)
+            while frame:
+                frame = frame[os.write(spec_fd, frame) :]
+            while not self.pid and self._spawn_error is None and not self._status_closed:
+                self._read_status(None)
+        except BaseException:
+            self.finish()
+            raise
+        if self.pid:
+            return
+        self.finish()
+        raise OSError(
+            self._spawn_error or f"command shim exited with status {self._shim.returncode}"
+        )
+
+    def wait(self, timeout: float) -> int | None:
+        """``poll``, but wait up to ``timeout`` for the shim's next report."""
+        with self._lock:
+            if self.returncode is None:
+                if self._status_closed:
+                    # The shim is exiting without a report; let it be reaped.
+                    time.sleep(min(timeout, _EXEC_POLL_SECONDS))
+                else:
+                    self._read_status(timeout)
+        return self.poll()
+
+    def poll(self) -> int | None:
+        with self._lock:
+            if self.returncode is None:
+                self._read_status(0)
+            if self.returncode is None and self._status_closed:
+                # The shim was killed before it could report the command's exit.
+                self.returncode = self._shim.poll()
+            return self.returncode
+
+    def send_signal(self, signum: int) -> None:
+        """Signal the command's leader; ``ProcessLookupError`` once it has exited."""
+        if self.poll() is not None or self.pid <= 0:
+            raise ProcessLookupError(errno.ESRCH, "command has exited")
+        os.kill(self.pid, signum)
+
+    def kill_tree(self) -> None:
+        """SIGKILL every process the command started; the shim stays to catch orphans."""
+        if self._shim.poll() is None:
+            _kill_process_tree(self._shim.pid)
+
+    def finish(self) -> None:
+        """Kill what the command left running, then release and reap the shim."""
+        with self._lock:
+            spec_fd = self._spec_fd
+            if spec_fd is None:
+                return
+            self.kill_tree()
+            self._spec_fd = None
+            os.close(spec_fd)
+            try:
+                self._shim.wait(timeout=_SHIM_EXIT_SECONDS)
+            except subprocess.TimeoutExpired:
+                self._shim.kill()
+                self._shim.wait()
+            # The shim has exited, so the status pipe ends; its last line
+            # can be the command's exit.
+            while not self._status_closed:
+                self._read_status(None)
+            if self._status_fd is not None:
+                os.close(self._status_fd)
+                self._status_fd = None
+            if self.returncode is None and self.pid:
+                self.returncode = self._shim.returncode
+
+
+def _start_command(
+    command: list[str],
+    *,
+    env: dict[str, str],
+    workdir: str | None,
+    stdin: int,
+    output: int,
+    cgroup_procs: list[str],
+) -> _CommandShim:
+    """Start ``command`` under the subreaper shim.
+
+    Raises ``OSError`` when the shim or the command cannot start, with the
+    same text ``subprocess.Popen`` would give for the command.
+    """
+    shim_env = dict(os.environ)
+    shim_env.pop(LISTENER_FD_ENV, None)
+    spec_r, spec_w = os.pipe()
+    status_r, status_w = os.pipe()
+    try:
+        shim = subprocess.Popen(
+            [
+                sys.executable or "python3",
+                "-I",
+                "-S",
+                "-c",
+                _COMMAND_SHIM_SOURCE,
+                str(spec_r),
+                str(status_w),
+            ],
+            stdin=stdin,
+            stdout=output,
+            stderr=output,
+            env=shim_env,
+            cwd=workdir or None,
+            close_fds=True,
+            pass_fds=(spec_r, status_w),
+            # Its own session, so ``kill(0)`` from user code cannot reach
+            # the long-running daemon's process group.
+            start_new_session=True,
+            # The cgroup join must happen in the child before exec; the
+            # hook only writes files and calls setrlimit.
+            preexec_fn=_make_command_preexec(cgroup_procs),  # noqa: PLW1509
+        )
+    except BaseException:
+        os.close(spec_w)
+        os.close(status_r)
+        raise
+    finally:
+        os.close(spec_r)
+        os.close(status_w)
+    handle = _CommandShim(shim, spec_w, status_r)
+    handle.start(marshal.dumps((list(command), env)))
+    return handle
+
+
+def _stop_command(proc: _CommandShim, procs_paths: list[str]) -> None:
+    """SIGKILL everything this command started, and nothing else.
+
+    The tree kill goes first, while the shim is alive to catch orphans.
+    The group kill runs even when the leader has exited, for members that
+    still hold the pipes; the cgroup kill covers hosts without ``/proc``.
+    """
+    proc.kill_tree()
+    _kill_command_group(proc.pid)
+    _kill_command_cgroup(procs_paths)
+
+
 def _snapshot_chunks(chunks: list[bytes], lock: threading.Lock) -> bytes:
     with lock:
         return b"".join(chunks)
@@ -599,7 +1028,7 @@ def _ipc_peer_gone_select(conn: socket.socket, wait: float) -> bool:
 
 
 def _collect_exec_output(
-    proc: subprocess.Popen[bytes],
+    proc: _CommandShim,
     conn: socket.socket,
     stdin_bytes: bytes | None,
     timeout: float | None,
@@ -609,9 +1038,10 @@ def _collect_exec_output(
 
     Returns ``(reason, stdout, stderr)``. ``reason`` is ``"ok"``,
     ``"timeout"``, or ``"client_gone"``. A timeout or a dropped IPC
-    connection SIGKILLs this command's process group only. Bytes already
-    read stay in the buffers when the post-kill drain ends, including
-    when descendants still hold the pipes.
+    connection SIGKILLs every process this command started, and only
+    those (``_stop_command``). Bytes already read stay in the buffers
+    when the post-kill drain ends, including when descendants still hold
+    the pipes.
     """
     stdout_chunks: list[bytes] = []
     stderr_chunks: list[bytes] = []
@@ -666,19 +1096,24 @@ def _collect_exec_output(
             now = time.monotonic()
             if deadline is not None and now >= deadline:
                 reason = "timeout"
-                if proc.poll() is None:
-                    _kill_command_group(proc.pid)
-                _kill_command_cgroup(procs_paths)
+                _stop_command(proc, procs_paths)
                 drain_deadline = time.monotonic() + _POST_KILL_DRAIN_SECONDS
                 continue
             slice_wait = _EXEC_POLL_SECONDS
             if deadline is not None:
                 slice_wait = min(slice_wait, max(0.0, deadline - now))
-            if _ipc_peer_gone(conn, slice_wait):
+            # Block on whatever ends the exec next (pipe EOF, then the
+            # shim's exit report) so it returns as soon as it happens; the
+            # IPC check below then does not sleep.
+            if not stdout_done.is_set():
+                stdout_done.wait(slice_wait)
+            elif not stderr_done.is_set():
+                stderr_done.wait(slice_wait)
+            else:
+                proc.wait(slice_wait)
+            if _ipc_peer_gone(conn, 0.0):
                 reason = "client_gone"
-                if proc.poll() is None:
-                    _kill_command_group(proc.pid)
-                _kill_command_cgroup(procs_paths)
+                _stop_command(proc, procs_paths)
                 drain_deadline = time.monotonic() + _POST_KILL_DRAIN_SECONDS
             continue
         if _pipes_closed():
@@ -745,22 +1180,15 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
 
         merged_env = build_child_env(env_override)
 
-        proc_kwargs: dict[str, Any] = {
-            "stdin": subprocess.PIPE if stdin_size else subprocess.DEVNULL,
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.PIPE,
-            "env": merged_env,
-            "close_fds": True,
-            # Isolate each exec in its own session so kill(0) from user
-            # code cannot reach the long-running daemon process group.
-            "start_new_session": True,
-        }
-        if workdir:
-            proc_kwargs["cwd"] = workdir
-        proc_kwargs["preexec_fn"] = _make_command_preexec(cgroup_procs)
-
         try:
-            proc = subprocess.Popen(command, **proc_kwargs)
+            proc = _start_command(
+                command,
+                env=merged_env,
+                workdir=workdir,
+                stdin=subprocess.PIPE if stdin_size else subprocess.DEVNULL,
+                output=subprocess.PIPE,
+                cgroup_procs=cgroup_procs,
+            )
         except OSError as exc:
             # ``OSError`` already covers ``FileNotFoundError`` and
             # ``PermissionError``; keep one branch (G.ERR.09).
@@ -775,13 +1203,18 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
             )
             return
 
-        reason, stdout_bytes, stderr_bytes = _collect_exec_output(
-            proc,
-            conn,
-            stdin_bytes if stdin_size else None,
-            float(timeout) if timeout is not None else None,
-            cgroup_procs,
-        )
+        try:
+            reason, stdout_bytes, stderr_bytes = _collect_exec_output(
+                proc,
+                conn,
+                stdin_bytes if stdin_size else None,
+                float(timeout) if timeout is not None else None,
+                cgroup_procs,
+            )
+        finally:
+            # Like the host's command cgroup release: once the exec
+            # returns, nothing it started is left running.
+            proc.finish()
         if reason == "timeout":
             stderr_text = stderr_bytes.decode("utf-8", errors="replace")
             stderr_text = (
@@ -1359,11 +1792,70 @@ def _fastpath_plan(
 # stdlib-only. The worker is a single-threaded interpreter; each request
 # ``fork()``s a child that runs the user's ``-c`` code, so the interpreter's
 # already-loaded state (stdlib + site) is shared with the child via copy-on-
-# write instead of paying a full interpreter cold start per exec.
+# write instead of paying a full interpreter cold start per exec. The
+# worker is a child subreaper serving one request at a time, so every
+# process it has under it belongs to the current request; ending a
+# request kills all of them (``_kill_descendants``), as the Popen path's
+# shim does.
 FORKSERVER_WORKER_SOURCE = r'''
 import builtins, json, os, select, signal, socket, struct, sys, time, traceback, types
 
 MARKER = "JIWENBOX_FORK_WORKER"
+# Mirrors the daemon's ``_POST_KILL_DRAIN_SECONDS`` and tree-kill budget.
+POST_KILL_DRAIN_SECONDS = 5.0
+TREE_KILL_SECONDS = 2.0
+
+
+def _become_subreaper():
+    try:
+        import ctypes
+        ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)  # PR_SET_CHILD_SUBREAPER
+    except Exception:
+        pass
+
+
+def _descendants(root):
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return []
+    children = {}
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % name, "rb") as fh:
+                stat = fh.read()
+        except OSError:
+            continue
+        fields = stat[stat.rfind(b")") + 2:].split()
+        if len(fields) < 2 or fields[0] in (b"Z", b"X"):
+            continue
+        children.setdefault(int(fields[1]), []).append(int(name))
+    found = []
+    pending = [root]
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            found.append(child)
+            pending.append(child)
+    return found
+
+
+def _kill_descendants():
+    """SIGKILL everything the current request started (see the module note)."""
+    deadline = time.monotonic() + TREE_KILL_SECONDS
+    while True:
+        pids = _descendants(os.getpid())
+        if not pids:
+            return
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.01)
 
 
 def _recv_exact(sock, n):
@@ -1601,17 +2093,15 @@ def _run_child(code, stdin_bytes, workdir, env_overrides, timeout, control_fd,
     err = b""
     deadline = time.monotonic() + timeout if timeout is not None else None
     timed_out = False
+    drain_deadline = None
     stdout_fd = r_out
     stderr_fd = r_err
-    # Reap the child exactly once. ``os.waitpid(pid, WNOHANG)`` may be called
-    # many times across loop iterations (the child is often reaped before its
-    # stdout/stderr pipes reach EOF), but a *second* successful ``waitpid`` on
-    # the same pid raises ``ChildProcessError`` (ECHILD, errno 10). Before this
-    # guard, that exception escaped ``_run_child`` and surfaced to the client
-    # as ``worker error: [Errno 10] No child processes`` on ~0.1% of requests.
-    # Once the child is reaped we save its wait status and never call
-    # ``waitpid(pid)`` again -- subsequent iterations only drain the pipes.
-    child_status = None   # saved wait status after the first successful reap
+    # Reap with ``waitpid(-1)``: the request's orphans land on this
+    # subreaper too. The child's own status is saved the one time it is
+    # reaped; a *second* ``waitpid(pid)`` would raise ``ChildProcessError``
+    # (ECHILD, errno 10), which once surfaced to the client as
+    # ``worker error: [Errno 10] No child processes``.
+    child_status = None   # saved wait status after the child is reaped
     child_done = False
     while True:
         fds = [fd for fd in (stdout_fd, stderr_fd) if fd != -1]
@@ -1637,26 +2127,46 @@ def _run_child(code, stdin_bytes, workdir, env_overrides, timeout, control_fd,
                     err += chunk
         if deadline is not None and time.monotonic() >= deadline and not timed_out:
             timed_out = True
+            _kill_descendants()
             try:
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
-        if not child_done:
-            # First (and only) reap attempt. ``wpid == 0`` means the child is
-            # still running; ``wpid == pid`` means it was just reaped. Either
-            # way we never reach this branch again once ``child_done`` is set.
+            drain_deadline = time.monotonic() + POST_KILL_DRAIN_SECONDS
+        while True:
             try:
-                wpid, status = os.waitpid(pid, os.WNOHANG)
+                wpid, status = os.waitpid(-1, os.WNOHANG)
             except ChildProcessError:
-                # Defensive: a direct fork child we have not reaped should not
-                # disappear, but if it does, treat it as gone with an unknown
-                # (zero) status rather than propagating ECHILD.
-                wpid, status = pid, 0
+                # Defensive: the child should not disappear unreaped, but if
+                # it does, treat it as gone with an unknown (zero) status
+                # rather than propagating ECHILD.
+                child_done = True
+                break
+            if wpid == 0:
+                break
             if wpid == pid:
                 child_done = True
                 child_status = status
+        if child_done and drain_deadline is not None and time.monotonic() >= drain_deadline:
+            # A writer this worker could not kill still holds the pipes;
+            # keep what was read.
+            for fd in (stdout_fd, stderr_fd):
+                if fd != -1:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+            stdout_fd = stderr_fd = -1
         pipes_done = stdout_fd == -1 and stderr_fd == -1
         if child_done and pipes_done:
+            # Nothing the request started outlives it.
+            _kill_descendants()
+            while True:
+                try:
+                    if os.waitpid(-1, os.WNOHANG)[0] == 0:
+                        break
+                except ChildProcessError:
+                    break
             if timed_out:
                 # Shape stderr exactly like the normal subprocess path's
                 # TimeoutExpired branch. box-server surfaces only
@@ -1679,6 +2189,7 @@ def _run_child(code, stdin_bytes, workdir, env_overrides, timeout, control_fd,
 
 def _worker_main(fd_str):
     fd = int(fd_str)
+    _become_subreaper()
     sock = socket.socket(family=socket.AF_UNIX, type=socket.SOCK_STREAM, fileno=fd)
     while True:
         try:
@@ -1911,6 +2422,35 @@ class _FastPathRequest:
     env_overrides: dict[str, str] | None
     timeout: float | None
     plan: dict[str, Any] | None = None
+    # True once the exec's client has dropped its connection.
+    cancelled: Callable[[], bool] | None = None
+
+
+def _await_worker_answer(
+    sock: socket.socket,
+    worker_pid: int,
+    cancelled: Callable[[], bool] | None,
+    timeout: float,
+) -> None:
+    """Wait until the worker's answer is readable, watching for a cancel.
+
+    When the exec's client drops, everything the request started is
+    killed; the worker, their subreaper, then answers and the caller
+    reads that answer as usual. Raises ``TimeoutError`` as the socket
+    read it precedes would.
+    """
+    deadline = time.monotonic() + timeout
+    killed = False
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("fastpath worker did not answer in time")
+        readable, _, _ = select.select([sock], [], [], min(_EXEC_POLL_SECONDS, remaining))
+        if readable:
+            return
+        if not killed and cancelled is not None and cancelled():
+            killed = True
+            _kill_process_tree(worker_pid)
 
 
 class ForkServerPool:
@@ -2229,9 +2769,8 @@ class ForkServerPool:
             # whose pipes take the whole post-kill drain to close is still
             # answered here, instead of this socket timing out as the
             # result is sent.
-            sock.settimeout(
-                (timeout or _FASTPATH_TIMEOUT_FLOOR_SECONDS) + _IPC_CLIENT_MARGIN_SECONDS
-            )
+            answer_wait = (timeout or _FASTPATH_TIMEOUT_FLOOR_SECONDS) + _IPC_CLIENT_MARGIN_SECONDS
+            sock.settimeout(answer_wait)
             dispatched = True  # dispatch begins here: about to send the header
             _send_frame(sock, json.dumps(header).encode("utf-8"))
             if stdin_bytes:
@@ -2239,6 +2778,7 @@ class ForkServerPool:
                 sock.sendall(stdin_bytes)
             else:
                 sock.sendall(struct.pack(">I", 0))
+            _await_worker_answer(sock, proc.pid, request.cancelled, answer_wait)
             resp_bytes = _recv_frame(sock, _FASTPATH_MAX_FRAME)
             response = json.loads(resp_bytes.decode("utf-8"))
         except Exception as exc:  # worker became unusable
@@ -2247,6 +2787,10 @@ class ForkServerPool:
                 sock.close()
             except OSError:
                 pass
+            # Kill the request's processes while the worker (their
+            # subreaper) is alive; killing the worker first orphans them.
+            if proc.poll() is None:
+                _kill_process_tree(proc.pid)
             try:
                 proc.kill()
             except OSError:
@@ -2352,6 +2896,7 @@ def _try_fastpath_exec(
                 env_overrides=header.get("env"),
                 timeout=header.get("timeout"),
                 plan=script_plan,
+                cancelled=lambda: _ipc_peer_gone(conn, 0.0),
             )
         )
     except FastPathUnavailable as exc:
@@ -2745,7 +3290,7 @@ def _handle_list_dir(conn: socket.socket, header: dict[str, Any]) -> None:
 class _BgJob:
     job_id: str
     command: list[str]
-    proc: subprocess.Popen
+    proc: _CommandShim
     cgroup_procs: tuple[str, ...] = ()
 
 
@@ -2774,8 +3319,10 @@ def _commit_bg_job(job_id: str, job: _BgJob) -> None:
 
 
 def _sync_bg_job(job: _BgJob) -> None:
-    if job.proc.returncode is None:
-        job.proc.poll()
+    # Once the leader is reported stopped, nothing it started keeps running;
+    # the host releases the job's cgroup at the same point.
+    if job.proc.poll() is not None:
+        job.proc.finish()
 
 
 def _bg_job_response(
@@ -2845,26 +3392,35 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
         try:
             merged_env = build_child_env(env_override)
 
-            # Background jobs discard stdout/stderr; use ``exec`` when output
-            # must be captured.
-            proc_kwargs: dict[str, Any] = {
-                "stdin": subprocess.PIPE if stdin_size else subprocess.DEVNULL,
-                "stdout": subprocess.DEVNULL,
-                "stderr": subprocess.DEVNULL,
-                "env": merged_env,
-                "close_fds": True,
-                "start_new_session": True,
-            }
-            if workdir:
-                proc_kwargs["cwd"] = workdir
-            proc_kwargs["preexec_fn"] = _make_command_preexec(cgroup_procs)
-
             try:
-                proc = subprocess.Popen(command, **proc_kwargs)
+                # Background jobs discard stdout/stderr; use ``exec`` when
+                # output must be captured.
+                proc = _start_command(
+                    command,
+                    env=merged_env,
+                    workdir=workdir,
+                    stdin=subprocess.PIPE if stdin_size else subprocess.DEVNULL,
+                    output=subprocess.DEVNULL,
+                    cgroup_procs=cgroup_procs,
+                )
+            except OSError as exc:
+                _send_response(
+                    conn,
+                    _bg_job_response(
+                        ok=False,
+                        job_id=job_id,
+                        started=False,
+                        error="spawn_failed",
+                        stderr=f"failed to spawn background command: {exc}",
+                    ),
+                )
+                return
+            try:
                 if stdin_size and proc.stdin is not None:
                     proc.stdin.write(stdin_bytes)
                     proc.stdin.close()
             except OSError as exc:
+                proc.finish()
                 _send_response(
                     conn,
                     _bg_job_response(
@@ -2990,10 +3546,22 @@ def _handle_bg_kill(conn: socket.socket, header: dict[str, Any]) -> None:
         return
 
     _sync_bg_job(job)
-    # setsid children are not in the leader's process group. The cgroup
-    # kill reaches them; send_signal below remains the session leader's signal.
+    reason = "already_exited"
+    if job.proc.returncode is None:
+        try:
+            job.proc.send_signal(signum)
+        except ProcessLookupError:
+            reason = "already_exited"
+        except OSError:
+            reason = "permission_denied"
+        else:
+            reason = "ok"
+        # setsid children are not in the leader's process group. The tree
+        # kill (and the cgroup kill below) reach them: nothing the job
+        # started outlives it.
+        job.proc.finish()
     _kill_command_cgroup(list(job.cgroup_procs))
-    if job.proc.returncode is not None:
+    if reason != "ok":
         _send_response(
             conn,
             {
@@ -3001,56 +3569,12 @@ def _handle_bg_kill(conn: socket.socket, header: dict[str, Any]) -> None:
                 "ok": True,
                 "job_id": job_id,
                 "killed": False,
-                "reason": "already_exited",
+                "reason": reason,
                 "exit_code": job.proc.returncode,
             },
         )
         return
 
-    try:
-        job.proc.send_signal(signum)
-    except ProcessLookupError:
-        _sync_bg_job(job)
-        _send_response(
-            conn,
-            {
-                "v": PROTOCOL_VERSION,
-                "ok": True,
-                "job_id": job_id,
-                "killed": False,
-                "reason": "already_exited",
-                "exit_code": job.proc.returncode,
-            },
-        )
-        return
-    except PermissionError:
-        _send_response(
-            conn,
-            {
-                "v": PROTOCOL_VERSION,
-                "ok": True,
-                "job_id": job_id,
-                "killed": False,
-                "reason": "permission_denied",
-                "exit_code": job.proc.returncode,
-            },
-        )
-        return
-    except OSError:
-        _send_response(
-            conn,
-            {
-                "v": PROTOCOL_VERSION,
-                "ok": True,
-                "job_id": job_id,
-                "killed": False,
-                "reason": "permission_denied",
-                "exit_code": job.proc.returncode,
-            },
-        )
-        return
-
-    _sync_bg_job(job)
     _send_response(
         conn,
         {

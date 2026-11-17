@@ -24,11 +24,12 @@ from tests.support.symlinks import symlink_or_skip
 
 @dataclass(frozen=True, slots=True)
 class _Settings:
-    """Stand-in with the three sandbox fields. Not the Settings class."""
+    """Stand-in with the four sandbox fields. Not the Settings class."""
 
     sandbox_enabled: bool = True
     sandbox_url: str = "http://sandbox.test"
     sandbox_token: str = ""
+    sandbox_network: str = "guarded"
 
 
 class _Script:

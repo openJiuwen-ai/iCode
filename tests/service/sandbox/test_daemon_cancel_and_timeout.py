@@ -31,7 +31,7 @@ _KEPT_STDOUT = b"kept-output\n"
 
 
 class _HoldingProc:
-    """A Popen stand-in whose pipes stay open until the group is released.
+    """A command-shim stand-in whose pipes stay open until the group is released.
 
     ``communicate`` drops partial reads and does not notice ``killpg``.
     That is the old timeout path: a test that still ends up there sees
@@ -45,6 +45,8 @@ class _HoldingProc:
         self.stdin = None
         self.direct_killed = False
         self.group_signaled = False
+        self.tree_kills = 0
+        self.finished = False
         out_read, out_write = os.pipe()
         err_read, err_write = os.pipe()
         if stdout:
@@ -88,8 +90,18 @@ class _HoldingProc:
     def poll(self) -> int | None:
         return self.returncode
 
+    def wait(self, timeout: float) -> int | None:
+        self._released.wait(timeout)
+        return self.returncode
+
     def kill(self) -> None:
         self.direct_killed = True
+
+    def kill_tree(self) -> None:
+        self.tree_kills += 1
+
+    def finish(self) -> None:
+        self.finished = True
 
     def communicate(
         self,
@@ -134,7 +146,16 @@ class _ExecSession:
             proc = next(item for item in self.procs.values() if item.pid == pid)
             self._on_signal(proc)
 
-        def popen(command: list[str], **_kwargs: object) -> _HoldingProc:
+        def start_command(
+            command: list[str],
+            *,
+            env: dict[str, str],
+            workdir: str | None,
+            stdin: int,
+            output: int,
+            cgroup_procs: list[str],
+        ) -> _HoldingProc:
+            del env, workdir, stdin, output, cgroup_procs
             key = tuple(command)
             pid, stdout, running = self._specs[key]
             proc = _HoldingProc(pid, stdout, running=running)
@@ -143,7 +164,7 @@ class _ExecSession:
             return proc
 
         monkeypatch.setattr(sandbox_daemon.os, "killpg", killpg, raising=False)
-        monkeypatch.setattr(sandbox_daemon.subprocess, "Popen", popen)
+        monkeypatch.setattr(sandbox_daemon, "_start_command", start_command)
 
     def start(
         self,
@@ -253,6 +274,10 @@ def test_cancel_kills_only_that_command_group(monkeypatch: pytest.MonkeyPatch) -
         _assert_group_signal(session.calls, first.pid)
         assert [pid for pid, _sig in session.calls] == [first.pid]
         assert first.group_signaled is True
+        assert first.tree_kills >= 1
+        assert first.finished is True
+        assert second.tree_kills == 0
+        assert second.finished is False
         assert second.group_signaled is False
         assert second.returncode is None
         assert second.pipes_open is True
@@ -307,6 +332,35 @@ def test_timeout_kills_command_group_and_keeps_stdout(monkeypatch: pytest.Monkey
         session.close()
 
 
+def test_timeout_kills_the_group_after_its_leader_exited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A backgrounded group member keeps the pipes open after the leader exits.
+
+    The exec is still running, so the timeout must signal the group even
+    though ``poll()`` already reports the leader's exit.
+    """
+    session = _ExecSession(monkeypatch, on_signal=_HoldingProc.release_group)
+    try:
+        client, done = session.start(
+            ["leader-gone"],
+            pid=71071,
+            stdout=b"started\n",
+            running=True,
+            timeout=0.4,
+        )
+        proc = session.wait_ready(["leader-gone"])
+        proc.returncode = 0
+        assert done.wait(3), "timed-out exec did not finish"
+        response = _read_response(client)
+        _assert_group_signal(session.calls, proc.pid)
+        assert proc.tree_kills >= 1
+        assert proc.finished is True
+        assert response["exit_code"] == 124
+        assert response["stdout"] == "started\n"
+        assert session.errors == []
+    finally:
+        session.close()
+
+
 def test_completed_exec_returns_stdout_without_a_group_signal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -325,6 +379,7 @@ def test_completed_exec_returns_stdout_without_a_group_signal(
         assert response["exit_code"] == 0
         assert response["stdout"] == "done\n"
         assert session.calls == []
+        assert session.procs[("echo-ok",)].finished is True
         assert session.errors == []
     finally:
         session.close()

@@ -7,9 +7,10 @@ from __future__ import annotations
 import ast
 import asyncio
 import builtins
+import contextlib
 import json
 import os
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -33,11 +34,12 @@ _SPAWN_CALLS: list[str] = []
 
 @dataclass(frozen=True, slots=True)
 class _Settings:
-    """Stand-in with the three sandbox fields. Not the Settings class."""
+    """Stand-in with the four sandbox fields. Not the Settings class."""
 
     sandbox_enabled: bool = True
     sandbox_url: str = "http://sandbox.test"
     sandbox_token: str = ""
+    sandbox_network: str = "guarded"
 
 
 class _Script:
@@ -439,11 +441,16 @@ def _forbid_supervisor_and_host_spawn(monkeypatch: pytest.MonkeyPatch):
         _SPAWN_CALLS.append("ensure-started")
         raise SandboxError("supervisor was started")
 
+    def forbid_lease(*_args: object, **_kwargs: object) -> object:
+        _SPAWN_CALLS.append("leased-server")
+        raise SandboxError("supervisor was leased")
+
     def forbid_managed(*_args: object, **_kwargs: object) -> object:
         _SPAWN_CALLS.append("managed-subprocess")
         raise AssertionError("managed subprocess")
 
     monkeypatch.setattr("chrys.service.sandbox.supervisor.ensure_started", forbid)
+    monkeypatch.setattr("chrys.service.sandbox.supervisor.leased_server", forbid_lease)
     monkeypatch.setattr("chrys.foundation.platform.process.managed_subprocess", forbid_managed)
 
 
@@ -609,20 +616,24 @@ async def test_configured_url_does_not_start_the_supervisor(monkeypatch: pytest.
 
 
 async def test_empty_url_asks_the_supervisor_and_uses_its_address(monkeypatch: pytest.MonkeyPatch):
-    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    calls: list[str] = []
 
-    async def fake_started(*args: object, **kwargs: object) -> tuple[str, str]:
-        calls.append((args, kwargs))
-        return "http://started.sandbox", "generated-token"
+    @contextlib.asynccontextmanager
+    async def fake_lease(network_mode: str) -> AsyncIterator[tuple[str, str]]:
+        calls.append(f"enter:{network_mode}")
+        try:
+            yield "http://started.sandbox", "generated-token"
+        finally:
+            calls.append("exit")
 
-    monkeypatch.setattr("chrys.service.sandbox.supervisor.ensure_started", fake_started)
+    monkeypatch.setattr("chrys.service.sandbox.supervisor.leased_server", fake_lease)
     script = _Script()
     result = await _run(
         script,
         monkeypatch,
-        _Settings(sandbox_url="", sandbox_token="bearer-token"),
+        _Settings(sandbox_url="", sandbox_token="bearer-token", sandbox_network="offline"),
     )
-    assert calls == [((), {})]
+    assert calls == ["enter:offline", "exit"]
     assert result.exit_code == 0
     assert script.events
     assert {event[3] for event in script.events} == {"Bearer generated-token"}
@@ -1400,7 +1411,7 @@ async def test_two_symlink_spellings_are_one_writable_sandbox(tmp_path: Path, mo
     assert second.exit_code == 0
     assert _create_bodies(script) == [_mount_body(physical, "rw")]
     assert _exec_ids(script) == ["sb-1", "sb-1"]
-    assert _exec_workdirs(script) == [str(link_a / "sub"), str(link_b)]
+    assert _exec_workdirs(script) == [_physical(sub), physical]
     assert backend._writable_by_root == {physical: "sb-1"}
     assert _mount_body(_physical(sub), "rw") not in _create_bodies(script)
     assert _SPAWN_CALLS == []
@@ -1589,7 +1600,254 @@ async def test_dotdot_spelling_and_directory_are_one_writable_sandbox(tmp_path: 
     assert second.exit_code == 0
     assert _create_bodies(script) == [_mount_body(physical, "rw")]
     assert _exec_ids(script) == ["sb-1", "sb-1"]
-    assert _exec_workdirs(script) == [str(via_parent / "pkg"), str(work)]
+    assert _exec_workdirs(script) == [_physical(pkg), physical]
     assert backend._writable_by_root == {physical: "sb-1"}
     assert _mount_body(_physical(pkg), "rw") not in _create_bodies(script)
+    assert _SPAWN_CALLS == []
+
+
+def _deleted(script: _Script) -> list[str]:
+    return [path for method, path in _paths(script) if method == "DELETE"]
+
+
+async def test_adding_a_workspace_dir_creates_a_sandbox_that_mounts_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Same primary root, one more directory: the cached sandbox lacks that mount."""
+    work = tmp_path / "work"
+    work.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    physical_work = _physical(work)
+    physical_extra = _physical(extra)
+    script = _Script()
+    script.distinct_ids = True
+    _install(monkeypatch, script)
+    settings = _Settings()
+    await _run_workspace(settings, argv=("echo", "before"), cwd=str(work), workspace_root=str(work))
+    added = await _run_workspace(
+        settings,
+        argv=("echo", "added"),
+        cwd=str(work),
+        workspace_root=str(work),
+        workspace_dirs=(str(extra),),
+    )
+    in_extra = await _run_workspace(
+        settings,
+        argv=("echo", "extra"),
+        cwd=str(extra),
+        workspace_root=str(work),
+        workspace_dirs=(str(extra),),
+    )
+    assert added.exit_code == 0
+    assert in_extra.exit_code == 0
+    assert _create_bodies(script) == [
+        _mount_body(physical_work, "rw"),
+        _mount_body_paths((physical_work, physical_extra), "rw"),
+    ]
+    assert _exec_ids(script) == ["sb-1", "sb-2", "sb-2"]
+    assert _deleted(script) == ["/api/v1/sandboxes/sb-1"]
+    assert backend._writable_by_root == {physical_work: "sb-2"}
+    assert backend._writable_mounts == {physical_work: (physical_work, physical_extra)}
+    assert _SPAWN_CALLS == []
+
+
+async def test_removing_a_workspace_dir_stops_using_the_sandbox_that_mounts_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A removed directory is not writable through the sandbox that still mounts it."""
+    work = tmp_path / "work"
+    work.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    physical_work = _physical(work)
+    physical_extra = _physical(extra)
+    script = _Script()
+    script.distinct_ids = True
+    _install(monkeypatch, script)
+    settings = _Settings()
+    await _run_workspace(
+        settings,
+        argv=("echo", "both"),
+        cwd=str(work),
+        workspace_root=str(work),
+        workspace_dirs=(str(extra),),
+    )
+    removed = await _run_workspace(settings, argv=("echo", "work"), cwd=str(work), workspace_root=str(work))
+    in_extra = await _run_workspace(settings, argv=("echo", "extra"), cwd=str(extra), workspace_root=str(work))
+    assert removed.exit_code == 0
+    assert in_extra.exit_code == 0
+    assert _create_bodies(script) == [
+        _mount_body_paths((physical_work, physical_extra), "rw"),
+        _mount_body(physical_work, "rw"),
+        _mount_body(physical_extra, "ro"),
+    ]
+    assert _exec_ids(script) == ["sb-1", "sb-2", "sb-3"]
+    assert _deleted(script) == ["/api/v1/sandboxes/sb-1"]
+    assert backend._writable_by_root == {physical_work: "sb-2"}
+    assert backend._writable_mounts == {physical_work: (physical_work,)}
+    assert backend._readonly_id == "sb-3"
+    assert _SPAWN_CALLS == []
+
+
+async def test_superseded_workspace_sandbox_is_deleted_only_after_its_running_exec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Another session's new mount set does not delete the sandbox a command still runs in."""
+    work = tmp_path / "work"
+    work.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    script = _Script()
+    script.distinct_ids = True
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    transport = _PausingTransport(script, entered, release, pause_when=_is_exec)
+    _install_transport(monkeypatch, transport)
+    settings = _Settings()
+    task_a = asyncio.create_task(_run_workspace(settings, argv=("echo", "a"), cwd=str(work), workspace_root=str(work)))
+    try:
+        await wait_for(lambda: entered.is_set() or task_a.done(), description="first exec is in flight")
+        if task_a.done():
+            await task_a
+        assert not task_a.done()
+        second = await _run_workspace(
+            settings,
+            argv=("echo", "b"),
+            cwd=str(work),
+            workspace_root=str(work),
+            workspace_dirs=(str(extra),),
+        )
+        assert second.exit_code == 0
+        assert not task_a.done()
+        assert _deleted(script) == []
+        assert backend._retiring == {"sb-1"}
+        release.set()
+        first = await task_a
+    finally:
+        release.set()
+        await _cancel_pending(task_a)
+    assert first.exit_code == 0
+    assert _exec_ids(script) == ["sb-2", "sb-1"]
+    assert _deleted(script) == ["/api/v1/sandboxes/sb-1"]
+    assert _paths(script).index(("DELETE", "/api/v1/sandboxes/sb-1")) > _paths(script).index(
+        ("POST", "/api/v1/sandboxes/sb-1/exec")
+    )
+    assert backend._writable_by_root == {_physical(work): "sb-2"}
+    assert backend._in_flight == {}
+    assert backend._retiring == set()
+    assert _SPAWN_CALLS == []
+
+
+async def _replace_readonly_while_first_exec_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[_Script, asyncio.Task[SandboxExec], asyncio.Event]:
+    """Park a read-only exec in ``sb-1``, then finish a command that replaces it with ``sb-2``."""
+    work = tmp_path / "work"
+    work.mkdir()
+    out_a = tmp_path / "out-a"
+    out_a.mkdir()
+    out_b = tmp_path / "out-b"
+    out_b.mkdir()
+    script = _Script()
+    script.distinct_ids = True
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    transport = _PausingTransport(script, entered, release, pause_when=_is_exec)
+    _install_transport(monkeypatch, transport)
+    settings = _Settings()
+    task_a = asyncio.create_task(_run_workspace(settings, argv=("echo", "a"), cwd=str(out_a), workspace_root=str(work)))
+    try:
+        await wait_for(lambda: entered.is_set() or task_a.done(), description="read-only exec is in flight")
+        if task_a.done():
+            await task_a
+        assert not task_a.done()
+        second = await _run_workspace(settings, argv=("echo", "b"), cwd=str(out_b), workspace_root=str(work))
+    except BaseException:
+        release.set()
+        await _cancel_pending(task_a)
+        raise
+    assert second.exit_code == 0
+    assert backend._readonly_id == "sb-2"
+    assert _create_bodies(script) == [_mount_body(_physical(out_a), "ro"), _mount_body(_physical(out_b), "ro")]
+    assert _exec_ids(script) == ["sb-2"]
+    return script, task_a, release
+
+
+async def test_replacing_a_readonly_sandbox_waits_for_its_running_exec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The replaced read-only sandbox is deleted after its last exec, not under it."""
+    script, task_a, release = await _replace_readonly_while_first_exec_runs(tmp_path, monkeypatch)
+    try:
+        assert not task_a.done()
+        assert _deleted(script) == []
+        assert backend._in_flight == {"sb-1": 1}
+        assert backend._retiring == {"sb-1"}
+        release.set()
+        first = await task_a
+    finally:
+        release.set()
+        await _cancel_pending(task_a)
+    assert first.exit_code == 0
+    assert _exec_ids(script) == ["sb-2", "sb-1"]
+    assert _deleted(script) == ["/api/v1/sandboxes/sb-1"]
+    assert _paths(script).index(("DELETE", "/api/v1/sandboxes/sb-1")) > _paths(script).index(
+        ("POST", "/api/v1/sandboxes/sb-1/exec")
+    )
+    assert backend._in_flight == {}
+    assert backend._retiring == set()
+    assert _SPAWN_CALLS == []
+
+
+async def test_cancelled_exec_in_a_replaced_sandbox_still_releases_and_deletes_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Cancel ends the in-flight use. The replaced sandbox is deleted, and nothing is stopped."""
+    script, task_a, release = await _replace_readonly_while_first_exec_runs(tmp_path, monkeypatch)
+    try:
+        assert _deleted(script) == []
+        task_a.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task_a
+    finally:
+        release.set()
+        await _cancel_pending(task_a)
+    assert _deleted(script) == ["/api/v1/sandboxes/sb-1"]
+    assert not any(path.endswith("/stop") for _method, path in _paths(script))
+    assert _exec_ids(script) == ["sb-2"]
+    assert backend._readonly_id == "sb-2"
+    assert backend._in_flight == {}
+    assert backend._retiring == set()
+    assert _SPAWN_CALLS == []
+
+
+@pytest.mark.parametrize("inside_workspace", [True, False], ids=["writable", "read-only"])
+async def test_symlinked_cwd_execs_in_the_physical_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inside_workspace: bool,
+):
+    """Only physical paths are mounted, so the exec workdir is the physical cwd, not the alias."""
+    work = tmp_path / "work"
+    work.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = work if inside_workspace else outside
+    alias = tmp_path / "alias"
+    symlink_or_skip(alias, target, target_is_directory=True)
+    physical_target = _physical(target)
+    assert str(alias) != physical_target
+    script = _Script()
+    _install(monkeypatch, script)
+    result = await _run_workspace(_Settings(), cwd=str(alias), workspace_root=str(work))
+    assert result.exit_code == 0
+    assert _create_bodies(script) == [_mount_body(physical_target, "rw" if inside_workspace else "ro")]
+    assert _exec_workdirs(script) == [physical_target]
     assert _SPAWN_CALLS == []
