@@ -484,13 +484,35 @@ class LoopRecorder:
             return
         if slot.fill_kind == "raw" and slot.result is not None:
             result_metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] = True
-            existing = slot.result.additional_properties.get(TOOL_RESULT_METADATA_KEY)
-            if isinstance(existing, Mapping):
-                result_metadata = {**existing, **result_metadata}
-            slot.result.additional_properties[TOOL_RESULT_METADATA_KEY] = result_metadata
-            timing = _tool_trajectory_timing(function_call, invocation_context)
-            slot.result.additional_properties[TRAJECTORY_TIMING_KEY] = timing
-            self._kick_result_checkpoint()
+            if invocation_context is not None and invocation_context.result is not None:
+                # Middleware completed before the cancellation landed, so
+                # ``invocation_context.result`` carries the hooks-processed
+                # value (redacted text, extra_context, result_override…).
+                # Replace the raw slot with that processed result rather than
+                # keeping text the hooks had not yet finalised.
+                existing = slot.result.additional_properties.get(TOOL_RESULT_METADATA_KEY)
+                if isinstance(existing, Mapping):
+                    result_metadata = {**existing, **result_metadata}
+                additional = _result_additional_properties(function_call, invocation_context)
+                additional[TOOL_RESULT_METADATA_KEY] = result_metadata
+                processed = Content.from_function_result(
+                    call_id=function_call.call_id,  # type: ignore[arg-type]
+                    result=invocation_context.result,
+                    additional_properties=additional,
+                )
+                self._fill_slot(exchange, slot, processed, fill_kind="interrupted", upgrade_raw=True)
+            else:
+                # ``invocation_context is None``: the tool completed via
+                # ``SyncToolCancelledAfterCompletion`` and middleware never ran —
+                # raw is already the final, safe value; keep it and only
+                # update its metadata.
+                existing = slot.result.additional_properties.get(TOOL_RESULT_METADATA_KEY)
+                if isinstance(existing, Mapping):
+                    result_metadata = {**existing, **result_metadata}
+                slot.result.additional_properties[TOOL_RESULT_METADATA_KEY] = result_metadata
+                timing = _tool_trajectory_timing(function_call, invocation_context)
+                slot.result.additional_properties[TRAJECTORY_TIMING_KEY] = timing
+                self._kick_result_checkpoint()
             return
         if slot.result is not None:
             # Final results are immutable; raw and interrupted fills took

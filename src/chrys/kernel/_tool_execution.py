@@ -1018,6 +1018,19 @@ async def _invoke_function_call(
         # boundary, so their measured timing and result metadata are now on
         # the invocation context. Commit with that context before the outer
         # batch-level cancellation fallback loses it.
+        #
+        # Sanitise context.result before passing it to commit_interrupted:
+        # - ``SyncToolCancelledAfterCompletion`` raised inside final_wrapper
+        #   before its ``await`` could resolve, leaving ``context.result``
+        #   holding an un-awaited coroutine object.  Discard it; the raw slot
+        #   already carries the completed sync result.
+        # - Hooks may have expanded the text beyond the caller-imposed ceiling.
+        #   Apply the same ceiling the normal commit path uses so resumed
+        #   history preserves the normal output bound.
+        if asyncio.iscoroutine(context.result):
+            context.result = None
+        elif context.result is not None and tool_result_ceiling_tokens is not None:
+            context.result = apply_result_ceiling(context.result, tool_result_ceiling_tokens)
         if result_commit is not None:
             result_commit.commit_interrupted(function_call, context)
         raise

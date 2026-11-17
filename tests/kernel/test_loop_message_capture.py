@@ -1156,6 +1156,60 @@ async def test_post_execution_middleware_cancel_keeps_raw_result_and_marks_proce
 
 
 @pytest.mark.asyncio
+async def test_post_execution_middleware_cancel_uses_processed_result_when_context_result_set() -> None:
+    """When middleware modifies context.result before cancellation, the slot keeps the processed value.
+
+    Scenario: tool returns "raw-result"; a middleware replaces context.result with
+    "processed-result" (simulating what hooks/redaction middleware does), then
+    awaits a gate. Cancellation arrives while the gate holds. The slot must end up
+    with "processed-result", not "raw-result", because middleware already finished
+    its work and the processed value is what the model should see.
+    """
+    tool_returned = asyncio.Event()
+    hold_after_modify = asyncio.Event()
+
+    @tool(name="modifying_tool")
+    async def modifying_tool() -> str:
+        return "raw-result"
+
+    class _ModifyThenHold(FunctionMiddleware):
+        async def process(
+            self,
+            context: FunctionInvocationContext,
+            call_next: Callable[[], Awaitable[None]],
+        ) -> None:
+            await call_next()
+            # Simulate what hook/redaction middleware does: replace the result.
+            context.result = "processed-result"
+            tool_returned.set()
+            await hold_after_modify.wait()
+
+    recorder = LoopRecorder()
+    layer, _wire = _stack([_call_response(("c1", "modifying_tool", {}))])
+    task = asyncio.create_task(
+        layer.get_response(
+            [_user()],
+            options={"tools": [modifying_tool]},
+            middleware=[_ModifyThenHold()],
+            client_kwargs={"loop_recorder": recorder},
+        )
+    )
+    await tool_returned.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    projected = recorder.loop_messages
+    assert projected is not None
+    result = projected[-1].contents[0]
+    metadata = result.additional_properties[TOOL_RESULT_METADATA_KEY]
+    # The middleware-processed value must survive; raw-result must not reach the model.
+    assert result.result == "processed-result"
+    assert metadata[TOOL_INTERRUPTED_METADATA_KEY] is True
+    assert metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] is True
+
+
+@pytest.mark.asyncio
 async def test_early_interrupted_slot_upgrades_timing_after_middleware_unwinds() -> None:
     """A cascade-style early fill accepts measured timing without replacing its result."""
     measured_timing = {
