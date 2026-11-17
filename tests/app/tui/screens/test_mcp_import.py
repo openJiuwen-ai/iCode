@@ -44,6 +44,7 @@ from chrys.service.mcp.importers import (
 )
 from chrys.service.mcp.importers.base import SourceServer, convert
 from chrys.service.mcp.importers.codex import CodexSource
+from chrys.service.mcp.importers.pi import PiSource
 from tests.app.tui.screens._mcp_import_support import (
     FakeSource,
     PanelApp,
@@ -61,6 +62,31 @@ from tests.support.tui_helpers import resize_when_settled
 from tests.support.waiting import wait_for
 
 _AUTH_NOT_IMPORTED = ImportWarning(WarningKind.AUTH_NOT_IMPORTED)
+
+
+@pytest.mark.parametrize("protocol", ["HTTPS", "HtTp"])
+@pytest.mark.parametrize("path", ["/CaseSensitive/%2F?Key=VaLue&escaped=%2f#Fragment", "/a b?Key=c d"])
+async def test_pi_url_protocol_is_normalized_before_editor_save(tmp_path: Path, protocol: str, path: str) -> None:
+    source_path = tmp_path / ".pi" / "agent" / "mcp.json"
+    source_path.parent.mkdir(parents=True)
+    suffix = "://example.com" + path
+    source_path.write_text(
+        json.dumps({"mcpServers": {"srv": {"url": protocol + suffix, "headers": {"Authorization": "token"}}}}),
+        encoding="utf-8",
+    )
+    source = PiSource()
+    result = source.discover(ImportContext(None, tmp_path, {}))
+    assert result.source_errors == ()
+    app = PanelApp(MCPConfigPanel([]))
+    async with app.run_test(size=(120, 80)) as pilot:
+        dialog = await open_dialog(app, pilot, [FakeSource("pi", "Pi", result)])
+        (item,) = await wait_for_items(dialog, pilot, 1)
+        item.tick.value = True
+        await import_ticked(dialog, pilot)
+        await wait_for(lambda: len(app.panel.query(MCPConnectionCard)) == 1, pilot=pilot, description="card added")
+        card = app.panel.query_one(MCPConnectionCard)
+        assert card.validate() == []
+        assert card.get_config().url == protocol.lower() + suffix
 
 
 def _unsupported(name: str, problem: Problem, field: str = "") -> McpImportCandidate:
@@ -535,7 +561,7 @@ async def test_servers_that_can_not_be_added_are_locked_as_the_add_picker_locks_
         assert len({item.card.region.x for item in items}) == 1
         assert notes_text(items[4]).splitlines() == [
             "Original configuration field: s.url",
-            format_message(problem_text(legacy, "Fake")),
+            format_message(problem_text(legacy)),
             "Configuration source: /src/config.json",
         ]
 

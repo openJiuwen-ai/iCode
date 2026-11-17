@@ -5,17 +5,20 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind
+from chrys.foundation.util.env_templates import resolve_env_templates
+from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind, pi
 from chrys.service.mcp.importers import WarningKind as Kind
 from chrys.service.mcp.importers.pi import PiSource
+from tests.support.symlinks import symlink_or_skip
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from chrys.service.mcp.importers import McpImportCandidate
 
 
@@ -90,8 +93,10 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, entry: dict[str, Any],
     assert candidate.warnings == ()
     for key, value in expected.items():
         wanted = value.replace("{home}", str(tmp_path)) if isinstance(value, str) else value
+        if isinstance(value, str) and value.startswith("{home}"):
+            wanted = os.path.normpath(wanted)
         if isinstance(value, list):
-            wanted = [item.replace("{home}", str(tmp_path)) for item in value]
+            wanted = [os.path.normpath(item.replace("{home}", str(tmp_path))) for item in value]
         assert getattr(candidate.config, key) == wanted
 
 
@@ -152,6 +157,7 @@ def test_a_value_from_a_command_is_listed_for_manual_setup(tmp_path: Path) -> No
     [
         {"type": "sse", "url": "https://x"},
         {"url": "ftp://x"},
+        {"url": "example.com/mcp"},
         {"command": "run", "exposure": "sometimes"},
         {"command": "run", "exposure": ["direct"]},
         {"command": "run", "exposure": {}},
@@ -163,6 +169,7 @@ def test_a_value_from_a_command_is_listed_for_manual_setup(tmp_path: Path) -> No
     ids=[
         "sse",
         "bad-url",
+        "no-scheme",
         "bad-exposure",
         "exposure-list",
         "exposure-object",
@@ -259,3 +266,280 @@ def test_a_file_with_comments_is_reported(tmp_path: Path) -> None:
     (error,) = _discover(tmp_path).source_errors
 
     assert (error.kind, error.line) == (SourceErrorKind.UNPARSABLE, 1)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["${INVALID:-$TOKEN}", "${INVALID:-${TOKEN}}", "${INVALID:-$$}", "${INVALID:-$!}", "${$TOKEN}", "${9}"],
+)
+@pytest.mark.parametrize("field", ["env", "headers"])
+@pytest.mark.parametrize("token_set", [False, True])
+def test_invalid_braced_blocks_stay_literal_at_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, field: str, token_set: bool
+) -> None:
+    if token_set:
+        monkeypatch.setenv("TOKEN", "fictional-secret")
+    else:
+        monkeypatch.delenv("TOKEN", raising=False)
+    entry = {"command": "run"} if field == "env" else {"url": "https://x"}
+    candidate = _only(tmp_path, {**entry, field: {"X": text}})
+
+    assert candidate.config is not None
+    values = candidate.config.env if field == "env" else candidate.config.headers
+    assert resolve_env_templates(values["X"], location="imported value") == text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("$$TOKEN", "$TOKEN"),
+        ("$!TOKEN", "!TOKEN"),
+        ("$TOKEN/${TOKEN}", "fictional/fictional"),
+        ("${INVALID:-$TOKEN", "${INVALID:-fictional"),
+        ("${INVALID:-$TOKEN}:$TOKEN", "${INVALID:-$TOKEN}:fictional"),
+        ("${INVALID:-${TOKEN} $TOKEN}", "${INVALID:-${TOKEN} fictional}"),
+        ("$9/$", "$9/$"),
+    ],
+)
+def test_templates_resume_at_pi_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, expected: str
+) -> None:
+    monkeypatch.setenv("TOKEN", "fictional")
+    candidate = _only(tmp_path, {"command": "run", "env": {"X": text}})
+
+    assert candidate.config is not None
+    assert resolve_env_templates(candidate.config.env["X"], location="imported env") == expected
+
+
+def test_home_expansion_collapses_parents_before_following_symlinks(tmp_path: Path) -> None:
+    home, other = tmp_path / "home", tmp_path / "other" / "dir"
+    home.mkdir()
+    other.mkdir(parents=True)
+    symlink_or_skip(home / "link", other, target_is_directory=True)
+    (home / "server").write_text("intended program", encoding="utf-8")
+    (other.parent / "server").write_text("different program", encoding="utf-8")
+
+    candidate = _only(home, {"command": "~/link/../server", "args": ["~/link/../server", "link/../server"]})
+
+    assert candidate.config is not None
+    assert candidate.config.command == str(home / "server")
+    assert candidate.config.args == [str(home / "server"), "link/../server"]
+    assert Path(candidate.config.command).read_text(encoding="utf-8") == "intended program"
+
+
+@pytest.mark.parametrize(
+    ("windows", "home", "value", "expected"),
+    [
+        (False, "/home/me", "~/link/../server", "/home/me/server"),
+        (False, "/home/me", "~//link/../server/", "/home/me/server/"),
+        (False, "/home/me", "~/", "/home/me"),
+        (False, "/", "~/server", "/server"),
+        (False, "/home/me", r"~\link\..\server", r"~\link\..\server"),
+        (True, r"C:\Users\me", r"~\link\..\server", r"C:\Users\me\server"),
+        (True, r"C:\Users\me", "~//link/../server/", "C:\\Users\\me\\server\\"),
+        (True, r"C:\Users\me", "~/", r"C:\Users\me"),
+        (True, r"C:\Users\me", "~//D:/server", r"C:\Users\me\D:\server"),
+    ],
+)
+def test_home_expansion_matches_node_join(
+    monkeypatch: pytest.MonkeyPatch, windows: bool, home: str, value: str, expected: str
+) -> None:
+    monkeypatch.setattr(pi, "get_platform", lambda: SimpleNamespace(is_windows=windows))
+
+    home_path = PureWindowsPath(home) if windows else PurePosixPath(home)
+    assert pi._expand_home(value, home_path) == expected
+
+
+def test_home_expansion_normalizes_the_agent_folder_before_reading(tmp_path: Path) -> None:
+    home, other = tmp_path / "home", tmp_path / "other" / "dir"
+    home.mkdir()
+    other.mkdir(parents=True)
+    symlink_or_skip(home / "link", other, target_is_directory=True)
+    _write(home / "agent" / "mcp.json", {"mcpServers": {"srv": {"command": "intended"}}})
+    _write(other.parent / "agent" / "mcp.json", {"mcpServers": {"srv": {"command": "different"}}})
+
+    (candidate,) = _discover(home, environ={"PI_CODING_AGENT_DIR": "~/link/../agent"}).candidates
+
+    assert candidate.config is not None
+    assert candidate.config.command == "intended"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"enabled": "false"},
+        {"exposure": "invalid"},
+        {"toolExposure": {"read": 1}},
+        {"env": {"X": "not-an-override"}},
+        {"command": "project", "enabled": "false"},
+        {"command": "project", "args": "not-an-array"},
+        {"command": "project", "cwd": None},
+        {"command": "project", "type": None},
+        {"command": "project", "type": ""},
+        {"url": "ftp://x"},
+        {"url": "example.com/mcp"},
+        {"url": "https://x", "auth": {"provider": "github"}},
+        {"url": "https://x", "oauth": False},
+        {"url": "https://x", "auth": {}},
+    ],
+)
+def test_invalid_project_entries_keep_the_valid_global_server(tmp_path: Path, entry: dict[str, Any]) -> None:
+    workspace = tmp_path / "ws"
+    project = workspace / ".pi" / "mcp.json"
+    _write(_global(tmp_path), {"mcpServers": {"srv": {"command": "global", "env": {"X": "kept"}}}})
+    _write(tmp_path / ".pi" / "agent" / "trust.json", {str(workspace): True})
+    _write(project, {"mcpServers": {"srv": entry}})
+
+    result = _discover(tmp_path, workspace)
+
+    (candidate,) = result.candidates
+    assert candidate.config is not None
+    assert (candidate.config.command, candidate.config.env) == ("global", {"X": "kept"})
+    assert candidate.source_path == str(_global(tmp_path))
+    (error,) = result.source_errors
+    assert (error.path, error.kind, error.field) == (str(project), SourceErrorKind.INVALID, "mcpServers.srv")
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"command": "project", "env": {"X": "!get-token"}},
+        {"command": "project", "env": {"X": " leading-space"}},
+        {"exposure": "hidden", "toolExposure": {"read,write": "direct"}},
+    ],
+)
+def test_valid_but_unrepresentable_project_entries_still_replace_global_servers(
+    tmp_path: Path, entry: dict[str, Any]
+) -> None:
+    workspace = tmp_path / "ws"
+    _write(_global(tmp_path), {"mcpServers": {"srv": {"command": "global"}}})
+    _write(tmp_path / ".pi" / "agent" / "trust.json", {str(workspace): True})
+    _write(workspace / ".pi" / "mcp.json", {"mcpServers": {"srv": entry}})
+
+    result = _discover(tmp_path, workspace)
+
+    (candidate,) = result.candidates
+    assert candidate.config is None
+    assert candidate.problem is not None
+    assert result.source_errors == ()
+
+
+@pytest.mark.parametrize(
+    ("fields", "warn"),
+    [
+        ({}, True),
+        ({"headers": {"X-Client": "Pi"}}, True),
+        ({"headers": {"Authorization": "token"}}, False),
+        ({"headers": {"aUtHoRiZaTiOn": "token"}}, False),
+        ({"oauth": {}, "headers": {"authorization": "token"}}, False),
+        ({"auth": {"provider": "github"}, "headers": {"Authorization": "token"}}, True),
+    ],
+)
+def test_authentication_warnings_follow_pi_defaults(tmp_path: Path, fields: dict[str, Any], warn: bool) -> None:
+    candidate = _only(tmp_path, {"url": "https://x", **fields})
+
+    assert candidate.config is not None
+    assert candidate.warnings == ((ImportWarning(Kind.AUTH_NOT_IMPORTED),) if warn else ())
+
+
+@pytest.mark.parametrize(
+    "oauth",
+    [None, False, [], "not-an-object"],
+)
+def test_invalid_oauth_settings_are_source_errors(tmp_path: Path, oauth: object) -> None:
+    _write(_global(tmp_path), {"mcpServers": {"bad": {"url": "https://x", "oauth": oauth}}})
+
+    result = _discover(tmp_path)
+
+    assert result.candidates == ()
+    (error,) = result.source_errors
+    assert (error.path, error.kind, error.field) == (str(_global(tmp_path)), SourceErrorKind.INVALID, "mcpServers.bad")
+
+
+@pytest.mark.parametrize(
+    "oauth",
+    [
+        {"clientId": "id", "clientSecret": "$TOKEN", "scope": "read write"},
+        {"clientRegistration": "cimd", "callbackUrl": "http://localhost/callback"},
+    ],
+)
+def test_unmigrated_oauth_options_are_not_revalidated_without_an_override(
+    tmp_path: Path, oauth: dict[str, Any]
+) -> None:
+    candidate = _only(tmp_path, {"url": "https://x", "oauth": oauth})
+
+    assert candidate.config is not None
+    assert candidate.warnings == (ImportWarning(Kind.AUTH_NOT_IMPORTED),)
+
+
+def test_an_exposure_override_keeps_global_provider_auth(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    _write(_global(tmp_path), {"mcpServers": {"srv": {"url": "https://x", "auth": {"provider": "github"}}}})
+    _write(tmp_path / ".pi" / "agent" / "trust.json", {str(workspace): True})
+    _write(workspace / ".pi" / "mcp.json", {"mcpServers": {"srv": {"enabled": False}}})
+
+    result = _discover(tmp_path, workspace)
+
+    (candidate,) = result.candidates
+    assert candidate.config is not None
+    assert candidate.config.enabled is False
+    assert candidate.warnings == (ImportWarning(Kind.AUTH_NOT_IMPORTED),)
+    assert result.source_errors == ()
+
+
+def test_a_project_namespace_clash_keeps_the_loaded_global_server(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    _write(_global(tmp_path), {"mcpServers": {"a-b": {"command": "global"}}})
+    _write(tmp_path / ".pi" / "agent" / "trust.json", {str(workspace): True})
+    _write(workspace / ".pi" / "mcp.json", {"mcpServers": {"a_b": {"command": "project"}}})
+
+    result = _discover(tmp_path, workspace)
+
+    assert [candidate.name for candidate in result.candidates] == ["a-b"]
+    (error,) = result.source_errors
+    assert error.field == "mcpServers.a_b"
+
+
+def test_partial_http_override_preserves_its_priority_with_unmigrated_oauth(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    _write(
+        _global(tmp_path),
+        {"mcpServers": {"srv": {"url": "https://x", "oauth": {"clientRegistration": "cimd"}}}},
+    )
+    _write(tmp_path / ".pi" / "agent" / "trust.json", {str(workspace): True})
+    _write(workspace / ".pi" / "mcp.json", {"mcpServers": {"srv": {"enabled": False}}})
+
+    result = _discover(tmp_path, workspace)
+
+    (candidate,) = result.candidates
+    assert candidate.config is not None
+    assert candidate.config.enabled is False
+    assert candidate.warnings == (ImportWarning(Kind.AUTH_NOT_IMPORTED),)
+    assert candidate.source_path == str(_global(tmp_path))
+    assert result.source_errors == ()
+
+
+@pytest.mark.parametrize(
+    ("fields", "url"),
+    [
+        ({}, "https://project.example/mcp"),
+        ({"oauth": {"clientId": "id"}}, "https://project.example/mcp"),
+        # URL details are copied as written; only the scheme's letter case changes.
+        ({"url": "HTTPS://Project.example/Case?Key=Value"}, "https://Project.example/Case?Key=Value"),
+        ({"url": "http://127.1/mcp"}, "http://127.1/mcp"),
+    ],
+)
+def test_http_project_servers_replace_global_ones(tmp_path: Path, fields: dict[str, Any], url: str) -> None:
+    workspace = tmp_path / "ws"
+    project = workspace / ".pi" / "mcp.json"
+    _write(_global(tmp_path), {"mcpServers": {"srv": {"command": "global"}}})
+    _write(tmp_path / ".pi" / "agent" / "trust.json", {str(workspace): True})
+    _write(project, {"mcpServers": {"srv": {"url": "https://project.example/mcp", **fields}}})
+
+    result = _discover(tmp_path, workspace)
+
+    (candidate,) = result.candidates
+    assert candidate.source_path == str(project)
+    assert result.source_errors == ()
+    assert candidate.config is not None
+    assert (candidate.config.transport, candidate.config.url) == ("http", url)

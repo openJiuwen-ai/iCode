@@ -10,12 +10,17 @@ it, as pi does: the nearest of the workspace and the folders above it that
 undecided project is not read). A project server replaces the global one of
 the same name; a project entry with none of ``command``, ``url`` and ``type``
 only changes the ``enabled``, ``exposure`` and ``toolExposure`` of the global
-server it names.
+server it names. Basic fields are checked before replacing an earlier definition;
+an invalid project entry reports an error and leaves the global server intact.
+OAuth options and URL details beyond an ``http``/``https`` scheme are not
+validated: they are copied as written.
 
 Values in ``env`` and ``headers`` may reference ``$NAME`` or ``${NAME}``; ``$$``
 and ``$!`` are a literal ``$`` and ``!``. A value starting with ``!`` runs a
 command in pi, which the import does not translate: such servers are listed
-for manual setup. ``~`` in ``command`` and ``args`` is expanded, as pi does.
+for manual setup. Home expansion in ``command`` and ``args`` uses Node's lexical
+path normalization, without following symlinks. HTTP servers without ``auth``
+or an Authorization header default to OAuth, whose sign-in cannot be imported.
 
 ``exposure`` maps to iCode's loading: ``direct`` loads every tool,
 ``codemode`` and ``deferred`` load on demand, ``hidden`` offers none.
@@ -40,6 +45,8 @@ that session folder. Remaining tildes are shielded from iCode's expansion.
 
 from __future__ import annotations
 
+import ntpath
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -74,9 +81,12 @@ from chrys.service.mcp.importers.base import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from pathlib import PurePath
 
 _NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
-_VARIABLE_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*)|([$!]))")
+_VARIABLE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Pi accepts only http and https URLs, in any letter case.
+_HTTP_SCHEME_RE = re.compile(r"https?:", re.IGNORECASE)
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 _OVERRIDE_KEYS = frozenset({"enabled", "exposure", "toolExposure"})
 _READ = (
@@ -134,7 +144,7 @@ class PiSource:
         project = Path(ctx.workspace_cwd) / ".pi" / "mcp.json" if ctx.workspace_cwd else None
         if project is not None and project.is_file() and _trusted(ctx.workspace_cwd or "", agent, read):
             files.append(project)
-        entries: dict[str, tuple[dict[str, Any], str]] = {}
+        entries: dict[str, tuple[dict[str, Any], SourceServer]] = {}
         for position, path in enumerate(files):
             document = read(path)
             if document is None:
@@ -144,18 +154,30 @@ class PiSource:
                 errors.append(McpSourceError(str(path), SourceErrorKind.INVALID, field="mcpServers"))
                 continue
             for name, entry in servers.items():
+                error = McpSourceError(str(path), SourceErrorKind.INVALID, field=f"mcpServers.{name}")
                 if not isinstance(entry, dict) or not _NAME_RE.fullmatch(name):
+                    errors.append(error)
                     continue
-                if position and not entry.keys() & {"command", "url", "type"}:
+                override = position and not entry.keys() & {"command", "url", "type"}
+                source_path = str(path)
+                if override:
                     # In the project file, an override changes only how a global server is offered.
-                    if name in entries and not entry.keys() - _OVERRIDE_KEYS:
-                        base, base_path = entries[name]
-                        entries[name] = ({**base, **entry}, base_path)
+                    if name not in entries or entry.keys() - _OVERRIDE_KEYS:
+                        errors.append(error)
+                        continue
+                    base, previous = entries[name]
+                    entry = {**base, **entry}
+                    source_path = previous.source_path
+                server = _server(name, entry, source_path, ctx.home)
+                if server is None or (position and not override and server.transport == "http" and entry.get("auth")):
+                    errors.append(error)
                     continue
-                entries.pop(name, None)
-                entries[name] = (entry, str(path))
-        found = [_server(name, entry, path, ctx.home) for name, (entry, path) in entries.items()]
-        candidates = tuple(convert(server) for server in found if server is not None)
+                if any(other != name and other.replace("-", "_") == name.replace("-", "_") for other in entries):
+                    errors.append(error)
+                    continue
+                # Keep refusal candidates instead of silently choosing an earlier definition.
+                entries[name] = (entry, server)
+        candidates = tuple(convert(server) for _, server in entries.values())
         return McpImportResult(candidates, tuple(errors))
 
 
@@ -180,9 +202,21 @@ def _trusted(workspace_cwd: str, agent: Path, read: Callable[[Path], dict[str, A
     return (read(agent / "settings.json") or {}).get("defaultProjectTrust") == "always"
 
 
-def _expand_home(text: str, home: Path) -> str:
-    if text == "~" or text.startswith("~/") or (get_platform().is_windows and text.startswith("~\\")):
-        return str(home) + text[1:]
+def _expand_home(text: str, home: PurePath) -> str:
+    if text == "~":
+        return str(home)
+    windows = get_platform().is_windows
+    if text.startswith("~/") or (windows and text.startswith("~\\")):
+        path = ntpath if windows else posixpath
+        suffix = text[2:]
+        # Node joins before normalizing; Python join would discard home for a rooted suffix.
+        joined = str(home) + path.sep + suffix if suffix else str(home)
+        normalized = path.normpath(joined)
+        if not windows and normalized.startswith("//"):
+            normalized = "/" + normalized.lstrip("/")
+        if joined.endswith(("/", "\\") if windows else ("/",)) and not normalized.endswith(path.sep):
+            normalized += path.sep
+        return normalized
     return text
 
 
@@ -191,14 +225,15 @@ def _is_exposure(value: object) -> bool:
 
 
 def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceServer | None:
-    """The server pi would run, or ``None`` for an entry it rejects."""
+    """The server pi would run, checked by its basic fields only, or ``None`` for an entry it rejects."""
     prefix = f"mcpServers.{name}"
-    kind = entry.get("type")
+    kind = entry.get("type", "")
     exposure = entry.get("exposure", "codemode")
     rules = entry.get("toolExposure", {})
     timeout = positive_number(entry.get("timeout")) if "timeout" in entry else _DEFAULT_TIMEOUT_SECONDS
     if (
-        not _is_exposure(exposure)
+        ("type" in entry and kind not in ("stdio", "http", "streamable-http"))
+        or not _is_exposure(exposure)
         or not isinstance(rules, dict)
         or not all(_is_exposure(rule) for rule in rules.values())
         or not isinstance(entry.get("enabled", True), bool)
@@ -206,11 +241,19 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
         or timeout is None
     ):
         return None
-    if isinstance(entry.get("url"), str) and kind in (None, "http", "streamable-http"):
+    if isinstance(entry.get("url"), str) and kind in ("", "http", "streamable-http"):
         transport = "http"
-        if not entry["url"].startswith(("http://", "https://")) or not is_str_mapping(entry.get("headers", {})):
+        if (
+            not _HTTP_SCHEME_RE.match(entry["url"].strip())
+            or not is_str_mapping(entry.get("headers", {}))
+            or ("oauth" in entry and not isinstance(entry["oauth"], dict))
+        ):
             return None
-    elif isinstance(entry.get("command"), str) and "url" not in entry and kind in (None, "stdio"):
+        if "auth" in entry:
+            auth = entry["auth"]
+            if not isinstance(auth, dict) or not isinstance(auth.get("provider"), str) or not auth["provider"]:
+                return None
+    elif isinstance(entry.get("command"), str) and kind in ("", "stdio"):
         transport = "stdio"
         if not is_str_list(entry.get("args", [])) or not is_str_mapping(entry.get("env", {})):
             return None
@@ -226,7 +269,7 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
     known = (*_READ_EXPOSURE, "cwd") if transport == "stdio" else _READ_EXPOSURE
     warnings: list[ImportWarning | None] = [*access.warnings, missing_fields(entry, known, prefix)]
     authorized = any(key.lower() == "authorization" for key in texts)
-    if transport == "http" and (entry.get("auth") or ("oauth" in entry and not authorized)):
+    if transport == "http" and (entry.get("auth") or not authorized):
         warnings.append(ImportWarning(WarningKind.AUTH_NOT_IMPORTED))
     return SourceServer(
         name,
@@ -268,11 +311,27 @@ def _cwd(text: str, home: Path) -> str:
 def _value(text: str) -> Value:
     parts: list[str | Var] = []
     position = 0
-    for match in _VARIABLE_RE.finditer(text):
-        braced, bare, escaped = match.groups()
-        parts.extend((text[position : match.start()], escaped or Var(braced or bare)))
-        position = match.end()
-    parts.append(text[position:])
+    while position < len(text):
+        dollar = text.find("$", position)
+        if dollar < 0:
+            parts.append(text[position:])
+            break
+        parts.append(text[position:dollar])
+        following = text[dollar + 1 : dollar + 2]
+        if following in ("$", "!"):
+            parts.append(following)
+            position = dollar + 2
+        elif following == "{" and (end := text.find("}", dollar + 2)) >= 0:
+            name = text[dollar + 2 : end]
+            # Invalid braced blocks are consumed whole, including any dollars inside them.
+            parts.append(Var(name) if _VARIABLE_NAME_RE.fullmatch(name) else text[dollar : end + 1])
+            position = end + 1
+        elif following != "{" and (match := _VARIABLE_NAME_RE.match(text, dollar + 1)):
+            parts.append(Var(match[0]))
+            position = match.end()
+        else:
+            parts.append("$")
+            position = dollar + 1
     return tuple(parts)
 
 

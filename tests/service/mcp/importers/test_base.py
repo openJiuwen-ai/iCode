@@ -229,8 +229,21 @@ def test_convert_trims_header_whitespace_and_ignores_env_of_http_servers() -> No
         ("\u00a0https://x/mcp\u3000", "https://x/mcp"),
         (" https://x/a b?key=a b ", "https://x/a b?key=a b"),
         (" https://x/mcp%20?key=%20 ", "https://x/mcp%20?key=%20"),
+        (" HTTPS://X/Path?Key=HTTP:Value ", "https://X/Path?Key=HTTP:Value"),
+        ("Example.COM/HTTP:x", "Example.COM/HTTP:x"),
     ],
-    ids=["unchanged", "leading", "trailing", "both", "ascii-whitespace", "unicode-whitespace", "internal", "encoded"],
+    ids=[
+        "unchanged",
+        "leading",
+        "trailing",
+        "both",
+        "ascii-whitespace",
+        "unicode-whitespace",
+        "internal",
+        "encoded",
+        "scheme-case",
+        "no-scheme",
+    ],
 )
 def test_convert_trims_only_surrounding_url_whitespace(url: str, expected: str) -> None:
     candidate = convert(SourceServer("srv", "/cfg.json", "http", url=url))

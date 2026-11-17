@@ -422,9 +422,7 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
         collapsed = self._folded.get(source.source_id, {}).get(index, True)
         card: _PreviewCard | _RefusedCard
         if imported is None:
-            reason = self._note(
-                problem_text(candidate, source.display_name, self._render_message), "mcp-import-problem"
-            )
+            reason = self._note(problem_text(candidate, render=self._render_message), "mcp-import-problem")
             field = [self._note(original_setting(candidate.problem_field), "mcp-import-problem")]
             path = self._display_path(candidate.source_path)
             where = self._note(_SOURCE.bind(path=path), "mcp-import-source")

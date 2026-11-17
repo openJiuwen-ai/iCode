@@ -101,7 +101,7 @@ def test_unpreservable_env_names_have_localized_advice(locale, key, reason) -> N
         reason=reason,
     )
     localizer = Localizer(locale)
-    text = localizer.render(problem_text(item, "source", localizer.render))
+    text = localizer.render(problem_text(item, render=localizer.render))
     assert ("editor cannot preserve" if locale == "en" else "编辑器无法原样保留") in text
     assert ("original configuration file" if locale == "en" else "原配置文件") not in text
     assert ("invalid" if locale == "en" else "非法") not in text
@@ -145,7 +145,7 @@ def test_changed_line_endings_have_localized_advice_without_parameter_values(loc
         reason=ValueReason.LINE_ENDINGS,
     )
     localizer = Localizer(locale)
-    text = localizer.render(problem_text(item, "source", localizer.render))
+    text = localizer.render(problem_text(item, render=localizer.render))
 
     assert ("cannot be preserved during import" if locale == "en" else "换行形式无法原样保留") in text
     field = (
@@ -403,7 +403,7 @@ def test_refused_values_record_the_cause_and_offer_only_supported_actions(
     assert (item.field_use, item.reason) == (use, reason)
     assert item.problem_field
     localizer = Localizer(locale)
-    text = localizer.render(problem_text(item, source, localizer.render))
+    text = localizer.render(problem_text(item, render=localizer.render))
     assert "private-source-value" not in text
     assert "private-source-value" not in item.problem_field
     assert ("Original configuration field:" if locale == "en" else "原配置项") not in text
@@ -428,7 +428,7 @@ def test_incomplete_windows_paths_have_specific_advice(tmp_path, monkeypatch, lo
     assert item.config is None
     assert (item.field_use, item.reason) == (FieldUse.CWD, ValueReason.WINDOWS_PATH)
     localizer = Localizer(locale)
-    text = localizer.render(problem_text(item, "Pi", localizer.render))
+    text = localizer.render(problem_text(item, render=localizer.render))
     assert r"C:\tools" in text and "C:tools" in text
     assert ("full path" if locale == "en" else "完整路径") in text
 
@@ -485,7 +485,7 @@ def test_problems_and_source_errors_name_the_setting_or_file() -> None:
     sse = replace(_unsupported("x", Problem.UNSUPPORTED_CONNECTION), transport="sse")
     ws = replace(sse, transport="ws")
     remote = _unsupported("x", Problem.REMOTE_ENVIRONMENT, "mcp_servers.x.environment_id")
-    assert [format_message(problem_text(c, "ChatGPT")) for c in (sse, ws, remote)] == [
+    assert [format_message(problem_text(c)) for c in (sse, ws, remote)] == [
         (
             "This server connects over SSE; iCode supports only STDIO and Streamable HTTP. "
             "If the server also offers one of these, add it manually."
@@ -502,7 +502,7 @@ def test_problems_and_source_errors_name_the_setting_or_file() -> None:
     ]
     # A connection refusal's sentence says it all; the others are introduced by their source setting.
     assert [names_field(c) for c in (sse, remote, variable, external, value)] == [False, False, True, True, True]
-    assert [format_message(problem_text(c, "ChatGPT")) for c in (variable, external, value)] == [
+    assert [format_message(problem_text(c)) for c in (variable, external, value)] == [
         "The server URL contains an environment variable reference, which iCode does not expand here. Add the server manually and enter its full URL, replacing any environment variable references with their values.",
         "The environment variable value is stored in another file and cannot be imported automatically. Add the server manually and fill in the value using the server instructions. You can also reference an environment variable or get the value from a command.",
         "The server URL cannot be imported as written. Add the server manually and enter its full URL, replacing any environment variable references with their values.",

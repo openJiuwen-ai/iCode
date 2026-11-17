@@ -223,9 +223,7 @@ def warning_text(warning: ImportWarning, agent: str) -> MessageRef:
     return message.bind()
 
 
-def problem_text(
-    candidate: McpImportCandidate, agent: str, render: Callable[[MessageRef], str] = format_message
-) -> MessageRef:
+def problem_text(candidate: McpImportCandidate, render: Callable[[MessageRef], str] = format_message) -> MessageRef:
     """Explain the recorded cause, with advice limited to what the target field supports."""
     if candidate.problem is Problem.UNSUPPORTED_CONNECTION:
         transport = candidate.transport

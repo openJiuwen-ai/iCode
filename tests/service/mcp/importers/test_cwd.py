@@ -300,8 +300,8 @@ def test_pi_backslash_home_prefix_matches_runtime_on_each_platform(
     assert candidate.config is not None
     if windows:
         assert candidate.config.cwd == ntpath.normpath(str(home_path) + r"\server")
-        assert candidate.config.command == str(home_path) + r"\bin\run"
-        assert candidate.config.args == [str(home_path) + r"\data"]
+        assert candidate.config.command == ntpath.normpath(str(home_path) + r"\bin\run")
+        assert candidate.config.args == [ntpath.normpath(str(home_path) + r"\data")]
     else:
         assert candidate.config.cwd == r"./~\server"
         assert candidate.config.command == r"~\bin\run"

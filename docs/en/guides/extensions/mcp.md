@@ -124,6 +124,10 @@ The same HTTP URL, or the same STDIO command and arguments, can trigger "Connect
 
 Some applications allow configurations to reference unset environment variables: Claude Code's `${VAR:-default}` can use a default value, OpenCode replaces unset variables with empty strings, and ChatGPT omits headers that reference unset variables. After import, iCode keeps only the variable references and fails to connect if the variables are unset. If the configuration references `CLAUDE_PROJECT_DIR`, which Claude Code provides automatically, set it yourself before starting iCode.
 
+Pi can sign in to HTTP servers with OAuth even when the configuration has no `oauth` setting, so those without an `Authorization` header show a sign-in warning after import. A public server may work without authentication; if yours requires sign-in, configure a supported token before testing.
+
+Pi's `~/...` paths in commands and arguments appear as full paths after import. Check that they point to the program and data you want to use.
+
 ### Check imported working directories
 
 Before saving, make sure "Working Directory" points to the folder the server needs. A blank value uses the current session folder; a relative path such as `tools/mcp` also follows that folder when it changes. To keep using the original folder, the most direct option is to enter its full path without `~` or `..`, for example `/home/me/mcp-server` or `C:\tools\mcp-server`.

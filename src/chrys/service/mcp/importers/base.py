@@ -49,6 +49,8 @@ MAX_REQUEST_TIMEOUT_SECONDS = timedelta.max.days * 86_400
 
 # TextArea splits at these characters, then joins every line with one newline style.
 _COMMAND_LINE_BREAK = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]")
+# A URL scheme, which every source reads in any letter case and the editor accepts only in lower case.
+_URL_SCHEME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9+.-]*:")
 
 
 class WarningKind(StrEnum):
@@ -634,7 +636,7 @@ def convert(server: SourceServer) -> McpImportCandidate:
         args=list(server.args) if stdio else [],
         env=env,
         cwd=cwd,
-        url="" if stdio else server.url.strip(),
+        url="" if stdio else _URL_SCHEME_RE.sub(lambda m: m[0].lower(), server.url.strip(), count=1),
         headers=headers,
         enabled=server.enabled,
         description=server.description,
